@@ -1,0 +1,14 @@
+{
+  "name": "cc-agentic",
+  "owner": { "name": "SellAnyBiz" },
+  "metadata": {
+    "description": "Our agentic development setup for Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "cc",
+      "source": "./plugin",
+      "description": "Gateway, hooks, skills, agents and machine setup for Claude Code."
+    }
+  ]
+}

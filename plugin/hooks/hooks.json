@@ -1,0 +1,31 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bun", "args": ["${CLAUDE_PLUGIN_ROOT}/dist/spike.js", "SessionStart"] }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bun", "args": ["${CLAUDE_PLUGIN_ROOT}/dist/spike.js", "PreToolUse"] }
+        ]
+      }
+    ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/dist/worktree-default.js"],
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}
