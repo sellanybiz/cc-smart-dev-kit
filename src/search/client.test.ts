@@ -3,7 +3,7 @@
  * can fail. Each test starts a fake OmniRoute on a free port of its own (never 20100,
  * where a real router may run); the expected values are written by hand.
  */
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { fakeProxy, withProxyEnv } from "../testing/proxy-env";
 import {
   fetchPage,
@@ -489,19 +489,33 @@ describe("what a failure shows of the address and the reason", () => {
   });
 
   it("a fetch error that quotes the key: masked", async () => {
-    // A key with a NUL in it: Bun refuses the header and quotes its whole value.
-    const broken = `${KEY}\u0000`;
+    // Bun before 1.4.3 quoted a refused header's whole value in its error; 1.4.3 does not.
+    // A fetch that throws such an error stands in for it: any error text may echo the key.
     const fake = fakeOmniRoute(() => Response.json(ANSWER));
-    const said = await searchWeb({
-      backend: { apiKey: broken, baseUrl: fake.baseUrl },
-      max: 5,
-      query: "bun runtime",
-    });
-    const error = "error" in said ? said.error : "";
-    // The whole key is masked, its NUL included (the last four characters `maskSecrets`
-    // keeps are "789" and the NUL, which the terminal sees as a space).
+    const quotingFetch = async (
+      _url: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      const sent = new Headers(init?.headers).get("authorization");
+      throw new TypeError(`Header 'Authorization' has invalid value: '${String(sent)}'`);
+    };
+    const quoting = spyOn(globalThis, "fetch").mockImplementation(
+      Object.assign(quotingFetch, { preconnect: fetch.preconnect }),
+    );
+    let error = "";
+    try {
+      const said = await searchWeb({
+        backend: { apiKey: KEY, baseUrl: fake.baseUrl },
+        max: 5,
+        query: "bun runtime",
+      });
+      error = "error" in said ? said.error : "";
+    } finally {
+      quoting.mockRestore();
+    }
+    // The whole key is masked: `maskSecrets` keeps its last four characters.
     expect(error).toBe(
-      `cannot reach OmniRoute at ${fake.baseUrl} (Header 'Authorization' has invalid value: 'Bearer ****789 '). Is it running?`,
+      `cannot reach OmniRoute at ${fake.baseUrl} (Header 'Authorization' has invalid value: 'Bearer ****6789'). Is it running?`,
     );
     expect(error).not.toContain(KEY);
     expect(fake.calls.length).toBe(0);

@@ -11,8 +11,10 @@ from), named `anymodel`.
 ## Install
 
 You need macOS or Linux (for now: the launcher and `bin/` are POSIX `sh` scripts),
-[Claude Code](https://code.claude.com), [Bun](https://bun.sh), and read access to this
-repo with git (an SSH key, or a git credential helper when the repo is private).
+[Claude Code](https://code.claude.com), [Bun](https://bun.sh) 1.4.3 or later (an older
+Bun would send a backend's key through a proxy; `bun --version` shows yours), and read
+access to this repo with git (an SSH key, or a git credential helper when the repo is
+private). On an older Bun only `doctor`, `restore`, `version` and `--help` run.
 
 1. Add the marketplace. `<owner>/anymodel` is where this repo lives: the `repository`
    field of `plugin/.claude-plugin/plugin.json`.
@@ -55,6 +57,8 @@ After that, use `anymodel setup` to set up again (for example after an update).
 
 `doctor` checks that:
 
+- the Bun running it is 1.4.3 or later. On an older one it skips the gateway checks:
+  they send the backend key;
 - the plugin is installed;
 - the installed version is not behind the marketplace's local copy. When it is, ✗ says
   "installed X, marketplace has Y. Run: claude plugin update anymodel@anymodel". When the

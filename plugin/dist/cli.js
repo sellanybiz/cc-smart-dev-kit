@@ -9,6 +9,12 @@ var PLUGIN = "anymodel";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
 var COMMAND = "anymodel";
 
+// src/build-info/bun.ts
+var MIN_BUN = "1.4.3";
+function bunTooOld(version, path) {
+  return Bun.semver.order(version, MIN_BUN) < 0 ? `anymodel needs Bun \u2265 ${MIN_BUN}; this is ${version} (${path}).` : null;
+}
+
 // src/build-info/index.ts
 var info = {
   version: "0.3.0",
@@ -19,6 +25,24 @@ var MARKETPLACE_SOURCE = info.repo;
 var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
 var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
+
+// src/cli/bun-check.ts
+var RUNS_ON_ANY_BUN = new Set([
+  undefined,
+  "doctor",
+  "restore",
+  "version",
+  "--version",
+  "help",
+  "--help",
+  "-h"
+]);
+function oldBunRefusal(command, version, path) {
+  if (RUNS_ON_ANY_BUN.has(command))
+    return null;
+  const tooOld = bunTooOld(version, path);
+  return tooOld === null ? null : `${COMMAND}: ${tooOld} Upgrade this Bun, then run the command again.`;
+}
 
 // src/cli/doctor.ts
 import { accessSync, constants, existsSync as existsSync9, readFileSync as readFileSync10 } from "fs";
@@ -6480,18 +6504,10 @@ function privateHostKind(hostname) {
     return "a private host name";
   return null;
 }
-function addNoProxyHost(host) {
-  const name = (process.env.no_proxy ?? "") === "" ? "NO_PROXY" : "no_proxy";
-  const entries = (process.env[name] ?? "").split(/[\s,]+/).filter((entry) => entry !== "");
-  if (entries.includes(host))
-    return;
-  process.env[name] = [...entries, host].join(",");
-}
 function directIfLoopback(url) {
   const parsed = URL.parse(url);
   if (parsed === null || !isLoopbackHost(parsed.hostname))
     return {};
-  addNoProxyHost(parsed.hostname);
   return { proxy: false };
 }
 
@@ -7834,6 +7850,10 @@ function restartPendingFile(stateDir) {
 }
 var HEALTH_WAIT_MS = 5000;
 async function installRouter(options) {
+  const tooOld = bunTooOld(options.bunVersion, tildify(options.bunPath, options.home));
+  if (tooOld !== null) {
+    throw new Error(`${tooOld} The router is not installed. Upgrade this Bun, then run: ${COMMAND} gateway setup`);
+  }
   const port = await probeRouterPort(options.port, options.probe.fetch);
   if (port.state === "other") {
     throw new Error(`port ${options.port} is used by another program (an older router? stop it first)`);
@@ -8304,6 +8324,7 @@ async function commandSetup(ctx, args) {
   const configPath = paths.gatewayConfigFile;
   const install = (overrides) => ({
     bunPath: ctx.bunPath,
+    bunVersion: ctx.bunVersion,
     bundle: ctx.bundle,
     copyPath: paths.routerCopy,
     unitPath: paths.routerUnitFile,
@@ -8953,9 +8974,21 @@ function checkOldPlugin(settings, paths) {
     text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}. ${steps}`
   };
 }
-async function runDoctor(paths, env, gateway) {
+function checkBun(bun, paths) {
+  const where = tildify(bun.path, paths.home);
+  const tooOld = bunTooOld(bun.version, where);
+  return tooOld === null ? { ok: true, text: `Bun ${bun.version} at ${where} (anymodel needs \u2265 ${MIN_BUN})` } : { ok: false, text: `${tooOld} Upgrade this Bun, then run: ${COMMAND} doctor` };
+}
+async function runDoctor(paths, env, gateway, bun) {
   const settings = readSettings2(paths.settingsFile);
+  const runtime = checkBun(bun, paths);
+  const skipped = {
+    ok: true,
+    info: true,
+    text: "gateway: not checked on this Bun (its checks send the backend key)"
+  };
   const checks = [
+    runtime,
     checkPlugin(paths),
     checkInstalledVersion(paths),
     checkLauncher(paths),
@@ -8964,7 +8997,7 @@ async function runDoctor(paths, env, gateway) {
     checkUpdatesNotOff(settings, env, paths),
     checkNameClash(settings),
     checkOldPlugin(settings, paths),
-    ...await gatewayChecks({ paths, ...gateway })
+    ...runtime.ok ? await gatewayChecks({ paths, ...gateway }) : [skipped]
   ].filter((check) => check !== null);
   for (const check of checks) {
     console.log(`${check.info ? "\xB7" : check.ok ? "\u2713" : "\u2717"} ${check.text}`);
@@ -9662,6 +9695,7 @@ function gatewayContext(paths) {
   return {
     paths,
     bunPath: process.execPath,
+    bunVersion: Bun.version,
     bundle: routerBundle(),
     runner,
     readStdin: () => Bun.stdin.text(),
@@ -9672,6 +9706,11 @@ function gatewayContext(paths) {
 }
 async function main(argv) {
   const [command, ...rest] = argv;
+  const refusal = oldBunRefusal(command, Bun.version, process.execPath);
+  if (refusal !== null) {
+    console.error(refusal);
+    return 1;
+  }
   const paths = cliPaths();
   switch (command) {
     case "setup": {
@@ -9685,11 +9724,7 @@ ${HELP}`);
       return runSetup(paths, { dryRun: rest.includes("--dry-run") });
     }
     case "doctor":
-      return runDoctor(paths, process.env, {
-        bundle: routerBundle(),
-        runner,
-        systemd
-      });
+      return runDoctor(paths, process.env, { bundle: routerBundle(), runner, systemd }, { path: process.execPath, version: Bun.version });
     case "restore": {
       const unknown = rest.filter((arg) => arg !== "--yes" && arg !== "--now");
       if (unknown.length > 0) {

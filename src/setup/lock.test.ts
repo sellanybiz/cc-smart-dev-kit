@@ -62,7 +62,7 @@ describe("withLock", () => {
     const lockModule = join(import.meta.dir, "lock.ts");
     const holder = Bun.spawn(
       [
-        "bun",
+        process.execPath,
         "-e",
         `const { withLock } = await import(${JSON.stringify(lockModule)});
          await withLock(${JSON.stringify(stateDir)}, async () => {
@@ -86,7 +86,7 @@ describe("withLock", () => {
     // The holder blocks its own event loop: no timer of its own could run in that time.
     const holder = Bun.spawn(
       [
-        "bun",
+        process.execPath,
         "-e",
         `const { writeSync } = await import("node:fs");
          const { withLock } = await import(${JSON.stringify(lockModule)});

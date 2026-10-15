@@ -43,7 +43,9 @@ flowchart LR
   sends a request through `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` unless `NO_PROXY`
   lists the host, and this request carries the key. So for a `baseUrl` on 127.0.0.0/8,
   `::1` or `localhost`, the request goes straight there (`directIfLoopback`,
-  `src/gateway/hosts.ts`, the same rule the gateway uses for its own backend calls).
+  `src/gateway/hosts.ts`, the same rule the gateway uses for its own backend calls). It
+  passes `proxy: false`, which Bun honours from 1.4.3 on; so `anymodel search` does not
+  run on an older Bun (`docs/design.md` § The Bun it needs).
 - **Web text never drives the terminal.** A title, a URL, a snippet, the provider's name
   and a page's text come from the web, and a terminal obeys control characters inside
   text: an escape sequence can write the clipboard or hide text, a bidi override shows

@@ -114,31 +114,15 @@ export function privateHostKind(hostname: string): null | string {
 }
 
 /**
- * Puts `host` on the NO_PROXY list `fetch` reads, once. Bun reads `no_proxy`, and
- * `NO_PROXY` when `no_proxy` is unset or empty, so the host goes on the one in effect.
- * Only ever adds: a person's own entries stay.
- */
-function addNoProxyHost(host: string): void {
-  const name = (process.env.no_proxy ?? "") === "" ? "NO_PROXY" : "no_proxy";
-  const entries = (process.env[name] ?? "").split(/[\s,]+/).filter((entry) => entry !== "");
-  if (entries.includes(host)) return;
-  process.env[name] = [...entries, host].join(",");
-}
-
-/**
  * The `fetch` options that send a request to `url` straight, never through a proxy, when
  * its host is this machine (`isLoopbackHost`): `{ proxy: false }`. `{}` for any other
  * host, which keeps the environment's proxy settings.
  *
- * `proxy: false` is Bun's typed way (bun-types 1.4.3). Bun 1.4.2, the version CI runs,
- * ignores it (measured: the request still went to HTTP_PROXY), so the host also goes on
- * this process's NO_PROXY list, which every Bun version honours. That list grows only by
- * the loopback hosts this process calls; drop the NO_PROXY step once every supported Bun
- * honours `proxy: false`.
+ * Bun honours `proxy: false` from 1.4.3 on (oven-sh/bun#42692), so anymodel needs that
+ * Bun (`MIN_BUN`). An older Bun ignores it and sends the request to HTTP_PROXY.
  */
 export function directIfLoopback(url: string): { proxy?: false } {
   const parsed = URL.parse(url);
   if (parsed === null || !isLoopbackHost(parsed.hostname)) return {};
-  addNoProxyHost(parsed.hostname);
   return { proxy: false };
 }

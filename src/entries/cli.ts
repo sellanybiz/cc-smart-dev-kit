@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { VERSION } from "../build-info";
+import { oldBunRefusal } from "../cli/bun-check";
 import { runDoctor } from "../cli/doctor";
 import { cliPaths } from "../cli/paths";
 import { runRestore } from "../cli/restore";
@@ -69,6 +70,7 @@ function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
   return {
     paths,
     bunPath: process.execPath,
+    bunVersion: Bun.version,
     bundle: routerBundle(),
     runner,
     readStdin: () => Bun.stdin.text(),
@@ -80,6 +82,11 @@ function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
+  const refusal = oldBunRefusal(command, Bun.version, process.execPath);
+  if (refusal !== null) {
+    console.error(refusal);
+    return 1;
+  }
   const paths = cliPaths();
 
   switch (command) {
@@ -92,11 +99,12 @@ async function main(argv: string[]): Promise<number> {
       return runSetup(paths, { dryRun: rest.includes("--dry-run") });
     }
     case "doctor":
-      return runDoctor(paths, process.env, {
-        bundle: routerBundle(),
-        runner,
-        systemd,
-      });
+      return runDoctor(
+        paths,
+        process.env,
+        { bundle: routerBundle(), runner, systemd },
+        { path: process.execPath, version: Bun.version },
+      );
     case "restore": {
       const unknown = rest.filter((arg) => arg !== "--yes" && arg !== "--now");
       if (unknown.length > 0) {

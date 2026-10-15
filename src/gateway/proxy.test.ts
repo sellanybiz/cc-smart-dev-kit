@@ -2,12 +2,15 @@
  * A backend on this machine is reached straight, never through a proxy: the request
  * carries the backend's key, and a proxy from HTTP_PROXY / HTTPS_PROXY / ALL_PROXY would
  * see it. The gateway's two calls that carry a key are tested here: the model list
- * (`listModels`) and the router's forward to a cheap backend.
+ * (`listModels`) and the router's forward to a cheap backend: once with every proxy
+ * variable set (HTTP_PROXY is the one an `http://` backend meets), once with ALL_PROXY
+ * alone (the fallback Bun uses when HTTP_PROXY is unset). `proxy: false` does it, with no
+ * NO_PROXY help: Bun 1.4.3 and later (`MIN_BUN`). On Bun 1.4.2 both tests fail.
  *
  * Every server is a fake on a free port of this test (never the live router's 20100).
  */
 import { afterEach, describe, expect, it } from "bun:test";
-import { fakeProxy, withProxyEnv } from "../testing/proxy-env";
+import { EVERY_PROXY, fakeProxy, withProxyEnv } from "../testing/proxy-env";
 import { listModels } from "./backends";
 import type { GatewayConfig } from "./config";
 import { createRouter } from "./router";
@@ -61,14 +64,21 @@ async function provenProxy(backendUrl: string) {
   };
 }
 
-describe("a proxy in the environment", () => {
+describe.each([
+  ["every proxy variable", EVERY_PROXY],
+  ["ALL_PROXY alone", ["ALL_PROXY"]],
+] as const)("a proxy in the environment: %s", (_, names) => {
   it("the model list: straight to a backend on this machine, never through the proxy", async () => {
     const backend = fakeBackend();
     const { control, proxy } = await provenProxy(backend.baseUrl);
-    const listed = await withProxyEnv(proxy.url, async () => {
-      await control();
-      return listModels(backend.baseUrl, KEY);
-    });
+    const listed = await withProxyEnv(
+      proxy.url,
+      async () => {
+        await control();
+        return listModels(backend.baseUrl, KEY);
+      },
+      names,
+    );
     expect(listed).toEqual({ models: [{ contextLength: null, id: "m1" }], status: 200 });
     expect(proxy.requests).toEqual([]);
     // The control went to the proxy: the backend saw only the model list.
@@ -97,24 +107,28 @@ describe("a proxy in the environment", () => {
       now: () => Date.now(),
       port: ROUTER_PORT,
     });
-    const response = await withProxyEnv(proxy.url, async () => {
-      await control();
-      return handle(
-        new Request(`http://127.0.0.1:${ROUTER_PORT}/v1/messages`, {
-          body: JSON.stringify({
-            max_tokens: 16,
-            messages: [{ content: "hi", role: "user" }],
-            model: "anymodel-scout",
+    const response = await withProxyEnv(
+      proxy.url,
+      async () => {
+        await control();
+        return handle(
+          new Request(`http://127.0.0.1:${ROUTER_PORT}/v1/messages`, {
+            body: JSON.stringify({
+              max_tokens: 16,
+              messages: [{ content: "hi", role: "user" }],
+              model: "anymodel-scout",
+            }),
+            headers: {
+              "anthropic-version": "2023-06-01",
+              "content-type": "application/json",
+              host: `127.0.0.1:${ROUTER_PORT}`,
+            },
+            method: "POST",
           }),
-          headers: {
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-            host: `127.0.0.1:${ROUTER_PORT}`,
-          },
-          method: "POST",
-        }),
-      );
-    });
+        );
+      },
+      names,
+    );
     expect(response.status).toBe(200);
     expect(((await response.json()) as { id: string }).id).toBe("msg_1");
     expect(proxy.requests).toEqual([]);

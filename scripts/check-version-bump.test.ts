@@ -87,7 +87,7 @@ describe("check-version-bump", () => {
     const repo = makeRepo();
     commit(repo, { "plugin/hooks/hooks.json": "{}\n" });
     const run = (...args: string[]) =>
-      Bun.spawnSync(["bun", SCRIPT, ...args], {
+      Bun.spawnSync([process.execPath, SCRIPT, ...args], {
         cwd: repo,
         env: cleanGitEnv(),
         stdout: "pipe",

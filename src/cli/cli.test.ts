@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -15,6 +15,8 @@ import { installLauncher } from "../setup/launcher";
 import { listBackups } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
+import { runDoctor } from "./doctor";
+import { cliPaths } from "./paths";
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 
@@ -105,7 +107,7 @@ function setup(options: SetupOptions = {}) {
   const run = (args: string[], extraEnv: Record<string, string> = {}) => {
     // The live-router guard runs in the CLI too: no test may reach port 20100.
     const guard = subprocessGuard();
-    const result = Bun.spawnSync(["bun", ...guard.args, CLI, ...args], {
+    const result = Bun.spawnSync([process.execPath, ...guard.args, CLI, ...args], {
       env: { ...env, ...extraEnv, ...guard.env },
       stdout: "pipe",
       stderr: "pipe",
@@ -245,6 +247,8 @@ describe("anymodel doctor", () => {
     const result = run(["doctor"]);
     expect(result.stdout).toBe(
       [
+        // The bun running the tests: the preload stops one older than 1.4.3.
+        `✓ Bun ${Bun.version} at ${process.execPath} (anymodel needs ≥ 1.4.3)`,
         `✓ anymodel@anymodel ${VERSION} is installed at ~/.claude/plugins/cache/anymodel/anymodel/${VERSION}`,
         `✓ the installed version ${VERSION} is not behind the marketplace`,
         `✓ the launcher ~/.local/bin/anymodel runs anymodel ${VERSION}`,
@@ -266,6 +270,87 @@ describe("anymodel doctor", () => {
         "",
       ].join("\n"),
     );
+  });
+
+  test("on a Bun older than 1.4.3: ✗ first, and the gateway checks, which send the key, are skipped", async () => {
+    // In this process, to give doctor an older Bun: a local marketplace, so no git runs, and
+    // no `setup`, so no launcher: doctor would run it with this process's real HOME.
+    const { home, configDir } = setup({
+      source: { source: "directory", path: "/placeholder" },
+    });
+    const marketplace = join(home, "marketplace");
+    mkdirSync(marketplace);
+    writeFileSync(
+      join(configDir, "plugins", "known_marketplaces.json"),
+      JSON.stringify({
+        anymodel: {
+          source: { source: "directory", path: marketplace },
+          installLocation: join(configDir, "plugins", "marketplaces", "anymodel"),
+        },
+      }),
+    );
+    // A gateway config whose router and backend are this fake: a gateway check would reach it.
+    const seen: string[] = [];
+    const fake = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req) {
+        seen.push(new URL(req.url).pathname);
+        return Response.json({ data: [] });
+      },
+    });
+    const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: configDir });
+    mkdirSync(join(home, ".config", "anymodel"), { recursive: true });
+    writeFileSync(
+      paths.gatewayConfigFile,
+      JSON.stringify({
+        backends: {
+          omniroute: { apiKey: "omni_SENTINEL_123456", baseUrl: `http://127.0.0.1:${fake.port}` },
+        },
+        port: fake.port,
+        slots: { "anymodel-scout": ["omniroute:m1"] },
+        version: 1,
+      }),
+      { mode: 0o600 },
+    );
+    const ran: string[][] = [];
+    const out: string[] = [];
+    const log = spyOn(console, "log").mockImplementation((...parts: unknown[]) => {
+      out.push(parts.join(" "));
+    });
+    let exitCode: number;
+    try {
+      exitCode = await runDoctor(
+        paths,
+        {},
+        {
+          bundle: join(home, "router.js"),
+          runner: (cmd) => {
+            ran.push(cmd);
+            return { exitCode: 0, output: "" };
+          },
+          systemd: true,
+        },
+        { path: "/opt/bun/bin/bun", version: "1.4.2" },
+      );
+    } finally {
+      log.mockRestore();
+      fake.stop(true);
+    }
+    expect(out).toEqual([
+      "✗ anymodel needs Bun ≥ 1.4.3; this is 1.4.2 (/opt/bun/bin/bun). Upgrade this Bun, then run: anymodel doctor",
+      `✓ anymodel@anymodel ${VERSION} is installed at ~/.claude/plugins/cache/anymodel/anymodel/${VERSION}`,
+      `✓ the installed version ${VERSION} is not behind the marketplace`,
+      "✗ no launcher at ~/.local/bin/anymodel. Run: anymodel setup",
+      "✓ the marketplace folder ~/marketplace exists",
+      "✗ plugin auto-update is off in ~/.claude/settings.json. Run: anymodel setup",
+      "✓ plugin updates are not switched off",
+      "✓ no other enabled plugin is named anymodel",
+      "· gateway: not checked on this Bun (its checks send the backend key)",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(seen).toEqual([]);
+    expect(ran).toEqual([]);
   });
 
   test("no access to the marketplace: ✗ naming both URLs tried, exit 1", () => {

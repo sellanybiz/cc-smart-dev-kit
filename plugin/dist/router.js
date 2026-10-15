@@ -1,4 +1,16 @@
 // @bun
+// src/build-info/bun.ts
+var MIN_BUN = "1.4.3";
+function bunTooOld(version, path) {
+  return Bun.semver.order(version, MIN_BUN) < 0 ? `anymodel needs Bun \u2265 ${MIN_BUN}; this is ${version} (${path}).` : null;
+}
+
+// src/build-info/names.ts
+var MARKETPLACE = "anymodel";
+var PLUGIN = "anymodel";
+var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
+var COMMAND = "anymodel";
+
 // src/cli/paths.ts
 import { homedir } from "os";
 import { join } from "path";
@@ -5806,12 +5818,6 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
-// src/build-info/names.ts
-var MARKETPLACE = "anymodel";
-var PLUGIN = "anymodel";
-var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-var COMMAND = "anymodel";
-
 // src/setup/write.ts
 import {
   chmodSync,
@@ -6458,18 +6464,10 @@ function privateHostKind(hostname) {
     return "a private host name";
   return null;
 }
-function addNoProxyHost(host) {
-  const name = (process.env.no_proxy ?? "") === "" ? "NO_PROXY" : "no_proxy";
-  const entries = (process.env[name] ?? "").split(/[\s,]+/).filter((entry) => entry !== "");
-  if (entries.includes(host))
-    return;
-  process.env[name] = [...entries, host].join(",");
-}
 function directIfLoopback(url) {
   const parsed = URL.parse(url);
   if (parsed === null || !isLoopbackHost(parsed.hostname))
     return {};
-  addNoProxyHost(parsed.hostname);
   return { proxy: false };
 }
 
@@ -7289,4 +7287,10 @@ function startRouter(configPath) {
 }
 
 // src/entries/router.ts
-startRouter(cliPaths().gatewayConfigFile);
+var tooOld = bunTooOld(Bun.version, process.execPath);
+if (tooOld === null) {
+  startRouter(cliPaths().gatewayConfigFile);
+} else {
+  console.error(`anymodel-router: ${tooOld} Upgrade this Bun, then run: ${COMMAND} gateway setup`);
+  process.exitCode = 1;
+}

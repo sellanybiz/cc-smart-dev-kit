@@ -12,7 +12,7 @@
 
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { COMMAND } from "../build-info";
+import { bunTooOld, COMMAND } from "../build-info";
 import { tildify } from "../cli/paths";
 import { atomicWrite, writeManagedFile } from "../setup/write";
 import { type HealthProbe, probeRouterPort, waitForRouter, waitWhileRouterAnswers } from "./health";
@@ -98,6 +98,8 @@ export const DRAIN_NOTE = "waiting for the old router to finish its answers (up 
 export interface InstallOptions {
   /** The bun that runs the router: `process.execPath` of this command. */
   bunPath: string;
+  /** That bun's version: `Bun.version` of this command. Older than `MIN_BUN`: refused. */
+  bunVersion: string;
   /** The plugin's own `dist/router.js`, copied to `copyPath`. */
   bundle: string;
   copyPath: string;
@@ -138,12 +140,19 @@ const HEALTH_WAIT_MS = 5_000;
  * the upgrade path. A running router is restarted only after a yes; without one nothing is
  * written (`declined`).
  *
- * First of all, before any write or question, it asks the port: a program that is not
- * this router there (an older router, say) stops it, with nothing written. After the
- * restart it waits for the health page; when that never answers, it throws with the
- * unit's state, and the restart-pending marker stays.
+ * First of all, it refuses a bun older than `MIN_BUN`: that router would send a backend's
+ * key through a proxy from the environment. Then, before any write or question, it asks
+ * the port: a program that is not this router there (an older router, say) stops it, with
+ * nothing written. After the restart it waits for the health page; when that never
+ * answers, it throws with the unit's state, and the restart-pending marker stays.
  */
 export async function installRouter(options: InstallOptions): Promise<InstallResult> {
+  const tooOld = bunTooOld(options.bunVersion, tildify(options.bunPath, options.home));
+  if (tooOld !== null) {
+    throw new Error(
+      `${tooOld} The router is not installed. Upgrade this Bun, then run: ${COMMAND} gateway setup`,
+    );
+  }
   const port = await probeRouterPort(options.port, options.probe.fetch);
   if (port.state === "other") {
     throw new Error(

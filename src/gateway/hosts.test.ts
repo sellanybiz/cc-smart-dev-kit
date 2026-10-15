@@ -49,32 +49,24 @@ describe("privateHostKind", () => {
 });
 
 describe("directIfLoopback", () => {
-  it("this machine: `proxy: false`, and the host goes on NO_PROXY once, after the person's own entries", async () => {
+  it("this machine: `proxy: false`, and the environment stays as it was", async () => {
     await withProxyEnv("http://proxy.example.test:3128", async () => {
-      process.env.NO_PROXY = "example.org, .corp.example.test";
+      process.env.NO_PROXY = "example.org";
+      const before = { ...process.env };
       expect(directIfLoopback("http://127.0.0.1:20128/v1/search")).toEqual({ proxy: false });
-      expect(directIfLoopback("http://127.0.0.1:20999/v1/models")).toEqual({ proxy: false });
-      expect(directIfLoopback("http://[::1]:20128/v1/search")).toEqual({ proxy: false });
-      expect(process.env.NO_PROXY).toBe("example.org,.corp.example.test,127.0.0.1,[::1]");
-    });
-  });
-
-  it("no_proxy in effect (Bun reads it first): the host goes there", async () => {
-    await withProxyEnv("http://proxy.example.test:3128", async () => {
-      process.env.no_proxy = "example.org";
       expect(directIfLoopback("http://localhost:20128/v1/search")).toEqual({ proxy: false });
-      expect(process.env.no_proxy).toBe("example.org,localhost");
-      expect(process.env.NO_PROXY).toBe("");
+      expect(directIfLoopback("http://[::1]:20128/v1/search")).toEqual({ proxy: false });
+      expect({ ...process.env }).toEqual(before);
     });
   });
 
-  it("any other host: no option, so the environment's proxy settings apply; NO_PROXY unchanged", async () => {
+  it("any other host: no option, so the environment's proxy settings apply", async () => {
     await withProxyEnv("http://proxy.example.test:3128", async () => {
+      const before = { ...process.env };
       expect(directIfLoopback("https://api.anthropic.com/v1/messages")).toEqual({});
       expect(directIfLoopback("https://omniroute.example.test/v1/search")).toEqual({});
       expect(directIfLoopback("not a url")).toEqual({});
-      expect(process.env.NO_PROXY).toBe("");
-      expect(process.env.no_proxy).toBe("");
+      expect({ ...process.env }).toEqual(before);
     });
   });
 });

@@ -241,10 +241,12 @@ The router builds a **new** request for a cheap backend:
   `::1` or `localhost` is called straight (`directIfLoopback`, `src/gateway/hosts.ts`),
   by the router and by the model list (`gateway models`, `slot`, `status`, `doctor`). A
   remote backend, and Anthropic, keep the environment's proxy settings: HTTPS through a
-  company proxy is normal there. `directIfLoopback` passes `proxy: false`, Bun's typed
-  way; Bun 1.4.2 ignores that option (measured), so it also adds the host to the
-  process's `NO_PROXY`, which every Bun version honours. That list grows only by the
-  loopback hosts the process calls (`src/gateway/proxy.test.ts`).
+  company proxy is normal there. `directIfLoopback` passes `proxy: false`, which Bun
+  honours from 1.4.3 on (oven-sh/bun#42692); Bun 1.4.2 ignores it and sends the key to
+  `HTTP_PROXY` (measured). So anymodel needs Bun ≥ 1.4.3 (`MIN_BUN`,
+  `src/build-info/bun.ts`): the router does not start on an older Bun, `gateway setup`
+  does not install it there, and `doctor` skips the gateway checks there
+  (`src/gateway/proxy.test.ts`; `docs/design.md` § The Bun it needs).
 - **Prompt text exactly as sent.** Only two named translations, each tested:
   - `toolSearchForBackend`: with `ENABLE_TOOL_SEARCH=true`, Claude Code marks most tools
     `defer_loading` and answers its `ToolSearch` with `tool_reference` blocks. Anthropic

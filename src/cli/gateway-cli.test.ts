@@ -222,6 +222,8 @@ function machine(options: { systemctl?: boolean } = {}) {
           : await runGateway(args.slice(1), {
               paths,
               bunPath: process.execPath,
+              // The Bun running the tests: the preload stops an older one.
+              bunVersion: Bun.version,
               bundle: BUILT_ROUTER,
               runner,
               readStdin: () => Promise.resolve(input ?? ""),

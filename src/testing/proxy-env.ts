@@ -38,25 +38,32 @@ export function fakeProxy(): { requests: string[]; stop(): void; url: string } {
 }
 
 /**
- * Sets one variable, or unsets it by setting it to "" (which `fetch` reads as unset).
- * Never `delete`: Bun 1.4.2's `fetch` does not see a `delete` from `process.env`, and
- * after one it sees no later value of that variable either (measured; the old value
- * stays in effect). So a variable a test unset stays in `process.env` as "".
+ * Sets one variable, or removes it. `fetch` sees a `delete` from Bun 1.4.3 on (before,
+ * it kept the old value: oven-sh/bun#42692), and anymodel needs that Bun (`MIN_BUN`).
  */
 function setVariable(name: string, value: string | undefined): void {
-  process.env[name] = value ?? "";
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
 }
 
+/** The variables that name a proxy, in both cases: all but NO_PROXY. */
+export const EVERY_PROXY = PROXY_VARIABLES.filter((name) => name.toLowerCase() !== "no_proxy");
+
 /**
- * Runs `body` with every proxy variable pointing at `proxyUrl` and no NO_PROXY, then puts
- * each variable back as it was (or unsets it), also when `body` throws.
+ * Runs `body` with the variables in `names` (default: every one that names a proxy)
+ * pointing at `proxyUrl`, and every other proxy variable and NO_PROXY removed. Then puts
+ * each variable back as it was, also when `body` throws.
  */
-export async function withProxyEnv<T>(proxyUrl: string, body: () => Promise<T>): Promise<T> {
+export async function withProxyEnv<T>(
+  proxyUrl: string,
+  body: () => Promise<T>,
+  names: readonly string[] = EVERY_PROXY,
+): Promise<T> {
   const saved = new Map<string, string | undefined>();
   for (const name of PROXY_VARIABLES) saved.set(name, process.env[name]);
   try {
     for (const name of PROXY_VARIABLES) {
-      setVariable(name, name.toLowerCase() === "no_proxy" ? undefined : proxyUrl);
+      setVariable(name, names.includes(name) ? proxyUrl : undefined);
     }
     return await body();
   } finally {
