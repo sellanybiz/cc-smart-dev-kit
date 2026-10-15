@@ -14,6 +14,9 @@ export const MARKETPLACE = "cc-agentic";
 export const PLUGIN = "cc";
 export const PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
 
+/** The command this plugin installs (the launcher in ~/.local/bin, and plugin/bin). */
+export const COMMAND = "cc-agentic";
+
 /** The commands a user runs to add, install and update the plugin. */
 export const MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
 export const PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;

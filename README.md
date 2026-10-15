@@ -48,7 +48,8 @@ After that, use `cc-agentic setup` to set up again (for example after an update)
 |---|---|
 | `cc-agentic setup` | Installs the launcher and turns on plugin auto-update. `--dry-run` shows the changes and writes nothing at all. A settings key you set yourself (for example `autoUpdate: false`) stops setup before it writes anything. |
 | `cc-agentic doctor` | Checks the install (the list is below). Prints ✓ or ✗ for each check, and exits with 1 when one fails. |
-| `cc-agentic restore` | Removes what setup added (its settings keys, its block) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. A second restore changes nothing. |
+| `cc-agentic restore [--yes]` | Removes what setup added (its settings keys, its block) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. When `gateway setup` installed the router, restore stops and disables it first (it asks, because that cuts answers in flight; `--yes` skips the question) and removes its copy and unit; it keeps `gateway.json`, which holds your key. A second restore changes nothing. |
+| `cc-agentic gateway <command>` | The optional AI gateway (below). |
 | `cc-agentic version` | Prints the version. |
 
 `doctor` checks that:
@@ -69,7 +70,11 @@ After that, use `cc-agentic setup` to set up again (for example after an update)
   or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set, in your environment or in the
   `env` of `settings.json`, without `FORCE_AUTOUPDATE_PLUGINS`. A value that is empty,
   `0`, `false`, `no` or `off` counts as not set;
-- no other plugin named `cc` is enabled.
+- no other plugin named `cc` is enabled;
+- the gateway, when it is set up: the router service is active, the router copy is this
+  plugin version's, the router answers on its port, each backend answers; and, as
+  information, each slot's first target. When it was never set up, doctor says
+  "gateway: not set up (optional)" as information (`·`), not as a failure.
 
 Setup only changes the keys it owns. Before each change it makes a backup in
 `~/.claude/cc-agentic/backups/` (a private folder, one subfolder per file), never beside
@@ -80,6 +85,27 @@ state and backups live under that folder. The launcher `~/.local/bin/cc-agentic`
 file for every config folder, so a `restore` under one config folder can remove a
 launcher another one still uses. A launcher started without `CLAUDE_CONFIG_DIR` looks in
 `~/.claude`.
+
+## The AI gateway (optional)
+
+A local router, `anymodel-router`, lets Claude Code's `haiku` and `sonnet` subagents run on
+cheaper models (for example through OmniRoute and Ollama Cloud), while Claude models stay
+real Claude on your own login. No prompt text is ever changed. Linux only for now
+(systemd user units). How it works: [docs/gateway.md](docs/gateway.md).
+
+| Command | What it does |
+|---|---|
+| `cc-agentic gateway setup [--yes] [--backend-key-stdin <backend> \| --no-backend-key]` | Makes `~/.config/anymodel/gateway.json` (mode 600; the key on stdin, never argv), copies the router to `~/.local/share/anymodel/router.js`, writes the systemd user unit `anymodel-router`, and starts it. When the router runs and the copy or unit changed, it says a restart cuts the answers in flight and asks; `--yes` skips the question. It never touches Claude Code's settings. |
+| `cc-agentic gateway status` | Router health, each backend, the slots, and whether Claude Code points at the gateway. Keys are masked. |
+| `cc-agentic gateway models` | Every model each backend offers, and the slots. |
+| `cc-agentic gateway slot <scout\|worker\|judge> <target>[,<target>…]` | Sets a slot's targets, checked against the backend's model list. Live, no restart. `slot judge off` puts auto mode's safety check back on Claude. |
+| `cc-agentic gateway on` | Points Claude Code at the router: sets its env keys in your `settings.json` as keys cc-agentic owns. A gateway key someone else set stops it; nothing is overwritten. Every running session switches on save. |
+| `cc-agentic gateway off` | Removes exactly the keys `on` set. Restart the sessions afterwards. |
+| `cc-agentic gateway serve` | Runs the router in the terminal. |
+
+The judge slot, which moves auto mode's safety check to a cheaper model, is **off by
+default**. Turn it on only when you accept the trade-off: a cheaper judge can block good
+work, and a weak one can let a risky command through.
 
 ## A project's `.claude/cc.json`
 

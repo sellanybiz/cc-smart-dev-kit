@@ -55,8 +55,9 @@ the first time you use it.
 | `src/project/` | Finds the git project from a folder and reads its `.claude/cc.json`. |
 | `src/setup/` | Safe changes to user files: managed keys and blocks, backups, atomic writes, the lock, the launcher, restore, marketplace access. |
 | `src/cli/` | The `cc-agentic` commands: `setup`, `doctor`, `restore`, `version`. |
+| `src/gateway/` | The optional AI gateway: the router, its config and slots, `gateway <command>`, its service and its doctor checks. |
 | `src/testing/` | Test helpers: temp folders, a clean git environment. |
-| `plugin/` | What users get: `dist/` (built, committed), `bin/`, `hooks/hooks.json`, the manifest. |
+| `plugin/` | What users get: `dist/` (built, committed), `bin/`, `hooks/hooks.json`, `skills/`, the manifest. |
 | `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check) and `check-version-bump.ts` (CI: a `plugin/` change raises the version). |
 | `docs/` | How the plugin is designed, the phases ahead, and the Claude Code behaviour it relies on. |
 
@@ -89,6 +90,7 @@ Each rule loads itself when you touch a file it covers.
 | `bundles-and-releases.md` | `src/`, `scripts/`, `plugin/`, `package.json` | Committed bundles, what `plugin/` may hold, versions. |
 | `hooks.md` | `src/hooks/`, `src/entries/`, `plugin/hooks/` | The hook contract (Phase 3). |
 | `setup-and-managed-files.md` | `src/setup/`, `src/cli/` | How the command changes user files. |
+| `gateway.md` | `src/gateway/`, `src/entries/router.ts`, the gateway skill and doc | Never change prompt text; the login reaches Anthropic only; the judge is opt-in; secrets; restarts. |
 | `cc-json.md` | `src/project/` | The `.claude/cc.json` contract. |
 | `testing.md` | `*.test.ts`, `src/testing/` | Temp folders only; every test can fail. |
 
@@ -106,6 +108,8 @@ Each rule loads itself when you touch a file it covers.
 - `docs/roadmap.md` — the phases, done and ahead.
 - `docs/claude-code-contract.md` — every Claude Code behaviour the plugin relies on, the
   version it was last proved on, and how.
+- `docs/gateway.md` — the AI gateway: how it routes, what it changes and never changes,
+  the service, and its limits.
 
 **Keep them true in the same change.** Change how a part works: update `docs/design.md`.
 Change a command or a `cc.json` field: update `README.md`. Rely on a new Claude Code

@@ -58,17 +58,29 @@ Code's file; it shows we read the shape correctly, not that Claude Code still wr
 | Installing from a private GitHub repo works over the user's SSH key. | 2.1.300 | live: Phase 0 spike; unit (`doctor`'s access check): `src/cli/cli.test.ts` › "all green after setup, through the launcher; git reads the marketplace over SSH" |
 | `claude plugin validate plugin --strict` and `claude plugin validate . --strict` pass. | 2.1.300 | CI: the "Validate the plugin" and "Validate the marketplace" steps, on `.claude-code-version` and weekly on the newest |
 
-## Auto mode and requests
+## The gateway
 
-These were seen in the requests Claude Code sends to a local proxy (a program between
-Claude Code and the model's API). From Phase 2, the router logs a request form it does
-not know, loudly, so a change shows on the first day.
+The request shapes the router (`src/gateway/`) relies on. They were seen in the requests
+Claude Code sends to a local proxy (a program between Claude Code and the model's API).
+A "unit" proof tests **our router** on a hand-written copy of the shape; the live row is
+what a person saw. When Claude Code changes a shape, the unit test still passes: only a
+live check or the router's log shows it.
 
 | Behaviour | Last proved on | How it is proved |
 |---|---|---|
-| The auto-mode safety check comes in two forms so far. Older: thinking turned off, the answer is `<severity>N`. Newer: the answer is `<block>yes` or `<block>no`, and the request is sent under the session's sonnet model name. | 2.1.300 | live: seen at a local proxy; from Phase 2, the router's log |
-| When a safety check fails, Claude Code tries it again on another Claude model. | 2.1.300 | live: seen at a local proxy; from Phase 2, the router's log |
-| A subagent's requests carry the header `x-claude-code-agent-id`. Every request carries `x-claude-code-session-id`. | 2.1.300 | live: seen at a local proxy; from Phase 2, the router's log |
+| With `ANTHROPIC_BASE_URL` set and no `ANTHROPIC_AUTH_TOKEN`, Claude Code sends the person's own login on every request (`authorization`, or `x-api-key`, `cookie`) and the account id in the body's `metadata`. | 2.1.300 | live: seen at a local proxy; unit (our handling): `src/gateway/gateway.test.ts` › "cheap backends never see the Claude login" (all three tests) |
+| Requests go to `POST /v1/messages` (`?beta=true`) and `POST /v1/messages/count_tokens`, with `content-type: application/json` and an `anthropic-version` header. | 2.1.300 | live: seen at a local proxy; unit: `gateway.test.ts` › "local-only guard", "count_tokens" |
+| Claude Code strips `[1m]` from a model name before it sends it (the docs say so); the router strips it too, in case. | not proved | unit (our handling): `gateway.test.ts` › "routes by name: [1m] suffix, unknown backend prefix, claude-*" |
+| `ANTHROPIC_DEFAULT_HAIKU_MODEL` / `…_SONNET_MODEL` make the `haiku` / `sonnet` names (and background calls such as titles) use those model names. | 2.1.300 | live: seen at a local proxy; unit (what `on` writes): `src/gateway/commands.test.ts` › "on: adds our env keys as owned keys, …" |
+| The auto-mode safety check has the system prompt "You are a security monitor for autonomous AI coding agents" and offers no tools. Two forms so far. **Older:** model `claude-sonnet-5`, `thinking: {type: "disabled"}`, `<severity>N` answers. **Newer:** under the session's sonnet name (with the gateway on, `anymodel-worker[1m]`), no `thinking` field, `<block>yes` / `<block>no` answers. | 2.1.300 | live: seen at a local proxy; unit: `gateway.test.ts` › "auto mode's safety check" › "is recognised by its system prompt on a claude-* model or a slot, as a string or a block", "a request that offers tools is never taken for the check, whatever its system prompt" |
+| A Claude model answers 400 to the older check form's `thinking: disabled` when another model id is put in its place. (Why the judge slot takes no `claude-…` target.) | 2.1.300 | live: seen at a local proxy; unit: `gateway.test.ts` › "the judge slot takes no claude-… target: the check's body would get a 400" |
+| When a safety check fails, Claude Code tries it again on another Claude model, with the same prompt. | 2.1.300 | live: seen at a local proxy |
+| With `ENABLE_TOOL_SEARCH=true`, Claude Code marks most tools `defer_loading: true`, and its `ToolSearch` answers with `{"type":"tool_reference","tool_name":"…"}` blocks inside a `tool_result`. | 2.1.300 | live: seen at a local proxy; unit: `gateway.test.ts` › "tool search" › "a backend gets found tools as plain definitions, the rest of the deferred ones dropped" |
+| `thinking: {type: "disabled"}` is how Claude Code turns reasoning off for short background calls; `output_config.effort` carries the effort. | 2.1.300 | live: seen at a local proxy; unit: `gateway.test.ts` › "reasoning off" (all three tests) |
+| Claude Code retries a request that got a 5xx or a broken stream, and reads `retry-after` as whole seconds. | 2.1.300 | live: seen at a local proxy; unit (our handling): `gateway.test.ts` › "fallback" › "the last target's answer is returned whatever it is; its retry-after made whole seconds" |
+| A subagent's requests carry the header `x-claude-code-agent-id`. Every request carries `x-claude-code-session-id` (passed on to a cheap backend). | 2.1.300 | live: seen at a local proxy; unit (what a backend gets): `gateway.test.ts` › "cheap backends never see the Claude login" › "first target: allow-listed headers and its own key only; no metadata" |
+| A 404 from `count_tokens` makes Claude Code estimate the tokens itself, with no error for the person. | 2.1.300 | live: seen at a local proxy; unit (our answer): `gateway.test.ts` › "count_tokens" › "a slot whose first target is a backend → 404 in Anthropic's shape, no upstream call" |
+| A request routed to Anthropic is forwarded byte for byte; a cheap backend gets the system prompt and every message's text unchanged. (Ours, not Claude Code's: the guarantee the rows above must not break.) | 2.1.300 | unit: `gateway.test.ts` › "prompts stay as Claude Code wrote them" (all four tests) |
 
 ## Relied on, not proved yet
 
@@ -84,8 +96,9 @@ into a table above.
   spike copied this shape; it was not compared with Claude Code's own result. (Phase 3)
 - **An exec-form hook on Windows** runs with `bun.exe`. (Phase 3)
 - **Old version folders are deleted 14 days after an update.** The docs say so
-  (code.claude.com/docs/en/plugins/loading). (Phase 2, for the copies in
-  `~/.local/share/cc/`)
+  (code.claude.com/docs/en/plugins/loading). The gateway's router runs from a copy in
+  `~/.local/share/anymodel/` either way, so a deletion cannot stop it. (Phase 3, with
+  `doctor --live`)
 - **Installs and updates are keyed by the plugin version.** A manifest that sets
   `version` keeps every user on the cached copy until the version changes
   (code.claude.com/docs/en/plugins/loading). CI's version-bump check

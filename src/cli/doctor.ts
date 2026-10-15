@@ -8,6 +8,8 @@ import {
   PLUGIN_INSTALL_COMMAND,
   PLUGIN_UPDATE_COMMAND,
 } from "../build-info";
+import { gatewayChecks } from "../gateway/doctor";
+import type { Runner } from "../gateway/service";
 import { findUserInstall } from "../setup/installed-plugins";
 import { bakedBunPath, LAUNCHER_NAME, launcherScript } from "../setup/launcher";
 import {
@@ -21,6 +23,8 @@ import { type CliPaths, tildify } from "./paths";
 
 interface Check {
   ok: boolean;
+  /** Information only: printed with `·`, never a failure. */
+  info?: boolean;
   text: string;
 }
 
@@ -276,8 +280,22 @@ function checkNameClash(settings: Record<string, unknown> | null): Check {
       };
 }
 
-/** Prints one ✓ or ✗ line per check. Exit code 1 when any check fails. */
-export async function runDoctor(paths: CliPaths, env: Env = process.env): Promise<number> {
+/** What the gateway checks need: the plugin's router bundle, a command runner, systemd or not. */
+export interface DoctorGateway {
+  bundle: string;
+  runner: Runner;
+  systemd: boolean;
+}
+
+/**
+ * Prints one ✓ or ✗ line per check, and `·` for information (the gateway, when it was never
+ * set up, is optional). Exit code 1 when any check fails.
+ */
+export async function runDoctor(
+  paths: CliPaths,
+  env: Env,
+  gateway: DoctorGateway,
+): Promise<number> {
   const settings = readSettings(paths.settingsFile);
   const checks = [
     checkPlugin(paths),
@@ -287,7 +305,10 @@ export async function runDoctor(paths: CliPaths, env: Env = process.env): Promis
     checkAutoUpdate(settings, paths),
     checkUpdatesNotOff(settings, env, paths),
     checkNameClash(settings),
+    ...(await gatewayChecks({ paths, ...gateway })),
   ].filter((check): check is Check => check !== null);
-  for (const check of checks) console.log(`${check.ok ? "✓" : "✗"} ${check.text}`);
+  for (const check of checks) {
+    console.log(`${check.info ? "·" : check.ok ? "✓" : "✗"} ${check.text}`);
+  }
   return checks.every((check) => check.ok) ? 0 : 1;
 }

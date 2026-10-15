@@ -6,8 +6,8 @@ parts fit: `design.md`.
 | Phase | What it adds | Status |
 |---|---|---|
 | 1 | Foundation | Done |
-| 2 | The AI gateway | Next |
-| 3 | Hooks and `doctor --live` | Planned |
+| 2 | The AI gateway | Done |
+| 3 | Hooks and `doctor --live` | Next |
 | 4 | Shared browser, Serena, MCP registration, session tools | Planned |
 | 5 | Instructions, skills, agents | Planned |
 | 6 | Notifications, claude-mem settings, the auto-mode block | Planned |
@@ -23,17 +23,23 @@ neutrality check. The `cc.json` contract and project resolution. `cc-agentic set
 `doctor` and `restore`, managed keys and blocks with backups, atomic writes and a lock,
 and the stable launcher.
 
-## 2 — The AI gateway
+## 2 — The AI gateway (done)
 
-A local router in front of OmniRoute and Ollama Cloud. It gives cheap models to
-subagent slots, and a judge for auto mode's safety check.
+A local router in front of OmniRoute and Ollama Cloud (`gateway.md`). It gives cheaper
+models to subagent slots, and an opt-in judge for auto mode's safety check.
 
-- Slot names: `cc-scout`, `cc-worker`, `cc-judge`.
-- A general `aliases` map in its config, so a machine's old slot names keep working
-  while it moves to the new ones.
-- `setup` runs the router from `~/.local/share/cc/`.
-- The router logs a safety-check request form it does not know, loudly, instead of
-  guessing (`claude-code-contract.md`).
+- Slots `anymodel-scout`, `anymodel-worker`, `anymodel-judge` (the judge off by default).
+- A general `aliases` map in its config, so a machine's old slot names keep working while
+  it moves to the new ones. The plugin ships none.
+- `cc-agentic gateway <serve|status|models|slot|setup|on|off>`. `gateway setup` runs the
+  router from a copy in `~/.local/share/anymodel/` as the systemd user unit
+  `anymodel-router`, and asks before a restart. `gateway on` / `off` use owned keys.
+- `doctor` checks the gateway when it is set up.
+- No prompt text is ever changed (`.claude/rules/gateway.md`).
+- **Not done, moved on:** logging a safety-check request form the router does not know.
+  The router knows the check only by its system prompt; telling a new *form* from a
+  known one needs the real request shapes captured first. It goes with
+  `doctor --live` (Phase 3).
 
 ## 3 — Hooks and `doctor --live`
 
@@ -43,6 +49,8 @@ subagent slots, and a judge for auto mode's safety check.
 - `cc-agentic doctor --live`: a throwaway session in a temp repo that proves the hooks
   and the worktree contract on the installed Claude Code. It makes the live rows of
   `claude-code-contract.md` repeatable.
+- The router logs a safety-check request form it does not know, loudly, instead of
+  guessing (moved from Phase 2).
 
 ## 4 — Shared browser, Serena, MCP, session tools
 

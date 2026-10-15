@@ -249,6 +249,8 @@ describe("cc-agentic doctor", () => {
         "✓ plugin auto-update is on",
         "✓ plugin updates are not switched off",
         "✓ no other enabled plugin is named cc",
+        // The gateway is optional: never set up is information, not a failure.
+        "· gateway: not set up (optional). To use it: cc-agentic gateway setup",
         "",
       ].join("\n"),
     );

@@ -21,8 +21,9 @@ Claude Code copies only `plugin/` into
   `skills/`, `agents/` and instructions for users.
 - **Never run anything long-lived from the version folder.** Claude Code deletes an old
   one after an update: 14 days later, the docs say (not proved yet:
-  `docs/claude-code-contract.md`). A long-running part (later: the router, the portal)
-  runs from a copy that `setup` puts in `~/.local/share/cc/`.
+  `docs/claude-code-contract.md`). A long-running part runs from a copy in
+  `~/.local/share/anymodel/`: the router (`src/entries/router.ts` → `dist/router.js`,
+  copied by `gateway setup`), later the portal.
 
 ## Bundles are committed
 

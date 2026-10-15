@@ -37,10 +37,32 @@ same CLI from its own version folder.
 
 ### Why long-running parts run from copies
 
-Anything that keeps running (later: the AI gateway's router, the portal) runs from a
-copy that `setup` puts in `~/.local/share/cc/`, never from the version folder. Claude
-Code deletes that folder after an update (14 days, not proved yet), even under a
-running process.
+Anything that keeps running (the AI gateway's router; later the portal) runs from a copy
+in `~/.local/share/anymodel/`, never from the version folder. Claude Code deletes that
+folder after an update (14 days, not proved yet), even under a running process.
+`cc-agentic gateway setup` copies `dist/router.js` there and writes a systemd user unit
+that runs the copy with the absolute path of `bun`. A new plugin version changes nothing
+that runs until the person runs `gateway setup` again; `doctor` says when the copy is
+older than the installed version.
+
+## The AI gateway
+
+An optional local router between Claude Code and the model providers
+(`src/gateway/`, design and limits in `gateway.md`):
+
+- Claude models go to Anthropic byte for byte, on the person's own login. The `haiku` and
+  `sonnet` names point at slots of cheaper models, each with a Claude target last.
+- **No prompt text is ever changed.** A cheap backend gets two named, tested format
+  translations and nothing else. The rules: `.claude/rules/gateway.md`.
+- Auto mode's safety check stays on Claude unless the person turns on the opt-in judge
+  slot.
+- A config `aliases` map lets a machine's old model names reach the new slots while it
+  moves. The plugin ships none; a project's migration writes them.
+- `gateway on` / `off` change Claude Code's settings only as owned keys through
+  `src/setup/`, so `restore` undoes them, and a key someone else set stops it.
+- A restart of the router cuts every answer in flight on the machine. So only a manual
+  `gateway setup` restarts it, only when the copy or the unit changed, and only after the
+  person says yes (or gives `--yes`). `restore` asks the same before it stops it.
 
 ## How `setup` changes user files
 
@@ -102,8 +124,9 @@ on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
 ### Who changes what, and when
 
 - **The SessionStart hook** (Phase 3 on) only refreshes managed files, under the lock.
-- **A manual `cc-agentic setup` run** is the only thing that restarts a service or
-  changes a permission, and it shows the change first.
+- **A manual run** (`cc-agentic setup`, `cc-agentic gateway setup`, `restore`) is the
+  only thing that restarts or stops a service or changes a permission. It shows the change
+  first, and asks before it cuts the answers in flight.
 
 So an automatic update can never restart something or widen a permission without the
 user seeing it.

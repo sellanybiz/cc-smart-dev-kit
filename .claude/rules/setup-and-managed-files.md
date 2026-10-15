@@ -109,6 +109,10 @@ Each of them:
   - A restored file is no longer tracked in `changed.json`, so a second `restore`
     changes nothing. When the baseline backup is missing, the file is left alone.
 - A new kind of managed change must say how `restore` undoes it, with a test.
+- **A service is a managed change too.** When `gateway setup` installed the router's unit
+  (it is in `changed.json`), `restore` stops and disables it first, while its file is still
+  there, then restores the files, then runs `systemctl --user daemon-reload`. Stopping a
+  running router cuts answers in flight, so restore asks first, or needs `--yes`.
 
 ## The launcher
 
@@ -124,8 +128,11 @@ valid across updates.
 
 ## What setup may do, and when
 
-- Restarts and permission changes happen only in a manual `cc-agentic setup` run that
-  shows the change first. The SessionStart hook (Phase 3) only refreshes managed files.
+- Restarts and permission changes happen only in a manual run (`cc-agentic setup`,
+  `gateway setup`, `restore`) that shows the change first. A restart or stop of a running
+  service says that answers in flight are cut, and asks: `confirm()` on a terminal; with
+  no terminal, it stops and changes nothing unless `--yes` was given. The SessionStart
+  hook (Phase 3) only refreshes managed files.
 - Setup refuses to start before `claude plugin marketplace add` has run, and says which
   command to run.
 
@@ -134,8 +141,9 @@ valid across updates.
 - `setup` prints one line per change: `+` created, `~` changed, `-` removed, with `~`
   for the home folder (`tildify`). Its last line: "Done. Each changed file has a backup
   in ~/.claude/cc-agentic/backups/." (the state folder's `backups/`).
-- `doctor` prints one `✓` or `✗` line per check. A `✗` line says what to run. The
-  list of checks is in `README.md` § Commands; keep it in step.
+- `doctor` prints one `✓` or `✗` line per check. A `✗` line says what to run. A part
+  the person may leave out (the gateway, never set up) is a `·` line: information, never
+  a failure. The list of checks is in `README.md` § Commands; keep it in step.
 - Exit codes: 0 done, 1 a failed check or an error, 2 a wrong command or option.
 - A check that reaches the network has a timeout and never asks for a password:
   `git ls-remote` with `GIT_TERMINAL_PROMPT=0`. It adds ssh `BatchMode` only when the
