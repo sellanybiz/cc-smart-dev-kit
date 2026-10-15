@@ -1,12 +1,12 @@
-# cc-agentic
+# anymodel
 
-`cc` is a general Claude Code setup that anyone can install as a plugin: hooks, skills,
-agents, and the `cc-agentic` command, which sets up and checks a machine. Nothing in it is
-tied to one project. A project opts in, and sets its own details, in its own
-`.claude/cc.json`.
+`anymodel` lets a person use any model with Claude Code. It is a plugin anyone can
+install: a local AI gateway, hooks, skills, agents, and the `anymodel` command, which sets
+up and checks a machine. Nothing in it is tied to one project. A project opts in, and sets its own details, in its own
+`.claude/anymodel.json`.
 
 This repo is also the plugin's marketplace (a list of plugins Claude Code can install
-from), named `cc-agentic`.
+from), named `anymodel`.
 
 ## Install
 
@@ -14,51 +14,51 @@ You need macOS or Linux (for now: the launcher and `bin/` are POSIX `sh` scripts
 [Claude Code](https://code.claude.com), [Bun](https://bun.sh), and read access to this
 repo with git (an SSH key, or a git credential helper when the repo is private).
 
-1. Add the marketplace. `<owner>/cc-agentic` is where this repo lives: the `repository`
+1. Add the marketplace. `<owner>/anymodel` is where this repo lives: the `repository`
    field of `plugin/.claude-plugin/plugin.json`.
 
    ```sh
-   claude plugin marketplace add <owner>/cc-agentic
+   claude plugin marketplace add <owner>/anymodel
    ```
 
 2. Install the plugin for your user:
 
    ```sh
-   claude plugin install cc@cc-agentic
+   claude plugin install anymodel@anymodel
    ```
 
-3. Run the first setup. The `cc-agentic` command does not exist yet, so run it from the
+3. Run the first setup. The `anymodel` command does not exist yet, so run it from the
    plugin folder. Put the installed version in place of `<version>` (the install prints
-   it; `ls ~/.claude/plugins/cache/cc-agentic/cc/` shows it too):
+   it; `ls ~/.claude/plugins/cache/anymodel/anymodel/` shows it too):
 
    ```sh
-   bun ~/.claude/plugins/cache/cc-agentic/cc/<version>/dist/cli.js setup
+   bun ~/.claude/plugins/cache/anymodel/anymodel/<version>/dist/cli.js setup
    ```
 
-   Setup installs the launcher `~/.local/bin/cc-agentic` and turns on auto-update for
+   Setup installs the launcher `~/.local/bin/anymodel` and turns on auto-update for
    the plugin. Add `--dry-run` to see the changes first; it writes nothing at all.
 
 4. Restart Claude Code.
 
-After that, use `cc-agentic setup` to set up again (for example after an update).
+After that, use `anymodel setup` to set up again (for example after an update).
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `cc-agentic setup` | Installs the launcher and turns on plugin auto-update. `--dry-run` shows the changes and writes nothing at all. A settings key you set yourself (for example `autoUpdate: false`) stops setup before it writes anything. |
-| `cc-agentic doctor` | Checks the install (the list is below). Prints ✓ or ✗ for each check, and exits with 1 when one fails. |
-| `cc-agentic restore [--yes]` | Removes what setup added (its settings keys, its block) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. When `gateway setup` installed the router, restore stops and disables it first (it asks, because that cuts answers in flight; `--yes` skips the question) and removes its copy and unit; it keeps `gateway.json`, which holds your key. A second restore changes nothing. |
-| `cc-agentic gateway <command>` | The optional AI gateway (below). |
-| `cc-agentic version` | Prints the version. |
+| `anymodel setup` | Installs the launcher and turns on plugin auto-update. `--dry-run` shows the changes and writes nothing at all. A settings key you set yourself (for example `autoUpdate: false`) stops setup before it writes anything. |
+| `anymodel doctor` | Checks the install (the list is below). Prints ✓ or ✗ for each check, and exits with 1 when one fails. |
+| `anymodel restore [--yes]` | Removes what setup added (its settings keys, its block) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. When `gateway setup` installed the router, restore stops and disables it first (it asks, because that cuts answers in flight; `--yes` skips the question) and removes its copy and unit; it keeps `gateway.json`, which holds your key. A second restore changes nothing. |
+| `anymodel gateway <command>` | The optional AI gateway (below). |
+| `anymodel version` | Prints the version. |
 
 `doctor` checks that:
 
 - the plugin is installed;
 - the installed version is not behind the marketplace's local copy. When it is, ✗ says
-  "installed X, marketplace has Y. Run: claude plugin update cc@cc-agentic". When the
+  "installed X, marketplace has Y. Run: claude plugin update anymodel@anymodel". When the
   local copy or its version cannot be read, it says "Run: claude plugin marketplace
-  update cc-agentic";
+  update anymodel";
 - the launcher matches the script setup would write for the `bun` baked into it, and
   that `bun` is executable;
 - git can read the marketplace (`git ls-remote`, which never asks for a password). It
@@ -70,18 +70,20 @@ After that, use `cc-agentic setup` to set up again (for example after an update)
   or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set, in your environment or in the
   `env` of `settings.json`, without `FORCE_AUTOUPDATE_PLUGINS`. A value that is empty,
   `0`, `false`, `no` or `off` counts as not set;
-- no other plugin named `cc` is enabled;
+- no other plugin named `anymodel` is enabled, and the plugin's old id `cc@cc-agentic`
+  (its name before version 0.2.0) is not enabled either: two copies of the same hooks
+  would run;
 - the gateway, when it is set up: the router service is active, the router copy is this
   plugin version's, the router answers on its port, each backend answers; and, as
   information, each slot's first target. When it was never set up, doctor says
   "gateway: not set up (optional)" as information (`·`), not as a failure.
 
 Setup only changes the keys it owns. Before each change it makes a backup in
-`~/.claude/cc-agentic/backups/` (a private folder, one subfolder per file), never beside
+`~/.claude/anymodel/backups/` (a private folder, one subfolder per file), never beside
 the file. A backup is never executable.
 
 The command follows `HOME` and `CLAUDE_CONFIG_DIR`. With `CLAUDE_CONFIG_DIR` set, its
-state and backups live under that folder. The launcher `~/.local/bin/cc-agentic` is one
+state and backups live under that folder. The launcher `~/.local/bin/anymodel` is one
 file for every config folder, so a `restore` under one config folder can remove a
 launcher another one still uses. A launcher started without `CLAUDE_CONFIG_DIR` looks in
 `~/.claude`.
@@ -95,19 +97,19 @@ real Claude on your own login. No prompt text is ever changed. Linux only for no
 
 | Command | What it does |
 |---|---|
-| `cc-agentic gateway setup [--yes] [--backend-key-stdin <backend> \| --no-backend-key]` | Makes `~/.config/anymodel/gateway.json` (mode 600; the key on stdin, never argv), copies the router to `~/.local/share/anymodel/router.js`, writes the systemd user unit `anymodel-router`, and starts it. When the router runs and the copy or unit changed, it says a restart cuts the answers in flight and asks; `--yes` skips the question. It never touches Claude Code's settings. |
-| `cc-agentic gateway status` | Router health, each backend, the slots, and whether Claude Code points at the gateway. Keys are masked. |
-| `cc-agentic gateway models` | Every model each backend offers, and the slots. |
-| `cc-agentic gateway slot <scout\|worker\|judge> <target>[,<target>…]` | Sets a slot's targets, checked against the backend's model list. Live, no restart. `slot judge off` puts auto mode's safety check back on Claude. |
-| `cc-agentic gateway on` | Points Claude Code at the router: sets its env keys in your `settings.json` as keys cc-agentic owns. A gateway key someone else set stops it; nothing is overwritten. Every running session switches on save. |
-| `cc-agentic gateway off` | Removes exactly the keys `on` set. Restart the sessions afterwards. |
-| `cc-agentic gateway serve` | Runs the router in the terminal. |
+| `anymodel gateway setup [--yes] [--backend-key-stdin <backend> \| --no-backend-key]` | Makes `~/.config/anymodel/gateway.json` (mode 600; the key on stdin, never argv), copies the router to `~/.local/share/anymodel/router.js`, writes the systemd user unit `anymodel-router`, and starts it. When the router runs and the copy or unit changed, it says a restart cuts the answers in flight and asks; `--yes` skips the question. It never touches Claude Code's settings. |
+| `anymodel gateway status` | Router health, each backend, the slots, and whether Claude Code points at the gateway. Keys are masked. |
+| `anymodel gateway models` | Every model each backend offers, and the slots. |
+| `anymodel gateway slot <scout\|worker\|judge> <target>[,<target>…]` | Sets a slot's targets, checked against the backend's model list. Live, no restart. `slot judge off` puts auto mode's safety check back on Claude. |
+| `anymodel gateway on` | Points Claude Code at the router: sets its env keys in your `settings.json` as keys anymodel owns. A gateway key someone else set stops it; nothing is overwritten. Every running session switches on save. |
+| `anymodel gateway off` | Removes exactly the keys `on` set. Restart the sessions afterwards. |
+| `anymodel gateway serve` | Runs the router in the terminal. |
 
 The judge slot, which moves auto mode's safety check to a cheaper model, is **off by
 default**. Turn it on only when you accept the trade-off: a cheaper judge can block good
 work, and a weak one can let a risky command through.
 
-## A project's `.claude/cc.json`
+## A project's `.claude/anymodel.json`
 
 ```json
 {
@@ -126,7 +128,7 @@ work, and a weak one can let a risky command through.
 | `autoMode` | Accepted now, used from Phase 6. |
 
 `requires` is a version range (npm syntax). When the installed plugin is outside it, the
-plugin says so and asks you to run `claude plugin update cc@cc-agentic`.
+plugin says so and asks you to run `claude plugin update anymodel@anymodel`.
 
 ## Develop
 

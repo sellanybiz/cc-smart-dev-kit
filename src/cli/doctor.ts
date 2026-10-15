@@ -101,19 +101,19 @@ function checkLauncher(paths: CliPaths): Check {
   const launcher = join(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
   if (!existsSync(launcher))
-    return { ok: false, text: `no launcher at ${where}. Run: cc-agentic setup` };
+    return { ok: false, text: `no launcher at ${where}. Run: anymodel setup` };
   if (!isExecutable(launcher)) {
-    return { ok: false, text: `the launcher ${where} is not executable. Run: cc-agentic setup` };
+    return { ok: false, text: `the launcher ${where} is not executable. Run: anymodel setup` };
   }
   const script = readFileSync(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
-    return { ok: false, text: `the launcher ${where} is out of date. Run: cc-agentic setup` };
+    return { ok: false, text: `the launcher ${where} is out of date. Run: anymodel setup` };
   }
   if (!isExecutable(bun)) {
     return {
       ok: false,
-      text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-agentic setup`,
+      text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: anymodel setup`,
     };
   }
   const result = run([launcher, "version"]);
@@ -227,7 +227,7 @@ function checkAutoUpdate(settings: Record<string, unknown> | null, paths: CliPat
     ? { ok: true, text: "plugin auto-update is on" }
     : {
         ok: false,
-        text: `plugin auto-update is off in ${tildify(paths.settingsFile, paths.home)}. Run: cc-agentic setup`,
+        text: `plugin auto-update is off in ${tildify(paths.settingsFile, paths.home)}. Run: anymodel setup`,
       };
 }
 
@@ -280,6 +280,23 @@ function checkNameClash(settings: Record<string, unknown> | null): Check {
       };
 }
 
+/**
+ * This plugin's id before version 0.2.0, when it was called `cc` in the `cc-agentic`
+ * marketplace. The one place the old names stay: both enabled means two copies of the same
+ * hooks run.
+ */
+export const OLD_PLUGIN_ID = "cc@cc-agentic";
+
+/** The old plugin is still enabled: ✗. Not enabled: no line at all. */
+function checkOldPlugin(settings: Record<string, unknown> | null): Check | null {
+  const enabled = (settings?.enabledPlugins ?? {}) as Record<string, unknown>;
+  if (enabled[OLD_PLUGIN_ID] !== true) return null;
+  return {
+    ok: false,
+    text: `the old plugin ${OLD_PLUGIN_ID} is still enabled: two copies of the same hooks would run. Run: claude plugin uninstall ${OLD_PLUGIN_ID}`,
+  };
+}
+
 /** What the gateway checks need: the plugin's router bundle, a command runner, systemd or not. */
 export interface DoctorGateway {
   bundle: string;
@@ -305,6 +322,7 @@ export async function runDoctor(
     checkAutoUpdate(settings, paths),
     checkUpdatesNotOff(settings, env, paths),
     checkNameClash(settings),
+    checkOldPlugin(settings),
     ...(await gatewayChecks({ paths, ...gateway })),
   ].filter((check): check is Check => check !== null);
   for (const check of checks) {

@@ -1,6 +1,6 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { type CcConfig, loadCcConfig } from "./config";
+import { type AnymodelConfig, loadAnymodelConfig } from "./config";
 
 export interface Project {
   /** The top folder of the checkout `cwd` is in (a linked worktree's own folder). */
@@ -11,8 +11,8 @@ export interface Project {
   isWorktree: boolean;
   /** The main checkout's folder, or null for a bare repo. */
   mainCheckout: string | null;
-  /** `<root>/.claude/cc.json`, else `<mainCheckout>/.claude/cc.json`, else null. */
-  config: CcConfig | null;
+  /** `<root>/.claude/anymodel.json`, else `<mainCheckout>/.claude/anymodel.json`, else null. */
+  config: AnymodelConfig | null;
 }
 
 export interface ResolveOptions {
@@ -91,10 +91,10 @@ function findMainCheckout(git: Git, cwd: string): string | null {
 }
 
 /**
- * Finds the git project `cwd` is in, and its cc.json.
+ * Finds the git project `cwd` is in, and its anymodel.json.
  * Returns null outside git. Throws when git is older than 2.31 or the main checkout is
- * missing, CcVersionError when the project needs another plugin version, and CcConfigError
- * when a cc.json is invalid.
+ * missing, AnymodelVersionError when the project needs another plugin version, and AnymodelConfigError
+ * when an anymodel.json is invalid.
  */
 export function resolveProject(cwd: string, options: ResolveOptions = {}): Project | null {
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
@@ -127,10 +127,13 @@ export function resolveProject(cwd: string, options: ResolveOptions = {}): Proje
   const isWorktree = realpathSync(gitDir) !== commonDir;
   const mainCheckout = isWorktree ? findMainCheckout(git, cwd) : root;
 
-  const own = join(root, ".claude", "cc.json");
-  let config = loadCcConfig(own, options.pluginVersion);
+  const own = join(root, ".claude", "anymodel.json");
+  let config = loadAnymodelConfig(own, options.pluginVersion);
   if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    config = loadCcConfig(join(mainCheckout, ".claude", "cc.json"), options.pluginVersion);
+    config = loadAnymodelConfig(
+      join(mainCheckout, ".claude", "anymodel.json"),
+      options.pluginVersion,
+    );
   }
   return { root, commonDir, isWorktree, mainCheckout, config };
 }

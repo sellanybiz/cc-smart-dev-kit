@@ -19,7 +19,7 @@ parts fit: `design.md`.
 ## 1 — Foundation (done)
 
 The repo, CI, the bundle step and its check, `claude plugin validate --strict`, the
-neutrality check. The `cc.json` contract and project resolution. `cc-agentic setup`,
+neutrality check. The `anymodel.json` contract and project resolution. `anymodel setup`,
 `doctor` and `restore`, managed keys and blocks with backups, atomic writes and a lock,
 and the stable launcher.
 
@@ -31,7 +31,7 @@ models to subagent slots, and an opt-in judge for auto mode's safety check.
 - Slots `anymodel-scout`, `anymodel-worker`, `anymodel-judge` (the judge off by default).
 - A general `aliases` map in its config, so a machine's old slot names keep working while
   it moves to the new ones. The plugin ships none.
-- `cc-agentic gateway <serve|status|models|slot|setup|on|off>`. `gateway setup` runs the
+- `anymodel gateway <serve|status|models|slot|setup|on|off>`. `gateway setup` runs the
   router from a copy in `~/.local/share/anymodel/` as the systemd user unit
   `anymodel-router`, and asks before a restart. `gateway on` / `off` use owned keys.
 - `doctor` checks the gateway when it is set up.
@@ -43,10 +43,10 @@ models to subagent slots, and an opt-in judge for auto mode's safety check.
 
 ## 3 — Hooks and `doctor --live`
 
-- Worktree create and remove, with the defer check: from `cc.json` when there is one,
+- Worktree create and remove, with the defer check: from `anymodel.json` when there is one,
   Claude Code's default when there is not.
 - Guards, and session names.
-- `cc-agentic doctor --live`: a throwaway session in a temp repo that proves the hooks
+- `anymodel doctor --live`: a throwaway session in a temp repo that proves the hooks
   and the worktree contract on the installed Claude Code. It makes the live rows of
   `claude-code-contract.md` repeatable.
 - The router logs a safety-check request form it does not know, loudly, instead of
@@ -57,12 +57,12 @@ models to subagent slots, and an opt-in judge for auto mode's safety check.
 - The Playwright MCP server with one Chrome for every session.
 - Serena.
 - `setup` registers MCP servers at user scope, so tool names stay `mcp__<server>__*`.
-- `cc-agentic sessions` and `cc-agentic worktrees`.
+- `anymodel sessions` and `anymodel worktrees`.
 
 ## 5 — Instructions, skills, agents
 
 - Always-on instructions, imported from `~/.claude/CLAUDE.md` through a managed block.
-- Opt-in instructions, per project (`cc.json` `instructions`).
+- Opt-in instructions, per project (`anymodel.json` `instructions`).
 - General skills and agents, which read a project's own additions when they exist.
 
 ## 6 — Notifications, claude-mem settings, the auto-mode block
@@ -78,7 +78,7 @@ Slots keyed by the real model ids, a usage-limit alert, and a status-line warnin
 
 ## 8 — Web search
 
-`cc-agentic search`.
+`anymodel search`.
 
 ## 9 — The local portal
 

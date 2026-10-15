@@ -1,19 +1,22 @@
-# cc-agentic
+# anymodel
 
-This repo builds the **`cc` plugin** for Claude Code. It is also the plugin's own
-**marketplace** (a list of plugins Claude Code can install from), named `cc-agentic`.
-The plugin is a general agentic setup that anyone can install: hooks, skills, agents, and
-the `cc-agentic` command, which sets up and checks a machine.
+This repo builds the **`anymodel` plugin** for Claude Code. It is also the plugin's own
+**marketplace** (a list of plugins Claude Code can install from), named `anymodel`.
+Its main job is letting a person use any model with Claude Code (the gateway). Anyone
+can install it: the gateway, hooks, skills, agents, and the `anymodel` command, which sets
+up and checks a machine.
 
 Users install it like this:
 
 ```sh
-claude plugin marketplace add <owner>/cc-agentic
-claude plugin install cc@cc-agentic
-cc-agentic setup
+claude plugin marketplace add <owner>/anymodel
+claude plugin install anymodel@anymodel
+anymodel setup
 ```
 
-The command is `cc-agentic`, never `cc`: on Linux `/usr/bin/cc` is the C compiler.
+The plugin, the marketplace and the command are all `anymodel`: the plugin id is
+`anymodel@anymodel`. Until version 0.2.0 they were `cc`, `cc-agentic` and
+`cc@cc-agentic`; only `doctor`'s check for the old plugin still names them.
 
 ## Two different things: `.claude/` and `plugin/`
 
@@ -31,7 +34,7 @@ for users never goes into `.claude/`.
 
 The plugin works for anyone. No company, project, organization, person, machine or team
 name goes anywhere in the repo. Every project detail comes from the project's own
-`.claude/cc.json` and `.claude/` folder. The detail, and what `bun run check:neutral`
+`.claude/anymodel.json` and `.claude/` folder. The detail, and what `bun run check:neutral`
 does and does not catch: `.claude/rules/neutrality.md`.
 
 ## Write plainly
@@ -52,9 +55,9 @@ the first time you use it.
 |---|---|
 | `src/entries/*.ts` | One file per bundle. Each becomes `plugin/dist/<name>.js`. |
 | `src/build-info/` | The version and the marketplace source, baked in from `plugin.json` at build time. |
-| `src/project/` | Finds the git project from a folder and reads its `.claude/cc.json`. |
+| `src/project/` | Finds the git project from a folder and reads its `.claude/anymodel.json`. |
 | `src/setup/` | Safe changes to user files: managed keys and blocks, backups, atomic writes, the lock, the launcher, restore, marketplace access. |
-| `src/cli/` | The `cc-agentic` commands: `setup`, `doctor`, `restore`, `version`. |
+| `src/cli/` | The `anymodel` commands: `setup`, `doctor`, `restore`, `version`. |
 | `src/gateway/` | The optional AI gateway: the router, its config and slots, `gateway <command>`, its service and its doctor checks. |
 | `src/testing/` | Test helpers: temp folders, a clean git environment. |
 | `plugin/` | What users get: `dist/` (built, committed), `bin/`, `hooks/hooks.json`, `skills/`, the manifest. |
@@ -91,7 +94,7 @@ Each rule loads itself when you touch a file it covers.
 | `hooks.md` | `src/hooks/`, `src/entries/`, `plugin/hooks/` | The hook contract (Phase 3). |
 | `setup-and-managed-files.md` | `src/setup/`, `src/cli/` | How the command changes user files. |
 | `gateway.md` | `src/gateway/`, `src/entries/router.ts`, the gateway skill and doc | Never change prompt text; the login reaches Anthropic only; the judge is opt-in; secrets; restarts. |
-| `cc-json.md` | `src/project/` | The `.claude/cc.json` contract. |
+| `anymodel-json.md` | `src/project/` | The `.claude/anymodel.json` contract. |
 | `testing.md` | `*.test.ts`, `src/testing/` | Temp folders only; every test can fail. |
 
 ## Skills
@@ -103,7 +106,7 @@ Each rule loads itself when you touch a file it covers.
 
 ## Docs
 
-- `README.md` — for users: install, commands, `cc.json`.
+- `README.md` — for users: install, commands, `anymodel.json`.
 - `docs/design.md` — how the parts fit, and why.
 - `docs/roadmap.md` — the phases, done and ahead.
 - `docs/claude-code-contract.md` — every Claude Code behaviour the plugin relies on, the
@@ -112,7 +115,7 @@ Each rule loads itself when you touch a file it covers.
   the service, and its limits.
 
 **Keep them true in the same change.** Change how a part works: update `docs/design.md`.
-Change a command or a `cc.json` field: update `README.md`. Rely on a new Claude Code
+Change a command or an `anymodel.json` field: update `README.md`. Rely on a new Claude Code
 behaviour: add its row to `docs/claude-code-contract.md`. The tested Claude Code version
 lives in one file, `.claude-code-version` at the repo root.
 

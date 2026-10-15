@@ -1075,7 +1075,7 @@ describe("auto mode's safety check", () => {
       },
     });
     expect("error" in parsed && parsed.error).toContain(
-      'anymodel-judge takes no claude-… target; use "cc-agentic gateway slot judge off" to put the checks on Claude',
+      'anymodel-judge takes no claude-… target; use "anymodel gateway slot judge off" to put the checks on Claude',
     );
   });
 

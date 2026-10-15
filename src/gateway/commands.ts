@@ -1,5 +1,5 @@
 /**
- * `cc-agentic gateway <command>`: serve the router, see it, switch its slots, install it,
+ * `anymodel gateway <command>`: serve the router, see it, switch its slots, install it,
  * and turn it on or off for Claude Code.
  *
  *   serve     runs the router in this terminal (the systemd unit runs the copy instead).

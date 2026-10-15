@@ -1,5 +1,5 @@
 /**
- * `cc-agentic gateway …` end to end, as a person runs it: a temp HOME and config folder,
+ * `anymodel gateway …` end to end, as a person runs it: a temp HOME and config folder,
  * a fake `systemctl` alone on PATH (it logs each call and keeps the unit's state in a
  * file), and a fake backend and router health page served by this test on a free port.
  *
@@ -130,7 +130,7 @@ function machine(options: { systemctl?: boolean } = {}) {
   return { home, env, run, paths, calls, state, useServer, writeConfig };
 }
 
-describe("cc-agentic gateway setup", () => {
+describe("anymodel gateway setup", () => {
   test("installs the copy and the unit, starts it, and changes nothing the second time", async () => {
     const m = machine();
     const first = await m.run(["gateway", "setup", "--no-backend-key"]);
@@ -142,7 +142,7 @@ describe("cc-agentic gateway setup", () => {
         "+ ~/.local/share/anymodel/router.js: router copy created",
         "+ ~/.config/systemd/user/anymodel-router.service: unit created",
         "enabled and (re)started anymodel-router.service",
-        "Claude Code does not use the gateway yet. Check it: cc-agentic gateway status. Then: cc-agentic gateway on.",
+        "Claude Code does not use the gateway yet. Check it: anymodel gateway status. Then: anymodel gateway on.",
         "",
       ].join("\n"),
     );
@@ -179,7 +179,7 @@ describe("cc-agentic gateway setup", () => {
     expect(refused.stdout).toBe(
       [
         "anymodel-router is running. A restart cuts the answers in flight in running Claude sessions on this machine (Claude Code retries them).",
-        "Nothing was changed. Run again with --yes to restart: cc-agentic gateway setup --yes",
+        "Nothing was changed. Run again with --yes to restart: anymodel gateway setup --yes",
         "",
       ].join("\n"),
     );
@@ -239,7 +239,7 @@ describe("cc-agentic gateway setup", () => {
     expect(refused.stdout).toBe(
       [
         "anymodel-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.",
-        "Nothing was changed. Run again with --yes to stop it: cc-agentic restore --yes",
+        "Nothing was changed. Run again with --yes to stop it: anymodel restore --yes",
         "",
       ].join("\n"),
     );
@@ -265,7 +265,7 @@ describe("cc-agentic gateway setup", () => {
   });
 });
 
-describe("cc-agentic gateway on / off", () => {
+describe("anymodel gateway on / off", () => {
   test("on sets the env keys as owned keys; off removes them again", async () => {
     const m = machine();
     const server = fakeServer();
@@ -278,12 +278,12 @@ describe("cc-agentic gateway on / off", () => {
         '~ ~/.claude/settings.json: env.ENABLE_TOOL_SEARCH: (none) -> "true"',
         `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: (none) -> "http://127.0.0.1:${server.port}"`,
         '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_HAIKU_MODEL: (none) -> "anymodel-scout[1m]"',
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: (none) -> "Cheap model for search and reading: the scout slot (cc-agentic gateway slot scout …)"',
+        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: (none) -> "Cheap model for search and reading: the scout slot (anymodel gateway slot scout …)"',
         '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: (none) -> "Scout (cheap)"',
         '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_SONNET_MODEL: (none) -> "anymodel-worker[1m]"',
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: (none) -> "Cheap model for routine code and docs: the worker slot (cc-agentic gateway slot worker …)"',
+        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: (none) -> "Cheap model for routine code and docs: the worker slot (anymodel gateway slot worker …)"',
         '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: (none) -> "Worker (cheap)"',
-        "Done. The changed file has a backup in ~/.claude/cc-agentic/backups/.",
+        "Done. The changed file has a backup in ~/.claude/anymodel/backups/.",
         "Every Claude Code session on this machine, in every folder, uses the gateway from now on: its haiku / sonnet work (background titles and summaries too) goes to the cheap slots.",
         "",
       ].join("\n"),
@@ -307,10 +307,10 @@ describe("cc-agentic gateway on / off", () => {
     const on = await m.run(["gateway", "on"]);
     expect(on.exitCode).toBe(1);
     expect(on.stderr).toBe(
-      `cc-agentic: ${m.paths.settings}: env.ANTHROPIC_DEFAULT_HAIKU_MODEL is old-scout[1m], set by someone else. cc-agentic does not overwrite it. Remove it by hand if cc-agentic should manage it.\n`,
+      `anymodel: ${m.paths.settings}: env.ANTHROPIC_DEFAULT_HAIKU_MODEL is old-scout[1m], set by someone else. anymodel does not overwrite it. Remove it by hand if anymodel should manage it.\n`,
     );
     expect(readFileSync(m.paths.settings, "utf8")).toBe(settings);
-    expect(existsSync(join(m.home, ".claude", "cc-agentic"))).toBe(false);
+    expect(existsSync(join(m.home, ".claude", "anymodel"))).toBe(false);
   });
 
   test("on refuses while the router does not answer: every request would fail", async () => {
@@ -321,13 +321,13 @@ describe("cc-agentic gateway on / off", () => {
     const on = await m.run(["gateway", "on"]);
     expect(on.exitCode).toBe(1);
     expect(on.stderr).toStartWith(
-      `cc-agentic: the router does not answer on 127.0.0.1:${server.port} (`,
+      `anymodel: the router does not answer on 127.0.0.1:${server.port} (`,
     );
     expect(existsSync(m.paths.settings)).toBe(false);
   });
 });
 
-describe("cc-agentic doctor: the gateway", () => {
+describe("anymodel doctor: the gateway", () => {
   test("set up and running: the unit, the copy, the health page, the backend, each slot's first target", async () => {
     const m = machine();
     const server = fakeServer();
@@ -358,10 +358,10 @@ describe("cc-agentic doctor: the gateway", () => {
     const doctor = await m.run(["doctor"]);
     expect(doctor.exitCode).toBe(1);
     expect(doctor.stdout).toContain(
-      "✗ the router service (anymodel-router.service) is inactive. Run: cc-agentic gateway setup\n",
+      "✗ the router service (anymodel-router.service) is inactive. Run: anymodel gateway setup\n",
     );
     expect(doctor.stdout).toContain(
-      "✗ the router copy ~/.local/share/anymodel/router.js is not this plugin version's router. Run: cc-agentic gateway setup\n",
+      "✗ the router copy ~/.local/share/anymodel/router.js is not this plugin version's router. Run: anymodel gateway setup\n",
     );
     expect(doctor.stdout).toContain(
       `✗ backend omniroute (http://127.0.0.1:${server.port}) answered HTTP 401; check its key\n`,

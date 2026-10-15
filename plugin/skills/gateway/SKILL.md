@@ -25,20 +25,20 @@ providers. It is optional. How it works and why: the plugin's `docs/gateway.md`.
 
 1. A backend first, for example OmniRoute with an Ollama Cloud connection, and an API key
    for the router. The key goes **on stdin, never on the command line**:
-   `cc-agentic gateway setup --backend-key-stdin omniroute < key-file`.
-   No key yet: `cc-agentic gateway setup --no-backend-key` (every slot answers on Claude).
-2. `cc-agentic gateway status`: the router is up, the backend answers, the slots look right.
-3. `cc-agentic gateway on`. 🔴 **Every running Claude session on the machine switches on
+   `anymodel gateway setup --backend-key-stdin omniroute < key-file`.
+   No key yet: `anymodel gateway setup --no-backend-key` (every slot answers on Claude).
+2. `anymodel gateway status`: the router is up, the backend answers, the slots look right.
+3. `anymodel gateway on`. 🔴 **Every running Claude session on the machine switches on
    save.** Pick the moment with the person.
 
 ## Switch a slot ("use GLM for subagents", "Claude for subagents again")
 
-1. `cc-agentic gateway models`: every model each backend offers, and the slot table.
-2. `cc-agentic gateway slot <scout|worker> <target>[,<target>…]`. It checks each target
+1. `anymodel gateway models`: every model each backend offers, and the slot table.
+2. `anymodel gateway slot <scout|worker> <target>[,<target>…]`. It checks each target
    against step 1, saves the config, and is **live**: no restart.
-   - GLM for workers: `cc-agentic gateway slot worker omniroute:ollama-cloud/glm-5.3-flash,claude-sonnet-5-5`
-   - Claude again: `cc-agentic gateway slot worker claude-sonnet-5-5`, the same for `scout`.
-3. `cc-agentic gateway status`, and tell the person in one line what changed.
+   - GLM for workers: `anymodel gateway slot worker omniroute:ollama-cloud/glm-5.3-flash,claude-sonnet-5-5`
+   - Claude again: `anymodel gateway slot worker claude-sonnet-5-5`, the same for `scout`.
+3. `anymodel gateway status`, and tell the person in one line what changed.
 
 Before a new model goes in a slot: compare its context window in `gateway models` with the
 provider's own page, check that it accepts images if subagents look at screenshots, and
@@ -49,8 +49,8 @@ check its cached-input price (subagent tokens are mostly cached re-reads).
 Auto mode's safety check (should this action run?) stays on Claude by default. Only when
 the person asks for it:
 
-- On: `cc-agentic gateway slot judge <target>[,<target>]`.
-- Off: `cc-agentic gateway slot judge off`.
+- On: `anymodel gateway slot judge <target>[,<target>]`.
+- Off: `anymodel gateway slot judge off`.
 
 **Say the trade-off before you turn it on:** a cheaper judge saves Claude usage but decides
 worse. It can block good work by mistake, and a weak one can let a risky command through.
@@ -60,22 +60,22 @@ unavailable": `gateway slot judge off`.
 
 ## Check health
 
-- `cc-agentic gateway status`: router health (requests, fallbacks, resting targets), each
+- `anymodel gateway status`: router health (requests, fallbacks, resting targets), each
   backend, the slots, whether Claude Code points at the gateway. Keys are masked.
-- `cc-agentic doctor`: the service, the router copy, the health page, each backend.
+- `anymodel doctor`: the service, the router copy, the health page, each backend.
 - The log: `journalctl --user -u anymodel-router -f`. One line per request; never a key.
 - Every Claude Code request fails: the router is down. `systemctl --user restart
-  anymodel-router`; still down: `cc-agentic gateway off`, then restart the sessions.
+  anymodel-router`; still down: `anymodel gateway off`, then restart the sessions.
 
 ## Turn it off
 
-`cc-agentic gateway off` removes exactly the keys `on` set. Running sessions need a
+`anymodel gateway off` removes exactly the keys `on` set. Running sessions need a
 restart. Stop the router only after every session restarted, or they fail.
 
 ## Update the router
 
 After a plugin update, `doctor` says the router copy is not this version's.
-`cc-agentic gateway setup` copies the new one. It **asks before the restart**: a restart
+`anymodel gateway setup` copies the new one. It **asks before the restart**: a restart
 cuts every answer in flight on the machine. Ask the person for the moment; use `--yes`
 only when they said yes.
 

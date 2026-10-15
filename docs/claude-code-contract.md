@@ -15,7 +15,7 @@ proved.
 - **Relying on a new behaviour?** Add its row in the same change.
 
 "Live" means a person ran Claude Code with the plugin and looked: the Phase 0 spike, a
-throwaway project with a logging hook. From Phase 3, `cc-agentic doctor --live` repeats
+throwaway project with a logging hook. From Phase 3, `anymodel doctor --live` repeats
 those checks. A "unit" proof tests **our reader** on a hand-written copy of Claude
 Code's file; it shows we read the shape correctly, not that Claude Code still writes it.
 
@@ -42,8 +42,8 @@ Code's file; it shows we read the shape correctly, not that Claude Code still wr
 |---|---|---|
 | Only `plugin/` is copied, to `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
 | `plugin/bin/` is on the Bash tool's PATH. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
-| `CLAUDE_PLUGIN_ROOT` is **not** set in the Bash tool. (So `plugin/bin/cc-agentic` finds `dist/` from its own location.) | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
-| `plugins/installed_plugins.json` has the shape `{"version":2,"plugins":{"cc@cc-agentic":[{"scope":"user","installPath":"…","version":"…","gitCommitSha":"…"}]}}`. The launcher and `doctor` read the `scope: "user"` entry. | 2.1.300 | live: Phase 0 spike; unit (our reader): `src/setup/launcher.test.ts` › "finds the user-scope entry and its version", "ignores a project-scope install and uses the user-scope one" |
+| `CLAUDE_PLUGIN_ROOT` is **not** set in the Bash tool. (So `plugin/bin/anymodel` finds `dist/` from its own location.) | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
+| `plugins/installed_plugins.json` has the shape `{"version":2,"plugins":{"anymodel@anymodel":[{"scope":"user","installPath":"…","version":"…","gitCommitSha":"…"}]}}`. The launcher and `doctor` read the `scope: "user"` entry. | 2.1.300 | live: Phase 0 spike; unit (our reader): `src/setup/launcher.test.ts` › "finds the user-scope entry and its version", "ignores a project-scope install and uses the user-scope one" |
 | `plugins/known_marketplaces.json` has the shape `{"<marketplace>":{"source":{"source":"github","repo":"<owner>/<name>"},"installLocation":"…"}}`. | 2.1.300 | live: Phase 0 spike; unit (our reader): `src/setup/marketplace-access.test.ts` › "github: SSH first, then HTTPS" |
 
 `marketplace-access.ts` also reads the source kinds `git` (`url`), `url` (`url`),
@@ -53,7 +53,7 @@ Code's file; it shows we read the shape correctly, not that Claude Code still wr
 
 | Behaviour | Last proved on | How it is proved |
 |---|---|---|
-| After `claude plugin marketplace add` and `claude plugin install`, the user's settings hold `enabledPlugins["cc@cc-agentic"]` and `extraKnownMarketplaces["cc-agentic"]` (with its source), **without** `autoUpdate`. That is why `setup` sets `autoUpdate: true`. (The spike ran both commands before it looked. The docs say `marketplace add` writes the marketplace entry and `install` the enabled plugin.) | 2.1.300 | live: Phase 0 spike; unit (our handling): `src/cli/cli.test.ts` › "installs the launcher and turns on auto-update, keeping the other settings" |
+| After `claude plugin marketplace add` and `claude plugin install`, the user's settings hold `enabledPlugins["anymodel@anymodel"]` and `extraKnownMarketplaces["anymodel"]` (with its source), **without** `autoUpdate`. That is why `setup` sets `autoUpdate: true`. (The spike ran both commands before it looked. The docs say `marketplace add` writes the marketplace entry and `install` the enabled plugin.) | 2.1.300 | live: Phase 0 spike; unit (our handling): `src/cli/cli.test.ts` › "installs the launcher and turns on auto-update, keeping the other settings" |
 | An update makes a new version folder. A running session keeps the old one until Claude Code restarts. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
 | Installing from a private GitHub repo works over the user's SSH key. | 2.1.300 | live: Phase 0 spike; unit (`doctor`'s access check): `src/cli/cli.test.ts` › "all green after setup, through the launcher; git reads the marketplace over SSH" |
 | `claude plugin validate plugin --strict` and `claude plugin validate . --strict` pass. | 2.1.300 | CI: the "Validate the plugin" and "Validate the marketplace" steps, on `.claude-code-version` and weekly on the newest |
@@ -128,7 +128,7 @@ into a table above.
   HTTPS first"). (Phase 3)
 - **An MCP server served from a plugin gets a new tool-name prefix**, and one
   registered at user scope keeps `mcp__<server>__*`. (Phase 4)
-- **An import of `~/.claude/cc/*.md` in `~/.claude/CLAUDE.md`** loads in the main
+- **An import of `~/.claude/anymodel/instructions/*.md` in `~/.claude/CLAUDE.md`** loads in the main
   session and in subagents; an import in a project's `CLAUDE.md` asks once, then loads.
   (Phase 5)
 - **Auto mode reads its rules only from user settings,** not from a project's. (Phase 6)

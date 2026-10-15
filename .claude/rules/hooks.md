@@ -32,7 +32,7 @@ The hook reads its input as JSON on stdin. **Use the input's `cwd`** with
 
 - Never `CLAUDE_PROJECT_DIR`: it stays at the folder the session started in.
 - Never `process.cwd()`.
-- Without a `.claude/cc.json`, the plugin does what Claude Code does by default, and its
+- Without a `.claude/anymodel.json`, the plugin does what Claude Code does by default, and its
   guards stay silent. A project that never opted in must not notice the plugin.
   For WorktreeCreate, the default is the one the Phase 0 spike reproduced: the folder
   `.claude/worktrees/<name>` on a new branch `worktree-<name>` from `HEAD`. Prove it again
@@ -46,7 +46,7 @@ Nothing runs twice. This matters most for WorktreeCreate: when a project's hook 
 plugin's both run, both make a worktree and Claude Code uses the project's.
 
 The project removes its copy only once every machine has the plugin, and then raises
-`requires` in its `cc.json` (`docs/design.md` § The safe switch). Every hook that
+`requires` in its `anymodel.json` (`docs/design.md` § The safe switch). Every hook that
 replaces something a project may already have gets a defer check, and a test for it.
 
 ## Quiet output
@@ -76,19 +76,19 @@ A bug in a hook must never stop a user's work.
 - Catch every error, write one line to stderr, and exit 0.
 - Exit code 2 (block) is only for a guard's deliberate decision, with the reason on
   stderr.
-- A `CcVersionError` (the project needs a newer plugin) is reported as its message,
-  which names the update command. A broken `cc.json` is reported with its file and field.
-- What a guard does when the project's `cc.json` is broken or needs a newer plugin is
+- An `AnymodelVersionError` (the project needs a newer plugin) is reported as its message,
+  which names the update command. A broken `anymodel.json` is reported with its file and field.
+- What a guard does when the project's `anymodel.json` is broken or needs a newer plugin is
   decided in Phase 3 and written here then.
 
 ## Session start refreshes, nothing more
 
 The SessionStart hook only refreshes managed files, through `src/setup/` under its lock.
 It never restarts a service, never changes a permission, and never asks a question.
-Those happen only in a manual `cc-agentic setup` run that shows the change first.
+Those happen only in a manual `anymodel setup` run that shows the change first.
 
 ## Tests
 
 Each hook is tested by running it with a JSON input on stdin, in a temp git repo
-(`testing.md`): with and without `cc.json`, in a worktree, with the project's own copy
-wired (the defer check), and with a broken `cc.json`. Assert stdout exactly.
+(`testing.md`): with and without `anymodel.json`, in a worktree, with the project's own copy
+wired (the defer check), and with a broken `anymodel.json`. Assert stdout exactly.

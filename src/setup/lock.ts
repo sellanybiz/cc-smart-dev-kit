@@ -39,7 +39,7 @@ interface Held {
   size: number;
 }
 
-/** Another cc-agentic run holds the lock. */
+/** Another anymodel run holds the lock. */
 export class LockBusyError extends Error {
   override name = "LockBusyError";
 }
@@ -252,7 +252,7 @@ export async function withLock<T>(
       const where = info && info.host !== hostname() ? ` on ${info.host || "another host"}` : "";
       const who = info ? `process ${info.pid}${where}` : "another run";
       throw new LockBusyError(
-        `cc-agentic is busy: ${who} holds ${file}. Wait for it to finish, then try again.`,
+        `anymodel is busy: ${who} holds ${file}. Wait for it to finish, then try again.`,
       );
     }
     await Bun.sleep(100);

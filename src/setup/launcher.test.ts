@@ -34,7 +34,7 @@ function fakeVersion(cacheDir: string, version: string): string {
 function writeInstalled(configDir: string, entries: unknown[]): string {
   mkdirSync(join(configDir, "plugins"), { recursive: true });
   const file = join(configDir, "plugins", "installed_plugins.json");
-  writeFileSync(file, JSON.stringify({ version: 2, plugins: { "cc@cc-agentic": entries } }));
+  writeFileSync(file, JSON.stringify({ version: 2, plugins: { "anymodel@anymodel": entries } }));
   return file;
 }
 
@@ -46,9 +46,9 @@ function userEntry(installPath: string, version: string) {
 function setup(bunPath = process.execPath) {
   const home = tempDir("launcher");
   const configDir = join(home, ".claude");
-  const cacheDir = join(configDir, "plugins", "cache", "cc-agentic", "cc");
+  const cacheDir = join(configDir, "plugins", "cache", "anymodel", "anymodel");
   const binDir = join(home, ".local", "bin");
-  const stateDir = join(configDir, "cc-agentic");
+  const stateDir = join(configDir, "anymodel");
   const launcher = installLauncher(binDir, { stateDir, bunPath }).path;
   return { home, configDir, cacheDir, launcher };
 }
@@ -100,7 +100,7 @@ describe("the launcher", () => {
     const result = runLauncher(launcher, env, []);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toBe(
-      `cc-agentic: bun not found (not at ${gone}, not on PATH). Install bun, then run: cc-agentic setup\n`,
+      `anymodel: bun not found (not at ${gone}, not on PATH). Install bun, then run: anymodel setup\n`,
     );
   });
 
@@ -155,7 +155,7 @@ describe("the launcher", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toBe("");
     expect(result.stderr).toBe(
-      `cc-agentic: the cc plugin folder is missing: ${installPath}. Run: claude plugin install cc@cc-agentic\n`,
+      `anymodel: the anymodel plugin folder is missing: ${installPath}. Run: claude plugin install anymodel@anymodel\n`,
     );
   });
 
@@ -164,7 +164,7 @@ describe("the launcher", () => {
     const result = runLauncher(launcher, { HOME: home, CLAUDE_CONFIG_DIR: configDir }, []);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toBe(
-      "cc-agentic: the cc plugin is not installed. Run: claude plugin install cc@cc-agentic\n",
+      "anymodel: the anymodel plugin is not installed. Run: claude plugin install anymodel@anymodel\n",
     );
   });
 
@@ -173,7 +173,7 @@ describe("the launcher", () => {
     writeInstalled(configDir, [{ scope: "project", installPath: fakeVersion(cacheDir, "1.0.0") }]);
     const result = runLauncher(launcher, { HOME: home, CLAUDE_CONFIG_DIR: configDir }, []);
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("Run: claude plugin install cc@cc-agentic");
+    expect(result.stderr).toContain("Run: claude plugin install anymodel@anymodel");
   });
 });
 

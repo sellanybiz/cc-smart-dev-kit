@@ -6,14 +6,14 @@ import { withLock } from "../setup/lock";
 import { applyManagedJson, formatKeyPath, type KeyPath } from "../setup/managed-json";
 import { type CliPaths, tildify } from "./paths";
 
-/** The key that turns on auto-update for the cc-agentic marketplace. Claude Code's install leaves it out. */
+/** The key that turns on auto-update for the anymodel marketplace. Claude Code's install leaves it out. */
 export const AUTO_UPDATE_KEY: KeyPath = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
 
 function show(value: unknown): string {
   return value === undefined ? "(none)" : JSON.stringify(value);
 }
 
-/** True when settings.json knows the cc-agentic marketplace (written by `claude plugin install`). */
+/** True when settings.json knows the anymodel marketplace (written by `claude plugin install`). */
 function marketplaceKnown(settingsFile: string): boolean {
   if (!existsSync(settingsFile)) return false;
   try {
@@ -93,7 +93,7 @@ export async function runSetup(paths: CliPaths, options: { dryRun: boolean }): P
   const pathDirs = (process.env.PATH ?? "").split(delimiter);
   if (!pathDirs.includes(paths.binDir)) {
     console.log(
-      `Note: ${short(paths.binDir)} is not on your PATH. Add it, so the cc-agentic command works.`,
+      `Note: ${short(paths.binDir)} is not on your PATH. Add it, so the anymodel command works.`,
     );
   }
   return 0;

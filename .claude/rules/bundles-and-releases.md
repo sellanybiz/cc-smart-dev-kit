@@ -11,7 +11,7 @@ paths:
 ## Only `plugin/` reaches a machine
 
 Claude Code copies only `plugin/` into
-`~/.claude/plugins/cache/cc-agentic/cc/<version>/`. There is no install step there: no
+`~/.claude/plugins/cache/anymodel/anymodel/<version>/`. There is no install step there: no
 `bun install`, no `node_modules`.
 
 - **Nothing in `plugin/` imports from outside it.** Every script in it is a bundle that
@@ -36,7 +36,7 @@ Claude Code copies only `plugin/` into
 - **Never edit `plugin/dist/*.js` by hand.** It is excluded from Biome and the
   neutrality check because it is built from `src/`.
 - **A new bundle is a new file in `src/entries/`.** A test file there is skipped.
-- `plugin/bin/cc-agentic` is written by hand. It finds `dist/cli.js` from its own
+- `plugin/bin/anymodel` is written by hand. It finds `dist/cli.js` from its own
   location (`dirname "$0"`), because `CLAUDE_PLUGIN_ROOT` is not set in the Bash tool.
 
 ## The version lives in one place
@@ -53,7 +53,7 @@ Claude Code copies only `plugin/` into
   (`scripts/check-version-bump.ts`). A change to `src/` that changes a bundle changes
   `plugin/dist/`, so it needs a bump too.
 - Use `VERSION`, `MARKETPLACE_SOURCE`, `PLUGIN_ID` and the command strings from
-  `src/build-info/`. Never write the version, the repository or `cc@cc-agentic` twice.
+  `src/build-info/`. Never write the version, the repository or `anymodel@anymodel` twice.
 
 ## Dependencies
 

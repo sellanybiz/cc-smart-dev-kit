@@ -3,9 +3,9 @@ paths:
   - "src/project/**"
 ---
 
-# The `.claude/cc.json` Contract
+# The `.claude/anymodel.json` Contract
 
-`cc.json` is how a project opts in to the plugin and gives its own details. Projects
+`anymodel.json` is how a project opts in to the plugin and gives its own details. Projects
 write it by hand and keep it in their repo for years, so it is a public contract:
 changing it breaks other people's projects.
 
@@ -15,8 +15,8 @@ changing it breaks other people's projects.
 reads (`env` is the environment git runs with, so a test can put a fake git first on
 PATH):
 
-1. `<checkout root>/.claude/cc.json` — a linked worktree's own file wins;
-2. else `<main checkout>/.claude/cc.json`;
+1. `<checkout root>/.claude/anymodel.json` — a linked worktree's own file wins;
+2. else `<main checkout>/.claude/anymodel.json`;
 3. else none: `config` is `null`, and the plugin does Claude Code's default behaviour.
 
 Outside git, or in a bare repo, it returns `null`. It drops the `GIT_*` variables that
@@ -35,13 +35,13 @@ a clear error that says what is wrong.
 | `instructions` | boolean | Turns on the opt-in instructions for this project. Used from Phase 5. |
 | `autoMode` | string array | Auto-mode rules `setup` copies into the user's settings. Used from Phase 6. |
 
-The schema is `ccConfigSchema` in `src/project/config.ts` (zod). The README shows an
+The schema is `anymodelConfigSchema` in `src/project/config.ts` (zod). The README shows an
 example; keep it in step.
 
 ## `requires` first, then the strict parse
 
 1. Read only `requires`. When the running plugin is outside the range, throw
-   `CcVersionError`, whose message names the update command.
+   `AnymodelVersionError`, whose message names the update command.
 2. Then parse the whole file strictly: an unknown field (`"worktree"`) is an error,
    never ignored.
 
@@ -51,7 +51,7 @@ every change, and keep its test.
 
 - Ranges are checked by `isValidRange()` before `Bun.semver`: Bun treats a range it
   cannot read as "any version", so a typo would pass.
-- Every error names the file, and the field when there is one (`CcConfigError`).
+- Every error names the file, and the field when there is one (`AnymodelConfigError`).
 
 ## Changing the contract
 

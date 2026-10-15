@@ -9,13 +9,13 @@ export const VERSION: string = info.version;
 /** Where the marketplace lives, as `<owner>/<name>`: plugin.json's `repository`. */
 export const MARKETPLACE_SOURCE: string = info.repo;
 
-/** The marketplace and plugin names, as Claude Code records them: `cc@cc-agentic`. */
-export const MARKETPLACE = "cc-agentic";
-export const PLUGIN = "cc";
+/** The marketplace and plugin names, as Claude Code records them: `anymodel@anymodel`. */
+export const MARKETPLACE = "anymodel";
+export const PLUGIN = "anymodel";
 export const PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
 
 /** The command this plugin installs (the launcher in ~/.local/bin, and plugin/bin). */
-export const COMMAND = "cc-agentic";
+export const COMMAND = "anymodel";
 
 /** The commands a user runs to add, install and update the plugin. */
 export const MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;

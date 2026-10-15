@@ -14,20 +14,20 @@ import {
 export interface RestoreResult {
   file: string;
   /**
-   * - `restored`: a file cc-agentic owns whole is back as it was before cc-agentic.
-   * - `removed`: cc-agentic had created the file; it is gone again.
-   * - `cleaned`: cc-agentic's keys or block are out; everything else stayed.
-   * - `unchanged`: nothing of cc-agentic was left in it.
-   * - `no-backup`: the backup from before cc-agentic is missing; the file was left alone.
+   * - `restored`: a file anymodel owns whole is back as it was before anymodel.
+   * - `removed`: anymodel had created the file; it is gone again.
+   * - `cleaned`: anymodel's keys or block are out; everything else stayed.
+   * - `unchanged`: nothing of anymodel was left in it.
+   * - `no-backup`: the backup from before anymodel is missing; the file was left alone.
    */
   action: "restored" | "removed" | "cleaned" | "unchanged" | "no-backup";
-  /** What was taken out: key paths, or "the cc-agentic block". */
+  /** What was taken out: key paths, or "the anymodel block". */
   details: string[];
   /** The backup of the file's state just before this restore changed it. */
   savedAs?: string;
 }
 
-/** The baseline is an `.absent` marker: the file did not exist before cc-agentic. */
+/** The baseline is an `.absent` marker: the file did not exist before anymodel. */
 function createdByUs(entry: ChangedEntry): boolean {
   return entry.baseline?.endsWith(ABSENT_SUFFIX) ?? false;
 }
@@ -74,11 +74,11 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
   }
   if (entry.kinds.includes("markdown-block")) {
     const result = removeManagedMarkdown({ file, stateDir });
-    if (result.outcome !== "unchanged") details.push("the cc-agentic block");
+    if (result.outcome !== "unchanged") details.push("the anymodel block");
     savedAs ??= result.backup;
   }
 
-  // cc-agentic created the file, and only an empty shell of ours is left: remove it.
+  // anymodel created the file, and only an empty shell of ours is left: remove it.
   if (createdByUs(entry) && isEmpty(file)) {
     const backup = removeManagedFile(stateDir, file);
     return { file, action: "removed", details, savedAs: savedAs ?? backup };
@@ -88,12 +88,12 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
 }
 
 /**
- * Removes everything cc-agentic added, and keeps everything else:
- * - JSON files: the keys cc-agentic owns are removed (they did not exist before, because
- *   cc-agentic never overwrites a key it does not own). Keys others added stay.
- * - Markdown files: the cc-agentic block is removed; the text around it stays.
- * - Files cc-agentic owns whole (the launcher): back to the state before cc-agentic's first
- *   change, or removed when cc-agentic created them.
+ * Removes everything anymodel added, and keeps everything else:
+ * - JSON files: the keys anymodel owns are removed (they did not exist before, because
+ *   anymodel never overwrites a key it does not own). Keys others added stay.
+ * - Markdown files: the anymodel block is removed; the text around it stays.
+ * - Files anymodel owns whole (the launcher): back to the state before anymodel's first
+ *   change, or removed when anymodel created them.
  * Each change makes a backup first. Afterwards the file is no longer tracked, so a second
  * restore changes nothing.
  */

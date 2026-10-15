@@ -6,14 +6,14 @@ import { join as join8 } from "path";
 // src/build-info/index.ts
 var info = {
   version: "0.2.0",
-  repo: "sellanybiz/cc-agentic"
+  repo: "sellanybiz/anymodel"
 };
 var VERSION = info.version;
 var MARKETPLACE_SOURCE = info.repo;
-var MARKETPLACE = "cc-agentic";
-var PLUGIN = "cc";
+var MARKETPLACE = "anymodel";
+var PLUGIN = "anymodel";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-var COMMAND = "cc-agentic";
+var COMMAND = "anymodel";
 var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
 var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
@@ -38,7 +38,7 @@ function cliPaths(env = process.env) {
     installedPluginsFile: join(claudeConfigDir, "plugins", "installed_plugins.json"),
     knownMarketplacesFile: join(claudeConfigDir, "plugins", "known_marketplaces.json"),
     binDir: join(home, ".local", "bin"),
-    stateDir: join(claudeConfigDir, "cc-agentic"),
+    stateDir: join(claudeConfigDir, "anymodel"),
     gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
     routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
     routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service")
@@ -6361,7 +6361,7 @@ async function withLock(stateDir, fn, options = {}) {
       const info = held.info;
       const where = info && info.host !== hostname() ? ` on ${info.host || "another host"}` : "";
       const who = info ? `process ${info.pid}${where}` : "another run";
-      throw new LockBusyError(`cc-agentic is busy: ${who} holds ${file}. Wait for it to finish, then try again.`);
+      throw new LockBusyError(`anymodel is busy: ${who} holds ${file}. Wait for it to finish, then try again.`);
     }
     await Bun.sleep(100);
   }
@@ -6397,7 +6397,7 @@ import {
 } from "fs";
 import { basename, dirname as dirname2, join as join4, resolve } from "path";
 var BACKUPS_DIR = "backups";
-var BACKUP_INFIX = ".bak-cc-agentic-";
+var BACKUP_INFIX = ".bak-anymodel-";
 var ABSENT_SUFFIX = ".absent";
 var CHANGED_FILE = "changed.json";
 var MAX_LINKS = 40;
@@ -6434,7 +6434,7 @@ function fileMode(file) {
 function writeTemp(file, content, mode) {
   const dir = dirname2(file);
   mkdirSync3(dir, { recursive: true });
-  const temp = join4(dir, `.${basename(file)}.cc-agentic-tmp-${process.pid}-${crypto.randomUUID()}`);
+  const temp = join4(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
   try {
     const fd = openSync2(temp, "wx", mode);
     try {
@@ -6575,7 +6575,7 @@ function retryOnConcurrentChange(file, fn, attempts = 3) {
     } catch (error) {
       if (!(error instanceof ConcurrentChangeError) || attempt >= attempts) {
         if (error instanceof ConcurrentChangeError) {
-          throw new ConcurrentChangeError(`${file} kept changing while cc-agentic tried to update it (${attempts} tries). ` + "Close the program that writes it (for example Claude Code), then run again.");
+          throw new ConcurrentChangeError(`${file} kept changing while anymodel tried to update it (${attempts} tries). ` + "Close the program that writes it (for example Claude Code), then run again.");
         }
         throw error;
       }
@@ -6591,7 +6591,7 @@ function writeManagedFile(file, content, options) {
   const current = currentMode === null ? null : readFileSync3(target, "utf8");
   const checkUnchanged = (now) => {
     if (options.expectedContent !== undefined && now !== options.expectedContent) {
-      throw new ConcurrentChangeError(`${target} changed after cc-agentic read it.`);
+      throw new ConcurrentChangeError(`${target} changed after anymodel read it.`);
     }
   };
   if (!options.dryRun)
@@ -6729,7 +6729,7 @@ function applyOnce(file, options, owned) {
       continue;
     }
     if (current.found && !isOwned(path)) {
-      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${JSON.stringify(current.value)}, set by someone else. ` + "cc-agentic does not overwrite it. Remove it by hand if cc-agentic should manage it.");
+      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${JSON.stringify(current.value)}, set by someone else. ` + "anymodel does not overwrite it. Remove it by hand if anymodel should manage it.");
     }
     setKey(data, path, value);
     changes.push({ path, before: current.found ? current.value : undefined, after: value });
@@ -6738,7 +6738,7 @@ function applyOnce(file, options, owned) {
   }
   for (const path of options.remove ?? []) {
     if (!isOwned(path)) {
-      skipped.push({ path, reason: "not owned by cc-agentic; left alone" });
+      skipped.push({ path, reason: "not owned by anymodel; left alone" });
       continue;
     }
     released.push([...path]);
@@ -8123,7 +8123,7 @@ function findUserInstall(installedPluginsFile) {
 
 // src/setup/launcher.ts
 import { join as join6 } from "path";
-var LAUNCHER_NAME = "cc-agentic";
+var LAUNCHER_NAME = "anymodel";
 var FIND_INSTALL_JS = [
   "const f=process.argv[process.argv.length-1];",
   'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
@@ -8142,10 +8142,10 @@ function bakedBunPath(script) {
 }
 function launcherScript(bunPath) {
   return `#!/bin/sh
-# cc-agentic launcher. Written by "cc-agentic setup"; setup rewrites it, so do not edit it.
-# It runs the cc-agentic command from the installed version of the cc plugin.
+# anymodel launcher. Written by "anymodel setup"; setup rewrites it, so do not edit it.
+# It runs the anymodel command from the installed version of the anymodel plugin.
 fail() {
-  echo "cc-agentic: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
+  echo "anymodel: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
   exit 1
 }
 baked_bun=${shellQuote(bunPath)}
@@ -8154,15 +8154,15 @@ if [ -x "$baked_bun" ]; then
 elif command -v bun >/dev/null 2>&1; then
   bun=$(command -v bun)
 else
-  echo "cc-agentic: bun not found (not at $baked_bun, not on PATH). Install bun, then run: cc-agentic setup" >&2
+  echo "anymodel: bun not found (not at $baked_bun, not on PATH). Install bun, then run: anymodel setup" >&2
   exit 1
 fi
 config_dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 installed="$config_dir/plugins/installed_plugins.json"
-[ -f "$installed" ] || fail "the cc plugin is not installed."
-install_path=$("$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the cc plugin is not installed."
-[ -n "$install_path" ] || fail "the cc plugin is not installed."
-[ -f "$install_path/dist/cli.js" ] || fail "the cc plugin folder is missing: $install_path."
+[ -f "$installed" ] || fail "the anymodel plugin is not installed."
+install_path=$("$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the anymodel plugin is not installed."
+[ -n "$install_path" ] || fail "the anymodel plugin is not installed."
+[ -f "$install_path/dist/cli.js" ] || fail "the anymodel plugin folder is missing: $install_path."
 exec "$bun" "$install_path/dist/cli.js" "$@"
 `;
 }
@@ -8365,19 +8365,19 @@ function checkLauncher(paths) {
   const launcher = join7(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
   if (!existsSync8(launcher))
-    return { ok: false, text: `no launcher at ${where}. Run: cc-agentic setup` };
+    return { ok: false, text: `no launcher at ${where}. Run: anymodel setup` };
   if (!isExecutable(launcher)) {
-    return { ok: false, text: `the launcher ${where} is not executable. Run: cc-agentic setup` };
+    return { ok: false, text: `the launcher ${where} is not executable. Run: anymodel setup` };
   }
   const script = readFileSync10(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
-    return { ok: false, text: `the launcher ${where} is out of date. Run: cc-agentic setup` };
+    return { ok: false, text: `the launcher ${where} is out of date. Run: anymodel setup` };
   }
   if (!isExecutable(bun)) {
     return {
       ok: false,
-      text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-agentic setup`
+      text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: anymodel setup`
     };
   }
   const result = run2([launcher, "version"]);
@@ -8468,7 +8468,7 @@ function checkAutoUpdate(settings, paths) {
   const marketplaces = settings?.extraKnownMarketplaces;
   return marketplaces?.[MARKETPLACE]?.autoUpdate === true ? { ok: true, text: "plugin auto-update is on" } : {
     ok: false,
-    text: `plugin auto-update is off in ${tildify(paths.settingsFile, paths.home)}. Run: cc-agentic setup`
+    text: `plugin auto-update is off in ${tildify(paths.settingsFile, paths.home)}. Run: anymodel setup`
   };
 }
 function isSet(value) {
@@ -8502,6 +8502,16 @@ function checkNameClash(settings) {
     text: `another plugin named ${PLUGIN} is enabled: ${clashes.join(", ")}. Disable it.`
   };
 }
+var OLD_PLUGIN_ID = "cc@cc-agentic";
+function checkOldPlugin(settings) {
+  const enabled = settings?.enabledPlugins ?? {};
+  if (enabled[OLD_PLUGIN_ID] !== true)
+    return null;
+  return {
+    ok: false,
+    text: `the old plugin ${OLD_PLUGIN_ID} is still enabled: two copies of the same hooks would run. Run: claude plugin uninstall ${OLD_PLUGIN_ID}`
+  };
+}
 async function runDoctor(paths, env, gateway) {
   const settings = readSettings2(paths.settingsFile);
   const checks = [
@@ -8512,6 +8522,7 @@ async function runDoctor(paths, env, gateway) {
     checkAutoUpdate(settings, paths),
     checkUpdatesNotOff(settings, env, paths),
     checkNameClash(settings),
+    checkOldPlugin(settings),
     ...await gatewayChecks({ paths, ...gateway })
   ].filter((check) => check !== null);
   for (const check of checks) {
@@ -8525,8 +8536,8 @@ import { existsSync as existsSync10, readFileSync as readFileSync12 } from "fs";
 
 // src/setup/managed-markdown.ts
 import { existsSync as existsSync9, readFileSync as readFileSync11 } from "fs";
-var BLOCK_BEGIN = "<!-- cc-agentic:begin -->";
-var BLOCK_END = "<!-- cc-agentic:end -->";
+var BLOCK_BEGIN = "<!-- anymodel:begin -->";
+var BLOCK_END = "<!-- anymodel:end -->";
 function countOf(text, marker) {
   return text.split(marker).length - 1;
 }
@@ -8538,7 +8549,7 @@ function findBlock(current, file) {
   const start = current.indexOf(BLOCK_BEGIN);
   const end = current.indexOf(BLOCK_END);
   if (begins !== 1 || ends !== 1 || end < start) {
-    throw new Error(`${file} has a broken cc-agentic block (${begins} begin and ${ends} end markers). ` + "Fix it by hand: keep one begin marker and one end marker after it.");
+    throw new Error(`${file} has a broken anymodel block (${begins} begin and ${ends} end markers). ` + "Fix it by hand: keep one begin marker and one end marker after it.");
   }
   return { start, end: end + BLOCK_END.length };
 }
@@ -8630,7 +8641,7 @@ function restorePartly(file, entry, stateDir) {
   if (entry.kinds.includes("markdown-block")) {
     const result = removeManagedMarkdown({ file, stateDir });
     if (result.outcome !== "unchanged")
-      details.push("the cc-agentic block");
+      details.push("the anymodel block");
     savedAs ??= result.backup;
   }
   if (createdByUs(entry) && isEmpty(file)) {
@@ -8655,15 +8666,15 @@ function describe2(result, short) {
   const file = short(result.file);
   switch (result.action) {
     case "restored":
-      return `~ ${file}: back as it was before cc-agentic`;
+      return `~ ${file}: back as it was before anymodel`;
     case "removed":
-      return `- ${file}: removed (cc-agentic had created it)`;
+      return `- ${file}: removed (anymodel had created it)`;
     case "cleaned":
       return `~ ${file}: removed ${result.details.join(", ")}; everything else kept`;
     case "unchanged":
-      return `  ${file}: nothing of cc-agentic left in it`;
+      return `  ${file}: nothing of anymodel left in it`;
     case "no-backup":
-      return `! ${file}: the backup from before cc-agentic is missing; left alone`;
+      return `! ${file}: the backup from before anymodel is missing; left alone`;
   }
 }
 var STOP_WARNING = "anymodel-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.";
@@ -8689,7 +8700,7 @@ async function runRestore(paths, options) {
     if (unitTracked)
       options.runner(["systemctl", "--user", "daemon-reload"]);
     if (results.length === 0) {
-      console.log("Nothing to restore: cc-agentic has nothing in any file.");
+      console.log("Nothing to restore: anymodel has nothing in any file.");
       return 0;
     }
     for (const result of results) {
@@ -8773,26 +8784,26 @@ async function runSetup(paths, options) {
   }
   const pathDirs = (process.env.PATH ?? "").split(delimiter);
   if (!pathDirs.includes(paths.binDir)) {
-    console.log(`Note: ${short(paths.binDir)} is not on your PATH. Add it, so the cc-agentic command works.`);
+    console.log(`Note: ${short(paths.binDir)} is not on your PATH. Add it, so the anymodel command works.`);
   }
   return 0;
 }
 
 // src/entries/cli.ts
-var HELP = `cc-agentic ${VERSION} - set up and check the cc plugin for Claude Code
+var HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
 
-Usage: cc-agentic <command> [options]
+Usage: anymodel <command> [options]
 
 Commands:
   setup [--dry-run]  Install the launcher in ~/.local/bin and turn on plugin auto-update.
                      --dry-run prints what would change and writes nothing.
   doctor             Check the install. Exit code 1 when a check fails.
-  restore [--yes]    Remove what cc-agentic added, and keep everything else: its settings
+  restore [--yes]    Remove what anymodel added, and keep everything else: its settings
                      keys, its Markdown blocks, and the files it created (the launcher,
                      the router copy and unit). Each changed file gets a backup first.
                      It stops a running router; --yes: without asking.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
-                     cc-agentic gateway --help lists them.
+                     anymodel gateway --help lists them.
   version            Print the version.
   --help             Print this help.
 
@@ -8855,7 +8866,7 @@ ${HELP}`);
       return runGateway(rest, gatewayContext(paths));
     case "version":
     case "--version":
-      console.log(`cc-agentic ${VERSION}`);
+      console.log(`anymodel ${VERSION}`);
       return 0;
     case undefined:
     case "help":
@@ -8873,6 +8884,6 @@ ${HELP}`);
 try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
-  console.error(`cc-agentic: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`anymodel: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 }

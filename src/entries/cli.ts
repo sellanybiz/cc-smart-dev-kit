@@ -8,20 +8,20 @@ import { runSetup } from "../cli/setup";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import type { Runner } from "../gateway/service";
 
-const HELP = `cc-agentic ${VERSION} - set up and check the cc plugin for Claude Code
+const HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
 
-Usage: cc-agentic <command> [options]
+Usage: anymodel <command> [options]
 
 Commands:
   setup [--dry-run]  Install the launcher in ~/.local/bin and turn on plugin auto-update.
                      --dry-run prints what would change and writes nothing.
   doctor             Check the install. Exit code 1 when a check fails.
-  restore [--yes]    Remove what cc-agentic added, and keep everything else: its settings
+  restore [--yes]    Remove what anymodel added, and keep everything else: its settings
                      keys, its Markdown blocks, and the files it created (the launcher,
                      the router copy and unit). Each changed file gets a backup first.
                      It stops a running router; --yes: without asking.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
-                     cc-agentic gateway --help lists them.
+                     anymodel gateway --help lists them.
   version            Print the version.
   --help             Print this help.
 
@@ -95,7 +95,7 @@ async function main(argv: string[]): Promise<number> {
       return runGateway(rest, gatewayContext(paths));
     case "version":
     case "--version":
-      console.log(`cc-agentic ${VERSION}`);
+      console.log(`anymodel ${VERSION}`);
       return 0;
     case undefined:
     case "help":
@@ -112,6 +112,6 @@ async function main(argv: string[]): Promise<number> {
 try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
-  console.error(`cc-agentic: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`anymodel: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 }

@@ -9,15 +9,15 @@ function describe(result: RestoreResult, short: (path: string) => string): strin
   const file = short(result.file);
   switch (result.action) {
     case "restored":
-      return `~ ${file}: back as it was before cc-agentic`;
+      return `~ ${file}: back as it was before anymodel`;
     case "removed":
-      return `- ${file}: removed (cc-agentic had created it)`;
+      return `- ${file}: removed (anymodel had created it)`;
     case "cleaned":
       return `~ ${file}: removed ${result.details.join(", ")}; everything else kept`;
     case "unchanged":
-      return `  ${file}: nothing of cc-agentic left in it`;
+      return `  ${file}: nothing of anymodel left in it`;
     case "no-backup":
-      return `! ${file}: the backup from before cc-agentic is missing; left alone`;
+      return `! ${file}: the backup from before anymodel is missing; left alone`;
   }
 }
 
@@ -67,7 +67,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       const results = restore(paths.stateDir);
       if (unitTracked) options.runner(["systemctl", "--user", "daemon-reload"]);
       if (results.length === 0) {
-        console.log("Nothing to restore: cc-agentic has nothing in any file.");
+        console.log("Nothing to restore: anymodel has nothing in any file.");
         return 0;
       }
       for (const result of results) {

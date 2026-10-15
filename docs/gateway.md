@@ -3,7 +3,7 @@
 A small local program, **`anymodel-router`**, sits between Claude Code and the model
 providers. It lets routine subagents run on cheaper models while Claude models stay real
 Claude, on the person's own login. It is optional: nothing changes until a person runs
-`cc-agentic gateway setup` and then `cc-agentic gateway on`.
+`anymodel gateway setup` and then `anymodel gateway on`.
 
 How to use it, step by step: the `gateway` skill (`plugin/skills/gateway/SKILL.md`).
 The rules for changing it: `.claude/rules/gateway.md`.
@@ -79,8 +79,8 @@ requests, through the router.
 save Claude usage on the checks turns the judge on:
 
 ```sh
-cc-agentic gateway slot judge omniroute:ollama-cloud/deepseek-v4.1-flash,omniroute:ollama-cloud/glm-5.3-flash
-cc-agentic gateway slot judge off      # back to Claude
+anymodel gateway slot judge omniroute:ollama-cloud/deepseek-v4.1-flash,omniroute:ollama-cloud/glm-5.3-flash
+anymodel gateway slot judge off      # back to Claude
 ```
 
 The trade-off, which the person accepts by turning it on:
@@ -217,7 +217,7 @@ router stops taking requests and exits once the answers in flight are done (up t
 User services run at boot only with linger on (`loginctl enable-linger $USER`, once, by
 the person).
 
-`cc-agentic restore` undoes it: it stops and disables the unit (asking first when it
+`anymodel restore` undoes it: it stops and disables the unit (asking first when it
 runs), removes the copy and the unit, and removes the env keys. It leaves
 `gateway.json`, which holds the person's key.
 
@@ -237,7 +237,7 @@ person's own login), nor `CLAUDE_CODE_SUBAGENT_MODEL` or `…_FORCE` (an agent l
 without a `model`, a reviewer say, would run on a cheap slot). `gateway status` warns
 when one of them is set.
 
-A gateway key that exists and that `cc-agentic` did not set stops `gateway on`, and the
+A gateway key that exists and that `anymodel` did not set stops `gateway on`, and the
 value is shown masked; nothing is overwritten. Remove it by hand first (a project moving
 from its own gateway does it in its migration). `on` also refuses while the router does
 not answer: every Claude request would fail.
@@ -266,7 +266,7 @@ restart of each session; stop the router only after every session restarted.
 
 ## Troubleshooting
 
-Start with `cc-agentic gateway status`, then `cc-agentic doctor`.
+Start with `anymodel gateway status`, then `anymodel doctor`.
 
 | Symptom | Check | Fix |
 |---|---|---|
@@ -277,5 +277,5 @@ Start with `cc-agentic gateway status`, then `cc-agentic doctor`.
 | `"anymodel-…" is not a slot` | `gateway status` | `gateway slot`, or `gateway setup` |
 | Every `haiku` / `sonnet` call answers from Claude Sonnet | the log says the config cannot be used | `chmod 600 ~/.config/anymodel/gateway.json`; fix the JSON (read on the next request) |
 | `gateway on` stops: set by someone else | an older install's env keys | remove those keys by hand, then `gateway on` |
-| `doctor`: the router copy is not this version's | the plugin was updated | `cc-agentic gateway setup` (it asks before the restart) |
+| `doctor`: the router copy is not this version's | the plugin was updated | `anymodel gateway setup` (it asks before the restart) |
 | Auto mode blocks good work, or says its classifier is unavailable | the log's `(safety check) [judge]` lines | `gateway slot judge off` |

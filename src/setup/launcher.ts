@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { PLUGIN_ID } from "../build-info";
 import { type WriteOutcome, writeManagedFile } from "./write";
 
-export const LAUNCHER_NAME = "cc-agentic";
+export const LAUNCHER_NAME = "anymodel";
 
 /**
  * Finds the user-scope install of the plugin in installed_plugins.json (the last argument)
@@ -41,10 +41,10 @@ export function bakedBunPath(script: string): string | null {
  */
 export function launcherScript(bunPath: string): string {
   return `#!/bin/sh
-# cc-agentic launcher. Written by "cc-agentic setup"; setup rewrites it, so do not edit it.
-# It runs the cc-agentic command from the installed version of the cc plugin.
+# anymodel launcher. Written by "anymodel setup"; setup rewrites it, so do not edit it.
+# It runs the anymodel command from the installed version of the anymodel plugin.
 fail() {
-  echo "cc-agentic: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
+  echo "anymodel: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
   exit 1
 }
 baked_bun=${shellQuote(bunPath)}
@@ -53,15 +53,15 @@ if [ -x "$baked_bun" ]; then
 elif command -v bun >/dev/null 2>&1; then
   bun=$(command -v bun)
 else
-  echo "cc-agentic: bun not found (not at $baked_bun, not on PATH). Install bun, then run: cc-agentic setup" >&2
+  echo "anymodel: bun not found (not at $baked_bun, not on PATH). Install bun, then run: anymodel setup" >&2
   exit 1
 fi
 config_dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 installed="$config_dir/plugins/installed_plugins.json"
-[ -f "$installed" ] || fail "the cc plugin is not installed."
-install_path=$("$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the cc plugin is not installed."
-[ -n "$install_path" ] || fail "the cc plugin is not installed."
-[ -f "$install_path/dist/cli.js" ] || fail "the cc plugin folder is missing: $install_path."
+[ -f "$installed" ] || fail "the anymodel plugin is not installed."
+install_path=$("$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the anymodel plugin is not installed."
+[ -n "$install_path" ] || fail "the anymodel plugin is not installed."
+[ -f "$install_path/dist/cli.js" ] || fail "the anymodel plugin folder is missing: $install_path."
 exec "$bun" "$install_path/dist/cli.js" "$@"
 `;
 }
@@ -73,7 +73,7 @@ export interface InstallLauncherOptions {
   dryRun?: boolean;
 }
 
-/** Writes `<binDir>/cc-agentic` (mode 755), with a backup when it changes. */
+/** Writes `<binDir>/anymodel` (mode 755), with a backup when it changes. */
 export function installLauncher(
   binDir: string,
   options: InstallLauncherOptions,

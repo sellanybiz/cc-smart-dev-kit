@@ -99,7 +99,7 @@ export function shownValue(value: unknown): string {
 }
 
 /**
- * Throws ForeignKeyError when a gateway key is in the settings and cc-agentic does not own
+ * Throws ForeignKeyError when a gateway key is in the settings and anymodel does not own
  * it, also when it already has the wanted value: then `gateway off` could not remove it,
  * and the gateway would stay half on. An older install, or the person, set it; they remove
  * it (a project's migration does it for its machines). The value is masked.
@@ -144,7 +144,7 @@ export function turnOn(options: {
 }
 
 /**
- * Removes the gateway env keys cc-agentic owns. A gateway key someone else set stays, and
+ * Removes the gateway env keys anymodel owns. A gateway key someone else set stays, and
  * is returned in `foreign`, so the output can name it.
  */
 export function turnOff(options: { settingsFile: string; stateDir: string; dryRun?: boolean }): {

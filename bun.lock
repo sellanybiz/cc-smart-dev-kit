@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "cc-agentic",
+      "name": "anymodel",
       "dependencies": {
         "zod": "^4.6.7",
       },

@@ -12,7 +12,7 @@ function cliPaths(env = process.env) {
     installedPluginsFile: join(claudeConfigDir, "plugins", "installed_plugins.json"),
     knownMarketplacesFile: join(claudeConfigDir, "plugins", "known_marketplaces.json"),
     binDir: join(home, ".local", "bin"),
-    stateDir: join(claudeConfigDir, "cc-agentic"),
+    stateDir: join(claudeConfigDir, "anymodel"),
     gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
     routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
     routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service")
@@ -5818,14 +5818,14 @@ function superRefine(fn, params) {
 // src/build-info/index.ts
 var info = {
   version: "0.2.0",
-  repo: "sellanybiz/cc-agentic"
+  repo: "sellanybiz/anymodel"
 };
 var VERSION = info.version;
 var MARKETPLACE_SOURCE = info.repo;
-var MARKETPLACE = "cc-agentic";
-var PLUGIN = "cc";
+var MARKETPLACE = "anymodel";
+var PLUGIN = "anymodel";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-var COMMAND = "cc-agentic";
+var COMMAND = "anymodel";
 var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
 var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;

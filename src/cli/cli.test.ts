@@ -20,58 +20,58 @@ const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 interface SetupOptions {
   marketplace?: boolean;
   gitOk?: boolean;
-  /** The marketplace source in known_marketplaces.json. Default: github example-org/cc-agentic. */
+  /** The marketplace source in known_marketplaces.json. Default: github example-org/anymodel. */
   source?: Record<string, string>;
   /** The version in the marketplace's local copy. Default: VERSION. null: no manifest there. */
   marketplaceVersion?: string | null;
 }
 
-/** A temp HOME as it looks right after `claude plugin install cc@cc-agentic`. */
+/** A temp HOME as it looks right after `claude plugin install anymodel@anymodel`. */
 function setup(options: SetupOptions = {}) {
   const home = tempDir("cli");
   const configDir = join(home, ".claude");
-  const stateDir = join(configDir, "cc-agentic");
+  const stateDir = join(configDir, "anymodel");
   const settingsFile = join(configDir, "settings.json");
   mkdirSync(configDir, { recursive: true });
   const settings: Record<string, unknown> = {
     model: "opus",
-    enabledPlugins: { "cc@cc-agentic": true },
+    enabledPlugins: { "anymodel@anymodel": true },
   };
   if (options.marketplace !== false) {
     settings.extraKnownMarketplaces = {
-      "cc-agentic": { source: { source: "github", repo: "example-org/cc-agentic" } },
+      anymodel: { source: { source: "github", repo: "example-org/anymodel" } },
     };
   }
   writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
 
   // The installed plugin: its dist/cli.js is this CLI's source, so the launcher runs real code.
-  const installPath = join(configDir, "plugins", "cache", "cc-agentic", "cc", VERSION);
+  const installPath = join(configDir, "plugins", "cache", "anymodel", "anymodel", VERSION);
   mkdirSync(join(installPath, "dist"), { recursive: true });
   writeFileSync(join(installPath, "dist", "cli.js"), `await import(${JSON.stringify(CLI)});\n`);
   writeFileSync(
     join(configDir, "plugins", "installed_plugins.json"),
     JSON.stringify({
       version: 2,
-      plugins: { "cc@cc-agentic": [{ scope: "user", installPath, version: VERSION }] },
+      plugins: { "anymodel@anymodel": [{ scope: "user", installPath, version: VERSION }] },
     }),
   );
 
   // Claude Code's local copy of the marketplace, with the plugin's manifest in it.
-  const installLocation = join(configDir, "plugins", "marketplaces", "cc-agentic");
+  const installLocation = join(configDir, "plugins", "marketplaces", "anymodel");
   const marketplaceVersion =
     options.marketplaceVersion === undefined ? VERSION : options.marketplaceVersion;
   if (marketplaceVersion !== null) {
     mkdirSync(join(installLocation, "plugin", ".claude-plugin"), { recursive: true });
     writeFileSync(
       join(installLocation, "plugin", ".claude-plugin", "plugin.json"),
-      JSON.stringify({ name: "cc", version: marketplaceVersion }),
+      JSON.stringify({ name: "anymodel", version: marketplaceVersion }),
     );
   }
   writeFileSync(
     join(configDir, "plugins", "known_marketplaces.json"),
     JSON.stringify({
-      "cc-agentic": {
-        source: options.source ?? { source: "github", repo: "example-org/cc-agentic" },
+      anymodel: {
+        source: options.source ?? { source: "github", repo: "example-org/anymodel" },
         installLocation,
       },
     }),
@@ -120,7 +120,7 @@ function setup(options: SetupOptions = {}) {
     stateDir,
     settingsFile,
     binDir: join(home, ".local", "bin"),
-    launcher: join(home, ".local", "bin", "cc-agentic"),
+    launcher: join(home, ".local", "bin", "anymodel"),
     run,
     gitCalls,
   };
@@ -128,26 +128,26 @@ function setup(options: SetupOptions = {}) {
 
 const readJson = (file: string) => JSON.parse(readFileSync(file, "utf8"));
 
-describe("cc-agentic setup", () => {
+describe("anymodel setup", () => {
   test("installs the launcher and turns on auto-update, keeping the other settings", () => {
     const { settingsFile, launcher, run } = setup();
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
       [
-        "+ ~/.local/bin/cc-agentic: launcher created",
-        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-agentic"].autoUpdate: (none) -> true',
-        "Done. Each changed file has a backup in ~/.claude/cc-agentic/backups/.",
+        "+ ~/.local/bin/anymodel: launcher created",
+        "~ ~/.claude/settings.json: extraKnownMarketplaces.anymodel.autoUpdate: (none) -> true",
+        "Done. Each changed file has a backup in ~/.claude/anymodel/backups/.",
         "",
       ].join("\n"),
     );
     expect(existsSync(launcher)).toBe(true);
     expect(readJson(settingsFile)).toEqual({
       model: "opus",
-      enabledPlugins: { "cc@cc-agentic": true },
+      enabledPlugins: { "anymodel@anymodel": true },
       extraKnownMarketplaces: {
-        "cc-agentic": {
-          source: { source: "github", repo: "example-org/cc-agentic" },
+        anymodel: {
+          source: { source: "github", repo: "example-org/anymodel" },
           autoUpdate: true,
         },
       },
@@ -158,8 +158,8 @@ describe("cc-agentic setup", () => {
     const { configDir, stateDir, settingsFile, binDir, run } = setup();
     run(["setup"]);
     expect(listBackups(stateDir, settingsFile)).toHaveLength(1);
-    expect(readdirSync(binDir)).toEqual(["cc-agentic"]);
-    expect(readdirSync(configDir).sort()).toEqual(["cc-agentic", "plugins", "settings.json"]);
+    expect(readdirSync(binDir)).toEqual(["anymodel"]);
+    expect(readdirSync(configDir).sort()).toEqual(["anymodel", "plugins", "settings.json"]);
   });
 
   test("a second run changes nothing", () => {
@@ -178,8 +178,8 @@ describe("cc-agentic setup", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
       [
-        "+ ~/.local/bin/cc-agentic: launcher created",
-        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-agentic"].autoUpdate: (none) -> true',
+        "+ ~/.local/bin/anymodel: launcher created",
+        "~ ~/.claude/settings.json: extraKnownMarketplaces.anymodel.autoUpdate: (none) -> true",
         "Dry run: nothing was written.",
         "",
       ].join("\n"),
@@ -192,13 +192,13 @@ describe("cc-agentic setup", () => {
   test("a key the user set (autoUpdate: false) fails before anything is written", () => {
     const { stateDir, settingsFile, launcher, run } = setup();
     const settings = readJson(settingsFile);
-    settings.extraKnownMarketplaces["cc-agentic"].autoUpdate = false;
+    settings.extraKnownMarketplaces["anymodel"].autoUpdate = false;
     writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
     const before = readFileSync(settingsFile, "utf8");
     const result = run(["setup"]);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain(
-      'extraKnownMarketplaces["cc-agentic"].autoUpdate is false, set by someone else.',
+      "extraKnownMarketplaces.anymodel.autoUpdate is false, set by someone else.",
     );
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
     expect(existsSync(launcher)).toBe(false);
@@ -210,7 +210,7 @@ describe("cc-agentic setup", () => {
     expect(run(["setup"]).stdout).not.toContain("Note:");
     const withoutBin = run(["setup"], { PATH: process.env.PATH ?? "" });
     expect(withoutBin.stdout).toContain(
-      "Note: ~/.local/bin is not on your PATH. Add it, so the cc-agentic command works.",
+      "Note: ~/.local/bin is not on your PATH. Add it, so the anymodel command works.",
     );
   });
 
@@ -235,22 +235,22 @@ describe("cc-agentic setup", () => {
   });
 });
 
-describe("cc-agentic doctor", () => {
+describe("anymodel doctor", () => {
   test("all green after setup, through the launcher; git reads the marketplace over SSH", () => {
     const { run, gitCalls } = setup();
     run(["setup"]);
     const result = run(["doctor"]);
     expect(result.stdout).toBe(
       [
-        `✓ cc@cc-agentic ${VERSION} is installed at ~/.claude/plugins/cache/cc-agentic/cc/${VERSION}`,
+        `✓ anymodel@anymodel ${VERSION} is installed at ~/.claude/plugins/cache/anymodel/anymodel/${VERSION}`,
         `✓ the installed version ${VERSION} is not behind the marketplace`,
-        `✓ the launcher ~/.local/bin/cc-agentic runs cc-agentic ${VERSION}`,
-        "✓ can read the marketplace at git@github.com:example-org/cc-agentic.git",
+        `✓ the launcher ~/.local/bin/anymodel runs anymodel ${VERSION}`,
+        "✓ can read the marketplace at git@github.com:example-org/anymodel.git",
         "✓ plugin auto-update is on",
         "✓ plugin updates are not switched off",
-        "✓ no other enabled plugin is named cc",
+        "✓ no other enabled plugin is named anymodel",
         // The gateway is optional: never set up is information, not a failure.
-        "· gateway: not set up (optional). To use it: cc-agentic gateway setup",
+        "· gateway: not set up (optional). To use it: anymodel gateway setup",
         "",
       ].join("\n"),
     );
@@ -259,7 +259,7 @@ describe("cc-agentic doctor", () => {
     expect(gitCalls()).toBe(
       [
         "config --get core.sshCommand | prompt=0 | ssh=",
-        "ls-remote git@github.com:example-org/cc-agentic.git HEAD | prompt=0 | ssh=ssh -o BatchMode=yes -o ConnectTimeout=8",
+        "ls-remote git@github.com:example-org/anymodel.git HEAD | prompt=0 | ssh=ssh -o BatchMode=yes -o ConnectTimeout=8",
         "",
       ].join("\n"),
     );
@@ -272,8 +272,8 @@ describe("cc-agentic doctor", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
       "✗ cannot read the marketplace (" +
-        "git@github.com:example-org/cc-agentic.git: fatal: unable to access 'https://***@git.example.com/r.git/': 403; " +
-        "https://github.com/example-org/cc-agentic.git: fatal: unable to access 'https://***@git.example.com/r.git/': 403). " +
+        "git@github.com:example-org/anymodel.git: fatal: unable to access 'https://***@git.example.com/r.git/': 403; " +
+        "https://github.com/example-org/anymodel.git: fatal: unable to access 'https://***@git.example.com/r.git/': 403). " +
         "Check your git access: an SSH key, or a git credential helper.",
     );
     expect(gitCalls().match(/ls-remote/g)).toHaveLength(2);
@@ -300,7 +300,7 @@ describe("cc-agentic doctor", () => {
     writeFileSync(join(configDir, "plugins", "known_marketplaces.json"), "{}");
     const result = run(["doctor"]);
     expect(result.stdout).toContain(
-      `✗ the cc-agentic marketplace is not added. Run: claude plugin marketplace add ${MARKETPLACE_SOURCE}\n`,
+      `✗ the anymodel marketplace is not added. Run: claude plugin marketplace add ${MARKETPLACE_SOURCE}\n`,
     );
   });
 
@@ -310,7 +310,7 @@ describe("cc-agentic doctor", () => {
     const result = run(["doctor"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      `✗ installed ${VERSION}, marketplace has 99.0.0. Run: claude plugin update cc@cc-agentic\n`,
+      `✗ installed ${VERSION}, marketplace has 99.0.0. Run: claude plugin update anymodel@anymodel\n`,
     );
   });
 
@@ -320,8 +320,8 @@ describe("cc-agentic doctor", () => {
     const result = run(["doctor"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      "✗ cannot read the version in ~/.claude/plugins/marketplaces/cc-agentic/plugin/.claude-plugin/plugin.json. " +
-        "Run: claude plugin marketplace update cc-agentic\n",
+      "✗ cannot read the version in ~/.claude/plugins/marketplaces/anymodel/plugin/.claude-plugin/plugin.json. " +
+        "Run: claude plugin marketplace update anymodel\n",
     );
   });
 
@@ -365,7 +365,7 @@ describe("cc-agentic doctor", () => {
     installLauncher(binDir, { stateDir, bunPath: otherBun });
     const result = run(["doctor"]);
     expect(result.stdout).toContain(
-      `✓ the launcher ~/.local/bin/cc-agentic runs cc-agentic ${VERSION}\n`,
+      `✓ the launcher ~/.local/bin/anymodel runs anymodel ${VERSION}\n`,
     );
   });
 
@@ -377,7 +377,7 @@ describe("cc-agentic doctor", () => {
     const result = run(["doctor"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      `✗ the launcher's bun ${gone} is missing or not executable. Run: cc-agentic setup\n`,
+      `✗ the launcher's bun ${gone} is missing or not executable. Run: anymodel setup\n`,
     );
   });
 
@@ -386,7 +386,7 @@ describe("cc-agentic doctor", () => {
     run(["setup"]);
     writeFileSync(launcher, `${readFileSync(launcher, "utf8")}# edited\n`);
     expect(run(["doctor"]).stdout).toContain(
-      "✗ the launcher ~/.local/bin/cc-agentic is out of date. Run: cc-agentic setup\n",
+      "✗ the launcher ~/.local/bin/anymodel is out of date. Run: anymodel setup\n",
     );
   });
 
@@ -394,7 +394,7 @@ describe("cc-agentic doctor", () => {
     const { run } = setup();
     const result = run(["doctor"]);
     expect(result.exitCode).toBe(1);
-    expect(result.stdout).toContain("✗ no launcher at ~/.local/bin/cc-agentic");
+    expect(result.stdout).toContain("✗ no launcher at ~/.local/bin/anymodel");
     expect(result.stdout).toContain("✗ plugin auto-update is off");
   });
 
@@ -403,27 +403,48 @@ describe("cc-agentic doctor", () => {
     rmSync(join(configDir, "plugins", "installed_plugins.json"));
     const result = run(["doctor"]);
     expect(result.stdout).toContain(
-      "✗ the cc@cc-agentic plugin is not installed. Run: claude plugin install cc@cc-agentic\n",
+      "✗ the anymodel@anymodel plugin is not installed. Run: claude plugin install anymodel@anymodel\n",
     );
     expect(result.stdout).not.toContain("marketplace has");
     expect(result.stdout).not.toContain("not behind");
   });
 
-  test("another plugin named cc is enabled: ✗, exit 1", () => {
+  test("the old plugin id is still enabled: ✗ naming it, with the uninstall command", () => {
     const { settingsFile, run } = setup();
     run(["setup"]);
+    const before = run(["doctor"]);
+    expect(before.stdout).not.toContain("cc@cc-agentic");
     const settings = readJson(settingsFile);
-    settings.enabledPlugins["cc@someone-else"] = true;
+    settings.enabledPlugins["cc@cc-agentic"] = true;
     writeFileSync(settingsFile, JSON.stringify(settings));
     const result = run(["doctor"]);
     expect(result.exitCode).toBe(1);
-    expect(result.stdout).toContain("✗ another plugin named cc is enabled: cc@someone-else");
+    expect(result.stdout).toContain(
+      "✗ the old plugin cc@cc-agentic is still enabled: two copies of the same hooks would run. Run: claude plugin uninstall cc@cc-agentic\n",
+    );
+    // Disabled (false) is no clash.
+    settings.enabledPlugins["cc@cc-agentic"] = false;
+    writeFileSync(settingsFile, JSON.stringify(settings));
+    expect(run(["doctor"]).stdout).not.toContain("cc@cc-agentic");
+  });
+
+  test("another plugin named anymodel is enabled: ✗, exit 1", () => {
+    const { settingsFile, run } = setup();
+    run(["setup"]);
+    const settings = readJson(settingsFile);
+    settings.enabledPlugins["anymodel@someone-else"] = true;
+    writeFileSync(settingsFile, JSON.stringify(settings));
+    const result = run(["doctor"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain(
+      "✗ another plugin named anymodel is enabled: anymodel@someone-else",
+    );
   });
 });
 
-describe("cc-agentic version and help", () => {
+describe("anymodel version and help", () => {
   test("version prints the plugin version", () => {
-    expect(setup().run(["version"]).stdout).toBe(`cc-agentic ${VERSION}\n`);
+    expect(setup().run(["version"]).stdout).toBe(`anymodel ${VERSION}\n`);
   });
 
   test("an unknown command prints help and exits 2", () => {

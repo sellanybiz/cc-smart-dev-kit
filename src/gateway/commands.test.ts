@@ -67,11 +67,11 @@ const ON_ENV = {
   ANTHROPIC_BASE_URL: "http://127.0.0.1:20100",
   ANTHROPIC_DEFAULT_HAIKU_MODEL: "anymodel-scout[1m]",
   ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION:
-    "Cheap model for search and reading: the scout slot (cc-agentic gateway slot scout …)",
+    "Cheap model for search and reading: the scout slot (anymodel gateway slot scout …)",
   ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (cheap)",
   ANTHROPIC_DEFAULT_SONNET_MODEL: "anymodel-worker[1m]",
   ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION:
-    "Cheap model for routine code and docs: the worker slot (cc-agentic gateway slot worker …)",
+    "Cheap model for routine code and docs: the worker slot (anymodel gateway slot worker …)",
   ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (cheap)",
   ENABLE_TOOL_SEARCH: "true",
 };
@@ -94,7 +94,7 @@ describe("Claude Code settings: on / off", () => {
       writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o644 });
       chmodSync(file, 0o644);
     }
-    return { file, stateDir: join(home, ".claude", "cc-agentic") };
+    return { file, stateDir: join(home, ".claude", "anymodel") };
   }
 
   it.skipIf(NO_POSIX_MODES)(
@@ -119,7 +119,7 @@ describe("Claude Code settings: on / off", () => {
       expect(backups).toHaveLength(1);
       expect(readFileSync(backups[0]?.path ?? "", "utf8")).toBe(before);
       // No backup beside the file: only the state folder, which holds them.
-      expect(readdirSync(join(file, "..")).sort()).toEqual(["cc-agentic", "settings.json"]);
+      expect(readdirSync(join(file, "..")).sort()).toEqual(["anymodel", "settings.json"]);
       expect(statSync(file).mode & 0o777).toBe(0o644);
       expect(
         ownedKeys(stateDir, file)
@@ -158,7 +158,7 @@ describe("Claude Code settings: on / off", () => {
       }
       expect(caught).toBeInstanceOf(ForeignKeyError);
       expect((caught as Error).message).toBe(
-        `${file}: env.${key} is ${shown}, set by someone else. cc-agentic does not overwrite it. Remove it by hand if cc-agentic should manage it.`,
+        `${file}: env.${key} is ${shown}, set by someone else. anymodel does not overwrite it. Remove it by hand if anymodel should manage it.`,
       );
       expect(readFileSync(file, "utf8")).toBe(before);
       expect(existsSync(stateDir)).toBe(false);
@@ -277,7 +277,7 @@ describe("setup, slot and models helpers", () => {
     () => {
       const path = join(tempDir("gateway-setup"), ".config", "anymodel", "gateway.json");
       expect(() => ensureConfig(path, null)).toThrow(
-        "cc-agentic gateway setup --backend-key-stdin omniroute",
+        "anymodel gateway setup --backend-key-stdin omniroute",
       );
       ensureConfig(path, { backend: "omniroute", value: "omni-key-123456" });
       expect(statSync(path).mode & 0o777).toBe(0o600);
@@ -319,7 +319,7 @@ describe("setup, slot and models helpers", () => {
     const models = { ollama: null, omniroute: ["glm-5.3-flash", "deepseek-v4.1-flash"] };
     expect(planSlotChange(cfg, "worker", "omniroute:kimi-k3", models)).toEqual({
       error:
-        '"omniroute:kimi-k3": "omniroute" has no model "kimi-k3" (see cc-agentic gateway models)',
+        '"omniroute:kimi-k3": "omniroute" has no model "kimi-k3" (see anymodel gateway models)',
     });
     expect(planSlotChange(cfg, "worker", "nobody:x", models)).toEqual({
       error: '"nobody:x": backend "nobody" is not in the config',
@@ -431,7 +431,7 @@ describe("router service install", () => {
         copyPath,
         unitPath,
         home,
-        stateDir: join(home, ".claude", "cc-agentic"),
+        stateDir: join(home, ".claude", "anymodel"),
         runner: (cmd) => {
           events.push(`$ ${cmd.join(" ")}`);
           if (state.fail) return { exitCode: 1, output: "Failed to connect to bus" };
@@ -488,7 +488,7 @@ describe("router service install", () => {
     expect(m.events).toEqual([
       "$ systemctl --user is-active --quiet anymodel-router.service",
       RESTART_WARNING,
-      "Nothing was changed. Run again with --yes to restart: cc-agentic gateway setup --yes",
+      "Nothing was changed. Run again with --yes to restart: anymodel gateway setup --yes",
     ]);
     expect(RESTART_WARNING).toBe(
       "anymodel-router is running. A restart cuts the answers in flight in running Claude sessions on this machine (Claude Code retries them).",
@@ -577,7 +577,7 @@ describe("router service install", () => {
   it("restore removes the copy and the unit that setup created", () => {
     const m = machine();
     m.install({});
-    const results = restore(join(m.home, ".claude", "cc-agentic"));
+    const results = restore(join(m.home, ".claude", "anymodel"));
     expect(results.map((result) => [result.file, result.action]).sort()).toEqual(
       [
         [m.unitPath, "removed"],
@@ -592,7 +592,7 @@ describe("router service install", () => {
     expect(renderUnit("/opt/bun/bin/bun", "/home/user/.local/share/anymodel/router.js")).toBe(
       [
         "# anymodel-router: the local AI gateway for Claude Code (127.0.0.1 only).",
-        "# Written by `cc-agentic gateway setup`; edits here are overwritten by the next setup.",
+        "# Written by `anymodel gateway setup`; edits here are overwritten by the next setup.",
         "# It runs a copy of the router, never a file in the plugin's version folder.",
         "# Its config: ~/.config/anymodel/gateway.json.",
         "",

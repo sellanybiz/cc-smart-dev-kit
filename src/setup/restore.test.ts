@@ -19,13 +19,13 @@ import { applyManagedMarkdown } from "./managed-markdown";
 import { restore } from "./restore";
 import { listBackups, readChanged, writeManagedFile } from "./write";
 
-const AUTO_UPDATE = ["extraKnownMarketplaces", "cc-agentic", "autoUpdate"] as const;
+const AUTO_UPDATE = ["extraKnownMarketplaces", "anymodel", "autoUpdate"] as const;
 
 const ORIGINAL_SETTINGS = `${JSON.stringify(
   {
     model: "opus",
     extraKnownMarketplaces: {
-      "cc-agentic": { source: { source: "github", repo: "example-org/cc-agentic" } },
+      anymodel: { source: { source: "github", repo: "example-org/anymodel" } },
     },
   },
   null,
@@ -39,7 +39,7 @@ function setup() {
 
 const read = (file: string) => readFileSync(file, "utf8");
 
-describe("restore: removes what cc-agentic added, keeps the rest", () => {
+describe("restore: removes what anymodel added, keeps the rest", () => {
   test("a key added by someone else after setup survives a restore", () => {
     const { dir, stateDir } = setup();
     const file = join(dir, "settings.json");
@@ -53,11 +53,11 @@ describe("restore: removes what cc-agentic added, keeps the rest", () => {
 
     const [result] = restore(stateDir);
     expect(result?.action).toBe("cleaned");
-    expect(result?.details).toEqual(['extraKnownMarketplaces["cc-agentic"].autoUpdate']);
+    expect(result?.details).toEqual(["extraKnownMarketplaces.anymodel.autoUpdate"]);
     expect(JSON.parse(read(file))).toEqual({
       model: "opus",
       extraKnownMarketplaces: {
-        "cc-agentic": { source: { source: "github", repo: "example-org/cc-agentic" } },
+        anymodel: { source: { source: "github", repo: "example-org/anymodel" } },
       },
       permissions: { allow: ["Bash(ls:*)"] },
     });
@@ -92,7 +92,7 @@ describe("restore: removes what cc-agentic added, keeps the rest", () => {
     const { dir, stateDir } = setup();
     const file = join(dir, "CLAUDE.md");
     writeFileSync(file, "# Notes\n\nKeep this.\n");
-    applyManagedMarkdown({ file, stateDir, body: "@cc/general.md" });
+    applyManagedMarkdown({ file, stateDir, body: "@anymodel/instructions/general.md" });
     // The user writes more after the block.
     writeFileSync(file, `${read(file)}\nWritten later by the user.\n`);
     const [result] = restore(stateDir);
@@ -119,7 +119,7 @@ describe("restore: removes what cc-agentic added, keeps the rest", () => {
     expect(existsSync(path)).toBe(false);
   });
 
-  test("files cc-agentic created with only its own content are removed", () => {
+  test("files anymodel created with only its own content are removed", () => {
     const { dir, stateDir } = setup();
     const json = join(dir, "new-settings.json");
     const markdown = join(dir, "NEW.md");
@@ -166,7 +166,7 @@ describe("restore: removes what cc-agentic added, keeps the rest", () => {
     expect(Object.keys(readChanged(stateDir))).toEqual([file]);
   });
 
-  test("nothing changed by cc-agentic: nothing to restore", () => {
+  test("nothing changed by anymodel: nothing to restore", () => {
     expect(restore(setup().stateDir)).toEqual([]);
   });
 });
@@ -209,7 +209,7 @@ describe("where backups live", () => {
     applyManagedJson({ file, stateDir, set: [[AUTO_UPDATE, true]] });
     const folder = join(stateDir, "backups", encodeURIComponent(file));
     expect(readdirSync(folder)).toHaveLength(1);
-    expect(readdirSync(folder)[0]).toMatch(/^settings\.json\.bak-cc-agentic-\d{8}T\d{9}Z$/);
+    expect(readdirSync(folder)[0]).toMatch(/^settings\.json\.bak-anymodel-\d{8}T\d{9}Z$/);
     expect(statSync(join(stateDir, "backups")).mode & 0o777).toBe(0o700);
     expect(statSync(folder).mode & 0o777).toBe(0o700);
     expect(readdirSync(dir).sort()).toEqual(["settings.json", "state"]);
@@ -244,7 +244,7 @@ describe("where backups live", () => {
     const { path } = installLauncher(linkedBin, { stateDir, bunPath: "/usr/bin/bun" });
     installLauncher(linkedBin, { stateDir, bunPath: "/opt/bun" });
     // Both writes are tracked under the real path, so the .absent baseline is found.
-    expect(Object.keys(readChanged(stateDir))).toEqual([join(realBin, "cc-agentic")]);
+    expect(Object.keys(readChanged(stateDir))).toEqual([join(realBin, "anymodel")]);
     expect(restore(stateDir).map((result) => result.action)).toEqual(["removed"]);
     expect(existsSync(path)).toBe(false);
   });

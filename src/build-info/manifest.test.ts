@@ -5,16 +5,16 @@ import { parseRepository, readBuildInfo } from "./manifest";
 
 describe("parseRepository", () => {
   test.each([
-    ["https://github.com/example-org/cc-agentic", "example-org/cc-agentic"],
-    ["https://github.com/example-org/cc-agentic.git", "example-org/cc-agentic"],
-    ["https://git.example.com/example-org/cc-agentic/", "example-org/cc-agentic"],
-    ["git@github.com:example-org/cc-agentic.git", "example-org/cc-agentic"],
-    ["example-org/cc-agentic", "example-org/cc-agentic"],
+    ["https://github.com/example-org/anymodel", "example-org/anymodel"],
+    ["https://github.com/example-org/anymodel.git", "example-org/anymodel"],
+    ["https://git.example.com/example-org/anymodel/", "example-org/anymodel"],
+    ["git@github.com:example-org/anymodel.git", "example-org/anymodel"],
+    ["example-org/anymodel", "example-org/anymodel"],
   ])("%p gives %p", (url, expected) => {
     expect(parseRepository(url)).toBe(expected);
   });
 
-  test.each(["", "cc-agentic", "https://github.com/only-owner", "https://host/a/b/c"])(
+  test.each(["", "anymodel", "https://github.com/only-owner", "https://host/a/b/c"])(
     "%p throws",
     (url) => {
       expect(() => parseRepository(url)).toThrow("Cannot read <owner>/<name>");

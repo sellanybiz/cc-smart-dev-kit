@@ -6,7 +6,7 @@ paths:
 
 # Setup And Managed Files
 
-`cc-agentic setup` changes files that belong to the user: `~/.claude/settings.json`,
+`anymodel setup` changes files that belong to the user: `~/.claude/settings.json`,
 later `~/.claude/CLAUDE.md`, the launcher. A mistake there breaks someone's Claude Code.
 So every change to a user's file goes through `src/setup/`, and nothing else writes one.
 
@@ -15,7 +15,7 @@ So every change to a user's file goes through `src/setup/`, and nothing else wri
 | Kind of file | Use | Owns |
 |---|---|---|
 | JSON settings | `applyManagedJson` | single keys, listed in `owned.json` |
-| Markdown | `applyManagedMarkdown` | one block between `<!-- cc-agentic:begin -->` and `<!-- cc-agentic:end -->` |
+| Markdown | `applyManagedMarkdown` | one block between `<!-- anymodel:begin -->` and `<!-- anymodel:end -->` |
 | A file it owns whole (the launcher) | `writeManagedFile` | the whole file |
 
 Each of them:
@@ -59,7 +59,7 @@ Each of them:
 
 - A JSON key that exists with another value and is not in `owned.json` is **never
   overwritten**: `ForeignKeyError`, and nothing is written. The user removes it by hand
-  if cc-agentic should manage it.
+  if anymodel should manage it.
 - A key that already has the wanted value but is not ours stays unowned.
 - Removal removes only owned keys. Every other key, and the text around a Markdown
   block, stays as it is.
@@ -71,8 +71,8 @@ Each of them:
 
 ## State, lock and paths
 
-- **State (`<stateDir>`):** `$CLAUDE_CONFIG_DIR/cc-agentic/` (by default
-  `~/.claude/cc-agentic/`): `owned.json`, `changed.json`, the `lock`, and `backups/`
+- **State (`<stateDir>`):** `$CLAUDE_CONFIG_DIR/anymodel/` (by default
+  `~/.claude/anymodel/`): `owned.json`, `changed.json`, the `lock`, and `backups/`
   (mode 0700).
 - **The lock:** every command that writes runs inside `withLock`. The lock file is made
   with O_EXCL (only one process can create it). It holds the pid, the start time of that
@@ -86,7 +86,7 @@ Each of them:
   place. A waiting run tries for up to 10 seconds, then says who holds it.
 - **Paths come from `cliPaths()`,** which follows `HOME` and `CLAUDE_CONFIG_DIR`. Never
   call `homedir()` or write `~/.claude` anywhere else: tests point these at a temp folder.
-- **One launcher, many config folders.** The launcher `~/.local/bin/cc-agentic` is
+- **One launcher, many config folders.** The launcher `~/.local/bin/anymodel` is
   shared by every config folder; the state (lock, records, backups) is per config folder.
   So a `restore` under one `CLAUDE_CONFIG_DIR` can remove a launcher another one relies
   on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
@@ -97,12 +97,12 @@ Each of them:
   no state folder, no lock. Every new step takes `dryRun` and is tested with it.
   Setup always runs this read-only pass first, outside the lock, also without
   `--dry-run`: a key the user set stops it before anything is written.
-- **`restore`** removes everything cc-agentic added and keeps everything else:
+- **`restore`** removes everything anymodel added and keeps everything else:
   - JSON settings: removes only the keys in `owned.json`. Foreign keys stay, also ones
     added after setup.
   - Markdown: removes the managed block and keeps the text around it.
   - Files owned whole (the launcher): puts back the **baseline**, the backup made at
-    cc-agentic's first change to the file since the last restore. When setup created
+    anymodel's first change to the file since the last restore. When setup created
     the file, it removes it.
   - A file setup created, with only an empty `{}` or empty text left, is removed.
   - Each change makes a normal backup first, so a restore can be undone by hand.
@@ -116,7 +116,7 @@ Each of them:
 
 ## The launcher
 
-`~/.local/bin/cc-agentic` is a small POSIX `sh` script that reads Claude Code's
+`~/.local/bin/anymodel` is a small POSIX `sh` script that reads Claude Code's
 `installed_plugins.json` and runs `dist/cli.js` of the installed version. It stays
 valid across updates.
 
@@ -128,7 +128,7 @@ valid across updates.
 
 ## What setup may do, and when
 
-- Restarts and permission changes happen only in a manual run (`cc-agentic setup`,
+- Restarts and permission changes happen only in a manual run (`anymodel setup`,
   `gateway setup`, `restore`) that shows the change first. A restart or stop of a running
   service says that answers in flight are cut, and asks: `confirm()` on a terminal; with
   no terminal, it stops and changes nothing unless `--yes` was given. The SessionStart
@@ -140,7 +140,7 @@ valid across updates.
 
 - `setup` prints one line per change: `+` created, `~` changed, `-` removed, with `~`
   for the home folder (`tildify`). Its last line: "Done. Each changed file has a backup
-  in ~/.claude/cc-agentic/backups/." (the state folder's `backups/`).
+  in ~/.claude/anymodel/backups/." (the state folder's `backups/`).
 - `doctor` prints one `✓` or `✗` line per check. A `✗` line says what to run. A part
   the person may leave out (the gateway, never set up) is a `·` line: information, never
   a failure. The list of checks is in `README.md` § Commands; keep it in step.
