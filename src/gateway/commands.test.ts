@@ -46,6 +46,7 @@ import {
   GATEWAY_ENV_KEYS,
   gatewayEnv,
   maskKey,
+  ownedGatewayEnvKeys,
   settingsReport,
   turnOff,
   turnOn,
@@ -282,6 +283,47 @@ describe("Claude Code settings: on / off", () => {
     const results = restore(stateDir);
     expect(results.map((result) => result.action)).toEqual(["cleaned"]);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(JSON.parse(before));
+  });
+
+  it("ownedGatewayEnvKeys keeps only the keys that still hold our value: a changed one is theirs", () => {
+    const { file, stateDir } = seed();
+    turnOn({ settingsFile: file, stateDir, port: 20100 });
+    expect(ownedGatewayEnvKeys(file, stateDir)).toEqual([
+      "ENABLE_TOOL_SEARCH",
+      "ANTHROPIC_BASE_URL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+    ]);
+    // The person points Claude Code at their own gateway: that key is their choice now, and
+    // restore's staging must stop counting it as a way running sessions reach the router.
+    const changed = JSON.parse(readFileSync(file, "utf8")) as { env: Record<string, string> };
+    changed.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:19999";
+    writeFileSync(file, `${JSON.stringify(changed, null, 2)}\n`);
+    expect(ownedGatewayEnvKeys(file, stateDir)).toEqual([
+      "ENABLE_TOOL_SEARCH",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+    ]);
+    // Restore leaves it (theirs), takes ours out, and gives up the ownership of it.
+    expect(restore(stateDir).map((result) => result.action)).toEqual(["cleaned"]);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      env: {
+        ANTHROPIC_BASE_URL: "http://127.0.0.1:19999",
+        CLAUDE_CODE_SUBAGENT_MODEL: "anymodel-worker[1m]",
+        FOO: "1",
+      },
+      model: "opus",
+      permissions: { allow: ["Bash(ls:*)"] },
+    });
+    expect(ownedGatewayEnvKeys(file, stateDir)).toEqual([]);
   });
 
   it("status sees a key that would replace the own login, and a subagent model override", () => {

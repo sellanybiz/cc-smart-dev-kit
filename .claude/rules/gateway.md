@@ -148,8 +148,10 @@ person chose and that passed the test; otherwise by the person, because Claude C
   refuses requests for one drain, and the warning names the real cause (`restartWarning`:
   the move, a stopped socket, a new port, a changed socket unit).
 - Stopping the router while running sessions still point at it makes each of them fail.
-  So `restore` stops it only once anymodel's gateway env keys are gone (its stage 2), and
-  asks first; `--now` does it at once, after saying every session fails until it restarts.
+  So `restore` stops it only once no gateway env key that still holds anymodel's value is
+  left (its stage 2; a key the person changed since is theirs, and does not hold it back),
+  and asks first; `--now` does it at once, after saying every session fails until it
+  restarts.
 - **Never `disable --now` or a blocking `stop`.** systemd then waits for the router's
   drain (up to `TimeoutStopSec`, 120 s) while its port is already closed. `stopRouter`
   asks `is-active`, runs `disable` of both units, then one `stop --no-block` of the

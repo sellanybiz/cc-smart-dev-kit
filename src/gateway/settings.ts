@@ -10,9 +10,12 @@ import {
   applyManagedJson,
   ForeignKeyError,
   formatKeyPath,
+  getKey,
   type KeyPath,
   type ManagedJsonResult,
   ownedKeys,
+  ownedRecords,
+  ownership,
 } from "../setup/managed-json";
 import { realTarget } from "../setup/write";
 
@@ -99,15 +102,34 @@ export function shownValue(value: unknown): string {
 }
 
 /**
- * The gateway env keys anymodel owns in the settings file: `gateway on` set them, and
- * neither `off` nor `restore` took them out yet. While there is one, running Claude
- * sessions may still send every request to the router.
+ * The gateway env keys anymodel owns in the settings file AND still holds the value anymodel
+ * wrote: a key the person changed since is theirs (the record has a value, and the file holds
+ * another one), and `restore` leaves it. A record with no value (an `owned.json` from before
+ * values were kept, or the claim written just before a write) counts as ours, whatever the
+ * key holds. While there is one, running Claude sessions may still send every request to the
+ * router.
  */
 export function ownedGatewayEnvKeys(settingsFile: string, stateDir: string): string[] {
-  const owned = ownedKeys(stateDir, realTarget(settingsFile));
-  return GATEWAY_ENV_KEYS.filter((key) =>
-    owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key),
+  const records = ownedRecords(stateDir, realTarget(settingsFile));
+  const settings = currentSettings(settingsFile);
+  return GATEWAY_ENV_KEYS.filter(
+    (key) => ownership(records, envPath(key), getKey(settings, envPath(key))) === "ours",
   );
+}
+
+/**
+ * The settings file's object as it is now, for the ownership check above. `{}` when there
+ * is no file, or it cannot be read as JSON: no key is found then, and every owned key
+ * counts as anymodel's. That is the conservative answer for the one caller that has a
+ * broken file in front of it (`restore`), which reports the file's own error a moment
+ * later.
+ */
+function currentSettings(settingsFile: string): Record<string, unknown> {
+  try {
+    return readSettings(settingsFile);
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -115,13 +137,19 @@ export function ownedGatewayEnvKeys(settingsFile: string, stateDir: string): str
  * it, also when it already has the wanted value: then `gateway off` could not remove it,
  * and the gateway would stay half on. An older install, or the person, set it; they remove
  * it (a project's migration does it for its machines). The value is masked.
+ *
+ * This check is by key path (`ownedKeys`), not by value like `ownedGatewayEnvKeys`: a key
+ * anymodel set and the person changed since still counts as owned here, and the write itself
+ * refuses it with the message for that case (it was changed after anymodel set it).
  */
 export function assertNoForeignGatewayKeys(settingsFile: string, stateDir: string): void {
   const env = readSettings(settingsFile).env;
   if (!isJsonObject(env)) return;
-  const owned = new Set(ownedGatewayEnvKeys(settingsFile, stateDir));
+  const owned = ownedKeys(stateDir, realTarget(settingsFile));
+  const owns = (key: string) =>
+    owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key);
   for (const key of GATEWAY_ENV_KEYS) {
-    if (!Object.hasOwn(env, key) || owned.has(key)) continue;
+    if (!Object.hasOwn(env, key) || owns(key)) continue;
     // Many people set ENABLE_TOOL_SEARCH themselves, for their own reasons: say so.
     const yourOwn =
       key === "ENABLE_TOOL_SEARCH"

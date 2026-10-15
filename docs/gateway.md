@@ -674,11 +674,17 @@ It undoes the service in **two stages** while the gateway is on. It assumes a
 running session keeps the `ANTHROPIC_BASE_URL` it started with, so that stopping the
 router while the env keys are there would make every running session fail. (One live
 look saw sessions pick up changed env keys at once: `claude-code-contract.md`. Until
-that is repeated, for removed keys too, the two stages stay.)
+that is repeated, for removed keys too, the two stages stay.) "Still there" means a
+gateway env key that **still holds anymodel's value** (`ownedGatewayEnvKeys`: a key path
+in `owned.json` whose value in the file is the one anymodel wrote; a record from before
+values were kept counts as anymodel's, whatever the file holds). A key anymodel set and
+the person changed since is theirs: it counts neither as a reason to keep the router up,
+nor as a key to remove.
 
-1. **Stage 1** (anymodel's gateway env keys are in `settings.json`): everything is
+1. **Stage 1** (such a key is in `settings.json`): everything is
    restored but the router's copy and units, the env keys included; the router keeps
    running. It says: restart every running Claude session, then run `restore` again.
+   A key the person changed stays in the file, and its ownership is given up with it.
 2. **Stage 2** (no such key left): it asks the service's state (`systemctl --user
    is-active`), disables both units, and stops both in **one** call, `systemctl --user stop
    --no-block anymodel-router.socket anymodel-router.service` (asking first when it runs;

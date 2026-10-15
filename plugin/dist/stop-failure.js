@@ -2,37 +2,51 @@
 // src/entries/stop-failure.ts
 import { spawn } from "child_process";
 import { existsSync as existsSync3 } from "fs";
-import { join as join2 } from "path";
+import { join as join3 } from "path";
 
 // src/cli/paths.ts
+import { join as join2 } from "path";
+
+// src/gateway/paths.ts
 import { homedir } from "os";
 import { join } from "path";
-function cliPaths(env = process.env) {
-  const home = env.HOME || homedir();
-  const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join(home, ".claude");
+function homeDir(env = process.env) {
+  return env.HOME || homedir();
+}
+function routerPaths(env = process.env) {
+  const home = homeDir(env);
   return {
     home,
-    claudeConfigDir,
-    settingsFile: join(claudeConfigDir, "settings.json"),
-    installedPluginsFile: join(claudeConfigDir, "plugins", "installed_plugins.json"),
-    knownMarketplacesFile: join(claudeConfigDir, "plugins", "known_marketplaces.json"),
-    binDir: join(home, ".local", "bin"),
-    stateDir: join(claudeConfigDir, "anymodel"),
     gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json"),
-    routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
-    routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service"),
-    claudeMemSettingsFile: join(claudeMemDataDir(env, home), "settings.json"),
-    routerSocketFile: join(home, ".config", "systemd", "user", "anymodel-router.socket")
+    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json")
+  };
+}
+
+// src/cli/paths.ts
+function cliPaths(env = process.env) {
+  const router = routerPaths(env);
+  const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join2(router.home, ".claude");
+  return {
+    ...router,
+    claudeConfigDir,
+    settingsFile: join2(claudeConfigDir, "settings.json"),
+    installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
+    knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
+    binDir: join2(router.home, ".local", "bin"),
+    stateDir: join2(claudeConfigDir, "anymodel"),
+    routerCopy: join2(router.home, ".local", "share", "anymodel", "router.js"),
+    routerUnitFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.service"),
+    claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
+    routerSocketFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.socket")
   };
 }
 function claudeMemDataDir(env, home) {
   const dir = env.CLAUDE_MEM_DATA_DIR;
   if (!dir)
-    return join(home, ".claude-mem");
+    return join2(home, ".claude-mem");
   if (dir === "~")
     return home;
-  return dir.startsWith("~/") ? join(home, dir.slice(2)) : dir;
+  return dir.startsWith("~/") ? join2(home, dir.slice(2)) : dir;
 }
 
 // src/hooks/stop-failure.ts
@@ -6371,7 +6385,7 @@ async function hook() {
   const alert = planAlert(input, readAlertContext(paths, Date.now(), input));
   if (alert === null)
     return;
-  const launcher = join2(paths.binDir, LAUNCHER_NAME);
+  const launcher = join3(paths.binDir, LAUNCHER_NAME);
   if (existsSync3(launcher)) {
     detached([launcher, ALERT_WORKER_COMMAND, JSON.stringify(alert)]);
     return;

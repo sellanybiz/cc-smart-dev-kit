@@ -3,34 +3,48 @@
 import { appendFileSync } from "fs";
 
 // src/cli/paths.ts
+import { join as join2 } from "path";
+
+// src/gateway/paths.ts
 import { homedir } from "os";
 import { join } from "path";
-function cliPaths(env = process.env) {
-  const home = env.HOME || homedir();
-  const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join(home, ".claude");
+function homeDir(env = process.env) {
+  return env.HOME || homedir();
+}
+function routerPaths(env = process.env) {
+  const home = homeDir(env);
   return {
     home,
-    claudeConfigDir,
-    settingsFile: join(claudeConfigDir, "settings.json"),
-    installedPluginsFile: join(claudeConfigDir, "plugins", "installed_plugins.json"),
-    knownMarketplacesFile: join(claudeConfigDir, "plugins", "known_marketplaces.json"),
-    binDir: join(home, ".local", "bin"),
-    stateDir: join(claudeConfigDir, "anymodel"),
     gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json"),
-    routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
-    routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service"),
-    claudeMemSettingsFile: join(claudeMemDataDir(env, home), "settings.json"),
-    routerSocketFile: join(home, ".config", "systemd", "user", "anymodel-router.socket")
+    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json")
+  };
+}
+
+// src/cli/paths.ts
+function cliPaths(env = process.env) {
+  const router = routerPaths(env);
+  const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join2(router.home, ".claude");
+  return {
+    ...router,
+    claudeConfigDir,
+    settingsFile: join2(claudeConfigDir, "settings.json"),
+    installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
+    knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
+    binDir: join2(router.home, ".local", "bin"),
+    stateDir: join2(claudeConfigDir, "anymodel"),
+    routerCopy: join2(router.home, ".local", "share", "anymodel", "router.js"),
+    routerUnitFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.service"),
+    claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
+    routerSocketFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.socket")
   };
 }
 function claudeMemDataDir(env, home) {
   const dir = env.CLAUDE_MEM_DATA_DIR;
   if (!dir)
-    return join(home, ".claude-mem");
+    return join2(home, ".claude-mem");
   if (dir === "~")
     return home;
-  return dir.startsWith("~/") ? join(home, dir.slice(2)) : dir;
+  return dir.startsWith("~/") ? join2(home, dir.slice(2)) : dir;
 }
 
 // src/project/config.ts
@@ -5912,7 +5926,7 @@ function loadAnymodelConfig(file, pluginVersion = VERSION) {
 
 // src/project/resolve.ts
 import { existsSync as existsSync2, realpathSync, statSync } from "fs";
-import { join as join2 } from "path";
+import { join as join3 } from "path";
 
 // src/project/git-env.ts
 var REPO_SELECTING_GIT_VARS = [
@@ -6014,20 +6028,20 @@ function locateCheckout(cwd, options = {}) {
 }
 function ownHooksOf(checkout) {
   const { root, mainCheckout } = checkout;
-  const own = readOwnHooks(join2(root, ".claude", "anymodel.json"));
+  const own = readOwnHooks(join3(root, ".claude", "anymodel.json"));
   if (own !== null)
     return own;
   if (mainCheckout === null || mainCheckout === root)
     return [];
-  return readOwnHooks(join2(mainCheckout, ".claude", "anymodel.json")) ?? [];
+  return readOwnHooks(join3(mainCheckout, ".claude", "anymodel.json")) ?? [];
 }
 function loadProjectConfig(checkout, pluginVersion) {
   const { root, mainCheckout } = checkout;
-  const own = join2(root, ".claude", "anymodel.json");
+  const own = join3(root, ".claude", "anymodel.json");
   let config = loadAnymodelConfig(own, pluginVersion);
   let configFile = config === null ? null : own;
   if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join2(mainCheckout, ".claude", "anymodel.json");
+    const main = join3(mainCheckout, ".claude", "anymodel.json");
     config = loadAnymodelConfig(main, pluginVersion);
     configFile = config === null ? null : main;
   }
@@ -6144,10 +6158,10 @@ async function runHookEntry(spec) {
 import { createHash } from "crypto";
 import { existsSync as existsSync3, mkdirSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join as join4 } from "path";
+import { join as join5 } from "path";
 
 // src/hooks/git.ts
-import { basename, dirname, join as join3, resolve } from "path";
+import { basename, dirname, join as join4, resolve } from "path";
 
 // src/setup/marketplace-access.ts
 var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
@@ -6752,7 +6766,7 @@ function viewPullRequest(ref, repo, folder, env) {
 }
 function announcedFile(repo, number, env) {
   const key = createHash("sha256").update(repo).digest("hex").slice(0, 16);
-  return join4(env.TMPDIR || tmpdir(), "anymodel-merges", `${key}-${number}`);
+  return join5(env.TMPDIR || tmpdir(), "anymodel-merges", `${key}-${number}`);
 }
 function afterMerge(context) {
   const { project, input, event, env, cwd } = context;
@@ -6793,7 +6807,7 @@ function afterMerge(context) {
     notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
   if (outcome.announce !== null && record !== null) {
     notes.push(tellSessionsNote(outcome.announce, base));
-    mkdirSync(join4(record, ".."), { recursive: true });
+    mkdirSync(join5(record, ".."), { recursive: true });
     writeFileSync(record, "");
   }
   return notes.length === 0 ? SILENT : addContext(event, notes.join(`
