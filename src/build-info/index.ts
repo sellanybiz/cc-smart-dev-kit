@@ -3,6 +3,7 @@ import { PLUGIN_ID } from "./names";
 
 // The fixed names live in ./names (no macro), so a bundle that needs only them, the
 // router, does not change with the version. Everything else imports them from here.
+export { bunTooOld, MIN_BUN } from "./bun";
 export { COMMAND, MARKETPLACE, PLUGIN, PLUGIN_ID } from "./names";
 
 // A Bun macro: it runs when this file is transpiled (by the bundler, or by `bun` running src),

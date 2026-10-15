@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { VERSION } from "../build-info";
+import { oldBunRefusal } from "../cli/bun-check";
 import { runDoctor } from "../cli/doctor";
 import { cliPaths } from "../cli/paths";
 import { runRestore } from "../cli/restore";
@@ -8,6 +9,7 @@ import { runSetup } from "../cli/setup";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
+import { runSearch } from "../search/command";
 
 const HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
 
@@ -36,6 +38,12 @@ Commands:
                      it restarts.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      anymodel gateway --help lists them.
+  search "<query>" [--max <n>] [--json]
+  search --fetch <url> [--json]
+                     Search the web through the gateway (OmniRoute, Ollama's web search):
+                     each result's title, URL and a short snippet. --fetch: one page's
+                     text. The query or URL goes to that provider on the internet. Needs
+                     the gateway set up.
   version            Print the version.
   --help             Print this help.
 
@@ -79,6 +87,7 @@ function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
   return {
     paths,
     bunPath: process.execPath,
+    bunVersion: Bun.version,
     bundle: routerBundle(),
     runner,
     readStdin: () => Bun.stdin.text(),
@@ -90,6 +99,11 @@ function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
+  const refusal = oldBunRefusal(command, Bun.version, process.execPath);
+  if (refusal !== null) {
+    console.error(refusal);
+    return 1;
+  }
   const paths = cliPaths();
 
   switch (command) {
@@ -118,6 +132,7 @@ async function main(argv: string[]): Promise<number> {
         process.env,
         { bundle: routerBundle(), runner, systemd },
         { instructionsSource: instructionsFolder(), cwd: process.cwd() },
+        { path: process.execPath, version: Bun.version },
       );
     case "restore": {
       const unknown = rest.filter((arg) => arg !== "--yes" && arg !== "--now");
@@ -136,6 +151,8 @@ async function main(argv: string[]): Promise<number> {
     }
     case "gateway":
       return runGateway(rest, gatewayContext(paths));
+    case "search":
+      return runSearch(rest, { paths });
     case "version":
     case "--version":
       console.log(`anymodel ${VERSION}`);

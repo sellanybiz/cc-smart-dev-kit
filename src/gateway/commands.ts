@@ -58,6 +58,8 @@ export interface GatewayContext {
   paths: CliPaths;
   /** The bun that runs the router copy: `process.execPath`. */
   bunPath: string;
+  /** Its version: `Bun.version`. `setup` refuses one older than `MIN_BUN`. */
+  bunVersion: string;
   /** The plugin's own `dist/router.js`. */
   bundle: string;
   runner: Runner;
@@ -420,6 +422,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
   const configPath = paths.gatewayConfigFile;
   const install = (overrides: Partial<InstallOptions>): InstallOptions => ({
     bunPath: ctx.bunPath,
+    bunVersion: ctx.bunVersion,
     bundle: ctx.bundle,
     copyPath: paths.routerCopy,
     unitPath: paths.routerUnitFile,

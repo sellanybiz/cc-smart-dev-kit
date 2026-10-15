@@ -1,6 +1,6 @@
 // @bun
 // src/entries/cli.ts
-import { existsSync as existsSync14 } from "fs";
+import { existsSync as existsSync15 } from "fs";
 import { join as join10 } from "path";
 
 // src/build-info/names.ts
@@ -9,9 +9,15 @@ var PLUGIN = "anymodel";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
 var COMMAND = "anymodel";
 
+// src/build-info/bun.ts
+var MIN_BUN = "1.4.3";
+function bunTooOld(version, path) {
+  return Bun.semver.order(version, MIN_BUN) < 0 ? `anymodel needs Bun \u2265 ${MIN_BUN}; this is ${version} (${path}).` : null;
+}
+
 // src/build-info/index.ts
 var info = {
-  version: "0.2.1",
+  version: "0.3.0",
   repo: "sellanybiz/anymodel"
 };
 var VERSION = info.version;
@@ -19,6 +25,24 @@ var MARKETPLACE_SOURCE = info.repo;
 var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
 var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
+
+// src/cli/bun-check.ts
+var RUNS_ON_ANY_BUN = new Set([
+  undefined,
+  "doctor",
+  "restore",
+  "version",
+  "--version",
+  "help",
+  "--help",
+  "-h"
+]);
+function oldBunRefusal(command, version, path) {
+  if (RUNS_ON_ANY_BUN.has(command))
+    return null;
+  const tooOld = bunTooOld(version, path);
+  return tooOld === null ? null : `${COMMAND}: ${tooOld} Upgrade this Bun, then run the command again.`;
+}
 
 // src/cli/doctor.ts
 import { accessSync, constants, existsSync as existsSync13, readFileSync as readFileSync14 } from "fs";
@@ -6380,6 +6404,113 @@ ${good ? "keeping the last good config" : NO_CONFIG_MEANS}`);
   };
 }
 
+// src/gateway/hosts.ts
+function ipv4Parts(host) {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (match === null)
+    return null;
+  const parts = match.slice(1).map(Number);
+  return parts.every((part) => part <= 255) ? parts : null;
+}
+function ipv6Groups(host) {
+  if (!host.startsWith("[") || !host.endsWith("]"))
+    return null;
+  const halves = host.slice(1, -1).split("::");
+  if (halves.length > 2)
+    return null;
+  const groupsOf = (text) => {
+    if (text === "")
+      return [];
+    const parts = text.split(":");
+    if (!parts.every((part) => /^[0-9a-f]{1,4}$/i.test(part)))
+      return null;
+    return parts.map((part) => Number.parseInt(part, 16));
+  };
+  const head = groupsOf(halves[0] ?? "");
+  const tail = groupsOf(halves[1] ?? "");
+  if (head === null || tail === null)
+    return null;
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 1)
+    return null;
+  return [...head, ...Array(halves.length === 1 ? 0 : missing).fill(0), ...tail];
+}
+function mappedIpv4(groups) {
+  if (!groups.slice(0, 5).every((group) => group === 0) || groups[5] !== 65535)
+    return null;
+  const high = groups[6] ?? 0;
+  const low = groups[7] ?? 0;
+  return [high >> 8, high & 255, low >> 8, low & 255];
+}
+function normalHost(hostname) {
+  const lower = hostname.toLowerCase();
+  return lower.endsWith(".") ? lower.slice(0, -1) : lower;
+}
+function ipv4Kind([a = 0, b = 0]) {
+  if (a === 127)
+    return "a loopback address";
+  if (a === 0)
+    return "an unspecified address";
+  if (a === 169 && b === 254)
+    return "a link-local address";
+  if (a === 10 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168) {
+    return "a private address";
+  }
+  return null;
+}
+function isLoopbackHost(hostname) {
+  const host = normalHost(hostname);
+  if (host === "localhost")
+    return true;
+  const v4 = ipv4Parts(host);
+  if (v4 !== null)
+    return v4[0] === 127;
+  const v6 = ipv6Groups(host);
+  if (v6 === null)
+    return false;
+  const mapped = mappedIpv4(v6);
+  if (mapped !== null)
+    return mapped[0] === 127;
+  return v6.slice(0, 7).every((group) => group === 0) && v6[7] === 1;
+}
+function privateHostKind(hostname) {
+  const host = normalHost(hostname);
+  if (host === "localhost" || host.endsWith(".localhost"))
+    return "a loopback name";
+  const v4 = ipv4Parts(host);
+  if (v4 !== null)
+    return ipv4Kind(v4);
+  const v6 = ipv6Groups(host);
+  if (v6 !== null) {
+    const mapped = mappedIpv4(v6);
+    if (mapped !== null)
+      return ipv4Kind(mapped);
+    if (isLoopbackHost(host))
+      return "a loopback address";
+    if (v6.every((group) => group === 0))
+      return "an unspecified address";
+    const first = v6[0] ?? 0;
+    if ((first & 65472) === 65152)
+      return "a link-local address";
+    if ((first & 65024) === 64512)
+      return "a private address";
+    return null;
+  }
+  if (host.startsWith("["))
+    return null;
+  if (!host.includes("."))
+    return "a private host name";
+  if (/\.(local|internal|home\.arpa)$/.test(host))
+    return "a private host name";
+  return null;
+}
+function directIfLoopback(url) {
+  const parsed = URL.parse(url);
+  if (parsed === null || !isLoopbackHost(parsed.hostname))
+    return {};
+  return { proxy: false };
+}
+
 // src/gateway/backends.ts
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -6398,9 +6529,11 @@ function parseModelList(body) {
 }
 async function listModels(baseUrl, apiKey, timeoutMs = 1e4) {
   try {
-    const response = await fetch(`${baseUrl}/v1/models`, {
+    const url = `${baseUrl}/v1/models`;
+    const response = await fetch(url, {
       headers: { authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(timeoutMs)
+      signal: AbortSignal.timeout(timeoutMs),
+      ...directIfLoopback(url)
     });
     if (!response.ok) {
       await response.body?.cancel();
@@ -6771,6 +6904,30 @@ function applyOnce(file, options, owned) {
   return { file, changes, skipped, written, backup };
 }
 
+// src/gateway/plain-text.ts
+var CONTROL = /[\p{Cc}\p{Cf}]/gu;
+var CONTROL_BUT_LINES = /[^\P{Cc}\n\t]|\p{Cf}/gu;
+function plainText(text, options = {}) {
+  return text.replace(options.keepNewlines === true ? CONTROL_BUT_LINES : CONTROL, " ");
+}
+function cutText(text, max) {
+  if (text.length <= max)
+    return text;
+  let end = Math.max(0, max);
+  const last = text.charCodeAt(end - 1);
+  if (end > 0 && last >= 55296 && last <= 56319)
+    end -= 1;
+  return text.slice(0, end);
+}
+function oneLine(text, max, options = {}) {
+  const flat = options.ascii === true ? text.replace(/\s+/g, " ").replace(/[^\x20-\x7e]/g, "?") : plainText(text).replace(/\s+/g, " ");
+  const line = flat.trim();
+  return line.length > max ? `${cutText(line, max)}${options.mark ?? ""}` : line;
+}
+function printableJson(value) {
+  return JSON.stringify(value, null, 2).replace(/[^\P{Cc}\n]|\p{Cf}/gu, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
 // src/gateway/router.ts
 var HEALTH_PATH = "/__anymodel/health";
 var MESSAGES_PATH = "/v1/messages";
@@ -6908,7 +7065,7 @@ function sseScanner() {
   };
 }
 function printable(text, max = 120) {
-  return text.replace(/\s+/g, " ").replace(/[^\x20-\x7e]/g, "?").trim().slice(0, max);
+  return oneLine(text, max, { ascii: true });
 }
 function maskedTail(secret) {
   return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
@@ -6935,6 +7092,9 @@ function maskSecrets(text, known = []) {
   }
   return out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****").replace(/(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi, "$1$2$1$3:$4$1****$1").replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****").replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`).replace(/(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi, (_match, name, separator, value) => `${name}${separator}${maskedTail(value)}`).replace(/[A-Za-z0-9_-]{32,512}/g, (run) => run.includes("__") || UUID.test(run) ? run : maskedTail(run));
 }
+function maskedLine(text, known, max, options = {}) {
+  return oneLine(maskSecrets(text, known), max, options);
+}
 var SNIPPET_MAX = 300;
 var SNIPPET_READ_BYTES = 2048;
 var KEY_CHARACTER = /[A-Za-z0-9_-]/;
@@ -6947,7 +7107,7 @@ function snippetText(bytes, known) {
       end -= 1;
     text = text.slice(0, end);
   }
-  return printable(maskSecrets(text, known), SNIPPET_MAX);
+  return maskedLine(text, known, SNIPPET_MAX, { ascii: true });
 }
 function decompressionFormat(encoding) {
   switch (encoding.trim().toLowerCase()) {
@@ -7172,7 +7332,8 @@ function createRouter(deps) {
       headers: upstream.headers,
       method: upstream.method,
       redirect: "manual",
-      signal: controller.signal
+      signal: controller.signal,
+      ...directIfLoopback(upstream.url)
     });
     try {
       const first = await (timer === null ? pending : Promise.race([pending, timer.done]));
@@ -7689,6 +7850,10 @@ function restartPendingFile(stateDir) {
 }
 var HEALTH_WAIT_MS = 5000;
 async function installRouter(options) {
+  const tooOld = bunTooOld(options.bunVersion, tildify(options.bunPath, options.home));
+  if (tooOld !== null) {
+    throw new Error(`${tooOld} The router is not installed. Upgrade this Bun, then run: ${COMMAND} gateway setup`);
+  }
   const port = await probeRouterPort(options.port, options.probe.fetch);
   if (port.state === "other") {
     throw new Error(`port ${options.port} is used by another program (an older router? stop it first)`);
@@ -8159,6 +8324,7 @@ async function commandSetup(ctx, args) {
   const configPath = paths.gatewayConfigFile;
   const install = (overrides) => ({
     bunPath: ctx.bunPath,
+    bunVersion: ctx.bunVersion,
     bundle: ctx.bundle,
     copyPath: paths.routerCopy,
     unitPath: paths.routerUnitFile,
@@ -9378,9 +9544,21 @@ function checkProjectImports(paths, cwd) {
     text: `${list}, which is missing: it loads nothing. Run: anymodel setup`
   };
 }
-async function runDoctor(paths, env, gateway, local) {
+function checkBun(bun, paths) {
+  const where = tildify(bun.path, paths.home);
+  const tooOld = bunTooOld(bun.version, where);
+  return tooOld === null ? { ok: true, text: `Bun ${bun.version} at ${where} (anymodel needs \u2265 ${MIN_BUN})` } : { ok: false, text: `${tooOld} Upgrade this Bun, then run: ${COMMAND} doctor` };
+}
+async function runDoctor(paths, env, gateway, local, bun) {
   const settings = readSettings2(paths.settingsFile);
+  const runtime = checkBun(bun, paths);
+  const skipped = {
+    ok: true,
+    info: true,
+    text: "gateway: not checked on this Bun (its checks send the backend key)"
+  };
   const checks = [
+    runtime,
     checkPlugin(paths),
     checkInstalledVersion(paths),
     checkLauncher(paths),
@@ -9391,7 +9569,7 @@ async function runDoctor(paths, env, gateway, local) {
     checkUpdatesNotOff(settings, env, paths),
     checkNameClash(settings),
     checkOldPlugin(settings, paths),
-    ...await gatewayChecks({ paths, ...gateway })
+    ...runtime.ok ? await gatewayChecks({ paths, ...gateway }) : [skipped]
   ].filter((check) => check !== null);
   for (const check of checks) {
     console.log(`${check.info ? "\xB7" : check.ok ? "\u2713" : "\u2717"} ${check.text}`);
@@ -9511,6 +9689,337 @@ async function runRestore(paths, options) {
   }, { waitMs: 1e4 });
 }
 
+// src/search/command.ts
+import { existsSync as existsSync14 } from "fs";
+
+// src/search/client.ts
+var REQUEST_TIMEOUT_MS = 30000;
+var ERROR_CHARS = 300;
+function isJsonObject7(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function textOf(value) {
+  return typeof value === "string" ? value : "";
+}
+function numberIn(holder, key) {
+  if (!isJsonObject7(holder))
+    return null;
+  const value = holder[key];
+  return typeof value === "number" ? value : null;
+}
+function waited(ms) {
+  return ms < 1000 ? `${ms} ms` : `${Math.round(ms / 1000)} s`;
+}
+function isTimeout(error) {
+  return error instanceof Error && error.name === "TimeoutError";
+}
+function errorText(text, backend) {
+  return maskedLine(text, [backend.apiKey], ERROR_CHARS, { mark: "\u2026" });
+}
+function reasonOf(text, backend) {
+  let reason = text;
+  try {
+    const body = JSON.parse(text);
+    if (isJsonObject7(body)) {
+      const error = body.error;
+      if (isJsonObject7(error) && typeof error.message === "string")
+        reason = error.message;
+      else if (typeof error === "string")
+        reason = error;
+    }
+  } catch {}
+  return errorText(reason, backend);
+}
+async function post(backend, path, body, timeoutMs) {
+  const url = `${backend.baseUrl}${path}`;
+  const address = shownValue(backend.baseUrl);
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${backend.apiKey}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(body),
+      redirect: "manual",
+      signal: AbortSignal.timeout(timeoutMs),
+      ...directIfLoopback(url)
+    });
+  } catch (error) {
+    if (isTimeout(error)) {
+      return {
+        error: `cannot reach OmniRoute at ${address} (no answer within ${waited(timeoutMs)})`
+      };
+    }
+    return {
+      error: `cannot reach OmniRoute at ${address} (${errorText(messageOf(error), backend)}). Is it running?`
+    };
+  }
+  if (response.type === "opaqueredirect" || response.status >= 300 && response.status < 400) {
+    return {
+      error: `OmniRoute answered a redirect (HTTP ${response.status === 0 ? "3xx" : response.status}); ` + "it is not followed, so the key stays with the address in the gateway config. Check backends.omniroute.baseUrl."
+    };
+  }
+  let text;
+  try {
+    text = await response.text();
+  } catch (error) {
+    return {
+      error: isTimeout(error) ? `OmniRoute at ${address} did not finish answering within ${waited(timeoutMs)}` : `OmniRoute's answer broke off (${errorText(messageOf(error), backend)})`
+    };
+  }
+  if (!response.ok) {
+    return { error: `OmniRoute answered HTTP ${response.status}: ${reasonOf(text, backend)}` };
+  }
+  try {
+    return { raw: JSON.parse(text) };
+  } catch {
+    return { error: `OmniRoute's HTTP ${response.status} answer is not JSON` };
+  }
+}
+function parseSearchAnswer(body) {
+  if (!isJsonObject7(body) || !Array.isArray(body.results))
+    return null;
+  const results = [];
+  for (const entry of body.results) {
+    if (!isJsonObject7(entry) || typeof entry.url !== "string")
+      continue;
+    results.push({ snippet: textOf(entry.snippet), title: textOf(entry.title), url: entry.url });
+  }
+  if (body.results.length > 0 && results.length === 0)
+    return null;
+  return {
+    cached: body.cached === true,
+    costUsd: numberIn(body.usage, "search_cost_usd") ?? 0,
+    provider: textOf(body.provider),
+    results,
+    tookMs: numberIn(body.metrics, "response_time_ms")
+  };
+}
+function parseFetchedPage(body, requested) {
+  if (!isJsonObject7(body) || typeof body.content !== "string")
+    return null;
+  const metadata = body.metadata;
+  const url = textOf(body.url);
+  return {
+    content: body.content,
+    title: isJsonObject7(metadata) ? textOf(metadata.title) : "",
+    url: url === "" ? requested : url
+  };
+}
+async function searchWeb(options) {
+  const sent = await post(options.backend, "/v1/search", { query: options.query, max_results: options.max }, options.timeoutMs ?? REQUEST_TIMEOUT_MS);
+  if ("error" in sent)
+    return sent;
+  const answer = parseSearchAnswer(sent.raw);
+  if (answer === null) {
+    const listed = isJsonObject7(sent.raw) && Array.isArray(sent.raw.results);
+    return {
+      error: listed ? "OmniRoute's results have no url this version can read; they are not a shape this version knows" : "OmniRoute's answer has no results list; it is not a shape this version knows"
+    };
+  }
+  return { answer, raw: sent.raw };
+}
+async function fetchPage(options) {
+  const sent = await post(options.backend, "/v1/web/fetch", { url: options.url, format: "markdown", include_metadata: true }, options.timeoutMs ?? REQUEST_TIMEOUT_MS);
+  if ("error" in sent)
+    return sent;
+  const page = parseFetchedPage(sent.raw, options.url);
+  if (page === null) {
+    return { error: "OmniRoute's answer has no page text; it is not a shape this version knows" };
+  }
+  return { page, raw: sent.raw };
+}
+
+// src/search/format.ts
+var MAX_OUTPUT_CHARS = 2500;
+var SNIPPET_CHARS = 300;
+var CUT_NOTE = "\u2026 (output cut; --json prints the whole answer)";
+function took(ms) {
+  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
+}
+function line(text) {
+  return oneLine(text, Number.POSITIVE_INFINITY);
+}
+function cutOutput(text) {
+  if (text.length <= MAX_OUTPUT_CHARS)
+    return text;
+  const room = MAX_OUTPUT_CHARS - CUT_NOTE.length - 1;
+  const head = cutText(text, room);
+  const lastBreak = head.lastIndexOf(`
+`);
+  const kept = lastBreak > room / 2 ? head.slice(0, lastBreak) : head;
+  return `${kept}
+${CUT_NOTE}`;
+}
+function searchOutput(query, answer) {
+  const provider = line(answer.provider);
+  const facts = [
+    `${answer.results.length} result${answer.results.length === 1 ? "" : "s"}`,
+    provider === "" ? "" : `from ${provider}`,
+    answer.tookMs === null ? "" : `in ${took(answer.tookMs)}`,
+    answer.cached ? "(cached)" : "",
+    answer.costUsd > 0 ? `cost $${answer.costUsd.toFixed(4)}` : ""
+  ].filter((fact) => fact !== "");
+  const lines = [`Search: ${line(query)}`, facts.join(" ")];
+  answer.results.forEach((result, index) => {
+    const url = line(result.url);
+    const title = line(result.title);
+    lines.push("", `${index + 1}. ${title === "" ? url : title}`, `   ${url}`);
+    const snippet = oneLine(result.snippet, SNIPPET_CHARS, { mark: "\u2026" });
+    if (snippet !== "")
+      lines.push(`   ${snippet}`);
+  });
+  return cutOutput(lines.join(`
+`));
+}
+function pageOutput(page) {
+  const head = [`Page: ${line(page.url)}`];
+  const title = line(page.title);
+  if (title !== "")
+    head.push(title);
+  const text = plainText(page.content, { keepNewlines: true }).trim();
+  return cutOutput(`${head.join(`
+`)}
+
+${text}`);
+}
+
+// src/search/command.ts
+var DEFAULT_MAX = 5;
+var MAX_RESULTS = 50;
+var SEARCH_BACKEND = "omniroute";
+var USAGE2 = `Usage: ${COMMAND} search "<query>" [--max <n>] [--json]
+       ${COMMAND} search --fetch <url> [--json]
+
+Searches the web through the gateway's OmniRoute backend (Ollama's web search among its
+providers) and prints each result's title, its URL and a short snippet. The whole output
+is cut to about 2500 characters; --json prints OmniRoute's whole answer instead. The
+query, or the URL, goes to that search or fetch provider on the internet.
+
+  --max <n>       how many results to ask for, 1 to ${MAX_RESULTS} (default ${DEFAULT_MAX}; the provider may cap it)
+  --fetch <url>   fetch one page's text, instead of searching (not a local or private address)
+  --json          the answer as JSON, uncut
+
+Needs the gateway: ${COMMAND} gateway setup --backend-key-stdin omniroute`;
+function httpUrl(text) {
+  const url = URL.parse(text);
+  return url !== null && (url.protocol === "http:" || url.protocol === "https:") ? url : null;
+}
+function refusedFetchUrl(url) {
+  const kind = privateHostKind(url.hostname);
+  if (kind === null)
+    return null;
+  return `--fetch does not read ${url.hostname}: it is ${kind}. The page is read by a fetch ` + "provider on the internet, which cannot reach it, and the address would leave this machine.";
+}
+function parseSearchArgs(args) {
+  const parsed = { fetch: null, json: false, max: DEFAULT_MAX, query: null };
+  const rest = [];
+  let maxGiven = false;
+  for (let index = 0;index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === "--json")
+      parsed.json = true;
+    else if (arg === "--max") {
+      const value = args[index + 1];
+      if (value === undefined || !/^\d+$/.test(value) || Number(value) < 1) {
+        return { error: `--max needs a whole number of results, 1 or more (not "${value ?? ""}")` };
+      }
+      if (Number(value) > MAX_RESULTS) {
+        return { error: `--max asks for at most ${MAX_RESULTS} results (not "${value}")` };
+      }
+      parsed.max = Number(value);
+      maxGiven = true;
+      index += 1;
+    } else if (arg === "--fetch") {
+      const value = args[index + 1];
+      const url = value === undefined ? null : httpUrl(value);
+      if (value === undefined || url === null) {
+        return { error: `--fetch needs an http(s) URL (not "${value ?? ""}")` };
+      }
+      const refused = refusedFetchUrl(url);
+      if (refused !== null)
+        return { error: refused };
+      parsed.fetch = value;
+      index += 1;
+    } else if (arg.startsWith("--"))
+      return { error: `Unknown option: ${arg}` };
+    else
+      rest.push(arg);
+  }
+  if (rest.length > 1)
+    return { error: "give one query, in quotes" };
+  const query = rest[0]?.trim() ?? null;
+  parsed.query = query === "" ? null : query;
+  if (parsed.fetch !== null && parsed.query !== null) {
+    return { error: "give either a query or --fetch <url>, not both" };
+  }
+  if (parsed.fetch !== null && maxGiven) {
+    return { error: "--max counts search results; --fetch reads one page, so leave --max out" };
+  }
+  if (parsed.fetch === null && parsed.query === null) {
+    return { error: "give a query, or --fetch <url>" };
+  }
+  return parsed;
+}
+function searchBackend(configFile) {
+  if (!existsSync14(configFile)) {
+    return {
+      error: `the gateway is not set up: ${configFile} does not exist.
+` + `Search goes through the gateway's OmniRoute backend. Set it up with: ${COMMAND} gateway setup --backend-key-stdin omniroute`
+    };
+  }
+  let config;
+  try {
+    config = loadConfigFile(configFile);
+  } catch (error) {
+    return { error: messageOf(error) };
+  }
+  const backend = Object.hasOwn(config.backends, SEARCH_BACKEND) ? config.backends[SEARCH_BACKEND] : undefined;
+  if (backend === undefined) {
+    const names = Object.keys(config.backends);
+    return {
+      error: `the gateway has no "${SEARCH_BACKEND}" backend: ${configFile} names ${names.length === 0 ? "none" : names.join(", ")}.
+` + `Search goes through OmniRoute. Add it with: ${COMMAND} gateway setup --backend-key-stdin omniroute`
+    };
+  }
+  return { backend: { apiKey: backend.apiKey, baseUrl: backend.baseUrl } };
+}
+function failed(reason, paths) {
+  console.error(reason);
+  console.error(`  config: ${tildify(paths.gatewayConfigFile, paths.home)}`);
+  return 1;
+}
+async function runSearch(args, ctx) {
+  const parsed = parseSearchArgs(args);
+  if ("error" in parsed) {
+    console.error(`${parsed.error}
+
+${USAGE2}`);
+    return 2;
+  }
+  const { paths } = ctx;
+  const found = searchBackend(paths.gatewayConfigFile);
+  if ("error" in found) {
+    console.error(found.error);
+    return 1;
+  }
+  if (parsed.fetch !== null) {
+    const said = await fetchPage({ backend: found.backend, url: parsed.fetch });
+    if ("error" in said)
+      return failed(said.error, paths);
+    console.log(parsed.json ? printableJson(said.raw) : pageOutput(said.page));
+    return 0;
+  }
+  const query = parsed.query ?? "";
+  const said = await searchWeb({ backend: found.backend, max: parsed.max, query });
+  if ("error" in said)
+    return failed(said.error, paths);
+  console.log(parsed.json ? printableJson(said.raw) : searchOutput(query, said.answer));
+  return 0;
+}
+
 // src/entries/cli.ts
 var HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
 
@@ -9539,17 +10048,23 @@ Commands:
                      it restarts.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      anymodel gateway --help lists them.
+  search "<query>" [--max <n>] [--json]
+  search --fetch <url> [--json]
+                     Search the web through the gateway (OmniRoute, Ollama's web search):
+                     each result's title, URL and a short snippet. --fetch: one page's
+                     text. The query or URL goes to that provider on the internet. Needs
+                     the gateway set up.
   version            Print the version.
   --help             Print this help.
 
 Paths follow HOME and CLAUDE_CONFIG_DIR.`;
 function routerBundle() {
   const beside = join10(import.meta.dir, "router.js");
-  return existsSync14(beside) ? beside : join10(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
+  return existsSync15(beside) ? beside : join10(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
 }
 function instructionsFolder() {
   const beside = join10(import.meta.dir, "..", "instructions");
-  return existsSync14(beside) ? beside : join10(import.meta.dir, "..", "..", "plugin", "instructions");
+  return existsSync15(beside) ? beside : join10(import.meta.dir, "..", "..", "plugin", "instructions");
 }
 var runner = (cmd) => {
   const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 30000 });
@@ -9564,6 +10079,7 @@ function gatewayContext(paths) {
   return {
     paths,
     bunPath: process.execPath,
+    bunVersion: Bun.version,
     bundle: routerBundle(),
     runner,
     readStdin: () => Bun.stdin.text(),
@@ -9574,6 +10090,11 @@ function gatewayContext(paths) {
 }
 async function main(argv) {
   const [command, ...rest] = argv;
+  const refusal = oldBunRefusal(command, Bun.version, process.execPath);
+  if (refusal !== null) {
+    console.error(refusal);
+    return 1;
+  }
   const paths = cliPaths();
   switch (command) {
     case "setup": {
@@ -9600,7 +10121,7 @@ ${HELP}`);
       });
     }
     case "doctor":
-      return runDoctor(paths, process.env, { bundle: routerBundle(), runner, systemd }, { instructionsSource: instructionsFolder(), cwd: process.cwd() });
+      return runDoctor(paths, process.env, { bundle: routerBundle(), runner, systemd }, { instructionsSource: instructionsFolder(), cwd: process.cwd() }, { path: process.execPath, version: Bun.version });
     case "restore": {
       const unknown = rest.filter((arg) => arg !== "--yes" && arg !== "--now");
       if (unknown.length > 0) {
@@ -9620,6 +10141,8 @@ ${HELP}`);
     }
     case "gateway":
       return runGateway(rest, gatewayContext(paths));
+    case "search":
+      return runSearch(rest, { paths });
     case "version":
     case "--version":
       console.log(`anymodel ${VERSION}`);

@@ -45,6 +45,37 @@ that runs the copy with the absolute path of `bun`. A new plugin version changes
 that runs until the person runs `gateway setup` again; `doctor` says when the copy is
 older than the installed version.
 
+### The Bun it needs
+
+anymodel needs Bun 1.4.3 or later. The number lives in one place, `MIN_BUN` in
+`src/build-info/bun.ts`, which the router bundle may import (it holds no plugin
+version). `package.json` `engines.bun` and the Bun version of both CI workflows follow
+it, and a test (`src/build-info/bun.test.ts`) fails when one of them differs.
+
+Why 1.4.3: a request to a backend on this machine carries the backend's key, and it must
+never go through a proxy from the environment. `fetch(url, { proxy: false })` says so,
+and Bun honours it from 1.4.3 on (oven-sh/bun#42692). Bun 1.4.2 ignores it and sends the
+request to `HTTP_PROXY` (measured). No workaround is kept for an older Bun: the owner
+chose a required version over one (2026-10-15).
+
+Where it is checked, each time against the Bun running the code (`Bun.version`):
+
+- **The CLI**, at start. On an older Bun every command stops with "anymodel needs
+  Bun ≥ 1.4.3; this is 1.4.2 (<path>). Upgrade this Bun, then run the command again.",
+  except the ones that send no key and help the person out: `doctor`, `restore`,
+  `version` and help (`src/cli/bun-check.ts`).
+- **`doctor`**: its first line is the Bun, ✓ or ✗. On an older Bun it skips the gateway
+  checks, which send the backend key.
+- **`gateway setup`** (`installRouter`): refuses to install the router for an older Bun,
+  before it asks or writes anything.
+- **The router**, at start: it does not listen on an older Bun. Its unit retries every
+  2 s, so an upgrade in place brings it up; a Bun at another path needs `gateway setup`,
+  which writes that path into the unit.
+- **The tests**: the preload (`src/testing/setup.ts`) stops `bun test` on an older Bun
+  with one line. The `package.json` scripts call `"$npm_execpath"` (the Bun running
+  `bun run`), never `bun` from PATH, and tests start subprocesses with
+  `process.execPath`: `<path>/bun run check` runs every step on that one Bun.
+
 ## The AI gateway
 
 An optional local router between Claude Code and the model providers
@@ -78,6 +109,27 @@ An optional local router between Claude Code and the model providers
   for its port to close.
 - The router bundle carries no version (`src/build-info/names.ts`), so a version bump
   alone never changes `router.js` and never makes a machine restart its router.
+
+## Web search
+
+`anymodel search` (`src/search/`) searches the web, or reads one page's text, through the
+same local OmniRoute the gateway uses — same config file, same `omniroute` backend, same
+key (`docs/search.md`):
+
+- The command reads the key through the gateway's own config reader, never a copy of it,
+  and never prints it: an OmniRoute error answer, or a failed request's reason, is
+  masked with the router's own `maskSecrets` before it reaches the terminal. To an
+  OmniRoute on this machine the key never goes through a proxy (`directIfLoopback`, the
+  rule the gateway's own backend calls use; it needs Bun ≥ 1.4.3, § The Bun it needs).
+- Web text is data, not terminal input: every field is printed through
+  `src/gateway/plain-text.ts`, the one home (shared with the router's log) that turns
+  each control character into a space.
+- The plain output is cut (about 2500 characters, 300 a snippet), because Ollama's web
+  search puts a whole page in each result's snippet; `--json` prints the whole answer.
+- The query, and a `--fetch` URL, go to a third party (the search or fetch provider), so
+  `--fetch` refuses a local or private address.
+- It is a command, not a service: no part of it runs in the background, and nothing
+  changes on a machine until a person runs it.
 
 ## How `setup` changes user files
 

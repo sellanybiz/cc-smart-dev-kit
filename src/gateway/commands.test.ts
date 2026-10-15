@@ -466,9 +466,11 @@ describe("router service install", () => {
       yes?: boolean;
       confirm?: ((question: string) => boolean) | null;
       dryRun?: boolean;
+      bunVersion?: string;
     }) =>
       installRouter({
         bunPath: "/opt/bun/bin/bun",
+        bunVersion: options.bunVersion ?? "1.4.3",
         bundle,
         copyPath,
         unitPath,
@@ -544,6 +546,20 @@ describe("router service install", () => {
     expect(readFileSync(m.unitPath, "utf8")).toContain(
       `\nExecStart="/opt/bun/bin/bun" --no-env-file "${m.copyPath}"\n`,
     );
+  });
+
+  it("a bun older than 1.4.3: refused first, with nothing asked, written or run", async () => {
+    const m = machine();
+    for (const dryRun of [true, false]) {
+      await expect(m.install({ bunVersion: "1.4.2", dryRun, yes: true })).rejects.toThrow(
+        "anymodel needs Bun ≥ 1.4.3; this is 1.4.2 (/opt/bun/bin/bun). The router is not installed. Upgrade this Bun, then run: anymodel gateway setup",
+      );
+    }
+    expect(m.events).toEqual([]);
+    expect(m.probed).toEqual([]);
+    expect(existsSync(m.copyPath)).toBe(false);
+    expect(existsSync(m.unitPath)).toBe(false);
+    expect(existsSync(m.marker)).toBe(false);
   });
 
   it("right after restore, the old router still draining: it says it waits, then restarts", async () => {

@@ -1,8 +1,11 @@
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  bunTooOld,
+  COMMAND,
   MARKETPLACE,
   MARKETPLACE_ADD_COMMAND,
+  MIN_BUN,
   PLUGIN,
   PLUGIN_ID,
   PLUGIN_INSTALL_COMMAND,
@@ -493,18 +496,46 @@ export interface DoctorGateway {
   systemd: boolean;
 }
 
+/** The Bun running doctor (through the launcher, the bun baked into it). */
+export interface DoctorBun {
+  /** Its file: `process.execPath`. */
+  path: string;
+  /** `Bun.version`. */
+  version: string;
+}
+
+/** Is the Bun running doctor new enough? `MIN_BUN` says why it matters. */
+function checkBun(bun: DoctorBun, paths: CliPaths): Check {
+  const where = tildify(bun.path, paths.home);
+  const tooOld = bunTooOld(bun.version, where);
+  return tooOld === null
+    ? { ok: true, text: `Bun ${bun.version} at ${where} (anymodel needs ≥ ${MIN_BUN})` }
+    : { ok: false, text: `${tooOld} Upgrade this Bun, then run: ${COMMAND} doctor` };
+}
+
 /**
  * Prints one ✓ or ✗ line per check, and `·` for information (the gateway, when it was never
  * set up, is optional). Exit code 1 when any check fails.
+ *
+ * On a Bun older than `MIN_BUN` the gateway checks are skipped: they send the backend key,
+ * and that Bun would send it through a proxy from the environment.
  */
 export async function runDoctor(
   paths: CliPaths,
   env: Env,
   gateway: DoctorGateway,
   local: DoctorLocal,
+  bun: DoctorBun,
 ): Promise<number> {
   const settings = readSettings(paths.settingsFile);
+  const runtime = checkBun(bun, paths);
+  const skipped: Check = {
+    ok: true,
+    info: true,
+    text: "gateway: not checked on this Bun (its checks send the backend key)",
+  };
   const checks = [
+    runtime,
     checkPlugin(paths),
     checkInstalledVersion(paths),
     checkLauncher(paths),
@@ -515,7 +546,7 @@ export async function runDoctor(
     checkUpdatesNotOff(settings, env, paths),
     checkNameClash(settings),
     checkOldPlugin(settings, paths),
-    ...(await gatewayChecks({ paths, ...gateway })),
+    ...(runtime.ok ? await gatewayChecks({ paths, ...gateway }) : [skipped]),
   ].filter((check): check is Check => check !== null);
   for (const check of checks) {
     console.log(`${check.info ? "·" : check.ok ? "✓" : "✗"} ${check.text}`);
