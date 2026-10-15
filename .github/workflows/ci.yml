@@ -45,6 +45,9 @@ jobs:
       - name: Neutral (no file names the publisher)
         run: bun run check:neutral
 
+      - name: One home per rule (no sentence repeats across the plugin's instructions)
+        run: bun run check:duplicates
+
       - name: Tests
         run: bun test
 

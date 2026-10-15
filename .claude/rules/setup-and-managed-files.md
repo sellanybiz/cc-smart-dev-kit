@@ -7,7 +7,8 @@ paths:
 # Setup And Managed Files
 
 `anymodel setup` changes files that belong to the user: `~/.claude/settings.json`,
-later `~/.claude/CLAUDE.md`, the launcher. A mistake there breaks someone's Claude Code.
+`~/.claude/CLAUDE.md` (one block that imports the instructions' copy), the launcher. A
+mistake there breaks someone's Claude Code.
 So every change to a user's file goes through `src/setup/`, and nothing else writes one.
 
 ## The one way to write
@@ -73,7 +74,9 @@ Each of them:
 
 - **State (`<stateDir>`):** `$CLAUDE_CONFIG_DIR/anymodel/` (by default
   `~/.claude/anymodel/`): `owned.json`, `changed.json`, the `lock`, and `backups/`
-  (mode 0700).
+  (mode 0700). Beside them, the instructions' two state files: `no-instructions` (a stored
+  `setup --no-instructions`, honoured by every later setup and by the copy's refresh) and
+  `instructions-version` (the version that wrote the copy). `restore` removes both.
 - **The lock:** every command that writes runs inside `withLock`. The lock file is made
   with O_EXCL (only one process can create it). It holds the pid, the start time of that
   process, and the host name. It is stale only when that pid is dead, or alive with a

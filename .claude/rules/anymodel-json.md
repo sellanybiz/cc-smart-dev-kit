@@ -32,7 +32,7 @@ a clear error that says what is wrong.
 | `worktrees.base` | string | The branch new worktrees start from. Used from Phase 3. |
 | `worktrees.prefix` | string | The folder-name prefix of a worktree beside the repo. Used from Phase 3. |
 | `worktrees.setup` | string array (argv) | A command run inside a new worktree, e.g. `["bun", "install"]`. Used from Phase 3. |
-| `instructions` | boolean | Turns on the opt-in instructions for this project. Used from Phase 5. |
+| `instructions` | boolean | Turns on the opt-in instructions for this project. Not acted on yet: since Phase 5 a project loads them with its own import line (`README.md`). |
 | `autoMode` | string array | Auto-mode rules `setup` copies into the user's settings. Used from Phase 6. |
 
 The schema is `anymodelConfigSchema` in `src/project/config.ts` (zod). The README shows an

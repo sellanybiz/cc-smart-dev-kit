@@ -1,6 +1,19 @@
 import { existsSync, readFileSync } from "node:fs";
-import { delimiter } from "node:path";
-import { MARKETPLACE, MARKETPLACE_ADD_COMMAND, PLUGIN_INSTALL_COMMAND } from "../build-info";
+import { delimiter, join } from "node:path";
+import {
+  MARKETPLACE,
+  MARKETPLACE_ADD_COMMAND,
+  PLUGIN_INSTALL_COMMAND,
+  VERSION,
+} from "../build-info";
+import {
+  ALWAYS_ON_FILE,
+  type InstructionsPaths,
+  installInstructions,
+  instructionsOptedOut,
+  removeInstructions,
+  setInstructionsOptOut,
+} from "../setup/instructions";
 import { installLauncher } from "../setup/launcher";
 import { withLock } from "../setup/lock";
 import { applyManagedJson, formatKeyPath, type KeyPath } from "../setup/managed-json";
@@ -27,8 +40,35 @@ function marketplaceKnown(settingsFile: string): boolean {
   }
 }
 
+export interface SetupOptions {
+  dryRun: boolean;
+  /**
+   * `false`: `--no-instructions` — take them out, and remember it. `true`: `--instructions` —
+   * forget that choice and install them. `null`: neither — follow the stored choice (on, unless
+   * an earlier `--no-instructions` is stored).
+   */
+  instructions: boolean | null;
+  /** The plugin's `instructions` folder, beside `dist/`. */
+  instructionsSource: string;
+}
+
+/** Where the instructions go, and how the CLAUDE.md block names them. */
+export function instructionsPaths(paths: CliPaths, source: string): InstructionsPaths {
+  const target = join(paths.stateDir, "instructions");
+  return {
+    source,
+    target,
+    // Not a field of cliPaths: that module is in the router bundle, and a changed router
+    // bundle makes every machine restart its router.
+    claudeMd: join(paths.claudeConfigDir, "CLAUDE.md"),
+    stateDir: paths.stateDir,
+    // `~/...` keeps a CLAUDE.md shared between machines (a dotfiles repo) right on each one.
+    importPath: tildify(join(target, ALWAYS_ON_FILE), paths.home),
+  };
+}
+
 /** Every change setup makes, in order. With `dryRun`, it only reports them. */
-function applySetup(paths: CliPaths, dryRun: boolean): string[] {
+function applySetup(paths: CliPaths, options: SetupOptions, dryRun: boolean): string[] {
   const short = (path: string) => tildify(path, paths.home);
   const lines: string[] = [];
   const launcher = installLauncher(paths.binDir, {
@@ -55,10 +95,23 @@ function applySetup(paths: CliPaths, dryRun: boolean): string[] {
   for (const skip of settings.skipped) {
     lines.push(`  ${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
   }
+
+  const where = instructionsPaths(paths, options.instructionsSource);
+  const optOut =
+    options.instructions === null ? instructionsOptedOut(paths.stateDir) : !options.instructions;
+  const choice =
+    options.instructions === null ? null : setInstructionsOptOut(paths.stateDir, optOut, dryRun);
+  const instructions = [
+    ...(choice ? [choice] : []),
+    ...(optOut ? removeInstructions(where, dryRun) : installInstructions(where, dryRun, VERSION)),
+  ];
+  for (const line of instructions) {
+    lines.push(`${line.mark} ${short(line.file)}: ${line.what}`);
+  }
   return lines;
 }
 
-export async function runSetup(paths: CliPaths, options: { dryRun: boolean }): Promise<number> {
+export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<number> {
   const short = (path: string) => tildify(path, paths.home);
 
   if (!marketplaceKnown(paths.settingsFile)) {
@@ -72,14 +125,14 @@ export async function runSetup(paths: CliPaths, options: { dryRun: boolean }): P
 
   // A read-only pass first: a key the user set (autoUpdate: false) throws ForeignKeyError
   // here, before anything is written, the launcher and the state folder included.
-  const planned = applySetup(paths, true);
+  const planned = applySetup(paths, options, true);
 
   if (options.dryRun) {
     // Nothing at all is written: no lock, no state folder.
     console.log(planned.length > 0 ? planned.join("\n") : "Nothing to change.");
     console.log("Dry run: nothing was written.");
   } else {
-    const lines = await withLock(paths.stateDir, () => applySetup(paths, false), {
+    const lines = await withLock(paths.stateDir, () => applySetup(paths, options, false), {
       waitMs: 10_000,
     });
     if (lines.length === 0) {

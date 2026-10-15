@@ -17,8 +17,12 @@ Claude Code copies only `plugin/` into
 - **Nothing in `plugin/` imports from outside it.** Every script in it is a bundle that
   carries all its code (`zod` included), or a small shell script.
 - **`plugin/` holds:** `.claude-plugin/plugin.json` (the manifest), `dist/` (bundles),
-  `bin/` (on the Bash tool's PATH in Claude Code), `hooks/hooks.json`, and later
-  `skills/`, `agents/` and instructions for users.
+  `bin/` (on the Bash tool's PATH in Claude Code), `hooks/hooks.json`, `instructions/`
+  (plain Markdown that `setup` copies), `skills/`, `agents/` and `output-styles/`.
+- **The router bundle never changes by accident.** Code that `src/entries/router.ts`
+  imports (`src/cli/paths.ts`, `src/gateway/`) changes `plugin/dist/router.js`, which makes
+  every machine restart its router. After `bun run build`, check `git diff --stat
+  plugin/dist`: a `router.js` line needs a reason.
 - **Never run anything long-lived from the version folder.** Claude Code deletes an old
   one after an update: 14 days later, the docs say (not proved yet:
   `docs/claude-code-contract.md`). A long-running part runs from a copy in

@@ -1,5 +1,5 @@
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   MARKETPLACE,
   MARKETPLACE_ADD_COMMAND,
@@ -7,10 +7,19 @@ import {
   PLUGIN_ID,
   PLUGIN_INSTALL_COMMAND,
   PLUGIN_UPDATE_COMMAND,
+  VERSION,
 } from "../build-info";
 import { gatewayChecks } from "../gateway/doctor";
 import type { Runner } from "../gateway/service";
 import { findUserInstall } from "../setup/installed-plugins";
+import {
+  copyDifferences,
+  copyInstalled,
+  instructionsBlockBody,
+  instructionsNeedRefresh,
+  instructionsOptedOut,
+  readVersionStamp,
+} from "../setup/instructions";
 import { bakedBunPath, LAUNCHER_NAME, launcherScript } from "../setup/launcher";
 import {
   canReadGitRemote,
@@ -20,6 +29,7 @@ import {
   redactUrl,
 } from "../setup/marketplace-access";
 import { type CliPaths, tildify } from "./paths";
+import { instructionsPaths } from "./setup";
 
 interface Check {
   ok: boolean;
@@ -348,6 +358,134 @@ function checkOldPlugin(settings: Record<string, unknown> | null, paths: CliPath
   };
 }
 
+/**
+ * The instructions: installed, this plugin version's, and imported by the anymodel block. The
+ * copy is compared two ways: its version stamp (`instructionsNeedRefresh`, the same test the
+ * refresh after an update uses) and its files against the plugin's. A stored
+ * `--no-instructions` is information, never a failure.
+ */
+function checkInstructions(paths: CliPaths, source: string): Check {
+  const where = instructionsPaths(paths, source);
+  const copy = `${tildify(where.target, paths.home)}/`;
+  const claudeMd = tildify(where.claudeMd, paths.home);
+  if (instructionsOptedOut(paths.stateDir)) {
+    return {
+      ok: true,
+      info: true,
+      text: "instructions: left out (anymodel setup --no-instructions). To add them: anymodel setup --instructions",
+    };
+  }
+  if (!copyInstalled(where)) {
+    return {
+      ok: false,
+      text: `the instructions are not installed in ${copy}. Run: anymodel setup`,
+    };
+  }
+  const why = copyDifferences(where);
+  if (instructionsNeedRefresh(where, VERSION)) {
+    why.unshift(`written by ${readVersionStamp(paths.stateDir) ?? "an unknown version"}`);
+  }
+  if (why.length > 0) {
+    return {
+      ok: false,
+      text: `the instructions copy ${copy} is not this plugin version's (${why.join("; ")}). Run: anymodel setup`,
+    };
+  }
+  const text = existsSync(where.claudeMd) ? readFileSync(where.claudeMd, "utf8") : "";
+  if (!text.includes(instructionsBlockBody(where.importPath))) {
+    return {
+      ok: false,
+      text: `${claudeMd} does not import the instructions (its anymodel block is missing or changed). Run: anymodel setup`,
+    };
+  }
+  return {
+    ok: true,
+    text: `the instructions copy ${copy} is this version's, and ${claudeMd} imports it`,
+  };
+}
+
+/** The memory files Claude Code loads from a project folder. */
+const PROJECT_MEMORY_FILES = ["CLAUDE.md", join(".claude", "CLAUDE.md"), "CLAUDE.local.md"];
+
+/**
+ * The `@~/…` or `@/…` imports of a CLAUDE.md that point into an anymodel instructions copy
+ * (a path with `/anymodel/instructions/` in it), outside code. Claude Code does not read an
+ * import inside a code span or a fenced block, so neither does this.
+ */
+export function anymodelImports(text: string): string[] {
+  const found: string[] = [];
+  let inFence = false;
+  for (const line of text.split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const outsideCode = line.replace(/`[^`]*`/g, " ");
+    for (const match of outsideCode.matchAll(/(?:^|\s)@((?:~\/|\/)\S+)/g)) {
+      const path = match[1] ?? "";
+      if (path.includes("/anymodel/instructions/")) found.push(path);
+    }
+  }
+  return found;
+}
+
+/**
+ * The project's CLAUDE.md imports an anymodel file that is missing: it loads nothing, with
+ * no error from Claude Code. Claude Code reads the memory files of the current folder and
+ * every folder above it, so doctor looks in the same places. No line when none of them
+ * imports an anymodel file. A missing file is `·` information when the person chose
+ * `--no-instructions` (the project wants them, this machine left them out), else ✗.
+ */
+function checkProjectImports(paths: CliPaths, cwd: string): Check | null {
+  const short = (path: string) => tildify(path, paths.home);
+  const imports: { from: string; path: string; file: string }[] = [];
+  for (let dir = cwd; ; dir = dirname(dir)) {
+    for (const name of PROJECT_MEMORY_FILES) {
+      const from = join(dir, name);
+      // The config folder's own CLAUDE.md is checked by the instructions check.
+      if (from === join(paths.claudeConfigDir, "CLAUDE.md") || !existsSync(from)) continue;
+      let text: string;
+      try {
+        text = readFileSync(from, "utf8");
+      } catch {
+        continue;
+      }
+      for (const path of anymodelImports(text)) {
+        const file = path.startsWith("~/") ? join(paths.home, path.slice(2)) : path;
+        imports.push({ from, path, file });
+      }
+    }
+    if (dirname(dir) === dir) break;
+  }
+  if (imports.length === 0) return null;
+  const missing = imports.filter((entry) => !existsSync(entry.file));
+  if (missing.length === 0) {
+    const names = imports.map((entry) => entry.path).join(", ");
+    return { ok: true, text: `the project's CLAUDE.md imports ${names}, and it is there` };
+  }
+  const list = missing.map((entry) => `${short(entry.from)} imports ${entry.path}`).join("; ");
+  if (instructionsOptedOut(paths.stateDir)) {
+    return {
+      ok: true,
+      info: true,
+      text: `${list}, which is missing: it loads nothing while the instructions are left out here. To add them: anymodel setup --instructions`,
+    };
+  }
+  return {
+    ok: false,
+    text: `${list}, which is missing: it loads nothing. Run: anymodel setup`,
+  };
+}
+
+/** Where doctor finds the plugin's instructions, and the folder it was started in. */
+export interface DoctorLocal {
+  /** The plugin's `instructions` folder, beside `dist/`. */
+  instructionsSource: string;
+  /** The current folder: its CLAUDE.md files (and those above it) are checked for imports. */
+  cwd: string;
+}
+
 /** What the gateway checks need: the plugin's router bundle, a command runner, systemd or not. */
 export interface DoctorGateway {
   bundle: string;
@@ -363,12 +501,15 @@ export async function runDoctor(
   paths: CliPaths,
   env: Env,
   gateway: DoctorGateway,
+  local: DoctorLocal,
 ): Promise<number> {
   const settings = readSettings(paths.settingsFile);
   const checks = [
     checkPlugin(paths),
     checkInstalledVersion(paths),
     checkLauncher(paths),
+    checkInstructions(paths, local.instructionsSource),
+    checkProjectImports(paths, local.cwd),
     await checkMarketplaceAccess(paths, env),
     checkAutoUpdate(settings, paths),
     checkUpdatesNotOff(settings, env, paths),

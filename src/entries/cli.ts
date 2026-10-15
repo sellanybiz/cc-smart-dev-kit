@@ -14,13 +14,21 @@ const HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Cla
 Usage: anymodel <command> [options]
 
 Commands:
-  setup [--dry-run]  Install the launcher in ~/.local/bin and turn on plugin auto-update.
-                     --dry-run prints what would change and writes nothing.
-  doctor             Check the install. Exit code 1 when a check fails.
+  setup [--dry-run] [--no-instructions | --instructions]
+                     Install the launcher in ~/.local/bin, turn on plugin auto-update,
+                     and install the plugin's instructions for Claude: a copy in
+                     ~/.claude/anymodel/instructions/, imported by a block in
+                     ~/.claude/CLAUDE.md. --no-instructions takes them out and keeps
+                     them out: a later plain setup leaves them out too. --instructions
+                     brings them back. restore forgets the choice. --dry-run prints what
+                     would change and writes nothing.
+  doctor             Check the install, and the anymodel files the current project's
+                     CLAUDE.md imports. Exit code 1 when a check fails.
   restore [--yes] [--now]
                      Remove what anymodel added, and keep everything else: its settings
                      keys, its Markdown blocks, and the files it created (the launcher,
-                     the router copy and unit). Each changed file gets a backup first.
+                     the instructions, the router copy and unit). Each changed file gets
+                     a backup first.
                      With the gateway on, it runs in two stages: first everything but the
                      router, which the running sessions still use; after you restart
                      them, again to stop and remove the router (it asks; --yes: without
@@ -42,6 +50,15 @@ function routerBundle(): string {
   return existsSync(beside)
     ? beside
     : join(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
+}
+
+/**
+ * The plugin's instructions folder (plugin/instructions), beside dist/. Run from the source
+ * (src/entries/cli.ts), the repo's plugin/instructions.
+ */
+function instructionsFolder(): string {
+  const beside = join(import.meta.dir, "..", "instructions");
+  return existsSync(beside) ? beside : join(import.meta.dir, "..", "..", "plugin", "instructions");
 }
 
 const runner: Runner = (cmd) => {
@@ -77,19 +94,31 @@ async function main(argv: string[]): Promise<number> {
 
   switch (command) {
     case "setup": {
-      const unknown = rest.filter((arg) => arg !== "--dry-run");
+      const known = ["--dry-run", "--no-instructions", "--instructions"];
+      const unknown = rest.filter((arg) => !known.includes(arg));
       if (unknown.length > 0) {
         console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
         return 2;
       }
-      return runSetup(paths, { dryRun: rest.includes("--dry-run") });
+      const off = rest.includes("--no-instructions");
+      const on = rest.includes("--instructions");
+      if (off && on) {
+        console.error(`Use --no-instructions or --instructions, not both.\n\n${HELP}`);
+        return 2;
+      }
+      return runSetup(paths, {
+        dryRun: rest.includes("--dry-run"),
+        instructions: off ? false : on ? true : null,
+        instructionsSource: instructionsFolder(),
+      });
     }
     case "doctor":
-      return runDoctor(paths, process.env, {
-        bundle: routerBundle(),
-        runner,
-        systemd,
-      });
+      return runDoctor(
+        paths,
+        process.env,
+        { bundle: routerBundle(), runner, systemd },
+        { instructionsSource: instructionsFolder(), cwd: process.cwd() },
+      );
     case "restore": {
       const unknown = rest.filter((arg) => arg !== "--yes" && arg !== "--now");
       if (unknown.length > 0) {

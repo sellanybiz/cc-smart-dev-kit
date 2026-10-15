@@ -11,6 +11,7 @@ import {
   unitActive,
 } from "../gateway/service";
 import { ownedGatewayEnvKeys } from "../gateway/settings";
+import { forgetInstructionsState } from "../setup/instructions";
 import { withLock } from "../setup/lock";
 import { type RestoreResult, restore } from "../setup/restore";
 import { readChanged, realTarget } from "../setup/write";
@@ -82,6 +83,20 @@ function print(results: RestoreResult[], short: (path: string) => string): void 
 }
 
 /**
+ * Restore takes the instructions out, so their two state files go too: the version stamp,
+ * and the stored `setup --no-instructions` (a setup after a restore starts fresh). Prints a
+ * line when a stored choice was forgotten; true when it was.
+ */
+function forgetInstructionChoice(stateDir: string, short: (path: string) => string): boolean {
+  const forgotten = forgetInstructionsState(stateDir);
+  if (forgotten === null) return false;
+  console.log(
+    `- ${short(forgotten)}: removed (your --no-instructions choice; the next setup installs the instructions)`,
+  );
+  return true;
+}
+
+/**
  * Restore also undoes the router service when `gateway setup` installed it. Running Claude
  * sessions read `ANTHROPIC_BASE_URL` at start, so while the gateway's env keys are in the
  * settings they still send every request to the router; stopping it would make each of
@@ -113,6 +128,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       () => {
         const results = restore(paths.stateDir, { except: routerFiles });
         print(results, short);
+        forgetInstructionChoice(paths.stateDir, short);
         console.log(STAGE_ONE_DONE);
         return results.some((result) => result.action === "no-backup") ? 1 : 0;
       },
@@ -186,11 +202,12 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       if (unitTracked) options.runner(["systemctl", "--user", "daemon-reload"]);
       // The router is gone: a setup that did not finish has nothing left to finish.
       rmSync(restartPendingFile(paths.stateDir), { force: true });
+      print(results, short);
+      const forgot = forgetInstructionChoice(paths.stateDir, short);
       if (results.length === 0) {
-        console.log("Nothing to restore: anymodel has nothing in any file.");
+        if (!forgot) console.log("Nothing to restore: anymodel has nothing in any file.");
         return 0;
       }
-      print(results, short);
       return results.some((result) => result.action === "no-backup") ? 1 : 0;
     },
     { waitMs: 10_000 },

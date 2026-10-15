@@ -86,7 +86,7 @@ An optional local router between Claude Code and the model providers
 - in a JSON settings file, single keys (listed in its state, `owned.json`);
 - in a Markdown file, one block between `<!-- anymodel:begin -->` and
   `<!-- anymodel:end -->`;
-- whole files it creates itself (the launcher).
+- whole files it creates itself (the launcher, the copy of the instructions).
 
 The guarantees:
 
@@ -161,8 +161,10 @@ and gives its own details, with `.claude/anymodel.json`:
 }
 ```
 
-The plugin accepts `worktrees`, `instructions` and `autoMode` now and uses them from
-Phase 3, 5 and 6 (`roadmap.md`).
+The plugin accepts `worktrees`, `instructions` and `autoMode` now, and uses `worktrees` from
+Phase 3 and `autoMode` from Phase 6 (`roadmap.md`). The opt-in instructions load through the
+project's own import line (§ Instructions, skills and agents); `instructions` does not load
+them yet.
 
 - A hook finds the project from its input's `cwd`, which follows the session into a
   worktree. A worktree's own `anymodel.json` wins; else the main checkout's is used. A moved
@@ -178,6 +180,76 @@ A general skill reads the project's own additions when they exist. For example,
 `/anymodel:review` also follows the project's `.claude/anymodel/review.md`, and where they disagree,
 the project's text wins. The plugin stays general; each project keeps its own rules in
 its own repo.
+
+## Instructions, skills and agents
+
+The plugin carries general working instructions for Claude, 16 skills and 4 agents, all
+written for any project (`README.md` § Instructions, skills and agents lists them).
+
+**The always-on instructions reach Claude through the user's `CLAUDE.md`.** A plugin cannot
+add text to every session by itself, but Claude Code loads `<config dir>/CLAUDE.md` in every
+session, and an `@path` line there imports another file. So `setup`:
+
+1. copies `plugin/instructions/**.md` to `<stateDir>/instructions/` — each file a whole file
+   anymodel owns, so `restore` removes it; a file a newer plugin no longer ships is taken
+   out of the copy (`src/setup/instructions.ts`);
+2. then writes one managed block into `<config dir>/CLAUDE.md` that imports `core.md`.
+
+Why a copy: the plugin's own folder has the version in its name and goes away after an
+update, so an import cannot point into it. The block names the copy as `~/…` when the config
+folder is under `HOME` (so a `CLAUDE.md` shared between machines through a dotfiles repo
+stays right on each), else by its absolute path. `--no-instructions` takes the block out
+first, then the copy, so nothing ever imports a missing file; a `CLAUDE.md` that setup
+created and that holds nothing else is removed.
+
+**Two state files sit beside the copy** (`src/setup/instructions.ts`), in the state folder:
+
+- `no-instructions`: the person's `--no-instructions`. While it is there, a plain `setup`
+  keeps the instructions out; `--instructions` removes it; `restore` removes it too (a setup
+  after a restore starts fresh). Why stored: a choice that a plain `setup` (run after every
+  update) quietly undid would be no choice.
+- `instructions-version`: the plugin version that last wrote the copy.
+  `instructionsNeedRefresh(paths, version)` is true for an installed copy, not opted out,
+  whose stamp names another version. `doctor` uses it (and compares each file with the
+  plugin's). `refreshInstructionsCopy(paths, version)` brings only the copy up to that
+  version: no block, no other step, no question, nothing when opted out or never installed.
+  It is meant for the **new** version's first run after an update: the update itself runs
+  the old version's code, which does not know the new files. Until something calls it, a
+  plugin update reaches the copy at the next `setup` run.
+
+**A project's import of an opt-in file loads nothing where the copy is missing** (a teammate
+without anymodel, or after `--no-instructions`), and Claude Code says nothing. `doctor` reads
+the memory files Claude Code would load (`CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`
+in the current folder and every folder above) and names an anymodel import whose file is
+missing.
+
+That an import in the user's `CLAUDE.md` reaches the main session and a subagent was proved
+live (`claude-code-contract.md` § Instructions). The built-in `Explore` and `Plan` agents load
+no `CLAUDE.md`, so a brief to them restates what they must respect.
+
+**Opt-in instructions** (`optin/`) are copied too, but only a project's own import line loads
+them: they are for projects that work the way they describe (one session per worktree).
+
+**One home per rule.** Each rule lives in one place: the always-on instructions state it; one
+skill holds its procedure and points back; an agent's file holds only that agent's job. The
+precedence is stated once, at the top of `core.md`: where the project's own `CLAUDE.md`,
+rules or `.claude/anymodel/<skill>.md` differ, the project's text wins.
+`bun run check:duplicates` (`scripts/check-duplicates.ts`, in `bun run check` and CI) fails
+when the same sentence of 12 or more words appears in two files of the plugin's
+instructions, skills, agents or output styles. A deliberate repeat goes in
+`scripts/check-duplicates.allow.json` with its reason. It cannot see the same rule said in
+other words; that stays a review job.
+
+**Agents pin no model and no effort.** The caller passes both on each launch, so an agent
+never runs on a model nobody chose. Plugin agents and skills are named `anymodel:<name>`.
+An agent that works by a skill loads it with `skills:` in its frontmatter (`reviewer`:
+`anymodel:review`; `rules-maintainer`: `anymodel:self-evolve`): the skill's text is in its
+context from the start, and it needs no path to the plugin's version folder (proved live:
+`claude-code-contract.md` § Instructions).
+Agents that need an MCP server name its tools as `mcp__serena__*` or `mcp__playwright__*`:
+the servers are registered for the user (§ MCP servers at user scope), so the names stay.
+
+**The output style** ships but is never switched on: a person picks it with `/output-style`.
 
 ## The safe switch
 
