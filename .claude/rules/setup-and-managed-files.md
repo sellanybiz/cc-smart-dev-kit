@@ -118,10 +118,13 @@ Each of them:
     (`restore(stateDir, { except })`, which leaves them tracked) and says to restart
     every running session, then run `restore` again. Nothing stops, nothing is asked.
   - **stage 2**, with no such key left: it disables and stops the unit first, while its
-    file is still there (`stopRouter`: `disable`, `stop --no-block`, then up to 15 s for
-    the config's port to close; the drain finishes in the background), then restores the
-    files, runs `systemctl --user daemon-reload`, and removes the restart-pending marker.
-    A port still taken after 15 s stops it with an error before any file is restored.
+    file is still there (`stopRouter`: `is-active`, `disable`, `stop --no-block`, then up
+    to 15 s while this router still answers on the config's port; the drain finishes in
+    the background), then restores the files, runs `systemctl --user daemon-reload`, and
+    removes the restart-pending marker. It waits only for the unit's own router: a unit
+    that was not `active` or `deactivating`, or a port that answers but not as this
+    router, gets one note and no wait. This router still answering after 15 s stops it
+    with an error before any file is restored.
     Stopping a running router cuts answers in flight, so it asks first, or needs `--yes`.
   - **`--now`**: both at once, after the warning that every running session fails until
     it restarts; asked, or `--yes`.

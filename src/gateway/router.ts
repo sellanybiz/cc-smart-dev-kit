@@ -43,14 +43,17 @@
  *     (a web page in a browser), and on `/v1/messages` wants JSON and an
  *     `anthropic-version` header: a browser cannot send those without a CORS
  *     preflight, which this server never answers.
- *   - A slot's `claude-…` target gets a body it accepts: Claude Code built it for the slot
- *     name, and Claude Sonnet 5.5 refuses some of its fields (`thinking: disabled`). A
- *     named translation, `requestForClaudeFallback`, changes only those; never `system`
- *     or a message. Never for auto mode's safety check, on any route: it reaches Claude
- *     with only `model` changed.
+ *   - A slot's `claude-…` target, and an alias to a `claude-…` model, gets a body it
+ *     accepts: Claude Code built it for another name, and Claude Sonnet 5.5 refuses some
+ *     of its fields (`thinking: disabled`). A named translation,
+ *     `requestForClaudeFallback`, changes only those; never `system` or a message. Never
+ *     for auto mode's safety check, on any route: it reaches Claude with only `model`
+ *     changed.
  *   - One log line per request; never a header value, key or body. A WARN line when any
- *     target, Anthropic included, answers 4xx / 5xx carries the start of its error answer
- *     (its reason, never the request): 300 characters at most, keys masked.
+ *     target, Anthropic included, answers 4xx / 5xx to a model call carries the start of
+ *     its error answer (its reason, never the request): 300 characters at most, keys and
+ *     email addresses masked. It is written in the background: the client's answer never
+ *     waits for the log.
  *   - On SIGTERM it stops taking requests and exits once the running ones finish.
  *
  * `createRouter` is the handler, with everything it touches passed in, so the tests
@@ -69,6 +72,7 @@ import {
   resolveRequestRoute,
   resolveRoute,
   type Target,
+  withoutContextSuffix,
 } from "./targets";
 
 /** What the router hands to `fetch` for one upstream call. */
@@ -91,6 +95,12 @@ export interface RouterDeps {
    * else, so a config edit can never send the login elsewhere); a test passes a fake.
    */
   anthropicBaseUrl?: string;
+  /**
+   * Handed each piece of work the router does after an answer went to the client (the
+   * error log lines). Each one handles its own errors; in use nothing waits for them. A
+   * test passes a collector, to wait for every log line before it reads them.
+   */
+  background?: (task: Promise<void>) => void;
   /** Named in the error a request for an unknown slot gets. */
   configPath: string;
   fetch: FetchLike;
@@ -279,28 +289,102 @@ function maskedTail(secret: string): string {
   return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
 }
 
+/** A known secret shorter than this is not masked by its text: it would wreck the line. */
+const KNOWN_SECRET_MIN = 4;
+
+/** A UUID (8-4-4-4-12 hex): a request or object id, never a key. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Each known secret as it can stand in an error text: as it is, as a JSON string shows it,
+ * and as a JSON string inside a JSON string shows it. Longest first, so a secret that holds
+ * another is masked whole.
+ */
+function knownSecretForms(known: readonly string[]): { form: string; secret: string }[] {
+  const forms = new Map<string, string>();
+  for (const secret of known) {
+    if (secret.length < KNOWN_SECRET_MIN) continue;
+    const once = JSON.stringify(secret).slice(1, -1);
+    const twice = JSON.stringify(once).slice(1, -1);
+    for (const form of [secret, once, twice]) if (!forms.has(form)) forms.set(form, secret);
+  }
+  return [...forms]
+    .map(([form, secret]) => ({ form, secret }))
+    .sort((a, b) => b.form.length - a.form.length);
+}
+
 /**
  * An upstream's error text with anything that looks like a key masked, before it goes to
- * the log. An upstream may echo a key back ("invalid x-api-key sk-…"). Masked: an
- * `sk-…` key, a `Bearer` / `Basic` credential, the value of a JSON field whose name says
- * key, token, secret, password or authorization, and any unbroken run of 32 or more
- * letters, digits, `_` or `-`. ASCII only, because the log line is (`printable`); so not
- * `maskKey` from settings.ts, whose `••••` the log would turn into `????` (and the router
- * bundle must not import settings.ts: it bakes in the plugin version).
+ * the log. An upstream may echo a key back ("invalid x-api-key sk-…"). Masked, in order:
+ *   - `known`: the exact secrets the router holds (each backend's key, the request's
+ *     `x-api-key` and `authorization`), short ones too, and their JSON-escaped forms;
+ *   - an email address (an account's, in an error about it);
+ *   - the value of a JSON field whose name says key, token, secret, password or
+ *     authorization, its quotes escaped or not;
+ *   - a `Bearer` / `Basic` credential; an `sk-…` key;
+ *   - a value after `key`, `token`, `secret` or `password` and a `:` or `=` (a header, a
+ *     query): `x-api-key: abc123`, `api_key=…`. Without the `:` or `=` the words after it
+ *     are prose ("the key does not exist"), and stay;
+ *   - any unbroken run of 32 or more letters, digits, `_` or `-`, but a run with `__` (an
+ *     MCP tool name, `mcp__plugin_x__tool`) or a UUID: those are names, never keys.
+ * Every quantifier is bounded, so no input makes a pattern backtrack for long; the caller
+ * also cuts the text to 2 KB first (`errorSnippet`). ASCII only, because the log line is
+ * (`printable`); so not `maskKey` from settings.ts, whose `••••` the log would turn into
+ * `????` (and the router bundle must not import settings.ts: it bakes in the plugin
+ * version).
  */
-export function maskSecrets(text: string): string {
-  return text
+export function maskSecrets(text: string, known: readonly string[] = []): string {
+  let out = text;
+  for (const { form, secret } of knownSecretForms(known)) {
+    out = out.split(form).join(maskedTail(secret));
+  }
+  return out
+    .replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****")
     .replace(
-      /"([^"]*(?:key|token|secret|password|authorization)[^"]*)"(\s*):(\s*)"[^"]*"/gi,
-      '"$1"$2:$3"****"',
+      /(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi,
+      "$1$2$1$3:$4$1****$1",
     )
-    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "$1 ****")
-    .replace(/\bsk-[A-Za-z0-9_-]+/g, (key) => `sk-${maskedTail(key)}`)
-    .replace(/[A-Za-z0-9_-]{32,}/g, (token) => maskedTail(token));
+    .replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****")
+    .replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`)
+    .replace(
+      /(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi,
+      (_match, name: string, separator: string, value: string) =>
+        `${name}${separator}${maskedTail(value)}`,
+    )
+    .replace(/[A-Za-z0-9_-]{32,512}/g, (run) =>
+      run.includes("__") || UUID.test(run) ? run : maskedTail(run),
+    );
 }
 
 /** How long an error snippet in the log may be. */
 const SNIPPET_MAX = 300;
+
+/**
+ * How much of an error answer's first chunk is read for the log, in bytes. The chunk can
+ * be half a megabyte (a gzip answer, decompressed); the log shows 300 characters of it.
+ */
+const SNIPPET_READ_BYTES = 2048;
+
+/** A character a key's run is made of (the 32-character rule in `maskSecrets`). */
+const KEY_CHARACTER = /[A-Za-z0-9_-]/;
+
+/**
+ * The start of an error answer as the log shows it: its first `SNIPPET_READ_BYTES`
+ * decoded, keys masked (`maskSecrets`, with the secrets the router knows), made one
+ * printable line of at most `SNIPPET_MAX` characters. When the bytes were cut, the run of
+ * key characters the cut went through is dropped first: a key cut short there could be too
+ * short for the 32-character rule.
+ */
+function snippetText(bytes: Uint8Array, known: readonly string[]): string {
+  const cut = bytes.length > SNIPPET_READ_BYTES;
+  let text = new TextDecoder().decode(cut ? bytes.subarray(0, SNIPPET_READ_BYTES) : bytes);
+  if (cut) {
+    let end = text.length;
+    while (end > 0 && KEY_CHARACTER.test(text.charAt(end - 1))) end -= 1;
+    text = text.slice(0, end);
+  }
+  return printable(maskSecrets(text, known), SNIPPET_MAX);
+}
 
 /**
  * A `content-encoding` the router can read for the log, as `DecompressionStream` names it;
@@ -419,7 +503,9 @@ export function reasoningOffForBackend(
  * (`any` / `tool`, on `count_tokens` too) and a non-default `temperature` / `top_p` /
  * `top_k`. They differ on `thinking: {type: "disabled"}`: Sonnet 5.5 wants
  * `{type: "between_tools"}` instead (accepted at effort `high` or below, with no other
- * field in `thinking`); Opus 5.5 always thinks, so the field is left out.
+ * field in `thinking`); Opus 5.5 always thinks, so the field is left out, and with no
+ * effort named the effort becomes `low` (the guide's own before / after for "disabled").
+ * Looked up without the `[1m]` suffix.
  */
 const CLAUDE_TARGET_RULES: Record<string, { thinkingOff: "between_tools" | "left out" }> = {
   "claude-opus-5-5": { thinkingOff: "left out" },
@@ -441,7 +527,8 @@ const ABOVE_HIGH = new Set(["max", "xhigh"]);
  * field gets the nearest value the target accepts:
  *   - `thinking: {type: "disabled"}` → `{type: "between_tools"}` (Sonnet 5.5; at effort
  *     `xhigh` / `max` the effort becomes `high`, the highest it takes with thinking off),
- *     or no `thinking` field (Opus 5.5: thinking is always on);
+ *     or no `thinking` field (Opus 5.5: thinking is always on), and, with no effort
+ *     named, `output_config.effort: "low"`, the nearest to no thinking;
  *   - `thinking: {type: "enabled", budget_tokens}` → `{type: "adaptive"}`, its `display`
  *     kept;
  *   - `tool_choice` `any` or `tool` → `{type: "auto"}`, its `disable_parallel_tool_use`
@@ -456,7 +543,9 @@ export function requestForClaudeFallback(
   body: Record<string, unknown>,
   model: string,
 ): { body: Record<string, unknown>; changes: string[] } {
-  const rules = Object.hasOwn(CLAUDE_TARGET_RULES, model) ? CLAUDE_TARGET_RULES[model] : undefined;
+  // A target may carry the `[1m]` context suffix; its rules are the model's.
+  const id = withoutContextSuffix(model);
+  const rules = Object.hasOwn(CLAUDE_TARGET_RULES, id) ? CLAUDE_TARGET_RULES[id] : undefined;
   if (rules === undefined) return { body, changes: [] };
   const out: Record<string, unknown> = { ...body };
   const changes: string[] = [];
@@ -465,6 +554,13 @@ export function requestForClaudeFallback(
     if (rules.thinkingOff === "left out") {
       delete out.thinking;
       changes.push("thinking disabled -> left out (always on)");
+      // Thinking cannot be off; effort is the one control of its depth. With none named,
+      // `low` is the nearest to "off" (the Opus 5.5 migration guide's own before/after).
+      const outputConfig = isJsonObject(body.output_config) ? body.output_config : undefined;
+      if (outputConfig?.effort === undefined) {
+        out.output_config = { ...outputConfig, effort: "low" };
+        changes.push("effort low (nearest to thinking off)");
+      }
     } else {
       out.thinking = { type: "between_tools" };
       changes.push("thinking disabled -> between_tools");
@@ -585,10 +681,11 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    * ("Input exceeds context window …", Anthropic's "… is not supported for this model")
    * is otherwise only in that upstream's log, or nowhere. One chunk, read within a second
    * (decompressed first when it is gzip, deflate, br or zstd); the rest is cancelled.
-   * At most `SNIPPET_MAX` characters, anything like a key masked (`maskSecrets`). Never
-   * request content. Pass a `clone()` when the client still needs the body.
+   * Its first 2 KB, anything like a key masked (`snippetText`, with the `known` secrets),
+   * at most `SNIPPET_MAX` characters. Never request content. Pass a `clone()` when the
+   * client still needs the body.
    */
-  async function errorSnippet(response: UpstreamBody): Promise<string> {
+  async function errorSnippet(response: UpstreamBody, known: readonly string[]): Promise<string> {
     const encoding = response.headers.get("content-encoding");
     const compressed = encoding !== null && encoding.trim().toLowerCase() !== "identity";
     const format = compressed ? decompressionFormat(encoding) : null;
@@ -602,22 +699,61 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     const body = format === null ? raw : raw.pipeThrough(new DecompressionStream(format));
     const reader = body.getReader();
     const timer = deadline(1000);
+    let readFailed = false;
     try {
       const step = await Promise.race([reader.read(), timer.done]);
       if (step === "timeout") return "(no body within 1 s)";
       if (step.done) return "(empty body)";
-      return printable(maskSecrets(new TextDecoder().decode(step.value)), SNIPPET_MAX);
+      return snippetText(step.value, known);
     } catch (error) {
+      readFailed = true;
       return `(${format === null ? "" : `${printable(encoding ?? "", 40)} `}body unreadable: ${messageOf(error)})`;
     } finally {
       timer.clear();
       // Not awaited: on a `clone()` the cancel settles only once the client's copy is
       // read too, which happens after this returns. The rest of this copy is dropped
-      // at once either way.
+      // at once either way. After a failed read the stream is broken and its cancel
+      // fails too: the WARN line above already says why, once is enough.
       reader.cancel().catch((error: unknown) => {
-        deps.log(`WARN could not cancel an upstream error body: ${messageOf(error)}`);
+        if (!readFailed) {
+          deps.log(`WARN could not cancel an upstream error body: ${messageOf(error)}`);
+        }
       });
     }
+  }
+
+  /**
+   * Logs `prefix — <the start of the error answer>` in the background: reading the answer
+   * can take up to a second, and the client's answer must never wait for the log. Pass a
+   * `clone()` when the client still needs the body.
+   */
+  function logErrorAnswer(response: UpstreamBody, known: readonly string[], prefix: string): void {
+    const task = errorSnippet(response, known).then(
+      (snippet) => {
+        deps.log(`${prefix} — ${snippet}`);
+      },
+      (error: unknown) => {
+        deps.log(`${prefix} — (body unreadable: ${messageOf(error)})`);
+      },
+    );
+    deps.background?.(task);
+  }
+
+  /**
+   * The secrets the router knows exactly, masked by their text in any error answer it
+   * logs: every backend's key, and the request's `x-api-key` and `authorization` (the
+   * whole value, and the credential after its scheme).
+   */
+  function knownSecrets(req: Request, config: GatewayConfig): string[] {
+    const known = Object.values(config.backends).map((backend) => backend.apiKey);
+    for (const name of ["x-api-key", "authorization"]) {
+      const value = req.headers.get(name);
+      if (value === null) continue;
+      known.push(value);
+      const space = value.indexOf(" ");
+      if (space !== -1) known.push(value.slice(space + 1).trim());
+    }
+    return known;
   }
 
   /**
@@ -755,6 +891,29 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     };
   }
 
+  /**
+   * A body Claude Code built for another name (a slot, an alias), for the Claude model
+   * `model`: only the fields that model refuses changed (`requestForClaudeFallback`), each
+   * kind of change logged once. The spread keeps every other field, and its order. Never
+   * for auto mode's safety check (`guard`): it stays exactly as Claude Code ships it.
+   */
+  function fitForClaude(
+    body: Record<string, unknown>,
+    model: string,
+    guard: boolean,
+  ): Record<string, unknown> {
+    if (guard) return body;
+    const fitted = requestForClaudeFallback(body, model);
+    const text = `${model}: ${fitted.changes.join(", ")}`;
+    if (fitted.changes.length > 0 && !translationsLogged.has(text)) {
+      translationsLogged.add(text);
+      deps.log(
+        `translated for ${printable(text, 200)} (requestForClaudeFallback; logged once per kind)`,
+      );
+    }
+    return fitted.body;
+  }
+
   /** The upstream call for one target, or why there is none. `guard`: the safety check. */
   function targetUpstream(
     req: Request,
@@ -765,18 +924,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     guard: boolean,
   ): { error: string } | { upstream: Upstream } {
     if (target.kind === "anthropic") {
-      // `model`, and only the fields this target refuses (`requestForClaudeFallback`); the
-      // spread keeps every other field, and its order. Never for auto mode's safety
-      // check: it stays exactly as Claude Code ships it, only `model` changes.
-      const fitted = guard ? { body, changes: [] } : requestForClaudeFallback(body, target.model);
-      const text = `${target.model}: ${fitted.changes.join(", ")}`;
-      if (fitted.changes.length > 0 && !translationsLogged.has(text)) {
-        translationsLogged.add(text);
-        deps.log(
-          `translated for ${printable(text, 200)} (requestForClaudeFallback; logged once per kind)`,
-        );
-      }
-      const bytes = encoder.encode(JSON.stringify({ ...fitted.body, model: target.model }));
+      const bytes = encoder.encode(
+        JSON.stringify({ ...fitForClaude(body, target.model, guard), model: target.model }),
+      );
       return { upstream: anthropicUpstream(req, url, config, bytes) };
     }
     const backend = Object.hasOwn(config.backends, target.backend)
@@ -910,8 +1060,11 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       if (decision === "stay" || last) {
         if (target.kind === "backend" && status >= 300 && status <= 399) {
           // Claude Code could follow the `Location` with the person's own login.
-          const snippet = await errorSnippet(result.response);
-          deps.log(`WARN ${label} answered a redirect (${status}); refused — ${snippet}`);
+          logErrorAnswer(
+            result.response,
+            knownSecrets(req, config),
+            `WARN ${label} answered a redirect (${status}); refused`,
+          );
           return {
             fallbacks,
             response: anthropicError(
@@ -925,15 +1078,22 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         }
         if (status >= 400) {
           // Any target, Anthropic too: its reason is the only trace of why the slot
-          // failed. Read from a copy: Claude Code still gets the whole answer.
-          const snippet = await errorSnippet(result.response.clone());
-          deps.log(`WARN ${label} answered ${status}; returned as it is — ${snippet}`);
+          // failed. Read from a copy: Claude Code still gets the whole answer, at once.
+          logErrorAnswer(
+            result.response.clone(),
+            knownSecrets(req, config),
+            `WARN ${label} answered ${status}; returned as it is`,
+          );
         }
         return { fallbacks, response: relay(result.response, target), skipped, target: label };
       }
-      // Reading the snippet also cancels the rest of this discarded answer.
-      const snippet = await errorSnippet(result.response);
-      deps.log(`WARN ${label} answered ${status}; trying the next target — ${snippet}`);
+      // Reading the snippet also cancels the rest of this discarded answer; the next
+      // target is asked meanwhile.
+      logErrorAnswer(
+        result.response,
+        knownSecrets(req, config),
+        `WARN ${label} answered ${status}; trying the next target`,
+      );
       failures.push(`${label}: HTTP ${status}`);
       fallbacks += 1;
     }
@@ -982,9 +1142,14 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
 
     const direct = async (body = bytes): Promise<Outcome> => {
       const result = await send(req, anthropicUpstream(req, url, config, body), null);
-      if ("response" in result && result.response.status >= 400) {
-        const snippet = await errorSnippet(result.response.clone());
-        deps.log(`WARN anthropic answered ${result.response.status} — ${snippet}`);
+      // Only a model's answer: another path (`/v1/models`, a file, an account page) is
+      // passed on as it is, and its errors are not the router's to log.
+      if (isMessages && "response" in result && result.response.status >= 400) {
+        logErrorAnswer(
+          result.response.clone(),
+          knownSecrets(req, config),
+          `WARN anthropic answered ${result.response.status}`,
+        );
       }
       const response =
         "response" in result
@@ -1027,8 +1192,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           `alias ${printable(alias.from)} → ${printable(alias.to)} (from the config's aliases; logged once per name)`,
         );
       }
-      // Only `model` changes; the spread keeps every other field, and its order.
+      // `model` changes; the spread keeps every other field, and its order. An alias to a
+      // `claude-…` target goes straight to Anthropic with a body Claude Code built for the
+      // old name, so it gets what a slot's Claude target gets: only the fields that model
+      // refuses translated (`fitForClaude`), never for the safety check.
       body = { ...parsed, model: alias.to };
+      if (alias.to.startsWith("claude-")) body = fitForClaude(body, alias.to, guard);
       bytes = encoder.encode(JSON.stringify(body));
     }
     // Its newer form carries the sonnet slot's name; the log must still tell it apart.

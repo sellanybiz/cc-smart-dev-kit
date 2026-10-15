@@ -149,7 +149,8 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
     async () => {
       if (unitTracked) {
         // The port the router listens on: the config's. An unusable config leaves it
-        // unknown; the stop is sent all the same, with no port to wait for.
+        // unknown; the stop is sent all the same, with no port to wait for. (Its health
+        // answer names its port too, but it can only be asked on a port already known.)
         let port: null | number;
         try {
           port = configuredPort(paths.gatewayConfigFile);
@@ -157,12 +158,29 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
           console.log(`  cannot read the router's port (${messageOf(error)}); not waiting for it`);
           port = null;
         }
-        await stopRouter(options.runner, port, options.probe);
-        console.log(
-          port === null
-            ? `- ${UNIT_NAME}: disabled and stopping`
-            : `- ${UNIT_NAME}: disabled and stopped (port ${port} closed; answers in flight finish in the background)`,
-        );
+        const stopped = await stopRouter(options.runner, port, options.probe);
+        switch (stopped.kind) {
+          case "closed":
+            console.log(
+              `- ${UNIT_NAME}: disabled and stopped (port ${port} closed; answers in flight finish in the background)`,
+            );
+            break;
+          case "no-port":
+            console.log(`- ${UNIT_NAME}: disabled and stopping`);
+            break;
+          case "not-running":
+            console.log(
+              `  ${UNIT_NAME} was not running (systemctl --user is-active: ${stopped.state}); not waiting for port ${port}`,
+            );
+            console.log(`- ${UNIT_NAME}: disabled and stopped`);
+            break;
+          case "other":
+            console.log(
+              `  port ${port} answers, but not as this router (${stopped.detail}); not waiting for it`,
+            );
+            console.log(`- ${UNIT_NAME}: disabled and stopping`);
+            break;
+        }
       }
       const results = restore(paths.stateDir);
       if (unitTracked) options.runner(["systemctl", "--user", "daemon-reload"]);

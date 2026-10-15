@@ -124,6 +124,9 @@ A config may map old model names to new ones:
   the request as it came, so a check sent under an old name is still the check: with the
   judge off it stays on Claude even when the alias points at a cheap backend (§ The judge
   slot). It logs each alias once per name.
+- An alias to a `claude-…` model goes to Anthropic with the body Claude Code built for
+  the old name, so it gets the same translation as a slot's Claude target (§ What a
+  Claude target sees); the safety check under it changes only `model`.
 - An alias names a configured slot, or a target whose backend is configured. **An alias to
   an alias is an error at load**, so there are no chains and no loops.
 - An alias cannot have a slot's name, a `claude-…` name, or `[1m]` on it.
@@ -153,39 +156,65 @@ A request moves to the next target **only before any answer reaches Claude Code*
   is 404, and Claude Code estimates instead.
 - Errors the router makes use Anthropic's error shape. A cheap backend's `retry-after` is
   rounded to whole seconds.
-- **The log names the reason.** When any target answers 4xx or 5xx (Anthropic too, and a
-  `claude-…` request sent straight to Anthropic), a `WARN` line carries the start of its
-  error answer: one chunk, decompressed when it is gzip, deflate, br or zstd, at most 300
-  characters, anything like a key masked (`maskSecrets`: `sk-…`, `Bearer …`, a JSON
-  field named like a key or token, any run of 32 or more letters and digits). The answer
-  still reaches Claude Code whole.
+- **The log names the reason.** When any target answers 4xx or 5xx to a model call
+  (`/v1/messages` or `count_tokens`; Anthropic too, and a `claude-…` request sent straight
+  to Anthropic), a `WARN` line carries the start of its error answer: one chunk,
+  decompressed when it is gzip, deflate, br or zstd, its first 2 KB read, at most 300
+  characters shown. Masked first (`maskSecrets`): the exact keys the router holds (every
+  backend's key, the request's `x-api-key` and `authorization`, short ones too, also
+  JSON-escaped), an email address, a JSON field named like a key, token, secret, password
+  or authorization, `Bearer …` / `Basic …`, `sk-…`, a value after `key`, `token`,
+  `secret` or `password` and a `:` or `=`, and any run of 32 or more letters, digits, `_`
+  or `-`, except a run with `__` (an MCP tool name) or a UUID. A masked value of 12 or
+  more characters keeps its last four. The line is written in the background, so the
+  answer reaches Claude Code whole and at once; it can come after the request's own log
+  line. A failed read gives one `WARN` line, not two.
 
 ## What a Claude target sees
 
-A slot's `claude-…` target (usually its last, the fallback) gets the person's own login,
-every header as sent, and the body Claude Code built **for the slot name**. Claude Code
-knows nothing of the model behind `anymodel-worker`, so that body can carry fields the
-Claude model refuses with a 400. One named translation, `requestForClaudeFallback`,
-changes only those fields, to the nearest value the target accepts, and never `system`,
-a message or a tool. The rules come from Anthropic's migration guides
+A slot's `claude-…` target (usually its last, the fallback), and an alias to a `claude-…`
+model (§ Aliases), gets the person's own login, every header as sent, and the body Claude
+Code built **for another name**: the slot's, or the old name's. Claude Code knows nothing
+of the model behind `anymodel-worker`, so that body can carry fields the Claude model
+refuses with a 400. One named translation, `requestForClaudeFallback`, changes only those
+fields, to the nearest value the target accepts, and never `system`, a message or a
+tool. The rules come from Anthropic's migration guides
 (platform.claude.com/docs/en/models/sonnet-5-5/migration-guide and
-…/opus-5-5/migration-guide, read 2026-10-15):
+…/opus-5-5/migration-guide, read 2026-10-15). A target written with `[1m]` gets its
+model's rules.
 
 | Field as sent | `claude-sonnet-5-5` gets | `claude-opus-5-5` gets |
 |---|---|---|
-| `thinking: {type: "disabled"}` | `{type: "between_tools"}` (its "thinking off"); an effort of `xhigh` or `max` becomes `high`, the highest it takes with thinking off | no `thinking` field (it always thinks) |
+| `thinking: {type: "disabled"}` | `{type: "between_tools"}` (its "thinking off"); an effort of `xhigh` or `max` becomes `high`, the highest it takes with thinking off | no `thinking` field (it always thinks); with no effort named, `output_config.effort: "low"`, the nearest to no thinking (the guide's own before / after); a named effort is kept |
 | `thinking: {type: "enabled", budget_tokens}` | `{type: "adaptive"}`, `display` kept | the same |
 | `tool_choice` `any` or `tool` | `{type: "auto"}`, `disable_parallel_tool_use` kept | the same |
 | `temperature` other than 1, any `top_p`, any `top_k` | left out (the default) | the same |
 
-Any other `claude-…` target gets the body with only `model` changed: add its row when
-it needs one. The router logs each kind of translation once (`translated for …`). Two
-requests are never translated:
+A forced `tool_choice` that becomes `auto` lets the model answer without calling the
+tool: the request then gets a text answer where Claude Code wanted a tool call.
 
-- **Auto mode's safety check**, on every route it can take (`/v1/messages` and
-  `count_tokens`): auto mode stays exactly as Claude Code ships it, so a check reaches its
-  Claude target with only `model` changed, every other byte as sent. Its newer form
-  carries no field the table would change, and Sonnet 5.5 took it (200).
+Any other `claude-…` target gets the body with only `model` changed: add its row when
+it needs one. The router logs each kind of translation once (`translated for …`).
+
+**Not translated, because it would mean changing a message**, so it can still give a 400
+on a Claude target:
+
+- an assistant **prefill** (the conversation ending on an assistant turn), which a newer
+  Claude model may refuse;
+- **thinking blocks a cheap model wrote** earlier in the same conversation, whose
+  signature a Claude model cannot check.
+
+The `WARN` line names Anthropic's reason when one of them is the cause.
+
+Two requests are never translated **for a Claude target**:
+
+- **Auto mode's safety check**, on every route it can take to Claude (`/v1/messages` and
+  `count_tokens`, a slot's Claude target or an alias to a `claude-…` model): auto mode
+  stays exactly as Claude Code ships it, so a check reaches its Claude target with only
+  `model` changed, every other byte as sent. Its newer form carries no field the table
+  would change, and Sonnet 5.5 took it (200). On the opt-in judge route to a cheap
+  backend, the check gets that backend's named translations (`reasoningOffForBackend`,
+  `toolSearchForBackend`, § What a cheap backend sees), like every request to it.
 - A `claude-…` model that Claude Code sent itself: Claude Code built that body for that
   model, and it goes byte for byte.
 
@@ -264,7 +293,10 @@ some time after an update, even under a running process. So `gateway setup`:
    `~/.local/share/anymodel/router.js` and writes the unit, both through `src/setup/`
    (backup, record for `restore`, atomic write);
 6. runs `systemctl --user daemon-reload`, `enable`, and `restart` (which starts it when it
-   was stopped), then waits up to 5 s for the health page. It answers: the marker goes.
+   was stopped). Right after `restore`, the old router may still drain its answers
+   (`is-active` says `deactivating`): `restart` then waits for that, so setup first says
+   "waiting for the old router to finish its answers (up to 120 s)". Then it waits up to
+   5 s for the health page. It answers: the marker goes.
    It does not: setup fails with the unit's `is-active` state and the hint
    `journalctl --user -u anymodel-router -n 30`, and the marker stays, so `doctor` shows
    ✗ "a gateway setup did not finish" and the next `gateway setup` restarts again, even
@@ -287,15 +319,20 @@ that is repeated, for removed keys too, the two stages stay.)
 1. **Stage 1** (anymodel's gateway env keys are in `settings.json`): everything is
    restored but the router's copy and unit, the env keys included; the router keeps
    running. It says: restart every running Claude session, then run `restore` again.
-2. **Stage 2** (no such key left): it disables the unit and stops it with
-   `systemctl --user stop --no-block` (asking first when it runs; `--yes` skips the
-   question), then asks the router's port (the config's) until a connection is refused,
-   for up to 15 s. The router closes its port at once on SIGTERM and finishes its answers
-   in flight in the background, so restore does not wait the up to 120 s of that drain,
-   while every new request already fails. A port still taken after 15 s stops restore
-   with an error, nothing else restored. Then it removes the copy and the unit, reloads
-   systemd, and clears the restart-pending marker. With an unusable `gateway.json` the
-   port is unknown: the stop is sent, and nothing is waited for.
+2. **Stage 2** (no such key left): it asks the unit's state (`systemctl --user
+   is-active`), disables the unit and stops it with `systemctl --user stop --no-block`
+   (asking first when it runs; `--yes` skips the question), then asks the router's port
+   (the config's) while this router answers there, for up to 15 s. The router closes its
+   port at once on SIGTERM and finishes its answers in flight in the background, so
+   restore does not wait the up to 120 s of that drain, while every new request already
+   fails. It waits only for the unit's own router: when the unit was not `active` or
+   `deactivating` (a crash loop because another program holds the port, say), or the
+   port answers but not as this router (a `404`, another program), it prints one note
+   and goes on. This router still answering after 15 s stops restore with an error,
+   nothing else restored. Then it removes the copy and the unit, reloads systemd, and
+   clears the restart-pending marker. With an unusable `gateway.json` the port is
+   unknown: the stop is sent, and nothing is waited for. (The health answer names the
+   router's port too, but it can only be asked on a port already known.)
 
 `restore --now` does both at once, after the warning that every running Claude session
 fails until it restarts (asked, or `--yes`). Restore leaves `gateway.json`, which holds
@@ -364,7 +401,7 @@ Start with `anymodel gateway status`, then `anymodel doctor`.
 |---|---|---|
 | Every Claude request fails | `gateway status`; `systemctl --user status anymodel-router`; `journalctl --user -u anymodel-router` | Restart the unit. Still broken: `gateway off`, restart the sessions |
 | Subagents are slow or answer from Claude | the log's `fallbacks=` and `skipped=`; the health page's `cooling` | the backend is down or busy; wait out the cooldown |
-| A slot request ends `→ claude-… 400` | the `WARN claude-… answered 400` line just before it: Anthropic's reason | a field the Claude target refuses: add it to `requestForClaudeFallback`'s table (with a test and a contract row) |
+| A slot request ends `→ claude-… 400` | the `WARN claude-… answered 400` line next to it (written just after it): Anthropic's reason | a field outside `messages`, `system` and `tools` that the Claude target refuses: add it to `requestForClaudeFallback`'s table (with a test and a contract row). A reason inside the messages (a prefill, a cheap model's thinking blocks) is not translated: § What a Claude target sees |
 | `403 … accepts requests from this machine only` | the caller sends `Origin` or a foreign `Host` | use `http://127.0.0.1:<port>` from a local program |
 | `no target for anymodel-… answered` | the error lists each target's failure | fix the first reason (key, model id, backend down) |
 | `"anymodel-…" is not a slot` | `gateway status` | `gateway slot`, or `gateway setup` |

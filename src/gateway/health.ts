@@ -99,21 +99,25 @@ export async function probeRouterPort(
 }
 
 /**
- * Waits until nothing listens on `port` (a connection is refused), for up to `waitMs` by
- * the probe's clock. True once it is free; false when something still held it at the end.
- * A stopping router closes its port at once and drains the answers in flight after that,
- * so a free port means it takes no new request.
+ * Waits while this router still answers on `port`, for up to `waitMs` by the probe's
+ * clock. How it ends:
+ *   - `free`: nothing listens any more (a connection is refused). A stopping router closes
+ *     its port at once and drains the answers in flight after that, so a free port means
+ *     it takes no new request;
+ *   - `other`: something that is not this router answers there (another program, or no
+ *     answer in time): nothing of ours to wait for, so it stops asking;
+ *   - `held`: this router still answered when the time ran out.
  */
-export async function waitForPortFree(
+export async function waitWhileRouterAnswers(
   port: number,
   probe: HealthProbe,
   waitMs: number,
-): Promise<boolean> {
+): Promise<{ state: "free" } | { detail: string; state: "other" } | { state: "held" }> {
   const deadline = probe.now() + waitMs;
   for (;;) {
     const result = await probeRouterPort(port, probe.fetch, 1_000);
-    if (result.state === "free") return true;
-    if (probe.now() >= deadline) return false;
+    if (result.state !== "ours") return result;
+    if (probe.now() >= deadline) return { state: "held" };
     await probe.sleep(200);
   }
 }
