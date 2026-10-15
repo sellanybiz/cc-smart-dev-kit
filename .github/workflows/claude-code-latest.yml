@@ -1,0 +1,151 @@
+name: Claude Code latest
+
+# The weekly check against the newest Claude Code on npm. It opens one issue when the
+# newest version is not the tested one, or when a check fails, and keeps that issue up to
+# date on every later run. The tested version lives in .claude-code-version at the repo root.
+
+on:
+  schedule:
+    # Monday 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  # Never two runs at once: a second run waits for the first.
+  group: claude-code-latest
+  cancel-in-progress: false
+
+jobs:
+  latest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Find the newest Claude Code version
+        id: newest
+        run: |
+          newest="$(curl -fsSL https://registry.npmjs.org/@anthropic-ai/claude-code/latest | jq -r .version)"
+          if [ -z "$newest" ] || [ "$newest" = "null" ]; then
+            echo "::error::Could not read the newest Claude Code version from npm."
+            exit 1
+          fi
+          echo "The newest Claude Code on npm is $newest."
+          echo "version=$newest" >> "$GITHUB_OUTPUT"
+
+      - name: Install Claude Code ${{ steps.newest.outputs.version }}
+        id: install
+        # A failed install is reported with the checks instead of stopping the run.
+        continue-on-error: true
+        env:
+          NEWEST_VERSION: ${{ steps.newest.outputs.version }}
+        # In its own folder, so it never touches this repo's package.json or lockfile.
+        # --trust lets its postinstall fetch the native binary.
+        run: |
+          mkdir -p "$RUNNER_TEMP/claude-code"
+          cd "$RUNNER_TEMP/claude-code"
+          echo '{"name":"claude-code-ci","private":true}' > package.json
+          bun add --trust "@anthropic-ai/claude-code@${NEWEST_VERSION}"
+          echo "$RUNNER_TEMP/claude-code/node_modules/.bin" >> "$GITHUB_PATH"
+
+      # Each check records its result, so one failure never hides the others.
+      - name: Tests
+        id: tests
+        continue-on-error: true
+        run: bun test
+
+      - name: Validate the plugin
+        id: plugin
+        continue-on-error: true
+        run: claude plugin validate plugin --strict
+
+      - name: Validate the marketplace
+        id: marketplace
+        continue-on-error: true
+        run: claude plugin validate . --strict
+
+      - name: Report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEWEST_VERSION: ${{ steps.newest.outputs.version }}
+          INSTALL_RESULT: ${{ steps.install.outcome }}
+          TESTS_RESULT: ${{ steps.tests.outcome }}
+          PLUGIN_RESULT: ${{ steps.plugin.outcome }}
+          MARKETPLACE_RESULT: ${{ steps.marketplace.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TESTED_VERSION="$(cat .claude-code-version)"
+
+          # One row per check, and the number that failed.
+          rows_file="$RUNNER_TEMP/check-rows.md"
+          : > "$rows_file"
+          failures=0
+          add_row() {
+            local label="$1"
+            local result="$2"
+            if [ "$result" = "success" ]; then
+              printf '| %s | pass |\n' "$label" >> "$rows_file"
+            else
+              printf '| %s | fail |\n' "$label" >> "$rows_file"
+              failures=$((failures + 1))
+            fi
+          }
+          add_row "Install Claude Code ${NEWEST_VERSION}" "$INSTALL_RESULT"
+          add_row "bun test" "$TESTS_RESULT"
+          add_row "claude plugin validate plugin --strict" "$PLUGIN_RESULT"
+          add_row "claude plugin validate . --strict" "$MARKETPLACE_RESULT"
+
+          if [ "$failures" -eq 0 ]; then
+            summary="all checks pass"
+          elif [ "$failures" -eq 1 ]; then
+            summary="1 check fails"
+          else
+            summary="${failures} checks fail"
+          fi
+          title="Claude Code ${NEWEST_VERSION}: ${summary}"
+
+          # The newest version is the tested one and everything passed: nothing to report.
+          if [ "$NEWEST_VERSION" = "$TESTED_VERSION" ] && [ "$failures" -eq 0 ]; then
+            echo "Claude Code ${TESTED_VERSION} is the newest and every check passed. Nothing to report."
+            exit 0
+          fi
+
+          body_file="$RUNNER_TEMP/issue-body.md"
+          {
+            printf 'The weekly check ran the newest Claude Code from npm against this repo.\n\n'
+            printf -- '- Tested version (from `.claude-code-version`): %s\n' "$TESTED_VERSION"
+            printf -- '- Newest version on npm: %s\n' "$NEWEST_VERSION"
+            printf -- '- Run: %s\n\n' "$RUN_URL"
+            printf '| Check | Result |\n| --- | --- |\n'
+            cat "$rows_file"
+            printf '\nNext step: Run the claude-code-upgrade skill in this repo.\n'
+          } > "$body_file"
+
+          # The label must exist for the filter below and for a new issue.
+          gh label create claude-code-upgrade --force \
+            --description "A newer Claude Code is available: run the upgrade check" \
+            --color "1d76db"
+
+          number="$(gh issue list --state open --label claude-code-upgrade --json number | jq -r '.[0].number // ""')"
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --title "$title" --body-file "$body_file"
+            echo "Updated issue #${number}: ${title}"
+          else
+            gh issue create --title "$title" --body-file "$body_file" --label claude-code-upgrade
+          fi
+
+          if [ "$failures" -gt 0 ]; then
+            echo "::error::${failures} check(s) failed against Claude Code ${NEWEST_VERSION}. See the issue."
+            exit 1
+          fi

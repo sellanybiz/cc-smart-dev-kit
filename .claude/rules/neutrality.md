@@ -1,0 +1,45 @@
+# Neutral: The Plugin Works For Anyone
+
+No `paths:` frontmatter: a name can land in any file — code, a doc, a test, a comment,
+a commit message — so this rule loads on every turn.
+
+## No names
+
+No company, project, organization, person, machine or team name goes anywhere in the
+repo: code, docs, tests, fixtures, comments, rules, skills, command output, commit
+messages, branch names.
+
+- **Neutral examples only:** `example-org/cc-agentic`, `my-app`, `app-wt-`,
+  `test@example.com`, `/home/user`. Never a real repo, host name, user name or home path.
+- **The one exception:** the publisher metadata of the two manifests —
+  `.claude-plugin/marketplace.json` (`owner`) and `plugin/.claude-plugin/plugin.json`
+  (`author`, `repository`). Nothing else in those two files names anyone either.
+- **The code never writes the publisher as text.** It reads the repository from
+  `plugin.json` at build time (`src/build-info/`, a Bun macro) and uses
+  `MARKETPLACE_SOURCE`.
+
+## Project details come from the project
+
+The plugin carries only general behaviour. Anything one project needs is a setting in
+that project's `.claude/cc.json` (`.claude/rules/cc-json.md`), or a file in its own
+`.claude/` folder that a general skill reads when it exists (for example, a review skill
+also follows the project's `.claude/cc/review.md`, and the project's text wins).
+
+So when a change seems to need a project's value — a branch name, a folder prefix, a
+command, a rule's wording — add a `cc.json` field or an extension point. Never write the
+value into the plugin.
+
+## What the check catches, and what it does not
+
+`bun run check:neutral` (`scripts/check-neutral.ts`, part of `bun run check` and CI):
+
+- reads the forbidden names from the two manifests (the owner in `repository`, and the
+  marketplace's `owner.name`), never from a list in the script;
+- searches every tracked file and every new file git does not ignore, case-insensitive;
+- skips the two manifests, `bun.lock` and `plugin/dist/` (built from `src/`, which it
+  does check).
+
+It knows **only the publisher's name**. Another project's name, a person, a machine or
+a team gets past it. Keeping those out is on you, and on every review.
+
+A hit is fixed by removing the name — never by adding a file to the skip list.

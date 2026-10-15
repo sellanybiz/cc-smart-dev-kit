@@ -2,7 +2,7 @@
   "name": "cc-agentic",
   "owner": { "name": "SellAnyBiz" },
   "metadata": {
-    "description": "Our agentic development setup for Claude Code."
+    "description": "A general agentic development setup for Claude Code, for any project."
   },
   "plugins": [
     {
