@@ -183,8 +183,8 @@ its own repo.
 
 ## Instructions, skills and agents
 
-The plugin carries general working instructions for Claude, skills and agents, all written
-for any project (`README.md` § Instructions, skills and agents lists them).
+The plugin carries general working instructions for Claude, 16 skills and 4 agents, all
+written for any project (`README.md` § Instructions, skills and agents lists them).
 
 **The always-on instructions reach Claude through the user's `CLAUDE.md`.** A plugin cannot
 add text to every session by itself, but Claude Code loads `<config dir>/CLAUDE.md` in every
@@ -200,8 +200,28 @@ update, so an import cannot point into it. The block names the copy as `~/…` w
 folder is under `HOME` (so a `CLAUDE.md` shared between machines through a dotfiles repo
 stays right on each), else by its absolute path. `--no-instructions` takes the block out
 first, then the copy, so nothing ever imports a missing file; a `CLAUDE.md` that setup
-created and that holds nothing else is removed. A plugin update reaches the copy at the next
-`setup` run.
+created and that holds nothing else is removed.
+
+**Two state files sit beside the copy** (`src/setup/instructions.ts`), in the state folder:
+
+- `no-instructions`: the person's `--no-instructions`. While it is there, a plain `setup`
+  keeps the instructions out; `--instructions` removes it; `restore` removes it too (a setup
+  after a restore starts fresh). Why stored: a choice that a plain `setup` (run after every
+  update) quietly undid would be no choice.
+- `instructions-version`: the plugin version that last wrote the copy.
+  `instructionsNeedRefresh(paths, version)` is true for an installed copy, not opted out,
+  whose stamp names another version. `doctor` uses it (and compares each file with the
+  plugin's). `refreshInstructionsCopy(paths, version)` brings only the copy up to that
+  version: no block, no other step, no question, nothing when opted out or never installed.
+  It is meant for the **new** version's first run after an update: the update itself runs
+  the old version's code, which does not know the new files. Until something calls it, a
+  plugin update reaches the copy at the next `setup` run.
+
+**A project's import of an opt-in file loads nothing where the copy is missing** (a teammate
+without anymodel, or after `--no-instructions`), and Claude Code says nothing. `doctor` reads
+the memory files Claude Code would load (`CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`
+in the current folder and every folder above) and names an anymodel import whose file is
+missing.
 
 That an import in the user's `CLAUDE.md` reaches the main session and a subagent was proved
 live (`claude-code-contract.md` § Instructions). The built-in `Explore` and `Plan` agents load
@@ -222,6 +242,10 @@ other words; that stays a review job.
 
 **Agents pin no model and no effort.** The caller passes both on each launch, so an agent
 never runs on a model nobody chose. Plugin agents and skills are named `anymodel:<name>`.
+An agent that works by a skill loads it with `skills:` in its frontmatter (`reviewer`:
+`anymodel:review`; `rules-maintainer`: `anymodel:self-evolve`): the skill's text is in its
+context from the start, and it needs no path to the plugin's version folder (proved live:
+`claude-code-contract.md` § Instructions).
 Agents that need an MCP server name its tools as `mcp__serena__*` or `mcp__playwright__*`:
 the servers are registered for the user (§ MCP servers at user scope), so the names stay.
 

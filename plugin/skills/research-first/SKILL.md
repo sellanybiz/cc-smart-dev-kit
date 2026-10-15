@@ -5,9 +5,9 @@ description: Use before using or recommending any external library, API or patte
 
 # Research Before You Build
 
-**Project add-on:** `.claude/anymodel/research-first.md` — read it first when it exists (which
-text wins: the core instructions). It names the project's research tools and any library it
-prefers or bans.
+**Project add-on:** `.claude/anymodel/research-first.md` — read it first when it exists.
+Where it differs, the add-on wins (`core.md`, top). It names the project's research tools and
+any library it prefers or bans.
 
 The rule — research before you build, reuse in a fixed order, never give up — is in the core
 instructions (§ Lead the work). This skill is how.

@@ -5,9 +5,9 @@ description: Use when someone wants to UNDERSTAND something, not change code - a
 
 # Explain It Simply
 
-**Project add-on:** `.claude/anymodel/explain.md` — read it first when it exists (which text
-wins: the core instructions). It gives the project's own words for its parts, and who the
-readers usually are.
+**Project add-on:** `.claude/anymodel/explain.md` — read it first when it exists. Where it
+differs, the add-on wins (`core.md`, top). It gives the project's own words for its parts,
+and who the readers usually are.
 
 The person wants to **learn**, not to get code. Slow down and teach. The reader may be new to
 code, or read English as a second language. Make the hard thing feel easy, and never make

@@ -10,6 +10,12 @@ branch new work starts from and pull requests go into), `prefix` (the folder nam
 worktree beside the repo) and `setup` (the command a new worktree runs). The project's own
 `CLAUDE.md`, rules and `.claude/anymodel/worktree.md` win where they say more.
 
+**Where a worktree lands.** The anymodel plugin adds no worktree hook to every project.
+Unless this project wired anymodel's worktree hooks into its own `.claude/settings.json`,
+`EnterWorktree` uses Claude Code's own `.claude/worktrees/<name>`, and `prefix` and `setup`
+are not applied. Wired in, the anymodel engine follows the `worktrees` field. How to wire it:
+README.md in the anymodel repository, § Worktrees.
+
 ## One session, one worktree, one branch
 
 **Always work in your own worktree. The main checkout stays on the latest `base`:** never

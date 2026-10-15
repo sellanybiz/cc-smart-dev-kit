@@ -5,8 +5,10 @@
  *
  *   bun scripts/check-duplicates.ts
  *
- * Sentences are compared after normalizing: lower case, markdown marks removed, whitespace
- * collapsed. Fenced code blocks are skipped (examples, not rules). A deliberate shared
+ * Sentences are compared after normalizing: lower case, markdown marks removed, a dash or a
+ * colon between words read as a space, the end mark (. ! ?) dropped, whitespace collapsed.
+ * Consecutive quote lines (`>`) are one block. Fenced code blocks are skipped (examples, not
+ * rules). A deliberate shared
  * sentence goes in `scripts/check-duplicates.allow.json`, with its reason; an entry that no
  * longer matches a duplicate fails too, so the list stays true.
  */
@@ -41,23 +43,38 @@ export interface DuplicatesResult {
   stale: string[];
 }
 
-/** Lower case, no markdown marks, one space between words. */
+/**
+ * Lower case, no markdown marks, one space between words. A dash (—, –, or a hyphen with space
+ * around it) or a colon is read as a space, so "rule — reason" and "rule: reason" match; a
+ * hyphen inside a word ("read-only") stays. The end mark (. ! ?) is dropped.
+ */
 export function normalize(sentence: string): string {
   return sentence
     .replace(/[`*_#>|[\]]/g, " ")
+    .replace(/[—–:]/g, " ")
+    .replace(/(^|\s)-+(?=\s|$)/g, " ")
     .replace(/\s+/g, " ")
     .trim()
+    .replace(/[.!?]+$/, "")
+    .trimEnd()
     .toLowerCase();
 }
 
-/** A line that starts a new block: a heading, a list item, a table row, a quote. */
-const BLOCK_START = /^\s*(#{1,6}\s|[-*+]\s|\d+[.)]\s|\||>)/;
+/** A line that starts a new block: a heading, a list item, a table row. */
+const BLOCK_START = /^\s*(#{1,6}\s|[-*+]\s|\d+[.)]\s|\|)/;
+/** A quote line, and what follows its `>`. */
+const QUOTE = /^\s*>\s?(.*)$/;
 
-/** The sentences of a markdown text, outside fenced code blocks. */
+/**
+ * The sentences of a markdown text, outside fenced code blocks. Consecutive quote lines are
+ * one block, so a quoted sentence that wraps is still one sentence; an empty quote line, or a
+ * line that is not a quote, ends it.
+ */
 export function sentences(text: string): string[] {
   const blocks: string[] = [];
   let current: string[] = [];
   let inFence = false;
+  let inQuote = false;
   const flush = () => {
     if (current.length > 0) blocks.push(current.join(" "));
     current = [];
@@ -66,9 +83,23 @@ export function sentences(text: string): string[] {
     if (/^\s*(```|~~~)/.test(line)) {
       flush();
       inFence = !inFence;
+      inQuote = false;
       continue;
     }
     if (inFence) continue;
+    const quote = QUOTE.exec(line);
+    if (quote) {
+      if (!inQuote) flush();
+      inQuote = true;
+      const body = quote[1] ?? "";
+      if (body.trim() === "") flush();
+      else current.push(body);
+      continue;
+    }
+    if (inQuote) {
+      flush();
+      inQuote = false;
+    }
     if (line.trim() === "") {
       flush();
       continue;

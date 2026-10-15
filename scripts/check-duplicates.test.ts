@@ -31,8 +31,41 @@ function cleanTree(): string {
 describe("normalize and sentences", () => {
   test("lower case, markdown marks gone, whitespace collapsed", () => {
     expect(normalize("**Never** start a `second`   reviewer.")).toBe(
-      "never start a second reviewer.",
+      "never start a second reviewer",
     );
+  });
+
+  test("a trailing . ! or ? does not make two sentences different", () => {
+    expect(normalize("Never start a second reviewer.")).toBe("never start a second reviewer");
+    expect(normalize("Never start a second reviewer!")).toBe("never start a second reviewer");
+    expect(normalize("Never start a second reviewer?")).toBe("never start a second reviewer");
+    expect(normalize("Never start a second reviewer")).toBe("never start a second reviewer");
+  });
+
+  test("a dash or a colon between words counts as one space; a hyphen inside a word stays", () => {
+    const expected = "one round only the author's own pass checks the fixes";
+    expect(normalize("One round only — the author's own pass checks the fixes.")).toBe(expected);
+    expect(normalize("One round only – the author's own pass checks the fixes.")).toBe(expected);
+    expect(normalize("One round only - the author's own pass checks the fixes.")).toBe(expected);
+    expect(normalize("One round only: the author's own pass checks the fixes.")).toBe(expected);
+    expect(normalize("A read-only agent.")).toBe("a read-only agent");
+  });
+
+  test("consecutive quote lines are one block; a blank quote line or plain text ends it", () => {
+    const text = [
+      "Before the quote.",
+      "> A quoted rule that goes",
+      "> on over a second line.",
+      ">",
+      "> A second paragraph.",
+      "After the quote.",
+    ].join("\n");
+    expect(sentences(text)).toEqual([
+      "Before the quote.",
+      "A quoted rule that goes on over a second line.",
+      "A second paragraph.",
+      "After the quote.",
+    ]);
   });
 
   test("splits on sentence ends, list items and table cells; skips code blocks", () => {
@@ -76,6 +109,31 @@ describe("findDuplicates", () => {
     expect(report(result)[0]).toBe(
       `The same sentence in plugin/instructions/core.md and plugin/skills/commit/SKILL.md:\n  "${normalize(RULE)}"`,
     );
+  });
+
+  test("the same rule with another end mark, a colon for a dash, or split over quote lines fails", () => {
+    const root = cleanTree();
+    write(
+      root,
+      "plugin/skills/commit/SKILL.md",
+      "> Never start a second reviewer to check the fixes:\n> after the first one returned!\n",
+    );
+    write(
+      root,
+      "plugin/agents/reviewer.md",
+      "Never start a second reviewer to check the fixes — after the first one returned\n",
+    );
+    const result = findDuplicates(readSourceFiles(root), []);
+    expect(result.duplicates).toEqual([
+      {
+        sentence: "never start a second reviewer to check the fixes after the first one returned",
+        files: [
+          "plugin/agents/reviewer.md",
+          "plugin/instructions/core.md",
+          "plugin/skills/commit/SKILL.md",
+        ],
+      },
+    ]);
   });
 
   test("the same sentence twice in one file, a short sentence, or a code block is not flagged", () => {

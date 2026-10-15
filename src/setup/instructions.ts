@@ -1,5 +1,6 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, relative, sep } from "node:path";
+import { withLock } from "./lock";
 import {
   applyManagedMarkdown,
   BLOCK_BEGIN,
@@ -7,7 +8,7 @@ import {
   renderWithoutBlock,
 } from "./managed-markdown";
 import { createdByUs, type RestoreResult, restore } from "./restore";
-import { readChanged, realTarget, writeManagedFile } from "./write";
+import { atomicWrite, readChanged, realTarget, writeManagedFile } from "./write";
 
 /**
  * The plugin's general instructions for Claude, installed as a managed copy and imported
@@ -19,10 +20,43 @@ import { readChanged, realTarget, writeManagedFile } from "./write";
  * Why a copy: the plugin's own folder has the version in its name and goes away after an
  * update, so an import cannot point into it. Every file of the copy is a whole file
  * anymodel owns (`whole-file` in changed.json), so `restore` removes it.
+ *
+ * Two small state files sit beside the copy, in the state folder (not in the copy, which
+ * holds only what the plugin ships):
+ *
+ *   <stateDir>/no-instructions        the person's `setup --no-instructions`: later setups
+ *                                     keep the instructions out until `--instructions`
+ *   <stateDir>/instructions-version   the plugin version that last wrote the copy, so a
+ *                                     newer version can tell that the copy is behind
+ *
+ * `restore` removes both (`forgetInstructionsState`).
  */
 
 /** The always-on file. The block imports only this one; `optin/` is for a project to import. */
 export const ALWAYS_ON_FILE = "core.md";
+
+/** The stored `--no-instructions`: while it exists, setup keeps the instructions out. */
+export function optOutFile(stateDir: string): string {
+  return join(stateDir, "no-instructions");
+}
+
+/** The plugin version that last wrote the copy. */
+export function versionStampFile(stateDir: string): string {
+  return join(stateDir, "instructions-version");
+}
+
+/** True when the person chose `setup --no-instructions` and has not opted back in. */
+export function instructionsOptedOut(stateDir: string): boolean {
+  return existsSync(optOutFile(stateDir));
+}
+
+/** The version in the stamp, or null when there is none. */
+export function readVersionStamp(stateDir: string): string | null {
+  const file = versionStampFile(stateDir);
+  if (!existsSync(file)) return null;
+  const version = readFileSync(file, "utf8").trim();
+  return version === "" ? null : version;
+}
 
 export interface InstructionsPaths {
   /** The plugin's instructions folder (`plugin/instructions`). */
@@ -95,6 +129,89 @@ function lineOf(result: RestoreResult, block: boolean): InstructionsLine | null 
   }
 }
 
+/** True when setup installed the copy: changed.json tracks at least one of its files. */
+export function copyInstalled(paths: InstructionsPaths): boolean {
+  return trackedCopies(paths.target, paths.stateDir).length > 0;
+}
+
+/**
+ * Does the copy need the plugin's `version`? Only a copy that is installed and not opted out,
+ * whose stamp is missing or names another version. Reads files only, never writes. The
+ * refresh after an update and `doctor` both ask it.
+ */
+export function instructionsNeedRefresh(paths: InstructionsPaths, version: string): boolean {
+  if (instructionsOptedOut(paths.stateDir)) return false;
+  if (!copyInstalled(paths)) return false;
+  return readVersionStamp(paths.stateDir) !== version;
+}
+
+/**
+ * How the copy differs from the plugin's files, one entry each: `<file> is missing`,
+ * `<file> differs`, `<file> is not shipped any more`. Empty when they match.
+ */
+export function copyDifferences(paths: InstructionsPaths): string[] {
+  const files = listInstructionFiles(paths.source);
+  const out: string[] = [];
+  for (const name of files) {
+    const copy = join(paths.target, name);
+    if (!existsSync(copy)) out.push(`${name} is missing`);
+    else if (readFileSync(copy, "utf8") !== readFileSync(join(paths.source, name), "utf8")) {
+      out.push(`${name} differs`);
+    }
+  }
+  const root = `${realTarget(paths.target)}/`;
+  const wanted = new Set(files.map((name) => realTarget(join(paths.target, name))));
+  for (const file of trackedCopies(paths.target, paths.stateDir)) {
+    if (!wanted.has(file) && existsSync(file)) {
+      out.push(`${file.slice(root.length)} is not shipped any more`);
+    }
+  }
+  return out;
+}
+
+/**
+ * Records or clears the person's choice. `optOut` true: setup keeps the instructions out from
+ * now on. Returns the line to print, or null when the choice is already stored that way.
+ */
+export function setInstructionsOptOut(
+  stateDir: string,
+  optOut: boolean,
+  dryRun: boolean,
+): InstructionsLine | null {
+  const file = optOutFile(stateDir);
+  if (optOut === existsSync(file)) return null;
+  if (!dryRun) {
+    if (optOut) {
+      atomicWrite(
+        file,
+        "Written by `anymodel setup --no-instructions`. While this file is here, setup leaves the instructions out. `anymodel setup --instructions` removes it.\n",
+        0o644,
+      );
+    } else {
+      rmSync(file, { force: true });
+    }
+  }
+  return optOut
+    ? {
+        mark: "+",
+        file,
+        what: "setup leaves the instructions out from now on (`anymodel setup --instructions` brings them back)",
+      }
+    : { mark: "-", file, what: "removed: setup installs the instructions again" };
+}
+
+/**
+ * Forgets both state files (the stored opt-out and the version stamp), for `restore`. Returns
+ * the opt-out file when it was there, so restore can say the choice is gone.
+ */
+export function forgetInstructionsState(stateDir: string): string | null {
+  const optOut = optOutFile(stateDir);
+  const had = existsSync(optOut);
+  rmSync(optOut, { force: true });
+  rmSync(versionStampFile(stateDir), { force: true });
+  return had ? optOut : null;
+}
+
 /** Takes tracked copies out: removed when anymodel created them, else back to their baseline. */
 function removeCopies(files: string[], stateDir: string, dryRun: boolean): InstructionsLine[] {
   if (files.length === 0) return [];
@@ -115,10 +232,15 @@ function removeCopies(files: string[], stateDir: string, dryRun: boolean): Instr
 }
 
 /**
- * Installs or refreshes the managed copy, then the block that imports it. A file the plugin
- * no longer ships is taken out of the copy. Only a real change writes, and prints a line.
+ * Installs or refreshes the managed copy only, and stamps it with `version`. A file the plugin
+ * no longer ships is taken out of the copy. Only a real change writes, and prints a line; the
+ * stamp is state, never printed.
  */
-export function installInstructions(paths: InstructionsPaths, dryRun: boolean): InstructionsLine[] {
+function installCopy(
+  paths: InstructionsPaths,
+  dryRun: boolean,
+  version: string,
+): InstructionsLine[] {
   const lines: InstructionsLine[] = [];
   const files = listInstructionFiles(paths.source);
   const wanted = new Set<string>();
@@ -146,6 +268,43 @@ export function installInstructions(paths: InstructionsPaths, dryRun: boolean): 
       what: `${line.what} (the plugin no longer ships it)`,
     })),
   );
+  if (!dryRun && readVersionStamp(paths.stateDir) !== version) {
+    atomicWrite(versionStampFile(paths.stateDir), `${version}\n`, 0o644);
+  }
+  return lines;
+}
+
+/**
+ * Brings the copy up to `version` after a plugin update, and does nothing else: no block, no
+ * other setup step, no question. It does nothing when the person opted out, when setup never
+ * installed the copy, or when the stamp already names `version` (`instructionsNeedRefresh`).
+ * Runs inside the state folder's lock; with `dryRun`, it only reports and takes no lock.
+ */
+export async function refreshInstructionsCopy(
+  paths: InstructionsPaths,
+  version: string,
+  options: { dryRun?: boolean; waitMs?: number } = {},
+): Promise<InstructionsLine[]> {
+  // Checked before the lock too: a machine that never ran setup gets no state folder.
+  if (!instructionsNeedRefresh(paths, version)) return [];
+  if (options.dryRun) return installCopy(paths, true, version);
+  return withLock(
+    paths.stateDir,
+    () => (instructionsNeedRefresh(paths, version) ? installCopy(paths, false, version) : []),
+    { waitMs: options.waitMs ?? 10_000 },
+  );
+}
+
+/**
+ * Installs or refreshes the managed copy (stamped with `version`), then the block that
+ * imports it. Only a real change writes, and prints a line.
+ */
+export function installInstructions(
+  paths: InstructionsPaths,
+  dryRun: boolean,
+  version: string,
+): InstructionsLine[] {
+  const lines = installCopy(paths, dryRun, version);
 
   // The block last: it never imports a file that is not there yet.
   const before = existsSync(paths.claudeMd) ? readFileSync(paths.claudeMd, "utf8") : null;
@@ -198,5 +357,6 @@ export function removeInstructions(paths: InstructionsPaths, dryRun: boolean): I
     }
   }
   lines.push(...removeCopies(trackedCopies(paths.target, paths.stateDir), paths.stateDir, dryRun));
+  if (!dryRun) rmSync(versionStampFile(paths.stateDir), { force: true });
   return lines;
 }

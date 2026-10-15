@@ -5,20 +5,27 @@ description: For projects that work one session per git worktree - starting a ta
 
 # Worktrees — The Steps
 
-**Project add-on:** `.claude/anymodel/worktree.md` — read it first when it exists (which text
-wins: the core instructions). It names the project's own worktree commands and hooks.
+**Project add-on:** `.claude/anymodel/worktree.md` — read it first when it exists. Where it
+differs, the add-on wins (`core.md`, top). It names the project's own worktree commands and
+hooks.
 
 The rule — one worktree per session, the main checkout stays on the base branch, what every
 worktree still shares, when to message other sessions — is the opt-in instructions
 (`optin/worktrees.md`), which the project imports. This skill is the how. The project's
-values (`base`, `prefix`, `setup`) are in `.claude/anymodel.json`, field `worktrees`.
+values (`base`, `prefix`, `setup`) are in `.claude/anymodel.json`, field `worktrees`; the
+anymodel worktree engine reads them only where the project wired it in (§ Start a task,
+step 2).
 
 ## Start a task
 
 1. **Pick the branch:** an existing one, or a new one for this task.
-2. **`EnterWorktree` with the branch as its `name`.** A WorktreeCreate hook decides where it
-   lands: the project's own, or the anymodel plugin's, which follows `worktrees` in
-   `.claude/anymodel.json`. With no hook, Claude Code makes one inside `.claude/worktrees/`.
+2. **`EnterWorktree` with the branch as its `name`.** Where it lands depends on the project.
+   The plugin itself ships no worktree hook. **Not wired in:** Claude Code makes its own
+   worktree, `.claude/worktrees/<name>` (or the project's own WorktreeCreate hook decides).
+   **Wired in:** the project's `.claude/settings.json` runs anymodel's worktree hooks
+   (`anymodel hook worktree-create`, `worktree-remove`, `subagent-stop`), and the anymodel
+   engine places the worktree by `worktrees` in `.claude/anymodel.json`. The exact lines to
+   paste are in README.md in the anymodel repository, § Worktrees.
 3. **Bring it up to date.** A worktree that already held the branch comes back as it was
    left. So after every `EnterWorktree`: `git fetch origin <base>`, then
    `git rev-list --count HEAD..origin/<base>`, and merge `origin/<base>` when it is behind —

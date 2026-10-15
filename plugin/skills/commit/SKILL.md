@@ -1,24 +1,32 @@
 ---
 name: commit
-description: Stage, write the message and commit - and when to push, open the pull request and merge. Commit and push your own branch without asking; a merge waits for the person's yes. Use at the end of each finished, reviewed phase, or when the person says commit.
+description: Stage, write the message and commit - and when to push, open the pull request and merge. By default you commit and push only when the person asks; a project's add-on can hand you its own branch's commits, pushes and pull request. A merge always waits for the person's yes. Use when the person says commit, and at the end of each finished, reviewed phase.
 ---
 
 # Commit, Push, Merge
 
-**Project add-on:** `.claude/anymodel/commit.md` — read it first when it exists (which text
-wins: the core instructions). It names the project's base branch, protected branches, message
-style and owner rules.
+**Project add-on:** `.claude/anymodel/commit.md` — read it first when it exists. Where it
+differs, the add-on wins (`core.md`, top). It names the project's base branch, protected
+branches, message style and owner rules.
 
 ## When to commit, push and merge
 
-Commit and push are your call, with no question. A merge waits for the person.
+**By default, commit and push only when the person asks** — Claude Code's own default. At the
+end of a finished, reviewed phase, say in one line that it is ready to commit, and carry on.
+
+**A project can hand you more.** Its add-on, `.claude/anymodel/commit.md`, turns it on with a
+line such as: "Commit and push your own branch without asking, and open its pull request."
+With that line, the commit, the push and the pull request below are your call, with no
+question. Either way, a merge waits for the person.
 
 - **Only on your own branch.** Never commit or push straight to the base branch or the main
   branch: every change reaches them through a pull request.
-- **Commit** each finished phase once its tests are green and your own review pass
-  (`/anymodel:review`) is done. Never commit half-built work.
-- **Push and open the pull request** when the change set is complete and the second opinion
-  has read it, or it is a small fix that skips it. Not after each commit.
+- **Commit** (when asked, or when the add-on allows it) each finished phase once its tests
+  are green and your own review pass (`/anymodel:review`) is done. Never commit half-built
+  work.
+- **Push and open the pull request** (the same condition) when the change set is complete
+  and the second opinion has read it, or it is a small fix that skips it. Not after each
+  commit.
 - **Merge only after the person says yes** — and never wait for that: open the pull request
   and move on. When the whole plan is done, ask once, listing every open pull request with
   its checks and the merge order.

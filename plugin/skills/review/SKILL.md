@@ -5,8 +5,8 @@ description: Review your own finished change before you commit it, then get one 
 
 # Review — You Are The Reviewer
 
-**Project add-on:** `.claude/anymodel/review.md` — read it first when it exists (which text
-wins: the core instructions).
+**Project add-on:** `.claude/anymodel/review.md` — read it first when it exists. Where it
+differs, the add-on wins (`core.md`, top).
 
 You wrote this code. Now read it as if a stranger wrote it and you must approve it with your
 name on it.

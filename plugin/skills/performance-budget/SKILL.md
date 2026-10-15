@@ -5,9 +5,9 @@ description: Use when writing or changing frontend, React or Next.js code, data 
 
 # Performance And UX Budget
 
-**Project add-on:** `.claude/anymodel/performance-budget.md` — read it first when it exists
-(which text wins: the core instructions). It names the project's data-fetching library,
-cache, image component and any tighter targets.
+**Project add-on:** `.claude/anymodel/performance-budget.md` — read it first when it exists.
+Where it differs, the add-on wins (`core.md`, top). It names the project's data-fetching
+library, cache, image component and any tighter targets.
 
 Slow code is broken code. A janky screen is a broken screen.
 

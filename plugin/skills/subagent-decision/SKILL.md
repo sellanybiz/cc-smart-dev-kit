@@ -5,8 +5,9 @@ description: Use when about to read more than three files, run multi-step resear
 
 # Which Agent, And How To Brief It
 
-**Project add-on:** `.claude/anymodel/subagent-decision.md` — read it first when it exists
-(which text wins: the core instructions). A project with its own agents lists them there.
+**Project add-on:** `.claude/anymodel/subagent-decision.md` — read it first when it exists.
+Where it differs, the add-on wins (`core.md`, top). A project with its own agents lists them
+there.
 
 A subagent runs in its own context window; only its final report comes back. Every file it
 reads, every search and every dead end stays out of yours. If the task can be written as a

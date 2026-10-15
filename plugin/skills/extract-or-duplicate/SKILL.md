@@ -5,9 +5,9 @@ description: Use when similar logic shows up in two or more places, when placing
 
 # Placement, Naming, Extract Or Duplicate
 
-**Project add-on:** `.claude/anymodel/extract-or-duplicate.md` — read it first when it exists
-(which text wins: the core instructions). It holds the project's folder layout, naming and
-layer rules; this skill holds the general method.
+**Project add-on:** `.claude/anymodel/extract-or-duplicate.md` — read it first when it
+exists. Where it differs, the add-on wins (`core.md`, top). It holds the project's folder
+layout, naming and layer rules; this skill holds the general method.
 
 The rule — one home for everything — is in the core instructions (§ Core principles). This
 skill is how to apply it.

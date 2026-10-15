@@ -6,9 +6,9 @@ argument-hint: "[route]"
 
 # UI Verify ($ARGUMENTS)
 
-**Project add-on:** `.claude/anymodel/ui-verify.md` — read it first when it exists (which
-text wins: the core instructions). It says how to find this session's dev server address,
-how to start the server, and which flows need a login.
+**Project add-on:** `.claude/anymodel/ui-verify.md` — read it first when it exists. Where it
+differs, the add-on wins (`core.md`, top). It says how to find this session's dev server
+address, how to start the server, and which flows need a login.
 
 A UI check is two steps, and the session that wants the check owns both:
 
@@ -32,8 +32,9 @@ check (`/anymodel:verify-change` § 5).
 ## 2. Launch the agent — one at a time
 
 `Agent` with the `anymodel:ui-verifier` type, on `sonnet` (the worker slot; effort as the
-core instructions say for that slot). **One at a time:** the Playwright MCP server gives the
-machine one shared browser, and a second agent fights the first for its windows.
+core instructions say for that slot). **One at a time:** the session's Playwright MCP server
+drives one browser, and a second agent fights the first for its pages. (A project whose add-on
+says its browser is shared by every session on the machine: one at a time across them too.)
 
 **The brief carries:**
 
@@ -55,9 +56,11 @@ clipping well but miscounts fine detail, so it measures and you judge.
 
 ## 4. Close out
 
-- Close your browser windows (`browser_close`) when the check is done: the agent leaves the
-  shared browser open on purpose. It closes only your windows.
+- Close the browser (`browser_close`) when the check is done: the agent leaves it open on
+  purpose. With stock Playwright MCP it closes this session's page. A project whose
+  add-on says its browser is shared by every session may set it up so that `browser_close`
+  closes only your windows: the add-on says which.
 - **A page needs a login:** the agent reports it and never signs in. Open the page yourself
-  and ask the person to sign in there, once. Never sign out or switch accounts in the shared
-  browser without asking — every session shares that login.
+  and ask the person to sign in there, once. Never sign out or switch accounts without
+  asking — in a browser the project shares between sessions, that login is everyone's.
 - A cheap run that fails twice: `/anymodel:subagent-decision` § Briefing a cheap model.

@@ -38,7 +38,7 @@ repo with git (an SSH key, or a git credential helper when the repo is private).
    Setup installs the launcher `~/.local/bin/anymodel`, turns on auto-update for the
    plugin, and installs the plugin's general instructions for Claude (§ Instructions,
    skills and agents). Add `--dry-run` to see the changes first; it writes nothing at all.
-   Add `--no-instructions` to leave the instructions out.
+   Add `--no-instructions` to leave the instructions out (setup remembers that choice).
 
 4. Restart Claude Code.
 
@@ -48,9 +48,9 @@ After that, use `anymodel setup` to set up again (for example after an update).
 
 | Command | What it does |
 |---|---|
-| `anymodel setup [--dry-run] [--no-instructions]` | Installs the launcher, turns on plugin auto-update, and installs the instructions: a copy in `~/.claude/anymodel/instructions/`, imported by an anymodel block in `~/.claude/CLAUDE.md` (your own text there is kept). Each run refreshes the copy; run it after a plugin update. `--no-instructions` leaves them out, and takes them out when they are there. `--dry-run` shows the changes and writes nothing at all. A settings key you set yourself (for example `autoUpdate: false`) stops setup before it writes anything. |
-| `anymodel doctor` | Checks the install (the list is below). Prints ✓ or ✗ for each check, and exits with 1 when one fails. |
-| `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, its block in `CLAUDE.md`, the instructions' copy) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy and unit. `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
+| `anymodel setup [--dry-run] [--no-instructions \| --instructions]` | Installs the launcher, turns on plugin auto-update, and installs the instructions: a copy in `~/.claude/anymodel/instructions/`, imported by an anymodel block in `~/.claude/CLAUDE.md` (your own text there is kept). Each run refreshes the copy; run it after a plugin update. `--no-instructions` takes the block and the copy out and **keeps them out**: setup stores the choice (`~/.claude/anymodel/no-instructions`), so a later plain `anymodel setup` leaves them out too. `--instructions` clears that choice and installs them again. `restore` clears it as well. `--dry-run` shows the changes and writes nothing at all. A settings key you set yourself (for example `autoUpdate: false`) stops setup before it writes anything. |
+| `anymodel doctor` | Checks the install, and the anymodel files the current project's `CLAUDE.md` imports (the list is below). Prints ✓ or ✗ for each check, and exits with 1 when one fails. |
+| `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, its block in `CLAUDE.md`, the instructions' copy, and a stored `--no-instructions` choice) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy and unit. `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
 | `anymodel gateway <command>` | The optional AI gateway (below). |
 | `anymodel version` | Prints the version. |
 
@@ -63,6 +63,15 @@ After that, use `anymodel setup` to set up again (for example after an update).
   update anymodel";
 - the launcher matches the script setup would write for the `bun` baked into it, and
   that `bun` is executable;
+- the instructions: the copy in `~/.claude/anymodel/instructions/` is this plugin
+  version's (its version stamp, and each file against the plugin's), and `~/.claude/CLAUDE.md`
+  still holds the block that imports it. A ✗ says "Run: anymodel setup". After
+  `--no-instructions`, a `·` line says they are left out, as information;
+- the current project: when a `CLAUDE.md`, `.claude/CLAUDE.md` or `CLAUDE.local.md` in the
+  current folder or a folder above it imports an anymodel file
+  (`@~/.claude/anymodel/instructions/…`), that file exists. A missing one loads nothing and
+  Claude Code says nothing about it, so doctor fails with "Run: anymodel setup" (or, after
+  `--no-instructions`, a `·` line with `anymodel setup --instructions`). No import, no line;
 - git can read the marketplace (`git ls-remote`, which never asks for a password). It
   adds ssh `BatchMode` only when you have no ssh command of your own
   (`GIT_SSH_COMMAND`, `GIT_SSH` or `core.sshCommand`). It prints URLs without
@@ -167,8 +176,12 @@ user, **on by default**:
   ```
 
   Your own text in that file stays as it is. Do not edit inside the block: setup rewrites it.
-- `anymodel setup --no-instructions` takes the block and the copy out (and keeps them out);
-  `anymodel restore` takes them out with everything else.
+- `anymodel setup --no-instructions` takes the block and the copy out, and keeps them out:
+  a later plain `anymodel setup` leaves them out too. `anymodel setup --instructions` brings
+  them back. `anymodel restore` takes them out with everything else and forgets the choice,
+  so the next setup installs them again.
+- Setup records which plugin version wrote the copy (`~/.claude/anymodel/instructions-version`).
+  `doctor` says when the copy is behind the installed plugin.
 
 The import reaches the main session and subagents that load `CLAUDE.md` (the built-in
 `Explore` and `Plan` do not). With `CLAUDE_CONFIG_DIR` set, both live under that folder.
@@ -186,7 +199,12 @@ not yet proved here: `docs/claude-code-contract.md`). The file reads its
 values (`base`, `prefix`, `setup`) from the project's `.claude/anymodel.json`, field
 `worktrees`.
 
-**Skills** (`/anymodel:<name>`; each also loads on its own when its topic comes up):
+That committed import line points at **each person's own copy**. For a teammate without
+anymodel, or one who ran `anymodel setup --no-instructions`, the file is not there, and the
+import loads nothing — Claude Code gives no error. `anymodel doctor`, run in the project,
+names such a missing import.
+
+**16 skills** (`/anymodel:<name>`; each also loads on its own when its topic comes up):
 
 | Skill | Use it for |
 |---|---|
@@ -207,8 +225,9 @@ values (`base`, `prefix`, `setup`) from the project's `.claude/anymodel.json`, f
 | `worktree` | The steps of one-worktree-per-session work (for projects that opt in). |
 | `gateway` | The optional AI gateway. |
 
-**Agents** (`anymodel:<name>`; the caller passes the model and effort on each launch, so none
-is pinned in their files):
+**4 agents** (`anymodel:<name>`; the caller passes the model and effort on each launch, so
+none is pinned in their files). `reviewer` and `rules-maintainer` load the skill they work by
+(`review`, `self-evolve`) at start, through their `skills:` field:
 
 | Agent | Job | Needs |
 |---|---|---|

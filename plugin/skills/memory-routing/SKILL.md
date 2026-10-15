@@ -5,9 +5,9 @@ description: Use when the person states a project fact, a correction, a preferen
 
 # Where Knowledge Goes
 
-**Project add-on:** `.claude/anymodel/memory-routing.md` — read it first when it exists
-(which text wins: the core instructions). It names the project's memory tool (Claude Code's
-auto memory, or a memory plugin) and any home it does not use.
+**Project add-on:** `.claude/anymodel/memory-routing.md` — read it first when it exists.
+Where it differs, the add-on wins (`core.md`, top). It names the project's memory tool
+(Claude Code's auto memory, or a memory plugin) and any home it does not use.
 
 Everything worth keeping has exactly one right home. Route it by **audience** — just this
 person, or the whole team — and by **how fast it goes stale**.

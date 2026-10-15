@@ -5,9 +5,9 @@ description: Before every `gh pr create`, and before merging or reviewing someon
 
 # Pull Request Bodies
 
-**Project add-on:** `.claude/anymodel/pull-request.md` — read it first when it exists (which
-text wins: the core instructions). A project with its own required headings or release
-process names them there.
+**Project add-on:** `.claude/anymodel/pull-request.md` — read it first when it exists. Where
+it differs, the add-on wins (`core.md`, top). A project with its own required headings or
+release process names them there.
 
 ## Three readers
 

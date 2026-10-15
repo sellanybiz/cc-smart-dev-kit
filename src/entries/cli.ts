@@ -14,14 +14,16 @@ const HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Cla
 Usage: anymodel <command> [options]
 
 Commands:
-  setup [--dry-run] [--no-instructions]
+  setup [--dry-run] [--no-instructions | --instructions]
                      Install the launcher in ~/.local/bin, turn on plugin auto-update,
                      and install the plugin's instructions for Claude: a copy in
                      ~/.claude/anymodel/instructions/, imported by a block in
-                     ~/.claude/CLAUDE.md. --no-instructions leaves them out (and takes
-                     them out when they are there). --dry-run prints what would change
-                     and writes nothing.
-  doctor             Check the install. Exit code 1 when a check fails.
+                     ~/.claude/CLAUDE.md. --no-instructions takes them out and keeps
+                     them out: a later plain setup leaves them out too. --instructions
+                     brings them back. restore forgets the choice. --dry-run prints what
+                     would change and writes nothing.
+  doctor             Check the install, and the anymodel files the current project's
+                     CLAUDE.md imports. Exit code 1 when a check fails.
   restore [--yes] [--now]
                      Remove what anymodel added, and keep everything else: its settings
                      keys, its Markdown blocks, and the files it created (the launcher,
@@ -92,23 +94,31 @@ async function main(argv: string[]): Promise<number> {
 
   switch (command) {
     case "setup": {
-      const unknown = rest.filter((arg) => arg !== "--dry-run" && arg !== "--no-instructions");
+      const known = ["--dry-run", "--no-instructions", "--instructions"];
+      const unknown = rest.filter((arg) => !known.includes(arg));
       if (unknown.length > 0) {
         console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
         return 2;
       }
+      const off = rest.includes("--no-instructions");
+      const on = rest.includes("--instructions");
+      if (off && on) {
+        console.error(`Use --no-instructions or --instructions, not both.\n\n${HELP}`);
+        return 2;
+      }
       return runSetup(paths, {
         dryRun: rest.includes("--dry-run"),
-        instructions: !rest.includes("--no-instructions"),
+        instructions: off ? false : on ? true : null,
         instructionsSource: instructionsFolder(),
       });
     }
     case "doctor":
-      return runDoctor(paths, process.env, {
-        bundle: routerBundle(),
-        runner,
-        systemd,
-      });
+      return runDoctor(
+        paths,
+        process.env,
+        { bundle: routerBundle(), runner, systemd },
+        { instructionsSource: instructionsFolder(), cwd: process.cwd() },
+      );
     case "restore": {
       const unknown = rest.filter((arg) => arg !== "--yes" && arg !== "--now");
       if (unknown.length > 0) {

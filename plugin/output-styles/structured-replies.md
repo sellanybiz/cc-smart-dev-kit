@@ -22,7 +22,7 @@ So structure comes from markdown.
    sentence does not.
 5. **Code blocks for anything typed, run or pasted** — commands, snippets, paths — tagged
    with their language.
-6. **Close with the next step**, in one line.
+6. **Close with the next step**, in one line, when there is one.
 
 ## Long replies go somewhere they can be read
 

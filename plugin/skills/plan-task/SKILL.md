@@ -5,8 +5,9 @@ description: Use before any non-trivial change - more than two files, a design t
 
 # Plan The Task
 
-**Project add-on:** `.claude/anymodel/plan-task.md` — read it first when it exists (which
-text wins: the core instructions). It names where plans live and the template to copy.
+**Project add-on:** `.claude/anymodel/plan-task.md` — read it first when it exists. Where it
+differs, the add-on wins (`core.md`, top). It names where plans live and the template to
+copy.
 
 Order: **research and explore → ask → write the plan → self-check → approval → phases →
 build → keep it live → archive.**
@@ -114,8 +115,9 @@ path, never `git add -A`. You tick the plan, integrate, commit and own the resul
   on half-built work. The one reason to stop early is a blocking question, asked with
   `AskUserQuestion`. A part that turns out blocked: finish everything else, then say what you
   left out and why.
-- **End of a phase:** commit it (`/anymodel:commit` says when, and when to push and ask for
-  merges), write one progress line in the plan, and start the next phase.
+- **End of a phase:** commit it as `/anymodel:commit` allows (by default only when the person
+  asks; it also says when to push and ask for merges), write one progress line in the plan,
+  and start the next phase.
 - **End of the plan:** a short summary (what shipped, what broke, what you left out), then
   the one merge question the commit skill describes.
 

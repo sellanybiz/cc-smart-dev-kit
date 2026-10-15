@@ -21,8 +21,8 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/cli/doctor.ts
-import { accessSync, constants, existsSync as existsSync9, readFileSync as readFileSync10 } from "fs";
-import { join as join7 } from "path";
+import { accessSync, constants, existsSync as existsSync13, readFileSync as readFileSync14 } from "fs";
+import { dirname as dirname4, join as join9 } from "path";
 
 // src/gateway/doctor.ts
 import { existsSync as existsSync6, readFileSync as readFileSync7 } from "fs";
@@ -8388,8 +8388,380 @@ function findUserInstall(installedPluginsFile) {
   };
 }
 
+// src/setup/instructions.ts
+import { existsSync as existsSync10, readdirSync as readdirSync3, readFileSync as readFileSync11, rmSync as rmSync2 } from "fs";
+import { join as join6, relative, sep } from "path";
+
+// src/setup/managed-markdown.ts
+import { existsSync as existsSync8, readFileSync as readFileSync9 } from "fs";
+var BLOCK_BEGIN = "<!-- anymodel:begin -->";
+var BLOCK_END = "<!-- anymodel:end -->";
+function countOf(text, marker) {
+  return text.split(marker).length - 1;
+}
+function findBlock(current, file) {
+  const begins = countOf(current, BLOCK_BEGIN);
+  const ends = countOf(current, BLOCK_END);
+  if (begins === 0 && ends === 0)
+    return null;
+  const start = current.indexOf(BLOCK_BEGIN);
+  const end = current.indexOf(BLOCK_END);
+  if (begins !== 1 || ends !== 1 || end < start) {
+    throw new Error(`${file} has a broken anymodel block (${begins} begin and ${ends} end markers). ` + "Fix it by hand: keep one begin marker and one end marker after it.");
+  }
+  return { start, end: end + BLOCK_END.length };
+}
+function renderManagedMarkdown(current, body, file = "the file") {
+  const block = `${BLOCK_BEGIN}
+${body.replace(/\n+$/, "")}
+${BLOCK_END}`;
+  const found = findBlock(current, file);
+  if (found === null) {
+    if (current === "")
+      return `${block}
+`;
+    const separator = current.endsWith(`
+
+`) ? "" : current.endsWith(`
+`) ? `
+` : `
+
+`;
+    return `${current}${separator}${block}
+`;
+  }
+  return `${current.slice(0, found.start)}${block}${current.slice(found.end)}`;
+}
+function renderWithoutBlock(current, file = "the file") {
+  const found = findBlock(current, file);
+  if (found === null)
+    return current;
+  let before = current.slice(0, found.start);
+  let after = current.slice(found.end);
+  if (after.startsWith(`
+`))
+    after = after.slice(1);
+  if (before === "" && after.startsWith(`
+`))
+    after = after.slice(1);
+  if (before.endsWith(`
+
+`) && (after === "" || after.startsWith(`
+`))) {
+    before = before.slice(0, -1);
+  }
+  return `${before}${after}`;
+}
+function writeMarkdown(options, render) {
+  const file = realTarget(options.file);
+  return retryOnConcurrentChange(file, () => {
+    const text = existsSync8(file) ? readFileSync9(file, "utf8") : null;
+    const next = render(text ?? "", file);
+    if (text === null && next === "")
+      return { outcome: "unchanged", backup: null };
+    options.onBeforeWrite?.();
+    return writeManagedFile(file, next, {
+      stateDir: options.stateDir,
+      kind: "markdown-block",
+      newFileMode: 420,
+      expectedContent: text,
+      ...options.dryRun !== undefined && { dryRun: options.dryRun }
+    });
+  });
+}
+function applyManagedMarkdown(options) {
+  return writeMarkdown(options, (current, file) => renderManagedMarkdown(current, options.body, file));
+}
+function removeManagedMarkdown(options) {
+  return writeMarkdown(options, renderWithoutBlock);
+}
+
+// src/setup/restore.ts
+import { existsSync as existsSync9, readdirSync as readdirSync2, readFileSync as readFileSync10, rmdirSync } from "fs";
+import { dirname as dirname3 } from "path";
+function createdByUs(entry) {
+  return entry.baseline?.endsWith(ABSENT_SUFFIX) ?? false;
+}
+function restoreWholeFile(file, entry, stateDir) {
+  const baseline = listBackups(stateDir, file).find((backup) => backup.path === entry.baseline);
+  if (!baseline)
+    return { file, action: "no-backup", details: [] };
+  if (baseline.absent) {
+    if (!existsSync9(file))
+      return { file, action: "unchanged", details: [] };
+    return { file, action: "removed", details: [], savedAs: removeManagedFile(stateDir, file) };
+  }
+  const result = writeManagedFile(file, readFileSync10(baseline.path, "utf8"), {
+    stateDir,
+    kind: "whole-file",
+    mode: baseline.mode
+  });
+  if (result.outcome === "unchanged")
+    return { file, action: "unchanged", details: [] };
+  return {
+    file,
+    action: "restored",
+    details: [],
+    ...result.backup && { savedAs: result.backup }
+  };
+}
+function isEmpty(file) {
+  if (!existsSync9(file))
+    return false;
+  const text = readFileSync10(file, "utf8").trim();
+  return text === "" || text === "{}";
+}
+function restorePartly(file, entry, stateDir) {
+  const details = [];
+  let savedAs = null;
+  if (entry.kinds.includes("json-keys")) {
+    const keys = ownedKeys(stateDir, file);
+    if (keys.length > 0) {
+      const result = applyManagedJson({ file, stateDir, remove: keys });
+      details.push(...result.changes.map((change) => formatKeyPath(change.path)));
+      savedAs ??= result.backup;
+    }
+  }
+  if (entry.kinds.includes("markdown-block")) {
+    const result = removeManagedMarkdown({ file, stateDir });
+    if (result.outcome !== "unchanged")
+      details.push("the anymodel block");
+    savedAs ??= result.backup;
+  }
+  if (createdByUs(entry) && isEmpty(file)) {
+    const backup = removeManagedFile(stateDir, file);
+    return { file, action: "removed", details, savedAs: savedAs ?? backup };
+  }
+  if (details.length === 0)
+    return { file, action: "unchanged", details };
+  return { file, action: "cleaned", details, ...savedAs && { savedAs } };
+}
+function restore(stateDir, options = {}) {
+  const except = new Set(options.except ?? []);
+  const only = options.only === undefined ? null : new Set(options.only);
+  const entries = Object.entries(readChanged(stateDir)).filter(([file]) => !except.has(file) && (only === null || only.has(file)));
+  return entries.map(([file, entry]) => {
+    const result = entry.kinds.includes("whole-file") ? restoreWholeFile(file, entry, stateDir) : restorePartly(file, entry, stateDir);
+    if (result.action !== "no-backup")
+      forgetChange(stateDir, file);
+    if (result.action === "removed")
+      removeEmptyFolders(file, stateDir);
+    return result;
+  });
+}
+function removeEmptyFolders(file, stateDir) {
+  const root = realTarget(stateDir);
+  let dir = dirname3(file);
+  while (dir.startsWith(`${root}/`) && existsSync9(dir) && readdirSync2(dir).length === 0) {
+    rmdirSync(dir);
+    dir = dirname3(dir);
+  }
+}
+
+// src/setup/instructions.ts
+var ALWAYS_ON_FILE = "core.md";
+function optOutFile(stateDir) {
+  return join6(stateDir, "no-instructions");
+}
+function versionStampFile(stateDir) {
+  return join6(stateDir, "instructions-version");
+}
+function instructionsOptedOut(stateDir) {
+  return existsSync10(optOutFile(stateDir));
+}
+function readVersionStamp(stateDir) {
+  const file = versionStampFile(stateDir);
+  if (!existsSync10(file))
+    return null;
+  const version = readFileSync11(file, "utf8").trim();
+  return version === "" ? null : version;
+}
+function instructionsBlockBody(importPath) {
+  return [
+    "<!-- Written by anymodel setup. `anymodel setup --no-instructions` takes it out. -->",
+    `@${importPath}`
+  ].join(`
+`);
+}
+function listInstructionFiles(source) {
+  if (!existsSync10(source)) {
+    throw new Error(`The plugin's instructions folder is missing: ${source}. Reinstall the plugin.`);
+  }
+  const files = readdirSync3(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative(source, join6(entry.parentPath, entry.name)).split(sep).join("/")).sort();
+  if (!files.includes(ALWAYS_ON_FILE)) {
+    throw new Error(`The plugin's instructions folder has no ${ALWAYS_ON_FILE}: ${source}. Reinstall the plugin.`);
+  }
+  return files;
+}
+function trackedCopies(target, stateDir) {
+  const root = `${realTarget(target)}/`;
+  return Object.keys(readChanged(stateDir)).filter((file) => file.startsWith(root));
+}
+function lineOf(result, block) {
+  switch (result.action) {
+    case "removed":
+      return { mark: "-", file: result.file, what: "removed" };
+    case "restored":
+      return { mark: "~", file: result.file, what: "back as it was before anymodel" };
+    case "cleaned":
+      return { mark: "~", file: result.file, what: block ? "anymodel block removed" : "cleaned" };
+    case "no-backup":
+      return {
+        mark: "!",
+        file: result.file,
+        what: "the backup from before anymodel is missing; left alone"
+      };
+    case "unchanged":
+      return null;
+  }
+}
+function copyInstalled(paths) {
+  return trackedCopies(paths.target, paths.stateDir).length > 0;
+}
+function instructionsNeedRefresh(paths, version) {
+  if (instructionsOptedOut(paths.stateDir))
+    return false;
+  if (!copyInstalled(paths))
+    return false;
+  return readVersionStamp(paths.stateDir) !== version;
+}
+function copyDifferences(paths) {
+  const files = listInstructionFiles(paths.source);
+  const out = [];
+  for (const name of files) {
+    const copy = join6(paths.target, name);
+    if (!existsSync10(copy))
+      out.push(`${name} is missing`);
+    else if (readFileSync11(copy, "utf8") !== readFileSync11(join6(paths.source, name), "utf8")) {
+      out.push(`${name} differs`);
+    }
+  }
+  const root = `${realTarget(paths.target)}/`;
+  const wanted = new Set(files.map((name) => realTarget(join6(paths.target, name))));
+  for (const file of trackedCopies(paths.target, paths.stateDir)) {
+    if (!wanted.has(file) && existsSync10(file)) {
+      out.push(`${file.slice(root.length)} is not shipped any more`);
+    }
+  }
+  return out;
+}
+function setInstructionsOptOut(stateDir, optOut, dryRun) {
+  const file = optOutFile(stateDir);
+  if (optOut === existsSync10(file))
+    return null;
+  if (!dryRun) {
+    if (optOut) {
+      atomicWrite(file, "Written by `anymodel setup --no-instructions`. While this file is here, setup leaves the instructions out. `anymodel setup --instructions` removes it.\n", 420);
+    } else {
+      rmSync2(file, { force: true });
+    }
+  }
+  return optOut ? {
+    mark: "+",
+    file,
+    what: "setup leaves the instructions out from now on (`anymodel setup --instructions` brings them back)"
+  } : { mark: "-", file, what: "removed: setup installs the instructions again" };
+}
+function forgetInstructionsState(stateDir) {
+  const optOut = optOutFile(stateDir);
+  const had = existsSync10(optOut);
+  rmSync2(optOut, { force: true });
+  rmSync2(versionStampFile(stateDir), { force: true });
+  return had ? optOut : null;
+}
+function removeCopies(files, stateDir, dryRun) {
+  if (files.length === 0)
+    return [];
+  if (dryRun) {
+    const changed = readChanged(stateDir);
+    return files.filter((file) => existsSync10(file)).map((file) => {
+      const entry = changed[file];
+      return entry !== undefined && createdByUs(entry) ? { mark: "-", file, what: "removed" } : { mark: "~", file, what: "back as it was before anymodel" };
+    });
+  }
+  return restore(stateDir, { only: files }).map((result) => lineOf(result, false)).filter((line) => line !== null);
+}
+function installCopy(paths, dryRun, version) {
+  const lines = [];
+  const files = listInstructionFiles(paths.source);
+  const wanted = new Set;
+  for (const name of files) {
+    const file = join6(paths.target, name);
+    wanted.add(realTarget(file));
+    const result = writeManagedFile(file, readFileSync11(join6(paths.source, name), "utf8"), {
+      stateDir: paths.stateDir,
+      kind: "whole-file",
+      mode: 420,
+      dryRun
+    });
+    if (result.outcome !== "unchanged") {
+      lines.push({
+        mark: result.outcome === "created" ? "+" : "~",
+        file,
+        what: result.outcome
+      });
+    }
+  }
+  const stale = trackedCopies(paths.target, paths.stateDir).filter((file) => !wanted.has(file));
+  lines.push(...removeCopies(stale, paths.stateDir, dryRun).map((line) => ({
+    ...line,
+    what: `${line.what} (the plugin no longer ships it)`
+  })));
+  if (!dryRun && readVersionStamp(paths.stateDir) !== version) {
+    atomicWrite(versionStampFile(paths.stateDir), `${version}
+`, 420);
+  }
+  return lines;
+}
+function installInstructions(paths, dryRun, version) {
+  const lines = installCopy(paths, dryRun, version);
+  const before = existsSync10(paths.claudeMd) ? readFileSync11(paths.claudeMd, "utf8") : null;
+  const block = applyManagedMarkdown({
+    file: paths.claudeMd,
+    stateDir: paths.stateDir,
+    body: instructionsBlockBody(paths.importPath),
+    dryRun
+  });
+  if (block.outcome === "created") {
+    lines.push({ mark: "+", file: paths.claudeMd, what: "created, with the anymodel block" });
+  } else if (block.outcome === "updated") {
+    const had = before?.includes(BLOCK_BEGIN) ?? false;
+    lines.push({
+      mark: "~",
+      file: paths.claudeMd,
+      what: had ? "anymodel block updated" : "anymodel block added"
+    });
+  }
+  return lines;
+}
+function removeInstructions(paths, dryRun) {
+  const lines = [];
+  const claudeMd = realTarget(paths.claudeMd);
+  const text = existsSync10(claudeMd) ? readFileSync11(claudeMd, "utf8") : null;
+  const entry = readChanged(paths.stateDir)[claudeMd];
+  if (text?.includes(BLOCK_BEGIN)) {
+    if (dryRun) {
+      const empty = renderWithoutBlock(text, claudeMd).trim() === "";
+      lines.push(entry !== undefined && createdByUs(entry) && empty ? { mark: "-", file: claudeMd, what: "removed" } : { mark: "~", file: claudeMd, what: "anymodel block removed" });
+    } else if (entry !== undefined) {
+      for (const result of restore(paths.stateDir, { only: [claudeMd] })) {
+        const line = lineOf(result, true);
+        if (line)
+          lines.push(line);
+      }
+    } else {
+      removeManagedMarkdown({ file: claudeMd, stateDir: paths.stateDir });
+      lines.push({ mark: "~", file: claudeMd, what: "anymodel block removed" });
+    }
+  }
+  lines.push(...removeCopies(trackedCopies(paths.target, paths.stateDir), paths.stateDir, dryRun));
+  if (!dryRun)
+    rmSync2(versionStampFile(paths.stateDir), { force: true });
+  return lines;
+}
+
 // src/setup/launcher.ts
-import { join as join6 } from "path";
+import { join as join7 } from "path";
 var LAUNCHER_NAME = "anymodel";
 var FIND_INSTALL_JS = [
   "const f=process.argv[process.argv.length-1];",
@@ -8434,7 +8806,7 @@ exec "$bun" "$install_path/dist/cli.js" "$@"
 `;
 }
 function installLauncher(binDir, options) {
-  const path = join6(binDir, LAUNCHER_NAME);
+  const path = join7(binDir, LAUNCHER_NAME);
   const { outcome } = writeManagedFile(path, launcherScript(options.bunPath), {
     stateDir: options.stateDir,
     kind: "whole-file",
@@ -8445,14 +8817,14 @@ function installLauncher(binDir, options) {
 }
 
 // src/setup/marketplace-access.ts
-import { existsSync as existsSync8, readFileSync as readFileSync9 } from "fs";
+import { existsSync as existsSync11, readFileSync as readFileSync12 } from "fs";
 var ACCESS_TIMEOUT_MS = 1e4;
 function marketplaceSource(knownMarketplacesFile, name, env = process.env) {
-  if (!existsSync8(knownMarketplacesFile))
+  if (!existsSync11(knownMarketplacesFile))
     return { kind: "missing" };
   let known;
   try {
-    known = JSON.parse(readFileSync9(knownMarketplacesFile, "utf8"));
+    known = JSON.parse(readFileSync12(knownMarketplacesFile, "utf8"));
   } catch {
     return { kind: "missing" };
   }
@@ -8562,15 +8934,111 @@ async function canReadHttp(url) {
   }
 }
 function marketplaceInstallLocation(knownMarketplacesFile, name) {
-  if (!existsSync8(knownMarketplacesFile))
+  if (!existsSync11(knownMarketplacesFile))
     return null;
   try {
-    const known = JSON.parse(readFileSync9(knownMarketplacesFile, "utf8"));
+    const known = JSON.parse(readFileSync12(knownMarketplacesFile, "utf8"));
     const location = known?.[name]?.installLocation;
     return typeof location === "string" && location !== "" ? location : null;
   } catch {
     return null;
   }
+}
+
+// src/cli/setup.ts
+import { existsSync as existsSync12, readFileSync as readFileSync13 } from "fs";
+import { delimiter, join as join8 } from "path";
+var AUTO_UPDATE_KEY = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
+function show2(value) {
+  return value === undefined ? "(none)" : JSON.stringify(value);
+}
+function marketplaceKnown(settingsFile) {
+  if (!existsSync12(settingsFile))
+    return false;
+  try {
+    const settings = JSON.parse(readFileSync13(settingsFile, "utf8"));
+    const entry = settings.extraKnownMarketplaces?.[MARKETPLACE];
+    return typeof entry === "object" && entry !== null;
+  } catch {
+    return false;
+  }
+}
+function instructionsPaths(paths, source) {
+  const target = join8(paths.stateDir, "instructions");
+  return {
+    source,
+    target,
+    claudeMd: join8(paths.claudeConfigDir, "CLAUDE.md"),
+    stateDir: paths.stateDir,
+    importPath: tildify(join8(target, ALWAYS_ON_FILE), paths.home)
+  };
+}
+function applySetup(paths, options, dryRun) {
+  const short = (path) => tildify(path, paths.home);
+  const lines = [];
+  const launcher = installLauncher(paths.binDir, {
+    stateDir: paths.stateDir,
+    bunPath: process.execPath,
+    dryRun
+  });
+  if (launcher.outcome !== "unchanged") {
+    const mark = launcher.outcome === "created" ? "+" : "~";
+    lines.push(`${mark} ${short(launcher.path)}: launcher ${launcher.outcome}`);
+  }
+  const settings = applyManagedJson({
+    file: paths.settingsFile,
+    stateDir: paths.stateDir,
+    set: [[AUTO_UPDATE_KEY, true]],
+    dryRun
+  });
+  for (const change of settings.changes) {
+    lines.push(`~ ${short(settings.file)}: ${formatKeyPath(change.path)}: ${show2(change.before)} -> ${show2(change.after)}`);
+  }
+  for (const skip of settings.skipped) {
+    lines.push(`  ${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
+  }
+  const where = instructionsPaths(paths, options.instructionsSource);
+  const optOut = options.instructions === null ? instructionsOptedOut(paths.stateDir) : !options.instructions;
+  const choice = options.instructions === null ? null : setInstructionsOptOut(paths.stateDir, optOut, dryRun);
+  const instructions = [
+    ...choice ? [choice] : [],
+    ...optOut ? removeInstructions(where, dryRun) : installInstructions(where, dryRun, VERSION)
+  ];
+  for (const line of instructions) {
+    lines.push(`${line.mark} ${short(line.file)}: ${line.what}`);
+  }
+  return lines;
+}
+async function runSetup(paths, options) {
+  const short = (path) => tildify(path, paths.home);
+  if (!marketplaceKnown(paths.settingsFile)) {
+    console.error(`${short(paths.settingsFile)} does not list the ${MARKETPLACE} marketplace yet.
+` + `Run first: ${MARKETPLACE_ADD_COMMAND}
+` + `Then:      ${PLUGIN_INSTALL_COMMAND}`);
+    return 1;
+  }
+  const planned = applySetup(paths, options, true);
+  if (options.dryRun) {
+    console.log(planned.length > 0 ? planned.join(`
+`) : "Nothing to change.");
+    console.log("Dry run: nothing was written.");
+  } else {
+    const lines = await withLock(paths.stateDir, () => applySetup(paths, options, false), {
+      waitMs: 1e4
+    });
+    if (lines.length === 0) {
+      console.log("Nothing to change. Setup is up to date.");
+    } else {
+      console.log(lines.join(`
+`));
+      console.log(`Done. Each changed file has a backup in ${short(paths.stateDir)}/backups/.`);
+    }
+  }
+  const pathDirs = (process.env.PATH ?? "").split(delimiter);
+  if (!pathDirs.includes(paths.binDir)) {
+    console.log(`Note: ${short(paths.binDir)} is not on your PATH. Add it, so the anymodel command works.`);
+  }
+  return 0;
 }
 
 // src/cli/doctor.ts
@@ -8582,10 +9050,10 @@ var UPDATE_BLOCKING_VARS = [
 var FORCE_PLUGIN_UPDATES_VAR = "FORCE_AUTOUPDATE_PLUGINS";
 var MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 function readSettings2(file) {
-  if (!existsSync9(file))
+  if (!existsSync13(file))
     return null;
   try {
-    const parsed = JSON.parse(readFileSync10(file, "utf8"));
+    const parsed = JSON.parse(readFileSync14(file, "utf8"));
     return typeof parsed === "object" && parsed !== null ? parsed : null;
   } catch {
     return null;
@@ -8609,7 +9077,7 @@ function checkPlugin(paths) {
     };
   }
   const where = tildify(install.installPath, paths.home);
-  if (!existsSync9(install.installPath)) {
+  if (!existsSync13(install.installPath)) {
     return {
       ok: false,
       text: `the plugin folder is missing: ${where}. Run: ${PLUGIN_INSTALL_COMMAND}`
@@ -8629,14 +9097,14 @@ function isExecutable(file) {
   }
 }
 function checkLauncher(paths) {
-  const launcher = join7(paths.binDir, LAUNCHER_NAME);
+  const launcher = join9(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
-  if (!existsSync9(launcher))
+  if (!existsSync13(launcher))
     return { ok: false, text: `no launcher at ${where}. Run: anymodel setup` };
   if (!isExecutable(launcher)) {
     return { ok: false, text: `the launcher ${where} is not executable. Run: anymodel setup` };
   }
-  const script = readFileSync10(launcher, "utf8");
+  const script = readFileSync14(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
     return { ok: false, text: `the launcher ${where} is out of date. Run: anymodel setup` };
@@ -8663,7 +9131,7 @@ async function checkMarketplaceAccess(paths, env) {
     case "unknown":
       return { ok: false, text: `cannot check the marketplace source (${source.type})` };
     case "local":
-      return existsSync9(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : { ok: false, text: `the marketplace folder is missing: ${source.path}` };
+      return existsSync13(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : { ok: false, text: `the marketplace folder is missing: ${source.path}` };
     case "http": {
       const url = redactUrl(source.url);
       const result = await canReadHttp(source.url);
@@ -8686,7 +9154,7 @@ async function checkMarketplaceAccess(paths, env) {
 }
 function marketplaceVersion(manifest) {
   try {
-    const version = JSON.parse(readFileSync10(manifest, "utf8"))?.version;
+    const version = JSON.parse(readFileSync14(manifest, "utf8"))?.version;
     return typeof version === "string" ? version : null;
   } catch {
     return null;
@@ -8705,7 +9173,7 @@ function checkInstalledVersion(paths) {
       text: `the ${MARKETPLACE} marketplace has no local copy. Run: ${MARKETPLACE_UPDATE_COMMAND}`
     };
   }
-  const manifest = join7(location, "plugin", ".claude-plugin", "plugin.json");
+  const manifest = join9(location, "plugin", ".claude-plugin", "plugin.json");
   const latest = marketplaceVersion(manifest);
   if (latest === null) {
     return {
@@ -8781,7 +9249,7 @@ function hasEntry(data, field, key) {
 function checkOldPlugin(settings, paths) {
   const plugins = settings?.enabledPlugins;
   const enabled = isJsonObject6(plugins) && plugins[OLD_PLUGIN_ID] === true;
-  if (!existsSync9(join7(paths.claudeConfigDir, OLD_NAME))) {
+  if (!existsSync13(join9(paths.claudeConfigDir, OLD_NAME))) {
     if (!enabled)
       return null;
     return {
@@ -8790,30 +9258,134 @@ function checkOldPlugin(settings, paths) {
     };
   }
   const short = (path) => tildify(path, paths.home);
-  const launcher = join7(paths.binDir, OLD_NAME);
+  const launcher = join9(paths.binDir, OLD_NAME);
   const left = [
     enabled ? "the plugin enabled" : null,
     hasEntry(readSettings2(paths.installedPluginsFile), "plugins", OLD_PLUGIN_ID) ? "the plugin installed" : null,
-    existsSync9(launcher) ? `its launcher ${short(launcher)}` : null,
+    existsSync13(launcher) ? `its launcher ${short(launcher)}` : null,
     hasEntry(settings, "extraKnownMarketplaces", OLD_NAME) ? `extraKnownMarketplaces.${OLD_NAME} in ${short(paths.settingsFile)}` : null,
     hasEntry(readSettings2(paths.knownMarketplacesFile), null, OLD_NAME) ? `the ${OLD_NAME} marketplace` : null
   ].filter((thing) => thing !== null);
   if (left.length === 0)
     return null;
   const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME}\``;
-  const canRun = existsSync9(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
+  const canRun = existsSync13(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
   const steps = canRun ? `Run \`${OLD_NAME} restore\` first, then \`${then}.` : `Its launcher cannot run, so remove by hand ${short(launcher)} and "${OLD_NAME}" under extraKnownMarketplaces in ${short(paths.settingsFile)}; then run \`${then}.`;
   return {
     ok: false,
     text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}. ${steps}`
   };
 }
-async function runDoctor(paths, env, gateway) {
+function checkInstructions(paths, source) {
+  const where = instructionsPaths(paths, source);
+  const copy = `${tildify(where.target, paths.home)}/`;
+  const claudeMd = tildify(where.claudeMd, paths.home);
+  if (instructionsOptedOut(paths.stateDir)) {
+    return {
+      ok: true,
+      info: true,
+      text: "instructions: left out (anymodel setup --no-instructions). To add them: anymodel setup --instructions"
+    };
+  }
+  if (!copyInstalled(where)) {
+    return {
+      ok: false,
+      text: `the instructions are not installed in ${copy}. Run: anymodel setup`
+    };
+  }
+  const why = copyDifferences(where);
+  if (instructionsNeedRefresh(where, VERSION)) {
+    why.unshift(`written by ${readVersionStamp(paths.stateDir) ?? "an unknown version"}`);
+  }
+  if (why.length > 0) {
+    return {
+      ok: false,
+      text: `the instructions copy ${copy} is not this plugin version's (${why.join("; ")}). Run: anymodel setup`
+    };
+  }
+  const text = existsSync13(where.claudeMd) ? readFileSync14(where.claudeMd, "utf8") : "";
+  if (!text.includes(instructionsBlockBody(where.importPath))) {
+    return {
+      ok: false,
+      text: `${claudeMd} does not import the instructions (its anymodel block is missing or changed). Run: anymodel setup`
+    };
+  }
+  return {
+    ok: true,
+    text: `the instructions copy ${copy} is this version's, and ${claudeMd} imports it`
+  };
+}
+var PROJECT_MEMORY_FILES = ["CLAUDE.md", join9(".claude", "CLAUDE.md"), "CLAUDE.local.md"];
+function anymodelImports(text) {
+  const found = [];
+  let inFence = false;
+  for (const line of text.split(`
+`)) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence)
+      continue;
+    const outsideCode = line.replace(/`[^`]*`/g, " ");
+    for (const match of outsideCode.matchAll(/(?:^|\s)@((?:~\/|\/)\S+)/g)) {
+      const path = match[1] ?? "";
+      if (path.includes("/anymodel/instructions/"))
+        found.push(path);
+    }
+  }
+  return found;
+}
+function checkProjectImports(paths, cwd) {
+  const short = (path) => tildify(path, paths.home);
+  const imports = [];
+  for (let dir = cwd;; dir = dirname4(dir)) {
+    for (const name of PROJECT_MEMORY_FILES) {
+      const from = join9(dir, name);
+      if (from === join9(paths.claudeConfigDir, "CLAUDE.md") || !existsSync13(from))
+        continue;
+      let text;
+      try {
+        text = readFileSync14(from, "utf8");
+      } catch {
+        continue;
+      }
+      for (const path of anymodelImports(text)) {
+        const file = path.startsWith("~/") ? join9(paths.home, path.slice(2)) : path;
+        imports.push({ from, path, file });
+      }
+    }
+    if (dirname4(dir) === dir)
+      break;
+  }
+  if (imports.length === 0)
+    return null;
+  const missing = imports.filter((entry) => !existsSync13(entry.file));
+  if (missing.length === 0) {
+    const names = imports.map((entry) => entry.path).join(", ");
+    return { ok: true, text: `the project's CLAUDE.md imports ${names}, and it is there` };
+  }
+  const list = missing.map((entry) => `${short(entry.from)} imports ${entry.path}`).join("; ");
+  if (instructionsOptedOut(paths.stateDir)) {
+    return {
+      ok: true,
+      info: true,
+      text: `${list}, which is missing: it loads nothing while the instructions are left out here. To add them: anymodel setup --instructions`
+    };
+  }
+  return {
+    ok: false,
+    text: `${list}, which is missing: it loads nothing. Run: anymodel setup`
+  };
+}
+async function runDoctor(paths, env, gateway, local) {
   const settings = readSettings2(paths.settingsFile);
   const checks = [
     checkPlugin(paths),
     checkInstalledVersion(paths),
     checkLauncher(paths),
+    checkInstructions(paths, local.instructionsSource),
+    checkProjectImports(paths, local.cwd),
     await checkMarketplaceAccess(paths, env),
     checkAutoUpdate(settings, paths),
     checkUpdatesNotOff(settings, env, paths),
@@ -8828,177 +9400,7 @@ async function runDoctor(paths, env, gateway) {
 }
 
 // src/cli/restore.ts
-import { rmSync as rmSync2 } from "fs";
-
-// src/setup/restore.ts
-import { existsSync as existsSync11, readdirSync as readdirSync2, readFileSync as readFileSync12, rmdirSync } from "fs";
-import { dirname as dirname3 } from "path";
-
-// src/setup/managed-markdown.ts
-import { existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
-var BLOCK_BEGIN = "<!-- anymodel:begin -->";
-var BLOCK_END = "<!-- anymodel:end -->";
-function countOf(text, marker) {
-  return text.split(marker).length - 1;
-}
-function findBlock(current, file) {
-  const begins = countOf(current, BLOCK_BEGIN);
-  const ends = countOf(current, BLOCK_END);
-  if (begins === 0 && ends === 0)
-    return null;
-  const start = current.indexOf(BLOCK_BEGIN);
-  const end = current.indexOf(BLOCK_END);
-  if (begins !== 1 || ends !== 1 || end < start) {
-    throw new Error(`${file} has a broken anymodel block (${begins} begin and ${ends} end markers). ` + "Fix it by hand: keep one begin marker and one end marker after it.");
-  }
-  return { start, end: end + BLOCK_END.length };
-}
-function renderManagedMarkdown(current, body, file = "the file") {
-  const block = `${BLOCK_BEGIN}
-${body.replace(/\n+$/, "")}
-${BLOCK_END}`;
-  const found = findBlock(current, file);
-  if (found === null) {
-    if (current === "")
-      return `${block}
-`;
-    const separator = current.endsWith(`
-
-`) ? "" : current.endsWith(`
-`) ? `
-` : `
-
-`;
-    return `${current}${separator}${block}
-`;
-  }
-  return `${current.slice(0, found.start)}${block}${current.slice(found.end)}`;
-}
-function renderWithoutBlock(current, file = "the file") {
-  const found = findBlock(current, file);
-  if (found === null)
-    return current;
-  let before = current.slice(0, found.start);
-  let after = current.slice(found.end);
-  if (after.startsWith(`
-`))
-    after = after.slice(1);
-  if (before === "" && after.startsWith(`
-`))
-    after = after.slice(1);
-  if (before.endsWith(`
-
-`) && (after === "" || after.startsWith(`
-`))) {
-    before = before.slice(0, -1);
-  }
-  return `${before}${after}`;
-}
-function writeMarkdown(options, render) {
-  const file = realTarget(options.file);
-  return retryOnConcurrentChange(file, () => {
-    const text = existsSync10(file) ? readFileSync11(file, "utf8") : null;
-    const next = render(text ?? "", file);
-    if (text === null && next === "")
-      return { outcome: "unchanged", backup: null };
-    options.onBeforeWrite?.();
-    return writeManagedFile(file, next, {
-      stateDir: options.stateDir,
-      kind: "markdown-block",
-      newFileMode: 420,
-      expectedContent: text,
-      ...options.dryRun !== undefined && { dryRun: options.dryRun }
-    });
-  });
-}
-function applyManagedMarkdown(options) {
-  return writeMarkdown(options, (current, file) => renderManagedMarkdown(current, options.body, file));
-}
-function removeManagedMarkdown(options) {
-  return writeMarkdown(options, renderWithoutBlock);
-}
-
-// src/setup/restore.ts
-function createdByUs(entry) {
-  return entry.baseline?.endsWith(ABSENT_SUFFIX) ?? false;
-}
-function restoreWholeFile(file, entry, stateDir) {
-  const baseline = listBackups(stateDir, file).find((backup) => backup.path === entry.baseline);
-  if (!baseline)
-    return { file, action: "no-backup", details: [] };
-  if (baseline.absent) {
-    if (!existsSync11(file))
-      return { file, action: "unchanged", details: [] };
-    return { file, action: "removed", details: [], savedAs: removeManagedFile(stateDir, file) };
-  }
-  const result = writeManagedFile(file, readFileSync12(baseline.path, "utf8"), {
-    stateDir,
-    kind: "whole-file",
-    mode: baseline.mode
-  });
-  if (result.outcome === "unchanged")
-    return { file, action: "unchanged", details: [] };
-  return {
-    file,
-    action: "restored",
-    details: [],
-    ...result.backup && { savedAs: result.backup }
-  };
-}
-function isEmpty(file) {
-  if (!existsSync11(file))
-    return false;
-  const text = readFileSync12(file, "utf8").trim();
-  return text === "" || text === "{}";
-}
-function restorePartly(file, entry, stateDir) {
-  const details = [];
-  let savedAs = null;
-  if (entry.kinds.includes("json-keys")) {
-    const keys = ownedKeys(stateDir, file);
-    if (keys.length > 0) {
-      const result = applyManagedJson({ file, stateDir, remove: keys });
-      details.push(...result.changes.map((change) => formatKeyPath(change.path)));
-      savedAs ??= result.backup;
-    }
-  }
-  if (entry.kinds.includes("markdown-block")) {
-    const result = removeManagedMarkdown({ file, stateDir });
-    if (result.outcome !== "unchanged")
-      details.push("the anymodel block");
-    savedAs ??= result.backup;
-  }
-  if (createdByUs(entry) && isEmpty(file)) {
-    const backup = removeManagedFile(stateDir, file);
-    return { file, action: "removed", details, savedAs: savedAs ?? backup };
-  }
-  if (details.length === 0)
-    return { file, action: "unchanged", details };
-  return { file, action: "cleaned", details, ...savedAs && { savedAs } };
-}
-function restore(stateDir, options = {}) {
-  const except = new Set(options.except ?? []);
-  const only = options.only === undefined ? null : new Set(options.only);
-  const entries = Object.entries(readChanged(stateDir)).filter(([file]) => !except.has(file) && (only === null || only.has(file)));
-  return entries.map(([file, entry]) => {
-    const result = entry.kinds.includes("whole-file") ? restoreWholeFile(file, entry, stateDir) : restorePartly(file, entry, stateDir);
-    if (result.action !== "no-backup")
-      forgetChange(stateDir, file);
-    if (result.action === "removed")
-      removeEmptyFolders(file, stateDir);
-    return result;
-  });
-}
-function removeEmptyFolders(file, stateDir) {
-  const root = realTarget(stateDir);
-  let dir = dirname3(file);
-  while (dir.startsWith(`${root}/`) && existsSync11(dir) && readdirSync2(dir).length === 0) {
-    rmdirSync(dir);
-    dir = dirname3(dir);
-  }
-}
-
-// src/cli/restore.ts
+import { rmSync as rmSync3 } from "fs";
 function describe2(result, short) {
   const file = short(result.file);
   switch (result.action) {
@@ -9035,6 +9437,13 @@ function print(results, short) {
     }
   }
 }
+function forgetInstructionChoice(stateDir, short) {
+  const forgotten = forgetInstructionsState(stateDir);
+  if (forgotten === null)
+    return false;
+  console.log(`- ${short(forgotten)}: removed (your --no-instructions choice; the next setup installs the instructions)`);
+  return true;
+}
 async function runRestore(paths, options) {
   const short = (path) => tildify(path, paths.home);
   const changed = readChanged(paths.stateDir);
@@ -9046,6 +9455,7 @@ async function runRestore(paths, options) {
     return withLock(paths.stateDir, () => {
       const results = restore(paths.stateDir, { except: routerFiles });
       print(results, short);
+      forgetInstructionChoice(paths.stateDir, short);
       console.log(STAGE_ONE_DONE);
       return results.some((result) => result.action === "no-backup") ? 1 : 0;
     }, { waitMs: 1e4 });
@@ -9089,231 +9499,16 @@ async function runRestore(paths, options) {
     const results = restore(paths.stateDir);
     if (unitTracked)
       options.runner(["systemctl", "--user", "daemon-reload"]);
-    rmSync2(restartPendingFile(paths.stateDir), { force: true });
+    rmSync3(restartPendingFile(paths.stateDir), { force: true });
+    print(results, short);
+    const forgot = forgetInstructionChoice(paths.stateDir, short);
     if (results.length === 0) {
-      console.log("Nothing to restore: anymodel has nothing in any file.");
+      if (!forgot)
+        console.log("Nothing to restore: anymodel has nothing in any file.");
       return 0;
     }
-    print(results, short);
     return results.some((result) => result.action === "no-backup") ? 1 : 0;
   }, { waitMs: 1e4 });
-}
-
-// src/cli/setup.ts
-import { existsSync as existsSync13, readFileSync as readFileSync14 } from "fs";
-import { delimiter, join as join9 } from "path";
-
-// src/setup/instructions.ts
-import { existsSync as existsSync12, readdirSync as readdirSync3, readFileSync as readFileSync13 } from "fs";
-import { join as join8, relative, sep } from "path";
-var ALWAYS_ON_FILE = "core.md";
-function instructionsBlockBody(importPath) {
-  return [
-    "<!-- Written by anymodel setup. `anymodel setup --no-instructions` takes it out. -->",
-    `@${importPath}`
-  ].join(`
-`);
-}
-function listInstructionFiles(source) {
-  if (!existsSync12(source)) {
-    throw new Error(`The plugin's instructions folder is missing: ${source}. Reinstall the plugin.`);
-  }
-  const files = readdirSync3(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative(source, join8(entry.parentPath, entry.name)).split(sep).join("/")).sort();
-  if (!files.includes(ALWAYS_ON_FILE)) {
-    throw new Error(`The plugin's instructions folder has no ${ALWAYS_ON_FILE}: ${source}. Reinstall the plugin.`);
-  }
-  return files;
-}
-function trackedCopies(target, stateDir) {
-  const root = `${realTarget(target)}/`;
-  return Object.keys(readChanged(stateDir)).filter((file) => file.startsWith(root));
-}
-function lineOf(result, block) {
-  switch (result.action) {
-    case "removed":
-      return { mark: "-", file: result.file, what: "removed" };
-    case "restored":
-      return { mark: "~", file: result.file, what: "back as it was before anymodel" };
-    case "cleaned":
-      return { mark: "~", file: result.file, what: block ? "anymodel block removed" : "cleaned" };
-    case "no-backup":
-      return {
-        mark: "!",
-        file: result.file,
-        what: "the backup from before anymodel is missing; left alone"
-      };
-    case "unchanged":
-      return null;
-  }
-}
-function removeCopies(files, stateDir, dryRun) {
-  if (files.length === 0)
-    return [];
-  if (dryRun) {
-    const changed = readChanged(stateDir);
-    return files.filter((file) => existsSync12(file)).map((file) => {
-      const entry = changed[file];
-      return entry !== undefined && createdByUs(entry) ? { mark: "-", file, what: "removed" } : { mark: "~", file, what: "back as it was before anymodel" };
-    });
-  }
-  return restore(stateDir, { only: files }).map((result) => lineOf(result, false)).filter((line) => line !== null);
-}
-function installInstructions(paths, dryRun) {
-  const lines = [];
-  const files = listInstructionFiles(paths.source);
-  const wanted = new Set;
-  for (const name of files) {
-    const file = join8(paths.target, name);
-    wanted.add(realTarget(file));
-    const result = writeManagedFile(file, readFileSync13(join8(paths.source, name), "utf8"), {
-      stateDir: paths.stateDir,
-      kind: "whole-file",
-      mode: 420,
-      dryRun
-    });
-    if (result.outcome !== "unchanged") {
-      lines.push({
-        mark: result.outcome === "created" ? "+" : "~",
-        file,
-        what: result.outcome
-      });
-    }
-  }
-  const stale = trackedCopies(paths.target, paths.stateDir).filter((file) => !wanted.has(file));
-  lines.push(...removeCopies(stale, paths.stateDir, dryRun).map((line) => ({
-    ...line,
-    what: `${line.what} (the plugin no longer ships it)`
-  })));
-  const before = existsSync12(paths.claudeMd) ? readFileSync13(paths.claudeMd, "utf8") : null;
-  const block = applyManagedMarkdown({
-    file: paths.claudeMd,
-    stateDir: paths.stateDir,
-    body: instructionsBlockBody(paths.importPath),
-    dryRun
-  });
-  if (block.outcome === "created") {
-    lines.push({ mark: "+", file: paths.claudeMd, what: "created, with the anymodel block" });
-  } else if (block.outcome === "updated") {
-    const had = before?.includes(BLOCK_BEGIN) ?? false;
-    lines.push({
-      mark: "~",
-      file: paths.claudeMd,
-      what: had ? "anymodel block updated" : "anymodel block added"
-    });
-  }
-  return lines;
-}
-function removeInstructions(paths, dryRun) {
-  const lines = [];
-  const claudeMd = realTarget(paths.claudeMd);
-  const text = existsSync12(claudeMd) ? readFileSync13(claudeMd, "utf8") : null;
-  const entry = readChanged(paths.stateDir)[claudeMd];
-  if (text?.includes(BLOCK_BEGIN)) {
-    if (dryRun) {
-      const empty = renderWithoutBlock(text, claudeMd).trim() === "";
-      lines.push(entry !== undefined && createdByUs(entry) && empty ? { mark: "-", file: claudeMd, what: "removed" } : { mark: "~", file: claudeMd, what: "anymodel block removed" });
-    } else if (entry !== undefined) {
-      for (const result of restore(paths.stateDir, { only: [claudeMd] })) {
-        const line = lineOf(result, true);
-        if (line)
-          lines.push(line);
-      }
-    } else {
-      removeManagedMarkdown({ file: claudeMd, stateDir: paths.stateDir });
-      lines.push({ mark: "~", file: claudeMd, what: "anymodel block removed" });
-    }
-  }
-  lines.push(...removeCopies(trackedCopies(paths.target, paths.stateDir), paths.stateDir, dryRun));
-  return lines;
-}
-
-// src/cli/setup.ts
-var AUTO_UPDATE_KEY = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
-function show2(value) {
-  return value === undefined ? "(none)" : JSON.stringify(value);
-}
-function marketplaceKnown(settingsFile) {
-  if (!existsSync13(settingsFile))
-    return false;
-  try {
-    const settings = JSON.parse(readFileSync14(settingsFile, "utf8"));
-    const entry = settings.extraKnownMarketplaces?.[MARKETPLACE];
-    return typeof entry === "object" && entry !== null;
-  } catch {
-    return false;
-  }
-}
-function instructionsPaths(paths, source) {
-  const target = join9(paths.stateDir, "instructions");
-  return {
-    source,
-    target,
-    claudeMd: join9(paths.claudeConfigDir, "CLAUDE.md"),
-    stateDir: paths.stateDir,
-    importPath: tildify(join9(target, ALWAYS_ON_FILE), paths.home)
-  };
-}
-function applySetup(paths, options, dryRun) {
-  const short = (path) => tildify(path, paths.home);
-  const lines = [];
-  const launcher = installLauncher(paths.binDir, {
-    stateDir: paths.stateDir,
-    bunPath: process.execPath,
-    dryRun
-  });
-  if (launcher.outcome !== "unchanged") {
-    const mark = launcher.outcome === "created" ? "+" : "~";
-    lines.push(`${mark} ${short(launcher.path)}: launcher ${launcher.outcome}`);
-  }
-  const settings = applyManagedJson({
-    file: paths.settingsFile,
-    stateDir: paths.stateDir,
-    set: [[AUTO_UPDATE_KEY, true]],
-    dryRun
-  });
-  for (const change of settings.changes) {
-    lines.push(`~ ${short(settings.file)}: ${formatKeyPath(change.path)}: ${show2(change.before)} -> ${show2(change.after)}`);
-  }
-  for (const skip of settings.skipped) {
-    lines.push(`  ${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
-  }
-  const where = instructionsPaths(paths, options.instructionsSource);
-  const instructions = options.instructions ? installInstructions(where, dryRun) : removeInstructions(where, dryRun);
-  for (const line of instructions) {
-    lines.push(`${line.mark} ${short(line.file)}: ${line.what}`);
-  }
-  return lines;
-}
-async function runSetup(paths, options) {
-  const short = (path) => tildify(path, paths.home);
-  if (!marketplaceKnown(paths.settingsFile)) {
-    console.error(`${short(paths.settingsFile)} does not list the ${MARKETPLACE} marketplace yet.
-` + `Run first: ${MARKETPLACE_ADD_COMMAND}
-` + `Then:      ${PLUGIN_INSTALL_COMMAND}`);
-    return 1;
-  }
-  const planned = applySetup(paths, options, true);
-  if (options.dryRun) {
-    console.log(planned.length > 0 ? planned.join(`
-`) : "Nothing to change.");
-    console.log("Dry run: nothing was written.");
-  } else {
-    const lines = await withLock(paths.stateDir, () => applySetup(paths, options, false), {
-      waitMs: 1e4
-    });
-    if (lines.length === 0) {
-      console.log("Nothing to change. Setup is up to date.");
-    } else {
-      console.log(lines.join(`
-`));
-      console.log(`Done. Each changed file has a backup in ${short(paths.stateDir)}/backups/.`);
-    }
-  }
-  const pathDirs = (process.env.PATH ?? "").split(delimiter);
-  if (!pathDirs.includes(paths.binDir)) {
-    console.log(`Note: ${short(paths.binDir)} is not on your PATH. Add it, so the anymodel command works.`);
-  }
-  return 0;
 }
 
 // src/entries/cli.ts
@@ -9322,14 +9517,16 @@ var HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claud
 Usage: anymodel <command> [options]
 
 Commands:
-  setup [--dry-run] [--no-instructions]
+  setup [--dry-run] [--no-instructions | --instructions]
                      Install the launcher in ~/.local/bin, turn on plugin auto-update,
                      and install the plugin's instructions for Claude: a copy in
                      ~/.claude/anymodel/instructions/, imported by a block in
-                     ~/.claude/CLAUDE.md. --no-instructions leaves them out (and takes
-                     them out when they are there). --dry-run prints what would change
-                     and writes nothing.
-  doctor             Check the install. Exit code 1 when a check fails.
+                     ~/.claude/CLAUDE.md. --no-instructions takes them out and keeps
+                     them out: a later plain setup leaves them out too. --instructions
+                     brings them back. restore forgets the choice. --dry-run prints what
+                     would change and writes nothing.
+  doctor             Check the install, and the anymodel files the current project's
+                     CLAUDE.md imports. Exit code 1 when a check fails.
   restore [--yes] [--now]
                      Remove what anymodel added, and keep everything else: its settings
                      keys, its Markdown blocks, and the files it created (the launcher,
@@ -9380,25 +9577,30 @@ async function main(argv) {
   const paths = cliPaths();
   switch (command) {
     case "setup": {
-      const unknown = rest.filter((arg) => arg !== "--dry-run" && arg !== "--no-instructions");
+      const known = ["--dry-run", "--no-instructions", "--instructions"];
+      const unknown = rest.filter((arg) => !known.includes(arg));
       if (unknown.length > 0) {
         console.error(`Unknown option: ${unknown.join(" ")}
 
 ${HELP}`);
         return 2;
       }
+      const off = rest.includes("--no-instructions");
+      const on = rest.includes("--instructions");
+      if (off && on) {
+        console.error(`Use --no-instructions or --instructions, not both.
+
+${HELP}`);
+        return 2;
+      }
       return runSetup(paths, {
         dryRun: rest.includes("--dry-run"),
-        instructions: !rest.includes("--no-instructions"),
+        instructions: off ? false : on ? true : null,
         instructionsSource: instructionsFolder()
       });
     }
     case "doctor":
-      return runDoctor(paths, process.env, {
-        bundle: routerBundle(),
-        runner,
-        systemd
-      });
+      return runDoctor(paths, process.env, { bundle: routerBundle(), runner, systemd }, { instructionsSource: instructionsFolder(), cwd: process.cwd() });
     case "restore": {
       const unknown = rest.filter((arg) => arg !== "--yes" && arg !== "--now");
       if (unknown.length > 0) {

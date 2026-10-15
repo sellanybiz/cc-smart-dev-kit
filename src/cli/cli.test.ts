@@ -11,10 +11,12 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { MARKETPLACE_SOURCE, VERSION } from "../build-info";
+import { versionStampFile } from "../setup/instructions";
 import { installLauncher } from "../setup/launcher";
 import { listBackups } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
+import { anymodelImports } from "./doctor";
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 
@@ -102,10 +104,13 @@ function setup(options: SetupOptions = {}) {
     CLAUDE_CONFIG_DIR: configDir,
     PATH: `${fakeBin}:${join(home, ".local", "bin")}:${process.env.PATH ?? ""}`,
   };
-  const run = (args: string[], extraEnv: Record<string, string> = {}) => {
+  // The CLI runs in the temp HOME, never in this repo: doctor reads the CLAUDE.md files of
+  // the current folder and the folders above it.
+  const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) => {
     // The live-router guard runs in the CLI too: no test may reach port 20100.
     const guard = subprocessGuard();
     const result = Bun.spawnSync(["bun", ...guard.args, CLI, ...args], {
+      cwd,
       env: { ...env, ...extraEnv, ...guard.env },
       stdout: "pipe",
       stderr: "pipe",
@@ -147,6 +152,16 @@ const BLOCK = [
 ].join("\n");
 
 const PLUGIN_INSTRUCTIONS = join(import.meta.dir, "..", "..", "plugin", "instructions");
+
+/** What setup prints when it stores `--no-instructions`, and when `--instructions` clears it. */
+const OPT_OUT_STORED =
+  "+ ~/.claude/anymodel/no-instructions: setup leaves the instructions out from now on (`anymodel setup --instructions` brings them back)";
+const OPT_OUT_CLEARED =
+  "- ~/.claude/anymodel/no-instructions: removed: setup installs the instructions again";
+
+/** doctor's line for instructions that are in place. */
+const INSTRUCTIONS_OK =
+  "✓ the instructions copy ~/.claude/anymodel/instructions/ is this version's, and ~/.claude/CLAUDE.md imports it";
 
 describe("anymodel setup", () => {
   test("installs the launcher and turns on auto-update, keeping the other settings", () => {
@@ -304,6 +319,7 @@ describe("anymodel setup: the instructions", () => {
       [
         "+ ~/.local/bin/anymodel: launcher created",
         "~ ~/.claude/settings.json: extraKnownMarketplaces.anymodel.autoUpdate: (none) -> true",
+        OPT_OUT_STORED,
         "Done. Each changed file has a backup in ~/.claude/anymodel/backups/.",
         "",
       ].join("\n"),
@@ -319,6 +335,7 @@ describe("anymodel setup: the instructions", () => {
     run(["setup"]);
     const dry = run(["setup", "--no-instructions", "--dry-run"]);
     const expected = [
+      OPT_OUT_STORED,
       "~ ~/.claude/CLAUDE.md: anymodel block removed",
       "- ~/.claude/anymodel/instructions/core.md: removed",
       "- ~/.claude/anymodel/instructions/optin/worktrees.md: removed",
@@ -354,6 +371,63 @@ describe("anymodel setup: the instructions", () => {
     expect(existsSync(join(stateDir, "instructions"))).toBe(false);
   });
 
+  test("--no-instructions is kept: a later plain setup leaves them out", () => {
+    const { configDir, stateDir, run } = setup();
+    run(["setup"]);
+    run(["setup", "--no-instructions"]);
+    const result = run(["setup"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("Nothing to change. Setup is up to date.\n");
+    expect(existsSync(join(configDir, "CLAUDE.md"))).toBe(false);
+    expect(existsSync(join(stateDir, "instructions"))).toBe(false);
+  });
+
+  test("--instructions opts back in: the choice is cleared and they are installed", () => {
+    const { stateDir, run } = setup();
+    run(["setup", "--no-instructions"]);
+    const dry = run(["setup", "--instructions", "--dry-run"]);
+    expect(dry.stdout).toBe(
+      [OPT_OUT_CLEARED, ...INSTRUCTIONS_CREATED, "Dry run: nothing was written.", ""].join("\n"),
+    );
+    expect(existsSync(join(stateDir, "no-instructions"))).toBe(true);
+    const result = run(["setup", "--instructions"]);
+    expect(result.stdout).toBe(
+      [
+        OPT_OUT_CLEARED,
+        ...INSTRUCTIONS_CREATED,
+        "Done. Each changed file has a backup in ~/.claude/anymodel/backups/.",
+        "",
+      ].join("\n"),
+    );
+    expect(run(["setup"]).stdout).toBe("Nothing to change. Setup is up to date.\n");
+  });
+
+  test("--instructions and --no-instructions together are refused with exit 2", () => {
+    const { stateDir, run } = setup();
+    const result = run(["setup", "--instructions", "--no-instructions"]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toStartWith("Use --no-instructions or --instructions, not both.\n");
+    expect(existsSync(stateDir)).toBe(false);
+  });
+
+  test("restore forgets --no-instructions: the next setup installs them", () => {
+    const { stateDir, run } = setup();
+    run(["setup", "--no-instructions"]);
+    const result = run(["restore"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(
+      "- ~/.claude/anymodel/no-instructions: removed (your --no-instructions choice; the next setup installs the instructions)\n",
+    );
+    expect(existsSync(join(stateDir, "no-instructions"))).toBe(false);
+    expect(run(["setup"]).stdout).toContain(INSTRUCTIONS_CREATED.join("\n"));
+  });
+
+  test("setup stamps the copy with this plugin's version", () => {
+    const { stateDir, run } = setup();
+    run(["setup"]);
+    expect(readFileSync(versionStampFile(stateDir), "utf8")).toBe(`${VERSION}\n`);
+  });
+
   test("an unknown setup option is refused with exit 2, and nothing is written", () => {
     const { stateDir, run } = setup();
     const result = run(["setup", "--no-instruction"]);
@@ -373,6 +447,7 @@ describe("anymodel doctor", () => {
         `✓ anymodel@anymodel ${VERSION} is installed at ~/.claude/plugins/cache/anymodel/anymodel/${VERSION}`,
         `✓ the installed version ${VERSION} is not behind the marketplace`,
         `✓ the launcher ~/.local/bin/anymodel runs anymodel ${VERSION}`,
+        INSTRUCTIONS_OK,
         "✓ can read the marketplace at git@github.com:example-org/anymodel.git",
         "✓ plugin auto-update is on",
         "✓ plugin updates are not switched off",
@@ -624,6 +699,138 @@ describe("anymodel doctor", () => {
     expect(result.stdout).toContain(
       "✗ another plugin named anymodel is enabled: anymodel@someone-else",
     );
+  });
+});
+
+describe("anymodel doctor: the instructions", () => {
+  /** doctor's lines, without the ones for other checks. */
+  const instructionLines = (stdout: string) =>
+    stdout.split("\n").filter((line) => /instructions|CLAUDE\.md/.test(line));
+
+  test("left out by choice: information, not a failure", () => {
+    const { run } = setup();
+    run(["setup", "--no-instructions"]);
+    const result = run(["doctor"]);
+    expect(instructionLines(result.stdout)).toEqual([
+      "· instructions: left out (anymodel setup --no-instructions). To add them: anymodel setup --instructions",
+    ]);
+    expect(result.exitCode).toBe(0);
+  });
+
+  test("never installed: ✗ with the setup command", () => {
+    const { run } = setup();
+    expect(instructionLines(run(["doctor"]).stdout)).toEqual([
+      "✗ the instructions are not installed in ~/.claude/anymodel/instructions/. Run: anymodel setup",
+    ]);
+  });
+
+  test("a copy someone edited: ✗ naming the file, exit 1", () => {
+    const { stateDir, run } = setup();
+    run(["setup"]);
+    writeFileSync(join(stateDir, "instructions", "core.md"), "# Edited by hand\n");
+    const result = run(["doctor"]);
+    expect(instructionLines(result.stdout)).toEqual([
+      "✗ the instructions copy ~/.claude/anymodel/instructions/ is not this plugin version's (core.md differs). Run: anymodel setup",
+    ]);
+    expect(result.exitCode).toBe(1);
+  });
+
+  test("a copy another plugin version wrote: ✗ naming that version, exit 1", () => {
+    const { stateDir, run } = setup();
+    run(["setup"]);
+    writeFileSync(versionStampFile(stateDir), "0.0.1\n");
+    const result = run(["doctor"]);
+    expect(instructionLines(result.stdout)).toEqual([
+      "✗ the instructions copy ~/.claude/anymodel/instructions/ is not this plugin version's (written by 0.0.1). Run: anymodel setup",
+    ]);
+    expect(result.exitCode).toBe(1);
+  });
+
+  test("the block was taken out of CLAUDE.md by hand: ✗ with the setup command", () => {
+    const { configDir, run } = setup();
+    run(["setup"]);
+    writeFileSync(join(configDir, "CLAUDE.md"), "# Mine\n");
+    expect(instructionLines(run(["doctor"]).stdout)).toEqual([
+      "✗ ~/.claude/CLAUDE.md does not import the instructions (its anymodel block is missing or changed). Run: anymodel setup",
+    ]);
+  });
+});
+
+describe("anymodel doctor: a project's imports of anymodel files", () => {
+  /** A project folder in the temp HOME whose CLAUDE.md (or .claude/CLAUDE.md) holds `text`. */
+  function project(home: string, text: string, where = "CLAUDE.md") {
+    const dir = join(home, "my-app");
+    mkdirSync(join(dir, ".claude"), { recursive: true });
+    writeFileSync(join(dir, where), text);
+    // doctor runs one folder below: Claude Code reads the memory files of every folder above.
+    const sub = join(dir, "src");
+    mkdirSync(sub);
+    return sub;
+  }
+  const projectLines = (stdout: string) =>
+    stdout.split("\n").filter((line) => line.includes("imports ~/"));
+
+  test("an imported anymodel file that is there: ✓", () => {
+    const { home, run } = setup();
+    run(["setup"]);
+    const cwd = project(home, "# My app\n\n@~/.claude/anymodel/instructions/optin/worktrees.md\n");
+    const result = run(["doctor"], {}, cwd);
+    expect(projectLines(result.stdout)).toEqual([
+      "✓ the project's CLAUDE.md imports ~/.claude/anymodel/instructions/optin/worktrees.md, and it is there",
+    ]);
+    expect(result.exitCode).toBe(0);
+  });
+
+  test("a missing one: ✗, it loads nothing, exit 1", () => {
+    const { home, run } = setup();
+    const cwd = project(
+      home,
+      "@~/.claude/anymodel/instructions/optin/worktrees.md\n",
+      join(".claude", "CLAUDE.md"),
+    );
+    const result = run(["doctor"], {}, cwd);
+    expect(projectLines(result.stdout)).toEqual([
+      "✗ ~/my-app/.claude/CLAUDE.md imports ~/.claude/anymodel/instructions/optin/worktrees.md, which is missing: it loads nothing. Run: anymodel setup",
+    ]);
+    expect(result.exitCode).toBe(1);
+  });
+
+  test("missing after --no-instructions: information, with the command to add them", () => {
+    const { home, run } = setup();
+    run(["setup", "--no-instructions"]);
+    const cwd = project(home, "@~/.claude/anymodel/instructions/optin/worktrees.md\n");
+    const result = run(["doctor"], {}, cwd);
+    expect(projectLines(result.stdout)).toEqual([
+      "· ~/my-app/CLAUDE.md imports ~/.claude/anymodel/instructions/optin/worktrees.md, which is missing: it loads nothing while the instructions are left out here. To add them: anymodel setup --instructions",
+    ]);
+    expect(result.exitCode).toBe(0);
+  });
+
+  test("no anymodel import: no line", () => {
+    const { home, run } = setup();
+    run(["setup"]);
+    const cwd = project(home, "# My app\n\n@docs/rules.md\n");
+    expect(projectLines(run(["doctor"], {}, cwd).stdout)).toEqual([]);
+  });
+});
+
+describe("anymodelImports", () => {
+  test("@~/ and @/ paths into an anymodel instructions copy, outside code", () => {
+    const fence = "`".repeat(3);
+    const text = [
+      "@~/.claude/anymodel/instructions/optin/worktrees.md",
+      "See @/home/user/.claude/anymodel/instructions/core.md for more.",
+      "@docs/rules.md and @~/notes.md are not anymodel's.",
+      "In code: `see @~/.claude/anymodel/instructions/a.md` is not an import.",
+      "an@~/.claude/anymodel/instructions/b.md is not one either",
+      fence,
+      "@~/.claude/anymodel/instructions/c.md",
+      fence,
+    ].join("\n");
+    expect(anymodelImports(text)).toEqual([
+      "~/.claude/anymodel/instructions/optin/worktrees.md",
+      "/home/user/.claude/anymodel/instructions/core.md",
+    ]);
   });
 });
 

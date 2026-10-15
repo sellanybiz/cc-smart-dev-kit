@@ -1,11 +1,18 @@
 import { existsSync, readFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
-import { MARKETPLACE, MARKETPLACE_ADD_COMMAND, PLUGIN_INSTALL_COMMAND } from "../build-info";
+import {
+  MARKETPLACE,
+  MARKETPLACE_ADD_COMMAND,
+  PLUGIN_INSTALL_COMMAND,
+  VERSION,
+} from "../build-info";
 import {
   ALWAYS_ON_FILE,
   type InstructionsPaths,
   installInstructions,
+  instructionsOptedOut,
   removeInstructions,
+  setInstructionsOptOut,
 } from "../setup/instructions";
 import { installLauncher } from "../setup/launcher";
 import { withLock } from "../setup/lock";
@@ -35,8 +42,12 @@ function marketplaceKnown(settingsFile: string): boolean {
 
 export interface SetupOptions {
   dryRun: boolean;
-  /** false: `--no-instructions` — leave the instructions out, and take them out if present. */
-  instructions: boolean;
+  /**
+   * `false`: `--no-instructions` — take them out, and remember it. `true`: `--instructions` —
+   * forget that choice and install them. `null`: neither — follow the stored choice (on, unless
+   * an earlier `--no-instructions` is stored).
+   */
+  instructions: boolean | null;
   /** The plugin's `instructions` folder, beside `dist/`. */
   instructionsSource: string;
 }
@@ -86,9 +97,14 @@ function applySetup(paths: CliPaths, options: SetupOptions, dryRun: boolean): st
   }
 
   const where = instructionsPaths(paths, options.instructionsSource);
-  const instructions = options.instructions
-    ? installInstructions(where, dryRun)
-    : removeInstructions(where, dryRun);
+  const optOut =
+    options.instructions === null ? instructionsOptedOut(paths.stateDir) : !options.instructions;
+  const choice =
+    options.instructions === null ? null : setInstructionsOptOut(paths.stateDir, optOut, dryRun);
+  const instructions = [
+    ...(choice ? [choice] : []),
+    ...(optOut ? removeInstructions(where, dryRun) : installInstructions(where, dryRun, VERSION)),
+  ];
   for (const line of instructions) {
     lines.push(`${line.mark} ${short(line.file)}: ${line.what}`);
   }

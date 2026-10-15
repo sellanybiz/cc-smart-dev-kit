@@ -11,14 +11,27 @@ import {
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
 import {
+  copyDifferences,
+  forgetInstructionsState,
   type InstructionsPaths,
   installInstructions,
   instructionsBlockBody,
+  instructionsNeedRefresh,
+  instructionsOptedOut,
   listInstructionFiles,
+  optOutFile,
+  readVersionStamp,
+  refreshInstructionsCopy,
   removeInstructions,
+  setInstructionsOptOut,
+  versionStampFile,
 } from "./instructions";
 import { restore } from "./restore";
 import { listBackups, readChanged } from "./write";
+
+/** The plugin versions the tests stamp the copy with. */
+const V1 = "1.0.0";
+const V2 = "1.1.0";
 
 const BLOCK = [
   "<!-- anymodel:begin -->",
@@ -74,7 +87,7 @@ describe("listInstructionFiles", () => {
 describe("installInstructions", () => {
   test("copies every file and adds the block to a new CLAUDE.md", () => {
     const { dir, paths } = setup();
-    const result = installInstructions(paths, false);
+    const result = installInstructions(paths, false, V1);
     expect(lines(result, dir)).toEqual([
       "+ home/.claude/anymodel/instructions/core.md: created",
       "+ home/.claude/anymodel/instructions/optin/worktrees.md: created",
@@ -90,26 +103,26 @@ describe("installInstructions", () => {
   test("the user's own text in CLAUDE.md is kept, and the block goes after it", () => {
     const { paths } = setup();
     writeFileSync(paths.claudeMd, "# Mine\n\nAlways answer in French.\n");
-    const result = installInstructions(paths, false);
+    const result = installInstructions(paths, false, V1);
     expect(result.at(-1)?.what).toBe("anymodel block added");
     expect(read(paths.claudeMd)).toBe(`# Mine\n\nAlways answer in French.\n\n${BLOCK}\n`);
   });
 
   test("a second run changes nothing: no line, no new backup", () => {
     const { stateDir, paths } = setup();
-    installInstructions(paths, false);
-    expect(installInstructions(paths, false)).toEqual([]);
+    installInstructions(paths, false, V1);
+    expect(installInstructions(paths, false, V1)).toEqual([]);
     expect(listBackups(stateDir, join(paths.target, "core.md"))).toHaveLength(1);
     expect(listBackups(stateDir, paths.claudeMd)).toHaveLength(1);
   });
 
   test("a new plugin version refreshes a changed file and drops one it no longer ships", () => {
     const { dir, source, paths } = setup();
-    installInstructions(paths, false);
+    installInstructions(paths, false, V1);
     writeFileSync(join(source, "core.md"), "# Core, version two\n");
     // The plugin no longer ships the opt-in file.
     rmSync(join(source, "optin"), { recursive: true });
-    const result = installInstructions(paths, false);
+    const result = installInstructions(paths, false, V1);
     expect(lines(result, dir)).toEqual([
       "~ home/.claude/anymodel/instructions/core.md: updated",
       "- home/.claude/anymodel/instructions/optin/worktrees.md: removed (the plugin no longer ships it)",
@@ -120,9 +133,9 @@ describe("installInstructions", () => {
 
   test("a file someone edited in the copy is put back", () => {
     const { dir, paths } = setup();
-    installInstructions(paths, false);
+    installInstructions(paths, false, V1);
     writeFileSync(join(paths.target, "core.md"), "# Edited by hand\n");
-    expect(lines(installInstructions(paths, false), dir)).toEqual([
+    expect(lines(installInstructions(paths, false, V1), dir)).toEqual([
       "~ home/.claude/anymodel/instructions/core.md: updated",
     ]);
     expect(read(join(paths.target, "core.md"))).toBe("# Core\n");
@@ -134,7 +147,7 @@ describe("installInstructions", () => {
       paths.claudeMd,
       "Mine\n\n<!-- anymodel:begin -->\n@~/old/path.md\n<!-- anymodel:end -->\n\nAfter\n",
     );
-    const result = installInstructions(paths, false);
+    const result = installInstructions(paths, false, V1);
     expect(result.at(-1)?.what).toBe("anymodel block updated");
     expect(read(paths.claudeMd)).toBe(`Mine\n\n${BLOCK}\n\nAfter\n`);
   });
@@ -142,7 +155,7 @@ describe("installInstructions", () => {
   test("dry run: the same lines, and nothing is written at all", () => {
     const { dir, stateDir, paths } = setup();
     writeFileSync(paths.claudeMd, "Mine\n");
-    const result = installInstructions(paths, true);
+    const result = installInstructions(paths, true, V1);
     expect(lines(result, dir)).toEqual([
       "+ home/.claude/anymodel/instructions/core.md: created",
       "+ home/.claude/anymodel/instructions/optin/worktrees.md: created",
@@ -157,7 +170,7 @@ describe("removeInstructions", () => {
   test("takes out the block and the copy; the user's text stays", () => {
     const { dir, stateDir, paths } = setup();
     writeFileSync(paths.claudeMd, "# Mine\n");
-    installInstructions(paths, false);
+    installInstructions(paths, false, V1);
     const result = removeInstructions(paths, false);
     expect(lines(result, dir)).toEqual([
       "~ home/.claude/CLAUDE.md: anymodel block removed",
@@ -172,7 +185,7 @@ describe("removeInstructions", () => {
 
   test("a CLAUDE.md that setup created, with only the block, is removed", () => {
     const { dir, paths } = setup();
-    installInstructions(paths, false);
+    installInstructions(paths, false, V1);
     const result = removeInstructions(paths, false);
     expect(lines(result, dir)[0]).toBe("- home/.claude/CLAUDE.md: removed");
     expect(existsSync(paths.claudeMd)).toBe(false);
@@ -180,7 +193,7 @@ describe("removeInstructions", () => {
 
   test("dry run: the same lines, and nothing changes", () => {
     const { dir, paths } = setup();
-    installInstructions(paths, false);
+    installInstructions(paths, false, V1);
     const before = read(paths.claudeMd);
     expect(lines(removeInstructions(paths, true), dir)).toEqual([
       "- home/.claude/CLAUDE.md: removed",
@@ -212,7 +225,7 @@ describe("restore takes the instructions out too", () => {
   test("the copy is removed with its folders; the block goes; the user's text stays", () => {
     const { stateDir, paths } = setup();
     writeFileSync(paths.claudeMd, "# Mine\n");
-    installInstructions(paths, false);
+    installInstructions(paths, false, V1);
     restore(stateDir);
     expect(read(paths.claudeMd)).toBe("# Mine\n");
     expect(existsSync(paths.target)).toBe(false);
@@ -225,5 +238,128 @@ describe("instructionsBlockBody", () => {
     expect(instructionsBlockBody("/abs/core.md")).toBe(
       "<!-- Written by anymodel setup. `anymodel setup --no-instructions` takes it out. -->\n@/abs/core.md",
     );
+  });
+});
+
+describe("the version stamp", () => {
+  test("setup stamps the copy with its version; a dry run writes no stamp", () => {
+    const { stateDir, paths } = setup();
+    installInstructions(paths, true, V1);
+    expect(existsSync(versionStampFile(stateDir))).toBe(false);
+    installInstructions(paths, false, V1);
+    expect(read(versionStampFile(stateDir))).toBe("1.0.0\n");
+    expect(readVersionStamp(stateDir)).toBe("1.0.0");
+    // A newer version restamps, even when no file of the copy changed.
+    expect(installInstructions(paths, false, V2)).toEqual([]);
+    expect(readVersionStamp(stateDir)).toBe("1.1.0");
+  });
+
+  test("taking the instructions out removes the stamp too", () => {
+    const { stateDir, paths } = setup();
+    installInstructions(paths, false, V1);
+    removeInstructions(paths, false);
+    expect(existsSync(versionStampFile(stateDir))).toBe(false);
+  });
+});
+
+describe("instructionsNeedRefresh", () => {
+  test("only an installed copy, not opted out, whose stamp names another version", () => {
+    const { stateDir, paths } = setup();
+    expect(instructionsNeedRefresh(paths, V2)).toBe(false); // never installed
+    installInstructions(paths, false, V1);
+    expect(instructionsNeedRefresh(paths, V1)).toBe(false);
+    expect(instructionsNeedRefresh(paths, V2)).toBe(true);
+    rmSync(versionStampFile(stateDir));
+    expect(instructionsNeedRefresh(paths, V1)).toBe(true); // an older setup wrote no stamp
+    setInstructionsOptOut(stateDir, true, false);
+    expect(instructionsNeedRefresh(paths, V2)).toBe(false);
+  });
+});
+
+describe("refreshInstructionsCopy", () => {
+  test("brings the copy to the new version and touches nothing else, not even the block", async () => {
+    const { dir, source, stateDir, paths } = setup();
+    installInstructions(paths, false, V1);
+    // The person took the block out by hand: the refresh must not put it back.
+    writeFileSync(paths.claudeMd, "# Mine\n");
+    writeFileSync(join(source, "core.md"), "# Core, version two\n");
+    const result = await refreshInstructionsCopy(paths, V2);
+    expect(lines(result, dir)).toEqual(["~ home/.claude/anymodel/instructions/core.md: updated"]);
+    expect(read(join(paths.target, "core.md"))).toBe("# Core, version two\n");
+    expect(read(paths.claudeMd)).toBe("# Mine\n");
+    expect(readVersionStamp(stateDir)).toBe("1.1.0");
+    expect(existsSync(join(stateDir, "lock"))).toBe(false);
+    expect(await refreshInstructionsCopy(paths, V2)).toEqual([]);
+  });
+
+  test("never installed: nothing at all, not even a state folder", async () => {
+    const { stateDir, paths } = setup();
+    expect(await refreshInstructionsCopy(paths, V2)).toEqual([]);
+    expect(existsSync(stateDir)).toBe(false);
+  });
+
+  test("the stored opt-out wins: nothing is written", async () => {
+    const { source, stateDir, paths } = setup();
+    installInstructions(paths, false, V1);
+    setInstructionsOptOut(stateDir, true, false);
+    writeFileSync(join(source, "core.md"), "# Core, version two\n");
+    expect(await refreshInstructionsCopy(paths, V2)).toEqual([]);
+    expect(read(join(paths.target, "core.md"))).toBe("# Core\n");
+    expect(readVersionStamp(stateDir)).toBe("1.0.0");
+  });
+
+  test("dry run: the lines, and nothing written", async () => {
+    const { dir, source, stateDir, paths } = setup();
+    installInstructions(paths, false, V1);
+    writeFileSync(join(source, "core.md"), "# Core, version two\n");
+    const result = await refreshInstructionsCopy(paths, V2, { dryRun: true });
+    expect(lines(result, dir)).toEqual(["~ home/.claude/anymodel/instructions/core.md: updated"]);
+    expect(read(join(paths.target, "core.md"))).toBe("# Core\n");
+    expect(readVersionStamp(stateDir)).toBe("1.0.0");
+  });
+});
+
+describe("setInstructionsOptOut and forgetInstructionsState", () => {
+  test("stores the choice once, clears it once; a dry run writes nothing", () => {
+    const { dir, stateDir } = setup();
+    const show = (line: ReturnType<typeof setInstructionsOptOut>) =>
+      line === null ? null : lines([line], dir)[0];
+    expect(show(setInstructionsOptOut(stateDir, true, true))).toBe(
+      "+ home/.claude/anymodel/no-instructions: setup leaves the instructions out from now on (`anymodel setup --instructions` brings them back)",
+    );
+    expect(existsSync(stateDir)).toBe(false);
+    setInstructionsOptOut(stateDir, true, false);
+    expect(instructionsOptedOut(stateDir)).toBe(true);
+    expect(setInstructionsOptOut(stateDir, true, false)).toBeNull();
+    expect(show(setInstructionsOptOut(stateDir, false, false))).toBe(
+      "- home/.claude/anymodel/no-instructions: removed: setup installs the instructions again",
+    );
+    expect(instructionsOptedOut(stateDir)).toBe(false);
+    expect(setInstructionsOptOut(stateDir, false, false)).toBeNull();
+  });
+
+  test("forget removes the choice and the stamp, and says whether a choice was there", () => {
+    const { stateDir, paths } = setup();
+    installInstructions(paths, false, V1);
+    expect(forgetInstructionsState(stateDir)).toBeNull();
+    expect(existsSync(versionStampFile(stateDir))).toBe(false);
+    setInstructionsOptOut(stateDir, true, false);
+    expect(forgetInstructionsState(stateDir)).toBe(optOutFile(stateDir));
+    expect(instructionsOptedOut(stateDir)).toBe(false);
+  });
+});
+
+describe("copyDifferences", () => {
+  test("empty when the copy matches; names each missing, changed or dropped file", () => {
+    const { source, paths } = setup();
+    installInstructions(paths, false, V1);
+    expect(copyDifferences(paths)).toEqual([]);
+    writeFileSync(join(paths.target, "core.md"), "# Edited\n");
+    rmSync(join(paths.target, "optin", "worktrees.md"));
+    expect(copyDifferences(paths)).toEqual(["core.md differs", "optin/worktrees.md is missing"]);
+    installInstructions(paths, false, V1);
+    // A newer plugin dropped the opt-in file; the old copy of it is still there.
+    rmSync(join(source, "optin"), { recursive: true });
+    expect(copyDifferences(paths)).toEqual(["optin/worktrees.md is not shipped any more"]);
   });
 });

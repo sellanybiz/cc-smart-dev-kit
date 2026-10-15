@@ -5,8 +5,12 @@ description: Use when the person wants cheaper models behind Claude Code's subag
 
 # The AI Gateway
 
+**Project add-on:** `.claude/anymodel/gateway.md` — read it first when it exists. Where it
+differs, the add-on wins (`core.md`, top).
+
 The gateway is a local router, `anymodel-router`, between Claude Code and the model
-providers. It is optional. How it works and why: the plugin's `docs/gateway.md`.
+providers. It is optional. How it works and why: `docs/gateway.md` in the anymodel
+repository (the installed plugin does not carry the docs).
 
 ## What it is
 
@@ -69,8 +73,8 @@ So today: keep the judge slot **off** (`anymodel gateway slot judge off`, the de
 judge slot that is on takes **every** check, not only the ones Claude cannot answer — that is
 the setup this rule forbids. "Off" relies on the router recognising the check by its prompt:
 if Claude Code rewords that prompt, the check is routed by its model name until the router is
-updated (the plugin's `docs/gateway.md` § Known limits). "Auto mode blocks good work" or "its
-classifier is unavailable": `gateway slot judge off`.
+updated (`docs/gateway.md` in the anymodel repository, § Known limits). "Auto mode blocks
+good work" or "its classifier is unavailable": `gateway slot judge off`.
 
 ## Check health
 

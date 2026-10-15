@@ -5,9 +5,9 @@ description: Use when the person gives a correction, sets a new convention, or a
 
 # Keep The Instructions Sharp And Small
 
-**Project add-on:** `.claude/anymodel/self-evolve.md` — read it first when it exists (which
-text wins: the core instructions). It names the project's own budgets and where its
-instruction files live.
+**Project add-on:** `.claude/anymodel/self-evolve.md` — read it first when it exists. Where
+it differs, the add-on wins (`core.md`, top). It names the project's own budgets and where
+its instruction files live.
 
 The instruction set is a product: every subagent inherits it, every turn pays for it. Improve
 it without letting it grow. **The default move is deletion** — most sessions should leave it

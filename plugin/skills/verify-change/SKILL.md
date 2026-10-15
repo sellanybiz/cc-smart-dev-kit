@@ -5,9 +5,9 @@ description: Use after editing code - the cheap loop after every batch of edits.
 
 # Verify A Change — The Cheap Loop
 
-**Project add-on:** `.claude/anymodel/verify-change.md` — read it first when it exists (which
-text wins: the core instructions). It names the project's test, lint and type-check commands
-and what its git hooks run.
+**Project add-on:** `.claude/anymodel/verify-change.md` — read it first when it exists. Where
+it differs, the add-on wins (`core.md`, top). It names the project's test, lint and
+type-check commands and what its git hooks run.
 
 Run this after every batch of edits, while you are still building. It is cheap, and it is
 where most mistakes die. The deeper pass — dimensions, edge cases, severity — is

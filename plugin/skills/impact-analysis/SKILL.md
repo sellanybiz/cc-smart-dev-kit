@@ -5,9 +5,9 @@ description: Use when changing anything used in two or more places - shared type
 
 # Impact Analysis — The Blast Radius
 
-**Project add-on:** `.claude/anymodel/impact-analysis.md` — read it first when it exists
-(which text wins: the core instructions). It lists the project's shared artifacts and where
-their consumers hide.
+**Project add-on:** `.claude/anymodel/impact-analysis.md` — read it first when it exists.
+Where it differs, the add-on wins (`core.md`, top). It lists the project's shared artifacts
+and where their consumers hide.
 
 Every change has a blast radius. Know it before you commit. A bug in one place usually
 exists in three.
