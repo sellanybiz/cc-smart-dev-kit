@@ -79,6 +79,30 @@ An optional local router between Claude Code and the model providers
 - The router bundle carries no version (`src/build-info/names.ts`), so a version bump
   alone never changes `router.js` and never makes a machine restart its router.
 
+## Heavy jobs
+
+One queue for the whole machine (`src/jobs/`, design and limits in `jobs.md`):
+
+- `anymodel job run --kind <kind> -- <command>` reserves the job's gigabytes, waits while
+  they are not free, runs the job, and gives them back however it ends. Kinds and sizes
+  are defaults a project can replace in its `anymodel.json` (`jobs.kinds`); a machine sets
+  its limits in `~/.config/anymodel/jobs.json`.
+- **Leases are files, judged like the lock.** Each reservation is a small file naming
+  its writer's pid and start time. A file whose writer is gone (a dead or reused pid) is
+  stale and the next reader removes it, through the same `holderIsGone` as setup's lock.
+  So nothing needs cleaning after a crash, and no native code (`flock`) is needed. A
+  writer another host or pid namespace cannot see keeps its files alive with a heartbeat.
+- **Two kinds of budget,** this machine's and optional shared folders (containers or
+  users on one host), taken in a fixed order and given back in reverse, so they never
+  wait on each other in a circle. Oldest first, fair share on shared folders, a live check
+  against real free memory (cgroup-aware), and no give-up timeout.
+- **The launch** puts a job in its own systemd memory group with a kill mark where Linux
+  allows it, so that if memory still runs out, a heavy job dies first.
+- **The state is per user** (`~/.local/share/anymodel/jobs/`): nothing in it outlives
+  its writers, and no service runs.
+- A pure classifier (`classifyHeavyCommand`) says which kind a Bash command runs; a later
+  hook routes heavy commands through `job run`.
+
 ## How `setup` changes user files
 
 `setup` owns **managed** parts of user files, and only those:

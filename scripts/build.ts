@@ -22,20 +22,29 @@ function entryPoints(): string[] {
     .map((name) => join(entriesDir, name));
 }
 
+/**
+ * One `Bun.build` per entry, never all of them in one call. Built together, the bundles
+ * share one tree-shaking pass: a library function one bundle starts to use (a zod schema
+ * type in the CLI) is then copied into every other bundle too, and `router.js` would
+ * change with code it never runs. A changed router bundle restarts the router on every
+ * machine (`.claude/rules/bundles-and-releases.md`), so each bundle holds only its own graph.
+ */
 async function buildInto(outdir: string): Promise<void> {
   rmSync(outdir, { recursive: true, force: true });
-  const result = await Bun.build({
-    entrypoints: entryPoints(),
-    outdir,
-    root: entriesDir,
-    target: "bun",
-    format: "esm",
-    minify: false,
-    naming: "[name].js",
-  });
-  if (!result.success) {
-    for (const log of result.logs) console.error(log);
-    throw new Error("The build failed.");
+  for (const entry of entryPoints()) {
+    const result = await Bun.build({
+      entrypoints: [entry],
+      outdir,
+      root: entriesDir,
+      target: "bun",
+      format: "esm",
+      minify: false,
+      naming: "[name].js",
+    });
+    if (!result.success) {
+      for (const log of result.logs) console.error(log);
+      throw new Error(`The build of ${entry} failed.`);
+    }
   }
 }
 

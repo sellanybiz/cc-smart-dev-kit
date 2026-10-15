@@ -8,6 +8,8 @@ import { runSetup } from "../cli/setup";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
+import { runJobCommand } from "../jobs/commands";
+import { realMemoryFacts } from "../jobs/memory";
 
 const HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
 
@@ -28,6 +30,8 @@ Commands:
                      it restarts.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      anymodel gateway --help lists them.
+  job <command>      The queue for heavy jobs (type checks, test runs, builds):
+                     run, status, kinds. anymodel job --help lists them.
   version            Print the version.
   --help             Print this help.
 
@@ -107,6 +111,15 @@ async function main(argv: string[]): Promise<number> {
     }
     case "gateway":
       return runGateway(rest, gatewayContext(paths));
+    case "job":
+      return runJobCommand(rest, {
+        paths,
+        cwd: process.cwd(),
+        execArgv: process.execArgv,
+        memory: realMemoryFacts(),
+        say: (line) => console.error(line),
+        print: (line) => console.log(line),
+      });
     case "version":
     case "--version":
       console.log(`anymodel ${VERSION}`);

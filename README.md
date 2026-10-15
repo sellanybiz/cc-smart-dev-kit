@@ -50,6 +50,7 @@ After that, use `anymodel setup` to set up again (for example after an update).
 | `anymodel doctor` | Checks the install (the list is below). Prints ✓ or ✗ for each check, and exits with 1 when one fails. |
 | `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, its block) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy and unit. `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
 | `anymodel gateway <command>` | The optional AI gateway (below). |
+| `anymodel job <command>` | The machine-wide queue for heavy jobs (below). |
 | `anymodel version` | Prints the version. |
 
 `doctor` checks that:
@@ -141,6 +142,24 @@ router recognising the check by its prompt. If Claude Code rewords that prompt, 
 is routed by its model name until the router is updated (see
 [docs/gateway.md](docs/gateway.md) § Known limits; [roadmap](docs/roadmap.md) Phase 3).
 
+## Heavy jobs: one queue for the machine
+
+When many Claude sessions and agents run on one machine, type checks, typed lints, test
+runs and builds start together and the machine runs out of memory. `anymodel job run`
+reserves the memory a job needs, waits while it is not free (oldest first, saying who
+holds it), runs the job, and gives the memory back however the job ends. How it works,
+the kinds, the config and the limits: [docs/jobs.md](docs/jobs.md).
+
+| Command | What it does |
+|---|---|
+| `anymodel job run --kind <kind> [--gb <n>] -- <command…>` | Waits until this machine (and any shared folder) has the memory, then runs the command. Its stdin, stdout, stderr and exit code pass through; SIGTERM and SIGHUP are sent on. |
+| `anymodel job status` | The memory, the budget, and who holds or waits, here and on each shared folder. |
+| `anymodel job kinds` | The kinds (`tsc`, `lint:typed`, `test:run`, `test:coverage`, `build`, `image:build`, and the project's own) and what each reserves. |
+
+The state is per user, in `~/.local/share/anymodel/jobs/`. A machine sets its limits,
+and optional shared folders for containers or users on one host, in
+`~/.config/anymodel/jobs.json`.
+
 ## A project's `.claude/anymodel.json`
 
 ```json
@@ -148,7 +167,8 @@ is routed by its model name until the router is updated (see
   "requires": ">=0.1",
   "worktrees": { "base": "main", "prefix": "app-wt-", "setup": ["bun", "install"] },
   "instructions": true,
-  "autoMode": ["In my-app: never touch production."]
+  "autoMode": ["In my-app: never touch production."],
+  "jobs": { "kinds": { "e2e": { "gb": 4, "match": [{ "script": "test:e2e" }] } } }
 }
 ```
 
@@ -158,6 +178,7 @@ is routed by its model name until the router is updated (see
 | `worktrees` | Accepted now, used from Phase 3. |
 | `instructions` | Accepted now, used from Phase 5. |
 | `autoMode` | Accepted now, used from Phase 6. |
+| `jobs.kinds` | Used now: the project's own heavy-job kinds over the defaults ([docs/jobs.md](docs/jobs.md) § Kinds). |
 
 `requires` is a version range (npm syntax). When the installed plugin is outside it, the
 plugin says so and asks you to run `claude plugin update anymodel@anymodel`.
@@ -171,5 +192,6 @@ See `.claude/CLAUDE.md`. In short: `bun install`, change `src/`, `bun run build`
 
 - [Design](docs/design.md): how the parts fit, and why.
 - [Roadmap](docs/roadmap.md): the phases, done and ahead.
+- [Heavy jobs](docs/jobs.md): the machine-wide queue, its kinds, config and limits.
 - [Claude Code contract](docs/claude-code-contract.md): the Claude Code behaviour the
   plugin relies on, and the version it was last proved on.

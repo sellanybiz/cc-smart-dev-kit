@@ -62,7 +62,8 @@ installed="$config_dir/plugins/installed_plugins.json"
 install_path=$("$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the anymodel plugin is not installed."
 [ -n "$install_path" ] || fail "the anymodel plugin is not installed."
 [ -f "$install_path/dist/cli.js" ] || fail "the anymodel plugin folder is missing: $install_path."
-exec "$bun" "$install_path/dist/cli.js" "$@"
+# --no-env-file: "anymodel job run" hands its job exactly the environment it was given.
+exec "$bun" --no-env-file "$install_path/dist/cli.js" "$@"
 `;
 }
 

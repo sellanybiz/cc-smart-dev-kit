@@ -21,11 +21,15 @@ const LOCK_FILE = "lock";
 /** The claim a run holds while it removes a stale lock, so two runs never both remove one. */
 const TAKEOVER_SUFFIX = ".takeover";
 
-interface LockInfo {
+/** A process that holds something: a lock, or a job's lease (`src/jobs/`). */
+export interface ProcessHolder {
   pid: number;
   /** When the holder process started (`proc:<ticks>` or `ps:<date>`), or null when unknown. */
   startTime: string | null;
   host: string;
+}
+
+interface LockInfo extends ProcessHolder {
   /** When the lock was made (ms). Used only when the holder cannot be judged. */
   time: number;
   token: string;
@@ -148,20 +152,28 @@ function sameHeld(a: Held, b: Held): boolean {
 }
 
 /**
- * A lock is stale only when its holder is gone: the pid is dead, or alive with another
- * start time (the pid was reused). A live holder is never stale, however long it runs.
- * When the holder cannot be judged (no start time, another host, an unreadable file),
- * the lock is stale after `fallbackStaleMs`.
+ * True when `holder` is gone: its pid is dead, or alive with another start time (the pid
+ * was reused). A live holder is never gone, however long it runs. When it cannot be judged
+ * (null: unreadable, or from a place whose processes we cannot see; another host; no start
+ * time), it is gone once `lastSeenMs` is more than `fallbackStaleMs` ago.
  */
-function isStale(held: Held, fallbackStaleMs: number): boolean {
-  const { info } = held;
-  const oldEnough = Date.now() - (info?.time ?? held.mtimeMs) > fallbackStaleMs;
-  if (info === null || info.host !== hostname()) return oldEnough;
-  if (!isAlive(info.pid)) return true;
-  if (info.startTime === null) return oldEnough;
-  const now = processStartTime(info.pid, info.startTime);
+export function holderIsGone(
+  holder: ProcessHolder | null,
+  lastSeenMs: number,
+  fallbackStaleMs: number,
+): boolean {
+  const oldEnough = Date.now() - lastSeenMs > fallbackStaleMs;
+  if (holder === null || holder.host !== hostname()) return oldEnough;
+  if (!isAlive(holder.pid)) return true;
+  if (holder.startTime === null) return oldEnough;
+  const now = processStartTime(holder.pid, holder.startTime);
   if (now === null) return oldEnough;
-  return now !== info.startTime;
+  return now !== holder.startTime;
+}
+
+/** A lock is stale only when its holder is gone (`holderIsGone`). */
+function isStale(held: Held, fallbackStaleMs: number): boolean {
+  return holderIsGone(held.info, held.info?.time ?? held.mtimeMs, fallbackStaleMs);
 }
 
 /** Creates `file` with O_EXCL (only one process can), holding `info`. False when it exists. */
@@ -183,15 +195,14 @@ function tryCreate(file: string, info: LockInfo): boolean {
 
 let ownStartTime: string | null | undefined;
 
-function newLockInfo(): LockInfo {
+/** This process, as a holder: its pid, its start time and the host name. */
+export function currentHolder(): ProcessHolder {
   ownStartTime ??= processStartTime(process.pid);
-  return {
-    pid: process.pid,
-    startTime: ownStartTime,
-    host: hostname(),
-    time: Date.now(),
-    token: crypto.randomUUID(),
-  };
+  return { pid: process.pid, startTime: ownStartTime, host: hostname() };
+}
+
+function newLockInfo(): LockInfo {
+  return { ...currentHolder(), time: Date.now(), token: crypto.randomUUID() };
 }
 
 /**
