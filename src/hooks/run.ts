@@ -1,14 +1,18 @@
 /**
- * The frame every plugin hook runs in, in this order:
+ * The frame every hook runs in, in this order:
  *
  * 1. Read the input. Not a JSON object, a wrong event, or a `cwd` that is not a folder in
  *    git: nothing to do.
- * 2. **The defer check** (`defer.ts`): when the project wires its own hook for the same
- *    event (and tool), exit 0 and print nothing, so the project's copy runs alone. It reads
- *    only git and the settings files, so it works even when anymodel.json is broken.
- * 3. Read the project's anymodel.json. When it is broken or needs a newer plugin, the
- *    hook **fails closed** in its own way (`onConfigProblem`): a guard asks, WorktreeCreate
- *    fails with the update command, an informational hook prints one line.
+ * 2. **The defer check** (`defer.ts`), for a hook the plugin wires (`wiring: "plugin"`):
+ *    when the project wires its own hook for the same event (and tool), exit 0 and print
+ *    nothing, so the project's copy runs alone. It reads only git and the settings files,
+ *    so it works even when anymodel.json is broken. A hook the project wires itself
+ *    (`wiring: "project"`, run as `anymodel hook <name>`) skips it: that wiring is the
+ *    project's opt-in.
+ * 3. Read the project's anymodel.json. When it is broken, needs a newer plugin, or lacks
+ *    what the hook `needs`, the hook **fails closed** in its own way (`onConfigProblem`):
+ *    a guard asks, WorktreeCreate fails with the reason, an informational hook prints one
+ *    line.
  * 4. Run the hook.
  *
  * A bug never stops a person's work: any error is one line on stderr and exit 0, except
@@ -19,7 +23,7 @@
  */
 import { appendFileSync } from "node:fs";
 import { type CliPaths, cliPaths } from "../cli/paths";
-import { AnymodelConfigError } from "../project/config";
+import { type AnymodelConfig, AnymodelConfigError } from "../project/config";
 import { type Checkout, loadProjectConfig, locateCheckout, type Project } from "../project/resolve";
 import { deferSources, ownHookIn } from "./defer";
 import { type HookInput, type HookResult, parseHookInput, SILENT, stringField } from "./io";
@@ -45,13 +49,21 @@ export interface HookSpec {
   /** The events it is wired for. Any other event: nothing to do. */
   events: string[];
   /**
-   * The events (and subjects) whose project hook silences this one. Default: the input's own
-   * event and subject (`deferSubject`).
+   * Who wires it. "plugin": `plugin/hooks/hooks.json`, so it runs in every project and
+   * stays silent while the project wires its own hook for the same event (the defer check).
+   * "project": the project wires `anymodel hook <name>` in its own settings; that is its
+   * opt-in, so there is no defer check.
    */
-  deferOn?: (input: HookInput, event: string) => Array<{ event: string; subject: string | null }>;
-  /** Also count the user's own settings.json in the defer check (the worktree events). */
-  deferToUserSettings?: boolean;
-  /** The answer when anymodel.json is broken or needs a newer plugin: fail closed. */
+  wiring: "plugin" | "project";
+  /**
+   * What the hook needs from anymodel.json: null when it is there, else why not (the
+   * hook then fails closed with `onConfigProblem`). Left out: it needs nothing.
+   */
+  needs?: (config: AnymodelConfig | null) => string | null;
+  /**
+   * The answer when anymodel.json is broken, needs a newer plugin, or lacks what the hook
+   * `needs`: fail closed.
+   */
   onConfigProblem: (
     message: string,
     input: HookInput,
@@ -107,15 +119,12 @@ export async function handleHook(spec: HookSpec, text: string, env: Env): Promis
     }
     if (checkout === null) return outside(input, event, `${cwd} is not in a git checkout`);
 
-    const paths = cliPaths(env);
-    const sources = deferSources(
-      checkout,
-      spec.deferToUserSettings === true ? paths.settingsFile : null,
-    );
-    const deferOn = spec.deferOn?.(input, event) ?? [
-      { event, subject: deferSubject(input, event) },
-    ];
-    if (deferOn.some((on) => ownHookIn(sources, on.event, on.subject) !== null)) return SILENT;
+    if (
+      spec.wiring === "plugin" &&
+      ownHookIn(deferSources(checkout), event, deferSubject(input, event)) !== null
+    ) {
+      return SILENT;
+    }
 
     let project: Project;
     try {
@@ -126,7 +135,9 @@ export async function handleHook(spec: HookSpec, text: string, env: Env): Promis
       }
       throw error;
     }
-    return await spec.run({ input, event, cwd, project, env, paths });
+    const missing = spec.needs?.(project.config) ?? null;
+    if (missing !== null) return spec.onConfigProblem(missing, input, event, checkout);
+    return await spec.run({ input, event, cwd, project, env, paths: cliPaths(env) });
   } catch (error) {
     return {
       exitCode: spec.crashExitCode ?? 0,
@@ -140,12 +151,13 @@ function logRun(spec: HookSpec, text: string, result: HookResult, env: Env): voi
   const file = env[HOOK_LOG_ENV];
   if (file === undefined || file === "") return;
   try {
-    const event = parseHookInput(text)?.hook_event_name;
+    const input = parseHookInput(text);
     appendFileSync(
       file,
       `${JSON.stringify({
         hook: spec.name,
-        event: typeof event === "string" ? event : null,
+        event: stringField(input?.hook_event_name),
+        cwd: stringField(input?.cwd),
         exitCode: result.exitCode ?? 0,
         stdout: (result.stdout ?? "").slice(0, 2000),
       })}\n`,
@@ -155,7 +167,10 @@ function logRun(spec: HookSpec, text: string, result: HookResult, env: Env): voi
   }
 }
 
-/** The body of `src/entries/<hook>.ts`: stdin in, the answer out, then exit. */
+/**
+ * The body of `src/entries/<hook>.ts` and of `anymodel hook <name>`: stdin in, the answer
+ * out, then exit.
+ */
 export async function runHookEntry(spec: HookSpec): Promise<never> {
   const text = await Bun.stdin.text();
   const result = await handleHook(spec, text, process.env);

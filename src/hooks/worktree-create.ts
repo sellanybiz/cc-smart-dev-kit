@@ -2,21 +2,23 @@
  * WorktreeCreate: the worktree Claude Code asks for (`claude -w <name>`, EnterWorktree with
  * a name, a subagent's `isolation: "worktree"`).
  *
- * A WorktreeCreate hook replaces Claude Code's own creation in every project, and a hook
- * that prints no folder makes the creation fail (proved live: `docs/claude-code-contract.md`).
- * So the plugin cannot step aside for a project that never opted in: it does Claude Code's
- * default itself there.
+ * A WorktreeCreate hook replaces Claude Code's own creation, for sessions and subagents
+ * alike, and a hook that prints no folder makes the creation fail (proved live:
+ * `docs/claude-code-contract.md`). So the plugin wires none: a project opts in by wiring
+ * `anymodel hook worktree-create` in its own settings, and `worktrees` in its anymodel.json
+ * (the frame refuses without it, `needsWorktrees`).
  *
- * - **With `worktrees` in anymodel.json** (a session's worktree): the folder
+ * - **A session's worktree:** the folder
  *   `<parent of the main checkout>/<prefix><name, every / a ->` on the branch `<name>`.
  *   An existing worktree of that branch is entered again (unless another running session
  *   works in it). Otherwise an existing branch is checked out, or a new one is cut from
  *   `origin/<base>` right after `git fetch origin <base>`; a failed fetch refuses, because a
  *   new branch starts only from the latest base. Then the project's `setup` runs inside.
- * - **Without it, and for every subagent** (`agent-<hex>`): Claude Code's default shape,
- *   `<main checkout>/.claude/worktrees/<name, every / a +>` on the branch
- *   `worktree-<same>`, from the base `worktree.baseRef` names: the remote's default branch
- *   (`"fresh"`, the default) or the asking checkout's HEAD (`"head"`). No setup.
+ * - **A subagent's worktree** (`agent-<hex>`): what Claude Code would make for it,
+ *   `<main checkout>/.claude/worktrees/<name>` on the branch `worktree-<name>`, from the
+ *   base `worktree.baseRef` names: the remote's default branch (`"fresh"`, the default) or
+ *   the asking checkout's HEAD (`"head"`). No setup: a subagent's worktree must be quick.
+ *   The SubagentStop hook finds it there by that shape.
  * - Both copy the files `.worktreeinclude` names (gitignored files only), which Claude Code
  *   no longer does once a hook makes the worktree.
  *
@@ -62,7 +64,7 @@ export function isSubagentName(name: string): boolean {
   return /^agent-[0-9a-f]+$/.test(name);
 }
 
-/** The base of a default-shape worktree, from Claude Code's `worktree.baseRef` setting. */
+/** The base of a subagent's worktree, from Claude Code's `worktree.baseRef` setting. */
 export type BaseRef = "fresh" | "head";
 
 /**
@@ -107,10 +109,12 @@ export function configuredFolder(mainCheckout: string, prefix: string, name: str
   return join(dirname(mainCheckout), `${prefix}${name.replace(/[\\/]/g, "-")}`);
 }
 
-/** Claude Code's own shape: `/` becomes `+` in the folder and the branch (seen live). */
-export function defaultShape(repoRoot: string, name: string): { folder: string; branch: string } {
-  const safe = name.replace(/\//g, "+");
-  return { folder: join(repoRoot, ".claude", "worktrees", safe), branch: `worktree-${safe}` };
+/**
+ * A subagent's worktree, in Claude Code's own shape (seen live). A subagent's name
+ * (`agent-<hex>`) has no `/`, so none needs turning into `+` as Claude Code does.
+ */
+export function subagentShape(repoRoot: string, name: string): { folder: string; branch: string } {
+  return { folder: join(repoRoot, ".claude", "worktrees", name), branch: `worktree-${name}` };
 }
 
 class Refusal extends Error {}
@@ -144,12 +148,12 @@ function fetchedRecently(commonDir: string): boolean {
 }
 
 /**
- * The commit a default-shape worktree starts from, as Claude Code picks it: with "fresh",
+ * The commit a subagent's worktree starts from, as Claude Code picks it: with "fresh",
  * the remote's default branch (`origin/HEAD`), fetched when the repo was not fetched for a
  * day (at most 5 s, never asking for a password); with "head", or with no remote or no
  * `origin/HEAD` to be had, the asking checkout's HEAD.
  */
-export function defaultBase(
+export function subagentBase(
   repo: string,
   commonDir: string,
   askingCheckout: string,
@@ -393,10 +397,10 @@ function createConfigured(context: HookContext, name: string, worktrees: Worktre
   return target;
 }
 
-function createDefault(context: HookContext, name: string): string {
+function createForSubagent(context: HookContext, name: string): string {
   const { env, paths, project } = context;
   const repo = project.mainCheckout ?? project.root;
-  const { folder, branch } = defaultShape(repo, name);
+  const { folder, branch } = subagentShape(repo, name);
   checkBranchName(repo, branch, env);
   const listed = listWorktrees(repo, env);
   if (existsSync(folder)) {
@@ -410,7 +414,7 @@ function createDefault(context: HookContext, name: string): string {
       join(root, ".claude", "settings.local.json"),
       join(root, ".claude", "settings.json"),
     ]);
-    const base = defaultBase(
+    const base = subagentBase(
       repo,
       project.commonDir,
       project.root,
@@ -428,11 +432,12 @@ export function worktreeCreate(context: HookContext): HookResult {
   try {
     const problem = badName(name);
     if (problem !== null) throw new Refusal(problem);
+    // The frame checked it (`needsWorktrees`); this only tells the type checker.
     const worktrees = context.project.config?.worktrees;
-    const folder =
-      worktrees !== undefined && !isSubagentName(name)
-        ? createConfigured(context, name, worktrees)
-        : createDefault(context, name);
+    if (worktrees === undefined) throw new Refusal("no worktrees in .claude/anymodel.json");
+    const folder = isSubagentName(name)
+      ? createForSubagent(context, name)
+      : createConfigured(context, name, worktrees);
     return { stdout: folder };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);

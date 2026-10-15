@@ -8,7 +8,14 @@ import { subagentWorktreeOf } from "./worktree-remove";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 
-/** A worktree on a new branch at `<repo>/.claude/worktrees/<name>`, as the default shape makes it. */
+/** A repo that turned the worktree engine on: `worktrees` in its anymodel.json. */
+function engineRepo(): string {
+  const repo = makeRepo();
+  writeClaudeFile(repo, "anymodel.json", { worktrees: { base: "main", prefix: "app-wt-" } });
+  return repo;
+}
+
+/** A worktree on a new branch at `<repo>/.claude/worktrees/<name>`, in a subagent's shape. */
 function addWorktree(repo: string, name: string): string {
   const folder = join(repo, ".claude", "worktrees", name);
   git(repo, "worktree", "add", "-q", "-b", `worktree-${name}`, folder);
@@ -29,7 +36,7 @@ const hasBranch = (repo: string, branch: string) =>
 
 describe("WorktreeRemove", () => {
   test("a clean worktree: the folder and its branch go, exit 0", async () => {
-    const repo = makeRepo();
+    const repo = engineRepo();
     const folder = addWorktree(repo, "done");
     expect(await remove(folder)).toEqual({
       stderr: `removed ${folder}; deleted branch worktree-done`,
@@ -39,7 +46,7 @@ describe("WorktreeRemove", () => {
   });
 
   test("uncommitted work: kept, exit 1, and the reason", async () => {
-    const repo = makeRepo();
+    const repo = engineRepo();
     const folder = addWorktree(repo, "busy");
     writeFileSync(join(folder, "new.txt"), "work\n");
     expect(await remove(folder)).toEqual({
@@ -50,7 +57,7 @@ describe("WorktreeRemove", () => {
   });
 
   test("a commit on no other branch: the folder goes, the branch stays", async () => {
-    const repo = makeRepo();
+    const repo = engineRepo();
     const folder = addWorktree(repo, "ahead");
     writeFileSync(join(folder, "a.txt"), "a\n");
     git(folder, "add", "a.txt");
@@ -62,7 +69,7 @@ describe("WorktreeRemove", () => {
   });
 
   test("a folder that is already gone: forgotten, exit 0", async () => {
-    const repo = makeRepo();
+    const repo = engineRepo();
     const folder = addWorktree(repo, "gone");
     rmSync(folder, { recursive: true, force: true });
     // Claude Code runs the hook inside the worktree; that folder is gone too, so run it from the repo.
@@ -74,14 +81,14 @@ describe("WorktreeRemove", () => {
   });
 
   test("the cwd is gone and so is the worktree: nothing to do, exit 0", async () => {
-    const repo = makeRepo();
+    const repo = engineRepo();
     const folder = addWorktree(repo, "vanished");
     rmSync(folder, { recursive: true, force: true });
     expect(await remove(folder)).toEqual({});
   });
 
   test("the main checkout: refused", async () => {
-    const repo = makeRepo();
+    const repo = engineRepo();
     expect(await remove(repo)).toEqual({
       exitCode: 1,
       stderr: `worktree kept: ${repo} is the main checkout`,
@@ -89,7 +96,7 @@ describe("WorktreeRemove", () => {
   });
 
   test("a folder that is not a worktree of this repo: refused", async () => {
-    const repo = makeRepo();
+    const repo = engineRepo();
     const other = makeRepo("other");
     expect(await remove(other, hookEnv(), repo)).toEqual({
       exitCode: 1,
@@ -98,7 +105,7 @@ describe("WorktreeRemove", () => {
   });
 
   test("a locked worktree: kept, exit 1", async () => {
-    const repo = makeRepo();
+    const repo = engineRepo();
     const folder = addWorktree(repo, "locked");
     git(repo, "worktree", "lock", folder);
     const result = await remove(folder);
@@ -109,7 +116,7 @@ describe("WorktreeRemove", () => {
   });
 
   test("a worktree with another one inside it: kept", async () => {
-    const repo = makeRepo();
+    const repo = engineRepo();
     const outer = join(repo, "..", "outer");
     git(repo, "worktree", "add", "-q", "-b", "outer", outer);
     const inner = join(outer, ".claude", "worktrees", "inner");
@@ -120,16 +127,28 @@ describe("WorktreeRemove", () => {
     });
   });
 
-  test("the project wires its own WorktreeRemove: no output, exit 0, nothing removed", async () => {
-    const repo = makeRepo();
+  test("no defer check: another WorktreeRemove in the project's settings does not silence it", async () => {
+    const repo = engineRepo();
     wireProjectHook(repo, "WorktreeRemove");
-    const folder = addWorktree(repo, "theirs");
-    expect(await remove(folder)).toEqual({});
+    const folder = addWorktree(repo, "wired");
+    expect(await remove(folder)).toEqual({
+      stderr: `removed ${folder}; deleted branch worktree-wired`,
+    });
+  });
+
+  test('no "worktrees" in anymodel.json: kept, exit 1, the reason', async () => {
+    const repo = makeRepo();
+    const folder = addWorktree(repo, "unwired");
+    const result = await remove(folder);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toStartWith(
+      "worktree kept: this project wires the anymodel worktree hooks (anymodel hook ...), but has no .claude/anymodel.json.",
+    );
     expect(existsSync(folder)).toBe(true);
   });
 
   test("anymodel.json needs a newer plugin: kept, exit 1, the update command", async () => {
-    const repo = makeRepo();
+    const repo = engineRepo();
     writeClaudeFile(repo, "anymodel.json", { requires: ">=99" });
     const folder = addWorktree(repo, "versioned");
     const result = await remove(folder);
@@ -167,7 +186,7 @@ describe("SubagentStop", () => {
   });
 
   test("a subagent that changed nothing: its worktree and branch go, exit 0", async () => {
-    const repo = makeRepo();
+    const repo = engineRepo();
     const folder = addWorktree(repo, `agent-${AGENT}`);
     expect(await stop(folder)).toEqual({
       stderr: `removed ${folder}; deleted branch worktree-agent-${AGENT}`,
@@ -176,7 +195,7 @@ describe("SubagentStop", () => {
   });
 
   test("an edit, or a commit of its own: everything stays, silently", async () => {
-    const repo = makeRepo();
+    const repo = engineRepo();
     const edited = addWorktree(repo, `agent-${AGENT}`);
     writeFileSync(join(edited, "x.txt"), "x\n");
     expect(await stop(edited)).toEqual({});
@@ -192,14 +211,18 @@ describe("SubagentStop", () => {
   });
 
   test("a subagent that worked in its session's folder: nothing to do", async () => {
-    expect(await stop(makeRepo())).toEqual({});
+    expect(await stop(engineRepo())).toEqual({});
   });
 
-  test("the project makes its own worktrees (its WorktreeCreate): left to the project", async () => {
+  test('no "worktrees" in anymodel.json: kept, with the reason, and exit 0', async () => {
     const repo = makeRepo();
-    wireProjectHook(repo, "WorktreeCreate");
+    writeClaudeFile(repo, "anymodel.json", { sessionNames: true });
     const folder = addWorktree(repo, `agent-${AGENT}`);
-    expect(await stop(folder)).toEqual({});
+    const result = await stop(folder);
+    expect(result.exitCode ?? 0).toBe(0);
+    expect(result.stderr).toStartWith(
+      'subagent worktree kept: this project wires the anymodel worktree hooks (anymodel hook ...), but its .claude/anymodel.json has no "worktrees".',
+    );
     expect(existsSync(folder)).toBe(true);
   });
 });

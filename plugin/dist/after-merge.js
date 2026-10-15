@@ -5344,27 +5344,40 @@ function hooksOf(file) {
     return null;
   }
 }
-function fileWiresHook(file, event, subject) {
+function describeHandler(handler) {
+  if (typeof handler !== "object" || handler === null)
+    return "(a hook)";
+  const { type, command, args } = handler;
+  if (typeof command !== "string")
+    return typeof type === "string" ? `(a ${type} hook)` : "(a hook)";
+  const rest = Array.isArray(args) ? args.filter((arg) => typeof arg === "string") : [];
+  return [command, ...rest].join(" ");
+}
+function wiredHandlers(file, event, subject) {
   const groups = hooksOf(file)?.[event];
   if (!Array.isArray(groups))
-    return false;
-  return groups.some((group) => {
+    return [];
+  return groups.flatMap((group) => {
     if (typeof group !== "object" || group === null)
-      return false;
+      return [];
     const { matcher, hooks } = group;
-    return Array.isArray(hooks) && hooks.length > 0 && matcherSelects(matcher, subject);
+    if (!Array.isArray(hooks) || !matcherSelects(matcher, subject))
+      return [];
+    return hooks.map((handler) => ({ file, command: describeHandler(handler) }));
   });
 }
-function deferSources(checkout, userSettings) {
+function fileWiresHook(file, event, subject) {
+  return wiredHandlers(file, event, subject).length > 0;
+}
+function deferSources(checkout) {
   const roots = [checkout.root];
   if (checkout.mainCheckout !== null && checkout.mainCheckout !== checkout.root) {
     roots.push(checkout.mainCheckout);
   }
-  const files = roots.flatMap((root) => [
+  return roots.flatMap((root) => [
     join3(root, ".claude", "settings.json"),
     join3(root, ".claude", "settings.local.json")
   ]);
-  return userSettings === null ? files : [...files, userSettings];
 }
 function ownHookIn(files, event, subject) {
   return files.find((file) => fileWiresHook(file, event, subject)) ?? null;
@@ -5434,13 +5447,9 @@ async function handleHook(spec, text, env) {
     }
     if (checkout === null)
       return outside(input, event, `${cwd} is not in a git checkout`);
-    const paths = cliPaths(env);
-    const sources = deferSources(checkout, spec.deferToUserSettings === true ? paths.settingsFile : null);
-    const deferOn = spec.deferOn?.(input, event) ?? [
-      { event, subject: deferSubject(input, event) }
-    ];
-    if (deferOn.some((on) => ownHookIn(sources, on.event, on.subject) !== null))
+    if (spec.wiring === "plugin" && ownHookIn(deferSources(checkout), event, deferSubject(input, event)) !== null) {
       return SILENT;
+    }
     let project;
     try {
       project = loadProjectConfig(checkout);
@@ -5450,7 +5459,10 @@ async function handleHook(spec, text, env) {
       }
       throw error;
     }
-    return await spec.run({ input, event, cwd, project, env, paths });
+    const missing = spec.needs?.(project.config) ?? null;
+    if (missing !== null)
+      return spec.onConfigProblem(missing, input, event, checkout);
+    return await spec.run({ input, event, cwd, project, env, paths: cliPaths(env) });
   } catch (error) {
     return {
       exitCode: spec.crashExitCode ?? 0,
@@ -5463,10 +5475,11 @@ function logRun(spec, text, result, env) {
   if (file === undefined || file === "")
     return;
   try {
-    const event = parseHookInput(text)?.hook_event_name;
+    const input = parseHookInput(text);
     appendFileSync(file, `${JSON.stringify({
       hook: spec.name,
-      event: typeof event === "string" ? event : null,
+      event: stringField(input?.hook_event_name),
+      cwd: stringField(input?.cwd),
       exitCode: result.exitCode ?? 0,
       stdout: (result.stdout ?? "").slice(0, 2000)
     })}
@@ -6001,6 +6014,7 @@ var FETCH_AGE_MS = 24 * 60 * 60 * 1000;
 var afterMergeHook = {
   name: "after-merge",
   events: ["PostToolUse", "PostToolUseFailure"],
+  wiring: "plugin",
   onConfigProblem: (message, input, event) => {
     const command = stringField(toolInput(input).command);
     return command !== null && mergesPullRequest(command) ? addContext(event, `anymodel: ${message}`) : SILENT;

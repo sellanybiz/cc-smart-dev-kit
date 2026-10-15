@@ -9,7 +9,10 @@ import { runSetup } from "../cli/setup";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
+import { projectHookSettingsText } from "../hooks/project-wiring";
+import { runHookEntry } from "../hooks/run";
 import { recordSessionName } from "../hooks/session-name";
+import { PROJECT_HOOKS } from "../hooks/specs";
 
 const HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
 
@@ -18,10 +21,15 @@ Usage: anymodel <command> [options]
 Commands:
   setup [--dry-run]  Install the launcher in ~/.local/bin and turn on plugin auto-update.
                      --dry-run prints what would change and writes nothing.
-  doctor [--live]    Check the install. Exit code 1 when a check fails.
+  doctor [--live]    Check the install, and the project of the current folder. Exit
+                     code 1 when a check fails.
                      --live: also run two throwaway Claude Code sessions in temp repos,
-                     to prove the hooks and the worktree contract on this Claude Code
+                     to prove the hooks and the worktree engine on this Claude Code
                      (uses your login; a few cents). Records the version it passed on.
+  hook <worktree-create|worktree-remove|subagent-stop>
+                     The worktree engine, for a project that wires it in its own
+                     .claude/settings.json: reads the hook's input on stdin and answers
+                     as Claude Code expects. Without a name: prints the lines to paste.
   session-name <session id> <name>
                      Name a Claude session after its task (for the session-name hook).
   restore [--yes] [--now]
@@ -39,6 +47,14 @@ Commands:
   --help             Print this help.
 
 Paths follow HOME and CLAUDE_CONFIG_DIR.`;
+
+const HOOK_HELP = `Usage: ${COMMAND} hook <${PROJECT_HOOKS.map((spec) => spec.name).join("|")}>
+
+The worktree engine is opt-in per project. To turn it on in a project, give its
+.claude/anymodel.json a "worktrees" field, and paste these hooks into its
+.claude/settings.json (merge them with any "hooks" it has):
+
+${projectHookSettingsText()}`;
 
 /**
  * The router bundle beside this file (plugin/dist/router.js). Run from the source
@@ -126,12 +142,25 @@ async function main(argv: string[]): Promise<number> {
         console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
         return 2;
       }
-      return runDoctor(
-        paths,
-        process.env,
-        { bundle: routerBundle(), runner, systemd },
-        rest.includes("--live") ? { pluginDir: pluginDir(), run: liveRunner } : null,
-      );
+      return runDoctor(paths, process.env, {
+        gateway: { bundle: routerBundle(), runner, systemd },
+        project: { cwd: process.cwd(), pluginHooksFile: join(pluginDir(), "hooks", "hooks.json") },
+        live: rest.includes("--live") ? { pluginDir: pluginDir(), run: liveRunner } : null,
+      });
+    }
+    case "hook": {
+      const [name, ...extra] = rest;
+      if (name === undefined || name === "--help" || name === "-h") {
+        console.log(HOOK_HELP);
+        return 0;
+      }
+      const spec = PROJECT_HOOKS.find((one) => one.name === name);
+      if (spec === undefined || extra.length > 0) {
+        console.error(`Unknown hook: ${[name, ...extra].join(" ")}\n\n${HOOK_HELP}`);
+        return 2;
+      }
+      // Reads stdin, answers, and exits with the hook's code.
+      return runHookEntry(spec);
     }
     case "session-name": {
       const [sessionId, ...words] = rest;

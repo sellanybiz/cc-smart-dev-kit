@@ -1,6 +1,7 @@
 /**
  * WorktreeRemove and SubagentStop: remove a worktree Claude Code is done with, only when
- * nothing can be lost.
+ * nothing can be lost. Both belong to the worktree engine a project wires itself
+ * (`anymodel hook worktree-remove`, `anymodel hook subagent-stop`), beside its WorktreeCreate.
  *
  * Once a WorktreeCreate hook makes the worktrees, Claude Code hands their removal to the
  * WorktreeRemove hook (a session that exits and picks "remove", `ExitWorktree` with

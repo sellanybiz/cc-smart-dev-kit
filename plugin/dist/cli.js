@@ -1,7 +1,7 @@
 // @bun
 // src/entries/cli.ts
-import { existsSync as existsSync15 } from "fs";
-import { basename as basename2, dirname as dirname4, join as join10 } from "path";
+import { existsSync as existsSync23 } from "fs";
+import { basename as basename2, dirname as dirname5, join as join14 } from "path";
 
 // src/build-info/names.ts
 var MARKETPLACE = "anymodel";
@@ -21,8 +21,8 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/cli/doctor.ts
-import { accessSync, constants, existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
-import { join as join8 } from "path";
+import { accessSync, constants, existsSync as existsSync19, readFileSync as readFileSync17 } from "fs";
+import { join as join13 } from "path";
 
 // src/gateway/doctor.ts
 import { existsSync as existsSync6, readFileSync as readFileSync7 } from "fs";
@@ -8621,16 +8621,29 @@ function marketplaceInstallLocation(knownMarketplacesFile, name) {
 
 // src/cli/live-check.ts
 import {
-  existsSync as existsSync9,
-  mkdirSync as mkdirSync4,
+  existsSync as existsSync17,
+  mkdirSync as mkdirSync6,
   mkdtempSync,
-  readFileSync as readFileSync10,
-  realpathSync as realpathSync2,
+  readFileSync as readFileSync15,
+  realpathSync as realpathSync3,
   rmSync as rmSync2,
-  writeFileSync as writeFileSync2
+  writeFileSync as writeFileSync4
 } from "fs";
-import { tmpdir } from "os";
-import { dirname as dirname3, join as join7 } from "path";
+import { tmpdir as tmpdir2 } from "os";
+import { dirname as dirname4, join as join12 } from "path";
+
+// src/hooks/specs.ts
+import { existsSync as existsSync15 } from "fs";
+
+// src/hooks/git.ts
+import { resolve as resolve2 } from "path";
+
+// src/project/resolve.ts
+import { existsSync as existsSync10, realpathSync as realpathSync2, statSync as statSync4 } from "fs";
+import { join as join7 } from "path";
+
+// src/project/config.ts
+import { existsSync as existsSync9, readFileSync as readFileSync10 } from "fs";
 
 // src/project/version-range.ts
 var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
@@ -8649,6 +8662,11 @@ function isValidRange(range) {
     return comparators.every((comparator) => COMPARATOR.test(comparator));
   });
 }
+function satisfiesRange(version, range) {
+  if (!isValidRange(range))
+    throw new Error(`"${range}" is not a valid version range`);
+  return Bun.semver.satisfies(version, range);
+}
 
 // src/project/config.ts
 var anymodelConfigSchema = strictObject({
@@ -8665,19 +8683,984 @@ var anymodelConfigSchema = strictObject({
   autoMode: array(string2().min(1)).optional()
 });
 
+class AnymodelConfigError extends Error {
+  name = "AnymodelConfigError";
+}
+
+class AnymodelVersionError extends AnymodelConfigError {
+  name = "AnymodelVersionError";
+}
+function describeIssue(issue) {
+  const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
+  if (issue.code === "unrecognized_keys") {
+    const keys = issue.keys.map((key) => field === "(top level)" ? key : `${field}.${key}`);
+    return `${keys.join(", ")}: unknown field (a newer anymodel may be needed)`;
+  }
+  return `${field}: ${issue.message}`;
+}
+function checkRequires(file, raw, pluginVersion) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return;
+  const requires = raw.requires;
+  if (typeof requires !== "string" || !isValidRange(requires))
+    return;
+  if (!satisfiesRange(pluginVersion, requires)) {
+    throw new AnymodelVersionError(`${file}: this project needs anymodel ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
+  }
+}
+function loadAnymodelConfig(file, pluginVersion = VERSION) {
+  if (!existsSync9(file))
+    return null;
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync10(file, "utf8"));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new AnymodelConfigError(`Invalid ${file}: not valid JSON (${reason})`);
+  }
+  checkRequires(file, raw, pluginVersion);
+  const parsed = anymodelConfigSchema.safeParse(raw);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map(describeIssue).join("; ");
+    throw new AnymodelConfigError(`Invalid ${file}: ${issues}`);
+  }
+  return parsed.data;
+}
+
+// src/project/resolve.ts
+var MIN_GIT_VERSION = "2.31.0";
+var REPO_SELECTING_GIT_VARS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_PREFIX",
+  "GIT_NAMESPACE"
+];
+function gitEnv(base) {
+  const env = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value !== undefined && !REPO_SELECTING_GIT_VARS.includes(key))
+      env[key] = value;
+  }
+  return env;
+}
+function gitIn(cwd, env) {
+  return (args) => {
+    const result = Bun.spawnSync(["git", ...args], { cwd, env, stdout: "pipe", stderr: "pipe" });
+    return {
+      ok: result.exitCode === 0,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString()
+    };
+  };
+}
+function requireGitVersion(git) {
+  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(git(["--version"]).stdout);
+  if (!match)
+    return;
+  const version = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
+  if (Bun.semver.order(version, MIN_GIT_VERSION) < 0) {
+    throw new Error(`git 2.31 or newer is needed; you have git ${version}. Update git.`);
+  }
+}
+function findMainCheckout(git, cwd) {
+  const list = git(["worktree", "list", "--porcelain"]);
+  if (!list.ok)
+    throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
+  const [firstEntry = ""] = list.stdout.split(`
+
+`);
+  const lines = firstEntry.split(`
+`);
+  if (lines.includes("bare"))
+    return null;
+  const pathLine = lines.find((line) => line.startsWith("worktree "));
+  if (!pathLine)
+    return null;
+  const path = pathLine.slice("worktree ".length);
+  if (!existsSync10(path) || lines.some((line) => line.startsWith("prunable"))) {
+    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
+  }
+  return realpathSync2(path);
+}
+function locateCheckout(cwd, options = {}) {
+  if (!existsSync10(cwd) || !statSync4(cwd).isDirectory()) {
+    throw new Error(`resolveProject: ${cwd} is not a folder`);
+  }
+  const git = gitIn(cwd, gitEnv(options.env ?? process.env));
+  const revParse = git([
+    "rev-parse",
+    "--path-format=absolute",
+    "--show-toplevel",
+    "--absolute-git-dir",
+    "--git-common-dir"
+  ]);
+  const [top, gitDir, common] = revParse.stdout.trim().split(`
+`);
+  if (!revParse.ok || top?.startsWith("--")) {
+    requireGitVersion(git);
+    if (revParse.ok) {
+      throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
+    }
+    return null;
+  }
+  if (!top || !gitDir || !common)
+    return null;
+  const root = realpathSync2(top);
+  const commonDir = realpathSync2(common);
+  const isWorktree = realpathSync2(gitDir) !== commonDir;
+  const mainCheckout = isWorktree ? findMainCheckout(git, cwd) : root;
+  return { root, commonDir, isWorktree, mainCheckout };
+}
+function loadProjectConfig(checkout, pluginVersion) {
+  const { root, mainCheckout } = checkout;
+  let config = loadAnymodelConfig(join7(root, ".claude", "anymodel.json"), pluginVersion);
+  if (config === null && mainCheckout !== null && mainCheckout !== root) {
+    config = loadAnymodelConfig(join7(mainCheckout, ".claude", "anymodel.json"), pluginVersion);
+  }
+  return { ...checkout, config };
+}
+
+// src/hooks/git.ts
+function runGit(cwd, args, env, timeoutMs = 15000) {
+  try {
+    const result = Bun.spawnSync(["git", ...args], {
+      cwd,
+      env: gitEnv(env),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs
+    });
+    const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
+    return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err };
+  } catch (error) {
+    return { ok: false, out: "", err: error instanceof Error ? error.message : String(error) };
+  }
+}
+function noPromptEnv(env) {
+  const quiet = { ...env, GIT_TERMINAL_PROMPT: "0" };
+  if (!hasOwnSshCommand(quiet))
+    quiet.GIT_SSH_COMMAND = BATCH_SSH_COMMAND;
+  return quiet;
+}
+var IGNORE_CASE = process.platform === "win32";
+function isInside(path, folder, ignoreCase = IGNORE_CASE) {
+  const form = (p) => {
+    const forward = resolve2(p).replace(/\\/g, "/").replace(/\/+$/, "");
+    return ignoreCase ? forward.toLowerCase() : forward;
+  };
+  const child = form(path);
+  const parent = form(folder);
+  return child === parent || child.startsWith(`${parent}/`);
+}
+function samePath2(a, b, ignoreCase = IGNORE_CASE) {
+  return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
+}
+function parseWorktreeList(porcelain) {
+  const worktrees = [];
+  for (const block of porcelain.split(/\r?\n\r?\n/)) {
+    const lines = block.split(/\r?\n/).filter((line) => line !== "");
+    const value = (key) => lines.find((line) => line.startsWith(`${key} `))?.slice(key.length + 1);
+    const flag = (key) => lines.some((line) => line === key || line.startsWith(`${key} `));
+    const path = value("worktree");
+    if (path === undefined)
+      continue;
+    worktrees.push({
+      path,
+      head: value("HEAD") ?? "",
+      branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
+      locked: flag("locked"),
+      prunable: flag("prunable")
+    });
+  }
+  return worktrees;
+}
+function listWorktrees(cwd, env) {
+  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env);
+  if (!listed.ok)
+    throw new Error(`git worktree list failed: ${listed.err}`);
+  return parseWorktreeList(listed.out);
+}
+function hasChanges(folder, env) {
+  const status = runGit(folder, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"], env);
+  return !status.ok || status.out !== "";
+}
+function ownCommits(repo, branch, env) {
+  const own = runGit(repo, [
+    "rev-list",
+    "--count",
+    `refs/heads/${branch}`,
+    "--not",
+    `--exclude=${branch}`,
+    "--branches",
+    "--remotes"
+  ], env);
+  return own.ok && /^\d+$/.test(own.out) ? Number(own.out) : null;
+}
+function hasRef(repo, ref, env) {
+  return runGit(repo, ["rev-parse", "--verify", "--quiet", ref], env).ok;
+}
+
+// src/hooks/io.ts
+var SILENT = {};
+function parseHookInput(text) {
+  try {
+    const value = JSON.parse(text);
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+function stringField(value) {
+  return typeof value === "string" && value !== "" ? value : null;
+}
+
+// src/hooks/shell-command.ts
+var SEPARATORS = new Set([`
+`, "\r", "&", "(", ")", ";", "{", "|", "}"]);
+var WRAPPERS = new Set(["builtin", "command", "env", "exec", "nohup", "sudo", "time"]);
+
+// src/hooks/after-merge.ts
+var MERGE_FLAGS_WITH_VALUE = new Set([
+  "--author-email",
+  "--body",
+  "--body-file",
+  "--match-head-commit",
+  "--repo",
+  "--subject",
+  "-A",
+  "-b",
+  "-F",
+  "-R",
+  "-t"
+]);
+var ANNOUNCE_WINDOW_MS = 15 * 60000;
+
+// src/hooks/git-guard.ts
+var PUSH_VALUE_OPTIONS = new Set(["--exec", "--push-option", "--receive-pack", "--repo"]);
+var CHANGE_DIR = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
+
+// src/hooks/sessions.ts
+import { existsSync as existsSync11, readdirSync as readdirSync2, readFileSync as readFileSync11, statSync as statSync5 } from "fs";
+import { uptime } from "os";
+import { join as join8 } from "path";
+function parseSessionRecord(json) {
+  let value;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null)
+    return null;
+  const { cwd, name, pid, sessionId } = value;
+  if (typeof cwd !== "string" || typeof pid !== "number" || typeof sessionId !== "string") {
+    return null;
+  }
+  return { pid, sessionId, cwd, name: typeof name === "string" ? name : sessionId.slice(0, 8) };
+}
+function isRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+function liveSessions(claudeConfigDir) {
+  const dir = join8(claudeConfigDir, "sessions");
+  if (!existsSync11(dir))
+    return [];
+  const bootedAt = Date.now() - uptime() * 1000;
+  const live = [];
+  for (const file of readdirSync2(dir)) {
+    const pid = Number(file.replace(/\.json$/, ""));
+    if (!file.endsWith(".json") || !Number.isInteger(pid) || !isRunning(pid))
+      continue;
+    let text;
+    try {
+      if (statSync5(join8(dir, file)).mtimeMs < bootedAt)
+        continue;
+      text = readFileSync11(join8(dir, file), "utf8");
+    } catch {
+      continue;
+    }
+    const record = parseSessionRecord(text);
+    if (record === null) {
+      throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
+    }
+    live.push(record);
+  }
+  return live;
+}
+
+// src/hooks/session-name.ts
+import { existsSync as existsSync12, mkdirSync as mkdirSync4, readFileSync as readFileSync12, renameSync as renameSync2, writeFileSync as writeFileSync2 } from "fs";
+import { tmpdir } from "os";
+import { join as join9 } from "path";
+var MAX_SESSION_NAME = 60;
+function isSessionId(value) {
+  return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+}
+function cleanSessionName(raw) {
+  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
+  const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
+  if (plain === "")
+    return null;
+  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
+}
+function namesDir(env) {
+  return join9(env.TMPDIR || tmpdir(), "anymodel-session-names");
+}
+function writeAtomic(file, text) {
+  const partial = `${file}.${process.pid}.tmp`;
+  writeFileSync2(partial, text);
+  renameSync2(partial, file);
+}
+function recordSessionName(sessionId, raw, env) {
+  if (!isSessionId(sessionId))
+    throw new Error(`"${sessionId}" is not a session id`);
+  const name = cleanSessionName(raw);
+  if (name === null)
+    throw new Error("the name is empty");
+  mkdirSync4(namesDir(env), { recursive: true });
+  writeAtomic(join9(namesDir(env), `${sessionId}.name`), name);
+  return name;
+}
+
+// src/hooks/worktree-create.ts
+import {
+  copyFileSync,
+  existsSync as existsSync13,
+  mkdirSync as mkdirSync5,
+  readFileSync as readFileSync13,
+  statSync as statSync6,
+  writeFileSync as writeFileSync3
+} from "fs";
+import { dirname as dirname3, join as join10 } from "path";
+var SETUP_TIMEOUT_MS = 540000;
+var BASE_FETCH_TIMEOUT_MS = 30000;
+var DEFAULT_FETCH_TIMEOUT_MS = 5000;
+var FETCH_AGE_MS = 24 * 60 * 60 * 1000;
+var SETUP_MARKER = "anymodel-setup-done";
+function isSubagentName(name) {
+  return /^agent-[0-9a-f]+$/.test(name);
+}
+function readBaseRef(files) {
+  for (const file of files) {
+    if (!existsSync13(file))
+      continue;
+    try {
+      const parsed = JSON.parse(readFileSync13(file, "utf8"));
+      const value = parsed?.worktree?.baseRef;
+      if (value === "head" || value === "fresh")
+        return value;
+    } catch {}
+  }
+  return "fresh";
+}
+function badName(name) {
+  if (name.trim() === "")
+    return "the worktree name is empty";
+  if (/[\u0000-\u001f\u007f]/.test(name))
+    return "the worktree name has a control character";
+  if (name.startsWith("-"))
+    return `the worktree name "${name}" starts with "-"`;
+  if (name.split(/[\\/]/).some((part) => part === "." || part === "..")) {
+    return `the worktree name "${name}" has a "." or ".." part`;
+  }
+  return null;
+}
+function badPrefix(prefix) {
+  return /[\\/]/.test(prefix) || prefix === "." || prefix === ".." ? `worktrees.prefix "${prefix}" must be part of a folder name, with no "/" or "\\"` : null;
+}
+function configuredFolder(mainCheckout, prefix, name) {
+  return join10(dirname3(mainCheckout), `${prefix}${name.replace(/[\\/]/g, "-")}`);
+}
+function subagentShape(repoRoot, name) {
+  return { folder: join10(repoRoot, ".claude", "worktrees", name), branch: `worktree-${name}` };
+}
+
+class Refusal extends Error {
+}
+function git(cwd, args, env, timeoutMs) {
+  const run = runGit(cwd, args, env, timeoutMs);
+  if (!run.ok) {
+    const reason = run.err.split(`
+`).filter((line) => line.trim() !== "").at(-1) ?? "";
+    throw new Refusal(`\`git ${args.join(" ")}\` failed: ${reason}`);
+  }
+  return run.out;
+}
+function checkBranchName(repo, branch, env) {
+  if (!runGit(repo, ["check-ref-format", "--branch", branch], env).ok) {
+    throw new Refusal(`"${branch}" is not a valid branch name`);
+  }
+}
+function fetchedRecently(commonDir) {
+  try {
+    return Date.now() - statSync6(join10(commonDir, "FETCH_HEAD")).mtimeMs < FETCH_AGE_MS;
+  } catch {
+    return false;
+  }
+}
+function subagentBase(repo, commonDir, askingCheckout, baseRef, env) {
+  const head = () => git(askingCheckout, ["rev-parse", "--verify", "HEAD^{commit}"], env);
+  if (baseRef === "head" || !runGit(repo, ["remote", "get-url", "origin"], env).ok)
+    return head();
+  const quiet = noPromptEnv(env);
+  const originHead = () => runGit(repo, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], env);
+  let known = originHead();
+  if (!known.ok) {
+    runGit(repo, ["remote", "set-head", "origin", "--auto"], quiet, DEFAULT_FETCH_TIMEOUT_MS);
+    known = originHead();
+  }
+  if (!known.ok)
+    return head();
+  const branch = known.out.replace(/^origin\//, "");
+  if (!fetchedRecently(commonDir)) {
+    runGit(repo, ["fetch", "--quiet", "origin", branch], quiet, DEFAULT_FETCH_TIMEOUT_MS);
+  }
+  const ref = `refs/remotes/origin/${branch}`;
+  return hasRef(repo, ref, env) ? git(repo, ["rev-parse", "--verify", `${ref}^{commit}`], env) : head();
+}
+function copyWorktreeInclude(source, target, env) {
+  const includeFile = join10(source, ".worktreeinclude");
+  if (!existsSync13(includeFile))
+    return [];
+  const listed = runGit(source, ["ls-files", "-z", "--others", "--ignored", `--exclude-from=${includeFile}`], env, 60000);
+  if (!listed.ok || listed.out === "")
+    return [];
+  const candidates = listed.out.split("\x00").filter((path) => path !== "");
+  const ignored = Bun.spawnSync(["git", "check-ignore", "-z", "--stdin"], {
+    cwd: source,
+    env: gitEnv(env),
+    stdin: Buffer.from(`${candidates.join("\x00")}\x00`),
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 60000
+  });
+  const copied = [];
+  for (const path of ignored.stdout.toString().split("\x00")) {
+    if (path === "" || existsSync13(join10(target, path)))
+      continue;
+    mkdirSync5(dirname3(join10(target, path)), { recursive: true });
+    copyFileSync(join10(source, path), join10(target, path));
+    copied.push(path);
+  }
+  return copied;
+}
+function runSetup(folder, setup, env) {
+  let result;
+  try {
+    result = Bun.spawnSync(setup, {
+      cwd: folder,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: SETUP_TIMEOUT_MS
+    });
+  } catch (error) {
+    throw new Refusal(`the setup command \`${setup.join(" ")}\` could not start: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (result.exitCode === 0)
+    return;
+  const said = `${result.stdout?.toString() ?? ""}${result.stderr?.toString() ?? ""}`.trim().split(`
+`).slice(-15).join(`
+`);
+  const how = result.signalCode ? `timed out after ${SETUP_TIMEOUT_MS / 1000} s` : `exited ${result.exitCode}`;
+  throw new Refusal(`the setup command \`${setup.join(" ")}\` ${how} in ${folder}; the worktree stays, and entering it again runs setup again${said === "" ? "" : `
+${said}`}`);
+}
+function setupMarker(folder, env) {
+  return join10(git(folder, ["rev-parse", "--absolute-git-dir"], env), SETUP_MARKER);
+}
+function reuseDecision(params) {
+  const { worktrees, branch, folder, sessions, askingSession, folderExists } = params;
+  const [main, ...others] = worktrees;
+  if (main?.branch === branch) {
+    return {
+      kind: "refuse",
+      why: `${branch} is the main checkout's branch; name a branch of its own for this work`
+    };
+  }
+  const found = others.find((worktree) => worktree.branch === branch) ?? others.find((worktree) => samePath2(worktree.path, folder));
+  if (found === undefined)
+    return { kind: "create" };
+  if (found.branch !== null && found.branch !== branch) {
+    return { kind: "refuse", why: `${found.path} is on ${found.branch}, not ${branch}` };
+  }
+  if (found.locked) {
+    return {
+      kind: "refuse",
+      why: `${found.path} is locked (\`git worktree unlock ${found.path}\` once it is safe)`
+    };
+  }
+  if (found.prunable || !folderExists(found.path)) {
+    return {
+      kind: "refuse",
+      why: `${found.path} is still listed but its folder is gone: run \`git worktree prune\`, then ask again`
+    };
+  }
+  if (sessions === null) {
+    return {
+      kind: "refuse",
+      why: `the running sessions' records cannot be read, so it is unknown whether another session works in ${found.path}`
+    };
+  }
+  const other = sessions.find((session) => session.sessionId !== askingSession && isInside(session.cwd, found.path));
+  if (other !== undefined) {
+    return {
+      kind: "refuse",
+      why: `the running session "${other.name}" (process ${other.pid}) works in ${found.path}; two sessions must not share a folder`
+    };
+  }
+  return { kind: "reuse", folder: found.path };
+}
+function createConfigured(context, name, worktrees) {
+  const { env, paths, project, input } = context;
+  const main = project.mainCheckout;
+  if (main === null)
+    throw new Refusal("the repo has no main checkout (a bare repo)");
+  const prefixProblem = badPrefix(worktrees.prefix);
+  if (prefixProblem !== null)
+    throw new Refusal(prefixProblem);
+  const branch = name;
+  checkBranchName(main, branch, env);
+  const folder = configuredFolder(main, worktrees.prefix, name);
+  let sessions;
+  try {
+    sessions = liveSessions(paths.claudeConfigDir);
+  } catch {
+    sessions = null;
+  }
+  const decision = reuseDecision({
+    worktrees: listWorktrees(main, env),
+    branch,
+    folder,
+    sessions,
+    askingSession: typeof input.session_id === "string" ? input.session_id : null,
+    folderExists: existsSync13
+  });
+  if (decision.kind === "refuse")
+    throw new Refusal(decision.why);
+  let target = folder;
+  if (decision.kind === "reuse") {
+    target = decision.folder;
+  } else {
+    if (existsSync13(folder))
+      throw new Refusal(`${folder} exists and is not a worktree of this repo`);
+    const fetched = runGit(main, ["fetch", "--quiet", "origin", worktrees.base], noPromptEnv(env), BASE_FETCH_TIMEOUT_MS);
+    if (hasRef(main, `refs/heads/${branch}`, env)) {
+      git(main, ["worktree", "add", "--quiet", folder, branch], env);
+    } else if (hasRef(main, `refs/remotes/origin/${branch}`, env)) {
+      git(main, ["worktree", "add", "--quiet", "--track", "-b", branch, folder, `origin/${branch}`], env);
+    } else if (fetched.ok) {
+      git(main, [
+        "worktree",
+        "add",
+        "--quiet",
+        "--no-track",
+        "-b",
+        branch,
+        folder,
+        `origin/${worktrees.base}`
+      ], env);
+    } else {
+      throw new Refusal(`\`git fetch origin ${worktrees.base}\` failed (${fetched.err || "no reason given"}): a new branch starts only from the latest ${worktrees.base}`);
+    }
+    copyWorktreeInclude(main, folder, env);
+  }
+  const marker = setupMarker(target, env);
+  if (worktrees.setup !== undefined && !existsSync13(marker)) {
+    runSetup(target, worktrees.setup, env);
+    writeFileSync3(marker, "");
+  }
+  return target;
+}
+function createForSubagent(context, name) {
+  const { env, paths, project } = context;
+  const repo = project.mainCheckout ?? project.root;
+  const { folder, branch } = subagentShape(repo, name);
+  checkBranchName(repo, branch, env);
+  const listed = listWorktrees(repo, env);
+  if (existsSync13(folder)) {
+    if (listed.some((worktree) => samePath2(worktree.path, folder)))
+      return folder;
+    throw new Refusal(`${folder} exists and is not a worktree of this repo`);
+  }
+  if (hasRef(repo, `refs/heads/${branch}`, env)) {
+    git(repo, ["worktree", "add", "--quiet", folder, branch], env);
+  } else {
+    const settings = [project.root, ...repo === project.root ? [] : [repo]].flatMap((root) => [
+      join10(root, ".claude", "settings.local.json"),
+      join10(root, ".claude", "settings.json")
+    ]);
+    const base = subagentBase(repo, project.commonDir, project.root, readBaseRef([...settings, paths.settingsFile]), env);
+    git(repo, ["worktree", "add", "--quiet", "--no-track", "-b", branch, folder, base], env);
+  }
+  copyWorktreeInclude(project.root, folder, env);
+  return folder;
+}
+function worktreeCreate(context) {
+  const name = typeof context.input.name === "string" ? context.input.name : "";
+  try {
+    const problem = badName(name);
+    if (problem !== null)
+      throw new Refusal(problem);
+    const worktrees = context.project.config?.worktrees;
+    if (worktrees === undefined)
+      throw new Refusal("no worktrees in .claude/anymodel.json");
+    const folder = isSubagentName(name) ? createForSubagent(context, name) : createConfigured(context, name, worktrees);
+    return { stdout: folder };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { exitCode: 1, stderr: `worktree not created: ${reason}` };
+  }
+}
+
+// src/hooks/worktree-remove.ts
+import { existsSync as existsSync14 } from "fs";
+function deleteBranchIfCopied(repo, branch, env) {
+  const own = ownCommits(repo, branch, env);
+  if (own === null)
+    return `kept branch ${branch}: git could not compare it with the other branches`;
+  if (own > 0) {
+    return `kept branch ${branch}: ${own === 1 ? "1 commit" : `${own} commits`} on it ${own === 1 ? "is" : "are"} on no other branch`;
+  }
+  const deleted = runGit(repo, ["branch", "-D", branch], env);
+  return deleted.ok ? `deleted branch ${branch}` : `kept branch ${branch}: ${deleted.err}`;
+}
+function removeWorktree(repo, found, all, env) {
+  if (found.locked) {
+    return {
+      removed: false,
+      why: `${found.path} is locked (\`git worktree unlock ${found.path}\` once it is safe)`
+    };
+  }
+  const inner = all.find((other) => other !== found && isInside(other.path, found.path) && !samePath2(other.path, found.path));
+  if (inner !== undefined) {
+    return { removed: false, why: `another worktree lives inside it: ${inner.path}` };
+  }
+  if (hasChanges(found.path, env)) {
+    return {
+      removed: false,
+      why: `it has uncommitted changes or untracked files. Commit them first, or remove it yourself: git worktree remove --force ${found.path}`
+    };
+  }
+  const removed = runGit(repo, ["worktree", "remove", found.path], env);
+  if (!removed.ok)
+    return { removed: false, why: removed.err };
+  const said = [`removed ${found.path}`];
+  if (found.branch !== null)
+    said.push(deleteBranchIfCopied(repo, found.branch, env));
+  return { removed: true, said: said.join("; ") };
+}
+function worktreeRemove(context) {
+  const { env, project, input } = context;
+  const path = stringField(input.worktree_path);
+  if (path === null)
+    return { exitCode: 1, stderr: "worktree kept: Claude Code gave no worktree path" };
+  const repo = project.mainCheckout ?? project.root;
+  const all = listWorktrees(repo, env);
+  const [main, ...others] = all;
+  if (main !== undefined && samePath2(main.path, path)) {
+    return { exitCode: 1, stderr: `worktree kept: ${path} is the main checkout` };
+  }
+  const found = others.find((worktree) => samePath2(worktree.path, path));
+  if (found === undefined) {
+    if (existsSync14(path)) {
+      return { exitCode: 1, stderr: `worktree kept: ${path} is not a worktree of this repo` };
+    }
+    return SILENT;
+  }
+  if (found.prunable || !existsSync14(found.path)) {
+    runGit(repo, ["worktree", "prune"], env);
+    const said = found.branch === null ? "" : `; ${deleteBranchIfCopied(repo, found.branch, env)}`;
+    return { stderr: `forgot ${found.path}: its folder was gone${said}` };
+  }
+  const removal = removeWorktree(repo, found, all, env);
+  return removal.removed ? { stderr: removal.said } : { exitCode: 1, stderr: `worktree kept: ${removal.why}` };
+}
+function subagentWorktreeOf(cwd, agentId) {
+  if (agentId === null || !/^[0-9a-f]+$/.test(agentId))
+    return null;
+  const found = new RegExp(String.raw`^(.*[\\/]\.claude[\\/]worktrees[\\/]agent-${agentId})(?:[\\/]|$)`).exec(cwd);
+  return found?.[1] ?? null;
+}
+function subagentStop(context) {
+  const { env, project, input, cwd } = context;
+  const path = subagentWorktreeOf(cwd, stringField(input.agent_id));
+  if (path === null)
+    return SILENT;
+  const repo = project.mainCheckout ?? project.root;
+  const all = listWorktrees(repo, env);
+  const found = all.slice(1).find((worktree) => samePath2(worktree.path, path));
+  if (found === undefined || found.branch === null)
+    return SILENT;
+  if (ownCommits(repo, found.branch, env) !== 0)
+    return SILENT;
+  const removal = removeWorktree(repo, found, all, env);
+  return removal.removed ? { stderr: removal.said } : SILENT;
+}
+
+// src/hooks/specs.ts
+function needsWorktrees(config) {
+  if (config?.worktrees !== undefined)
+    return null;
+  const lacks = config === null ? "has no .claude/anymodel.json" : 'its .claude/anymodel.json has no "worktrees"';
+  return `this project wires the anymodel worktree hooks (anymodel hook ...), but ${lacks}. ` + 'Add "worktrees" to .claude/anymodel.json, or take the three anymodel hook lines out of ' + ".claude/settings.json (the anymodel README, \xA7 Worktrees)";
+}
+var worktreeCreateHook = {
+  name: "worktree-create",
+  events: ["WorktreeCreate"],
+  wiring: "project",
+  needs: needsWorktrees,
+  onConfigProblem: (message) => ({ exitCode: 1, stderr: `worktree not created: ${message}` }),
+  outsideGit: (_input, _event, why) => ({ exitCode: 1, stderr: `worktree not created: ${why}` }),
+  run: worktreeCreate,
+  crashExitCode: 1
+};
+var worktreeRemoveHook = {
+  name: "worktree-remove",
+  events: ["WorktreeRemove"],
+  wiring: "project",
+  needs: needsWorktrees,
+  onConfigProblem: (message) => ({ exitCode: 1, stderr: `worktree kept: ${message}` }),
+  outsideGit: (input, _event, why) => {
+    const path = stringField(input.worktree_path);
+    return path !== null && !existsSync15(path) ? SILENT : { exitCode: 1, stderr: `worktree kept: ${why}` };
+  },
+  run: worktreeRemove,
+  crashExitCode: 1
+};
+var subagentStopHook = {
+  name: "subagent-stop",
+  events: ["SubagentStop"],
+  wiring: "project",
+  needs: needsWorktrees,
+  onConfigProblem: (message) => ({ stderr: `subagent worktree kept: ${message}` }),
+  run: subagentStop
+};
+var PROJECT_HOOKS = [
+  worktreeCreateHook,
+  worktreeRemoveHook,
+  subagentStopHook
+];
+
+// src/hooks/project-wiring.ts
+var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
+var TIMEOUTS = {
+  "worktree-create": 600,
+  "worktree-remove": 60,
+  "subagent-stop": 60
+};
+function projectHookCommand(name) {
+  return `${LAUNCHER_IN_SHELL} hook ${name}`;
+}
+function projectHookSettings() {
+  const hooks = {};
+  for (const spec of PROJECT_HOOKS) {
+    const timeout = TIMEOUTS[spec.name];
+    if (timeout === undefined)
+      throw new Error(`no timeout for the project hook ${spec.name}`);
+    for (const event of spec.events) {
+      hooks[event] = [
+        { hooks: [{ type: "command", command: projectHookCommand(spec.name), timeout }] }
+      ];
+    }
+  }
+  return { hooks };
+}
+function projectHookSettingsText() {
+  return JSON.stringify(projectHookSettings(), null, 2);
+}
+function runsProjectHook(command, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(String.raw`(^|[\s/"'])${LAUNCHER_NAME}["']?\s+hook\s+["']?${escaped}["']?(\s|;|$)`).test(command);
+}
+
+// src/hooks/run.ts
+import { appendFileSync } from "fs";
+
+// src/hooks/defer.ts
+import { existsSync as existsSync16, readFileSync as readFileSync14 } from "fs";
+import { join as join11 } from "path";
+function matcherSelects(matcher, subject) {
+  if (matcher === undefined || matcher === null || matcher === "" || matcher === "*")
+    return true;
+  if (typeof matcher !== "string")
+    return false;
+  if (subject === null)
+    return true;
+  if (/^[A-Za-z0-9_\- ,|]*$/.test(matcher)) {
+    return matcher.split(/[|,]/).map((part) => part.trim()).includes(subject);
+  }
+  try {
+    return new RegExp(matcher).test(subject);
+  } catch {
+    return false;
+  }
+}
+function hooksOf(file) {
+  if (!existsSync16(file))
+    return null;
+  try {
+    const parsed = JSON.parse(readFileSync14(file, "utf8"));
+    if (typeof parsed !== "object" || parsed === null)
+      return null;
+    const hooks = parsed.hooks;
+    return typeof hooks === "object" && hooks !== null && !Array.isArray(hooks) ? hooks : null;
+  } catch {
+    return null;
+  }
+}
+function describeHandler(handler) {
+  if (typeof handler !== "object" || handler === null)
+    return "(a hook)";
+  const { type, command, args } = handler;
+  if (typeof command !== "string")
+    return typeof type === "string" ? `(a ${type} hook)` : "(a hook)";
+  const rest = Array.isArray(args) ? args.filter((arg) => typeof arg === "string") : [];
+  return [command, ...rest].join(" ");
+}
+function wiredHandlers(file, event, subject) {
+  const groups = hooksOf(file)?.[event];
+  if (!Array.isArray(groups))
+    return [];
+  return groups.flatMap((group) => {
+    if (typeof group !== "object" || group === null)
+      return [];
+    const { matcher, hooks } = group;
+    if (!Array.isArray(hooks) || !matcherSelects(matcher, subject))
+      return [];
+    return hooks.map((handler) => ({ file, command: describeHandler(handler) }));
+  });
+}
+function fileWiresHook(file, event, subject) {
+  return wiredHandlers(file, event, subject).length > 0;
+}
+function deferSources(checkout) {
+  const roots = [checkout.root];
+  if (checkout.mainCheckout !== null && checkout.mainCheckout !== checkout.root) {
+    roots.push(checkout.mainCheckout);
+  }
+  return roots.flatMap((root) => [
+    join11(root, ".claude", "settings.json"),
+    join11(root, ".claude", "settings.local.json")
+  ]);
+}
+function ownHookIn(files, event, subject) {
+  return files.find((file) => fileWiresHook(file, event, subject)) ?? null;
+}
+
 // src/hooks/run.ts
 var HOOK_LOG_ENV = "ANYMODEL_HOOK_LOG";
+function deferSubject(input, event) {
+  if (["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest"].includes(event)) {
+    return stringField(input.tool_name);
+  }
+  if (event === "SessionStart")
+    return stringField(input.source);
+  if (event === "SubagentStop" || event === "SubagentStart")
+    return stringField(input.agent_type);
+  return null;
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+async function handleHook(spec, text, env) {
+  try {
+    const input = parseHookInput(text);
+    if (input === null) {
+      return {
+        exitCode: spec.crashExitCode ?? 0,
+        stderr: `anymodel ${spec.name}: the hook input is not JSON`
+      };
+    }
+    const event = stringField(input.hook_event_name);
+    if (event === null || !spec.events.includes(event))
+      return SILENT;
+    const cwd = stringField(input.cwd);
+    const outside = spec.outsideGit ?? (() => SILENT);
+    if (cwd === null)
+      return outside(input, event, "the hook input has no cwd");
+    let checkout;
+    try {
+      checkout = locateCheckout(cwd, { env });
+    } catch (error) {
+      return outside(input, event, errorMessage(error));
+    }
+    if (checkout === null)
+      return outside(input, event, `${cwd} is not in a git checkout`);
+    if (spec.wiring === "plugin" && ownHookIn(deferSources(checkout), event, deferSubject(input, event)) !== null) {
+      return SILENT;
+    }
+    let project;
+    try {
+      project = loadProjectConfig(checkout);
+    } catch (error) {
+      if (error instanceof AnymodelConfigError) {
+        return spec.onConfigProblem(error.message, input, event, checkout);
+      }
+      throw error;
+    }
+    const missing = spec.needs?.(project.config) ?? null;
+    if (missing !== null)
+      return spec.onConfigProblem(missing, input, event, checkout);
+    return await spec.run({ input, event, cwd, project, env, paths: cliPaths(env) });
+  } catch (error) {
+    return {
+      exitCode: spec.crashExitCode ?? 0,
+      stderr: `anymodel ${spec.name}: ${errorMessage(error)}`
+    };
+  }
+}
+function logRun(spec, text, result, env) {
+  const file = env[HOOK_LOG_ENV];
+  if (file === undefined || file === "")
+    return;
+  try {
+    const input = parseHookInput(text);
+    appendFileSync(file, `${JSON.stringify({
+      hook: spec.name,
+      event: stringField(input?.hook_event_name),
+      cwd: stringField(input?.cwd),
+      exitCode: result.exitCode ?? 0,
+      stdout: (result.stdout ?? "").slice(0, 2000)
+    })}
+`);
+  } catch {}
+}
+async function runHookEntry(spec) {
+  const text = await Bun.stdin.text();
+  const result = await handleHook(spec, text, process.env);
+  logRun(spec, text, result, process.env);
+  if (result.stdout !== undefined)
+    await Bun.write(Bun.stdout, result.stdout);
+  if (result.stderr !== undefined)
+    await Bun.write(Bun.stderr, `${result.stderr}
+`);
+  process.exit(result.exitCode ?? 0);
+}
 
 // src/cli/live-check.ts
 var LIVE_NAME = "anymodel-live-check";
 var LIVE_PREFIX = "live-wt-";
 var SESSION_TIMEOUT_MS = 240000;
+var LIVE_TOOLS = "EnterWorktree,ExitWorktree,Bash";
+var LIVE_ALLOWED = "EnterWorktree,ExitWorktree,Bash(git status:*)";
 function liveRecordFile(stateDir) {
-  return join7(stateDir, "live-check.json");
+  return join12(stateDir, "live-check.json");
 }
 function readLiveRecord(stateDir) {
   try {
-    const parsed = JSON.parse(readFileSync10(liveRecordFile(stateDir), "utf8"));
+    const parsed = JSON.parse(readFileSync15(liveRecordFile(stateDir), "utf8"));
     return typeof parsed.claudeCode === "string" && typeof parsed.plugin === "string" && typeof parsed.passedAt === "string" ? { claudeCode: parsed.claudeCode, plugin: parsed.plugin, passedAt: parsed.passedAt } : null;
   } catch {
     return null;
@@ -8686,11 +9669,11 @@ function readLiveRecord(stateDir) {
 function parseClaudeVersion(output) {
   return /(\d+\.\d+\.\d+)/.exec(output)?.[1] ?? null;
 }
-var LIVE_PROMPT = `Call the EnterWorktree tool with name "${LIVE_NAME}". Then call the ExitWorktree tool ` + 'with action "remove" and discard_changes true. Then reply with the single word done. ' + "Do nothing else.";
+var LIVE_PROMPT = `Call the EnterWorktree tool with name "${LIVE_NAME}". Then run the Bash command ` + '`git status`. Then call the ExitWorktree tool with action "remove" and discard_changes ' + "true. Then reply with the single word done. Do nothing else.";
 function readLog(file) {
-  if (!existsSync9(file))
+  if (!existsSync17(file))
     return [];
-  return readFileSync10(file, "utf8").split(`
+  return readFileSync15(file, "utf8").split(`
 `).filter((line) => line.trim() !== "").flatMap((line) => {
     try {
       return [JSON.parse(line)];
@@ -8706,59 +9689,71 @@ var GIT_ID = {
   GIT_COMMITTER_EMAIL: "live-check@example.com"
 };
 function proveIn(label, repo, expected, deps, env) {
-  const log = join7(dirname3(repo), `${label}-hooks.log`);
+  const log = join12(dirname4(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
   const session = deps.run([
     "claude",
     "-p",
     "--plugin-dir",
     deps.pluginDir,
-    "--permission-mode",
-    "bypassPermissions",
     "--tools",
-    "EnterWorktree,ExitWorktree",
+    LIVE_TOOLS,
+    "--allowedTools",
+    LIVE_ALLOWED,
     "--strict-mcp-config",
     "--no-session-persistence",
     LIVE_PROMPT
   ], { cwd: repo, env: { ...env, [HOOK_LOG_ENV]: log }, timeoutMs: SESSION_TIMEOUT_MS });
   const runs = readLog(log);
+  const said = `claude exited ${session.exitCode}: ${session.output.trim().split(`
+`).slice(-3).join(" ")}`;
   const fired = (event) => runs.some((run) => run.event === event);
-  const created = runs.find((run) => run.event === "WorktreeCreate" && run.exitCode === 0);
+  const created = runs.find((run) => run.event === "WorktreeCreate");
   const removed = runs.find((run) => run.event === "WorktreeRemove");
-  const branchLeft = deps.run(["git", "rev-parse", "--verify", "--quiet", `refs/heads/${expected.branch}`], {
-    cwd: repo,
-    env,
-    timeoutMs: 1e4
-  });
+  const guarded = runs.filter((run) => run.hook === "git-guard" && run.event === "PreToolUse");
+  const guardedThere = guarded.some((run) => run.cwd === expected.folder);
+  const branchLeft = deps.run(["git", "rev-parse", "--verify", "--quiet", `refs/heads/${expected.branch}`], { cwd: repo, env, timeoutMs: 1e4 });
   const lines = [];
-  const events = ["SessionStart", "WorktreeCreate", "WorktreeRemove"];
+  const events = expected.maker === "engine" ? ["SessionStart", "WorktreeCreate", "PreToolUse", "WorktreeRemove"] : ["SessionStart", "PreToolUse"];
   const missing = events.filter((event) => !fired(event));
-  lines.push(missing.length === 0 ? { ok: true, text: `${label}: the plugin's hooks fired (${events.join(", ")})` } : {
-    ok: false,
-    text: `${label}: no ${missing.join(", ")} hook ran. claude exited ${session.exitCode}: ${session.output.trim().split(`
-`).slice(-3).join(" ")}`
-  });
-  lines.push(created?.stdout === expected.folder ? { ok: true, text: `${label}: WorktreeCreate made ${expected.folder}` } : {
-    ok: false,
-    text: `${label}: WorktreeCreate gave ${created?.stdout || "no folder"}, expected ${expected.folder}`
-  });
-  const gone = !existsSync9(expected.folder) && branchLeft.exitCode !== 0;
-  lines.push(gone && removed?.exitCode === 0 ? {
+  lines.push(missing.length === 0 ? { ok: true, text: `${label}: the hooks fired (${events.join(", ")})` } : { ok: false, text: `${label}: no ${missing.join(", ")} hook ran. ${said}` });
+  const where = guarded.length === 0 ? "no Bash call" : guarded.map((run) => run.cwd).join(", ");
+  if (expected.maker === "engine") {
+    lines.push(created?.exitCode === 0 && created.stdout === expected.folder && guardedThere ? {
+      ok: true,
+      text: `${label}: WorktreeCreate made ${expected.folder}, and the session worked there`
+    } : {
+      ok: false,
+      text: `${label}: WorktreeCreate gave ${created?.stdout || `no folder (exit ${created?.exitCode ?? "none"})`}, the git guard ran in ${where}; expected ${expected.folder}`
+    });
+  } else {
+    lines.push(created === undefined && guardedThere ? {
+      ok: true,
+      text: `${label}: no WorktreeCreate hook ran; Claude Code made ${expected.folder}, and the session worked there`
+    } : {
+      ok: false,
+      text: `${label}: ${created === undefined ? "" : "a WorktreeCreate hook ran; "}the git guard ran in ${where}; expected Claude Code's own ${expected.folder}`
+    });
+  }
+  const gone = !existsSync17(expected.folder) && branchLeft.exitCode !== 0;
+  const remover = expected.maker === "engine" ? "WorktreeRemove" : "ExitWorktree";
+  const removerOk = expected.maker === "engine" ? removed?.exitCode === 0 : guardedThere;
+  lines.push(gone && removerOk ? {
     ok: true,
-    text: `${label}: WorktreeRemove removed the folder and the branch ${expected.branch}`
+    text: `${label}: ${remover} removed the folder and the branch ${expected.branch}`
   } : {
     ok: false,
-    text: `${label}: after WorktreeRemove (${removed === undefined ? "did not run" : `exit ${removed.exitCode}`}) ${existsSync9(expected.folder) ? "the folder is still there" : "the folder is gone"}, ${branchLeft.exitCode === 0 ? `the branch ${expected.branch} is still there` : "the branch is gone"}`
+    text: `${label}: after ${remover}${expected.maker === "engine" ? ` (${removed === undefined ? "did not run" : `exit ${removed.exitCode}`})` : guardedThere ? "" : " (the session never worked in it)"} ${existsSync17(expected.folder) ? "the folder is still there" : "the folder is gone"}, ${branchLeft.exitCode === 0 ? `the branch ${expected.branch} is still there` : "the branch is gone"}`
   });
   return lines;
 }
 function runLiveCheck(paths, env, deps) {
-  const version = parseClaudeVersion(deps.run(["claude", "--version"], { cwd: tmpdir(), env, timeoutMs: 20000 }).output);
+  const version = parseClaudeVersion(deps.run(["claude", "--version"], { cwd: tmpdir2(), env, timeoutMs: 20000 }).output);
   if (version === null) {
     return [
       { ok: false, text: "live: `claude --version` gave no version: is Claude Code installed?" }
     ];
   }
-  const root = realpathSync2(mkdtempSync(join7(tmpdir(), "anymodel-live-")));
+  const root = realpathSync3(mkdtempSync(join12(tmpdir2(), "anymodel-live-")));
   try {
     const gitEnv = { ...env, ...GIT_ID };
     const git = (cwd, ...args) => {
@@ -8766,34 +9761,41 @@ function runLiveCheck(paths, env, deps) {
       if (result.exitCode !== 0)
         throw new Error(`git ${args.join(" ")} failed: ${result.output}`);
     };
-    const plain = join7(root, "plain");
-    mkdirSync4(plain);
+    const plain = join12(root, "plain");
+    mkdirSync6(plain);
     git(plain, "init", "-q", "-b", "main");
-    writeFileSync2(join7(plain, "README.md"), `live check
+    writeFileSync4(join12(plain, "README.md"), `live check
 `);
     git(plain, "add", "README.md");
     git(plain, "commit", "-q", "-m", "first");
-    const origin = join7(root, "origin.git");
+    const origin = join12(root, "origin.git");
     git(root, "init", "-q", "--bare", "-b", "main", origin);
-    const configured = join7(root, "configured");
+    const configured = join12(root, "configured");
     git(root, "clone", "-q", origin, configured);
-    writeFileSync2(join7(configured, "README.md"), `live check
+    writeFileSync4(join12(configured, "README.md"), `live check
 `);
-    mkdirSync4(join7(configured, ".claude"));
-    writeFileSync2(join7(configured, ".claude", "anymodel.json"), `${JSON.stringify({ worktrees: { base: "main", prefix: LIVE_PREFIX } })}
+    mkdirSync6(join12(configured, ".claude"));
+    writeFileSync4(join12(configured, ".claude", "anymodel.json"), `${JSON.stringify({ worktrees: { base: "main", prefix: LIVE_PREFIX } })}
 `);
-    git(configured, "add", "README.md", ".claude/anymodel.json");
+    writeFileSync4(join12(configured, ".claude", "settings.json"), `${projectHookSettingsText()}
+`);
+    git(configured, "add", "README.md", ".claude/anymodel.json", ".claude/settings.json");
     git(configured, "commit", "-q", "-m", "first");
     git(configured, "push", "-q", "origin", "main");
     const lines = [
-      ...proveIn("without anymodel.json", plain, {
-        folder: join7(plain, ".claude", "worktrees", LIVE_NAME),
+      ...proveIn("Claude Code's worktrees", plain, {
+        maker: "claude-code",
+        folder: join12(plain, ".claude", "worktrees", LIVE_NAME),
         branch: `worktree-${LIVE_NAME}`
       }, deps, env),
-      ...proveIn("with anymodel.json", configured, { folder: join7(root, `${LIVE_PREFIX}${LIVE_NAME}`), branch: LIVE_NAME }, deps, env)
+      ...proveIn("the worktree engine", configured, {
+        maker: "engine",
+        folder: join12(root, `${LIVE_PREFIX}${LIVE_NAME}`),
+        branch: LIVE_NAME
+      }, deps, env)
     ].map((line) => ({ ...line, text: `live, ${line.text}` }));
     if (lines.every((line) => line.ok)) {
-      mkdirSync4(paths.stateDir, { recursive: true, mode: 448 });
+      mkdirSync6(paths.stateDir, { recursive: true, mode: 448 });
       const record = {
         claudeCode: version,
         plugin: VERSION,
@@ -8809,6 +9811,109 @@ function runLiveCheck(paths, env, deps) {
   }
 }
 
+// src/cli/project-checks.ts
+import { existsSync as existsSync18, readFileSync as readFileSync16 } from "fs";
+function message(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function shown(file, checkout, home) {
+  return file.startsWith(`${checkout.root}/`) ? file.slice(checkout.root.length + 1) : tildify(file, home);
+}
+var ENGINE_HINT = "Run `anymodel hook` for the lines to paste (also in the anymodel README, \xA7 Worktrees)";
+function engineLines(config, sources, checkout, paths) {
+  const hooks = PROJECT_HOOKS.map((spec) => {
+    const event = spec.events[0] ?? "";
+    const handlers = sources.flatMap((file) => wiredHandlers(file, event, null));
+    return { spec, event, wired: handlers.some((h) => runsProjectHook(h.command, spec.name)) };
+  });
+  const missing = hooks.filter((hook) => !hook.wired).map((hook) => hook.event);
+  const wired = hooks.filter((hook) => hook.wired).map((hook) => hook.event);
+  const lines = [];
+  if (config?.worktrees !== undefined) {
+    lines.push(missing.length === 0 ? { ok: true, text: `project: the worktree engine is wired (${wired.join(", ")})` } : {
+      ok: false,
+      text: `project: "worktrees" is set in .claude/anymodel.json, but the project's settings do not wire ${missing.join(", ")} to anymodel hook${missing.includes("WorktreeCreate") ? ", so Claude Code makes its own worktrees" : ""}. ${ENGINE_HINT}`
+    });
+  } else if (wired.length > 0) {
+    lines.push({
+      ok: false,
+      text: `project: the project's settings wire ${wired.join(", ")} to anymodel hook, but ${config === null ? "there is no .claude/anymodel.json" : '.claude/anymodel.json has no "worktrees"'}, so each of them fails. Add "worktrees", or take the anymodel hook lines out`
+    });
+  }
+  if (hooks.find((hook) => hook.event === "WorktreeCreate")?.wired === true) {
+    const others = [...sources, paths.settingsFile].flatMap((file) => wiredHandlers(file, "WorktreeCreate", null)).filter((handler) => !runsProjectHook(handler.command, "worktree-create"));
+    for (const other of others) {
+      lines.push({
+        ok: false,
+        text: `project: another WorktreeCreate hook runs too: ${other.command} (${shown(other.file, checkout, paths.home)}). Claude Code runs both and makes two worktrees for each request; remove one`
+      });
+    }
+  }
+  return lines;
+}
+function readPluginHooks(file) {
+  const parsed = JSON.parse(readFileSync16(file, "utf8"));
+  return Object.entries(parsed.hooks ?? {}).flatMap(([event, groups]) => groups.flatMap((group) => (group.hooks ?? []).flatMap((handler) => {
+    const bundle = (handler.args ?? []).map((arg) => /\/dist\/([a-z-]+)\.js$/.exec(arg)?.[1]).find((name) => name !== undefined);
+    if (bundle === undefined)
+      return [];
+    const subjects = group.matcher === undefined || group.matcher === "" ? [null] : group.matcher.split("|");
+    return [{ name: bundle, event, subjects }];
+  })));
+}
+function silencedLines(sources, pluginHooksFile, checkout, home) {
+  let pluginHooks;
+  try {
+    pluginHooks = readPluginHooks(pluginHooksFile);
+  } catch (error) {
+    return [
+      { ok: false, text: `cannot read the plugin's hooks (${pluginHooksFile}): ${message(error)}` }
+    ];
+  }
+  const found = new Map;
+  for (const hook of pluginHooks) {
+    for (const subject of hook.subjects) {
+      for (const handler of sources.flatMap((file) => wiredHandlers(file, hook.event, subject))) {
+        const key = JSON.stringify([hook.name, hook.event, handler.file, handler.command]);
+        const entry = found.get(key) ?? { hook, handler, subjects: [] };
+        if (subject !== null)
+          entry.subjects.push(subject);
+        found.set(key, entry);
+      }
+    }
+  }
+  return [...found.values()].map(({ hook, handler, subjects }) => ({
+    ok: true,
+    info: true,
+    text: `project: the plugin's ${hook.name} is off here for ${hook.event}${subjects.length > 0 ? ` (${subjects.join(", ")})` : ""}: ${handler.command} (${shown(handler.file, checkout, home)}) runs on the same event`
+  }));
+}
+function projectChecks(cwd, env, paths, pluginHooksFile) {
+  if (Bun.which("git", { PATH: env.PATH ?? "" }) === null) {
+    return [{ ok: true, info: true, text: "project: not checked, git is not on PATH" }];
+  }
+  let checkout;
+  try {
+    checkout = existsSync18(cwd) ? locateCheckout(cwd, { env }) : null;
+  } catch (error) {
+    return [{ ok: false, text: `project: ${message(error)}` }];
+  }
+  if (checkout === null)
+    return [];
+  const sources = deferSources(checkout);
+  const lines = [];
+  try {
+    const { config } = loadProjectConfig(checkout);
+    lines.push(...engineLines(config, sources, checkout, paths));
+  } catch (error) {
+    if (!(error instanceof AnymodelConfigError))
+      throw error;
+    lines.push({ ok: false, text: `project: ${error.message}` });
+  }
+  lines.push(...silencedLines(sources, pluginHooksFile, checkout, paths.home));
+  return lines;
+}
+
 // src/cli/doctor.ts
 var UPDATE_BLOCKING_VARS = [
   "DISABLE_AUTOUPDATER",
@@ -8818,10 +9923,10 @@ var UPDATE_BLOCKING_VARS = [
 var FORCE_PLUGIN_UPDATES_VAR = "FORCE_AUTOUPDATE_PLUGINS";
 var MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 function readSettings2(file) {
-  if (!existsSync10(file))
+  if (!existsSync19(file))
     return null;
   try {
-    const parsed = JSON.parse(readFileSync11(file, "utf8"));
+    const parsed = JSON.parse(readFileSync17(file, "utf8"));
     return typeof parsed === "object" && parsed !== null ? parsed : null;
   } catch {
     return null;
@@ -8845,7 +9950,7 @@ function checkPlugin(paths) {
     };
   }
   const where = tildify(install.installPath, paths.home);
-  if (!existsSync10(install.installPath)) {
+  if (!existsSync19(install.installPath)) {
     return {
       ok: false,
       text: `the plugin folder is missing: ${where}. Run: ${PLUGIN_INSTALL_COMMAND}`
@@ -8865,14 +9970,14 @@ function isExecutable(file) {
   }
 }
 function checkLauncher(paths) {
-  const launcher = join8(paths.binDir, LAUNCHER_NAME);
+  const launcher = join13(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
-  if (!existsSync10(launcher))
+  if (!existsSync19(launcher))
     return { ok: false, text: `no launcher at ${where}. Run: anymodel setup` };
   if (!isExecutable(launcher)) {
     return { ok: false, text: `the launcher ${where} is not executable. Run: anymodel setup` };
   }
-  const script = readFileSync11(launcher, "utf8");
+  const script = readFileSync17(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
     return { ok: false, text: `the launcher ${where} is out of date. Run: anymodel setup` };
@@ -8899,7 +10004,7 @@ async function checkMarketplaceAccess(paths, env) {
     case "unknown":
       return { ok: false, text: `cannot check the marketplace source (${source.type})` };
     case "local":
-      return existsSync10(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : { ok: false, text: `the marketplace folder is missing: ${source.path}` };
+      return existsSync19(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : { ok: false, text: `the marketplace folder is missing: ${source.path}` };
     case "http": {
       const url = redactUrl(source.url);
       const result = await canReadHttp(source.url);
@@ -8922,7 +10027,7 @@ async function checkMarketplaceAccess(paths, env) {
 }
 function marketplaceVersion(manifest) {
   try {
-    const version = JSON.parse(readFileSync11(manifest, "utf8"))?.version;
+    const version = JSON.parse(readFileSync17(manifest, "utf8"))?.version;
     return typeof version === "string" ? version : null;
   } catch {
     return null;
@@ -8941,7 +10046,7 @@ function checkInstalledVersion(paths) {
       text: `the ${MARKETPLACE} marketplace has no local copy. Run: ${MARKETPLACE_UPDATE_COMMAND}`
     };
   }
-  const manifest = join8(location, "plugin", ".claude-plugin", "plugin.json");
+  const manifest = join13(location, "plugin", ".claude-plugin", "plugin.json");
   const latest = marketplaceVersion(manifest);
   if (latest === null) {
     return {
@@ -9017,7 +10122,7 @@ function hasEntry(data, field, key) {
 function checkOldPlugin(settings, paths) {
   const plugins = settings?.enabledPlugins;
   const enabled = isJsonObject6(plugins) && plugins[OLD_PLUGIN_ID] === true;
-  if (!existsSync10(join8(paths.claudeConfigDir, OLD_NAME))) {
+  if (!existsSync19(join13(paths.claudeConfigDir, OLD_NAME))) {
     if (!enabled)
       return null;
     return {
@@ -9026,18 +10131,18 @@ function checkOldPlugin(settings, paths) {
     };
   }
   const short = (path) => tildify(path, paths.home);
-  const launcher = join8(paths.binDir, OLD_NAME);
+  const launcher = join13(paths.binDir, OLD_NAME);
   const left = [
     enabled ? "the plugin enabled" : null,
     hasEntry(readSettings2(paths.installedPluginsFile), "plugins", OLD_PLUGIN_ID) ? "the plugin installed" : null,
-    existsSync10(launcher) ? `its launcher ${short(launcher)}` : null,
+    existsSync19(launcher) ? `its launcher ${short(launcher)}` : null,
     hasEntry(settings, "extraKnownMarketplaces", OLD_NAME) ? `extraKnownMarketplaces.${OLD_NAME} in ${short(paths.settingsFile)}` : null,
     hasEntry(readSettings2(paths.knownMarketplacesFile), null, OLD_NAME) ? `the ${OLD_NAME} marketplace` : null
   ].filter((thing) => thing !== null);
   if (left.length === 0)
     return null;
   const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME}\``;
-  const canRun = existsSync10(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
+  const canRun = existsSync19(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
   const steps = canRun ? `Run \`${OLD_NAME} restore\` first, then \`${then}.` : `Its launcher cannot run, so remove by hand ${short(launcher)} and "${OLD_NAME}" under extraKnownMarketplaces in ${short(paths.settingsFile)}; then run \`${then}.`;
   return {
     ok: false,
@@ -9062,7 +10167,7 @@ function checkLiveRecord(paths) {
     text: `the live check passed on Claude Code ${record.claudeCode} (plugin ${record.plugin})`
   };
 }
-async function runDoctor(paths, env, gateway, live = null) {
+async function runDoctor(paths, env, { gateway, project, live }) {
   const settings = readSettings2(paths.settingsFile);
   const checks = [
     checkPlugin(paths),
@@ -9073,6 +10178,7 @@ async function runDoctor(paths, env, gateway, live = null) {
     checkUpdatesNotOff(settings, env, paths),
     checkNameClash(settings),
     checkOldPlugin(settings, paths),
+    ...project === null ? [] : projectChecks(project.cwd, env, paths, project.pluginHooksFile),
     ...await gatewayChecks({ paths, ...gateway }),
     live === null ? checkLiveRecord(paths) : null,
     ...live === null ? [] : runLiveCheck(paths, env, live)
@@ -9087,10 +10193,10 @@ async function runDoctor(paths, env, gateway, live = null) {
 import { rmSync as rmSync3 } from "fs";
 
 // src/setup/restore.ts
-import { existsSync as existsSync12, readFileSync as readFileSync13 } from "fs";
+import { existsSync as existsSync21, readFileSync as readFileSync19 } from "fs";
 
 // src/setup/managed-markdown.ts
-import { existsSync as existsSync11, readFileSync as readFileSync12 } from "fs";
+import { existsSync as existsSync20, readFileSync as readFileSync18 } from "fs";
 var BLOCK_BEGIN = "<!-- anymodel:begin -->";
 var BLOCK_END = "<!-- anymodel:end -->";
 function countOf(text, marker) {
@@ -9131,7 +10237,7 @@ function renderWithoutBlock(current, file = "the file") {
 function writeMarkdown(options, render) {
   const file = realTarget(options.file);
   return retryOnConcurrentChange(file, () => {
-    const text = existsSync11(file) ? readFileSync12(file, "utf8") : null;
+    const text = existsSync20(file) ? readFileSync18(file, "utf8") : null;
     const next = render(text ?? "", file);
     if (text === null && next === "")
       return { outcome: "unchanged", backup: null };
@@ -9158,11 +10264,11 @@ function restoreWholeFile(file, entry, stateDir) {
   if (!baseline)
     return { file, action: "no-backup", details: [] };
   if (baseline.absent) {
-    if (!existsSync12(file))
+    if (!existsSync21(file))
       return { file, action: "unchanged", details: [] };
     return { file, action: "removed", details: [], savedAs: removeManagedFile(stateDir, file) };
   }
-  const result = writeManagedFile(file, readFileSync13(baseline.path, "utf8"), {
+  const result = writeManagedFile(file, readFileSync19(baseline.path, "utf8"), {
     stateDir,
     kind: "whole-file",
     mode: baseline.mode
@@ -9177,9 +10283,9 @@ function restoreWholeFile(file, entry, stateDir) {
   };
 }
 function isEmpty(file) {
-  if (!existsSync12(file))
+  if (!existsSync21(file))
     return false;
-  const text = readFileSync13(file, "utf8").trim();
+  const text = readFileSync19(file, "utf8").trim();
   return text === "" || text === "{}";
 }
 function restorePartly(file, entry, stateDir) {
@@ -9320,17 +10426,17 @@ async function runRestore(paths, options) {
 }
 
 // src/cli/setup.ts
-import { existsSync as existsSync13, readFileSync as readFileSync14 } from "fs";
+import { existsSync as existsSync22, readFileSync as readFileSync20 } from "fs";
 import { delimiter } from "path";
 var AUTO_UPDATE_KEY = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
 function show2(value) {
   return value === undefined ? "(none)" : JSON.stringify(value);
 }
 function marketplaceKnown(settingsFile) {
-  if (!existsSync13(settingsFile))
+  if (!existsSync22(settingsFile))
     return false;
   try {
-    const settings = JSON.parse(readFileSync14(settingsFile, "utf8"));
+    const settings = JSON.parse(readFileSync20(settingsFile, "utf8"));
     const entry = settings.extraKnownMarketplaces?.[MARKETPLACE];
     return typeof entry === "object" && entry !== null;
   } catch {
@@ -9363,7 +10469,7 @@ function applySetup(paths, dryRun) {
   }
   return lines;
 }
-async function runSetup(paths, options) {
+async function runSetup2(paths, options) {
   const short = (path) => tildify(path, paths.home);
   if (!marketplaceKnown(paths.settingsFile)) {
     console.error(`${short(paths.settingsFile)} does not list the ${MARKETPLACE} marketplace yet.
@@ -9395,40 +10501,6 @@ async function runSetup(paths, options) {
   return 0;
 }
 
-// src/hooks/session-name.ts
-import { existsSync as existsSync14, mkdirSync as mkdirSync5, readFileSync as readFileSync15, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "fs";
-import { tmpdir as tmpdir2 } from "os";
-import { join as join9 } from "path";
-var MAX_SESSION_NAME = 60;
-function isSessionId(value) {
-  return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
-}
-function cleanSessionName(raw) {
-  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
-  const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
-  if (plain === "")
-    return null;
-  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
-}
-function namesDir(env) {
-  return join9(env.TMPDIR || tmpdir2(), "anymodel-session-names");
-}
-function writeAtomic(file, text) {
-  const partial = `${file}.${process.pid}.tmp`;
-  writeFileSync3(partial, text);
-  renameSync2(partial, file);
-}
-function recordSessionName(sessionId, raw, env) {
-  if (!isSessionId(sessionId))
-    throw new Error(`"${sessionId}" is not a session id`);
-  const name = cleanSessionName(raw);
-  if (name === null)
-    throw new Error("the name is empty");
-  mkdirSync5(namesDir(env), { recursive: true });
-  writeAtomic(join9(namesDir(env), `${sessionId}.name`), name);
-  return name;
-}
-
 // src/entries/cli.ts
 var HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
 
@@ -9437,10 +10509,15 @@ Usage: anymodel <command> [options]
 Commands:
   setup [--dry-run]  Install the launcher in ~/.local/bin and turn on plugin auto-update.
                      --dry-run prints what would change and writes nothing.
-  doctor [--live]    Check the install. Exit code 1 when a check fails.
+  doctor [--live]    Check the install, and the project of the current folder. Exit
+                     code 1 when a check fails.
                      --live: also run two throwaway Claude Code sessions in temp repos,
-                     to prove the hooks and the worktree contract on this Claude Code
+                     to prove the hooks and the worktree engine on this Claude Code
                      (uses your login; a few cents). Records the version it passed on.
+  hook <worktree-create|worktree-remove|subagent-stop>
+                     The worktree engine, for a project that wires it in its own
+                     .claude/settings.json: reads the hook's input on stdin and answers
+                     as Claude Code expects. Without a name: prints the lines to paste.
   session-name <session id> <name>
                      Name a Claude session after its task (for the session-name hook).
   restore [--yes] [--now]
@@ -9458,12 +10535,19 @@ Commands:
   --help             Print this help.
 
 Paths follow HOME and CLAUDE_CONFIG_DIR.`;
+var HOOK_HELP = `Usage: ${COMMAND} hook <${PROJECT_HOOKS.map((spec) => spec.name).join("|")}>
+
+The worktree engine is opt-in per project. To turn it on in a project, give its
+.claude/anymodel.json a "worktrees" field, and paste these hooks into its
+.claude/settings.json (merge them with any "hooks" it has):
+
+${projectHookSettingsText()}`;
 function routerBundle() {
-  const beside = join10(import.meta.dir, "router.js");
-  return existsSync15(beside) ? beside : join10(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
+  const beside = join14(import.meta.dir, "router.js");
+  return existsSync23(beside) ? beside : join14(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
 }
 function pluginDir() {
-  return basename2(import.meta.dir) === "dist" ? dirname4(import.meta.dir) : join10(import.meta.dir, "..", "..", "plugin");
+  return basename2(import.meta.dir) === "dist" ? dirname5(import.meta.dir) : join14(import.meta.dir, "..", "..", "plugin");
 }
 var liveRunner = (argv, { cwd, env, timeoutMs }) => {
   try {
@@ -9516,7 +10600,7 @@ async function main(argv) {
 ${HELP}`);
         return 2;
       }
-      return runSetup(paths, { dryRun: rest.includes("--dry-run") });
+      return runSetup2(paths, { dryRun: rest.includes("--dry-run") });
     }
     case "doctor": {
       const unknown = rest.filter((arg) => arg !== "--live");
@@ -9526,7 +10610,26 @@ ${HELP}`);
 ${HELP}`);
         return 2;
       }
-      return runDoctor(paths, process.env, { bundle: routerBundle(), runner, systemd }, rest.includes("--live") ? { pluginDir: pluginDir(), run: liveRunner } : null);
+      return runDoctor(paths, process.env, {
+        gateway: { bundle: routerBundle(), runner, systemd },
+        project: { cwd: process.cwd(), pluginHooksFile: join14(pluginDir(), "hooks", "hooks.json") },
+        live: rest.includes("--live") ? { pluginDir: pluginDir(), run: liveRunner } : null
+      });
+    }
+    case "hook": {
+      const [name, ...extra] = rest;
+      if (name === undefined || name === "--help" || name === "-h") {
+        console.log(HOOK_HELP);
+        return 0;
+      }
+      const spec = PROJECT_HOOKS.find((one) => one.name === name);
+      if (spec === undefined || extra.length > 0) {
+        console.error(`Unknown hook: ${[name, ...extra].join(" ")}
+
+${HOOK_HELP}`);
+        return 2;
+      }
+      return runHookEntry(spec);
     }
     case "session-name": {
       const [sessionId, ...words] = rest;

@@ -3,18 +3,25 @@
  * the plugin relies on (`docs/claude-code-contract.md`). It never runs by default: it
  * starts real Claude Code sessions, which use the person's login and cost a few cents.
  *
- * In a temp folder it makes two throwaway repos: one without anymodel.json (Claude Code's
- * default shape) and one with `worktrees` in it, cloned from a local bare "origin". In each
- * it runs one `claude -p` session with this plugin (`--plugin-dir`), only the EnterWorktree
- * and ExitWorktree tools, and a tiny prompt: enter a worktree, then leave it with "remove".
+ * In a temp folder it makes two throwaway repos: one without anymodel.json, where Claude
+ * Code makes its own worktrees, and one that turned the worktree engine on (`worktrees` in
+ * anymodel.json, and the three `anymodel hook` lines in its `.claude/settings.json`, exactly
+ * as the README says), cloned from a local bare "origin". In each it runs one `claude -p`
+ * session with this plugin (`--plugin-dir`), only the EnterWorktree, ExitWorktree and Bash
+ * tools, permission for exactly those calls (no permission mode that skips the checks),
+ * and a tiny prompt: enter a worktree, run `git status` there, leave it with "remove".
  * Every hook run is logged (`ANYMODEL_HOOK_LOG`), and the check reads that log and git:
  *
- * - the hooks fired: SessionStart, WorktreeCreate and WorktreeRemove;
- * - WorktreeCreate made the right shape (folder and branch);
- * - WorktreeRemove removed the folder and the branch.
+ * - the plugin's hooks fired: SessionStart, and the git guard before the Bash call;
+ * - without anymodel.json: no WorktreeCreate hook ran, Claude Code made its own worktree,
+ *   and the session worked in it (the git guard's `cwd`); ExitWorktree removed it;
+ * - with the engine: its WorktreeCreate made the configured folder, through the launcher,
+ *   and the session worked there; its WorktreeRemove removed the folder and the branch.
  *
- * When every check passes, the Claude Code version is recorded in the state folder
- * (`live-check.json`); plain `doctor` then shows it. The temp folder is removed at the end.
+ * The project-wired hooks run the launcher (`~/.local/bin/anymodel`), so the engine proved is
+ * the installed plugin's, the one every project uses. When every check passes, the Claude
+ * Code version is recorded in the state folder (`live-check.json`); plain `doctor` then
+ * shows it. The temp folder is removed at the end.
  */
 import {
   existsSync,
@@ -28,6 +35,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { VERSION } from "../build-info";
+import { projectHookSettingsText } from "../hooks/project-wiring";
 import { HOOK_LOG_ENV } from "../hooks/run";
 import { atomicWrite } from "../setup/write";
 import type { CliPaths } from "./paths";
@@ -38,6 +46,10 @@ export const LIVE_NAME = "anymodel-live-check";
 const LIVE_PREFIX = "live-wt-";
 /** One live session may take this long. */
 const SESSION_TIMEOUT_MS = 240_000;
+/** The only tools a live session has. */
+export const LIVE_TOOLS = "EnterWorktree,ExitWorktree,Bash";
+/** The calls a live session may make without asking: nothing else runs. */
+export const LIVE_ALLOWED = "EnterWorktree,ExitWorktree,Bash(git status:*)";
 
 export interface LiveRecord {
   claudeCode: string;
@@ -87,19 +99,20 @@ export function parseClaudeVersion(output: string): string | null {
 }
 
 /**
- * The prompt each live session gets: two tool calls, nothing else. `discard_changes`:
+ * The prompt each live session gets: three tool calls, nothing else. `discard_changes`:
  * Claude Code cannot check a hook-made worktree outside the repo, and refuses "remove"
- * without it (seen live); the plugin's WorktreeRemove is then the check, and the worktree
+ * without it (seen live); the engine's WorktreeRemove is then the check, and the worktree
  * here holds no work.
  */
 export const LIVE_PROMPT =
-  `Call the EnterWorktree tool with name "${LIVE_NAME}". Then call the ExitWorktree tool ` +
-  'with action "remove" and discard_changes true. Then reply with the single word done. ' +
-  "Do nothing else.";
+  `Call the EnterWorktree tool with name "${LIVE_NAME}". Then run the Bash command ` +
+  '`git status`. Then call the ExitWorktree tool with action "remove" and discard_changes ' +
+  "true. Then reply with the single word done. Do nothing else.";
 
 interface LoggedRun {
   hook: string;
   event: string | null;
+  cwd: string | null;
   exitCode: number;
   stdout: string;
 }
@@ -125,25 +138,32 @@ const GIT_ID = {
   GIT_COMMITTER_EMAIL: "live-check@example.com",
 };
 
+interface Expected {
+  /** Who makes the worktree: Claude Code itself, or the engine the project wired. */
+  maker: "claude-code" | "engine";
+  folder: string;
+  branch: string;
+}
+
 /** One throwaway session in `repo`, and what it proved. */
 function proveIn(
   label: string,
   repo: string,
-  expected: { folder: string; branch: string },
+  expected: Expected,
   deps: LiveDeps,
   env: Record<string, string | undefined>,
 ): LiveCheckLine[] {
-  const log = join(dirname(repo), `${label}-hooks.log`);
+  const log = join(dirname(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
   const session = deps.run(
     [
       "claude",
       "-p",
       "--plugin-dir",
       deps.pluginDir,
-      "--permission-mode",
-      "bypassPermissions",
       "--tools",
-      "EnterWorktree,ExitWorktree",
+      LIVE_TOOLS,
+      "--allowedTools",
+      LIVE_ALLOWED,
       "--strict-mcp-config",
       "--no-session-persistence",
       LIVE_PROMPT,
@@ -151,46 +171,70 @@ function proveIn(
     { cwd: repo, env: { ...env, [HOOK_LOG_ENV]: log }, timeoutMs: SESSION_TIMEOUT_MS },
   );
   const runs = readLog(log);
+  const said = `claude exited ${session.exitCode}: ${session.output.trim().split("\n").slice(-3).join(" ")}`;
   const fired = (event: string) => runs.some((run) => run.event === event);
-  const created = runs.find((run) => run.event === "WorktreeCreate" && run.exitCode === 0);
+  const created = runs.find((run) => run.event === "WorktreeCreate");
   const removed = runs.find((run) => run.event === "WorktreeRemove");
+  const guarded = runs.filter((run) => run.hook === "git-guard" && run.event === "PreToolUse");
+  const guardedThere = guarded.some((run) => run.cwd === expected.folder);
   const branchLeft = deps.run(
     ["git", "rev-parse", "--verify", "--quiet", `refs/heads/${expected.branch}`],
-    {
-      cwd: repo,
-      env,
-      timeoutMs: 10_000,
-    },
+    { cwd: repo, env, timeoutMs: 10_000 },
   );
+
   const lines: LiveCheckLine[] = [];
-  const events = ["SessionStart", "WorktreeCreate", "WorktreeRemove"];
+  const events =
+    expected.maker === "engine"
+      ? ["SessionStart", "WorktreeCreate", "PreToolUse", "WorktreeRemove"]
+      : ["SessionStart", "PreToolUse"];
   const missing = events.filter((event) => !fired(event));
   lines.push(
     missing.length === 0
-      ? { ok: true, text: `${label}: the plugin's hooks fired (${events.join(", ")})` }
-      : {
-          ok: false,
-          text: `${label}: no ${missing.join(", ")} hook ran. claude exited ${session.exitCode}: ${session.output.trim().split("\n").slice(-3).join(" ")}`,
-        },
+      ? { ok: true, text: `${label}: the hooks fired (${events.join(", ")})` }
+      : { ok: false, text: `${label}: no ${missing.join(", ")} hook ran. ${said}` },
   );
-  lines.push(
-    created?.stdout === expected.folder
-      ? { ok: true, text: `${label}: WorktreeCreate made ${expected.folder}` }
-      : {
-          ok: false,
-          text: `${label}: WorktreeCreate gave ${created?.stdout || "no folder"}, expected ${expected.folder}`,
-        },
-  );
+
+  const where = guarded.length === 0 ? "no Bash call" : guarded.map((run) => run.cwd).join(", ");
+  if (expected.maker === "engine") {
+    lines.push(
+      created?.exitCode === 0 && created.stdout === expected.folder && guardedThere
+        ? {
+            ok: true,
+            text: `${label}: WorktreeCreate made ${expected.folder}, and the session worked there`,
+          }
+        : {
+            ok: false,
+            text: `${label}: WorktreeCreate gave ${created?.stdout || `no folder (exit ${created?.exitCode ?? "none"})`}, the git guard ran in ${where}; expected ${expected.folder}`,
+          },
+    );
+  } else {
+    lines.push(
+      created === undefined && guardedThere
+        ? {
+            ok: true,
+            text: `${label}: no WorktreeCreate hook ran; Claude Code made ${expected.folder}, and the session worked there`,
+          }
+        : {
+            ok: false,
+            text: `${label}: ${created === undefined ? "" : "a WorktreeCreate hook ran; "}the git guard ran in ${where}; expected Claude Code's own ${expected.folder}`,
+          },
+    );
+  }
+
   const gone = !existsSync(expected.folder) && branchLeft.exitCode !== 0;
+  const remover = expected.maker === "engine" ? "WorktreeRemove" : "ExitWorktree";
+  // Claude Code's own removal runs no hook: the worktree must have been there (the session
+  // worked in it), or "gone" proves nothing.
+  const removerOk = expected.maker === "engine" ? removed?.exitCode === 0 : guardedThere;
   lines.push(
-    gone && removed?.exitCode === 0
+    gone && removerOk
       ? {
           ok: true,
-          text: `${label}: WorktreeRemove removed the folder and the branch ${expected.branch}`,
+          text: `${label}: ${remover} removed the folder and the branch ${expected.branch}`,
         }
       : {
           ok: false,
-          text: `${label}: after WorktreeRemove (${removed === undefined ? "did not run" : `exit ${removed.exitCode}`}) ${existsSync(expected.folder) ? "the folder is still there" : "the folder is gone"}, ${branchLeft.exitCode === 0 ? `the branch ${expected.branch} is still there` : "the branch is gone"}`,
+          text: `${label}: after ${remover}${expected.maker === "engine" ? ` (${removed === undefined ? "did not run" : `exit ${removed.exitCode}`})` : guardedThere ? "" : " (the session never worked in it)"} ${existsSync(expected.folder) ? "the folder is still there" : "the folder is gone"}, ${branchLeft.exitCode === 0 ? `the branch ${expected.branch} is still there` : "the branch is gone"}`,
         },
   );
   return lines;
@@ -221,14 +265,14 @@ export function runLiveCheck(
       const result = deps.run(["git", ...args], { cwd, env: gitEnv, timeoutMs: 20_000 });
       if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.output}`);
     };
-    // Without anymodel.json: Claude Code's default shape.
+    // Without anymodel.json: Claude Code's own worktrees.
     const plain = join(root, "plain");
     mkdirSync(plain);
     git(plain, "init", "-q", "-b", "main");
     writeFileSync(join(plain, "README.md"), "live check\n");
     git(plain, "add", "README.md");
     git(plain, "commit", "-q", "-m", "first");
-    // With anymodel.json: beside the repo, from origin/main.
+    // The worktree engine turned on, as the README says: beside the repo, from origin/main.
     const origin = join(root, "origin.git");
     git(root, "init", "-q", "--bare", "-b", "main", origin);
     const configured = join(root, "configured");
@@ -239,15 +283,17 @@ export function runLiveCheck(
       join(configured, ".claude", "anymodel.json"),
       `${JSON.stringify({ worktrees: { base: "main", prefix: LIVE_PREFIX } })}\n`,
     );
-    git(configured, "add", "README.md", ".claude/anymodel.json");
+    writeFileSync(join(configured, ".claude", "settings.json"), `${projectHookSettingsText()}\n`);
+    git(configured, "add", "README.md", ".claude/anymodel.json", ".claude/settings.json");
     git(configured, "commit", "-q", "-m", "first");
     git(configured, "push", "-q", "origin", "main");
 
     const lines = [
       ...proveIn(
-        "without anymodel.json",
+        "Claude Code's worktrees",
         plain,
         {
+          maker: "claude-code",
           folder: join(plain, ".claude", "worktrees", LIVE_NAME),
           branch: `worktree-${LIVE_NAME}`,
         },
@@ -255,9 +301,13 @@ export function runLiveCheck(
         env,
       ),
       ...proveIn(
-        "with anymodel.json",
+        "the worktree engine",
         configured,
-        { folder: join(root, `${LIVE_PREFIX}${LIVE_NAME}`), branch: LIVE_NAME },
+        {
+          maker: "engine",
+          folder: join(root, `${LIVE_PREFIX}${LIVE_NAME}`),
+          branch: LIVE_NAME,
+        },
         deps,
         env,
       ),

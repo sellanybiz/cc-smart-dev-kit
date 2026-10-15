@@ -1,7 +1,9 @@
 /**
  * Every hook through the same frame (`run.ts`), in a table:
- * - with no anymodel.json: Claude Code's default worktree, and every guard silent;
- * - the defer check: the project's own hook for the same event (and tool) silences it;
+ * - with no anymodel.json: every plugin hook silent; the worktree engine a project wires
+ *   fails closed (it needs `worktrees`);
+ * - the defer check: the project's own hook for the same event (and tool) silences a
+ *   plugin hook, never a hook the project wires itself;
  * - `requires` not met (and a broken anymodel.json): each fails closed its own way;
  * - the guard matrix: the plugin's hook on or off × the project's hook wired or not ×
  *   the project's `requires` met or not. Exactly one guard answers a destructive command,
@@ -27,6 +29,7 @@ import {
   HOOKS,
   mainFolderGuardHook,
   messageGuardHook,
+  PROJECT_HOOKS,
   sessionNameHook,
   subagentStopHook,
   worktreeCreateHook,
@@ -280,29 +283,39 @@ const CASES: Case[] = [
   },
 ];
 
-test("the table covers every hook", () => {
-  expect(CASES.map((c) => c.spec.name).sort()).toEqual(HOOKS.map((spec) => spec.name).sort());
+test("the table covers every hook, the plugin's and the project's", () => {
+  expect(CASES.map((c) => c.spec.name).sort()).toEqual(
+    [...HOOKS, ...PROJECT_HOOKS].map((spec) => spec.name).sort(),
+  );
+  expect(HOOKS.every((spec) => spec.wiring === "plugin")).toBe(true);
+  expect(PROJECT_HOOKS.every((spec) => spec.wiring === "project")).toBe(true);
 });
+
+/** What a hook says: anything at all on stdout or stderr. */
+const speaks = (result: HookResult) => result.stdout !== undefined || result.stderr !== undefined;
 
 describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
   test("speaks with a full anymodel.json (the baseline the other rows silence)", async () => {
     const { input, env } = c.setup(FULL_CONFIG);
     const result = await runHook(c.spec, input, env);
-    expect(result.stdout !== undefined || result.stderr !== undefined).toBe(true);
+    expect(speaks(result)).toBe(true);
     expect(result.exitCode ?? 0).toBe(0);
   });
 
-  test("the project wires its own: exit 0 and nothing at all", async () => {
-    const { input, env } = c.setup(FULL_CONFIG);
-    wireProjectHook(mainOf(input), c.own.event, c.own.matcher);
-    expect(await runHook(c.spec, input, env)).toEqual({});
-  });
-
-  test("the project wires its own in settings.local.json: the same", async () => {
-    const { input, env } = c.setup(FULL_CONFIG);
-    wireProjectHook(mainOf(input), c.own.event, c.own.matcher, "settings.local.json");
-    expect(await runHook(c.spec, input, env)).toEqual({});
-  });
+  test.each(["settings.json", "settings.local.json"])(
+    "another hook for the same event in the project's %s: a plugin hook stays silent, a project-wired one runs",
+    async (file) => {
+      const { input, env } = c.setup(FULL_CONFIG);
+      wireProjectHook(mainOf(input), c.own.event, c.own.matcher, file);
+      const result = await runHook(c.spec, input, env);
+      if (c.spec.wiring === "plugin") {
+        expect(result).toEqual({});
+      } else {
+        expect(speaks(result)).toBe(true);
+        expect(result.exitCode ?? 0).toBe(0);
+      }
+    },
+  );
 
   test("requires not met: fails closed", async () => {
     const { input, env } = c.setup({ requires: ">=99", fieldFromTheFuture: true });
@@ -316,34 +329,45 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
     expect(said).toContain("anymodel.json: worktree: unknown field");
   });
 
-  test("requires not met, but the project still wires its own: silent (its copy runs)", async () => {
+  test("requires not met, and another hook for the same event: a plugin hook stays silent (that one runs), a project-wired one fails closed", async () => {
     const { input, env } = c.setup({ requires: ">=99" });
     wireProjectHook(mainOf(input), c.own.event, c.own.matcher);
-    expect(await runHook(c.spec, input, env)).toEqual({});
+    const result = await runHook(c.spec, input, env);
+    if (c.spec.wiring === "plugin") expect(result).toEqual({});
+    else c.failsClosed(result);
   });
 });
 
 describe("no anymodel.json", () => {
-  test.each(
-    CASES.filter(
-      (c) =>
-        c.spec !== worktreeCreateHook &&
-        c.spec !== worktreeRemoveHook &&
-        c.spec !== subagentStopHook,
-    ).map((c) => [c.spec.name, c] as const),
-  )("%s is silent", async (_name, c) => {
-    const { input, env } = c.setup(undefined);
-    expect(await runHook(c.spec, input, env)).toEqual({});
-  });
+  test.each(CASES.filter((c) => c.spec.wiring === "plugin").map((c) => [c.spec.name, c] as const))(
+    "the plugin's %s is silent",
+    async (_name, c) => {
+      const { input, env } = c.setup(undefined);
+      expect(await runHook(c.spec, input, env)).toEqual({});
+    },
+  );
 
-  test("worktree-create makes Claude Code's default shape", async () => {
-    const c = CASES.find((one) => one.spec === worktreeCreateHook);
-    if (c === undefined) throw new Error("no case");
-    const { input, env } = c.setup(undefined);
-    expect(await runHook(c.spec, input, env)).toEqual({
-      stdout: join(String(input.cwd), ".claude", "worktrees", "x"),
-    });
-  });
+  const NEEDS =
+    "this project wires the anymodel worktree hooks (anymodel hook ...), but has no .claude/anymodel.json. " +
+    'Add "worktrees" to .claude/anymodel.json, or take the three anymodel hook lines out of .claude/settings.json (the anymodel README, § Worktrees)';
+
+  test.each([
+    [
+      "worktree-create",
+      worktreeCreateHook,
+      { exitCode: 1, stderr: `worktree not created: ${NEEDS}` },
+    ],
+    ["worktree-remove", worktreeRemoveHook, { exitCode: 1, stderr: `worktree kept: ${NEEDS}` }],
+    ["subagent-stop", subagentStopHook, { stderr: `subagent worktree kept: ${NEEDS}` }],
+  ] as const)(
+    "the project-wired %s fails closed: it needs worktrees",
+    async (_name, spec, expected) => {
+      const c = CASES.find((one) => one.spec === spec);
+      if (c === undefined) throw new Error("no case");
+      const { input, env } = c.setup(undefined);
+      expect(await runHook(c.spec, input, env)).toEqual(expected);
+    },
+  );
 });
 
 describe("the guard matrix", () => {

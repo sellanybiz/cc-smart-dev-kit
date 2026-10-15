@@ -107,6 +107,8 @@ function setup(options: SetupOptions = {}) {
     const guard = subprocessGuard();
     const result = Bun.spawnSync(["bun", ...guard.args, CLI, ...args], {
       env: { ...env, ...extraEnv, ...guard.env },
+      // Outside any project: doctor also checks the project of the folder it runs in.
+      cwd: home,
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -259,10 +261,12 @@ describe("anymodel doctor", () => {
     );
     expect(result.exitCode).toBe(0);
     // git is asked for the user's own ssh command, then told never to ask for a password.
+    // Then which project the folder is in (this fake git says: none).
     expect(gitCalls()).toBe(
       [
         "config --get core.sshCommand | prompt=0 | ssh=",
         "ls-remote git@github.com:example-org/anymodel.git HEAD | prompt=0 | ssh=ssh -o BatchMode=yes -o ConnectTimeout=8",
+        "rev-parse --path-format=absolute --show-toplevel --absolute-git-dir --git-common-dir | prompt= | ssh=",
         "",
       ].join("\n"),
     );

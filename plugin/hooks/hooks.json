@@ -1,49 +1,13 @@
 {
-  "description": "anymodel: worktrees, git and edit guards, session names. Each hook stays silent while the project wires its own for the same event.",
+  "description": "anymodel: git, edit and message guards, notes after a merge and at session start, session names. Each hook stays silent while the project wires its own for the same event.",
   "hooks": {
-    "WorktreeCreate": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bun",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/dist/worktree-create.js"],
-            "timeout": 600
-          }
-        ]
-      }
-    ],
-    "WorktreeRemove": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bun",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/dist/worktree-remove.js"],
-            "timeout": 60
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bun",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/dist/subagent-stop.js"],
-            "timeout": 60
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "command",
-            "command": "bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
             "args": ["${CLAUDE_PLUGIN_ROOT}/dist/git-guard.js"],
             "timeout": 10
           }
@@ -54,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
             "args": ["${CLAUDE_PLUGIN_ROOT}/dist/main-folder-guard.js"],
             "timeout": 10
           }
@@ -65,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
             "args": ["${CLAUDE_PLUGIN_ROOT}/dist/message-guard.js"],
             "timeout": 10
           }
@@ -78,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
             "args": ["${CLAUDE_PLUGIN_ROOT}/dist/after-merge.js"],
             "timeout": 30
           }
@@ -91,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
             "args": ["${CLAUDE_PLUGIN_ROOT}/dist/after-merge.js"],
             "timeout": 30
           }
@@ -104,7 +68,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
             "args": ["${CLAUDE_PLUGIN_ROOT}/dist/worktree-leftovers.js"],
             "timeout": 30
           }
@@ -115,7 +79,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
             "args": ["${CLAUDE_PLUGIN_ROOT}/dist/session-name.js"],
             "timeout": 10
           }
@@ -127,7 +91,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
             "args": ["${CLAUDE_PLUGIN_ROOT}/dist/session-name.js"],
             "timeout": 10
           }

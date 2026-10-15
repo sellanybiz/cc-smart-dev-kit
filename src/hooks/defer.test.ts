@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { locateCheckout } from "../project/resolve";
 import { makeRepo, wireProjectHook } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
-import { deferSources, fileWiresHook, matcherSelects, ownHookIn } from "./defer";
+import { deferSources, fileWiresHook, matcherSelects, ownHookIn, wiredHandlers } from "./defer";
 
 describe("matcherSelects: Claude Code's matcher rules", () => {
   test.each([
@@ -61,22 +61,54 @@ describe("fileWiresHook", () => {
   });
 });
 
+describe("wiredHandlers", () => {
+  test("names each handler of the matching groups: exec form joined, a shell string as is", () => {
+    const dir = tempDir("settings");
+    const file = join(dir, "settings.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            { matcher: "Bash", hooks: [{ type: "command", command: "bun", args: ["g.js", "x"] }] },
+            { matcher: "Edit", hooks: [{ type: "command", command: "edit-check" }] },
+            {
+              hooks: [
+                { type: "prompt", prompt: "is this safe?" },
+                { type: "command", command: "all" },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    expect(wiredHandlers(file, "PreToolUse", "Bash")).toEqual([
+      { file, command: "bun g.js x" },
+      { file, command: "(a prompt hook)" },
+      { file, command: "all" },
+    ]);
+    expect(wiredHandlers(file, "PreToolUse", "Edit").map((handler) => handler.command)).toEqual([
+      "edit-check",
+      "(a prompt hook)",
+      "all",
+    ]);
+    expect(wiredHandlers(file, "PostToolUse", "Bash")).toEqual([]);
+  });
+});
+
 describe("deferSources", () => {
-  test("the checkout's and the main checkout's settings, both files each; the user's when asked", () => {
+  test("the checkout's and the main checkout's settings, both files each, and nothing else", () => {
     const repo = makeRepo();
     const worktree = join(repo, "..", "wt");
     git(repo, "worktree", "add", "-q", "-b", "wt", worktree);
     const checkout = locateCheckout(worktree);
     if (checkout === null) throw new Error("no checkout");
-    expect(deferSources(checkout, null)).toEqual([
+    expect(deferSources(checkout)).toEqual([
       join(worktree, ".claude", "settings.json"),
       join(worktree, ".claude", "settings.local.json"),
       join(repo, ".claude", "settings.json"),
       join(repo, ".claude", "settings.local.json"),
     ]);
-    expect(deferSources(checkout, "/home/user/.claude/settings.json").at(-1)).toBe(
-      "/home/user/.claude/settings.json",
-    );
   });
 
   test("the main checkout's settings.local.json silences a hook running in a worktree", () => {
@@ -84,10 +116,10 @@ describe("deferSources", () => {
     const worktree = join(repo, "..", "wt");
     git(repo, "worktree", "add", "-q", "-b", "wt", worktree);
     mkdirSync(join(repo, ".claude"), { recursive: true });
-    const local = wireProjectHook(repo, "WorktreeCreate", undefined, "settings.local.json");
+    const local = wireProjectHook(repo, "PreToolUse", "Bash", "settings.local.json");
     const checkout = locateCheckout(worktree);
     if (checkout === null) throw new Error("no checkout");
-    expect(ownHookIn(deferSources(checkout, null), "WorktreeCreate", null)).toBe(local);
-    expect(ownHookIn(deferSources(checkout, null), "WorktreeRemove", null)).toBeNull();
+    expect(ownHookIn(deferSources(checkout), "PreToolUse", "Bash")).toBe(local);
+    expect(ownHookIn(deferSources(checkout), "PreToolUse", "Edit")).toBeNull();
   });
 });

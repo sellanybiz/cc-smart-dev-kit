@@ -57,11 +57,11 @@ the first time you use it.
 | `src/build-info/` | The version and the marketplace source, baked in from `plugin.json` at build time; the fixed names, without the version, in `names.ts` (the router bundle uses those). |
 | `src/project/` | Finds the git project from a folder and reads its `.claude/anymodel.json`. |
 | `src/setup/` | Safe changes to user files: managed keys and blocks, backups, atomic writes, the lock, the launcher, restore, marketplace access. |
-| `src/cli/` | The `anymodel` commands: `setup`, `doctor` (and `--live`), `restore`, `session-name`, `version`. |
-| `src/hooks/` | The hooks: the frame every one runs in (`run.ts`, the defer check in `defer.ts`), the worktree engine, the guards, the notes; `specs.ts` lists them all. |
+| `src/cli/` | The `anymodel` commands: `setup`, `doctor` (and `--live`; its checks of the current folder's project in `project-checks.ts`), `hook`, `restore`, `session-name`, `version`. |
+| `src/hooks/` | The hooks: the frame every one runs in (`run.ts`, the defer check in `defer.ts`), the guards, the notes, and the worktree engine a project wires itself (`anymodel hook <name>`; its lines in `project-wiring.ts`); `specs.ts` lists them all, by who wires them. |
 | `src/gateway/` | The optional AI gateway: the router, its config and slots, `gateway <command>`, its service and its doctor checks. |
 | `src/testing/` | Test helpers: temp folders, a clean git environment, the guard that fails any test reaching the live router's port 20100. |
-| `plugin/` | What users get: `dist/` (built, committed), `bin/`, `hooks/hooks.json`, `skills/`, the manifest. |
+| `plugin/` | What users get: `dist/` (built, committed), `bin/` (`anymodel`, and `anymodel-bun`, which the hooks run through), `hooks/hooks.json`, `skills/`, the manifest. |
 | `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check) and `check-version-bump.ts` (CI: a `plugin/` change raises the version). |
 | `docs/` | How the plugin is designed, the phases ahead, and the Claude Code behaviour it relies on. |
 

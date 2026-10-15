@@ -1,0 +1,28 @@
+#!/bin/sh
+# Runs bun with these arguments, for the plugin's hooks (plugin/hooks/hooks.json), without
+# needing bun on PATH: Claude Code's hooks get the PATH Claude Code started with, which may
+# lack bun. It tries, in order:
+#   1. the bun `anymodel setup` baked into the launcher ~/.local/bin/anymodel;
+#   2. $BUN_INSTALL/bin/bun;
+#   3. ~/.bun/bin/bun;
+#   4. bun on PATH.
+# Only shell built-ins, so it works with an empty PATH too.
+launcher="$HOME/.local/bin/anymodel"
+baked=
+if [ -f "$launcher" ]; then
+  while IFS= read -r line; do
+    case $line in
+      "baked_bun='"*"'")
+        baked=${line#"baked_bun='"}
+        baked=${baked%"'"}
+        break
+        ;;
+    esac
+  done <"$launcher"
+fi
+for bun in "$baked" "${BUN_INSTALL:+$BUN_INSTALL/bin/bun}" "$HOME/.bun/bin/bun"; do
+  if [ -n "$bun" ] && [ -x "$bun" ]; then exec "$bun" "$@"; fi
+done
+if bun=$(command -v bun 2>/dev/null) && [ -n "$bun" ]; then exec "$bun" "$@"; fi
+echo "anymodel: bun not found (not in ~/.local/bin/anymodel, \$BUN_INSTALL/bin, ~/.bun/bin or on PATH), so the anymodel hooks cannot run. Install bun, then run: anymodel setup" >&2
+exit 1

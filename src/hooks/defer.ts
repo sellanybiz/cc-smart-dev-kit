@@ -2,14 +2,19 @@
  * The defer check: a plugin hook stays silent while the project still wires its own hook
  * for the same event (and a matcher that covers the same tool or source).
  *
- * Why: a project may still carry its own copy of a piece the plugin now ships (a worktree
- * hook, a guard). Claude Code runs every matching hook, the plugin's and the project's, so
- * both would act: two worktrees made for one request (seen live), two questions for one
- * command. So the plugin's hook exits 0 and prints nothing, and the project's copy runs
- * alone, until the project removes it (`docs/design.md` § The safe switch).
+ * Why: a project may still carry its own copy of a piece the plugin now ships (a guard, a
+ * note). Claude Code runs every matching hook, the plugin's and the project's, so both
+ * would act: two questions for one command. So the plugin's hook exits 0 and prints
+ * nothing, and the project's copy runs alone, until the project removes it
+ * (`docs/design.md` § The safe switch).
  *
  * The check is coarse on purpose: it cannot tell what a project's hook does, only when it
  * runs. A project hook on the same event and tool, whatever it does, silences the plugin's.
+ * `anymodel doctor` lists each one it finds in the project it runs in, so the silence is
+ * visible.
+ *
+ * Only the hooks `plugin/hooks/hooks.json` wires have the check. The worktree hooks a
+ * project wires itself (`anymodel hook <name>`) run because the project asked for them.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -57,34 +62,53 @@ function hooksOf(file: string): Record<string, unknown> | null {
   }
 }
 
+/** One handler a settings file wires: the file, and its command as a person would type it. */
+export interface WiredHandler {
+  file: string;
+  command: string;
+}
+
+/** A handler's command: `command` and its `args` (exec form), or its type when it has none. */
+function describeHandler(handler: unknown): string {
+  if (typeof handler !== "object" || handler === null) return "(a hook)";
+  const { type, command, args } = handler as { type?: unknown; command?: unknown; args?: unknown };
+  if (typeof command !== "string")
+    return typeof type === "string" ? `(a ${type} hook)` : "(a hook)";
+  const rest = Array.isArray(args) ? args.filter((arg) => typeof arg === "string") : [];
+  return [command, ...rest].join(" ");
+}
+
+/** Every handler `file` wires for `event` in a group whose matcher selects `subject`. */
+export function wiredHandlers(file: string, event: string, subject: string | null): WiredHandler[] {
+  const groups = hooksOf(file)?.[event];
+  if (!Array.isArray(groups)) return [];
+  return groups.flatMap((group: unknown) => {
+    if (typeof group !== "object" || group === null) return [];
+    const { matcher, hooks } = group as { matcher?: unknown; hooks?: unknown };
+    if (!Array.isArray(hooks) || !matcherSelects(matcher, subject)) return [];
+    return hooks.map((handler: unknown) => ({ file, command: describeHandler(handler) }));
+  });
+}
+
 /** True when `file` wires at least one hook handler for `event` whose matcher selects `subject`. */
 export function fileWiresHook(file: string, event: string, subject: string | null): boolean {
-  const groups = hooksOf(file)?.[event];
-  if (!Array.isArray(groups)) return false;
-  return groups.some((group: unknown) => {
-    if (typeof group !== "object" || group === null) return false;
-    const { matcher, hooks } = group as { matcher?: unknown; hooks?: unknown };
-    return Array.isArray(hooks) && hooks.length > 0 && matcherSelects(matcher, subject);
-  });
+  return wiredHandlers(file, event, subject).length > 0;
 }
 
 /**
  * The settings files whose hooks count as the project's own: `.claude/settings.json` and
  * `.claude/settings.local.json` of the checkout `cwd` is in and of the main checkout. A
- * session in a worktree may have loaded either one. `userSettings`: also the user's
- * `settings.json` (for the worktree events, where any second creator makes a second
- * worktree).
+ * session in a worktree may have loaded either one.
  */
-export function deferSources(checkout: Checkout, userSettings: string | null): string[] {
+export function deferSources(checkout: Checkout): string[] {
   const roots = [checkout.root];
   if (checkout.mainCheckout !== null && checkout.mainCheckout !== checkout.root) {
     roots.push(checkout.mainCheckout);
   }
-  const files = roots.flatMap((root) => [
+  return roots.flatMap((root) => [
     join(root, ".claude", "settings.json"),
     join(root, ".claude", "settings.local.json"),
   ]);
-  return userSettings === null ? files : [...files, userSettings];
 }
 
 /** The first of `files` that wires its own hook for `event` and `subject`, or null. */

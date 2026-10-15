@@ -30,6 +30,7 @@ a clear error that says what is wrong.
 | Field | Type | Meaning |
 |---|---|---|
 | `requires` | version range, npm syntax (`">=0.1"`) | The plugin versions this project needs. |
+| `worktrees` | object | Turns on the plugin hooks that work with worktrees, and is what the worktree engine needs. The engine also needs the project to wire `anymodel hook <name>` in its own settings (README § Worktrees); wired without `worktrees`, each engine hook fails closed (`needsWorktrees` in `src/hooks/specs.ts`), never falls back to another shape. |
 | `worktrees.base` | string | The branch new worktrees start from (`origin/<base>`, freshly fetched); also the base the after-merge and leftovers hooks compare with. |
 | `worktrees.prefix` | string | The folder-name prefix of a worktree beside the repo. No `/` or `\` (the hook refuses one). |
 | `worktrees.setup` | string array (argv) | A command run inside a new worktree, e.g. `["bun", "install"]`. |

@@ -1,28 +1,40 @@
 /**
- * Every plugin hook: what it runs, what silences it (the defer check), and how it fails
- * closed when the project's anymodel.json is broken or needs a newer plugin.
+ * Every hook: what it runs, who wires it, what silences it (the defer check, for the hooks
+ * the plugin wires), and how it fails closed when the project's anymodel.json is broken,
+ * needs a newer plugin, or lacks what the hook needs.
+ *
+ * The plugin wires these in `plugin/hooks/hooks.json` (`HOOKS`):
  *
  * | Hook | Event (matcher) | Fails closed by |
  * |---|---|---|
- * | worktree-create | WorktreeCreate | failing: exit 1, the reason (the update command) on stderr |
- * | worktree-remove | WorktreeRemove | keeping the worktree: exit 1, the reason on stderr |
- * | subagent-stop | SubagentStop | keeping the worktree (exit 0: a subagent must finish) |
  * | git-guard | PreToolUse (Bash, PowerShell) | asking before every command that runs git |
  * | main-folder-guard | PreToolUse (Edit, Write, NotebookEdit) | asking before every edit in the repo |
  * | message-guard | PreToolUse (SendMessage) | asking before every message |
  * | after-merge | PostToolUse, PostToolUseFailure (Bash, PowerShell) | one line after a merge |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
+ *
+ * A project wires these itself, as `anymodel hook <name>` (`PROJECT_HOOKS`): the worktree
+ * engine. A plugin WorktreeCreate would replace Claude Code's own worktrees in every
+ * project, so the engine is opt-in (`docs/design.md` § The worktree engine). Each needs
+ * `worktrees` in anymodel.json, and fails closed without it:
+ *
+ * | Hook | Event | Fails closed by |
+ * |---|---|---|
+ * | worktree-create | WorktreeCreate | failing: exit 1, the reason on stderr |
+ * | worktree-remove | WorktreeRemove | keeping the worktree: exit 1, the reason on stderr |
+ * | subagent-stop | SubagentStop | keeping the worktree (exit 0: a subagent must finish) |
  */
 
 import { existsSync } from "node:fs";
+import type { AnymodelConfig } from "../project/config";
 import { afterMerge, mergesPullRequest } from "./after-merge";
 import { isInside } from "./git";
 import { DEFAULT_PROTECTED_BRANCHES, guardQuestions, runsGit } from "./git-guard";
 import { addContext, type HookResult, SILENT, stringField, toolDecision, toolInput } from "./io";
 import { editedFile, mainFolderGuard } from "./main-folder-guard";
 import { messageGuard } from "./message-guard";
-import { deferSubject, type HookSpec } from "./run";
+import type { HookSpec } from "./run";
 import { sessionName } from "./session-name";
 import { worktreeCreate } from "./worktree-create";
 import { worktreeLeftovers } from "./worktree-leftovers";
@@ -33,10 +45,28 @@ function cannotCheck(what: string, message: string): string {
   return `anymodel cannot check ${what}: ${message}`;
 }
 
+/**
+ * The worktree engine's need: `worktrees` in anymodel.json. A project that wires the hooks
+ * without it gets this reason, never a worktree of some other shape.
+ */
+export function needsWorktrees(config: AnymodelConfig | null): string | null {
+  if (config?.worktrees !== undefined) return null;
+  const lacks =
+    config === null
+      ? "has no .claude/anymodel.json"
+      : 'its .claude/anymodel.json has no "worktrees"';
+  return (
+    `this project wires the anymodel worktree hooks (anymodel hook ...), but ${lacks}. ` +
+    'Add "worktrees" to .claude/anymodel.json, or take the three anymodel hook lines out of ' +
+    ".claude/settings.json (the anymodel README, § Worktrees)"
+  );
+}
+
 export const worktreeCreateHook: HookSpec = {
   name: "worktree-create",
   events: ["WorktreeCreate"],
-  deferToUserSettings: true,
+  wiring: "project",
+  needs: needsWorktrees,
   onConfigProblem: (message) => ({ exitCode: 1, stderr: `worktree not created: ${message}` }),
   outsideGit: (_input, _event, why) => ({ exitCode: 1, stderr: `worktree not created: ${why}` }),
   run: worktreeCreate,
@@ -46,7 +76,8 @@ export const worktreeCreateHook: HookSpec = {
 export const worktreeRemoveHook: HookSpec = {
   name: "worktree-remove",
   events: ["WorktreeRemove"],
-  deferToUserSettings: true,
+  wiring: "project",
+  needs: needsWorktrees,
   onConfigProblem: (message) => ({ exitCode: 1, stderr: `worktree kept: ${message}` }),
   // Claude Code starts the hook inside the worktree; when that folder is gone, so is the worktree.
   outsideGit: (input, _event, why) => {
@@ -62,12 +93,8 @@ export const worktreeRemoveHook: HookSpec = {
 export const subagentStopHook: HookSpec = {
   name: "subagent-stop",
   events: ["SubagentStop"],
-  deferToUserSettings: true,
-  // The plugin cleans only the worktrees its own WorktreeCreate made.
-  deferOn: (input, event) => [
-    { event: "WorktreeCreate", subject: null },
-    { event, subject: deferSubject(input, event) },
-  ],
+  wiring: "project",
+  needs: needsWorktrees,
   onConfigProblem: (message) => ({ stderr: `subagent worktree kept: ${message}` }),
   run: subagentStop,
 };
@@ -75,6 +102,7 @@ export const subagentStopHook: HookSpec = {
 export const gitGuardHook: HookSpec = {
   name: "git-guard",
   events: ["PreToolUse"],
+  wiring: "plugin",
   onConfigProblem: (message, input) => {
     const command = stringField(toolInput(input).command);
     return command !== null && runsGit(command)
@@ -98,6 +126,7 @@ export const gitGuardHook: HookSpec = {
 export const mainFolderGuardHook: HookSpec = {
   name: "main-folder-guard",
   events: ["PreToolUse"],
+  wiring: "plugin",
   onConfigProblem: (message, input, _event, checkout) => {
     const file = typeof input.cwd === "string" ? editedFile(input, input.cwd) : null;
     const repo = checkout.mainCheckout ?? checkout.root;
@@ -111,6 +140,7 @@ export const mainFolderGuardHook: HookSpec = {
 export const messageGuardHook: HookSpec = {
   name: "message-guard",
   events: ["PreToolUse"],
+  wiring: "plugin",
   onConfigProblem: (message) =>
     toolDecision("ask", cannotCheck("whether this message stays in this repo", message)),
   run: messageGuard,
@@ -119,6 +149,7 @@ export const messageGuardHook: HookSpec = {
 export const afterMergeHook: HookSpec = {
   name: "after-merge",
   events: ["PostToolUse", "PostToolUseFailure"],
+  wiring: "plugin",
   onConfigProblem: (message, input, event) => {
     const command = stringField(toolInput(input).command);
     return command !== null && mergesPullRequest(command)
@@ -131,6 +162,7 @@ export const afterMergeHook: HookSpec = {
 export const worktreeLeftoversHook: HookSpec = {
   name: "worktree-leftovers",
   events: ["SessionStart"],
+  wiring: "plugin",
   onConfigProblem: (message, _input, event) => addContext(event, `anymodel: ${message}`),
   run: worktreeLeftovers,
 };
@@ -138,19 +170,24 @@ export const worktreeLeftoversHook: HookSpec = {
 export const sessionNameHook: HookSpec = {
   name: "session-name",
   events: ["SessionStart", "UserPromptSubmit"],
+  wiring: "plugin",
   onConfigProblem: (message) => ({ stderr: `anymodel session-name: ${message}` }),
   run: sessionName,
 };
 
-/** Every hook, by its bundle name. */
+/** The hooks the plugin wires in `plugin/hooks/hooks.json`, by their bundle name. */
 export const HOOKS: readonly HookSpec[] = [
-  worktreeCreateHook,
-  worktreeRemoveHook,
-  subagentStopHook,
   gitGuardHook,
   mainFolderGuardHook,
   messageGuardHook,
   afterMergeHook,
   worktreeLeftoversHook,
   sessionNameHook,
+];
+
+/** The hooks a project wires itself, as `anymodel hook <name>`: the worktree engine. */
+export const PROJECT_HOOKS: readonly HookSpec[] = [
+  worktreeCreateHook,
+  worktreeRemoveHook,
+  subagentStopHook,
 ];

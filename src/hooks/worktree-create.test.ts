@@ -16,11 +16,11 @@ import {
   badName,
   badPrefix,
   configuredFolder,
-  defaultShape,
   isSubagentName,
   readBaseRef,
   reuseDecision,
   SETUP_MARKER,
+  subagentShape,
 } from "./worktree-create";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
@@ -36,11 +36,20 @@ function create(cwd: string, name: string, env = hookEnv()) {
 const head = (folder: string, ref = "HEAD") => git(folder, "rev-parse", ref).trim();
 const branchOf = (folder: string) => git(folder, "symbolic-ref", "--short", "HEAD").trim();
 
+/** Turns the worktree engine on in `repo`: `worktrees` in its anymodel.json. */
+function optIn(repo: string, setup?: string[]): void {
+  writeClaudeFile(repo, "anymodel.json", {
+    worktrees: { base: "main", prefix: "app-wt-", ...(setup === undefined ? {} : { setup }) },
+  });
+}
+
+const AGENT = "agent-0a1b2c3d4e5f60718";
+
 describe("the shapes", () => {
-  test("Claude Code's own shape: / becomes + in the folder and the branch", () => {
-    expect(defaultShape("/repo", "feat/x")).toEqual({
-      folder: "/repo/.claude/worktrees/feat+x",
-      branch: "worktree-feat+x",
+  test("a subagent's worktree: Claude Code's own shape", () => {
+    expect(subagentShape("/repo", AGENT)).toEqual({
+      folder: `/repo/.claude/worktrees/${AGENT}`,
+      branch: `worktree-${AGENT}`,
     });
   });
 
@@ -86,23 +95,25 @@ describe("the shapes", () => {
   });
 });
 
-describe("without anymodel.json: Claude Code's default", () => {
+describe("a subagent's worktree: Claude Code's shape, no setup", () => {
   test("a repo without a remote: .claude/worktrees/<name> on worktree-<name>, from HEAD", async () => {
     const repo = makeRepo();
-    const result = await create(repo, "feat/x");
-    const folder = join(repo, ".claude", "worktrees", "feat+x");
+    optIn(repo);
+    const result = await create(repo, AGENT);
+    const folder = join(repo, ".claude", "worktrees", AGENT);
     expect(result).toEqual({ stdout: folder });
-    expect(branchOf(folder)).toBe("worktree-feat+x");
+    expect(branchOf(folder)).toBe(`worktree-${AGENT}`);
     expect(head(folder)).toBe(head(repo));
   });
 
   test("with a remote: from origin's default branch, not the local HEAD (worktree.baseRef fresh)", async () => {
     const { repo } = makeClone();
+    optIn(repo);
     writeFileSync(join(repo, "local.txt"), "not pushed\n");
     git(repo, "add", "local.txt");
     git(repo, "commit", "-q", "-m", "local only");
-    const result = await create(repo, "t1");
-    const folder = join(repo, ".claude", "worktrees", "t1");
+    const result = await create(repo, "agent-01");
+    const folder = join(repo, ".claude", "worktrees", "agent-01");
     expect(result).toEqual({ stdout: folder });
     expect(head(folder)).toBe(head(repo, "origin/main"));
     expect(head(folder)).not.toBe(head(repo));
@@ -110,75 +121,101 @@ describe("without anymodel.json: Claude Code's default", () => {
 
   test("worktree.baseRef head in the project's settings: from the local HEAD", async () => {
     const { repo } = makeClone();
+    optIn(repo);
     writeFileSync(join(repo, "local.txt"), "not pushed\n");
     git(repo, "add", "local.txt");
     git(repo, "commit", "-q", "-m", "local only");
     writeClaudeFile(repo, "settings.json", { worktree: { baseRef: "head" } });
-    await create(repo, "t2");
-    expect(head(join(repo, ".claude", "worktrees", "t2"))).toBe(head(repo));
+    await create(repo, "agent-02");
+    expect(head(join(repo, ".claude", "worktrees", "agent-02"))).toBe(head(repo));
   });
 
   test("an existing worktree of that name is entered again", async () => {
     const repo = makeRepo();
+    optIn(repo);
     const env = hookEnv();
-    const first = await create(repo, "again", env);
-    const second = await create(repo, "again", env);
+    const first = await create(repo, AGENT, env);
+    const second = await create(repo, AGENT, env);
     expect(second).toEqual(first);
   });
 
   test("a folder there that is no worktree: refused, exit 1", async () => {
     const repo = makeRepo();
-    mkdirSync(join(repo, ".claude", "worktrees", "taken"), { recursive: true });
-    expect(await create(repo, "taken")).toEqual({
+    optIn(repo);
+    mkdirSync(join(repo, ".claude", "worktrees", AGENT), { recursive: true });
+    expect(await create(repo, AGENT)).toEqual({
       exitCode: 1,
-      stderr: `worktree not created: ${join(repo, ".claude", "worktrees", "taken")} exists and is not a worktree of this repo`,
+      stderr: `worktree not created: ${join(repo, ".claude", "worktrees", AGENT)} exists and is not a worktree of this repo`,
     });
   });
 
-  test("a subagent asking from inside a worktree: the main checkout's .claude/worktrees", async () => {
-    const repo = makeRepo();
+  test("a subagent asking from inside a session's worktree: the main checkout's .claude/worktrees", async () => {
+    const { repo } = makeClone();
+    optIn(repo);
     const env = hookEnv();
-    const session = (await create(repo, "session", env)).stdout ?? "";
-    const result = await create(session, "agent-0a1b2c3d4e5f60718", env);
-    expect(result).toEqual({
-      stdout: join(repo, ".claude", "worktrees", "agent-0a1b2c3d4e5f60718"),
+    const session = (await create(repo, "fix/session", env)).stdout ?? "";
+    expect(session).toBe(join(dirname(repo), "app-wt-fix-session"));
+    expect(await create(session, AGENT, env)).toEqual({
+      stdout: join(repo, ".claude", "worktrees", AGENT),
     });
   });
 
-  test(".worktreeinclude: copies the gitignored files it names, never a tracked one", async () => {
+  test("the project's setup does not run for a subagent", async () => {
+    const log = join(tempDir("setup"), "calls.log");
     const repo = makeRepo();
+    optIn(repo, ["sh", "-c", `echo ran >> "${log}"`]);
+    expect(await create(repo, AGENT)).toEqual({
+      stdout: join(repo, ".claude", "worktrees", AGENT),
+    });
+    expect(existsSync(log)).toBe(false);
+  });
+
+  test("outside git: refused, exit 1", async () => {
+    const result = await create(tempDir("nogit"), AGENT);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toStartWith("worktree not created: ");
+  });
+});
+
+describe(".worktreeinclude", () => {
+  /** A clone whose committed .gitignore and .worktreeinclude name files only the main checkout has. */
+  function withIncludes() {
+    const { repo } = makeClone();
     writeFileSync(join(repo, ".gitignore"), ".env\nsecrets/\nbuild/\n");
     writeFileSync(join(repo, ".worktreeinclude"), ".env\nsecrets/key.txt\ntracked.txt\n");
     writeFileSync(join(repo, "tracked.txt"), "tracked\n");
     git(repo, "add", ".gitignore", ".worktreeinclude", "tracked.txt");
     git(repo, "commit", "-q", "-m", "ignore");
+    git(repo, "push", "-q", "origin", "main");
+    optIn(repo);
     writeFileSync(join(repo, ".env"), "A=1\n");
     mkdirSync(join(repo, "secrets"));
     writeFileSync(join(repo, "secrets", "key.txt"), "k\n");
     mkdirSync(join(repo, "build"));
     writeFileSync(join(repo, "build", "out.js"), "x\n");
     writeFileSync(join(repo, "tracked.txt"), "changed here\n");
-    const folder = (await create(repo, "inc")).stdout ?? "";
+    return repo;
+  }
+
+  test.each([
+    ["a session's worktree", "fix/inc"],
+    ["a subagent's worktree", AGENT],
+  ])("%s: copies the gitignored files it names, never a tracked one", async (_kind, name) => {
+    const repo = withIncludes();
+    const folder = (await create(repo, name)).stdout ?? "";
+    expect(folder).not.toBe("");
     expect(readFileSync(join(folder, ".env"), "utf8")).toBe("A=1\n");
     expect(readFileSync(join(folder, "secrets", "key.txt"), "utf8")).toBe("k\n");
     expect(existsSync(join(folder, "build"))).toBe(false);
     // Tracked: the worktree has the committed text, not the main checkout's change.
     expect(readFileSync(join(folder, "tracked.txt"), "utf8")).toBe("tracked\n");
   });
-
-  test("outside git: refused, exit 1", async () => {
-    const result = await create(tempDir("nogit"), "x");
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toStartWith("worktree not created: ");
-  });
 });
 
-describe("with worktrees in anymodel.json", () => {
+describe("a session's worktree", () => {
   function configured(setup?: string[]) {
     const { origin, repo } = makeClone();
-    writeClaudeFile(repo, "anymodel.json", {
-      worktrees: { base: "main", prefix: "app-wt-", ...(setup === undefined ? {} : { setup }) },
-    });
+    optIn(repo, setup);
     return { origin, repo, beside: dirname(repo) };
   }
 
@@ -312,16 +349,6 @@ describe("with worktrees in anymodel.json", () => {
     });
   });
 
-  test("a subagent keeps Claude Code's shape, with no setup", async () => {
-    const log = join(tempDir("setup"), "calls.log");
-    const { repo } = configured(["sh", "-c", `echo ran >> "${log}"`]);
-    const result = await create(repo, "agent-0123456789abcdef0");
-    expect(result).toEqual({
-      stdout: join(repo, ".claude", "worktrees", "agent-0123456789abcdef0"),
-    });
-    expect(existsSync(log)).toBe(false);
-  });
-
   test("a prefix with a / is refused", async () => {
     const { repo } = makeClone();
     writeClaudeFile(repo, "anymodel.json", { worktrees: { base: "main", prefix: "../x-" } });
@@ -332,20 +359,42 @@ describe("with worktrees in anymodel.json", () => {
 });
 
 describe("the frame", () => {
-  test("the project wires its own WorktreeCreate: no output, exit 0, no worktree", async () => {
+  test("no anymodel.json: exit 1 with the reason, no worktree of any shape", async () => {
     const repo = makeRepo();
-    wireProjectHook(repo, "WorktreeCreate");
-    expect(await create(repo, "deferred")).toEqual({});
-    expect(existsSync(join(repo, ".claude", "worktrees", "deferred"))).toBe(false);
+    for (const name of ["fix/x", AGENT]) {
+      expect(await create(repo, name)).toEqual({
+        exitCode: 1,
+        stderr:
+          "worktree not created: this project wires the anymodel worktree hooks (anymodel hook ...), but has no .claude/anymodel.json. " +
+          'Add "worktrees" to .claude/anymodel.json, or take the three anymodel hook lines out of .claude/settings.json (the anymodel README, § Worktrees)',
+      });
+    }
+    expect(existsSync(join(repo, ".claude", "worktrees"))).toBe(false);
+    expect(git(repo, "worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(1);
   });
 
-  test("the user's own settings wire a WorktreeCreate: also deferred", async () => {
+  test('an anymodel.json without "worktrees": exit 1 with the reason', async () => {
     const repo = makeRepo();
+    writeClaudeFile(repo, "anymodel.json", { sessionNames: true });
+    const result = await create(repo, AGENT);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toStartWith(
+      'worktree not created: this project wires the anymodel worktree hooks (anymodel hook ...), but its .claude/anymodel.json has no "worktrees". ',
+    );
+    expect(existsSync(join(repo, ".claude", "worktrees"))).toBe(false);
+  });
+
+  test("no defer check: another WorktreeCreate in the project's or the user's settings does not silence it", async () => {
+    const repo = makeRepo();
+    optIn(repo);
+    wireProjectHook(repo, "WorktreeCreate");
     const env = hookEnv();
     writeClaudeFile(dirname(env.CLAUDE_CONFIG_DIR ?? ""), "settings.json", {
       hooks: { WorktreeCreate: [{ hooks: [{ type: "command", command: "true" }] }] },
     });
-    expect(await create(repo, "deferred", env)).toEqual({});
+    expect(await create(repo, AGENT, env)).toEqual({
+      stdout: join(repo, ".claude", "worktrees", AGENT),
+    });
   });
 
   test("anymodel.json needs a newer plugin: exit 1 with the update command, no worktree", async () => {
@@ -370,8 +419,9 @@ describe("the frame", () => {
     });
   });
 
-  test("the timestamp of FETCH_HEAD: a repo fetched today is not fetched again", async () => {
+  test("a subagent's base: a repo fetched today is not fetched again (FETCH_HEAD's time)", async () => {
     const { origin, repo } = makeClone();
+    optIn(repo);
     git(repo, "fetch", "-q", "origin");
     const before = head(repo, "origin/main");
     // A newer commit on origin that a fetch would bring.
@@ -381,13 +431,13 @@ describe("the frame", () => {
     git(other, "add", "n.txt");
     git(other, "commit", "-q", "-m", "n");
     git(other, "push", "-q", "origin", "main");
-    const folder = (await create(repo, "today")).stdout ?? "";
+    const folder = (await create(repo, "agent-0aa")).stdout ?? "";
     expect(head(folder)).toBe(before);
     // Fetched a day ago: fetched again, so the newer commit is the base.
     const fetchHead = join(repo, ".git", "FETCH_HEAD");
     const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
     utimesSync(fetchHead, old, old);
-    const later = (await create(repo, "later")).stdout ?? "";
+    const later = (await create(repo, "agent-0bb")).stdout ?? "";
     expect(head(later)).toBe(head(other));
   });
 });

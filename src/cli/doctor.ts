@@ -21,6 +21,7 @@ import {
 } from "../setup/marketplace-access";
 import { type LiveDeps, parseClaudeVersion, readLiveRecord, runLiveCheck } from "./live-check";
 import { type CliPaths, tildify } from "./paths";
+import { projectChecks } from "./project-checks";
 
 interface Check {
   ok: boolean;
@@ -379,16 +380,28 @@ export interface DoctorGateway {
   systemd: boolean;
 }
 
+/** The project `doctor` checks: the folder it runs in, and the plugin's hooks.json. */
+export interface DoctorProject {
+  cwd: string;
+  pluginHooksFile: string;
+}
+
+export interface DoctorOptions {
+  gateway: DoctorGateway;
+  /** Check the project of this folder (`project-checks.ts`); null: no project checks. */
+  project: DoctorProject | null;
+  /** Also run the live check (`doctor --live`), which starts real Claude Code sessions. */
+  live: LiveDeps | null;
+}
+
 /**
  * Prints one ✓ or ✗ line per check, and `·` for information (the gateway, when it was never
- * set up, is optional). Exit code 1 when any check fails. `live`: also run the live check
- * (`doctor --live`), which starts real Claude Code sessions.
+ * set up, is optional). Exit code 1 when any check fails.
  */
 export async function runDoctor(
   paths: CliPaths,
   env: Env,
-  gateway: DoctorGateway,
-  live: LiveDeps | null = null,
+  { gateway, project, live }: DoctorOptions,
 ): Promise<number> {
   const settings = readSettings(paths.settingsFile);
   const checks = [
@@ -400,6 +413,7 @@ export async function runDoctor(
     checkUpdatesNotOff(settings, env, paths),
     checkNameClash(settings),
     checkOldPlugin(settings, paths),
+    ...(project === null ? [] : projectChecks(project.cwd, env, paths, project.pluginHooksFile)),
     ...(await gatewayChecks({ paths, ...gateway })),
     live === null ? checkLiveRecord(paths) : null,
     ...(live === null ? [] : runLiveCheck(paths, env, live)),
