@@ -18,7 +18,8 @@
  *   - A slot key (`anymodel-scout`, `anymodel-worker`) → the slot's targets in order
  *     (`targets.ts`). A cheap backend gets only an allow-list of headers plus its own
  *     key, and the body without `metadata` (it holds the account id). A `claude-…`
- *     target goes to Anthropic with only `model` changed. It moves to the next target
+ *     target goes to Anthropic with `model` changed, and only the fields that target
+ *     refuses translated (`requestForClaudeFallback`). It moves to the next target
  *     only before an answer reaches Claude Code: a network error, a status
  *     `fallbackKind` names, or (on a streaming request to a cheap backend that is not
  *     the last target) no response headers or no first real event within
@@ -33,7 +34,7 @@
  *     one whose name leads to no Claude target (a cheap-only slot, or an alias to
  *     `<backend>:<model>`) to Anthropic as it was sent (`resolveRequestRoute`).
  *   - No prompt text is ever changed. A cheap backend gets only the named format
- *     translations below; Anthropic gets the bytes as they came.
+ *     translations below; a `claude-…` request reaches Anthropic as the bytes it came as.
  *   - A cheap backend never sees Claude Code's tool search: `toolSearchForBackend`.
  *   - A cheap backend gets "no reasoning" in a form it reads: `reasoningOffForBackend`.
  *   - A redirect from a cheap backend becomes a 502: Claude Code must never follow a
@@ -42,9 +43,17 @@
  *     (a web page in a browser), and on `/v1/messages` wants JSON and an
  *     `anthropic-version` header: a browser cannot send those without a CORS
  *     preflight, which this server never answers.
- *   - One log line per request; never a header value, key or body. A WARN line when a
- *     target fails carries the start of the upstream's error answer (its reason, never
- *     the request).
+ *   - A slot's `claude-…` target, and an alias to a `claude-…` model, gets a body it
+ *     accepts: Claude Code built it for another name, and Claude Sonnet 5.5 refuses some
+ *     of its fields (`thinking: disabled`). A named translation,
+ *     `requestForClaudeFallback`, changes only those; never `system` or a message. Never
+ *     for auto mode's safety check, on any route: it reaches Claude with only `model`
+ *     changed.
+ *   - One log line per request; never a header value, key or body. A WARN line when any
+ *     target, Anthropic included, answers 4xx / 5xx to a model call carries the start of
+ *     its error answer (its reason, never the request): 300 characters at most, keys and
+ *     email addresses masked. It is written in the background: the client's answer never
+ *     waits for the log.
  *   - On SIGTERM it stops taking requests and exits once the running ones finish.
  *
  * `createRouter` is the handler, with everything it touches passed in, so the tests
@@ -63,6 +72,7 @@ import {
   resolveRequestRoute,
   resolveRoute,
   type Target,
+  withoutContextSuffix,
 } from "./targets";
 
 /** What the router hands to `fetch` for one upstream call. */
@@ -85,6 +95,12 @@ export interface RouterDeps {
    * else, so a config edit can never send the login elsewhere); a test passes a fake.
    */
   anthropicBaseUrl?: string;
+  /**
+   * Handed each piece of work the router does after an answer went to the client (the
+   * error log lines). Each one handles its own errors; in use nothing waits for them. A
+   * test passes a collector, to wait for every log line before it reads them.
+   */
+  background?: (task: Promise<void>) => void;
   /** Named in the error a request for an unknown slot gets. */
   configPath: string;
   fetch: FetchLike;
@@ -268,6 +284,128 @@ function printable(text: string, max = 120): string {
     .slice(0, max);
 }
 
+/** A secret as the log shows it: `****` and, for a long one, its last four characters. */
+function maskedTail(secret: string): string {
+  return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
+}
+
+/** A known secret shorter than this is not masked by its text: it would wreck the line. */
+const KNOWN_SECRET_MIN = 4;
+
+/** A UUID (8-4-4-4-12 hex): a request or object id, never a key. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Each known secret as it can stand in an error text: as it is, as a JSON string shows it,
+ * and as a JSON string inside a JSON string shows it. Longest first, so a secret that holds
+ * another is masked whole.
+ */
+function knownSecretForms(known: readonly string[]): { form: string; secret: string }[] {
+  const forms = new Map<string, string>();
+  for (const secret of known) {
+    if (secret.length < KNOWN_SECRET_MIN) continue;
+    const once = JSON.stringify(secret).slice(1, -1);
+    const twice = JSON.stringify(once).slice(1, -1);
+    for (const form of [secret, once, twice]) if (!forms.has(form)) forms.set(form, secret);
+  }
+  return [...forms]
+    .map(([form, secret]) => ({ form, secret }))
+    .sort((a, b) => b.form.length - a.form.length);
+}
+
+/**
+ * An upstream's error text with anything that looks like a key masked, before it goes to
+ * the log. An upstream may echo a key back ("invalid x-api-key sk-…"). Masked, in order:
+ *   - `known`: the exact secrets the router holds (each backend's key, the request's
+ *     `x-api-key` and `authorization`), short ones too, and their JSON-escaped forms;
+ *   - an email address (an account's, in an error about it);
+ *   - the value of a JSON field whose name says key, token, secret, password or
+ *     authorization, its quotes escaped or not;
+ *   - a `Bearer` / `Basic` credential; an `sk-…` key;
+ *   - a value after `key`, `token`, `secret` or `password` and a `:` or `=` (a header, a
+ *     query): `x-api-key: abc123`, `api_key=…`. Without the `:` or `=` the words after it
+ *     are prose ("the key does not exist"), and stay;
+ *   - any unbroken run of 32 or more letters, digits, `_` or `-`, but a run with `__` (an
+ *     MCP tool name, `mcp__plugin_x__tool`) or a UUID: those are names, never keys.
+ * Every quantifier is bounded, so no input makes a pattern backtrack for long; the caller
+ * also cuts the text to 2 KB first (`errorSnippet`). ASCII only, because the log line is
+ * (`printable`); so not `maskKey` from settings.ts, whose `••••` the log would turn into
+ * `????` (and the router bundle must not import settings.ts: it bakes in the plugin
+ * version).
+ */
+export function maskSecrets(text: string, known: readonly string[] = []): string {
+  let out = text;
+  for (const { form, secret } of knownSecretForms(known)) {
+    out = out.split(form).join(maskedTail(secret));
+  }
+  return out
+    .replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****")
+    .replace(
+      /(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi,
+      "$1$2$1$3:$4$1****$1",
+    )
+    .replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****")
+    .replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`)
+    .replace(
+      /(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi,
+      (_match, name: string, separator: string, value: string) =>
+        `${name}${separator}${maskedTail(value)}`,
+    )
+    .replace(/[A-Za-z0-9_-]{32,512}/g, (run) =>
+      run.includes("__") || UUID.test(run) ? run : maskedTail(run),
+    );
+}
+
+/** How long an error snippet in the log may be. */
+const SNIPPET_MAX = 300;
+
+/**
+ * How much of an error answer's first chunk is read for the log, in bytes. The chunk can
+ * be half a megabyte (a gzip answer, decompressed); the log shows 300 characters of it.
+ */
+const SNIPPET_READ_BYTES = 2048;
+
+/** A character a key's run is made of (the 32-character rule in `maskSecrets`). */
+const KEY_CHARACTER = /[A-Za-z0-9_-]/;
+
+/**
+ * The start of an error answer as the log shows it: its first `SNIPPET_READ_BYTES`
+ * decoded, keys masked (`maskSecrets`, with the secrets the router knows), made one
+ * printable line of at most `SNIPPET_MAX` characters. When the bytes were cut, the run of
+ * key characters the cut went through is dropped first: a key cut short there could be too
+ * short for the 32-character rule.
+ */
+function snippetText(bytes: Uint8Array, known: readonly string[]): string {
+  const cut = bytes.length > SNIPPET_READ_BYTES;
+  let text = new TextDecoder().decode(cut ? bytes.subarray(0, SNIPPET_READ_BYTES) : bytes);
+  if (cut) {
+    let end = text.length;
+    while (end > 0 && KEY_CHARACTER.test(text.charAt(end - 1))) end -= 1;
+    text = text.slice(0, end);
+  }
+  return printable(maskSecrets(text, known), SNIPPET_MAX);
+}
+
+/**
+ * A `content-encoding` the router can read for the log, as `DecompressionStream` names it;
+ * null for one it cannot (the log then names the encoding only).
+ */
+function decompressionFormat(encoding: string): Bun.CompressionFormat | null {
+  switch (encoding.trim().toLowerCase()) {
+    case "gzip":
+    case "x-gzip":
+      return "gzip";
+    case "deflate":
+      return "deflate";
+    case "br":
+      return "brotli";
+    case "zstd":
+      return "zstd";
+    default:
+      return null;
+  }
+}
+
 /**
  * Claude Code's tool search, made plain for a cheap backend.
  *
@@ -355,6 +493,115 @@ export function reasoningOffForBackend(
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
 }
 
+/**
+ * What a slot's `claude-…` target refuses with a 400, by model. Only models whose rules
+ * Anthropic's migration guides state are here; a target not in the table gets the body
+ * as Claude Code built it (only `model` changes). Sources, read 2026-10-15:
+ *   - platform.claude.com/docs/en/models/sonnet-5-5/migration-guide
+ *   - platform.claude.com/docs/en/models/opus-5-5/migration-guide
+ * Both models refuse `thinking: {type: "enabled", budget_tokens}`, a forced `tool_choice`
+ * (`any` / `tool`, on `count_tokens` too) and a non-default `temperature` / `top_p` /
+ * `top_k`. They differ on `thinking: {type: "disabled"}`: Sonnet 5.5 wants
+ * `{type: "between_tools"}` instead (accepted at effort `high` or below, with no other
+ * field in `thinking`); Opus 5.5 always thinks, so the field is left out, and with no
+ * effort named the effort becomes `low` (the guide's own before / after for "disabled").
+ * Looked up without the `[1m]` suffix.
+ */
+const CLAUDE_TARGET_RULES: Record<string, { thinkingOff: "between_tools" | "left out" }> = {
+  "claude-opus-5-5": { thinkingOff: "left out" },
+  "claude-sonnet-5-5": { thinkingOff: "between_tools" },
+};
+
+/** Efforts at which Sonnet 5.5 refuses `between_tools`. */
+const ABOVE_HIGH = new Set(["max", "xhigh"]);
+
+/**
+ * A slot request's body, made acceptable to the slot's `claude-…` target.
+ *
+ * Claude Code builds a request for the model name it sends. Under a slot name
+ * (`anymodel-worker`) it knows nothing of the model behind it, so the body can carry a
+ * field the Claude target refuses: Claude Sonnet 5.5 answers 400 to
+ * `thinking: {type: "disabled"}`, which Claude Code sends to turn reasoning off for short
+ * background calls. Without this, a slot that falls back to Claude after its cheap targets
+ * fail answers 400 instead. So, for a target in `CLAUDE_TARGET_RULES` only, each refused
+ * field gets the nearest value the target accepts:
+ *   - `thinking: {type: "disabled"}` → `{type: "between_tools"}` (Sonnet 5.5; at effort
+ *     `xhigh` / `max` the effort becomes `high`, the highest it takes with thinking off),
+ *     or no `thinking` field (Opus 5.5: thinking is always on), and, with no effort
+ *     named, `output_config.effort: "low"`, the nearest to no thinking;
+ *   - `thinking: {type: "enabled", budget_tokens}` → `{type: "adaptive"}`, its `display`
+ *     kept;
+ *   - `tool_choice` `any` or `tool` → `{type: "auto"}`, its `disable_parallel_tool_use`
+ *     kept;
+ *   - a `temperature` other than 1, any `top_p`, any `top_k` → left out (the default).
+ * Nothing else changes: not `system`, not a message, not a tool, not the field order.
+ * The router never calls it for auto mode's safety check (`guard`): the check stays as
+ * Claude Code ships it.
+ * `changes` names each change, for the log. The input is not changed in place.
+ */
+export function requestForClaudeFallback(
+  body: Record<string, unknown>,
+  model: string,
+): { body: Record<string, unknown>; changes: string[] } {
+  // A target may carry the `[1m]` context suffix; its rules are the model's.
+  const id = withoutContextSuffix(model);
+  const rules = Object.hasOwn(CLAUDE_TARGET_RULES, id) ? CLAUDE_TARGET_RULES[id] : undefined;
+  if (rules === undefined) return { body, changes: [] };
+  const out: Record<string, unknown> = { ...body };
+  const changes: string[] = [];
+  const thinking = body.thinking;
+  if (isJsonObject(thinking) && thinking.type === "disabled") {
+    if (rules.thinkingOff === "left out") {
+      delete out.thinking;
+      changes.push("thinking disabled -> left out (always on)");
+      // Thinking cannot be off; effort is the one control of its depth. With none named,
+      // `low` is the nearest to "off" (the Opus 5.5 migration guide's own before/after).
+      const outputConfig = isJsonObject(body.output_config) ? body.output_config : undefined;
+      if (outputConfig?.effort === undefined) {
+        out.output_config = { ...outputConfig, effort: "low" };
+        changes.push("effort low (nearest to thinking off)");
+      }
+    } else {
+      out.thinking = { type: "between_tools" };
+      changes.push("thinking disabled -> between_tools");
+      const outputConfig = body.output_config;
+      if (
+        isJsonObject(outputConfig) &&
+        typeof outputConfig.effort === "string" &&
+        ABOVE_HIGH.has(outputConfig.effort)
+      ) {
+        out.output_config = { ...outputConfig, effort: "high" };
+        changes.push(`effort ${outputConfig.effort} -> high`);
+      }
+    }
+  } else if (isJsonObject(thinking) && thinking.type === "enabled") {
+    out.thinking =
+      thinking.display === undefined
+        ? { type: "adaptive" }
+        : { display: thinking.display, type: "adaptive" };
+    changes.push("thinking enabled (budget) -> adaptive");
+  }
+  const toolChoice = body.tool_choice;
+  if (isJsonObject(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
+    out.tool_choice =
+      toolChoice.disable_parallel_tool_use === undefined
+        ? { type: "auto" }
+        : { disable_parallel_tool_use: toolChoice.disable_parallel_tool_use, type: "auto" };
+    changes.push(`tool_choice ${toolChoice.type} -> auto`);
+  }
+  if (body.temperature !== undefined && body.temperature !== 1) {
+    delete out.temperature;
+    changes.push("temperature left out");
+  }
+  for (const field of ["top_p", "top_k"]) {
+    if (body[field] !== undefined) {
+      delete out[field];
+      changes.push(`${field} left out`);
+    }
+  }
+  return changes.length > 0 ? { body: out, changes } : { body, changes };
+}
+
 const encoder = new TextEncoder();
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -417,6 +664,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   const cooling = new Map<string, number>();
   /** Alias names already logged: each one is logged once, not on every request. */
   const aliasesLogged = new Set<string>();
+  /** Claude-target translations already logged (target and changes): once each. */
+  const translationsLogged = new Set<string>();
 
   /** Cancel a response the client will never see, so its connection is freed. */
   async function discard(response: UpstreamBody): Promise<void> {
@@ -429,37 +678,82 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
 
   /**
    * The first part of an error answer, for the log: an upstream's own reason
-   * ("Input exceeds context window …") is otherwise only in that upstream's log.
-   * One chunk, read within a second; the rest is cancelled. Never request content.
-   * Pass a `clone()` when the client still needs the body.
+   * ("Input exceeds context window …", Anthropic's "… is not supported for this model")
+   * is otherwise only in that upstream's log, or nowhere. One chunk, read within a second
+   * (decompressed first when it is gzip, deflate, br or zstd); the rest is cancelled.
+   * Its first 2 KB, anything like a key masked (`snippetText`, with the `known` secrets),
+   * at most `SNIPPET_MAX` characters. Never request content. Pass a `clone()` when the
+   * client still needs the body.
    */
-  async function errorSnippet(response: UpstreamBody): Promise<string> {
+  async function errorSnippet(response: UpstreamBody, known: readonly string[]): Promise<string> {
     const encoding = response.headers.get("content-encoding");
-    if (encoding !== null && encoding !== "identity") {
+    const compressed = encoding !== null && encoding.trim().toLowerCase() !== "identity";
+    const format = compressed ? decompressionFormat(encoding) : null;
+    if (compressed && format === null) {
       // Not awaited, for the reason in `finally` below.
       void discard(response);
-      return `(${encoding} body)`;
+      return `(${printable(encoding, 40)} body)`;
     }
-    const body = response.body;
-    if (body === null) return "(no body)";
+    const raw = response.body;
+    if (raw === null) return "(no body)";
+    const body = format === null ? raw : raw.pipeThrough(new DecompressionStream(format));
     const reader = body.getReader();
     const timer = deadline(1000);
+    let readFailed = false;
     try {
       const step = await Promise.race([reader.read(), timer.done]);
       if (step === "timeout") return "(no body within 1 s)";
       if (step.done) return "(empty body)";
-      return printable(new TextDecoder().decode(step.value), 200);
+      return snippetText(step.value, known);
     } catch (error) {
-      return `(body unreadable: ${messageOf(error)})`;
+      readFailed = true;
+      return `(${format === null ? "" : `${printable(encoding ?? "", 40)} `}body unreadable: ${messageOf(error)})`;
     } finally {
       timer.clear();
       // Not awaited: on a `clone()` the cancel settles only once the client's copy is
       // read too, which happens after this returns. The rest of this copy is dropped
-      // at once either way.
+      // at once either way. After a failed read the stream is broken and its cancel
+      // fails too: the WARN line above already says why, once is enough.
       reader.cancel().catch((error: unknown) => {
-        deps.log(`WARN could not cancel an upstream error body: ${messageOf(error)}`);
+        if (!readFailed) {
+          deps.log(`WARN could not cancel an upstream error body: ${messageOf(error)}`);
+        }
       });
     }
+  }
+
+  /**
+   * Logs `prefix — <the start of the error answer>` in the background: reading the answer
+   * can take up to a second, and the client's answer must never wait for the log. Pass a
+   * `clone()` when the client still needs the body.
+   */
+  function logErrorAnswer(response: UpstreamBody, known: readonly string[], prefix: string): void {
+    const task = errorSnippet(response, known).then(
+      (snippet) => {
+        deps.log(`${prefix} — ${snippet}`);
+      },
+      (error: unknown) => {
+        deps.log(`${prefix} — (body unreadable: ${messageOf(error)})`);
+      },
+    );
+    deps.background?.(task);
+  }
+
+  /**
+   * The secrets the router knows exactly, masked by their text in any error answer it
+   * logs: every backend's key, and the request's `x-api-key` and `authorization` (the
+   * whole value, and the credential after its scheme).
+   */
+  function knownSecrets(req: Request, config: GatewayConfig): string[] {
+    const known = Object.values(config.backends).map((backend) => backend.apiKey);
+    for (const name of ["x-api-key", "authorization"]) {
+      const value = req.headers.get(name);
+      if (value === null) continue;
+      known.push(value);
+      const space = value.indexOf(" ");
+      if (space !== -1) known.push(value.slice(space + 1).trim());
+    }
+    return known;
   }
 
   /**
@@ -597,6 +891,29 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     };
   }
 
+  /**
+   * A body Claude Code built for another name (a slot, an alias), for the Claude model
+   * `model`: only the fields that model refuses changed (`requestForClaudeFallback`), each
+   * kind of change logged once. The spread keeps every other field, and its order. Never
+   * for auto mode's safety check (`guard`): it stays exactly as Claude Code ships it.
+   */
+  function fitForClaude(
+    body: Record<string, unknown>,
+    model: string,
+    guard: boolean,
+  ): Record<string, unknown> {
+    if (guard) return body;
+    const fitted = requestForClaudeFallback(body, model);
+    const text = `${model}: ${fitted.changes.join(", ")}`;
+    if (fitted.changes.length > 0 && !translationsLogged.has(text)) {
+      translationsLogged.add(text);
+      deps.log(
+        `translated for ${printable(text, 200)} (requestForClaudeFallback; logged once per kind)`,
+      );
+    }
+    return fitted.body;
+  }
+
   /** The upstream call for one target, or why there is none. `guard`: the safety check. */
   function targetUpstream(
     req: Request,
@@ -607,8 +924,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     guard: boolean,
   ): { error: string } | { upstream: Upstream } {
     if (target.kind === "anthropic") {
-      // Only `model` changes; the spread keeps every other field, and its order.
-      const bytes = encoder.encode(JSON.stringify({ ...body, model: target.model }));
+      const bytes = encoder.encode(
+        JSON.stringify({ ...fitForClaude(body, target.model, guard), model: target.model }),
+      );
       return { upstream: anthropicUpstream(req, url, config, bytes) };
     }
     const backend = Object.hasOwn(config.backends, target.backend)
@@ -742,8 +1060,11 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       if (decision === "stay" || last) {
         if (target.kind === "backend" && status >= 300 && status <= 399) {
           // Claude Code could follow the `Location` with the person's own login.
-          const snippet = await errorSnippet(result.response);
-          deps.log(`WARN ${label} answered a redirect (${status}); refused — ${snippet}`);
+          logErrorAnswer(
+            result.response,
+            knownSecrets(req, config),
+            `WARN ${label} answered a redirect (${status}); refused`,
+          );
           return {
             fallbacks,
             response: anthropicError(
@@ -755,16 +1076,24 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
             target: label,
           };
         }
-        if (target.kind === "backend" && !result.response.ok) {
-          // Read from a copy: Claude Code still gets the whole answer.
-          const snippet = await errorSnippet(result.response.clone());
-          deps.log(`WARN ${label} answered ${status}; returned as it is — ${snippet}`);
+        if (status >= 400) {
+          // Any target, Anthropic too: its reason is the only trace of why the slot
+          // failed. Read from a copy: Claude Code still gets the whole answer, at once.
+          logErrorAnswer(
+            result.response.clone(),
+            knownSecrets(req, config),
+            `WARN ${label} answered ${status}; returned as it is`,
+          );
         }
         return { fallbacks, response: relay(result.response, target), skipped, target: label };
       }
-      // Reading the snippet also cancels the rest of this discarded answer.
-      const snippet = await errorSnippet(result.response);
-      deps.log(`WARN ${label} answered ${status}; trying the next target — ${snippet}`);
+      // Reading the snippet also cancels the rest of this discarded answer; the next
+      // target is asked meanwhile.
+      logErrorAnswer(
+        result.response,
+        knownSecrets(req, config),
+        `WARN ${label} answered ${status}; trying the next target`,
+      );
       failures.push(`${label}: HTTP ${status}`);
       fallbacks += 1;
     }
@@ -813,6 +1142,15 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
 
     const direct = async (body = bytes): Promise<Outcome> => {
       const result = await send(req, anthropicUpstream(req, url, config, body), null);
+      // Only a model's answer: another path (`/v1/models`, a file, an account page) is
+      // passed on as it is, and its errors are not the router's to log.
+      if (isMessages && "response" in result && result.response.status >= 400) {
+        logErrorAnswer(
+          result.response.clone(),
+          knownSecrets(req, config),
+          `WARN anthropic answered ${result.response.status}`,
+        );
+      }
       const response =
         "response" in result
           ? relay(result.response, null)
@@ -854,8 +1192,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           `alias ${printable(alias.from)} → ${printable(alias.to)} (from the config's aliases; logged once per name)`,
         );
       }
-      // Only `model` changes; the spread keeps every other field, and its order.
+      // `model` changes; the spread keeps every other field, and its order. An alias to a
+      // `claude-…` target goes straight to Anthropic with a body Claude Code built for the
+      // old name, so it gets what a slot's Claude target gets: only the fields that model
+      // refuses translated (`fitForClaude`), never for the safety check.
       body = { ...parsed, model: alias.to };
+      if (alias.to.startsWith("claude-")) body = fitForClaude(body, alias.to, guard);
       bytes = encoder.encode(JSON.stringify(body));
     }
     // Its newer form carries the sonnet slot's name; the log must still tell it apart.
@@ -913,7 +1255,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           target: first === undefined ? "none" : formatTarget(first),
         };
       }
-      return chain(req, url, config, body, [first], name, false);
+      // `first` is a Claude target here, so `guard` only keeps a check untranslated.
+      return chain(req, url, config, body, [first], name, guard);
     }
     return chain(req, url, config, body, targets, name, guard);
   }

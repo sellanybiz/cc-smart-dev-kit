@@ -25,7 +25,14 @@ import { tempDir } from "../testing/temp";
 import { parseModelList } from "./backends";
 import { ensureConfig, planSlotChange } from "./commands";
 import { type GatewayConfig, loadConfigFile } from "./config";
-import { installRouter, RESTART_WARNING, renderUnit, UP_TO_DATE } from "./service";
+import {
+  installRouter,
+  RESTART_WARNING,
+  renderUnit,
+  STOP_WAIT_MS,
+  stopRouter,
+  UP_TO_DATE,
+} from "./service";
 import {
   FORBIDDEN_ENV_KEYS,
   GATEWAY_ENV_KEYS,
@@ -438,7 +445,8 @@ describe("router service install", () => {
     const bundle = join(home, "plugin", "dist", "router.js");
     mkdirSync(join(home, "plugin", "dist"), { recursive: true });
     writeFileSync(bundle, "// router v1\n");
-    const state = { active: false, fail: false };
+    /** `idle`: what `is-active` says while the unit is not active. */
+    const state = { active: false, fail: false, idle: "activating" };
     const port: {
       answers: boolean;
       reply: (() => Response) | null;
@@ -488,7 +496,7 @@ describe("router service install", () => {
           );
           if (state.fail) return { exitCode: 1, output: "Failed to connect to bus" };
           if (cmd[2] === "is-active") {
-            const word = state.active ? "active" : "activating";
+            const word = state.active ? "active" : state.idle;
             return { exitCode: state.active ? 0 : 3, output: cmd[3] === "--quiet" ? "" : word };
           }
           if (cmd[2] === "restart" || cmd[3] === "--now") state.active = true;
@@ -516,6 +524,8 @@ describe("router service install", () => {
     };
   }
 
+  // Changed on purpose: a unit that is not active is asked its state once more before the
+  // restart (the `is-active` line without --quiet), to say when it still drains.
   it("first install: copies the bundle, writes the unit, reloads, enables and starts it", async () => {
     const m = machine();
     expect(await m.install({})).toBe("installed");
@@ -525,6 +535,7 @@ describe("router service install", () => {
       "+ ~/.config/systemd/user/anymodel-router.service: unit created",
       "$ systemctl --user daemon-reload",
       "$ systemctl --user enable anymodel-router.service",
+      "$ systemctl --user is-active anymodel-router.service",
       "$ systemctl --user restart anymodel-router.service",
       "enabled and (re)started anymodel-router.service",
     ]);
@@ -533,6 +544,24 @@ describe("router service install", () => {
     expect(readFileSync(m.unitPath, "utf8")).toContain(
       `\nExecStart="/opt/bun/bin/bun" --no-env-file "${m.copyPath}"\n`,
     );
+  });
+
+  it("right after restore, the old router still draining: it says it waits, then restarts", async () => {
+    const m = machine();
+    // restore's `stop --no-block` returned at once; the old router finishes its answers.
+    m.state.idle = "deactivating";
+    expect(await m.install({})).toBe("installed");
+    expect(m.events).toEqual([
+      "$ systemctl --user is-active --quiet anymodel-router.service",
+      "+ ~/.local/share/anymodel/router.js: router copy created",
+      "+ ~/.config/systemd/user/anymodel-router.service: unit created",
+      "$ systemctl --user daemon-reload",
+      "$ systemctl --user enable anymodel-router.service",
+      "$ systemctl --user is-active anymodel-router.service",
+      "waiting for the old router to finish its answers (up to 120 s)",
+      "$ systemctl --user restart anymodel-router.service",
+      "enabled and (re)started anymodel-router.service",
+    ]);
   });
 
   it("again with nothing changed: no restart, only enable --now", async () => {
@@ -682,10 +711,12 @@ describe("router service install", () => {
   it("the marker is there from before the copy until the restarted router answers, then gone", async () => {
     const m = machine();
     expect(await m.install({})).toBe("installed");
+    // Changed on purpose: the second is-active, before the restart (see "first install").
     expect(m.markerAt).toEqual([
       "is-active: no marker, no copy",
       "daemon-reload: marker, copy",
       "enable: marker, copy",
+      "is-active: marker, copy",
       "restart: marker, copy",
     ]);
     expect(existsSync(m.marker)).toBe(false);
@@ -783,5 +814,135 @@ describe("router service install", () => {
     expect(() => renderUnit('/opt/b"un', "/x")).toThrow("cannot put");
     expect(() => renderUnit("/opt/bun", "/x\\y")).toThrow("cannot put");
     expect(() => renderUnit("/opt/bun", "/x%h")).toThrow("cannot put");
+  });
+});
+
+// ─── The router service: stop, for restore ──────────────────────────────────────
+
+describe("router service stop", () => {
+  /**
+   * A fake systemctl and a fake probe on a made-up port. `unit` is what
+   * `systemctl --user is-active` says before the stop (default `active`). The port answers
+   * as this router for `heldPolls` probes after the stop was sent (Infinity: it never lets
+   * go), then refuses; with `other`, another program answers there (a 404, not a health
+   * answer). Every call goes into one `events` list, so the order is the assertion. The
+   * clock moves only when the code sleeps. No network.
+   */
+  function stopMachine(options: {
+    heldPolls: number;
+    failOn?: string;
+    other?: boolean;
+    unit?: string;
+  }) {
+    const events: string[] = [];
+    const start = Date.UTC(2026, 9, 15, 10, 0, 0);
+    const clock = { now: start };
+    let stopSent = false;
+    let polls = 0;
+    const unit = options.unit ?? "active";
+    const runner = (cmd: string[]) => {
+      events.push(`$ ${cmd.join(" ")}`);
+      if (cmd[2] === options.failOn) return { exitCode: 1, output: "Failed to connect to bus" };
+      if (cmd[2] === "is-active") {
+        const word = stopSent ? "inactive" : unit;
+        return { exitCode: word === "active" ? 0 : 3, output: `${word}\n` };
+      }
+      if (cmd[2] === "stop") stopSent = true;
+      return { exitCode: 0, output: "" };
+    };
+    const probe = {
+      fetch: async (url: string) => {
+        events.push(`probe ${url}`);
+        if (options.other === true) return new Response("not found", { status: 404 });
+        if (!stopSent) return Response.json({ ok: true, port: FAKE_PORT });
+        polls += 1;
+        if (polls <= options.heldPolls) return Response.json({ ok: true, port: FAKE_PORT });
+        throw connectionRefused();
+      },
+      now: () => clock.now,
+      sleep: async (ms: number) => {
+        clock.now += ms;
+      },
+    };
+    return { clock, events, probe, runner, waited: () => clock.now - start };
+  }
+
+  const HEALTH = `probe http://127.0.0.1:${FAKE_PORT}/__anymodel/health`;
+  const IS_ACTIVE = "$ systemctl --user is-active anymodel-router.service";
+  const DISABLE = "$ systemctl --user disable anymodel-router.service";
+  const STOP = "$ systemctl --user stop --no-block anymodel-router.service";
+
+  // Changed on purpose, in the tests below that list the calls: the unit's state is asked
+  // first (IS_ACTIVE), so the port is waited for only while the unit itself runs.
+  it("disables, stops without waiting for the drain, then asks the port until it is refused", async () => {
+    const m = stopMachine({ heldPolls: 3 });
+    expect(await stopRouter(m.runner, FAKE_PORT, m.probe)).toEqual({ kind: "closed" });
+    // Never `disable --now`: that waits up to TimeoutStopSec while the drain runs.
+    expect(m.events).toEqual([IS_ACTIVE, DISABLE, STOP, HEALTH, HEALTH, HEALTH, HEALTH]);
+    // Three held answers, a 200 ms rest after each, then the refusal.
+    expect(m.waited()).toBe(600);
+  });
+
+  it("a port that is free at once: one probe, no rest", async () => {
+    const m = stopMachine({ heldPolls: 0 });
+    expect(await stopRouter(m.runner, FAKE_PORT, m.probe)).toEqual({ kind: "closed" });
+    expect(m.events).toEqual([IS_ACTIVE, DISABLE, STOP, HEALTH]);
+    expect(m.waited()).toBe(0);
+  });
+
+  it("a unit that is still deactivating (an earlier stop) is waited for like a running one", async () => {
+    const m = stopMachine({ heldPolls: 2, unit: "deactivating" });
+    expect(await stopRouter(m.runner, FAKE_PORT, m.probe)).toEqual({ kind: "closed" });
+    expect(m.events).toEqual([IS_ACTIVE, DISABLE, STOP, HEALTH, HEALTH, HEALTH]);
+    expect(m.waited()).toBe(400);
+  });
+
+  it("the port answers, but not as this router (a 404): no wait, the reason given back", async () => {
+    const m = stopMachine({ heldPolls: Number.POSITIVE_INFINITY, other: true });
+    expect(await stopRouter(m.runner, FAKE_PORT, m.probe)).toEqual({
+      detail: "HTTP 404",
+      kind: "other",
+    });
+    expect(m.events).toEqual([IS_ACTIVE, DISABLE, STOP, HEALTH]);
+    expect(m.waited()).toBe(0);
+  });
+
+  it("a unit that was not running (crash-looping) while a router it did not start holds the port: no wait", async () => {
+    // A `gateway serve` started by hand answers the health page; the unit cannot bind.
+    for (const unit of ["activating", "failed", "inactive"]) {
+      const m = stopMachine({ heldPolls: Number.POSITIVE_INFINITY, unit });
+      expect(await stopRouter(m.runner, FAKE_PORT, m.probe)).toEqual({
+        kind: "not-running",
+        state: unit,
+      });
+      expect(m.events).toEqual([IS_ACTIVE, DISABLE, STOP]);
+      expect(m.waited()).toBe(0);
+    }
+  });
+
+  it("a port still held after 15 s: a clear error, after the stop was sent", async () => {
+    const m = stopMachine({ heldPolls: Number.POSITIVE_INFINITY });
+    expect(STOP_WAIT_MS).toBe(15_000);
+    await expect(stopRouter(m.runner, FAKE_PORT, m.probe)).rejects.toThrow(
+      `anymodel-router.service is disabled and was told to stop, but 127.0.0.1:${FAKE_PORT} still takes connections after 15 s. Nothing else was restored. See why: systemctl --user status anymodel-router (and ss -ltnp for another program on the port). Then run anymodel restore again.`,
+    );
+    expect(m.events.slice(0, 4)).toEqual([IS_ACTIVE, DISABLE, STOP, HEALTH]);
+    // The whole 15 s by its clock, in 200 ms rests, and not longer: 75 rests, 76 probes.
+    expect(m.waited()).toBe(15_000);
+    expect(m.events.filter((event) => event === HEALTH)).toHaveLength(76);
+  });
+
+  it("an unknown port (null): the stop is sent, nothing is asked", async () => {
+    const m = stopMachine({ heldPolls: 0 });
+    expect(await stopRouter(m.runner, null, m.probe)).toEqual({ kind: "no-port" });
+    expect(m.events).toEqual([DISABLE, STOP]);
+  });
+
+  it("a failing systemctl stops it before anything else", async () => {
+    const m = stopMachine({ failOn: "disable", heldPolls: 0 });
+    await expect(stopRouter(m.runner, FAKE_PORT, m.probe)).rejects.toThrow(
+      "systemctl --user disable anymodel-router.service failed (exit 1):\nFailed to connect to bus",
+    );
+    expect(m.events).toEqual([IS_ACTIVE, DISABLE]);
   });
 });

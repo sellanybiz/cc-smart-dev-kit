@@ -17,7 +17,9 @@ providers. It is optional. How it works and why: the plugin's `docs/gateway.md`.
   list of targets, tried in order; the first that answers wins. Keep a `claude-*` target
   last, so work never stops when a cheap model fails.
 - A target is `claude-<id>` or `<backend>:<model>` (for example
-  `omniroute:ollama-cloud/glm-5.3-flash`).
+  `omniroute:ollama-cloud/glm-5.3-flash`). A `claude-<id>` target gets the request with
+  its model name, and any field that model refuses put in the form it accepts (Claude
+  Sonnet 5.5 refuses "thinking disabled"); never a word of the prompt.
 - **User-wide:** once it is on, every Claude Code session on the machine, in every folder,
   sends its `haiku` / `sonnet` work to the slots. **Linux only** for now (systemd).
 
@@ -72,6 +74,8 @@ unavailable": `gateway slot judge off`.
   backend, the slots, whether Claude Code points at the gateway. Keys are masked.
 - `anymodel doctor`: the service, the router copy, the health page, each backend.
 - The log: `journalctl --user -u anymodel-router -f`. One line per request; never a key.
+  A target that answers 4xx / 5xx (Anthropic too) gets a `WARN` line with the start of
+  its error reason, keys masked: read it first when a slot fails.
 - Every Claude Code request fails: the router is down. `systemctl --user restart
   anymodel-router`; still down: `anymodel gateway off`, then restart the sessions.
 - `doctor` says "a gateway setup did not finish": the router did not answer after a

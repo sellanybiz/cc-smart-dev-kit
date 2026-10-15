@@ -102,6 +102,7 @@ async function main(argv: string[]): Promise<number> {
         runner,
         systemd,
         confirm: ask,
+        probe: realProbe(),
       });
     }
     case "gateway":

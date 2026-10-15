@@ -1,6 +1,7 @@
 /**
- * The router's health page, asked on this machine: `gateway status`, `gateway on`,
- * `gateway setup` (before it writes anything, and after the restart) and `doctor`.
+ * The router's health page and port, asked on this machine: `gateway status`, `gateway on`,
+ * `gateway setup` (before it writes anything, and after the restart), `doctor`, and `restore`
+ * (until the stopped router lets go of its port).
  *
  * Every caller takes the `fetch` (and, to wait, the clock) from outside, so a test passes
  * fakes and never reaches a real port: a router may be running on the default one.
@@ -95,6 +96,30 @@ export async function probeRouterPort(
   return isJsonObject(body) && body.ok === true
     ? { state: "ours" }
     : { detail: "not this router's health answer", state: "other" };
+}
+
+/**
+ * Waits while this router still answers on `port`, for up to `waitMs` by the probe's
+ * clock. How it ends:
+ *   - `free`: nothing listens any more (a connection is refused). A stopping router closes
+ *     its port at once and drains the answers in flight after that, so a free port means
+ *     it takes no new request;
+ *   - `other`: something that is not this router answers there (another program, or no
+ *     answer in time): nothing of ours to wait for, so it stops asking;
+ *   - `held`: this router still answered when the time ran out.
+ */
+export async function waitWhileRouterAnswers(
+  port: number,
+  probe: HealthProbe,
+  waitMs: number,
+): Promise<{ state: "free" } | { detail: string; state: "other" } | { state: "held" }> {
+  const deadline = probe.now() + waitMs;
+  for (;;) {
+    const result = await probeRouterPort(port, probe.fetch, 1_000);
+    if (result.state !== "ours") return result;
+    if (probe.now() >= deadline) return { state: "held" };
+    await probe.sleep(200);
+  }
 }
 
 /**

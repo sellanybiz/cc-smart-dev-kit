@@ -6,10 +6,12 @@
  * Nothing here reaches the real systemd, the real ~/.claude or a real gateway: PATH holds
  * only the fake, and every config this file writes names the fake server's port. A command
  * that would ask the default port (setup or `on` with no config) runs in this process
- * instead (`runHere`), with a fake health page. Never run the router, `setup`, `on` or
- * `status` as a subprocess without such a config: the default port belongs to a router
- * that may be running on this machine. The port guard (src/testing/port-guard.ts) fails
- * any test that tries.
+ * instead (`runHere`), with a fake health page. Never run the router, `setup`, `on`,
+ * `status`, or a `restore` that stops the router, as a subprocess without such a config:
+ * the default port belongs to a router that may be running on this machine. The port
+ * guard (src/testing/port-guard.ts) fails any test that tries. A `restore` that stops the
+ * router runs in this process anyway: it waits for the port to close, and the fake server
+ * here never closes.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -20,6 +22,7 @@ import type { HealthProbe } from "../gateway/health";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import { cliPaths } from "./paths";
+import { runRestore } from "./restore";
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 const BUILT_ROUTER = join(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
@@ -94,7 +97,8 @@ function machine(options: { systemctl?: boolean } = {}) {
         `[ -e '${state}' ] && read s < '${state}'`,
         'case "$*" in',
         '  *is-active*) [ "$1" = "--user" ] || exit 9; case "$*" in *--quiet*) ;; *) echo "$s" ;; esac; [ "$s" = active ] && exit 0; exit 3 ;;',
-        `  *disable*) echo inactive > '${state}' ;;`,
+        // `disable` alone leaves a running unit running, as systemd does; `stop` stops it.
+        `  *disable*--now*|*" stop "*) echo inactive > '${state}' ;;`,
         `  *restart*|*--now*) echo active > '${state}' ;;`,
         "esac",
         "exit 0",
@@ -130,14 +134,19 @@ function machine(options: { systemctl?: boolean } = {}) {
 
   /**
    * The router health page, faked for `runHere`: this router answers while the fake unit
-   * is active, and nothing listens while it is not. Each URL asked is recorded. No network.
+   * is active (or while `port.held`: a router that does not let go), another program
+   * answers 404 while `port.other`, and nothing listens otherwise. Each URL asked is
+   * recorded. Its clock moves only when the code sleeps. No network.
    */
   const probed: string[] = [];
+  const port = { held: false, other: false };
+  const clock = { now: Date.UTC(2026, 9, 15, 10, 0, 0) };
   const probe: HealthProbe = {
     fetch: async (url) => {
       probed.push(url);
+      if (port.other) return new Response("not found", { status: 404 });
       const unit = existsSync(state) ? readFileSync(state, "utf8").trim() : "inactive";
-      if (unit === "active") return Response.json({ ok: true });
+      if (unit === "active" || port.held) return Response.json({ ok: true });
       throw Object.assign(
         new TypeError("Unable to connect. Is the computer able to access the url?"),
         {
@@ -145,16 +154,35 @@ function machine(options: { systemctl?: boolean } = {}) {
         },
       );
     },
-    now: () => Date.UTC(2026, 9, 15, 10, 0, 0),
-    sleep: async () => undefined,
+    now: () => clock.now,
+    sleep: async (ms) => {
+      clock.now += ms;
+    },
+  };
+  /** The fake systemctl, called the way the CLI's own runner calls the real one. */
+  const runner = (cmd: string[]) => {
+    const result = Bun.spawnSync([join(fakeBin, "systemctl"), ...cmd.slice(1)], {
+      env: { PATH: fakeBin },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return {
+      exitCode: result.exitCode,
+      output: `${result.stdout.toString()}${result.stderr.toString()}`,
+    };
   };
   /**
-   * `anymodel gateway …` in this process, for a command that would ask the default port:
-   * the same temp machine and fake systemctl, but the fake health page above, so no test
-   * reaches a router that may run on this machine. Output as the CLI prints it.
+   * `anymodel gateway …` or `anymodel restore …` in this process, for a command that
+   * asks a port: the same temp machine and fake systemctl, but the fake health page
+   * above, so no test reaches a router that may run on this machine (and a stopped unit
+   * frees its port, which a fake server in this process cannot do for a subprocess).
+   * Output as the CLI prints it.
    */
   const runHere = async (args: string[], input?: string) => {
-    if (args[0] !== "gateway") throw new Error("runHere runs `gateway …` commands only");
+    if (args[0] !== "gateway" && args[0] !== "restore") {
+      throw new Error("runHere runs `gateway …` and `restore …` commands only");
+    }
+    const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: configDir });
     const out: string[] = [];
     const err: string[] = [];
     const log = spyOn(console, "log").mockImplementation((...parts: unknown[]) => {
@@ -165,26 +193,26 @@ function machine(options: { systemctl?: boolean } = {}) {
     });
     let exitCode: number;
     try {
-      exitCode = await runGateway(args.slice(1), {
-        paths: cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: configDir }),
-        bunPath: process.execPath,
-        bundle: BUILT_ROUTER,
-        runner: (cmd) => {
-          const result = Bun.spawnSync([join(fakeBin, "systemctl"), ...cmd.slice(1)], {
-            env: { PATH: fakeBin },
-            stdout: "pipe",
-            stderr: "pipe",
-          });
-          return {
-            exitCode: result.exitCode,
-            output: `${result.stdout.toString()}${result.stderr.toString()}`,
-          };
-        },
-        readStdin: () => Promise.resolve(input ?? ""),
-        confirm: null,
-        systemd: options.systemctl !== false,
-        probe,
-      });
+      exitCode =
+        args[0] === "restore"
+          ? await runRestore(paths, {
+              yes: args.includes("--yes"),
+              now: args.includes("--now"),
+              runner,
+              systemd: options.systemctl !== false,
+              confirm: null,
+              probe,
+            })
+          : await runGateway(args.slice(1), {
+              paths,
+              bunPath: process.execPath,
+              bundle: BUILT_ROUTER,
+              runner,
+              readStdin: () => Promise.resolve(input ?? ""),
+              confirm: null,
+              systemd: options.systemctl !== false,
+              probe,
+            });
     } catch (thrown) {
       // What the CLI's own catch prints (src/entries/cli.ts).
       err.push(`anymodel: ${thrown instanceof Error ? thrown.message : String(thrown)}\n`);
@@ -224,6 +252,8 @@ function machine(options: { systemctl?: boolean } = {}) {
     runHere,
     probe,
     probed,
+    port,
+    clock,
     paths,
     calls,
     state,
@@ -263,6 +293,9 @@ describe("anymodel gateway setup", () => {
         "--user is-active --quiet anymodel-router.service",
         "--user daemon-reload",
         "--user enable anymodel-router.service",
+        // Changed on purpose: a unit that is not active is asked its state before the
+        // restart, to say when an old router still drains.
+        "--user is-active anymodel-router.service",
         "--user restart anymodel-router.service",
         "",
       ].join("\n"),
@@ -416,19 +449,30 @@ describe("anymodel restore: the gateway in two stages", () => {
     // A setup that did not finish has nothing left to finish once the router is gone.
     const marker = join(m.configDir, "anymodel", "restart-pending");
     writeFileSync(marker, "pending\n");
+    // Reworked: in this process (`runHere`), because the stop now asks the router's port
+    // until it closes, and the fake server of this test cannot close for a subprocess.
+    // It was `disable --now`, which waits for the router's whole drain (up to 120 s).
     const middle = m.calls();
-    const done = await m.run(["restore", "--yes"]);
+    const done = await m.runHere(["restore", "--yes"]);
+    expect(done.stderr).toBe("");
     expect(done.exitCode).toBe(0);
     expect(existsSync(marker)).toBe(false);
     expect(m.calls().slice(middle.length)).toBe(
       [
         "--user is-active --quiet anymodel-router.service",
-        "--user disable --now anymodel-router.service",
+        // Changed on purpose: the stop asks the unit's state, to wait only for its own port.
+        "--user is-active anymodel-router.service",
+        "--user disable anymodel-router.service",
+        "--user stop --no-block anymodel-router.service",
         "--user daemon-reload",
         "",
       ].join("\n"),
     );
-    expect(done.stdout).toContain("- anymodel-router.service: stopped and disabled\n");
+    // The config's port was asked once the stop was sent, and it was closed.
+    expect(m.probed).toEqual([`http://127.0.0.1:${server.port}/__anymodel/health`]);
+    expect(done.stdout).toContain(
+      `- anymodel-router.service: disabled and stopped (port ${server.port} closed; answers in flight finish in the background)\n`,
+    );
     expect(done.stdout).toContain(
       "- ~/.local/share/anymodel/router.js: removed (anymodel had created it)\n",
     );
@@ -462,20 +506,168 @@ describe("anymodel restore: the gateway in two stages", () => {
     );
     expect(readFileSync(m.paths.settings, "utf8")).toBe(settings);
 
+    // Reworked: in this process (`runHere`), for the port wait (see the test above). The
+    // stop was `disable --now`, which blocked while the router drained.
     const before = m.calls();
-    const done = await m.run(["restore", "--now", "--yes"]);
+    const done = await m.runHere(["restore", "--now", "--yes"]);
+    expect(done.stderr).toBe("");
     expect(done.exitCode).toBe(0);
     expect(done.stdout).toStartWith(
-      "restore --now stops anymodel-router while Claude sessions still use it: every running Claude session fails until it restarts.\n- anymodel-router.service: stopped and disabled\n",
+      `restore --now stops anymodel-router while Claude sessions still use it: every running Claude session fails until it restarts.\n- anymodel-router.service: disabled and stopped (port ${server.port} closed; answers in flight finish in the background)\n`,
     );
     expect(done.stdout).toContain(`${STAGE_1_KEYS}\n`);
-    // The warning above is the question: no is-active first.
+    // The warning above is the question: no `is-active --quiet` first. Changed on purpose:
+    // the stop asks the unit's state (no --quiet), to wait only for its own port.
     expect(m.calls().slice(before.length)).toBe(
-      ["--user disable --now anymodel-router.service", "--user daemon-reload", ""].join("\n"),
+      [
+        "--user is-active anymodel-router.service",
+        "--user disable anymodel-router.service",
+        "--user stop --no-block anymodel-router.service",
+        "--user daemon-reload",
+        "",
+      ].join("\n"),
     );
+    expect(m.probed).toEqual([`http://127.0.0.1:${server.port}/__anymodel/health`]);
     expect(existsSync(m.paths.copy)).toBe(false);
     expect(existsSync(m.paths.unit)).toBe(false);
     expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus", env: {} });
+  });
+
+  test("a port still held 15 s after the stop: restore fails clearly and restores nothing else", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    writeFileSync(m.paths.settings, '{ "model": "opus" }\n');
+    expect((await m.run(["gateway", "setup"])).exitCode).toBe(0);
+    expect((await m.run(["gateway", "on"])).exitCode).toBe(0);
+    const settings = readFileSync(m.paths.settings, "utf8");
+
+    m.port.held = true;
+    const started = m.clock.now;
+    const failed = await m.runHere(["restore", "--now", "--yes"]);
+    expect(failed.exitCode).toBe(1);
+    expect(failed.stderr).toBe(
+      `anymodel: anymodel-router.service is disabled and was told to stop, but 127.0.0.1:${server.port} still takes connections after 15 s. Nothing else was restored. See why: systemctl --user status anymodel-router (and ss -ltnp for another program on the port). Then run anymodel restore again.\n`,
+    );
+    expect(m.clock.now - started).toBe(15_000);
+    // Nothing else was restored: the env keys, the copy and the unit are all still there.
+    expect(readFileSync(m.paths.settings, "utf8")).toBe(settings);
+    expect(existsSync(m.paths.copy)).toBe(true);
+    expect(existsSync(m.paths.unit)).toBe(true);
+
+    // Once the port is free, restore finishes.
+    m.port.held = false;
+    const done = await m.runHere(["restore", "--now", "--yes"]);
+    expect(done.exitCode).toBe(0);
+    expect(existsSync(m.paths.copy)).toBe(false);
+  });
+
+  const NOW_WARNING =
+    "restore --now stops anymodel-router while Claude sessions still use it: every running Claude session fails until it restarts.";
+
+  test("another program answers on the port (a 404, not a health answer): restore says so and finishes", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    writeFileSync(m.paths.settings, '{ "model": "opus" }\n');
+    expect((await m.run(["gateway", "setup"])).exitCode).toBe(0);
+    expect((await m.run(["gateway", "on"])).exitCode).toBe(0);
+
+    m.port.other = true;
+    const started = m.clock.now;
+    const done = await m.runHere(["restore", "--now", "--yes"]);
+    expect(done.stderr).toBe("");
+    expect(done.exitCode).toBe(0);
+    expect(done.stdout).toStartWith(
+      [
+        NOW_WARNING,
+        `  port ${server.port} answers, but not as this router (HTTP 404); not waiting for it`,
+        "- anymodel-router.service: disabled and stopping",
+        "",
+      ].join("\n"),
+    );
+    expect(m.clock.now - started).toBe(0);
+    expect(existsSync(m.paths.copy)).toBe(false);
+    expect(existsSync(m.paths.unit)).toBe(false);
+  });
+
+  test("a unit that was not running while the port is taken (a router started by hand): restore says so and finishes", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    writeFileSync(m.paths.settings, '{ "model": "opus" }\n');
+    expect((await m.run(["gateway", "setup"])).exitCode).toBe(0);
+    expect((await m.run(["gateway", "on"])).exitCode).toBe(0);
+
+    // The unit crash-loops (it cannot bind), and a `gateway serve` in a terminal answers.
+    writeFileSync(m.state, "activating\n");
+    m.port.held = true;
+    const started = m.clock.now;
+    const before = m.calls();
+    m.probed.length = 0;
+    const done = await m.runHere(["restore", "--now", "--yes"]);
+    expect(done.stderr).toBe("");
+    expect(done.exitCode).toBe(0);
+    expect(done.stdout).toStartWith(
+      [
+        NOW_WARNING,
+        `  anymodel-router.service was not running (systemctl --user is-active: activating); not waiting for port ${server.port}`,
+        "- anymodel-router.service: disabled and stopped",
+        "",
+      ].join("\n"),
+    );
+    expect(m.clock.now - started).toBe(0);
+    // The unit's state decided it: the port was not even asked.
+    expect(m.probed).toEqual([]);
+    expect(m.calls().slice(before.length)).toBe(
+      [
+        "--user is-active anymodel-router.service",
+        "--user disable anymodel-router.service",
+        "--user stop --no-block anymodel-router.service",
+        "--user daemon-reload",
+        "",
+      ].join("\n"),
+    );
+    expect(existsSync(m.paths.copy)).toBe(false);
+  });
+
+  test("an unreadable gateway.json: restore says the port is unknown, sends the stop, and waits for nothing", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    writeFileSync(m.paths.settings, '{ "model": "opus" }\n');
+    expect((await m.run(["gateway", "setup"])).exitCode).toBe(0);
+    expect((await m.run(["gateway", "on"])).exitCode).toBe(0);
+
+    writeFileSync(m.paths.config, `{ "backends": { "omniroute": { "apiKey": "${PLANTED_KEY}"`, {
+      mode: 0o600,
+    });
+    m.probed.length = 0;
+    const before = m.calls();
+    const done = await m.runHere(["restore", "--now", "--yes"]);
+    expect(done.stderr).toBe("");
+    expect(done.exitCode).toBe(0);
+    expect(done.stdout).toStartWith(
+      [
+        NOW_WARNING,
+        `  cannot read the router's port (${m.paths.config} is not valid JSON. Fix it by hand.); not waiting for it`,
+        "- anymodel-router.service: disabled and stopping",
+        "",
+      ].join("\n"),
+    );
+    expect(done.stdout).not.toContain(PLANTED_KEY);
+    expect(m.probed).toEqual([]);
+    expect(m.calls().slice(before.length)).toBe(
+      [
+        "--user disable anymodel-router.service",
+        "--user stop --no-block anymodel-router.service",
+        "--user daemon-reload",
+        "",
+      ].join("\n"),
+    );
+    expect(existsSync(m.paths.copy)).toBe(false);
+    // The config holds the person's key: restore leaves it, even broken.
+    expect(existsSync(m.paths.config)).toBe(true);
   });
 });
 
