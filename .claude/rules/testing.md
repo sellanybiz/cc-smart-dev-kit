@@ -31,6 +31,20 @@ A test never reaches the network or a real tool it does not test (`git ls-remote
 
 `src/cli/cli.test.ts` does this for `git`.
 
+## Never the live router's port
+
+A gateway router may run for real on this machine, on port 20100. **No test may ever
+connect to it.** Each test uses a fake server's free port, or an injected fake probe
+(`GatewayContext.probe`, the `fetch` of `routerHealth` and `gatewayChecks`).
+
+The guard (`src/testing/port-guard.ts`) enforces it: the preload wraps `fetch`, and a call
+to 127.0.0.1, localhost or [::1] on 20100 is refused and fails the test, even when the
+code caught the error. A test that starts the CLI or the router as a bun subprocess
+passes `subprocessGuard().args` after the bun path and `subprocessGuard().env` in its
+environment, so the guard runs in there too. A command that would ask the default port
+(`gateway setup` or `on` with no config) runs in the test's own process instead, with a
+fake probe (`runHere` in `src/cli/gateway-cli.test.ts`).
+
 ## Every test can fail
 
 - **Write the expected value by hand.** Never compute it with the code under test.

@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { VERSION } from "../build-info";
 import { git, tempDir } from "../testing/temp";
-import { CcConfigError, CcVersionError } from "./config";
+import { AnymodelConfigError, AnymodelVersionError } from "./config";
 import { resolveProject } from "./resolve";
 
 /** A repo with one commit, so `git worktree add` works. */
@@ -17,9 +17,9 @@ function makeRepo(): string {
   return repo;
 }
 
-function writeCcJson(folder: string, content: string): string {
+function writeAnymodelJson(folder: string, content: string): string {
   mkdirSync(join(folder, ".claude"), { recursive: true });
-  const file = join(folder, ".claude", "cc.json");
+  const file = join(folder, ".claude", "anymodel.json");
   writeFileSync(file, content);
   return file;
 }
@@ -56,13 +56,13 @@ describe("resolveProject", () => {
     expect(resolveProject(tempDir("nogit"))).toBeNull();
   });
 
-  test("no cc.json gives config null", () => {
+  test("no anymodel.json gives config null", () => {
     expect(resolveProject(makeRepo())?.config).toBeNull();
   });
 
-  test("a valid cc.json is read with every field", () => {
+  test("a valid anymodel.json is read with every field", () => {
     const repo = makeRepo();
-    writeCcJson(
+    writeAnymodelJson(
       repo,
       JSON.stringify({
         requires: ">=1.2",
@@ -79,51 +79,51 @@ describe("resolveProject", () => {
     });
   });
 
-  test("a worktree without its own cc.json falls back to the main checkout's", () => {
+  test("a worktree without its own anymodel.json falls back to the main checkout's", () => {
     const repo = makeRepo();
-    writeCcJson(repo, JSON.stringify({ instructions: true }));
+    writeAnymodelJson(repo, JSON.stringify({ instructions: true }));
     const worktree = join(repo, "..", "wt-fallback");
     git(repo, "worktree", "add", "-q", "-b", "fallback", worktree);
     expect(resolveProject(worktree)?.config).toEqual({ instructions: true });
   });
 
-  test("a worktree's own cc.json wins over the main checkout's", () => {
+  test("a worktree's own anymodel.json wins over the main checkout's", () => {
     const repo = makeRepo();
-    writeCcJson(repo, JSON.stringify({ instructions: true }));
+    writeAnymodelJson(repo, JSON.stringify({ instructions: true }));
     const worktree = join(repo, "..", "wt-own");
     git(repo, "worktree", "add", "-q", "-b", "own", worktree);
-    writeCcJson(worktree, JSON.stringify({ instructions: false }));
+    writeAnymodelJson(worktree, JSON.stringify({ instructions: false }));
     expect(resolveProject(worktree)?.config).toEqual({ instructions: false });
   });
 
-  test("an invalid cc.json throws an error that names the file and the field", () => {
+  test("an invalid anymodel.json throws an error that names the file and the field", () => {
     const repo = makeRepo();
-    const file = writeCcJson(repo, JSON.stringify({ worktrees: { base: 5, prefix: "x-" } }));
-    expect(() => resolveProject(repo)).toThrow(CcConfigError);
+    const file = writeAnymodelJson(repo, JSON.stringify({ worktrees: { base: 5, prefix: "x-" } }));
+    expect(() => resolveProject(repo)).toThrow(AnymodelConfigError);
     expect(() => resolveProject(repo)).toThrow(`Invalid ${file}: worktrees.base:`);
   });
 
-  test("an unknown field in cc.json is named", () => {
+  test("an unknown field in anymodel.json is named", () => {
     const repo = makeRepo();
-    writeCcJson(repo, JSON.stringify({ worktree: { base: "dev", prefix: "x-" } }));
+    writeAnymodelJson(repo, JSON.stringify({ worktree: { base: "dev", prefix: "x-" } }));
     expect(() => resolveProject(repo)).toThrow("worktree: unknown field");
   });
 
   test("a plugin too old for `requires`: the update message, even with a field it does not know", () => {
     const repo = makeRepo();
-    const file = writeCcJson(
+    const file = writeAnymodelJson(
       repo,
       JSON.stringify({ requires: ">=1.2", fieldFromTheFuture: true, instructions: true }),
     );
-    expect(() => resolveProject(repo, { pluginVersion: "1.1.0" })).toThrow(CcVersionError);
+    expect(() => resolveProject(repo, { pluginVersion: "1.1.0" })).toThrow(AnymodelVersionError);
     expect(() => resolveProject(repo, { pluginVersion: "1.1.0" })).toThrow(
-      `${file}: this project needs cc-agentic >=1.2; you have 1.1.0; run claude plugin update cc@cc-agentic`,
+      `${file}: this project needs anymodel >=1.2; you have 1.1.0; run claude plugin update anymodel@anymodel`,
     );
   });
 
   test("a plugin new enough for `requires`: then an unknown field is an error", () => {
     const repo = makeRepo();
-    writeCcJson(repo, JSON.stringify({ requires: "^1.2", fieldFromTheFuture: true }));
+    writeAnymodelJson(repo, JSON.stringify({ requires: "^1.2", fieldFromTheFuture: true }));
     expect(() => resolveProject(repo, { pluginVersion: "1.4.0" })).toThrow(
       "fieldFromTheFuture: unknown field",
     );
@@ -133,13 +133,13 @@ describe("resolveProject", () => {
     } catch (caught) {
       error = caught;
     }
-    expect(error).toBeInstanceOf(CcConfigError);
-    expect(error).not.toBeInstanceOf(CcVersionError);
+    expect(error).toBeInstanceOf(AnymodelConfigError);
+    expect(error).not.toBeInstanceOf(AnymodelVersionError);
   });
 
   test("`requires` that is not a version range is a field error", () => {
     const repo = makeRepo();
-    const file = writeCcJson(repo, JSON.stringify({ requires: "banana" }));
+    const file = writeAnymodelJson(repo, JSON.stringify({ requires: "banana" }));
     expect(() => resolveProject(repo, { pluginVersion: "1.0.0" })).toThrow(
       `Invalid ${file}: requires: not a valid version range`,
     );
@@ -147,15 +147,15 @@ describe("resolveProject", () => {
 
   test("by default, `requires` is checked against this build's version", () => {
     const repo = makeRepo();
-    writeCcJson(repo, JSON.stringify({ requires: `>${VERSION}` }));
+    writeAnymodelJson(repo, JSON.stringify({ requires: `>${VERSION}` }));
     expect(() => resolveProject(repo)).toThrow(`you have ${VERSION};`);
-    writeCcJson(repo, JSON.stringify({ requires: `>=${VERSION}` }));
+    writeAnymodelJson(repo, JSON.stringify({ requires: `>=${VERSION}` }));
     expect(resolveProject(repo)?.config).toEqual({ requires: `>=${VERSION}` });
   });
 
-  test("cc.json that is not JSON throws an error that names the file", () => {
+  test("anymodel.json that is not JSON throws an error that names the file", () => {
     const repo = makeRepo();
-    const file = writeCcJson(repo, "{ not json");
+    const file = writeAnymodelJson(repo, "{ not json");
     expect(() => resolveProject(repo)).toThrow(`Invalid ${file}: not valid JSON`);
   });
 

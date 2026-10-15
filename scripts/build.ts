@@ -48,7 +48,7 @@ function listFiles(dir: string): string[] {
 }
 
 if (process.argv.includes("--check")) {
-  const temp = mkdtempSync(join(tmpdir(), "cc-agentic-build-"));
+  const temp = mkdtempSync(join(tmpdir(), "anymodel-build-"));
   try {
     const fresh = join(temp, "dist");
     await buildInto(fresh);

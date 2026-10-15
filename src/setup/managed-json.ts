@@ -8,10 +8,10 @@ import {
   writeManagedFile,
 } from "./write";
 
-/** A key inside a JSON file, as its path of segments: ["extraKnownMarketplaces", "cc-agentic", "autoUpdate"]. */
+/** A key inside a JSON file, as its path of segments: ["extraKnownMarketplaces", "anymodel", "autoUpdate"]. */
 export type KeyPath = readonly string[];
 
-/** The keys cc-agentic owns, per file: `<stateDir>/owned.json`. */
+/** The keys anymodel owns, per file: `<stateDir>/owned.json`. */
 const OWNED_FILE = "owned.json";
 
 type JsonObject = Record<string, unknown>;
@@ -28,7 +28,7 @@ export interface ManagedJsonOptions {
   stateDir: string;
   /** Keys to set, with their values. */
   set?: ReadonlyArray<readonly [KeyPath, unknown]>;
-  /** Keys to remove. Only keys cc-agentic owns are removed. */
+  /** Keys to remove. Only keys anymodel owns are removed. */
   remove?: readonly KeyPath[];
   dryRun?: boolean;
   /** Tests only: runs after the read and before the write, to play another program's write. */
@@ -45,12 +45,12 @@ export interface ManagedJsonResult {
   backup: string | null;
 }
 
-/** Thrown when a change would overwrite a key cc-agentic does not own. Nothing is written. */
+/** Thrown when a change would overwrite a key anymodel does not own. Nothing is written. */
 export class ForeignKeyError extends Error {
   override name = "ForeignKeyError";
 }
 
-/** `extraKnownMarketplaces["cc-agentic"].autoUpdate` */
+/** `extraKnownMarketplaces.anymodel.autoUpdate`; a segment that is not a name: `env["my-key"]` */
 export function formatKeyPath(path: KeyPath): string {
   return path
     .map((segment, index) => {
@@ -97,7 +97,7 @@ function writeOwned(stateDir: string, owned: OwnedState): void {
   atomicWrite(join(stateDir, OWNED_FILE), `${JSON.stringify(owned, null, 2)}\n`, 0o600);
 }
 
-/** The keys cc-agentic owns in `file` (its real path), from owned.json. */
+/** The keys anymodel owns in `file` (its real path), from owned.json. */
 export function ownedKeys(stateDir: string, file: string): KeyPath[] {
   return readOwned(stateDir)[file] ?? [];
 }
@@ -136,7 +136,7 @@ function deleteKey(data: JsonObject, path: KeyPath): void {
 }
 
 /**
- * Sets or removes the keys cc-agentic owns in a JSON settings file.
+ * Sets or removes the keys anymodel owns in a JSON settings file.
  *
  * - Every other key stays as it is, and the file keeps its mode.
  * - A key that exists with another value and is not owned is never overwritten:
@@ -181,7 +181,7 @@ function applyOnce(
     if (current.found && !isOwned(path)) {
       throw new ForeignKeyError(
         `${file}: ${formatKeyPath(path)} is ${JSON.stringify(current.value)}, set by someone else. ` +
-          "cc-agentic does not overwrite it. Remove it by hand if cc-agentic should manage it.",
+          "anymodel does not overwrite it. Remove it by hand if anymodel should manage it.",
       );
     }
     setKey(data, path, value);
@@ -191,7 +191,7 @@ function applyOnce(
 
   for (const path of options.remove ?? []) {
     if (!isOwned(path)) {
-      skipped.push({ path, reason: "not owned by cc-agentic; left alone" });
+      skipped.push({ path, reason: "not owned by anymodel; left alone" });
       continue;
     }
     released.push([...path]);

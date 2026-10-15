@@ -1,3 +1,0 @@
-#!/bin/sh
-# Runs the cc-agentic command of this plugin version (on the Bash tool's PATH in Claude Code).
-exec bun "$(dirname "$0")/../dist/cli.js" "$@"

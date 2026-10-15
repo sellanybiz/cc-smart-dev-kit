@@ -25,11 +25,8 @@ describe("redactUrl", () => {
     ["https://u:p@example.com/m.json?sig=1", "https://***@example.com/m.json?***"],
     ["ssh://git:secret@git.example.com/org/repo.git", "ssh://git:***@git.example.com/org/repo.git"],
     ["ssh://git@git.example.com:2222/org/repo.git", "ssh://git@git.example.com:2222/org/repo.git"],
-    ["git@github.com:example-org/cc-agentic.git", "git@github.com:example-org/cc-agentic.git"],
-    [
-      "https://github.com/example-org/cc-agentic.git",
-      "https://github.com/example-org/cc-agentic.git",
-    ],
+    ["git@github.com:example-org/anymodel.git", "git@github.com:example-org/anymodel.git"],
+    ["https://github.com/example-org/anymodel.git", "https://github.com/example-org/anymodel.git"],
   ])("%s -> %s", (url, safe) => {
     expect(redactUrl(url)).toBe(safe);
   });

@@ -8,6 +8,8 @@ import {
   PLUGIN_INSTALL_COMMAND,
   PLUGIN_UPDATE_COMMAND,
 } from "../build-info";
+import { gatewayChecks } from "../gateway/doctor";
+import type { Runner } from "../gateway/service";
 import { findUserInstall } from "../setup/installed-plugins";
 import { bakedBunPath, LAUNCHER_NAME, launcherScript } from "../setup/launcher";
 import {
@@ -21,6 +23,8 @@ import { type CliPaths, tildify } from "./paths";
 
 interface Check {
   ok: boolean;
+  /** Information only: printed with `·`, never a failure. */
+  info?: boolean;
   text: string;
 }
 
@@ -97,19 +101,19 @@ function checkLauncher(paths: CliPaths): Check {
   const launcher = join(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
   if (!existsSync(launcher))
-    return { ok: false, text: `no launcher at ${where}. Run: cc-agentic setup` };
+    return { ok: false, text: `no launcher at ${where}. Run: anymodel setup` };
   if (!isExecutable(launcher)) {
-    return { ok: false, text: `the launcher ${where} is not executable. Run: cc-agentic setup` };
+    return { ok: false, text: `the launcher ${where} is not executable. Run: anymodel setup` };
   }
   const script = readFileSync(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
-    return { ok: false, text: `the launcher ${where} is out of date. Run: cc-agentic setup` };
+    return { ok: false, text: `the launcher ${where} is out of date. Run: anymodel setup` };
   }
   if (!isExecutable(bun)) {
     return {
       ok: false,
-      text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-agentic setup`,
+      text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: anymodel setup`,
     };
   }
   const result = run([launcher, "version"]);
@@ -223,7 +227,7 @@ function checkAutoUpdate(settings: Record<string, unknown> | null, paths: CliPat
     ? { ok: true, text: "plugin auto-update is on" }
     : {
         ok: false,
-        text: `plugin auto-update is off in ${tildify(paths.settingsFile, paths.home)}. Run: cc-agentic setup`,
+        text: `plugin auto-update is off in ${tildify(paths.settingsFile, paths.home)}. Run: anymodel setup`,
       };
 }
 
@@ -276,8 +280,90 @@ function checkNameClash(settings: Record<string, unknown> | null): Check {
       };
 }
 
-/** Prints one ✓ or ✗ line per check. Exit code 1 when any check fails. */
-export async function runDoctor(paths: CliPaths, env: Env = process.env): Promise<number> {
+/**
+ * This plugin's id before version 0.2.0, when it was called `cc` in the `cc-agentic`
+ * marketplace. The one place the old names stay: both enabled means two copies of the same
+ * hooks run.
+ */
+export const OLD_PLUGIN_ID = "cc@cc-agentic";
+/** The old marketplace's name, which was also the old command and the old state folder's. */
+const OLD_NAME = "cc-agentic";
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** True when `key` is a key of the object at `field` of `data`. */
+function hasEntry(data: Record<string, unknown> | null, field: string | null, key: string) {
+  const node = field === null ? data : data?.[field];
+  return isJsonObject(node) && Object.hasOwn(node, key);
+}
+
+/**
+ * What the old plugin (before 0.2.0) left behind.
+ *
+ * Without its state folder (`<config folder>/cc-agentic`), only an enabled old plugin is
+ * reported, as before: two copies of the same hooks would run. With it, the old `setup`
+ * ran on this machine, so any of these is a leftover: the old plugin enabled or
+ * installed, its launcher `~/.local/bin/cc-agentic`, `extraKnownMarketplaces.cc-agentic`
+ * in settings.json, or the marketplace in Claude Code's list. The order to clear them:
+ * the old `restore` first (it removes what the old setup wrote), while its launcher still
+ * runs; then the plugin; then the marketplace. A launcher that cannot run cannot restore,
+ * so the two things the old setup wrote are named for removal by hand.
+ */
+function checkOldPlugin(settings: Record<string, unknown> | null, paths: CliPaths): Check | null {
+  const plugins = settings?.enabledPlugins;
+  const enabled = isJsonObject(plugins) && plugins[OLD_PLUGIN_ID] === true;
+  if (!existsSync(join(paths.claudeConfigDir, OLD_NAME))) {
+    if (!enabled) return null;
+    return {
+      ok: false,
+      text: `the old plugin ${OLD_PLUGIN_ID} is still enabled: two copies of the same hooks would run. Run: claude plugin uninstall ${OLD_PLUGIN_ID}`,
+    };
+  }
+  const short = (path: string) => tildify(path, paths.home);
+  const launcher = join(paths.binDir, OLD_NAME);
+  const left = [
+    enabled ? "the plugin enabled" : null,
+    hasEntry(readSettings(paths.installedPluginsFile), "plugins", OLD_PLUGIN_ID)
+      ? "the plugin installed"
+      : null,
+    existsSync(launcher) ? `its launcher ${short(launcher)}` : null,
+    hasEntry(settings, "extraKnownMarketplaces", OLD_NAME)
+      ? `extraKnownMarketplaces.${OLD_NAME} in ${short(paths.settingsFile)}`
+      : null,
+    hasEntry(readSettings(paths.knownMarketplacesFile), null, OLD_NAME)
+      ? `the ${OLD_NAME} marketplace`
+      : null,
+  ].filter((thing): thing is string => thing !== null);
+  if (left.length === 0) return null;
+  const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME}\``;
+  const canRun = existsSync(launcher) && isExecutable(launcher) && run([launcher, "version"]).ok;
+  const steps = canRun
+    ? `Run \`${OLD_NAME} restore\` first, then \`${then}.`
+    : `Its launcher cannot run, so remove by hand ${short(launcher)} and "${OLD_NAME}" under extraKnownMarketplaces in ${short(paths.settingsFile)}; then run \`${then}.`;
+  return {
+    ok: false,
+    text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}. ${steps}`,
+  };
+}
+
+/** What the gateway checks need: the plugin's router bundle, a command runner, systemd or not. */
+export interface DoctorGateway {
+  bundle: string;
+  runner: Runner;
+  systemd: boolean;
+}
+
+/**
+ * Prints one ✓ or ✗ line per check, and `·` for information (the gateway, when it was never
+ * set up, is optional). Exit code 1 when any check fails.
+ */
+export async function runDoctor(
+  paths: CliPaths,
+  env: Env,
+  gateway: DoctorGateway,
+): Promise<number> {
   const settings = readSettings(paths.settingsFile);
   const checks = [
     checkPlugin(paths),
@@ -287,7 +373,11 @@ export async function runDoctor(paths: CliPaths, env: Env = process.env): Promis
     checkAutoUpdate(settings, paths),
     checkUpdatesNotOff(settings, env, paths),
     checkNameClash(settings),
+    checkOldPlugin(settings, paths),
+    ...(await gatewayChecks({ paths, ...gateway })),
   ].filter((check): check is Check => check !== null);
-  for (const check of checks) console.log(`${check.ok ? "✓" : "✗"} ${check.text}`);
+  for (const check of checks) {
+    console.log(`${check.info ? "·" : check.ok ? "✓" : "✗"} ${check.text}`);
+  }
   return checks.every((check) => check.ok) ? 0 : 1;
 }

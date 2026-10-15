@@ -11,8 +11,14 @@ export interface CliPaths {
   knownMarketplacesFile: string;
   /** Where the launcher goes: `~/.local/bin`. */
   binDir: string;
-  /** cc-agentic's own state: lock, owned keys, changed files. */
+  /** anymodel's own state: lock, owned keys, changed files. */
   stateDir: string;
+  /** The gateway's config, with the backend keys: `~/.config/anymodel/gateway.json`. */
+  gatewayConfigFile: string;
+  /** The router's long-running copy: `~/.local/share/anymodel/router.js`. */
+  routerCopy: string;
+  /** The router's systemd user unit: `~/.config/systemd/user/anymodel-router.service`. */
+  routerUnitFile: string;
 }
 
 /** Every path the CLI touches, from HOME and CLAUDE_CONFIG_DIR, so tests can point it anywhere. */
@@ -26,7 +32,10 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     installedPluginsFile: join(claudeConfigDir, "plugins", "installed_plugins.json"),
     knownMarketplacesFile: join(claudeConfigDir, "plugins", "known_marketplaces.json"),
     binDir: join(home, ".local", "bin"),
-    stateDir: join(claudeConfigDir, "cc-agentic"),
+    stateDir: join(claudeConfigDir, "anymodel"),
+    gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
+    routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
+    routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service"),
   };
 }
 

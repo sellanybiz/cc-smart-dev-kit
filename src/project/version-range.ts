@@ -1,5 +1,5 @@
 /**
- * Version ranges for cc.json's `requires`, in npm's syntax (">=1.2", "^1.2", "~1.2.3",
+ * Version ranges for anymodel.json's `requires`, in npm's syntax (">=1.2", "^1.2", "~1.2.3",
  * "1.x", "1.2.0 - 2.0.0", ">=1.2 <2", "^1 || ^2").
  *
  * Matching uses Bun.semver (built into Bun, npm-compatible), so there is no extra dependency.

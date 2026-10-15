@@ -1,14 +1,14 @@
 {
-  "name": "cc-agentic",
+  "name": "anymodel",
   "owner": { "name": "SellAnyBiz" },
   "metadata": {
-    "description": "A general agentic development setup for Claude Code, for any project."
+    "description": "Use any model with Claude Code: a local gateway, plus hooks, skills, agents and machine setup, for any project."
   },
   "plugins": [
     {
-      "name": "cc",
+      "name": "anymodel",
       "source": "./plugin",
-      "description": "Gateway, hooks, skills, agents and machine setup for Claude Code."
+      "description": "Use any model with Claude Code: a gateway, hooks, skills, agents and machine setup."
     }
   ]
 }

@@ -11,7 +11,7 @@ paths:
 ## Only `plugin/` reaches a machine
 
 Claude Code copies only `plugin/` into
-`~/.claude/plugins/cache/cc-agentic/cc/<version>/`. There is no install step there: no
+`~/.claude/plugins/cache/anymodel/anymodel/<version>/`. There is no install step there: no
 `bun install`, no `node_modules`.
 
 - **Nothing in `plugin/` imports from outside it.** Every script in it is a bundle that
@@ -21,8 +21,9 @@ Claude Code copies only `plugin/` into
   `skills/`, `agents/` and instructions for users.
 - **Never run anything long-lived from the version folder.** Claude Code deletes an old
   one after an update: 14 days later, the docs say (not proved yet:
-  `docs/claude-code-contract.md`). A long-running part (later: the router, the portal)
-  runs from a copy that `setup` puts in `~/.local/share/cc/`.
+  `docs/claude-code-contract.md`). A long-running part runs from a copy in
+  `~/.local/share/anymodel/`: the router (`src/entries/router.ts` → `dist/router.js`,
+  copied by `gateway setup`), later the portal.
 
 ## Bundles are committed
 
@@ -35,7 +36,7 @@ Claude Code copies only `plugin/` into
 - **Never edit `plugin/dist/*.js` by hand.** It is excluded from Biome and the
   neutrality check because it is built from `src/`.
 - **A new bundle is a new file in `src/entries/`.** A test file there is skipped.
-- `plugin/bin/cc-agentic` is written by hand. It finds `dist/cli.js` from its own
+- `plugin/bin/anymodel` is written by hand. It finds `dist/cli.js` from its own
   location (`dirname "$0"`), because `CLAUDE_PLUGIN_ROOT` is not set in the Bash tool.
 
 ## The version lives in one place
@@ -46,13 +47,19 @@ Claude Code copies only `plugin/` into
   macro (code that runs at build time). The bundle holds those two values only, never
   the rest of the file.
 - So **a version bump changes `plugin/dist/cli.js`**: rebuild after it.
+- **But never `plugin/dist/router.js`.** A changed router bundle makes `gateway setup`
+  restart the router on every machine, which cuts answers in flight. So code in the
+  router bundle imports the fixed names (`COMMAND`, `PLUGIN`, …) from
+  `src/build-info/names.ts`, never from `src/build-info` (its index bakes in the
+  version). `src/build-info/manifest.test.ts` › "the router bundle" fails when the
+  version or the repository gets into `router.js`.
 - **Any change under `plugin/` needs a version bump.** Claude Code keys installs and
   updates by the version, so without a bump no user ever gets the change. CI enforces
   it: a pull request that changes anything under `plugin/` must raise `version`
   (`scripts/check-version-bump.ts`). A change to `src/` that changes a bundle changes
   `plugin/dist/`, so it needs a bump too.
 - Use `VERSION`, `MARKETPLACE_SOURCE`, `PLUGIN_ID` and the command strings from
-  `src/build-info/`. Never write the version, the repository or `cc@cc-agentic` twice.
+  `src/build-info/`. Never write the version, the repository or `anymodel@anymodel` twice.
 
 ## Dependencies
 

@@ -4,10 +4,10 @@ import { PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
 import { isValidRange, satisfiesRange } from "./version-range";
 
 /**
- * The per-project opt-in file, `.claude/cc.json`.
+ * The per-project opt-in file, `.claude/anymodel.json`.
  * Strict on purpose: a typo like `"worktree"` fails loudly instead of being ignored.
  */
-export const ccConfigSchema = z.strictObject({
+export const anymodelConfigSchema = z.strictObject({
   /** The plugin versions this project needs, as a semver range (">=1.2"). */
   requires: z
     .string()
@@ -29,29 +29,29 @@ export const ccConfigSchema = z.strictObject({
   autoMode: z.array(z.string().min(1)).optional(),
 });
 
-export type CcConfig = z.infer<typeof ccConfigSchema>;
+export type AnymodelConfig = z.infer<typeof anymodelConfigSchema>;
 
-/** A cc.json that exists but cannot be used. The message names the file and the field. */
-export class CcConfigError extends Error {
-  override name = "CcConfigError";
+/** An anymodel.json that exists but cannot be used. The message names the file and the field. */
+export class AnymodelConfigError extends Error {
+  override name = "AnymodelConfigError";
 }
 
 /** The project needs a newer (or other) version of the plugin than the one running. */
-export class CcVersionError extends CcConfigError {
-  override name = "CcVersionError";
+export class AnymodelVersionError extends AnymodelConfigError {
+  override name = "AnymodelVersionError";
 }
 
 function describeIssue(issue: z.core.$ZodIssue): string {
   const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
   if (issue.code === "unrecognized_keys") {
     const keys = issue.keys.map((key) => (field === "(top level)" ? key : `${field}.${key}`));
-    return `${keys.join(", ")}: unknown field (a newer cc-agentic may be needed)`;
+    return `${keys.join(", ")}: unknown field (a newer anymodel may be needed)`;
   }
   return `${field}: ${issue.message}`;
 }
 
 /**
- * Checks `requires` before anything else, reading only that field. A newer cc.json may hold
+ * Checks `requires` before anything else, reading only that field. A newer anymodel.json may hold
  * fields this plugin does not know yet; the user must hear "update the plugin", not
  * "unknown field".
  */
@@ -61,32 +61,35 @@ function checkRequires(file: string, raw: unknown, pluginVersion: string): void 
   // A broken value is reported by the full check below.
   if (typeof requires !== "string" || !isValidRange(requires)) return;
   if (!satisfiesRange(pluginVersion, requires)) {
-    throw new CcVersionError(
-      `${file}: this project needs cc-agentic ${requires}; you have ${pluginVersion}; ` +
+    throw new AnymodelVersionError(
+      `${file}: this project needs anymodel ${requires}; you have ${pluginVersion}; ` +
         `run ${PLUGIN_UPDATE_COMMAND}`,
     );
   }
 }
 
 /**
- * Reads and validates one cc.json: first `requires` against the plugin version, then the
- * whole file, strictly. Returns null when the file does not exist; throws CcVersionError
- * when the plugin is too old, and CcConfigError when the file is invalid.
+ * Reads and validates one anymodel.json: first `requires` against the plugin version, then the
+ * whole file, strictly. Returns null when the file does not exist; throws AnymodelVersionError
+ * when the plugin is too old, and AnymodelConfigError when the file is invalid.
  */
-export function loadCcConfig(file: string, pluginVersion: string = VERSION): CcConfig | null {
+export function loadAnymodelConfig(
+  file: string,
+  pluginVersion: string = VERSION,
+): AnymodelConfig | null {
   if (!existsSync(file)) return null;
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new CcConfigError(`Invalid ${file}: not valid JSON (${reason})`);
+    throw new AnymodelConfigError(`Invalid ${file}: not valid JSON (${reason})`);
   }
   checkRequires(file, raw, pluginVersion);
-  const parsed = ccConfigSchema.safeParse(raw);
+  const parsed = anymodelConfigSchema.safeParse(raw);
   if (!parsed.success) {
     const issues = parsed.error.issues.map(describeIssue).join("; ");
-    throw new CcConfigError(`Invalid ${file}: ${issues}`);
+    throw new AnymodelConfigError(`Invalid ${file}: ${issues}`);
   }
   return parsed.data;
 }

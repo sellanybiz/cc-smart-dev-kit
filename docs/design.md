@@ -1,54 +1,84 @@
 # Design
 
-How the `cc` plugin is built, and why. For the phases ahead see `roadmap.md`; for the
+How the `anymodel` plugin is built, and why. For the phases ahead see `roadmap.md`; for the
 Claude Code behaviour it relies on see `claude-code-contract.md`.
 
 ## The three parts
 
 | Part | What it is | How it reaches a machine |
 |---|---|---|
-| **The plugin** | Hooks, skills, agents and bundled scripts in `plugin/`. | `claude plugin install cc@cc-agentic`. Claude Code copies `plugin/` into a version folder and updates it. |
-| **`cc-agentic setup`** | A command that does what a plugin cannot: changes to user files, MCP registration, long-running copies. | Run by hand, once after the install and again when a release asks for it. |
-| **The launcher** | `~/.local/bin/cc-agentic`, a small `sh` script. | Written by `setup`. |
+| **The plugin** | Hooks, skills, agents and bundled scripts in `plugin/`. | `claude plugin install anymodel@anymodel`. Claude Code copies `plugin/` into a version folder and updates it. |
+| **`anymodel setup`** | A command that does what a plugin cannot: changes to user files, MCP registration, long-running copies. | Run by hand, once after the install and again when a release asks for it. |
+| **The launcher** | `~/.local/bin/anymodel`, a small `sh` script. | Written by `setup`. |
 
 A plugin alone cannot change a user's `settings.json`, register an MCP server at user
 scope, or keep a service running. A setup command alone has no versions and no update
 channel. Together they get both. The cost is two places to look, so
-`cc-agentic doctor` checks both (its list of checks: `README.md` § Commands).
+`anymodel doctor` checks both (its list of checks: `README.md` § Commands).
 
 **macOS and Linux for now.** The launcher and `plugin/bin/` are POSIX `sh` scripts.
 
 ### Why a stable launcher
 
 Claude Code installs each version into its own folder,
-`~/.claude/plugins/cache/cc-agentic/cc/<version>/`, and deletes an old folder some time
+`~/.claude/plugins/cache/anymodel/anymodel/<version>/`, and deletes an old folder some time
 after an update (14 days, the docs say; not proved yet: `claude-code-contract.md`).
 Installs and updates are keyed by the version, so every change to `plugin/` raises it;
 CI checks that. A terminal, a systemd unit or a cron job cannot point into a folder
 whose name changes. The launcher reads Claude Code's `installed_plugins.json`, finds the
-user-scope install of `cc@cc-agentic`, and runs that version's `dist/cli.js`. It stays
+user-scope install of `anymodel@anymodel`, and runs that version's `dist/cli.js`. It stays
 valid across updates.
 
 `setup` writes into the launcher the absolute path of the `bun` that ran it. The
 launcher tries that first, then `bun` on PATH, so it also works under systemd and cron.
 
-Inside Claude Code's Bash tool, `plugin/bin/cc-agentic` is on PATH as well, and runs the
+Inside Claude Code's Bash tool, `plugin/bin/anymodel` is on PATH as well, and runs the
 same CLI from its own version folder.
 
 ### Why long-running parts run from copies
 
-Anything that keeps running (later: the AI gateway's router, the portal) runs from a
-copy that `setup` puts in `~/.local/share/cc/`, never from the version folder. Claude
-Code deletes that folder after an update (14 days, not proved yet), even under a
-running process.
+Anything that keeps running (the AI gateway's router; later the portal) runs from a copy
+in `~/.local/share/anymodel/`, never from the version folder. Claude Code deletes that
+folder after an update (14 days, not proved yet), even under a running process.
+`anymodel gateway setup` copies `dist/router.js` there and writes a systemd user unit
+that runs the copy with the absolute path of `bun`. A new plugin version changes nothing
+that runs until the person runs `gateway setup` again; `doctor` says when the copy is
+older than the installed version.
+
+## The AI gateway
+
+An optional local router between Claude Code and the model providers
+(`src/gateway/`, design and limits in `gateway.md`):
+
+- Claude models go to Anthropic byte for byte, on the person's own login. The `haiku` and
+  `sonnet` names point at slots of cheaper models, each with a Claude target last.
+- **No prompt text is ever changed.** A cheap backend gets two named, tested format
+  translations and nothing else. The rules: `.claude/rules/gateway.md`.
+- Auto mode's safety check stays on Claude unless the person turns on the opt-in judge
+  slot.
+- A config `aliases` map lets a machine's old model names reach the new slots while it
+  moves. The plugin ships none; a project's migration writes them.
+- `gateway on` / `off` change Claude Code's settings only as owned keys through
+  `src/setup/`, so `restore` undoes them, and a key someone else set stops it.
+- A restart of the router cuts every answer in flight on the machine. So only a manual
+  `gateway setup` restarts it, only when the copy or the unit changed (or an earlier
+  setup did not finish: the restart-pending marker), and only after the person says yes
+  (or gives `--yes`). Before anything, setup asks the port and stops when another
+  program holds it; after the restart it waits for the health page.
+- Running sessions keep the router's address until they restart. So `restore` takes the
+  gateway out in two stages: first the env keys (the router keeps running), then, after
+  the sessions restarted, the router (asked first). `restore --now` does both, with a
+  warning.
+- The router bundle carries no version (`src/build-info/names.ts`), so a version bump
+  alone never changes `router.js` and never makes a machine restart its router.
 
 ## How `setup` changes user files
 
 `setup` owns **managed** parts of user files, and only those:
 
 - in a JSON settings file, single keys (listed in its state, `owned.json`);
-- in a Markdown file, one block between `<!-- cc-agentic:begin -->` and
-  `<!-- cc-agentic:end -->`;
+- in a Markdown file, one block between `<!-- anymodel:begin -->` and
+  `<!-- anymodel:end -->`;
 - whole files it creates itself (the launcher).
 
 The guarantees:
@@ -87,14 +117,15 @@ The guarantees:
   anything is written.
 - **`--dry-run`** shows every change and writes nothing at all: no state folder, no
   lock. Every setup runs this read-only pass first, outside the lock.
-- **`restore`** removes what cc-agentic added and keeps everything else: its own JSON
+- **`restore`** removes what anymodel added and keeps everything else: its own JSON
   keys and its Markdown block go; a whole file goes back to its **baseline** (the backup
-  made at cc-agentic's first change to it since the last restore), or is removed when
-  setup created it. It backs up each file before it changes it. A second restore
-  changes nothing.
+  made at anymodel's first change to it since the last restore), or is removed when
+  setup created it. It backs up each file before it changes it. With the gateway on, the
+  router's copy and unit wait for a second restore (§ The AI gateway). A restore with
+  nothing left changes nothing.
 
-Its state (`<stateDir>`) lives in `$CLAUDE_CONFIG_DIR/cc-agentic/` (by default
-`~/.claude/cc-agentic/`): `owned.json`, `changed.json`, the lock and `backups/`. The
+Its state (`<stateDir>`) lives in `$CLAUDE_CONFIG_DIR/anymodel/` (by default
+`~/.claude/anymodel/`): `owned.json`, `changed.json`, the lock and `backups/`. The
 state is per config folder, but the launcher in `~/.local/bin` is shared by all of
 them. So a restore under one config folder can remove a launcher another one relies
 on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
@@ -102,16 +133,17 @@ on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
 ### Who changes what, and when
 
 - **The SessionStart hook** (Phase 3 on) only refreshes managed files, under the lock.
-- **A manual `cc-agentic setup` run** is the only thing that restarts a service or
-  changes a permission, and it shows the change first.
+- **A manual run** (`anymodel setup`, `anymodel gateway setup`, `restore`) is the
+  only thing that restarts or stops a service or changes a permission. It shows the change
+  first, and asks before it cuts the answers in flight.
 
 So an automatic update can never restart something or widen a permission without the
 user seeing it.
 
-## Per-project opt-in: `.claude/cc.json`
+## Per-project opt-in: `.claude/anymodel.json`
 
 The plugin is installed for the user, so it runs in every project. A project opts in,
-and gives its own details, with `.claude/cc.json`:
+and gives its own details, with `.claude/anymodel.json`:
 
 ```json
 {
@@ -126,17 +158,17 @@ The plugin accepts `worktrees`, `instructions` and `autoMode` now and uses them 
 Phase 3, 5 and 6 (`roadmap.md`).
 
 - A hook finds the project from its input's `cwd`, which follows the session into a
-  worktree. A worktree's own `cc.json` wins; else the main checkout's is used. A moved
+  worktree. A worktree's own `anymodel.json` wins; else the main checkout's is used. A moved
   or deleted main checkout, and git older than 2.31, each give a clear error.
 - **`requires` is checked before the strict parse.** A project may use a field newer
   than a user's plugin; that user is told to update, not that the field is unknown.
-- **Without `cc.json`, the plugin does Claude Code's default** and its guards stay
+- **Without `anymodel.json`, the plugin does Claude Code's default** and its guards stay
   silent. A project that never opted in does not notice the plugin.
 
 ### How a project adds its own part to a general skill
 
 A general skill reads the project's own additions when they exist. For example,
-`/cc:review` also follows the project's `.claude/cc/review.md`, and where they disagree,
+`/anymodel:review` also follows the project's `.claude/anymodel/review.md`, and where they disagree,
 the project's text wins. The plugin stays general; each project keeps its own rules in
 its own repo.
 
@@ -147,8 +179,8 @@ hook, a guard). Moving it to the plugin must never run it twice or leave a gap:
 
 1. **A plugin release adds the piece, with a defer check.** The plugin's hook stays
    silent while the project still wires its own copy.
-2. Every machine gets the plugin, and `cc-agentic doctor` is green on each.
-3. **Then the project removes its copy** and raises `requires` in its `cc.json`.
+2. Every machine gets the plugin, and `anymodel doctor` is green on each.
+3. **Then the project removes its copy** and raises `requires` in its `anymodel.json`.
 4. **A small fail-closed check in the project** covers a machine without the plugin: it
    stops risky work instead of going on unguarded.
 
@@ -164,14 +196,14 @@ which would break every permission rule, hook matcher and agent tool list that n
 ## Auto mode reads only user settings
 
 Claude Code's auto mode reads its rules from the user's settings, not from a project's.
-So `setup` copies each opted-in project's `autoMode` rules from its `cc.json` into a
+So `setup` copies each opted-in project's `autoMode` rules from its `anymodel.json` into a
 managed block in the user's settings. The project owns the wording; the plugin only
 copies it.
 
 ## Neutral by design
 
 The plugin carries only general behaviour. Every project value — a branch, a folder
-prefix, a command, a rule's wording — is a `cc.json` field or a file in the project's
+prefix, a command, a rule's wording — is an `anymodel.json` field or a file in the project's
 own `.claude/`. The publisher appears only in the two manifests, and
 `bun run check:neutral` keeps it out of every other file.
 

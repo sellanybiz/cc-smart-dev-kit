@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { realTarget, retryOnConcurrentChange, type WriteResult, writeManagedFile } from "./write";
 
-export const BLOCK_BEGIN = "<!-- cc-agentic:begin -->";
-export const BLOCK_END = "<!-- cc-agentic:end -->";
+export const BLOCK_BEGIN = "<!-- anymodel:begin -->";
+export const BLOCK_END = "<!-- anymodel:end -->";
 
 export interface ManagedMarkdownOptions {
   file: string;
@@ -27,7 +27,7 @@ function findBlock(current: string, file: string): { start: number; end: number 
   const end = current.indexOf(BLOCK_END);
   if (begins !== 1 || ends !== 1 || end < start) {
     throw new Error(
-      `${file} has a broken cc-agentic block (${begins} begin and ${ends} end markers). ` +
+      `${file} has a broken anymodel block (${begins} begin and ${ends} end markers). ` +
         "Fix it by hand: keep one begin marker and one end marker after it.",
     );
   }
@@ -83,14 +83,14 @@ function writeMarkdown(
   });
 }
 
-/** Puts one cc-agentic block into a Markdown file; the text around it is kept as it is. */
+/** Puts one anymodel block into a Markdown file; the text around it is kept as it is. */
 export function applyManagedMarkdown(options: ManagedMarkdownOptions): WriteResult {
   return writeMarkdown(options, (current, file) =>
     renderManagedMarkdown(current, options.body, file),
   );
 }
 
-/** Takes the cc-agentic block out of a Markdown file; the text around it is kept. */
+/** Takes the anymodel block out of a Markdown file; the text around it is kept. */
 export function removeManagedMarkdown(options: {
   file: string;
   stateDir: string;

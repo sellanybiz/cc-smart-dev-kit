@@ -7,7 +7,7 @@ export interface PluginInstall {
 }
 
 /**
- * The user-scope install of cc@cc-agentic from Claude Code's `installed_plugins.json`,
+ * The user-scope install of anymodel@anymodel from Claude Code's `installed_plugins.json`,
  * or null when there is none. The launcher script repeats this lookup in plain JS
  * (it must work without this code) — keep the two in step.
  */
