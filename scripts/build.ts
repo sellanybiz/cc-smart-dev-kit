@@ -23,10 +23,11 @@ function entryPoints(): string[] {
 }
 
 /**
- * One build per entry. Built together, Bun keeps a library export in every bundle when
- * any entry uses it (zod's `boolean`, used by the CLI, landed in router.js), so a CLI
- * change would change router.js, and a changed router.js makes every machine restart its
- * router. Built alone, a bundle holds only what its own entry reaches.
+ * One `Bun.build` per entry, never all of them in one call. Built together, the bundles
+ * share one tree-shaking pass: a library function one bundle starts to use (a zod schema
+ * type in the CLI) is then copied into every other bundle too, and `router.js` would
+ * change with code it never runs. A changed router bundle restarts the router on every
+ * machine (`.claude/rules/bundles-and-releases.md`), so each bundle holds only its own graph.
  */
 async function buildInto(outdir: string): Promise<void> {
   rmSync(outdir, { recursive: true, force: true });

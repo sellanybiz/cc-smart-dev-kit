@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import { PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
+import { kindsSchema } from "../jobs/kinds";
 import { isValidRange, satisfiesRange } from "./version-range";
 
 /**
@@ -27,6 +28,8 @@ export const anymodelConfigSchema = z.strictObject({
   instructions: z.boolean().optional(),
   /** Auto-mode rules this project adds to the user's settings. */
   autoMode: z.array(z.string().min(1)).optional(),
+  /** Heavy jobs: the project's own kinds, over the defaults (`src/jobs/kinds.ts`). */
+  jobs: z.strictObject({ kinds: kindsSchema.optional() }).optional(),
 });
 
 export type AnymodelConfig = z.infer<typeof anymodelConfigSchema>;

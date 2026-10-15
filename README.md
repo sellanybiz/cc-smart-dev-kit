@@ -71,6 +71,7 @@ After that, use `anymodel setup` to set up again (for example after an update).
 | `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its unit and its limit state (`~/.local/state/anymodel/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
 | `anymodel gateway <command>` | The optional AI gateway (below). |
 | `anymodel search "<query>" [--max <n>] [--json]`<br>`anymodel search --fetch <url> [--json]` | Searches the web through the gateway's OmniRoute backend (Ollama's web search among its providers), or reads one page's text with `--fetch`. Prints each result's title, its URL and a short snippet. `--max` asks for 1 to 50 results. The query, or the URL, goes to that search or fetch provider on the internet; `--fetch` refuses a local or private address. Needs the gateway set up (below). |
+| `anymodel job <command>` | The machine-wide queue for heavy jobs (below). |
 | `anymodel version` | Prints the version. |
 
 `doctor` checks that:
@@ -441,6 +442,24 @@ in its `anymodel.json` (`autoMode`), and `anymodel setup`, run in that project (
 - `restore` takes out every entry setup added. `"$defaults"` goes too, unless you have
   added entries of your own since.
 
+## Heavy jobs: one queue for the machine
+
+When many Claude sessions and agents run on one machine, type checks, typed lints, test
+runs and builds start together and the machine runs out of memory. `anymodel job run`
+reserves the memory a job needs, waits while it is not free (oldest first, saying who
+holds it), runs the job, and gives the memory back however the job ends. How it works,
+the kinds, the config and the limits: [docs/jobs.md](docs/jobs.md).
+
+| Command | What it does |
+|---|---|
+| `anymodel job run [--kind <kind>] [--gb <n>] [--exclusive <name>] -- <command…>` | Waits until this machine (and any shared folder) has the memory, then runs the command. Its stdin, stdout, stderr and exit code pass through; SIGINT, SIGTERM and SIGHUP are sent on to the whole job. `--exclusive <name>`: at most one job with that name at a time, in order (with a kind, or alone). |
+| `anymodel job status` | The memory, the budget, and who holds or waits, here and on each shared folder. |
+| `anymodel job kinds` | The kinds (`tsc`, `lint:typed`, `test:run`, `test:coverage`, `build`, `image:build`, and the project's own) and what each reserves. |
+
+The state is per user, in `~/.local/share/anymodel/jobs/`. A machine sets its limits,
+and optional shared folders for containers or users on one host, in
+`~/.config/anymodel/jobs.json`.
+
 ## A project's `.claude/anymodel.json`
 
 ```json
@@ -448,7 +467,8 @@ in its `anymodel.json` (`autoMode`), and `anymodel setup`, run in that project (
   "requires": ">=0.1",
   "worktrees": { "base": "main", "prefix": "app-wt-", "setup": ["bun", "install"] },
   "instructions": true,
-  "autoMode": ["In my-app: never touch production."]
+  "autoMode": ["In my-app: never touch production."],
+  "jobs": { "kinds": { "e2e": { "gb": 4, "match": [{ "script": "test:e2e" }] } } }
 }
 ```
 
@@ -458,6 +478,7 @@ in its `anymodel.json` (`autoMode`), and `anymodel setup`, run in that project (
 | `worktrees` | Accepted now, used from Phase 3. |
 | `instructions` | Accepted now. Today a project loads the opt-in instructions with its own import line (§ Instructions, skills and agents); the field does not load them yet. |
 | `autoMode` | Used now: `setup` copies it into your settings ([The auto-mode block](#the-auto-mode-block)). |
+| `jobs.kinds` | Used now: the project's own heavy-job kinds over the defaults ([docs/jobs.md](docs/jobs.md) § Kinds). |
 
 `requires` is a version range (npm syntax). When the installed plugin is outside it, the
 plugin says so and asks you to run `claude plugin update anymodel@anymodel`.
@@ -473,5 +494,6 @@ See `.claude/CLAUDE.md`. In short: `bun install`, change `src/`, `bun run build`
 - [The AI gateway](docs/gateway.md): the router, its slots, and the judge.
 - [Web search](docs/search.md): `anymodel search`, its cost and its limits.
 - [Roadmap](docs/roadmap.md): the phases, done and ahead.
+- [Heavy jobs](docs/jobs.md): the machine-wide queue, its kinds, config and limits.
 - [Claude Code contract](docs/claude-code-contract.md): the Claude Code behaviour the
   plugin relies on, and the version it was last proved on.

@@ -63,6 +63,8 @@ the first time you use it.
 | `src/gateway/` | The optional AI gateway: the router, its config and slots (the model slots, the judge test and its proof too), a model slot's fallback answer made safe for Claude (`fallback-answer.ts`), the limit state file, `gateway <command>`, its service and its doctor checks. |
 | `src/search/` | The `anymodel search` command: web search and one page's text through the gateway's OmniRoute backend. |
 | `src/hooks/` | The logic of the plugin's hooks, tested: the StopFailure usage-limit alert. Each hook's entry is in `src/entries/`. |
+| `src/jobs/` | The heavy-job queue: kinds, memory readings, the lease store, the queue, the launch, `job <command>`, the classifier. |
+| `src/shell/` | The shell lexer: reads a Bash line as the commands it runs (quotes, here-docs, `bash -c`). |
 | `src/testing/` | Test helpers: temp folders, a clean git environment, a fake machine for setup, the guard that fails any test reaching the live router's port 20100. |
 | `plugin/` | What users get: `dist/` (built, committed), `bin/`, `hooks/hooks.json`, `instructions/` (`setup` copies and imports them), `skills/`, `agents/`, `output-styles/`, the manifest. |
 | `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check), `check-duplicates.ts` (one home per rule in `plugin/`) and `check-version-bump.ts` (CI: a `plugin/` change raises the version). |
@@ -119,6 +121,8 @@ Each rule loads itself when you touch a file it covers.
 - `docs/gateway.md` — the AI gateway: how it routes, what it changes and never changes,
   the service, and its limits.
 - `docs/search.md` — `anymodel search`: how it works, what a search costs, and its limits.
+- `docs/jobs.md` — the heavy-job queue: how a job waits and runs, the kinds, the config,
+  the shared view, and its limits.
 
 **Keep them true in the same change.** Change how a part works: update `docs/design.md`.
 Change a command or an `anymodel.json` field: update `README.md`. Rely on a new Claude Code

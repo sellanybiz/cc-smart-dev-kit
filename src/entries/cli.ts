@@ -12,6 +12,8 @@ import { type GatewayContext, runGateway } from "../gateway/commands";
 import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
 import { ALERT_WORKER_COMMAND, parseAlert, runAlert, spawnRunner } from "../hooks/stop-failure";
+import { runJobCommand } from "../jobs/commands";
+import { realMemoryFacts } from "../jobs/memory";
 import { realMachine } from "../machine/machine";
 import { runSearch } from "../search/command";
 import { LAUNCHER_NAME } from "../setup/launcher";
@@ -58,6 +60,8 @@ Commands:
                      it restarts.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      anymodel gateway --help lists them.
+  job <command>      The queue for heavy jobs (type checks, test runs, builds):
+                     run, status, kinds. anymodel job --help lists them.
   search "<query>" [--max <n>] [--json]
   search --fetch <url> [--json]
                      Search the web through the gateway (OmniRoute, Ollama's web search):
@@ -242,6 +246,15 @@ async function main(argv: string[]): Promise<number> {
       return runGateway(rest, gatewayContext(paths));
     case "search":
       return runSearch(rest, { paths });
+    case "job":
+      return runJobCommand(rest, {
+        paths,
+        cwd: process.cwd(),
+        execArgv: process.execArgv,
+        memory: realMemoryFacts(),
+        say: (line) => console.error(line),
+        print: (line) => console.log(line),
+      });
     case "version":
     case "--version":
       console.log(`anymodel ${VERSION}`);
