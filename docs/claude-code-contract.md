@@ -80,6 +80,8 @@ live check or the router's log shows it.
 | Claude Code retries a request that got a 5xx or a broken stream, and reads `retry-after` as whole seconds. | 2.1.300 | live: seen at a local proxy; unit (our handling): `gateway.test.ts` › "fallback" › "the last target's answer is returned whatever it is; its retry-after made whole seconds" |
 | A subagent's requests carry the header `x-claude-code-agent-id`. Every request carries `x-claude-code-session-id` (passed on to a cheap backend). | 2.1.300 | live: seen at a local proxy; unit (what a backend gets): `gateway.test.ts` › "cheap backends never see the Claude login" › "first target: allow-listed headers and its own key only; no metadata" |
 | A 404 from `count_tokens` makes Claude Code estimate the tokens itself, with no error for the person. | 2.1.300 | live: seen at a local proxy; unit (our answer): `gateway.test.ts` › "count_tokens" › "a slot whose first target is a backend → 404 in Anthropic's shape, no upstream call" |
+| Under a slot name, Claude Code builds the body for a model it does not know, so it can carry fields the slot's `claude-…` target refuses with a 400. Claude Code sends `thinking: {type: "disabled"}` for short background calls (row above); Claude Sonnet 5.5 refuses it and wants `{type: "between_tools"}`, Claude Opus 5.5 refuses it outright. Both also refuse a thinking budget, a forced `tool_choice` and non-default `temperature` / `top_p` / `top_k` (Anthropic's migration guides, platform.claude.com/docs/en/models/sonnet-5-5/migration-guide and …/opus-5-5/migration-guide, read 2026-10-15). `requestForClaudeFallback` changes only those fields, and never for auto mode's safety check, which reaches Claude with only `model` changed. | 2.1.300 | live: on 2026-10-15 at 15:43Z a worker request fell back to `claude-sonnet-5-5` after both cheap targets answered 503, and Anthropic answered 400 (another one 26 s later got 200). Which field it refused is **not known**: the router did not log Anthropic's reason then; it does now. unit: `gateway.test.ts` › "a slot's Claude target: only the fields it refuses change" (all tests); the check untouched: "auto mode's safety check" › "a check is never translated for its Claude target: only the model changes, on messages and count_tokens" |
+| A running session picks up a change to the `env` of `settings.json` without a restart. Seen once: on 2026-10-15 at about 15:36Z, the old gateway's env keys were replaced by `anymodel-…` ones, and from then on not one request with an old model name reached the router: every running session sent `anymodel-worker` at once. **Observed once, not yet repeated.** Seen for keys whose value changed; a key that is removed was not watched. `restore`'s two stages still assume the opposite (`docs/roadmap.md`). | 2.1.300 | live: the router's log during the switch, observed once; no test |
 | A request routed to Anthropic is forwarded byte for byte; a cheap backend gets the system prompt and every message's text unchanged. (Ours, not Claude Code's: the guarantee the rows above must not break.) | 2.1.300 | unit: `gateway.test.ts` › "prompts stay as Claude Code wrote them" (all four tests) |
 
 ## Relied on, not proved yet
@@ -132,10 +134,10 @@ into a table above.
   session and in subagents; an import in a project's `CLAUDE.md` asks once, then loads.
   (Phase 5)
 - **Auto mode reads its rules only from user settings,** not from a project's. (Phase 6)
-- **A running session keeps the gateway env keys it started with.** Removing
-  `ANTHROPIC_BASE_URL` (and the model names) from `settings.json` takes effect in a
-  session only after it restarts, so until then it still sends every request to the
-  router. `restore`'s two stages rely on it: the first removes the keys and leaves the
-  router running, the second stops the router (`src/cli/gateway-cli.test.ts` ›
-  "anymodel restore: the gateway in two stages" tests our side only). If removal took
-  effect at once, the second stage would only be a wait that was not needed. (Now)
+
+The row that was here, "a running session keeps the gateway env keys it started with",
+is now the gateway table's row "A running session picks up a change to the `env` of
+`settings.json` without a restart": the one live look so far saw the opposite.
+`restore`'s two stages (`src/cli/gateway-cli.test.ts` › "anymodel restore: the gateway
+in two stages", our side only) were built on the old assumption and stay as they are
+until the observation is repeated, for a removed key too (`docs/roadmap.md`).

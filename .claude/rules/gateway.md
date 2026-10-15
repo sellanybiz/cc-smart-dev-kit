@@ -22,13 +22,20 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
 - **Never switch on an output style, and never add `--append-system-prompt`** or any other
   way of adding words to what a model is told.
 - A request routed to Anthropic goes **byte for byte** (only hop-by-hop headers, `host`
-  and `content-length` are dropped). A slot's `claude-…` target changes `model` and
-  nothing else.
+  and `content-length` are dropped). A slot's `claude-…` target changes `model`, and only
+  the fields that model refuses, through `requestForClaudeFallback` (its table names each
+  model's rules, from Anthropic's migration guides). Never `system`, a message or a tool.
+  **Auto mode's safety check is never translated**, on any route: it reaches its Claude
+  target with only `model` changed (the router skips the translation when `guard` is set).
 - A cheap backend gets only the **named format translations**: `toolSearchForBackend`
   (tool search made plain) and `reasoningOffForBackend` ("no reasoning" in a form the
-  backend reads). **A new translation needs its own named, tested function, plus a row in
-  `docs/claude-code-contract.md`** naming the Claude Code shape it relies on. The tests in
-  `gateway.test.ts` › "prompts stay as Claude Code wrote them" must keep passing.
+  backend reads). **A new translation, or a new row in a translation's table, needs its
+  own named, tested function or test, plus a row in `docs/claude-code-contract.md`** naming
+  the Claude Code shape it relies on. The tests in `gateway.test.ts` › "prompts stay as
+  Claude Code wrote them" and "a slot's Claude target: only the fields it refuses change"
+  must keep passing.
+- **Log an upstream's reason, never the request.** A 4xx / 5xx from any target gets a
+  `WARN` line with at most 300 characters of its answer, through `maskSecrets`.
 
 ## The login only ever reaches Anthropic
 
@@ -56,7 +63,8 @@ can block good work, and a weak one can let a risky command through.
   (`FORBIDDEN_ENV_KEYS`, and its test).
 - A backend key comes on stdin, never argv. `gateway.json` is mode 600, and a file
   others can read is refused. No output, log line or error message ever holds a key: mask
-  it (`maskKey`), and never echo a parser's message about the config's text. The test
+  it (`maskKey`; in the router's log, `maskSecrets`), and never echo a parser's message
+  about the config's text. The test
   `gateway-cli.test.ts` › "secrets" runs every command with a planted key; add a new
   command to it.
 
@@ -72,6 +80,10 @@ can block good work, and a weak one can let a risky command through.
 - Stopping the router while running sessions still point at it makes each of them fail.
   So `restore` stops it only once anymodel's gateway env keys are gone (its stage 2), and
   asks first; `--now` does it at once, after saying every session fails until it restarts.
+- **Never `disable --now` or a blocking `stop`.** systemd then waits for the router's
+  drain (up to `TimeoutStopSec`, 120 s) while its port is already closed. `stopRouter`
+  runs `disable`, then `stop --no-block`, then asks the port (the injected probe) until a
+  connection is refused, for up to 15 s, and throws when it is still taken.
 - In tests, `systemctl` is a fake on PATH (or a fake runner), and every config a test
   writes names a free port of the test's own. **Never run the router, `setup`, `status`
   or `on` in a test without such a config, or a fake probe**: the default port may belong

@@ -11,7 +11,7 @@ var COMMAND = "anymodel";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.2.0",
+  version: "0.2.1",
   repo: "sellanybiz/anymodel"
 };
 var VERSION = info.version;
@@ -6910,6 +6910,28 @@ function sseScanner() {
 function printable(text, max = 120) {
   return text.replace(/\s+/g, " ").replace(/[^\x20-\x7e]/g, "?").trim().slice(0, max);
 }
+function maskedTail(secret) {
+  return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
+}
+function maskSecrets(text) {
+  return text.replace(/"([^"]*(?:key|token|secret|password|authorization)[^"]*)"(\s*):(\s*)"[^"]*"/gi, '"$1"$2:$3"****"').replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "$1 ****").replace(/\bsk-[A-Za-z0-9_-]+/g, (key) => `sk-${maskedTail(key)}`).replace(/[A-Za-z0-9_-]{32,}/g, (token) => maskedTail(token));
+}
+var SNIPPET_MAX = 300;
+function decompressionFormat(encoding) {
+  switch (encoding.trim().toLowerCase()) {
+    case "gzip":
+    case "x-gzip":
+      return "gzip";
+    case "deflate":
+      return "deflate";
+    case "br":
+      return "brotli";
+    case "zstd":
+      return "zstd";
+    default:
+      return null;
+  }
+}
 function toolSearchForBackend(body) {
   const referenced = new Set;
   const out = { ...body };
@@ -6965,6 +6987,52 @@ function reasoningOffForBackend(body, options = {}) {
     return body;
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
 }
+var CLAUDE_TARGET_RULES = {
+  "claude-opus-5-5": { thinkingOff: "left out" },
+  "claude-sonnet-5-5": { thinkingOff: "between_tools" }
+};
+var ABOVE_HIGH = new Set(["max", "xhigh"]);
+function requestForClaudeFallback(body, model) {
+  const rules = Object.hasOwn(CLAUDE_TARGET_RULES, model) ? CLAUDE_TARGET_RULES[model] : undefined;
+  if (rules === undefined)
+    return { body, changes: [] };
+  const out = { ...body };
+  const changes = [];
+  const thinking = body.thinking;
+  if (isJsonObject2(thinking) && thinking.type === "disabled") {
+    if (rules.thinkingOff === "left out") {
+      delete out.thinking;
+      changes.push("thinking disabled -> left out (always on)");
+    } else {
+      out.thinking = { type: "between_tools" };
+      changes.push("thinking disabled -> between_tools");
+      const outputConfig = body.output_config;
+      if (isJsonObject2(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
+        out.output_config = { ...outputConfig, effort: "high" };
+        changes.push(`effort ${outputConfig.effort} -> high`);
+      }
+    }
+  } else if (isJsonObject2(thinking) && thinking.type === "enabled") {
+    out.thinking = thinking.display === undefined ? { type: "adaptive" } : { display: thinking.display, type: "adaptive" };
+    changes.push("thinking enabled (budget) -> adaptive");
+  }
+  const toolChoice = body.tool_choice;
+  if (isJsonObject2(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
+    out.tool_choice = toolChoice.disable_parallel_tool_use === undefined ? { type: "auto" } : { disable_parallel_tool_use: toolChoice.disable_parallel_tool_use, type: "auto" };
+    changes.push(`tool_choice ${toolChoice.type} -> auto`);
+  }
+  if (body.temperature !== undefined && body.temperature !== 1) {
+    delete out.temperature;
+    changes.push("temperature left out");
+  }
+  for (const field of ["top_p", "top_k"]) {
+    if (body[field] !== undefined) {
+      delete out[field];
+      changes.push(`${field} left out`);
+    }
+  }
+  return changes.length > 0 ? { body: out, changes } : { body, changes };
+}
 var encoder = new TextEncoder;
 function isJsonObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -6991,6 +7059,7 @@ function createRouter(deps) {
   const allowedHosts = new Set([`127.0.0.1:${deps.port}`, `localhost:${deps.port}`]);
   const cooling = new Map;
   const aliasesLogged = new Set;
+  const translationsLogged = new Set;
   async function discard(response) {
     try {
       await response.body?.cancel();
@@ -7000,13 +7069,16 @@ function createRouter(deps) {
   }
   async function errorSnippet(response) {
     const encoding = response.headers.get("content-encoding");
-    if (encoding !== null && encoding !== "identity") {
+    const compressed = encoding !== null && encoding.trim().toLowerCase() !== "identity";
+    const format = compressed ? decompressionFormat(encoding) : null;
+    if (compressed && format === null) {
       discard(response);
-      return `(${encoding} body)`;
+      return `(${printable(encoding, 40)} body)`;
     }
-    const body = response.body;
-    if (body === null)
+    const raw = response.body;
+    if (raw === null)
       return "(no body)";
+    const body = format === null ? raw : raw.pipeThrough(new DecompressionStream(format));
     const reader = body.getReader();
     const timer = deadline(1000);
     try {
@@ -7015,9 +7087,9 @@ function createRouter(deps) {
         return "(no body within 1 s)";
       if (step.done)
         return "(empty body)";
-      return printable(new TextDecoder().decode(step.value), 200);
+      return printable(maskSecrets(new TextDecoder().decode(step.value)), SNIPPET_MAX);
     } catch (error) {
-      return `(body unreadable: ${messageOf(error)})`;
+      return `(${format === null ? "" : `${printable(encoding ?? "", 40)} `}body unreadable: ${messageOf(error)})`;
     } finally {
       timer.clear();
       reader.cancel().catch((error) => {
@@ -7135,7 +7207,13 @@ function createRouter(deps) {
   }
   function targetUpstream(req, url, config, body, target, guard) {
     if (target.kind === "anthropic") {
-      const bytes = encoder.encode(JSON.stringify({ ...body, model: target.model }));
+      const fitted = guard ? { body, changes: [] } : requestForClaudeFallback(body, target.model);
+      const text = `${target.model}: ${fitted.changes.join(", ")}`;
+      if (fitted.changes.length > 0 && !translationsLogged.has(text)) {
+        translationsLogged.add(text);
+        deps.log(`translated for ${printable(text, 200)} (requestForClaudeFallback; logged once per kind)`);
+      }
+      const bytes = encoder.encode(JSON.stringify({ ...fitted.body, model: target.model }));
       return { upstream: anthropicUpstream(req, url, config, bytes) };
     }
     const backend = Object.hasOwn(config.backends, target.backend) ? config.backends[target.backend] : undefined;
@@ -7234,7 +7312,7 @@ function createRouter(deps) {
             target: label
           };
         }
-        if (target.kind === "backend" && !result.response.ok) {
+        if (status >= 400) {
           const snippet = await errorSnippet(result.response.clone());
           deps.log(`WARN ${label} answered ${status}; returned as it is \u2014 ${snippet}`);
         }
@@ -7274,6 +7352,10 @@ function createRouter(deps) {
     let bytes = sent;
     const direct = async (body = bytes) => {
       const result = await send(req, anthropicUpstream(req, url, config, body), null);
+      if ("response" in result && result.response.status >= 400) {
+        const snippet = await errorSnippet(result.response.clone());
+        deps.log(`WARN anthropic answered ${result.response.status} \u2014 ${snippet}`);
+      }
       const response = "response" in result ? relay(result.response, null) : anthropicError(502, "api_error", `anymodel-router: Anthropic did not answer (${result.failure})`);
       return { fallbacks: 0, response, skipped: 0, target: "anthropic" };
     };
@@ -7342,7 +7424,7 @@ function createRouter(deps) {
           target: first === undefined ? "none" : formatTarget(first)
         };
       }
-      return chain(req, url, config, body, [first], name, false);
+      return chain(req, url, config, body, [first], name, guard);
     }
     return chain(req, url, config, body, targets, name, guard);
   }
@@ -7461,6 +7543,17 @@ async function probeRouterPort(port, fetchImpl, timeoutMs = 2000) {
     return { detail: `not a health answer (${messageOf(error)})`, state: "other" };
   }
   return isJsonObject3(body) && body.ok === true ? { state: "ours" } : { detail: "not this router's health answer", state: "other" };
+}
+async function waitForPortFree(port, probe, waitMs) {
+  const deadline = probe.now() + waitMs;
+  for (;; ) {
+    const result = await probeRouterPort(port, probe.fetch, 1000);
+    if (result.state === "free")
+      return true;
+    if (probe.now() >= deadline)
+      return false;
+    await probe.sleep(200);
+  }
 }
 async function waitForRouter(port, probe, waitMs = 5000) {
   const deadline = probe.now() + waitMs;
@@ -7585,8 +7678,15 @@ async function installRouter(options) {
   options.say(`enabled and (re)started ${UNIT_NAME}`);
   return "installed";
 }
-function stopRouter(runner) {
-  run(runner, ["systemctl", "--user", "disable", "--now", UNIT_NAME]);
+var STOP_WAIT_MS = 15000;
+async function stopRouter(runner, port, probe) {
+  run(runner, ["systemctl", "--user", "disable", UNIT_NAME]);
+  run(runner, ["systemctl", "--user", "stop", "--no-block", UNIT_NAME]);
+  if (port === null)
+    return;
+  if (!await waitForPortFree(port, probe, STOP_WAIT_MS)) {
+    throw new Error(`${UNIT_NAME} is disabled and was told to stop, but 127.0.0.1:${port} still takes connections after ${STOP_WAIT_MS / 1000} s. Nothing else was restored. See why: systemctl --user status anymodel-router (and ss -ltnp for another program on the port). Then run ${COMMAND} restore again.`);
+  }
 }
 
 // src/gateway/settings.ts
@@ -8845,10 +8945,17 @@ async function runRestore(paths, options) {
       return 1;
     }
   }
-  return withLock(paths.stateDir, () => {
+  return withLock(paths.stateDir, async () => {
     if (unitTracked) {
-      stopRouter(options.runner);
-      console.log(`- ${UNIT_NAME}: stopped and disabled`);
+      let port;
+      try {
+        port = configuredPort(paths.gatewayConfigFile);
+      } catch (error) {
+        console.log(`  cannot read the router's port (${messageOf(error)}); not waiting for it`);
+        port = null;
+      }
+      await stopRouter(options.runner, port, options.probe);
+      console.log(port === null ? `- ${UNIT_NAME}: disabled and stopping` : `- ${UNIT_NAME}: disabled and stopped (port ${port} closed; answers in flight finish in the background)`);
     }
     const results = restore(paths.stateDir);
     if (unitTracked)
@@ -9021,7 +9128,8 @@ ${HELP}`);
         now: rest.includes("--now"),
         runner,
         systemd,
-        confirm: ask
+        confirm: ask,
+        probe: realProbe()
       });
     }
     case "gateway":

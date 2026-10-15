@@ -40,6 +40,14 @@ models to subagent slots, and an opt-in judge for auto mode's safety check.
   The router knows the check only by its system prompt; telling a new *form* from a
   known one needs the real request shapes captured first. It goes with
   `doctor --live` (Phase 3).
+- **0.2.1, follow-ups from the first live run:** a slot's `claude-…` target gets the
+  fields it refuses in a form it accepts (`requestForClaudeFallback`); every target's
+  4xx / 5xx reason is logged, keys masked; `restore` no longer blocks while the router
+  drains (`disable`, `stop --no-block`, then up to 15 s for the port to close).
+- **Open, from the same run:** running sessions seemed to pick up the new env keys
+  without a restart (`claude-code-contract.md`, observed once). If that is confirmed,
+  for a removed key too, restore can stop the router right after removing the keys, and
+  its two stages become one.
 
 ## 3 — Hooks and `doctor --live`
 

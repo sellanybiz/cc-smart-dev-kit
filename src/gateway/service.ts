@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { COMMAND } from "../build-info";
 import { tildify } from "../cli/paths";
 import { atomicWrite, writeManagedFile } from "../setup/write";
-import { type HealthProbe, probeRouterPort, waitForRouter } from "./health";
+import { type HealthProbe, probeRouterPort, waitForPortFree, waitForRouter } from "./health";
 
 /** The systemd user unit's name. */
 export const UNIT_NAME = "anymodel-router.service";
@@ -213,7 +213,34 @@ export async function installRouter(options: InstallOptions): Promise<InstallRes
   return "installed";
 }
 
-/** Stops and disables the unit (for `restore`, while its unit file is still there). */
-export function stopRouter(runner: Runner): void {
-  run(runner, ["systemctl", "--user", "disable", "--now", UNIT_NAME]);
+/** How long `stopRouter` waits for the router's port to close. */
+export const STOP_WAIT_MS = 15_000;
+
+/**
+ * Disables the unit and stops it, for `restore`, while its unit file is still there.
+ *
+ * Not `disable --now`: that waits until the router has drained its answers in flight, up
+ * to the unit's `TimeoutStopSec` (120 s), and the router closes its port in the first
+ * second, so every new request of every session fails for that whole time while restore
+ * looks stuck. So: `disable`, then `stop --no-block` (systemd sends SIGTERM and returns),
+ * then it asks the port (`probe`) until a connection is refused, for up to 15 s. The drain
+ * finishes in the background. `port` null: the port is unknown (an unusable config), so
+ * there is nothing to ask; the stop is sent all the same.
+ *
+ * Throws when the port still takes connections after 15 s: the router did not stop, or
+ * another program holds the port.
+ */
+export async function stopRouter(
+  runner: Runner,
+  port: null | number,
+  probe: HealthProbe,
+): Promise<void> {
+  run(runner, ["systemctl", "--user", "disable", UNIT_NAME]);
+  run(runner, ["systemctl", "--user", "stop", "--no-block", UNIT_NAME]);
+  if (port === null) return;
+  if (!(await waitForPortFree(port, probe, STOP_WAIT_MS))) {
+    throw new Error(
+      `${UNIT_NAME} is disabled and was told to stop, but 127.0.0.1:${port} still takes connections after ${STOP_WAIT_MS / 1000} s. Nothing else was restored. See why: systemctl --user status anymodel-router (and ss -ltnp for another program on the port). Then run ${COMMAND} restore again.`,
+    );
+  }
 }

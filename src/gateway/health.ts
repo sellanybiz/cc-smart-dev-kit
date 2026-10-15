@@ -1,6 +1,7 @@
 /**
- * The router's health page, asked on this machine: `gateway status`, `gateway on`,
- * `gateway setup` (before it writes anything, and after the restart) and `doctor`.
+ * The router's health page and port, asked on this machine: `gateway status`, `gateway on`,
+ * `gateway setup` (before it writes anything, and after the restart), `doctor`, and `restore`
+ * (until the stopped router lets go of its port).
  *
  * Every caller takes the `fetch` (and, to wait, the clock) from outside, so a test passes
  * fakes and never reaches a real port: a router may be running on the default one.
@@ -95,6 +96,26 @@ export async function probeRouterPort(
   return isJsonObject(body) && body.ok === true
     ? { state: "ours" }
     : { detail: "not this router's health answer", state: "other" };
+}
+
+/**
+ * Waits until nothing listens on `port` (a connection is refused), for up to `waitMs` by
+ * the probe's clock. True once it is free; false when something still held it at the end.
+ * A stopping router closes its port at once and drains the answers in flight after that,
+ * so a free port means it takes no new request.
+ */
+export async function waitForPortFree(
+  port: number,
+  probe: HealthProbe,
+  waitMs: number,
+): Promise<boolean> {
+  const deadline = probe.now() + waitMs;
+  for (;;) {
+    const result = await probeRouterPort(port, probe.fetch, 1_000);
+    if (result.state === "free") return true;
+    if (probe.now() >= deadline) return false;
+    await probe.sleep(200);
+  }
 }
 
 /**

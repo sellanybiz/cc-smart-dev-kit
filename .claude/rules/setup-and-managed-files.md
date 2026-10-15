@@ -111,15 +111,18 @@ Each of them:
 - A new kind of managed change must say how `restore` undoes it, with a test.
 - **A service is a managed change too.** When `gateway setup` installed the router (its
   copy or unit is in `changed.json`), `restore` works in two stages, because running
-  sessions keep pointing at the router until they restart:
+  sessions are taken to keep pointing at the router until they restart (one live look
+  saw otherwise: `docs/claude-code-contract.md`; the stages stay until it is repeated):
   - **stage 1**, while anymodel's gateway env keys are in `settings.json`
     (`ownedGatewayEnvKeys`): it restores everything except the router's files
     (`restore(stateDir, { except })`, which leaves them tracked) and says to restart
     every running session, then run `restore` again. Nothing stops, nothing is asked.
-  - **stage 2**, with no such key left: it stops and disables the unit first, while its
-    file is still there, then restores the files, runs `systemctl --user daemon-reload`,
-    and removes the restart-pending marker. Stopping a running router cuts answers in
-    flight, so it asks first, or needs `--yes`.
+  - **stage 2**, with no such key left: it disables and stops the unit first, while its
+    file is still there (`stopRouter`: `disable`, `stop --no-block`, then up to 15 s for
+    the config's port to close; the drain finishes in the background), then restores the
+    files, runs `systemctl --user daemon-reload`, and removes the restart-pending marker.
+    A port still taken after 15 s stops it with an error before any file is restored.
+    Stopping a running router cuts answers in flight, so it asks first, or needs `--yes`.
   - **`--now`**: both at once, after the warning that every running session fails until
     it restarts; asked, or `--yes`.
 

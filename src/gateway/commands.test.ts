@@ -25,7 +25,14 @@ import { tempDir } from "../testing/temp";
 import { parseModelList } from "./backends";
 import { ensureConfig, planSlotChange } from "./commands";
 import { type GatewayConfig, loadConfigFile } from "./config";
-import { installRouter, RESTART_WARNING, renderUnit, UP_TO_DATE } from "./service";
+import {
+  installRouter,
+  RESTART_WARNING,
+  renderUnit,
+  STOP_WAIT_MS,
+  stopRouter,
+  UP_TO_DATE,
+} from "./service";
 import {
   FORBIDDEN_ENV_KEYS,
   GATEWAY_ENV_KEYS,
@@ -783,5 +790,89 @@ describe("router service install", () => {
     expect(() => renderUnit('/opt/b"un', "/x")).toThrow("cannot put");
     expect(() => renderUnit("/opt/bun", "/x\\y")).toThrow("cannot put");
     expect(() => renderUnit("/opt/bun", "/x%h")).toThrow("cannot put");
+  });
+});
+
+// ─── The router service: stop, for restore ──────────────────────────────────────
+
+describe("router service stop", () => {
+  /**
+   * A fake systemctl and a fake probe on a made-up port. The port answers as this router
+   * for `heldPolls` probes after the stop was sent (Infinity: it never lets go), then
+   * refuses. Every call goes into one `events` list, so the order is the assertion. The
+   * clock moves only when the code sleeps. No network.
+   */
+  function stopMachine(options: { heldPolls: number; failOn?: string }) {
+    const events: string[] = [];
+    const start = Date.UTC(2026, 9, 15, 10, 0, 0);
+    const clock = { now: start };
+    let stopSent = false;
+    let polls = 0;
+    const runner = (cmd: string[]) => {
+      events.push(`$ ${cmd.join(" ")}`);
+      if (cmd[2] === options.failOn) return { exitCode: 1, output: "Failed to connect to bus" };
+      if (cmd[2] === "stop") stopSent = true;
+      return { exitCode: 0, output: "" };
+    };
+    const probe = {
+      fetch: async (url: string) => {
+        events.push(`probe ${url}`);
+        if (!stopSent) return Response.json({ ok: true, port: FAKE_PORT });
+        polls += 1;
+        if (polls <= options.heldPolls) return Response.json({ ok: true, port: FAKE_PORT });
+        throw connectionRefused();
+      },
+      now: () => clock.now,
+      sleep: async (ms: number) => {
+        clock.now += ms;
+      },
+    };
+    return { clock, events, probe, runner, waited: () => clock.now - start };
+  }
+
+  const HEALTH = `probe http://127.0.0.1:${FAKE_PORT}/__anymodel/health`;
+  const DISABLE = "$ systemctl --user disable anymodel-router.service";
+  const STOP = "$ systemctl --user stop --no-block anymodel-router.service";
+
+  it("disables, stops without waiting for the drain, then asks the port until it is refused", async () => {
+    const m = stopMachine({ heldPolls: 3 });
+    await stopRouter(m.runner, FAKE_PORT, m.probe);
+    // Never `disable --now`: that waits up to TimeoutStopSec while the drain runs.
+    expect(m.events).toEqual([DISABLE, STOP, HEALTH, HEALTH, HEALTH, HEALTH]);
+    // Three held answers, a 200 ms rest after each, then the refusal.
+    expect(m.waited()).toBe(600);
+  });
+
+  it("a port that is free at once: one probe, no rest", async () => {
+    const m = stopMachine({ heldPolls: 0 });
+    await stopRouter(m.runner, FAKE_PORT, m.probe);
+    expect(m.events).toEqual([DISABLE, STOP, HEALTH]);
+    expect(m.waited()).toBe(0);
+  });
+
+  it("a port still held after 15 s: a clear error, after the stop was sent", async () => {
+    const m = stopMachine({ heldPolls: Number.POSITIVE_INFINITY });
+    expect(STOP_WAIT_MS).toBe(15_000);
+    await expect(stopRouter(m.runner, FAKE_PORT, m.probe)).rejects.toThrow(
+      `anymodel-router.service is disabled and was told to stop, but 127.0.0.1:${FAKE_PORT} still takes connections after 15 s. Nothing else was restored. See why: systemctl --user status anymodel-router (and ss -ltnp for another program on the port). Then run anymodel restore again.`,
+    );
+    expect(m.events.slice(0, 3)).toEqual([DISABLE, STOP, HEALTH]);
+    // The whole 15 s by its clock, in 200 ms rests, and not longer: 75 rests, 76 probes.
+    expect(m.waited()).toBe(15_000);
+    expect(m.events.filter((event) => event === HEALTH)).toHaveLength(76);
+  });
+
+  it("an unknown port (null): the stop is sent, nothing is asked", async () => {
+    const m = stopMachine({ heldPolls: 0 });
+    await stopRouter(m.runner, null, m.probe);
+    expect(m.events).toEqual([DISABLE, STOP]);
+  });
+
+  it("a failing systemctl stops it before anything else", async () => {
+    const m = stopMachine({ failOn: "disable", heldPolls: 0 });
+    await expect(stopRouter(m.runner, FAKE_PORT, m.probe)).rejects.toThrow(
+      "systemctl --user disable anymodel-router.service failed (exit 1):\nFailed to connect to bus",
+    );
+    expect(m.events).toEqual([DISABLE]);
   });
 });
