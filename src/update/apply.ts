@@ -124,17 +124,21 @@ export function installedText(version: null | string, routerChanged = false): st
 /**
  * The command that shows a desktop notification here, or null when there is none:
  * `notify-send` on Linux, `osascript` on macOS. `title` is the notification's summary (the
- * plugin's name by default).
+ * plugin's name by default). `critical` asks the desktop to keep the notification on screen
+ * (and show it even under Do Not Disturb): for the alerts where the person must act.
  */
 export function notifyCommand(
   text: string,
   platform: NodeJS.Platform,
   which: (command: string) => null | string,
   title: string = PLUGIN,
+  critical = false,
 ): null | string[] {
   if (platform === "linux") {
     const notifySend = which("notify-send");
-    return notifySend === null ? null : [notifySend, title, text];
+    return notifySend === null
+      ? null
+      : [notifySend, ...(critical ? ["--urgency=critical"] : []), title, text];
   }
   if (platform === "darwin") {
     const osascript = which("osascript");

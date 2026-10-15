@@ -12,7 +12,7 @@ import { hookEnv, makeRepo, runEntry, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { HOOK_LOG_ENV } from "./run";
-import { HOOKS, USER_HOOKS } from "./specs";
+import { GUARD_BUNDLES, HOOKS, USER_HOOKS } from "./specs";
 import { ADD_TIMEOUT_MS, SETUP_TIMEOUT_MS } from "./worktree-create";
 import { REMOVE_TIMEOUT_MS } from "./worktree-remove";
 
@@ -42,14 +42,15 @@ const wired = Object.entries(hooksJson.hooks).flatMap(([event, groups]) =>
 
 describe("hooks.json", () => {
   test("every handler is exec form: the bun shim, the missing-bun mode and one bundle in dist/, with its own timeout", () => {
+    // The shim's first argument says what it does when bun is missing: a guard fails closed
+    // by asking the person; every other hook is quiet, one line (`GUARD_BUNDLES`).
     for (const { event, handler } of wired) {
       expect(handler.type).toBe("command");
       // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code's placeholder, filled in by Claude Code.
       expect(handler.command).toBe("${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun");
-      // The shim's first argument says what it does when bun is missing: a guard fails
-      // closed by asking the person (PreToolUse); every other hook is quiet, one line.
+      const bundle = (handler.args?.[1] ?? "").replace(/^.*\/dist\/|\.js$/g, "");
       expect(handler.args).toEqual([
-        event === "PreToolUse" ? "--missing=ask" : "--missing=quiet",
+        event === "PreToolUse" && GUARD_BUNDLES.has(bundle) ? "--missing=ask" : "--missing=quiet",
         expect.stringMatching(/^\$\{CLAUDE_PLUGIN_ROOT\}\/dist\/[a-z-]+\.js$/),
       ]);
       expect(typeof handler.timeout).toBe("number");

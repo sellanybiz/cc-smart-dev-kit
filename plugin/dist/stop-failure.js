@@ -37,7 +37,9 @@ function cliPaths(env = process.env) {
     routerCopy: join2(router.home, ".local", "share", "anymodel", "router.js"),
     routerUnitFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.service"),
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
-    routerSocketFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.socket")
+    routerSocketFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.socket"),
+    notifyConfigFile: join2(claudeConfigDir, "anymodel", "notify.json"),
+    tmuxConfFile: join2(router.home, ".tmux.conf")
   };
 }
 function claudeMemDataDir(env, home) {
@@ -6183,7 +6185,7 @@ var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 function isJsonObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function lastClaudeModel(transcriptPath) {
+function tailLines(transcriptPath) {
   let text;
   try {
     const fd = openSync(transcriptPath, "r");
@@ -6199,11 +6201,13 @@ function lastClaudeModel(transcriptPath) {
   } catch {
     return null;
   }
-  const lines = text.split(`
+  return text.split(`
 `);
+}
+function* entriesFromEnd(lines) {
   for (let index = lines.length - 1;index >= 0; index -= 1) {
     const line = lines[index] ?? "";
-    if (!line.includes('"assistant"'))
+    if (line === "")
       continue;
     let entry;
     try {
@@ -6211,9 +6215,17 @@ function lastClaudeModel(transcriptPath) {
     } catch {
       continue;
     }
-    if (!isJsonObject2(entry) || entry.type !== "assistant" || !isJsonObject2(entry.message)) {
+    if (isJsonObject2(entry))
+      yield entry;
+  }
+}
+function lastClaudeModel(transcriptPath) {
+  const lines = tailLines(transcriptPath);
+  if (lines === null)
+    return null;
+  for (const entry of entriesFromEnd(lines)) {
+    if (entry.type !== "assistant" || !isJsonObject2(entry.message))
       continue;
-    }
     const model = entry.message.model;
     if (typeof model === "string" && model.startsWith("claude-"))
       return model;

@@ -611,16 +611,61 @@ why) — the transcripts say which model wrote a reply, never why it was allowed
 ### The notifier
 
 `notify` is a `USER_HOOKS` bundle: it never enters the frame and reads no `anymodel.json`,
-because it is about the machine. Wired on `Notification` (the "needs you" types) and `Stop`,
-it shows one desktop notification per event through the machine's own notifier
-(`notify-send`, `osascript` — the same selection `src/update/` uses), and stays silent with no
-notifier, on another platform, and **inside Warp** (`TERM_PROGRAM=WarpTerminal`), whose own
-Claude Code plugin already shows a finished turn, a question and a permission request — a
-second alert for one event is the thing this hook avoids. The idle wait (`idle_prompt`) is
-left out: the `Stop` notification already announced that finished turn. The notifier starts
-detached, so a slow one never holds the hook, and a `claude -p` session's exit does not cut
-the notification off. `setup` does not touch anyone's own notification hooks yet: a person
-with those removes them by hand when they switch to this one.
+because it is about the machine (`src/hooks/notify.ts`, its header is the full contract).
+
+**Which events, one alert each** (`plugin/hooks/hooks.json`): `Notification` (the "needs you"
+types, `worker_permission_prompt` included; the idle wait is left out — the `Stop` alert
+already announced that turn); `Stop` (the turn's last answer as the body, from the
+transcript's tail, 300 ms after the event because Claude Code writes it just then);
+`PreToolUse` on `AskUserQuestion|ExitPlanMode` (Claude Code raises no Notification at the
+moment Claude asks, so this covers it); `PostToolUse`, `PostToolUseFailure` on the same two
+tools and `UserPromptSubmit` (that wait is over: the mark goes, nothing is shown); and
+`StopFailure` (the turn died). `rate_limit` belongs to the `stop-failure` hook — never two
+alerts for one stop.
+
+**The waits that stay quiet**, all from the team's older notification script, which this
+replaces: the permission prompt about six seconds after a question (the same wait — a mark
+file per session, `/run/user/<uid>/anymodel-notify-asked-<session>`, holds until anything
+ends it, and only for ten minutes so a wait that ended unrecorded never hides a later alert);
+a turn another session started (`startedByPeer`: `turnOrigin: "peer"` without a
+`senderTaskId`, a human prompt into the turn or a helper agent's launch alerting as before);
+the same error twice in a row (a per-session file remembers the last error, cleared by a turn
+that ends well); a `stop_hook_active` Stop (a hook made Claude continue). One alert per
+session per event, never two.
+
+**The routes**, chosen per alert: **the desktop** — `notify-send` on Linux, and only with a
+`DISPLAY` (a session over SSH with no desktop has no bus to show anything on), `osascript` on
+macOS, plus the freedesktop sound through `paplay`; **the SSH terminal** — with no desktop
+route and `SSH_CONNECTION` or `SSH_TTY` set, the same title and body as OSC 777
+(`ESC ] 777 ; notify ; <title> ; <body> BEL`), sanitised with `oneLine` (controls gone, one
+line, capped) and sent through the hook's `terminalSequence` output field (Claude Code 2.1.141
+and later writes it to the session's terminal itself, and wraps it for tmux — a wrapped
+sequence in the field is rejected, so the field carries the bare one), or straight to
+`/dev/tty` (wrapped for tmux by `tmuxPassthrough` when `TMUX` is set) for a Claude Code
+without that field; **nothing** — no desktop route, not over SSH, or **inside Warp** with
+Warp's own plugin on (`TERM_PROGRAM=WarpTerminal`, or the `WARP_*` pair a background session
+keeps), whose hooks already show a finished turn, a question, a permission prompt and an
+error. In Warp ours plays only the sound, and shows a question (`elicitation_*`) or a waiting
+agent itself: those may sit in a tab the person is not looking at (owner, 2026-10-11). A
+session that is none of those — no desktop, no SSH, no Warp — gets nothing, and that is not a
+failure: an alert on every turn would be noise.
+
+**The title** is `<kind> · <session>`: the session's newest `customTitle` from the
+transcript's tail (`cleanSessionName`), else the folder of the hook's `cwd`. **The settings**
+are `~/.claude/anymodel/notify.json`: `desktopSound` (default on) and `sshBell` (default off,
+one BEL after an SSH alert). The notifier starts detached, so a slow one never holds the
+hook. `setup` does not touch anyone's own notification hooks: a person with those removes
+them by hand when they switch to this one.
+
+**tmux** (`src/setup/tmux.ts`): a sequence written inside a pane is parsed by tmux and
+dropped, so it reaches the outer terminal only inside tmux's passthrough wrapper, and only
+while `allow-passthrough` allows it. `anymodel setup` adds one managed line (`set -g
+allow-passthrough all`) to `~/.tmux.conf` when tmux is installed — `all`, so an alert from a
+window the person is not looking at arrives too (owner, 2026-10-16) — prints `tmux set -g
+allow-passthrough all` when a server is running (it never changes a running server itself),
+and `restore` takes the line out through the same `file-line` record (`managed-line.ts`) that
+keeps every line the person wrote. `doctor` reports, as information, a missing line and a
+running server that does not pass alerts through.
 
 ### The job route
 
@@ -644,7 +689,13 @@ into a release branch, the main checkout following the base branch after each me
 files, and the claude-mem start-folder note. **Waiting for Phase 4:** the Serena root
 record (Serena's edits in the main-folder guard) and the Playwright output folder, both tied
 to MCP servers the plugin registers in Phase 4. **Not ported:** the Windows helper that
-removes a worktree after the session lets go of it (the plugin is macOS and Linux for now).
+removes a worktree after the session lets go of it (the plugin is macOS and Linux for now);
+and, from the older notification script, the click on a notification raising the terminal
+window and picking its tab (xdotool, AT-SPI and a per-session DBus helper — one desktop's
+tools, not general), its 60-second auto-close (that notification server's own behaviour) and
+its XFCE Do-Not-Disturb check (`xfconf-query`). The alerts, the waits they skip, the titles
+and the sounds are the same as that script's — they are the `notify` hook's contract
+(§ The notifier).
 
 ### `doctor --live`
 

@@ -232,20 +232,29 @@ export function backupFile(stateDir: string, file: string): string {
  * - `json-entries`: entries of a JSON string list, listed in owned-entries.json; restore
  *   removes them and keeps every other entry.
  * - `markdown-block`: one anymodel block; restore removes it and keeps the text around it.
+ * - `file-line`: exact lines anymodel added (`lines`); restore removes those and only those.
  * - `whole-file`: the file is anymodel's (the launcher); restore puts back the baseline.
  */
-export type ChangeKind = "json-keys" | "json-entries" | "markdown-block" | "whole-file";
+export type ChangeKind =
+  | "json-keys"
+  | "json-entries"
+  | "markdown-block"
+  | "file-line"
+  | "whole-file";
 
 export interface ChangedEntry {
   kinds: ChangeKind[];
   /** The first backup, made just before anymodel first changed the file. */
   baseline: string | null;
+  /** The exact lines anymodel added to the file (`file-line`), for restore. */
+  lines?: string[];
 }
 
 const CHANGE_KINDS: readonly ChangeKind[] = [
   "json-keys",
   "json-entries",
   "markdown-block",
+  "file-line",
   "whole-file",
 ];
 
@@ -255,7 +264,9 @@ function isChangedEntry(value: unknown): value is ChangedEntry {
   return (
     Array.isArray(entry.kinds) &&
     entry.kinds.every((kind) => CHANGE_KINDS.includes(kind)) &&
-    (entry.baseline === null || typeof entry.baseline === "string")
+    (entry.baseline === null || typeof entry.baseline === "string") &&
+    (entry.lines === undefined ||
+      (Array.isArray(entry.lines) && entry.lines.every((line) => typeof line === "string")))
   );
 }
 
@@ -285,18 +296,37 @@ function writeChanged(stateDir: string, files: Record<string, ChangedEntry>): vo
 }
 
 /** Records that `file` gets a change of `kind`. Returns true when `backup` became its baseline. */
-function recordChange(stateDir: string, file: string, kind: ChangeKind, backup: string): boolean {
+function recordChange(
+  stateDir: string,
+  file: string,
+  kind: ChangeKind,
+  backup: string,
+  lines?: string[],
+): boolean {
   const files = readChanged(stateDir);
   const entry = files[file];
   if (!entry) {
-    files[file] = { kinds: [kind], baseline: backup };
+    files[file] = {
+      kinds: [kind],
+      baseline: backup,
+      ...(lines !== undefined && lines.length > 0 && { lines: [...lines] }),
+    };
     writeChanged(stateDir, files);
     return true;
   }
+  let changed = false;
   if (!entry.kinds.includes(kind)) {
     entry.kinds.push(kind);
-    writeChanged(stateDir, files);
+    changed = true;
   }
+  for (const line of lines ?? []) {
+    // The lines anymodel added pile up: two writes may add different lines.
+    const known = entry.lines ?? [];
+    if (known.includes(line)) continue;
+    entry.lines = [...known, line];
+    changed = true;
+  }
+  if (changed) writeChanged(stateDir, files);
   return false;
 }
 
@@ -339,6 +369,8 @@ export interface ManagedWriteOptions {
   stateDir: string;
   /** What this write changes, for restore. */
   kind: ChangeKind;
+  /** The exact lines this write adds (`file-line`): restore removes those, and only those. */
+  lines?: string[];
   /** The mode of a file that does not exist yet. An existing file keeps its own mode. */
   newFileMode?: number;
   /** Force this mode even on an existing file (the launcher must stay executable). */
@@ -403,7 +435,7 @@ export function writeManagedFile(
   const outcome: WriteOutcome = currentMode === null ? "created" : "updated";
   if (options.dryRun) return { outcome, backup: null };
   const backup = backupFile(options.stateDir, target);
-  const isBaseline = recordChange(options.stateDir, target, options.kind, backup);
+  const isBaseline = recordChange(options.stateDir, target, options.kind, backup, options.lines);
   try {
     atomicWrite(target, content, wantedMode, () => {
       options.onBeforeCompare?.();
