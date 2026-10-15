@@ -24,10 +24,12 @@ function entryPoints(): string[] {
 
 /**
  * One `Bun.build` per entry, never all of them in one call. Built together, the bundles
- * share one tree-shaking pass: a library function one bundle starts to use (a zod schema
- * type in the CLI) is then copied into every other bundle too, and `router.js` would
- * change with code it never runs. A changed router bundle restarts the router on every
- * machine (`.claude/rules/bundles-and-releases.md`), so each bundle holds only its own graph.
+ * share one tree-shaking pass: Bun drops the unused code of a shared module (zod, say) by
+ * what all the entries of that build use, so a library function one bundle starts to use is
+ * then copied into every other bundle too, and `router.js` would change with code it never
+ * runs. The router bundle must change only when its own code does: a changed one makes every
+ * machine restart its router (`.claude/rules/bundles-and-releases.md`), so each bundle holds
+ * only its own graph.
  */
 async function buildInto(outdir: string): Promise<void> {
   rmSync(outdir, { recursive: true, force: true });

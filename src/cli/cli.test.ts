@@ -179,6 +179,8 @@ function setup(options: SetupOptions = {}) {
     // The live-router guard runs in the CLI too: no test may reach port 20100.
     const guard = subprocessGuard();
     const result = Bun.spawnSync([process.execPath, ...guard.args, CLI, ...args], {
+      // Outside any project by default: doctor also checks the project of the folder it
+      // runs in, and a test that wants one passes its own `cwd`.
       cwd,
       env: { ...env, ...extraEnv, ...guard.env },
       stdout: "pipe",
@@ -638,10 +640,12 @@ describe("anymodel doctor", () => {
     );
     expect(result.exitCode).toBe(0);
     // git is asked for the user's own ssh command, then told never to ask for a password.
+    // Then which project the folder is in (this fake git says: none).
     expect(gitCalls().slice(afterSetup)).toBe(
       [
         "config --get core.sshCommand | prompt=0 | ssh=",
         "ls-remote git@github.com:example-org/anymodel.git HEAD | prompt=0 | ssh=ssh -o BatchMode=yes -o ConnectTimeout=8",
+        "rev-parse --path-format=absolute --show-toplevel --absolute-git-dir --git-common-dir | prompt= | ssh=",
         "",
       ].join("\n"),
     );
@@ -701,16 +705,20 @@ describe("anymodel doctor", () => {
         paths,
         {},
         {
-          bundle: join(home, "router.js"),
-          runner: (cmd) => {
-            ran.push(cmd);
-            return { exitCode: 0, output: "" };
+          bun: { path: "/opt/bun/bin/bun", version: "1.4.2" },
+          gateway: {
+            bundle: join(home, "router.js"),
+            runner: (cmd) => {
+              ran.push(cmd);
+              return { exitCode: 0, output: "" };
+            },
+            systemd: true,
+            machine: fakeMachine,
           },
-          systemd: true,
-          machine: fakeMachine,
+          local: { instructionsSource: join(home, "no-instructions-source"), cwd: home },
+          project: null,
+          live: null,
         },
-        { instructionsSource: join(home, "no-instructions-source"), cwd: home },
-        { path: "/opt/bun/bin/bun", version: "1.4.2" },
       );
     } finally {
       log.mockRestore();

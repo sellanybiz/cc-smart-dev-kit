@@ -1,8 +1,9 @@
 import { existsSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { VERSION } from "../build-info";
+import { basename, dirname, join, resolve } from "node:path";
+import { COMMAND, VERSION } from "../build-info";
 import { oldBunRefusal } from "../cli/bun-check";
 import { runDoctor } from "../cli/doctor";
+import { type LiveRunner, liveHookCommand } from "../cli/live-check";
 import { cliPaths } from "../cli/paths";
 import { runRestore } from "../cli/restore";
 import { runSetup } from "../cli/setup";
@@ -12,6 +13,10 @@ import { runUsage } from "../cli/usage";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
+import { projectHookSettingsText } from "../hooks/project-wiring";
+import { runHookEntry } from "../hooks/run";
+import { recordSessionName } from "../hooks/session-name";
+import { PROJECT_HOOKS } from "../hooks/specs";
 import { ALERT_WORKER_COMMAND, parseAlert, runAlert, spawnRunner } from "../hooks/stop-failure";
 import { runJobCommand } from "../jobs/commands";
 import { realMemoryFacts } from "../jobs/memory";
@@ -46,8 +51,18 @@ Commands:
                      "anymodel statusline" (asked when run in a terminal).
                      --dry-run prints what would change, and writes, runs and checks
                      nothing.
-  doctor             Check the install, and the anymodel files the current project's
-                     CLAUDE.md imports. Exit code 1 when a check fails.
+  doctor [--live]    Check the install, the anymodel files the current project's CLAUDE.md
+                     imports, and the project of the current folder. Exit code 1 when a
+                     check fails.
+                     --live: also run two throwaway Claude Code sessions in temp repos,
+                     to prove the hooks and the worktree engine on this Claude Code
+                     (uses your login; a few cents). Records the version it passed on.
+  hook <worktree-create|worktree-remove|subagent-stop>
+                     The worktree engine, for a project that wires it in its own
+                     .claude/settings.json: reads the hook's input on stdin and answers
+                     as Claude Code expects. Without a name: prints the lines to paste.
+  session-name <session id> <name>
+                     Name a Claude session after its task (for the session-name hook).
   restore [--yes] [--now]
                      Remove what anymodel added, and keep everything else: its settings
                      keys and entries (claude-mem's settings, the auto-mode entries), its
@@ -88,6 +103,14 @@ Commands:
 
 Paths follow HOME and CLAUDE_CONFIG_DIR.`;
 
+const HOOK_HELP = `Usage: ${COMMAND} hook <${PROJECT_HOOKS.map((spec) => spec.name).join("|")}>
+
+The worktree engine is opt-in per project. To turn it on in a project, give its
+.claude/anymodel.json a "worktrees" field, and paste these hooks into its
+.claude/settings.json (merge them with any "hooks" it has):
+
+${projectHookSettingsText()}`;
+
 /**
  * The router bundle beside this file (plugin/dist/router.js). Run from the source
  * (src/entries/cli.ts, in tests and development), the built plugin/dist/router.js.
@@ -107,6 +130,35 @@ function instructionsFolder(): string {
   const beside = join(import.meta.dir, "..", "instructions");
   return existsSync(beside) ? beside : join(import.meta.dir, "..", "..", "plugin", "instructions");
 }
+
+/**
+ * The plugin folder this CLI belongs to (`plugin/`, holding `dist/`): what `doctor --live`
+ * loads with `--plugin-dir`. Run from the source, the repo's `plugin/`.
+ */
+function pluginDir(): string {
+  return basename(import.meta.dir) === "dist"
+    ? dirname(import.meta.dir)
+    : join(import.meta.dir, "..", "..", "plugin");
+}
+
+const liveRunner: LiveRunner = (argv, { cwd, env, timeoutMs }) => {
+  try {
+    const result = Bun.spawnSync(argv, {
+      cwd,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+    });
+    return {
+      exitCode: result.exitCode ?? 1,
+      output: `${result.stdout.toString()}${result.stderr.toString()}`,
+    };
+  } catch (error) {
+    return { exitCode: 1, output: error instanceof Error ? error.message : String(error) };
+  }
+};
 
 // 180 s: a `systemctl --user restart` of the router returns only once the old router has
 // drained its answers in flight (the unit's TimeoutStopSec, 120 s). A shorter timeout
@@ -229,14 +281,55 @@ async function main(argv: string[]): Promise<number> {
       }
       return 0;
     }
-    case "doctor":
-      return runDoctor(
-        paths,
-        process.env,
-        { bundle: routerBundle(), runner, systemd, machine: realMachine(process.env, null) },
-        { instructionsSource: instructionsFolder(), cwd: process.cwd() },
-        { path: process.execPath, version: Bun.version },
-      );
+    case "doctor": {
+      const unknown = rest.filter((arg) => arg !== "--live");
+      if (unknown.length > 0) {
+        console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+        return 2;
+      }
+      return runDoctor(paths, process.env, {
+        bun: { path: process.execPath, version: Bun.version },
+        gateway: {
+          bundle: routerBundle(),
+          runner,
+          systemd,
+          machine: realMachine(process.env, null),
+        },
+        local: { instructionsSource: instructionsFolder(), cwd: process.cwd() },
+        project: { cwd: process.cwd(), pluginHooksFile: join(pluginDir(), "hooks", "hooks.json") },
+        live: rest.includes("--live")
+          ? {
+              pluginDir: pluginDir(),
+              hookCommand: liveHookCommand(pluginDir(), process.execPath),
+              run: liveRunner,
+            }
+          : null,
+      });
+    }
+    case "hook": {
+      const [name, ...extra] = rest;
+      if (name === undefined || name === "--help" || name === "-h") {
+        console.log(HOOK_HELP);
+        return 0;
+      }
+      const spec = PROJECT_HOOKS.find((one) => one.name === name);
+      if (spec === undefined || extra.length > 0) {
+        console.error(`Unknown hook: ${[name, ...extra].join(" ")}\n\n${HOOK_HELP}`);
+        return 2;
+      }
+      // Reads stdin, answers, and exits with the hook's code.
+      return runHookEntry(spec);
+    }
+    case "session-name": {
+      const [sessionId, ...words] = rest;
+      if (sessionId === undefined || words.length === 0) {
+        console.error(`Usage: ${COMMAND} session-name <session id> <name>\n\n${HELP}`);
+        return 2;
+      }
+      const name = recordSessionName(sessionId, words.join(" "), process.env);
+      console.log(`This session will be named "${name}" from the next prompt.`);
+      return 0;
+    }
     case "restore": {
       const unknown = rest.filter((arg) => arg !== "--yes" && arg !== "--now");
       if (unknown.length > 0) {

@@ -5,6 +5,19 @@ import { kindsSchema } from "../jobs/kinds";
 import { isValidRange, satisfiesRange } from "./version-range";
 
 /**
+ * The hooks the plugin wires in `plugin/hooks/hooks.json`, by name: what `ownHooks` may
+ * list. A test keeps it the same as `HOOKS` in `src/hooks/specs.ts`.
+ */
+export const PLUGIN_HOOK_NAMES = [
+  "git-guard",
+  "main-folder-guard",
+  "message-guard",
+  "after-merge",
+  "worktree-leftovers",
+  "session-name",
+] as const;
+
+/**
  * The per-project opt-in file, `.claude/anymodel.json`.
  * Strict on purpose: a typo like `"worktree"` fails loudly instead of being ignored.
  */
@@ -22,14 +35,32 @@ export const anymodelConfigSchema = z.strictObject({
       prefix: z.string().min(1),
       /** A command (argv form) run inside a new worktree, e.g. ["bun", "install"]. */
       setup: z.array(z.string().min(1)).min(1).optional(),
+      /**
+       * Refuse an Edit, Write or NotebookEdit of a file in the main checkout itself (not in
+       * a worktree): there, every change goes in a worktree. Off when left out.
+       */
+      guardMainFolder: z.boolean().optional(),
     })
     .optional(),
+  /**
+   * The branches the git guard asks about before a push to one of them, as git names them
+   * (["main", "release"]). When left out: ["main"].
+   */
+  protectedBranches: z.array(z.string().min(1)).min(1).optional(),
+  /** Each session names itself after its task: a note at its start, the title at the next prompt. */
+  sessionNames: z.boolean().optional(),
   /** Turn on the opt-in instructions for this project. */
   instructions: z.boolean().optional(),
   /** Auto-mode rules this project adds to the user's settings. */
   autoMode: z.array(z.string().min(1)).optional(),
   /** Heavy jobs: the project's own kinds, over the defaults (`src/jobs/kinds.ts`). */
   jobs: z.strictObject({ kinds: kindsSchema.optional() }).optional(),
+  /**
+   * The plugin hooks this project still runs as its own copy (["git-guard"]): exactly
+   * those stay silent here, so the two copies never both answer. Emptied once the project
+   * removed its copies (`docs/design.md` § The safe switch).
+   */
+  ownHooks: z.array(z.enum(PLUGIN_HOOK_NAMES)).optional(),
 });
 
 export type AnymodelConfig = z.infer<typeof anymodelConfigSchema>;
@@ -68,6 +99,26 @@ function checkRequires(file: string, raw: unknown, pluginVersion: string): void 
       `${file}: this project needs anymodel ${requires}; you have ${pluginVersion}; ` +
         `run ${PLUGIN_UPDATE_COMMAND}`,
     );
+  }
+}
+
+/**
+ * The names `ownHooks` lists in one anymodel.json, read on their own, the way `requires` is:
+ * a hook the project runs as its own copy stays silent even when the rest of the file needs
+ * a newer plugin or is broken, so the person never gets two questions for one command.
+ * Null when the file does not exist; empty when it cannot be read or lists nothing.
+ */
+export function readOwnHooks(file: string): string[] | null {
+  if (!existsSync(file)) return null;
+  try {
+    const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
+    const listed = (raw as { ownHooks?: unknown }).ownHooks;
+    return Array.isArray(listed)
+      ? listed.filter((name): name is string => typeof name === "string")
+      : [];
+  } catch {
+    return [];
   }
 }
 

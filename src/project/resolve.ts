@@ -1,6 +1,6 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { type AnymodelConfig, loadAnymodelConfig } from "./config";
+import { type AnymodelConfig, loadAnymodelConfig, readOwnHooks } from "./config";
 import { gitEnv } from "./git-env";
 
 export interface Project {
@@ -30,9 +30,22 @@ export const MIN_GIT_VERSION = "2.31.0";
 
 type Git = (args: string[]) => { ok: boolean; stdout: string; stderr: string };
 
+/**
+ * Each git call here may take this long. A hook resolves its project first, and a guard's
+ * own timeout is 10 s (`.claude/rules/hooks.md` § Timeouts); these calls take milliseconds.
+ */
+export const RESOLVE_GIT_TIMEOUT_MS = 5_000;
+
 function gitIn(cwd: string, env: Record<string, string>): Git {
   return (args) => {
-    const result = Bun.spawnSync(["git", ...args], { cwd, env, stdout: "pipe", stderr: "pipe" });
+    const result = Bun.spawnSync(["git", ...args], {
+      cwd,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: RESOLVE_GIT_TIMEOUT_MS,
+    });
     return {
       ok: result.exitCode === 0,
       stdout: result.stdout.toString(),
@@ -70,13 +83,16 @@ function findMainCheckout(git: Git, cwd: string): string | null {
   return realpathSync(path);
 }
 
+/** Where a checkout is, without its anymodel.json: what a hook needs before it reads the file. */
+export type Checkout = Omit<Project, "config" | "configFile">;
+
 /**
- * Finds the git project `cwd` is in, and its anymodel.json.
- * Returns null outside git. Throws when git is older than 2.31 or the main checkout is
- * missing, AnymodelVersionError when the project needs another plugin version, and AnymodelConfigError
- * when an anymodel.json is invalid.
+ * Finds the git checkout `cwd` is in, reading no anymodel.json. Returns null outside git or
+ * in a bare repo. Throws when git is older than 2.31 or the main checkout is missing.
+ * A hook calls it first, then `ownHooksOf`, so a hook the project runs as its own copy stays
+ * silent even when the anymodel.json is broken.
  */
-export function resolveProject(cwd: string, options: ResolveOptions = {}): Project | null {
+export function locateCheckout(cwd: string, options: ResolveOptions = {}): Checkout | null {
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
@@ -106,14 +122,47 @@ export function resolveProject(cwd: string, options: ResolveOptions = {}): Proje
   const commonDir = realpathSync(common);
   const isWorktree = realpathSync(gitDir) !== commonDir;
   const mainCheckout = isWorktree ? findMainCheckout(git, cwd) : root;
+  return { root, commonDir, isWorktree, mainCheckout };
+}
 
+/**
+ * The plugin hooks the project runs as its own copy (`ownHooks`), read on their own from the
+ * same anymodel.json `loadProjectConfig` reads. Never throws: empty when there is no file,
+ * or it cannot be read.
+ */
+export function ownHooksOf(checkout: Checkout): string[] {
+  const { root, mainCheckout } = checkout;
+  const own = readOwnHooks(join(root, ".claude", "anymodel.json"));
+  if (own !== null) return own;
+  if (mainCheckout === null || mainCheckout === root) return [];
+  return readOwnHooks(join(mainCheckout, ".claude", "anymodel.json")) ?? [];
+}
+
+/**
+ * Reads the anymodel.json of a located checkout: its own, else the main checkout's, and the
+ * file it came from. Throws AnymodelVersionError when the project needs another plugin
+ * version, and AnymodelConfigError when an anymodel.json is invalid.
+ */
+export function loadProjectConfig(checkout: Checkout, pluginVersion?: string): Project {
+  const { root, mainCheckout } = checkout;
   const own = join(root, ".claude", "anymodel.json");
-  let config = loadAnymodelConfig(own, options.pluginVersion);
+  let config = loadAnymodelConfig(own, pluginVersion);
   let configFile = config === null ? null : own;
   if (config === null && mainCheckout !== null && mainCheckout !== root) {
     const main = join(mainCheckout, ".claude", "anymodel.json");
-    config = loadAnymodelConfig(main, options.pluginVersion);
+    config = loadAnymodelConfig(main, pluginVersion);
     configFile = config === null ? null : main;
   }
-  return { root, commonDir, isWorktree, mainCheckout, config, configFile };
+  return { ...checkout, config, configFile };
+}
+
+/**
+ * Finds the git project `cwd` is in, and its anymodel.json.
+ * Returns null outside git. Throws when git is older than 2.31 or the main checkout is
+ * missing, AnymodelVersionError when the project needs another plugin version, and AnymodelConfigError
+ * when an anymodel.json is invalid.
+ */
+export function resolveProject(cwd: string, options: ResolveOptions = {}): Project | null {
+  const checkout = locateCheckout(cwd, options);
+  return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
 }

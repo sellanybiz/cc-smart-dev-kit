@@ -98,21 +98,36 @@ describe("the hooks' bun shim", () => {
     expect(result.exitCode).toBe(0);
   });
 
-  test("hooks.json runs every hook through the shim, in exec form", () => {
+  test("hooks.json runs every hook through the shim, in exec form, each with its missing-bun mode", () => {
     const hooks = JSON.parse(readFileSync(join(PLUGIN, "hooks", "hooks.json"), "utf8")) as {
       hooks: Record<string, { hooks: { args: string[]; command: string; type: string }[] }[]>;
     };
-    const commands = Object.values(hooks.hooks).flatMap((groups) =>
-      groups.flatMap((group) => group.hooks),
-    );
     // What Claude Code does with the variable, in `command` and `args` alike.
     const expand = (text: string | undefined) =>
       (text ?? "").replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, PLUGIN);
-    expect(commands.length).toBeGreaterThan(0);
-    for (const hook of commands) {
+    const entries = Object.entries(hooks.hooks).flatMap(([event, groups]) =>
+      groups.flatMap((group) => group.hooks.map((hook) => ({ event, hook }))),
+    );
+    expect(entries.length).toBeGreaterThan(0);
+    const events = new Set<string>();
+    for (const { event, hook } of entries) {
+      events.add(event);
       expect(hook.type).toBe("command");
       expect(expand(hook.command)).toBe(SHIM);
-      expect(expand(hook.args[0])).toStartWith(`${join(PLUGIN, "dist")}/`);
+      // A guard fails closed: with no bun it asks. Every other hook is quiet.
+      expect(hook.args[0]).toBe(event === "PreToolUse" ? "--missing=ask" : "--missing=quiet");
+      expect(expand(hook.args[1])).toStartWith(`${join(PLUGIN, "dist")}/`);
     }
+    // Every event the plugin wires, and only those.
+    expect(events).toEqual(
+      new Set([
+        "PreToolUse",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "SessionStart",
+        "StopFailure",
+        "UserPromptSubmit",
+      ]),
+    );
   });
 });

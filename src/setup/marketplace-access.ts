@@ -111,7 +111,7 @@ export function redactUrlsIn(text: string): string {
 }
 
 /** True when the user has an ssh command of their own: GIT_SSH_COMMAND, GIT_SSH or core.sshCommand. */
-function hasOwnSshCommand(env: Record<string, string | undefined>): boolean {
+export function hasOwnSshCommand(env: Record<string, string | undefined>): boolean {
   if (env.GIT_SSH_COMMAND || env.GIT_SSH) return true;
   try {
     const result = Bun.spawnSync(["git", "config", "--get", "core.sshCommand"], {

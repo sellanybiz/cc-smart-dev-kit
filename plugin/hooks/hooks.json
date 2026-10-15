@@ -1,4 +1,5 @@
 {
+  "description": "anymodel: git, edit and message guards, notes after a merge and at session start, session names, the usage-limit alert and the background update check. Each hook stays silent while the project wires its own for the same event.",
   "hooks": {
     "StopFailure": [
       {
@@ -7,19 +8,114 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/dist/stop-failure.js"],
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/stop-failure.js"],
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/git-guard.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/main-folder-guard.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/message-guard.js"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/after-merge.js"],
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/after-merge.js"],
+            "timeout": 30
           }
         ]
       }
     ],
     "SessionStart": [
       {
+        "matcher": "startup|resume",
         "hooks": [
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/dist/update-check.js"],
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/worktree-leftovers.js"],
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/session-name.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/update-check.js"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/session-name.js"],
             "timeout": 10
           }
         ]

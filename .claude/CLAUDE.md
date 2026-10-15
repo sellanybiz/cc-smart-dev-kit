@@ -58,16 +58,16 @@ the first time you use it.
 | `src/build-info/` | The version and the marketplace source, baked in from `plugin.json` at build time; the fixed names, without the version, in `names.ts` (the router bundle uses those). |
 | `src/project/` | Finds the git project from a folder and reads its `.claude/anymodel.json`. |
 | `src/setup/` | Safe changes to user files: managed keys, list entries and blocks, backups, atomic writes, the lock, the launcher, restore, marketplace access, the auto-mode block. |
-| `src/cli/` | The `anymodel` commands: `setup`, `doctor`, `restore`, `update`, `statusline`, `usage`, `version`. |
+| `src/cli/` | The `anymodel` commands: `setup`, `doctor` (and `--live`; its checks of the current folder's project in `project-checks.ts`), `hook`, `restore`, `update`, `session-name`, `statusline`, `usage`, `version`. |
 | `src/machine/` | Machine setup: the companion plugins, claude-mem's settings, Warp, and `Machine` (the system, faked in tests). |
 | `src/gateway/` | The optional AI gateway: the router, its config and slots (the model slots, the judge test and its proof too), a model slot's fallback answer made safe for Claude (`fallback-answer.ts`), the limit state file, `gateway <command>`, its service (a socket unit and the router unit) and its doctor checks. |
 | `src/update/` | The self-update: the SessionStart hook's part, the detached background check, `anymodel update`'s steps, and their state files. |
 | `src/search/` | The `anymodel search` command: web search and one page's text through the gateway's OmniRoute backend. |
-| `src/hooks/` | The logic of the plugin's hooks, tested: the StopFailure usage-limit alert. Each hook's entry is in `src/entries/`. |
+| `src/hooks/` | The hooks: the frame every one runs in (`run.ts`), the guards, the notes, the StopFailure usage-limit alert, the project's own copies (`ownHooks`, `settings-hooks.ts`), and the worktree engine a project wires itself (`anymodel hook <name>`; its lines in `project-wiring.ts`, its create lock in `create-lock.ts`); `specs.ts` lists them all, by who wires them. Each hook's entry is in `src/entries/`. |
 | `src/jobs/` | The heavy-job queue: kinds, memory readings, the lease store, the queue, the launch, `job <command>`, the classifier. |
 | `src/shell/` | The shell lexer: reads a Bash line as the commands it runs (quotes, here-docs, `bash -c`). |
 | `src/testing/` | Test helpers: temp folders, a clean git environment, a fake machine for setup, the guard that fails any test reaching the live router's port 20100. |
-| `plugin/` | What users get: `dist/` (built, committed), `bin/`, `hooks/hooks.json`, `instructions/` (`setup` copies and imports them), `skills/`, `agents/`, `output-styles/`, the manifest. |
+| `plugin/` | What users get: `dist/` (built, committed), `bin/` (`anymodel`, and `anymodel-bun`, which the hooks run through), `hooks/hooks.json`, `instructions/` (`setup` copies and imports them), `skills/`, `agents/`, `output-styles/`, the manifest. |
 | `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check), `check-duplicates.ts` (one home per rule in `plugin/`) and `check-version-bump.ts` (CI: a `plugin/` change raises the version). |
 | `docs/` | How the plugin is designed, the phases ahead, and the Claude Code behaviour it relies on. |
 

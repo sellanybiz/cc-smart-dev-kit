@@ -32,9 +32,10 @@ Claude Code copies only `plugin/` into
 ## Bundles are committed
 
 `bun run build` (`scripts/build.ts`) turns each `src/entries/<name>.ts` into
-`plugin/dist/<name>.js`: target bun, ESM, not minified, one flat folder. **One build per
-entry:** built together, Bun keeps a library export in every bundle when any entry uses
-it, so a CLI change could change `router.js`.
+`plugin/dist/<name>.js`: target bun, ESM, not minified, one flat folder. **Each entry is
+built on its own** (one `Bun.build` per entry): Bun drops a shared module's unused code by
+what all the entries of one build use, so building them together made a new bundle change
+the others, `router.js` included.
 
 - **After any change under `src/`, run `bun run build` and commit `plugin/dist` in the
   same commit.** `bun run build:check` (in `bun run check` and CI) builds into a temp
@@ -44,9 +45,11 @@ it, so a CLI change could change `router.js`.
 - **A new bundle is a new file in `src/entries/`.** A test file there is skipped.
 - `plugin/bin/anymodel` is written by hand. It finds `dist/cli.js` from its own
   location (`dirname "$0"`), because `CLAUDE_PLUGIN_ROOT` is not set in the Bash tool.
-- `plugin/bin/anymodel-bun` is written by hand too: the hooks' way to bun when PATH has
-  none (`hooks.md`). It reads the launcher's `baked_bun=` line, so a change to that line
-  in `launcherScript` changes the shim too (`src/setup/bun-shim.test.ts`).
+- `plugin/bin/anymodel-bun` is written by hand too: the plugin's hooks run through it, so
+  they find bun without PATH (`.claude/rules/hooks.md`). It reads the launcher's
+  `baked_bun='…'` line, so a change to that line in `src/setup/launcher.ts` changes it too.
+  Both shim tests run the real launcher script (`src/hooks/bun-shim.test.ts`,
+  `src/setup/bun-shim.test.ts`).
 
 ## The version lives in one place
 

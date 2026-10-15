@@ -45,7 +45,9 @@ import {
   UNREACHABLE_FAILS_AFTER_HOURS,
   updateFiles,
 } from "../update/state";
+import { type LiveDeps, parseClaudeVersion, readLiveRecord, runLiveCheck } from "./live-check";
 import { type CliPaths, tildify } from "./paths";
+import { projectChecks } from "./project-checks";
 import { instructionsPaths } from "./setup";
 
 interface Check {
@@ -480,6 +482,29 @@ function checkInstructions(paths: CliPaths, source: string): Check {
   };
 }
 
+/**
+ * The last live check (`doctor --live`), as information. Nothing when it never ran, so a
+ * machine that never asked for it sees no line. When the installed Claude Code is not the
+ * one it passed on, the line says to run it again.
+ */
+function checkLiveRecord(paths: CliPaths): Check | null {
+  const record = readLiveRecord(paths.stateDir);
+  if (record === null) return null;
+  const now = parseClaudeVersion(run(["claude", "--version"]).output);
+  if (now !== null && now !== record.claudeCode) {
+    return {
+      ok: true,
+      info: true,
+      text: `the live check last passed on Claude Code ${record.claudeCode}; this machine has ${now}. Run: anymodel doctor --live`,
+    };
+  }
+  return {
+    ok: true,
+    info: true,
+    text: `the live check passed on Claude Code ${record.claudeCode} (plugin ${record.plugin})`,
+  };
+}
+
 /** The memory files Claude Code loads from a project folder. */
 const PROJECT_MEMORY_FILES = ["CLAUDE.md", join(".claude", "CLAUDE.md"), "CLAUDE.local.md"];
 
@@ -594,9 +619,27 @@ function checkBun(bun: DoctorBun, paths: CliPaths): Check {
     : { ok: false, text: `${tooOld} Upgrade this Bun, then run: ${COMMAND} doctor` };
 }
 
+/** The project `doctor` checks: the folder it runs in, and the plugin's hooks.json. */
+export interface DoctorProject {
+  cwd: string;
+  pluginHooksFile: string;
+}
+
+export interface DoctorOptions {
+  /** The Bun running doctor (through the launcher, the bun baked into it). */
+  bun: DoctorBun;
+  gateway: DoctorGateway;
+  /** Where the plugin's instructions are, and the folder doctor was started in. */
+  local: DoctorLocal;
+  /** Check the project of this folder (`project-checks.ts`); null: no project checks. */
+  project: DoctorProject | null;
+  /** Also run the live check (`doctor --live`), which starts real Claude Code sessions. */
+  live: LiveDeps | null;
+}
+
 /**
- * Prints one ✓ or ✗ line per check, and `·` for information (the gateway, when it was never
- * set up, is optional). Exit code 1 when any check fails.
+ * Prints one ✓ or ✗ line per check, `·` for information (the gateway, when it was never
+ * set up, is optional) and `!` for a warning. Exit code 1 when any check fails.
  *
  * On a Bun older than `MIN_BUN` the gateway checks are skipped: they send the backend key,
  * and that Bun would send it through a proxy from the environment.
@@ -604,9 +647,7 @@ function checkBun(bun: DoctorBun, paths: CliPaths): Check {
 export async function runDoctor(
   paths: CliPaths,
   env: Env,
-  gateway: DoctorGateway,
-  local: DoctorLocal,
-  bun: DoctorBun,
+  { bun, gateway, local, project, live }: DoctorOptions,
 ): Promise<number> {
   const settings = readSettings(paths.settingsFile);
   const runtime = checkBun(bun, paths);
@@ -631,7 +672,10 @@ export async function runDoctor(
     ...companionChecks(paths),
     claudeMemCheck(paths),
     warpCheck(gateway.machine, paths),
+    ...(project === null ? [] : projectChecks(project.cwd, env, paths, project.pluginHooksFile)),
     ...(runtime.ok ? await gatewayChecks({ paths, ...gateway }) : [skipped]),
+    live === null ? checkLiveRecord(paths) : null,
+    ...(live === null ? [] : runLiveCheck(paths, env, live)),
   ].filter((check): check is Check => check !== null);
   for (const check of checks) {
     console.log(`${check.warn ? "!" : check.info ? "·" : check.ok ? "✓" : "✗"} ${check.text}`);

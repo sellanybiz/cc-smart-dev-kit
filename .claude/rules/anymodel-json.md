@@ -13,7 +13,8 @@ changing it breaks other people's projects.
 
 `resolveProject(cwd, { pluginVersion?, env? })` finds the git checkout `cwd` is in, then
 reads (`env` is the environment git runs with, so a test can put a fake git first on
-PATH):
+PATH). It is two steps a hook calls apart: `locateCheckout()` (git only; the `ownHooks`
+read needs it even when the file is broken), then `loadProjectConfig()`, which reads:
 
 1. `<checkout root>/.claude/anymodel.json` — a linked worktree's own file wins;
 2. else `<main checkout>/.claude/anymodel.json`;
@@ -29,15 +30,26 @@ a clear error that says what is wrong.
 | Field | Type | Meaning |
 |---|---|---|
 | `requires` | version range, npm syntax (`">=0.1"`) | The plugin versions this project needs. |
-| `worktrees.base` | string | The branch new worktrees start from. Used from Phase 3. |
-| `worktrees.prefix` | string | The folder-name prefix of a worktree beside the repo. Used from Phase 3. |
-| `worktrees.setup` | string array (argv) | A command run inside a new worktree, e.g. `["bun", "install"]`. Used from Phase 3. |
+| `worktrees` | object | Turns on the plugin hooks that work with worktrees, and is what the worktree engine needs. The engine also needs the project to wire `anymodel hook <name>` in its own settings (README § Worktrees); wired without `worktrees`, each engine hook fails closed (`needsWorktrees` in `src/hooks/specs.ts`), never falls back to another shape. |
+| `worktrees.base` | string | The branch new worktrees start from (`origin/<base>`, freshly fetched); also the base the after-merge and leftovers hooks compare with. |
+| `worktrees.prefix` | string | The folder-name prefix of a worktree beside the repo. No `/` or `\` (the hook refuses one). |
+| `worktrees.setup` | string array (argv) | A command run inside a new worktree, e.g. `["bun", "install"]`. |
+| `worktrees.guardMainFolder` | boolean | Refuse edits in the main checkout itself (the main-folder guard). Off when left out. |
+| `protectedBranches` | string array | The branches the git guard asks about before a push. Default `["main"]`. |
+| `sessionNames` | boolean | Each session names itself after its task (the session-name hook). Off when left out. |
+| `ownHooks` | array of plugin hook names | The plugin hooks this project still runs as its own copy (`["git-guard"]`): exactly those stay silent here, so two copies never both answer. Emptied once the project removed its copies (`docs/design.md` § The safe switch). A name that is not a plugin hook is refused by the strict parse (`PLUGIN_HOOK_NAMES` in `src/project/config.ts`). |
 | `instructions` | boolean | Turns on the opt-in instructions for this project. Not acted on yet: since Phase 5 a project loads them with its own import line (`README.md`). |
 | `autoMode` | string array | Auto-mode rules `setup` copies into the user's `autoMode.environment` (`src/setup/auto-mode.ts`). Used now. |
 | `jobs.kinds` | object: kind name to kind | The project's heavy-job kinds over the defaults (`src/jobs/kinds.ts`, `docs/jobs.md`). Used now. |
 
 The schema is `anymodelConfigSchema` in `src/project/config.ts` (zod). The README shows an
 example; keep it in step.
+
+`worktrees.guardMainFolder`, `protectedBranches`, `sessionNames` and `ownHooks` came with the
+hooks: a project that uses one raises its `requires` to the release that ships them. A hook
+that cannot read the file (too new, or broken) fails closed (`.claude/rules/hooks.md`) —
+except `ownHooks`, which is read on its own (`readOwnHooks`), so a listed hook stays silent
+even then.
 
 ## `requires` first, then the strict parse
 
