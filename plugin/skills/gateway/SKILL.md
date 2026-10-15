@@ -6,7 +6,8 @@ description: Use when the person wants cheaper models behind Claude Code's subag
 # The AI Gateway
 
 The gateway is a local router, `anymodel-router`, between Claude Code and the model
-providers. It is optional. How it works and why: the plugin's `docs/gateway.md`.
+providers. It is optional. How it works and why: see docs/gateway.md in the anymodel
+repository (it is not installed with the plugin).
 
 ## What it is
 
@@ -56,8 +57,9 @@ check its cached-input price (subagent tokens are mostly cached re-reads).
 
 Auto mode's safety check (should this action run?) stays on Claude by default. "Off by
 default" relies on the router recognising the check by its prompt: if Claude Code rewords
-that prompt, the check is routed by its model name until the router is updated (the
-plugin's `docs/gateway.md` § Known limits). Only when the person asks for it:
+that prompt, the check is routed by its model name until the router is updated (see
+docs/gateway.md § Known limits in the anymodel repository). Only when the person asks
+for it:
 
 - On: `anymodel gateway slot judge <target>[,<target>]`.
 - Off: `anymodel gateway slot judge off`.

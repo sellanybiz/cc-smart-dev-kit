@@ -6358,6 +6358,145 @@ ${good ? "keeping the last good config" : NO_CONFIG_MEANS}`);
   };
 }
 
+// src/gateway/hosts.ts
+function ipv4Parts(host) {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (match === null)
+    return null;
+  const parts = match.slice(1).map(Number);
+  return parts.every((part) => part <= 255) ? parts : null;
+}
+function ipv6Groups(host) {
+  if (!host.startsWith("[") || !host.endsWith("]"))
+    return null;
+  const halves = host.slice(1, -1).split("::");
+  if (halves.length > 2)
+    return null;
+  const groupsOf = (text) => {
+    if (text === "")
+      return [];
+    const parts = text.split(":");
+    if (!parts.every((part) => /^[0-9a-f]{1,4}$/i.test(part)))
+      return null;
+    return parts.map((part) => Number.parseInt(part, 16));
+  };
+  const head = groupsOf(halves[0] ?? "");
+  const tail = groupsOf(halves[1] ?? "");
+  if (head === null || tail === null)
+    return null;
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 1)
+    return null;
+  return [...head, ...Array(halves.length === 1 ? 0 : missing).fill(0), ...tail];
+}
+function mappedIpv4(groups) {
+  if (!groups.slice(0, 5).every((group) => group === 0) || groups[5] !== 65535)
+    return null;
+  const high = groups[6] ?? 0;
+  const low = groups[7] ?? 0;
+  return [high >> 8, high & 255, low >> 8, low & 255];
+}
+function normalHost(hostname) {
+  const lower = hostname.toLowerCase();
+  return lower.endsWith(".") ? lower.slice(0, -1) : lower;
+}
+function ipv4Kind([a = 0, b = 0]) {
+  if (a === 127)
+    return "a loopback address";
+  if (a === 0)
+    return "an unspecified address";
+  if (a === 169 && b === 254)
+    return "a link-local address";
+  if (a === 10 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168) {
+    return "a private address";
+  }
+  return null;
+}
+function isLoopbackHost(hostname) {
+  const host = normalHost(hostname);
+  if (host === "localhost")
+    return true;
+  const v4 = ipv4Parts(host);
+  if (v4 !== null)
+    return v4[0] === 127;
+  const v6 = ipv6Groups(host);
+  if (v6 === null)
+    return false;
+  const mapped = mappedIpv4(v6);
+  if (mapped !== null)
+    return mapped[0] === 127;
+  return v6.slice(0, 7).every((group) => group === 0) && v6[7] === 1;
+}
+function privateHostKind(hostname) {
+  const host = normalHost(hostname);
+  if (host === "localhost" || host.endsWith(".localhost"))
+    return "a loopback name";
+  const v4 = ipv4Parts(host);
+  if (v4 !== null)
+    return ipv4Kind(v4);
+  const v6 = ipv6Groups(host);
+  if (v6 !== null) {
+    const mapped = mappedIpv4(v6);
+    if (mapped !== null)
+      return ipv4Kind(mapped);
+    if (isLoopbackHost(host))
+      return "a loopback address";
+    if (v6.every((group) => group === 0))
+      return "an unspecified address";
+    const first = v6[0] ?? 0;
+    if ((first & 65472) === 65152)
+      return "a link-local address";
+    if ((first & 65024) === 64512)
+      return "a private address";
+    return null;
+  }
+  if (host.startsWith("["))
+    return null;
+  if (!host.includes("."))
+    return "a private host name";
+  if (/\.(local|internal|home\.arpa)$/.test(host))
+    return "a private host name";
+  return null;
+}
+function addNoProxyHost(host) {
+  const name = (process.env.no_proxy ?? "") === "" ? "NO_PROXY" : "no_proxy";
+  const entries = (process.env[name] ?? "").split(/[\s,]+/).filter((entry) => entry !== "");
+  if (entries.includes(host))
+    return;
+  process.env[name] = [...entries, host].join(",");
+}
+function directIfLoopback(url) {
+  const parsed = URL.parse(url);
+  if (parsed === null || !isLoopbackHost(parsed.hostname))
+    return {};
+  addNoProxyHost(parsed.hostname);
+  return { proxy: false };
+}
+
+// src/gateway/plain-text.ts
+var CONTROL = /[\p{Cc}\p{Cf}]/gu;
+var CONTROL_BUT_LINES = /[^\P{Cc}\n\t]|\p{Cf}/gu;
+function plainText(text, options = {}) {
+  return text.replace(options.keepNewlines === true ? CONTROL_BUT_LINES : CONTROL, " ");
+}
+function cutText(text, max) {
+  if (text.length <= max)
+    return text;
+  let end = Math.max(0, max);
+  const last = text.charCodeAt(end - 1);
+  if (end > 0 && last >= 55296 && last <= 56319)
+    end -= 1;
+  return text.slice(0, end);
+}
+function oneLine(text, max, options = {}) {
+  const flat = options.ascii === true ? text.replace(/\s+/g, " ").replace(/[^\x20-\x7e]/g, "?") : plainText(text).replace(/\s+/g, " ");
+  const line = flat.trim();
+  return line.length > max ? `${cutText(line, max)}${options.mark ?? ""}` : line;
+}
+function printableJson(value) {
+  return JSON.stringify(value, null, 2).replace(/[^\P{Cc}\n]|\p{Cf}/gu, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
 // src/gateway/router.ts
 var HEALTH_PATH = "/__anymodel/health";
 var MESSAGES_PATH = "/v1/messages";
@@ -6495,7 +6634,7 @@ function sseScanner() {
   };
 }
 function printable(text, max = 120) {
-  return text.replace(/\s+/g, " ").replace(/[^\x20-\x7e]/g, "?").trim().slice(0, max);
+  return oneLine(text, max, { ascii: true });
 }
 function maskedTail(secret) {
   return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
@@ -6522,6 +6661,9 @@ function maskSecrets(text, known = []) {
   }
   return out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****").replace(/(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi, "$1$2$1$3:$4$1****$1").replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****").replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`).replace(/(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi, (_match, name, separator, value) => `${name}${separator}${maskedTail(value)}`).replace(/[A-Za-z0-9_-]{32,512}/g, (run) => run.includes("__") || UUID.test(run) ? run : maskedTail(run));
 }
+function maskedLine(text, known, max, options = {}) {
+  return oneLine(maskSecrets(text, known), max, options);
+}
 var SNIPPET_MAX = 300;
 var SNIPPET_READ_BYTES = 2048;
 var KEY_CHARACTER = /[A-Za-z0-9_-]/;
@@ -6534,7 +6676,7 @@ function snippetText(bytes, known) {
       end -= 1;
     text = text.slice(0, end);
   }
-  return printable(maskSecrets(text, known), SNIPPET_MAX);
+  return maskedLine(text, known, SNIPPET_MAX, { ascii: true });
 }
 function decompressionFormat(encoding) {
   switch (encoding.trim().toLowerCase()) {
@@ -6759,7 +6901,8 @@ function createRouter(deps) {
       headers: upstream.headers,
       method: upstream.method,
       redirect: "manual",
-      signal: controller.signal
+      signal: controller.signal,
+      ...directIfLoopback(upstream.url)
     });
     try {
       const first = await (timer === null ? pending : Promise.race([pending, timer.done]));

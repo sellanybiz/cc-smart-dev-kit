@@ -5,6 +5,7 @@
  */
 
 import { messageOf } from "./config";
+import { directIfLoopback } from "./hosts";
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -35,9 +36,12 @@ export async function listModels(
   timeoutMs = 10_000,
 ): Promise<{ error: string } | { models: ListedModel[]; status: number }> {
   try {
-    const response = await fetch(`${baseUrl}/v1/models`, {
+    const url = `${baseUrl}/v1/models`;
+    const response = await fetch(url, {
       headers: { authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(timeoutMs),
+      // The key goes straight to a backend on this machine, never through a proxy.
+      ...directIfLoopback(url),
     });
     if (!response.ok) {
       await response.body?.cancel();

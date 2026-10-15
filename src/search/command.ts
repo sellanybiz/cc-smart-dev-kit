@@ -14,23 +14,30 @@ import { existsSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { type GatewayConfig, loadConfigFile, messageOf } from "../gateway/config";
+import { privateHostKind } from "../gateway/hosts";
+import { printableJson } from "../gateway/plain-text";
 import { fetchPage, type SearchBackend, searchWeb } from "./client";
 import { pageOutput, searchOutput } from "./format";
 
 /** How many results a search asks for when `--max` is not given. */
 export const DEFAULT_MAX = 5;
 
+/** The most results `--max` may ask for. */
+export const MAX_RESULTS = 50;
+
 /** The backend search goes through: OmniRoute's. The gateway's `setup` writes that name. */
 const SEARCH_BACKEND = "omniroute";
 
-export const USAGE = `Usage: ${COMMAND} search "<query>" [--max <n>] [--fetch <url>] [--json]
+export const USAGE = `Usage: ${COMMAND} search "<query>" [--max <n>] [--json]
+       ${COMMAND} search --fetch <url> [--json]
 
 Searches the web through the gateway's OmniRoute backend (Ollama's web search among its
 providers) and prints each result's title, its URL and a short snippet. The whole output
-is cut to about 2500 characters; --json prints OmniRoute's whole answer instead.
+is cut to about 2500 characters; --json prints OmniRoute's whole answer instead. The
+query, or the URL, goes to that search or fetch provider on the internet.
 
-  --max <n>       how many results to ask for (default ${DEFAULT_MAX}; the provider may cap it)
-  --fetch <url>   fetch one page's text, instead of searching
+  --max <n>       how many results to ask for, 1 to ${MAX_RESULTS} (default ${DEFAULT_MAX}; the provider may cap it)
+  --fetch <url>   fetch one page's text, instead of searching (not a local or private address)
   --json          the answer as JSON, uncut
 
 Needs the gateway: ${COMMAND} gateway setup --backend-key-stdin omniroute`;
@@ -48,10 +55,25 @@ function httpUrl(text: string): null | URL {
   return url !== null && (url.protocol === "http:" || url.protocol === "https:") ? url : null;
 }
 
+/**
+ * Why `--fetch` refuses `url`, or null when it may go. A local or private address
+ * (`privateHostKind`) is refused: the URL goes to a fetch provider on the internet, which
+ * cannot reach it, and the address would leave this machine for nothing.
+ */
+function refusedFetchUrl(url: URL): null | string {
+  const kind = privateHostKind(url.hostname);
+  if (kind === null) return null;
+  return (
+    `--fetch does not read ${url.hostname}: it is ${kind}. The page is read by a fetch ` +
+    "provider on the internet, which cannot reach it, and the address would leave this machine."
+  );
+}
+
 /** What the arguments mean, or `{ error }` with the reason they do not work. */
 export function parseSearchArgs(args: string[]): SearchArgs | { error: string } {
   const parsed: SearchArgs = { fetch: null, json: false, max: DEFAULT_MAX, query: null };
   const rest: string[] = [];
+  let maxGiven = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? "";
     if (arg === "--json") parsed.json = true;
@@ -60,13 +82,20 @@ export function parseSearchArgs(args: string[]): SearchArgs | { error: string } 
       if (value === undefined || !/^\d+$/.test(value) || Number(value) < 1) {
         return { error: `--max needs a whole number of results, 1 or more (not "${value ?? ""}")` };
       }
+      if (Number(value) > MAX_RESULTS) {
+        return { error: `--max asks for at most ${MAX_RESULTS} results (not "${value}")` };
+      }
       parsed.max = Number(value);
+      maxGiven = true;
       index += 1;
     } else if (arg === "--fetch") {
       const value = args[index + 1];
-      if (value === undefined || httpUrl(value) === null) {
+      const url = value === undefined ? null : httpUrl(value);
+      if (value === undefined || url === null) {
         return { error: `--fetch needs an http(s) URL (not "${value ?? ""}")` };
       }
+      const refused = refusedFetchUrl(url);
+      if (refused !== null) return { error: refused };
       parsed.fetch = value;
       index += 1;
     } else if (arg.startsWith("--")) return { error: `Unknown option: ${arg}` };
@@ -77,6 +106,9 @@ export function parseSearchArgs(args: string[]): SearchArgs | { error: string } 
   parsed.query = query === "" ? null : query;
   if (parsed.fetch !== null && parsed.query !== null) {
     return { error: "give either a query or --fetch <url>, not both" };
+  }
+  if (parsed.fetch !== null && maxGiven) {
+    return { error: "--max counts search results; --fetch reads one page, so leave --max out" };
   }
   if (parsed.fetch === null && parsed.query === null) {
     return { error: "give a query, or --fetch <url>" };
@@ -145,12 +177,12 @@ export async function runSearch(args: string[], ctx: SearchContext): Promise<num
   if (parsed.fetch !== null) {
     const said = await fetchPage({ backend: found.backend, url: parsed.fetch });
     if ("error" in said) return failed(said.error, paths);
-    console.log(parsed.json ? JSON.stringify(said.raw, null, 2) : pageOutput(said.page));
+    console.log(parsed.json ? printableJson(said.raw) : pageOutput(said.page));
     return 0;
   }
   const query = parsed.query ?? "";
   const said = await searchWeb({ backend: found.backend, max: parsed.max, query });
   if ("error" in said) return failed(said.error, paths);
-  console.log(parsed.json ? JSON.stringify(said.raw, null, 2) : searchOutput(query, said.answer));
+  console.log(parsed.json ? printableJson(said.raw) : searchOutput(query, said.answer));
   return 0;
 }

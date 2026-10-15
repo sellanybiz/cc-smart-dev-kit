@@ -62,6 +62,8 @@
  */
 
 import { type GatewayConfig, messageOf, watchConfig } from "./config";
+import { directIfLoopback } from "./hosts";
+import { oneLine } from "./plain-text";
 import {
   cooldownSeconds,
   fallbackKind,
@@ -82,6 +84,11 @@ export interface UpstreamInit {
   decompress: false;
   headers: Headers;
   method: string;
+  /**
+   * `false` for a backend on this machine: its key goes straight there, never through a
+   * proxy from the environment (`directIfLoopback`). Absent for any other upstream.
+   */
+  proxy?: false;
   /** A proxy passes a redirect on; it never follows one with the client's login. */
   redirect: "manual";
   signal: AbortSignal;
@@ -275,13 +282,9 @@ export function sseScanner(): { push(text: string): "error" | "event" | null } {
   };
 }
 
-/** Text safe for one log line: no control characters, bounded length. */
+/** Text safe for one log line: printable ASCII only, bounded length (`oneLine`). */
 function printable(text: string, max = 120): string {
-  return text
-    .replace(/\s+/g, " ")
-    .replace(/[^\x20-\x7e]/g, "?")
-    .trim()
-    .slice(0, max);
+  return oneLine(text, max, { ascii: true });
 }
 
 /** A secret as the log shows it: `****` and, for a long one, its last four characters. */
@@ -356,6 +359,21 @@ export function maskSecrets(text: string, known: readonly string[] = []): string
     );
 }
 
+/**
+ * An outside error text as one line to show: anything like a key masked first
+ * (`maskSecrets`, with the `known` secrets), then made one line of at most `max`
+ * characters with no control character (`oneLine`). The router's log passes `ascii`;
+ * `anymodel search` shows Unicode and marks a cut with `…`.
+ */
+export function maskedLine(
+  text: string,
+  known: readonly string[],
+  max: number,
+  options: { ascii?: boolean; mark?: string } = {},
+): string {
+  return oneLine(maskSecrets(text, known), max, options);
+}
+
 /** How long an error snippet in the log may be. */
 const SNIPPET_MAX = 300;
 
@@ -383,7 +401,7 @@ function snippetText(bytes: Uint8Array, known: readonly string[]): string {
     while (end > 0 && KEY_CHARACTER.test(text.charAt(end - 1))) end -= 1;
     text = text.slice(0, end);
   }
-  return printable(maskSecrets(text, known), SNIPPET_MAX);
+  return maskedLine(text, known, SNIPPET_MAX, { ascii: true });
 }
 
 /**
@@ -777,6 +795,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       method: upstream.method,
       redirect: "manual",
       signal: controller.signal,
+      ...directIfLoopback(upstream.url),
     });
     try {
       const first = await (timer === null ? pending : Promise.race([pending, timer.done]));

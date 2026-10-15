@@ -50,7 +50,7 @@ After that, use `anymodel setup` to set up again (for example after an update).
 | `anymodel doctor` | Checks the install (the list is below). Prints ✓ or ✗ for each check, and exits with 1 when one fails. |
 | `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, its block) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy and unit. `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
 | `anymodel gateway <command>` | The optional AI gateway (below). |
-| `anymodel search "<query>" [--max <n>] [--fetch <url>] [--json]` | Searches the web through the gateway's OmniRoute backend (Ollama's web search among its providers), or reads one page's text with `--fetch`. Prints each result's title, its URL and a short snippet. Needs the gateway set up (below). |
+| `anymodel search "<query>" [--max <n>] [--json]`<br>`anymodel search --fetch <url> [--json]` | Searches the web through the gateway's OmniRoute backend (Ollama's web search among its providers), or reads one page's text with `--fetch`. Prints each result's title, its URL and a short snippet. `--max` asks for 1 to 50 results. The query, or the URL, goes to that search or fetch provider on the internet; `--fetch` refuses a local or private address. Needs the gateway set up (below). |
 | `anymodel version` | Prints the version. |
 
 `doctor` checks that:
@@ -150,8 +150,10 @@ snippet, and the whole output is cut to about 2500 characters (`--json` prints t
 answer). `--fetch <url>` reads one page's text instead. It needs the gateway set up — its
 own error says so when it is not — and `--fetch` needs a web-fetch provider key inside
 OmniRoute. With the default setup a search is free: Ollama's web search costs $0.00, and
-OmniRoute caches a query for five minutes. The details, the measured numbers and the
-limits: [docs/search.md](docs/search.md).
+OmniRoute caches a query for five minutes. Your OmniRoute key goes only to OmniRoute, but
+the query (or the URL) goes on to the search or fetch provider on the internet, so never
+put a key, a private host name or private data in it. The details, the measured numbers
+and the limits: [docs/search.md](docs/search.md).
 
 ## A project's `.claude/anymodel.json`
 

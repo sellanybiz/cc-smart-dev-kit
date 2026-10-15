@@ -15,17 +15,23 @@
  *   400 that says so.
  *
  * The key comes from the gateway's config file, read in this process. It is never
- * printed: an error answer goes through the router's own `maskSecrets` (the function its
- * log uses) before it reaches the terminal. A 200 answer is not masked: the generic
- * "32 characters or more" rule would wreck real page text, and a search answer is
- * OmniRoute's own — the program the key was given to. Only errors, which an upstream may
- * echo a key into, are masked.
+ * printed: an error answer, and the reason a request failed, go through the router's own
+ * `maskSecrets` (the function its log uses) before they reach the terminal, and the
+ * address is shown through `shownValue` (a URL with a user and password is masked). A
+ * 200 answer is not masked: the generic "32 characters or more" rule would wreck real
+ * page text, and a search answer is OmniRoute's own — the program the key was given to.
+ * Only errors, which an upstream may echo a key into, are masked.
+ *
+ * A request to an OmniRoute on this machine never goes through a proxy from the
+ * environment (`directIfLoopback`): it carries the key.
  *
  * The shapes and the tests: docs/search.md.
  */
 
 import { messageOf } from "../gateway/config";
-import { maskSecrets } from "../gateway/router";
+import { directIfLoopback } from "../gateway/hosts";
+import { maskedLine } from "../gateway/router";
+import { shownValue } from "../gateway/settings";
 
 /** How long one search or fetch may take before it is given up. */
 export const REQUEST_TIMEOUT_MS = 30_000;
@@ -81,12 +87,28 @@ function numberIn(holder: unknown, key: string): null | number {
   return typeof value === "number" ? value : null;
 }
 
+/** A wait as an error names it: milliseconds under a second. */
+function waited(ms: number): string {
+  return ms < 1000 ? `${ms} ms` : `${Math.round(ms / 1000)} s`;
+}
+
+/** True when `error` is the abort `AbortSignal.timeout` sends. */
+function isTimeout(error: unknown): boolean {
+  return error instanceof Error && error.name === "TimeoutError";
+}
+
 /**
- * Why a request failed, in one line, ready to print: OmniRoute's own `error.message`
- * when its answer is JSON with one, else the answer's text. Keys masked first (the
- * answer may echo the one that was sent), the terminal's own control characters turned
- * into spaces (an upstream's answer is its text, not a way to drive the terminal), then
- * cut to `ERROR_CHARS`.
+ * Text from outside (an answer, a fetch error) as one line, ready to print: keys masked
+ * first (it may echo the one that was sent), every control character a space (it is
+ * text, not a way to drive the terminal), then cut to `ERROR_CHARS` (`maskedLine`).
+ */
+function errorText(text: string, backend: SearchBackend): string {
+  return maskedLine(text, [backend.apiKey], ERROR_CHARS, { mark: "…" });
+}
+
+/**
+ * Why a request failed: OmniRoute's own `error.message` when its answer is JSON with
+ * one, else the answer's text, made safe to print (`errorText`).
  */
 function reasonOf(text: string, backend: SearchBackend): string {
   let reason = text;
@@ -100,16 +122,13 @@ function reasonOf(text: string, backend: SearchBackend): string {
   } catch {
     // Not JSON: the text itself is the reason.
   }
-  const oneLine = maskSecrets(reason, [backend.apiKey])
-    .replace(/[\p{Cc}\p{Cf}]+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return oneLine.length > ERROR_CHARS ? `${oneLine.slice(0, ERROR_CHARS)}…` : oneLine;
+  return errorText(reason, backend);
 }
 
 /**
  * One POST to the backend. `{ error }` with the reason when nothing answered, when the
- * answer was a redirect, when it was not 2xx, or when it was not JSON; else the answer.
+ * answer was a redirect, when its body broke off or did not finish in time, when it was
+ * not 2xx, or when it was not JSON; else the answer.
  *
  * A redirect is **not** followed: the key would travel to whatever address the answer
  * names. The router refuses one from a cheap backend for the same reason
@@ -122,9 +141,11 @@ async function post(
   body: Record<string, unknown>,
   timeoutMs: number,
 ): Promise<{ error: string } | { raw: unknown }> {
+  const url = `${backend.baseUrl}${path}`;
+  const address = shownValue(backend.baseUrl);
   let response: Response;
   try {
-    response = await fetch(`${backend.baseUrl}${path}`, {
+    response = await fetch(url, {
       method: "POST",
       headers: {
         authorization: `Bearer ${backend.apiKey}`,
@@ -133,13 +154,19 @@ async function post(
       body: JSON.stringify(body),
       redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
+      ...directIfLoopback(url),
     });
   } catch (error) {
-    const reason =
-      error instanceof Error && error.name === "TimeoutError"
-        ? `no answer within ${timeoutMs < 1000 ? `${timeoutMs} ms` : `${Math.round(timeoutMs / 1000)} s`}`
-        : messageOf(error);
-    return { error: `cannot reach OmniRoute at ${backend.baseUrl} (${reason}). Is it running?` };
+    // A timeout is not a refused connection (something may be busy there, or the network
+    // drops the packets): "Is it running?" would point the wrong way.
+    if (isTimeout(error)) {
+      return {
+        error: `cannot reach OmniRoute at ${address} (no answer within ${waited(timeoutMs)})`,
+      };
+    }
+    return {
+      error: `cannot reach OmniRoute at ${address} (${errorText(messageOf(error), backend)}). Is it running?`,
+    };
   }
   if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
     return {
@@ -148,7 +175,16 @@ async function post(
         "it is not followed, so the key stays with the address in the gateway config. Check backends.omniroute.baseUrl.",
     };
   }
-  const text = await response.text().catch(() => "");
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (error) {
+    return {
+      error: isTimeout(error)
+        ? `OmniRoute at ${address} did not finish answering within ${waited(timeoutMs)}`
+        : `OmniRoute's answer broke off (${errorText(messageOf(error), backend)})`,
+    };
+  }
   if (!response.ok) {
     return { error: `OmniRoute answered HTTP ${response.status}: ${reasonOf(text, backend)}` };
   }
@@ -159,7 +195,11 @@ async function post(
   }
 }
 
-/** The search answer as much as the plain output needs; null when the shape is not one we know. */
+/**
+ * The search answer as much as the plain output needs; null when the shape is not one we
+ * know: no results list, or a list with entries of which none has a `url` string (an
+ * answer in a new shape, not "nothing found").
+ */
 export function parseSearchAnswer(body: unknown): null | SearchAnswer {
   if (!isJsonObject(body) || !Array.isArray(body.results)) return null;
   const results: SearchResult[] = [];
@@ -167,6 +207,7 @@ export function parseSearchAnswer(body: unknown): null | SearchAnswer {
     if (!isJsonObject(entry) || typeof entry.url !== "string") continue;
     results.push({ snippet: textOf(entry.snippet), title: textOf(entry.title), url: entry.url });
   }
+  if (body.results.length > 0 && results.length === 0) return null;
   return {
     cached: body.cached === true,
     costUsd: numberIn(body.usage, "search_cost_usd") ?? 0,
@@ -204,8 +245,11 @@ export async function searchWeb(options: {
   if ("error" in sent) return sent;
   const answer = parseSearchAnswer(sent.raw);
   if (answer === null) {
+    const listed = isJsonObject(sent.raw) && Array.isArray(sent.raw.results);
     return {
-      error: "OmniRoute's answer has no results list; it is not a shape this version knows",
+      error: listed
+        ? "OmniRoute's results have no url this version can read; they are not a shape this version knows"
+        : "OmniRoute's answer has no results list; it is not a shape this version knows",
     };
   }
   return { answer, raw: sent.raw };

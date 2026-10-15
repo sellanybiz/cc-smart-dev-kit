@@ -5,11 +5,17 @@
  * 2026-10-15: 585 to 61,350 characters for five results), so a snippet is shown as one
  * short line of `SNIPPET_CHARS` characters, and the whole output is cut to
  * `MAX_OUTPUT_CHARS` with a note saying so. `--json` prints OmniRoute's whole answer
- * instead, uncut.
+ * instead, uncut (`printableJson`).
+ *
+ * Every field comes from the web, so none reaches the terminal as it is: each one goes
+ * through `oneLine` or `plainText` (src/gateway/plain-text.ts), which turn every control
+ * character into a space. A page's text keeps its line breaks and tabs; a title, a URL,
+ * a snippet or the provider is one line, so it cannot forge a line of its own.
  *
  * The numbers and the measurement: docs/search.md.
  */
 
+import { cutText, oneLine, plainText } from "../gateway/plain-text";
 import type { FetchedPage, SearchAnswer, SearchResult } from "./client";
 
 /** The whole plain output is never longer than this, the cut note included. */
@@ -26,10 +32,9 @@ function took(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 
-/** One result's snippet: one line, cut to `SNIPPET_CHARS`. */
-function snippet(text: string): string {
-  const oneLine = text.replace(/\s+/g, " ").trim();
-  return oneLine.length > SNIPPET_CHARS ? `${oneLine.slice(0, SNIPPET_CHARS)}…` : oneLine;
+/** A field shown whole on one line (a title, a URL): the output's own cut bounds it. */
+function line(text: string): string {
+  return oneLine(text, Number.POSITIVE_INFINITY);
 }
 
 /**
@@ -41,7 +46,7 @@ function snippet(text: string): string {
 export function cutOutput(text: string): string {
   if (text.length <= MAX_OUTPUT_CHARS) return text;
   const room = MAX_OUTPUT_CHARS - CUT_NOTE.length - 1;
-  const head = text.slice(0, room);
+  const head = cutText(text, room);
   const lastBreak = head.lastIndexOf("\n");
   const kept = lastBreak > room / 2 ? head.slice(0, lastBreak) : head;
   return `${kept}\n${CUT_NOTE}`;
@@ -49,29 +54,30 @@ export function cutOutput(text: string): string {
 
 /** A search's plain output: the query, what answered, then each result. Cut to the limit. */
 export function searchOutput(query: string, answer: SearchAnswer): string {
+  const provider = line(answer.provider);
   const facts = [
     `${answer.results.length} result${answer.results.length === 1 ? "" : "s"}`,
-    answer.provider === "" ? "" : `from ${answer.provider}`,
+    provider === "" ? "" : `from ${provider}`,
     answer.tookMs === null ? "" : `in ${took(answer.tookMs)}`,
     answer.cached ? "(cached)" : "",
     answer.costUsd > 0 ? `cost $${answer.costUsd.toFixed(4)}` : "",
   ].filter((fact) => fact !== "");
-  const lines = [`Search: ${query}`, facts.join(" ")];
+  const lines = [`Search: ${line(query)}`, facts.join(" ")];
   answer.results.forEach((result: SearchResult, index: number) => {
-    lines.push(
-      "",
-      `${index + 1}. ${result.title === "" ? result.url : result.title}`,
-      `   ${result.url}`,
-    );
-    const text = snippet(result.snippet);
-    if (text !== "") lines.push(`   ${text}`);
+    const url = line(result.url);
+    const title = line(result.title);
+    lines.push("", `${index + 1}. ${title === "" ? url : title}`, `   ${url}`);
+    const snippet = oneLine(result.snippet, SNIPPET_CHARS, { mark: "…" });
+    if (snippet !== "") lines.push(`   ${snippet}`);
   });
   return cutOutput(lines.join("\n"));
 }
 
 /** A fetched page's plain output: its title and its text. Cut to the limit. */
 export function pageOutput(page: FetchedPage): string {
-  const head = [`Page: ${page.url}`];
-  if (page.title !== "") head.push(page.title);
-  return cutOutput(`${head.join("\n")}\n\n${page.content.trim()}`);
+  const head = [`Page: ${line(page.url)}`];
+  const title = line(page.title);
+  if (title !== "") head.push(title);
+  const text = plainText(page.content, { keepNewlines: true }).trim();
+  return cutOutput(`${head.join("\n")}\n\n${text}`);
 }

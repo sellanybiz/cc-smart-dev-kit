@@ -29,10 +29,12 @@ Commands:
                      it restarts.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      anymodel gateway --help lists them.
-  search "<query>" [--max <n>] [--fetch <url>] [--json]
+  search "<query>" [--max <n>] [--json]
+  search --fetch <url> [--json]
                      Search the web through the gateway (OmniRoute, Ollama's web search):
                      each result's title, URL and a short snippet. --fetch: one page's
-                     text. Needs the gateway set up.
+                     text. The query or URL goes to that provider on the internet. Needs
+                     the gateway set up.
   version            Print the version.
   --help             Print this help.
 

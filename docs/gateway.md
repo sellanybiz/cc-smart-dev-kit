@@ -166,9 +166,11 @@ A request moves to the next target **only before any answer reaches Claude Code*
   or authorization, `Bearer …` / `Basic …`, `sk-…`, a value after `key`, `token`,
   `secret` or `password` and a `:` or `=`, and any run of 32 or more letters, digits, `_`
   or `-`, except a run with `__` (an MCP tool name) or a UUID. A masked value of 12 or
-  more characters keeps its last four. The line is written in the background, so the
-  answer reaches Claude Code whole and at once; it can come after the request's own log
-  line. A failed read gives one `WARN` line, not two.
+  more characters keeps its last four. Then it is made one line of printable ASCII
+  (`maskedLine` in `router.ts`, and `oneLine` in `src/gateway/plain-text.ts`: the one
+  home for making outside text safe to print, which `anymodel search` uses too). The line
+  is written in the background, so the answer reaches Claude Code whole and at once; it
+  can come after the request's own log line. A failed read gives one `WARN` line, not two.
 
 ## What a Claude target sees
 
@@ -233,6 +235,16 @@ The router builds a **new** request for a cheap backend:
   `x-claude-code-session-id`, plus the backend's own key as `Authorization`. Never
   `authorization`, `x-api-key`, `cookie` or `anthropic-beta`.
 - The body without `metadata` (it holds the Claude account id).
+- **No proxy to a backend on this machine.** Bun's `fetch` sends a request through
+  `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` unless `NO_PROXY` lists the host, and this
+  request carries the backend's key. So a backend whose `baseUrl` is on 127.0.0.0/8,
+  `::1` or `localhost` is called straight (`directIfLoopback`, `src/gateway/hosts.ts`),
+  by the router and by the model list (`gateway models`, `slot`, `status`, `doctor`). A
+  remote backend, and Anthropic, keep the environment's proxy settings: HTTPS through a
+  company proxy is normal there. `directIfLoopback` passes `proxy: false`, Bun's typed
+  way; Bun 1.4.2 ignores that option (measured), so it also adds the host to the
+  process's `NO_PROXY`, which every Bun version honours. That list grows only by the
+  loopback hosts the process calls (`src/gateway/proxy.test.ts`).
 - **Prompt text exactly as sent.** Only two named translations, each tested:
   - `toolSearchForBackend`: with `ENABLE_TOOL_SEARCH=true`, Claude Code marks most tools
     `defer_loading` and answers its `ToolSearch` with `tool_reference` blocks. Anthropic

@@ -32,14 +32,29 @@ flowchart LR
   "include_metadata": true}` for `--fetch`. OmniRoute routes that to a web-fetch provider
   of its own, not to Ollama.
 - **The key is never printed.** It reaches the request's header and nothing else; a
-  failed request's reason goes through the router's own `maskSecrets` (the function its
-  log uses, `src/gateway/router.ts`) with the key in its known list, so a provider that
-  echoes a key back cannot put it on the terminal. A 200 answer is **not** masked: the
-  generic "32 characters or more" rule would wreck real page text, and the answer is the
-  local OmniRoute's own.
+  failed request's reason — OmniRoute's answer, or the error `fetch` threw — goes
+  through the router's own `maskSecrets` (the function its log uses,
+  `src/gateway/router.ts`) with the key in its known list, so a provider that echoes a
+  key back cannot put it on the terminal. The address is shown through `shownValue`: a
+  `baseUrl` with a user and a password in it is masked. A 200 answer is **not** masked:
+  the generic "32 characters or more" rule would wreck real page text, and the answer is
+  the local OmniRoute's own.
+- **The key never goes through a proxy to an OmniRoute on this machine.** Bun's `fetch`
+  sends a request through `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` unless `NO_PROXY`
+  lists the host, and this request carries the key. So for a `baseUrl` on 127.0.0.0/8,
+  `::1` or `localhost`, the request goes straight there (`directIfLoopback`,
+  `src/gateway/hosts.ts`, the same rule the gateway uses for its own backend calls).
+- **Web text never drives the terminal.** A title, a URL, a snippet, the provider's name
+  and a page's text come from the web, and a terminal obeys control characters inside
+  text: an escape sequence can write the clipboard or hide text, a bidi override shows
+  text in another order, a line break can forge a result line. So every control and
+  format character becomes a space (`src/gateway/plain-text.ts`); a page's text keeps
+  only its line breaks and tabs. `--json` writes each of them as a JSON escape
+  (`\u001b`, `\u202e`), so the JSON parses back to the same answer.
 - **The plain output is cut** to about 2500 characters, and each snippet to 300, because
-  Ollama's `content` per result is a whole page's text. `--json` prints everything: it is
-  the way to get the full text of a result.
+  Ollama's `content` per result is a whole page's text. A cut never leaves half of a
+  character (an emoji is two units). `--json` prints everything: it is the way to get the
+  full text of a result.
 
 ## The cost of a search
 
@@ -76,18 +91,39 @@ provider would change that, and the command then prints `cost $0.00xx` in the he
 - **One query, not a crawl.** OmniRoute's `/v1/search` takes one query string; there is
   no site walk, no pagination, and no second page of results (`--max` asks for more
   results, not for more pages).
-- **Result count**: OmniRoute clamps `max_results` to the provider's own maximum. For
-  `ollama-search` that is 10, with 5 as the default; `--max 20` answers at most 10.
+- **Result count**: `--max` takes 1 to 50; more is refused before anything is sent.
+  OmniRoute then clamps `max_results` to the provider's own maximum. For `ollama-search`
+  that is 10, with 5 as the default; `--max 20` answers at most 10. `--max` is for a
+  search only: with `--fetch` it is refused.
 - **No news or date filter.** OmniRoute's API has `search_type: news` and `time_range`;
   this command sends neither, so it always searches the web as a whole.
 - **The plain output is cut** at about 2500 characters (300 a snippet). A long page's
   text is only whole under `--json`.
-- **Everything local**: the command talks to `baseUrl` from the config, which is
-  `http://127.0.0.1:20128` in the default setup. A remote OmniRoute would work too — the
-  key would then travel to that address, which is what `gateway.json` says.
+- **The key stays local; the query does not.** The command talks to `baseUrl` from the
+  config, which is `http://127.0.0.1:20128` in the default setup: the key goes there and
+  nowhere else. But every query, and every `--fetch` URL, leaves this machine:
+  OmniRoute sends it to a third party — Ollama's web search, or the fetch provider —
+  under OmniRoute's own provider key. So a query or a URL must never hold a key, a
+  private host name or private data.
+- **`--fetch` refuses a local or private address**, before anything is sent: a loopback
+  one (127.0.0.0/8, `::1`, `localhost`, `*.localhost`), an unspecified one (0.0.0.0/8,
+  `::`), a link-local one (169.254.0.0/16, fe80::/10), a private one (10.0.0.0/8,
+  172.16.0.0/12, 192.168.0.0/16, fc00::/7, and the IPv4-mapped IPv6 form of each), and a
+  private name (one with no dot, or under `.local`, `.internal` or `.home.arpa`). The
+  fetch provider is on the internet: it cannot reach such a page, and the address would
+  leave this machine for nothing. There is no switch to allow one, for that reason. A
+  public name that resolves to a private address is not caught: the name is resolved by
+  the provider, not here.
+- **A remote OmniRoute** (a `baseUrl` not on this machine) works too: the key then
+  travels to that address, which is what `gateway.json` says. That request keeps the
+  environment's proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`),
+  so a proxy there sees where the key goes — and with an `http://` `baseUrl`, the key
+  itself. Use `https://`, or list the host in `NO_PROXY`. Only a `baseUrl` on this
+  machine skips the proxy (§ How it works).
 - **A redirect is refused, not followed**: the key would travel to whatever address the
   answer names. So a proxy in front of OmniRoute must be the address in
   `backends.omniroute.baseUrl`, not a redirect to it.
 - **The tests never reach a provider.** Every test uses a fake server on a free port
-  (`src/search/client.test.ts`, `src/search/command.test.ts`); the numbers above come
-  from the live calls listed in § The cost of a search.
+  (`src/search/client.test.ts`, `src/search/command.test.ts`; a fake proxy too, for the
+  proxy rule); the numbers above come from the live calls listed in § The cost of a
+  search.

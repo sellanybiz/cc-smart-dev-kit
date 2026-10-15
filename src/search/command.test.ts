@@ -13,7 +13,7 @@ import { type CliPaths, cliPaths } from "../cli/paths";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import { DEFAULT_MAX, parseSearchArgs, runSearch, searchBackend, USAGE } from "./command";
-import { CUT_NOTE, MAX_OUTPUT_CHARS } from "./format";
+import { CUT_NOTE, cutOutput, MAX_OUTPUT_CHARS } from "./format";
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 
@@ -23,6 +23,13 @@ const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
  * key happens to look like one.
  */
 const PLANTED_KEY = "omni_live_SENTINEL_0123456789";
+
+/** Every control or format character in `text` but `\n`, as its code: what a terminal may obey. */
+function controlsIn(text: string): string[] {
+  return [...text]
+    .filter((char) => char !== "\n" && /[\p{Cc}\p{Cf}]/u.test(char))
+    .map((char) => `U+${(char.codePointAt(0) ?? 0).toString(16).padStart(4, "0")}`);
+}
 
 const servers: { stop(force?: boolean): void }[] = [];
 afterEach(() => {
@@ -177,6 +184,30 @@ describe("the plain output", () => {
     expect(lines[9]).toBe(`   ${"a".repeat(300)}…`);
   });
 
+  it("a snippet cut next to an emoji: the cut never keeps half of it", async () => {
+    // 299 characters, then an emoji (two UTF-16 units): a cut at 300 would keep its first half.
+    const fake = fakeOmniRoute(() =>
+      Response.json({
+        ...SEARCH_ANSWER,
+        results: [
+          { snippet: `${"a".repeat(299)}\u{1F600}tail`, title: "A page", url: "https://x.test/" },
+        ],
+      }),
+    );
+    const result = await run(["x"], machine(fake.baseUrl).paths);
+    expect(result.stdout.split("\n")[5]).toBe(`   ${"a".repeat(299)}…`);
+  });
+
+  it("the whole output cut next to an emoji: the cut never keeps half of it", () => {
+    // No line break to cut at, and the emoji's first half is the last unit that fits.
+    const room = MAX_OUTPUT_CHARS - CUT_NOTE.length - 1;
+    const text = `${"x".repeat(room - 1)}\u{1F600}${"y".repeat(100)}`;
+    expect(cutOutput(text)).toBe(`${"x".repeat(room - 1)}\n${CUT_NOTE}`);
+    // One unit more room would keep the emoji whole: the cut moves only for a half.
+    const fits = `${"x".repeat(room - 2)}\u{1F600}${"y".repeat(100)}`;
+    expect(cutOutput(fits)).toBe(`${"x".repeat(room - 2)}\u{1F600}\n${CUT_NOTE}`);
+  });
+
   it("an answer longer than the limit: cut to 2500 characters, a note at the end", async () => {
     const fake = fakeOmniRoute(() =>
       Response.json({
@@ -270,6 +301,75 @@ describe("the plain output", () => {
     expect(JSON.parse(result.stdout)).toEqual(big);
   });
 
+  it("web text that would drive the terminal: no control character reaches it", async () => {
+    // Each field a page controls carries an OSC 52 clipboard write, hidden text (SGR 8),
+    // a C1 control, a right-to-left override, and a line break that would forge a result.
+    const nasty = "\u001b]52;c;ZXZpbA==\u0007\u001b[8mhidden\u009b2J\u202eevil\r\n9. forged";
+    const fake = fakeOmniRoute(() =>
+      Response.json({
+        ...SEARCH_ANSWER,
+        provider: `ollama-search${nasty}`,
+        results: [
+          { snippet: `Snippet ${nasty}`, title: `Title ${nasty}`, url: `https://x.test/${nasty}` },
+        ],
+      }),
+    );
+    const result = await run(["bun runtime"], machine(fake.baseUrl).paths);
+    expect(result.exitCode).toBe(0);
+    // Each control character is a space, then each run of spaces one space.
+    const shown = "]52;c;ZXZpbA== [8mhidden 2J evil 9. forged";
+    expect(result.stdout).toBe(
+      [
+        "Search: bun runtime",
+        `1 result from ollama-search ${shown} in 847 ms`,
+        "",
+        `1. Title ${shown}`,
+        `   https://x.test/ ${shown}`,
+        `   Snippet ${shown}`,
+        "",
+      ].join("\n"),
+    );
+    expect(controlsIn(result.stdout)).toEqual([]);
+  });
+
+  it("a fetched page that would drive the terminal: its line breaks and tabs stay, nothing else", async () => {
+    const fake = fakeOmniRoute(() =>
+      Response.json({
+        content:
+          "Line one\u001b[2J\r\n\tLine two\u202e\u0007\nLine three\u001b]52;c;ZXZpbA==\u0007",
+        metadata: { title: "Title\u001b[8m\r\nPage: https://forged.test/" },
+        url: "https://x.test/\u001b[8m",
+      }),
+    );
+    const result = await run(["--fetch", "https://x.test/"], machine(fake.baseUrl).paths);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      [
+        "Page: https://x.test/ [8m",
+        "Title [8m Page: https://forged.test/",
+        "",
+        "Line one [2J ",
+        "\tLine two  ",
+        "Line three ]52;c;ZXZpbA==",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("--json: the answer as it was, every control character written as a JSON escape", async () => {
+    const answer = {
+      ...SEARCH_ANSWER,
+      results: [{ snippet: "a\u001b[8mb\u202ec\u009bd", title: "t\r\nu", url: "https://x.test/" }],
+    };
+    const fake = fakeOmniRoute(() => Response.json(answer));
+    const result = await run(["--json", "bun runtime"], machine(fake.baseUrl).paths);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('"snippet": "a\\u001b[8mb\\u202ec\\u009bd"');
+    expect(result.stdout).toContain('"title": "t\\r\\nu"');
+    expect(controlsIn(result.stdout)).toEqual([]);
+    expect(JSON.parse(result.stdout)).toEqual(answer);
+  });
+
   it("a search that found nothing: 0 results, and no result lines", async () => {
     const fake = fakeOmniRoute(() => Response.json({ ...SEARCH_ANSWER, results: [] }));
     const result = await run(["nothing at all"], machine(fake.baseUrl).paths);
@@ -355,6 +455,16 @@ describe("when it cannot search", () => {
       [["--fetch", "example.com"], '--fetch needs an http(s) URL (not "example.com")'],
       [["--fetch"], '--fetch needs an http(s) URL (not "")'],
       [["x", "--fetch", "https://example.com/"], "give either a query or --fetch <url>, not both"],
+      [["--max", "51", "x"], '--max asks for at most 50 results (not "51")'],
+      [["--max", "1000000", "x"], '--max asks for at most 50 results (not "1000000")'],
+      [
+        ["--max", "3", "--fetch", "https://example.com/"],
+        "--max counts search results; --fetch reads one page, so leave --max out",
+      ],
+      [
+        ["--fetch", "https://example.com/", "--max", "3"],
+        "--max counts search results; --fetch reads one page, so leave --max out",
+      ],
     ];
     for (const [args, reason] of cases) {
       const result = await run(args, paths);
@@ -372,13 +482,64 @@ describe("when it cannot search", () => {
       max: DEFAULT_MAX,
       query: "bun runtime",
     });
-    expect(parseSearchArgs(["--json", "--max", "9", "--fetch", "https://example.com/"])).toEqual({
+    // --max is a search's only: with --fetch it is refused (above), so the fetch keeps
+    // the default it never sends.
+    expect(parseSearchArgs(["--json", "--fetch", "https://example.com/"])).toEqual({
       fetch: "https://example.com/",
       json: true,
-      max: 9,
+      max: DEFAULT_MAX,
       query: null,
     });
+    expect(parseSearchArgs(["--max", "50", "x"])).toMatchObject({ max: 50 });
     expect(DEFAULT_MAX).toBe(5);
+  });
+
+  it("--fetch of a local or private address: refused, with what it is and why", async () => {
+    const { paths } = machine("http://127.0.0.1:1");
+    const why =
+      "The page is read by a fetch provider on the internet, which cannot reach it, and the address would leave this machine.";
+    const cases: [string, string][] = [
+      ["http://localhost:3000/", "localhost: it is a loopback name"],
+      ["http://app.localhost/", "app.localhost: it is a loopback name"],
+      ["http://127.0.0.1/", "127.0.0.1: it is a loopback address"],
+      // The URL parser writes these forms of 127.0.0.1 as 127.0.0.1.
+      ["http://2130706433/", "127.0.0.1: it is a loopback address"],
+      ["http://0x7f.1/", "127.0.0.1: it is a loopback address"],
+      ["http://[::1]:8080/", "[::1]: it is a loopback address"],
+      ["http://[::ffff:127.0.0.1]/", "[::ffff:7f00:1]: it is a loopback address"],
+      ["http://0.0.0.0/", "0.0.0.0: it is an unspecified address"],
+      ["http://[::]/", "[::]: it is an unspecified address"],
+      ["http://169.254.169.254/latest/meta-data/", "169.254.169.254: it is a link-local address"],
+      ["http://[fe80::1]/", "[fe80::1]: it is a link-local address"],
+      ["http://[febf::1]/", "[febf::1]: it is a link-local address"],
+      ["http://10.1.2.3/", "10.1.2.3: it is a private address"],
+      ["http://172.16.0.1/", "172.16.0.1: it is a private address"],
+      ["http://172.31.255.255/", "172.31.255.255: it is a private address"],
+      ["http://192.168.1.10/", "192.168.1.10: it is a private address"],
+      ["http://[fd12:3456::1]/", "[fd12:3456::1]: it is a private address"],
+      ["http://[::ffff:10.0.0.1]/", "[::ffff:a00:1]: it is a private address"],
+      ["http://intranet/", "intranet: it is a private host name"],
+      ["http://printer.local/", "printer.local: it is a private host name"],
+      ["http://git.corp.internal/", "git.corp.internal: it is a private host name"],
+      ["http://nas.home.arpa./", "nas.home.arpa.: it is a private host name"],
+    ];
+    for (const [url, what] of cases) {
+      const result = await run(["--fetch", url], paths);
+      expect(`${url} → ${result.exitCode} ${result.stderr}`).toBe(
+        `${url} → 2 --fetch does not read ${what}. ${why}\n\n${USAGE}\n`,
+      );
+    }
+    // Public addresses next to those ranges go through.
+    for (const url of [
+      "http://172.15.0.1/",
+      "http://172.32.0.1/",
+      "http://169.253.1.1/",
+      "http://11.0.0.1/",
+      "http://[2001:db8::1]/",
+      "https://example.com/",
+    ]) {
+      expect(parseSearchArgs(["--fetch", url])).toMatchObject({ fetch: url });
+    }
   });
 });
 

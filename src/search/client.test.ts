@@ -4,6 +4,7 @@
  * where a real router may run); the expected values are written by hand.
  */
 import { afterEach, describe, expect, it } from "bun:test";
+import { fakeProxy, withProxyEnv } from "../testing/proxy-env";
 import {
   fetchPage,
   parseFetchedPage,
@@ -208,9 +209,57 @@ describe("a request that does not answer", () => {
       query: "bun runtime",
       timeoutMs: 50,
     });
+    // Not "Is it running?": something took the connection, it just did not answer.
     expect("error" in said && said.error).toBe(
-      `cannot reach OmniRoute at ${fake.baseUrl} (no answer within 50 ms). Is it running?`,
+      `cannot reach OmniRoute at ${fake.baseUrl} (no answer within 50 ms)`,
     );
+  });
+
+  it("an answer whose body does not finish in time: it says so, and how long it waited", async () => {
+    // Headers at once, then one chunk, then nothing: the body never ends.
+    const fake = fakeOmniRoute(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"results": ['));
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+    );
+    const said = await searchWeb({
+      backend: { apiKey: KEY, baseUrl: fake.baseUrl },
+      max: 5,
+      query: "bun runtime",
+      timeoutMs: 200,
+    });
+    expect("error" in said && said.error).toBe(
+      `OmniRoute at ${fake.baseUrl} did not finish answering within 200 ms`,
+    );
+  });
+
+  it("an answer whose body breaks off: it says so, with the reason, never as an empty answer", async () => {
+    // It promises 1000 bytes and closes the connection after 13: the read fails.
+    const server = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: {
+        data(socket) {
+          socket.write(
+            'HTTP/1.1 500 Internal Server Error\r\ncontent-length: 1000\r\n\r\n{"error": {"m',
+          );
+          socket.end();
+        },
+      },
+    });
+    servers.push(server);
+    const said = await searchWeb({
+      backend: { apiKey: KEY, baseUrl: `http://127.0.0.1:${server.port}` },
+      max: 5,
+      query: "bun runtime",
+    });
+    expect("error" in said && said.error).toMatch(/^OmniRoute's answer broke off \(.+\)$/);
   });
 
   it("a 4xx: OmniRoute's own reason, and the key it echoed back is masked", async () => {
@@ -303,6 +352,20 @@ describe("a request that does not answer", () => {
     expect(fake.calls.length).toBe(1);
   });
 
+  it("a long reason cut next to an emoji: the cut never keeps half of it", async () => {
+    // 299 characters, then an emoji (two UTF-16 units): a cut at 300 would keep its first half.
+    const reason = `${"word ".repeat(59)}word\u{1F600} more`;
+    const fake = fakeOmniRoute(() => new Response(reason, { status: 502 }));
+    const said = await searchWeb({
+      backend: { apiKey: KEY, baseUrl: fake.baseUrl },
+      max: 5,
+      query: "bun runtime",
+    });
+    expect("error" in said && said.error).toBe(
+      `OmniRoute answered HTTP 502: ${"word ".repeat(59)}word…`,
+    );
+  });
+
   it("a 200 whose answer is not JSON: it says so, and does not guess", async () => {
     const fake = fakeOmniRoute(() => new Response("<html>hello</html>"));
     const said = await searchWeb({
@@ -323,6 +386,24 @@ describe("a request that does not answer", () => {
     expect("error" in said && said.error).toBe(
       "OmniRoute's answer has no results list; it is not a shape this version knows",
     );
+  });
+
+  it("results in a shape this version cannot read: said so, never '0 results'", async () => {
+    // A list with entries, none of which has a `url` string: a new shape, not "nothing found".
+    const fake = fakeOmniRoute(() =>
+      Response.json({ ...ANSWER, results: [{ link: "https://x.test/", name: "A page" }] }),
+    );
+    const said = await searchWeb({
+      backend: { apiKey: KEY, baseUrl: fake.baseUrl },
+      max: 5,
+      query: "bun runtime",
+    });
+    expect("error" in said && said.error).toBe(
+      "OmniRoute's results have no url this version can read; they are not a shape this version knows",
+    );
+    expect(parseSearchAnswer({ results: [{ link: "https://x.test/" }] })).toBeNull();
+    // An empty list is a search that found nothing, not an unknown shape.
+    expect(parseSearchAnswer({ results: [] })?.results).toEqual([]);
   });
 });
 
@@ -355,5 +436,74 @@ describe("the key", () => {
       "OmniRoute answered HTTP 403: x-api-key: ****** was refused",
     );
     expect("error" in said && said.error).not.toContain(KEY);
+  });
+});
+
+describe("a proxy in the environment", () => {
+  it("is never used for OmniRoute on this machine: the key goes straight to it", async () => {
+    const proxy = fakeProxy();
+    servers.push(proxy);
+    const fake = fakeOmniRoute(() => Response.json(ANSWER));
+    await withProxyEnv(proxy.url, async () => {
+      // The control: with these variables, a plain fetch to the same address does go
+      // through the proxy. So the zero below proves the client chose not to.
+      await fetch(`${fake.baseUrl}/control`).then((response) => response.text());
+      expect(proxy.requests.length).toBe(1);
+      proxy.requests.length = 0;
+      const said = await searchWeb({
+        backend: { apiKey: KEY, baseUrl: fake.baseUrl },
+        max: 5,
+        query: "bun runtime",
+      });
+      expect("answer" in said).toBe(true);
+      // `localhost` is this machine too.
+      const page = await fetchPage({
+        backend: { apiKey: KEY, baseUrl: fake.baseUrl.replace("127.0.0.1", "localhost") },
+        url: "https://x.test/",
+      });
+      expect("error" in page && page.error).toBe(
+        "OmniRoute's answer has no page text; it is not a shape this version knows",
+      );
+    });
+    expect(proxy.requests).toEqual([]);
+    expect(fake.calls.map((call) => call.authorization)).toEqual([
+      `Bearer ${KEY}`,
+      `Bearer ${KEY}`,
+    ]);
+  });
+});
+
+describe("what a failure shows of the address and the reason", () => {
+  it("a base URL with a user and a password: masked, never shown as it is", async () => {
+    const port = closedPort();
+    const said = await searchWeb({
+      backend: { apiKey: KEY, baseUrl: `http://user:SECRET-pass@127.0.0.1:${port}` },
+      max: 5,
+      query: "bun runtime",
+    });
+    const error = "error" in said ? said.error : "";
+    // `shownValue` shows a URL with credentials as its last four characters.
+    expect(error).toStartWith(`cannot reach OmniRoute at ••••${String(port).slice(-4)} (`);
+    expect(error).not.toContain("SECRET");
+    expect(error).not.toContain("user:");
+  });
+
+  it("a fetch error that quotes the key: masked", async () => {
+    // A key with a NUL in it: Bun refuses the header and quotes its whole value.
+    const broken = `${KEY}\u0000`;
+    const fake = fakeOmniRoute(() => Response.json(ANSWER));
+    const said = await searchWeb({
+      backend: { apiKey: broken, baseUrl: fake.baseUrl },
+      max: 5,
+      query: "bun runtime",
+    });
+    const error = "error" in said ? said.error : "";
+    // The whole key is masked, its NUL included (the last four characters `maskSecrets`
+    // keeps are "789" and the NUL, which the terminal sees as a space).
+    expect(error).toBe(
+      `cannot reach OmniRoute at ${fake.baseUrl} (Header 'Authorization' has invalid value: 'Bearer ****789 '). Is it running?`,
+    );
+    expect(error).not.toContain(KEY);
+    expect(fake.calls.length).toBe(0);
   });
 });

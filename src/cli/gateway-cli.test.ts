@@ -34,14 +34,30 @@ afterEach(() => {
   for (const server of servers.splice(0)) server.stop(true);
 });
 
-/** A fake OmniRoute (`/v1/models`) and a fake router health page, on one free port. */
+/**
+ * A fake OmniRoute (`/v1/models`, and `anymodel search`'s `/v1/search` and
+ * `/v1/web/fetch`) and a fake router health page, on one free port. Its search answers
+ * 401 with the key it was sent echoed back, as an upstream may.
+ */
 function fakeServer(options: { modelsStatus?: number } = {}) {
   const seenKeys: string[] = [];
+  const searchKeys: string[] = [];
   const server: Bun.Server<undefined> = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch(req): Response {
       const url = new URL(req.url);
+      if (url.pathname === "/v1/search" || url.pathname === "/v1/web/fetch") {
+        const authorization = req.headers.get("authorization") ?? "";
+        searchKeys.push(authorization);
+        if (url.pathname === "/v1/web/fetch") {
+          return Response.json({ content: "Page text.", url: "https://example.com/" });
+        }
+        return Response.json(
+          { error: { message: `invalid key in "${authorization}"` } },
+          { status: 401 },
+        );
+      }
       if (url.pathname === "/v1/models") {
         seenKeys.push(req.headers.get("authorization") ?? "");
         if (options.modelsStatus !== undefined && options.modelsStatus !== 200) {
@@ -63,7 +79,7 @@ function fakeServer(options: { modelsStatus?: number } = {}) {
     },
   });
   servers.push(server);
-  return { port: server.port as number, seenKeys };
+  return { port: server.port as number, searchKeys, seenKeys };
 }
 
 /** Another program on a free port: it answers, but not as this router (an older one, say). */
@@ -922,7 +938,7 @@ describe("secrets", () => {
     const m = machine();
     const server = fakeServer();
     const outputs: string[] = [];
-    const record = (result: { stdout: string; stderr: string }) => {
+    const record = <T extends { stdout: string; stderr: string }>(result: T): T => {
       outputs.push(result.stdout, result.stderr);
       return result;
     };
@@ -949,6 +965,13 @@ describe("secrets", () => {
     record(await m.run(["doctor"]));
     record(await m.run(["gateway", "help"]));
     record(await m.run(["gateway", "setup", "--backend-key-stdin"], PLANTED_KEY));
+    // `anymodel search` reads the same config and key: its search answers 401 with the key
+    // echoed, its fetch a page.
+    const searchFailed = record(await m.run(["search", "bun runtime"]));
+    record(await m.run(["search", "--json", "bun runtime"]));
+    record(await m.run(["search", "--fetch", "https://example.com/"]));
+    record(await m.run(["search", "--json", "--fetch", "https://example.com/"]));
+    record(await m.run(["search", "--max", "99", "bun runtime"]));
     // A broken file: the error must not quote the text around the mistake.
     writeFileSync(m.paths.config, `{"backends":{"omniroute":{"apiKey":"${PLANTED_KEY}",}}}`, {
       mode: 0o600,
@@ -958,6 +981,7 @@ describe("secrets", () => {
     record(await m.run(["gateway", "models"]));
     record(await m.run(["gateway", "slot", "worker", "claude-sonnet-5-5"]));
     record(await m.run(["doctor"]));
+    record(await m.run(["search", "bun runtime"]));
     // Valid JSON that fails the schema: the error names fields, not values.
     writeFileSync(
       m.paths.config,
@@ -970,10 +994,18 @@ describe("secrets", () => {
     );
     record(await m.run(["gateway", "models"]));
     record(await m.run(["doctor"]));
+    record(await m.run(["search", "bun runtime"]));
     const all = outputs.join("\n");
 
     // The backend did receive the key: the test would see a leak if one were printed.
     expect(server.seenKeys).toContain(`Bearer ${PLANTED_KEY}`);
+    // So did the search and the fetch, four times; the broken configs never sent it.
+    expect(server.searchKeys).toEqual(Array(4).fill(`Bearer ${PLANTED_KEY}`));
+    // The failed search printed the echoed key masked.
+    expect(searchFailed.exitCode).toBe(1);
+    expect(searchFailed.stderr).toStartWith(
+      'OmniRoute answered HTTP 401: invalid key in "Bearer ****cdef"\n',
+    );
     // The URL with the password was printed, masked, by status, models and doctor.
     const maskedUrl = `••••${String(server.port).slice(-4)}`;
     expect(all).toContain(`backend creds: ${maskedUrl} key ••••cdef → HTTP 200`);

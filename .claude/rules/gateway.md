@@ -67,6 +67,13 @@ can block good work, and a weak one can let a risky command through.
 - **Never write** `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`,
   `CLAUDE_CODE_SUBAGENT_MODEL` or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`
   (`FORBIDDEN_ENV_KEYS`, and its test).
+- Every `fetch` that carries a backend key spreads `directIfLoopback(url)`
+  (`src/gateway/hosts.ts`) into its options: a backend on this machine is never reached
+  through a proxy from the environment (`src/gateway/proxy.test.ts`). Requests to
+  Anthropic keep the environment's proxy settings.
+- Text from outside (an upstream's answer, a fetch error, web text) is printed or logged
+  only through `src/gateway/plain-text.ts` (`oneLine`, `plainText`, `printableJson`;
+  `maskedLine` for an error): never a second copy of that logic.
 - A backend key comes on stdin, never argv. `gateway.json` is mode 600, and a file
   others can read is refused. No output, log line or error message ever holds a key: mask
   it (`maskKey`; in the router's log, `maskSecrets`), and never echo a parser's message
