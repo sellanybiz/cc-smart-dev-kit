@@ -12,6 +12,8 @@ export const PLUGIN_HOOK_NAMES = [
   "git-guard",
   "main-folder-guard",
   "message-guard",
+  "agent-guard",
+  "job-route",
   "after-merge",
   "worktree-leftovers",
   "session-name",
@@ -53,8 +55,12 @@ export const anymodelConfigSchema = z.strictObject({
   instructions: z.boolean().optional(),
   /** Auto-mode rules this project adds to the user's settings. */
   autoMode: z.array(z.string().min(1)).optional(),
-  /** Heavy jobs: the project's own kinds, over the defaults (`src/jobs/kinds.ts`). */
-  jobs: z.strictObject({ kinds: kindsSchema.optional() }).optional(),
+  /**
+   * Heavy jobs: the project's own kinds, over the defaults (`src/jobs/kinds.ts`).
+   * `route: true` turns on the `job-route` hook: a heavy Bash command is sent through
+   * `anymodel job run` instead of running raw.
+   */
+  jobs: z.strictObject({ kinds: kindsSchema.optional(), route: z.boolean().optional() }).optional(),
   /**
    * The plugin hooks this project still runs as its own copy (["git-guard"]): exactly
    * those stay silent here, so the two copies never both answer. Emptied once the project

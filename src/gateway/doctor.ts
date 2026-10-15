@@ -12,13 +12,21 @@ import { emptyConfig, judgeTargetTested, loadConfigFile, messageOf } from "./con
 import { type HealthFetch, routerHealth } from "./health";
 import { type Runner, renderSocket, restartPendingFile, SOCKET_NAME, UNIT_NAME } from "./service";
 import { shownValue } from "./settings";
-import { JUDGE_SLOT } from "./targets";
+import { isModelSlot, JUDGE_SLOT, parseTarget } from "./targets";
 
 export interface DoctorCheck {
   ok: boolean;
   /** Information only: printed with `·`, never a failure. */
   info?: boolean;
+  /** Worth a look, but not a failure: printed with `!`. */
+  warn?: boolean;
   text: string;
+}
+
+/** True for a Claude model that spends the person's own plan usage: Opus or Fable. */
+function isCostly(model: string): boolean {
+  const name = model.toLowerCase();
+  return name.includes("-opus-") || name.includes("-fable-");
 }
 
 const SETUP = `Run: ${COMMAND} gateway setup`;
@@ -146,6 +154,25 @@ export async function gatewayChecks(options: {
   for (const slot of Object.keys(config.slots).sort()) {
     const first = config.slots[slot]?.[0] ?? "(none)";
     checks.push({ ok: true, info: true, text: `slot ${slot}: first target ${first}` });
+  }
+  // A cheap slot that falls back to Claude Opus or Fable spends the person's own plan usage
+  // without saying so (the Agent guard allows those models only for reviews and reasons):
+  // a warning, not a failure. The model slots are left out: their own first target IS the
+  // Claude model, which is what they are for.
+  for (const [slot, targets] of Object.entries(config.slots).sort(([a], [b]) => (a < b ? -1 : 1))) {
+    if (isModelSlot(slot)) continue;
+    const costly = targets.filter((target) => {
+      const parsed = parseTarget(target);
+      return (
+        "target" in parsed && parsed.target.kind === "anthropic" && isCostly(parsed.target.model)
+      );
+    });
+    if (costly.length === 0) continue;
+    checks.push({
+      ok: true,
+      warn: true,
+      text: `slot ${slot} falls back to ${costly.join(", ")}: a cheap slot that answers on Claude Opus or Fable spends your own plan usage. To change it: ${COMMAND} gateway slot ${slot} <targets>`,
+    });
   }
   if (!Object.hasOwn(config.slots, JUDGE_SLOT)) {
     checks.push({

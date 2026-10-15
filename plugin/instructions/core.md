@@ -97,6 +97,14 @@ permanent and drifts silently.
 | `opus` | Claude Opus | every review; building code that touches security, money, permissions, schema or deploy plumbing; architecture, plan second-reads, tangled debugging, ambiguous research, all UI/UX and design judgment |
 | `fable` | Claude Fable | only the hardest long-horizon work, never the default |
 
+**Opus is for reviews, or an exception the person approves.** Every other Opus launch carries
+a line `Opus reason: <security|money|permissions|schema|deploy|ui|architecture|plan-review|debugging>`
+and asks the person to approve it; a session nobody watches (`claude -p`) refuses it. **Fable
+advises; it never builds.** Very hard problems, hard architecture, a rewrite or a complex
+UI/UX design, a strong second-opinion review, refining a plan — read-only agents only (Plan,
+Reviewer, Explore, Code Explorer), with a line
+`Fable reason: <hard|rewrite|ui-design|architecture|review|plan> - <why>`, each asking the person; `agent-guard` enforces all of it.
+
 **With the anymodel gateway on** (`ANTHROPIC_BASE_URL` points at the local router),
 `haiku` and `sonnet` are its slots, `anymodel-scout` and `anymodel-worker`: cheaper
 non-Claude models, with Claude as the last fallback. `opus` and `fable` stay Claude on the

@@ -15,10 +15,20 @@
  * What it counts, in the window: per session, the main session's replies by model; the
  * subagents launched, how, their replies by model, and the share of those on an Opus model.
  * A file last changed before the window holds nothing in it, and is not read.
+ *
+ * Beside the transcripts it lists the Opus and Fable launches the Agent guard allowed
+ * (`src/hooks/agent-launches.ts`), with why: an Opus or Fable agent spends the person's own
+ * plan usage, and the reason the guard accepted is the one thing the transcripts cannot say.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import {
+  type AgentLaunch,
+  agentLaunchesFile,
+  formatAgentLaunches,
+  readAgentLaunches,
+} from "../hooks/agent-launches";
 import { type CliPaths, tildify } from "./paths";
 
 export interface UsageOptions {
@@ -223,12 +233,14 @@ export function formatUsage(
   hours: number,
   projectsDir: string,
   home: string,
+  launches: AgentLaunch[] = [],
 ): string {
   const lines = [
     `Claude Code replies in the last ${hours} h, main sessions and subagents apart, from ${tildify(projectsDir, home)} (read only; no message text)`,
   ];
   if (sessions.length === 0) {
     lines.push("", "No session answered in that time.");
+    lines.push(...formatAgentLaunches(launches));
     return lines.join("\n");
   }
   const main: Record<string, number> = {};
@@ -262,6 +274,7 @@ export function formatUsage(
     "",
     `Main sessions: ${plural(mainSessions, "session")}; replies by model: ${counts(main) || "none"}`,
     `Subagents: ${subagents} in ${plural(withSubagents, "session")}; replies by model: ${counts(replies) || "none"}; on Opus: ${opus} of ${total} replies (${percent(opus, total)})`,
+    ...formatAgentLaunches(launches),
   );
   return lines.join("\n");
 }
@@ -301,10 +314,16 @@ export function runUsage(paths: CliPaths, args: string[], nowMs: number): number
     return 2;
   }
   const projectsDir = join(paths.claudeConfigDir, "projects");
-  const sessions = collectUsage(projectsDir, {
-    project: options.project,
-    sinceMs: nowMs - options.hours * 3_600_000,
-  });
-  console.log(formatUsage(sessions, options.hours, projectsDir, paths.home));
+  const sinceMs = nowMs - options.hours * 3_600_000;
+  const sessions = collectUsage(projectsDir, { project: options.project, sinceMs });
+  console.log(
+    formatUsage(
+      sessions,
+      options.hours,
+      projectsDir,
+      paths.home,
+      readAgentLaunches(agentLaunchesFile(paths.stateDir), sinceMs),
+    ),
+  );
   return 0;
 }

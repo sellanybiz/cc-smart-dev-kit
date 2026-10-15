@@ -123,23 +123,29 @@ export function installedText(version: null | string, routerChanged = false): st
 
 /**
  * The command that shows a desktop notification here, or null when there is none:
- * `notify-send` on Linux, `osascript` on macOS.
+ * `notify-send` on Linux, `osascript` on macOS. `title` is the notification's summary (the
+ * plugin's name by default).
  */
 export function notifyCommand(
   text: string,
   platform: NodeJS.Platform,
   which: (command: string) => null | string,
+  title: string = PLUGIN,
 ): null | string[] {
   if (platform === "linux") {
     const notifySend = which("notify-send");
-    return notifySend === null ? null : [notifySend, PLUGIN, text];
+    return notifySend === null ? null : [notifySend, title, text];
   }
   if (platform === "darwin") {
     const osascript = which("osascript");
     // `text` holds only fixed words and a checked version: no quote can end the string.
     return osascript === null
       ? null
-      : [osascript, "-e", `display notification ${JSON.stringify(text)} with title "${PLUGIN}"`];
+      : [
+          osascript,
+          "-e",
+          `display notification ${JSON.stringify(text)} with title ${JSON.stringify(title)}`,
+        ];
   }
   return null;
 }

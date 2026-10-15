@@ -62,9 +62,1181 @@ function tildify(path, home) {
   return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
 }
 
+// src/setup/instructions.ts
+import { existsSync as existsSync6, readdirSync as readdirSync3, readFileSync as readFileSync7, rmSync } from "fs";
+import { join as join6, relative, sep } from "path";
+
+// src/setup/lock.ts
+import {
+  closeSync,
+  fchmodSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readlinkSync,
+  statSync,
+  unlinkSync,
+  writeSync
+} from "fs";
+import { hostname } from "os";
+import { join as join2 } from "path";
+var FALLBACK_STALE_MS = 10 * 60 * 1000;
+var LOCK_FILE = "lock";
+var TAKEOVER_SUFFIX = ".takeover";
+
+class LockBusyError extends Error {
+  name = "LockBusyError";
+}
+function procStartTime(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    const start = fields[22 - 3];
+    return start && /^\d+$/.test(start) ? start : null;
+  } catch {
+    return null;
+  }
+}
+function psStartTime(pid) {
+  try {
+    const result = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], {
+      env: { ...process.env, LC_ALL: "C" },
+      stdout: "pipe",
+      stderr: "ignore"
+    });
+    const text = result.stdout.toString().trim();
+    return result.exitCode === 0 && text !== "" ? text : null;
+  } catch {
+    return null;
+  }
+}
+function processStartTime(pid, like) {
+  if (like === undefined || like.startsWith("proc:")) {
+    const proc = procStartTime(pid);
+    if (proc !== null)
+      return `proc:${proc}`;
+  }
+  if (like === undefined || like.startsWith("ps:")) {
+    const ps = psStartTime(pid);
+    if (ps !== null)
+      return `ps:${ps}`;
+  }
+  return null;
+}
+function ownPidNamespace() {
+  try {
+    return readlinkSync("/proc/self/ns/pid");
+  } catch {
+    return null;
+  }
+}
+var ownPidns;
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+function parseLock(text) {
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed.pid !== "number" || typeof parsed.time !== "number" || typeof parsed.token !== "string") {
+      return null;
+    }
+    return {
+      pid: parsed.pid,
+      startTime: typeof parsed.startTime === "string" ? parsed.startTime : null,
+      host: typeof parsed.host === "string" ? parsed.host : "",
+      pidns: typeof parsed.pidns === "string" ? parsed.pidns : null,
+      time: parsed.time,
+      token: parsed.token
+    };
+  } catch {
+    return null;
+  }
+}
+function readHeld(file) {
+  let stat;
+  try {
+    stat = statSync(file);
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    throw error;
+  }
+  let info;
+  try {
+    info = parseLock(readFileSync(file, "utf8"));
+  } catch (error) {
+    const code = error.code;
+    if (code === "ENOENT")
+      return null;
+    if (code !== "EACCES" && code !== "EPERM")
+      throw error;
+    info = null;
+  }
+  return { info, ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size };
+}
+function sameHeld(a, b) {
+  if (a.info && b.info)
+    return a.info.token === b.info.token;
+  if (a.info || b.info)
+    return false;
+  return a.ino === b.ino && a.mtimeMs === b.mtimeMs && a.size === b.size;
+}
+function holderIsGone(holder, lastSeenMs, fallbackStaleMs, startTimeOf = processStartTime) {
+  const oldEnough = Date.now() - lastSeenMs > fallbackStaleMs;
+  if (holder === null || holder.host !== hostname())
+    return oldEnough;
+  ownPidns ??= ownPidNamespace();
+  const theirs = holder.pidns ?? null;
+  if (theirs !== null && ownPidns !== null && theirs !== ownPidns)
+    return oldEnough;
+  if (!isAlive(holder.pid))
+    return true;
+  if (holder.startTime === null)
+    return oldEnough;
+  const now = startTimeOf(holder.pid, holder.startTime);
+  if (now === null)
+    return oldEnough;
+  return now !== holder.startTime;
+}
+function isStale(held, fallbackStaleMs) {
+  return holderIsGone(held.info, held.info?.time ?? held.mtimeMs, fallbackStaleMs);
+}
+function tryCreate(file, info, mode) {
+  let fd;
+  try {
+    fd = openSync(file, "wx", mode);
+  } catch (error) {
+    if (error.code === "EEXIST")
+      return false;
+    throw error;
+  }
+  try {
+    fchmodSync(fd, mode);
+    writeSync(fd, JSON.stringify(info));
+  } finally {
+    closeSync(fd);
+  }
+  return true;
+}
+var ownStartTime;
+function currentHolder() {
+  ownStartTime ??= processStartTime(process.pid);
+  ownPidns ??= ownPidNamespace();
+  return { pid: process.pid, startTime: ownStartTime, host: hostname(), pidns: ownPidns };
+}
+function newLockInfo() {
+  return { ...currentHolder(), time: Date.now(), token: crypto.randomUUID() };
+}
+function takeOverStale(file, judged, fallbackStaleMs, mode) {
+  const claim = `${file}${TAKEOVER_SUFFIX}`;
+  const me = newLockInfo();
+  if (!tryCreate(claim, me, mode)) {
+    const other = readHeld(claim);
+    if (other && isStale(other, fallbackStaleMs)) {
+      const again = readHeld(claim);
+      if (again && sameHeld(again, other))
+        unlinkSync(claim);
+    }
+    return false;
+  }
+  try {
+    const now = readHeld(file);
+    if (now && sameHeld(now, judged))
+      unlinkSync(file);
+    return true;
+  } finally {
+    if (readHeld(claim)?.info?.token === me.token)
+      unlinkSync(claim);
+  }
+}
+async function withLock(stateDir, fn, options = {}) {
+  mkdirSync(stateDir, { recursive: true });
+  const file = join2(stateDir, LOCK_FILE);
+  const mine = newLockInfo();
+  const deadline = Date.now() + (options.waitMs ?? 0);
+  const fallbackStaleMs = options.fallbackStaleMs ?? FALLBACK_STALE_MS;
+  const mode = options.mode ?? 384;
+  for (;; ) {
+    mine.time = Date.now();
+    if (tryCreate(file, mine, mode))
+      break;
+    const held = readHeld(file);
+    if (held === null)
+      continue;
+    if (isStale(held, fallbackStaleMs) && takeOverStale(file, held, fallbackStaleMs, mode)) {
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      const info = held.info;
+      const where = info && info.host !== hostname() ? ` on ${info.host || "another host"}` : "";
+      const who = info ? `process ${info.pid}${where}` : "another run";
+      throw new LockBusyError(`anymodel is busy: ${who} holds ${file}. Wait for it to finish, then try again.`);
+    }
+    await Bun.sleep(100);
+  }
+  try {
+    return await fn();
+  } finally {
+    if (readHeld(file)?.info?.token === mine.token)
+      unlinkSync(file);
+  }
+}
+
+// src/setup/managed-markdown.ts
+import { existsSync as existsSync2, readFileSync as readFileSync3 } from "fs";
+
+// src/setup/write.ts
+import {
+  chmodSync,
+  closeSync as closeSync2,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync as mkdirSync2,
+  openSync as openSync2,
+  readdirSync,
+  readFileSync as readFileSync2,
+  readlinkSync as readlinkSync2,
+  realpathSync,
+  renameSync,
+  statSync as statSync2,
+  unlinkSync as unlinkSync2,
+  writeFileSync
+} from "fs";
+import { basename, dirname, join as join3, resolve } from "path";
+var BACKUPS_DIR = "backups";
+var BACKUP_INFIX = ".bak-anymodel-";
+var ABSENT_SUFFIX = ".absent";
+var CHANGED_FILE = "changed.json";
+var MAX_LINKS = 40;
+function utcStamp(date = new Date) {
+  return date.toISOString().replace(/[-:.]/g, "");
+}
+function realTarget(file) {
+  let path = resolve(file);
+  for (let links = 0;links <= MAX_LINKS; links += 1) {
+    try {
+      return realpathSync(path);
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    let isLink = false;
+    try {
+      isLink = lstatSync(path).isSymbolicLink();
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    if (!isLink) {
+      const parent = dirname(path);
+      return parent === path ? path : join3(realTarget(parent), basename(path));
+    }
+    path = resolve(dirname(path), readlinkSync2(path));
+  }
+  throw new Error(`${file}: too many symlinks (a loop?)`);
+}
+function fileMode(file) {
+  return existsSync(file) ? statSync2(file).mode & 4095 : null;
+}
+function writeTemp(file, content, mode) {
+  const dir = dirname(file);
+  mkdirSync2(dir, { recursive: true });
+  const temp = join3(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
+  try {
+    const fd = openSync2(temp, "wx", mode);
+    try {
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync2(fd);
+    }
+    chmodSync(temp, mode);
+  } catch (error) {
+    if (existsSync(temp))
+      unlinkSync2(temp);
+    throw error;
+  }
+  return temp;
+}
+function atomicWrite(file, content, mode, beforeRename) {
+  const temp = writeTemp(file, content, mode);
+  try {
+    beforeRename?.();
+    renameSync(temp, file);
+  } catch (error) {
+    if (existsSync(temp))
+      unlinkSync2(temp);
+    throw error;
+  }
+}
+function parseBackupName(base, name) {
+  const prefix = `${base}${BACKUP_INFIX}`;
+  if (!name.startsWith(prefix))
+    return null;
+  const match = /^(\d{8}T\d{9}Z)(?:-(\d+))?(?:(\.absent)|\.mode-([0-7]{3,4}))?$/.exec(name.slice(prefix.length));
+  if (!match?.[1])
+    return null;
+  return {
+    name,
+    stamp: match[1],
+    counter: match[2] ? Number(match[2]) : 0,
+    absent: match[3] !== undefined,
+    mode: match[4] ? Number.parseInt(match[4], 8) : null
+  };
+}
+function backupDir(stateDir, file) {
+  return join3(stateDir, BACKUPS_DIR, encodeURIComponent(realTarget(file)));
+}
+function makePrivateDir(dir) {
+  mkdirSync2(dir, { recursive: true, mode: 448 });
+  chmodSync(dir, 448);
+}
+function listBackups(stateDir, file) {
+  const dir = backupDir(stateDir, file);
+  if (!existsSync(dir))
+    return [];
+  const base = basename(realTarget(file));
+  return readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup !== null).sort((a, b) => a.stamp === b.stamp ? a.counter - b.counter : a.stamp < b.stamp ? -1 : 1).map((backup) => {
+    const path = join3(dir, backup.name);
+    return { path, absent: backup.absent, mode: backup.mode ?? fileMode(path) ?? 384 };
+  });
+}
+function copyNotExecutable(file, target) {
+  const mode = fileMode(file) ?? 384;
+  const safeMode = mode & ~73;
+  writeFileSync(target, readFileSync2(file), { flag: "wx", mode: safeMode });
+  chmodSync(target, safeMode);
+  return mode;
+}
+function backupFile(stateDir, file) {
+  const real = realTarget(file);
+  const dir = backupDir(stateDir, real);
+  const base = basename(real);
+  const stamp = utcStamp();
+  const mode = fileMode(real);
+  const suffix = mode === null ? ABSENT_SUFFIX : (mode & 73) !== 0 ? `.mode-${mode.toString(8)}` : "";
+  makePrivateDir(join3(stateDir, BACKUPS_DIR));
+  makePrivateDir(dir);
+  const sameStamp = readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup?.stamp === stamp);
+  const counter = sameStamp.length === 0 ? 0 : Math.max(...sameStamp.map((backup) => backup.counter)) + 1;
+  const target = join3(dir, `${base}${BACKUP_INFIX}${stamp}${counter === 0 ? "" : `-${counter}`}${suffix}`);
+  if (mode === null) {
+    writeFileSync(target, "", { flag: "wx", mode: 384 });
+  } else {
+    copyNotExecutable(real, target);
+  }
+  return target;
+}
+var CHANGE_KINDS = [
+  "json-keys",
+  "json-entries",
+  "markdown-block",
+  "whole-file"
+];
+function isChangedEntry(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const entry = value;
+  return Array.isArray(entry.kinds) && entry.kinds.every((kind) => CHANGE_KINDS.includes(kind)) && (entry.baseline === null || typeof entry.baseline === "string");
+}
+function readChanged(stateDir) {
+  const file = join3(stateDir, CHANGED_FILE);
+  if (!existsSync(file))
+    return {};
+  const parsed = JSON.parse(readFileSync2(file, "utf8"));
+  const files = parsed?.files;
+  if (typeof files !== "object" || files === null || !Object.values(files).every((entry) => isChangedEntry(entry))) {
+    throw new Error(`Invalid ${file}: expected { "files": { <path>: { kinds, baseline } } }`);
+  }
+  return files;
+}
+function writeChanged(stateDir, files) {
+  const sorted = Object.fromEntries(Object.entries(files).sort(([a], [b]) => a < b ? -1 : 1));
+  atomicWrite(join3(stateDir, CHANGED_FILE), `${JSON.stringify({ files: sorted }, null, 2)}
+`, 384);
+}
+function recordChange(stateDir, file, kind, backup) {
+  const files = readChanged(stateDir);
+  const entry = files[file];
+  if (!entry) {
+    files[file] = { kinds: [kind], baseline: backup };
+    writeChanged(stateDir, files);
+    return true;
+  }
+  if (!entry.kinds.includes(kind)) {
+    entry.kinds.push(kind);
+    writeChanged(stateDir, files);
+  }
+  return false;
+}
+function forgetChange(stateDir, file) {
+  const files = readChanged(stateDir);
+  if (!(file in files))
+    return;
+  delete files[file];
+  writeChanged(stateDir, files);
+}
+
+class ConcurrentChangeError extends Error {
+  name = "ConcurrentChangeError";
+}
+function retryOnConcurrentChange(file, fn, attempts = 3) {
+  for (let attempt = 1;; attempt += 1) {
+    try {
+      return fn();
+    } catch (error) {
+      if (!(error instanceof ConcurrentChangeError) || attempt >= attempts) {
+        if (error instanceof ConcurrentChangeError) {
+          throw new ConcurrentChangeError(`${file} kept changing while anymodel tried to update it (${attempts} tries). ` + "Close the program that writes it (for example Claude Code), then run again.");
+        }
+        throw error;
+      }
+    }
+  }
+}
+function readCurrent(file) {
+  return existsSync(file) ? readFileSync2(file, "utf8") : null;
+}
+function writeManagedFile(file, content, options) {
+  const target = realTarget(file);
+  const currentMode = fileMode(target);
+  const current = currentMode === null ? null : readFileSync2(target, "utf8");
+  const checkUnchanged = (now) => {
+    if (options.expectedContent !== undefined && now !== options.expectedContent) {
+      throw new ConcurrentChangeError(`${target} changed after anymodel read it.`);
+    }
+  };
+  if (!options.dryRun)
+    checkUnchanged(current);
+  const wantedMode = options.mode ?? currentMode ?? options.newFileMode ?? 384;
+  if (current === content && currentMode === wantedMode) {
+    return { outcome: "unchanged", backup: null };
+  }
+  const outcome = currentMode === null ? "created" : "updated";
+  if (options.dryRun)
+    return { outcome, backup: null };
+  const backup = backupFile(options.stateDir, target);
+  const isBaseline = recordChange(options.stateDir, target, options.kind, backup);
+  try {
+    atomicWrite(target, content, wantedMode, () => {
+      options.onBeforeCompare?.();
+      checkUnchanged(readCurrent(target));
+    });
+  } catch (error) {
+    if (!isBaseline && existsSync(backup))
+      unlinkSync2(backup);
+    throw error;
+  }
+  return { outcome, backup };
+}
+function removeManagedFile(stateDir, file) {
+  const backup = backupFile(stateDir, file);
+  unlinkSync2(file);
+  return backup;
+}
+
+// src/setup/managed-markdown.ts
+var BLOCK_BEGIN = "<!-- anymodel:begin -->";
+var BLOCK_END = "<!-- anymodel:end -->";
+function countOf(text, marker) {
+  return text.split(marker).length - 1;
+}
+function findBlock(current, file) {
+  const begins = countOf(current, BLOCK_BEGIN);
+  const ends = countOf(current, BLOCK_END);
+  if (begins === 0 && ends === 0)
+    return null;
+  const start = current.indexOf(BLOCK_BEGIN);
+  const end = current.indexOf(BLOCK_END);
+  if (begins !== 1 || ends !== 1 || end < start) {
+    throw new Error(`${file} has a broken anymodel block (${begins} begin and ${ends} end markers). ` + "Fix it by hand: keep one begin marker and one end marker after it.");
+  }
+  return { start, end: end + BLOCK_END.length };
+}
+function renderWithoutBlock(current, file = "the file") {
+  const found = findBlock(current, file);
+  if (found === null)
+    return current;
+  let before = current.slice(0, found.start);
+  let after = current.slice(found.end);
+  if (after.startsWith(`
+`))
+    after = after.slice(1);
+  if (before === "" && after.startsWith(`
+`))
+    after = after.slice(1);
+  if (before.endsWith(`
+
+`) && (after === "" || after.startsWith(`
+`))) {
+    before = before.slice(0, -1);
+  }
+  return `${before}${after}`;
+}
+function writeMarkdown(options, render) {
+  const file = realTarget(options.file);
+  return retryOnConcurrentChange(file, () => {
+    const text = existsSync2(file) ? readFileSync3(file, "utf8") : null;
+    const next = render(text ?? "", file);
+    if (text === null && next === "")
+      return { outcome: "unchanged", backup: null };
+    options.onBeforeWrite?.();
+    return writeManagedFile(file, next, {
+      stateDir: options.stateDir,
+      kind: "markdown-block",
+      newFileMode: 420,
+      expectedContent: text,
+      ...options.dryRun !== undefined && { dryRun: options.dryRun }
+    });
+  });
+}
+function removeManagedMarkdown(options) {
+  return writeMarkdown(options, renderWithoutBlock);
+}
+
+// src/setup/restore.ts
+import { existsSync as existsSync5, readdirSync as readdirSync2, readFileSync as readFileSync6, rmdirSync } from "fs";
+import { dirname as dirname2 } from "path";
+
+// src/setup/managed-entries.ts
+import { existsSync as existsSync4, readFileSync as readFileSync5 } from "fs";
+import { join as join5 } from "path";
+
+// src/setup/managed-json.ts
+import { createHash } from "crypto";
+import { existsSync as existsSync3, readFileSync as readFileSync4 } from "fs";
+import { join as join4 } from "path";
+var OWNED_FILE = "owned.json";
+
+class ForeignKeyError extends Error {
+  name = "ForeignKeyError";
+}
+function formatKeyPath(path) {
+  return path.map((segment, index) => {
+    if (/^[A-Za-z_$][\w$]*$/.test(segment))
+      return index === 0 ? segment : `.${segment}`;
+    return `[${JSON.stringify(segment)}]`;
+  }).join("");
+}
+function isObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function samePath(a, b) {
+  return a.length === b.length && a.every((segment, index) => segment === b[index]);
+}
+function readJsonObject(file) {
+  if (!existsSync3(file))
+    return { data: {}, indent: "  ", text: null };
+  const text = readFileSync4(file, "utf8");
+  if (text.trim() === "")
+    return { data: {}, indent: "  ", text };
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);
+  }
+  if (!isObject(parsed))
+    throw new Error(`${file} must hold a JSON object.`);
+  const indent = /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
+  return { data: parsed, indent, text };
+}
+function toRecord(entry, file) {
+  if (Array.isArray(entry) && entry.every((segment) => typeof segment === "string")) {
+    return { path: [...entry] };
+  }
+  if (isObject(entry) && Array.isArray(entry.path) && entry.path.every((segment) => typeof segment === "string")) {
+    const record = { path: [...entry.path] };
+    if (Object.hasOwn(entry, "value"))
+      record.value = entry.value;
+    if (typeof entry.sha256 === "string")
+      record.sha256 = entry.sha256;
+    return record;
+  }
+  throw new Error(`Invalid ${file}: an owned key that is neither a path nor a record`);
+}
+function readOwned(stateDir) {
+  const file = join4(stateDir, OWNED_FILE);
+  if (!existsSync3(file))
+    return {};
+  const parsed = JSON.parse(readFileSync4(file, "utf8"));
+  if (!isObject(parsed))
+    throw new Error(`Invalid ${file}: expected an object`);
+  const owned = {};
+  for (const [target, entries] of Object.entries(parsed)) {
+    if (!Array.isArray(entries))
+      throw new Error(`Invalid ${file}: expected a list per file`);
+    owned[target] = entries.map((entry) => toRecord(entry, file));
+  }
+  return owned;
+}
+function writeOwned(stateDir, owned) {
+  atomicWrite(join4(stateDir, OWNED_FILE), `${JSON.stringify(owned, null, 2)}
+`, 384);
+}
+function ownedKeys(stateDir, file) {
+  return ownedRecords(stateDir, file).map((record) => record.path);
+}
+function ownedRecords(stateDir, file) {
+  return readOwned(stateDir)[file] ?? [];
+}
+function hashOf(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+function recordOf(path, value, secret) {
+  return secret ? { path: [...path], sha256: hashOf(value) } : { path: [...path], value };
+}
+function ownership(records, path, current, unchosen) {
+  const record = records.find((entry) => samePath(entry.path, path));
+  if (record === undefined)
+    return "none";
+  if (!current.found)
+    return "ours";
+  if (record.sha256 !== undefined) {
+    if (hashOf(current.value) === record.sha256)
+      return "ours";
+  } else if (!Object.hasOwn(record, "value")) {
+    return "ours";
+  } else if (Bun.deepEquals(current.value, record.value, true)) {
+    return "ours";
+  }
+  return unchosen?.(path, current.value) ? "ours" : "changed";
+}
+function getKey(data, path) {
+  let node = data;
+  for (const segment of path) {
+    if (!isObject(node) || !Object.hasOwn(node, segment))
+      return { found: false, value: undefined };
+    node = node[segment];
+  }
+  return { found: true, value: node };
+}
+function setKey(data, path, value) {
+  let node = data;
+  for (const [index, segment] of path.slice(0, -1).entries()) {
+    const next = node[segment];
+    if (next === undefined) {
+      node[segment] = {};
+    } else if (!isObject(next)) {
+      throw new ForeignKeyError(`Cannot set ${formatKeyPath(path)}: ${formatKeyPath(path.slice(0, index + 1))} is not an object.`);
+    }
+    node = node[segment];
+  }
+  const leaf = path.at(-1);
+  if (leaf !== undefined)
+    node[leaf] = structuredClone(value);
+}
+function deleteKey(data, path) {
+  const parent = getKey(data, path.slice(0, -1));
+  const leaf = path.at(-1);
+  if (parent.found && isObject(parent.value) && leaf !== undefined)
+    delete parent.value[leaf];
+}
+function applyManagedJson(options) {
+  const file = realTarget(options.file);
+  const snapshot = readOwned(options.stateDir);
+  return retryOnConcurrentChange(file, () => applyOnce(file, options, snapshot));
+}
+function applyOnce(file, options, owned) {
+  const { data, indent, text } = readJsonObject(file);
+  const ownedHere = owned[file] ?? [];
+  const isSecret = (path) => options.secret?.(path) ?? false;
+  const shown = (path, value) => isSecret(path) ? "a secret" : JSON.stringify(value);
+  const changes = [];
+  const skipped = [];
+  const updated = [];
+  const dropped = [];
+  let setsSecret = false;
+  for (const [path, value] of options.set ?? []) {
+    if (path.length === 0)
+      throw new Error("applyManagedJson: an empty key path");
+    if (isSecret(path))
+      setsSecret = true;
+    const current = getKey(data, path);
+    const whose = ownership(ownedHere, path, current, options.unchosen);
+    if (current.found && Bun.deepEquals(current.value, value, true)) {
+      if (whose === "none") {
+        skipped.push({ path, reason: "already set by someone else; left alone" });
+      } else if (whose === "changed") {
+        skipped.push({ path, reason: "set by you since; left alone, no longer anymodel's" });
+        dropped.push(path);
+      } else {
+        updated.push(recordOf(path, value, isSecret(path)));
+      }
+      continue;
+    }
+    if (current.found && whose === "changed") {
+      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}: it was changed after anymodel set it, so it is your choice now. ` + "anymodel does not overwrite it. Remove it by hand if anymodel should manage it again.");
+    }
+    if (current.found && whose === "none" && !options.unchosen?.(path, current.value)) {
+      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}, set by someone else. ` + "anymodel does not overwrite it. Remove it by hand if anymodel should manage it.");
+    }
+    setKey(data, path, value);
+    changes.push({ path, before: current.found ? current.value : undefined, after: value });
+    updated.push(recordOf(path, value, isSecret(path)));
+  }
+  for (const path of options.remove ?? []) {
+    const current = getKey(data, path);
+    const whose = ownership(ownedHere, path, current);
+    if (whose === "none") {
+      skipped.push({ path, reason: "not owned by anymodel; left alone" });
+      continue;
+    }
+    dropped.push(path);
+    if (whose === "changed") {
+      skipped.push({ path, reason: "changed since anymodel set it; left alone" });
+      continue;
+    }
+    if (!current.found)
+      continue;
+    deleteKey(data, path);
+    changes.push({ path, before: current.value, after: undefined });
+  }
+  const touched = (entry) => updated.some((record) => samePath(record.path, entry.path)) || dropped.some((path) => samePath(path, entry.path));
+  const finalOwned = [...ownedHere.filter((entry) => !touched(entry)), ...updated];
+  const ownedChanged = !Bun.deepEquals([...finalOwned].sort(byPath), [...ownedHere].sort(byPath), true);
+  if (options.dryRun || changes.length === 0 && !ownedChanged) {
+    return { file, changes, skipped, written: false, backup: null };
+  }
+  const nextState = (records) => {
+    const next = { ...owned, [file]: records };
+    if (records.length === 0)
+      delete next[file];
+    return next;
+  };
+  const changedPaths = changes.filter((change) => change.after !== undefined);
+  if (changedPaths.length > 0) {
+    const pending = [
+      ...ownedHere.filter((entry) => !changedPaths.some((c) => samePath(c.path, entry.path))),
+      ...changedPaths.map((change) => ({ path: [...change.path] }))
+    ];
+    writeOwned(options.stateDir, nextState(pending));
+  }
+  let written = false;
+  let backup = null;
+  if (changes.length > 0) {
+    options.onBeforeWrite?.();
+    let result;
+    try {
+      result = writeManagedFile(file, `${JSON.stringify(data, null, indent)}
+`, {
+        stateDir: options.stateDir,
+        kind: "json-keys",
+        newFileMode: 384,
+        ...setsSecret && { mode: 384 },
+        expectedContent: text
+      });
+    } catch (error) {
+      if (changedPaths.length > 0)
+        writeOwned(options.stateDir, owned);
+      throw error;
+    }
+    written = result.outcome !== "unchanged";
+    backup = result.backup;
+  }
+  writeOwned(options.stateDir, nextState(finalOwned));
+  return { file, changes, skipped, written, backup };
+}
+function byPath(a, b) {
+  const left = JSON.stringify(a.path);
+  const right = JSON.stringify(b.path);
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+// src/setup/managed-entries.ts
+var OWNED_ENTRIES_FILE = "owned-entries.json";
+var ANCHOR_SOURCE = "";
+function pathKey(path) {
+  return JSON.stringify(path);
+}
+function isOwnedEntry(value) {
+  return isObject(value) && typeof value.entry === "string" && typeof value.source === "string";
+}
+function readOwnedEntries(stateDir) {
+  const file = join5(stateDir, OWNED_ENTRIES_FILE);
+  if (!existsSync4(file))
+    return {};
+  const parsed = JSON.parse(readFileSync5(file, "utf8"));
+  const valid = isObject(parsed) && Object.values(parsed).every((lists) => isObject(lists) && Object.values(lists).every((list) => Array.isArray(list) && list.every(isOwnedEntry)));
+  if (!valid) {
+    throw new Error(`Invalid ${file}: expected { <file>: { <key path>: [{ "entry", "source" }] } }`);
+  }
+  return parsed;
+}
+function writeOwnedEntries(stateDir, state) {
+  atomicWrite(join5(stateDir, OWNED_ENTRIES_FILE), `${JSON.stringify(state, null, 2)}
+`, 384);
+}
+function withRecords(state, file, key, records) {
+  const lists = { ...state[file] ?? {} };
+  if (records.length === 0)
+    delete lists[key];
+  else
+    lists[key] = records;
+  const next = { ...state };
+  if (Object.keys(lists).length === 0)
+    delete next[file];
+  else
+    next[file] = lists;
+  return next;
+}
+function ownedEntries(stateDir, file) {
+  return readOwnedEntries(stateDir)[file] ?? {};
+}
+function deleteWithEmptyParents(data, path) {
+  deleteKey(data, path);
+  for (let depth = path.length - 1;depth > 0; depth -= 1) {
+    const parent = getKey(data, path.slice(0, depth));
+    if (!parent.found || !isObject(parent.value) || Object.keys(parent.value).length > 0)
+      return;
+    deleteKey(data, path.slice(0, depth));
+  }
+}
+function applyOnce2(file, options, plan, snapshot) {
+  const { path } = options;
+  const key = pathKey(path);
+  const { data, indent, text } = readJsonObject(file);
+  const current = getKey(data, path);
+  if (current.found && !(Array.isArray(current.value) && current.value.every((item) => typeof item === "string"))) {
+    throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is not a list of strings. anymodel does not change it.`);
+  }
+  const list = current.found ? [...current.value] : [];
+  const records = [...snapshot[file]?.[key] ?? []];
+  const live = records.filter((record) => list.includes(record.entry));
+  const added = [];
+  const removed = [];
+  const skipped = [];
+  let kept;
+  if (plan.kind === "all") {
+    kept = [];
+  } else {
+    const wanted = [...new Set(plan.entries)].filter((entry) => entry !== plan.anchor);
+    kept = live.filter((record) => record.source !== plan.source || wanted.includes(record.entry));
+    for (const entry of wanted) {
+      const ownedHere = kept.some((r) => r.entry === entry && r.source === plan.source);
+      if (ownedHere)
+        continue;
+      const ownedByAnymodel = kept.some((r) => r.entry === entry);
+      if (list.includes(entry) && !ownedByAnymodel) {
+        skipped.push(entry);
+        continue;
+      }
+      if (!list.includes(entry)) {
+        if (list.length === 0 && plan.anchor !== undefined && !current.found) {
+          list.push(plan.anchor);
+          added.push(plan.anchor);
+          kept.push({ entry: plan.anchor, source: ANCHOR_SOURCE });
+        }
+        list.push(entry);
+        added.push(entry);
+      }
+      kept.push({ entry, source: plan.source });
+    }
+  }
+  for (const record of live) {
+    if (record.source === ANCHOR_SOURCE)
+      continue;
+    if (kept.some((r) => r.entry === record.entry))
+      continue;
+    if (removed.includes(record.entry))
+      continue;
+    const at = list.indexOf(record.entry);
+    if (at !== -1) {
+      list.splice(at, 1);
+      removed.push(record.entry);
+    }
+  }
+  const anchorRecord = kept.find((r) => r.source === ANCHOR_SOURCE) ?? live.find((r) => r.source === ANCHOR_SOURCE);
+  let dropList = false;
+  if (anchorRecord !== undefined) {
+    const onlyAnchor = list.every((entry) => entry === anchorRecord.entry);
+    if (onlyAnchor) {
+      kept = kept.filter((r) => r.source !== ANCHOR_SOURCE);
+      if (list.length > 0)
+        removed.push(anchorRecord.entry);
+      list.length = 0;
+      dropList = true;
+    } else if (plan.kind === "source" && !kept.includes(anchorRecord)) {
+      kept.push(anchorRecord);
+    }
+  }
+  const listChanged = added.length > 0 || removed.length > 0;
+  const recordsChanged = JSON.stringify(kept) !== JSON.stringify(records);
+  if (options.dryRun || !listChanged && !recordsChanged) {
+    return { file, added, removed, skipped, written: false, backup: null };
+  }
+  if (!listChanged) {
+    writeOwnedEntries(options.stateDir, withRecords(snapshot, file, key, kept));
+    return { file, added, removed, skipped, written: false, backup: null };
+  }
+  if (dropList)
+    deleteWithEmptyParents(data, path);
+  else
+    setKey(data, path, list);
+  const claimed = withRecords(snapshot, file, key, [
+    ...live,
+    ...kept.filter((r) => !live.includes(r))
+  ]);
+  writeOwnedEntries(options.stateDir, claimed);
+  options.onBeforeWrite?.();
+  let result;
+  try {
+    result = writeManagedFile(file, `${JSON.stringify(data, null, indent)}
+`, {
+      stateDir: options.stateDir,
+      kind: "json-entries",
+      newFileMode: 384,
+      expectedContent: text
+    });
+  } catch (error) {
+    writeOwnedEntries(options.stateDir, snapshot);
+    throw error;
+  }
+  writeOwnedEntries(options.stateDir, withRecords(snapshot, file, key, kept));
+  return {
+    file,
+    added,
+    removed,
+    skipped,
+    written: result.outcome !== "unchanged",
+    backup: result.backup
+  };
+}
+function removeAllOwnedEntries(stateDir, file) {
+  const real = realTarget(file);
+  const removed = [];
+  let backup = null;
+  for (const key of Object.keys(ownedEntries(stateDir, real))) {
+    const path = JSON.parse(key);
+    const snapshot = readOwnedEntries(stateDir);
+    const result = retryOnConcurrentChange(real, () => applyOnce2(real, { stateDir, path }, { kind: "all" }, snapshot));
+    removed.push(...result.removed);
+    backup ??= result.backup;
+  }
+  return { removed, backup };
+}
+
+// src/setup/restore.ts
+function createdByUs(entry) {
+  return entry.baseline?.endsWith(ABSENT_SUFFIX) ?? false;
+}
+function restoreWholeFile(file, entry, stateDir) {
+  const baseline = listBackups(stateDir, file).find((backup) => backup.path === entry.baseline);
+  if (!baseline)
+    return { file, action: "no-backup", details: [] };
+  if (baseline.absent) {
+    if (!existsSync5(file))
+      return { file, action: "unchanged", details: [] };
+    return { file, action: "removed", details: [], savedAs: removeManagedFile(stateDir, file) };
+  }
+  const result = writeManagedFile(file, readFileSync6(baseline.path, "utf8"), {
+    stateDir,
+    kind: "whole-file",
+    mode: baseline.mode
+  });
+  if (result.outcome === "unchanged")
+    return { file, action: "unchanged", details: [] };
+  return {
+    file,
+    action: "restored",
+    details: [],
+    ...result.backup && { savedAs: result.backup }
+  };
+}
+function isEmpty(file) {
+  if (!existsSync5(file))
+    return false;
+  const text = readFileSync6(file, "utf8").trim();
+  return text === "" || text === "{}";
+}
+function restorePartly(file, entry, stateDir) {
+  const details = [];
+  let savedAs = null;
+  if (entry.kinds.includes("json-keys")) {
+    const keys = ownedKeys(stateDir, file);
+    if (keys.length > 0) {
+      const result = applyManagedJson({ file, stateDir, remove: keys });
+      details.push(...result.changes.map((change) => formatKeyPath(change.path)));
+      savedAs ??= result.backup;
+    }
+  }
+  if (entry.kinds.includes("json-entries")) {
+    const result = removeAllOwnedEntries(stateDir, file);
+    details.push(...result.removed.map((removed) => `the entry ${JSON.stringify(removed)}`));
+    savedAs ??= result.backup;
+  }
+  if (entry.kinds.includes("markdown-block")) {
+    const result = removeManagedMarkdown({ file, stateDir });
+    if (result.outcome !== "unchanged")
+      details.push("the anymodel block");
+    savedAs ??= result.backup;
+  }
+  if (createdByUs(entry) && isEmpty(file)) {
+    const backup = removeManagedFile(stateDir, file);
+    return { file, action: "removed", details, savedAs: savedAs ?? backup };
+  }
+  if (details.length === 0)
+    return { file, action: "unchanged", details };
+  return { file, action: "cleaned", details, ...savedAs && { savedAs } };
+}
+function restore(stateDir, options = {}) {
+  const except = new Set(options.except ?? []);
+  const only = options.only === undefined ? null : new Set(options.only);
+  const entries = Object.entries(readChanged(stateDir)).filter(([file]) => !except.has(file) && (only === null || only.has(file)));
+  return entries.map(([file, entry]) => {
+    const result = entry.kinds.includes("whole-file") ? restoreWholeFile(file, entry, stateDir) : restorePartly(file, entry, stateDir);
+    if (result.action !== "no-backup")
+      forgetChange(stateDir, file);
+    if (result.action === "removed")
+      removeEmptyFolders(file, stateDir);
+    return result;
+  });
+}
+function removeEmptyFolders(file, stateDir) {
+  const root = realTarget(stateDir);
+  let dir = dirname2(file);
+  while (dir.startsWith(`${root}/`) && existsSync5(dir) && readdirSync2(dir).length === 0) {
+    rmdirSync(dir);
+    dir = dirname2(dir);
+  }
+}
+
+// src/setup/instructions.ts
+var ALWAYS_ON_FILE = "core.md";
+function optOutFile(stateDir) {
+  return join6(stateDir, "no-instructions");
+}
+function versionStampFile(stateDir) {
+  return join6(stateDir, "instructions-version");
+}
+function instructionsOptedOut(stateDir) {
+  return existsSync6(optOutFile(stateDir));
+}
+function readVersionStamp(stateDir) {
+  const file = versionStampFile(stateDir);
+  if (!existsSync6(file))
+    return null;
+  const version = readFileSync7(file, "utf8").trim();
+  return version === "" ? null : version;
+}
+function instructionsPaths(paths, source) {
+  const target = join6(paths.stateDir, "instructions");
+  return {
+    source,
+    target,
+    claudeMd: join6(paths.claudeConfigDir, "CLAUDE.md"),
+    stateDir: paths.stateDir,
+    importPath: tildify(join6(target, ALWAYS_ON_FILE), paths.home)
+  };
+}
+function instructionsFolder(bundleDir) {
+  const beside = join6(bundleDir, "..", "instructions");
+  return existsSync6(beside) ? beside : join6(bundleDir, "..", "..", "plugin", "instructions");
+}
+function listInstructionFiles(source) {
+  if (!existsSync6(source)) {
+    throw new Error(`The plugin's instructions folder is missing: ${source}. Reinstall the plugin.`);
+  }
+  const files = readdirSync3(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative(source, join6(entry.parentPath, entry.name)).split(sep).join("/")).sort();
+  if (!files.includes(ALWAYS_ON_FILE)) {
+    throw new Error(`The plugin's instructions folder has no ${ALWAYS_ON_FILE}: ${source}. Reinstall the plugin.`);
+  }
+  return files;
+}
+function trackedCopies(target, stateDir) {
+  const root = `${realTarget(target)}/`;
+  return Object.keys(readChanged(stateDir)).filter((file) => file.startsWith(root));
+}
+function lineOf(result, block) {
+  switch (result.action) {
+    case "removed":
+      return { mark: "-", file: result.file, what: "removed" };
+    case "restored":
+      return { mark: "~", file: result.file, what: "back as it was before anymodel" };
+    case "cleaned":
+      return { mark: "~", file: result.file, what: block ? "anymodel block removed" : "cleaned" };
+    case "no-backup":
+      return {
+        mark: "!",
+        file: result.file,
+        what: "the backup from before anymodel is missing; left alone"
+      };
+    case "unchanged":
+      return null;
+  }
+}
+function copyInstalled(paths) {
+  return trackedCopies(paths.target, paths.stateDir).length > 0;
+}
+function instructionsNeedRefresh(paths, version) {
+  if (instructionsOptedOut(paths.stateDir))
+    return false;
+  if (!copyInstalled(paths))
+    return false;
+  return readVersionStamp(paths.stateDir) !== version;
+}
+function removeCopies(files, stateDir, dryRun) {
+  if (files.length === 0)
+    return [];
+  if (dryRun) {
+    const changed = readChanged(stateDir);
+    return files.filter((file) => existsSync6(file)).map((file) => {
+      const entry = changed[file];
+      return entry !== undefined && createdByUs(entry) ? { mark: "-", file, what: "removed" } : { mark: "~", file, what: "back as it was before anymodel" };
+    });
+  }
+  return restore(stateDir, { only: files }).map((result) => lineOf(result, false)).filter((line) => line !== null);
+}
+function installCopy(paths, dryRun, version) {
+  const lines = [];
+  const files = listInstructionFiles(paths.source);
+  const wanted = new Set;
+  for (const name of files) {
+    const file = join6(paths.target, name);
+    wanted.add(realTarget(file));
+    const result = writeManagedFile(file, readFileSync7(join6(paths.source, name), "utf8"), {
+      stateDir: paths.stateDir,
+      kind: "whole-file",
+      mode: 420,
+      dryRun
+    });
+    if (result.outcome !== "unchanged") {
+      lines.push({
+        mark: result.outcome === "created" ? "+" : "~",
+        file,
+        what: result.outcome
+      });
+    }
+  }
+  const stale = trackedCopies(paths.target, paths.stateDir).filter((file) => !wanted.has(file));
+  lines.push(...removeCopies(stale, paths.stateDir, dryRun).map((line) => ({
+    ...line,
+    what: `${line.what} (the plugin no longer ships it)`
+  })));
+  if (!dryRun && readVersionStamp(paths.stateDir) !== version) {
+    atomicWrite(versionStampFile(paths.stateDir), `${version}
+`, 420);
+  }
+  return lines;
+}
+async function refreshInstructionsCopy(paths, version, options = {}) {
+  if (!instructionsNeedRefresh(paths, version))
+    return [];
+  if (options.dryRun)
+    return installCopy(paths, true, version);
+  return withLock(paths.stateDir, () => instructionsNeedRefresh(paths, version) ? installCopy(paths, false, version) : [], { waitMs: options.waitMs ?? 1e4 });
+}
+
 // src/update/apply.ts
-import { existsSync as existsSync3, readFileSync as readFileSync3 } from "fs";
-import { join as join3 } from "path";
+import { existsSync as existsSync9, readFileSync as readFileSync10 } from "fs";
+import { join as join8 } from "path";
 
 // src/project/git-env.ts
 var REPO_SELECTING_GIT_VARS = [
@@ -87,13 +1259,13 @@ function gitEnv(base) {
 }
 
 // src/setup/installed-plugins.ts
-import { existsSync, readFileSync } from "fs";
+import { existsSync as existsSync7, readFileSync as readFileSync8 } from "fs";
 function findUserInstall(installedPluginsFile, pluginId = PLUGIN_ID) {
-  if (!existsSync(installedPluginsFile))
+  if (!existsSync7(installedPluginsFile))
     return null;
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync(installedPluginsFile, "utf8"));
+    parsed = JSON.parse(readFileSync8(installedPluginsFile, "utf8"));
   } catch {
     return null;
   }
@@ -111,15 +1283,15 @@ function findUserInstall(installedPluginsFile, pluginId = PLUGIN_ID) {
 }
 
 // src/setup/marketplace-access.ts
-import { existsSync as existsSync2, readFileSync as readFileSync2 } from "fs";
-import { join as join2 } from "path";
+import { existsSync as existsSync8, readFileSync as readFileSync9 } from "fs";
+import { join as join7 } from "path";
 var ACCESS_TIMEOUT_MS = 1e4;
 function marketplaceSource(knownMarketplacesFile, name, env = process.env) {
-  if (!existsSync2(knownMarketplacesFile))
+  if (!existsSync8(knownMarketplacesFile))
     return { kind: "missing" };
   let known;
   try {
-    known = JSON.parse(readFileSync2(knownMarketplacesFile, "utf8"));
+    known = JSON.parse(readFileSync9(knownMarketplacesFile, "utf8"));
   } catch {
     return { kind: "missing" };
   }
@@ -236,10 +1408,10 @@ function lsRemote(url, ref, baseEnv) {
   }
 }
 function marketplaceInstallLocation(knownMarketplacesFile, name) {
-  if (!existsSync2(knownMarketplacesFile))
+  if (!existsSync8(knownMarketplacesFile))
     return null;
   try {
-    const known = JSON.parse(readFileSync2(knownMarketplacesFile, "utf8"));
+    const known = JSON.parse(readFileSync9(knownMarketplacesFile, "utf8"));
     const location = known?.[name]?.installLocation;
     return typeof location === "string" && location !== "" ? location : null;
   } catch {
@@ -262,11 +1434,11 @@ function pluginFolderIn(marketplaceJson, plugin) {
 function marketplaceCopyVersion(location, plugin) {
   let folder = "plugin";
   try {
-    folder = pluginFolderIn(readFileSync2(join2(location, ".claude-plugin", "marketplace.json"), "utf8"), plugin) ?? folder;
+    folder = pluginFolderIn(readFileSync9(join7(location, ".claude-plugin", "marketplace.json"), "utf8"), plugin) ?? folder;
   } catch {}
-  const manifest = join2(location, folder, ".claude-plugin", "plugin.json");
+  const manifest = join7(location, folder, ".claude-plugin", "plugin.json");
   try {
-    const version = JSON.parse(readFileSync2(manifest, "utf8"))?.version;
+    const version = JSON.parse(readFileSync9(manifest, "utf8"))?.version;
     return { manifest, version: typeof version === "string" ? version : null };
   } catch {
     return { manifest, version: null };
@@ -383,10 +1555,10 @@ function applyUpdate(paths, claude, run, say) {
 }
 function routerNeedsSetup(paths) {
   const install = findUserInstall(paths.installedPluginsFile);
-  if (install === null || !existsSync3(paths.routerCopy))
+  if (install === null || !existsSync9(paths.routerCopy))
     return false;
-  const bundle = join3(install.installPath, "dist", "router.js");
-  return existsSync3(bundle) && readFileSync3(bundle, "utf8") !== readFileSync3(paths.routerCopy, "utf8");
+  const bundle = join8(install.installPath, "dist", "router.js");
+  return existsSync9(bundle) && readFileSync10(bundle, "utf8") !== readFileSync10(paths.routerCopy, "utf8");
 }
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
 function shownVersion(version) {
@@ -396,14 +1568,18 @@ function installedText(version, routerChanged = false) {
   const text = `${PLUGIN} ${shownVersion(version)} installed; restart Claude sessions to load it`;
   return routerChanged ? `${text}; ${ROUTER_SETUP_HINT}` : text;
 }
-function notifyCommand(text, platform, which) {
+function notifyCommand(text, platform, which, title = PLUGIN) {
   if (platform === "linux") {
     const notifySend = which("notify-send");
-    return notifySend === null ? null : [notifySend, PLUGIN, text];
+    return notifySend === null ? null : [notifySend, title, text];
   }
   if (platform === "darwin") {
     const osascript = which("osascript");
-    return osascript === null ? null : [osascript, "-e", `display notification ${JSON.stringify(text)} with title "${PLUGIN}"`];
+    return osascript === null ? null : [
+      osascript,
+      "-e",
+      `display notification ${JSON.stringify(text)} with title ${JSON.stringify(title)}`
+    ];
   }
   return null;
 }
@@ -431,229 +1607,8 @@ function capturingRunner(env, home) {
   };
 }
 
-// src/setup/lock.ts
-import {
-  closeSync,
-  fchmodSync,
-  mkdirSync,
-  openSync,
-  readFileSync as readFileSync4,
-  readlinkSync,
-  statSync,
-  unlinkSync,
-  writeSync
-} from "fs";
-import { hostname } from "os";
-import { join as join4 } from "path";
-var FALLBACK_STALE_MS = 10 * 60 * 1000;
-var LOCK_FILE = "lock";
-var TAKEOVER_SUFFIX = ".takeover";
-
-class LockBusyError extends Error {
-  name = "LockBusyError";
-}
-function procStartTime(pid) {
-  try {
-    const stat = readFileSync4(`/proc/${pid}/stat`, "utf8");
-    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-    const start = fields[22 - 3];
-    return start && /^\d+$/.test(start) ? start : null;
-  } catch {
-    return null;
-  }
-}
-function psStartTime(pid) {
-  try {
-    const result = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], {
-      env: { ...process.env, LC_ALL: "C" },
-      stdout: "pipe",
-      stderr: "ignore"
-    });
-    const text = result.stdout.toString().trim();
-    return result.exitCode === 0 && text !== "" ? text : null;
-  } catch {
-    return null;
-  }
-}
-function processStartTime(pid, like) {
-  if (like === undefined || like.startsWith("proc:")) {
-    const proc = procStartTime(pid);
-    if (proc !== null)
-      return `proc:${proc}`;
-  }
-  if (like === undefined || like.startsWith("ps:")) {
-    const ps = psStartTime(pid);
-    if (ps !== null)
-      return `ps:${ps}`;
-  }
-  return null;
-}
-function ownPidNamespace() {
-  try {
-    return readlinkSync("/proc/self/ns/pid");
-  } catch {
-    return null;
-  }
-}
-var ownPidns;
-function isAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
-  }
-}
-function parseLock(text) {
-  try {
-    const parsed = JSON.parse(text);
-    if (typeof parsed.pid !== "number" || typeof parsed.time !== "number" || typeof parsed.token !== "string") {
-      return null;
-    }
-    return {
-      pid: parsed.pid,
-      startTime: typeof parsed.startTime === "string" ? parsed.startTime : null,
-      host: typeof parsed.host === "string" ? parsed.host : "",
-      pidns: typeof parsed.pidns === "string" ? parsed.pidns : null,
-      time: parsed.time,
-      token: parsed.token
-    };
-  } catch {
-    return null;
-  }
-}
-function readHeld(file) {
-  let stat;
-  try {
-    stat = statSync(file);
-  } catch (error) {
-    if (error.code === "ENOENT")
-      return null;
-    throw error;
-  }
-  let info;
-  try {
-    info = parseLock(readFileSync4(file, "utf8"));
-  } catch (error) {
-    const code = error.code;
-    if (code === "ENOENT")
-      return null;
-    if (code !== "EACCES" && code !== "EPERM")
-      throw error;
-    info = null;
-  }
-  return { info, ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size };
-}
-function sameHeld(a, b) {
-  if (a.info && b.info)
-    return a.info.token === b.info.token;
-  if (a.info || b.info)
-    return false;
-  return a.ino === b.ino && a.mtimeMs === b.mtimeMs && a.size === b.size;
-}
-function holderIsGone(holder, lastSeenMs, fallbackStaleMs, startTimeOf = processStartTime) {
-  const oldEnough = Date.now() - lastSeenMs > fallbackStaleMs;
-  if (holder === null || holder.host !== hostname())
-    return oldEnough;
-  ownPidns ??= ownPidNamespace();
-  const theirs = holder.pidns ?? null;
-  if (theirs !== null && ownPidns !== null && theirs !== ownPidns)
-    return oldEnough;
-  if (!isAlive(holder.pid))
-    return true;
-  if (holder.startTime === null)
-    return oldEnough;
-  const now = startTimeOf(holder.pid, holder.startTime);
-  if (now === null)
-    return oldEnough;
-  return now !== holder.startTime;
-}
-function isStale(held, fallbackStaleMs) {
-  return holderIsGone(held.info, held.info?.time ?? held.mtimeMs, fallbackStaleMs);
-}
-function tryCreate(file, info, mode) {
-  let fd;
-  try {
-    fd = openSync(file, "wx", mode);
-  } catch (error) {
-    if (error.code === "EEXIST")
-      return false;
-    throw error;
-  }
-  try {
-    fchmodSync(fd, mode);
-    writeSync(fd, JSON.stringify(info));
-  } finally {
-    closeSync(fd);
-  }
-  return true;
-}
-var ownStartTime;
-function currentHolder() {
-  ownStartTime ??= processStartTime(process.pid);
-  ownPidns ??= ownPidNamespace();
-  return { pid: process.pid, startTime: ownStartTime, host: hostname(), pidns: ownPidns };
-}
-function newLockInfo() {
-  return { ...currentHolder(), time: Date.now(), token: crypto.randomUUID() };
-}
-function takeOverStale(file, judged, fallbackStaleMs, mode) {
-  const claim = `${file}${TAKEOVER_SUFFIX}`;
-  const me = newLockInfo();
-  if (!tryCreate(claim, me, mode)) {
-    const other = readHeld(claim);
-    if (other && isStale(other, fallbackStaleMs)) {
-      const again = readHeld(claim);
-      if (again && sameHeld(again, other))
-        unlinkSync(claim);
-    }
-    return false;
-  }
-  try {
-    const now = readHeld(file);
-    if (now && sameHeld(now, judged))
-      unlinkSync(file);
-    return true;
-  } finally {
-    if (readHeld(claim)?.info?.token === me.token)
-      unlinkSync(claim);
-  }
-}
-async function withLock(stateDir, fn, options = {}) {
-  mkdirSync(stateDir, { recursive: true });
-  const file = join4(stateDir, LOCK_FILE);
-  const mine = newLockInfo();
-  const deadline = Date.now() + (options.waitMs ?? 0);
-  const fallbackStaleMs = options.fallbackStaleMs ?? FALLBACK_STALE_MS;
-  const mode = options.mode ?? 384;
-  for (;; ) {
-    mine.time = Date.now();
-    if (tryCreate(file, mine, mode))
-      break;
-    const held = readHeld(file);
-    if (held === null)
-      continue;
-    if (isStale(held, fallbackStaleMs) && takeOverStale(file, held, fallbackStaleMs, mode)) {
-      continue;
-    }
-    if (Date.now() >= deadline) {
-      const info = held.info;
-      const where = info && info.host !== hostname() ? ` on ${info.host || "another host"}` : "";
-      const who = info ? `process ${info.pid}${where}` : "another run";
-      throw new LockBusyError(`anymodel is busy: ${who} holds ${file}. Wait for it to finish, then try again.`);
-    }
-    await Bun.sleep(100);
-  }
-  try {
-    return await fn();
-  } finally {
-    if (readHeld(file)?.info?.token === mine.token)
-      unlinkSync(file);
-  }
-}
-
 // src/update/opt-out.ts
-import { readFileSync as readFileSync5 } from "fs";
+import { readFileSync as readFileSync11 } from "fs";
 var UPDATE_BLOCKING_VARS = [
   "DISABLE_AUTOUPDATER",
   "DISABLE_UPDATES",
@@ -667,7 +1622,7 @@ function isSet(value) {
 }
 function settingsEnv(settingsFile) {
   try {
-    const parsed = JSON.parse(readFileSync5(settingsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync11(settingsFile, "utf8"));
     const env = parsed?.env;
     return typeof env === "object" && env !== null && !Array.isArray(env) ? env : {};
   } catch {
@@ -693,78 +1648,25 @@ function blockingVar(env, settingsFile) {
 // src/update/state.ts
 import {
   appendFileSync,
-  existsSync as existsSync5,
+  existsSync as existsSync10,
   mkdirSync as mkdirSync3,
-  readdirSync as readdirSync2,
-  readFileSync as readFileSync7,
-  rmSync,
+  readdirSync as readdirSync4,
+  readFileSync as readFileSync12,
+  rmSync as rmSync2,
   statSync as statSync3,
   writeFileSync as writeFileSync2
 } from "fs";
-import { join as join6 } from "path";
-
-// src/setup/write.ts
-import {
-  chmodSync,
-  closeSync as closeSync2,
-  existsSync as existsSync4,
-  fsyncSync,
-  lstatSync,
-  mkdirSync as mkdirSync2,
-  openSync as openSync2,
-  readdirSync,
-  readFileSync as readFileSync6,
-  readlinkSync as readlinkSync2,
-  realpathSync,
-  renameSync,
-  statSync as statSync2,
-  unlinkSync as unlinkSync2,
-  writeFileSync
-} from "fs";
-import { basename, dirname, join as join5, resolve } from "path";
-function writeTemp(file, content, mode) {
-  const dir = dirname(file);
-  mkdirSync2(dir, { recursive: true });
-  const temp = join5(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
-  try {
-    const fd = openSync2(temp, "wx", mode);
-    try {
-      writeFileSync(fd, content);
-      fsyncSync(fd);
-    } finally {
-      closeSync2(fd);
-    }
-    chmodSync(temp, mode);
-  } catch (error) {
-    if (existsSync4(temp))
-      unlinkSync2(temp);
-    throw error;
-  }
-  return temp;
-}
-function atomicWrite(file, content, mode, beforeRename) {
-  const temp = writeTemp(file, content, mode);
-  try {
-    beforeRename?.();
-    renameSync(temp, file);
-  } catch (error) {
-    if (existsSync4(temp))
-      unlinkSync2(temp);
-    throw error;
-  }
-}
-
-// src/update/state.ts
+import { join as join9 } from "path";
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
 var LOG_MAX_BYTES = 256 * 1024;
 function updateFiles(stateDir) {
   return {
-    hold: join6(stateDir, "update-hold"),
-    check: join6(stateDir, "update-check.json"),
-    reported: join6(stateDir, "update-reported"),
-    log: join6(stateDir, "update.log"),
-    lockDir: join6(stateDir, "update"),
-    sessions: join6(stateDir, "sessions")
+    hold: join9(stateDir, "update-hold"),
+    check: join9(stateDir, "update-check.json"),
+    reported: join9(stateDir, "update-reported"),
+    log: join9(stateDir, "update.log"),
+    lockDir: join9(stateDir, "update"),
+    sessions: join9(stateDir, "sessions")
   };
 }
 var RESULTS = [
@@ -792,7 +1694,7 @@ function ensureDir(dir) {
 }
 function readLastCheck(files) {
   try {
-    const parsed = JSON.parse(readFileSync7(files.check, "utf8"));
+    const parsed = JSON.parse(readFileSync12(files.check, "utf8"));
     if (typeof parsed?.at !== "string" || Number.isNaN(Date.parse(parsed.at)) || !RESULTS.includes(parsed.result) || typeof parsed.detail !== "string") {
       return null;
     }
@@ -810,7 +1712,7 @@ function readLastCheck(files) {
   }
 }
 function writeLastCheck(files, check) {
-  ensureDir(join6(files.check, ".."));
+  ensureDir(join9(files.check, ".."));
   atomicWrite(files.check, `${JSON.stringify(check, null, 2)}
 `, 384);
 }
@@ -821,16 +1723,16 @@ function isDue(last, nowMs) {
   return nowMs - at >= CHECK_INTERVAL_MS || at > nowMs + 60000;
 }
 function isHeld(files) {
-  return existsSync5(files.hold);
+  return existsSync10(files.hold);
 }
 function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
 }
 function appendLog(files, line, nowMs) {
-  ensureDir(join6(files.log, ".."));
+  ensureDir(join9(files.log, ".."));
   try {
     if (statSync3(files.log).size > LOG_MAX_BYTES) {
-      const text = readFileSync7(files.log, "utf8");
+      const text = readFileSync12(files.log, "utf8");
       const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
       writeFileSync2(files.log, keep.slice(keep.indexOf(`
 `) + 1), { mode: 384 });
@@ -841,19 +1743,19 @@ function appendLog(files, line, nowMs) {
 }
 function wasReported(files, at) {
   try {
-    return readFileSync7(files.reported, "utf8").trim() === at;
+    return readFileSync12(files.reported, "utf8").trim() === at;
   } catch {
     return false;
   }
 }
 function markReported(files, at) {
-  ensureDir(join6(files.reported, ".."));
+  ensureDir(join9(files.reported, ".."));
   atomicWrite(files.reported, `${at}
 `, 384);
 }
 function readSession(file) {
   try {
-    const parsed = JSON.parse(readFileSync7(file, "utf8"));
+    const parsed = JSON.parse(readFileSync12(file, "utf8"));
     if (typeof parsed?.pid !== "number" || typeof parsed.start !== "string" || typeof parsed.version !== "string") {
       return null;
     }
@@ -871,14 +1773,14 @@ function registerSession(files, pid, version) {
   if (start === null)
     return;
   ensureDir(files.sessions);
-  for (const name of readdirSync2(files.sessions).filter((entry) => SESSION_FILE.test(entry))) {
-    const file = join6(files.sessions, name);
+  for (const name of readdirSync4(files.sessions).filter((entry) => SESSION_FILE.test(entry))) {
+    const file = join9(files.sessions, name);
     const session = readSession(file);
     if (session === null || !isRunning(session))
-      rmSync(file, { force: true });
+      rmSync2(file, { force: true });
   }
   const record = { pid, start, version };
-  atomicWrite(join6(files.sessions, `${pid}.json`), `${JSON.stringify(record)}
+  atomicWrite(join9(files.sessions, `${pid}.json`), `${JSON.stringify(record)}
 `, 384);
 }
 
@@ -918,6 +1820,15 @@ function sessionStart(deps) {
   if (isDue(last, deps.nowMs))
     deps.spawnBackground();
   return answer;
+}
+async function refreshInstructionsAtSessionStart(deps) {
+  try {
+    await refreshInstructionsCopy(deps.where, deps.version, { waitMs: deps.waitMs ?? 2000 });
+  } catch (error) {
+    if (error instanceof LockBusyError)
+      return;
+    deps.log(`${PLUGIN}: the instructions copy was not refreshed (${messageOf(error)}). A plain ${COMMAND} setup brings it up to date.`);
+  }
 }
 async function backgroundCheck(deps) {
   const files = updateFiles(deps.paths.stateDir);
@@ -1033,6 +1944,11 @@ if (process.argv.includes("--background")) {
     if (answer !== "")
       process.stdout.write(`${answer}
 `);
+    await refreshInstructionsAtSessionStart({
+      where: instructionsPaths(paths, instructionsFolder(import.meta.dir)),
+      version: VERSION,
+      log: (line) => console.error(line)
+    });
   } catch (error) {
     console.error(`${PLUGIN} update check: ${error instanceof Error ? error.message : error}`);
   }

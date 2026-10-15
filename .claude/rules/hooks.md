@@ -105,6 +105,31 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
   `git fetch origin <base>`, so a repo with no `origin` cannot make one: WorktreeCreate
   fails closed and says the fetch failed. An existing branch is checked out all the same.
 
+## A machine-wide hook
+
+Some hooks answer about the machine, not a project: `agent-guard` (the model a launch runs
+on) and `notify` (desktop notifications). `notify` is a `USER_HOOKS` bundle like
+`update-check`: it never enters the frame, reads no `anymodel.json`, and its opt-in is the
+machine — a notifier on PATH, and a terminal that does not notify by itself (inside Warp,
+whose own Claude Code plugin notifies, it stays silent).
+
+`agent-guard` is a plugin hook (`HOOKS`) that is machine-wide all the same: it runs with or
+without `anymodel.json`, a broken or too new file does not change its answer, and a folder
+that is not in git is judged the same way. The frame hands such a hook the input and the
+environment (`HookEnvContext`) where its checkout or config step does not apply, and the
+spec's `onConfigProblem` and `outsideGit` judge on. It is still in `PLUGIN_HOOK_NAMES`, so
+a project that runs its own Agent guard silences it through `ownHooks`, which is read on its
+own, before the file.
+
+```json
+{ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": { "command": "…" } } }
+```
+
+`updatedInput` (PreToolUse only, proved live on 2.1.301) replaces the tool's input for that
+call: `job-route` uses it to send a heavy command through `anymodel job run`. The rewritten
+command runs in the Bash tool's own shell, so it keeps the folder that shell is in (proved
+live: after a `cd`, the rewritten command ran in the new folder, not in the hook's `cwd`).
+
 ## A user-level hook
 
 A hook about the person, not a project (the StopFailure usage-limit alert) reads no
@@ -209,7 +234,10 @@ Those happen only in a manual `anymodel setup` run that shows the change first. 
 must stay quick: no fetch.
 
 The plugin's SessionStart hooks are the worktree-leftovers note, the session name, and the
-background self-update (`src/update/`, the owner's decision of 2026-10-15).
+background self-update (`src/update/`, the owner's decision of 2026-10-15). `update-check`
+also brings the managed instructions copy up to this version when it is behind
+(`refreshInstructionsAtSessionStart`): the copy only, under the state lock, never the
+`CLAUDE.md` block, never a question, one stderr line on failure.
 
 The self-update hook (`src/entries/update-check.ts`) is machine-wide, not a project's
 piece, so it has no `anymodel.json` and no `ownHooks` step. Its rules:

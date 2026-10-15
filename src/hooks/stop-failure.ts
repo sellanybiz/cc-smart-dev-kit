@@ -29,7 +29,7 @@
  *   - Anything else: one stderr line.
  */
 
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { type GatewayConfig, loadConfigFile } from "../gateway/config";
@@ -42,6 +42,7 @@ import {
 } from "../gateway/limit-state";
 import { settingsReport } from "../gateway/settings";
 import { MODEL_SLOTS, parseTarget, withoutContextSuffix } from "../gateway/targets";
+import { lastClaudeModel } from "./transcript";
 
 /** The words Claude Code 2.1.300 shows when a plan's usage limit stops a turn. */
 const LIMIT_TEXT = /^You've hit your (?:[\w-]+ ){0,3}limit\b/;
@@ -195,52 +196,6 @@ export function planAlert(input: unknown, ctx: AlertContext): Alert | null {
     body: `${head} A cheaper model until it resets: ${command} (Claude takes over again by itself once it answers).`,
     title,
   };
-}
-
-/** How much of a transcript's end the hook reads for the session's model. */
-const TRANSCRIPT_TAIL_BYTES = 512 * 1024;
-
-/**
- * The last Claude model that answered in this transcript (`message.model` of its last
- * `assistant` line that names a `claude-…` model): the session's own model. A fallback's
- * answer names the backend's model and Claude Code's own error lines name none, so both are
- * passed over. Only the file's last 512 KB is read. Null when there is none, or no file.
- */
-export function lastClaudeModel(transcriptPath: string): null | string {
-  let text: string;
-  try {
-    const fd = openSync(transcriptPath, "r");
-    try {
-      const size = fstatSync(fd).size;
-      const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
-      const buffer = Buffer.alloc(length);
-      readSync(fd, buffer, 0, length, size - length);
-      text = buffer.toString("utf8");
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    // No transcript, or not readable: the alert falls back to the state file.
-    return null;
-  }
-  const lines = text.split("\n");
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index] ?? "";
-    if (!line.includes('"assistant"')) continue;
-    let entry: unknown;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      // The first line may be cut by the tail, the last one half written.
-      continue;
-    }
-    if (!isJsonObject(entry) || entry.type !== "assistant" || !isJsonObject(entry.message)) {
-      continue;
-    }
-    const model = entry.message.model;
-    if (typeof model === "string" && model.startsWith("claude-")) return model;
-  }
-  return null;
 }
 
 /** What the hook reads from this machine for `planAlert`; never throws. */

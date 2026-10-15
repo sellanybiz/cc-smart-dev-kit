@@ -28,8 +28,10 @@ import type { HookResult } from "./io";
 import type { HookSpec } from "./run";
 import {
   afterMergeHook,
+  agentGuardHook,
   gitGuardHook,
   HOOKS,
+  jobRouteHook,
   mainFolderGuardHook,
   messageGuardHook,
   PROJECT_HOOKS,
@@ -43,6 +45,7 @@ import {
 const SESSION = "11111111-2222-3333-4444-555555555555";
 const AGENT = "0a1b2c3d4e5f60718";
 const FULL_CONFIG = {
+  jobs: { route: true },
   worktrees: { base: "main", prefix: "app-wt-", guardMainFolder: true },
   sessionNames: true,
 };
@@ -55,6 +58,11 @@ interface Case {
   setup: (config: unknown) => { input: Record<string, unknown>; env: Record<string, string> };
   /** What it says when `requires` is not met (null: silent but for one stderr line). */
   failsClosed: (result: HookResult) => void;
+  /**
+   * A machine-wide hook (agent-guard): it runs with or without anymodel.json, and its answer
+   * does not depend on the project's file, so the shared rows below say so.
+   */
+  machineWide?: boolean;
 }
 
 function project(config: unknown) {
@@ -90,6 +98,12 @@ const askLine = (result: HookResult) => {
   const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
   expect(output.permissionDecision).toBe("ask");
   expect(output.permissionDecisionReason).toEndWith("run claude plugin update anymodel@anymodel");
+};
+const denyLine = (result: HookResult) => {
+  expect(result.exitCode ?? 0).toBe(0);
+  const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+  expect(output.permissionDecision).toBe("deny");
+  expect(output.permissionDecisionReason).toContain("Opus is for reviews");
 };
 const contextLine = (result: HookResult) => {
   const text: string = JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext;
@@ -173,6 +187,37 @@ const CASES: Case[] = [
         cwd: project(config),
         tool_name: "Bash",
         tool_input: { command: "git push --force" },
+      },
+      env: hookEnv(),
+    }),
+    failsClosed: askLine,
+  },
+  {
+    spec: agentGuardHook,
+    own: { event: "PreToolUse", matcher: "Agent|Task|Workflow" },
+    machineWide: true,
+    setup: (config) => ({
+      input: {
+        hook_event_name: "PreToolUse",
+        session_id: SESSION,
+        cwd: project(config),
+        tool_name: "Agent",
+        tool_input: { effort: "high", model: "opus", prompt: "do it" },
+      },
+      env: hookEnv(),
+    }),
+    failsClosed: denyLine,
+  },
+  {
+    spec: jobRouteHook,
+    own: { event: "PreToolUse", matcher: "Bash" },
+    setup: (config) => ({
+      input: {
+        hook_event_name: "PreToolUse",
+        session_id: SESSION,
+        cwd: project(config),
+        tool_name: "Bash",
+        tool_input: { command: "bunx tsc --noEmit" },
       },
       env: hookEnv(),
     }),
@@ -340,6 +385,11 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
   test("a broken anymodel.json: fails closed the same way, naming the file", async () => {
     const { input, env } = c.setup({ worktree: {} });
     const result = await runHook(c.spec, input, env);
+    if (c.machineWide === true) {
+      // A machine-wide hook's answer never depends on the project's file: it judges on.
+      c.failsClosed(result);
+      return;
+    }
     const said = `${result.stdout ?? ""}${result.stderr ?? ""}`;
     expect(said).toContain("anymodel.json: worktree: unknown field");
   });
@@ -360,13 +410,21 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
 });
 
 describe("no anymodel.json", () => {
-  test.each(CASES.filter((c) => c.spec.wiring === "plugin").map((c) => [c.spec.name, c] as const))(
-    "the plugin's %s is silent",
-    async (_name, c) => {
-      const { input, env } = c.setup(undefined);
-      expect(await runHook(c.spec, input, env)).toEqual({});
-    },
-  );
+  test.each(
+    CASES.filter((c) => c.spec.wiring === "plugin" && c.machineWide !== true).map(
+      (c) => [c.spec.name, c] as const,
+    ),
+  )("the plugin's %s is silent", async (_name, c) => {
+    const { input, env } = c.setup(undefined);
+    expect(await runHook(c.spec, input, env)).toEqual({});
+  });
+
+  test("a machine-wide hook judges the same without anymodel.json (agent-guard)", async () => {
+    const c = CASES.find((one) => one.spec === agentGuardHook);
+    if (c === undefined) throw new Error("no case");
+    const { input, env } = c.setup(undefined);
+    c.failsClosed(await runHook(c.spec, input, env));
+  });
 
   const NEEDS =
     "this project wires the anymodel worktree hooks (anymodel hook ...), but has no .claude/anymodel.json. " +

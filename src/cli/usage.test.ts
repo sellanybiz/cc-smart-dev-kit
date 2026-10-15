@@ -151,6 +151,39 @@ describe("usage", () => {
     ]);
   });
 
+  it("the Opus and Fable launches the guard allowed are listed, with why", () => {
+    const root = projects();
+    const sessions = collectUsage(root, { project: null, sinceMs: SINCE });
+    const launch = (
+      at: number,
+      family: "fable" | "opus",
+      reason: string,
+      subagentType: string,
+    ) => ({
+      at,
+      family,
+      model: "claude-opus-5-5",
+      project: "/home/user/my-app",
+      reason,
+      session: "s1",
+      subagentType,
+      toolUseId: "",
+    });
+    const text = formatUsage(sessions, 6, root, "/home/user", [
+      launch(SINCE + 1, "opus", "review", "Reviewer"),
+      launch(SINCE + 2, "fable", "fable:plan", "Plan"),
+      launch(SINCE + 3, "opus", "opus:security", "general-purpose"),
+    ]);
+    expect(text.split("\n").slice(-2)).toEqual([
+      "",
+      "Opus / Fable launches: 3 (Opus 2, Fable 1); why: plan 1, review 1, security 1",
+    ]);
+    // No launch: no line at all (an older machine has no record file).
+    expect(formatUsage(sessions, 6, root, "/home/user")).toBe(
+      formatUsage(sessions, 6, root, "/home/user", []),
+    );
+  });
+
   it("--hours and --project choose the window and the project", () => {
     const root = projects();
     const wide = collectUsage(root, { project: null, sinceMs: NOW - 9 * 3_600_000 });

@@ -1,5 +1,5 @@
 {
-  "description": "anymodel: git, edit and message guards, notes after a merge and at session start, session names, the usage-limit alert and the background update check. Each hook stays silent while the project wires its own for the same event.",
+  "description": "anymodel: git, edit, message and agent guards, desktop notifications, notes after a merge and at session start, session names, the usage-limit alert and the background update check. Each hook stays silent while the project wires its own for the same event.",
   "hooks": {
     "StopFailure": [
       {
@@ -44,6 +44,53 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
             "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/message-guard.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/job-route.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task|Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/agent-guard.js"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input|worker_permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"],
             "timeout": 10
           }
         ]

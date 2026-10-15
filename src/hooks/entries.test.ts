@@ -68,10 +68,12 @@ describe("hooks.json", () => {
 
   test("no worktree hook: a plugin WorktreeCreate would replace Claude Code's worktrees everywhere", () => {
     expect(Object.keys(hooksJson.hooks).sort()).toEqual([
+      "Notification",
       "PostToolUse",
       "PostToolUseFailure",
       "PreToolUse",
       "SessionStart",
+      "Stop",
       "StopFailure",
       "UserPromptSubmit",
     ]);
@@ -93,6 +95,7 @@ describe("hooks.json", () => {
     expect(timeout("git-guard")).toBe(10);
     expect(timeout("main-folder-guard")).toBe(10);
     expect(timeout("message-guard")).toBe(10);
+    expect(timeout("agent-guard")).toBe(10);
   });
 
   test("every git call inside a hook stays well inside that hook's own timeout", () => {

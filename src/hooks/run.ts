@@ -20,6 +20,12 @@
  * A bug never stops a person's work: any error is one line on stderr and exit 0, except
  * where the hook says otherwise (WorktreeCreate cannot succeed without a folder).
  *
+ * A **machine-wide** hook (`agent-guard`, and the notifier) answers about the machine, not a
+ * project: it runs with or without `anymodel.json`, and its answer never depends on the
+ * project's file. It gets the input and the environment (`HookEnvContext`) where the frame's
+ * checkout or config step does not apply, and a project may still silence it through
+ * `ownHooks` (which is read on its own, before the file).
+ *
  * `ANYMODEL_HOOK_LOG` (a file path), when set, gets one JSON line per hook run: what
  * `anymodel doctor --live` reads to prove the hooks fired.
  */
@@ -50,6 +56,17 @@ export interface HookContext {
   paths: CliPaths;
 }
 
+/**
+ * What a hook gets besides the input when the frame's project steps do not apply (no
+ * checkouts, a broken anymodel.json, outside git): the environment and the paths. A
+ * machine-wide hook (agent-guard) judges from these alone, so its answer does not change
+ * with the project's file.
+ */
+export interface HookEnvContext {
+  env: Env;
+  paths: CliPaths;
+}
+
 export interface HookSpec {
   /** The bundle's name (`dist/<name>.js`), used in messages and the log. */
   name: string;
@@ -68,22 +85,31 @@ export interface HookSpec {
   needs?: (config: AnymodelConfig | null) => string | null;
   /**
    * The answer when anymodel.json is broken, needs a newer plugin, or lacks what the hook
-   * `needs`: fail closed.
+   * `needs`: fail closed. `context` (the environment and paths): for a hook whose answer
+   * does not depend on the project's file, so it can judge the same way (`agent-guard`).
    */
   onConfigProblem: (
     message: string,
     input: HookInput,
     event: string,
     checkout: Checkout,
+    context: HookEnvContext,
   ) => HookResult;
   /** The answer when `cwd` is missing, not a folder, or outside git. Default: silent. */
-  outsideGit?: (input: HookInput, event: string, why: string) => HookResult;
+  outsideGit?: (
+    input: HookInput,
+    event: string,
+    why: string,
+    context: HookEnvContext,
+  ) => HookResult;
   /**
    * Facts for the hook log only (`ANYMODEL_HOOK_LOG`), never part of the answer: what the
-   * hook's own parser read in the input. `doctor --live` reads them to prove a guard read
-   * the call, not only that the hook ran (`.claude/rules/hooks.md` § Quiet output).
+   * hook's own parser read in the input, and — where the answer is a judgement — what it
+   * judged. `doctor --live` reads them to prove a guard read the call, not only that the
+   * hook ran (`.claude/rules/hooks.md` § Quiet output). `context` (the environment and
+   * paths) is there for a machine-wide hook, whose facts do not depend on the project.
    */
-  logFacts?: (input: HookInput) => Record<string, unknown>;
+  logFacts?: (input: HookInput, context: HookEnvContext) => Record<string, unknown>;
   run: (context: HookContext) => HookResult | Promise<HookResult>;
   /** The exit code when the hook itself fails. Default 0. */
   crashExitCode?: number;
@@ -106,16 +132,17 @@ export async function handleHook(spec: HookSpec, text: string, env: Env): Promis
     const event = stringField(input.hook_event_name);
     if (event === null || !spec.events.includes(event)) return SILENT;
     const cwd = stringField(input.cwd);
+    const context: HookEnvContext = { env, paths: cliPaths(env) };
     const outside = spec.outsideGit ?? (() => SILENT);
-    if (cwd === null) return outside(input, event, "the hook input has no cwd");
+    if (cwd === null) return outside(input, event, "the hook input has no cwd", context);
 
     let checkout: Checkout | null;
     try {
       checkout = locateCheckout(cwd, { env });
     } catch (error) {
-      return outside(input, event, errorMessage(error));
+      return outside(input, event, errorMessage(error), context);
     }
-    if (checkout === null) return outside(input, event, `${cwd} is not in a git checkout`);
+    if (checkout === null) return outside(input, event, `${cwd} is not in a git checkout`, context);
 
     if (spec.wiring === "plugin" && ownHooksOf(checkout).includes(spec.name)) return SILENT;
 
@@ -124,13 +151,13 @@ export async function handleHook(spec: HookSpec, text: string, env: Env): Promis
       project = loadProjectConfig(checkout);
     } catch (error) {
       if (error instanceof AnymodelConfigError) {
-        return spec.onConfigProblem(error.message, input, event, checkout);
+        return spec.onConfigProblem(error.message, input, event, checkout, context);
       }
       throw error;
     }
     const missing = spec.needs?.(project.config) ?? null;
-    if (missing !== null) return spec.onConfigProblem(missing, input, event, checkout);
-    return await spec.run({ input, event, cwd, project, env, paths: cliPaths(env) });
+    if (missing !== null) return spec.onConfigProblem(missing, input, event, checkout, context);
+    return await spec.run({ input, event, cwd, project, env, paths: context.paths });
   } catch (error) {
     return {
       exitCode: spec.crashExitCode ?? 0,
@@ -148,7 +175,8 @@ function logRun(spec: HookSpec, text: string, result: HookResult, env: Env): voi
   if (file === undefined || file === "") return;
   try {
     const input = parseHookInput(text);
-    const facts = input === null ? {} : (spec.logFacts?.(input) ?? {});
+    const facts =
+      input === null ? {} : (spec.logFacts?.(input, { env, paths: cliPaths(env) }) ?? {});
     appendFileSync(
       file,
       `${JSON.stringify({

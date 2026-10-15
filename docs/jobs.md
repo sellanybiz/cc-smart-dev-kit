@@ -109,6 +109,22 @@ there is. The fields:
 | `match` | How the classifier finds the kind (below): `{ "tool", "sub", "flags", "argIncludes", "valued" }` or `{ "script" }`. |
 | `about` | One line for `job kinds`. |
 
+## The route: `job-route`
+
+A heavy command typed by hand runs raw. A project can have it sent through the queue:
+`"jobs": { "route": true }` in its `.claude/anymodel.json`, and the plugin's `job-route`
+hook (PreToolUse on Bash, in `src/hooks/job-route.ts`) rewrites the call to
+
+    "$HOME/.local/bin/anymodel" job run --kind <kind> -- <command>
+
+through the hook's `updatedInput` — byte for byte the same command, in the same folder —
+so the reservation, the waiting line and the workers come out the same as a person's own
+`job run`. One plain command goes in as its own argv words (`bunx vitest run src/a.test.ts`);
+anything else (a pipe, `&&`, a glob, an expansion) through `sh -c '<the line>'`, so the
+shell reads exactly what was written. A command already inside `anymodel job run` is left
+alone. Off unless the project says so, because it changes the call; `ownHooks` silences it
+like any other plugin hook.
+
 ## One job per name: `--exclusive`
 
 Some jobs must not run twice at once, whatever the memory: two container image builds
@@ -340,7 +356,7 @@ Optional. Unknown fields are an error that names the file and the field.
 ## The classifier
 
 `classifyHeavyCommand(bashCommand, kinds)` (`src/jobs/classify.ts`) says which kind a
-Bash command runs, or null. A later hook uses it to send heavy commands through `job run`.
+Bash command runs, or null: it is what the `job-route` hook routes by (§ The route).
 It reads the line with the shell lexer (`src/shell/command.ts`): a tool inside quotes,
 an `echo`, a here-doc, a comment or a commit message is text, not a run. It finds the
 tool behind `bunx`, `bun x`, `bun run`, `bun <name>`, `npx`, `npm exec`, `npm run`,
