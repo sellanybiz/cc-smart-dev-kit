@@ -651,6 +651,41 @@ describe("anymodel doctor", () => {
     );
   });
 
+  test("tmux: the managed passthrough line, and the fix when the running server does not pass alerts through", () => {
+    const { fakeBin, home, run } = setup();
+    run(["setup"]);
+    // tmux is installed: this fake answers "a server is running" and the option read.
+    const tmuxFake = (value: string) =>
+      ["#!/bin/sh", `[ "$1" = show-options ] && { echo "${value}"; exit 0; }`, "exit 0", ""].join(
+        "\n",
+      );
+    writeFileSync(join(fakeBin, "tmux"), tmuxFake("allow-passthrough off"));
+    chmodSync(join(fakeBin, "tmux"), 0o755);
+    const result = run(["doctor"], { TMUX: "/tmp/tmux-1001/default,1234,0" });
+    expect(result.exitCode).toBe(0); // information, never a failure
+    expect(result.stdout).toContain(
+      '· ~/.tmux.conf has no "set -g allow-passthrough all" line, so tmux drops an alert from a pane. To add it: anymodel setup\n',
+    );
+    expect(result.stdout).toContain(
+      "· tmux: alerts are not passed through (its allow-passthrough is not all). To apply it now: tmux set -g allow-passthrough all (a restart works too); it needs tmux 3.3 or newer\n",
+    );
+
+    // The line in place, and the running server on `all`: nothing about tmux at all.
+    writeFileSync(join(home, ".tmux.conf"), "set -g allow-passthrough all\n");
+    writeFileSync(join(fakeBin, "tmux"), tmuxFake("all"));
+    expect(run(["doctor"], { TMUX: "/tmp/tmux-1001/default,1234,0" }).stdout).not.toContain("tmux");
+
+    // Outside tmux the running server is not read: only the config file is checked.
+    writeFileSync(join(home, ".tmux.conf"), "");
+    expect(
+      run(["doctor"], { TMUX: "" })
+        .stdout.split("\n")
+        .filter((line) => line.includes("tmux")),
+    ).toEqual([
+      '· ~/.tmux.conf has no "set -g allow-passthrough all" line, so tmux drops an alert from a pane. To add it: anymodel setup',
+    ]);
+  });
+
   test("on a Bun older than 1.4.3: ✗ first, and the gateway checks, which send the key, are skipped", async () => {
     // In this process, to give doctor an older Bun: a local marketplace, so no git runs, and
     // no `setup`, so no launcher: doctor would run it with this process's real HOME.

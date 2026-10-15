@@ -4,7 +4,7 @@
  * test says (`src/testing/fake-machine.ts`); git is the real one, on a temp project.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { restore } from "../setup/restore";
 import { capturePrinted, printed, world } from "../testing/fake-machine";
@@ -90,6 +90,59 @@ describe("setup on a terminal: the auto-mode entries", () => {
       RULE,
       "In my-app: new rule.",
     ]);
+  });
+});
+
+describe("setup and tmux: the one managed line", () => {
+  test("tmux installed: the line goes into ~/.tmux.conf, the person's own lines kept, and a running server gets the command printed", async () => {
+    const repo = project({ autoMode: [RULE] });
+    const w = world({ bins: { tmux: "exit 0" }, git: true });
+    writeFileSync(w.paths.tmuxConfFile, "set -g mouse on\n");
+    expect(await w.setup({ project: repo, yes: true })).toBe(0);
+    expect(printed).toContain("~ ~/.tmux.conf: added set -g allow-passthrough all");
+    expect(printed).toContain(
+      "  tmux is running: run `tmux set -g allow-passthrough all` to apply the line now (a restart works too)",
+    );
+    expect(readFileSync(w.paths.tmuxConfFile, "utf8")).toBe(
+      "set -g mouse on\nset -g allow-passthrough all\n",
+    );
+    // A second run changes nothing, and says so.
+    printed.length = 0;
+    expect(await w.setup({ project: repo, yes: true })).toBe(0);
+    expect(printed[0]).toBe("Nothing to change. Setup is up to date.");
+    expect(printed.join("\n")).not.toContain("tmux.conf");
+    // restore takes exactly that line out and keeps the person's own.
+    restore(w.paths.stateDir);
+    expect(readFileSync(w.paths.tmuxConfFile, "utf8")).toBe("set -g mouse on\n");
+  });
+
+  test("no tmux: nothing is written, and nothing is said about it", async () => {
+    const repo = project({ autoMode: [RULE] });
+    const w = world({ git: true });
+    expect(await w.setup({ project: repo, yes: true })).toBe(0);
+    expect(printed.join("\n")).not.toContain("tmux");
+    expect(existsSync(w.paths.tmuxConfFile)).toBe(false);
+  });
+
+  test("a line the person already wrote themselves is left alone: setup claims nothing, and restore keeps it", async () => {
+    const repo = project({ autoMode: [RULE] });
+    const w = world({ bins: { tmux: "exit 1" }, git: true }); // no server running
+    writeFileSync(w.paths.tmuxConfFile, "set -g allow-passthrough all\n");
+    expect(await w.setup({ project: repo, yes: true })).toBe(0);
+    expect(printed.join("\n")).not.toContain("tmux is running");
+    restore(w.paths.stateDir);
+    expect(readFileSync(w.paths.tmuxConfFile, "utf8")).toBe("set -g allow-passthrough all\n");
+  });
+
+  test("a dry run reports the line and the running server, and writes nothing", async () => {
+    const repo = project({ autoMode: [RULE] });
+    const w = world({ bins: { tmux: "exit 0" }, git: true });
+    expect(await w.setup({ project: repo, dryRun: true })).toBe(0);
+    expect(printed).toContain("+ ~/.tmux.conf: added set -g allow-passthrough all");
+    expect(printed).toContain(
+      "  tmux is running: run `tmux set -g allow-passthrough all` to apply the line now (a restart works too)",
+    );
+    expect(existsSync(w.paths.tmuxConfFile)).toBe(false);
   });
 });
 

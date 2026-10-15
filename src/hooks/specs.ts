@@ -19,7 +19,7 @@
  * Three more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they are about
  * the person, not a project, so they never enter the frame and read no `anymodel.json` —
  * `stop-failure` (the usage-limit alert), `update-check` (the background self-update and the
- * instructions copy) and `notify` (desktop notifications, silent inside Warp).
+ * instructions copy) and `notify` (the alerts: desktop, SSH terminal, Warp; `notify.ts`).
  * A project wires these itself, as `anymodel hook <name>` (`PROJECT_HOOKS`): the worktree
  * engine. A plugin WorktreeCreate would replace Claude Code's own worktrees in every
  * project, so the engine is opt-in (`docs/design.md` § The worktree engine). Each needs
@@ -265,11 +265,20 @@ export const HOOKS: readonly HookSpec[] = [
 ];
 
 /**
+ * The bundles whose `hooks.json` entry runs the shim with `--missing=ask`: the guards, which
+ * fail closed when no bun is found. Every other hook is quiet (`--missing=quiet`), one line
+ * on stderr — the notifier runs on PreToolUse too, and is not a guard.
+ */
+export const GUARD_BUNDLES: ReadonlySet<string> = new Set(
+  HOOKS.filter((spec) => spec.events.includes("PreToolUse")).map((spec) => spec.name),
+);
+
+/**
  * The plugin's other bundles in `plugin/hooks/hooks.json`, by name: hooks about the person,
  * not a project, so no `HookSpec` here — they never enter the frame (`run.ts`) and read no
  * `anymodel.json` (`ownHooks` lists only `HOOKS`). Each has its own entry and its own logic:
- * `stop-failure` (the usage-limit alert, `src/hooks/stop-failure.ts`) and `update-check`
- * (the background self-update, `src/update/`).
+ * `stop-failure` (the usage-limit alert, `src/hooks/stop-failure.ts`), `update-check`
+ * (the background self-update, `src/update/`) and `notify` (the alerts, `src/hooks/notify.ts`).
  */
 export const USER_HOOKS: readonly string[] = ["stop-failure", "update-check", "notify"];
 

@@ -19,6 +19,10 @@ export interface CliPaths extends RouterPaths {
   claudeMemSettingsFile: string;
   /** The socket unit that holds the router's port: `~/.config/systemd/user/anymodel-router.socket`. */
   routerSocketFile: string;
+  /** The notifier's settings: `~/.claude/anymodel/notify.json`. */
+  notifyConfigFile: string;
+  /** tmux's own config: `~/.tmux.conf` (setup adds one managed line there). */
+  tmuxConfFile: string;
 }
 
 /**
@@ -41,6 +45,8 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     routerUnitFile: join(router.home, ".config", "systemd", "user", "anymodel-router.service"),
     claudeMemSettingsFile: join(claudeMemDataDir(env, router.home), "settings.json"),
     routerSocketFile: join(router.home, ".config", "systemd", "user", "anymodel-router.socket"),
+    notifyConfigFile: join(claudeConfigDir, "anymodel", "notify.json"),
+    tmuxConfFile: join(router.home, ".tmux.conf"),
   };
 }
 

@@ -108,10 +108,22 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
 ## A machine-wide hook
 
 Some hooks answer about the machine, not a project: `agent-guard` (the model a launch runs
-on) and `notify` (desktop notifications). `notify` is a `USER_HOOKS` bundle like
-`update-check`: it never enters the frame, reads no `anymodel.json`, and its opt-in is the
-machine — a notifier on PATH, and a terminal that does not notify by itself (inside Warp,
-whose own Claude Code plugin notifies, it stays silent).
+on) and `notify` (the alerts). `notify` is a `USER_HOOKS` bundle like `update-check`: it
+never enters the frame, reads no `anymodel.json`, and its opt-in is the machine. It alerts on
+`Notification`, `Stop`, `PreToolUse` on `AskUserQuestion|ExitPlanMode`, and `StopFailure`
+(other than `rate_limit`, which is the `stop-failure` hook's own alert), and clears its mark
+on `PostToolUse`, `PostToolUseFailure` and `UserPromptSubmit`. The route is the desktop
+(`notify-send`, `osascript`, with the freedesktop sound), or — with no desktop route here and
+an SSH session (`SSH_CONNECTION`/`SSH_TTY`) — the terminal as OSC 777; inside Warp whose own
+plugin is on it stays quiet but for the sound and a waiting question; with nowhere to show it,
+nothing. The whole contract, the marks and the two settings: `docs/design.md` § The notifier.
+
+**A hook's answer can carry `terminalSequence`** (Claude Code 2.1.141+): the OSC in that
+output field is written to the session's terminal by Claude Code itself — the only route for
+a hook with no controlling terminal — and Claude Code wraps it for tmux itself, so the field
+carries the **bare** sequence and a wrapped one is rejected whole
+(`docs/claude-code-contract.md`). An event whose output is not read (`StopFailure`) needs the
+`/dev/tty` write instead, wrapped for tmux there (`forTty`).
 
 `agent-guard` is a plugin hook (`HOOKS`) that is machine-wide all the same: it runs with or
 without `anymodel.json`, a broken or too new file does not change its answer, and a folder

@@ -35,7 +35,9 @@ function cliPaths(env = process.env) {
     routerCopy: join2(router.home, ".local", "share", "anymodel", "router.js"),
     routerUnitFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.service"),
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
-    routerSocketFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.socket")
+    routerSocketFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.socket"),
+    notifyConfigFile: join2(claudeConfigDir, "anymodel", "notify.json"),
+    tmuxConfFile: join2(router.home, ".tmux.conf")
   };
 }
 function claudeMemDataDir(env, home) {
@@ -5941,6 +5943,82 @@ var kindSpecSchema = strictObject({
 });
 var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
 var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
+var TSC_PRINT_ONLY = ["--help", "--listfilesonly", "--showconfig", "--version", "-h", "-v"];
+var TEST_PRINT_ONLY = ["--help", "--version", "-h", "-v"];
+var VALUED = ["--config", "-c", "--max-warnings", "--reporter", "--project", "--root"];
+var TEST_WORKERS = { flag: "--maxWorkers", aliases: ["--max-workers"], gbEach: 0.5 };
+var DEFAULT_KINDS = {
+  tsc: {
+    about: "A TypeScript type check (tsc, tsgo, vue-tsc).",
+    gb: 8,
+    printOnly: TSC_PRINT_ONLY,
+    match: [{ tool: "tsc" }, { tool: "tsgo" }, { tool: "vue-tsc" }]
+  },
+  "lint:typed": {
+    about: "A type-aware lint: ESLint with a typed config, or oxlint --type-aware.",
+    gb: 12,
+    filesGb: 6,
+    valuedFlags: VALUED,
+    printOnly: TEST_PRINT_ONLY,
+    match: [
+      { tool: "eslint", argIncludes: "typed" },
+      { tool: "eslint", argIncludes: "type-checked" },
+      { tool: "oxlint", flags: ["--type-aware"] }
+    ]
+  },
+  "test:coverage": {
+    about: "A test run with coverage (vitest or jest with --coverage).",
+    gb: 12,
+    printOnly: TEST_PRINT_ONLY,
+    workers: TEST_WORKERS,
+    match: [
+      { tool: "vitest", argIncludes: "--coverage" },
+      { tool: "jest", argIncludes: "--coverage" }
+    ]
+  },
+  "test:run": {
+    about: "A test run (vitest, jest). Up to 3 existing files: the small size.",
+    gb: 8,
+    filesGb: 2,
+    maxFiles: 3,
+    skipWords: ["run"],
+    valuedFlags: VALUED,
+    printOnly: TEST_PRINT_ONLY,
+    workers: TEST_WORKERS,
+    match: [{ tool: "vitest" }, { tool: "jest" }]
+  },
+  build: {
+    about: "A framework production build (next build).",
+    gb: 14,
+    match: [{ tool: "next", sub: ["build"] }]
+  },
+  "image:build": {
+    about: "A container image build (docker, podman, compose).",
+    gb: 14,
+    match: [
+      { tool: "docker", sub: ["build"] },
+      { tool: "docker", sub: ["image", "build"] },
+      { tool: "docker", sub: ["builder", "build"] },
+      { tool: "docker", sub: ["buildx", "build"] },
+      { tool: "docker", sub: ["buildx", "b"] },
+      { tool: "docker", sub: ["buildx", "bake"] },
+      { tool: "docker", sub: ["compose", "build"] },
+      { tool: "docker", sub: ["compose", "up"], flags: ["--build"] },
+      { tool: "docker", sub: ["compose", "run"], flags: ["--build"] },
+      { tool: "docker", sub: ["compose", "create"], flags: ["--build"] },
+      { tool: "docker-compose", sub: ["build"] },
+      { tool: "docker-compose", sub: ["up"], flags: ["--build"] },
+      { tool: "docker-compose", sub: ["run"], flags: ["--build"] },
+      { tool: "docker-compose", sub: ["create"], flags: ["--build"] },
+      { tool: "podman", sub: ["build"] },
+      { tool: "podman", sub: ["image", "build"] },
+      { tool: "buildah", sub: ["build"] }
+    ]
+  }
+};
+function mergeKinds(projectKinds) {
+  return { ...DEFAULT_KINDS, ...projectKinds ?? {} };
+}
 
 // src/project/version-range.ts
 var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
@@ -6201,6 +6279,13 @@ function toolDecision(decision, reason) {
     })
   };
 }
+function addContext(event, text) {
+  return {
+    stdout: JSON.stringify({
+      hookSpecificOutput: { hookEventName: event, additionalContext: text }
+    })
+  };
+}
 
 // src/hooks/run.ts
 var HOOK_LOG_ENV = "ANYMODEL_HOOK_LOG";
@@ -6285,11 +6370,301 @@ async function runHookEntry(spec) {
 }
 
 // src/shell/command.ts
+var MAX_NESTING = 3;
 var SEPARATORS = new Set([`
 `, "\r", "&", "(", ")", ";", "{", "|", "}"]);
+var CONTINUATION = /[\\`][ \t]*\r?\n/y;
+var HERE_DOC = /<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([^\s"'<>;&|()]+))/y;
+var HERE_STRING = /@(["'])\r?\n[\s\S]*?\r?\n\1@/y;
+function lex(text, { blind, join }) {
+  const segments = [];
+  const owed = [];
+  let open = false;
+  let at = 0;
+  function skipBodies() {
+    for (const { stripTabs, word } of owed.splice(0)) {
+      let line = at;
+      let closedAt = -1;
+      while (line < text.length) {
+        const end = text.indexOf(`
+`, line);
+        const stop = end === -1 ? text.length : end;
+        const content = text.slice(line, stop).replace(/\r$/, "");
+        if ((stripTabs ? content.replace(/^\t+/, "") : content) === word) {
+          closedAt = Math.min(stop + 1, text.length);
+          break;
+        }
+        line = stop + 1;
+      }
+      if (closedAt !== -1) {
+        at = closedAt;
+      } else if (!blind) {
+        open = true;
+        at = text.length;
+      }
+    }
+  }
+  function arithmeticEnd(from) {
+    if (text.charAt(from + 1) !== "(")
+      return -1;
+    let depth = 0;
+    for (let i = from;i < text.length; i++) {
+      if (text.charAt(i) === "(")
+        depth++;
+      else if (text.charAt(i) === ")" && --depth === 0) {
+        const closes = text.charAt(i - 1) === ")" && i - 1 > from + 1;
+        return closes && !text.slice(from, i).includes(";") ? i + 1 : -1;
+      }
+    }
+    return -1;
+  }
+  function readSingle(ansi) {
+    let end = at + 1;
+    while (end < text.length && text.charAt(end) !== "'") {
+      end += ansi && text.charAt(end) === "\\" ? 2 : 1;
+    }
+    if (end >= text.length)
+      open = true;
+    const piece = text.slice(at, end + 1);
+    at = Math.min(end + 1, text.length);
+    return piece;
+  }
+  function readDouble() {
+    const mark = segments.length;
+    let raw = '"';
+    at++;
+    while (at < text.length) {
+      const char = text.charAt(at);
+      const next = text.charAt(at + 1);
+      if (char === '"') {
+        at++;
+        return raw + char;
+      }
+      if ((char === "\\" || char === "`") && (next === '"' || next === "'" || next === char || char === "\\" && next === "$")) {
+        raw += char + next;
+        at += 2;
+      } else if (char === "$" && next === "(") {
+        const end = arithmeticEnd(at + 1);
+        if (end === -1) {
+          at += 2;
+          raw += `$(${read(true)}`;
+        } else {
+          raw += text.slice(at, end);
+          at = end;
+        }
+      } else {
+        raw += char;
+        at++;
+      }
+    }
+    open = true;
+    segments.length = mark;
+    return raw;
+  }
+  function read(nested) {
+    let raw = "";
+    let current = "";
+    let depth = 0;
+    const take = (piece) => {
+      current += piece;
+      raw += piece;
+    };
+    while (at < text.length) {
+      const char = text.charAt(at);
+      const next = text.charAt(at + 1);
+      if (join && (char === "\\" || char === "`")) {
+        CONTINUATION.lastIndex = at;
+        if (CONTINUATION.test(text)) {
+          take(" ");
+          at = CONTINUATION.lastIndex;
+          continue;
+        }
+      }
+      if (!blind) {
+        if ((char === "\\" || char === "`") && (next === '"' || next === "'" || next === char)) {
+          take(char + next);
+          at += 2;
+          continue;
+        }
+        if (char === "'") {
+          take(readSingle(false));
+          continue;
+        }
+        if (char === '"') {
+          take(readDouble());
+          continue;
+        }
+        if (char === "$" && next === "'") {
+          at++;
+          take(`$${readSingle(true)}`);
+          continue;
+        }
+        const arithmetic = char === "$" && next === "(" ? arithmeticEnd(at + 1) : -1;
+        if (arithmetic !== -1) {
+          take(text.slice(at, arithmetic));
+          at = arithmetic;
+          continue;
+        }
+        if (char === "#" && (at === 0 || /[\s;&|(]/.test(text.charAt(at - 1)))) {
+          const end = text.indexOf(`
+`, at);
+          at = end === -1 ? text.length : end;
+          continue;
+        }
+      }
+      if (char === "<" && next === "<") {
+        HERE_DOC.lastIndex = at;
+        const opener = HERE_DOC.exec(text);
+        const word = opener?.[2] ?? opener?.[3] ?? opener?.[4];
+        if (opener !== null && word !== undefined) {
+          owed.push({ stripTabs: opener[1] === "-", word });
+          take(opener[0]);
+          at = HERE_DOC.lastIndex;
+        } else {
+          take("<<");
+          at += 2;
+        }
+        continue;
+      }
+      if (char === "@" && (next === '"' || next === "'")) {
+        HERE_STRING.lastIndex = at;
+        if (HERE_STRING.exec(text) !== null) {
+          take(`${next}${next}`);
+          at = HERE_STRING.lastIndex;
+          continue;
+        }
+      }
+      if (SEPARATORS.has(char)) {
+        if (nested && char === ")" && depth === 0) {
+          segments.push(current);
+          at++;
+          return `${raw})`;
+        }
+        if (nested && char === "(")
+          depth++;
+        if (nested && char === ")")
+          depth--;
+        segments.push(current);
+        current = "";
+        raw += char;
+        at++;
+        if (char === `
+`)
+          skipBodies();
+        continue;
+      }
+      take(char);
+      at++;
+    }
+    segments.push(current);
+    return raw;
+  }
+  read(false);
+  return { open, segments };
+}
+function shellSegments(command, options = {}) {
+  const join = options.joinLines ?? false;
+  const read = lex(command, { blind: false, join });
+  if (read.open && options.blindWhenOpen === true) {
+    return lex(command, { blind: true, join }).segments;
+  }
+  return read.segments;
+}
 var PREFIX_WORDS = new Set(["builtin", "command", "env", "exec", "nohup", "sudo", "time"]);
+var ASSIGNMENT = /^[A-Za-z_]\w*=/;
+function wordsOf(segment) {
+  const words = segment.match(/(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s"'])+/g) ?? [];
+  return words.map((word) => word.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'/g, (_, double, single) => double === undefined ? String(single) : double.replace(/\\(["\\$`])/g, "$1")));
+}
+function invocationOf(words) {
+  let index = 0;
+  while (index < words.length) {
+    const word = words[index] ?? "";
+    if (!ASSIGNMENT.test(word) && !PREFIX_WORDS.has(word))
+      break;
+    index++;
+  }
+  const first = words[index];
+  if (first === undefined)
+    return;
+  const program = (first.split(/[\\/]/).pop() ?? first).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
+  return { args: words.slice(index + 1), program };
+}
+function nestedCommand(program, args) {
+  if (["bash", "dash", "sh", "zsh"].includes(program)) {
+    const at = args.findIndex((arg) => /^-[a-z]*c$/.test(arg));
+    return at === -1 ? undefined : args[at + 1];
+  }
+  if (program === "cmd") {
+    const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
+    return at === -1 ? undefined : args.slice(at + 1).join(" ");
+  }
+  if (program === "powershell" || program === "pwsh") {
+    const at = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
+    return at === -1 ? undefined : args.slice(at + 1).join(" ");
+  }
+  if (program === "eval" || program === "iex" || program === "invoke-expression") {
+    return args.join(" ");
+  }
+  return;
+}
 
 // src/jobs/classify.ts
+var BUN_VALUED = ["--config", "--cwd", "--env-file", "--filter", "--preload", "-c", "-F", "-r"];
+var NPX_VALUED = ["--package", "-p", "--call", "-c", "--workspace", "-w"];
+var PNPM_VALUED = ["--filter", "-F", "--dir", "-C", "--workspace-root"];
+var TIMEOUT_VALUED = ["--kill-after", "--signal", "-k", "-s"];
+var NODE_VALUED = [
+  "--conditions",
+  "--eval",
+  "--import",
+  "--input-type",
+  "--loader",
+  "--print",
+  "--require",
+  "-C",
+  "-e",
+  "-p",
+  "-r"
+];
+var TOOL_VALUED = {
+  docker: [
+    "--config",
+    "--context",
+    "--host",
+    "--log-level",
+    "--tlscacert",
+    "--tlscert",
+    "--tlskey",
+    "-c",
+    "-H",
+    "-l",
+    "--builder",
+    "--ansi",
+    "--env-file",
+    "--file",
+    "--parallel",
+    "--profile",
+    "--progress",
+    "--project-directory",
+    "--project-name",
+    "-f",
+    "-p"
+  ],
+  "docker-compose": [
+    "--ansi",
+    "--env-file",
+    "--file",
+    "--parallel",
+    "--profile",
+    "--progress",
+    "--project-directory",
+    "--project-name",
+    "-f",
+    "-p"
+  ],
+  podman: ["--connection", "--url", "--root", "--runroot", "--log-level"]
+};
 var BUN_COMMANDS = new Set([
   "add",
   "build",
@@ -6311,20 +6686,695 @@ var BUN_COMMANDS = new Set([
   "update",
   "upgrade"
 ]);
+function firstWord(args, from, valued) {
+  let index = from;
+  while (index < args.length && (args[index] ?? "").startsWith("-")) {
+    index += valued.includes(args[index] ?? "") ? 2 : 1;
+  }
+  return Math.min(index, args.length);
+}
+function toolName(word) {
+  const isPath = /[\\/]/.test(word) && !/^@[^\\/]+\/[^\\/]+$/.test(word);
+  const base = (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(cmd|exe|ps1|bat)$/, "");
+  return (isPath ? base.replace(/\.(mjs|cjs|js)$/, "") : base).replace(/(?<=.)@.*$/, "");
+}
+function scriptOrTool(word, args) {
+  return /[\\/]/.test(word) ? { name: toolName(word), args } : { name: toolName(word), args, script: word };
+}
+function toolOf(program, args, depth = 0) {
+  if (depth > 4)
+    return;
+  const again = (words) => {
+    const inner = invocationOf(words);
+    return inner === undefined ? undefined : toolOf(inner.program, inner.args, depth + 1);
+  };
+  const at = (valued, from = 0) => firstWord(args, from, valued);
+  switch (program) {
+    case "timeout":
+      return again(args.slice(at(TIMEOUT_VALUED) + 1));
+    case "nice":
+      return again(args.slice(at(["-n"])));
+    case "bunx":
+    case "npx": {
+      const index = at(program === "npx" ? NPX_VALUED : NPX_VALUED.slice(0, 2));
+      const name = args[index];
+      return name === undefined ? undefined : { name: toolName(name), args: args.slice(index + 1) };
+    }
+    case "bun": {
+      const index = at(BUN_VALUED);
+      const sub = args[index];
+      if (sub === undefined)
+        return;
+      if (sub === "x")
+        return toolOf("bunx", args.slice(index + 1), depth + 1);
+      if (sub === "run") {
+        const nameAt = firstWord(args, index + 1, BUN_VALUED);
+        const name = args[nameAt];
+        return name === undefined ? undefined : scriptOrTool(name, args.slice(nameAt + 1));
+      }
+      if (BUN_COMMANDS.has(sub))
+        return;
+      return scriptOrTool(sub, args.slice(index + 1));
+    }
+    case "npm": {
+      const index = at([]);
+      const sub = args[index];
+      const rest = args.slice(index + 1);
+      if (sub === "exec" || sub === "x")
+        return toolOf("npx", rest, depth + 1);
+      if (sub === "test" || sub === "t")
+        return { name: "", args: rest, script: "test" };
+      if (sub === "run" || sub === "run-script") {
+        const nameAt = firstWord(rest, 0, []);
+        const name = rest[nameAt];
+        if (name === undefined)
+          return;
+        return { name: "", args: rest.slice(nameAt + 1), script: name };
+      }
+      return;
+    }
+    case "pnpm":
+    case "yarn": {
+      const index = at(PNPM_VALUED);
+      const sub = args[index];
+      if (sub === undefined)
+        return;
+      const rest = args.slice(index + 1);
+      if (sub === "exec" || sub === "dlx")
+        return toolOf("npx", rest, depth + 1);
+      if (sub === "test" || sub === "t")
+        return { name: "", args: rest, script: "test" };
+      if (sub === "run" || sub === "run-script") {
+        const nameAt = firstWord(rest, 0, []);
+        const name = rest[nameAt];
+        return name === undefined ? undefined : scriptOrTool(name, rest.slice(nameAt + 1));
+      }
+      return scriptOrTool(sub, rest);
+    }
+    case "node": {
+      const index = at(NODE_VALUED);
+      const script = args[index];
+      if (script !== undefined && /[\\/]/.test(script)) {
+        return { name: toolName(script), args: args.slice(index + 1) };
+      }
+      return;
+    }
+    default:
+      return { name: program, args };
+  }
+}
+function hasFlag(args, flag) {
+  return args.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
+}
+function startsWithSub(args, sub, valued) {
+  let from = 0;
+  for (const word of sub) {
+    const index = firstWord(args, from, valued);
+    if (args[index] !== word)
+      return false;
+    from = index + 1;
+  }
+  return true;
+}
+function printsOnly(kind, args) {
+  const printOnly = new Set((kind.printOnly ?? []).map((flag) => flag.toLowerCase()));
+  return printOnly.size > 0 && args.length > 0 && args.every((arg) => printOnly.has(arg.toLowerCase()));
+}
+function ruleMatches(rule, call) {
+  if ("script" in rule)
+    return call.script === rule.script;
+  if (call.name !== rule.tool)
+    return false;
+  const valued = [...TOOL_VALUED[rule.tool] ?? [], ...rule.valued ?? []];
+  if (rule.sub !== undefined && !startsWithSub(call.args, rule.sub, valued))
+    return false;
+  if (rule.flags !== undefined && !rule.flags.every((flag) => hasFlag(call.args, flag))) {
+    return false;
+  }
+  const text = rule.argIncludes?.toLowerCase();
+  return text === undefined || call.args.some((arg) => arg.toLowerCase().includes(text));
+}
+function kindOfCall(call, kinds) {
+  let best = null;
+  for (const [name, kind] of Object.entries(kinds)) {
+    const heavy = (kind.match ?? []).some((rule) => ruleMatches(rule, call) && (("script" in rule) || !printsOnly(kind, call.args)));
+    if (heavy && (best === null || kind.gb > best.gb))
+      best = { name, gb: kind.gb };
+  }
+  return best;
+}
+function inspect(command, kinds, depth) {
+  const found = [];
+  for (const segment of shellSegments(command, { blindWhenOpen: true, joinLines: true })) {
+    const invocation = invocationOf(wordsOf(segment));
+    if (invocation === undefined)
+      continue;
+    const { program, args } = invocation;
+    const call = toolOf(program, args);
+    const kind = call === undefined ? null : kindOfCall(call, kinds);
+    if (kind !== null)
+      found.push(kind);
+    const inner = nestedCommand(program, args);
+    if (inner !== undefined && depth < MAX_NESTING)
+      found.push(...inspect(inner, kinds, depth + 1));
+  }
+  return found;
+}
+function classifyHeavyCommand(bashCommand, kinds) {
+  let best = null;
+  for (const kind of inspect(bashCommand, kinds, 0)) {
+    if (best === null || kind.gb > best.gb)
+      best = kind;
+  }
+  return best?.name ?? null;
+}
+
+// src/hooks/after-merge.ts
+import { createHash } from "crypto";
+import { existsSync as existsSync3, mkdirSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join as join5 } from "path";
+
+// src/hooks/git.ts
+import { realpathSync as realpathSync2 } from "fs";
+import { basename, dirname, join as join4, resolve } from "path";
 
 // src/setup/marketplace-access.ts
 var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
 // src/hooks/git.ts
+var GUARD_GIT_TIMEOUT_MS = 5000;
+function runGit(cwd, args, env, timeoutMs = 15000) {
+  try {
+    const result = Bun.spawnSync(["git", ...args], {
+      cwd,
+      env: gitEnv(env),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs
+    });
+    const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
+    return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err };
+  } catch (error) {
+    return { ok: false, out: "", err: error instanceof Error ? error.message : String(error) };
+  }
+}
 var IGNORE_CASE = process.platform === "win32";
+function isInside(path, folder, ignoreCase = IGNORE_CASE) {
+  const form = (p) => {
+    const forward = resolve(p).replace(/\\/g, "/").replace(/\/+$/, "");
+    return ignoreCase ? forward.toLowerCase() : forward;
+  };
+  const child = form(path);
+  const parent = form(folder);
+  return child === parent || child.startsWith(`${parent}/`);
+}
+function realPath(path) {
+  const rest = [];
+  let at = resolve(path);
+  for (;; ) {
+    try {
+      return join4(realpathSync2(at), ...rest);
+    } catch {
+      const parent = dirname(at);
+      if (parent === at)
+        return resolve(path);
+      rest.unshift(basename(at));
+      at = parent;
+    }
+  }
+}
+function parseWorktreeList(porcelain) {
+  const worktrees = [];
+  for (const block of porcelain.split(/\r?\n\r?\n/)) {
+    const lines = block.split(/\r?\n/).filter((line) => line !== "");
+    const value = (key) => lines.find((line) => line.startsWith(`${key} `))?.slice(key.length + 1);
+    const flag = (key) => lines.some((line) => line === key || line.startsWith(`${key} `));
+    const path = value("worktree");
+    if (path === undefined)
+      continue;
+    worktrees.push({
+      path,
+      head: value("HEAD") ?? "",
+      branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
+      locked: flag("locked"),
+      prunable: flag("prunable")
+    });
+  }
+  return worktrees;
+}
+function listWorktrees(cwd, env, timeoutMs = 15000) {
+  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env, timeoutMs);
+  if (!listed.ok)
+    throw new Error(`git worktree list failed: ${listed.err}`);
+  return parseWorktreeList(listed.out);
+}
+function innermostWorktree(path, worktrees) {
+  let deepest = null;
+  for (const worktree of worktrees) {
+    if (isInside(path, worktree) && (deepest === null || worktree.length > deepest.length)) {
+      deepest = worktree;
+    }
+  }
+  return deepest;
+}
+function hasChanges(folder, env) {
+  const status = runGit(folder, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"], env);
+  return !status.ok || status.out !== "";
+}
 
 // src/hooks/shell-command.ts
+var MAX_NESTING2 = 3;
 var SEPARATORS2 = new Set([`
 `, "\r", "&", "(", ")", ";", "{", "|", "}"]);
+var CONTINUATION2 = /[\\`][ \t]*\r?\n/y;
+var HERE_DOC2 = /<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([^\s"'<>;&|()]+))/y;
+var HERE_STRING2 = /@(["'])\r?\n[\s\S]*?\r?\n\1@/y;
+function lex2(text, { blind, join }) {
+  const segments = [];
+  const piped = [];
+  const owed = [];
+  let open = false;
+  let at = 0;
+  let afterPipe = false;
+  const push = (piece, from) => {
+    segments.push(piece);
+    piped.push(from);
+  };
+  function skipBodies() {
+    for (const { stripTabs, script, word } of owed.splice(0)) {
+      let line = at;
+      let closedAt = -1;
+      let bodyEnd = -1;
+      while (line < text.length) {
+        const end = text.indexOf(`
+`, line);
+        const stop = end === -1 ? text.length : end;
+        const content = text.slice(line, stop).replace(/\r$/, "");
+        if ((stripTabs ? content.replace(/^\t+/, "") : content) === word) {
+          closedAt = Math.min(stop + 1, text.length);
+          bodyEnd = line;
+          break;
+        }
+        line = stop + 1;
+      }
+      if (closedAt !== -1) {
+        if (script) {
+          const body = lex2(text.slice(at, bodyEnd), { blind, join });
+          for (let i = 0;i < body.segments.length; i++) {
+            push(body.segments[i] ?? "", body.piped[i] ?? null);
+          }
+        }
+        at = closedAt;
+      } else if (!blind) {
+        open = true;
+        at = text.length;
+      }
+    }
+  }
+  function arithmeticEnd(from) {
+    if (text.charAt(from + 1) !== "(")
+      return -1;
+    let depth = 0;
+    for (let i = from;i < text.length; i++) {
+      if (text.charAt(i) === "(")
+        depth++;
+      else if (text.charAt(i) === ")" && --depth === 0) {
+        const closes = text.charAt(i - 1) === ")" && i - 1 > from + 1;
+        return closes && !text.slice(from, i).includes(";") ? i + 1 : -1;
+      }
+    }
+    return -1;
+  }
+  function readSingle(ansi) {
+    let end = at + 1;
+    while (end < text.length && text.charAt(end) !== "'") {
+      end += ansi && text.charAt(end) === "\\" ? 2 : 1;
+    }
+    if (end >= text.length)
+      open = true;
+    const piece = text.slice(at, end + 1);
+    at = Math.min(end + 1, text.length);
+    return piece;
+  }
+  function readDouble() {
+    const mark = segments.length;
+    let raw = '"';
+    at++;
+    while (at < text.length) {
+      const char = text.charAt(at);
+      const next = text.charAt(at + 1);
+      if (char === '"') {
+        at++;
+        return raw + char;
+      }
+      if ((char === "\\" || char === "`") && (next === '"' || next === "'" || next === char || char === "\\" && next === "$")) {
+        raw += char + next;
+        at += 2;
+      } else if (char === "$" && next === "(") {
+        const end = arithmeticEnd(at + 1);
+        if (end === -1) {
+          at += 2;
+          raw += `$(${read(true).raw}`;
+        } else {
+          raw += text.slice(at, end);
+          at = end;
+        }
+      } else {
+        raw += char;
+        at++;
+      }
+    }
+    open = true;
+    segments.length = mark;
+    piped.length = mark;
+    return raw;
+  }
+  function read(nested) {
+    let raw = "";
+    let current = "";
+    let depth = 0;
+    const take = (piece) => {
+      current += piece;
+      raw += piece;
+    };
+    while (at < text.length) {
+      const char = text.charAt(at);
+      const next = text.charAt(at + 1);
+      if (join && (char === "\\" || char === "`")) {
+        CONTINUATION2.lastIndex = at;
+        if (CONTINUATION2.test(text)) {
+          take(" ");
+          at = CONTINUATION2.lastIndex;
+          continue;
+        }
+      }
+      if (!blind) {
+        if ((char === "\\" || char === "`") && (next === '"' || next === "'" || next === char)) {
+          take(char + next);
+          at += 2;
+          continue;
+        }
+        if (char === "'") {
+          take(readSingle(false));
+          continue;
+        }
+        if (char === '"') {
+          take(readDouble());
+          continue;
+        }
+        if (char === "$" && next === "'") {
+          at++;
+          take(`$${readSingle(true)}`);
+          continue;
+        }
+        const arithmetic = char === "$" && next === "(" ? arithmeticEnd(at + 1) : -1;
+        if (arithmetic !== -1) {
+          take(text.slice(at, arithmetic));
+          at = arithmetic;
+          continue;
+        }
+        if (char === "#" && (at === 0 || /[\s;&|(]/.test(text.charAt(at - 1)))) {
+          const end = text.indexOf(`
+`, at);
+          at = end === -1 ? text.length : end;
+          continue;
+        }
+      }
+      if (char === "<" && next === "<") {
+        HERE_DOC2.lastIndex = at;
+        const opener = HERE_DOC2.exec(text);
+        const word = opener?.[2] ?? opener?.[3] ?? opener?.[4];
+        if (opener !== null && word !== undefined) {
+          owed.push({ stripTabs: opener[1] === "-", script: readsStdinShell(current), word });
+          take(opener[0]);
+          at = HERE_DOC2.lastIndex;
+        } else {
+          take("<<");
+          at += 2;
+        }
+        continue;
+      }
+      if (char === "@" && (next === '"' || next === "'")) {
+        HERE_STRING2.lastIndex = at;
+        const quoted = HERE_STRING2.exec(text);
+        if (quoted !== null) {
+          take(`${next}${next}`);
+          at = HERE_STRING2.lastIndex;
+          continue;
+        }
+      }
+      if (SEPARATORS2.has(char)) {
+        const wasPiped = afterPipe;
+        push(current, wasPiped ? segments[segments.length - 1] ?? null : null);
+        afterPipe = char === "|";
+        if (nested && char === ")" && depth === 0) {
+          at++;
+          return { raw: `${raw})` };
+        }
+        if (nested && char === "(")
+          depth++;
+        if (nested && char === ")")
+          depth--;
+        current = "";
+        raw += char;
+        at++;
+        if (char === `
+`)
+          skipBodies();
+        continue;
+      }
+      take(char);
+      at++;
+    }
+    push(current, afterPipe ? segments[segments.length - 1] ?? null : null);
+    return { raw };
+  }
+  read(false);
+  return { open, piped, segments };
+}
+function shellSteps(command, { blindWhenOpen = false, joinLines = false } = {}) {
+  const read = lex2(command, { blind: false, join: joinLines });
+  const chosen = read.open && blindWhenOpen ? lex2(command, { blind: true, join: joinLines }) : read;
+  return chosen.segments.map((text, index) => ({ text, pipedFrom: chosen.piped[index] ?? null }));
+}
 var KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
+var ASSIGNMENT2 = /^[A-Za-z_]\w*=/;
+var DURATION = (word) => /^\d+(?:\.\d+)?[smhd]?$/.test(word);
+var WRAPPERS = {
+  builtin: { long: [], short: "" },
+  command: { inert: ["-v", "-V"], long: [], short: "" },
+  env: { long: ["--unset", "--chdir", "--split-string"], short: "uCS" },
+  exec: { long: [], short: "a" },
+  ionice: { long: ["--class", "--classdata", "--pid", "--pgid"], short: "cnpPu" },
+  nice: { long: ["--adjustment"], short: "n" },
+  nohup: { long: [], short: "" },
+  stdbuf: { long: ["--input", "--output", "--error"], short: "ioe" },
+  sudo: {
+    long: [
+      "--user",
+      "--group",
+      "--host",
+      "--prompt",
+      "--close-from",
+      "--chdir",
+      "--chroot",
+      "--command-timeout",
+      "--other-user"
+    ],
+    short: "ughpCDRTU"
+  },
+  time: { long: [], short: "" },
+  timeout: { long: ["--signal", "--kill-after"], short: "sk", skip: DURATION },
+  xargs: {
+    long: [
+      "--arg-file",
+      "--delimiter",
+      "--eof",
+      "--max-args",
+      "--max-chars",
+      "--max-lines",
+      "--max-procs",
+      "--replace",
+      "--process-slot-var"
+    ],
+    short: "adEILnPs"
+  }
+};
 var SHELLS = new Set(["bash", "dash", "sh", "zsh"]);
+var REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|>&|&>)(.*)$/;
+function programName(word) {
+  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
+}
+function shortFlags(arg, valued) {
+  let flags = "";
+  for (let i = 1;i < arg.length; i++) {
+    const letter = arg.charAt(i);
+    flags += letter;
+    if (valued.includes(letter))
+      return { flags, wantsNext: i === arg.length - 1 };
+  }
+  return { flags, wantsNext: false };
+}
+function isShort(arg) {
+  return /^-[^-]/.test(arg);
+}
+function afterWrapper(words, from, spec) {
+  let index = from;
+  while (index < words.length) {
+    const word = words[index] ?? "";
+    if (word === "--")
+      return index + 1;
+    if (!isShort(word) && !word.startsWith("--"))
+      break;
+    const name = word.split("=")[0] ?? word;
+    if (spec.inert?.some((inert) => inert === name || inert === word) === true)
+      return;
+    if (word.startsWith("--")) {
+      index += spec.long.includes(name) && !word.includes("=") ? 2 : 1;
+      continue;
+    }
+    index += shortFlags(word, spec.short).wantsNext ? 2 : 1;
+  }
+  return spec.skip?.(words[index] ?? "") === true ? index + 1 : index;
+}
+function wordsOf2(segment) {
+  const words = segment.match(/(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s"'])+/g) ?? [];
+  return words.map((word) => word.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'/g, (_, double, single) => double === undefined ? String(single) : double.replace(/\\(["\\$`])/g, "$1")));
+}
+function invocationOf2(words) {
+  let index = 0;
+  while (index < words.length) {
+    const word = words[index] ?? "";
+    if (ASSIGNMENT2.test(word) || KEYWORDS.has(word)) {
+      index++;
+      continue;
+    }
+    const spec = WRAPPERS[programName(word)];
+    if (spec === undefined)
+      break;
+    const after = afterWrapper(words, index + 1, spec);
+    if (after === undefined)
+      return;
+    index = after;
+  }
+  const first = words[index];
+  if (first === undefined)
+    return;
+  return { args: words.slice(index + 1), program: programName(first) };
+}
+function shellTakesStdin(args) {
+  let stdin = false;
+  let scriptFile = false;
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    const redirection = REDIRECTION.exec(arg);
+    if (redirection !== null) {
+      if ((redirection[2] ?? "") === "")
+        index++;
+      if ((redirection[1] ?? "").startsWith("<<"))
+        stdin = true;
+      continue;
+    }
+    if (arg === "-") {
+      stdin = true;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      if (arg === "--init-file" || arg === "--rcfile")
+        index++;
+      continue;
+    }
+    if (isShort(arg) || arg.startsWith("+")) {
+      const letters = arg.replace(/^[-+]+/, "");
+      if (letters.includes("c"))
+        return false;
+      if (letters.includes("s"))
+        stdin = true;
+      if (letters === "o")
+        index++;
+      continue;
+    }
+    scriptFile = true;
+  }
+  return stdin || !scriptFile;
+}
+function readsStdinShell(segment) {
+  const invocation = invocationOf2(wordsOf2(segment));
+  return invocation !== undefined && SHELLS.has(invocation.program) && shellTakesStdin(invocation.args);
+}
+function writtenText(segment) {
+  const invocation = invocationOf2(wordsOf2(segment));
+  if (invocation === undefined || invocation.args.length === 0)
+    return null;
+  const text = invocation.args.join(" ");
+  return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
+}
+function nestedCommand2(program, args, pipedFrom = null) {
+  if (SHELLS.has(program)) {
+    const at = args.findIndex((arg) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(arg));
+    if (at !== -1)
+      return args[at + 1];
+    if (!shellTakesStdin(args))
+      return;
+    const here = args.findIndex((arg) => arg === "<<<" || arg.startsWith("<<<"));
+    if (here !== -1) {
+      const word = args[here] ?? "";
+      return word.length > 3 ? word.slice(3) : args.slice(here + 1).join(" ");
+    }
+    return pipedFrom === null ? undefined : writtenText(pipedFrom) ?? undefined;
+  }
+  if (program === "cmd") {
+    const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
+    return at === -1 ? undefined : args.slice(at + 1).join(" ");
+  }
+  if (program === "powershell" || program === "pwsh") {
+    const at = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
+    return at === -1 ? undefined : args.slice(at + 1).join(" ");
+  }
+  if (program === "eval" || program === "iex" || program === "invoke-expression") {
+    return args.join(" ");
+  }
+  return;
+}
+function programsOf(command) {
+  const found = [];
+  const walk = (line, depth) => {
+    for (const step of shellSteps(line, { blindWhenOpen: true, joinLines: true })) {
+      const invocation = invocationOf2(wordsOf2(step.text));
+      if (invocation === undefined)
+        continue;
+      found.push(invocation.program);
+      const inner = nestedCommand2(invocation.program, invocation.args, step.pipedFrom);
+      if (inner !== undefined && depth < MAX_NESTING2)
+        walk(inner, depth + 1);
+    }
+  };
+  walk(command, 0);
+  return found;
+}
 
 // src/hooks/after-merge.ts
+function mergeRuns(command, depth = 0) {
+  const runs = [];
+  for (const step of shellSteps(command, { joinLines: true })) {
+    const invocation = invocationOf2(wordsOf2(step.text));
+    if (invocation === undefined)
+      continue;
+    const { args, program } = invocation;
+    if (program === "gh" && args[0] === "pr" && args[1] === "merge")
+      runs.push(args.slice(2));
+    const inner = nestedCommand2(program, args, step.pipedFrom);
+    if (inner !== undefined && depth < MAX_NESTING2)
+      runs.push(...mergeRuns(inner, depth + 1));
+  }
+  return runs;
+}
+var isArmingFlag = (word) => /^--(?:auto|disable-auto)(?:=|$)/.test(word);
+function mergesPullRequest(command) {
+  return mergeRuns(command).some((words) => !words.some(isArmingFlag));
+}
 var MERGE_FLAGS_WITH_VALUE = new Set([
   "--author-email",
   "--body",
@@ -6338,10 +7388,167 @@ var MERGE_FLAGS_WITH_VALUE = new Set([
   "-R",
   "-t"
 ]);
+function mergeTarget(command) {
+  const runs = mergeRuns(command);
+  const words = runs.find((run) => !run.some(isArmingFlag)) ?? runs[0];
+  if (words === undefined)
+    return null;
+  let ref = null;
+  let repo = null;
+  for (let i = 0;i < words.length; i++) {
+    const word = words[i];
+    if (word === undefined)
+      break;
+    if (word.startsWith("-")) {
+      const [flag, value] = word.split("=", 2);
+      if (flag === "--repo" || flag === "-R")
+        repo = (value ?? words[i + 1] ?? "") || null;
+      if (!word.includes("=") && MERGE_FLAGS_WITH_VALUE.has(word))
+        i += 1;
+      continue;
+    }
+    ref ??= word || null;
+  }
+  return { ref, repo };
+}
+var PULL_REQUEST_FIELDS = "number,title,baseRefName,headRefName,state,url,mergedAt";
+function parsePullRequestView(json) {
+  try {
+    const view = JSON.parse(json);
+    const { baseRefName, headRefName, mergedAt, number, state, title, url } = view;
+    if (typeof baseRefName !== "string" || typeof headRefName !== "string" || typeof number !== "number" || typeof state !== "string" || typeof title !== "string" || typeof url !== "string") {
+      return null;
+    }
+    return {
+      number,
+      title,
+      base: baseRefName,
+      head: headRefName,
+      state,
+      url,
+      mergedAt: typeof mergedAt === "string" && mergedAt !== "" ? mergedAt : null
+    };
+  } catch {
+    return null;
+  }
+}
+function pullRequestRepository(url) {
+  const match = /github\.com\/([^/\s]+)\/([^/\s]+)\/pull\//i.exec(url);
+  return match === null ? null : `${match[1] ?? ""}/${match[2] ?? ""}`.toLowerCase();
+}
+function remoteRepository(remote) {
+  const match = /[/:]([^/:\s]+)\/([^/:\s]+?)(?:\.git)?\/?$/.exec(remote.trim());
+  return match === null ? null : `${match[1] ?? ""}/${match[2] ?? ""}`.toLowerCase();
+}
+function sameRepository(prUrl, origin) {
+  const pr = pullRequestRepository(prUrl);
+  return pr !== null && pr === remoteRepository(origin);
+}
 var ANNOUNCE_WINDOW_MS = 15 * 60000;
+function mergeOutcome(params) {
+  const { announced, base, failed, now, pr, sameRepo, target, worktree } = params;
+  const none = { announce: null, clear: null };
+  if (pr === null ? failed : pr.state !== "MERGED" || !sameRepo)
+    return none;
+  const branch = worktree?.branch ?? null;
+  const mergedHere = worktree !== null && branch !== null && (target.ref === null || target.ref === branch || pr?.head === branch);
+  const clear = mergedHere && branch !== null ? { path: worktree.path, branch } : null;
+  const mergedAt = pr === null || pr.mergedAt === null ? Number.NaN : Date.parse(pr.mergedAt);
+  const recent = now - mergedAt <= ANNOUNCE_WINDOW_MS;
+  const announce = pr !== null && pr.base === base && !announced && recent ? pr : null;
+  return { announce, clear };
+}
+function quotableTitle(title) {
+  const line = title.replace(/["`]/g, "'").replace(/\s+/g, " ").trim();
+  return line.length > 100 ? `${line.slice(0, 99)}\u2026` : line;
+}
+function clearWorktreeNote(path, branch) {
+  return [
+    `That merged the pull request of this worktree's branch, ${branch}. Clear the worktree now, unless the user wants more work on this branch:`,
+    'ExitWorktree with action "remove" and discard_changes true. Claude Code cannot check a worktree outside the repo, so the anymodel hook does: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.',
+    `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: git worktree remove "${path}", then git branch -d ${branch}.`
+  ].join(`
+`);
+}
+function tellSessionsNote(pr, base) {
+  const message = `${base} now has #${pr.number} (${quotableTitle(pr.title)}). At your next stop, once your current work is committed: ` + `git fetch origin ${base}, then git merge origin/${base}, and fix any conflict. No reply needed.`;
+  return [
+    `That merged #${pr.number} into ${base}.`,
+    "Tell the other sessions of this repo, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo (not this session, not a subagent, not another project) with exactly this text:",
+    `"${message}"`,
+    "Merged several pull requests this turn? Send each session one message, naming every merged number."
+  ].join(`
+`);
+}
+function viewPullRequest(ref, repo, folder, env) {
+  try {
+    const view = Bun.spawnSync([
+      "gh",
+      "pr",
+      "view",
+      ...ref === null ? [] : [ref],
+      ...repo === null ? [] : ["--repo", repo],
+      "--json",
+      PULL_REQUEST_FIELDS
+    ], { cwd: folder, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 1e4 });
+    return view.exitCode === 0 ? parsePullRequestView(view.stdout.toString()) : null;
+  } catch {
+    return null;
+  }
+}
+function announcedFile(repo, number, env) {
+  const key = createHash("sha256").update(repo).digest("hex").slice(0, 16);
+  return join5(env.TMPDIR || tmpdir(), "anymodel-merges", `${key}-${number}`);
+}
+function afterMerge(context) {
+  const { project, input, event, env, cwd } = context;
+  const base = project.config?.worktrees?.base;
+  if (base === undefined)
+    return SILENT;
+  const command = stringField(toolInput(input).command);
+  if (command === null || !mergesPullRequest(command))
+    return SILENT;
+  const target = mergeTarget(command);
+  if (target === null)
+    return SILENT;
+  const repo = project.mainCheckout ?? project.root;
+  let worktree = null;
+  const [, ...linked] = listWorktrees(repo, env);
+  const mine = innermostWorktree(cwd, linked.map((listed) => listed.path));
+  if (mine !== null) {
+    worktree = {
+      path: mine,
+      branch: linked.find((listed) => listed.path === mine)?.branch ?? null
+    };
+  }
+  const pr = viewPullRequest(target.ref, target.repo, cwd, env);
+  const origin = runGit(repo, ["remote", "get-url", "origin"], env);
+  const record = pr === null ? null : announcedFile(repo, pr.number, env);
+  const outcome = mergeOutcome({
+    announced: record !== null && existsSync3(record),
+    base,
+    failed: event === "PostToolUseFailure",
+    now: Date.now(),
+    pr,
+    sameRepo: pr !== null && origin.ok && sameRepository(pr.url, origin.out),
+    target,
+    worktree
+  });
+  const notes = [];
+  if (outcome.clear !== null)
+    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
+  if (outcome.announce !== null && record !== null) {
+    notes.push(tellSessionsNote(outcome.announce, base));
+    mkdirSync(join5(record, ".."), { recursive: true });
+    writeFileSync(record, "");
+  }
+  return notes.length === 0 ? SILENT : addContext(event, notes.join(`
+
+`));
+}
 
 // src/gateway/config.ts
-import { mkdirSync, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
 
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
@@ -6524,7 +7731,7 @@ ${parsed.error}`);
 }
 
 // src/gateway/settings.ts
-import { existsSync as existsSync3, readFileSync as readFileSync3 } from "fs";
+import { existsSync as existsSync4, readFileSync as readFileSync3 } from "fs";
 function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
@@ -6544,7 +7751,7 @@ function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function readSettings(path) {
-  if (!existsSync3(path))
+  if (!existsSync4(path))
     return {};
   let parsed;
   try {
@@ -6581,9 +7788,9 @@ function settingsReport(settingsPath) {
 
 // src/hooks/agent-launches.ts
 import { appendFileSync as appendFileSync2, readFileSync as readFileSync4 } from "fs";
-import { join as join4 } from "path";
+import { join as join6 } from "path";
 function agentLaunchesFile(stateDir) {
-  return join4(stateDir, "agent-launches.jsonl");
+  return join6(stateDir, "agent-launches.jsonl");
 }
 function lastAgentLaunch(file) {
   let text;
@@ -6640,7 +7847,7 @@ var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function lastClaudeModel(transcriptPath) {
+function tailLines(transcriptPath) {
   let text;
   try {
     const fd = openSync(transcriptPath, "r");
@@ -6656,11 +7863,13 @@ function lastClaudeModel(transcriptPath) {
   } catch {
     return null;
   }
-  const lines = text.split(`
+  return text.split(`
 `);
+}
+function* entriesFromEnd(lines) {
   for (let index = lines.length - 1;index >= 0; index -= 1) {
     const line = lines[index] ?? "";
-    if (!line.includes('"assistant"'))
+    if (line === "")
       continue;
     let entry;
     try {
@@ -6668,9 +7877,17 @@ function lastClaudeModel(transcriptPath) {
     } catch {
       continue;
     }
-    if (!isJsonObject3(entry) || entry.type !== "assistant" || !isJsonObject3(entry.message)) {
+    if (isJsonObject3(entry))
+      yield entry;
+  }
+}
+function lastClaudeModel(transcriptPath) {
+  const lines = tailLines(transcriptPath);
+  if (lines === null)
+    return null;
+  for (const entry of entriesFromEnd(lines)) {
+    if (entry.type !== "assistant" || !isJsonObject3(entry.message))
       continue;
-    }
     const model = entry.message.model;
     if (typeof model === "string" && model.startsWith("claude-"))
       return model;
@@ -7178,7 +8395,244 @@ function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
 }
 
 // src/hooks/git-guard.ts
+import { isAbsolute, resolve as resolve2 } from "path";
+var DEFAULT_PROTECTED_BRANCHES = ["main"];
+var PUSH_VALUE_OPTIONS = [
+  ["--exec", 4],
+  ["--push-option", 4],
+  ["--receive-pack", 5],
+  ["--repo", 6]
+];
 var CHANGE_DIR = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
+function longOption(arg, full, min) {
+  const name = arg.split("=")[0] ?? arg;
+  return name.length >= min && name.length <= full.length && full.startsWith(name);
+}
+function movedTo(program, folder, args) {
+  if (program === "popd")
+    return null;
+  const target = args.find((arg) => !arg.startsWith("-") && arg.toLowerCase() !== "/d");
+  if (target === undefined || /^[~%]|[$`]/.test(target))
+    return null;
+  const path = process.platform === "win32" ? target.replace(/^\/([A-Za-z])(?=\/|$)/, "$1:") : target;
+  if (isAbsolute(path))
+    return resolve2(path);
+  return folder === null ? null : resolve2(folder, path);
+}
+function currentBranch(folder, dir, env) {
+  if (folder === null)
+    return;
+  const where = dir === undefined ? folder : resolve2(folder, dir);
+  const run = runGit(where, ["symbolic-ref", "--short", "-q", "HEAD"], env, GUARD_GIT_TIMEOUT_MS);
+  return run.ok && run.out !== "" ? run.out : undefined;
+}
+function pushQuestions(args, branchHere, protectedBranches) {
+  const found = [];
+  const positional = [];
+  let dryRun = false;
+  let force = false;
+  let deleting = false;
+  let everyBranch = false;
+  let repoGiven = false;
+  let tagsOnly = false;
+  for (let i = 0;i < args.length; i++) {
+    const arg = args[i] ?? "";
+    if (arg === "--") {
+      positional.push(...args.slice(i + 1));
+      break;
+    }
+    if (arg.startsWith("--")) {
+      if (longOption(arg, "--force", 6) || longOption(arg, "--force-if-includes", 9) || longOption(arg, "--force-with-lease", 9)) {
+        force = true;
+      }
+      if (longOption(arg, "--all", 4) || longOption(arg, "--mirror", 6))
+        everyBranch = true;
+      if (longOption(arg, "--dry-run", 4))
+        dryRun = true;
+      if (longOption(arg, "--tags", 4))
+        tagsOnly = true;
+      if (longOption(arg, "--delete", 5))
+        deleting = true;
+      if (longOption(arg, "--repo", 6))
+        repoGiven = true;
+      if (!arg.includes("=") && PUSH_VALUE_OPTIONS.some(([full, min]) => longOption(arg, full, min)))
+        i++;
+    } else if (isShort(arg)) {
+      const { flags, wantsNext } = shortFlags(arg, "o");
+      if (flags.includes("f"))
+        force = true;
+      if (flags.includes("n"))
+        dryRun = true;
+      if (flags.includes("d"))
+        deleting = true;
+      if (wantsNext)
+        i++;
+    } else {
+      positional.push(arg);
+    }
+  }
+  if (dryRun)
+    return found;
+  const refspecs = repoGiven ? positional : positional.slice(1);
+  if (force || refspecs.some((refspec) => refspec.startsWith("+"))) {
+    found.push("This is a force-push: it can overwrite commits that other people or other sessions " + "already pushed, and those commits can be lost. Approve only if you meant it.");
+  }
+  if (everyBranch) {
+    found.push(`\`git push --all\` / \`--mirror\` pushes every branch, ${protectedBranches.map((b) => `\`${b}\``).join(", ")} included.`);
+  }
+  const deleted = refspecs.map((refspec) => refspec.replace(/^\+/, "")).map((spec) => deleting ? spec : spec.startsWith(":") && spec.length > 1 ? spec.slice(1) : "").filter((name) => name !== "").map((name) => name.replace(/^refs\/heads\//, ""));
+  if (deleted.length > 0) {
+    found.push(`This deletes ${deleted.map((name) => `\`${name}\``).join(", ")} on the remote: the ` + "commits on it are gone for everyone, and a teammate may still be working on it. " + "Approve only if you meant to delete it.");
+  }
+  const targets = [];
+  for (const refspec of refspecs) {
+    const spec = refspec.replace(/^\+/, "");
+    const colon = spec.indexOf(":");
+    const destination = colon === -1 ? spec : spec.slice(colon + 1);
+    if (colon === -1 && (spec === "HEAD" || spec === "@")) {
+      const here = branchHere();
+      if (here !== undefined)
+        targets.push(here);
+    } else {
+      targets.push(destination.replace(/^refs\/heads\//, ""));
+    }
+  }
+  if (refspecs.length === 0 && !tagsOnly) {
+    const here = branchHere();
+    if (here !== undefined)
+      targets.push(here);
+  }
+  const protectedTarget = targets.find((target) => protectedBranches.includes(target));
+  if (protectedTarget !== undefined) {
+    found.push(`This pushes straight to \`${protectedTarget}\`, a protected branch: work usually reaches ` + "it through a pull request. Approve only if you meant to push there.");
+  }
+  return found;
+}
+function stashQuestions(args, sharedStash) {
+  const sub = args[0];
+  const named = args.slice(1).some((arg) => !arg.startsWith("-"));
+  if (sub === "clear") {
+    return [
+      "`git stash clear` throws away every stash for good: git cannot bring them back. " + "`git stash list` shows what they hold, `git stash show -p` one of them."
+    ];
+  }
+  if (sub === "drop" && !named) {
+    return [
+      "`git stash drop` with no stash named drops the newest one, whoever made it. " + "`git stash list` shows them; `git stash drop stash@{n}` drops the one you mean."
+    ];
+  }
+  if (!sharedStash)
+    return [];
+  const tagged = args.some((arg) => longOption(arg, "--message", 6) || isShort(arg) && shortFlags(arg, "m").flags.includes("m"));
+  const untaggedPush = (sub === undefined || sub.startsWith("-") || sub === "push") && !tagged;
+  const saveWithoutMessage = sub === "save" && !named;
+  if (sub !== "pop" && !untaggedPush && !saveWithoutMessage)
+    return [];
+  return [
+    "The git stash is shared by every worktree of this repo, so a bare `git stash` or " + "`git stash pop` can take or restore another session's work. A WIP commit is safer; " + "or `git stash push -u -m <tag>`, then `git stash apply <its sha>`."
+  ];
+}
+function discardsChanges(sub, rest) {
+  if (sub === "switch") {
+    return rest.some((arg) => longOption(arg, "--force", 6) || longOption(arg, "--discard-changes", 8) || isShort(arg) && shortFlags(arg, "cC").flags.includes("f"));
+  }
+  if (sub === "checkout") {
+    const dashes = rest.indexOf("--");
+    const pathsGiven = dashes !== -1 && dashes < rest.length - 1;
+    const force = rest.some((arg) => longOption(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "bB").flags.includes("f"));
+    return pathsGiven || force || rest.slice(0, dashes === -1 ? undefined : dashes).includes(".");
+  }
+  const staged = rest.some((arg) => longOption(arg, "--staged", 6) || isShort(arg) && shortFlags(arg, "s").flags.includes("S"));
+  const worktree = rest.some((arg) => longOption(arg, "--worktree", 6) || isShort(arg) && shortFlags(arg, "s").flags.includes("W"));
+  return !staged || worktree;
+}
+function forceDeletesBranch(rest) {
+  const has = (long, min, short) => rest.some((arg) => long !== undefined && longOption(arg, long, min) || isShort(arg) && shortFlags(arg, "").flags.includes(short));
+  return has(undefined, 0, "D") || has("--delete", 5, "d") && has("--force", 6, "f");
+}
+function gitQuestions(args, folder, options) {
+  let dir;
+  let index = 0;
+  for (;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "-C")
+      dir = args[++index];
+    else if (["--git-dir", "--namespace", "--work-tree", "-c"].includes(arg))
+      index++;
+    else if (!arg.startsWith("-"))
+      break;
+  }
+  const sub = args[index];
+  const rest = args.slice(index + 1);
+  if (sub === "push") {
+    return pushQuestions(rest, () => currentBranch(folder, dir, options.env), options.protectedBranches);
+  }
+  if (sub === "stash")
+    return stashQuestions(rest, options.sharedStash);
+  if (sub === "worktree" && rest[0] === "remove") {
+    const force = rest.slice(1).some((arg) => longOption(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "").flags.includes("f"));
+    if (force) {
+      return [
+        "`git worktree remove --force` deletes a worktree even when it holds uncommitted or " + "untracked work, and git cannot bring that back. Look in it first."
+      ];
+    }
+  }
+  if ((sub === "checkout" || sub === "restore" || sub === "switch") && discardsChanges(sub, rest)) {
+    return [
+      `\`git ${sub}\` here overwrites files in this folder with another version, and any ` + "uncommitted change in them is lost for good. Approve only if you want them gone; a " + "WIP commit keeps the work first. Switching branch, and `git restore --staged`, do not ask."
+    ];
+  }
+  if (sub === "branch" && forceDeletesBranch(rest)) {
+    return [
+      "`git branch -D` deletes a branch even if it was never merged: its commits are then " + "only in the reflog. `git branch -d` deletes a merged branch, and does not ask."
+    ];
+  }
+  if (sub === "reset" && rest.some((arg) => longOption(arg, "--hard", 4))) {
+    return [
+      "`git reset --hard` throws away every uncommitted change in this folder, for good. " + "Approve only if you want them gone; a WIP commit keeps the work first."
+    ];
+  }
+  if (sub === "clean") {
+    const force = rest.some((arg) => longOption(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "e").flags.includes("f"));
+    const dryRun = rest.some((arg) => longOption(arg, "--dry-run", 4) || isShort(arg) && shortFlags(arg, "e").flags.includes("n"));
+    if (force && !dryRun) {
+      return [
+        "`git clean -f` deletes untracked files for good: git cannot bring them back. " + "`git clean -n` shows what it would delete, without deleting."
+      ];
+    }
+  }
+  return [];
+}
+function inspect2(command, cwd, joinLines, options, depth = 0) {
+  const found = [];
+  let folder = cwd;
+  for (const step of shellSteps(command, { blindWhenOpen: true, joinLines })) {
+    const invocation = invocationOf2(wordsOf2(step.text));
+    if (invocation === undefined)
+      continue;
+    const { args, program } = invocation;
+    if (program === "git")
+      found.push(...gitQuestions(args, folder, options));
+    if (CHANGE_DIR.has(program))
+      folder = movedTo(program, folder, args);
+    const inner = nestedCommand2(program, args, step.pipedFrom);
+    if (inner !== undefined && depth < MAX_NESTING2) {
+      found.push(...inspect2(inner, folder, joinLines, options, depth + 1));
+    }
+  }
+  return found;
+}
+function guardQuestions(command, cwd, options) {
+  const continues = /[\\`][ \t]*\r?\n/.test(command);
+  const found = [
+    ...inspect2(command, cwd, false, options),
+    ...continues ? inspect2(command, cwd, true, options) : []
+  ];
+  return [...new Set(found)];
+}
+function runsGit(command) {
+  return programsOf(command).includes("git");
+}
 
 // src/setup/launcher.ts
 var FIND_INSTALL_JS = [
@@ -7188,9 +8642,283 @@ var FIND_INSTALL_JS = [
   "if(!e)process.exit(1);",
   "process.stdout.write(e.installPath);"
 ].join("");
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
 
 // src/hooks/job-route.ts
 var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${COMMAND}"`;
+var PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
+var SHELL_MEANING = /[$`*?[\]{}~<>|&;\n\\]/;
+function plainWords(command) {
+  const segments = shellSegments(command);
+  if (segments.length !== 1)
+    return null;
+  const words = wordsOf(segments[0] ?? "");
+  if (words.length === 0 || !words.every((word) => !SHELL_MEANING.test(word)))
+    return null;
+  const invocation = invocationOf(words);
+  return invocation === undefined || invocation.program !== words[0] ? null : words;
+}
+function shellWord(word) {
+  return PLAIN_WORD.test(word) ? word : shellQuote(word);
+}
+function jobRunCommand(kind, command) {
+  const words = plainWords(command);
+  const inner = words === null ? `sh -c ${shellQuote(command)}` : words.map(shellWord).join(" ");
+  return `${LAUNCHER_IN_SHELL} job run --kind ${kind} -- ${inner}`;
+}
+function runsJobRun(command) {
+  return shellSegments(command).some((segment) => {
+    const words = wordsOf(segment);
+    const inner = invocationOf(words);
+    if (inner === undefined)
+      return false;
+    if (isJobRun(inner.program, inner.args))
+      return true;
+    const nested = nestedCommand(inner.program, inner.args);
+    if (nested === undefined)
+      return false;
+    const deeper = invocationOf(wordsOf(nested));
+    return deeper !== undefined && isJobRun(deeper.program, deeper.args);
+  });
+}
+function isJobRun(program, args) {
+  const base = (program.split(/[\\/]/).pop() ?? program).replace(/\.(cmd|exe|ps1|bat)$/, "");
+  return base === COMMAND && args[0] === "job" && args[1] === "run";
+}
+function routeHeavyCommand(command, kinds) {
+  if (runsJobRun(command))
+    return null;
+  const kind = classifyHeavyCommand(command, kinds);
+  return kind === null ? null : { command: jobRunCommand(kind, command), kind };
+}
+var REWRITE_SUPPORTED = true;
+function rewriteAnswer(fields, routed) {
+  return {
+    stdout: JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        updatedInput: { ...fields, command: routed.command }
+      }
+    })
+  };
+}
+function routeDenial(routed) {
+  return toolDecision("deny", [
+    `This is a heavy command (${routed.kind}): running it raw does not wait for free memory, and parallel heavy runs have run machines out of memory.`,
+    "Run it through the queue instead:",
+    routed.command
+  ].join(`
+`));
+}
+function jobRoute(context) {
+  if (context.project.config?.jobs?.route !== true)
+    return SILENT;
+  const fields = toolInput(context.input);
+  const command = stringField(fields.command);
+  if (command === null)
+    return SILENT;
+  const routed = routeHeavyCommand(command, mergeKinds(context.project.config.jobs?.kinds));
+  if (routed === null)
+    return SILENT;
+  return REWRITE_SUPPORTED ? rewriteAnswer(fields, routed) : routeDenial(routed);
+}
+function routeFacts(input) {
+  const command = stringField(toolInput(input).command);
+  if (command === null)
+    return {};
+  return { job_run: runsJobRun(command) };
+}
+
+// src/hooks/main-folder-guard.ts
+import { isAbsolute as isAbsolute2, resolve as resolve3 } from "path";
+function editedFile(input, cwd) {
+  const fields = toolInput(input);
+  const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
+  if (path === null)
+    return null;
+  return realPath(isAbsolute2(path) ? resolve3(path) : resolve3(cwd, path));
+}
+function editsMainFolder(file, mainCheckout, worktrees) {
+  if (!isInside(file, mainCheckout))
+    return false;
+  return innermostWorktree(file, [mainCheckout, ...worktrees]) === mainCheckout;
+}
+function mainFolderRefusal(mainCheckout, base) {
+  return [
+    `This file is in the main checkout (${mainCheckout}). This project keeps the main checkout on \`${base}\` and makes every change in a worktree (anymodel.json \`worktrees.guardMainFolder\`).`,
+    "Already working in a worktree? Edit the same file under that worktree's folder.",
+    "Not in one yet: EnterWorktree, with the branch for this work as its `name`, makes one."
+  ].join(`
+`);
+}
+function mainFolderGuard(context) {
+  const { project, input, cwd, env } = context;
+  const worktreesConfig = project.config?.worktrees;
+  if (worktreesConfig?.guardMainFolder !== true || project.mainCheckout === null)
+    return SILENT;
+  const file = editedFile(input, cwd);
+  if (file === null)
+    return SILENT;
+  const main = realPath(project.mainCheckout);
+  const [, ...worktrees] = listWorktrees(main, env, GUARD_GIT_TIMEOUT_MS);
+  return editsMainFolder(file, main, worktrees.map((worktree) => realPath(worktree.path))) ? toolDecision("deny", mainFolderRefusal(project.mainCheckout, worktreesConfig.base)) : SILENT;
+}
+
+// src/hooks/sessions.ts
+import { existsSync as existsSync5, readdirSync, readFileSync as readFileSync5, statSync as statSync3 } from "fs";
+import { uptime } from "os";
+import { join as join7 } from "path";
+function parseSessionRecord(json) {
+  let value;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null)
+    return null;
+  const { cwd, name, pid, sessionId } = value;
+  if (typeof cwd !== "string" || typeof pid !== "number" || typeof sessionId !== "string") {
+    return null;
+  }
+  return { pid, sessionId, cwd, name: typeof name === "string" ? name : sessionId.slice(0, 8) };
+}
+function isRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+function liveSessions(claudeConfigDir) {
+  const dir = join7(claudeConfigDir, "sessions");
+  if (!existsSync5(dir))
+    return [];
+  const bootedAt = Date.now() - uptime() * 1000;
+  const live = [];
+  for (const file of readdirSync(dir)) {
+    const pid = Number(file.replace(/\.json$/, ""));
+    if (!file.endsWith(".json") || !Number.isInteger(pid) || !isRunning(pid))
+      continue;
+    let text;
+    try {
+      if (statSync3(join7(dir, file)).mtimeMs < bootedAt)
+        continue;
+      text = readFileSync5(join7(dir, file), "utf8");
+    } catch {
+      continue;
+    }
+    const record = parseSessionRecord(text);
+    if (record === null) {
+      throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
+    }
+    live.push(record);
+  }
+  return live;
+}
+
+// src/hooks/message-guard.ts
+function messageLeavesRepo(to, sessions, repoFolders) {
+  const name = to.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
+  const named = sessions.filter((session) => session.name === name);
+  const outside = named.filter((session) => !repoFolders.some((folder) => isInside(realPath(session.cwd), folder)));
+  return named.length > 0 && outside.length === named.length ? outside[0]?.cwd ?? null : null;
+}
+function otherProjectRefusal(to, folder) {
+  return [
+    `"${to}" works in ${folder}, outside this repo: sessions message only sessions of their own repo.`,
+    "ListAgents lists every Claude session on the machine, other projects too."
+  ].join(`
+`);
+}
+function messageGuard(context) {
+  const { project, input, env, paths } = context;
+  if (project.config === null)
+    return SILENT;
+  const to = stringField(toolInput(input).to);
+  if (to === null)
+    return SILENT;
+  let sessions;
+  try {
+    sessions = liveSessions(paths.claudeConfigDir);
+  } catch {
+    return SILENT;
+  }
+  const repo = realPath(project.mainCheckout ?? project.root);
+  const folders = listWorktrees(repo, env, GUARD_GIT_TIMEOUT_MS).map((worktree) => realPath(worktree.path));
+  const folder = messageLeavesRepo(to, sessions, folders);
+  return folder === null ? SILENT : toolDecision("deny", otherProjectRefusal(to, folder));
+}
+
+// src/hooks/session-name.ts
+import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync6, renameSync, writeFileSync as writeFileSync2 } from "fs";
+import { tmpdir as tmpdir2 } from "os";
+import { join as join8 } from "path";
+var MAX_SESSION_NAME = 60;
+function isSessionId(value) {
+  return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+}
+function cleanSessionName(raw) {
+  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
+  const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
+  if (plain === "")
+    return null;
+  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
+}
+function namesDir(env) {
+  return join8(env.TMPDIR || tmpdir2(), "anymodel-session-names");
+}
+function readName(file) {
+  try {
+    return existsSync6(file) ? cleanSessionName(readFileSync6(file, "utf8")) : null;
+  } catch {
+    return null;
+  }
+}
+function writeAtomic(file, text) {
+  const partial = `${file}.${process.pid}.tmp`;
+  writeFileSync2(partial, text);
+  renameSync(partial, file);
+}
+function namingNote(sessionId, current) {
+  const command = `${COMMAND} session-name ${sessionId} "<the task, in a few words>"`;
+  return current === null ? `This session has no name yet. Name it once, as soon as its main task is clear: people and other sessions find it by this name in ListAgents and /resume. Run: ${command}` : `This session is named "${current}" after its main task. Keep it; rename it only if the name no longer describes the main task: ${command}`;
+}
+function sessionName(context) {
+  const { project, input, event, env } = context;
+  if (project.config?.sessionNames !== true)
+    return SILENT;
+  const sessionId = input.session_id;
+  if (!isSessionId(sessionId))
+    return SILENT;
+  const dir = namesDir(env);
+  const wanted = readName(join8(dir, `${sessionId}.name`));
+  const note = namingNote(sessionId, wanted);
+  if (event === "SessionStart") {
+    return {
+      stdout: JSON.stringify({
+        hookSpecificOutput: { hookEventName: event, additionalContext: note }
+      })
+    };
+  }
+  const appliedFile = join8(dir, sessionId);
+  const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
+  if (title !== null) {
+    mkdirSync3(dir, { recursive: true });
+    writeAtomic(appliedFile, title);
+    return {
+      stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: event, sessionTitle: title } })
+    };
+  }
+  return wanted === null ? {
+    stdout: JSON.stringify({
+      hookSpecificOutput: { hookEventName: event, additionalContext: note }
+    })
+  } : SILENT;
+}
 
 // src/setup/lock.ts
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
@@ -7198,7 +8926,222 @@ var FALLBACK_STALE_MS = 10 * 60 * 1000;
 // src/hooks/worktree-create.ts
 var FETCH_AGE_MS = 24 * 60 * 60 * 1000;
 
+// src/hooks/worktree-leftovers.ts
+import { readFileSync as readFileSync8, statSync as statSync4 } from "fs";
+import { basename as basename2, isAbsolute as isAbsolute3, join as join10, resolve as resolve4 } from "path";
+
+// src/hooks/local-files.ts
+import { lstatSync, readdirSync as readdirSync2, readFileSync as readFileSync7, readlinkSync } from "fs";
+import { join as join9 } from "path";
+var REBUILDABLE = [
+  /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
+  /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
+  /(?:^|\/)(?:\.cache|\.vite|\.eslintcache|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.hypothesis|\.terraform|\.dart_tool)\/?$/,
+  /\.(?:tsbuildinfo|pyc|pyo)$/,
+  /(?:^|\/)\.DS_Store$/,
+  /(?:^|\/)Thumbs\.db$/,
+  /(?:^|\/)(?:npm-debug|yarn-debug|yarn-error|pnpm-debug|lerna-debug)\.log/
+];
+var MAX_COMPARED = 2000;
+function parseIgnored(porcelain) {
+  return porcelain.split("\x00").filter((entry) => entry.startsWith("!! ")).map((entry) => entry.slice(3));
+}
+function sameAsMain(worktree, mainCheckout, path) {
+  let budget = MAX_COMPARED;
+  const same = (relative) => {
+    if (--budget < 0)
+      return false;
+    const here = join9(worktree, relative);
+    const there = join9(mainCheckout, relative);
+    try {
+      const a = lstatSync(here);
+      const b = lstatSync(there);
+      if (a.isSymbolicLink() || b.isSymbolicLink()) {
+        return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync(here) === readlinkSync(there);
+      }
+      if (a.isDirectory()) {
+        return b.isDirectory() && readdirSync2(here).every((entry) => same(join9(relative, entry)));
+      }
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync7(here).equals(readFileSync7(there));
+    } catch {
+      return false;
+    }
+  };
+  return same(path.replace(/\/$/, ""));
+}
+function localFiles(worktree, mainCheckout, env) {
+  const status = runGit(worktree, [
+    "--no-optional-locks",
+    "status",
+    "--porcelain",
+    "-z",
+    "--ignored=traditional",
+    "--untracked-files=normal"
+  ], env, 30000);
+  if (!status.ok)
+    return null;
+  return parseIgnored(status.out).filter((entry) => !REBUILDABLE.some((pattern) => pattern.test(entry)) && !(mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry)));
+}
+
+// src/hooks/worktree-leftovers.ts
+var IDLE_MINUTES = 60;
+function idleMinutes(worktree, now) {
+  let admin;
+  try {
+    admin = readFileSync8(join10(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+  } catch {
+    return 0;
+  }
+  if (!isAbsolute3(admin))
+    admin = resolve4(worktree, admin);
+  let last = 0;
+  for (const file of ["index", "HEAD", join10("logs", "HEAD")]) {
+    try {
+      last = Math.max(last, statSync4(join10(admin, file)).mtimeMs);
+    } catch {}
+  }
+  return last === 0 ? 0 : (now - last) / 60000;
+}
+function judgeWorktree(repo, listed, base, sessions, env, now) {
+  if (listed.locked)
+    return "kept";
+  if (listed.prunable)
+    return "gone";
+  try {
+    statSync4(listed.path);
+  } catch {
+    return "gone";
+  }
+  if (sessions.some((session) => isInside(session.cwd, listed.path)))
+    return "kept";
+  const ahead = runGit(repo, ["rev-list", "--count", `refs/remotes/origin/${base}..${listed.head}`], env);
+  if (!ahead.ok || ahead.out !== "0")
+    return "kept";
+  if (idleMinutes(listed.path, now) < IDLE_MINUTES)
+    return "kept";
+  if (hasChanges(listed.path, env))
+    return "kept";
+  return localFiles(listed.path, repo, env)?.length === 0 ? "finished" : "kept";
+}
+function leftoversNote(base, finished, gone) {
+  const parts = [];
+  if (finished.length > 0) {
+    const names = finished.map((worktree) => basename2(worktree.path)).join(", ");
+    const count = finished.length === 1 ? "1 finished worktree is" : `${finished.length} finished worktrees are`;
+    parts.push(`${count} left in this repo: ${names}. Each has every commit on origin/${base}, nothing uncommitted, no running session, and no git use for an hour. ` + "Tell the user, and when they agree, remove each in the main checkout: `git worktree remove <folder>`, then `git branch -d <branch>`.");
+  }
+  if (gone.length > 0) {
+    parts.push(`${gone.length === 1 ? "1 worktree is still listed, but its folder is gone" : `${gone.length} worktrees are still listed, but their folders are gone`}: ${gone.map((worktree) => worktree.path).join(", ")}. \`git worktree prune\` in the main checkout forgets ${gone.length === 1 ? "it" : "them"}.`);
+  }
+  return parts.length === 0 ? null : parts.join(`
+`);
+}
+function worktreeLeftovers(context) {
+  const { project, env, paths, event } = context;
+  const base = project.config?.worktrees?.base;
+  if (base === undefined)
+    return SILENT;
+  const repo = project.mainCheckout ?? project.root;
+  const [, ...linked] = listWorktrees(repo, env);
+  if (linked.length === 0)
+    return SILENT;
+  if (!runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${base}`], env).ok) {
+    return SILENT;
+  }
+  let sessions;
+  try {
+    sessions = liveSessions(paths.claudeConfigDir);
+  } catch {
+    return SILENT;
+  }
+  const now = Date.now();
+  const finished = [];
+  const gone = [];
+  for (const listed of linked) {
+    const verdict = judgeWorktree(repo, listed, base, sessions, env, now);
+    if (verdict === "finished")
+      finished.push(listed);
+    if (verdict === "gone")
+      gone.push(listed);
+  }
+  const note = leftoversNote(base, finished, gone);
+  return note === null ? SILENT : addContext(event, note);
+}
+
 // src/hooks/specs.ts
+function cannotCheck(what, message) {
+  return `anymodel cannot check ${what}: ${message}`;
+}
+var gitGuardHook = {
+  name: "git-guard",
+  events: ["PreToolUse"],
+  wiring: "plugin",
+  onConfigProblem: (message, input) => {
+    const command = stringField(toolInput(input).command);
+    return command !== null && runsGit(command) ? toolDecision("ask", cannotCheck("this git command", message)) : SILENT;
+  },
+  logFacts: (input) => {
+    const command = stringField(toolInput(input).command);
+    return command === null ? {} : { programs: programsOf(command) };
+  },
+  run: ({ project, input, cwd, env }) => {
+    const config = project.config;
+    if (config === null)
+      return SILENT;
+    const command = stringField(toolInput(input).command);
+    if (command === null)
+      return SILENT;
+    const questions = guardQuestions(command, cwd, {
+      protectedBranches: config.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
+      sharedStash: config.worktrees !== undefined,
+      env
+    });
+    return questions.length === 0 ? SILENT : toolDecision("ask", questions.join(`
+`));
+  }
+};
+var mainFolderGuardHook = {
+  name: "main-folder-guard",
+  events: ["PreToolUse"],
+  wiring: "plugin",
+  onConfigProblem: (message, input, _event, checkout) => {
+    const file = typeof input.cwd === "string" ? editedFile(input, input.cwd) : null;
+    const repo = checkout.mainCheckout ?? checkout.root;
+    return file !== null && isInside(file, repo) ? toolDecision("ask", cannotCheck("whether this edit belongs in a worktree", message)) : SILENT;
+  },
+  run: mainFolderGuard
+};
+var messageGuardHook = {
+  name: "message-guard",
+  events: ["PreToolUse"],
+  wiring: "plugin",
+  onConfigProblem: (message) => toolDecision("ask", cannotCheck("whether this message stays in this repo", message)),
+  run: messageGuard
+};
+var afterMergeHook = {
+  name: "after-merge",
+  events: ["PostToolUse", "PostToolUseFailure"],
+  wiring: "plugin",
+  onConfigProblem: (message, input, event) => {
+    const command = stringField(toolInput(input).command);
+    return command !== null && mergesPullRequest(command) ? addContext(event, `anymodel: ${message}`) : SILENT;
+  },
+  run: afterMerge
+};
+var worktreeLeftoversHook = {
+  name: "worktree-leftovers",
+  events: ["SessionStart"],
+  wiring: "plugin",
+  onConfigProblem: (message, _input, event) => addContext(event, `anymodel: ${message}`),
+  run: worktreeLeftovers
+};
+var sessionNameHook = {
+  name: "session-name",
+  events: ["SessionStart", "UserPromptSubmit"],
+  wiring: "plugin",
+  onConfigProblem: (message) => ({ stderr: `anymodel session-name: ${message}` }),
+  run: sessionName
+};
 var agentGuardHook = {
   name: "agent-guard",
   events: ["PreToolUse"],
@@ -7208,9 +9151,31 @@ var agentGuardHook = {
   logFacts: guardFacts,
   run: ({ input, env, paths, cwd }) => agentGuard(input, env, paths, cwd)
 };
+var jobRouteHook = {
+  name: "job-route",
+  events: ["PreToolUse"],
+  wiring: "plugin",
+  onConfigProblem: (message, input) => {
+    const command = stringField(toolInput(input).command);
+    return command === null || classifyHeavyCommand(command, mergeKinds(undefined)) === null ? SILENT : toolDecision("ask", cannotCheck("whether this project routes heavy commands through its job queue", message));
+  },
+  logFacts: routeFacts,
+  run: jobRoute
+};
 function cwdOf(input) {
   return stringField(input.cwd) ?? "";
 }
+var HOOKS = [
+  gitGuardHook,
+  mainFolderGuardHook,
+  messageGuardHook,
+  agentGuardHook,
+  jobRouteHook,
+  afterMergeHook,
+  worktreeLeftoversHook,
+  sessionNameHook
+];
+var GUARD_BUNDLES = new Set(HOOKS.filter((spec) => spec.events.includes("PreToolUse")).map((spec) => spec.name));
 var USER_HOOKS = ["stop-failure", "update-check", "notify"];
 var MACHINE_WIDE_HOOKS = [...USER_HOOKS, "agent-guard"];
 

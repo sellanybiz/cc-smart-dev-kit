@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, rmdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { removeAllOwnedEntries } from "./managed-entries";
 import { applyManagedJson, formatKeyPath, ownedKeys } from "./managed-json";
+import { removeManagedLines } from "./managed-line";
 import { removeManagedMarkdown } from "./managed-markdown";
 import {
   ABSENT_SUFFIX,
@@ -83,6 +84,13 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
   if (entry.kinds.includes("markdown-block")) {
     const result = removeManagedMarkdown({ file, stateDir });
     if (result.outcome !== "unchanged") details.push("the anymodel block");
+    savedAs ??= result.backup;
+  }
+  if (entry.kinds.includes("file-line")) {
+    // Only the exact lines anymodel added: a line the person changed or removed since
+    // stays, and a file whose lines are all gone reports nothing.
+    const result = removeManagedLines({ file, lines: entry.lines ?? [], stateDir });
+    for (const line of result.removed) details.push(`the line ${JSON.stringify(line)}`);
     savedAs ??= result.backup;
   }
 

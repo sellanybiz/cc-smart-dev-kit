@@ -8,6 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { GUARD_BUNDLES } from "../hooks/specs";
 import { tempDir } from "../testing/temp";
 import { launcherScript } from "./launcher";
 
@@ -114,8 +115,12 @@ describe("the hooks' bun shim", () => {
       events.add(event);
       expect(hook.type).toBe("command");
       expect(expand(hook.command)).toBe(SHIM);
-      // A guard fails closed: with no bun it asks. Every other hook is quiet.
-      expect(hook.args[0]).toBe(event === "PreToolUse" ? "--missing=ask" : "--missing=quiet");
+      // A guard fails closed: with no bun it asks. Every other hook is quiet — the notifier
+      // is wired on PreToolUse too, and is not a guard.
+      const bundle = (hook.args[1] ?? "").replace(/^.*\/dist\/|\.js$/g, "");
+      expect(hook.args[0]).toBe(
+        event === "PreToolUse" && GUARD_BUNDLES.has(bundle) ? "--missing=ask" : "--missing=quiet",
+      );
       expect(expand(hook.args[1])).toStartWith(`${join(PLUGIN, "dist")}/`);
     }
     // Every event the plugin wires, and only those.

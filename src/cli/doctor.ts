@@ -37,6 +37,13 @@ import {
   marketplaceSource,
   redactUrl,
 } from "../setup/marketplace-access";
+import {
+  TMUX_LINE,
+  TMUX_MIN_VERSION,
+  TMUX_NOW_COMMAND,
+  tmuxLineIn,
+  tmuxPassthroughOf,
+} from "../setup/tmux";
 import { isOlder } from "../update/check";
 import { FORCE_PLUGIN_UPDATES_VAR, updateOptOuts } from "../update/opt-out";
 import {
@@ -593,6 +600,34 @@ function claudeMemCheck(paths: CliPaths): Check | null {
   return advice === null ? null : { ok: true, warn: true, text: advice };
 }
 
+/**
+ * tmux: an alert from a pane reaches the terminal the person is looking at only with tmux
+ * 3.3 or newer and its passthrough allowed (`all`, so a window the person is not looking at
+ * works too), which is why `anymodel setup` writes one managed line into `~/.tmux.conf` and
+ * `restore` takes it out. Both lines are information (`·`), never failures: tmux is
+ * optional, and so is this.
+ */
+function checkTmux(paths: CliPaths, env: Env, machine: Machine): Check[] {
+  if (machine.which("tmux") === null) return [];
+  const checks: Check[] = [];
+  const conf = tildify(paths.tmuxConfFile, paths.home);
+  if (!tmuxLineIn(paths.tmuxConfFile)) {
+    checks.push({
+      info: true,
+      ok: true,
+      text: `${conf} has no "${TMUX_LINE}" line, so tmux drops an alert from a pane. To add it: ${COMMAND} setup`,
+    });
+  }
+  if ((env.TMUX ?? "") !== "" && tmuxPassthroughOf(machine.run) !== "all") {
+    checks.push({
+      info: true,
+      ok: true,
+      text: `tmux: alerts are not passed through (its allow-passthrough is not all). To apply it now: ${TMUX_NOW_COMMAND} (a restart works too); it needs tmux ${TMUX_MIN_VERSION} or newer`,
+    });
+  }
+  return checks;
+}
+
 /** What the gateway checks need: the plugin's router bundle, a command runner, systemd or not. */
 export interface DoctorGateway {
   bundle: string;
@@ -672,6 +707,7 @@ export async function runDoctor(
     ...companionChecks(paths),
     claudeMemCheck(paths),
     warpCheck(gateway.machine, paths),
+    ...checkTmux(paths, env, gateway.machine),
     ...(project === null ? [] : projectChecks(project.cwd, env, paths, project.pluginHooksFile)),
     ...(runtime.ok ? await gatewayChecks({ paths, ...gateway }) : [skipped]),
     live === null ? checkLiveRecord(paths) : null,

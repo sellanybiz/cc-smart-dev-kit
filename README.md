@@ -58,7 +58,7 @@ After that, use `anymodel setup` to set up again (for example after an update).
 
 | Command | What it does |
 |---|---|
-| `anymodel setup` | Installs the launcher, turns on plugin auto-update, and installs the [instructions](#instructions-skills-and-agents): a copy in `~/.claude/anymodel/instructions/`, imported by an anymodel block in `~/.claude/CLAUDE.md` (your own text there is kept); each run refreshes the copy, so run it after a plugin update. Adds a missing [companion](#companion-plugins) marketplace (or plugin). Points [claude-mem at the gateway's cheap model](#claude-mem-on-the-gateway) when both are set up. Copies the project's [auto-mode entries](#the-auto-mode-block) into your settings, after it shows them and asks. It never touches [Warp](#warp) or its plugin without `--warp`. Every question comes before anything runs or is written. `--dry-run` shows the changes, and writes, runs and checks nothing at all (it reaches no network). A settings key you set yourself (for example `autoUpdate: false`, also after setup had set it) stops setup before it writes or runs anything. Without `claude` on your PATH, setup skips only the `claude plugin …` steps, names them, does the rest, and exits with 1. Run in a terminal with no status line set, setup also offers [anymodel's status line](#the-usage-limit-the-alert-the-status-line-and-usage) (once: it remembers a "no"). |
+| `anymodel setup` | Installs the launcher, turns on plugin auto-update, and installs the [instructions](#instructions-skills-and-agents): a copy in `~/.claude/anymodel/instructions/`, imported by an anymodel block in `~/.claude/CLAUDE.md` (your own text there is kept); each run refreshes the copy, so run it after a plugin update. Adds a missing [companion](#companion-plugins) marketplace (or plugin). Adds the [tmux line](#notifications) to `~/.tmux.conf` when tmux is installed (kept next to your own lines, removed again by `restore`), and prints the command that applies it to a running tmux server. Points [claude-mem at the gateway's cheap model](#claude-mem-on-the-gateway) when both are set up. Copies the project's [auto-mode entries](#the-auto-mode-block) into your settings, after it shows them and asks. It never touches [Warp](#warp) or its plugin without `--warp`. Every question comes before anything runs or is written. `--dry-run` shows the changes, and writes, runs and checks nothing at all (it reaches no network). A settings key you set yourself (for example `autoUpdate: false`, also after setup had set it) stops setup before it writes or runs anything. Without `claude` on your PATH, setup skips only the `claude plugin …` steps, names them, does the rest, and exits with 1. Run in a terminal with no status line set, setup also offers [anymodel's status line](#the-usage-limit-the-alert-the-status-line-and-usage) (once: it remembers a "no"). |
 | `anymodel setup --no-instructions` | Takes the instructions' block and copy out and **keeps them out**: setup stores the choice (`~/.claude/anymodel/no-instructions`), so a later plain `anymodel setup` leaves them out too. `--instructions` clears that choice and installs them again. `restore` clears it as well. |
 | `anymodel setup --yes` | On a terminal: the same, and writes the auto-mode entries without asking (they are still shown). With no terminal, they are left out, also with `--yes`. |
 | `anymodel setup --project <dir>` | Reads the auto-mode entries from the project in `<dir>`, not from the folder you are in. |
@@ -70,7 +70,7 @@ After that, use `anymodel setup` to set up again (for example after an update).
 | `anymodel doctor [--live]` | Checks the install, the anymodel files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below). Prints ✓ or ✗ for each check, `·` for information and `!` for a warning (neither is a failure), and exits with 1 when a check fails. `--live` also proves the hooks and the worktree engine on the Claude Code installed here (below); it never runs without the flag. |
 | `anymodel hook <worktree-create\|worktree-remove\|subagent-stop>` | The worktree engine, for a project that wires it in its own `.claude/settings.json` (§ Worktrees). It reads the hook's input on stdin and answers as Claude Code expects. With no name, it prints the lines to paste. |
 | `anymodel session-name <session id> <name>` | Names a Claude session after its task. A session runs it itself when the project turns on `sessionNames` (below). |
-| `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/anymodel/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
+| `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/anymodel/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
 | `anymodel update [--check \| --hold \| --resume]` | Installs a newer anymodel now, showing each step: `claude plugin marketplace update anymodel`, then `claude plugin update anymodel@anymodel --scope user` when there is a newer version. `--check` only says whether a newer version exists (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
 | `anymodel gateway <command>` | The optional AI gateway (below). |
 | `anymodel search "<query>" [--max <n>] [--json]`<br>`anymodel search --fetch <url> [--json]` | Searches the web through the gateway's OmniRoute backend (Ollama's web search among its providers), or reads one page's text with `--fetch`. Prints each result's title, its URL and a short snippet. `--max` asks for 1 to 50 results. The query, or the URL, goes to that search or fetch provider on the internet; `--fetch` refuses a local or private address. Needs the gateway set up (below). |
@@ -158,6 +158,10 @@ it works when Claude Code was started with a PATH that has no bun.
 - Warp: the app and its version, and its Claude plugin. Not installed, or installed
   without its plugin (or with it turned off), is information (`·`): Warp is optional.
   ✗ only for the plugin without the app;
+- tmux, when it is on your PATH: whether `~/.tmux.conf` has the line that lets an alert out
+  of a pane (§ Notifications), and, inside a tmux session, whether the running server passes
+  alerts through. Both are information (`·`) with the fix (`anymodel setup`, or
+  `tmux set -g allow-passthrough all`): tmux is optional;
 - no other plugin named `anymodel` is enabled, and the plugin's old id `cc@cc-agentic`
   (its name before version 0.2.0) is not enabled either: two copies of the same hooks
   would run. When the old setup ran on this machine (its folder `~/.claude/cc-agentic`
@@ -545,7 +549,7 @@ and optional shared folders for containers or users on one host, in
 
 The plugin's hooks run in every project. Most stay silent in a **project without
 `.claude/anymodel.json`**; the two that are about your machine, not a project — `agent-guard`
-and `notify` — run there too (§ Desktop notifications below). The plugin ships no worktree hook:
+and `notify` — run there too (§ Notifications below). The plugin ships no worktree hook:
 Claude Code makes its own worktrees, unless a project turns on the worktree engine
 (§ Worktrees). Each hook runs through `bin/anymodel-bun`, which finds bun even when your
 PATH has none: the bun `anymodel setup` saved in the launcher first, then
@@ -579,15 +583,65 @@ newer plugin, or is broken, the hooks fail closed: the guards ask before every c
 cover, and the message names the update command — and a hook listed in `ownHooks` stays
 silent all the same.
 
-### Desktop notifications
+### Notifications
 
-Two more hooks are about your machine, not a project, so they run in every folder and read
-no `.claude/anymodel.json`: `notify` shows a desktop notification when Claude asks for
-permission or input, and when a turn ends (one notification per event), through
-`notify-send` on Linux or `osascript` on macOS, and stays silent with no notifier and
-**inside Warp**, whose own Claude Code plugin notifies (Warp sets `TERM_PROGRAM`). The
-`update-check` hook is the third: the background self-update, which also brings the
-managed instructions copy up to a new plugin version at the first session start.
+Three more hooks are about your machine, not a project, so they run in every folder and read
+no `.claude/anymodel.json`: `notify` (the alerts below), `stop-failure` (the usage-limit
+alert) and `update-check` (the background self-update, which also brings the managed
+instructions copy up to a new plugin version at the first session start).
+
+`notify` alerts you when Claude needs you, and when a turn ends or dies. One event, one
+alert:
+
+| When | The alert |
+|---|---|
+| a permission prompt, an MCP prompt, a background agent or worker waiting | `Claude needs you · <session>` |
+| a question (`AskUserQuestion`) or a plan for your OK (`ExitPlanMode`) | `Claude asks you · <session>`, with the question |
+| the turn ended | `Claude finished · <session>`, with the turn's last answer |
+| the turn died on an error | `Claude stopped · <session>`, with the error |
+
+`<session>` is the session's `/rename` name when it has one, else its folder. Questions need
+a hook of their own: Claude Code raises no notification at the moment Claude asks. A few
+waits stay quiet on purpose: the idle wait (the "finished" alert already announced that
+turn), the permission prompt that follows a question about six seconds later (the same wait),
+a "finished" alert for a turn another session started (a merge broadcast wakes every session
+of a repo), the same error twice in a row (until a turn ends well), and the plan's usage
+limit (the `stop-failure` hook's alert — never two for one stop).
+
+**A desktop** shows the alert through `notify-send` on Linux (it needs `DISPLAY`) or
+`osascript` on macOS, and plays the freedesktop sound when `paplay` is installed. **An SSH
+session** with no desktop to show it on gets the same alert in the terminal you are looking
+at, as an OSC 777 notification — no `notify-send` needed on a server: Claude Code writes the
+sequence for the hook (2.1.141 or later, wrapped for tmux itself). **Inside Warp** Warp's own
+Claude Code plugin shows a finished turn, a question, a permission prompt and an error
+itself, so ours stays quiet and plays only the sound — except a question or a waiting agent,
+which may sit in a tab you are not looking at: those stay ours. With no desktop, no SSH and
+no Warp there is nowhere to show it, and nothing happens — not a failure.
+
+One settings file, `~/.claude/anymodel/notify.json` (both keys optional):
+
+```json
+{ "desktopSound": true, "sshBell": false }
+```
+
+`desktopSound` (default `true`) plays the freedesktop sound with a desktop notification.
+`sshBell` (default `false`) sends a terminal bell after an SSH alert, for a terminal that
+ignores the notification.
+
+**tmux swallows a sequence written inside a pane**, so an alert from a session in a tmux
+window reaches your terminal only through tmux's passthrough. `anymodel setup` adds one line
+to `~/.tmux.conf` when tmux is installed:
+
+```
+set -g allow-passthrough all
+```
+
+`all`, not `on`, so an alert from a window you are not looking at arrives too. A tmux server
+that is already running keeps its own value: setup prints `tmux set -g allow-passthrough all`
+to apply it now (a restart works too) and never changes the running server itself.
+`anymodel restore` takes the line out, and `doctor` says when it is missing or when the
+running server does not pass alerts through. Without it, an alert still arrives in a
+terminal that is not tmux, and a session in tmux gets none.
 
 ## Worktrees
 

@@ -19,6 +19,7 @@ So every change to a user's file goes through `src/setup/`, and nothing else wri
 | JSON settings | `applyManagedJson` | single keys, listed in `owned.json` |
 | A JSON list of strings (`autoMode.environment`) | `applyManagedEntries` | single entries, each with its source, listed in `owned-entries.json` |
 | Markdown | `applyManagedMarkdown` | one block between `<!-- anymodel:begin -->` and `<!-- anymodel:end -->` |
+| Exact lines in a text file the person owns (`~/.tmux.conf`) | `applyManagedLine` / `removeManagedLines` (`managed-line.ts`) | the exact lines it added, listed as `lines` in `changed.json` (`file-line`) |
 | A file it owns whole (the launcher) | `writeManagedFile` | the whole file |
 
 Each of them:
@@ -135,6 +136,10 @@ Each of them:
     Code's own changes to its own files, and removing claude-mem would remove the
     person's memory plugin.
   - Markdown: removes the managed block and keeps the text around it.
+  - Lines (`file-line`): removes exactly the lines in `changed.json` and keeps every
+    other line, in the person's own order. A line the person edited or removed since is
+    not there to remove. A line they wrote themselves is never claimed, so restore keeps
+    it (the tmux line, `src/setup/tmux.ts`).
   - Files owned whole (the launcher): puts back the **baseline**, the backup made at
     anymodel's first change to the file since the last restore. When setup created
     the file, it removes it.
@@ -184,6 +189,10 @@ valid across updates.
   stops and changes nothing unless `--yes` was given. The SessionStart hook only starts
   the background self-update (`hooks.md`), which installs a new plugin version with
   `claude plugin` commands and restarts nothing.
+- **A running program is never changed behind the person's back**: the tmux line
+  (`src/setup/tmux.ts`) goes into `~/.tmux.conf` only when `tmux` is on PATH, and setup
+  **prints** `tmux set -g allow-passthrough all` for a running server instead of running
+  it — a running server keeps its own value until they apply it (or restart tmux).
 - Setup refuses to start before `claude plugin marketplace add` has run, and says which
   command to run.
 - **Commands that need root** (installing or removing the Warp app) run only in a manual

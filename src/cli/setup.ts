@@ -46,6 +46,7 @@ import {
 import { installLauncher, LAUNCHER_NAME } from "../setup/launcher";
 import { withLock } from "../setup/lock";
 import { applyManagedJson, formatKeyPath, type KeyPath } from "../setup/managed-json";
+import { applyTmuxLine, TMUX_LINE, TMUX_NOW_COMMAND, tmuxServerRunning } from "../setup/tmux";
 import { atomicWrite } from "../setup/write";
 import { type CliPaths, tildify } from "./paths";
 
@@ -135,6 +136,8 @@ interface Managed {
   instructions: { where: InstructionsPaths; choice: boolean | null };
   /** Set the status line (`--statusline`, or a "yes" to the question). */
   statusline: boolean;
+  /** Add tmux's passthrough line (`tmux` is installed, so the person uses tmux). */
+  tmuxLine: boolean;
 }
 
 /** What setup prints: changes, then information, then notes (warnings and choices). */
@@ -209,6 +212,14 @@ function applySetup(
     }
     // A key that holds the wanted value already is claude-mem's own default (the plan
     // stops at any other value of the person's): nothing worth a line.
+  }
+
+  if (managed.tmuxLine) {
+    const line = applyTmuxLine({ dryRun, file: paths.tmuxConfFile, stateDir: paths.stateDir });
+    if (line.outcome !== "unchanged") {
+      const mark = line.outcome === "created" ? "+" : "~";
+      changes.push(`${mark} ${short(paths.tmuxConfFile)}: added ${TMUX_LINE}`);
+    }
   }
 
   const { where, choice } = managed.instructions;
@@ -491,6 +502,15 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   }
   const claudeMem = await decideClaudeMem(paths, options.dryRun, report);
   const autoMode = planAutoMode(paths, options, report.notes);
+  // tmux's passthrough line is for a person who uses tmux: it goes in only when tmux is
+  // installed. A running server keeps its own value until the line is applied to it, which
+  // setup never does itself: it prints the command to run.
+  const tmuxLine = machine.which("tmux") !== null;
+  if (tmuxLine && tmuxServerRunning(machine.run)) {
+    report.info.push(
+      `  tmux is running: run \`${TMUX_NOW_COMMAND}\` to apply the line now (a restart works too)`,
+    );
+  }
   const managed: Managed = {
     claudeMem: claudeMem === "not-installed" ? null : claudeMem,
     autoMode: autoMode?.wanted ?? null,
@@ -499,6 +519,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       choice: options.instructions,
     },
     statusline: options.statusline,
+    tmuxLine,
   };
 
   // A read-only pass: a key the user set (autoUpdate: false) throws ForeignKeyError here,

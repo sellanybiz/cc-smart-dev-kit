@@ -61,7 +61,9 @@ function cliPaths(env = process.env) {
     routerCopy: join2(router.home, ".local", "share", "anymodel", "router.js"),
     routerUnitFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.service"),
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
-    routerSocketFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.socket")
+    routerSocketFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.socket"),
+    notifyConfigFile: join2(claudeConfigDir, "anymodel", "notify.json"),
+    tmuxConfFile: join2(router.home, ".tmux.conf")
   };
 }
 function claudeMemDataDir(env, home) {
@@ -77,7 +79,7 @@ function tildify(path, home) {
 }
 
 // src/setup/instructions.ts
-import { existsSync as existsSync6, readdirSync as readdirSync3, readFileSync as readFileSync7, rmSync } from "fs";
+import { existsSync as existsSync7, readdirSync as readdirSync3, readFileSync as readFileSync8, rmSync } from "fs";
 import { join as join7, relative, sep } from "path";
 
 // src/setup/lock.ts
@@ -451,13 +453,14 @@ var CHANGE_KINDS = [
   "json-keys",
   "json-entries",
   "markdown-block",
+  "file-line",
   "whole-file"
 ];
 function isChangedEntry(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const entry = value;
-  return Array.isArray(entry.kinds) && entry.kinds.every((kind) => CHANGE_KINDS.includes(kind)) && (entry.baseline === null || typeof entry.baseline === "string");
+  return Array.isArray(entry.kinds) && entry.kinds.every((kind) => CHANGE_KINDS.includes(kind)) && (entry.baseline === null || typeof entry.baseline === "string") && (entry.lines === undefined || Array.isArray(entry.lines) && entry.lines.every((line) => typeof line === "string"));
 }
 function readChanged(stateDir) {
   const file = join4(stateDir, CHANGED_FILE);
@@ -475,18 +478,32 @@ function writeChanged(stateDir, files) {
   atomicWrite(join4(stateDir, CHANGED_FILE), `${JSON.stringify({ files: sorted }, null, 2)}
 `, 384);
 }
-function recordChange(stateDir, file, kind, backup) {
+function recordChange(stateDir, file, kind, backup, lines) {
   const files = readChanged(stateDir);
   const entry = files[file];
   if (!entry) {
-    files[file] = { kinds: [kind], baseline: backup };
+    files[file] = {
+      kinds: [kind],
+      baseline: backup,
+      ...lines !== undefined && lines.length > 0 && { lines: [...lines] }
+    };
     writeChanged(stateDir, files);
     return true;
   }
+  let changed = false;
   if (!entry.kinds.includes(kind)) {
     entry.kinds.push(kind);
-    writeChanged(stateDir, files);
+    changed = true;
   }
+  for (const line of lines ?? []) {
+    const known = entry.lines ?? [];
+    if (known.includes(line))
+      continue;
+    entry.lines = [...known, line];
+    changed = true;
+  }
+  if (changed)
+    writeChanged(stateDir, files);
   return false;
 }
 function forgetChange(stateDir, file) {
@@ -536,7 +553,7 @@ function writeManagedFile(file, content, options) {
   if (options.dryRun)
     return { outcome, backup: null };
   const backup = backupFile(options.stateDir, target);
-  const isBaseline = recordChange(options.stateDir, target, options.kind, backup);
+  const isBaseline = recordChange(options.stateDir, target, options.kind, backup, options.lines);
   try {
     atomicWrite(target, content, wantedMode, () => {
       options.onBeforeCompare?.();
@@ -615,7 +632,7 @@ function removeManagedMarkdown(options) {
 }
 
 // src/setup/restore.ts
-import { existsSync as existsSync5, readdirSync as readdirSync2, readFileSync as readFileSync6, rmdirSync } from "fs";
+import { existsSync as existsSync6, readdirSync as readdirSync2, readFileSync as readFileSync7, rmdirSync } from "fs";
 import { dirname as dirname2 } from "path";
 
 // src/setup/managed-entries.ts
@@ -1037,6 +1054,41 @@ function removeAllOwnedEntries(stateDir, file) {
   return { removed, backup };
 }
 
+// src/setup/managed-line.ts
+import { existsSync as existsSync5, readFileSync as readFileSync6 } from "fs";
+function renderWithoutLines(current, lines) {
+  const unwanted = new Set(lines);
+  return current.split(`
+`).filter((one) => !unwanted.has(one)).join(`
+`);
+}
+function writeRendered(file, stateDir, render, options) {
+  const target = realTarget(file);
+  return retryOnConcurrentChange(target, () => {
+    const current = existsSync5(target) ? readFileSync6(target, "utf8") : null;
+    const { removed, text } = render(current ?? "");
+    if (current === null && text === "") {
+      return { backup: null, outcome: "unchanged", removed: removed ?? [] };
+    }
+    const result = writeManagedFile(target, text, {
+      stateDir,
+      kind: "file-line",
+      ...options.lines !== undefined && { lines: options.lines },
+      newFileMode: 420,
+      expectedContent: current,
+      ...options.dryRun !== undefined && { dryRun: options.dryRun }
+    });
+    return { backup: result.backup, outcome: result.outcome, removed: removed ?? [] };
+  });
+}
+function removeManagedLines(options) {
+  return writeRendered(options.file, options.stateDir, (current) => ({
+    removed: current.split(`
+`).filter((one) => options.lines.includes(one)),
+    text: renderWithoutLines(current, options.lines)
+  }), { dryRun: options.dryRun });
+}
+
 // src/setup/restore.ts
 function createdByUs(entry) {
   return entry.baseline?.endsWith(ABSENT_SUFFIX) ?? false;
@@ -1046,11 +1098,11 @@ function restoreWholeFile(file, entry, stateDir) {
   if (!baseline)
     return { file, action: "no-backup", details: [] };
   if (baseline.absent) {
-    if (!existsSync5(file))
+    if (!existsSync6(file))
       return { file, action: "unchanged", details: [] };
     return { file, action: "removed", details: [], savedAs: removeManagedFile(stateDir, file) };
   }
-  const result = writeManagedFile(file, readFileSync6(baseline.path, "utf8"), {
+  const result = writeManagedFile(file, readFileSync7(baseline.path, "utf8"), {
     stateDir,
     kind: "whole-file",
     mode: baseline.mode
@@ -1065,9 +1117,9 @@ function restoreWholeFile(file, entry, stateDir) {
   };
 }
 function isEmpty(file) {
-  if (!existsSync5(file))
+  if (!existsSync6(file))
     return false;
-  const text = readFileSync6(file, "utf8").trim();
+  const text = readFileSync7(file, "utf8").trim();
   return text === "" || text === "{}";
 }
 function restorePartly(file, entry, stateDir) {
@@ -1090,6 +1142,12 @@ function restorePartly(file, entry, stateDir) {
     const result = removeManagedMarkdown({ file, stateDir });
     if (result.outcome !== "unchanged")
       details.push("the anymodel block");
+    savedAs ??= result.backup;
+  }
+  if (entry.kinds.includes("file-line")) {
+    const result = removeManagedLines({ file, lines: entry.lines ?? [], stateDir });
+    for (const line of result.removed)
+      details.push(`the line ${JSON.stringify(line)}`);
     savedAs ??= result.backup;
   }
   if (createdByUs(entry) && isEmpty(file)) {
@@ -1116,7 +1174,7 @@ function restore(stateDir, options = {}) {
 function removeEmptyFolders(file, stateDir) {
   const root = realTarget(stateDir);
   let dir = dirname2(file);
-  while (dir.startsWith(`${root}/`) && existsSync5(dir) && readdirSync2(dir).length === 0) {
+  while (dir.startsWith(`${root}/`) && existsSync6(dir) && readdirSync2(dir).length === 0) {
     rmdirSync(dir);
     dir = dirname2(dir);
   }
@@ -1131,13 +1189,13 @@ function versionStampFile(stateDir) {
   return join7(stateDir, "instructions-version");
 }
 function instructionsOptedOut(stateDir) {
-  return existsSync6(optOutFile(stateDir));
+  return existsSync7(optOutFile(stateDir));
 }
 function readVersionStamp(stateDir) {
   const file = versionStampFile(stateDir);
-  if (!existsSync6(file))
+  if (!existsSync7(file))
     return null;
-  const version = readFileSync7(file, "utf8").trim();
+  const version = readFileSync8(file, "utf8").trim();
   return version === "" ? null : version;
 }
 function instructionsPaths(paths, source) {
@@ -1152,10 +1210,10 @@ function instructionsPaths(paths, source) {
 }
 function instructionsFolder(bundleDir) {
   const beside = join7(bundleDir, "..", "instructions");
-  return existsSync6(beside) ? beside : join7(bundleDir, "..", "..", "plugin", "instructions");
+  return existsSync7(beside) ? beside : join7(bundleDir, "..", "..", "plugin", "instructions");
 }
 function listInstructionFiles(source) {
-  if (!existsSync6(source)) {
+  if (!existsSync7(source)) {
     throw new Error(`The plugin's instructions folder is missing: ${source}. Reinstall the plugin.`);
   }
   const files = readdirSync3(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative(source, join7(entry.parentPath, entry.name)).split(sep).join("/")).sort();
@@ -1201,7 +1259,7 @@ function removeCopies(files, stateDir, dryRun) {
     return [];
   if (dryRun) {
     const changed = readChanged(stateDir);
-    return files.filter((file) => existsSync6(file)).map((file) => {
+    return files.filter((file) => existsSync7(file)).map((file) => {
       const entry = changed[file];
       return entry !== undefined && createdByUs(entry) ? { mark: "-", file, what: "removed" } : { mark: "~", file, what: "back as it was before anymodel" };
     });
@@ -1215,7 +1273,7 @@ function installCopy(paths, dryRun, version) {
   for (const name of files) {
     const file = join7(paths.target, name);
     wanted.add(realTarget(file));
-    const result = writeManagedFile(file, readFileSync7(join7(paths.source, name), "utf8"), {
+    const result = writeManagedFile(file, readFileSync8(join7(paths.source, name), "utf8"), {
       stateDir: paths.stateDir,
       kind: "whole-file",
       mode: 420,
@@ -1249,7 +1307,7 @@ async function refreshInstructionsCopy(paths, version, options = {}) {
 }
 
 // src/update/apply.ts
-import { existsSync as existsSync9, readFileSync as readFileSync10 } from "fs";
+import { existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
 import { join as join9 } from "path";
 
 // src/project/git-env.ts
@@ -1273,13 +1331,13 @@ function gitEnv(base) {
 }
 
 // src/setup/installed-plugins.ts
-import { existsSync as existsSync7, readFileSync as readFileSync8 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync9 } from "fs";
 function findUserInstall(installedPluginsFile, pluginId = PLUGIN_ID) {
-  if (!existsSync7(installedPluginsFile))
+  if (!existsSync8(installedPluginsFile))
     return null;
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync8(installedPluginsFile, "utf8"));
+    parsed = JSON.parse(readFileSync9(installedPluginsFile, "utf8"));
   } catch {
     return null;
   }
@@ -1297,15 +1355,15 @@ function findUserInstall(installedPluginsFile, pluginId = PLUGIN_ID) {
 }
 
 // src/setup/marketplace-access.ts
-import { existsSync as existsSync8, readFileSync as readFileSync9 } from "fs";
+import { existsSync as existsSync9, readFileSync as readFileSync10 } from "fs";
 import { join as join8 } from "path";
 var ACCESS_TIMEOUT_MS = 1e4;
 function marketplaceSource(knownMarketplacesFile, name, env = process.env) {
-  if (!existsSync8(knownMarketplacesFile))
+  if (!existsSync9(knownMarketplacesFile))
     return { kind: "missing" };
   let known;
   try {
-    known = JSON.parse(readFileSync9(knownMarketplacesFile, "utf8"));
+    known = JSON.parse(readFileSync10(knownMarketplacesFile, "utf8"));
   } catch {
     return { kind: "missing" };
   }
@@ -1422,10 +1480,10 @@ function lsRemote(url, ref, baseEnv) {
   }
 }
 function marketplaceInstallLocation(knownMarketplacesFile, name) {
-  if (!existsSync8(knownMarketplacesFile))
+  if (!existsSync9(knownMarketplacesFile))
     return null;
   try {
-    const known = JSON.parse(readFileSync9(knownMarketplacesFile, "utf8"));
+    const known = JSON.parse(readFileSync10(knownMarketplacesFile, "utf8"));
     const location = known?.[name]?.installLocation;
     return typeof location === "string" && location !== "" ? location : null;
   } catch {
@@ -1448,11 +1506,11 @@ function pluginFolderIn(marketplaceJson, plugin) {
 function marketplaceCopyVersion(location, plugin) {
   let folder = "plugin";
   try {
-    folder = pluginFolderIn(readFileSync9(join8(location, ".claude-plugin", "marketplace.json"), "utf8"), plugin) ?? folder;
+    folder = pluginFolderIn(readFileSync10(join8(location, ".claude-plugin", "marketplace.json"), "utf8"), plugin) ?? folder;
   } catch {}
   const manifest = join8(location, folder, ".claude-plugin", "plugin.json");
   try {
-    const version = JSON.parse(readFileSync9(manifest, "utf8"))?.version;
+    const version = JSON.parse(readFileSync10(manifest, "utf8"))?.version;
     return { manifest, version: typeof version === "string" ? version : null };
   } catch {
     return { manifest, version: null };
@@ -1569,10 +1627,10 @@ function applyUpdate(paths, claude, run, say) {
 }
 function routerNeedsSetup(paths) {
   const install = findUserInstall(paths.installedPluginsFile);
-  if (install === null || !existsSync9(paths.routerCopy))
+  if (install === null || !existsSync10(paths.routerCopy))
     return false;
   const bundle = join9(install.installPath, "dist", "router.js");
-  return existsSync9(bundle) && readFileSync10(bundle, "utf8") !== readFileSync10(paths.routerCopy, "utf8");
+  return existsSync10(bundle) && readFileSync11(bundle, "utf8") !== readFileSync11(paths.routerCopy, "utf8");
 }
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
 function shownVersion(version) {
@@ -1582,10 +1640,10 @@ function installedText(version, routerChanged = false) {
   const text = `${PLUGIN} ${shownVersion(version)} installed; restart Claude sessions to load it`;
   return routerChanged ? `${text}; ${ROUTER_SETUP_HINT}` : text;
 }
-function notifyCommand(text, platform, which, title = PLUGIN) {
+function notifyCommand(text, platform, which, title = PLUGIN, critical = false) {
   if (platform === "linux") {
     const notifySend = which("notify-send");
-    return notifySend === null ? null : [notifySend, title, text];
+    return notifySend === null ? null : [notifySend, ...critical ? ["--urgency=critical"] : [], title, text];
   }
   if (platform === "darwin") {
     const osascript = which("osascript");
@@ -1622,7 +1680,7 @@ function capturingRunner(env, home) {
 }
 
 // src/update/opt-out.ts
-import { readFileSync as readFileSync11 } from "fs";
+import { readFileSync as readFileSync12 } from "fs";
 var UPDATE_BLOCKING_VARS = [
   "DISABLE_AUTOUPDATER",
   "DISABLE_UPDATES",
@@ -1636,7 +1694,7 @@ function isSet(value) {
 }
 function settingsEnv(settingsFile) {
   try {
-    const parsed = JSON.parse(readFileSync11(settingsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync12(settingsFile, "utf8"));
     const env = parsed?.env;
     return typeof env === "object" && env !== null && !Array.isArray(env) ? env : {};
   } catch {
@@ -1662,10 +1720,10 @@ function blockingVar(env, settingsFile) {
 // src/update/state.ts
 import {
   appendFileSync,
-  existsSync as existsSync10,
+  existsSync as existsSync11,
   mkdirSync as mkdirSync3,
   readdirSync as readdirSync4,
-  readFileSync as readFileSync12,
+  readFileSync as readFileSync13,
   rmSync as rmSync2,
   statSync as statSync3,
   writeFileSync as writeFileSync2
@@ -1708,7 +1766,7 @@ function ensureDir(dir) {
 }
 function readLastCheck(files) {
   try {
-    const parsed = JSON.parse(readFileSync12(files.check, "utf8"));
+    const parsed = JSON.parse(readFileSync13(files.check, "utf8"));
     if (typeof parsed?.at !== "string" || Number.isNaN(Date.parse(parsed.at)) || !RESULTS.includes(parsed.result) || typeof parsed.detail !== "string") {
       return null;
     }
@@ -1737,7 +1795,7 @@ function isDue(last, nowMs) {
   return nowMs - at >= CHECK_INTERVAL_MS || at > nowMs + 60000;
 }
 function isHeld(files) {
-  return existsSync10(files.hold);
+  return existsSync11(files.hold);
 }
 function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
@@ -1746,7 +1804,7 @@ function appendLog(files, line, nowMs) {
   ensureDir(join10(files.log, ".."));
   try {
     if (statSync3(files.log).size > LOG_MAX_BYTES) {
-      const text = readFileSync12(files.log, "utf8");
+      const text = readFileSync13(files.log, "utf8");
       const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
       writeFileSync2(files.log, keep.slice(keep.indexOf(`
 `) + 1), { mode: 384 });
@@ -1757,7 +1815,7 @@ function appendLog(files, line, nowMs) {
 }
 function wasReported(files, at) {
   try {
-    return readFileSync12(files.reported, "utf8").trim() === at;
+    return readFileSync13(files.reported, "utf8").trim() === at;
   } catch {
     return false;
   }
@@ -1769,7 +1827,7 @@ function markReported(files, at) {
 }
 function readSession(file) {
   try {
-    const parsed = JSON.parse(readFileSync12(file, "utf8"));
+    const parsed = JSON.parse(readFileSync13(file, "utf8"));
     if (typeof parsed?.pid !== "number" || typeof parsed.start !== "string" || typeof parsed.version !== "string") {
       return null;
     }
