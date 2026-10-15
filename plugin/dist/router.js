@@ -6497,6 +6497,60 @@ function sseScanner() {
 function printable(text, max = 120) {
   return text.replace(/\s+/g, " ").replace(/[^\x20-\x7e]/g, "?").trim().slice(0, max);
 }
+function maskedTail(secret) {
+  return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
+}
+var KNOWN_SECRET_MIN = 4;
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function knownSecretForms(known) {
+  const forms = new Map;
+  for (const secret of known) {
+    if (secret.length < KNOWN_SECRET_MIN)
+      continue;
+    const once = JSON.stringify(secret).slice(1, -1);
+    const twice = JSON.stringify(once).slice(1, -1);
+    for (const form of [secret, once, twice])
+      if (!forms.has(form))
+        forms.set(form, secret);
+  }
+  return [...forms].map(([form, secret]) => ({ form, secret })).sort((a, b) => b.form.length - a.form.length);
+}
+function maskSecrets(text, known = []) {
+  let out = text;
+  for (const { form, secret } of knownSecretForms(known)) {
+    out = out.split(form).join(maskedTail(secret));
+  }
+  return out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****").replace(/(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi, "$1$2$1$3:$4$1****$1").replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****").replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`).replace(/(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi, (_match, name, separator, value) => `${name}${separator}${maskedTail(value)}`).replace(/[A-Za-z0-9_-]{32,512}/g, (run) => run.includes("__") || UUID.test(run) ? run : maskedTail(run));
+}
+var SNIPPET_MAX = 300;
+var SNIPPET_READ_BYTES = 2048;
+var KEY_CHARACTER = /[A-Za-z0-9_-]/;
+function snippetText(bytes, known) {
+  const cut = bytes.length > SNIPPET_READ_BYTES;
+  let text = new TextDecoder().decode(cut ? bytes.subarray(0, SNIPPET_READ_BYTES) : bytes);
+  if (cut) {
+    let end = text.length;
+    while (end > 0 && KEY_CHARACTER.test(text.charAt(end - 1)))
+      end -= 1;
+    text = text.slice(0, end);
+  }
+  return printable(maskSecrets(text, known), SNIPPET_MAX);
+}
+function decompressionFormat(encoding) {
+  switch (encoding.trim().toLowerCase()) {
+    case "gzip":
+    case "x-gzip":
+      return "gzip";
+    case "deflate":
+      return "deflate";
+    case "br":
+      return "brotli";
+    case "zstd":
+      return "zstd";
+    default:
+      return null;
+  }
+}
 function toolSearchForBackend(body) {
   const referenced = new Set;
   const out = { ...body };
@@ -6552,6 +6606,58 @@ function reasoningOffForBackend(body, options = {}) {
     return body;
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
 }
+var CLAUDE_TARGET_RULES = {
+  "claude-opus-5-5": { thinkingOff: "left out" },
+  "claude-sonnet-5-5": { thinkingOff: "between_tools" }
+};
+var ABOVE_HIGH = new Set(["max", "xhigh"]);
+function requestForClaudeFallback(body, model) {
+  const id = withoutContextSuffix(model);
+  const rules = Object.hasOwn(CLAUDE_TARGET_RULES, id) ? CLAUDE_TARGET_RULES[id] : undefined;
+  if (rules === undefined)
+    return { body, changes: [] };
+  const out = { ...body };
+  const changes = [];
+  const thinking = body.thinking;
+  if (isJsonObject(thinking) && thinking.type === "disabled") {
+    if (rules.thinkingOff === "left out") {
+      delete out.thinking;
+      changes.push("thinking disabled -> left out (always on)");
+      const outputConfig = isJsonObject(body.output_config) ? body.output_config : undefined;
+      if (outputConfig?.effort === undefined) {
+        out.output_config = { ...outputConfig, effort: "low" };
+        changes.push("effort low (nearest to thinking off)");
+      }
+    } else {
+      out.thinking = { type: "between_tools" };
+      changes.push("thinking disabled -> between_tools");
+      const outputConfig = body.output_config;
+      if (isJsonObject(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
+        out.output_config = { ...outputConfig, effort: "high" };
+        changes.push(`effort ${outputConfig.effort} -> high`);
+      }
+    }
+  } else if (isJsonObject(thinking) && thinking.type === "enabled") {
+    out.thinking = thinking.display === undefined ? { type: "adaptive" } : { display: thinking.display, type: "adaptive" };
+    changes.push("thinking enabled (budget) -> adaptive");
+  }
+  const toolChoice = body.tool_choice;
+  if (isJsonObject(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
+    out.tool_choice = toolChoice.disable_parallel_tool_use === undefined ? { type: "auto" } : { disable_parallel_tool_use: toolChoice.disable_parallel_tool_use, type: "auto" };
+    changes.push(`tool_choice ${toolChoice.type} -> auto`);
+  }
+  if (body.temperature !== undefined && body.temperature !== 1) {
+    delete out.temperature;
+    changes.push("temperature left out");
+  }
+  for (const field of ["top_p", "top_k"]) {
+    if (body[field] !== undefined) {
+      delete out[field];
+      changes.push(`${field} left out`);
+    }
+  }
+  return changes.length > 0 ? { body: out, changes } : { body, changes };
+}
 var encoder = new TextEncoder;
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -6578,6 +6684,7 @@ function createRouter(deps) {
   const allowedHosts = new Set([`127.0.0.1:${deps.port}`, `localhost:${deps.port}`]);
   const cooling = new Map;
   const aliasesLogged = new Set;
+  const translationsLogged = new Set;
   async function discard(response) {
     try {
       await response.body?.cancel();
@@ -6585,32 +6692,60 @@ function createRouter(deps) {
       deps.log(`WARN could not cancel a discarded upstream body: ${messageOf(error)}`);
     }
   }
-  async function errorSnippet(response) {
+  async function errorSnippet(response, known) {
     const encoding = response.headers.get("content-encoding");
-    if (encoding !== null && encoding !== "identity") {
+    const compressed = encoding !== null && encoding.trim().toLowerCase() !== "identity";
+    const format = compressed ? decompressionFormat(encoding) : null;
+    if (compressed && format === null) {
       discard(response);
-      return `(${encoding} body)`;
+      return `(${printable(encoding, 40)} body)`;
     }
-    const body = response.body;
-    if (body === null)
+    const raw = response.body;
+    if (raw === null)
       return "(no body)";
+    const body = format === null ? raw : raw.pipeThrough(new DecompressionStream(format));
     const reader = body.getReader();
     const timer = deadline(1000);
+    let readFailed = false;
     try {
       const step = await Promise.race([reader.read(), timer.done]);
       if (step === "timeout")
         return "(no body within 1 s)";
       if (step.done)
         return "(empty body)";
-      return printable(new TextDecoder().decode(step.value), 200);
+      return snippetText(step.value, known);
     } catch (error) {
-      return `(body unreadable: ${messageOf(error)})`;
+      readFailed = true;
+      return `(${format === null ? "" : `${printable(encoding ?? "", 40)} `}body unreadable: ${messageOf(error)})`;
     } finally {
       timer.clear();
       reader.cancel().catch((error) => {
-        deps.log(`WARN could not cancel an upstream error body: ${messageOf(error)}`);
+        if (!readFailed) {
+          deps.log(`WARN could not cancel an upstream error body: ${messageOf(error)}`);
+        }
       });
     }
+  }
+  function logErrorAnswer(response, known, prefix) {
+    const task = errorSnippet(response, known).then((snippet) => {
+      deps.log(`${prefix} \u2014 ${snippet}`);
+    }, (error) => {
+      deps.log(`${prefix} \u2014 (body unreadable: ${messageOf(error)})`);
+    });
+    deps.background?.(task);
+  }
+  function knownSecrets(req, config) {
+    const known = Object.values(config.backends).map((backend) => backend.apiKey);
+    for (const name of ["x-api-key", "authorization"]) {
+      const value = req.headers.get(name);
+      if (value === null)
+        continue;
+      known.push(value);
+      const space = value.indexOf(" ");
+      if (space !== -1)
+        known.push(value.slice(space + 1).trim());
+    }
+    return known;
   }
   async function send(req, upstream, deadlineAt) {
     if (req.signal.aborted)
@@ -6720,9 +6855,20 @@ function createRouter(deps) {
       url: `${deps.anthropicBaseUrl ?? config.anthropicBaseUrl}${url.pathname}${url.search}`
     };
   }
+  function fitForClaude(body, model, guard) {
+    if (guard)
+      return body;
+    const fitted = requestForClaudeFallback(body, model);
+    const text = `${model}: ${fitted.changes.join(", ")}`;
+    if (fitted.changes.length > 0 && !translationsLogged.has(text)) {
+      translationsLogged.add(text);
+      deps.log(`translated for ${printable(text, 200)} (requestForClaudeFallback; logged once per kind)`);
+    }
+    return fitted.body;
+  }
   function targetUpstream(req, url, config, body, target, guard) {
     if (target.kind === "anthropic") {
-      const bytes = encoder.encode(JSON.stringify({ ...body, model: target.model }));
+      const bytes = encoder.encode(JSON.stringify({ ...fitForClaude(body, target.model, guard), model: target.model }));
       return { upstream: anthropicUpstream(req, url, config, bytes) };
     }
     const backend = Object.hasOwn(config.backends, target.backend) ? config.backends[target.backend] : undefined;
@@ -6812,8 +6958,7 @@ function createRouter(deps) {
       const decision = fallbackKind(status, target);
       if (decision === "stay" || last) {
         if (target.kind === "backend" && status >= 300 && status <= 399) {
-          const snippet = await errorSnippet(result.response);
-          deps.log(`WARN ${label} answered a redirect (${status}); refused \u2014 ${snippet}`);
+          logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${label} answered a redirect (${status}); refused`);
           return {
             fallbacks,
             response: anthropicError(502, "api_error", `anymodel-router: ${label} answered a redirect (${status}); not passed on`),
@@ -6821,14 +6966,12 @@ function createRouter(deps) {
             target: label
           };
         }
-        if (target.kind === "backend" && !result.response.ok) {
-          const snippet = await errorSnippet(result.response.clone());
-          deps.log(`WARN ${label} answered ${status}; returned as it is \u2014 ${snippet}`);
+        if (status >= 400) {
+          logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN ${label} answered ${status}; returned as it is`);
         }
         return { fallbacks, response: relay(result.response, target), skipped, target: label };
       }
-      const snippet = await errorSnippet(result.response);
-      deps.log(`WARN ${label} answered ${status}; trying the next target \u2014 ${snippet}`);
+      logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${label} answered ${status}; trying the next target`);
       failures.push(`${label}: HTTP ${status}`);
       fallbacks += 1;
     }
@@ -6861,6 +7004,9 @@ function createRouter(deps) {
     let bytes = sent;
     const direct = async (body = bytes) => {
       const result = await send(req, anthropicUpstream(req, url, config, body), null);
+      if (isMessages && "response" in result && result.response.status >= 400) {
+        logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN anthropic answered ${result.response.status}`);
+      }
       const response = "response" in result ? relay(result.response, null) : anthropicError(502, "api_error", `anymodel-router: Anthropic did not answer (${result.failure})`);
       return { fallbacks: 0, response, skipped: 0, target: "anthropic" };
     };
@@ -6886,6 +7032,8 @@ function createRouter(deps) {
         deps.log(`alias ${printable(alias.from)} \u2192 ${printable(alias.to)} (from the config's aliases; logged once per name)`);
       }
       body = { ...parsed, model: alias.to };
+      if (alias.to.startsWith("claude-"))
+        body = fitForClaude(body, alias.to, guard);
       bytes = encoder.encode(JSON.stringify(body));
     }
     if (guard)
@@ -6929,7 +7077,7 @@ function createRouter(deps) {
           target: first === undefined ? "none" : formatTarget(first)
         };
       }
-      return chain(req, url, config, body, [first], name, false);
+      return chain(req, url, config, body, [first], name, guard);
     }
     return chain(req, url, config, body, targets, name, guard);
   }

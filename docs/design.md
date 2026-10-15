@@ -53,7 +53,12 @@ An optional local router between Claude Code and the model providers
 - Claude models go to Anthropic byte for byte, on the person's own login. The `haiku` and
   `sonnet` names point at slots of cheaper models, each with a Claude target last.
 - **No prompt text is ever changed.** A cheap backend gets two named, tested format
-  translations and nothing else. The rules: `.claude/rules/gateway.md`.
+  translations and nothing else. A slot's Claude target gets one,
+  `requestForClaudeFallback`: only the fields that Claude model refuses (Claude Code built
+  the body for the slot name), never a word of the prompt. The rules:
+  `.claude/rules/gateway.md`.
+- Every 4xx / 5xx from any target is logged with the start of its reason, keys masked,
+  so a failure can be read in the journal.
 - Auto mode's safety check stays on Claude unless the person turns on the opt-in judge
   slot.
 - A config `aliases` map lets a machine's old model names reach the new slots while it
@@ -65,10 +70,12 @@ An optional local router between Claude Code and the model providers
   setup did not finish: the restart-pending marker), and only after the person says yes
   (or gives `--yes`). Before anything, setup asks the port and stops when another
   program holds it; after the restart it waits for the health page.
-- Running sessions keep the router's address until they restart. So `restore` takes the
-  gateway out in two stages: first the env keys (the router keeps running), then, after
-  the sessions restarted, the router (asked first). `restore --now` does both, with a
-  warning.
+- Running sessions are taken to keep the router's address until they restart (one live
+  look saw otherwise; `claude-code-contract.md`). So `restore` takes the gateway out in
+  two stages: first the env keys (the router keeps running), then, after the sessions
+  restarted, the router (asked first). `restore --now` does both, with a warning. The
+  stop never waits for the router's drain: `disable`, `stop --no-block`, then up to 15 s
+  for its port to close.
 - The router bundle carries no version (`src/build-info/names.ts`), so a version bump
   alone never changes `router.js` and never makes a machine restart its router.
 

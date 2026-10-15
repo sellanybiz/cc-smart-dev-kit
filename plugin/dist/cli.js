@@ -11,7 +11,7 @@ var COMMAND = "anymodel";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.2.0",
+  version: "0.2.1",
   repo: "sellanybiz/anymodel"
 };
 var VERSION = info.version;
@@ -6910,6 +6910,60 @@ function sseScanner() {
 function printable(text, max = 120) {
   return text.replace(/\s+/g, " ").replace(/[^\x20-\x7e]/g, "?").trim().slice(0, max);
 }
+function maskedTail(secret) {
+  return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
+}
+var KNOWN_SECRET_MIN = 4;
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function knownSecretForms(known) {
+  const forms = new Map;
+  for (const secret of known) {
+    if (secret.length < KNOWN_SECRET_MIN)
+      continue;
+    const once = JSON.stringify(secret).slice(1, -1);
+    const twice = JSON.stringify(once).slice(1, -1);
+    for (const form of [secret, once, twice])
+      if (!forms.has(form))
+        forms.set(form, secret);
+  }
+  return [...forms].map(([form, secret]) => ({ form, secret })).sort((a, b) => b.form.length - a.form.length);
+}
+function maskSecrets(text, known = []) {
+  let out = text;
+  for (const { form, secret } of knownSecretForms(known)) {
+    out = out.split(form).join(maskedTail(secret));
+  }
+  return out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****").replace(/(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi, "$1$2$1$3:$4$1****$1").replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****").replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`).replace(/(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi, (_match, name, separator, value) => `${name}${separator}${maskedTail(value)}`).replace(/[A-Za-z0-9_-]{32,512}/g, (run) => run.includes("__") || UUID.test(run) ? run : maskedTail(run));
+}
+var SNIPPET_MAX = 300;
+var SNIPPET_READ_BYTES = 2048;
+var KEY_CHARACTER = /[A-Za-z0-9_-]/;
+function snippetText(bytes, known) {
+  const cut = bytes.length > SNIPPET_READ_BYTES;
+  let text = new TextDecoder().decode(cut ? bytes.subarray(0, SNIPPET_READ_BYTES) : bytes);
+  if (cut) {
+    let end = text.length;
+    while (end > 0 && KEY_CHARACTER.test(text.charAt(end - 1)))
+      end -= 1;
+    text = text.slice(0, end);
+  }
+  return printable(maskSecrets(text, known), SNIPPET_MAX);
+}
+function decompressionFormat(encoding) {
+  switch (encoding.trim().toLowerCase()) {
+    case "gzip":
+    case "x-gzip":
+      return "gzip";
+    case "deflate":
+      return "deflate";
+    case "br":
+      return "brotli";
+    case "zstd":
+      return "zstd";
+    default:
+      return null;
+  }
+}
 function toolSearchForBackend(body) {
   const referenced = new Set;
   const out = { ...body };
@@ -6965,6 +7019,58 @@ function reasoningOffForBackend(body, options = {}) {
     return body;
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
 }
+var CLAUDE_TARGET_RULES = {
+  "claude-opus-5-5": { thinkingOff: "left out" },
+  "claude-sonnet-5-5": { thinkingOff: "between_tools" }
+};
+var ABOVE_HIGH = new Set(["max", "xhigh"]);
+function requestForClaudeFallback(body, model) {
+  const id = withoutContextSuffix(model);
+  const rules = Object.hasOwn(CLAUDE_TARGET_RULES, id) ? CLAUDE_TARGET_RULES[id] : undefined;
+  if (rules === undefined)
+    return { body, changes: [] };
+  const out = { ...body };
+  const changes = [];
+  const thinking = body.thinking;
+  if (isJsonObject2(thinking) && thinking.type === "disabled") {
+    if (rules.thinkingOff === "left out") {
+      delete out.thinking;
+      changes.push("thinking disabled -> left out (always on)");
+      const outputConfig = isJsonObject2(body.output_config) ? body.output_config : undefined;
+      if (outputConfig?.effort === undefined) {
+        out.output_config = { ...outputConfig, effort: "low" };
+        changes.push("effort low (nearest to thinking off)");
+      }
+    } else {
+      out.thinking = { type: "between_tools" };
+      changes.push("thinking disabled -> between_tools");
+      const outputConfig = body.output_config;
+      if (isJsonObject2(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
+        out.output_config = { ...outputConfig, effort: "high" };
+        changes.push(`effort ${outputConfig.effort} -> high`);
+      }
+    }
+  } else if (isJsonObject2(thinking) && thinking.type === "enabled") {
+    out.thinking = thinking.display === undefined ? { type: "adaptive" } : { display: thinking.display, type: "adaptive" };
+    changes.push("thinking enabled (budget) -> adaptive");
+  }
+  const toolChoice = body.tool_choice;
+  if (isJsonObject2(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
+    out.tool_choice = toolChoice.disable_parallel_tool_use === undefined ? { type: "auto" } : { disable_parallel_tool_use: toolChoice.disable_parallel_tool_use, type: "auto" };
+    changes.push(`tool_choice ${toolChoice.type} -> auto`);
+  }
+  if (body.temperature !== undefined && body.temperature !== 1) {
+    delete out.temperature;
+    changes.push("temperature left out");
+  }
+  for (const field of ["top_p", "top_k"]) {
+    if (body[field] !== undefined) {
+      delete out[field];
+      changes.push(`${field} left out`);
+    }
+  }
+  return changes.length > 0 ? { body: out, changes } : { body, changes };
+}
 var encoder = new TextEncoder;
 function isJsonObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -6991,6 +7097,7 @@ function createRouter(deps) {
   const allowedHosts = new Set([`127.0.0.1:${deps.port}`, `localhost:${deps.port}`]);
   const cooling = new Map;
   const aliasesLogged = new Set;
+  const translationsLogged = new Set;
   async function discard(response) {
     try {
       await response.body?.cancel();
@@ -6998,32 +7105,60 @@ function createRouter(deps) {
       deps.log(`WARN could not cancel a discarded upstream body: ${messageOf(error)}`);
     }
   }
-  async function errorSnippet(response) {
+  async function errorSnippet(response, known) {
     const encoding = response.headers.get("content-encoding");
-    if (encoding !== null && encoding !== "identity") {
+    const compressed = encoding !== null && encoding.trim().toLowerCase() !== "identity";
+    const format = compressed ? decompressionFormat(encoding) : null;
+    if (compressed && format === null) {
       discard(response);
-      return `(${encoding} body)`;
+      return `(${printable(encoding, 40)} body)`;
     }
-    const body = response.body;
-    if (body === null)
+    const raw = response.body;
+    if (raw === null)
       return "(no body)";
+    const body = format === null ? raw : raw.pipeThrough(new DecompressionStream(format));
     const reader = body.getReader();
     const timer = deadline(1000);
+    let readFailed = false;
     try {
       const step = await Promise.race([reader.read(), timer.done]);
       if (step === "timeout")
         return "(no body within 1 s)";
       if (step.done)
         return "(empty body)";
-      return printable(new TextDecoder().decode(step.value), 200);
+      return snippetText(step.value, known);
     } catch (error) {
-      return `(body unreadable: ${messageOf(error)})`;
+      readFailed = true;
+      return `(${format === null ? "" : `${printable(encoding ?? "", 40)} `}body unreadable: ${messageOf(error)})`;
     } finally {
       timer.clear();
       reader.cancel().catch((error) => {
-        deps.log(`WARN could not cancel an upstream error body: ${messageOf(error)}`);
+        if (!readFailed) {
+          deps.log(`WARN could not cancel an upstream error body: ${messageOf(error)}`);
+        }
       });
     }
+  }
+  function logErrorAnswer(response, known, prefix) {
+    const task = errorSnippet(response, known).then((snippet) => {
+      deps.log(`${prefix} \u2014 ${snippet}`);
+    }, (error) => {
+      deps.log(`${prefix} \u2014 (body unreadable: ${messageOf(error)})`);
+    });
+    deps.background?.(task);
+  }
+  function knownSecrets(req, config) {
+    const known = Object.values(config.backends).map((backend) => backend.apiKey);
+    for (const name of ["x-api-key", "authorization"]) {
+      const value = req.headers.get(name);
+      if (value === null)
+        continue;
+      known.push(value);
+      const space = value.indexOf(" ");
+      if (space !== -1)
+        known.push(value.slice(space + 1).trim());
+    }
+    return known;
   }
   async function send(req, upstream, deadlineAt) {
     if (req.signal.aborted)
@@ -7133,9 +7268,20 @@ function createRouter(deps) {
       url: `${deps.anthropicBaseUrl ?? config.anthropicBaseUrl}${url.pathname}${url.search}`
     };
   }
+  function fitForClaude(body, model, guard) {
+    if (guard)
+      return body;
+    const fitted = requestForClaudeFallback(body, model);
+    const text = `${model}: ${fitted.changes.join(", ")}`;
+    if (fitted.changes.length > 0 && !translationsLogged.has(text)) {
+      translationsLogged.add(text);
+      deps.log(`translated for ${printable(text, 200)} (requestForClaudeFallback; logged once per kind)`);
+    }
+    return fitted.body;
+  }
   function targetUpstream(req, url, config, body, target, guard) {
     if (target.kind === "anthropic") {
-      const bytes = encoder.encode(JSON.stringify({ ...body, model: target.model }));
+      const bytes = encoder.encode(JSON.stringify({ ...fitForClaude(body, target.model, guard), model: target.model }));
       return { upstream: anthropicUpstream(req, url, config, bytes) };
     }
     const backend = Object.hasOwn(config.backends, target.backend) ? config.backends[target.backend] : undefined;
@@ -7225,8 +7371,7 @@ function createRouter(deps) {
       const decision = fallbackKind(status, target);
       if (decision === "stay" || last) {
         if (target.kind === "backend" && status >= 300 && status <= 399) {
-          const snippet = await errorSnippet(result.response);
-          deps.log(`WARN ${label} answered a redirect (${status}); refused \u2014 ${snippet}`);
+          logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${label} answered a redirect (${status}); refused`);
           return {
             fallbacks,
             response: anthropicError(502, "api_error", `anymodel-router: ${label} answered a redirect (${status}); not passed on`),
@@ -7234,14 +7379,12 @@ function createRouter(deps) {
             target: label
           };
         }
-        if (target.kind === "backend" && !result.response.ok) {
-          const snippet = await errorSnippet(result.response.clone());
-          deps.log(`WARN ${label} answered ${status}; returned as it is \u2014 ${snippet}`);
+        if (status >= 400) {
+          logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN ${label} answered ${status}; returned as it is`);
         }
         return { fallbacks, response: relay(result.response, target), skipped, target: label };
       }
-      const snippet = await errorSnippet(result.response);
-      deps.log(`WARN ${label} answered ${status}; trying the next target \u2014 ${snippet}`);
+      logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${label} answered ${status}; trying the next target`);
       failures.push(`${label}: HTTP ${status}`);
       fallbacks += 1;
     }
@@ -7274,6 +7417,9 @@ function createRouter(deps) {
     let bytes = sent;
     const direct = async (body = bytes) => {
       const result = await send(req, anthropicUpstream(req, url, config, body), null);
+      if (isMessages && "response" in result && result.response.status >= 400) {
+        logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN anthropic answered ${result.response.status}`);
+      }
       const response = "response" in result ? relay(result.response, null) : anthropicError(502, "api_error", `anymodel-router: Anthropic did not answer (${result.failure})`);
       return { fallbacks: 0, response, skipped: 0, target: "anthropic" };
     };
@@ -7299,6 +7445,8 @@ function createRouter(deps) {
         deps.log(`alias ${printable(alias.from)} \u2192 ${printable(alias.to)} (from the config's aliases; logged once per name)`);
       }
       body = { ...parsed, model: alias.to };
+      if (alias.to.startsWith("claude-"))
+        body = fitForClaude(body, alias.to, guard);
       bytes = encoder.encode(JSON.stringify(body));
     }
     if (guard)
@@ -7342,7 +7490,7 @@ function createRouter(deps) {
           target: first === undefined ? "none" : formatTarget(first)
         };
       }
-      return chain(req, url, config, body, [first], name, false);
+      return chain(req, url, config, body, [first], name, guard);
     }
     return chain(req, url, config, body, targets, name, guard);
   }
@@ -7462,6 +7610,17 @@ async function probeRouterPort(port, fetchImpl, timeoutMs = 2000) {
   }
   return isJsonObject3(body) && body.ok === true ? { state: "ours" } : { detail: "not this router's health answer", state: "other" };
 }
+async function waitWhileRouterAnswers(port, probe, waitMs) {
+  const deadline = probe.now() + waitMs;
+  for (;; ) {
+    const result = await probeRouterPort(port, probe.fetch, 1000);
+    if (result.state !== "ours")
+      return result;
+    if (probe.now() >= deadline)
+      return { state: "held" };
+    await probe.sleep(200);
+  }
+}
 async function waitForRouter(port, probe, waitMs = 5000) {
   const deadline = probe.now() + waitMs;
   for (;; ) {
@@ -7519,6 +7678,12 @@ ${result.output.trim()}`);
 function unitActive(runner) {
   return runner(["systemctl", "--user", "is-active", "--quiet", UNIT_NAME]).exitCode === 0;
 }
+function unitState(runner) {
+  const result = runner(["systemctl", "--user", "is-active", UNIT_NAME]);
+  return result.output.trim().split(`
+`)[0]?.trim() || "unknown";
+}
+var DRAIN_NOTE = "waiting for the old router to finish its answers (up to 120 s)";
 function restartPendingFile(stateDir) {
   return join5(stateDir, "restart-pending");
 }
@@ -7574,19 +7739,32 @@ async function installRouter(options) {
   run(options.runner, ["systemctl", "--user", "enable", UNIT_NAME]);
   if (active)
     options.say("restarting anymodel-router");
+  else if (unitState(options.runner) === "deactivating")
+    options.say(DRAIN_NOTE);
   run(options.runner, ["systemctl", "--user", "restart", UNIT_NAME]);
   if (!await waitForRouter(options.port, options.probe, HEALTH_WAIT_MS)) {
-    const state = options.runner(["systemctl", "--user", "is-active", UNIT_NAME]);
-    const word = state.output.trim().split(`
-`)[0] || "unknown";
-    throw new Error(`${UNIT_NAME} did not answer on 127.0.0.1:${options.port} within ${HEALTH_WAIT_MS / 1000} s of the restart (systemctl --user is-active: ${word}). See why: journalctl --user -u anymodel-router -n 30. Then run ${COMMAND} gateway setup again.`);
+    throw new Error(`${UNIT_NAME} did not answer on 127.0.0.1:${options.port} within ${HEALTH_WAIT_MS / 1000} s of the restart (systemctl --user is-active: ${unitState(options.runner)}). See why: journalctl --user -u anymodel-router -n 30. Then run ${COMMAND} gateway setup again.`);
   }
   rmSync(marker, { force: true });
   options.say(`enabled and (re)started ${UNIT_NAME}`);
   return "installed";
 }
-function stopRouter(runner) {
-  run(runner, ["systemctl", "--user", "disable", "--now", UNIT_NAME]);
+var STOP_WAIT_MS = 15000;
+var HOLDS_ITS_PORT = new Set(["active", "deactivating"]);
+async function stopRouter(runner, port, probe) {
+  const state = port === null ? null : unitState(runner);
+  run(runner, ["systemctl", "--user", "disable", UNIT_NAME]);
+  run(runner, ["systemctl", "--user", "stop", "--no-block", UNIT_NAME]);
+  if (port === null || state === null)
+    return { kind: "no-port" };
+  if (!HOLDS_ITS_PORT.has(state))
+    return { kind: "not-running", state };
+  const result = await waitWhileRouterAnswers(port, probe, STOP_WAIT_MS);
+  if (result.state === "free")
+    return { kind: "closed" };
+  if (result.state === "other")
+    return { detail: result.detail, kind: "other" };
+  throw new Error(`${UNIT_NAME} is disabled and was told to stop, but 127.0.0.1:${port} still takes connections after ${STOP_WAIT_MS / 1000} s. Nothing else was restored. See why: systemctl --user status anymodel-router (and ss -ltnp for another program on the port). Then run ${COMMAND} restore again.`);
 }
 
 // src/gateway/settings.ts
@@ -8845,10 +9023,32 @@ async function runRestore(paths, options) {
       return 1;
     }
   }
-  return withLock(paths.stateDir, () => {
+  return withLock(paths.stateDir, async () => {
     if (unitTracked) {
-      stopRouter(options.runner);
-      console.log(`- ${UNIT_NAME}: stopped and disabled`);
+      let port;
+      try {
+        port = configuredPort(paths.gatewayConfigFile);
+      } catch (error) {
+        console.log(`  cannot read the router's port (${messageOf(error)}); not waiting for it`);
+        port = null;
+      }
+      const stopped = await stopRouter(options.runner, port, options.probe);
+      switch (stopped.kind) {
+        case "closed":
+          console.log(`- ${UNIT_NAME}: disabled and stopped (port ${port} closed; answers in flight finish in the background)`);
+          break;
+        case "no-port":
+          console.log(`- ${UNIT_NAME}: disabled and stopping`);
+          break;
+        case "not-running":
+          console.log(`  ${UNIT_NAME} was not running (systemctl --user is-active: ${stopped.state}); not waiting for port ${port}`);
+          console.log(`- ${UNIT_NAME}: disabled and stopped`);
+          break;
+        case "other":
+          console.log(`  port ${port} answers, but not as this router (${stopped.detail}); not waiting for it`);
+          console.log(`- ${UNIT_NAME}: disabled and stopping`);
+          break;
+      }
     }
     const results = restore(paths.stateDir);
     if (unitTracked)
@@ -9021,7 +9221,8 @@ ${HELP}`);
         now: rest.includes("--now"),
         runner,
         systemd,
-        confirm: ask
+        confirm: ask,
+        probe: realProbe()
       });
     }
     case "gateway":

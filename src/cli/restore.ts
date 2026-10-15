@@ -1,5 +1,8 @@
 import { rmSync } from "node:fs";
 import { COMMAND } from "../build-info";
+import { configuredPort } from "../gateway/commands";
+import { messageOf } from "../gateway/config";
+import type { HealthProbe } from "../gateway/health";
 import {
   type Runner,
   restartPendingFile,
@@ -48,6 +51,8 @@ export interface RestoreOptions {
   systemd: boolean;
   /** Asks the person; null when there is no terminal. */
   confirm: ((question: string) => boolean) | null;
+  /** Asks the router's port after the stop, until it is closed; a test passes a fake. */
+  probe: HealthProbe;
 }
 
 /** Asks before something that cuts running sessions; true to go on. Prints why it stops. */
@@ -84,9 +89,11 @@ function print(results: RestoreResult[], short: (path: string) => string): void 
  *   - stage 1, while anymodel's gateway env keys are there: everything is restored but the
  *     router's copy and unit, and the router keeps running. It says to restart the
  *     sessions and run `restore` again.
- *   - stage 2, with no such key left: it stops and disables the unit (asking first when it
- *     runs, because that cuts answers in flight), restores the rest (the copy and the unit
- *     are removed), reloads systemd, and clears the restart-pending marker.
+ *   - stage 2, with no such key left: it disables and stops the unit (asking first when it
+ *     runs, because that cuts answers in flight) and waits up to 15 s for its port to
+ *     close (`stopRouter`; the drain goes on in the background), restores the rest (the
+ *     copy and the unit are removed), reloads systemd, and clears the restart-pending
+ *     marker.
  *   - `--now`: both at once, after the warning that every running session fails until it
  *     restarts (asked, or `--yes`).
  */
@@ -139,10 +146,41 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
 
   return withLock(
     paths.stateDir,
-    () => {
+    async () => {
       if (unitTracked) {
-        stopRouter(options.runner);
-        console.log(`- ${UNIT_NAME}: stopped and disabled`);
+        // The port the router listens on: the config's. An unusable config leaves it
+        // unknown; the stop is sent all the same, with no port to wait for. (Its health
+        // answer names its port too, but it can only be asked on a port already known.)
+        let port: null | number;
+        try {
+          port = configuredPort(paths.gatewayConfigFile);
+        } catch (error) {
+          console.log(`  cannot read the router's port (${messageOf(error)}); not waiting for it`);
+          port = null;
+        }
+        const stopped = await stopRouter(options.runner, port, options.probe);
+        switch (stopped.kind) {
+          case "closed":
+            console.log(
+              `- ${UNIT_NAME}: disabled and stopped (port ${port} closed; answers in flight finish in the background)`,
+            );
+            break;
+          case "no-port":
+            console.log(`- ${UNIT_NAME}: disabled and stopping`);
+            break;
+          case "not-running":
+            console.log(
+              `  ${UNIT_NAME} was not running (systemctl --user is-active: ${stopped.state}); not waiting for port ${port}`,
+            );
+            console.log(`- ${UNIT_NAME}: disabled and stopped`);
+            break;
+          case "other":
+            console.log(
+              `  port ${port} answers, but not as this router (${stopped.detail}); not waiting for it`,
+            );
+            console.log(`- ${UNIT_NAME}: disabled and stopping`);
+            break;
+        }
       }
       const results = restore(paths.stateDir);
       if (unitTracked) options.runner(["systemctl", "--user", "daemon-reload"]);

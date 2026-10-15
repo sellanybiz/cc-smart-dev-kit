@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { COMMAND } from "../build-info";
 import { tildify } from "../cli/paths";
 import { atomicWrite, writeManagedFile } from "../setup/write";
-import { type HealthProbe, probeRouterPort, waitForRouter } from "./health";
+import { type HealthProbe, probeRouterPort, waitForRouter, waitWhileRouterAnswers } from "./health";
 
 /** The systemd user unit's name. */
 export const UNIT_NAME = "anymodel-router.service";
@@ -82,6 +82,18 @@ function run(runner: Runner, cmd: string[]): void {
 export function unitActive(runner: Runner): boolean {
   return runner(["systemctl", "--user", "is-active", "--quiet", UNIT_NAME]).exitCode === 0;
 }
+
+/**
+ * The unit's state as `systemctl --user is-active` names it (`active`, `deactivating`,
+ * `activating`, `inactive`, `failed`, …); `unknown` when it printed nothing.
+ */
+export function unitState(runner: Runner): string {
+  const result = runner(["systemctl", "--user", "is-active", UNIT_NAME]);
+  return result.output.trim().split("\n")[0]?.trim() || "unknown";
+}
+
+/** Said by `gateway setup` before a restart that waits for an old router's drain. */
+export const DRAIN_NOTE = "waiting for the old router to finish its answers (up to 120 s)";
 
 export interface InstallOptions {
   /** The bun that runs the router: `process.execPath` of this command. */
@@ -199,13 +211,15 @@ export async function installRouter(options: InstallOptions): Promise<InstallRes
   run(options.runner, ["systemctl", "--user", "daemon-reload"]);
   run(options.runner, ["systemctl", "--user", "enable", UNIT_NAME]);
   if (active) options.say("restarting anymodel-router");
+  // Right after `restore`, the old router may still drain its answers (`stop --no-block`
+  // returned at once). `restart` then waits for that stop to end, up to the unit's
+  // `TimeoutStopSec`: say so, or setup looks stuck.
+  else if (unitState(options.runner) === "deactivating") options.say(DRAIN_NOTE);
   // `restart` starts it when stopped, and loads the new copy when running.
   run(options.runner, ["systemctl", "--user", "restart", UNIT_NAME]);
   if (!(await waitForRouter(options.port, options.probe, HEALTH_WAIT_MS))) {
-    const state = options.runner(["systemctl", "--user", "is-active", UNIT_NAME]);
-    const word = state.output.trim().split("\n")[0] || "unknown";
     throw new Error(
-      `${UNIT_NAME} did not answer on 127.0.0.1:${options.port} within ${HEALTH_WAIT_MS / 1000} s of the restart (systemctl --user is-active: ${word}). See why: journalctl --user -u anymodel-router -n 30. Then run ${COMMAND} gateway setup again.`,
+      `${UNIT_NAME} did not answer on 127.0.0.1:${options.port} within ${HEALTH_WAIT_MS / 1000} s of the restart (systemctl --user is-active: ${unitState(options.runner)}). See why: journalctl --user -u anymodel-router -n 30. Then run ${COMMAND} gateway setup again.`,
     );
   }
   rmSync(marker, { force: true });
@@ -213,7 +227,59 @@ export async function installRouter(options: InstallOptions): Promise<InstallRes
   return "installed";
 }
 
-/** Stops and disables the unit (for `restore`, while its unit file is still there). */
-export function stopRouter(runner: Runner): void {
-  run(runner, ["systemctl", "--user", "disable", "--now", UNIT_NAME]);
+/** How long `stopRouter` waits for the router's port to close. */
+export const STOP_WAIT_MS = 15_000;
+
+/**
+ * `systemctl --user is-active` states in which the unit's own router holds its port:
+ * running, or still draining after an earlier stop.
+ */
+const HOLDS_ITS_PORT = new Set(["active", "deactivating"]);
+
+/** What `stopRouter` waited for, so `restore` can say it. */
+export type StopResult =
+  /** The router's port closed: it takes no new request. */
+  | { kind: "closed" }
+  /** The port is unknown (an unusable config): nothing was asked. */
+  | { kind: "no-port" }
+  /** The unit was not running (`state`, from `is-active`): nothing of it to wait for. */
+  | { kind: "not-running"; state: string }
+  /** Something that is not this router answers on the port: not waited for. */
+  | { detail: string; kind: "other" };
+
+/**
+ * Disables the unit and stops it, for `restore`, while its unit file is still there.
+ *
+ * Not `disable --now`: that waits until the router has drained its answers in flight, up
+ * to the unit's `TimeoutStopSec` (120 s), and the router closes its port in the first
+ * second, so every new request of every session fails for that whole time while restore
+ * looks stuck. So: it asks the unit's state, then runs `disable`, then `stop --no-block`
+ * (systemd sends SIGTERM and returns), then asks the port (`probe`) while this router
+ * answers there, for up to 15 s. The drain finishes in the background.
+ *
+ * It waits only for the unit's own router: only when the unit was `active` or
+ * `deactivating` before the stop, and only while the port answers as this router. A
+ * crash-looping unit (another program holds the port, so it never binds) and a router
+ * started by hand (`gateway serve`) are not the unit's: a wait for them would never end.
+ * `port` null: the port is unknown (an unusable config), so there is nothing to ask; the
+ * stop is sent all the same.
+ *
+ * Throws when this router still answers on the port after 15 s.
+ */
+export async function stopRouter(
+  runner: Runner,
+  port: null | number,
+  probe: HealthProbe,
+): Promise<StopResult> {
+  const state = port === null ? null : unitState(runner);
+  run(runner, ["systemctl", "--user", "disable", UNIT_NAME]);
+  run(runner, ["systemctl", "--user", "stop", "--no-block", UNIT_NAME]);
+  if (port === null || state === null) return { kind: "no-port" };
+  if (!HOLDS_ITS_PORT.has(state)) return { kind: "not-running", state };
+  const result = await waitWhileRouterAnswers(port, probe, STOP_WAIT_MS);
+  if (result.state === "free") return { kind: "closed" };
+  if (result.state === "other") return { detail: result.detail, kind: "other" };
+  throw new Error(
+    `${UNIT_NAME} is disabled and was told to stop, but 127.0.0.1:${port} still takes connections after ${STOP_WAIT_MS / 1000} s. Nothing else was restored. See why: systemctl --user status anymodel-router (and ss -ltnp for another program on the port). Then run ${COMMAND} restore again.`,
+  );
 }

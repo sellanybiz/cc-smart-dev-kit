@@ -48,7 +48,9 @@ import {
 } from "./config";
 import {
   createRouter,
+  maskSecrets,
   reasoningOffForBackend,
+  requestForClaudeFallback,
   sseScanner,
   toolSearchForBackend,
   type UpstreamInit,
@@ -173,13 +175,22 @@ function fakeFetch(replies: Reply[]) {
   return { calls, fetch };
 }
 
+/**
+ * The router with fake upstreams. `handle` also waits for the work the router does after
+ * the answer (the error log lines, `RouterDeps.background`), so a test reads every log
+ * line; `raw` is the router alone, for a test of what the client gets and when.
+ */
 function router(replies: Reply[], options: { config?: GatewayConfig; now?: () => number } = {}) {
   const upstream = fakeFetch(replies);
   const logs: string[] = [];
   const cfg = options.config ?? config();
-  const handle = createRouter({
+  const background: Promise<void>[] = [];
+  const raw = createRouter({
     // The config may only name api.anthropic.com; a fake comes in through the router.
     anthropicBaseUrl: "https://anthropic.test",
+    background: (task) => {
+      background.push(task);
+    },
     configPath: CONFIG_PATH,
     fetch: upstream.fetch,
     getConfig: () => cfg,
@@ -187,7 +198,13 @@ function router(replies: Reply[], options: { config?: GatewayConfig; now?: () =>
     now: options.now ?? (() => Date.UTC(2026, 9, 15, 10, 0, 0)),
     port: PORT,
   });
-  return { calls: upstream.calls, handle, logs };
+  const settled = () => Promise.all(background.splice(0)).then(() => undefined);
+  const handle = async (req: Request): Promise<Response> => {
+    const response = await raw(req);
+    await settled();
+    return response;
+  };
+  return { calls: upstream.calls, handle, logs, raw, settled };
 }
 
 /** A response whose body records whether it was cancelled. */
@@ -560,9 +577,13 @@ describe("fallback", () => {
     expect(calls).toHaveLength(2);
   });
 
-  it("logs the upstream's reason (first 200 characters); the last target's body still reaches the client whole", async () => {
-    const reason = `{"error":{"message":"Input exceeds context window of this model (limit 128000)","pad":"${"a".repeat(300)}"}}`;
-    const lastBody = `{"error":"rejected",\n"detail":"${"b".repeat(400)}"}`;
+  // Changed on purpose: the log keeps 300 characters now (it was 200), so a long error
+  // reason from Anthropic fits; the expected lengths grew by 100 each. The padding is
+  // `a.` / `b.` now (it was one long run of `a` / `b`): a run of 32 or more letters looks
+  // like a key, and the log masks it (`maskSecrets`).
+  it("logs the upstream's reason (first 300 characters); the last target's body still reaches the client whole", async () => {
+    const reason = `{"error":{"message":"Input exceeds context window of this model (limit 128000)","pad":"${"a.".repeat(150)}"}}`;
+    const lastBody = `{"error":"rejected",\n"detail":"${"b.".repeat(200)}"}`;
     const { handle, logs } = router([
       () => new Response(reason, { status: 413 }),
       () => new Response(lastBody, { status: 400 }),
@@ -571,10 +592,10 @@ describe("fallback", () => {
     expect(res.status).toBe(400);
     expect(await res.text()).toBe(lastBody);
     expect(logs).toContain(
-      `WARN omniroute:glm-5.3-flash answered 413; trying the next target — {"error":{"message":"Input exceeds context window of this model (limit 128000)","pad":"${"a".repeat(113)}`,
+      `WARN omniroute:glm-5.3-flash answered 413; trying the next target — {"error":{"message":"Input exceeds context window of this model (limit 128000)","pad":"${"a.".repeat(106)}a`,
     );
     expect(logs).toContain(
-      `WARN ollama:deepseek-v4.1-flash answered 400; returned as it is — {"error":"rejected", "detail":"${"b".repeat(169)}`,
+      `WARN ollama:deepseek-v4.1-flash answered 400; returned as it is — {"error":"rejected", "detail":"${"b.".repeat(134)}b`,
     );
   });
 
@@ -627,17 +648,41 @@ describe("fallback", () => {
     });
   });
 
-  it("a compressed error answer is logged as such, and still reaches the client whole", async () => {
+  // Reworked: a gzip answer is now decompressed for the log (the test with real gzip is in
+  // "error answers are logged, keys masked"). What stays: an encoding the router cannot
+  // read is named, and a body that is not what its encoding says is named so; the client
+  // gets the bytes whole either way.
+  it("a compressed error answer it cannot read is logged as such, and still reaches the client whole", async () => {
     const { handle, logs } = router([
       () => new Response("x", { status: 503 }),
-      () => new Response("GZIPPED-BYTES", { headers: { "content-encoding": "gzip" }, status: 400 }),
+      () =>
+        new Response("COMPRESSED-BYTES", {
+          headers: { "content-encoding": "compress" },
+          status: 400,
+        }),
     ]);
     const res = await handle(clientRequest({ body: JSON.stringify(message("anymodel-cheap")) }));
-    expect(res.headers.get("content-encoding")).toBe("gzip");
-    expect(await res.text()).toBe("GZIPPED-BYTES");
+    expect(res.headers.get("content-encoding")).toBe("compress");
+    expect(await res.text()).toBe("COMPRESSED-BYTES");
     expect(logs).toContain(
-      "WARN ollama:deepseek-v4.1-flash answered 400; returned as it is — (gzip body)",
+      "WARN ollama:deepseek-v4.1-flash answered 400; returned as it is — (compress body)",
     );
+
+    const broken = router([
+      () => new Response("x", { status: 503 }),
+      () => new Response("NOT-GZIP", { headers: { "content-encoding": "gzip" }, status: 400 }),
+    ]);
+    const res2 = await broken.handle(
+      clientRequest({ body: JSON.stringify(message("anymodel-cheap")) }),
+    );
+    expect(await res2.text()).toBe("NOT-GZIP");
+    expect(
+      broken.logs.some((line) =>
+        line.startsWith(
+          "WARN ollama:deepseek-v4.1-flash answered 400; returned as it is — (gzip body unreadable: ",
+        ),
+      ),
+    ).toBe(true);
   });
 
   it("firstByteMs applies only to a streaming request to a cheap target with another behind it", async () => {
@@ -925,6 +970,32 @@ describe("auto mode's safety check", () => {
     expect(JSON.parse(calls[0]?.body ?? "")).toEqual({ ...body, model: "claude-sonnet-5-5" });
   });
 
+  it("a check is never translated for its Claude target: only the model changes, on messages and count_tokens", async () => {
+    // Fields requestForClaudeFallback would change for Claude Sonnet 5.5 on any other
+    // request. Auto mode stays as Claude Code ships it: the check keeps them all.
+    const body = {
+      ...slotGuardBody("anymodel-scout"),
+      output_config: { effort: "max" },
+      temperature: 0,
+      thinking: { type: "disabled" },
+      tool_choice: { type: "any" },
+      top_p: 0.5,
+    };
+    const { calls, handle, logs } = router([() => new Response("{}"), () => new Response("{}")]);
+    await handle(clientRequest({ body: JSON.stringify(body) }));
+    await handle(
+      clientRequest({ body: JSON.stringify(body), path: "/v1/messages/count_tokens?beta=true" }),
+    );
+    expect(calls.map((c) => c.url)).toEqual([
+      ANTHROPIC_URL,
+      "https://anthropic.test/v1/messages/count_tokens?beta=true",
+    ]);
+    const expected = JSON.stringify({ ...body, model: "claude-sonnet-5-5" });
+    expect(nth(calls, 0).body).toBe(expected);
+    expect(nth(calls, 1).body).toBe(expected);
+    expect(logs.filter((line) => line.startsWith("translated for "))).toEqual([]);
+  });
+
   it("count_tokens for a check on a cheap-first slot: its Claude target, not a 404", async () => {
     const { calls, handle } = router([() => new Response("{}", { status: 200 })]);
     const res = await handle(
@@ -1155,12 +1226,476 @@ describe("reasoning off", () => {
     expect(reasoningOffForBackend({ max_tokens: 5 })).toEqual({ max_tokens: 5 });
   });
 
-  it("a claude-* slot target gets thinking as it was: no effort added", async () => {
+  // Rewritten on purpose (it was "a claude-* slot target gets thinking as it was"): Claude
+  // Sonnet 5.5 answers 400 to `thinking: disabled`, so a slot that reached it with that
+  // field failed. Kept from the old test: no effort is added for a Claude target.
+  it("a claude-* slot target gets reasoning off in the form it accepts: no effort added", async () => {
     const { calls, handle } = router([() => new Response("{}", { status: 200 })]);
     const body = { ...message("anymodel-mixed"), thinking: { type: "disabled" } };
     await handle(clientRequest({ body: JSON.stringify(body) }));
     expect(calls[0]?.url).toBe("https://anthropic.test/v1/messages?beta=true");
-    expect(JSON.parse(calls[0]?.body ?? "")).toEqual({ ...body, model: "claude-sonnet-5-5" });
+    expect(JSON.parse(calls[0]?.body ?? "")).toEqual({
+      ...body,
+      model: "claude-sonnet-5-5",
+      thinking: { type: "between_tools" },
+    });
+  });
+});
+
+describe("a slot's Claude target: only the fields it refuses change", () => {
+  /** A slot request as Claude Code builds it, with every field a Claude target may refuse. */
+  function refusedBody(model: string): Record<string, unknown> {
+    return {
+      max_tokens: 2048,
+      messages: [
+        { content: "Summarise   the diff.\n\nKeep it short.", role: "user" },
+        {
+          content: [
+            { signature: "sig-1", thinking: "", type: "thinking" },
+            { text: "Reading it.", type: "text" },
+          ],
+          role: "assistant",
+        },
+        { content: "Go on.", role: "user" },
+      ],
+      metadata: { user_id: "acct-42" },
+      model,
+      output_config: { effort: "xhigh", format: { type: "json_schema" } },
+      stream: true,
+      system: [
+        { cache_control: { type: "ephemeral" }, text: "You are Claude Code.", type: "text" },
+      ],
+      temperature: 0,
+      thinking: { type: "disabled" },
+      tool_choice: { disable_parallel_tool_use: true, type: "tool", name: "Read" },
+      tools: [{ description: "read a file", input_schema: { type: "object" }, name: "Read" }],
+      top_k: 40,
+      top_p: 0.9,
+    };
+  }
+
+  it("Claude Sonnet 5.5: each refused field gets the nearest value it accepts", () => {
+    const body = refusedBody("anymodel-worker");
+    const before = JSON.stringify(body);
+    const out = requestForClaudeFallback(body, "claude-sonnet-5-5");
+    expect(out.body).toEqual({
+      max_tokens: 2048,
+      messages: body.messages,
+      metadata: { user_id: "acct-42" },
+      model: "anymodel-worker",
+      output_config: { effort: "high", format: { type: "json_schema" } },
+      stream: true,
+      system: body.system,
+      thinking: { type: "between_tools" },
+      tool_choice: { disable_parallel_tool_use: true, type: "auto" },
+      tools: body.tools,
+    });
+    expect(out.changes).toEqual([
+      "thinking disabled -> between_tools",
+      "effort xhigh -> high",
+      "tool_choice tool -> auto",
+      "temperature left out",
+      "top_p left out",
+      "top_k left out",
+    ]);
+    // The input is not changed in place.
+    expect(JSON.stringify(body)).toBe(before);
+  });
+
+  it("system, messages and tools stay byte-identical, and the fields keep their order", () => {
+    const body = refusedBody("anymodel-worker");
+    const out = requestForClaudeFallback(body, "claude-sonnet-5-5").body;
+    expect(JSON.stringify(out.system)).toBe(
+      '[{"cache_control":{"type":"ephemeral"},"text":"You are Claude Code.","type":"text"}]',
+    );
+    expect(JSON.stringify(out.messages)).toBe(
+      '[{"content":"Summarise   the diff.\\n\\nKeep it short.","role":"user"},{"content":[{"signature":"sig-1","thinking":"","type":"thinking"},{"text":"Reading it.","type":"text"}],"role":"assistant"},{"content":"Go on.","role":"user"}]',
+    );
+    expect(JSON.stringify(out.tools)).toBe(
+      '[{"description":"read a file","input_schema":{"type":"object"},"name":"Read"}]',
+    );
+    expect(Object.keys(out)).toEqual([
+      "max_tokens",
+      "messages",
+      "metadata",
+      "model",
+      "output_config",
+      "stream",
+      "system",
+      "thinking",
+      "tool_choice",
+      "tools",
+    ]);
+  });
+
+  it("Claude Opus 5.5 always thinks: disabled thinking is left out, the effort kept", () => {
+    const out = requestForClaudeFallback(refusedBody("anymodel-worker"), "claude-opus-5-5");
+    expect(out.body).not.toHaveProperty("thinking");
+    expect(out.body.output_config).toEqual({ effort: "xhigh", format: { type: "json_schema" } });
+    expect(out.changes[0]).toBe("thinking disabled -> left out (always on)");
+  });
+
+  it("Claude Opus 5.5 with no effort named: thinking off becomes effort low, the nearest to no thinking", () => {
+    const out = requestForClaudeFallback(
+      {
+        model: "anymodel-worker",
+        output_config: { format: { type: "json_schema" } },
+        thinking: { type: "disabled" },
+      },
+      "claude-opus-5-5",
+    );
+    expect(out.body).toEqual({
+      model: "anymodel-worker",
+      output_config: { effort: "low", format: { type: "json_schema" } },
+    });
+    expect(out.changes).toEqual([
+      "thinking disabled -> left out (always on)",
+      "effort low (nearest to thinking off)",
+    ]);
+    // No output_config at all: one is added with the effort alone.
+    expect(
+      requestForClaudeFallback(
+        { model: "anymodel-worker", thinking: { type: "disabled" } },
+        "claude-opus-5-5",
+      ).body,
+    ).toEqual({ model: "anymodel-worker", output_config: { effort: "low" } });
+    // Sonnet 5.5 keeps its own rule: between_tools, no effort added.
+    expect(
+      requestForClaudeFallback(
+        { model: "anymodel-worker", thinking: { type: "disabled" } },
+        "claude-sonnet-5-5",
+      ).body,
+    ).toEqual({ model: "anymodel-worker", thinking: { type: "between_tools" } });
+  });
+
+  it("a target written with [1m] gets its model's rules", () => {
+    const out = requestForClaudeFallback(
+      { model: "anymodel-worker", thinking: { type: "disabled" } },
+      "claude-sonnet-5-5[1m]",
+    );
+    expect(out.body).toEqual({ model: "anymodel-worker", thinking: { type: "between_tools" } });
+    expect(out.changes).toEqual(["thinking disabled -> between_tools"]);
+  });
+
+  it("a thinking budget becomes adaptive, its display kept; tool_choice any becomes auto", () => {
+    const out = requestForClaudeFallback(
+      {
+        model: "anymodel-worker",
+        thinking: { budget_tokens: 4000, display: "summarized", type: "enabled" },
+        tool_choice: { type: "any" },
+      },
+      "claude-sonnet-5-5",
+    );
+    expect(out.body).toEqual({
+      model: "anymodel-worker",
+      thinking: { display: "summarized", type: "adaptive" },
+      tool_choice: { type: "auto" },
+    });
+    expect(out.changes).toEqual([
+      "thinking enabled (budget) -> adaptive",
+      "tool_choice any -> auto",
+    ]);
+  });
+
+  it("what a target accepts stays as it is: the same object back, no changes", () => {
+    const accepted = {
+      model: "anymodel-worker",
+      output_config: { effort: "low" },
+      temperature: 1,
+      thinking: { type: "adaptive" },
+      tool_choice: { type: "auto" },
+    };
+    expect(requestForClaudeFallback(accepted, "claude-sonnet-5-5")).toEqual({
+      body: accepted,
+      changes: [],
+    });
+    expect(requestForClaudeFallback(accepted, "claude-sonnet-5-5").body).toBe(accepted);
+    // A model with no rules in the table: unchanged, whatever it carries.
+    const body = refusedBody("anymodel-worker");
+    expect(requestForClaudeFallback(body, "claude-sonnet-5").body).toBe(body);
+  });
+
+  it("a slot falling back to Claude Sonnet 5.5 sends between_tools; the cheap targets got the body unchanged by it", async () => {
+    // config()'s anymodel-scout: GLM, DeepSeek, then Claude Sonnet 5.5. Both cheap ones 503.
+    const busy = () => new Response("busy", { status: 503 });
+    const { calls, handle, logs } = router([
+      busy,
+      busy,
+      () => new Response("{}"),
+      busy,
+      busy,
+      () => new Response("{}"),
+    ]);
+    const body = { ...message("anymodel-scout"), thinking: { type: "disabled" } };
+    const res = await handle(clientRequest({ body: JSON.stringify(body) }));
+    expect(res.status).toBe(200);
+    // The cheap targets: their own translations only, `thinking` as Claude Code sent it.
+    expect(JSON.parse(nth(calls, 0).body ?? "")).toEqual({
+      ...cheapBodyFor("glm-5.3-flash"),
+      output_config: { effort: "none" },
+      thinking: { type: "disabled" },
+    });
+    expect(JSON.parse(nth(calls, 1).body ?? "")).toEqual({
+      ...cheapBodyFor("deepseek-v4.1-flash"),
+      output_config: { effort: "none" },
+      thinking: { type: "disabled" },
+    });
+    // Claude: the login, `model`, and between_tools; the rest as sent, metadata included.
+    expect(nth(calls, 2).url).toBe("https://anthropic.test/v1/messages?beta=true");
+    expect(nth(calls, 2).headers).toContainEqual(["authorization", `Bearer ${TOKEN}`]);
+    expect(nth(calls, 2).body).toBe(
+      JSON.stringify({ ...body, model: "claude-sonnet-5-5", thinking: { type: "between_tools" } }),
+    );
+    // Logged once per kind of change, not on every request.
+    await handle(clientRequest({ body: JSON.stringify(body) }));
+    expect(logs.filter((line) => line.startsWith("translated for "))).toEqual([
+      "translated for claude-sonnet-5-5: thinking disabled -> between_tools (requestForClaudeFallback; logged once per kind)",
+    ]);
+  });
+
+  it("a claude-* request is never translated: Anthropic gets the bytes as sent", async () => {
+    const { calls, handle } = router([() => new Response("{}")]);
+    const sent = JSON.stringify(refusedBody("claude-sonnet-5-5"));
+    await handle(clientRequest({ body: sent }));
+    expect(nth(calls, 0).body).toBe(sent);
+  });
+});
+
+describe("error answers are logged, keys masked", () => {
+  const mixed = () => clientRequest({ body: JSON.stringify(message("anymodel-mixed")) });
+
+  it("Anthropic's 400 for a slot's Claude target: logged with its reason, returned unchanged", async () => {
+    const reason =
+      '{"type":"error","error":{"type":"invalid_request_error","message":"\\"thinking.type.disabled\\" is not supported for this model."}}';
+    const { handle, logs } = router([() => new Response(reason, { status: 400 })]);
+    const res = await handle(mixed());
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe(reason);
+    expect(logs).toContain(`WARN claude-sonnet-5-5 answered 400; returned as it is — ${reason}`);
+  });
+
+  it("a claude-* request's 4xx / 5xx from Anthropic is logged too", async () => {
+    const { handle, logs } = router([
+      () => new Response('{"type":"error","error":{"type":"overloaded_error"}}', { status: 529 }),
+    ]);
+    const res = await handle(clientRequest({ body: JSON.stringify(message("claude-opus-5-5")) }));
+    expect(res.status).toBe(529);
+    // Changed on purpose (it was `logs[0]`): the WARN line is written in the background,
+    // once the client has its answer, so it now comes after the request's own line.
+    expect(logs).toEqual([
+      "2026-10-15T10:00:00.000Z POST /v1/messages claude-opus-5-5 → anthropic 529 0ms fallbacks=0",
+      'WARN anthropic answered 529 — {"type":"error","error":{"type":"overloaded_error"}}',
+    ]);
+    // A 2xx is not.
+    const ok = router([() => new Response("{}")]);
+    await ok.handle(clientRequest({ body: JSON.stringify(message("claude-opus-5-5")) }));
+    expect(ok.logs.filter((line) => line.startsWith("WARN"))).toEqual([]);
+  });
+
+  it("keys in an error answer are masked: sk-…, Bearer, key-named fields, long tokens", () => {
+    expect(
+      maskSecrets(
+        'invalid x-api-key sk-ant-api03-SECRETSECRETSECRETabcd; Authorization: Bearer omni-key-123456 {"api_key":"plain-value","request_id":"req_011ABC"} token 0123456789abcdefghijklmnopqrstuvWXYZ',
+      ),
+    ).toBe(
+      'invalid x-api-key sk-****abcd; Authorization: Bearer **** {"api_key":"****","request_id":"req_011ABC"} token ****WXYZ',
+    );
+  });
+
+  it("the logged reason is masked and cut at 300 characters", async () => {
+    const reason = `{"error":{"message":"bad key sk-live-SECRETSECRET9999","pad":"${"c".repeat(20)} ${"d ".repeat(200)}"}}`;
+    const { handle, logs } = router([() => new Response(reason, { status: 401 })]);
+    await handle(mixed());
+    const line = logs.find((entry) => entry.startsWith("WARN claude-sonnet-5-5 answered 401"));
+    expect(line).toBe(
+      // 49 + 21 + 230 = 300 characters.
+      `WARN claude-sonnet-5-5 answered 401; returned as it is — {"error":{"message":"bad key sk-****9999","pad":"${"c".repeat(20)} ${"d ".repeat(115)}`,
+    );
+    expect(line).not.toContain("SECRET");
+  });
+
+  it("a gzip error answer is read for the log, and still reaches the client as sent", async () => {
+    const reason = '{"error":{"message":"prompt is too long"}}';
+    const gzipped = Bun.gzipSync(new TextEncoder().encode(reason));
+    const { handle, logs } = router([
+      () => new Response(gzipped, { headers: { "content-encoding": "gzip" }, status: 400 }),
+    ]);
+    const res = await handle(mixed());
+    expect(res.headers.get("content-encoding")).toBe("gzip");
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(gzipped);
+    expect(logs).toContain(`WARN claude-sonnet-5-5 answered 400; returned as it is — ${reason}`);
+  });
+
+  // ─── The log never stalls the router ─────────────────────────────────────────
+
+  /** One `"`, then "key " over and over: the old field pattern backtracked on it for seconds. */
+  const ADVERSARIAL = `"${"key ".repeat(16_384)}`;
+
+  it("masking never stalls: a 64 KB adversarial text masks in well under 50 ms", () => {
+    expect(ADVERSARIAL.length).toBe(65_537);
+    const start = performance.now();
+    maskSecrets(ADVERSARIAL);
+    expect(performance.now() - start).toBeLessThan(50);
+  });
+
+  it("a large adversarial error answer: its WARN line is ready in well under 50 ms, cut to its start", async () => {
+    // 512 KB in one chunk: what a gzip answer of a few KB can grow to.
+    const big = ADVERSARIAL.repeat(8);
+    const { handle, logs } = router([() => new Response(big, { status: 400 })]);
+    const start = performance.now();
+    const res = await handle(mixed());
+    expect(performance.now() - start).toBeLessThan(50);
+    expect(await res.text()).toBe(big);
+    const line = logs.find((entry) => entry.startsWith("WARN claude-sonnet-5-5 answered 400"));
+    // The snippet: its first 300 characters.
+    expect(line).toBe(
+      `WARN claude-sonnet-5-5 answered 400; returned as it is — "${"key ".repeat(74)}key`,
+    );
+  });
+
+  it("a slow error body never delays the client's answer: the WARN line comes once the body does", async () => {
+    const reason = '{"error":{"message":"slow reason"}}';
+    const gate = deferred();
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await gate.promise;
+        controller.enqueue(new TextEncoder().encode(reason));
+        controller.close();
+      },
+    });
+    const { logs, raw, settled } = router([() => new Response(body, { status: 400 })]);
+    const res = await raw(mixed());
+    // The answer is here before its body sent a byte, and nothing is logged about it yet.
+    expect(res.status).toBe(400);
+    expect(logs.filter((line) => line.startsWith("WARN"))).toEqual([]);
+    gate.resolve();
+    expect(await res.text()).toBe(reason);
+    await settled();
+    expect(logs).toContain(`WARN claude-sonnet-5-5 answered 400; returned as it is — ${reason}`);
+  });
+
+  // ─── What is masked, and what stays readable ─────────────────────────────────
+
+  it("short secrets after a key-like name are masked: header, JSON-escaped and query forms", () => {
+    expect(maskSecrets("'x-api-key': 'abc123short'")).toBe("'x-api-key': '****'");
+    expect(maskSecrets("x-api-key: shortkey99")).toBe("x-api-key: ****");
+    expect(maskSecrets('{\\"api_key\\": \\"shortkey99\\"}')).toBe('{\\"api_key\\": \\"****\\"}');
+    expect(maskSecrets("api_key=sk_live_abc&x=1")).toBe("api_key=****&x=1");
+    // 12 characters or more: its last four stay, like every other masked secret.
+    expect(maskSecrets("token=ghp_short1234")).toBe("token=****1234");
+    // Words after a name with no `:` or `=` are prose, not a value.
+    expect(maskSecrets("your api key does not exist")).toBe("your api key does not exist");
+  });
+
+  it("the exact secrets the router holds are masked, short ones and JSON-escaped ones too", () => {
+    expect(maskSecrets("the backend key k9sh was refused", ["k9sh"])).toBe(
+      "the backend key **** was refused",
+    );
+    // A key with a quote and a backslash, as a JSON string shows it, and inside a JSON
+    // string inside a JSON string.
+    const odd = 'ab"cd\\ef';
+    expect(maskSecrets('{"message":"bad ab\\"cd\\\\ef"}', [odd])).toBe('{"message":"bad ****"}');
+    expect(maskSecrets('"{\\"message\\":\\"bad ab\\\\\\"cd\\\\\\\\ef\\"}"', [odd])).toBe(
+      '"{\\"message\\":\\"bad ****\\"}"',
+    );
+    // Too short to mask without wrecking the text: left to the patterns.
+    expect(maskSecrets("a b c", ["a"])).toBe("a b c");
+  });
+
+  it("a backend's own key, and the request's x-api-key and authorization, never reach the log", async () => {
+    const cfg = config();
+    const backends = {
+      ...cfg.backends,
+      omniroute: { apiKey: "k9sh-omni", baseUrl: "http://omni.test" },
+    };
+    const { handle, logs } = router(
+      [
+        () => new Response('{"error":{"message":"key k9sh-omni is wrong"}}', { status: 401 }),
+        () => new Response("{}"),
+        () =>
+          new Response('{"error":{"message":"plainlogin42 or oauthlogin77 refused"}}', {
+            status: 401,
+          }),
+      ],
+      { config: { ...cfg, backends } },
+    );
+    await handle(clientRequest({ body: JSON.stringify(message("anymodel-cheap")) }));
+    await handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-opus-5-5")),
+        headers: { authorization: "Bearer oauthlogin77", "x-api-key": "plainlogin42" },
+      }),
+    );
+    expect(logs).toContain(
+      'WARN omniroute:glm-5.3-flash answered 401; trying the next target — {"error":{"message":"key **** is wrong"}}',
+    );
+    // 12 characters each: their last four stay, as for every masked secret that long.
+    expect(logs).toContain(
+      'WARN anthropic answered 401 — {"error":{"message":"****in42 or ****in77 refused"}}',
+    );
+    for (const line of logs) {
+      expect(line).not.toContain("k9sh");
+      expect(line).not.toContain("plainlogin42");
+      expect(line).not.toContain("oauthlogin77");
+    }
+  });
+
+  it("names stay readable: an MCP tool name with __ and a UUID; a 40-character random key is still masked", () => {
+    const key = "Zx8Kq2Lm9Np4Rs7Tv1Wy5Ab3Cd6Ef0Gh2Jk4Mn8P";
+    expect(key).toHaveLength(40);
+    expect(
+      maskSecrets(
+        `tool mcp__plugin_example__search_everything_in_the_repository failed; request 3f2b8c1e-9a4d-4e7b-8c2a-1d5e6f7a8b9c; key ${key}`,
+      ),
+    ).toBe(
+      "tool mcp__plugin_example__search_everything_in_the_repository failed; request 3f2b8c1e-9a4d-4e7b-8c2a-1d5e6f7a8b9c; key ****Mn8P",
+    );
+  });
+
+  it("an email address in an error answer is masked", () => {
+    expect(maskSecrets('{"message":"someone.else+x@example.co.uk has no access"}')).toBe(
+      '{"message":"****@**** has no access"}',
+    );
+  });
+
+  // ─── Which answers are logged, and how often ─────────────────────────────────
+
+  it("a corrupt gzip error answer: exactly one WARN line, and the client still gets it as sent", async () => {
+    // A gzip header, then bytes that are no deflate stream.
+    const corrupt = new Uint8Array([
+      0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 0x03, 0xff, 0xff, 0xff, 0xff,
+    ]);
+    const { handle, logs } = router([
+      () => new Response(corrupt, { headers: { "content-encoding": "gzip" }, status: 400 }),
+    ]);
+    const res = await handle(mixed());
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(corrupt);
+    // The cancel of the log's copy settles once the client's copy is read: give it the turn.
+    await Bun.sleep(20);
+    const warns = logs.filter((line) => line.startsWith("WARN"));
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toStartWith(
+      "WARN claude-sonnet-5-5 answered 400; returned as it is — (gzip body unreadable: ",
+    );
+  });
+
+  it("straight to Anthropic, only /v1/messages and count_tokens answers are logged", async () => {
+    const { handle, logs } = router([
+      () => new Response('{"error":{"message":"no such model"}}', { status: 404 }),
+      () => new Response('{"error":{"message":"bad count"}}', { status: 400 }),
+    ]);
+    const models = await handle(clientRequest({ method: "GET", path: "/v1/models/nope" }));
+    expect(models.status).toBe(404);
+    expect(logs.filter((line) => line.startsWith("WARN"))).toEqual([]);
+    await handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-opus-5-5")),
+        path: "/v1/messages/count_tokens",
+      }),
+    );
+    expect(logs.filter((line) => line.startsWith("WARN"))).toEqual([
+      'WARN anthropic answered 400 — {"error":{"message":"bad count"}}',
+    ]);
   });
 });
 
@@ -1722,6 +2257,59 @@ describe("aliases", () => {
     expect(nth(calls, 0).url).toBe("https://anthropic.test/v1/messages?beta=true");
     expect(nth(calls, 0).body).toBe(JSON.stringify({ ...body, model: "claude-sonnet-5-5" }));
     expect(nth(calls, 0).headers).toContainEqual(["authorization", `Bearer ${TOKEN}`]);
+  });
+
+  it("an alias to a claude-… target: a request that is not the check gets the fields that model refuses translated", async () => {
+    const { calls, handle, logs } = router([() => new Response("{}"), () => new Response("{}")], {
+      config: aliased({ "old-model": "claude-sonnet-5-5" }),
+    });
+    // Built by Claude Code for a name it does not know: it may carry `thinking: disabled`.
+    const body = { ...message("old-model"), thinking: { type: "disabled" } };
+    await handle(clientRequest({ body: JSON.stringify(body) }));
+    expect(nth(calls, 0).url).toBe("https://anthropic.test/v1/messages?beta=true");
+    expect(nth(calls, 0).body).toBe(
+      JSON.stringify({ ...body, model: "claude-sonnet-5-5", thinking: { type: "between_tools" } }),
+    );
+    expect(nth(calls, 0).headers).toContainEqual(["authorization", `Bearer ${TOKEN}`]);
+    expect(logs).toContain(
+      "translated for claude-sonnet-5-5: thinking disabled -> between_tools (requestForClaudeFallback; logged once per kind)",
+    );
+    // count_tokens too: a forced tool_choice is refused there as well.
+    const counted = {
+      messages: message("old-model").messages,
+      model: "old-model",
+      thinking: { type: "disabled" },
+      tool_choice: { type: "any" },
+    };
+    await handle(
+      clientRequest({ body: JSON.stringify(counted), path: "/v1/messages/count_tokens" }),
+    );
+    expect(nth(calls, 1).url).toBe("https://anthropic.test/v1/messages/count_tokens");
+    expect(nth(calls, 1).body).toBe(
+      JSON.stringify({
+        ...counted,
+        model: "claude-sonnet-5-5",
+        thinking: { type: "between_tools" },
+        tool_choice: { type: "auto" },
+      }),
+    );
+  });
+
+  it("an alias to a claude-… target: the safety check under it changes only the model", async () => {
+    const { calls, handle, logs } = router([() => new Response("{}")], {
+      config: aliased({ "old-model": "claude-sonnet-5-5" }),
+    });
+    const check = {
+      max_tokens: 64,
+      messages: [{ content: "<transcript>git push --force</transcript>", role: "user" }],
+      model: "old-model",
+      system: "You are a security monitor for autonomous AI coding agents.",
+      thinking: { type: "disabled" },
+    };
+    await handle(clientRequest({ body: JSON.stringify(check) }));
+    expect(nth(calls, 0).url).toBe("https://anthropic.test/v1/messages?beta=true");
+    expect(nth(calls, 0).body).toBe(JSON.stringify({ ...check, model: "claude-sonnet-5-5" }));
+    expect(logs.filter((line) => line.startsWith("translated for "))).toEqual([]);
   });
 
   it("an alias to <backend>:<model> goes to that backend alone, without the login", async () => {
