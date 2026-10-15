@@ -19,7 +19,14 @@ import { z } from "zod";
 // must not change with it (a changed bundle restarts every machine's router).
 import { COMMAND } from "../build-info/names";
 import { atomicWrite } from "../setup/write";
-import { isBackendName, isSlotKey, JUDGE_SLOT, parseTarget, withoutContextSuffix } from "./targets";
+import {
+  isBackendName,
+  isSlotKey,
+  JUDGE_SLOT,
+  MODEL_SLOTS,
+  parseTarget,
+  withoutContextSuffix,
+} from "./targets";
 
 export const DEFAULT_PORT = 20100;
 export const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
@@ -53,6 +60,14 @@ export const gatewayConfigSchema = z
     // point them anywhere else. (Tests inject a fake through the router.)
     anthropicBaseUrl: z.literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
     backends: z.record(z.string().refine(isBackendName, "not a backend name"), backendSchema),
+    /**
+     * Claude model ids that have a model slot: `{"claude-opus-5-5": "anymodel-opus"}`.
+     * Absent (the default): every `claude-…` request goes to Anthropic byte for byte. With
+     * an entry, that model's requests go to the slot, whose first target is the model
+     * itself; the next target answers only at the plan's usage limit (`targets.ts`).
+     * `gateway slot opus|fable` writes it.
+     */
+    modelSlots: z.record(z.string(), z.string()).optional(),
     port: z.int().min(1).max(65_535).default(DEFAULT_PORT),
     slots: z.record(
       z.string().refine(isSlotKey, "a slot key is anymodel-<name>"),
@@ -93,7 +108,49 @@ export const gatewayConfigSchema = z
       const error = aliasError(name, to, config);
       if (error !== null) ctx.addIssue({ code: "custom", message: error, path: ["aliases", name] });
     }
+    for (const [model, slot] of Object.entries(config.modelSlots ?? {})) {
+      const error = modelSlotError(model, slot, config.slots);
+      if (error !== null) {
+        ctx.addIssue({ code: "custom", message: error, path: ["modelSlots", model] });
+      }
+    }
   });
+
+/**
+ * Why a `modelSlots` entry cannot be used, or null when it can. The key is the Claude id
+ * Claude Code sends (without `[1m]`); the slot is a model slot (`anymodel-opus`,
+ * `anymodel-fable`) whose FIRST target is that same id, so a request that is not at its
+ * limit still reaches Anthropic byte for byte; and the slot has a target after it.
+ */
+export function modelSlotError(
+  model: string,
+  slot: string,
+  slots: Readonly<Record<string, readonly string[]>>,
+): null | string {
+  if (!model.startsWith("claude-") || /\s/.test(model) || model === "claude-") {
+    return `modelSlots key "${model}" is not a Claude model id`;
+  }
+  if (withoutContextSuffix(model) !== model) {
+    return `modelSlots key "${model}": write it without [1m]; the router looks names up without it`;
+  }
+  const family = Object.hasOwn(MODEL_SLOTS, slot) ? MODEL_SLOTS[slot] : undefined;
+  if (family === undefined) {
+    return `modelSlots "${model}" points at "${slot}", which is not a model slot (${Object.keys(MODEL_SLOTS).sort().join(", ")})`;
+  }
+  if (!model.includes(`-${family}-`)) {
+    return `modelSlots "${model}" points at ${slot}, which is for ${family} models`;
+  }
+  const targets = Object.hasOwn(slots, slot) ? slots[slot] : undefined;
+  if (targets === undefined)
+    return `modelSlots "${model}" points at slot "${slot}", which is not in slots`;
+  if (targets[0] !== model) {
+    return `slot ${slot} must start with "${model}" itself: that target is the model, sent unchanged`;
+  }
+  if (targets.length < 2) {
+    return `slot ${slot} names no target after "${model}" to answer at its usage limit`;
+  }
+  return null;
+}
 
 /**
  * Why an alias cannot be used, or null when it can. An alias names a slot or a target,

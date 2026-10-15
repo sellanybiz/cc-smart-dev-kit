@@ -5,6 +5,8 @@ import { runDoctor } from "../cli/doctor";
 import { cliPaths } from "../cli/paths";
 import { runRestore } from "../cli/restore";
 import { runSetup } from "../cli/setup";
+import { runStatusline } from "../cli/statusline";
+import { runUsage } from "../cli/usage";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
@@ -14,8 +16,11 @@ const HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Cla
 Usage: anymodel <command> [options]
 
 Commands:
-  setup [--dry-run]  Install the launcher in ~/.local/bin and turn on plugin auto-update.
+  setup [--dry-run] [--statusline]
+                     Install the launcher in ~/.local/bin and turn on plugin auto-update.
                      --dry-run prints what would change and writes nothing.
+                     --statusline also sets Claude Code's status line to
+                     "anymodel statusline" (asked when run in a terminal).
   doctor             Check the install. Exit code 1 when a check fails.
   restore [--yes] [--now]
                      Remove what anymodel added, and keep everything else: its settings
@@ -28,6 +33,13 @@ Commands:
                      it restarts.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      anymodel gateway --help lists them.
+  statusline         One line for Claude Code's status bar: plan usage (a warning from
+                     85 %), and any fallback the gateway is using. Reads the JSON
+                     Claude Code passes on stdin.
+  usage [--hours <n>] [--project <folder or name>]
+                     Which models answered the subagents, per session, from Claude
+                     Code's transcripts (default: the last 6 hours). Read only; no
+                     message text.
   version            Print the version.
   --help             Print this help.
 
@@ -77,13 +89,26 @@ async function main(argv: string[]): Promise<number> {
 
   switch (command) {
     case "setup": {
-      const unknown = rest.filter((arg) => arg !== "--dry-run");
+      const unknown = rest.filter((arg) => arg !== "--dry-run" && arg !== "--statusline");
       if (unknown.length > 0) {
         console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
         return 2;
       }
-      return runSetup(paths, { dryRun: rest.includes("--dry-run") });
+      return runSetup(paths, {
+        confirm: ask,
+        dryRun: rest.includes("--dry-run"),
+        statusline: rest.includes("--statusline"),
+      });
     }
+    case "statusline":
+      // Claude Code pipes its JSON in; run by hand in a terminal, there is none to wait for.
+      return runStatusline(
+        paths,
+        () => (process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text()),
+        Date.now(),
+      );
+    case "usage":
+      return runUsage(paths, rest, Date.now());
     case "doctor":
       return runDoctor(paths, process.env, {
         bundle: routerBundle(),

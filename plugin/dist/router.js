@@ -14,12 +14,263 @@ function cliPaths(env = process.env) {
     binDir: join(home, ".local", "bin"),
     stateDir: join(claudeConfigDir, "anymodel"),
     gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
+    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json"),
     routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
     routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service")
   };
 }
 function tildify(path, home) {
   return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+}
+
+// src/gateway/router.ts
+import { mkdirSync as mkdirSync3 } from "fs";
+import { dirname as dirname3 } from "path";
+
+// src/setup/write.ts
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from "fs";
+import { basename, dirname, join as join2, resolve } from "path";
+var BACKUPS_DIR = "backups";
+var BACKUP_INFIX = ".bak-anymodel-";
+var ABSENT_SUFFIX = ".absent";
+var CHANGED_FILE = "changed.json";
+var MAX_LINKS = 40;
+function utcStamp(date = new Date) {
+  return date.toISOString().replace(/[-:.]/g, "");
+}
+function realTarget(file) {
+  let path = resolve(file);
+  for (let links = 0;links <= MAX_LINKS; links += 1) {
+    try {
+      return realpathSync(path);
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    let isLink = false;
+    try {
+      isLink = lstatSync(path).isSymbolicLink();
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    if (!isLink) {
+      const parent = dirname(path);
+      return parent === path ? path : join2(realTarget(parent), basename(path));
+    }
+    path = resolve(dirname(path), readlinkSync(path));
+  }
+  throw new Error(`${file}: too many symlinks (a loop?)`);
+}
+function fileMode(file) {
+  return existsSync(file) ? statSync(file).mode & 4095 : null;
+}
+function writeTemp(file, content, mode) {
+  const dir = dirname(file);
+  mkdirSync(dir, { recursive: true });
+  const temp = join2(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
+  try {
+    const fd = openSync(temp, "wx", mode);
+    try {
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    chmodSync(temp, mode);
+  } catch (error) {
+    if (existsSync(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+  return temp;
+}
+function atomicWrite(file, content, mode, beforeRename) {
+  const temp = writeTemp(file, content, mode);
+  try {
+    beforeRename?.();
+    renameSync(temp, file);
+  } catch (error) {
+    if (existsSync(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+}
+function parseBackupName(base, name) {
+  const prefix = `${base}${BACKUP_INFIX}`;
+  if (!name.startsWith(prefix))
+    return null;
+  const match = /^(\d{8}T\d{9}Z)(?:-(\d+))?(?:(\.absent)|\.mode-([0-7]{3,4}))?$/.exec(name.slice(prefix.length));
+  if (!match?.[1])
+    return null;
+  return {
+    name,
+    stamp: match[1],
+    counter: match[2] ? Number(match[2]) : 0,
+    absent: match[3] !== undefined,
+    mode: match[4] ? Number.parseInt(match[4], 8) : null
+  };
+}
+function backupDir(stateDir, file) {
+  return join2(stateDir, BACKUPS_DIR, encodeURIComponent(realTarget(file)));
+}
+function makePrivateDir(dir) {
+  mkdirSync(dir, { recursive: true, mode: 448 });
+  chmodSync(dir, 448);
+}
+function listBackups(stateDir, file) {
+  const dir = backupDir(stateDir, file);
+  if (!existsSync(dir))
+    return [];
+  const base = basename(realTarget(file));
+  return readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup !== null).sort((a, b) => a.stamp === b.stamp ? a.counter - b.counter : a.stamp < b.stamp ? -1 : 1).map((backup) => {
+    const path = join2(dir, backup.name);
+    return { path, absent: backup.absent, mode: backup.mode ?? fileMode(path) ?? 384 };
+  });
+}
+function copyNotExecutable(file, target) {
+  const mode = fileMode(file) ?? 384;
+  const safeMode = mode & ~73;
+  writeFileSync(target, readFileSync(file), { flag: "wx", mode: safeMode });
+  chmodSync(target, safeMode);
+  return mode;
+}
+function backupFile(stateDir, file) {
+  const real = realTarget(file);
+  const dir = backupDir(stateDir, real);
+  const base = basename(real);
+  const stamp = utcStamp();
+  const mode = fileMode(real);
+  const suffix = mode === null ? ABSENT_SUFFIX : (mode & 73) !== 0 ? `.mode-${mode.toString(8)}` : "";
+  makePrivateDir(join2(stateDir, BACKUPS_DIR));
+  makePrivateDir(dir);
+  const sameStamp = readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup?.stamp === stamp);
+  const counter = sameStamp.length === 0 ? 0 : Math.max(...sameStamp.map((backup) => backup.counter)) + 1;
+  const target = join2(dir, `${base}${BACKUP_INFIX}${stamp}${counter === 0 ? "" : `-${counter}`}${suffix}`);
+  if (mode === null) {
+    writeFileSync(target, "", { flag: "wx", mode: 384 });
+  } else {
+    copyNotExecutable(real, target);
+  }
+  return target;
+}
+var CHANGE_KINDS = ["json-keys", "markdown-block", "whole-file"];
+function isChangedEntry(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const entry = value;
+  return Array.isArray(entry.kinds) && entry.kinds.every((kind) => CHANGE_KINDS.includes(kind)) && (entry.baseline === null || typeof entry.baseline === "string");
+}
+function readChanged(stateDir) {
+  const file = join2(stateDir, CHANGED_FILE);
+  if (!existsSync(file))
+    return {};
+  const parsed = JSON.parse(readFileSync(file, "utf8"));
+  const files = parsed?.files;
+  if (typeof files !== "object" || files === null || !Object.values(files).every((entry) => isChangedEntry(entry))) {
+    throw new Error(`Invalid ${file}: expected { "files": { <path>: { kinds, baseline } } }`);
+  }
+  return files;
+}
+function writeChanged(stateDir, files) {
+  const sorted = Object.fromEntries(Object.entries(files).sort(([a], [b]) => a < b ? -1 : 1));
+  atomicWrite(join2(stateDir, CHANGED_FILE), `${JSON.stringify({ files: sorted }, null, 2)}
+`, 384);
+}
+function recordChange(stateDir, file, kind, backup) {
+  const files = readChanged(stateDir);
+  const entry = files[file];
+  if (!entry) {
+    files[file] = { kinds: [kind], baseline: backup };
+    writeChanged(stateDir, files);
+    return true;
+  }
+  if (!entry.kinds.includes(kind)) {
+    entry.kinds.push(kind);
+    writeChanged(stateDir, files);
+  }
+  return false;
+}
+function forgetChange(stateDir, file) {
+  const files = readChanged(stateDir);
+  if (!(file in files))
+    return;
+  delete files[file];
+  writeChanged(stateDir, files);
+}
+
+class ConcurrentChangeError extends Error {
+  name = "ConcurrentChangeError";
+}
+function retryOnConcurrentChange(file, fn, attempts = 3) {
+  for (let attempt = 1;; attempt += 1) {
+    try {
+      return fn();
+    } catch (error) {
+      if (!(error instanceof ConcurrentChangeError) || attempt >= attempts) {
+        if (error instanceof ConcurrentChangeError) {
+          throw new ConcurrentChangeError(`${file} kept changing while anymodel tried to update it (${attempts} tries). ` + "Close the program that writes it (for example Claude Code), then run again.");
+        }
+        throw error;
+      }
+    }
+  }
+}
+function readCurrent(file) {
+  return existsSync(file) ? readFileSync(file, "utf8") : null;
+}
+function writeManagedFile(file, content, options) {
+  const target = realTarget(file);
+  const currentMode = fileMode(target);
+  const current = currentMode === null ? null : readFileSync(target, "utf8");
+  const checkUnchanged = (now) => {
+    if (options.expectedContent !== undefined && now !== options.expectedContent) {
+      throw new ConcurrentChangeError(`${target} changed after anymodel read it.`);
+    }
+  };
+  if (!options.dryRun)
+    checkUnchanged(current);
+  const wantedMode = options.mode ?? currentMode ?? options.newFileMode ?? 384;
+  if (current === content && currentMode === wantedMode) {
+    return { outcome: "unchanged", backup: null };
+  }
+  const outcome = currentMode === null ? "created" : "updated";
+  if (options.dryRun)
+    return { outcome, backup: null };
+  const backup = backupFile(options.stateDir, target);
+  const isBaseline = recordChange(options.stateDir, target, options.kind, backup);
+  try {
+    atomicWrite(target, content, wantedMode, () => {
+      options.onBeforeCompare?.();
+      checkUnchanged(readCurrent(target));
+    });
+  } catch (error) {
+    if (!isBaseline && existsSync(backup))
+      unlinkSync(backup);
+    throw error;
+  }
+  return { outcome, backup };
+}
+function removeManagedFile(stateDir, file) {
+  const backup = backupFile(stateDir, file);
+  unlinkSync(file);
+  return backup;
 }
 
 // src/gateway/config.ts
@@ -3629,6 +3880,9 @@ function _isoDuration(Class, params) {
     ...normalizeParams(params)
   });
 }
+function _number(Class, params) {
+  return new Class(snapshotChecks({ type: "number", checks: [], ...normalizeParams(params) }));
+}
 function _int(Class, params) {
   return new Class({
     type: "number",
@@ -5412,6 +5666,9 @@ var ZodNumber = /* @__PURE__ */ $constructor("ZodNumber", (inst, def) => {
     return this;
   }
 }));
+function number2(params) {
+  return _number(ZodNumber, params);
+}
 var ZodNumberFormat = /* @__PURE__ */ $constructor("ZodNumberFormat", (inst, def) => {
   $ZodNumberFormat.init(inst, def);
   ZodNumber.init(inst, def);
@@ -5511,6 +5768,14 @@ var ZodObject = /* @__PURE__ */ $constructor("ZodObject", (inst, def) => {
     return required(ZodNonOptional, this, args[0]);
   }
 });
+function object(shape, params) {
+  const def = {
+    type: "object",
+    shape: shape ?? {},
+    ...normalizeParams(params)
+  };
+  return new ZodObject(def);
+}
 function looseObject(shape, params) {
   return new ZodObject({
     type: "object",
@@ -5812,252 +6077,6 @@ var PLUGIN = "anymodel";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
 var COMMAND = "anymodel";
 
-// src/setup/write.ts
-import {
-  chmodSync,
-  closeSync,
-  existsSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  readlinkSync,
-  realpathSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync
-} from "fs";
-import { basename, dirname, join as join2, resolve } from "path";
-var BACKUPS_DIR = "backups";
-var BACKUP_INFIX = ".bak-anymodel-";
-var ABSENT_SUFFIX = ".absent";
-var CHANGED_FILE = "changed.json";
-var MAX_LINKS = 40;
-function utcStamp(date = new Date) {
-  return date.toISOString().replace(/[-:.]/g, "");
-}
-function realTarget(file) {
-  let path = resolve(file);
-  for (let links = 0;links <= MAX_LINKS; links += 1) {
-    try {
-      return realpathSync(path);
-    } catch (error) {
-      if (error.code !== "ENOENT")
-        throw error;
-    }
-    let isLink = false;
-    try {
-      isLink = lstatSync(path).isSymbolicLink();
-    } catch (error) {
-      if (error.code !== "ENOENT")
-        throw error;
-    }
-    if (!isLink) {
-      const parent = dirname(path);
-      return parent === path ? path : join2(realTarget(parent), basename(path));
-    }
-    path = resolve(dirname(path), readlinkSync(path));
-  }
-  throw new Error(`${file}: too many symlinks (a loop?)`);
-}
-function fileMode(file) {
-  return existsSync(file) ? statSync(file).mode & 4095 : null;
-}
-function writeTemp(file, content, mode) {
-  const dir = dirname(file);
-  mkdirSync(dir, { recursive: true });
-  const temp = join2(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
-  try {
-    const fd = openSync(temp, "wx", mode);
-    try {
-      writeFileSync(fd, content);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    chmodSync(temp, mode);
-  } catch (error) {
-    if (existsSync(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-  return temp;
-}
-function atomicWrite(file, content, mode, beforeRename) {
-  const temp = writeTemp(file, content, mode);
-  try {
-    beforeRename?.();
-    renameSync(temp, file);
-  } catch (error) {
-    if (existsSync(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-}
-function parseBackupName(base, name) {
-  const prefix = `${base}${BACKUP_INFIX}`;
-  if (!name.startsWith(prefix))
-    return null;
-  const match = /^(\d{8}T\d{9}Z)(?:-(\d+))?(?:(\.absent)|\.mode-([0-7]{3,4}))?$/.exec(name.slice(prefix.length));
-  if (!match?.[1])
-    return null;
-  return {
-    name,
-    stamp: match[1],
-    counter: match[2] ? Number(match[2]) : 0,
-    absent: match[3] !== undefined,
-    mode: match[4] ? Number.parseInt(match[4], 8) : null
-  };
-}
-function backupDir(stateDir, file) {
-  return join2(stateDir, BACKUPS_DIR, encodeURIComponent(realTarget(file)));
-}
-function makePrivateDir(dir) {
-  mkdirSync(dir, { recursive: true, mode: 448 });
-  chmodSync(dir, 448);
-}
-function listBackups(stateDir, file) {
-  const dir = backupDir(stateDir, file);
-  if (!existsSync(dir))
-    return [];
-  const base = basename(realTarget(file));
-  return readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup !== null).sort((a, b) => a.stamp === b.stamp ? a.counter - b.counter : a.stamp < b.stamp ? -1 : 1).map((backup) => {
-    const path = join2(dir, backup.name);
-    return { path, absent: backup.absent, mode: backup.mode ?? fileMode(path) ?? 384 };
-  });
-}
-function copyNotExecutable(file, target) {
-  const mode = fileMode(file) ?? 384;
-  const safeMode = mode & ~73;
-  writeFileSync(target, readFileSync(file), { flag: "wx", mode: safeMode });
-  chmodSync(target, safeMode);
-  return mode;
-}
-function backupFile(stateDir, file) {
-  const real = realTarget(file);
-  const dir = backupDir(stateDir, real);
-  const base = basename(real);
-  const stamp = utcStamp();
-  const mode = fileMode(real);
-  const suffix = mode === null ? ABSENT_SUFFIX : (mode & 73) !== 0 ? `.mode-${mode.toString(8)}` : "";
-  makePrivateDir(join2(stateDir, BACKUPS_DIR));
-  makePrivateDir(dir);
-  const sameStamp = readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup?.stamp === stamp);
-  const counter = sameStamp.length === 0 ? 0 : Math.max(...sameStamp.map((backup) => backup.counter)) + 1;
-  const target = join2(dir, `${base}${BACKUP_INFIX}${stamp}${counter === 0 ? "" : `-${counter}`}${suffix}`);
-  if (mode === null) {
-    writeFileSync(target, "", { flag: "wx", mode: 384 });
-  } else {
-    copyNotExecutable(real, target);
-  }
-  return target;
-}
-var CHANGE_KINDS = ["json-keys", "markdown-block", "whole-file"];
-function isChangedEntry(value) {
-  if (typeof value !== "object" || value === null)
-    return false;
-  const entry = value;
-  return Array.isArray(entry.kinds) && entry.kinds.every((kind) => CHANGE_KINDS.includes(kind)) && (entry.baseline === null || typeof entry.baseline === "string");
-}
-function readChanged(stateDir) {
-  const file = join2(stateDir, CHANGED_FILE);
-  if (!existsSync(file))
-    return {};
-  const parsed = JSON.parse(readFileSync(file, "utf8"));
-  const files = parsed?.files;
-  if (typeof files !== "object" || files === null || !Object.values(files).every((entry) => isChangedEntry(entry))) {
-    throw new Error(`Invalid ${file}: expected { "files": { <path>: { kinds, baseline } } }`);
-  }
-  return files;
-}
-function writeChanged(stateDir, files) {
-  const sorted = Object.fromEntries(Object.entries(files).sort(([a], [b]) => a < b ? -1 : 1));
-  atomicWrite(join2(stateDir, CHANGED_FILE), `${JSON.stringify({ files: sorted }, null, 2)}
-`, 384);
-}
-function recordChange(stateDir, file, kind, backup) {
-  const files = readChanged(stateDir);
-  const entry = files[file];
-  if (!entry) {
-    files[file] = { kinds: [kind], baseline: backup };
-    writeChanged(stateDir, files);
-    return true;
-  }
-  if (!entry.kinds.includes(kind)) {
-    entry.kinds.push(kind);
-    writeChanged(stateDir, files);
-  }
-  return false;
-}
-function forgetChange(stateDir, file) {
-  const files = readChanged(stateDir);
-  if (!(file in files))
-    return;
-  delete files[file];
-  writeChanged(stateDir, files);
-}
-
-class ConcurrentChangeError extends Error {
-  name = "ConcurrentChangeError";
-}
-function retryOnConcurrentChange(file, fn, attempts = 3) {
-  for (let attempt = 1;; attempt += 1) {
-    try {
-      return fn();
-    } catch (error) {
-      if (!(error instanceof ConcurrentChangeError) || attempt >= attempts) {
-        if (error instanceof ConcurrentChangeError) {
-          throw new ConcurrentChangeError(`${file} kept changing while anymodel tried to update it (${attempts} tries). ` + "Close the program that writes it (for example Claude Code), then run again.");
-        }
-        throw error;
-      }
-    }
-  }
-}
-function readCurrent(file) {
-  return existsSync(file) ? readFileSync(file, "utf8") : null;
-}
-function writeManagedFile(file, content, options) {
-  const target = realTarget(file);
-  const currentMode = fileMode(target);
-  const current = currentMode === null ? null : readFileSync(target, "utf8");
-  const checkUnchanged = (now) => {
-    if (options.expectedContent !== undefined && now !== options.expectedContent) {
-      throw new ConcurrentChangeError(`${target} changed after anymodel read it.`);
-    }
-  };
-  if (!options.dryRun)
-    checkUnchanged(current);
-  const wantedMode = options.mode ?? currentMode ?? options.newFileMode ?? 384;
-  if (current === content && currentMode === wantedMode) {
-    return { outcome: "unchanged", backup: null };
-  }
-  const outcome = currentMode === null ? "created" : "updated";
-  if (options.dryRun)
-    return { outcome, backup: null };
-  const backup = backupFile(options.stateDir, target);
-  const isBaseline = recordChange(options.stateDir, target, options.kind, backup);
-  try {
-    atomicWrite(target, content, wantedMode, () => {
-      options.onBeforeCompare?.();
-      checkUnchanged(readCurrent(target));
-    });
-  } catch (error) {
-    if (!isBaseline && existsSync(backup))
-      unlinkSync(backup);
-    throw error;
-  }
-  return { outcome, backup };
-}
-function removeManagedFile(stateDir, file) {
-  const backup = backupFile(stateDir, file);
-  unlinkSync(file);
-  return backup;
-}
-
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 var SLOT_PREFIX = "anymodel-";
@@ -6168,6 +6187,39 @@ function resolveRequestRoute(body, config, guard) {
   return claude.length > 0 ? { ...route, targets: claude } : { kind: "anthropic-as-sent" };
 }
 var JUDGE_SLOT = "anymodel-judge";
+var MODEL_SLOTS = {
+  "anymodel-fable": "fable",
+  "anymodel-opus": "opus"
+};
+function isModelSlot(slot) {
+  return Object.hasOwn(MODEL_SLOTS, slot);
+}
+function modelSlotFor(model, modelSlots) {
+  if (typeof model !== "string" || !model.startsWith("claude-") || modelSlots === undefined) {
+    return null;
+  }
+  const name = withoutContextSuffix(model);
+  if (!Object.hasOwn(modelSlots, name))
+    return null;
+  const slot = modelSlots[name];
+  return slot === undefined ? null : { model: name, slot };
+}
+function planUsageLimit(status, header) {
+  if (status !== 429)
+    return null;
+  const state = header("anthropic-ratelimit-unified-status")?.trim().toLowerCase();
+  if (state !== "rejected")
+    return null;
+  const overage = header("anthropic-ratelimit-unified-overage-status")?.trim().toLowerCase();
+  if (overage !== undefined && overage !== "" && overage !== "rejected")
+    return null;
+  const claim = header("anthropic-ratelimit-unified-representative-claim")?.trim() ?? "";
+  const reset = Number(header("anthropic-ratelimit-unified-reset")?.trim() ?? "");
+  return {
+    claim: /^[a-z0-9_]{1,40}$/.test(claim) ? claim : null,
+    resetsAt: Number.isInteger(reset) && reset > 0 ? reset : null
+  };
+}
 var FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
 function fallbackKind(status, target) {
   if (FALLBACK_ANY.has(status))
@@ -6205,6 +6257,7 @@ var gatewayConfigSchema = looseObject({
   aliases: record(string2(), string2()).default({}),
   anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
   backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
+  modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
   slots: record(string2().refine(isSlotKey, "a slot key is anymodel-<name>"), array(string2()).min(1)),
   timeouts: looseObject({ firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS) }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
@@ -6235,7 +6288,38 @@ var gatewayConfigSchema = looseObject({
     if (error !== null)
       ctx.addIssue({ code: "custom", message: error, path: ["aliases", name] });
   }
+  for (const [model, slot] of Object.entries(config.modelSlots ?? {})) {
+    const error = modelSlotError(model, slot, config.slots);
+    if (error !== null) {
+      ctx.addIssue({ code: "custom", message: error, path: ["modelSlots", model] });
+    }
+  }
 });
+function modelSlotError(model, slot, slots) {
+  if (!model.startsWith("claude-") || /\s/.test(model) || model === "claude-") {
+    return `modelSlots key "${model}" is not a Claude model id`;
+  }
+  if (withoutContextSuffix(model) !== model) {
+    return `modelSlots key "${model}": write it without [1m]; the router looks names up without it`;
+  }
+  const family = Object.hasOwn(MODEL_SLOTS, slot) ? MODEL_SLOTS[slot] : undefined;
+  if (family === undefined) {
+    return `modelSlots "${model}" points at "${slot}", which is not a model slot (${Object.keys(MODEL_SLOTS).sort().join(", ")})`;
+  }
+  if (!model.includes(`-${family}-`)) {
+    return `modelSlots "${model}" points at ${slot}, which is for ${family} models`;
+  }
+  const targets = Object.hasOwn(slots, slot) ? slots[slot] : undefined;
+  if (targets === undefined)
+    return `modelSlots "${model}" points at slot "${slot}", which is not in slots`;
+  if (targets[0] !== model) {
+    return `slot ${slot} must start with "${model}" itself: that target is the model, sent unchanged`;
+  }
+  if (targets.length < 2) {
+    return `slot ${slot} names no target after "${model}" to answer at its usage limit`;
+  }
+  return null;
+}
 function aliasError(name, to, config) {
   if (name.trim() === "" || /\s/.test(name))
     return `alias "${name}" is not a model name`;
@@ -6358,7 +6442,79 @@ ${good ? "keeping the last good config" : NO_CONFIG_MEANS}`);
   };
 }
 
+// src/gateway/limit-state.ts
+var NO_RESET_FRESH_MS = 15 * 60000;
+var limitSchema = object({
+  claim: string2().nullable(),
+  resetsAt: number2().nullable(),
+  seenAt: number2()
+});
+var fallbackSchema = object({
+  lastAt: number2(),
+  model: string2(),
+  resetsAt: number2().nullable(),
+  since: number2(),
+  target: string2()
+});
+var stateSchema = object({
+  fallbacks: record(string2(), fallbackSchema),
+  limits: record(string2(), limitSchema),
+  version: literal(1)
+});
+function emptyLimitState() {
+  return { fallbacks: {}, limits: {}, version: 1 };
+}
+function formatLimitState(state) {
+  return `${JSON.stringify(state, null, 2)}
+`;
+}
+function parseLimitState(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = stateSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+function formatClock(epochSec, nowMs, timeZone) {
+  const at = new Date(epochSec * 1000);
+  const day = (date) => new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone,
+    year: "numeric"
+  }).format(date);
+  const time = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    timeZone
+  }).format(at);
+  if (day(at) === day(new Date(nowMs)))
+    return time;
+  const date = new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    month: "short",
+    timeZone
+  }).format(at);
+  return `${date} ${time}`;
+}
+function current(resetsAt, lastMs, nowMs) {
+  if (resetsAt !== null)
+    return resetsAt * 1000 > nowMs;
+  return nowMs - lastMs < NO_RESET_FRESH_MS;
+}
+function currentLimits(state, nowMs) {
+  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+function currentFallbacks(state, nowMs) {
+  return Object.entries(state.fallbacks).filter(([, record2]) => current(record2.resetsAt, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+
 // src/gateway/router.ts
+var FALLBACK_SAVE_EVERY_MS = 60000;
 var HEALTH_PATH = "/__anymodel/health";
 var MESSAGES_PATH = "/v1/messages";
 var COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
@@ -6685,6 +6841,78 @@ function createRouter(deps) {
   const cooling = new Map;
   const aliasesLogged = new Set;
   const translationsLogged = new Set;
+  const limitState = emptyLimitState();
+  const limitedUntil = new Map;
+  let saveQueued = false;
+  let lastSaveError = "";
+  function persist() {
+    const save = deps.saveState;
+    if (save === undefined || saveQueued)
+      return;
+    saveQueued = true;
+    const task = new Promise((resolve) => {
+      setTimeout(() => {
+        saveQueued = false;
+        try {
+          save(formatLimitState(limitState));
+          lastSaveError = "";
+        } catch (error) {
+          const message = messageOf(error);
+          if (message !== lastSaveError)
+            deps.log(`ERROR cannot write the limit state: ${message}`);
+          lastSaveError = message;
+        }
+        resolve();
+      }, 0);
+    });
+    deps.background?.(task);
+  }
+  function observeClaude(model, response) {
+    const id = withoutContextSuffix(model);
+    const limit = planUsageLimit(response.status, (name) => response.headers.get(name));
+    if (limit !== null) {
+      const before = limitState.limits[id];
+      limitState.limits[id] = { ...limit, seenAt: deps.now() };
+      if (before === undefined || before.resetsAt !== limit.resetsAt || deps.now() - before.seenAt >= FALLBACK_SAVE_EVERY_MS) {
+        persist();
+      } else {
+        limitState.limits[id] = before;
+      }
+      return limit;
+    }
+    if (response.status >= 400 || !Object.hasOwn(limitState.limits, id))
+      return null;
+    delete limitState.limits[id];
+    for (const [slot, record] of Object.entries(limitState.fallbacks)) {
+      if (record.model !== id || slot === JUDGE_SLOT)
+        continue;
+      delete limitState.fallbacks[slot];
+      deps.log(`${slot}: ${id} answers again; its fallback is over`);
+    }
+    limitedUntil.delete(id);
+    persist();
+    return null;
+  }
+  function noteFallback(slot, model, limit, outcome) {
+    const now = deps.now();
+    const before = limitState.fallbacks[slot];
+    const resetsAt = limit?.resetsAt ?? before?.resetsAt ?? null;
+    if (before === undefined) {
+      const reset = resetsAt === null ? "no reset time given" : `resets ${new Date(resetsAt * 1000).toISOString()}`;
+      const claim = limit?.claim ?? "plan limit";
+      deps.log(`WARN ${slot}: ${model} is at its plan usage limit (${printable(claim, 40)}, ${reset}); ${outcome.response.ok ? `answering from ${outcome.target}` : `its fallback ${outcome.target} answered ${outcome.response.status}`} until ${model} answers again`);
+    }
+    limitState.fallbacks[slot] = {
+      lastAt: now,
+      model,
+      resetsAt,
+      since: before?.since ?? now,
+      target: outcome.target
+    };
+    if (before === undefined || before.target !== outcome.target || before.resetsAt !== resetsAt || now - before.lastAt >= FALLBACK_SAVE_EVERY_MS) {
+      persist();
+    }
+  }
   async function discard(response) {
     try {
       await response.body?.cancel();
@@ -6912,6 +7140,17 @@ function createRouter(deps) {
     }
     return out;
   }
+  function limitedNow() {
+    const now = deps.now();
+    const out = {};
+    for (const [model, until] of limitedUntil) {
+      if (until <= now)
+        limitedUntil.delete(model);
+      else
+        out[model] = Math.ceil((until - now) / 1000);
+    }
+    return out;
+  }
   function closed(result, label) {
     if ("response" in result)
       discard(result.response);
@@ -6940,6 +7179,9 @@ function createRouter(deps) {
       let result = "error" in built ? { failure: built.error, status: null } : await send(req, built.upstream, deadlineAt);
       if (req.signal.aborted)
         return closed(result, label);
+      if (target.kind === "anthropic" && "response" in result) {
+        observeClaude(target.model, result.response);
+      }
       if ("response" in result && !last && target.kind === "backend" && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("text/event-stream")) {
         result = await holdFirstEvent(result.response, deadlineAt);
         if (req.signal.aborted)
@@ -6991,6 +7233,82 @@ function createRouter(deps) {
       target: "refused"
     };
   }
+  async function useModelSlot(req, url, config, body, sent, found, rest, answerDirect) {
+    const until = limitedUntil.get(found.model);
+    let limit;
+    let skipped = 0;
+    if (until !== undefined && until > deps.now()) {
+      skipped = 1;
+      limit = limitState.limits[found.model] ?? null;
+    } else {
+      limitedUntil.delete(found.model);
+      const result = await send(req, anthropicUpstream(req, url, config, sent), null);
+      if (req.signal.aborted)
+        return closed(result, found.model);
+      if (!("response" in result))
+        return answerDirect(result, null);
+      limit = observeClaude(found.model, result.response);
+      if (limit === null)
+        return answerDirect(result, null);
+      const nowSec = deps.now() / 1000;
+      const restSec = limit.resetsAt === null ? COOLDOWN_MAX_SEC : Math.min(Math.max(limit.resetsAt - nowSec, 0), COOLDOWN_MAX_SEC);
+      limitedUntil.set(found.model, deps.now() + restSec * 1000);
+      logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${found.model} answered 429 (the plan's usage limit); trying the next target of ${found.slot}`);
+    }
+    const outcome = await chain(req, url, config, body, rest, found.slot, false);
+    if (!req.signal.aborted)
+      noteFallback(found.slot, found.model, limit, outcome);
+    return {
+      ...outcome,
+      fallbacks: outcome.fallbacks + (skipped === 0 ? 1 : 0),
+      skipped: outcome.skipped + skipped
+    };
+  }
+  async function judgeAsFallback(req, url, config, body, model, judgeTargets, toClaude) {
+    const checkModel = withoutContextSuffix(String(body.model ?? "-"));
+    let limit = null;
+    let reason;
+    if (!req.headers.has("authorization") && !req.headers.has("x-api-key")) {
+      reason = "the request carries no Claude login";
+    } else {
+      const outcome = await toClaude();
+      const answer = outcome.response;
+      limit = planUsageLimit(answer.status, (name) => answer.headers.get(name));
+      if (req.signal.aborted || limit === null && answer.status !== 401) {
+        if (answer.status < 400)
+          endJudgeFallback();
+        return outcome;
+      }
+      discard(answer);
+      reason = limit === null ? "Claude answered 401 (no valid Claude login)" : `Claude is at the plan's usage limit (${limit.claim ?? "no window named"})`;
+    }
+    model.name = `${model.name} [judge fallback]`;
+    const judged = await chain(req, url, config, body, judgeTargets, JUDGE_SLOT, true);
+    if (req.signal.aborted)
+      return judged;
+    deps.log(`WARN safety check judged by ${judged.target} (${judged.response.status}), not by Claude: ${reason}`);
+    const now = deps.now();
+    const before = limitState.fallbacks[JUDGE_SLOT];
+    const resetsAt = limit?.resetsAt ?? null;
+    limitState.fallbacks[JUDGE_SLOT] = {
+      lastAt: now,
+      model: checkModel,
+      resetsAt,
+      since: before?.since ?? now,
+      target: judged.target
+    };
+    if (before === undefined || before.target !== judged.target || before.resetsAt !== resetsAt || now - before.lastAt >= FALLBACK_SAVE_EVERY_MS) {
+      persist();
+    }
+    return { ...judged, fallbacks: judged.fallbacks + 1 };
+  }
+  function endJudgeFallback() {
+    if (!Object.hasOwn(limitState.fallbacks, JUDGE_SLOT))
+      return;
+    delete limitState.fallbacks[JUDGE_SLOT];
+    deps.log(`${JUDGE_SLOT}: Claude answers safety checks again; the judge fallback is over`);
+    persist();
+  }
   async function route(req, url, model) {
     const config = deps.getConfig();
     const isMessages = req.method === "POST" && (url.pathname === MESSAGES_PATH || url.pathname === COUNT_TOKENS_PATH);
@@ -7002,14 +7320,16 @@ function createRouter(deps) {
     }
     const sent = req.method === "GET" || req.method === "HEAD" || req.body === null ? null : new Uint8Array(await req.arrayBuffer());
     let bytes = sent;
-    const direct = async (body = bytes) => {
-      const result = await send(req, anthropicUpstream(req, url, config, body), null);
+    const answerDirect = (result, observed) => {
+      if (observed !== null && "response" in result)
+        observeClaude(observed, result.response);
       if (isMessages && "response" in result && result.response.status >= 400) {
         logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN anthropic answered ${result.response.status}`);
       }
       const response = "response" in result ? relay(result.response, null) : anthropicError(502, "api_error", `anymodel-router: Anthropic did not answer (${result.failure})`);
       return { fallbacks: 0, response, skipped: 0, target: "anthropic" };
     };
+    const direct = async (body = bytes, observed = null) => answerDirect(await send(req, anthropicUpstream(req, url, config, body), null), observed);
     if (!isMessages)
       return direct();
     const parsed = bytes === null ? null : parseBody(bytes);
@@ -7039,47 +7359,50 @@ function createRouter(deps) {
     if (guard)
       model.name = `${model.name} (safety check)`;
     const judge = guard ? resolveRoute(JUDGE_SLOT, config) : null;
-    if (judge !== null && judge.kind === "slot" && judge.targets.length > 0) {
-      model.name = `${model.name} [judge]`;
-      if (url.pathname === COUNT_TOKENS_PATH) {
-        return {
+    const judgeTargets = judge?.kind === "slot" ? judge.targets : [];
+    if (judgeTargets.length > 0 && url.pathname === MESSAGES_PATH) {
+      return judgeAsFallback(req, url, config, body, model, judgeTargets, claudeRoute);
+    }
+    return claudeRoute();
+    function claudeRoute() {
+      const found = guard || alias !== null || url.pathname !== MESSAGES_PATH ? null : modelSlotFor(body.model, config.modelSlots);
+      const slotRoute = found === null ? null : resolveRoute(found.slot, config);
+      const rest = slotRoute?.kind === "slot" ? slotRoute.targets.slice(1) : [];
+      if (found !== null && rest.length > 0) {
+        return useModelSlot(req, url, config, body, sent, found, rest, answerDirect);
+      }
+      const decided = resolveRequestRoute(body, config, guard);
+      if (decided.kind === "anthropic") {
+        const named = typeof body.model === "string" && body.model.startsWith("claude-");
+        return direct(bytes, named ? String(body.model) : null);
+      }
+      if (decided.kind === "anthropic-as-sent")
+        return direct(sent);
+      if (decided.kind === "unknown-slot") {
+        const slots = Object.keys(config.slots);
+        return Promise.resolve({
           fallbacks: 0,
-          response: anthropicError(404, "not_found_error", "count_tokens is not available for the judge slot; Claude Code estimates instead"),
+          response: anthropicError(400, "invalid_request_error", `anymodel-router: "${decided.slot}" is not a slot in ${deps.configPath} (slots: ${slots.length > 0 ? slots.join(", ") : "none \u2014 run anymodel gateway setup"})`),
           skipped: 0,
           target: "none"
-        };
+        });
       }
-      return chain(req, url, config, body, judge.targets, JUDGE_SLOT, true);
-    }
-    const decided = resolveRequestRoute(body, config, guard);
-    if (decided.kind === "anthropic")
-      return direct();
-    if (decided.kind === "anthropic-as-sent")
-      return direct(sent);
-    if (decided.kind === "unknown-slot") {
-      const slots = Object.keys(config.slots);
-      return {
-        fallbacks: 0,
-        response: anthropicError(400, "invalid_request_error", `anymodel-router: "${decided.slot}" is not a slot in ${deps.configPath} (slots: ${slots.length > 0 ? slots.join(", ") : "none \u2014 run anymodel gateway setup"})`),
-        skipped: 0,
-        target: "none"
-      };
-    }
-    const targets = decided.kind === "slot" ? decided.targets : [decided.target];
-    const name = decided.kind === "slot" ? decided.slot : model.name;
-    if (url.pathname === COUNT_TOKENS_PATH) {
-      const first = targets[0];
-      if (first === undefined || first.kind === "backend") {
-        return {
-          fallbacks: 0,
-          response: anthropicError(404, "not_found_error", `count_tokens is not available for ${name}; Claude Code estimates instead`),
-          skipped: 0,
-          target: first === undefined ? "none" : formatTarget(first)
-        };
+      const targets = decided.kind === "slot" ? decided.targets : [decided.target];
+      const name = decided.kind === "slot" ? decided.slot : model.name;
+      if (url.pathname === COUNT_TOKENS_PATH) {
+        const first = targets[0];
+        if (first === undefined || first.kind === "backend") {
+          return Promise.resolve({
+            fallbacks: 0,
+            response: anthropicError(404, "not_found_error", `count_tokens is not available for ${name}; Claude Code estimates instead`),
+            skipped: 0,
+            target: first === undefined ? "none" : formatTarget(first)
+          });
+        }
+        return chain(req, url, config, body, [first], name, guard);
       }
-      return chain(req, url, config, body, [first], name, guard);
+      return chain(req, url, config, body, targets, name, guard);
     }
-    return chain(req, url, config, body, targets, name, guard);
   }
   return async function handle(req) {
     const startMs = deps.now();
@@ -7096,6 +7419,8 @@ function createRouter(deps) {
       return Response.json({
         cooling: coolingNow(),
         fallbacks: stats.fallbacks,
+        limited: limitedNow(),
+        modelSlots: deps.getConfig().modelSlots ?? {},
         ok: true,
         port: deps.port,
         requests: stats.requests,
@@ -7121,7 +7446,7 @@ function createRouter(deps) {
     return outcome.response;
   };
 }
-function startRouter(configPath) {
+function startRouter(configPath, statePath) {
   const log = (line) => console.log(line);
   const source = watchConfig(configPath, log);
   const { port } = source.get();
@@ -7131,7 +7456,11 @@ function startRouter(configPath) {
     getConfig: () => source.get(),
     log,
     now: () => Date.now(),
-    port
+    port,
+    saveState: (text) => {
+      mkdirSync3(dirname3(statePath), { mode: 448, recursive: true });
+      atomicWrite(statePath, text, 384);
+    }
   });
   const server = Bun.serve({ fetch: handler, hostname: "127.0.0.1", idleTimeout: 0, port });
   log(`anymodel-router listening on http://127.0.0.1:${port} (config ${configPath})`);
@@ -7146,4 +7475,5 @@ function startRouter(configPath) {
 }
 
 // src/entries/router.ts
-startRouter(cliPaths().gatewayConfigFile);
+var paths = cliPaths();
+startRouter(paths.gatewayConfigFile, paths.gatewayStateFile);

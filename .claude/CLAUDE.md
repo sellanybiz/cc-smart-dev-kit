@@ -57,8 +57,9 @@ the first time you use it.
 | `src/build-info/` | The version and the marketplace source, baked in from `plugin.json` at build time; the fixed names, without the version, in `names.ts` (the router bundle uses those). |
 | `src/project/` | Finds the git project from a folder and reads its `.claude/anymodel.json`. |
 | `src/setup/` | Safe changes to user files: managed keys and blocks, backups, atomic writes, the lock, the launcher, restore, marketplace access. |
-| `src/cli/` | The `anymodel` commands: `setup`, `doctor`, `restore`, `version`. |
-| `src/gateway/` | The optional AI gateway: the router, its config and slots, `gateway <command>`, its service and its doctor checks. |
+| `src/cli/` | The `anymodel` commands: `setup`, `doctor`, `restore`, `statusline`, `usage`, `version`. |
+| `src/gateway/` | The optional AI gateway: the router, its config and slots (the model slots and the judge test too), the limit state file, `gateway <command>`, its service and its doctor checks. |
+| `src/hooks/` | The logic of the plugin's hooks, tested: the StopFailure usage-limit alert. Each hook's entry is in `src/entries/`. |
 | `src/testing/` | Test helpers: temp folders, a clean git environment, the guard that fails any test reaching the live router's port 20100. |
 | `plugin/` | What users get: `dist/` (built, committed), `bin/`, `hooks/hooks.json`, `skills/`, the manifest. |
 | `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check) and `check-version-bump.ts` (CI: a `plugin/` change raises the version). |
@@ -93,7 +94,7 @@ Each rule loads itself when you touch a file it covers.
 | `bundles-and-releases.md` | `src/`, `scripts/`, `plugin/`, `package.json` | Committed bundles, what `plugin/` may hold, versions. |
 | `hooks.md` | `src/hooks/`, `src/entries/`, `plugin/hooks/` | The hook contract (Phase 3). |
 | `setup-and-managed-files.md` | `src/setup/`, `src/cli/` | How the command changes user files. |
-| `gateway.md` | `src/gateway/`, `src/entries/router.ts`, the gateway skill and doc | Never change prompt text; the login reaches Anthropic only; the judge is opt-in; secrets; restarts. |
+| `gateway.md` | `src/gateway/`, `src/entries/router.ts`, the gateway skill and doc | Never change prompt text; the login reaches Anthropic only; the judge is a fallback only; model slots only at the usage limit; secrets; restarts. |
 | `anymodel-json.md` | `src/project/` | The `.claude/anymodel.json` contract. |
 | `testing.md` | `*.test.ts`, `src/testing/` | Temp folders only; every test can fail. |
 

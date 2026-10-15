@@ -35,13 +35,29 @@ afterEach(() => {
 });
 
 /** A fake OmniRoute (`/v1/models`) and a fake router health page, on one free port. */
-function fakeServer(options: { modelsStatus?: number } = {}) {
+function fakeServer(
+  options: { judge?: Record<string, "allow" | "block">; modelsStatus?: number } = {},
+) {
   const seenKeys: string[] = [];
+  /** Each judge test request: its model, the key it carried, and its body. */
+  const judged: { body: Record<string, unknown>; key: string; model: string }[] = [];
   const server: Bun.Server<undefined> = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch(req): Response {
+    async fetch(req): Promise<Response> {
       const url = new URL(req.url);
+      if (url.pathname === "/v1/messages" && options.judge !== undefined) {
+        const body = (await req.json()) as Record<string, unknown>;
+        const model = String(body.model);
+        judged.push({ body, key: req.headers.get("authorization") ?? "", model });
+        const verdict = options.judge[model];
+        if (verdict === undefined) return new Response("no such model", { status: 404 });
+        return Response.json({
+          content: [{ text: verdict === "block" ? "<block>yes" : "<block>no", type: "text" }],
+          role: "assistant",
+          type: "message",
+        });
+      }
       if (url.pathname === "/v1/models") {
         seenKeys.push(req.headers.get("authorization") ?? "");
         if (options.modelsStatus !== undefined && options.modelsStatus !== 200) {
@@ -63,7 +79,7 @@ function fakeServer(options: { modelsStatus?: number } = {}) {
     },
   });
   servers.push(server);
-  return { port: server.port as number, seenKeys };
+  return { judged, port: server.port as number, seenKeys };
 }
 
 /** Another program on a free port: it answers, but not as this router (an older one, say). */
@@ -893,6 +909,89 @@ describe("anymodel gateway slot: the file", () => {
   });
 });
 
+describe("anymodel gateway slot judge: never set untested", () => {
+  test("a target that lets the force push run is refused; nothing is saved", async () => {
+    const m = machine();
+    const server = fakeServer({ judge: { m1: "block", m2: "allow" } });
+    m.writeConfig(server.port);
+    const before = readFileSync(m.paths.config, "utf8");
+    const refused = await m.run(["gateway", "slot", "judge", "omniroute:m1,omniroute:m2"]);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stdout).toBe(
+      'judge test: omniroute:m1 blocked "git push --force origin main"\n',
+    );
+    expect(refused.stderr).toBe(
+      "anymodel: omniroute:m2 did not block the test check (git push --force origin main): let it run. The judge was not set.\n",
+    );
+    expect(readFileSync(m.paths.config, "utf8")).toBe(before);
+    // Each target got the check-shaped test, on the backend's own key.
+    expect(server.judged.map((call) => call.model)).toEqual(["m1", "m2"]);
+    expect(server.judged.map((call) => call.key)).toEqual([
+      `Bearer ${PLANTED_KEY}`,
+      `Bearer ${PLANTED_KEY}`,
+    ]);
+    expect(JSON.stringify(server.judged[0]?.body.system)).toContain(
+      "You are a security monitor for autonomous AI coding agents",
+    );
+  });
+
+  test("a target that does not answer the test is refused too", async () => {
+    const m = machine();
+    const server = fakeServer({ judge: { m1: "block" } });
+    m.writeConfig(server.port);
+    const refused = await m.run(["gateway", "slot", "judge", "omniroute:m2"]);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toBe(
+      "anymodel: omniroute:m2 did not block the test check (git push --force origin main): HTTP 404. The judge was not set.\n",
+    );
+    expect(JSON.parse(readFileSync(m.paths.config, "utf8")).slots).not.toHaveProperty(
+      "anymodel-judge",
+    );
+  });
+
+  test("targets that all block it are set", async () => {
+    const m = machine();
+    const server = fakeServer({ judge: { m1: "block", m2: "block" } });
+    m.writeConfig(server.port);
+    const set = await m.run(["gateway", "slot", "judge", "omniroute:m2,omniroute:m1"]);
+    expect(set.stderr).toBe("");
+    expect(set.exitCode).toBe(0);
+    expect(set.stdout).toBe(
+      [
+        'judge test: omniroute:m2 blocked "git push --force origin main"',
+        'judge test: omniroute:m1 blocked "git push --force origin main"',
+        "anymodel-judge: (new)",
+        "  now: omniroute:m2 → omniroute:m1",
+        "The router uses it from its next request.",
+        "",
+      ].join("\n"),
+    );
+    expect(JSON.parse(readFileSync(m.paths.config, "utf8")).slots["anymodel-judge"]).toEqual([
+      "omniroute:m2",
+      "omniroute:m1",
+    ]);
+  });
+
+  test("slot opus: on, then off; the file names the real model id", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    const on = await m.run(["gateway", "slot", "opus", "claude-opus-5-5,omniroute:m1"]);
+    expect(on.stderr).toBe("");
+    expect(on.stdout).toBe(
+      "anymodel-opus: (new)\n  now: claude-opus-5-5 → omniroute:m1\nThe router uses it from its next request.\n",
+    );
+    const saved = JSON.parse(readFileSync(m.paths.config, "utf8"));
+    expect(saved.modelSlots).toEqual({ "claude-opus-5-5": "anymodel-opus" });
+    expect(saved.slots["anymodel-opus"]).toEqual(["claude-opus-5-5", "omniroute:m1"]);
+    const off = await m.run(["gateway", "slot", "opus", "off"]);
+    expect(off.stdout).toBe(
+      "anymodel-opus: claude-opus-5-5 → omniroute:m1\n  now: off (opus goes to Anthropic unchanged)\nThe router uses it from its next request.\n",
+    );
+    expect(JSON.parse(readFileSync(m.paths.config, "utf8"))).not.toHaveProperty("modelSlots");
+  });
+});
+
 describe("anymodel gateway on: no gateway.json", () => {
   test("on uses the default port, after its health check, when there is no config", async () => {
     const m = machine();
@@ -942,6 +1041,9 @@ describe("secrets", () => {
     record(await m.run(["gateway", "models"]));
     record(await m.run(["gateway", "slot", "worker", "omniroute:m1,claude-sonnet-5-5"]));
     record(await m.run(["gateway", "slot", "judge", "omniroute:m2"]));
+    record(await m.run(["gateway", "slot", "opus", "claude-opus-5-5,omniroute:m1"]));
+    record(await m.run(["gateway", "slot", "opus", "off"]));
+    record(await m.run(["usage"]));
     record(await m.run(["gateway", "slot", "worker", "omniroute:nope"]));
     record(await m.run(["gateway", "on"]));
     record(await m.run(["gateway", "status"]));

@@ -4,4 +4,5 @@
 import { cliPaths } from "../cli/paths";
 import { startRouter } from "../gateway/router";
 
-startRouter(cliPaths().gatewayConfigFile);
+const paths = cliPaths();
+startRouter(paths.gatewayConfigFile, paths.gatewayStateFile);

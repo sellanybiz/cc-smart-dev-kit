@@ -27,6 +27,43 @@ Code's file; it shows we read the shape correctly, not that Claude Code still wr
 | SessionStart and PreToolUse hooks fire from a plugin. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
 | The hook input's `cwd` follows the session into a worktree. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
 | `CLAUDE_PROJECT_DIR` stays at the folder the session started in, also in a worktree. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
+| A `StopFailure` hook runs instead of `Stop` when a turn ends on an API error. Its input has the common fields plus `error` (the matcher value; `rate_limit` for the plan's usage limit **and** for a short rate limit), `last_assistant_message` (the error text Claude Code showed) and, per the docs, an optional `error_details` (absent in all live runs). Claude Code ignores its output and exit code (code.claude.com/docs/en/hooks § StopFailure, read 2026-10-15). Proved with a `--settings` hook, not yet from the plugin's own `hooks.json`. | 2.1.300 | live (2026-10-15, § Usage limits): one `StopFailure` per stopped turn, in `-p` and interactive; unit (our reader): `src/hooks/stop-failure.test.ts` › "which stops get an alert" (all tests), "the hook as Claude Code runs it" (both tests) |
+
+## Usage limits
+
+What Claude Code does when Anthropic refuses a request for the plan's usage limit, and how
+that differs from a short rate limit.
+
+**The answer's shape** comes from Claude Code 2.1.300 itself: its built-in test limiter
+(in the binary, the class that sets `anthropic-ratelimit-unified-*` headers) builds the
+refusal as status 429, body `{"error":{"type":"rate_limit_error","message":"Rate limit
+exceeded"}}`, with `anthropic-ratelimit-unified-status: rejected`,
+`anthropic-ratelimit-unified-representative-claim` (`five_hour`, `seven_day`,
+`seven_day_opus`, `seven_day_sonnet`), `anthropic-ratelimit-unified-reset` (Unix seconds)
+and `retry-after` (seconds to the reset). It counts it as a refusal only while
+`anthropic-ratelimit-unified-overage-status` is absent or `rejected` (paid extra usage
+takes over otherwise). Public write-ups agree: a request on a subscription login gets the
+`anthropic-ratelimit-unified-*` family, an API key the per-minute
+`anthropic-ratelimit-requests-*` family (ssdnodes.com/learn/claude-api-rate-limit-headers-explained;
+claudecodecamp.com, "I Tried to Reverse Engineer Claude Code's Usage Limits";
+github.com/anthropics/claude-code/issues/12829). **A real refusal from Anthropic was not
+captured:** no account here was at its limit, so the live runs answered with a fake
+Anthropic in that shape.
+
+How the live runs were made (2026-10-15): a fake Anthropic (a small Bun server) on a free
+test port, never 20100, forwarding nothing; `claude -p` (and once the interactive `claude`
+in tmux) in a temp folder, with `ANTHROPIC_BASE_URL` set for that one process,
+`--setting-sources project --strict-mcp-config`, and a `--settings` file with a logging
+StopFailure hook (and a status line that saved its input). No request reached Anthropic.
+
+| Behaviour | Last proved on | How it is proved |
+|---|---|---|
+| **At the plan's usage limit** (the shape above, `five_hour`): Claude Code sends the request **once** and does not retry. `-p` ends with `"result": "You've hit your limit · resets 1:42am (<time zone>)"`, `"api_error": "usage_limit_reached"`, `"api_error_status": 429`. The interactive screen shows the same line, then "Usage limit reached · continuing automatically at <reset> · esc to cancel · /usage-credits to continue now". StopFailure gets `error: "rate_limit"` and that same text as `last_assistant_message`. | 2.1.300 | live (above); unit (our reading of it): `src/gateway/gateway.test.ts` › "model slots (opus, fable)" › "planUsageLimit: only a 429 that says rejected, with no paid extra usage taking over"; `src/hooks/stop-failure.test.ts` › "which stops get an alert" |
+| **A short rate limit** (429 `rate_limit_error`, `retry-after: 1`, no unified headers): Claude Code retries it **10 times** (11 requests in 172 s, the waits growing to about 34 s, not the `retry-after`), then ends with "API Error: Server is temporarily limiting requests (not your usage limit) · <Anthropic's message>", `api_error: null`; StopFailure gets `error: "rate_limit"` with that text. | 2.1.300 | live (above); unit: `src/hooks/stop-failure.test.ts` › "a short rate limit, another error, or no gateway: no alert" |
+| **No model switch by itself** at the limit: with `--model claude-opus-5-5` and `seven_day_opus` refused (Sonnet would have answered), Claude Code sent one Opus request and stopped; with `--fallback-model claude-sonnet-5-5` too. (Why the router's model slot exists.) | 2.1.300 | live (above) |
+| The status line's input has `rate_limits.five_hour` / `rate_limits.seven_day`, each with `used_percentage` (0 to 100) and `resets_at` (Unix seconds), filled from Anthropic's `anthropic-ratelimit-unified-5h-utilization` / `-7d-utilization` (0 to 1) and `-5h-reset` / `-7d-reset` headers: a fake answer with `5h-utilization: 0.87` gave `used_percentage: 87`. Only for a Claude subscription, after the first answer (code.claude.com/docs/en/statusline). After a refused request (the 429 above) the input had no `rate_limits`. | 2.1.300 | live (interactive, above); unit (our reader): `src/cli/statusline.test.ts` (all tests) |
+| A model slot's fallback reaches Claude Code as a normal answer: `claude -p --model claude-opus-5-5` through a TEST router (the worktree's `createRouter`, a fake Anthropic at its limit, a fake backend) ended with the backend's text, `is_error: false`. | 2.1.300 | live (2026-10-15, test router on a free port); unit: `gateway.test.ts` › "model slots (opus, fable)" (all tests) |
+| Claude Code writes each subagent to `<config>/projects/<project>/<session>/subagents/agent-<id>.jsonl`, beside `agent-<id>.meta.json` (`model`: `opus` / `sonnet` / `haiku`, or none). Each `type: "assistant"` line is one content block of a reply: `message.id`, `message.model` (a cheap backend's own name when a slot answered), `timestamp`, `cwd`. | 2.1.300 | seen in this machine's transcripts (read only); unit (our reader): `src/cli/usage.test.ts` (all tests) |
 
 ## Worktrees
 
@@ -83,6 +120,8 @@ live check or the router's log shows it.
 | Under a slot name, or an old name in the config's `aliases` that points at a `claude-…` model, Claude Code builds the body for a model it does not know, so it can carry fields that `claude-…` target refuses with a 400. Claude Code sends `thinking: {type: "disabled"}` for short background calls (row above); Claude Sonnet 5.5 refuses it and wants `{type: "between_tools"}`, Claude Opus 5.5 refuses it outright (thinking is always on there; the guide's own replacement is `output_config: {effort: "low"}`, which the router adds when no effort is named). Both also refuse a thinking budget, a forced `tool_choice` and non-default `temperature` / `top_p` / `top_k` (Anthropic's migration guides, platform.claude.com/docs/en/models/sonnet-5-5/migration-guide and …/opus-5-5/migration-guide, read 2026-10-15). `requestForClaudeFallback` changes only those fields, and never for auto mode's safety check, which reaches Claude with only `model` changed. | 2.1.300 | live: on 2026-10-15 at 15:43Z a worker request fell back to `claude-sonnet-5-5` after both cheap targets answered 503, and Anthropic answered 400 (another one 26 s later got 200). Which field it refused is **not known**: the router did not log Anthropic's reason then; it does now. unit: `gateway.test.ts` › "a slot's Claude target: only the fields it refuses change" (all tests); under an alias: "aliases" › "an alias to a claude-… target: a request that is not the check gets the fields that model refuses translated", "an alias to a claude-… target: the safety check under it changes only the model"; the check untouched: "auto mode's safety check" › "a check is never translated for its Claude target: only the model changes, on messages and count_tokens" |
 | A running session picks up a change to the `env` of `settings.json` without a restart. Seen once: on 2026-10-15 at about 15:36Z, the old gateway's env keys were replaced by `anymodel-…` ones, and from then on not one request with an old model name reached the router: every running session sent `anymodel-worker` at once. **Observed once, not yet repeated.** Seen for keys whose value changed; a key that is removed was not watched. `restore`'s two stages still assume the opposite (`docs/roadmap.md`). | 2.1.300 | live: the router's log during the switch, observed once; no test |
 | A request routed to Anthropic is forwarded byte for byte; a cheap backend gets the system prompt and every message's text unchanged. (Ours, not Claude Code's: the guarantee the rows above must not break.) | 2.1.300 | unit: `gateway.test.ts` › "prompts stay as Claude Code wrote them" (all four tests) |
+| The judge answers a safety check only when Claude cannot: Claude first, the judge only on the plan's usage limit (§ Usage limits), a 401, or no login; a short 429 or a 5xx goes back to Claude Code, which then retries or asks the person. (Ours; it relies on the check's shape in the rows above and the limit's shape in § Usage limits.) A judge target must first block a test check built on that shape (`judge-test.ts`). | 2.1.300 | unit: `gateway.test.ts` › "auto mode's safety check" › "judge set, Claude answers: …", "judge set, the plan's usage limit: …", "judge set, a 401 …", "judge set, a 5xx or a short 429: …", "judge not set, the plan's usage limit: …"; `src/cli/gateway-cli.test.ts` › "anymodel gateway slot judge: never set untested" (all tests). Not live: a real auto-mode check was not driven through the fallback |
+| Thinking blocks from an Opus history reach a cheap backend as they are, and GLM 5.3 Flash behind OmniRoute takes them: a 3-turn history with a `thinking` block (a made-up signature), and one with a `redacted_thinking` block, both answered 200 with the right text. (A model slot relies on it; it changes no message.) | 2.1.300 | live: measured once, 2026-10-15, through OmniRoute on this machine with the router's OmniRoute key, `max_tokens` 64; not repeated per model |
 
 ## Relied on, not proved yet
 

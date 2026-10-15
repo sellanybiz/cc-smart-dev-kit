@@ -513,3 +513,112 @@ describe("anymodel version and help", () => {
     expect(result.stderr).toContain("Unknown command: nope");
   });
 });
+
+describe("anymodel setup --statusline, statusline and usage", () => {
+  test("--statusline sets the status line as an owned key; restore removes it", () => {
+    const { settingsFile, run } = setup();
+    const result = run(["setup", "--statusline"]);
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(
+      '~ ~/.claude/settings.json: statusLine: (none) -> {"command":"',
+    );
+    const line = readJson(settingsFile).statusLine;
+    expect(line.type).toBe("command");
+    expect(line.command).toEndWith("/.local/bin/anymodel statusline");
+    expect(run(["restore", "--yes"]).exitCode).toBe(0);
+    expect(readJson(settingsFile)).not.toHaveProperty("statusLine");
+  });
+
+  test("--statusline never replaces a status line someone else set", () => {
+    const { settingsFile, run } = setup();
+    const settings = readJson(settingsFile);
+    writeFileSync(
+      settingsFile,
+      JSON.stringify({ ...settings, statusLine: { command: "my-line", type: "command" } }),
+    );
+    const result = run(["setup", "--statusline"]);
+    expect(result.exitCode).toBe(1);
+    expect(readJson(settingsFile).statusLine).toEqual({ command: "my-line", type: "command" });
+    // Without the option and without a terminal, setup does not ask and leaves it alone.
+    expect(run(["setup"]).exitCode).toBe(0);
+    expect(readJson(settingsFile).statusLine).toEqual({ command: "my-line", type: "command" });
+  });
+
+  test("statusline reads Claude Code's JSON on stdin and the router's state file", () => {
+    const { home, configDir } = setup();
+    const guard = subprocessGuard();
+    const now = Math.floor(Date.now() / 1000);
+    mkdirSync(join(home, ".local", "state", "anymodel"), { recursive: true });
+    writeFileSync(
+      join(home, ".local", "state", "anymodel", "gateway-state.json"),
+      JSON.stringify({
+        fallbacks: {
+          "anymodel-judge": {
+            lastAt: Date.now(),
+            model: "claude-sonnet-5",
+            resetsAt: null,
+            since: Date.now(),
+            target: "omniroute:m1",
+          },
+        },
+        limits: {},
+        version: 1,
+      }),
+    );
+    const result = Bun.spawnSync(["bun", ...guard.args, CLI, "statusline"], {
+      env: { CLAUDE_CONFIG_DIR: configDir, HOME: home, PATH: process.env.PATH ?? "", ...guard.env },
+      stdin: new Blob([
+        JSON.stringify({
+          model: { display_name: "Opus 5.5" },
+          rate_limits: { five_hour: { resets_at: now + 3600, used_percentage: 40 } },
+        }),
+      ]),
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe(
+      "Opus 5.5 · judge: fallback active (omniroute:m1) · 5h 40%\n",
+    );
+  });
+
+  test("usage reads the projects folder; a wrong option exits 2", () => {
+    const { configDir, run } = setup();
+    const folder = join(configDir, "projects", "-home-user-my-app", "session-1", "subagents");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "agent-a.meta.json"), JSON.stringify({ model: "sonnet" }));
+    writeFileSync(
+      join(folder, "agent-a.jsonl"),
+      `${JSON.stringify({
+        cwd: "/home/user/my-app",
+        message: {
+          content: [{ text: "secret words", type: "text" }],
+          id: "m1",
+          model: "glm-5.3-flash",
+        },
+        timestamp: new Date().toISOString(),
+        type: "assistant",
+      })}\n`,
+    );
+    const result = run(["usage", "--hours", "1"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      [
+        "Subagents in the last 1 h, from ~/.claude/projects (read only; no message text)",
+        "",
+        "/home/user/my-app  session session-",
+        "  1 subagents, launched as: sonnet 1",
+        "  replies by model: glm-5.3-flash 1",
+        "  on Opus: 0 of 1 replies (0%)",
+        "",
+        "Total: 1 subagents in 1 session; on Opus: 0 of 1 replies (0%)",
+        "",
+      ].join("\n"),
+    );
+    expect(result.stdout).not.toContain("secret words");
+    const wrong = run(["usage", "--days", "1"]);
+    expect(wrong.exitCode).toBe(2);
+    expect(wrong.stderr).toStartWith("Unknown option: --days");
+  });
+});

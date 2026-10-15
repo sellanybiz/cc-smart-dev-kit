@@ -15,6 +15,11 @@ export interface CliPaths {
   stateDir: string;
   /** The gateway's config, with the backend keys: `~/.config/anymodel/gateway.json`. */
   gatewayConfigFile: string;
+  /**
+   * The router's limit state (plan limits seen, model slots on a fallback), which the status
+   * line and the StopFailure hook read: `~/.local/state/anymodel/gateway-state.json`.
+   */
+  gatewayStateFile: string;
   /** The router's long-running copy: `~/.local/share/anymodel/router.js`. */
   routerCopy: string;
   /** The router's systemd user unit: `~/.config/systemd/user/anymodel-router.service`. */
@@ -34,6 +39,7 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     binDir: join(home, ".local", "bin"),
     stateDir: join(claudeConfigDir, "anymodel"),
     gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
+    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json"),
     routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
     routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service"),
   };

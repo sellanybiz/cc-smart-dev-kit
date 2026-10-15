@@ -25,6 +25,7 @@ import { tempDir } from "../testing/temp";
 import { parseModelList } from "./backends";
 import { ensureConfig, planSlotChange } from "./commands";
 import { type GatewayConfig, loadConfigFile } from "./config";
+import { judgeTestRequest, judgeVerdict } from "./judge-test";
 import {
   installRouter,
   RESTART_WARNING,
@@ -42,6 +43,7 @@ import {
   turnOff,
   turnOn,
 } from "./settings";
+import { isAutoModeGuard } from "./targets";
 
 const NO_POSIX_MODES = process.platform === "win32";
 
@@ -352,7 +354,7 @@ describe("setup, slot and models helpers", () => {
       error: '"ollama:x": could not list the models of "ollama", so it cannot be checked',
     });
     expect(planSlotChange(cfg, "Scout!", "claude-sonnet-5-5", models)).toEqual({
-      error: '"Scout!" is not a slot name (scout, worker, judge, or anymodel-<name>)',
+      error: '"Scout!" is not a slot name (scout, worker, judge, opus, fable, or anymodel-<name>)',
     });
     // `judge off`: the way back to Claude. config() has no judge slot yet.
     expect(planSlotChange(cfg, "judge", "off", models)).toEqual({
@@ -372,7 +374,8 @@ describe("setup, slot and models helpers", () => {
       "anymodel-worker",
     ]);
     expect(planSlotChange(cfg, "worker", "off", models)).toEqual({
-      error: "only anymodel-judge can be off; give anymodel-worker its targets instead",
+      error:
+        "only anymodel-judge, anymodel-opus and anymodel-fable can be off; give anymodel-worker its targets instead",
     });
     const ok = planSlotChange(cfg, "worker", "omniroute:glm-5.3-flash, claude-sonnet-5-5", models);
     if (!("config" in ok)) throw new Error(ok.error);
@@ -944,5 +947,126 @@ describe("router service stop", () => {
       "systemctl --user disable anymodel-router.service failed (exit 1):\nFailed to connect to bus",
     );
     expect(m.events).toEqual([IS_ACTIVE, DISABLE]);
+  });
+});
+
+// ─── The model slots and the judge test ─────────────────────────────────────────
+
+describe("slot opus / fable", () => {
+  const models = { omniroute: ["glm-5.3-flash", "deepseek-v4.1-flash"] };
+
+  it("turns a model slot on: the model first, then its fallbacks; modelSlots keyed by the real id", () => {
+    const plan = planSlotChange(
+      config(),
+      "opus",
+      "claude-opus-5-5,omniroute:glm-5.3-flash",
+      models,
+    );
+    if (!("config" in plan)) throw new Error(plan.error);
+    expect(plan.key).toBe("anymodel-opus");
+    expect(plan.old).toEqual([]);
+    expect(plan.config.slots["anymodel-opus"]).toEqual([
+      "claude-opus-5-5",
+      "omniroute:glm-5.3-flash",
+    ]);
+    expect(plan.config.modelSlots).toEqual({ "claude-opus-5-5": "anymodel-opus" });
+    const fable = planSlotChange(
+      plan.config,
+      "fable",
+      "claude-fable-5-1,omniroute:deepseek-v4.1-flash",
+      models,
+    );
+    if (!("config" in fable)) throw new Error(fable.error);
+    expect(fable.config.modelSlots).toEqual({
+      "claude-fable-5-1": "anymodel-fable",
+      "claude-opus-5-5": "anymodel-opus",
+    });
+  });
+
+  it("off removes the slot and its modelSlots entry; with none left, no modelSlots field at all", () => {
+    const on = planSlotChange(config(), "opus", "claude-opus-5-5,omniroute:glm-5.3-flash", models);
+    if (!("config" in on)) throw new Error(on.error);
+    const off = planSlotChange(on.config, "opus", "off", models);
+    if (!("config" in off)) throw new Error(off.error);
+    expect(off.next).toEqual([]);
+    expect(Object.keys(off.config.slots)).not.toContain("anymodel-opus");
+    expect(off.config).not.toHaveProperty("modelSlots");
+    expect(planSlotChange(config(), "fable", "off", models)).toEqual({
+      error: "anymodel-fable is already off",
+    });
+  });
+
+  it("refuses a model slot that does not start with its own model, or has no fallback", () => {
+    expect(planSlotChange(config(), "opus", "omniroute:glm-5.3-flash", models)).toEqual({
+      error:
+        "anymodel-opus: start with the opus model itself, e.g. anymodel gateway slot opus claude-opus-5-5,omniroute:<model>",
+    });
+    expect(
+      planSlotChange(config(), "fable", "claude-opus-5-5,omniroute:glm-5.3-flash", models),
+    ).toEqual({
+      error:
+        "anymodel-fable: start with the fable model itself, e.g. anymodel gateway slot fable claude-fable-5-1,omniroute:<model>",
+    });
+    expect(planSlotChange(config(), "opus", "claude-opus-5-5", models)).toEqual({
+      error: "anymodel-opus: give the fallback targets after claude-opus-5-5",
+    });
+    expect(planSlotChange(config(), "opus", "claude-opus-5-5,omniroute:kimi", models)).toEqual({
+      error: '"omniroute:kimi": "omniroute" has no model "kimi" (see anymodel gateway models)',
+    });
+  });
+
+  it("a new model id replaces the old entry for the same slot", () => {
+    const on = planSlotChange(config(), "opus", "claude-opus-5-5,omniroute:glm-5.3-flash", models);
+    if (!("config" in on)) throw new Error(on.error);
+    const moved = planSlotChange(
+      on.config,
+      "opus",
+      "claude-opus-6-0,omniroute:glm-5.3-flash",
+      models,
+    );
+    if (!("config" in moved)) throw new Error(moved.error);
+    expect(moved.config.modelSlots).toEqual({ "claude-opus-6-0": "anymodel-opus" });
+  });
+});
+
+describe("the judge test", () => {
+  it("is a check the router recognises: its prompt, no tools, the force push, reasoning off", () => {
+    const request = judgeTestRequest("deepseek-v4.1-flash");
+    expect(isAutoModeGuard({ ...request, model: "anymodel-judge" })).toBe(true);
+    expect(request).not.toHaveProperty("tools");
+    expect(request).not.toHaveProperty("thinking");
+    expect(request).not.toHaveProperty("metadata");
+    expect(request).toMatchObject({
+      model: "deepseek-v4.1-flash",
+      output_config: { effort: "none" },
+      stop_sequences: ["</block>"],
+    });
+    expect(JSON.stringify(request.messages)).toContain(
+      '{\\"Bash\\":\\"git push --force origin main\\"}',
+    );
+  });
+
+  it("reads the verdict: <block>yes blocks, <block>no allows, anything else is unclear", () => {
+    const answer = (text: string) => ({ content: [{ text, type: "text" }] });
+    expect(judgeVerdict(answer("<block>yes</block> force push to main"))).toEqual({
+      detail: "blocked it",
+      verdict: "block",
+    });
+    expect(judgeVerdict(answer("Thinking... <block> YES"))).toEqual({
+      detail: "blocked it",
+      verdict: "block",
+    });
+    expect(judgeVerdict(answer("<block>no</block> fine"))).toEqual({
+      detail: "let it run",
+      verdict: "allow",
+    });
+    expect(judgeVerdict(answer("I would block this."))).toEqual({
+      detail: "the answer has no <block>yes or <block>no",
+      verdict: "unclear",
+    });
+    expect(judgeVerdict({ error: "x" })).toEqual({
+      detail: "no content in the answer",
+      verdict: "unclear",
+    });
   });
 });

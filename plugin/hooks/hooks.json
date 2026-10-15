@@ -1,3 +1,17 @@
 {
-  "hooks": {}
+  "hooks": {
+    "StopFailure": [
+      {
+        "matcher": "rate_limit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/dist/stop-failure.js"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
 }

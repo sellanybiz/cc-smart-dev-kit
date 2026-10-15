@@ -27,12 +27,18 @@
  *     answered 429 / 5xx rests a while (`cooldownSeconds`); the last target of a slot is
  *     always tried. A client that hangs up rests nothing.
  *   - An explicit `<backend>:<model>` → that backend, no fallback.
+ *   - A Claude model with a model slot (`modelSlots`, off by default) → the model itself
+ *     first, the bytes as sent; the slot's next target only when Anthropic answers with
+ *     the plan's usage limit (`useModelSlot`, `planUsageLimit`).
  *   - Auto mode's safety check (`isAutoModeGuard`, on the request as it came, so an old
- *     name in `aliases` is seen too) → the `anymodel-judge` slot, only when the person
- *     turned it on (it is off by default). Without that slot it stays on Claude: a
- *     `claude-…` check untouched, a slot-named one to that slot's Claude targets only, and
- *     one whose name leads to no Claude target (a cheap-only slot, or an alias to
- *     `<backend>:<model>`) to Anthropic as it was sent (`resolveRequestRoute`).
+ *     name in `aliases` is seen too) → Claude, always first: a `claude-…` check
+ *     untouched, a slot-named one to that slot's Claude targets only, and one whose name
+ *     leads to no Claude target (a cheap-only slot, or an alias to `<backend>:<model>`) to
+ *     Anthropic as it was sent (`resolveRequestRoute`). The `anymodel-judge` slot, when
+ *     the person set one, answers only when Claude cannot (`judgeAsFallback`).
+ *   - Every Claude answer's headers (never its body) say whether the plan's usage limit
+ *     was reached; the router writes that to its state file, for the status line and the
+ *     StopFailure alert (`limit-state.ts`).
  *   - No prompt text is ever changed. A cheap backend gets only the named format
  *     translations below; a `claude-…` request reaches Anthropic as the bytes it came as.
  *   - A cheap backend never sees Claude Code's tool search: `toolSearchForBackend`.
@@ -61,13 +67,21 @@
  * the systemd unit through `src/entries/router.ts`). The design: docs/gateway.md.
  */
 
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { atomicWrite } from "../setup/write";
 import { type GatewayConfig, messageOf, watchConfig } from "./config";
+import { emptyLimitState, formatLimitState, type LimitState } from "./limit-state";
 import {
+  COOLDOWN_MAX_SEC,
   cooldownSeconds,
   fallbackKind,
   formatTarget,
   isAutoModeGuard,
   JUDGE_SLOT,
+  modelSlotFor,
+  type PlanLimit,
+  planUsageLimit,
   resolveAlias,
   resolveRequestRoute,
   resolveRoute,
@@ -110,7 +124,15 @@ export interface RouterDeps {
   now: () => number;
   /** The port the server is bound to; the `Host` guard checks it. */
   port: number;
+  /**
+   * Writes the limit state file's text (`limit-state.ts`). Called in the background, never
+   * before an answer; it may throw, and the router logs that once. Absent: no file.
+   */
+  saveState?: (text: string) => void;
 }
+
+/** How often a model slot's `lastAt` reaches the state file, at most: once a minute. */
+const FALLBACK_SAVE_EVERY_MS = 60_000;
 
 /** Path of the router's own health check, answered before anything is forwarded. */
 export const HEALTH_PATH = "/__anymodel/health";
@@ -666,6 +688,112 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   const aliasesLogged = new Set<string>();
   /** Claude-target translations already logged (target and changes): once each. */
   const translationsLogged = new Set<string>();
+  /** What the state file says: plan limits seen, model slots on a fallback. */
+  const limitState: LimitState = emptyLimitState();
+  /**
+   * Claude model id → the time (ms) until which its model slot skips it: it answered with
+   * the plan's usage limit. Apart from `cooling`, so that a short 429 from another slot's
+   * Claude target never moves a model slot to its fallback.
+   */
+  const limitedUntil = new Map<string, number>();
+  let saveQueued = false;
+  let lastSaveError = "";
+
+  /** Write the state file in the background, once for any number of changes in a row. */
+  function persist(): void {
+    const save = deps.saveState;
+    if (save === undefined || saveQueued) return;
+    saveQueued = true;
+    // A timer, not a microtask: the write must never run before the answer goes out.
+    const task = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        saveQueued = false;
+        try {
+          save(formatLimitState(limitState));
+          lastSaveError = "";
+        } catch (error) {
+          const message = messageOf(error);
+          if (message !== lastSaveError) deps.log(`ERROR cannot write the limit state: ${message}`);
+          lastSaveError = message;
+        }
+        resolve();
+      }, 0);
+    });
+    deps.background?.(task);
+  }
+
+  /**
+   * Read a Claude answer's headers (never its body): a plan usage limit is noted for the
+   * status line and the hook; any other answer below 400 ends the limit, and the fallback of
+   * any model slot that used it. The answer itself is not touched. Returns the limit, or null.
+   */
+  function observeClaude(model: string, response: Response): null | PlanLimit {
+    const id = withoutContextSuffix(model);
+    const limit = planUsageLimit(response.status, (name) => response.headers.get(name));
+    if (limit !== null) {
+      const before = limitState.limits[id];
+      limitState.limits[id] = { ...limit, seenAt: deps.now() };
+      if (
+        before === undefined ||
+        before.resetsAt !== limit.resetsAt ||
+        deps.now() - before.seenAt >= FALLBACK_SAVE_EVERY_MS
+      ) {
+        persist();
+      } else {
+        // The file keeps the older `seenAt`; less than a minute apart, it says the same.
+        limitState.limits[id] = before;
+      }
+      return limit;
+    }
+    if (response.status >= 400 || !Object.hasOwn(limitState.limits, id)) return null;
+    delete limitState.limits[id];
+    for (const [slot, record] of Object.entries(limitState.fallbacks)) {
+      // The judge fallback ends only when Claude answers a check: `endJudgeFallback`.
+      if (record.model !== id || slot === JUDGE_SLOT) continue;
+      delete limitState.fallbacks[slot];
+      deps.log(`${slot}: ${id} answers again; its fallback is over`);
+    }
+    limitedUntil.delete(id);
+    persist();
+    return null;
+  }
+
+  /** A model slot answered from its fallback: one WARN when it starts, and the state file. */
+  function noteFallback(
+    slot: string,
+    model: string,
+    limit: PlanLimit | null,
+    outcome: Outcome,
+  ): void {
+    const now = deps.now();
+    const before = limitState.fallbacks[slot];
+    const resetsAt = limit?.resetsAt ?? before?.resetsAt ?? null;
+    if (before === undefined) {
+      const reset =
+        resetsAt === null
+          ? "no reset time given"
+          : `resets ${new Date(resetsAt * 1000).toISOString()}`;
+      const claim = limit?.claim ?? "plan limit";
+      deps.log(
+        `WARN ${slot}: ${model} is at its plan usage limit (${printable(claim, 40)}, ${reset}); ${outcome.response.ok ? `answering from ${outcome.target}` : `its fallback ${outcome.target} answered ${outcome.response.status}`} until ${model} answers again`,
+      );
+    }
+    limitState.fallbacks[slot] = {
+      lastAt: now,
+      model,
+      resetsAt,
+      since: before?.since ?? now,
+      target: outcome.target,
+    };
+    if (
+      before === undefined ||
+      before.target !== outcome.target ||
+      before.resetsAt !== resetsAt ||
+      now - before.lastAt >= FALLBACK_SAVE_EVERY_MS
+    ) {
+      persist();
+    }
+  }
 
   /** Cancel a response the client will never see, so its connection is freed. */
   async function discard(response: UpstreamBody): Promise<void> {
@@ -981,6 +1109,17 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     return out;
   }
 
+  /** The Claude models a model slot skips now (their plan limit), with the seconds left. */
+  function limitedNow(): Record<string, number> {
+    const now = deps.now();
+    const out: Record<string, number> = {};
+    for (const [model, until] of limitedUntil) {
+      if (until <= now) limitedUntil.delete(model);
+      else out[model] = Math.ceil((until - now) / 1000);
+    }
+    return out;
+  }
+
   /** The client hung up: free any answer, rest nothing, count no fallback. */
   function closed(result: Attempt, label: string): Outcome {
     if ("response" in result) void discard(result.response);
@@ -1034,6 +1173,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           ? { failure: built.error, status: null }
           : await send(req, built.upstream, deadlineAt);
       if (req.signal.aborted) return closed(result, label);
+      if (target.kind === "anthropic" && "response" in result) {
+        observeClaude(target.model, result.response);
+      }
       if (
         "response" in result &&
         !last &&
@@ -1119,6 +1261,135 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     };
   }
 
+  /**
+   * A Claude model with a model slot. First the model itself, with the bytes Claude Code
+   * sent: whatever Anthropic answers goes back as it is (a short 429, a 5xx and a network
+   * error included: Claude Code retries those itself), EXCEPT the plan's usage limit
+   * (`planUsageLimit`). Then the slot's other targets, in order (`chain`, with a cheap
+   * backend's named translations), and the model rests until its reset (at most
+   * `COOLDOWN_MAX_SEC`: then one request asks Anthropic again). One WARN when a fallback
+   * starts; the state file says so for the status line.
+   */
+  async function useModelSlot(
+    req: Request,
+    url: URL,
+    config: GatewayConfig,
+    body: Record<string, unknown>,
+    sent: null | Uint8Array<ArrayBuffer>,
+    found: { model: string; slot: string },
+    rest: Target[],
+    answerDirect: (result: Attempt, observed: null | string) => Outcome,
+  ): Promise<Outcome> {
+    const until = limitedUntil.get(found.model);
+    let limit: null | PlanLimit;
+    let skipped = 0;
+    if (until !== undefined && until > deps.now()) {
+      skipped = 1;
+      limit = limitState.limits[found.model] ?? null;
+    } else {
+      limitedUntil.delete(found.model);
+      const result = await send(req, anthropicUpstream(req, url, config, sent), null);
+      if (req.signal.aborted) return closed(result, found.model);
+      if (!("response" in result)) return answerDirect(result, null);
+      limit = observeClaude(found.model, result.response);
+      if (limit === null) return answerDirect(result, null);
+      const nowSec = deps.now() / 1000;
+      const restSec =
+        limit.resetsAt === null
+          ? COOLDOWN_MAX_SEC
+          : Math.min(Math.max(limit.resetsAt - nowSec, 0), COOLDOWN_MAX_SEC);
+      limitedUntil.set(found.model, deps.now() + restSec * 1000);
+      // Reading the snippet also cancels the rest of this answer; Claude Code never sees it.
+      logErrorAnswer(
+        result.response,
+        knownSecrets(req, config),
+        `WARN ${found.model} answered 429 (the plan's usage limit); trying the next target of ${found.slot}`,
+      );
+    }
+    const outcome = await chain(req, url, config, body, rest, found.slot, false);
+    if (!req.signal.aborted) noteFallback(found.slot, found.model, limit, outcome);
+    return {
+      ...outcome,
+      fallbacks: outcome.fallbacks + (skipped === 0 ? 1 : 0),
+      skipped: outcome.skipped + skipped,
+    };
+  }
+
+  /**
+   * Auto mode's safety check with a judge slot set. The judge is a FALLBACK only:
+   *   1. Claude first, always: the check takes the way it takes with no judge (`toClaude`:
+   *      untouched, or only `model` changed for a slot-named check).
+   *   2. The judge only when Claude cannot answer it: the plan's usage limit
+   *      (`planUsageLimit`), a 401 (no valid Claude login), or a request with no login on it
+   *      at all (then Claude is not asked). Every other answer, a short 429 and a 5xx
+   *      included, goes back to Claude Code as it is, and Claude Code asks the person.
+   * One WARN for every check the judge answers, naming the target; the state file says the
+   * judge fallback is active, for the status line.
+   */
+  async function judgeAsFallback(
+    req: Request,
+    url: URL,
+    config: GatewayConfig,
+    body: Record<string, unknown>,
+    model: { name: string },
+    judgeTargets: Target[],
+    toClaude: () => Promise<Outcome>,
+  ): Promise<Outcome> {
+    const checkModel = withoutContextSuffix(String(body.model ?? "-"));
+    let limit: null | PlanLimit = null;
+    let reason: string;
+    if (!req.headers.has("authorization") && !req.headers.has("x-api-key")) {
+      reason = "the request carries no Claude login";
+    } else {
+      const outcome = await toClaude();
+      const answer = outcome.response;
+      limit = planUsageLimit(answer.status, (name) => answer.headers.get(name));
+      if (req.signal.aborted || (limit === null && answer.status !== 401)) {
+        if (answer.status < 400) endJudgeFallback();
+        return outcome;
+      }
+      // Claude Code never sees this answer: the judge's goes back instead.
+      void discard(answer);
+      reason =
+        limit === null
+          ? "Claude answered 401 (no valid Claude login)"
+          : `Claude is at the plan's usage limit (${limit.claim ?? "no window named"})`;
+    }
+    model.name = `${model.name} [judge fallback]`;
+    const judged = await chain(req, url, config, body, judgeTargets, JUDGE_SLOT, true);
+    if (req.signal.aborted) return judged;
+    deps.log(
+      `WARN safety check judged by ${judged.target} (${judged.response.status}), not by Claude: ${reason}`,
+    );
+    const now = deps.now();
+    const before = limitState.fallbacks[JUDGE_SLOT];
+    const resetsAt = limit?.resetsAt ?? null;
+    limitState.fallbacks[JUDGE_SLOT] = {
+      lastAt: now,
+      model: checkModel,
+      resetsAt,
+      since: before?.since ?? now,
+      target: judged.target,
+    };
+    if (
+      before === undefined ||
+      before.target !== judged.target ||
+      before.resetsAt !== resetsAt ||
+      now - before.lastAt >= FALLBACK_SAVE_EVERY_MS
+    ) {
+      persist();
+    }
+    return { ...judged, fallbacks: judged.fallbacks + 1 };
+  }
+
+  /** Claude answered a safety check again: the judge fallback, if any, is over. */
+  function endJudgeFallback(): void {
+    if (!Object.hasOwn(limitState.fallbacks, JUDGE_SLOT)) return;
+    delete limitState.fallbacks[JUDGE_SLOT];
+    deps.log(`${JUDGE_SLOT}: Claude answers safety checks again; the judge fallback is over`);
+    persist();
+  }
+
   async function route(req: Request, url: URL, model: { name: string }): Promise<Outcome> {
     const config = deps.getConfig();
     const isMessages =
@@ -1140,8 +1411,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         : new Uint8Array(await req.arrayBuffer());
     let bytes = sent;
 
-    const direct = async (body = bytes): Promise<Outcome> => {
-      const result = await send(req, anthropicUpstream(req, url, config, body), null);
+    /**
+     * Anthropic's answer to the bytes sent, as Claude Code gets it. `observed`: the Claude
+     * model the bytes name, whose answer's headers note or end a plan limit (`observeClaude`).
+     */
+    const answerDirect = (result: Attempt, observed: null | string): Outcome => {
+      if (observed !== null && "response" in result) observeClaude(observed, result.response);
       // Only a model's answer: another path (`/v1/models`, a file, an account page) is
       // passed on as it is, and its errors are not the router's to log.
       if (isMessages && "response" in result && result.response.status >= 400) {
@@ -1161,6 +1436,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
             );
       return { fallbacks: 0, response, skipped: 0, target: "anthropic" };
     };
+    const direct = async (body = bytes, observed: null | string = null): Promise<Outcome> =>
+      answerDirect(await send(req, anthropicUpstream(req, url, config, body), null), observed);
 
     if (!isMessages) return direct();
 
@@ -1202,63 +1479,74 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
     // Its newer form carries the sonnet slot's name; the log must still tell it apart.
     if (guard) model.name = `${model.name} (safety check)`;
+    // The judge is a fallback only: a check goes to Claude exactly as with no judge, and to
+    // the judge only when Claude cannot answer it (`judgeAsFallback`). count_tokens never.
     const judge = guard ? resolveRoute(JUDGE_SLOT, config) : null;
-    if (judge !== null && judge.kind === "slot" && judge.targets.length > 0) {
-      model.name = `${model.name} [judge]`;
-      if (url.pathname === COUNT_TOKENS_PATH) {
-        // A check judged off Claude never reaches Claude, not even to count its tokens.
-        return {
+    const judgeTargets = judge?.kind === "slot" ? judge.targets : [];
+    if (judgeTargets.length > 0 && url.pathname === MESSAGES_PATH) {
+      return judgeAsFallback(req, url, config, body, model, judgeTargets, claudeRoute);
+    }
+    return claudeRoute();
+
+    /** The request's way to Claude, or by its name: everything but the judge fallback. */
+    // Not `async`: it only hands back a promise, and an extra async step would reorder the
+    // log lines a test reads.
+    function claudeRoute(): Promise<Outcome> {
+      // A Claude model with a model slot (`gateway slot opus …`): never the safety check, never
+      // a name an alias changed (so `body` is the request as sent), never count_tokens. Off by
+      // default (no `modelSlots`).
+      const found =
+        guard || alias !== null || url.pathname !== MESSAGES_PATH
+          ? null
+          : modelSlotFor(body.model, config.modelSlots);
+      const slotRoute = found === null ? null : resolveRoute(found.slot, config);
+      const rest = slotRoute?.kind === "slot" ? slotRoute.targets.slice(1) : [];
+      if (found !== null && rest.length > 0) {
+        return useModelSlot(req, url, config, body, sent, found, rest, answerDirect);
+      }
+      const decided = resolveRequestRoute(body, config, guard);
+      if (decided.kind === "anthropic") {
+        const named = typeof body.model === "string" && body.model.startsWith("claude-");
+        return direct(bytes, named ? String(body.model) : null);
+      }
+      // A check with no Claude target behind its name: Anthropic gets what Claude Code sent.
+      if (decided.kind === "anthropic-as-sent") return direct(sent);
+      if (decided.kind === "unknown-slot") {
+        const slots = Object.keys(config.slots);
+        return Promise.resolve({
           fallbacks: 0,
           response: anthropicError(
-            404,
-            "not_found_error",
-            "count_tokens is not available for the judge slot; Claude Code estimates instead",
+            400,
+            "invalid_request_error",
+            `anymodel-router: "${decided.slot}" is not a slot in ${deps.configPath} (slots: ${slots.length > 0 ? slots.join(", ") : "none — run anymodel gateway setup"})`,
           ),
           skipped: 0,
           target: "none",
-        };
+        });
       }
-      return chain(req, url, config, body, judge.targets, JUDGE_SLOT, true);
-    }
-    const decided = resolveRequestRoute(body, config, guard);
-    if (decided.kind === "anthropic") return direct();
-    // A check with no Claude target behind its name: Anthropic gets what Claude Code sent.
-    if (decided.kind === "anthropic-as-sent") return direct(sent);
-    if (decided.kind === "unknown-slot") {
-      const slots = Object.keys(config.slots);
-      return {
-        fallbacks: 0,
-        response: anthropicError(
-          400,
-          "invalid_request_error",
-          `anymodel-router: "${decided.slot}" is not a slot in ${deps.configPath} (slots: ${slots.length > 0 ? slots.join(", ") : "none — run anymodel gateway setup"})`,
-        ),
-        skipped: 0,
-        target: "none",
-      };
-    }
 
-    const targets = decided.kind === "slot" ? decided.targets : [decided.target];
-    const name = decided.kind === "slot" ? decided.slot : model.name;
-    if (url.pathname === COUNT_TOKENS_PATH) {
-      // Token counting has no fallback: the first target answers, or no one does.
-      const first = targets[0];
-      if (first === undefined || first.kind === "backend") {
-        return {
-          fallbacks: 0,
-          response: anthropicError(
-            404,
-            "not_found_error",
-            `count_tokens is not available for ${name}; Claude Code estimates instead`,
-          ),
-          skipped: 0,
-          target: first === undefined ? "none" : formatTarget(first),
-        };
+      const targets = decided.kind === "slot" ? decided.targets : [decided.target];
+      const name = decided.kind === "slot" ? decided.slot : model.name;
+      if (url.pathname === COUNT_TOKENS_PATH) {
+        // Token counting has no fallback: the first target answers, or no one does.
+        const first = targets[0];
+        if (first === undefined || first.kind === "backend") {
+          return Promise.resolve({
+            fallbacks: 0,
+            response: anthropicError(
+              404,
+              "not_found_error",
+              `count_tokens is not available for ${name}; Claude Code estimates instead`,
+            ),
+            skipped: 0,
+            target: first === undefined ? "none" : formatTarget(first),
+          });
+        }
+        // `first` is a Claude target here, so `guard` only keeps a check untranslated.
+        return chain(req, url, config, body, [first], name, guard);
       }
-      // `first` is a Claude target here, so `guard` only keeps a check untranslated.
-      return chain(req, url, config, body, [first], name, guard);
+      return chain(req, url, config, body, targets, name, guard);
     }
-    return chain(req, url, config, body, targets, name, guard);
   }
 
   return async function handle(req: Request): Promise<Response> {
@@ -1279,6 +1567,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       return Response.json({
         cooling: coolingNow(),
         fallbacks: stats.fallbacks,
+        limited: limitedNow(),
+        modelSlots: deps.getConfig().modelSlots ?? {},
         ok: true,
         port: deps.port,
         requests: stats.requests,
@@ -1311,7 +1601,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
 }
 
 /** Serve the router on 127.0.0.1: `anymodel gateway serve`, and the systemd unit. */
-export function startRouter(configPath: string) {
+export function startRouter(configPath: string, statePath: string) {
   const log = (line: string) => console.log(line);
   // A missing or bad file at start does not stop the router: it runs `emptyConfig()`
   // (both slots on Claude Sonnet 5.5) and picks the file up once it is fixed.
@@ -1324,6 +1614,12 @@ export function startRouter(configPath: string) {
     log,
     now: () => Date.now(),
     port,
+    // Mode 600 in an owner-only folder: it names models and times, nothing secret, but it is
+    // the person's own state.
+    saveState: (text) => {
+      mkdirSync(dirname(statePath), { mode: 0o700, recursive: true });
+      atomicWrite(statePath, text, 0o600);
+    },
   });
   // `idleTimeout: 0` turns Bun's 10-second idle cut-off off: a model that thinks
   // for a minute sends nothing in between, and the stream must not be dropped.

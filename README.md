@@ -46,7 +46,9 @@ After that, use `anymodel setup` to set up again (for example after an update).
 
 | Command | What it does |
 |---|---|
-| `anymodel setup` | Installs the launcher and turns on plugin auto-update. `--dry-run` shows the changes and writes nothing at all. A settings key you set yourself (for example `autoUpdate: false`) stops setup before it writes anything. |
+| `anymodel setup [--statusline]` | Installs the launcher and turns on plugin auto-update. `--dry-run` shows the changes and writes nothing at all. A settings key you set yourself (for example `autoUpdate: false`) stops setup before it writes anything. `--statusline` also sets Claude Code's status line to `anymodel statusline`, as a key anymodel owns; run in a terminal with no status line set, setup asks instead. It never replaces a status line you set. |
+| `anymodel statusline` | The status line itself: plan usage, a warning from 85 %, and any gateway fallback in use. Reads the JSON Claude Code passes on stdin. |
+| `anymodel usage [--hours <n>] [--project <folder or name>]` | Which models answered the subagents, per session, from Claude Code's transcripts. Read only; no message text. |
 | `anymodel doctor` | Checks the install (the list is below). Prints ✓ or ✗ for each check, and exits with 1 when one fails. |
 | `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, its block) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy and unit. `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
 | `anymodel gateway <command>` | The optional AI gateway (below). |
@@ -110,7 +112,9 @@ real Claude on your own login. No prompt text is ever changed. Linux only for no
 | `anymodel gateway setup [--yes] [--backend-key-stdin <backend> \| --no-backend-key]` | Makes `~/.config/anymodel/gateway.json` (mode 600; the key on stdin, never argv), copies the router to `~/.local/share/anymodel/router.js`, writes the systemd user unit `anymodel-router`, starts it, and waits up to 5 s for it to answer. First of all it asks the router's port: when another program holds it (an older router, say), it stops and writes nothing. When the router runs and the copy or unit changed, it says a restart cuts the answers in flight and asks; `--yes` skips the question. A setup that stopped half way is finished by the next one. It never touches Claude Code's settings. |
 | `anymodel gateway status` | Router health, each backend, the slots, and whether Claude Code points at the gateway. Keys are masked. |
 | `anymodel gateway models` | Every model each backend offers, and the slots. |
-| `anymodel gateway slot <scout\|worker\|judge> <target>[,<target>…]` | Sets a slot's targets, checked against the backend's model list. Live, no restart. `slot judge off` puts auto mode's safety check back on Claude. |
+| `anymodel gateway slot <scout\|worker> <target>[,<target>…]` | Sets a slot's targets, checked against the backend's model list. Live, no restart. |
+| `anymodel gateway slot opus claude-opus-5-5,<target>[,…]` | A fallback for Opus (and `slot fable claude-fable-5-1,…` for Fable): Opus still goes to Anthropic unchanged, and only when Anthropic answers with your plan's usage limit does the next target answer, until Opus answers again. Never on a short rate limit or a server error. `slot opus off` turns it off. |
+| `anymodel gateway slot judge <target>[,<target>…]` | A fallback judge for auto mode's safety check, used **only when Claude cannot answer it** (the plan's usage limit, or no valid Claude login). Each target must first block a test check (a force push to `main`), or it is not set. `slot judge off` turns it off. |
 | `anymodel gateway on` | Points Claude Code at the router: sets its env keys in your `settings.json` as keys anymodel owns. A gateway key someone else set stops it; nothing is overwritten. Every running session switches on save. |
 | `anymodel gateway off` | Removes exactly the keys `on` set. Restart the sessions afterwards. |
 | `anymodel gateway serve` | Runs the router in the terminal. |
@@ -134,12 +138,27 @@ real Claude on your own login. No prompt text is ever changed. Linux only for no
    `anymodel gateway setup --no-backend-key` (every slot answers on Claude).
 3. `anymodel gateway status`, then `anymodel gateway on`.
 
-The judge slot, which moves auto mode's safety check to a cheaper model, is **off by
-default**. Turn it on only when you accept the trade-off: a cheaper judge can block good
-work, and a weak one can let a risky command through. "Off by default" relies on the
-router recognising the check by its prompt. If Claude Code rewords that prompt, the check
-is routed by its model name until the router is updated (see
+Auto mode's safety check is judged by Claude whenever Claude can answer it. The judge
+slot is **off by default**, and even when it is set it is only a fallback: it answers a
+check only when Claude cannot (your plan's usage limit, or no valid Claude login). With no
+judge set, Claude Code then asks you. A cheaper judge can block good work, and a weak one
+can let a risky command through, so `slot judge` first tests each target on one obvious
+case and refuses a target that lets it run. "Claude first" relies on the router
+recognising the check by its prompt. If Claude Code rewords that prompt, the check is
+routed by its model name until the router is updated (see
 [docs/gateway.md](docs/gateway.md) § Known limits; [roadmap](docs/roadmap.md) Phase 3).
+
+### The usage limit: the alert, the status line, and `usage`
+
+- **The alert.** When a turn stops at your plan's usage limit, the plugin's StopFailure
+  hook shows a desktop notification (only once the gateway is set up). On Linux it offers
+  "Use <model> until it resets", which runs the `slot opus` command above, and "Wait". On
+  macOS it names the command. A short rate limit gets no alert: Claude Code retries it.
+- **The status line.** `anymodel setup --statusline` sets Claude Code's status line to
+  `anymodel statusline`. It shows your 5-hour and 7-day plan usage, warns from 85 %, and
+  shows any fallback in use.
+- **`anymodel usage`** reads Claude Code's own transcripts and shows, per session, the
+  subagents launched, which model wrote each reply, and the share on Opus.
 
 ## A project's `.claude/anymodel.json`
 

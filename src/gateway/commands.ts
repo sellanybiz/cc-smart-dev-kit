@@ -32,19 +32,35 @@ import {
   saveConfig,
 } from "./config";
 import { type HealthProbe, routerHealth } from "./health";
+import { JUDGE_TEST_ACTION, testJudgeTarget } from "./judge-test";
 import { startRouter } from "./router";
 import { type InstallOptions, installRouter, RESTART_WARNING, type Runner } from "./service";
 import { maskKey, settingsReport, shownValue, turnOff, turnOn } from "./settings";
-import { JUDGE_SLOT, parseTarget, slotKeyFromArg, type Target } from "./targets";
+import {
+  isModelSlot,
+  JUDGE_SLOT,
+  MODEL_SLOTS,
+  parseTarget,
+  slotKeyFromArg,
+  type Target,
+} from "./targets";
 
 export const USAGE = `Usage: ${COMMAND} gateway <command>
 
 Commands:
   status                 Router health, backends, slots, and the Claude Code settings.
   models                 Every model each backend offers, and the slots.
-  slot <slot> <targets>  Set a slot's targets, in order. <slot>: scout, worker or judge.
+  slot <slot> <targets>  Set a slot's targets, in order. <slot>: scout, worker, judge,
+                         opus or fable.
                          e.g. slot worker omniroute:ollama-cloud/glm-5.3-flash,claude-sonnet-5-5
-  slot judge off         Auto mode's safety check goes back to Claude.
+  slot opus claude-opus-5-5,<target>[,<target>]
+                         Opus goes to Anthropic unchanged; only at the plan's usage limit
+                         the next target answers. The same for fable (claude-fable-5-1).
+  slot judge <targets>   A fallback judge for auto mode's safety check, used only when
+                         Claude cannot answer it. Each target must first block a test
+                         check (a force push to main), or it is not set.
+  slot <judge|opus|fable> off
+                         Turn that fallback off.
   setup [--yes] [--backend-key-stdin <backend> | --no-backend-key]
                          Make the config (the key on stdin), install the router copy and
                          its systemd user unit, and start it. --yes: restart a running
@@ -94,10 +110,10 @@ export const KNOWN_BACKENDS: Record<string, string> = {
  * GLM's (ollama.com/pricing). The ids are the ones OmniRoute's `/v1/models` lists, so
  * `gateway slot` can check them. No aliases: a project's own migration writes those.
  *
- * No judge slot: auto mode's safety checks stay on Claude, untouched, until the person
- * turns the judge on (`gateway slot judge <targets>`). A cheaper judge trades the checks'
- * quality for Claude usage: it can block good work, and a weak one can let a risky
- * command through.
+ * No judge slot and no model slots: auto mode's safety checks stay on Claude, untouched,
+ * and with no fallback judge Claude Code asks the person when Claude cannot answer. The
+ * person may set a fallback judge (`gateway slot judge <targets>`, tested first): a cheaper
+ * judge can block good work, and a weak one can let a risky command through.
  */
 export function defaultConfig(omnirouteKey: string): GatewayConfig {
   return {
@@ -196,16 +212,31 @@ export function planSlotChange(
   modelsByBackend: Record<string, null | string[]>,
 ): { config: GatewayConfig; key: string; old: string[]; next: string[] } | { error: string } {
   const key = slotKeyFromArg(slotArg);
-  if (key === null)
-    return { error: `"${slotArg}" is not a slot name (scout, worker, judge, or anymodel-<name>)` };
+  if (key === null) {
+    return {
+      error: `"${slotArg}" is not a slot name (scout, worker, judge, opus, fable, or anymodel-<name>)`,
+    };
+  }
+  const model = isModelSlot(key);
+  // The model slots' entries in `modelSlots`, without this slot's.
+  const otherModelSlots = Object.fromEntries(
+    Object.entries(config.modelSlots ?? {}).filter(([, slot]) => slot !== key),
+  );
+  /** The config with `modelSlots` written only when it has an entry: absent is the default. */
+  const withModelSlots = (base: GatewayConfig, entries: Record<string, string>): GatewayConfig => {
+    const { modelSlots: _old, ...rest } = base;
+    return Object.keys(entries).length > 0 ? { ...rest, modelSlots: entries } : rest;
+  };
   if (targetsText.trim() === "off") {
-    if (key !== JUDGE_SLOT) {
-      return { error: `only ${JUDGE_SLOT} can be off; give ${key} its targets instead` };
+    if (key !== JUDGE_SLOT && !model) {
+      return {
+        error: `only ${JUDGE_SLOT}, anymodel-opus and anymodel-fable can be off; give ${key} its targets instead`,
+      };
     }
-    if (!Object.hasOwn(config.slots, key)) return { error: `${JUDGE_SLOT} is already off` };
+    if (!Object.hasOwn(config.slots, key)) return { error: `${key} is already off` };
     const slots = Object.fromEntries(Object.entries(config.slots).filter(([name]) => name !== key));
-    // An alias may still point at the judge slot: the check says so.
-    const checked = parseConfig({ ...config, slots });
+    // An alias may still point at the slot: the check says so.
+    const checked = parseConfig(withModelSlots({ ...config, slots }, otherModelSlots));
     if ("error" in checked) return { error: checked.error };
     return { config: checked.config, key, next: [], old: config.slots[key] ?? [] };
   }
@@ -214,6 +245,18 @@ export function planSlotChange(
     .map((text) => text.trim())
     .filter((text) => text !== "");
   if (next.length === 0) return { error: "give at least one target" };
+  if (model) {
+    // The first target is the Claude model the slot is for, sent unchanged; the rest answer
+    // only at its plan usage limit.
+    const first = next[0] ?? "";
+    const family = MODEL_SLOTS[key] ?? "";
+    if (!first.startsWith("claude-") || !first.includes(`-${family}-`)) {
+      return {
+        error: `${key}: start with the ${family} model itself, e.g. ${COMMAND} gateway slot ${family} ${family === "opus" ? "claude-opus-5-5" : "claude-fable-5-1"},omniroute:<model>`,
+      };
+    }
+    if (next.length < 2) return { error: `${key}: give the fallback targets after ${first}` };
+  }
   for (const text of next) {
     const parsed = parseTarget(text);
     if ("error" in parsed) return { error: parsed.error };
@@ -236,7 +279,10 @@ export function planSlotChange(
       };
     }
   }
-  const changed = { ...config, slots: { ...config.slots, [key]: next } };
+  const slots = { ...config.slots, [key]: next };
+  const changed = model
+    ? withModelSlots({ ...config, slots }, { ...otherModelSlots, [next[0] ?? ""]: key })
+    : { ...config, slots };
   const checked = parseConfig(changed);
   if ("error" in checked) return { error: checked.error };
   return { config: checked.config, key, next, old: config.slots[key] ?? [] };
@@ -246,10 +292,24 @@ function printSlots(config: GatewayConfig): void {
   console.log("\nSlots (first that answers wins):");
   const keys = Object.keys(config.slots).sort();
   if (keys.length === 0) console.log("  (none)");
-  for (const key of keys)
-    console.log(`  ${key.padEnd(16)} ${(config.slots[key] ?? []).join(" → ")}`);
+  for (const key of keys) {
+    const note =
+      key === JUDGE_SLOT
+        ? "  (only when Claude cannot answer a check)"
+        : isModelSlot(key)
+          ? "  (the rest only at the plan's usage limit)"
+          : "";
+    console.log(`  ${key.padEnd(16)} ${(config.slots[key] ?? []).join(" → ")}${note}`);
+  }
   if (!Object.hasOwn(config.slots, JUDGE_SLOT)) {
-    console.log(`  ${JUDGE_SLOT.padEnd(16)} off: auto mode's safety checks go to Claude`);
+    console.log(
+      `  ${JUDGE_SLOT.padEnd(16)} off: auto mode's safety checks go to Claude, and to no one else`,
+    );
+  }
+  for (const [slot, family] of Object.entries(MODEL_SLOTS).sort(([a], [b]) => (a < b ? -1 : 1))) {
+    if (!Object.values(config.modelSlots ?? {}).includes(slot)) {
+      console.log(`  ${slot.padEnd(16)} off: ${family} goes to Anthropic unchanged`);
+    }
   }
   const aliases = Object.entries(config.aliases).sort(([a], [b]) => (a < b ? -1 : 1));
   if (aliases.length > 0) {
@@ -306,6 +366,22 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
   }
   const first = planSlotChange(config, slotArg, targets, modelsByBackend);
   if ("error" in first) throw new Error(first.error);
+  if (first.key === JUDGE_SLOT && first.next.length > 0) {
+    // A judge is never set untested, and there is no way to skip the test.
+    for (const text of first.next) {
+      const parsed = parseTarget(text);
+      if (!("target" in parsed) || parsed.target.kind !== "backend") continue;
+      const backend = config.backends[parsed.target.backend];
+      if (backend === undefined) continue;
+      const result = await testJudgeTarget(backend.baseUrl, backend.apiKey, parsed.target.model);
+      if (result.verdict !== "block") {
+        throw new Error(
+          `${text} did not block the test check (${JUDGE_TEST_ACTION}): ${result.detail}. The judge was not set.`,
+        );
+      }
+      console.log(`judge test: ${text} blocked "${JUDGE_TEST_ACTION}"`);
+    }
+  }
   // Read again and save inside the lock: another command may have changed the file since
   // (a key set by `gateway setup`, another slot), and its change must not be lost.
   const plan = await withLock(
@@ -319,7 +395,11 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
     { waitMs: 10_000 },
   );
   const now =
-    plan.next.length === 0 ? "off (auto mode's safety check on Claude)" : plan.next.join(" → ");
+    plan.next.length > 0
+      ? plan.next.join(" → ")
+      : plan.key === JUDGE_SLOT
+        ? "off (auto mode's safety check on Claude, and on no one else)"
+        : `off (${MODEL_SLOTS[plan.key] ?? plan.key} goes to Anthropic unchanged)`;
   console.log(`${plan.key}: ${plan.old.join(" → ") || "(new)"}\n  now: ${now}`);
   console.log("The router uses it from its next request.");
   return 0;
@@ -359,6 +439,12 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
     const cooling = isJsonObject(body.cooling) ? Object.entries(body.cooling) : [];
     for (const [target, seconds] of cooling)
       console.log(`  resting: ${target} for ${String(seconds)} s more`);
+    const limited = isJsonObject(body.limited) ? Object.entries(body.limited) : [];
+    for (const [model, seconds] of limited) {
+      console.log(
+        `  at its plan usage limit: ${model}; its model slot answers from a fallback, and asks it again in ${String(seconds)} s`,
+      );
+    }
   }
   if (config !== null) {
     for (const [name, backend] of Object.entries(config.backends)) {
@@ -550,7 +636,7 @@ export async function runGateway(args: string[], ctx: GatewayContext): Promise<n
       return noArgs(() => commandOff(ctx));
     case "serve":
       return noArgs(async () => {
-        startRouter(ctx.paths.gatewayConfigFile);
+        startRouter(ctx.paths.gatewayConfigFile, ctx.paths.gatewayStateFile);
         return 0;
       });
     case undefined:
