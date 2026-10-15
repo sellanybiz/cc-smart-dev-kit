@@ -64,19 +64,30 @@ switch models by itself. A **model slot** lets a cheaper model carry on until th
 - It ends by itself: the router asks Opus again at most every 10 minutes and goes back
   once it answers. Off for good: `anymodel gateway slot opus off`.
 - Only when the person asks. Say what leaves Claude: the whole Opus conversation goes to
-  that provider while the fallback is on. Thinking blocks a cheap model writes can later
-  make Opus refuse the conversation (a 400): then start a new one.
+  that provider while the fallback is on.
+- The router removes the thinking blocks from the fallback's answers before Claude Code
+  stores them (Opus refuses a thinking block it cannot verify), and gives an answer that
+  held only thinking one short text block. If Opus still answers 400 "Invalid
+  `signature`" (an older conversation), the router log says so: `/rewind` to the message
+  before the fallback answered, or start a new session.
+- A long (`[1m]`, 200k+ tokens) or rich (images, documents, server tools) Opus
+  conversation may be more than the fallback takes. Its 400 gets a WARN in the router
+  log: `/compact`, a new session, or wait for the reset.
 
 **The alert.** With the gateway set up, a turn stopped at the limit shows a desktop
-notification. On Linux, "Use <model> until it resets" runs the `slot opus` command above;
-"Wait" does nothing. On macOS it names the command.
+notification about the session's own model. On Linux, "Use <target> until it resets" runs
+`anymodel gateway slot opus …`: the model, then Sonnet when only Opus's own window ran out
+(`seven_day_opus`), then the worker slot's cheap targets in order; then send a message in
+Claude Code to go on now. "Wait" does nothing. On macOS it names the command. A
+`gateway.json` that cannot be read still gives the alert, without the action.
 
-**The status line.** `anymodel setup --statusline` (asked in a terminal when none is set)
-shows the 5-hour and 7-day usage, warns from 85 %, and shows any fallback in use.
+**The status line.** `anymodel setup --statusline` (asked once in a terminal when none is
+set; a "no" is remembered) shows the 5-hour and 7-day usage, warns from 85 %, and shows
+any fallback in use.
 
 **How much runs on Opus.** `anymodel usage [--hours <n>] [--project <folder or name>]`:
-per session, the subagents launched, which model wrote each reply, and the share on Opus.
-Read only; no message text.
+per session, the main session's replies by model, and apart, its subagents: how they were
+launched, which model wrote each reply, and the share on Opus. Read only; no message text.
 
 ## The judge for auto mode: a fallback only
 
@@ -88,7 +99,8 @@ prompt (the plugin's `docs/gateway.md` § Known limits). Only when the person as
 
 - On: `anymodel gateway slot judge <target>[,<target>]`. Each target must first block a
   test check (a force push to `main`); one that does not is refused, and nothing is saved.
-  There is no way to skip the test: pick another model.
+  There is no way to skip the test: pick another model. A judge target added by hand is
+  untested: the router ignores it, and `anymodel doctor` fails until `slot judge` tests it.
 - Off: `anymodel gateway slot judge off`.
 
 **Say the trade-off before you turn it on:** at the limit, a cheaper judge keeps auto mode

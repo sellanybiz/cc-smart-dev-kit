@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -15,6 +15,8 @@ import { installLauncher } from "../setup/launcher";
 import { listBackups } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
+import { cliPaths } from "./paths";
+import { runSetup } from "./setup";
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 
@@ -530,6 +532,56 @@ describe("anymodel setup --statusline, statusline and usage", () => {
     expect(readJson(settingsFile)).not.toHaveProperty("statusLine");
   });
 
+  test("in a terminal: asked only after the read-only pass; a no is remembered; --statusline still sets it", async () => {
+    const quiet = spyOn(console, "log").mockImplementation(() => undefined);
+    const loud = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const { home, configDir, stateDir, settingsFile } = setup();
+      const paths = cliPaths({ CLAUDE_CONFIG_DIR: configDir, HOME: home });
+      const asked: string[] = [];
+      const say = (answer: boolean) => (question: string) => {
+        asked.push(question);
+        return answer;
+      };
+      // A key someone else set stops setup before the question.
+      const settings = readJson(settingsFile);
+      writeFileSync(
+        settingsFile,
+        JSON.stringify({
+          ...settings,
+          extraKnownMarketplaces: {
+            anymodel: { ...settings.extraKnownMarketplaces.anymodel, autoUpdate: false },
+          },
+        }),
+      );
+      await expect(runSetup(paths, { confirm: say(true), dryRun: false })).rejects.toThrow(
+        "set by someone else",
+      );
+      expect(asked).toEqual([]);
+      writeFileSync(settingsFile, JSON.stringify(settings));
+      // A "no": not set, and remembered.
+      expect(await runSetup(paths, { confirm: say(false), dryRun: false })).toBe(0);
+      expect(asked).toHaveLength(1);
+      expect(readJson(settingsFile)).not.toHaveProperty("statusLine");
+      expect(readFileSync(join(stateDir, "statusline-declined"), "utf8")).toBe("no\n");
+      // Not asked again.
+      expect(await runSetup(paths, { confirm: say(true), dryRun: false })).toBe(0);
+      expect(asked).toHaveLength(1);
+      expect(readJson(settingsFile)).not.toHaveProperty("statusLine");
+      // `--statusline` sets it all the same.
+      expect(await runSetup(paths, { confirm: say(false), dryRun: false, statusline: true })).toBe(
+        0,
+      );
+      expect(asked).toHaveLength(1);
+      expect(readJson(settingsFile).statusLine.command).toEndWith(
+        "/.local/bin/anymodel statusline",
+      );
+    } finally {
+      quiet.mockRestore();
+      loud.mockRestore();
+    }
+  });
+
   test("--statusline never replaces a status line someone else set", () => {
     const { settingsFile, run } = setup();
     const settings = readJson(settingsFile);
@@ -605,14 +657,16 @@ describe("anymodel setup --statusline, statusline and usage", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
       [
-        "Subagents in the last 1 h, from ~/.claude/projects (read only; no message text)",
+        "Claude Code replies in the last 1 h, main sessions and subagents apart, from ~/.claude/projects (read only; no message text)",
         "",
         "/home/user/my-app  session session-",
+        "  main session, replies by model: none in the window",
         "  1 subagents, launched as: sonnet 1",
-        "  replies by model: glm-5.3-flash 1",
-        "  on Opus: 0 of 1 replies (0%)",
+        "  subagent replies by model: glm-5.3-flash 1",
+        "  subagents on Opus: 0 of 1 replies (0%)",
         "",
-        "Total: 1 subagents in 1 session; on Opus: 0 of 1 replies (0%)",
+        "Main sessions: 0 sessions; replies by model: none",
+        "Subagents: 1 in 1 session; replies by model: glm-5.3-flash 1; on Opus: 0 of 1 replies (0%)",
         "",
       ].join("\n"),
     );

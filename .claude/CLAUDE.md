@@ -58,7 +58,7 @@ the first time you use it.
 | `src/project/` | Finds the git project from a folder and reads its `.claude/anymodel.json`. |
 | `src/setup/` | Safe changes to user files: managed keys and blocks, backups, atomic writes, the lock, the launcher, restore, marketplace access. |
 | `src/cli/` | The `anymodel` commands: `setup`, `doctor`, `restore`, `statusline`, `usage`, `version`. |
-| `src/gateway/` | The optional AI gateway: the router, its config and slots (the model slots and the judge test too), the limit state file, `gateway <command>`, its service and its doctor checks. |
+| `src/gateway/` | The optional AI gateway: the router, its config and slots (the model slots, the judge test and its proof too), a model slot's fallback answer made safe for Claude (`fallback-answer.ts`), the limit state file, `gateway <command>`, its service and its doctor checks. |
 | `src/hooks/` | The logic of the plugin's hooks, tested: the StopFailure usage-limit alert. Each hook's entry is in `src/entries/`. |
 | `src/testing/` | Test helpers: temp folders, a clean git environment, the guard that fails any test reaching the live router's port 20100. |
 | `plugin/` | What users get: `dist/` (built, committed), `bin/`, `hooks/hooks.json`, `skills/`, the manifest. |

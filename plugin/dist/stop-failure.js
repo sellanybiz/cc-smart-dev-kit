@@ -2,7 +2,7 @@
 // src/entries/stop-failure.ts
 import { spawn } from "child_process";
 import { existsSync as existsSync5 } from "fs";
-import { dirname as dirname3, join as join4 } from "path";
+import { join as join5 } from "path";
 
 // src/cli/paths.ts
 import { homedir } from "os";
@@ -29,7 +29,7 @@ function tildify(path, home) {
 }
 
 // src/hooks/stop-failure.ts
-import { existsSync as existsSync4, readFileSync as readFileSync5 } from "fs";
+import { closeSync as closeSync2, existsSync as existsSync4, fstatSync, openSync as openSync2, readFileSync as readFileSync5, readSync } from "fs";
 
 // src/build-info/names.ts
 var MARKETPLACE = "anymodel";
@@ -38,6 +38,7 @@ var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
 var COMMAND = "anymodel";
 
 // src/gateway/config.ts
+import { createHash } from "crypto";
 import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
 import { dirname as dirname2 } from "path";
 
@@ -6261,6 +6262,7 @@ var gatewayConfigSchema = looseObject({
   aliases: record(string2(), string2()).default({}),
   anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
   backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
+  judgeTested: record(string2(), string2()).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
   slots: record(string2().refine(isSlotKey, "a slot key is anymodel-<name>"), array(string2()).min(1)),
@@ -6348,6 +6350,20 @@ function aliasError(name, to, config) {
     return `alias "${name}" names backend "${parsed.target.backend}", which is not in backends`;
   }
   return null;
+}
+var JUDGE_TEST_VERSION = 1;
+function judgeTestProof(target, backendUrl) {
+  return createHash("sha256").update(`anymodel judge test ${JUDGE_TEST_VERSION}
+${target}
+${backendUrl}`).digest("hex").slice(0, 32);
+}
+function judgeTargetTested(config, target) {
+  const parsed = parseTarget(target);
+  if (!("target" in parsed) || parsed.target.kind !== "backend")
+    return false;
+  const backend = Object.hasOwn(config.backends, parsed.target.backend) ? config.backends[parsed.target.backend] : undefined;
+  const proof = config.judgeTested !== undefined && Object.hasOwn(config.judgeTested, target) ? config.judgeTested[target] : undefined;
+  return backend !== undefined && proof !== undefined && proof === judgeTestProof(target, backend.baseUrl);
 }
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
@@ -6803,75 +6819,133 @@ function settingsReport(settingsPath) {
 var LIMIT_TEXT = /^You've hit your (?:[\w-]+ ){0,3}limit\b/;
 var NOT_LIMIT_TEXT = /\(not your usage limit\)/;
 var STATE_FRESH_MS = 2 * 60000;
+var OTHER_CLAUDE = "claude-sonnet-5-5";
+var ALERT_WORKER_COMMAND = "alert-worker";
 function isJsonObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function cheapTarget(config) {
-  for (const slot of ["anymodel-worker", "anymodel-scout"]) {
-    for (const text of config.slots[slot] ?? []) {
-      const parsed = parseTarget(text);
-      if ("target" in parsed && parsed.target.kind === "backend")
-        return text;
-    }
+function slotOf(model) {
+  for (const [slot, family] of Object.entries(MODEL_SLOTS)) {
+    if (model.includes(`-${family}-`))
+      return { family, slot };
   }
   return null;
+}
+function suggestedTargets(config, model, family, claim) {
+  const backends = (config.slots["anymodel-worker"] ?? []).filter((text) => {
+    const parsed = parseTarget(text);
+    return "target" in parsed && parsed.target.kind === "backend";
+  });
+  if (backends.length === 0)
+    return null;
+  const modelOnly = claim?.endsWith(`_${family}`) === true;
+  return [model, ...modelOnly ? [OTHER_CLAUDE] : [], ...backends];
+}
+function shortName(target) {
+  return target.slice(target.lastIndexOf("/") + 1).replace(/^[^:]*:/, "");
 }
 function planAlert(input, ctx) {
   if (!isJsonObject2(input) || input.error !== "rate_limit")
     return null;
   const text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
-  const limits = ctx.state === null ? [] : currentLimits(ctx.state, ctx.nowMs);
-  const latest = limits.sort(([, a], [, b]) => b.seenAt - a.seenAt)[0];
-  const fresh = latest !== undefined && ctx.nowMs - latest[1].seenAt < STATE_FRESH_MS;
   if (NOT_LIMIT_TEXT.test(text))
     return null;
-  if (!LIMIT_TEXT.test(text) && !fresh)
+  const limits = ctx.state === null ? [] : currentLimits(ctx.state, ctx.nowMs);
+  const fresh = ([, record]) => ctx.nowMs - record.seenAt < STATE_FRESH_MS;
+  if (!LIMIT_TEXT.test(text) && !limits.some(fresh))
     return null;
-  if (ctx.config === null)
+  if (!ctx.gatewaySetUp)
     return null;
-  const model = fresh ? latest[0] : null;
-  const record = fresh ? latest[1] : null;
+  const own = ctx.sessionModel === null ? undefined : limits.find(([model]) => model === withoutContextSuffix(ctx.sessionModel ?? ""));
+  const slotted = limits.filter((entry) => slotOf(entry[0]) !== null && fresh(entry)).sort(([, a], [, b]) => b.seenAt - a.seenAt)[0];
+  const chosen = own ?? slotted;
+  const model = chosen?.[0] ?? null;
+  const record = chosen?.[1] ?? null;
   const reset = record?.resetsAt !== null && record?.resetsAt !== undefined ? `resets ${formatClock(record.resetsAt, ctx.nowMs, ctx.timeZone)}` : /resets [^(]+/.exec(text)?.[0]?.trim() ?? "no reset time known";
   const title = "Claude usage limit reached";
   const head = `${model ?? "Claude"}: ${record?.claim ?? "plan limit"}, ${reset}.`;
-  const slot = model === null ? undefined : Object.entries(MODEL_SLOTS).find(([, family]) => model.includes(`-${family}-`));
-  if (slot === undefined || model === null) {
+  if (ctx.config === null) {
+    return {
+      action: null,
+      body: `${head} Claude Code continues by itself after the reset. The gateway config cannot be read, so no fallback is offered: ${COMMAND} doctor says why.`,
+      title
+    };
+  }
+  const slot = model === null ? null : slotOf(model);
+  if (slot === null || model === null) {
     return {
       action: null,
       body: `${head} Claude Code continues by itself after the reset.`,
       title
     };
   }
-  const [slotKey, family] = slot;
   if (Object.hasOwn(ctx.config.modelSlots ?? {}, model)) {
     return {
       action: null,
-      body: `${head} The ${slotKey} fallback is on, yet this turn stopped: check ${COMMAND} gateway status.`,
+      body: `${head} The ${slot.slot} fallback is on, yet this turn stopped: check ${COMMAND} gateway status.`,
       title
     };
   }
-  const target = cheapTarget(ctx.config);
-  const command = `${COMMAND} gateway slot ${family} ${model},${target ?? "<backend>:<model>"}`;
-  if (target === null || !ctx.gatewayOn) {
+  const targets = suggestedTargets(ctx.config, model, slot.family, record?.claim ?? null);
+  const command = `${COMMAND} gateway slot ${slot.family} ${(targets ?? [model, "<backend>:<model>"]).join(",")}`;
+  if (targets === null || !ctx.gatewayOn) {
     return {
       action: null,
       body: `${head} To use a cheaper model until it resets: ${command}`,
       title
     };
   }
-  const short = target.slice(target.lastIndexOf("/") + 1).replace(/^[^:]*:/, "");
   return {
     action: {
-      args: ["gateway", "slot", family, `${model},${target}`],
-      label: `Use ${short} until it resets`
+      args: ["gateway", "slot", slot.family, targets.join(",")],
+      label: `Use ${shortName(targets[1] ?? "")} until it resets`
     },
     body: `${head} A cheaper model until it resets: ${command} (Claude takes over again by itself once it answers).`,
     title
   };
 }
-function readAlertContext(paths, nowMs) {
+var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
+function lastClaudeModel(transcriptPath) {
+  let text;
+  try {
+    const fd = openSync2(transcriptPath, "r");
+    try {
+      const size = fstatSync(fd).size;
+      const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+      const buffer = Buffer.alloc(length);
+      readSync(fd, buffer, 0, length, size - length);
+      text = buffer.toString("utf8");
+    } finally {
+      closeSync2(fd);
+    }
+  } catch {
+    return null;
+  }
+  const lines = text.split(`
+`);
+  for (let index = lines.length - 1;index >= 0; index -= 1) {
+    const line = lines[index] ?? "";
+    if (!line.includes('"assistant"'))
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isJsonObject2(entry) || entry.type !== "assistant" || !isJsonObject2(entry.message)) {
+      continue;
+    }
+    const model = entry.message.model;
+    if (typeof model === "string" && model.startsWith("claude-"))
+      return model;
+  }
+  return null;
+}
+function readAlertContext(paths, nowMs, input) {
+  const gatewaySetUp = existsSync4(paths.gatewayConfigFile);
   let config = null;
-  if (existsSync4(paths.gatewayConfigFile)) {
+  if (gatewaySetUp) {
     try {
       config = loadConfigFile(paths.gatewayConfigFile);
     } catch {
@@ -6890,9 +6964,45 @@ function readAlertContext(paths, nowMs) {
   } catch {
     gatewayOn = false;
   }
-  return { config, gatewayOn, nowMs, state };
+  const transcript = isJsonObject2(input) && typeof input.transcript_path === "string" ? input.transcript_path : null;
+  const sessionModel = transcript === null ? null : lastClaudeModel(transcript);
+  return { config, gatewayOn, gatewaySetUp, nowMs, sessionModel, state };
 }
+var spawnRunner = ({ argv, timeoutMs }) => {
+  try {
+    const result = Bun.spawnSync(argv, { stderr: "ignore", stdout: "pipe", timeout: timeoutMs });
+    return {
+      exitCode: result.exitCode,
+      stdout: result.stdout.toString(),
+      timedOut: result.exitedDueToTimeout === true
+    };
+  } catch {
+    return { exitCode: null, stdout: "", timedOut: false };
+  }
+};
 var ACTION_WAIT_MS = 30 * 60000;
+function parseAlert(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isJsonObject2(raw) || typeof raw.title !== "string" || typeof raw.body !== "string") {
+    return null;
+  }
+  const action = raw.action;
+  if (action === null)
+    return { action: null, body: raw.body, title: raw.title };
+  if (!isJsonObject2(action) || typeof action.label !== "string" || !Array.isArray(action.args) || !action.args.every((arg) => typeof arg === "string")) {
+    return null;
+  }
+  return {
+    action: { args: action.args, label: action.label },
+    body: raw.body,
+    title: raw.title
+  };
+}
 function appleString(text) {
   return `"${text.replaceAll("\\", "\\\\").replaceAll('"', "\\\"")}"`;
 }
@@ -6913,7 +7023,7 @@ function plainNotification(alert, platform) {
   }
   return null;
 }
-function runAlert(alert, platform, paths, run) {
+function runAlert(alert, platform, launcher, run) {
   if (platform === "linux" && alert.action !== null) {
     const asked = run({
       argv: [
@@ -6931,17 +7041,14 @@ function runAlert(alert, platform, paths, run) {
     if (asked.exitCode === 0) {
       if (asked.stdout.trim() !== "use")
         return "waited";
-      const slot = run({
-        argv: [paths.bunPath, paths.cliBundle, ...alert.action.args],
-        timeoutMs: 60000
-      });
+      const slot = run({ argv: [launcher, ...alert.action.args], timeoutMs: 60000 });
       const done = slot.exitCode === 0;
       run({
         argv: [
           "notify-send",
           "--app-name=anymodel",
           done ? "Fallback on" : "Fallback not turned on",
-          done ? `${alert.action.label.replace(/^Use /, "Using ")}: anymodel gateway status shows it.` : `Run it yourself to see why: ${COMMAND} ${alert.action.args.join(" ")}`
+          done ? `${alert.action.label.replace(/^Use /, "Using ")}: ${COMMAND} gateway status shows it. Send a message in Claude Code to go on now.` : `Run it yourself to see why: ${COMMAND} ${alert.action.args.join(" ")}`
         ],
         timeoutMs: 1e4
       });
@@ -6955,25 +7062,73 @@ function runAlert(alert, platform, paths, run) {
   return "shown";
 }
 
-// src/entries/stop-failure.ts
-var WORKER_FLAG = "--alert-worker";
-var self = process.argv[1] ?? "";
-function cliBundle() {
-  const beside = join4(dirname3(self), "cli.js");
-  return existsSync5(beside) ? beside : join4(import.meta.dir, "..", "..", "plugin", "dist", "cli.js");
+// src/setup/launcher.ts
+import { join as join4 } from "path";
+var LAUNCHER_NAME = "anymodel";
+var FIND_INSTALL_JS = [
+  "const f=process.argv[process.argv.length-1];",
+  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
+  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
-var runner = ({ argv, timeoutMs }) => {
-  try {
-    const result = Bun.spawnSync(argv, { stderr: "ignore", stdout: "pipe", timeout: timeoutMs });
-    return {
-      exitCode: result.exitCode,
-      stdout: result.stdout.toString(),
-      timedOut: result.exitedDueToTimeout === true
-    };
-  } catch {
-    return { exitCode: null, stdout: "", timedOut: false };
-  }
-};
+function bakedBunPath(script) {
+  const match = /^baked_bun=('(?:[^']|'\\'')*')$/m.exec(script);
+  if (!match?.[1])
+    return null;
+  return match[1].slice(1, -1).replaceAll("'\\''", "'");
+}
+function launcherScript(bunPath) {
+  return `#!/bin/sh
+# anymodel launcher. Written by "anymodel setup"; setup rewrites it, so do not edit it.
+# It runs the anymodel command from the installed version of the anymodel plugin.
+fail() {
+  echo "anymodel: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
+  exit 1
+}
+baked_bun=${shellQuote(bunPath)}
+if [ -x "$baked_bun" ]; then
+  bun="$baked_bun"
+elif command -v bun >/dev/null 2>&1; then
+  bun=$(command -v bun)
+else
+  echo "anymodel: bun not found (not at $baked_bun, not on PATH). Install bun, then run: anymodel setup" >&2
+  exit 1
+fi
+config_dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+installed="$config_dir/plugins/installed_plugins.json"
+[ -f "$installed" ] || fail "the anymodel plugin is not installed."
+install_path=$("$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the anymodel plugin is not installed."
+[ -n "$install_path" ] || fail "the anymodel plugin is not installed."
+[ -f "$install_path/dist/cli.js" ] || fail "the anymodel plugin folder is missing: $install_path."
+exec "$bun" "$install_path/dist/cli.js" "$@"
+`;
+}
+function installLauncher(binDir, options) {
+  const path = join4(binDir, LAUNCHER_NAME);
+  const { outcome } = writeManagedFile(path, launcherScript(options.bunPath), {
+    stateDir: options.stateDir,
+    kind: "whole-file",
+    mode: 493,
+    ...options.dryRun !== undefined && { dryRun: options.dryRun }
+  });
+  return { path, outcome };
+}
+
+// src/entries/stop-failure.ts
+function detached(argv) {
+  const [file, ...args] = argv;
+  if (file === undefined)
+    return;
+  const child = spawn(file, args, { detached: true, stdio: "ignore" });
+  child.on("error", (error) => {
+    console.error(`anymodel StopFailure: could not show the alert: ${error.message}`);
+  });
+  child.unref();
+}
 async function hook() {
   let input;
   try {
@@ -6982,31 +7137,23 @@ async function hook() {
     console.error("anymodel StopFailure: the hook input is not JSON");
     return;
   }
-  const alert = planAlert(input, readAlertContext(cliPaths(), Date.now()));
+  const paths = cliPaths();
+  const alert = planAlert(input, readAlertContext(paths, Date.now(), input));
   if (alert === null)
     return;
-  const child = spawn(process.execPath, [self, WORKER_FLAG, JSON.stringify(alert)], {
-    detached: true,
-    stdio: "ignore"
-  });
-  child.on("error", (error) => {
-    console.error(`anymodel StopFailure: could not show the alert: ${error.message}`);
-  });
-  child.unref();
-}
-function worker(payload) {
-  const alert = JSON.parse(payload);
-  const outcome = runAlert(alert, process.platform, { bunPath: process.execPath, cliBundle: cliBundle() }, runner);
-  if (outcome === "no notifier") {
-    console.error(`anymodel: ${alert.title}. ${alert.body}`);
+  const launcher = join5(paths.binDir, LAUNCHER_NAME);
+  if (existsSync5(launcher)) {
+    detached([launcher, ALERT_WORKER_COMMAND, JSON.stringify(alert)]);
+    return;
   }
+  const plain = plainNotification({ ...alert, action: null }, process.platform);
+  if (plain === null)
+    console.error(`anymodel: ${alert.title}. ${alert.body}`);
+  else
+    detached(plain.argv);
 }
 try {
-  const [flag, payload] = process.argv.slice(2);
-  if (flag === WORKER_FLAG && payload !== undefined)
-    worker(payload);
-  else
-    await hook();
+  await hook();
 } catch (error) {
   console.error(`anymodel StopFailure: ${error instanceof Error ? error.message : String(error)}`);
 }

@@ -27,6 +27,12 @@ function tildify(path, home) {
 import { mkdirSync as mkdirSync3 } from "fs";
 import { dirname as dirname3 } from "path";
 
+// src/build-info/names.ts
+var MARKETPLACE = "anymodel";
+var PLUGIN = "anymodel";
+var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
+var COMMAND = "anymodel";
+
 // src/setup/write.ts
 import {
   chmodSync,
@@ -274,6 +280,7 @@ function removeManagedFile(stateDir, file) {
 }
 
 // src/gateway/config.ts
+import { createHash } from "crypto";
 import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
 import { dirname as dirname2 } from "path";
 
@@ -6071,12 +6078,6 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
-// src/build-info/names.ts
-var MARKETPLACE = "anymodel";
-var PLUGIN = "anymodel";
-var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-var COMMAND = "anymodel";
-
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 var SLOT_PREFIX = "anymodel-";
@@ -6257,6 +6258,7 @@ var gatewayConfigSchema = looseObject({
   aliases: record(string2(), string2()).default({}),
   anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
   backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
+  judgeTested: record(string2(), string2()).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
   slots: record(string2().refine(isSlotKey, "a slot key is anymodel-<name>"), array(string2()).min(1)),
@@ -6344,6 +6346,20 @@ function aliasError(name, to, config) {
     return `alias "${name}" names backend "${parsed.target.backend}", which is not in backends`;
   }
   return null;
+}
+var JUDGE_TEST_VERSION = 1;
+function judgeTestProof(target, backendUrl) {
+  return createHash("sha256").update(`anymodel judge test ${JUDGE_TEST_VERSION}
+${target}
+${backendUrl}`).digest("hex").slice(0, 32);
+}
+function judgeTargetTested(config, target) {
+  const parsed = parseTarget(target);
+  if (!("target" in parsed) || parsed.target.kind !== "backend")
+    return false;
+  const backend = Object.hasOwn(config.backends, parsed.target.backend) ? config.backends[parsed.target.backend] : undefined;
+  const proof = config.judgeTested !== undefined && Object.hasOwn(config.judgeTested, target) ? config.judgeTested[target] : undefined;
+  return backend !== undefined && proof !== undefined && proof === judgeTestProof(target, backend.baseUrl);
 }
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
@@ -6442,6 +6458,238 @@ ${good ? "keeping the last good config" : NO_CONFIG_MEANS}`);
   };
 }
 
+// src/gateway/fallback-answer.ts
+import { createHash as createHash2 } from "crypto";
+var DROPPED_BLOCKS = new Set(["redacted_thinking", "thinking"]);
+var TOOL_USE_ID = /^[a-zA-Z0-9_-]+$/;
+var EMPTY_ANSWER_TEXT = "(The fallback model answered with thinking only.)";
+function isJsonObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function safeToolUseId(id) {
+  if (TOOL_USE_ID.test(id))
+    return id;
+  return `toolu_anymodel_${createHash2("sha256").update(id).digest("hex").slice(0, 24)}`;
+}
+function withSafeId(block, changes) {
+  if (block.type !== "tool_use" || typeof block.id !== "string")
+    return block;
+  const id = safeToolUseId(block.id);
+  if (id === block.id)
+    return block;
+  changes.ids += 1;
+  return { ...block, id };
+}
+function cleanFallbackMessage(message) {
+  const changes = { ids: 0, thinking: 0 };
+  if (!isJsonObject(message) || !Array.isArray(message.content))
+    return { changes, message };
+  const content = [];
+  for (const block of message.content) {
+    if (isJsonObject(block) && typeof block.type === "string" && DROPPED_BLOCKS.has(block.type)) {
+      changes.thinking += 1;
+      continue;
+    }
+    content.push(isJsonObject(block) ? withSafeId(block, changes) : block);
+  }
+  if (changes.thinking === 0 && changes.ids === 0)
+    return { changes, message };
+  if (content.length === 0)
+    content.push({ text: EMPTY_ANSWER_TEXT, type: "text" });
+  return { changes, message: { ...message, content } };
+}
+function eventText(name, data) {
+  return `event: ${name}
+data: ${JSON.stringify(data)}
+
+`;
+}
+function eventEnd(text) {
+  const match = /\r?\n\r?\n/.exec(text);
+  return match === null ? -1 : match.index + match[0].length;
+}
+function parseEvent(text) {
+  let name = null;
+  const data = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (line === "" || line.startsWith(":"))
+      continue;
+    const colon = line.indexOf(":");
+    const field = colon === -1 ? line : line.slice(0, colon);
+    const value = colon === -1 ? "" : line.slice(colon + 1).replace(/^ /, "");
+    if (field === "event")
+      name = value;
+    if (field === "data")
+      data.push(value);
+  }
+  return { data: data.length === 0 ? null : data.join(`
+`), name };
+}
+function cleanFallbackStream(onDone = () => {
+  return;
+}) {
+  const decoder = new TextDecoder;
+  const encoder = new TextEncoder;
+  const changes = { ids: 0, thinking: 0 };
+  const dropped = new Set;
+  let kept = 0;
+  let filled = false;
+  let buffer = "";
+  const renumber = (index) => {
+    let below = 0;
+    for (const gone of dropped)
+      if (gone < index)
+        below += 1;
+    return index - below;
+  };
+  const clean = (text) => {
+    const { data, name } = parseEvent(text);
+    if (data === null)
+      return text;
+    let event;
+    try {
+      event = JSON.parse(data);
+    } catch {
+      return text;
+    }
+    if (!isJsonObject(event) || typeof event.type !== "string")
+      return text;
+    const label = name ?? event.type;
+    if (event.type === "message_delta" || event.type === "message_stop") {
+      if (kept > 0 || dropped.size === 0 || filled)
+        return text;
+      filled = true;
+      return [
+        eventText("content_block_start", {
+          content_block: { text: "", type: "text" },
+          index: 0,
+          type: "content_block_start"
+        }),
+        eventText("content_block_delta", {
+          delta: { text: EMPTY_ANSWER_TEXT, type: "text_delta" },
+          index: 0,
+          type: "content_block_delta"
+        }),
+        eventText("content_block_stop", { index: 0, type: "content_block_stop" }),
+        text
+      ].join("");
+    }
+    const isBlock = event.type === "content_block_start" || event.type === "content_block_delta" || event.type === "content_block_stop";
+    if (!isBlock || typeof event.index !== "number")
+      return text;
+    const index = event.index;
+    if (event.type === "content_block_start") {
+      const block = event.content_block;
+      if (isJsonObject(block) && typeof block.type === "string" && DROPPED_BLOCKS.has(block.type)) {
+        dropped.add(index);
+        changes.thinking += 1;
+        return "";
+      }
+      kept += 1;
+      const safe = isJsonObject(block) ? withSafeId(block, changes) : block;
+      const next = renumber(index);
+      if (next === index && safe === block)
+        return text;
+      return eventText(label, { ...event, content_block: safe, index: next });
+    }
+    if (dropped.has(index))
+      return "";
+    const next = renumber(index);
+    return next === index ? text : eventText(label, { ...event, index: next });
+  };
+  const drain = (controller) => {
+    for (;; ) {
+      const end = eventEnd(buffer);
+      if (end === -1)
+        return;
+      const out = clean(buffer.slice(0, end));
+      buffer = buffer.slice(end);
+      if (out !== "")
+        controller.enqueue(encoder.encode(out));
+    }
+  };
+  return new TransformStream({
+    flush(controller) {
+      buffer += decoder.decode();
+      drain(controller);
+      if (buffer !== "")
+        controller.enqueue(encoder.encode(buffer));
+      onDone(changes);
+    },
+    transform(chunk, controller) {
+      buffer += decoder.decode(chunk, { stream: true });
+      drain(controller);
+    }
+  });
+}
+function decoding(encoding) {
+  switch (encoding.trim().toLowerCase()) {
+    case "":
+    case "identity":
+      return "identity";
+    case "gzip":
+    case "x-gzip":
+      return "gzip";
+    case "deflate":
+      return "deflate";
+    case "br":
+      return "brotli";
+    case "zstd":
+      return "zstd";
+    default:
+      return null;
+  }
+}
+function cleanFallbackResponse(response, onChanged) {
+  if (!response.ok || response.body === null)
+    return { note: null, response };
+  const type = (response.headers.get("content-type") ?? "").toLowerCase();
+  const stream = type.includes("text/event-stream");
+  if (!stream && !type.includes("json"))
+    return { note: null, response };
+  const encoding = response.headers.get("content-encoding") ?? "";
+  const format = decoding(encoding);
+  if (format === null) {
+    return {
+      note: `its answer is "${encoding.slice(0, 40)}" encoded, which the router cannot read: thinking blocks were not removed`,
+      response
+    };
+  }
+  const headers = new Headers(response.headers);
+  headers.delete("content-encoding");
+  headers.delete("content-length");
+  const plain = format === "identity" ? response.body : response.body.pipeThrough(new DecompressionStream(format));
+  const report = (changes) => {
+    if (changes.thinking > 0 || changes.ids > 0)
+      onChanged(changes);
+  };
+  const init = { headers, status: response.status, statusText: response.statusText };
+  if (stream) {
+    return {
+      note: null,
+      response: new Response(plain.pipeThrough(cleanFallbackStream(report)), init)
+    };
+  }
+  const cleaned = new Response(plain).arrayBuffer().then((bytes) => {
+    let parsed;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(bytes));
+    } catch {
+      return new Uint8Array(bytes);
+    }
+    const result = cleanFallbackMessage(parsed);
+    report(result.changes);
+    return result.changes.thinking > 0 || result.changes.ids > 0 ? new TextEncoder().encode(JSON.stringify(result.message)) : new Uint8Array(bytes);
+  });
+  const body = new ReadableStream({
+    async pull(controller) {
+      controller.enqueue(await cleaned);
+      controller.close();
+    }
+  });
+  return { note: null, response: new Response(body, init) };
+}
+
 // src/gateway/limit-state.ts
 var NO_RESET_FRESH_MS = 15 * 60000;
 var limitSchema = object({
@@ -6515,6 +6763,10 @@ function currentFallbacks(state, nowMs) {
 
 // src/gateway/router.ts
 var FALLBACK_SAVE_EVERY_MS = 60000;
+var LIMIT_REST_MIN_SEC = 60;
+var TOO_LONG = /context|too long|too large|too many tokens|token limit|payload/i;
+var UNSUPPORTED = /unsupported|not supported|unknown (?:content|block|type)|invalid (?:content|block) type|image|document|server_tool|web_search|web_fetch|tool_reference/i;
+var BAD_SIGNATURE = "Invalid `signature`";
 var HEALTH_PATH = "/__anymodel/health";
 var MESSAGES_PATH = "/v1/messages";
 var COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
@@ -6713,10 +6965,10 @@ function toolSearchForBackend(body) {
   const messages = body.messages;
   if (Array.isArray(messages)) {
     out.messages = messages.map((message) => {
-      if (!isJsonObject(message) || !Array.isArray(message.content))
+      if (!isJsonObject2(message) || !Array.isArray(message.content))
         return message;
       const content = message.content.map((block) => {
-        if (!isJsonObject(block) || block.type !== "tool_result")
+        if (!isJsonObject2(block) || block.type !== "tool_result")
           return block;
         const inner = block.content;
         if (!Array.isArray(inner))
@@ -6724,7 +6976,7 @@ function toolSearchForBackend(body) {
         return {
           ...block,
           content: inner.map((part) => {
-            if (!isJsonObject(part) || part.type !== "tool_reference")
+            if (!isJsonObject2(part) || part.type !== "tool_reference")
               return part;
             const name = part.tool_name;
             if (typeof name !== "string")
@@ -6740,7 +6992,7 @@ function toolSearchForBackend(body) {
   const tools = body.tools;
   if (Array.isArray(tools)) {
     out.tools = tools.flatMap((tool) => {
-      if (!isJsonObject(tool) || tool.defer_loading !== true)
+      if (!isJsonObject2(tool) || tool.defer_loading !== true)
         return [tool];
       const name = tool.name;
       if (typeof name !== "string" || !referenced.has(name))
@@ -6754,10 +7006,10 @@ function toolSearchForBackend(body) {
 }
 function reasoningOffForBackend(body, options = {}) {
   const thinking = body.thinking;
-  const off = isJsonObject(thinking) ? thinking.type === "disabled" : thinking === undefined && options.absentIsOff === true;
+  const off = isJsonObject2(thinking) ? thinking.type === "disabled" : thinking === undefined && options.absentIsOff === true;
   if (!off)
     return body;
-  const outputConfig = isJsonObject(body.output_config) ? body.output_config : {};
+  const outputConfig = isJsonObject2(body.output_config) ? body.output_config : {};
   if (outputConfig.effort !== undefined)
     return body;
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
@@ -6775,11 +7027,11 @@ function requestForClaudeFallback(body, model) {
   const out = { ...body };
   const changes = [];
   const thinking = body.thinking;
-  if (isJsonObject(thinking) && thinking.type === "disabled") {
+  if (isJsonObject2(thinking) && thinking.type === "disabled") {
     if (rules.thinkingOff === "left out") {
       delete out.thinking;
       changes.push("thinking disabled -> left out (always on)");
-      const outputConfig = isJsonObject(body.output_config) ? body.output_config : undefined;
+      const outputConfig = isJsonObject2(body.output_config) ? body.output_config : undefined;
       if (outputConfig?.effort === undefined) {
         out.output_config = { ...outputConfig, effort: "low" };
         changes.push("effort low (nearest to thinking off)");
@@ -6788,17 +7040,17 @@ function requestForClaudeFallback(body, model) {
       out.thinking = { type: "between_tools" };
       changes.push("thinking disabled -> between_tools");
       const outputConfig = body.output_config;
-      if (isJsonObject(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
+      if (isJsonObject2(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
         out.output_config = { ...outputConfig, effort: "high" };
         changes.push(`effort ${outputConfig.effort} -> high`);
       }
     }
-  } else if (isJsonObject(thinking) && thinking.type === "enabled") {
+  } else if (isJsonObject2(thinking) && thinking.type === "enabled") {
     out.thinking = thinking.display === undefined ? { type: "adaptive" } : { display: thinking.display, type: "adaptive" };
     changes.push("thinking enabled (budget) -> adaptive");
   }
   const toolChoice = body.tool_choice;
-  if (isJsonObject(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
+  if (isJsonObject2(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
     out.tool_choice = toolChoice.disable_parallel_tool_use === undefined ? { type: "auto" } : { disable_parallel_tool_use: toolChoice.disable_parallel_tool_use, type: "auto" };
     changes.push(`tool_choice ${toolChoice.type} -> auto`);
   }
@@ -6815,7 +7067,7 @@ function requestForClaudeFallback(body, model) {
   return changes.length > 0 ? { body: out, changes } : { body, changes };
 }
 var encoder = new TextEncoder;
-function isJsonObject(value) {
+function isJsonObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function parseBody(bytes) {
@@ -6825,7 +7077,7 @@ function parseBody(bytes) {
   } catch {
     return null;
   }
-  return isJsonObject(parsed) ? parsed : null;
+  return isJsonObject2(parsed) ? parsed : null;
 }
 function deadline(ms) {
   let timer;
@@ -6843,6 +7095,10 @@ function createRouter(deps) {
   const translationsLogged = new Set;
   const limitState = emptyLimitState();
   const limitedUntil = new Map;
+  const fellBack = new Set;
+  const untestedLogged = new Set;
+  const cleanedLogged = new Set;
+  let checkedConfig = null;
   let saveQueued = false;
   let lastSaveError = "";
   function persist() {
@@ -6867,7 +7123,9 @@ function createRouter(deps) {
     });
     deps.background?.(task);
   }
-  function observeClaude(model, response) {
+  function observeClaude(model, response, path) {
+    if (path !== MESSAGES_PATH)
+      return null;
     const id = withoutContextSuffix(model);
     const limit = planUsageLimit(response.status, (name) => response.headers.get(name));
     if (limit !== null) {
@@ -6897,10 +7155,17 @@ function createRouter(deps) {
     const now = deps.now();
     const before = limitState.fallbacks[slot];
     const resetsAt = limit?.resetsAt ?? before?.resetsAt ?? null;
+    const reset = resetsAt === null ? "no reset time given" : `resets ${new Date(resetsAt * 1000).toISOString()}`;
+    const claim = printable(limit?.claim ?? "plan limit", 40);
+    if (!outcome.response.ok) {
+      if (before === undefined) {
+        deps.log(`WARN ${slot}: ${model} is at its plan usage limit (${claim}, ${reset}); its fallback ${outcome.target} answered ${outcome.response.status}`);
+      }
+      return;
+    }
+    fellBack.add(model);
     if (before === undefined) {
-      const reset = resetsAt === null ? "no reset time given" : `resets ${new Date(resetsAt * 1000).toISOString()}`;
-      const claim = limit?.claim ?? "plan limit";
-      deps.log(`WARN ${slot}: ${model} is at its plan usage limit (${printable(claim, 40)}, ${reset}); ${outcome.response.ok ? `answering from ${outcome.target}` : `its fallback ${outcome.target} answered ${outcome.response.status}`} until ${model} answers again`);
+      deps.log(`WARN ${slot}: ${model} is at its plan usage limit (${claim}, ${reset}); answering from ${outcome.target} until ${model} answers again`);
     }
     limitState.fallbacks[slot] = {
       lastAt: now,
@@ -6912,6 +7177,42 @@ function createRouter(deps) {
     if (before === undefined || before.target !== outcome.target || before.resetsAt !== resetsAt || now - before.lastAt >= FALLBACK_SAVE_EVERY_MS) {
       persist();
     }
+  }
+  function dropRemovedFallbacks(config) {
+    if (config === checkedConfig)
+      return;
+    checkedConfig = config;
+    const inUse = new Set(Object.values(config.modelSlots ?? {}));
+    if (judgeTargetsOf(config, false).length > 0)
+      inUse.add(JUDGE_SLOT);
+    let changed = false;
+    for (const slot of Object.keys(limitState.fallbacks)) {
+      if (inUse.has(slot))
+        continue;
+      delete limitState.fallbacks[slot];
+      deps.log(`${slot}: removed from the config; its fallback record is dropped`);
+      changed = true;
+    }
+    if (changed)
+      persist();
+  }
+  function judgeTargetsOf(config, warn) {
+    const judge = resolveRoute(JUDGE_SLOT, config);
+    if (judge.kind !== "slot")
+      return [];
+    return judge.targets.filter((target) => {
+      const text = formatTarget(target);
+      if (judgeTargetTested(config, text))
+        return true;
+      if (warn && !untestedLogged.has(text)) {
+        untestedLogged.add(text);
+        deps.log(`WARN ${JUDGE_SLOT}: ${text} has not passed the judge test, so it judges nothing. Test and set it: ${COMMAND} gateway slot judge <targets>`);
+      }
+      return false;
+    });
+  }
+  function hadFallback(model) {
+    return fellBack.has(model);
   }
   async function discard(response) {
     try {
@@ -6954,9 +7255,10 @@ function createRouter(deps) {
       });
     }
   }
-  function logErrorAnswer(response, known, prefix) {
+  function logErrorAnswer(response, known, prefix, follow) {
     const task = errorSnippet(response, known).then((snippet) => {
       deps.log(`${prefix} \u2014 ${snippet}`);
+      follow?.(snippet);
     }, (error) => {
       deps.log(`${prefix} \u2014 (body unreadable: ${messageOf(error)})`);
     });
@@ -7161,7 +7463,7 @@ function createRouter(deps) {
       target: label
     };
   }
-  async function chain(req, url, config, body, targets, name, guard) {
+  async function chain(req, url, config, body, targets, name, guard, standsInFor = null) {
     const failures = [];
     let fallbacks = 0;
     let skipped = 0;
@@ -7180,7 +7482,7 @@ function createRouter(deps) {
       if (req.signal.aborted)
         return closed(result, label);
       if (target.kind === "anthropic" && "response" in result) {
-        observeClaude(target.model, result.response);
+        observeClaude(target.model, result.response, url.pathname);
       }
       if ("response" in result && !last && target.kind === "backend" && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("text/event-stream")) {
         result = await holdFirstEvent(result.response, deadlineAt);
@@ -7209,7 +7511,12 @@ function createRouter(deps) {
           };
         }
         if (status >= 400) {
-          logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN ${label} answered ${status}; returned as it is`);
+          logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN ${label} answered ${status}; returned as it is`, standsInFor === null || status !== 400 && status !== 413 ? undefined : (snippet) => {
+            const kind = TOO_LONG.test(snippet) ? "too long" : UNSUPPORTED.test(snippet) ? "a kind of content it does not take" : null;
+            if (kind === null)
+              return;
+            deps.log(`WARN ${name}: ${label} refused this ${standsInFor} conversation (${kind}). A long ([1m], 200k+ tokens) or rich (images, documents, server tools) ${standsInFor} conversation may be more than the fallback takes: /compact it, start a new one, or wait for ${standsInFor}'s reset`);
+          });
         }
         return { fallbacks, response: relay(result.response, target), skipped, target: label };
       }
@@ -7246,23 +7553,42 @@ function createRouter(deps) {
       if (req.signal.aborted)
         return closed(result, found.model);
       if (!("response" in result))
-        return answerDirect(result, null);
-      limit = observeClaude(found.model, result.response);
+        return answerDirect(result, null, found.model);
+      limit = observeClaude(found.model, result.response, url.pathname);
       if (limit === null)
-        return answerDirect(result, null);
+        return answerDirect(result, null, found.model);
       const nowSec = deps.now() / 1000;
-      const restSec = limit.resetsAt === null ? COOLDOWN_MAX_SEC : Math.min(Math.max(limit.resetsAt - nowSec, 0), COOLDOWN_MAX_SEC);
+      const restSec = limit.resetsAt === null ? COOLDOWN_MAX_SEC : limit.resetsAt <= nowSec ? LIMIT_REST_MIN_SEC : Math.min(limit.resetsAt - nowSec, COOLDOWN_MAX_SEC);
       limitedUntil.set(found.model, deps.now() + restSec * 1000);
       logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${found.model} answered 429 (the plan's usage limit); trying the next target of ${found.slot}`);
     }
-    const outcome = await chain(req, url, config, body, rest, found.slot, false);
+    const outcome = await chain(req, url, config, body, rest, found.slot, false, found.model);
     if (!req.signal.aborted)
       noteFallback(found.slot, found.model, limit, outcome);
     return {
       ...outcome,
       fallbacks: outcome.fallbacks + (skipped === 0 ? 1 : 0),
+      response: cleanAnswer(found, outcome),
       skipped: outcome.skipped + skipped
     };
+  }
+  function cleanAnswer(found, outcome) {
+    if (deps.fallbackAnswersAsIs === true)
+      return outcome.response;
+    const cleaned = cleanFallbackResponse(outcome.response, (changes) => {
+      const kinds = [
+        changes.thinking > 0 ? "thinking blocks removed" : "",
+        changes.ids > 0 ? "tool_use ids made safe" : ""
+      ].filter((part) => part !== "");
+      const text = `${found.slot}: ${outcome.target}'s answers: ${kinds.join(", ")}`;
+      if (cleanedLogged.has(text))
+        return;
+      cleanedLogged.add(text);
+      deps.log(`${text} (${found.model} refuses them in its history; logged once per kind)`);
+    });
+    if (cleaned.note !== null)
+      deps.log(`WARN ${found.slot}: ${outcome.target}: ${cleaned.note}`);
+    return cleaned.response;
   }
   async function judgeAsFallback(req, url, config, body, model, judgeTargets, toClaude) {
     const checkModel = withoutContextSuffix(String(body.model ?? "-"));
@@ -7287,6 +7613,8 @@ function createRouter(deps) {
     if (req.signal.aborted)
       return judged;
     deps.log(`WARN safety check judged by ${judged.target} (${judged.response.status}), not by Claude: ${reason}`);
+    if (!judged.response.ok)
+      return { ...judged, fallbacks: judged.fallbacks + 1 };
     const now = deps.now();
     const before = limitState.fallbacks[JUDGE_SLOT];
     const resetsAt = limit?.resetsAt ?? null;
@@ -7311,6 +7639,7 @@ function createRouter(deps) {
   }
   async function route(req, url, model) {
     const config = deps.getConfig();
+    dropRemovedFallbacks(config);
     const isMessages = req.method === "POST" && (url.pathname === MESSAGES_PATH || url.pathname === COUNT_TOKENS_PATH);
     if (isMessages) {
       const type = (req.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
@@ -7320,11 +7649,17 @@ function createRouter(deps) {
     }
     const sent = req.method === "GET" || req.method === "HEAD" || req.body === null ? null : new Uint8Array(await req.arrayBuffer());
     let bytes = sent;
-    const answerDirect = (result, observed) => {
-      if (observed !== null && "response" in result)
-        observeClaude(observed, result.response);
+    const answerDirect = (result, observed, claudeModel = observed) => {
+      if (observed !== null && "response" in result) {
+        observeClaude(observed, result.response, url.pathname);
+      }
       if (isMessages && "response" in result && result.response.status >= 400) {
-        logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN anthropic answered ${result.response.status}`);
+        const id = claudeModel === null ? null : withoutContextSuffix(claudeModel);
+        logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN anthropic answered ${result.response.status}`, id === null || result.response.status !== 400 || !hadFallback(id) ? undefined : (snippet) => {
+          if (!snippet.includes(BAD_SIGNATURE))
+            return;
+          deps.log(`WARN ${id} refused a thinking block's signature: this conversation holds a thinking block a fallback model wrote while ${id} was at its plan limit. Claude Code 2.1.300 sent the request once more and was answered (seen live); if the session stays stuck, /rewind in Claude Code to the message before the fallback answered, or start a new session`);
+        });
       }
       const response = "response" in result ? relay(result.response, null) : anthropicError(502, "api_error", `anymodel-router: Anthropic did not answer (${result.failure})`);
       return { fallbacks: 0, response, skipped: 0, target: "anthropic" };
@@ -7358,8 +7693,7 @@ function createRouter(deps) {
     }
     if (guard)
       model.name = `${model.name} (safety check)`;
-    const judge = guard ? resolveRoute(JUDGE_SLOT, config) : null;
-    const judgeTargets = judge?.kind === "slot" ? judge.targets : [];
+    const judgeTargets = guard ? judgeTargetsOf(config, true) : [];
     if (judgeTargets.length > 0 && url.pathname === MESSAGES_PATH) {
       return judgeAsFallback(req, url, config, body, model, judgeTargets, claudeRoute);
     }

@@ -10,6 +10,8 @@ import { runUsage } from "../cli/usage";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
+import { ALERT_WORKER_COMMAND, parseAlert, runAlert, spawnRunner } from "../hooks/stop-failure";
+import { LAUNCHER_NAME } from "../setup/launcher";
 
 const HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
 
@@ -37,9 +39,10 @@ Commands:
                      85 %), and any fallback the gateway is using. Reads the JSON
                      Claude Code passes on stdin.
   usage [--hours <n>] [--project <folder or name>]
-                     Which models answered the subagents, per session, from Claude
-                     Code's transcripts (default: the last 6 hours). Read only; no
-                     message text.
+                     Which models answered on this machine, per session: the main
+                     session's replies and its subagents' apart (how each subagent was
+                     launched, and the share on Opus), from Claude Code's transcripts
+                     (default: the last 6 hours). Read only; no message text.
   version            Print the version.
   --help             Print this help.
 
@@ -109,6 +112,21 @@ async function main(argv: string[]): Promise<number> {
       );
     case "usage":
       return runUsage(paths, rest, Date.now());
+    case ALERT_WORKER_COMMAND: {
+      // Not in --help: the StopFailure hook starts it, detached, through the launcher, so the
+      // half hour it may wait for a click runs from the installed version, not the hook's
+      // version folder (src/entries/stop-failure.ts).
+      const alert = rest.length === 1 ? parseAlert(rest[0] ?? "") : null;
+      if (alert === null) {
+        console.error(`Usage: anymodel ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
+        return 2;
+      }
+      const launcher = join(paths.binDir, LAUNCHER_NAME);
+      if (runAlert(alert, process.platform, launcher, spawnRunner) === "no notifier") {
+        console.error(`anymodel: ${alert.title}. ${alert.body}`);
+      }
+      return 0;
+    }
     case "doctor":
       return runDoctor(paths, process.env, {
         bundle: routerBundle(),

@@ -66,6 +66,28 @@ function projects(): string {
   subagent(session, "agent-a3", { agentType: "Explore" }, [
     ...reply("msg_4", "claude-opus-5-5", NOW - 600_000),
   ]);
+  // The main session's own transcript, beside the session folder.
+  const project = join(root, "-home-user-my-app");
+  writeFileSync(
+    join(project, "11111111-aaaa-bbbb-cccc-000000000001.jsonl"),
+    `${[
+      JSON.stringify({ content: SECRET_TEXT, cwd: "/home/user/my-app", type: "user" }),
+      ...reply("main_1", "claude-opus-5-5", NOW - 3_500_000, 2),
+      ...reply("main_2", "glm-5.3-flash", NOW - 1_000_000),
+      // A subagent's line in an older version's main file: not the main session's.
+      JSON.stringify({
+        isSidechain: true,
+        message: { id: "side_1", model: "claude-haiku-4-5" },
+        timestamp: new Date(NOW - 900_000).toISOString(),
+        type: "assistant",
+      }),
+    ].join("\n")}\n`,
+  );
+  // A main session whose file last changed before the window: not read, though its lines
+  // say otherwise (the file's time wins: nothing was written to it since).
+  const stale = join(project, "33333333-aaaa-bbbb-cccc-000000000003.jsonl");
+  writeFileSync(stale, `${reply("stale_1", "claude-opus-5-5", NOW - 600_000).join("\n")}\n`);
+  utimesSync(stale, (NOW - 7 * 3_600_000) / 1000, (NOW - 7 * 3_600_000) / 1000);
   // Another project, all old: not in the window.
   const old = join(root, "-home-user-other", "22222222-aaaa-bbbb-cccc-000000000002", "subagents");
   subagent(
@@ -79,13 +101,14 @@ function projects(): string {
 }
 
 describe("usage", () => {
-  it("counts subagents, how they were launched, replies by model, and the share on Opus", () => {
+  it("counts the main session and its subagents apart: replies by model, launches, the share on Opus", () => {
     const root = projects();
     const sessions = collectUsage(root, { project: null, sinceMs: SINCE });
     expect(sessions).toEqual([
       {
         cwd: "/home/user/my-app",
         launched: { inherited: 1, opus: 1, sonnet: 1 },
+        main: { "claude-opus-5-5": 1, "glm-5.3-flash": 1 },
         project: "-home-user-my-app",
         replies: { "claude-opus-5-5": 3, "glm-5.3-flash": 1 },
         session: "11111111-aaaa-bbbb-cccc-000000000001",
@@ -95,31 +118,53 @@ describe("usage", () => {
     const text = formatUsage(sessions, 6, root, "/home/user");
     expect(text).toBe(
       [
-        `Subagents in the last 6 h, from ${root} (read only; no message text)`,
+        `Claude Code replies in the last 6 h, main sessions and subagents apart, from ${root} (read only; no message text)`,
         "",
         "~/my-app  session 11111111",
+        "  main session, replies by model: claude-opus-5-5 1, glm-5.3-flash 1",
         "  3 subagents, launched as: inherited 1, opus 1, sonnet 1",
-        "  replies by model: claude-opus-5-5 3, glm-5.3-flash 1",
-        "  on Opus: 3 of 4 replies (75%)",
+        "  subagent replies by model: claude-opus-5-5 3, glm-5.3-flash 1",
+        "  subagents on Opus: 3 of 4 replies (75%)",
         "",
-        "Total: 3 subagents in 1 session; on Opus: 3 of 4 replies (75%)",
+        "Main sessions: 1 session; replies by model: claude-opus-5-5 1, glm-5.3-flash 1",
+        "Subagents: 3 in 1 session; replies by model: claude-opus-5-5 3, glm-5.3-flash 1; on Opus: 3 of 4 replies (75%)",
       ].join("\n"),
     );
     expect(text).not.toContain(SECRET_TEXT);
   });
 
+  it("a main session with no subagent is counted too", () => {
+    const root = join(tempDir("usage"), "projects");
+    mkdirSync(join(root, "-home-user-site"), { recursive: true });
+    writeFileSync(
+      join(root, "-home-user-site", "44444444-aaaa.jsonl"),
+      `${reply("m1", "claude-fable-5-1", NOW - 60_000).join("\n")}\n`,
+    );
+    const sessions = collectUsage(root, { project: null, sinceMs: SINCE });
+    expect(formatUsage(sessions, 6, root, "/home/user").split("\n").slice(2)).toEqual([
+      "~/my-app  session 44444444",
+      "  main session, replies by model: claude-fable-5-1 1",
+      "  subagents: none in the window",
+      "",
+      "Main sessions: 1 session; replies by model: claude-fable-5-1 1",
+      "Subagents: 0 in 0 sessions; replies by model: none; on Opus: 0 of 0 replies (-)",
+    ]);
+  });
+
   it("--hours and --project choose the window and the project", () => {
     const root = projects();
     const wide = collectUsage(root, { project: null, sinceMs: NOW - 9 * 3_600_000 });
-    expect(wide.map((session) => session.project)).toEqual([
-      "-home-user-my-app",
-      "-home-user-other",
+    // Nine hours back, the file that last changed seven hours ago is in the window.
+    expect(wide.map((session) => `${session.project} ${session.session.slice(0, 8)}`)).toEqual([
+      "-home-user-my-app 11111111",
+      "-home-user-my-app 33333333",
+      "-home-user-other 22222222",
     ]);
     expect(collectUsage(root, { project: "my-app", sinceMs: SINCE })).toHaveLength(1);
     expect(collectUsage(root, { project: "/home/user/my-app", sinceMs: SINCE })).toHaveLength(1);
     expect(collectUsage(root, { project: "other", sinceMs: SINCE })).toEqual([]);
     expect(formatUsage([], 2, root, "/home/user")).toBe(
-      `Subagents in the last 2 h, from ${root} (read only; no message text)\n\nNo subagent ran in that time.`,
+      `Claude Code replies in the last 2 h, main sessions and subagents apart, from ${root} (read only; no message text)\n\nNo session answered in that time.`,
     );
   });
 

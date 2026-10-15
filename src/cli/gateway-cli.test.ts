@@ -14,6 +14,7 @@
  * here never closes.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { runGateway } from "../gateway/commands";
@@ -465,6 +466,10 @@ describe("anymodel restore: the gateway in two stages", () => {
     // A setup that did not finish has nothing left to finish once the router is gone.
     const marker = join(m.configDir, "anymodel", "restart-pending");
     writeFileSync(marker, "pending\n");
+    // Nor does the router's limit state: stage 2 removes it.
+    const limitState = join(m.home, ".local", "state", "anymodel", "gateway-state.json");
+    mkdirSync(dirname(limitState), { recursive: true });
+    writeFileSync(limitState, '{"fallbacks":{},"limits":{},"version":1}\n');
     // Reworked: in this process (`runHere`), because the stop now asks the router's port
     // until it closes, and the fake server of this test cannot close for a subprocess.
     // It was `disable --now`, which waits for the router's whole drain (up to 120 s).
@@ -473,6 +478,10 @@ describe("anymodel restore: the gateway in two stages", () => {
     expect(done.stderr).toBe("");
     expect(done.exitCode).toBe(0);
     expect(existsSync(marker)).toBe(false);
+    expect(existsSync(limitState)).toBe(false);
+    expect(done.stdout).toContain(
+      "- ~/.local/state/anymodel/gateway-state.json: removed (the router's limit state)\n",
+    );
     expect(m.calls().slice(middle.length)).toBe(
       [
         "--user is-active --quiet anymodel-router.service",
@@ -966,10 +975,74 @@ describe("anymodel gateway slot judge: never set untested", () => {
         "",
       ].join("\n"),
     );
-    expect(JSON.parse(readFileSync(m.paths.config, "utf8")).slots["anymodel-judge"]).toEqual([
-      "omniroute:m2",
-      "omniroute:m1",
-    ]);
+    const saved = JSON.parse(readFileSync(m.paths.config, "utf8"));
+    expect(saved.slots["anymodel-judge"]).toEqual(["omniroute:m2", "omniroute:m1"]);
+    // The proof the router checks: the recipe in config.ts's `judgeTestProof`, by hand.
+    const url = `http://127.0.0.1:${server.port}`;
+    const proof = (target: string) =>
+      createHash("sha256")
+        .update(`anymodel judge test 1\n${target}\n${url}`)
+        .digest("hex")
+        .slice(0, 32);
+    expect(saved.judgeTested).toEqual({
+      "omniroute:m1": proof("omniroute:m1"),
+      "omniroute:m2": proof("omniroute:m2"),
+    });
+    // `judge off` drops the slot, its proofs, and its fallback record in the state file.
+    const statePath = join(m.home, ".local", "state", "anymodel", "gateway-state.json");
+    mkdirSync(dirname(statePath), { recursive: true });
+    const record = { lastAt: 1, model: "claude-sonnet-5", resetsAt: null, since: 1, target: "x" };
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        fallbacks: { "anymodel-judge": record, "anymodel-opus": record },
+        limits: {},
+        version: 1,
+      }),
+    );
+    expect((await m.run(["gateway", "slot", "judge", "off"])).exitCode).toBe(0);
+    const after = JSON.parse(readFileSync(m.paths.config, "utf8"));
+    expect(after.slots).not.toHaveProperty("anymodel-judge");
+    expect(after).not.toHaveProperty("judgeTested");
+    expect(JSON.parse(readFileSync(statePath, "utf8")).fallbacks).toEqual({
+      "anymodel-opus": record,
+    });
+  });
+
+  test("a judge target set by hand, or by a config from before 0.3, is untested: doctor fails", async () => {
+    const m = machine();
+    const server = fakeServer();
+    expect((await m.runHere(["gateway", "setup", "--no-backend-key"])).exitCode).toBe(0);
+    mkdirSync(dirname(m.paths.config), { recursive: true });
+    writeFileSync(
+      m.paths.config,
+      JSON.stringify({
+        backends: {
+          omniroute: { apiKey: PLANTED_KEY, baseUrl: `http://127.0.0.1:${server.port}` },
+        },
+        // A proof for another target does not count for this one.
+        judgeTested: { "omniroute:m2": "0".repeat(32) },
+        port: server.port,
+        slots: {
+          "anymodel-judge": ["omniroute:m1"],
+          "anymodel-scout": ["claude-sonnet-5-5"],
+          "anymodel-worker": ["claude-sonnet-5-5"],
+        },
+        version: 1,
+      }),
+      { mode: 0o600 },
+    );
+    const checks = await gatewayChecks({
+      paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
+      bundle: BUILT_ROUTER,
+      runner: () => ({ exitCode: 0, output: "active\n" }),
+      systemd: true,
+      fetch: m.probe.fetch,
+    });
+    expect(checks.at(-1)).toEqual({
+      ok: false,
+      text: "slot anymodel-judge: omniroute:m1 has not passed the judge test, so the router ignores it. Run: anymodel gateway slot judge omniroute:m1",
+    });
   });
 
   test("slot opus: on, then off; the file names the real model id", async () => {

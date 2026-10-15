@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import { configuredPort } from "../gateway/commands";
 import { messageOf } from "../gateway/config";
@@ -186,11 +186,17 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       if (unitTracked) options.runner(["systemctl", "--user", "daemon-reload"]);
       // The router is gone: a setup that did not finish has nothing left to finish.
       rmSync(restartPendingFile(paths.stateDir), { force: true });
-      if (results.length === 0) {
+      // So is its limit state: no status line or alert may read a stale fallback from it.
+      const stateGone = routerTracked && existsSync(paths.gatewayStateFile);
+      if (stateGone) rmSync(paths.gatewayStateFile, { force: true });
+      if (results.length === 0 && !stateGone) {
         console.log("Nothing to restore: anymodel has nothing in any file.");
         return 0;
       }
       print(results, short);
+      if (stateGone) {
+        console.log(`- ${short(paths.gatewayStateFile)}: removed (the router's limit state)`);
+      }
       return results.some((result) => result.action === "no-backup") ? 1 : 0;
     },
     { waitMs: 10_000 },

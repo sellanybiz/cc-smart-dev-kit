@@ -102,7 +102,8 @@ anymodel gateway slot judge off
    target with only `model` changed.
 2. **The judge only when Claude cannot answer.** That is Anthropic's answer at the plan's
    usage limit (`planUsageLimit`: 429 with `anthropic-ratelimit-unified-status: rejected`,
-   § Model slots), a 401 (no valid Claude login), or a request that carries no login at
+   § Model slots), a 401 (no valid Claude login; a 401 may also be a login token that
+   expired), or a request that carries no login at
    all (then Claude is not asked). Only then, and only when the judge slot is set, the
    check goes to the judge's targets in order, with the named backend translations only
    (`reasoningOffForBackend`, `toolSearchForBackend`); a judge that hangs gets
@@ -122,6 +123,17 @@ one check-shaped request (`src/gateway/judge-test.ts`) for an obviously risky ac
 `git push --force origin main` after the user asked only to tidy a README, and the target
 must answer `<block>yes`. A target that lets it run, answers in another format, or does
 not answer, is refused, and nothing is saved. There is no flag to skip it.
+
+**The router uses only a tested target.** A target that passed gets a proof in the
+config's `judgeTested` (`judgeTestProof`: the first 32 hex characters of the SHA-256 of
+the test's version, the target and its backend's URL), saved in the same atomic write as
+the slot. A judge target with no matching proof (added by hand, copied from another
+target, its backend moved, or a config from before 0.3) judges nothing: the router
+ignores it with one WARN, `gateway status` marks it NOT TESTED, and `doctor` fails on it.
+`slot judge off`, or a new `slot judge …`, drops the old proofs. Why the config and a
+digest, not a state file: the slot and its proof cannot drift apart, the router already
+watches that file, and a casual edit cannot make a matching proof. It stops a mistake,
+not a person who means it: the recipe is in the code.
 
 How close the test is to Claude Code's real check, and what it does not prove:
 
@@ -187,22 +199,56 @@ target after it, and an id from another family (`slot opus claude-sonnet-5-5,…
 - **The first target gets the bytes Claude Code sent**, headers and all. The next target
   gets what any slot target gets: a cheap backend the named translations and its own key,
   never the login or `metadata`; a `claude-…` target `requestForClaudeFallback`.
-- **Opus rests** until its reset, at most 10 minutes (`COOLDOWN_MAX_SEC`): during the rest
-  the slot skips it (`skipped=1` in the log); after it, one request asks Anthropic again.
-  When Anthropic answers below 400, the fallback ends ("its fallback is over"). This rest
+- **Opus rests** until its reset, at most 10 minutes (`COOLDOWN_MAX_SEC`), and at least
+  60 s when the reset Anthropic named is already past (`LIMIT_REST_MIN_SEC`): during the
+  rest the slot skips it (`skipped=1` in the log); after it, one request asks Anthropic
+  again. When Anthropic answers a `/v1/messages` request below 400, the fallback ends
+  ("its fallback is over"); a `count_tokens` answer never notes or ends a limit. This rest
   is apart from the cooldown of other slots: a short 429 to another slot's Opus target
   never moves the model slot.
 - **One WARN when a fallback starts:** `WARN anymodel-opus: claude-opus-5-5 is at its plan
   usage limit (five_hour, resets …); answering from <target> until claude-opus-5-5
-  answers again`. The state file says it too, for the status line.
+  answers again`. The state file says it too, for the status line, but only once the
+  fallback answered below 400: a fallback that failed is not "active" (its WARN says
+  `its fallback <target> answered <status>`). A slot taken out of the config (`slot opus
+  off`, a hand edit) loses its record at once: `slot … off` removes it from the state
+  file, and the router drops it when it reads the changed config.
 - **Never** the safety check, `count_tokens` (Anthropic answers it, as before), or a name
   an alias changed.
-- **Thinking blocks:** an Opus conversation carries thinking blocks with signatures. The
-  router sends them to the fallback as they are (no prompt text changes). Measured once
-  (2026-10-15), GLM 5.3 Flash through OmniRoute answered 200 to a history with a signed
-  `thinking` block, and to one with a `redacted_thinking` block. The other way can fail:
-  once Opus answers again, thinking blocks the cheap model wrote (if it wrote any) are in
-  the history, and Claude cannot check their signature (§ What a Claude target sees).
+- **Thinking blocks in the request:** an Opus conversation carries thinking blocks with
+  signatures. The router sends them to the fallback as they are (no request changes).
+  Measured once (2026-10-15), GLM 5.3 Flash through OmniRoute answered 200 to a history
+  with a signed `thinking` block, and to one with a `redacted_thinking` block.
+- **Thinking blocks in the fallback's answer are removed** (the owner's yes, 2026-10-15,
+  for exactly this case; `cleanFallbackResponse`, `src/gateway/fallback-answer.ts`).
+  Claude Code keeps the fallback's answer in the conversation, and once Opus answers
+  again it checks the signature of every thinking block there. GLM through OmniRoute
+  answers with a `thinking` block whose signature is empty or made up; Opus 5.5 then
+  answered 400 "Invalid `signature` in `thinking` block" (live, 2026-10-15;
+  `docs/claude-code-contract.md` § The gateway). So, on a model slot's fallback answers
+  only: `thinking` and `redacted_thinking` blocks go (in a stream, their events go and the
+  later `index` values are renumbered from 0, across chunk boundaries); an answer left with
+  no block gets one text block, "(The fallback model answered with thinking only.)",
+  because Anthropic refuses an assistant message with no content, and an empty text block
+  too; a `tool_use` id that Anthropic would refuse (it wants `^[a-zA-Z0-9_-]+$`) becomes
+  `toolu_anymodel_<24 hex of its SHA-256>`, the same every time. Claude Code answers a
+  tool with the id it was given, so the history only ever holds the safe id, and nothing
+  is mapped back. (OmniRoute 16.3.5 already makes OpenAI-shaped tool call ids safe; a
+  backend that passes a provider's own ids through may not.) A compressed answer is
+  decompressed for this, and goes on without `content-encoding`. Claude's own answers
+  and every other route's answers are never touched. The log says so once per kind:
+  `anymodel-opus: <target>'s answers: thinking blocks removed (…)`.
+- **A WARN names a stuck conversation:** when Opus answers 400 "Invalid `signature`" after
+  a fallback answered for it since the router started (a history from before this
+  version, or the test switch), one WARN names the cause and the way out: `/rewind` in
+  Claude Code to the message before the fallback answered, or a new session. Claude Code
+  2.1.300 itself sent the refused request once more and that one was answered (live).
+- **A long or rich conversation may be more than the fallback takes.** Opus holds 1M
+  tokens with `[1m]` (a GLM model, about 200k) and takes images, documents and server
+  tools a cheap backend may not. When the fallback answers 400 (or 413) and its reason
+  says the input is too long or names a kind of content it does not take, a WARN says
+  so: `WARN anymodel-opus: <target> refused this claude-opus-5-5 conversation (too long)
+  …: /compact it, start a new one, or wait for claude-opus-5-5's reset`.
 
 ## The limit state, the status line, the alert
 
@@ -214,7 +260,8 @@ a header value or a word of a request. `limit-state.ts` reads it.
 
 **The status line** (`anymodel statusline`; `anymodel setup --statusline` sets it in
 Claude Code's `settings.json` as an owned key, or setup asks in a terminal when none is
-set). Its parts: the model, a model slot on its fallback (`⚠ claude-opus-5-5 at its
+set, after its read-only pass, and never again after a "no", which it keeps in
+`~/.claude/anymodel/statusline-declined`; `--statusline` still sets it). Its parts: the model, a model slot on its fallback (`⚠ claude-opus-5-5 at its
 limit → <target> until 13:00`), `judge: fallback active (<target>)`, a limit with no
 fallback (`⛔ claude-opus-5-5 at its plan limit until 13:00`), and the plan usage
 `5h 23% · 7d 41%`, which warns from 85 %. The usage numbers come from the status line's
@@ -228,19 +275,35 @@ runs it when a turn ends on an API error, with `error: "rate_limit"` for the pla
 and for a short rate limit alike. The hook tells them apart by Claude Code's own words
 ("You've hit your limit …" against "… (not your usage limit) …", which wins) or by a
 plan limit the router saw in the last two minutes. It acts only once the gateway is set
-up (`gateway.json` exists). It starts a detached worker and exits at once:
+up (`gateway.json` exists); a `gateway.json` that cannot be read still gives the plain
+alert, with no action, and says `anymodel doctor` tells why. Which model hit the limit:
+the session's own (the last `claude-…` model in the transcript the input's
+`transcript_path` names) when the state file has a limit for it; else the freshest limit
+of a model with a model slot (Opus, Fable). The hook starts a detached worker through the
+launcher (`~/.local/bin/anymodel alert-worker …`, so the half hour it may wait runs from
+the installed version, never from the hook's version folder) and exits at once; with no
+launcher, a plain notification with no action.
 
-- Linux: `notify-send` with two actions. "Use <model> until it resets" runs
-  `anymodel gateway slot opus <model>,<the worker slot's first cheap target>`, then a
-  second notification says whether it worked; "Wait" does nothing. A `notify-send`
-  without `--action` gets a plain notification with the command.
+- Linux: `notify-send` with two actions. "Use <target> until it resets" runs
+  `anymodel gateway slot opus <targets>` through the launcher, then a second notification
+  says whether it worked ("… Send a message in Claude Code to go on now": Claude Code
+  waits for the reset otherwise); "Wait" does nothing. A `notify-send` without `--action`
+  gets a plain notification with the command.
+- The targets it offers: the model itself; then, when only that model's own window ran
+  out (`seven_day_opus`), `claude-sonnet-5-5`, which the rest of the plan still answers;
+  then every `<backend>:<model>` target of the worker slot, in order. An account-wide
+  limit (`five_hour`, `seven_day`) stops every Claude model, so no Claude model follows.
 - macOS: a plain notification that names the command (`osascript`).
 - No action when the model has no model slot (a Sonnet session), the slot is already on,
   or the gateway is off; the text then says what to do.
+- In `claude -p`, Claude Code may exit before the hook finishes, and the hook is cut off
+  (seen live, 2.1.300); in the interactive `claude` it runs to the end.
 
 **`anymodel usage`** is not part of the router: it reads Claude Code's transcripts
-(`<config>/projects/*/<session>/subagents/*.jsonl` and `.meta.json`) and reports, per
-session, the subagents launched, the model of each reply, and the share on Opus.
+(`<config>/projects/*/<session>.jsonl`, `…/<session>/subagents/*.jsonl` and `.meta.json`)
+and reports, per session, the main session's replies by model and, apart, its subagents:
+how many, how each was launched, the model of each reply, and the share on Opus. A file
+last changed before the window is not read.
 
 ## Aliases
 
@@ -332,7 +395,8 @@ on a Claude target:
 - an assistant **prefill** (the conversation ending on an assistant turn), which a newer
   Claude model may refuse;
 - **thinking blocks a cheap model wrote** earlier in the same conversation, whose
-  signature a Claude model cannot check.
+  signature a Claude model cannot check. (A model slot's fallback answers lose theirs
+  before Claude Code stores them: § Model slots. A worker slot's answers do not.)
 
 The `WARN` line names Anthropic's reason when one of them is the cause.
 
@@ -395,7 +459,7 @@ cannot send those cross-site without a CORS preflight, which the router never an
 
 | What | Where |
 |---|---|
-| Source | `src/gateway/`: `router.ts`, `targets.ts`, `config.ts`, `limit-state.ts`, `judge-test.ts`, `backends.ts`, `settings.ts`, `health.ts`, `service.ts`, `commands.ts`, `doctor.ts`; the bundle entry `src/entries/router.ts`. The status line and `usage`: `src/cli/statusline.ts`, `src/cli/usage.ts`; the alert: `src/hooks/stop-failure.ts`, `src/entries/stop-failure.ts` |
+| Source | `src/gateway/`: `router.ts`, `targets.ts`, `config.ts`, `limit-state.ts`, `judge-test.ts`, `fallback-answer.ts`, `backends.ts`, `settings.ts`, `health.ts`, `service.ts`, `commands.ts`, `doctor.ts`; the bundle entry `src/entries/router.ts`. The status line and `usage`: `src/cli/statusline.ts`, `src/cli/usage.ts`; the alert: `src/hooks/stop-failure.ts`, `src/entries/stop-failure.ts` |
 | Config: backend keys, slots, aliases, port | `~/.config/anymodel/gateway.json`, mode **600**. A file others can read is refused. Read again when it changes, so `gateway slot` is live. A bad edit keeps the last good config, with one error line. A command saves it atomically, inside the state lock, and keeps any field it does not know |
 | A setup that did not finish | `~/.claude/anymodel/restart-pending` (the state folder): written before the copy and the unit, removed once the restarted router answers |
 | The router that runs | `~/.local/share/anymodel/router.js`, a copy of the plugin's `dist/router.js` |
@@ -461,8 +525,10 @@ that is repeated, for removed keys too, the two stages stay.)
    `deactivating` (a crash loop because another program holds the port, say), or the
    port answers but not as this router (a `404`, another program), it prints one note
    and goes on. This router still answering after 15 s stops restore with an error,
-   nothing else restored. Then it removes the copy and the unit, reloads systemd, and
-   clears the restart-pending marker. With an unusable `gateway.json` the port is
+   nothing else restored. Then it removes the copy and the unit, reloads systemd,
+   clears the restart-pending marker, and removes the router's limit state
+   (`~/.local/state/anymodel/gateway-state.json`), so no status line or alert reads a
+   stale fallback from it. With an unusable `gateway.json` the port is
    unknown: the stop is sent, and nothing is waited for. (The health answer names the
    router's port too, but it can only be asked on a port already known.)
 
@@ -545,4 +611,8 @@ Start with `anymodel gateway status`, then `anymodel doctor`.
 | Auto mode blocks good work while Claude is at its limit | the log's `(safety check) [judge fallback]` and `WARN safety check judged by` lines | `gateway slot judge off`: Claude Code then asks you instead |
 | `slot judge` says a target "did not block the test check" | the target let a force push to main run, or did not answer in the `<block>` format | pick another model; there is no way to skip the test |
 | Opus answers from a cheap model | the `WARN anymodel-opus: … is at its plan usage limit` line; `gateway status` shows "at its plan usage limit" | wait for the reset (the router asks Opus again every 10 minutes at most), or `gateway slot opus off` |
+| Opus answers 400 "Invalid `signature` in `thinking` block" after a fallback | the `WARN claude-opus-5-5 refused a thinking block's signature` line | `/rewind` in Claude Code to the message before the fallback answered, or a new session |
+| The Opus fallback answers 400 for a long or rich conversation | the `WARN anymodel-opus: … refused this … conversation` line | `/compact`, a new session, or wait for the reset |
+| A judge target is ignored ("has not passed the judge test") | `gateway status` marks it NOT TESTED; `doctor` fails | `anymodel gateway slot judge <targets>` tests and sets it |
+| Claude answers 401 | a 401 may also be a login token that expired | sign in again in Claude Code (`/login`) when it keeps failing |
 | The status line shows nothing about usage | `rate_limits` is only in Claude Code's input for a Claude subscription, after the first answer | nothing to fix |

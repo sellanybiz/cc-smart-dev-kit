@@ -14,11 +14,12 @@
  * API keys are masked in every output. The design: docs/gateway.md.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { withLock } from "../setup/lock";
 import { formatKeyPath, type ManagedJsonResult } from "../setup/managed-json";
+import { atomicWrite } from "../setup/write";
 import { listModels } from "./backends";
 import {
   ConfigError,
@@ -26,6 +27,8 @@ import {
   DEFAULT_FIRST_BYTE_MS,
   DEFAULT_PORT,
   type GatewayConfig,
+  judgeTargetTested,
+  judgeTestProof,
   loadConfigFile,
   messageOf,
   parseConfig,
@@ -33,6 +36,7 @@ import {
 } from "./config";
 import { type HealthProbe, routerHealth } from "./health";
 import { JUDGE_TEST_ACTION, testJudgeTarget } from "./judge-test";
+import { formatLimitState, parseLimitState } from "./limit-state";
 import { startRouter } from "./router";
 import { type InstallOptions, installRouter, RESTART_WARNING, type Runner } from "./service";
 import { maskKey, settingsReport, shownValue, turnOff, turnOn } from "./settings";
@@ -204,9 +208,12 @@ export function configuredPort(configPath: string): number {
  * Claude Code's haiku / sonnet names point at them. (A `claude-…` target in the judge slot
  * is no way back: the check's body is built for the model it names, and Claude Sonnet 5.5
  * refuses its `thinking: disabled` with a 400.)
+ *
+ * A judge change drops every judge test proof (`judgeTested`): `judge off` needs none, and
+ * new targets get theirs only from the test, in `commandSlot` (`withJudgeProofs`).
  */
 export function planSlotChange(
-  config: GatewayConfig,
+  current: GatewayConfig,
   slotArg: string,
   targetsText: string,
   modelsByBackend: Record<string, null | string[]>,
@@ -217,6 +224,8 @@ export function planSlotChange(
       error: `"${slotArg}" is not a slot name (scout, worker, judge, opus, fable, or anymodel-<name>)`,
     };
   }
+  const { judgeTested: _proofs, ...withoutProofs } = current;
+  const config = key === JUDGE_SLOT ? withoutProofs : current;
   const model = isModelSlot(key);
   // The model slots' entries in `modelSlots`, without this slot's.
   const otherModelSlots = Object.fromEntries(
@@ -293,9 +302,14 @@ function printSlots(config: GatewayConfig): void {
   const keys = Object.keys(config.slots).sort();
   if (keys.length === 0) console.log("  (none)");
   for (const key of keys) {
+    const untested = (config.slots[key] ?? []).filter(
+      (target) => !judgeTargetTested(config, target),
+    );
     const note =
       key === JUDGE_SLOT
-        ? "  (only when Claude cannot answer a check)"
+        ? untested.length > 0
+          ? `  (NOT TESTED, so ignored: ${untested.join(", ")}; run ${COMMAND} gateway slot judge <targets>)`
+          : "  (only when Claude cannot answer a check)"
         : isModelSlot(key)
           ? "  (the rest only at the plan's usage limit)"
           : "";
@@ -344,6 +358,38 @@ async function commandModels(ctx: GatewayContext): Promise<number> {
   return 0;
 }
 
+/**
+ * The config with a judge test proof (`judgeTestProof`) for each target that passed, on
+ * the backend URL it passed on: a target whose backend moved since then gets none.
+ */
+export function withJudgeProofs(
+  config: GatewayConfig,
+  passed: Readonly<Record<string, string>>,
+): GatewayConfig {
+  const proofs = Object.fromEntries(
+    Object.entries(passed).map(([target, url]) => [target, judgeTestProof(target, url)]),
+  );
+  return Object.keys(proofs).length > 0 ? { ...config, judgeTested: proofs } : config;
+}
+
+/**
+ * A slot turned off loses its fallback record in the router's state file at once, so the
+ * status line stops showing it even before the router's next request (the router drops it
+ * too, when it reads the changed config). A file that is not there, or not readable, stays.
+ */
+function dropFallbackRecord(statePath: string, slot: string): void {
+  let state: ReturnType<typeof parseLimitState>;
+  try {
+    state = parseLimitState(readFileSync(statePath, "utf8"));
+  } catch {
+    // No state file: nothing to drop.
+    return;
+  }
+  if (state === null || !Object.hasOwn(state.fallbacks, slot)) return;
+  delete state.fallbacks[slot];
+  atomicWrite(statePath, formatLimitState(state), 0o600);
+}
+
 async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number> {
   const [slotArg, targets, ...extra] = args;
   if (slotArg === undefined || targets === undefined || extra.length > 0) {
@@ -366,6 +412,8 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
   }
   const first = planSlotChange(config, slotArg, targets, modelsByBackend);
   if ("error" in first) throw new Error(first.error);
+  /** Each judge target that passed the test, and the backend URL it passed on. */
+  const passed: Record<string, string> = {};
   if (first.key === JUDGE_SLOT && first.next.length > 0) {
     // A judge is never set untested, and there is no way to skip the test.
     for (const text of first.next) {
@@ -379,6 +427,7 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
           `${text} did not block the test check (${JUDGE_TEST_ACTION}): ${result.detail}. The judge was not set.`,
         );
       }
+      passed[text] = backend.baseUrl;
       console.log(`judge test: ${text} blocked "${JUDGE_TEST_ACTION}"`);
     }
   }
@@ -389,7 +438,11 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
     () => {
       const again = planSlotChange(loadConfigFile(configPath), slotArg, targets, modelsByBackend);
       if ("error" in again) throw new Error(again.error);
-      saveConfig(configPath, again.config);
+      saveConfig(
+        configPath,
+        again.key === JUDGE_SLOT ? withJudgeProofs(again.config, passed) : again.config,
+      );
+      if (again.next.length === 0) dropFallbackRecord(ctx.paths.gatewayStateFile, again.key);
       return again;
     },
     { waitMs: 10_000 },

@@ -44,7 +44,10 @@ A hook about the person, not a project (the StopFailure usage-limit alert) reads
 `anymodel.json`. Its opt-in is the gateway: it acts only when `gateway.json` exists, so a
 person who never set the gateway up does not notice it. It replaces nothing a project
 wires, so it has no defer check. Work that waits (a notification with buttons) runs in a
-detached worker; the hook itself exits at once.
+detached worker started through the launcher (`~/.local/bin/anymodel alert-worker …`),
+never from the plugin's version folder, which an update may delete while it waits; the
+hook itself exits at once. A `claude -p` run may exit before the hook finishes and cut
+it off (seen live, 2.1.300): keep the hook's own work short.
 
 ## The defer check
 

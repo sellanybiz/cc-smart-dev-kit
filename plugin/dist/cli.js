@@ -1,6 +1,6 @@
 // @bun
 // src/entries/cli.ts
-import { existsSync as existsSync14 } from "fs";
+import { existsSync as existsSync16 } from "fs";
 import { join as join10 } from "path";
 
 // src/build-info/names.ts
@@ -21,11 +21,11 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/cli/doctor.ts
-import { accessSync, constants, existsSync as existsSync9, readFileSync as readFileSync10 } from "fs";
+import { accessSync, constants, existsSync as existsSync9, readFileSync as readFileSync11 } from "fs";
 import { join as join7 } from "path";
 
 // src/gateway/doctor.ts
-import { existsSync as existsSync6, readFileSync as readFileSync7 } from "fs";
+import { existsSync as existsSync6, readFileSync as readFileSync8 } from "fs";
 
 // src/cli/paths.ts
 import { homedir } from "os";
@@ -52,6 +52,7 @@ function tildify(path, home) {
 }
 
 // src/gateway/config.ts
+import { createHash } from "crypto";
 import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
 import { dirname as dirname2 } from "path";
 
@@ -6275,6 +6276,7 @@ var gatewayConfigSchema = looseObject({
   aliases: record(string2(), string2()).default({}),
   anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
   backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
+  judgeTested: record(string2(), string2()).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
   slots: record(string2().refine(isSlotKey, "a slot key is anymodel-<name>"), array(string2()).min(1)),
@@ -6362,6 +6364,20 @@ function aliasError(name, to, config) {
     return `alias "${name}" names backend "${parsed.target.backend}", which is not in backends`;
   }
   return null;
+}
+var JUDGE_TEST_VERSION = 1;
+function judgeTestProof(target, backendUrl) {
+  return createHash("sha256").update(`anymodel judge test ${JUDGE_TEST_VERSION}
+${target}
+${backendUrl}`).digest("hex").slice(0, 32);
+}
+function judgeTargetTested(config, target) {
+  const parsed = parseTarget(target);
+  if (!("target" in parsed) || parsed.target.kind !== "backend")
+    return false;
+  const backend = Object.hasOwn(config.backends, parsed.target.backend) ? config.backends[parsed.target.backend] : undefined;
+  const proof = config.judgeTested !== undefined && Object.hasOwn(config.judgeTested, target) ? config.judgeTested[target] : undefined;
+  return backend !== undefined && proof !== undefined && proof === judgeTestProof(target, backend.baseUrl);
 }
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
@@ -6493,7 +6509,7 @@ async function listModels(baseUrl, apiKey, timeoutMs = 1e4) {
 }
 
 // src/gateway/commands.ts
-import { existsSync as existsSync5 } from "fs";
+import { existsSync as existsSync5, readFileSync as readFileSync7 } from "fs";
 
 // src/setup/lock.ts
 import {
@@ -6855,6 +6871,238 @@ function applyOnce(file, options, owned) {
 import { mkdirSync as mkdirSync4 } from "fs";
 import { dirname as dirname3 } from "path";
 
+// src/gateway/fallback-answer.ts
+import { createHash as createHash2 } from "crypto";
+var DROPPED_BLOCKS = new Set(["redacted_thinking", "thinking"]);
+var TOOL_USE_ID = /^[a-zA-Z0-9_-]+$/;
+var EMPTY_ANSWER_TEXT = "(The fallback model answered with thinking only.)";
+function isJsonObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function safeToolUseId(id) {
+  if (TOOL_USE_ID.test(id))
+    return id;
+  return `toolu_anymodel_${createHash2("sha256").update(id).digest("hex").slice(0, 24)}`;
+}
+function withSafeId(block, changes) {
+  if (block.type !== "tool_use" || typeof block.id !== "string")
+    return block;
+  const id = safeToolUseId(block.id);
+  if (id === block.id)
+    return block;
+  changes.ids += 1;
+  return { ...block, id };
+}
+function cleanFallbackMessage(message) {
+  const changes = { ids: 0, thinking: 0 };
+  if (!isJsonObject2(message) || !Array.isArray(message.content))
+    return { changes, message };
+  const content = [];
+  for (const block of message.content) {
+    if (isJsonObject2(block) && typeof block.type === "string" && DROPPED_BLOCKS.has(block.type)) {
+      changes.thinking += 1;
+      continue;
+    }
+    content.push(isJsonObject2(block) ? withSafeId(block, changes) : block);
+  }
+  if (changes.thinking === 0 && changes.ids === 0)
+    return { changes, message };
+  if (content.length === 0)
+    content.push({ text: EMPTY_ANSWER_TEXT, type: "text" });
+  return { changes, message: { ...message, content } };
+}
+function eventText(name, data) {
+  return `event: ${name}
+data: ${JSON.stringify(data)}
+
+`;
+}
+function eventEnd(text) {
+  const match = /\r?\n\r?\n/.exec(text);
+  return match === null ? -1 : match.index + match[0].length;
+}
+function parseEvent(text) {
+  let name = null;
+  const data = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (line === "" || line.startsWith(":"))
+      continue;
+    const colon = line.indexOf(":");
+    const field = colon === -1 ? line : line.slice(0, colon);
+    const value = colon === -1 ? "" : line.slice(colon + 1).replace(/^ /, "");
+    if (field === "event")
+      name = value;
+    if (field === "data")
+      data.push(value);
+  }
+  return { data: data.length === 0 ? null : data.join(`
+`), name };
+}
+function cleanFallbackStream(onDone = () => {
+  return;
+}) {
+  const decoder = new TextDecoder;
+  const encoder = new TextEncoder;
+  const changes = { ids: 0, thinking: 0 };
+  const dropped = new Set;
+  let kept = 0;
+  let filled = false;
+  let buffer = "";
+  const renumber = (index) => {
+    let below = 0;
+    for (const gone of dropped)
+      if (gone < index)
+        below += 1;
+    return index - below;
+  };
+  const clean = (text) => {
+    const { data, name } = parseEvent(text);
+    if (data === null)
+      return text;
+    let event;
+    try {
+      event = JSON.parse(data);
+    } catch {
+      return text;
+    }
+    if (!isJsonObject2(event) || typeof event.type !== "string")
+      return text;
+    const label = name ?? event.type;
+    if (event.type === "message_delta" || event.type === "message_stop") {
+      if (kept > 0 || dropped.size === 0 || filled)
+        return text;
+      filled = true;
+      return [
+        eventText("content_block_start", {
+          content_block: { text: "", type: "text" },
+          index: 0,
+          type: "content_block_start"
+        }),
+        eventText("content_block_delta", {
+          delta: { text: EMPTY_ANSWER_TEXT, type: "text_delta" },
+          index: 0,
+          type: "content_block_delta"
+        }),
+        eventText("content_block_stop", { index: 0, type: "content_block_stop" }),
+        text
+      ].join("");
+    }
+    const isBlock = event.type === "content_block_start" || event.type === "content_block_delta" || event.type === "content_block_stop";
+    if (!isBlock || typeof event.index !== "number")
+      return text;
+    const index = event.index;
+    if (event.type === "content_block_start") {
+      const block = event.content_block;
+      if (isJsonObject2(block) && typeof block.type === "string" && DROPPED_BLOCKS.has(block.type)) {
+        dropped.add(index);
+        changes.thinking += 1;
+        return "";
+      }
+      kept += 1;
+      const safe = isJsonObject2(block) ? withSafeId(block, changes) : block;
+      const next = renumber(index);
+      if (next === index && safe === block)
+        return text;
+      return eventText(label, { ...event, content_block: safe, index: next });
+    }
+    if (dropped.has(index))
+      return "";
+    const next = renumber(index);
+    return next === index ? text : eventText(label, { ...event, index: next });
+  };
+  const drain = (controller) => {
+    for (;; ) {
+      const end = eventEnd(buffer);
+      if (end === -1)
+        return;
+      const out = clean(buffer.slice(0, end));
+      buffer = buffer.slice(end);
+      if (out !== "")
+        controller.enqueue(encoder.encode(out));
+    }
+  };
+  return new TransformStream({
+    flush(controller) {
+      buffer += decoder.decode();
+      drain(controller);
+      if (buffer !== "")
+        controller.enqueue(encoder.encode(buffer));
+      onDone(changes);
+    },
+    transform(chunk, controller) {
+      buffer += decoder.decode(chunk, { stream: true });
+      drain(controller);
+    }
+  });
+}
+function decoding(encoding) {
+  switch (encoding.trim().toLowerCase()) {
+    case "":
+    case "identity":
+      return "identity";
+    case "gzip":
+    case "x-gzip":
+      return "gzip";
+    case "deflate":
+      return "deflate";
+    case "br":
+      return "brotli";
+    case "zstd":
+      return "zstd";
+    default:
+      return null;
+  }
+}
+function cleanFallbackResponse(response, onChanged) {
+  if (!response.ok || response.body === null)
+    return { note: null, response };
+  const type = (response.headers.get("content-type") ?? "").toLowerCase();
+  const stream = type.includes("text/event-stream");
+  if (!stream && !type.includes("json"))
+    return { note: null, response };
+  const encoding = response.headers.get("content-encoding") ?? "";
+  const format = decoding(encoding);
+  if (format === null) {
+    return {
+      note: `its answer is "${encoding.slice(0, 40)}" encoded, which the router cannot read: thinking blocks were not removed`,
+      response
+    };
+  }
+  const headers = new Headers(response.headers);
+  headers.delete("content-encoding");
+  headers.delete("content-length");
+  const plain = format === "identity" ? response.body : response.body.pipeThrough(new DecompressionStream(format));
+  const report = (changes) => {
+    if (changes.thinking > 0 || changes.ids > 0)
+      onChanged(changes);
+  };
+  const init = { headers, status: response.status, statusText: response.statusText };
+  if (stream) {
+    return {
+      note: null,
+      response: new Response(plain.pipeThrough(cleanFallbackStream(report)), init)
+    };
+  }
+  const cleaned = new Response(plain).arrayBuffer().then((bytes) => {
+    let parsed;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(bytes));
+    } catch {
+      return new Uint8Array(bytes);
+    }
+    const result = cleanFallbackMessage(parsed);
+    report(result.changes);
+    return result.changes.thinking > 0 || result.changes.ids > 0 ? new TextEncoder().encode(JSON.stringify(result.message)) : new Uint8Array(bytes);
+  });
+  const body = new ReadableStream({
+    async pull(controller) {
+      controller.enqueue(await cleaned);
+      controller.close();
+    }
+  });
+  return { note: null, response: new Response(body, init) };
+}
+
 // src/gateway/limit-state.ts
 var NO_RESET_FRESH_MS = 15 * 60000;
 var limitSchema = object({
@@ -6928,6 +7176,10 @@ function currentFallbacks(state, nowMs) {
 
 // src/gateway/router.ts
 var FALLBACK_SAVE_EVERY_MS = 60000;
+var LIMIT_REST_MIN_SEC = 60;
+var TOO_LONG = /context|too long|too large|too many tokens|token limit|payload/i;
+var UNSUPPORTED = /unsupported|not supported|unknown (?:content|block|type)|invalid (?:content|block) type|image|document|server_tool|web_search|web_fetch|tool_reference/i;
+var BAD_SIGNATURE = "Invalid `signature`";
 var HEALTH_PATH = "/__anymodel/health";
 var MESSAGES_PATH = "/v1/messages";
 var COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
@@ -7126,10 +7378,10 @@ function toolSearchForBackend(body) {
   const messages = body.messages;
   if (Array.isArray(messages)) {
     out.messages = messages.map((message) => {
-      if (!isJsonObject2(message) || !Array.isArray(message.content))
+      if (!isJsonObject3(message) || !Array.isArray(message.content))
         return message;
       const content = message.content.map((block) => {
-        if (!isJsonObject2(block) || block.type !== "tool_result")
+        if (!isJsonObject3(block) || block.type !== "tool_result")
           return block;
         const inner = block.content;
         if (!Array.isArray(inner))
@@ -7137,7 +7389,7 @@ function toolSearchForBackend(body) {
         return {
           ...block,
           content: inner.map((part) => {
-            if (!isJsonObject2(part) || part.type !== "tool_reference")
+            if (!isJsonObject3(part) || part.type !== "tool_reference")
               return part;
             const name = part.tool_name;
             if (typeof name !== "string")
@@ -7153,7 +7405,7 @@ function toolSearchForBackend(body) {
   const tools = body.tools;
   if (Array.isArray(tools)) {
     out.tools = tools.flatMap((tool) => {
-      if (!isJsonObject2(tool) || tool.defer_loading !== true)
+      if (!isJsonObject3(tool) || tool.defer_loading !== true)
         return [tool];
       const name = tool.name;
       if (typeof name !== "string" || !referenced.has(name))
@@ -7167,10 +7419,10 @@ function toolSearchForBackend(body) {
 }
 function reasoningOffForBackend(body, options = {}) {
   const thinking = body.thinking;
-  const off = isJsonObject2(thinking) ? thinking.type === "disabled" : thinking === undefined && options.absentIsOff === true;
+  const off = isJsonObject3(thinking) ? thinking.type === "disabled" : thinking === undefined && options.absentIsOff === true;
   if (!off)
     return body;
-  const outputConfig = isJsonObject2(body.output_config) ? body.output_config : {};
+  const outputConfig = isJsonObject3(body.output_config) ? body.output_config : {};
   if (outputConfig.effort !== undefined)
     return body;
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
@@ -7188,11 +7440,11 @@ function requestForClaudeFallback(body, model) {
   const out = { ...body };
   const changes = [];
   const thinking = body.thinking;
-  if (isJsonObject2(thinking) && thinking.type === "disabled") {
+  if (isJsonObject3(thinking) && thinking.type === "disabled") {
     if (rules.thinkingOff === "left out") {
       delete out.thinking;
       changes.push("thinking disabled -> left out (always on)");
-      const outputConfig = isJsonObject2(body.output_config) ? body.output_config : undefined;
+      const outputConfig = isJsonObject3(body.output_config) ? body.output_config : undefined;
       if (outputConfig?.effort === undefined) {
         out.output_config = { ...outputConfig, effort: "low" };
         changes.push("effort low (nearest to thinking off)");
@@ -7201,17 +7453,17 @@ function requestForClaudeFallback(body, model) {
       out.thinking = { type: "between_tools" };
       changes.push("thinking disabled -> between_tools");
       const outputConfig = body.output_config;
-      if (isJsonObject2(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
+      if (isJsonObject3(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
         out.output_config = { ...outputConfig, effort: "high" };
         changes.push(`effort ${outputConfig.effort} -> high`);
       }
     }
-  } else if (isJsonObject2(thinking) && thinking.type === "enabled") {
+  } else if (isJsonObject3(thinking) && thinking.type === "enabled") {
     out.thinking = thinking.display === undefined ? { type: "adaptive" } : { display: thinking.display, type: "adaptive" };
     changes.push("thinking enabled (budget) -> adaptive");
   }
   const toolChoice = body.tool_choice;
-  if (isJsonObject2(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
+  if (isJsonObject3(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
     out.tool_choice = toolChoice.disable_parallel_tool_use === undefined ? { type: "auto" } : { disable_parallel_tool_use: toolChoice.disable_parallel_tool_use, type: "auto" };
     changes.push(`tool_choice ${toolChoice.type} -> auto`);
   }
@@ -7228,7 +7480,7 @@ function requestForClaudeFallback(body, model) {
   return changes.length > 0 ? { body: out, changes } : { body, changes };
 }
 var encoder = new TextEncoder;
-function isJsonObject2(value) {
+function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function parseBody(bytes) {
@@ -7238,7 +7490,7 @@ function parseBody(bytes) {
   } catch {
     return null;
   }
-  return isJsonObject2(parsed) ? parsed : null;
+  return isJsonObject3(parsed) ? parsed : null;
 }
 function deadline(ms) {
   let timer;
@@ -7256,6 +7508,10 @@ function createRouter(deps) {
   const translationsLogged = new Set;
   const limitState = emptyLimitState();
   const limitedUntil = new Map;
+  const fellBack = new Set;
+  const untestedLogged = new Set;
+  const cleanedLogged = new Set;
+  let checkedConfig = null;
   let saveQueued = false;
   let lastSaveError = "";
   function persist() {
@@ -7280,7 +7536,9 @@ function createRouter(deps) {
     });
     deps.background?.(task);
   }
-  function observeClaude(model, response) {
+  function observeClaude(model, response, path) {
+    if (path !== MESSAGES_PATH)
+      return null;
     const id = withoutContextSuffix(model);
     const limit = planUsageLimit(response.status, (name) => response.headers.get(name));
     if (limit !== null) {
@@ -7310,10 +7568,17 @@ function createRouter(deps) {
     const now = deps.now();
     const before = limitState.fallbacks[slot];
     const resetsAt = limit?.resetsAt ?? before?.resetsAt ?? null;
+    const reset = resetsAt === null ? "no reset time given" : `resets ${new Date(resetsAt * 1000).toISOString()}`;
+    const claim = printable(limit?.claim ?? "plan limit", 40);
+    if (!outcome.response.ok) {
+      if (before === undefined) {
+        deps.log(`WARN ${slot}: ${model} is at its plan usage limit (${claim}, ${reset}); its fallback ${outcome.target} answered ${outcome.response.status}`);
+      }
+      return;
+    }
+    fellBack.add(model);
     if (before === undefined) {
-      const reset = resetsAt === null ? "no reset time given" : `resets ${new Date(resetsAt * 1000).toISOString()}`;
-      const claim = limit?.claim ?? "plan limit";
-      deps.log(`WARN ${slot}: ${model} is at its plan usage limit (${printable(claim, 40)}, ${reset}); ${outcome.response.ok ? `answering from ${outcome.target}` : `its fallback ${outcome.target} answered ${outcome.response.status}`} until ${model} answers again`);
+      deps.log(`WARN ${slot}: ${model} is at its plan usage limit (${claim}, ${reset}); answering from ${outcome.target} until ${model} answers again`);
     }
     limitState.fallbacks[slot] = {
       lastAt: now,
@@ -7325,6 +7590,42 @@ function createRouter(deps) {
     if (before === undefined || before.target !== outcome.target || before.resetsAt !== resetsAt || now - before.lastAt >= FALLBACK_SAVE_EVERY_MS) {
       persist();
     }
+  }
+  function dropRemovedFallbacks(config) {
+    if (config === checkedConfig)
+      return;
+    checkedConfig = config;
+    const inUse = new Set(Object.values(config.modelSlots ?? {}));
+    if (judgeTargetsOf(config, false).length > 0)
+      inUse.add(JUDGE_SLOT);
+    let changed = false;
+    for (const slot of Object.keys(limitState.fallbacks)) {
+      if (inUse.has(slot))
+        continue;
+      delete limitState.fallbacks[slot];
+      deps.log(`${slot}: removed from the config; its fallback record is dropped`);
+      changed = true;
+    }
+    if (changed)
+      persist();
+  }
+  function judgeTargetsOf(config, warn) {
+    const judge = resolveRoute(JUDGE_SLOT, config);
+    if (judge.kind !== "slot")
+      return [];
+    return judge.targets.filter((target) => {
+      const text = formatTarget(target);
+      if (judgeTargetTested(config, text))
+        return true;
+      if (warn && !untestedLogged.has(text)) {
+        untestedLogged.add(text);
+        deps.log(`WARN ${JUDGE_SLOT}: ${text} has not passed the judge test, so it judges nothing. Test and set it: ${COMMAND} gateway slot judge <targets>`);
+      }
+      return false;
+    });
+  }
+  function hadFallback(model) {
+    return fellBack.has(model);
   }
   async function discard(response) {
     try {
@@ -7367,9 +7668,10 @@ function createRouter(deps) {
       });
     }
   }
-  function logErrorAnswer(response, known, prefix) {
+  function logErrorAnswer(response, known, prefix, follow) {
     const task = errorSnippet(response, known).then((snippet) => {
       deps.log(`${prefix} \u2014 ${snippet}`);
+      follow?.(snippet);
     }, (error) => {
       deps.log(`${prefix} \u2014 (body unreadable: ${messageOf(error)})`);
     });
@@ -7574,7 +7876,7 @@ function createRouter(deps) {
       target: label
     };
   }
-  async function chain(req, url, config, body, targets, name, guard) {
+  async function chain(req, url, config, body, targets, name, guard, standsInFor = null) {
     const failures = [];
     let fallbacks = 0;
     let skipped = 0;
@@ -7593,7 +7895,7 @@ function createRouter(deps) {
       if (req.signal.aborted)
         return closed(result, label);
       if (target.kind === "anthropic" && "response" in result) {
-        observeClaude(target.model, result.response);
+        observeClaude(target.model, result.response, url.pathname);
       }
       if ("response" in result && !last && target.kind === "backend" && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("text/event-stream")) {
         result = await holdFirstEvent(result.response, deadlineAt);
@@ -7622,7 +7924,12 @@ function createRouter(deps) {
           };
         }
         if (status >= 400) {
-          logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN ${label} answered ${status}; returned as it is`);
+          logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN ${label} answered ${status}; returned as it is`, standsInFor === null || status !== 400 && status !== 413 ? undefined : (snippet) => {
+            const kind = TOO_LONG.test(snippet) ? "too long" : UNSUPPORTED.test(snippet) ? "a kind of content it does not take" : null;
+            if (kind === null)
+              return;
+            deps.log(`WARN ${name}: ${label} refused this ${standsInFor} conversation (${kind}). A long ([1m], 200k+ tokens) or rich (images, documents, server tools) ${standsInFor} conversation may be more than the fallback takes: /compact it, start a new one, or wait for ${standsInFor}'s reset`);
+          });
         }
         return { fallbacks, response: relay(result.response, target), skipped, target: label };
       }
@@ -7659,23 +7966,42 @@ function createRouter(deps) {
       if (req.signal.aborted)
         return closed(result, found.model);
       if (!("response" in result))
-        return answerDirect(result, null);
-      limit = observeClaude(found.model, result.response);
+        return answerDirect(result, null, found.model);
+      limit = observeClaude(found.model, result.response, url.pathname);
       if (limit === null)
-        return answerDirect(result, null);
+        return answerDirect(result, null, found.model);
       const nowSec = deps.now() / 1000;
-      const restSec = limit.resetsAt === null ? COOLDOWN_MAX_SEC : Math.min(Math.max(limit.resetsAt - nowSec, 0), COOLDOWN_MAX_SEC);
+      const restSec = limit.resetsAt === null ? COOLDOWN_MAX_SEC : limit.resetsAt <= nowSec ? LIMIT_REST_MIN_SEC : Math.min(limit.resetsAt - nowSec, COOLDOWN_MAX_SEC);
       limitedUntil.set(found.model, deps.now() + restSec * 1000);
       logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${found.model} answered 429 (the plan's usage limit); trying the next target of ${found.slot}`);
     }
-    const outcome = await chain(req, url, config, body, rest, found.slot, false);
+    const outcome = await chain(req, url, config, body, rest, found.slot, false, found.model);
     if (!req.signal.aborted)
       noteFallback(found.slot, found.model, limit, outcome);
     return {
       ...outcome,
       fallbacks: outcome.fallbacks + (skipped === 0 ? 1 : 0),
+      response: cleanAnswer(found, outcome),
       skipped: outcome.skipped + skipped
     };
+  }
+  function cleanAnswer(found, outcome) {
+    if (deps.fallbackAnswersAsIs === true)
+      return outcome.response;
+    const cleaned = cleanFallbackResponse(outcome.response, (changes) => {
+      const kinds = [
+        changes.thinking > 0 ? "thinking blocks removed" : "",
+        changes.ids > 0 ? "tool_use ids made safe" : ""
+      ].filter((part) => part !== "");
+      const text = `${found.slot}: ${outcome.target}'s answers: ${kinds.join(", ")}`;
+      if (cleanedLogged.has(text))
+        return;
+      cleanedLogged.add(text);
+      deps.log(`${text} (${found.model} refuses them in its history; logged once per kind)`);
+    });
+    if (cleaned.note !== null)
+      deps.log(`WARN ${found.slot}: ${outcome.target}: ${cleaned.note}`);
+    return cleaned.response;
   }
   async function judgeAsFallback(req, url, config, body, model, judgeTargets, toClaude) {
     const checkModel = withoutContextSuffix(String(body.model ?? "-"));
@@ -7700,6 +8026,8 @@ function createRouter(deps) {
     if (req.signal.aborted)
       return judged;
     deps.log(`WARN safety check judged by ${judged.target} (${judged.response.status}), not by Claude: ${reason}`);
+    if (!judged.response.ok)
+      return { ...judged, fallbacks: judged.fallbacks + 1 };
     const now = deps.now();
     const before = limitState.fallbacks[JUDGE_SLOT];
     const resetsAt = limit?.resetsAt ?? null;
@@ -7724,6 +8052,7 @@ function createRouter(deps) {
   }
   async function route(req, url, model) {
     const config = deps.getConfig();
+    dropRemovedFallbacks(config);
     const isMessages = req.method === "POST" && (url.pathname === MESSAGES_PATH || url.pathname === COUNT_TOKENS_PATH);
     if (isMessages) {
       const type = (req.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
@@ -7733,11 +8062,17 @@ function createRouter(deps) {
     }
     const sent = req.method === "GET" || req.method === "HEAD" || req.body === null ? null : new Uint8Array(await req.arrayBuffer());
     let bytes = sent;
-    const answerDirect = (result, observed) => {
-      if (observed !== null && "response" in result)
-        observeClaude(observed, result.response);
+    const answerDirect = (result, observed, claudeModel = observed) => {
+      if (observed !== null && "response" in result) {
+        observeClaude(observed, result.response, url.pathname);
+      }
       if (isMessages && "response" in result && result.response.status >= 400) {
-        logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN anthropic answered ${result.response.status}`);
+        const id = claudeModel === null ? null : withoutContextSuffix(claudeModel);
+        logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN anthropic answered ${result.response.status}`, id === null || result.response.status !== 400 || !hadFallback(id) ? undefined : (snippet) => {
+          if (!snippet.includes(BAD_SIGNATURE))
+            return;
+          deps.log(`WARN ${id} refused a thinking block's signature: this conversation holds a thinking block a fallback model wrote while ${id} was at its plan limit. Claude Code 2.1.300 sent the request once more and was answered (seen live); if the session stays stuck, /rewind in Claude Code to the message before the fallback answered, or start a new session`);
+        });
       }
       const response = "response" in result ? relay(result.response, null) : anthropicError(502, "api_error", `anymodel-router: Anthropic did not answer (${result.failure})`);
       return { fallbacks: 0, response, skipped: 0, target: "anthropic" };
@@ -7771,8 +8106,7 @@ function createRouter(deps) {
     }
     if (guard)
       model.name = `${model.name} (safety check)`;
-    const judge = guard ? resolveRoute(JUDGE_SLOT, config) : null;
-    const judgeTargets = judge?.kind === "slot" ? judge.targets : [];
+    const judgeTargets = guard ? judgeTargetsOf(config, true) : [];
     if (judgeTargets.length > 0 && url.pathname === MESSAGES_PATH) {
       return judgeAsFallback(req, url, config, body, model, judgeTargets, claudeRoute);
     }
@@ -7895,7 +8229,7 @@ function realProbe() {
     sleep: (ms) => Bun.sleep(ms)
   };
 }
-function isJsonObject3(value) {
+function isJsonObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function healthUrl(port) {
@@ -7937,7 +8271,7 @@ async function probeRouterPort(port, fetchImpl, timeoutMs = 2000) {
   } catch (error) {
     return { detail: `not a health answer (${messageOf(error)})`, state: "other" };
   }
-  return isJsonObject3(body) && body.ok === true ? { state: "ours" } : { detail: "not this router's health answer", state: "other" };
+  return isJsonObject4(body) && body.ok === true ? { state: "ours" } : { detail: "not this router's health answer", state: "other" };
 }
 async function waitWhileRouterAnswers(port, probe, waitMs) {
   const deadline = probe.now() + waitMs;
@@ -8200,7 +8534,7 @@ var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
 var SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
 var LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 var envPath = (key) => ["env", key];
-function isJsonObject4(value) {
+function isJsonObject5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function readSettings(path) {
@@ -8212,10 +8546,10 @@ function readSettings(path) {
   } catch {
     throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
   }
-  if (!isJsonObject4(parsed))
+  if (!isJsonObject5(parsed))
     throw new Error(`${path} is not a JSON object; not touching it`);
   const env = parsed.env;
-  if (env !== undefined && !isJsonObject4(env))
+  if (env !== undefined && !isJsonObject5(env))
     throw new Error(`${path} has an "env" that is not an object`);
   return parsed;
 }
@@ -8234,7 +8568,7 @@ function ownedGatewayEnvKeys(settingsFile, stateDir) {
 }
 function assertNoForeignGatewayKeys(settingsFile, stateDir) {
   const env = readSettings(settingsFile).env;
-  if (!isJsonObject4(env))
+  if (!isJsonObject5(env))
     return;
   const owned = new Set(ownedGatewayEnvKeys(settingsFile, stateDir));
   for (const key of GATEWAY_ENV_KEYS) {
@@ -8267,12 +8601,12 @@ function turnOff(options) {
     remove: GATEWAY_ENV_KEYS.map(envPath),
     ...options.dryRun !== undefined && { dryRun: options.dryRun }
   });
-  const foreign = result.skipped.map((skip) => skip.path[1]).filter((key) => key !== undefined && isJsonObject4(env) && Object.hasOwn(env, key));
+  const foreign = result.skipped.map((skip) => skip.path[1]).filter((key) => key !== undefined && isJsonObject5(env) && Object.hasOwn(env, key));
   return { result, foreign };
 }
 function settingsReport(settingsPath) {
   const settings = readSettings(settingsPath);
-  const env = isJsonObject4(settings.env) ? settings.env : {};
+  const env = isJsonObject5(settings.env) ? settings.env : {};
   const baseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? shownValue(env.ANTHROPIC_BASE_URL) : null;
   const loginOverrides = LOGIN_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
   if (Object.hasOwn(settings, "apiKeyHelper"))
@@ -8306,7 +8640,7 @@ Commands:
   off                    Remove what "on" set. Restart the sessions afterwards.
   serve                  Run the router in this terminal.`;
 var NEEDS_SYSTEMD = "the gateway service needs systemd (Linux) for now.";
-function isJsonObject5(value) {
+function isJsonObject6(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 var KNOWN_BACKENDS = {
@@ -8366,13 +8700,15 @@ function ensureConfig(configPath, key, options = {}) {
 function configuredPort(configPath) {
   return existsSync5(configPath) ? loadConfigFile(configPath).port : DEFAULT_PORT;
 }
-function planSlotChange(config, slotArg, targetsText, modelsByBackend) {
+function planSlotChange(current, slotArg, targetsText, modelsByBackend) {
   const key = slotKeyFromArg(slotArg);
   if (key === null) {
     return {
       error: `"${slotArg}" is not a slot name (scout, worker, judge, opus, fable, or anymodel-<name>)`
     };
   }
+  const { judgeTested: _proofs, ...withoutProofs } = current;
+  const config = key === JUDGE_SLOT ? withoutProofs : current;
   const model = isModelSlot(key);
   const otherModelSlots = Object.fromEntries(Object.entries(config.modelSlots ?? {}).filter(([, slot]) => slot !== key));
   const withModelSlots = (base, entries) => {
@@ -8443,7 +8779,8 @@ Slots (first that answers wins):`);
   if (keys.length === 0)
     console.log("  (none)");
   for (const key of keys) {
-    const note = key === JUDGE_SLOT ? "  (only when Claude cannot answer a check)" : isModelSlot(key) ? "  (the rest only at the plan's usage limit)" : "";
+    const untested = (config.slots[key] ?? []).filter((target) => !judgeTargetTested(config, target));
+    const note = key === JUDGE_SLOT ? untested.length > 0 ? `  (NOT TESTED, so ignored: ${untested.join(", ")}; run ${COMMAND} gateway slot judge <targets>)` : "  (only when Claude cannot answer a check)" : isModelSlot(key) ? "  (the rest only at the plan's usage limit)" : "";
     console.log(`  ${key.padEnd(16)} ${(config.slots[key] ?? []).join(" \u2192 ")}${note}`);
   }
   if (!Object.hasOwn(config.slots, JUDGE_SLOT)) {
@@ -8484,6 +8821,22 @@ ${name}  ${shownValue(backend.baseUrl)}  (key ${maskKey(backend.apiKey)})`);
 Any claude-<id> target (e.g. claude-sonnet-5-5) goes to Anthropic on your own Claude login.`);
   return 0;
 }
+function withJudgeProofs(config, passed) {
+  const proofs = Object.fromEntries(Object.entries(passed).map(([target, url]) => [target, judgeTestProof(target, url)]));
+  return Object.keys(proofs).length > 0 ? { ...config, judgeTested: proofs } : config;
+}
+function dropFallbackRecord(statePath, slot) {
+  let state;
+  try {
+    state = parseLimitState(readFileSync7(statePath, "utf8"));
+  } catch {
+    return;
+  }
+  if (state === null || !Object.hasOwn(state.fallbacks, slot))
+    return;
+  delete state.fallbacks[slot];
+  atomicWrite(statePath, formatLimitState(state), 384);
+}
 async function commandSlot(ctx, args) {
   const [slotArg, targets, ...extra] = args;
   if (slotArg === undefined || targets === undefined || extra.length > 0) {
@@ -8507,6 +8860,7 @@ async function commandSlot(ctx, args) {
   const first = planSlotChange(config, slotArg, targets, modelsByBackend);
   if ("error" in first)
     throw new Error(first.error);
+  const passed = {};
   if (first.key === JUDGE_SLOT && first.next.length > 0) {
     for (const text of first.next) {
       const parsed = parseTarget(text);
@@ -8519,6 +8873,7 @@ async function commandSlot(ctx, args) {
       if (result.verdict !== "block") {
         throw new Error(`${text} did not block the test check (${JUDGE_TEST_ACTION}): ${result.detail}. The judge was not set.`);
       }
+      passed[text] = backend.baseUrl;
       console.log(`judge test: ${text} blocked "${JUDGE_TEST_ACTION}"`);
     }
   }
@@ -8526,7 +8881,9 @@ async function commandSlot(ctx, args) {
     const again = planSlotChange(loadConfigFile(configPath), slotArg, targets, modelsByBackend);
     if ("error" in again)
       throw new Error(again.error);
-    saveConfig(configPath, again.config);
+    saveConfig(configPath, again.key === JUDGE_SLOT ? withJudgeProofs(again.config, passed) : again.config);
+    if (again.next.length === 0)
+      dropFallbackRecord(ctx.paths.gatewayStateFile, again.key);
     return again;
   }, { waitMs: 1e4 });
   const now = plan.next.length > 0 ? plan.next.join(" \u2192 ") : plan.key === JUDGE_SLOT ? "off (auto mode's safety check on Claude, and on no one else)" : `off (${MODEL_SLOTS[plan.key] ?? plan.key} goes to Anthropic unchanged)`;
@@ -8555,14 +8912,14 @@ async function commandStatus(ctx) {
   if ("error" in health)
     console.log(`router: DOWN on 127.0.0.1:${port} (${health.error})`);
   else {
-    const body = isJsonObject5(health.body) ? health.body : {};
+    const body = isJsonObject6(health.body) ? health.body : {};
     console.log(`router: up on 127.0.0.1:${String(body.port)} for ${String(body.uptimeSec)} s, ${String(body.requests)} requests, ${String(body.fallbacks)} fallbacks`);
     if (body.port !== port)
       console.log(`  WARN the config says port ${port}; restart the router to move it`);
-    const cooling = isJsonObject5(body.cooling) ? Object.entries(body.cooling) : [];
+    const cooling = isJsonObject6(body.cooling) ? Object.entries(body.cooling) : [];
     for (const [target, seconds] of cooling)
       console.log(`  resting: ${target} for ${String(seconds)} s more`);
-    const limited = isJsonObject5(body.limited) ? Object.entries(body.limited) : [];
+    const limited = isJsonObject6(body.limited) ? Object.entries(body.limited) : [];
     for (const [model, seconds] of limited) {
       console.log(`  at its plan usage limit: ${model}; its model slot answers from a fallback, and asks it again in ${String(seconds)} s`);
     }
@@ -8779,7 +9136,7 @@ async function gatewayChecks(options) {
   }
   if (!existsSync6(paths.routerCopy)) {
     checks.push({ ok: false, text: `no router copy at ${short(paths.routerCopy)}. ${SETUP}` });
-  } else if (existsSync6(options.bundle) && readFileSync7(paths.routerCopy, "utf8") !== readFileSync7(options.bundle, "utf8")) {
+  } else if (existsSync6(options.bundle) && readFileSync8(paths.routerCopy, "utf8") !== readFileSync8(options.bundle, "utf8")) {
     checks.push({
       ok: false,
       text: `the router copy ${short(paths.routerCopy)} is not this plugin version's router. ${SETUP}`
@@ -8827,17 +9184,25 @@ async function gatewayChecks(options) {
       text: `slot ${JUDGE_SLOT}: off, auto mode's safety checks go to Claude`
     });
   }
+  for (const target of config.slots[JUDGE_SLOT] ?? []) {
+    if (judgeTargetTested(config, target))
+      continue;
+    checks.push({
+      ok: false,
+      text: `slot ${JUDGE_SLOT}: ${target} has not passed the judge test, so the router ignores it. Run: ${COMMAND} gateway slot judge ${(config.slots[JUDGE_SLOT] ?? []).join(",")}`
+    });
+  }
   return checks;
 }
 
 // src/setup/installed-plugins.ts
-import { existsSync as existsSync7, readFileSync as readFileSync8 } from "fs";
+import { existsSync as existsSync7, readFileSync as readFileSync9 } from "fs";
 function findUserInstall(installedPluginsFile) {
   if (!existsSync7(installedPluginsFile))
     return null;
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync8(installedPluginsFile, "utf8"));
+    parsed = JSON.parse(readFileSync9(installedPluginsFile, "utf8"));
   } catch {
     return null;
   }
@@ -8911,14 +9276,14 @@ function installLauncher(binDir, options) {
 }
 
 // src/setup/marketplace-access.ts
-import { existsSync as existsSync8, readFileSync as readFileSync9 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync10 } from "fs";
 var ACCESS_TIMEOUT_MS = 1e4;
 function marketplaceSource(knownMarketplacesFile, name, env = process.env) {
   if (!existsSync8(knownMarketplacesFile))
     return { kind: "missing" };
   let known;
   try {
-    known = JSON.parse(readFileSync9(knownMarketplacesFile, "utf8"));
+    known = JSON.parse(readFileSync10(knownMarketplacesFile, "utf8"));
   } catch {
     return { kind: "missing" };
   }
@@ -9031,7 +9396,7 @@ function marketplaceInstallLocation(knownMarketplacesFile, name) {
   if (!existsSync8(knownMarketplacesFile))
     return null;
   try {
-    const known = JSON.parse(readFileSync9(knownMarketplacesFile, "utf8"));
+    const known = JSON.parse(readFileSync10(knownMarketplacesFile, "utf8"));
     const location = known?.[name]?.installLocation;
     return typeof location === "string" && location !== "" ? location : null;
   } catch {
@@ -9051,7 +9416,7 @@ function readSettings2(file) {
   if (!existsSync9(file))
     return null;
   try {
-    const parsed = JSON.parse(readFileSync10(file, "utf8"));
+    const parsed = JSON.parse(readFileSync11(file, "utf8"));
     return typeof parsed === "object" && parsed !== null ? parsed : null;
   } catch {
     return null;
@@ -9102,7 +9467,7 @@ function checkLauncher(paths) {
   if (!isExecutable(launcher)) {
     return { ok: false, text: `the launcher ${where} is not executable. Run: anymodel setup` };
   }
-  const script = readFileSync10(launcher, "utf8");
+  const script = readFileSync11(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
     return { ok: false, text: `the launcher ${where} is out of date. Run: anymodel setup` };
@@ -9152,7 +9517,7 @@ async function checkMarketplaceAccess(paths, env) {
 }
 function marketplaceVersion(manifest) {
   try {
-    const version = JSON.parse(readFileSync10(manifest, "utf8"))?.version;
+    const version = JSON.parse(readFileSync11(manifest, "utf8"))?.version;
     return typeof version === "string" ? version : null;
   } catch {
     return null;
@@ -9237,16 +9602,16 @@ function checkNameClash(settings) {
 }
 var OLD_PLUGIN_ID = "cc@cc-agentic";
 var OLD_NAME = "cc-agentic";
-function isJsonObject6(value) {
+function isJsonObject7(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function hasEntry(data, field, key) {
   const node = field === null ? data : data?.[field];
-  return isJsonObject6(node) && Object.hasOwn(node, key);
+  return isJsonObject7(node) && Object.hasOwn(node, key);
 }
 function checkOldPlugin(settings, paths) {
   const plugins = settings?.enabledPlugins;
-  const enabled = isJsonObject6(plugins) && plugins[OLD_PLUGIN_ID] === true;
+  const enabled = isJsonObject7(plugins) && plugins[OLD_PLUGIN_ID] === true;
   if (!existsSync9(join7(paths.claudeConfigDir, OLD_NAME))) {
     if (!enabled)
       return null;
@@ -9294,13 +9659,13 @@ async function runDoctor(paths, env, gateway) {
 }
 
 // src/cli/restore.ts
-import { rmSync as rmSync2 } from "fs";
+import { existsSync as existsSync12, rmSync as rmSync2 } from "fs";
 
 // src/setup/restore.ts
-import { existsSync as existsSync11, readFileSync as readFileSync12 } from "fs";
+import { existsSync as existsSync11, readFileSync as readFileSync13 } from "fs";
 
 // src/setup/managed-markdown.ts
-import { existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
+import { existsSync as existsSync10, readFileSync as readFileSync12 } from "fs";
 var BLOCK_BEGIN = "<!-- anymodel:begin -->";
 var BLOCK_END = "<!-- anymodel:end -->";
 function countOf(text, marker) {
@@ -9341,7 +9706,7 @@ function renderWithoutBlock(current, file = "the file") {
 function writeMarkdown(options, render) {
   const file = realTarget(options.file);
   return retryOnConcurrentChange(file, () => {
-    const text = existsSync10(file) ? readFileSync11(file, "utf8") : null;
+    const text = existsSync10(file) ? readFileSync12(file, "utf8") : null;
     const next = render(text ?? "", file);
     if (text === null && next === "")
       return { outcome: "unchanged", backup: null };
@@ -9372,7 +9737,7 @@ function restoreWholeFile(file, entry, stateDir) {
       return { file, action: "unchanged", details: [] };
     return { file, action: "removed", details: [], savedAs: removeManagedFile(stateDir, file) };
   }
-  const result = writeManagedFile(file, readFileSync12(baseline.path, "utf8"), {
+  const result = writeManagedFile(file, readFileSync13(baseline.path, "utf8"), {
     stateDir,
     kind: "whole-file",
     mode: baseline.mode
@@ -9389,7 +9754,7 @@ function restoreWholeFile(file, entry, stateDir) {
 function isEmpty(file) {
   if (!existsSync11(file))
     return false;
-  const text = readFileSync12(file, "utf8").trim();
+  const text = readFileSync13(file, "utf8").trim();
   return text === "" || text === "{}";
 }
 function restorePartly(file, entry, stateDir) {
@@ -9520,27 +9885,33 @@ async function runRestore(paths, options) {
     if (unitTracked)
       options.runner(["systemctl", "--user", "daemon-reload"]);
     rmSync2(restartPendingFile(paths.stateDir), { force: true });
-    if (results.length === 0) {
+    const stateGone = routerTracked && existsSync12(paths.gatewayStateFile);
+    if (stateGone)
+      rmSync2(paths.gatewayStateFile, { force: true });
+    if (results.length === 0 && !stateGone) {
       console.log("Nothing to restore: anymodel has nothing in any file.");
       return 0;
     }
     print(results, short);
+    if (stateGone) {
+      console.log(`- ${short(paths.gatewayStateFile)}: removed (the router's limit state)`);
+    }
     return results.some((result) => result.action === "no-backup") ? 1 : 0;
   }, { waitMs: 1e4 });
 }
 
 // src/cli/setup.ts
-import { existsSync as existsSync12, readFileSync as readFileSync13 } from "fs";
+import { existsSync as existsSync13, readFileSync as readFileSync14 } from "fs";
 import { delimiter, join as join8 } from "path";
 var AUTO_UPDATE_KEY = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
 function show2(value) {
   return value === undefined ? "(none)" : JSON.stringify(value);
 }
 function marketplaceKnown(settingsFile) {
-  if (!existsSync12(settingsFile))
+  if (!existsSync13(settingsFile))
     return false;
   try {
-    const settings = JSON.parse(readFileSync13(settingsFile, "utf8"));
+    const settings = JSON.parse(readFileSync14(settingsFile, "utf8"));
     const entry = settings.extraKnownMarketplaces?.[MARKETPLACE];
     return typeof entry === "object" && entry !== null;
   } catch {
@@ -9548,6 +9919,9 @@ function marketplaceKnown(settingsFile) {
   }
 }
 var STATUSLINE_KEY = ["statusLine"];
+function statuslineDeclinedFile(stateDir) {
+  return join8(stateDir, "statusline-declined");
+}
 function shellWord(path) {
   return /^[\w./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`;
 }
@@ -9555,10 +9929,10 @@ function statuslineSetting(paths) {
   return { command: `${shellWord(join8(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 function hasStatusline(settingsFile) {
-  if (!existsSync12(settingsFile))
+  if (!existsSync13(settingsFile))
     return false;
   try {
-    const settings = JSON.parse(readFileSync13(settingsFile, "utf8"));
+    const settings = JSON.parse(readFileSync14(settingsFile, "utf8"));
     return Object.hasOwn(settings, "statusLine");
   } catch {
     return false;
@@ -9602,18 +9976,27 @@ async function runSetup(paths, options) {
     return 1;
   }
   let statusline = options.statusline === true;
-  if (!statusline && !options.dryRun && options.confirm && !hasStatusline(paths.settingsFile)) {
+  let planned = applySetup(paths, true, statusline);
+  const declinedFile = statuslineDeclinedFile(paths.stateDir);
+  let declined = false;
+  if (!statusline && !options.dryRun && options.confirm && !hasStatusline(paths.settingsFile) && !existsSync13(declinedFile)) {
     statusline = options.confirm("Show anymodel's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?");
+    declined = !statusline;
+    if (statusline)
+      planned = applySetup(paths, true, true);
   }
-  const planned = applySetup(paths, true, statusline);
   if (options.dryRun) {
     console.log(planned.length > 0 ? planned.join(`
 `) : "Nothing to change.");
     console.log("Dry run: nothing was written.");
   } else {
-    const lines = await withLock(paths.stateDir, () => applySetup(paths, false, statusline), {
-      waitMs: 1e4
-    });
+    const lines = await withLock(paths.stateDir, () => {
+      const done = applySetup(paths, false, statusline);
+      if (declined)
+        atomicWrite(declinedFile, `no
+`, 384);
+      return done;
+    }, { waitMs: 1e4 });
     if (lines.length === 0) {
       console.log("Nothing to change. Setup is up to date.");
     } else {
@@ -9630,17 +10013,17 @@ async function runSetup(paths, options) {
 }
 
 // src/cli/statusline.ts
-import { readFileSync as readFileSync14 } from "fs";
+import { readFileSync as readFileSync15 } from "fs";
 var WARN_PERCENT = 85;
-function isJsonObject7(value) {
+function isJsonObject8(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function window(input, name) {
   const limits = input.rate_limits;
-  if (!isJsonObject7(limits))
+  if (!isJsonObject8(limits))
     return null;
   const entry = limits[name];
-  if (!isJsonObject7(entry) || typeof entry.used_percentage !== "number")
+  if (!isJsonObject8(entry) || typeof entry.used_percentage !== "number")
     return null;
   return {
     percent: entry.used_percentage,
@@ -9649,8 +10032,8 @@ function window(input, name) {
 }
 function statuslineText(input, state, nowMs, timeZone) {
   const parts = [];
-  const data = isJsonObject7(input) ? input : {};
-  const model = isJsonObject7(data.model) ? data.model.display_name : undefined;
+  const data = isJsonObject8(input) ? input : {};
+  const model = isJsonObject8(data.model) ? data.model.display_name : undefined;
   if (typeof model === "string" && model !== "")
     parts.push(model);
   const until = (resetsAt) => resetsAt === null ? "" : ` until ${formatClock(resetsAt, nowMs, timeZone)}`;
@@ -9690,7 +10073,7 @@ async function runStatusline(paths, readStdin, nowMs) {
   }
   let state = null;
   try {
-    state = parseLimitState(readFileSync14(paths.gatewayStateFile, "utf8"));
+    state = parseLimitState(readFileSync15(paths.gatewayStateFile, "utf8"));
   } catch {
     state = null;
   }
@@ -9699,31 +10082,44 @@ async function runStatusline(paths, readStdin, nowMs) {
 }
 
 // src/cli/usage.ts
-import { existsSync as existsSync13, readdirSync as readdirSync2, readFileSync as readFileSync15, statSync as statSync4 } from "fs";
+import { existsSync as existsSync14, readdirSync as readdirSync2, readFileSync as readFileSync16, statSync as statSync4 } from "fs";
 import { basename as basename2, join as join9, resolve as resolve2 } from "path";
-function isJsonObject8(value) {
+function isJsonObject9(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function directories(path) {
+function entries(path) {
   try {
-    return readdirSync2(path, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+    const all = readdirSync2(path, { withFileTypes: true });
+    return {
+      dirs: all.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort(),
+      files: all.filter((entry) => entry.isFile()).map((entry) => entry.name).sort()
+    };
   } catch {
-    return [];
+    return { dirs: [], files: [] };
+  }
+}
+function changedAt(path) {
+  try {
+    return statSync4(path).mtimeMs;
+  } catch {
+    return Number.NEGATIVE_INFINITY;
   }
 }
 function readJson(path) {
   try {
-    return JSON.parse(readFileSync15(path, "utf8"));
+    return JSON.parse(readFileSync16(path, "utf8"));
   } catch {
     return null;
   }
 }
-function readSubagent(path, sinceMs) {
+function readTranscript(path, sinceMs, sidechains) {
   const replies = new Map;
   let cwd = null;
+  if (changedAt(path) < sinceMs)
+    return { cwd, replies };
   let text;
   try {
-    text = readFileSync15(path, "utf8");
+    text = readFileSync16(path, "utf8");
   } catch {
     return { cwd, replies };
   }
@@ -9737,11 +10133,13 @@ function readSubagent(path, sinceMs) {
     } catch {
       continue;
     }
-    if (!isJsonObject8(entry))
+    if (!isJsonObject9(entry))
       continue;
     if (cwd === null && typeof entry.cwd === "string")
       cwd = entry.cwd;
-    if (entry.type !== "assistant" || !isJsonObject8(entry.message))
+    if (entry.type !== "assistant" || !isJsonObject9(entry.message))
+      continue;
+    if (!sidechains && entry.isSidechain === true)
       continue;
     const time = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN;
     if (!(time >= sinceMs))
@@ -9761,46 +10159,49 @@ function matches(project, folder, cwd) {
     return false;
   return cwd === resolve2(project) || basename2(cwd) === project;
 }
+function count(into, replies) {
+  for (const model of replies.values())
+    into[model] = (into[model] ?? 0) + 1;
+}
 function collectUsage(projectsDir, options) {
   const out = [];
-  for (const project of directories(projectsDir)) {
-    for (const session of directories(join9(projectsDir, project))) {
-      const folder = join9(projectsDir, project, session, "subagents");
-      if (!existsSync13(folder))
-        continue;
+  for (const project of entries(projectsDir).dirs) {
+    const folder = join9(projectsDir, project);
+    const listed = entries(folder);
+    const sessions = new Set([
+      ...listed.files.filter((name) => name.endsWith(".jsonl")).map((name) => name.slice(0, -6)),
+      ...listed.dirs
+    ]);
+    for (const session of [...sessions].sort()) {
       const usage = {
         cwd: null,
         launched: {},
+        main: {},
         project,
         replies: {},
         session,
         subagents: 0
       };
-      let names;
-      try {
-        names = readdirSync2(folder).filter((name) => name.endsWith(".meta.json")).sort();
-      } catch {
-        continue;
-      }
-      for (const name of names) {
-        const meta = readJson(join9(folder, name));
-        const transcript = join9(folder, name.replace(/\.meta\.json$/, ".jsonl"));
-        const { cwd, replies } = readSubagent(transcript, options.sinceMs);
-        let started = Number.NEGATIVE_INFINITY;
-        try {
-          started = statSync4(join9(folder, name)).mtimeMs;
-        } catch {}
+      const own = readTranscript(join9(folder, `${session}.jsonl`), options.sinceMs, false);
+      usage.cwd = own.cwd;
+      count(usage.main, own.replies);
+      const subagents = join9(folder, session, "subagents");
+      const metas = existsSync14(subagents) ? entries(subagents).files.filter((name) => name.endsWith(".meta.json")) : [];
+      for (const name of metas) {
+        const transcript = join9(subagents, name.replace(/\.meta\.json$/, ".jsonl"));
+        const started = changedAt(join9(subagents, name));
+        const { cwd, replies } = readTranscript(transcript, options.sinceMs, true);
         if (replies.size === 0 && started < options.sinceMs)
           continue;
+        const meta = readJson(join9(subagents, name));
         usage.cwd ??= cwd;
         usage.subagents += 1;
-        const launched = isJsonObject8(meta) && typeof meta.model === "string" ? meta.model : "inherited";
+        const launched = isJsonObject9(meta) && typeof meta.model === "string" ? meta.model : "inherited";
         usage.launched[launched] = (usage.launched[launched] ?? 0) + 1;
-        for (const model of replies.values()) {
-          usage.replies[model] = (usage.replies[model] ?? 0) + 1;
-        }
+        count(usage.replies, replies);
       }
-      if (usage.subagents > 0 && matches(options.project, project, usage.cwd))
+      const active = own.replies.size > 0 || usage.subagents > 0;
+      if (active && matches(options.project, project, usage.cwd))
         out.push(usage);
     }
   }
@@ -9823,30 +10224,45 @@ function share(record) {
 function percent(part, whole) {
   return whole === 0 ? "-" : `${Math.round(part / whole * 100)}%`;
 }
+function add(into, from) {
+  for (const [model, count] of Object.entries(from))
+    into[model] = (into[model] ?? 0) + count;
+}
 function formatUsage(sessions, hours, projectsDir, home) {
   const lines = [
-    `Subagents in the last ${hours} h, from ${tildify(projectsDir, home)} (read only; no message text)`
+    `Claude Code replies in the last ${hours} h, main sessions and subagents apart, from ${tildify(projectsDir, home)} (read only; no message text)`
   ];
   if (sessions.length === 0) {
-    lines.push("", "No subagent ran in that time.");
+    lines.push("", "No session answered in that time.");
     return lines.join(`
 `);
   }
-  const all = {};
+  const main = {};
+  const replies = {};
+  let mainSessions = 0;
   let subagents = 0;
+  let withSubagents = 0;
   for (const session of sessions) {
     lines.push("", `${session.cwd === null ? session.project : tildify(session.cwd, home)}  session ${session.session.slice(0, 8)}`);
-    lines.push(`  ${session.subagents} subagents, launched as: ${counts(session.launched)}`);
-    lines.push(`  replies by model: ${counts(session.replies) || "none in the window"}`);
-    const { opus, total } = share(session.replies);
-    lines.push(`  on Opus: ${opus} of ${total} replies (${percent(opus, total)})`);
-    subagents += session.subagents;
-    for (const [model, count] of Object.entries(session.replies)) {
-      all[model] = (all[model] ?? 0) + count;
+    lines.push(`  main session, replies by model: ${counts(session.main) || "none in the window"}`);
+    if (session.subagents === 0) {
+      lines.push("  subagents: none in the window");
+    } else {
+      lines.push(`  ${session.subagents} subagents, launched as: ${counts(session.launched)}`);
+      lines.push(`  subagent replies by model: ${counts(session.replies) || "none in the window"}`);
+      const { opus, total } = share(session.replies);
+      lines.push(`  subagents on Opus: ${opus} of ${total} replies (${percent(opus, total)})`);
+      withSubagents += 1;
     }
+    if (Object.keys(session.main).length > 0)
+      mainSessions += 1;
+    subagents += session.subagents;
+    add(main, session.main);
+    add(replies, session.replies);
   }
-  const { opus, total } = share(all);
-  lines.push("", `Total: ${subagents} subagents in ${sessions.length} session${sessions.length === 1 ? "" : "s"}; on Opus: ${opus} of ${total} replies (${percent(opus, total)})`);
+  const { opus, total } = share(replies);
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  lines.push("", `Main sessions: ${plural(mainSessions, "session")}; replies by model: ${counts(main) || "none"}`, `Subagents: ${subagents} in ${plural(withSubagents, "session")}; replies by model: ${counts(replies) || "none"}; on Opus: ${opus} of ${total} replies (${percent(opus, total)})`);
   return lines.join(`
 `);
 }
@@ -9888,6 +10304,254 @@ Usage: anymodel usage [--hours <n>] [--project <folder or name>]`);
   return 0;
 }
 
+// src/hooks/stop-failure.ts
+import { closeSync as closeSync3, existsSync as existsSync15, fstatSync, openSync as openSync3, readFileSync as readFileSync17, readSync } from "fs";
+var LIMIT_TEXT = /^You've hit your (?:[\w-]+ ){0,3}limit\b/;
+var NOT_LIMIT_TEXT = /\(not your usage limit\)/;
+var STATE_FRESH_MS = 2 * 60000;
+var OTHER_CLAUDE = "claude-sonnet-5-5";
+var ALERT_WORKER_COMMAND = "alert-worker";
+function isJsonObject10(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function slotOf(model) {
+  for (const [slot, family] of Object.entries(MODEL_SLOTS)) {
+    if (model.includes(`-${family}-`))
+      return { family, slot };
+  }
+  return null;
+}
+function suggestedTargets(config, model, family, claim) {
+  const backends = (config.slots["anymodel-worker"] ?? []).filter((text) => {
+    const parsed = parseTarget(text);
+    return "target" in parsed && parsed.target.kind === "backend";
+  });
+  if (backends.length === 0)
+    return null;
+  const modelOnly = claim?.endsWith(`_${family}`) === true;
+  return [model, ...modelOnly ? [OTHER_CLAUDE] : [], ...backends];
+}
+function shortName(target) {
+  return target.slice(target.lastIndexOf("/") + 1).replace(/^[^:]*:/, "");
+}
+function planAlert(input, ctx) {
+  if (!isJsonObject10(input) || input.error !== "rate_limit")
+    return null;
+  const text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
+  if (NOT_LIMIT_TEXT.test(text))
+    return null;
+  const limits = ctx.state === null ? [] : currentLimits(ctx.state, ctx.nowMs);
+  const fresh = ([, record]) => ctx.nowMs - record.seenAt < STATE_FRESH_MS;
+  if (!LIMIT_TEXT.test(text) && !limits.some(fresh))
+    return null;
+  if (!ctx.gatewaySetUp)
+    return null;
+  const own = ctx.sessionModel === null ? undefined : limits.find(([model]) => model === withoutContextSuffix(ctx.sessionModel ?? ""));
+  const slotted = limits.filter((entry) => slotOf(entry[0]) !== null && fresh(entry)).sort(([, a], [, b]) => b.seenAt - a.seenAt)[0];
+  const chosen = own ?? slotted;
+  const model = chosen?.[0] ?? null;
+  const record = chosen?.[1] ?? null;
+  const reset = record?.resetsAt !== null && record?.resetsAt !== undefined ? `resets ${formatClock(record.resetsAt, ctx.nowMs, ctx.timeZone)}` : /resets [^(]+/.exec(text)?.[0]?.trim() ?? "no reset time known";
+  const title = "Claude usage limit reached";
+  const head = `${model ?? "Claude"}: ${record?.claim ?? "plan limit"}, ${reset}.`;
+  if (ctx.config === null) {
+    return {
+      action: null,
+      body: `${head} Claude Code continues by itself after the reset. The gateway config cannot be read, so no fallback is offered: ${COMMAND} doctor says why.`,
+      title
+    };
+  }
+  const slot = model === null ? null : slotOf(model);
+  if (slot === null || model === null) {
+    return {
+      action: null,
+      body: `${head} Claude Code continues by itself after the reset.`,
+      title
+    };
+  }
+  if (Object.hasOwn(ctx.config.modelSlots ?? {}, model)) {
+    return {
+      action: null,
+      body: `${head} The ${slot.slot} fallback is on, yet this turn stopped: check ${COMMAND} gateway status.`,
+      title
+    };
+  }
+  const targets = suggestedTargets(ctx.config, model, slot.family, record?.claim ?? null);
+  const command = `${COMMAND} gateway slot ${slot.family} ${(targets ?? [model, "<backend>:<model>"]).join(",")}`;
+  if (targets === null || !ctx.gatewayOn) {
+    return {
+      action: null,
+      body: `${head} To use a cheaper model until it resets: ${command}`,
+      title
+    };
+  }
+  return {
+    action: {
+      args: ["gateway", "slot", slot.family, targets.join(",")],
+      label: `Use ${shortName(targets[1] ?? "")} until it resets`
+    },
+    body: `${head} A cheaper model until it resets: ${command} (Claude takes over again by itself once it answers).`,
+    title
+  };
+}
+var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
+function lastClaudeModel(transcriptPath) {
+  let text;
+  try {
+    const fd = openSync3(transcriptPath, "r");
+    try {
+      const size = fstatSync(fd).size;
+      const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+      const buffer = Buffer.alloc(length);
+      readSync(fd, buffer, 0, length, size - length);
+      text = buffer.toString("utf8");
+    } finally {
+      closeSync3(fd);
+    }
+  } catch {
+    return null;
+  }
+  const lines = text.split(`
+`);
+  for (let index = lines.length - 1;index >= 0; index -= 1) {
+    const line = lines[index] ?? "";
+    if (!line.includes('"assistant"'))
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isJsonObject10(entry) || entry.type !== "assistant" || !isJsonObject10(entry.message)) {
+      continue;
+    }
+    const model = entry.message.model;
+    if (typeof model === "string" && model.startsWith("claude-"))
+      return model;
+  }
+  return null;
+}
+function readAlertContext(paths, nowMs, input) {
+  const gatewaySetUp = existsSync15(paths.gatewayConfigFile);
+  let config = null;
+  if (gatewaySetUp) {
+    try {
+      config = loadConfigFile(paths.gatewayConfigFile);
+    } catch {
+      config = null;
+    }
+  }
+  let state = null;
+  try {
+    state = parseLimitState(readFileSync17(paths.gatewayStateFile, "utf8"));
+  } catch {
+    state = null;
+  }
+  let gatewayOn = false;
+  try {
+    gatewayOn = settingsReport(paths.settingsFile).baseUrl !== null;
+  } catch {
+    gatewayOn = false;
+  }
+  const transcript = isJsonObject10(input) && typeof input.transcript_path === "string" ? input.transcript_path : null;
+  const sessionModel = transcript === null ? null : lastClaudeModel(transcript);
+  return { config, gatewayOn, gatewaySetUp, nowMs, sessionModel, state };
+}
+var spawnRunner = ({ argv, timeoutMs }) => {
+  try {
+    const result = Bun.spawnSync(argv, { stderr: "ignore", stdout: "pipe", timeout: timeoutMs });
+    return {
+      exitCode: result.exitCode,
+      stdout: result.stdout.toString(),
+      timedOut: result.exitedDueToTimeout === true
+    };
+  } catch {
+    return { exitCode: null, stdout: "", timedOut: false };
+  }
+};
+var ACTION_WAIT_MS = 30 * 60000;
+function parseAlert(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isJsonObject10(raw) || typeof raw.title !== "string" || typeof raw.body !== "string") {
+    return null;
+  }
+  const action = raw.action;
+  if (action === null)
+    return { action: null, body: raw.body, title: raw.title };
+  if (!isJsonObject10(action) || typeof action.label !== "string" || !Array.isArray(action.args) || !action.args.every((arg) => typeof arg === "string")) {
+    return null;
+  }
+  return {
+    action: { args: action.args, label: action.label },
+    body: raw.body,
+    title: raw.title
+  };
+}
+function appleString(text) {
+  return `"${text.replaceAll("\\", "\\\\").replaceAll('"', "\\\"")}"`;
+}
+function plainNotification(alert, platform) {
+  const body = alert.body;
+  if (platform === "linux") {
+    return { argv: ["notify-send", "--app-name=anymodel", alert.title, body], timeoutMs: 1e4 };
+  }
+  if (platform === "darwin") {
+    return {
+      argv: [
+        "osascript",
+        "-e",
+        `display notification ${appleString(body)} with title ${appleString(alert.title)}`
+      ],
+      timeoutMs: 1e4
+    };
+  }
+  return null;
+}
+function runAlert(alert, platform, launcher, run) {
+  if (platform === "linux" && alert.action !== null) {
+    const asked = run({
+      argv: [
+        "notify-send",
+        "--app-name=anymodel",
+        `--action=use=${alert.action.label}`,
+        "--action=wait=Wait",
+        alert.title,
+        alert.body
+      ],
+      timeoutMs: ACTION_WAIT_MS
+    });
+    if (asked.timedOut)
+      return "no answer";
+    if (asked.exitCode === 0) {
+      if (asked.stdout.trim() !== "use")
+        return "waited";
+      const slot = run({ argv: [launcher, ...alert.action.args], timeoutMs: 60000 });
+      const done = slot.exitCode === 0;
+      run({
+        argv: [
+          "notify-send",
+          "--app-name=anymodel",
+          done ? "Fallback on" : "Fallback not turned on",
+          done ? `${alert.action.label.replace(/^Use /, "Using ")}: ${COMMAND} gateway status shows it. Send a message in Claude Code to go on now.` : `Run it yourself to see why: ${COMMAND} ${alert.action.args.join(" ")}`
+        ],
+        timeoutMs: 1e4
+      });
+      return done ? "used" : "use failed";
+    }
+  }
+  const plain = plainNotification(alert, platform);
+  if (plain === null)
+    return "no notifier";
+  run(plain);
+  return "shown";
+}
+
 // src/entries/cli.ts
 var HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
 
@@ -9915,16 +10579,17 @@ Commands:
                      85 %), and any fallback the gateway is using. Reads the JSON
                      Claude Code passes on stdin.
   usage [--hours <n>] [--project <folder or name>]
-                     Which models answered the subagents, per session, from Claude
-                     Code's transcripts (default: the last 6 hours). Read only; no
-                     message text.
+                     Which models answered on this machine, per session: the main
+                     session's replies and its subagents' apart (how each subagent was
+                     launched, and the share on Opus), from Claude Code's transcripts
+                     (default: the last 6 hours). Read only; no message text.
   version            Print the version.
   --help             Print this help.
 
 Paths follow HOME and CLAUDE_CONFIG_DIR.`;
 function routerBundle() {
   const beside = join10(import.meta.dir, "router.js");
-  return existsSync14(beside) ? beside : join10(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
+  return existsSync16(beside) ? beside : join10(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
 }
 var runner = (cmd) => {
   const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 30000 });
@@ -9969,6 +10634,18 @@ ${HELP}`);
       return runStatusline(paths, () => process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text(), Date.now());
     case "usage":
       return runUsage(paths, rest, Date.now());
+    case ALERT_WORKER_COMMAND: {
+      const alert = rest.length === 1 ? parseAlert(rest[0] ?? "") : null;
+      if (alert === null) {
+        console.error(`Usage: anymodel ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
+        return 2;
+      }
+      const launcher = join10(paths.binDir, LAUNCHER_NAME);
+      if (runAlert(alert, process.platform, launcher, spawnRunner) === "no notifier") {
+        console.error(`anymodel: ${alert.title}. ${alert.body}`);
+      }
+      return 0;
+    }
     case "doctor":
       return runDoctor(paths, process.env, {
         bundle: routerBundle(),

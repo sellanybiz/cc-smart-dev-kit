@@ -46,11 +46,11 @@ After that, use `anymodel setup` to set up again (for example after an update).
 
 | Command | What it does |
 |---|---|
-| `anymodel setup [--statusline]` | Installs the launcher and turns on plugin auto-update. `--dry-run` shows the changes and writes nothing at all. A settings key you set yourself (for example `autoUpdate: false`) stops setup before it writes anything. `--statusline` also sets Claude Code's status line to `anymodel statusline`, as a key anymodel owns; run in a terminal with no status line set, setup asks instead. It never replaces a status line you set. |
+| `anymodel setup [--statusline]` | Installs the launcher and turns on plugin auto-update. `--dry-run` shows the changes and writes nothing at all. A settings key you set yourself (for example `autoUpdate: false`) stops setup before it writes anything. `--statusline` also sets Claude Code's status line to `anymodel statusline`, as a key anymodel owns; run in a terminal with no status line set, setup asks instead (once: it remembers a "no"; `--statusline` still sets it later). It never replaces a status line you set. |
 | `anymodel statusline` | The status line itself: plan usage, a warning from 85 %, and any gateway fallback in use. Reads the JSON Claude Code passes on stdin. |
-| `anymodel usage [--hours <n>] [--project <folder or name>]` | Which models answered the subagents, per session, from Claude Code's transcripts. Read only; no message text. |
+| `anymodel usage [--hours <n>] [--project <folder or name>]` | Which models answered on this machine, per session, from Claude Code's transcripts: the main session's replies by model, and apart, its subagents (how each was launched, the model of each reply, the share on Opus). Default: the last 6 hours. Read only; no message text. |
 | `anymodel doctor` | Checks the install (the list is below). Prints ✓ or ✗ for each check, and exits with 1 when one fails. |
-| `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, its block) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy and unit. `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
+| `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, its block) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its unit and its limit state (`~/.local/state/anymodel/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
 | `anymodel gateway <command>` | The optional AI gateway (below). |
 | `anymodel version` | Prints the version. |
 
@@ -84,7 +84,8 @@ After that, use `anymodel setup` to set up again (for example after an update).
   run: anymodel gateway setup";
 - the gateway, when it is installed (the router copy or its unit is there): the router
   service is active, the router copy is this plugin version's, the router answers on its
-  port, each backend answers; and, as information, each slot's first target. Without
+  port, each backend answers, every judge target passed the judge test; and, as
+  information, each slot's first target. Without
   `gateway.json` (set up with `--no-backend-key`), a `·` line says every slot answers on
   Claude. When it was never set up, doctor says "gateway: not set up (optional)" as
   information (`·`), not as a failure; with only `gateway.json` left (restore keeps it),
@@ -151,14 +152,17 @@ routed by its model name until the router is updated (see
 ### The usage limit: the alert, the status line, and `usage`
 
 - **The alert.** When a turn stops at your plan's usage limit, the plugin's StopFailure
-  hook shows a desktop notification (only once the gateway is set up). On Linux it offers
-  "Use <model> until it resets", which runs the `slot opus` command above, and "Wait". On
-  macOS it names the command. A short rate limit gets no alert: Claude Code retries it.
+  hook shows a desktop notification about your session's model (only once the gateway is
+  set up). On Linux it offers "Use <target> until it resets", which runs the `slot opus`
+  command above (the model, then Sonnet when only the Opus window ran out, then the worker
+  slot's cheap targets), and "Wait"; after "Use", send a message in Claude Code to go on.
+  On macOS it names the command. A short rate limit gets no alert: Claude Code retries it.
 - **The status line.** `anymodel setup --statusline` sets Claude Code's status line to
   `anymodel statusline`. It shows your 5-hour and 7-day plan usage, warns from 85 %, and
   shows any fallback in use.
 - **`anymodel usage`** reads Claude Code's own transcripts and shows, per session, the
-  subagents launched, which model wrote each reply, and the share on Opus.
+  main session's replies by model and, apart, its subagents: how each was launched, which
+  model wrote each reply, and the share on Opus.
 
 ## A project's `.claude/anymodel.json`
 

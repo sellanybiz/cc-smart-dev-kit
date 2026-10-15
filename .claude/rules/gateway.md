@@ -65,7 +65,11 @@ person chose and that passed the test; otherwise by the person, because Claude C
   those reach Claude Code as they are. Never for `count_tokens`.
 - **Off by default:** `defaultConfig()` has no judge slot; only the person sets one.
 - **Never set untested:** `gateway slot judge` runs the judge test (`judge-test.ts`) on
-  each target and refuses one that does not block it. No skip flag, ever.
+  each target and refuses one that does not block it. No skip flag, ever. A target that
+  passed gets its proof in the config's `judgeTested` (`judgeTestProof`: the test
+  version, the target, its backend's URL); **the router uses only a target with a
+  matching proof**, ignores any other with one WARN, and doctor fails on it. Raise
+  `JUDGE_TEST_VERSION` when the test changes.
 - **Loud:** one WARN per judged check, naming the target; the state file says so.
 - Docs and the skill name the trade-off: a cheaper judge can block good work, a weak one
   can let a risky command through, and the test proves one obvious case only.
@@ -78,10 +82,17 @@ person chose and that passed the test; otherwise by the person, because Claude C
 - The slot's first target is the model itself and gets **the bytes Claude Code sent**.
 - The next target answers **only** on `planUsageLimit`. A short 429, a 5xx, a 400 or a
   network error goes back as it is. A new trigger needs a contract row and a test.
-- Never the safety check, never `count_tokens`, never a name an alias changed.
-- The fallback gets only the named translations a slot target gets; no message changes
-  (thinking blocks included: dropping them for a backend would change message content,
-  and needs the owner's yes first).
+- Never the safety check, never `count_tokens`, never a name an alias changed. Only a
+  `/v1/messages` answer notes or ends a limit (`observeClaude`).
+- The fallback gets only the named translations a slot target gets; no **request**
+  changes (the thinking blocks of the history included).
+- **The owner's yes (2026-10-15), for exactly this case: a model slot's fallback
+  ANSWERS** lose their `thinking` / `redacted_thinking` blocks, get one text block when
+  nothing is left, and get a safe `tool_use` id (`cleanFallbackResponse`,
+  `fallback-answer.ts`). Claude Code keeps the answer, and Opus refuses a thinking block it
+  cannot verify. Never an answer of Claude itself, never another route's answer, never a
+  request. `fallbackAnswersAsIs` is a test-only switch for the live proof; never set it in
+  use.
 
 ## Settings and secrets
 

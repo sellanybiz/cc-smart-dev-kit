@@ -12,6 +12,7 @@
  * The design: docs/gateway.md.
  */
 
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
@@ -60,6 +61,12 @@ export const gatewayConfigSchema = z
     // point them anywhere else. (Tests inject a fake through the router.)
     anthropicBaseUrl: z.literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
     backends: z.record(z.string().refine(isBackendName, "not a backend name"), backendSchema),
+    /**
+     * The judge targets that passed the judge test: `{"<target>": "<proof>"}`, written only
+     * by `gateway slot judge` after the test (`judgeTestProof`). The router uses a judge
+     * target only when its proof matches; a target without one is ignored, with a WARN.
+     */
+    judgeTested: z.record(z.string(), z.string()).optional(),
     /**
      * Claude model ids that have a model slot: `{"claude-opus-5-5": "anymodel-opus"}`.
      * Absent (the default): every `claude-…` request goes to Anthropic byte for byte. With
@@ -188,6 +195,49 @@ function aliasError(
 }
 
 export type GatewayConfig = z.output<typeof gatewayConfigSchema>;
+
+/**
+ * The judge test's version. Raise it when the test changes: every judge target then
+ * counts as untested until `gateway slot judge` tests it again.
+ */
+export const JUDGE_TEST_VERSION = 1;
+
+/**
+ * The proof that a judge target passed the judge test, as `gateway slot judge` writes it
+ * into `judgeTested`: the first 32 hex characters of the SHA-256 of the test version, the
+ * target and its backend's URL. Why in the config, and why a digest: the slot and its proof
+ * are saved in one atomic write, so they cannot drift apart; the router already reads that
+ * file on each change; and a hand edit that adds a judge target, copies another target's
+ * entry, or moves the backend gets no matching proof. It stops a mistake, not a person who
+ * means it: anyone who reads this code can compute it.
+ */
+export function judgeTestProof(target: string, backendUrl: string): string {
+  return createHash("sha256")
+    .update(`anymodel judge test ${JUDGE_TEST_VERSION}\n${target}\n${backendUrl}`)
+    .digest("hex")
+    .slice(0, 32);
+}
+
+/** Did this judge target pass the judge test, by the config's `judgeTested`? */
+export function judgeTargetTested(
+  config: Pick<GatewayConfig, "backends" | "judgeTested">,
+  target: string,
+): boolean {
+  const parsed = parseTarget(target);
+  if (!("target" in parsed) || parsed.target.kind !== "backend") return false;
+  const backend = Object.hasOwn(config.backends, parsed.target.backend)
+    ? config.backends[parsed.target.backend]
+    : undefined;
+  const proof =
+    config.judgeTested !== undefined && Object.hasOwn(config.judgeTested, target)
+      ? config.judgeTested[target]
+      : undefined;
+  return (
+    backend !== undefined &&
+    proof !== undefined &&
+    proof === judgeTestProof(target, backend.baseUrl)
+  );
+}
 
 /** The words of a caught error, whatever was thrown. */
 export function messageOf(error: unknown): string {

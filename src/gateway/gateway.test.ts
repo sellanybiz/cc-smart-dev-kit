@@ -57,6 +57,16 @@ import {
 } from "./router";
 import { cooldownSeconds, isAutoModeGuard, planUsageLimit, resolveRoute } from "./targets";
 
+/**
+ * The judge test proofs of the test config's two cheap targets, as `gateway slot judge`
+ * writes them. Worked out by hand: `printf 'anymodel judge test 1\n<target>\n<backend URL>'
+ * | sha256sum`, the first 32 characters.
+ */
+const JUDGE_PROOFS = {
+  "ollama:deepseek-v4.1-flash": "9e7497df97196232b9f3bbfd2458e714",
+  "omniroute:glm-5.3-flash": "6a3229badab5b0688344a468ee465a19",
+};
+
 const PORT = 20100;
 /** File modes are POSIX: this tooling runs on Linux and macOS only. */
 const NO_POSIX_MODES = process.platform === "win32";
@@ -184,6 +194,10 @@ function router(
   replies: Reply[],
   options: {
     config?: GatewayConfig;
+    /** The live config, for a test that changes it between requests (wins over `config`). */
+    getConfig?: () => GatewayConfig;
+    /** Tests only: a model slot's fallback answers as the backend sent them. */
+    fallbackAnswersAsIs?: boolean;
     now?: () => number;
     /** The state file's texts, in the order the router wrote them. */
     states?: string[];
@@ -200,8 +214,11 @@ function router(
       background.push(task);
     },
     configPath: CONFIG_PATH,
+    ...(options.fallbackAnswersAsIs === undefined
+      ? {}
+      : { fallbackAnswersAsIs: options.fallbackAnswersAsIs }),
     fetch: upstream.fetch,
-    getConfig: () => cfg,
+    getConfig: options.getConfig ?? (() => cfg),
     log: (line) => logs.push(line),
     now: options.now ?? (() => Date.UTC(2026, 9, 15, 10, 0, 0)),
     port: PORT,
@@ -1090,6 +1107,7 @@ describe("auto mode's safety check", () => {
     const cfg = config(firstByteMs);
     return {
       ...cfg,
+      judgeTested: JUDGE_PROOFS,
       slots: {
         ...cfg.slots,
         "anymodel-judge": ["ollama:deepseek-v4.1-flash", "omniroute:glm-5.3-flash"],
@@ -1175,6 +1193,15 @@ describe("auto mode's safety check", () => {
       },
       version: 1,
     });
+  });
+
+  it("a judge that fails judged nothing: its fallback is not recorded as active", async () => {
+    const states: string[] = [];
+    const down = () => new Response("down", { status: 503 });
+    const { handle } = router([atLimit, down, down], { config: withJudge(), states });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(503);
+    expect(JSON.parse(states.at(-1) ?? "").fallbacks).toEqual({});
   });
 
   it("the newer form at the limit: its slot's Claude target first, then the judge, reasoning off", async () => {
@@ -2485,7 +2512,10 @@ describe("aliases", () => {
   it("the safety check under an old name is still the safety check: Claude first, the judge at the limit", async () => {
     const judged = aliased(
       { "old-worker": "anymodel-worker" },
-      { slots: { ...config().slots, "anymodel-judge": ["ollama:deepseek-v4.1-flash"] } },
+      {
+        judgeTested: JUDGE_PROOFS,
+        slots: { ...config().slots, "anymodel-judge": ["ollama:deepseek-v4.1-flash"] },
+      },
     );
     const { calls, handle, logs } = router([atLimit, () => new Response("{}")], {
       config: judged,
@@ -2541,7 +2571,10 @@ describe("aliases", () => {
   it("judge on: the same check goes to Anthropic as sent; only at the limit to the judge", async () => {
     const judged = aliased(
       { "old-worker": "omniroute:glm-5.3-flash" },
-      { slots: { ...config().slots, "anymodel-judge": ["ollama:deepseek-v4.1-flash"] } },
+      {
+        judgeTested: JUDGE_PROOFS,
+        slots: { ...config().slots, "anymodel-judge": ["ollama:deepseek-v4.1-flash"] },
+      },
     );
     const sent = JSON.stringify(aliasedCheck("old-worker[1m]"));
     const refused = router([() => new Response("not found", { status: 404 })], { config: judged });
@@ -3158,5 +3191,215 @@ describe("model slots (opus, fable)", () => {
     expect(errorOf({ slots: withoutSlot })).toContain(
       'modelSlots "claude-opus-5-5" points at slot "anymodel-opus", which is not in slots',
     );
+  });
+
+  // ─── The fallback's answer, kept safe for the Claude conversation ─────────────
+
+  /** A streamed answer with a thinking block first, then a text block. */
+  const THINKING_STREAM = [
+    'event: message_start\ndata: {"type":"message_start","message":{"content":[],"role":"assistant"}}\n\n',
+    'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"made-up"}}\n\n',
+    'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+    'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}\n\n',
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Fixed."}}\n\n',
+    'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+  ].join("");
+  const streamOf = (text: string) => () =>
+    new Response(text, { headers: { "content-type": "text/event-stream" }, status: 200 });
+
+  it("the fallback's answer reaches Claude Code without its thinking blocks; one log line names it", async () => {
+    const { handle, logs } = router([atLimit, streamOf(THINKING_STREAM)], {
+      config: withOpusSlot(),
+    });
+    const res = await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+    expect(await res.text()).toBe(
+      [
+        'event: message_start\ndata: {"type":"message_start","message":{"content":[],"role":"assistant"}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Fixed."}}\n\n',
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ].join(""),
+    );
+    expect(logs.at(-1)).toBe(
+      "anymodel-opus: omniroute:glm-5.3-flash's answers: thinking blocks removed (claude-opus-5-5 refuses them in its history; logged once per kind)",
+    );
+  });
+
+  it("Claude's own answer keeps its thinking blocks, byte for byte; the test-only switch keeps the fallback's", async () => {
+    const own = router([streamOf(THINKING_STREAM)], { config: withOpusSlot() });
+    const claude = await own.handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+    expect(await claude.text()).toBe(THINKING_STREAM);
+    const asIs = router([atLimit, streamOf(THINKING_STREAM)], {
+      config: withOpusSlot(),
+      fallbackAnswersAsIs: true,
+    });
+    const fallback = await asIs.handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+    expect(await fallback.text()).toBe(THINKING_STREAM);
+  });
+
+  it("count_tokens during the rest: its 200 neither ends the limit nor the fallback", async () => {
+    let now = T0;
+    const states: string[] = [];
+    const { calls, handle, logs } = router([atLimit, ok, ok, ok], {
+      config: withOpusSlot(),
+      now: () => now,
+      states,
+    });
+    const sent = JSON.stringify(opusBody());
+    await handle(clientRequest({ body: sent }));
+    now += 1000;
+    const counted = await handle(
+      clientRequest({ body: sent, path: "/v1/messages/count_tokens?beta=true" }),
+    );
+    expect(counted.status).toBe(200);
+    now += 1000;
+    await handle(clientRequest({ body: sent }));
+    expect(calls.map((c) => c.url)).toEqual([
+      ANTHROPIC_URL,
+      OMNI_URL,
+      "https://anthropic.test/v1/messages/count_tokens?beta=true",
+      OMNI_URL,
+    ]);
+    expect(logs).not.toContain(
+      "anymodel-opus: claude-opus-5-5 answers again; its fallback is over",
+    );
+    expect(JSON.parse(states.at(-1) ?? "").limits).toEqual({
+      "claude-opus-5-5": { claim: "five_hour", resetsAt: RESET, seenAt: T0 },
+    });
+  });
+
+  it("a count_tokens 200 with no model slot leaves a noted limit too", async () => {
+    const states: string[] = [];
+    const { handle } = router([atLimit, ok], { states });
+    const sent = JSON.stringify(opusBody());
+    await handle(clientRequest({ body: sent }));
+    await handle(clientRequest({ body: sent, path: "/v1/messages/count_tokens?beta=true" }));
+    expect(JSON.parse(states.at(-1) ?? "").limits).toEqual({
+      "claude-opus-5-5": { claim: "five_hour", resetsAt: RESET, seenAt: T0 },
+    });
+  });
+
+  it("a reset already past rests Opus 60 s, not none", async () => {
+    let now = T0;
+    const past = () =>
+      new Response("{}", {
+        headers: {
+          "anthropic-ratelimit-unified-reset": String(T0 / 1000 - 10),
+          "anthropic-ratelimit-unified-status": "rejected",
+        },
+        status: 429,
+      });
+    const { calls, handle } = router([past, ok, ok, ok], {
+      config: withOpusSlot(),
+      now: () => now,
+    });
+    const sent = JSON.stringify(opusBody());
+    await handle(clientRequest({ body: sent }));
+    now += 59_000;
+    await handle(clientRequest({ body: sent }));
+    now += 2_000;
+    await handle(clientRequest({ body: sent }));
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OMNI_URL, OMNI_URL, ANTHROPIC_URL]);
+  });
+
+  it("a fallback that fails is not recorded as active", async () => {
+    const states: string[] = [];
+    const down = () => new Response("down", { status: 503 });
+    const { handle, logs } = router([atLimit, down, down], { config: withOpusSlot(), states });
+    const res = await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+    expect(res.status).toBe(503);
+    expect(JSON.parse(states.at(-1) ?? "").fallbacks).toEqual({});
+    expect(logs).toContain(
+      "WARN anymodel-opus: claude-opus-5-5 is at its plan usage limit (five_hour, resets 2026-10-15T13:00:00.000Z); its fallback ollama:deepseek-v4.1-flash answered 503",
+    );
+  });
+
+  it("a model slot taken out of the config loses its fallback record", async () => {
+    const states: string[] = [];
+    let cfg = withOpusSlot();
+    const { handle, logs } = router([atLimit, ok, ok], { getConfig: () => cfg, states });
+    await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+    expect(Object.keys(JSON.parse(states.at(-1) ?? "").fallbacks)).toEqual(["anymodel-opus"]);
+    const { modelSlots: _off, ...rest } = cfg;
+    cfg = rest;
+    await handle(clientRequest({ body: JSON.stringify(message("anymodel-worker")) }));
+    expect(JSON.parse(states.at(-1) ?? "").fallbacks).toEqual({});
+    expect(logs).toContain(
+      "anymodel-opus: removed from the config; its fallback record is dropped",
+    );
+  });
+
+  it("Opus refuses a thinking block's signature after a fallback: a WARN names the cause and /rewind", async () => {
+    let now = T0;
+    const badSignature = () =>
+      new Response(
+        '{"type":"error","error":{"type":"invalid_request_error","message":"messages.3.content.0: Invalid `signature` in `thinking` block"}}',
+        { status: 400 },
+      );
+    const { handle, logs } = router([atLimit, ok, badSignature], {
+      config: withOpusSlot(),
+      now: () => now,
+    });
+    const sent = JSON.stringify(opusBody());
+    await handle(clientRequest({ body: sent }));
+    now += 600_000;
+    const res = await handle(clientRequest({ body: sent }));
+    expect(res.status).toBe(400);
+    expect(logs).toContain(
+      "WARN claude-opus-5-5 refused a thinking block's signature: this conversation holds a thinking block a fallback model wrote while claude-opus-5-5 was at its plan limit. Claude Code 2.1.300 sent the request once more and was answered (seen live); if the session stays stuck, /rewind in Claude Code to the message before the fallback answered, or start a new session",
+    );
+  });
+
+  it("the same 400 with no fallback before it: no such WARN", async () => {
+    const badSignature = () =>
+      new Response('{"error":{"message":"Invalid `signature` in `thinking` block"}}', {
+        status: 400,
+      });
+    const { handle, logs } = router([badSignature], { config: withOpusSlot() });
+    await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+    expect(logs.some((line) => line.includes("refused a thinking block's signature"))).toBe(false);
+  });
+
+  it("the fallback refuses the conversation for its size: a WARN names long and rich conversations", async () => {
+    const tooLong = () =>
+      new Response('{"error":{"message":"Input exceeds context window of 202752 tokens"}}', {
+        status: 400,
+      });
+    const cfg = withOpusSlot();
+    const { handle, logs } = router([atLimit, tooLong], {
+      config: {
+        ...cfg,
+        slots: { ...cfg.slots, "anymodel-opus": ["claude-opus-5-5", "omniroute:glm-5.3-flash"] },
+      },
+    });
+    const res = await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+    expect(res.status).toBe(400);
+    expect(logs).toContain(
+      "WARN anymodel-opus: omniroute:glm-5.3-flash refused this claude-opus-5-5 conversation (too long). A long ([1m], 200k+ tokens) or rich (images, documents, server tools) claude-opus-5-5 conversation may be more than the fallback takes: /compact it, start a new one, or wait for claude-opus-5-5's reset",
+    );
+  });
+
+  it("an untested judge target judges nothing: Claude's answer goes back, one WARN", async () => {
+    const cfg = config();
+    const untested: GatewayConfig = {
+      ...cfg,
+      slots: { ...cfg.slots, "anymodel-judge": ["ollama:deepseek-v4.1-flash"] },
+    };
+    const { calls, handle, logs } = router([atLimit, atLimit], { config: untested });
+    const check = JSON.stringify({
+      max_tokens: 64,
+      messages: [{ content: "<transcript>git push --force</transcript>", role: "user" }],
+      model: "claude-sonnet-5",
+      system: "You are a security monitor for autonomous AI coding agents.",
+    });
+    expect((await handle(clientRequest({ body: check }))).status).toBe(429);
+    expect((await handle(clientRequest({ body: check }))).status).toBe(429);
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, ANTHROPIC_URL]);
+    expect(logs.filter((line) => line.includes("has not passed the judge test"))).toEqual([
+      "WARN anymodel-judge: ollama:deepseek-v4.1-flash has not passed the judge test, so it judges nothing. Test and set it: anymodel gateway slot judge <targets>",
+    ]);
   });
 });

@@ -8,7 +8,7 @@ import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { listModels } from "./backends";
 import { NEEDS_SYSTEMD } from "./commands";
-import { emptyConfig, loadConfigFile, messageOf } from "./config";
+import { emptyConfig, judgeTargetTested, loadConfigFile, messageOf } from "./config";
 import { type HealthFetch, routerHealth } from "./health";
 import { type Runner, restartPendingFile, UNIT_NAME } from "./service";
 import { shownValue } from "./settings";
@@ -149,6 +149,15 @@ export async function gatewayChecks(options: {
       ok: true,
       info: true,
       text: `slot ${JUDGE_SLOT}: off, auto mode's safety checks go to Claude`,
+    });
+  }
+  // A judge target counts only once `gateway slot judge` tested it; the router ignores
+  // any other (a hand edit, a config from before 0.3).
+  for (const target of config.slots[JUDGE_SLOT] ?? []) {
+    if (judgeTargetTested(config, target)) continue;
+    checks.push({
+      ok: false,
+      text: `slot ${JUDGE_SLOT}: ${target} has not passed the judge test, so the router ignores it. Run: ${COMMAND} gateway slot judge ${(config.slots[JUDGE_SLOT] ?? []).join(",")}`,
     });
   }
   return checks;
