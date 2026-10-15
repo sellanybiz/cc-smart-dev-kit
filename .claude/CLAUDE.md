@@ -59,6 +59,7 @@ the first time you use it.
 | `src/setup/` | Safe changes to user files: managed keys and blocks, backups, atomic writes, the lock, the launcher, restore, marketplace access. |
 | `src/cli/` | The `anymodel` commands: `setup`, `doctor`, `restore`, `version`. |
 | `src/gateway/` | The optional AI gateway: the router, its config and slots, `gateway <command>`, its service and its doctor checks. |
+| `src/search/` | The `anymodel search` command: web search and one page's text through the gateway's OmniRoute backend. |
 | `src/testing/` | Test helpers: temp folders, a clean git environment, the guard that fails any test reaching the live router's port 20100. |
 | `plugin/` | What users get: `dist/` (built, committed), `bin/`, `hooks/hooks.json`, `skills/`, the manifest. |
 | `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check) and `check-version-bump.ts` (CI: a `plugin/` change raises the version). |
@@ -113,6 +114,7 @@ Each rule loads itself when you touch a file it covers.
   version it was last proved on, and how.
 - `docs/gateway.md` — the AI gateway: how it routes, what it changes and never changes,
   the service, and its limits.
+- `docs/search.md` — `anymodel search`: how it works, what a search costs, and its limits.
 
 **Keep them true in the same change.** Change how a part works: update `docs/design.md`.
 Change a command or an `anymodel.json` field: update `README.md`. Rely on a new Claude Code

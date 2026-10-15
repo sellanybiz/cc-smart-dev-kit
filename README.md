@@ -50,6 +50,7 @@ After that, use `anymodel setup` to set up again (for example after an update).
 | `anymodel doctor` | Checks the install (the list is below). Prints ✓ or ✗ for each check, and exits with 1 when one fails. |
 | `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, its block) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy and unit. `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
 | `anymodel gateway <command>` | The optional AI gateway (below). |
+| `anymodel search "<query>" [--max <n>] [--fetch <url>] [--json]` | Searches the web through the gateway's OmniRoute backend (Ollama's web search among its providers), or reads one page's text with `--fetch`. Prints each result's title, its URL and a short snippet. Needs the gateway set up (below). |
 | `anymodel version` | Prints the version. |
 
 `doctor` checks that:
@@ -141,6 +142,17 @@ router recognising the check by its prompt. If Claude Code rewords that prompt, 
 is routed by its model name until the router is updated (see
 [docs/gateway.md](docs/gateway.md) § Known limits; [roadmap](docs/roadmap.md) Phase 3).
 
+### Web search
+
+`anymodel search "bun runtime latest version"` searches the web through the same
+OmniRoute backend, with the same key: it prints each result's title, its URL and a short
+snippet, and the whole output is cut to about 2500 characters (`--json` prints the whole
+answer). `--fetch <url>` reads one page's text instead. It needs the gateway set up — its
+own error says so when it is not — and `--fetch` needs a web-fetch provider key inside
+OmniRoute. With the default setup a search is free: Ollama's web search costs $0.00, and
+OmniRoute caches a query for five minutes. The details, the measured numbers and the
+limits: [docs/search.md](docs/search.md).
+
 ## A project's `.claude/anymodel.json`
 
 ```json
@@ -170,6 +182,8 @@ See `.claude/CLAUDE.md`. In short: `bun install`, change `src/`, `bun run build`
 ## Docs
 
 - [Design](docs/design.md): how the parts fit, and why.
+- [The AI gateway](docs/gateway.md): the router, its slots, and the judge.
+- [Web search](docs/search.md): `anymodel search`, its cost and its limits.
 - [Roadmap](docs/roadmap.md): the phases, done and ahead.
 - [Claude Code contract](docs/claude-code-contract.md): the Claude Code behaviour the
   plugin relies on, and the version it was last proved on.

@@ -79,6 +79,20 @@ An optional local router between Claude Code and the model providers
 - The router bundle carries no version (`src/build-info/names.ts`), so a version bump
   alone never changes `router.js` and never makes a machine restart its router.
 
+## Web search
+
+`anymodel search` (`src/search/`) searches the web, or reads one page's text, through the
+same local OmniRoute the gateway uses — same config file, same `omniroute` backend, same
+key (`docs/search.md`):
+
+- The command reads the key through the gateway's own config reader, never a copy of it,
+  and never prints it: an OmniRoute error answer is masked with the router's own
+  `maskSecrets` before it reaches the terminal.
+- The plain output is cut (about 2500 characters, 300 a snippet), because Ollama's web
+  search puts a whole page in each result's snippet; `--json` prints the whole answer.
+- It is a command, not a service: no part of it runs in the background, and nothing
+  changes on a machine until a person runs it.
+
 ## How `setup` changes user files
 
 `setup` owns **managed** parts of user files, and only those:

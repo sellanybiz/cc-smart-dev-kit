@@ -1,6 +1,6 @@
 // @bun
 // src/entries/cli.ts
-import { existsSync as existsSync13 } from "fs";
+import { existsSync as existsSync14 } from "fs";
 import { join as join8 } from "path";
 
 // src/build-info/names.ts
@@ -11,7 +11,7 @@ var COMMAND = "anymodel";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.2.1",
+  version: "0.3.0",
   repo: "sellanybiz/anymodel"
 };
 var VERSION = info.version;
@@ -9139,6 +9139,285 @@ async function runSetup(paths, options) {
   return 0;
 }
 
+// src/search/command.ts
+import { existsSync as existsSync13 } from "fs";
+
+// src/search/client.ts
+var REQUEST_TIMEOUT_MS = 30000;
+var ERROR_CHARS = 300;
+function isJsonObject7(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function textOf(value) {
+  return typeof value === "string" ? value : "";
+}
+function numberIn(holder, key) {
+  if (!isJsonObject7(holder))
+    return null;
+  const value = holder[key];
+  return typeof value === "number" ? value : null;
+}
+function reasonOf(text, backend) {
+  let reason = text;
+  try {
+    const body = JSON.parse(text);
+    if (isJsonObject7(body)) {
+      const error = body.error;
+      if (isJsonObject7(error) && typeof error.message === "string")
+        reason = error.message;
+      else if (typeof error === "string")
+        reason = error;
+    }
+  } catch {}
+  const oneLine = maskSecrets(reason, [backend.apiKey]).replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/g, " ").trim();
+  return oneLine.length > ERROR_CHARS ? `${oneLine.slice(0, ERROR_CHARS)}\u2026` : oneLine;
+}
+async function post(backend, path, body, timeoutMs) {
+  let response;
+  try {
+    response = await fetch(`${backend.baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${backend.apiKey}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(body),
+      redirect: "manual",
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+  } catch (error) {
+    const reason = error instanceof Error && error.name === "TimeoutError" ? `no answer within ${timeoutMs < 1000 ? `${timeoutMs} ms` : `${Math.round(timeoutMs / 1000)} s`}` : messageOf(error);
+    return { error: `cannot reach OmniRoute at ${backend.baseUrl} (${reason}). Is it running?` };
+  }
+  if (response.type === "opaqueredirect" || response.status >= 300 && response.status < 400) {
+    return {
+      error: `OmniRoute answered a redirect (HTTP ${response.status === 0 ? "3xx" : response.status}); ` + "it is not followed, so the key stays with the address in the gateway config. Check backends.omniroute.baseUrl."
+    };
+  }
+  const text = await response.text().catch(() => "");
+  if (!response.ok) {
+    return { error: `OmniRoute answered HTTP ${response.status}: ${reasonOf(text, backend)}` };
+  }
+  try {
+    return { raw: JSON.parse(text) };
+  } catch {
+    return { error: `OmniRoute's HTTP ${response.status} answer is not JSON` };
+  }
+}
+function parseSearchAnswer(body) {
+  if (!isJsonObject7(body) || !Array.isArray(body.results))
+    return null;
+  const results = [];
+  for (const entry of body.results) {
+    if (!isJsonObject7(entry) || typeof entry.url !== "string")
+      continue;
+    results.push({ snippet: textOf(entry.snippet), title: textOf(entry.title), url: entry.url });
+  }
+  return {
+    cached: body.cached === true,
+    costUsd: numberIn(body.usage, "search_cost_usd") ?? 0,
+    provider: textOf(body.provider),
+    results,
+    tookMs: numberIn(body.metrics, "response_time_ms")
+  };
+}
+function parseFetchedPage(body, requested) {
+  if (!isJsonObject7(body) || typeof body.content !== "string")
+    return null;
+  const metadata = body.metadata;
+  const url = textOf(body.url);
+  return {
+    content: body.content,
+    title: isJsonObject7(metadata) ? textOf(metadata.title) : "",
+    url: url === "" ? requested : url
+  };
+}
+async function searchWeb(options) {
+  const sent = await post(options.backend, "/v1/search", { query: options.query, max_results: options.max }, options.timeoutMs ?? REQUEST_TIMEOUT_MS);
+  if ("error" in sent)
+    return sent;
+  const answer = parseSearchAnswer(sent.raw);
+  if (answer === null) {
+    return {
+      error: "OmniRoute's answer has no results list; it is not a shape this version knows"
+    };
+  }
+  return { answer, raw: sent.raw };
+}
+async function fetchPage(options) {
+  const sent = await post(options.backend, "/v1/web/fetch", { url: options.url, format: "markdown", include_metadata: true }, options.timeoutMs ?? REQUEST_TIMEOUT_MS);
+  if ("error" in sent)
+    return sent;
+  const page = parseFetchedPage(sent.raw, options.url);
+  if (page === null) {
+    return { error: "OmniRoute's answer has no page text; it is not a shape this version knows" };
+  }
+  return { page, raw: sent.raw };
+}
+
+// src/search/format.ts
+var MAX_OUTPUT_CHARS = 2500;
+var SNIPPET_CHARS = 300;
+var CUT_NOTE = "\u2026 (output cut; --json prints the whole answer)";
+function took(ms) {
+  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
+}
+function snippet(text) {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > SNIPPET_CHARS ? `${oneLine.slice(0, SNIPPET_CHARS)}\u2026` : oneLine;
+}
+function cutOutput(text) {
+  if (text.length <= MAX_OUTPUT_CHARS)
+    return text;
+  const room = MAX_OUTPUT_CHARS - CUT_NOTE.length - 1;
+  const head = text.slice(0, room);
+  const lastBreak = head.lastIndexOf(`
+`);
+  const kept = lastBreak > room / 2 ? head.slice(0, lastBreak) : head;
+  return `${kept}
+${CUT_NOTE}`;
+}
+function searchOutput(query, answer) {
+  const facts = [
+    `${answer.results.length} result${answer.results.length === 1 ? "" : "s"}`,
+    answer.provider === "" ? "" : `from ${answer.provider}`,
+    answer.tookMs === null ? "" : `in ${took(answer.tookMs)}`,
+    answer.cached ? "(cached)" : "",
+    answer.costUsd > 0 ? `cost $${answer.costUsd.toFixed(4)}` : ""
+  ].filter((fact) => fact !== "");
+  const lines = [`Search: ${query}`, facts.join(" ")];
+  answer.results.forEach((result, index) => {
+    lines.push("", `${index + 1}. ${result.title === "" ? result.url : result.title}`, `   ${result.url}`);
+    const text = snippet(result.snippet);
+    if (text !== "")
+      lines.push(`   ${text}`);
+  });
+  return cutOutput(lines.join(`
+`));
+}
+function pageOutput(page) {
+  const head = [`Page: ${page.url}`];
+  if (page.title !== "")
+    head.push(page.title);
+  return cutOutput(`${head.join(`
+`)}
+
+${page.content.trim()}`);
+}
+
+// src/search/command.ts
+var DEFAULT_MAX = 5;
+var SEARCH_BACKEND = "omniroute";
+var USAGE2 = `Usage: ${COMMAND} search "<query>" [--max <n>] [--fetch <url>] [--json]
+
+Searches the web through the gateway's OmniRoute backend (Ollama's web search among its
+providers) and prints each result's title, its URL and a short snippet. The whole output
+is cut to about 2500 characters; --json prints OmniRoute's whole answer instead.
+
+  --max <n>       how many results to ask for (default ${DEFAULT_MAX}; the provider may cap it)
+  --fetch <url>   fetch one page's text, instead of searching
+  --json          the answer as JSON, uncut
+
+Needs the gateway: ${COMMAND} gateway setup --backend-key-stdin omniroute`;
+function httpUrl(text) {
+  const url = URL.parse(text);
+  return url !== null && (url.protocol === "http:" || url.protocol === "https:") ? url : null;
+}
+function parseSearchArgs(args) {
+  const parsed = { fetch: null, json: false, max: DEFAULT_MAX, query: null };
+  const rest = [];
+  for (let index = 0;index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === "--json")
+      parsed.json = true;
+    else if (arg === "--max") {
+      const value = args[index + 1];
+      if (value === undefined || !/^\d+$/.test(value) || Number(value) < 1) {
+        return { error: `--max needs a whole number of results, 1 or more (not "${value ?? ""}")` };
+      }
+      parsed.max = Number(value);
+      index += 1;
+    } else if (arg === "--fetch") {
+      const value = args[index + 1];
+      if (value === undefined || httpUrl(value) === null) {
+        return { error: `--fetch needs an http(s) URL (not "${value ?? ""}")` };
+      }
+      parsed.fetch = value;
+      index += 1;
+    } else if (arg.startsWith("--"))
+      return { error: `Unknown option: ${arg}` };
+    else
+      rest.push(arg);
+  }
+  if (rest.length > 1)
+    return { error: "give one query, in quotes" };
+  const query = rest[0]?.trim() ?? null;
+  parsed.query = query === "" ? null : query;
+  if (parsed.fetch !== null && parsed.query !== null) {
+    return { error: "give either a query or --fetch <url>, not both" };
+  }
+  if (parsed.fetch === null && parsed.query === null) {
+    return { error: "give a query, or --fetch <url>" };
+  }
+  return parsed;
+}
+function searchBackend(configFile) {
+  if (!existsSync13(configFile)) {
+    return {
+      error: `the gateway is not set up: ${configFile} does not exist.
+` + `Search goes through the gateway's OmniRoute backend. Set it up with: ${COMMAND} gateway setup --backend-key-stdin omniroute`
+    };
+  }
+  let config;
+  try {
+    config = loadConfigFile(configFile);
+  } catch (error) {
+    return { error: messageOf(error) };
+  }
+  const backend = Object.hasOwn(config.backends, SEARCH_BACKEND) ? config.backends[SEARCH_BACKEND] : undefined;
+  if (backend === undefined) {
+    const names = Object.keys(config.backends);
+    return {
+      error: `the gateway has no "${SEARCH_BACKEND}" backend: ${configFile} names ${names.length === 0 ? "none" : names.join(", ")}.
+` + `Search goes through OmniRoute. Add it with: ${COMMAND} gateway setup --backend-key-stdin omniroute`
+    };
+  }
+  return { backend: { apiKey: backend.apiKey, baseUrl: backend.baseUrl } };
+}
+function failed(reason, paths) {
+  console.error(reason);
+  console.error(`  config: ${tildify(paths.gatewayConfigFile, paths.home)}`);
+  return 1;
+}
+async function runSearch(args, ctx) {
+  const parsed = parseSearchArgs(args);
+  if ("error" in parsed) {
+    console.error(`${parsed.error}
+
+${USAGE2}`);
+    return 2;
+  }
+  const { paths } = ctx;
+  const found = searchBackend(paths.gatewayConfigFile);
+  if ("error" in found) {
+    console.error(found.error);
+    return 1;
+  }
+  if (parsed.fetch !== null) {
+    const said = await fetchPage({ backend: found.backend, url: parsed.fetch });
+    if ("error" in said)
+      return failed(said.error, paths);
+    console.log(parsed.json ? JSON.stringify(said.raw, null, 2) : pageOutput(said.page));
+    return 0;
+  }
+  const query = parsed.query ?? "";
+  const said = await searchWeb({ backend: found.backend, max: parsed.max, query });
+  if ("error" in said)
+    return failed(said.error, paths);
+  console.log(parsed.json ? JSON.stringify(said.raw, null, 2) : searchOutput(query, said.answer));
+  return 0;
+}
+
 // src/entries/cli.ts
 var HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
 
@@ -9159,13 +9438,17 @@ Commands:
                      it restarts.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      anymodel gateway --help lists them.
+  search "<query>" [--max <n>] [--fetch <url>] [--json]
+                     Search the web through the gateway (OmniRoute, Ollama's web search):
+                     each result's title, URL and a short snippet. --fetch: one page's
+                     text. Needs the gateway set up.
   version            Print the version.
   --help             Print this help.
 
 Paths follow HOME and CLAUDE_CONFIG_DIR.`;
 function routerBundle() {
   const beside = join8(import.meta.dir, "router.js");
-  return existsSync13(beside) ? beside : join8(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
+  return existsSync14(beside) ? beside : join8(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
 }
 var runner = (cmd) => {
   const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 30000 });
@@ -9227,6 +9510,8 @@ ${HELP}`);
     }
     case "gateway":
       return runGateway(rest, gatewayContext(paths));
+    case "search":
+      return runSearch(rest, { paths });
     case "version":
     case "--version":
       console.log(`anymodel ${VERSION}`);

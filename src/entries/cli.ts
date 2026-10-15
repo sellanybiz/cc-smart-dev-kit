@@ -8,6 +8,7 @@ import { runSetup } from "../cli/setup";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
+import { runSearch } from "../search/command";
 
 const HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
 
@@ -28,6 +29,10 @@ Commands:
                      it restarts.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      anymodel gateway --help lists them.
+  search "<query>" [--max <n>] [--fetch <url>] [--json]
+                     Search the web through the gateway (OmniRoute, Ollama's web search):
+                     each result's title, URL and a short snippet. --fetch: one page's
+                     text. Needs the gateway set up.
   version            Print the version.
   --help             Print this help.
 
@@ -107,6 +112,8 @@ async function main(argv: string[]): Promise<number> {
     }
     case "gateway":
       return runGateway(rest, gatewayContext(paths));
+    case "search":
+      return runSearch(rest, { paths });
     case "version":
     case "--version":
       console.log(`anymodel ${VERSION}`);

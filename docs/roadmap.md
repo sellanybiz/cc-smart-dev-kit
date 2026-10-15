@@ -12,7 +12,7 @@ parts fit: `design.md`.
 | 5 | Instructions, skills, agents | Planned |
 | 6 | Notifications, claude-mem settings, the auto-mode block | Planned |
 | 7 | Opus and Fable slots, the usage-limit alert | Planned |
-| 8 | Web search | Planned |
+| 8 | Web search | Done (0.3.0) |
 | 9 | The local portal | Planned |
 | 10 | Rollout to machines | Planned |
 
@@ -86,9 +86,9 @@ models to subagent slots, and an opt-in judge for auto mode's safety check.
 
 Slots keyed by the real model ids, a usage-limit alert, and a status-line warning.
 
-## 8 — Web search
+## 8 — Web search (done, 0.3.0)
 
-`anymodel search`.
+`anymodel search "<query>"` asks the local OmniRoute gateway for web results (Ollama's web search, included with the Ollama account: $0 per search, about 0.9 s, cached for 5 minutes). `--fetch <url>` needs a fetch provider's key inside OmniRoute. How it works and its limits: [search.md](search.md).
 
 ## 9 — The local portal
 
