@@ -13,6 +13,8 @@ export interface Project {
   mainCheckout: string | null;
   /** `<root>/.claude/anymodel.json`, else `<mainCheckout>/.claude/anymodel.json`, else null. */
   config: AnymodelConfig | null;
+  /** The file `config` was read from; null when there is none. */
+  configFile: string | null;
 }
 
 export interface ResolveOptions {
@@ -129,11 +131,11 @@ export function resolveProject(cwd: string, options: ResolveOptions = {}): Proje
 
   const own = join(root, ".claude", "anymodel.json");
   let config = loadAnymodelConfig(own, options.pluginVersion);
+  let configFile = config === null ? null : own;
   if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    config = loadAnymodelConfig(
-      join(mainCheckout, ".claude", "anymodel.json"),
-      options.pluginVersion,
-    );
+    const main = join(mainCheckout, ".claude", "anymodel.json");
+    config = loadAnymodelConfig(main, options.pluginVersion);
+    configFile = config === null ? null : main;
   }
-  return { root, commonDir, isWorktree, mainCheckout, config };
+  return { root, commonDir, isWorktree, mainCheckout, config, configFile };
 }

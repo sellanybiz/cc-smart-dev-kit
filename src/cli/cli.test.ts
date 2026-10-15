@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { MARKETPLACE_SOURCE, VERSION } from "../build-info";
+import { TEST_HOST_VAR } from "../machine/machine";
 import { installLauncher } from "../setup/launcher";
 import { listBackups } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
@@ -136,6 +137,11 @@ function setup(options: SetupOptions = {}) {
       ].join("\n"),
     );
     chmodSync(join(fakeBin, "git"), 0o755);
+  } else {
+    // The real git, alone: the rest of the host's PATH stays out.
+    const realGit = Bun.which("git");
+    if (realGit === null) throw new Error("this test needs git");
+    symlinkSync(realGit, join(fakeBin, "git"));
   }
   // A fake claude that logs each call (setup runs `claude plugin …`), and package tools
   // that know no Warp: no test reaches a real one.
@@ -149,10 +155,19 @@ function setup(options: SetupOptions = {}) {
     chmodSync(join(fakeBin, name), 0o755);
   }
 
+  // The CLI runs as its own process: it never reads the host. PATH holds the fakes, the
+  // launcher's folder and bun's, nothing else; the host's facts are given (a Linux with no
+  // os-release, so no package manager anymodel knows, and no Warp app).
   const env: Record<string, string> = {
     HOME: home,
     CLAUDE_CONFIG_DIR: configDir,
-    PATH: `${fakeBin}:${join(home, ".local", "bin")}:${process.env.PATH ?? ""}`,
+    PATH: `${fakeBin}:${join(home, ".local", "bin")}:${dirname(process.execPath)}`,
+    [TEST_HOST_VAR]: JSON.stringify({
+      platform: "linux",
+      arch: "x64",
+      osRelease: null,
+      macApp: join(home, "no-such-Warp.app"),
+    }),
   };
   const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) => {
     // The live-router guard runs in the CLI too: no test may reach port 20100.
@@ -287,6 +302,39 @@ describe("anymodel setup", () => {
     expect(existsSync(stateDir)).toBe(false);
   });
 
+  test("auto-update turned off by the person after setup: theirs now; setup stops, restore leaves it", () => {
+    const { settingsFile, launcher, run } = setup();
+    run(["setup"]);
+    const settings = readJson(settingsFile);
+    settings.extraKnownMarketplaces.anymodel.autoUpdate = false;
+    writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+    const result = run(["setup"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(
+      "extraKnownMarketplaces.anymodel.autoUpdate is false: it was changed after anymodel set it, so it is your choice now.",
+    );
+    expect(readJson(settingsFile).extraKnownMarketplaces.anymodel.autoUpdate).toBe(false);
+    expect(run(["restore"]).exitCode).toBe(0);
+    expect(readJson(settingsFile).extraKnownMarketplaces.anymodel.autoUpdate).toBe(false);
+    expect(existsSync(launcher)).toBe(false);
+  });
+
+  test("nothing to change, with a line of information: 'Nothing to change' first, and no 'Done'", () => {
+    const { settingsFile, run } = setup();
+    run(["setup"]);
+    // The person's own auto-update key, with the value anymodel wants: not anymodel's.
+    const ownedFile = join(dirname(settingsFile), "anymodel", "owned.json");
+    writeFileSync(ownedFile, "{}\n");
+    const result = run(["setup"]);
+    expect(result.stdout).toBe(
+      [
+        "Nothing to change. Setup is up to date.",
+        "  ~/.claude/settings.json: extraKnownMarketplaces.anymodel.autoUpdate: already set by someone else; left alone",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("a note when ~/.local/bin is not on PATH, and none when it is", () => {
     const { run } = setup();
     expect(run(["setup"]).stdout).not.toContain("Note:");
@@ -351,6 +399,28 @@ describe("anymodel doctor", () => {
         "",
       ].join("\n"),
     );
+  });
+
+  test("the host is the test's: a macOS with the Warp app (given, not read) is information, and setup leaves Warp alone", () => {
+    const { home, run, claudeCalls } = setup();
+    const macApp = join(home, "Applications", "Warp.app");
+    mkdirSync(macApp, { recursive: true });
+    const host = {
+      [TEST_HOST_VAR]: JSON.stringify({
+        platform: "darwin",
+        arch: "arm64",
+        osRelease: null,
+        macApp,
+      }),
+    };
+    const setupResult = run(["setup"], host);
+    expect(setupResult.exitCode).toBe(0);
+    expect(claudeCalls()).toBe("");
+    const result = run(["doctor"], host);
+    expect(result.stdout).toContain(
+      "· Warp is installed, without its Claude plugin (optional: anymodel setup --warp)\n",
+    );
+    expect(result.exitCode).toBe(0);
   });
 
   test("no access to the marketplace: ✗ naming both URLs tried, exit 1", () => {
@@ -665,20 +735,58 @@ describe("anymodel setup: the companion plugins", () => {
     expect(existsSync(launcher)).toBe(true);
   });
 
-  test("no claude on PATH: setup names the steps and stops before it writes anything", () => {
-    const { fakeBin, run, launcher, stateDir } = setup({ companions: false, claude: false });
-    const result = run(["setup"], { PATH: `${fakeBin}:${dirname(process.execPath)}` });
+  test("no claude on PATH: setup skips only the claude steps, names them, does the rest; exit 1", () => {
+    const { run, launcher, settingsFile } = setup({ companions: false, claude: false });
+    const result = run(["setup"]);
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toBe(
+    expect(result.stdout).toBe(
       [
-        "The claude command is not on PATH. Setup needs it for these steps:",
+        "+ ~/.local/bin/anymodel: launcher created",
+        "~ ~/.claude/settings.json: extraKnownMarketplaces.anymodel.autoUpdate: (none) -> true",
+        "! The claude command is not on PATH, so setup skipped these steps. Run them once it is:",
         "  $ claude plugin marketplace add thedotmack/claude-mem",
         "  $ claude plugin marketplace add anthropics/claude-plugins-official",
+        "Done. Each changed file has a backup in ~/.claude/anymodel/backups/.",
         "",
       ].join("\n"),
     );
-    expect(existsSync(launcher)).toBe(false);
-    expect(existsSync(stateDir)).toBe(false);
+    expect(existsSync(launcher)).toBe(true);
+    expect(readJson(settingsFile).extraKnownMarketplaces.anymodel.autoUpdate).toBe(true);
+  });
+
+  test("the first run: claude-mem comes with its marketplace, and is pointed at the gateway in the same run", async () => {
+    const { home, configDir, fakeBin, runAsync } = setup({ companions: false });
+    // Claude Code installs claude-mem when its marketplace is added: the fake does the same.
+    const installed = join(configDir, "plugins", "installed_plugins.json");
+    const memPath = join(configDir, "plugins", "cache", "thedotmack", "claude-mem", "13.39.0");
+    const after = readJson(installed);
+    after.plugins["claude-mem@thedotmack"] = [
+      { scope: "user", installPath: memPath, version: "13.39.0" },
+    ];
+    const afterFile = join(home, "installed-after.json");
+    writeFileSync(afterFile, JSON.stringify(after));
+    writeFileSync(
+      join(fakeBin, "claude"),
+      [
+        "#!/bin/sh",
+        'case "$*" in *thedotmack/claude-mem*)',
+        `  /bin/mkdir -p ${JSON.stringify(memPath)}`,
+        `  /bin/cp ${JSON.stringify(afterFile)} ${JSON.stringify(installed)} ;;`,
+        "esac",
+        "exit 0",
+        "",
+      ].join("\n"),
+    );
+    const backend = fakeBackend();
+    writeGatewayConfig(home, backend.url);
+    const result = await runAsync(["setup"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(
+      '~ ~/.claude-mem/settings.json: CLAUDE_MEM_PROVIDER: (none) -> "openai-compatible"\n',
+    );
+    expect(
+      readJson(join(home, ".claude-mem", "settings.json")).CLAUDE_MEM_OPENAI_COMPAT_MODEL,
+    ).toBe(CHEAP_MODEL);
   });
 });
 
@@ -721,6 +829,38 @@ describe("anymodel doctor: the companion plugins", () => {
       "✓ claude-mem@thedotmack 13.30.0-8713c5b11005 is installed and on\n",
     );
   });
+
+  test("a version that is a commit id is unknown, not older; setup says it once", () => {
+    const { home, configDir, run } = setup();
+    const installed = join(configDir, "plugins", "installed_plugins.json");
+    const plugins = readJson(installed);
+    plugins.plugins["claude-mem@thedotmack"][0].version = "8713c5b11005";
+    writeFileSync(installed, JSON.stringify(plugins));
+    const unknown =
+      "claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so anymodel cannot check it against >=13.29.0. Run: claude plugin update claude-mem@thedotmack";
+    expect(run(["doctor"]).stdout).toContain(`✗ ${unknown}\n`);
+    // With the gateway there, claude-mem's own check would say it again: it does not.
+    writeGatewayConfig(home, "http://127.0.0.1:9");
+    const result = run(["setup"]);
+    expect(result.stdout).toContain(`! ${unknown}\n`);
+    expect(result.stdout).not.toContain("older");
+    expect(result.stdout).not.toContain("claude-mem settings left alone");
+  });
+
+  test("claude-mem older than 13.35.0: a warning (its vector search), never a failure", () => {
+    const { configDir, run } = setup();
+    run(["setup"]);
+    const installed = join(configDir, "plugins", "installed_plugins.json");
+    const plugins = readJson(installed);
+    plugins.plugins["claude-mem@thedotmack"][0].version = "13.34.2";
+    writeFileSync(installed, JSON.stringify(plugins));
+    const result = run(["doctor"]);
+    expect(result.stdout).toContain("✓ claude-mem@thedotmack 13.34.2 is installed and on\n");
+    expect(result.stdout).toContain(
+      "\n! claude-mem@thedotmack 13.34.2 is older than 13.35.0: on a fresh install its vector search may not start (pydantic 2.14 broke chroma-mcp; 13.35.0 pins pydantic below it). Run: claude plugin update claude-mem@thedotmack\n",
+    );
+    expect(result.exitCode).toBe(0);
+  });
 });
 
 /** A git project with a `.claude/anymodel.json`. */
@@ -738,71 +878,25 @@ const GIT_ENV = { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
 describe("anymodel setup: the auto-mode block", () => {
   const RULE = "In my-app: never touch the production database.";
 
-  test("no terminal: the entries are shown, left out, and not written", () => {
+  test("no terminal, also with --yes: the entries are shown, left out, and not written", () => {
     const repo = project({ autoMode: [RULE] });
     const { settingsFile, run } = setup({ fakeGit: false });
-    const result = run(["setup"], GIT_ENV, repo);
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toStartWith(
-      [
-        `Auto mode: trust rules from ${repo}/.claude/anymodel.json ("autoMode"), for autoMode.environment in ~/.claude/settings.json:`,
-        '  + "$defaults"',
-        `  + ${JSON.stringify(RULE)}`,
-        "",
-      ].join("\n"),
-    );
-    expect(result.stdout).toContain(
-      "! auto-mode entries left out: they are trust rules, so setup asks first. Run anymodel setup in a terminal, or with --yes.\n",
-    );
-    expect(readJson(settingsFile).autoMode).toBeUndefined();
-  });
-
-  test("--yes: added after the person's own entries, owned; restore takes out only ours", () => {
-    const repo = project({ autoMode: [RULE] });
-    const { settingsFile, run } = setup({ fakeGit: false });
-    const settings = readJson(settingsFile);
-    settings.autoMode = { environment: ["$defaults", "Mine: github.com/example-org"] };
-    writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
-    const result = run(["setup", "--yes"], GIT_ENV, repo);
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain(
-      `~ ~/.claude/settings.json: autoMode.environment: added ${JSON.stringify(RULE)}\n`,
-    );
-    expect(readJson(settingsFile).autoMode).toEqual({
-      environment: ["$defaults", "Mine: github.com/example-org", RULE],
-    });
-    expect(run(["restore"]).exitCode).toBe(0);
-    expect(readJson(settingsFile).autoMode).toEqual({
-      environment: ["$defaults", "Mine: github.com/example-org"],
-    });
-  });
-
-  test("--project from another folder; no list yet: it starts with $defaults; a second run changes nothing", () => {
-    const repo = project({ autoMode: [RULE] });
-    const { settingsFile, run } = setup({ fakeGit: false });
-    expect(run(["setup", "--yes", "--project", repo], GIT_ENV).exitCode).toBe(0);
-    expect(readJson(settingsFile).autoMode).toEqual({ environment: ["$defaults", RULE] });
-    const again = run(["setup", "--project", repo], GIT_ENV);
-    expect(again.stdout).toBe("Nothing to change. Setup is up to date.\n");
-    run(["restore"]);
-    expect(readJson(settingsFile).autoMode).toBeUndefined();
-  });
-
-  test("the project changes its rules: the next setup shows and makes exactly that change", () => {
-    const repo = project({ autoMode: [RULE, "In my-app: old rule."] });
-    const { settingsFile, run } = setup({ fakeGit: false });
-    run(["setup", "--yes"], GIT_ENV, repo);
-    writeFileSync(
-      join(repo, ".claude", "anymodel.json"),
-      JSON.stringify({ autoMode: [RULE, "In my-app: new rule."] }),
-    );
-    const result = run(["setup", "--yes"], GIT_ENV, repo);
-    expect(result.stdout).toContain('  + "In my-app: new rule."\n  - "In my-app: old rule."\n');
-    expect(readJson(settingsFile).autoMode.environment).toEqual([
-      "$defaults",
-      RULE,
-      "In my-app: new rule.",
-    ]);
+    for (const args of [["setup"], ["setup", "--yes"]]) {
+      const result = run(args, GIT_ENV, repo);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toStartWith(
+        [
+          `Auto mode: trust rules from ${repo}/.claude/anymodel.json ("autoMode"), for autoMode.environment in ~/.claude/settings.json:`,
+          '  + "$defaults"',
+          `  + ${JSON.stringify(RULE)}`,
+          "",
+        ].join("\n"),
+      );
+      expect(result.stdout).toContain(
+        "! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run anymodel setup in a terminal.\n",
+      );
+      expect(readJson(settingsFile).autoMode).toBeUndefined();
+    }
   });
 
   test("--dry-run: the entries as changes, nothing asked, nothing written", () => {
@@ -817,13 +911,67 @@ describe("anymodel setup: the auto-mode block", () => {
     expect(existsSync(stateDir)).toBe(false);
   });
 
-  test("an invalid anymodel.json stops setup before anything is written", () => {
-    const repo = project({ autoMode: "not a list" });
-    const { launcher, run } = setup({ fakeGit: false });
-    const result = run(["setup", "--yes"], GIT_ENV, repo);
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("anymodel.json: autoMode:");
-    expect(existsSync(launcher)).toBe(false);
+  test("an invalid or too-new anymodel.json leaves only the auto-mode entries out: the rest of setup is done", () => {
+    const cases: Array<[unknown, (file: string) => string]> = [
+      [{ autoMode: "not a list" }, (file) => `Invalid ${file}: autoMode:`],
+      [
+        { requires: ">=999.0.0" },
+        (file) => `${file}: this project needs anymodel >=999.0.0; you have ${VERSION};`,
+      ],
+    ];
+    for (const [config, reason] of cases) {
+      const repo = project(config);
+      const { launcher, run } = setup({ fakeGit: false });
+      const result = run(["setup"], GIT_ENV, repo);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toStartWith("+ ~/.local/bin/anymodel: launcher created\n");
+      expect(result.stdout).toContain(
+        `! auto-mode entries left out: ${reason(`${repo}/.claude/anymodel.json`)}`,
+      );
+      expect(existsSync(launcher)).toBe(true);
+    }
+  });
+
+  test("git older than 2.31, or a worktree whose main checkout is gone: a note, and the rest of setup", () => {
+    const repo = project({ autoMode: [RULE] });
+    git(repo, "commit", "--allow-empty", "-q", "-m", "first");
+    const gone = join(tempDir("gone"), "main");
+    const realGit = Bun.which("git") ?? "git";
+    const cases: Array<[string, string]> = [
+      [
+        '  --version) echo "git version 2.20.1" ;;\n  rev-parse) echo "unknown option" >&2; exit 129 ;;',
+        "! auto-mode entries left out: git 2.31 or newer is needed; you have git 2.20.1. Update git.\n",
+      ],
+      [
+        `  worktree) printf 'worktree %s\\nHEAD 0000\\n\\n' ${JSON.stringify(gone)} ;;`,
+        `is missing: ${gone} was moved or deleted.`,
+      ],
+    ];
+    for (const [index, [answers, note]] of cases.entries()) {
+      const { fakeBin, launcher, run } = setup({ fakeGit: false });
+      rmSync(join(fakeBin, "git"));
+      writeFileSync(
+        join(fakeBin, "git"),
+        `#!/bin/sh\ncase "$1" in\n${answers}\n  *) exec ${JSON.stringify(realGit)} "$@" ;;\nesac\n`,
+      );
+      chmodSync(join(fakeBin, "git"), 0o755);
+      // A worktree: the main checkout is asked of `git worktree list`.
+      const worktree = join(tempDir("wt"), "feature");
+      git(repo, "worktree", "add", "-q", "-b", `feature-${index}`, worktree);
+      const result = run(["setup"], GIT_ENV, worktree);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain(note);
+      expect(existsSync(launcher)).toBe(true);
+    }
+  });
+
+  test("outside git, setup needs no git at all", () => {
+    const { fakeBin, launcher, run } = setup();
+    rmSync(join(fakeBin, "git"));
+    const result = run(["setup"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain("auto-mode");
+    expect(existsSync(launcher)).toBe(true);
   });
 });
 
@@ -836,21 +984,35 @@ afterEach(() => {
 const PLANTED_KEY = "sk-planted-SECRET-0123456789abcdef";
 const CHEAP_MODEL = "ollama-cloud/deepseek-v4.1-flash";
 
-/** A fake OpenAI-style backend: `/v1/models` lists the cheap model, or answers `status`. */
-function fakeBackend(status = 200) {
+/**
+ * A fake OpenAI-style backend: `POST /v1/chat/completions` answers one token; any other
+ * path is a 404. With `status`, every request gets that status and `body`.
+ */
+function fakeBackend(status = 200, body: unknown = { error: { message: "no" } }) {
   const seen: string[] = [];
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch(req): Response {
-      seen.push(`${new URL(req.url).pathname} ${req.headers.get("authorization")}`);
-      if (status !== 200) return new Response("no", { status });
-      return Response.json({ data: [{ id: CHEAP_MODEL }] });
+    async fetch(req): Promise<Response> {
+      const path = new URL(req.url).pathname;
+      seen.push(`${req.method} ${path} ${req.headers.get("authorization")} ${await req.text()}`);
+      if (status !== 200) return Response.json(body, { status });
+      if (req.method !== "POST" || path !== "/v1/chat/completions") {
+        return new Response("404 page not found", { status: 404 });
+      }
+      return Response.json({ choices: [{ message: { role: "assistant", content: "OK" } }] });
     },
   });
   servers.push(server);
   return { url: `http://127.0.0.1:${server.port}`, seen };
 }
+
+/** The one request setup sends to check the backend, as the fake backend logs it. */
+const CHAT_CHECK = `POST /v1/chat/completions Bearer ${PLANTED_KEY} ${JSON.stringify({
+  model: CHEAP_MODEL,
+  messages: [{ role: "user", content: "Say OK." }],
+  max_tokens: 1,
+})}`;
 
 /** gateway.json with the omniroute backend at `url`, as `gateway setup` makes it. */
 function writeGatewayConfig(home: string, url: string) {
@@ -911,7 +1073,7 @@ describe("anymodel setup: claude-mem on the gateway's cheap model", () => {
     );
     expect(`${result.stdout}${result.stderr}`).not.toContain(PLANTED_KEY);
     // The key was checked against the backend once, before anything was written.
-    expect(backend.seen).toEqual([`/v1/models Bearer ${PLANTED_KEY}`]);
+    expect(backend.seen).toEqual([CHAT_CHECK]);
     expect(readJson(file)).toEqual({
       ...SEEDED,
       CLAUDE_MEM_PROVIDER: "openai-compatible",
@@ -1010,7 +1172,7 @@ describe("anymodel setup: claude-mem on the gateway's cheap model", () => {
     expect(written.CLAUDE_MEM_PROVIDER).toBeUndefined();
   });
 
-  test("claude-mem older than 13.29.0: a note, and nothing written", () => {
+  test("claude-mem older than 13.29.0: one note (the range check's), and nothing written", () => {
     const { home, configDir, run } = setup();
     writeGatewayConfig(home, fakeBackend().url);
     const file = writeClaudeMem(home, SEEDED);
@@ -1021,7 +1183,152 @@ describe("anymodel setup: claude-mem on the gateway's cheap model", () => {
     const before = readFileSync(file, "utf8");
     const result = run(["setup"]);
     expect(result.stdout).toContain(
-      "! claude-mem settings left alone: claude-mem 13.28.0 is older than 13.29.0, which brought what they need. Run: claude plugin update claude-mem@thedotmack\n",
+      "! claude-mem@thedotmack 13.28.0 is outside >=13.29.0, and anymodel does not load with it. Run: claude plugin update claude-mem@thedotmack\n",
+    );
+    expect(result.stdout.match(/13\.28\.0/g)).toHaveLength(1);
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
+  test("the backend has no chat endpoint (404), or does not serve the model: said so; the key never shows", async () => {
+    const cases: Array<[number, unknown, string]> = [
+      [
+        404,
+        "404 page not found",
+        "! claude-mem settings left alone: omniroute has no OpenAI chat endpoint at URL/v1/chat/completions (HTTP 404)\n",
+      ],
+      [
+        404,
+        { error: { code: "model_not_found", message: "The model does not exist" } },
+        `! claude-mem settings left alone: omniroute does not serve the model ${CHEAP_MODEL} (HTTP 404)\n`,
+      ],
+      [
+        500,
+        { error: { message: `upstream rejected ${PLANTED_KEY}` } },
+        `! claude-mem settings left alone: omniroute answered HTTP 500 to a one-token chat request for ${CHEAP_MODEL} at URL/v1/chat/completions\n`,
+      ],
+    ];
+    for (const [status, body, note] of cases) {
+      const { home, runAsync } = setup();
+      const backend = fakeBackend(status, body);
+      writeGatewayConfig(home, backend.url);
+      const file = writeClaudeMem(home, SEEDED);
+      const before = readFileSync(file, "utf8");
+      const result = await runAsync(["setup"]);
+      expect(result.stdout).toContain(note.replace("URL", backend.url));
+      expect(result.stdout).not.toContain("refused its key");
+      expect(`${result.stdout}${result.stderr}`).not.toContain(PLANTED_KEY);
+      expect(readFileSync(file, "utf8")).toBe(before);
+    }
+  });
+
+  test("--dry-run reaches no network: it says which backend a real run checks", () => {
+    const { home, run } = setup();
+    const backend = fakeBackend();
+    writeGatewayConfig(home, backend.url);
+    writeClaudeMem(home, SEEDED);
+    const result = run(["setup", "--dry-run"]);
+    expect(result.stdout).toContain(
+      "  claude-mem: would check omniroute (one chat request) before writing its settings\n",
+    );
+    expect(result.stdout).toContain(
+      '~ ~/.claude-mem/settings.json: CLAUDE_MEM_PROVIDER: "claude" -> "openai-compatible"\n',
+    );
+    expect(backend.seen).toEqual([]);
+  });
+
+  test("a key anymodel set and the person changed since is theirs: setup leaves all seven, restore leaves theirs", async () => {
+    const { home, run, runAsync } = setup();
+    const backend = fakeBackend();
+    writeGatewayConfig(home, backend.url);
+    const file = writeClaudeMem(home, SEEDED);
+    await runAsync(["setup"]);
+    const settings = readJson(file);
+    settings.CLAUDE_MEM_OPENAI_COMPAT_MODEL = "my-own-model";
+    writeFileSync(file, JSON.stringify(settings, null, 2));
+    const before = readFileSync(file, "utf8");
+    const result = run(["setup"]);
+    expect(result.stdout).toContain(
+      '  claude-mem settings left alone: CLAUDE_MEM_OPENAI_COMPAT_MODEL is "my-own-model" in ~/.claude-mem/settings.json (your choice)\n',
+    );
+    expect(readFileSync(file, "utf8")).toBe(before);
+    run(["restore"]);
+    expect(readJson(file)).toEqual({
+      CLAUDE_MEM_MODEL: "claude-haiku-4-5-20251001",
+      CLAUDE_MEM_OPENAI_COMPAT_MODEL: "my-own-model",
+      CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "claude",
+      CLAUDE_MEM_CONTEXT_OBSERVATIONS: "50",
+    });
+  });
+
+  test("the gateway's backend key changed: anymodel updates the key it set, after the check", async () => {
+    const { home, runAsync } = setup();
+    const backend = fakeBackend();
+    writeGatewayConfig(home, backend.url);
+    const file = writeClaudeMem(home, SEEDED);
+    await runAsync(["setup"]);
+    const gateway = join(home, ".config", "anymodel", "gateway.json");
+    const config = readJson(gateway);
+    config.backends.omniroute.apiKey = "sk-rotated-SECRET-9999999999999999";
+    writeFileSync(gateway, JSON.stringify(config));
+    const result = await runAsync(["setup"]);
+    expect(result.stdout).toContain(
+      '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "••••cdef" -> "••••9999"\n',
+    );
+    expect(readJson(file).CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe(
+      "sk-rotated-SECRET-9999999999999999",
+    );
+  });
+
+  test("anymodel's keys are there, but the gateway has no cheap model any more: a note that says how to fix it", async () => {
+    const { home, run, runAsync } = setup();
+    writeGatewayConfig(home, fakeBackend().url);
+    writeClaudeMem(home, SEEDED);
+    await runAsync(["setup"]);
+    rmSync(join(home, ".config", "anymodel", "gateway.json"));
+    expect(run(["setup"]).stdout).toBe(
+      [
+        "Nothing to change. Setup is up to date.",
+        "! claude-mem still uses the backend anymodel set for it, but the gateway is not set up. Run anymodel setup again once the gateway has a cheap model, or anymodel restore to put claude-mem back on its own defaults.",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("an existing settings file readable by others: the write with the key leaves it at mode 600", async () => {
+    const { home, runAsync } = setup();
+    writeGatewayConfig(home, fakeBackend().url);
+    const file = writeClaudeMem(home, SEEDED);
+    chmodSync(file, 0o644);
+    await runAsync(["setup"]);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  test("a key pool of the person's (CLAUDE_MEM_OPENAI_COMPAT_API_KEYS): left alone, never printed", () => {
+    const { home, run } = setup();
+    const backend = fakeBackend();
+    writeGatewayConfig(home, backend.url);
+    const file = writeClaudeMem(home, {
+      ...SEEDED,
+      CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: "sk-pool-one-000000,sk-pool-two-000000",
+    });
+    const before = readFileSync(file, "utf8");
+    const result = run(["setup"]);
+    expect(result.stdout).toContain(
+      "  claude-mem settings left alone: CLAUDE_MEM_OPENAI_COMPAT_API_KEYS holds your own keys in ~/.claude-mem/settings.json (your choice)\n",
+    );
+    expect(result.stdout).not.toContain("sk-pool");
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(backend.seen).toEqual([]);
+  });
+
+  test("a file with only claude-mem's old nested env: left alone, with a note (claude-mem rewrites it flat itself)", () => {
+    const { home, run } = setup();
+    writeGatewayConfig(home, fakeBackend().url);
+    const file = writeClaudeMem(home, { env: SEEDED });
+    const before = readFileSync(file, "utf8");
+    const result = run(["setup"]);
+    expect(result.stdout).toContain(
+      "! claude-mem settings left alone: ~/.claude-mem/settings.json is in claude-mem's old nested form, which claude-mem rewrites when it next starts. Start a Claude Code session, then run anymodel setup again.\n",
     );
     expect(readFileSync(file, "utf8")).toBe(before);
   });

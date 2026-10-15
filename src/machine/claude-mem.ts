@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
 import { type CliPaths, tildify } from "../cli/paths";
-import { listModels } from "../gateway/backends";
 import { loadConfigFile, messageOf } from "../gateway/config";
 import { maskKey } from "../gateway/settings";
 import { parseTarget } from "../gateway/targets";
@@ -9,41 +8,56 @@ import {
   applyManagedJson,
   getKey,
   isObject,
+  type JsonObject,
   type KeyPath,
   type ManagedJsonResult,
-  ownedKeys,
+  ownedRecords,
+  ownership,
   readJsonObject,
 } from "../setup/managed-json";
+import { redactUrl } from "../setup/marketplace-access";
 import { realTarget } from "../setup/write";
-import { comparableVersion } from "./companions";
+import { companionState, companions, comparableVersion } from "./companions";
 
 /**
  * claude-mem (the memory plugin anymodel depends on) summarises every session, by default
  * with Claude Haiku on the person's own Claude login. When the anymodel gateway is set
  * up, setup points claude-mem at the gateway's cheap model instead, straight at its
  * backend (OmniRoute by default, which speaks OpenAI's format), with Claude Haiku as
- * claude-mem's quota fallback: when the cheap model cannot answer, claude-mem goes back to
- * Claude.
+ * claude-mem's quota fallback: while the cheap model is in a quota or rate-limit cooldown,
+ * claude-mem sends its work to Claude, and hands it back once the cheap model answers
+ * again. It is not a fallback for a backend that is down or refuses the key (claude-mem
+ * never routes around an authentication failure; its CHANGELOG, 13.29.0).
  *
  * Seven keys in `~/.claude-mem/settings.json`, owned through `applyManagedJson`, so a
  * restore takes them out and claude-mem is back on its own defaults. claude-mem writes
  * every default into that file on its first run, so a key that holds claude-mem's own
  * default (`""`, or `claude` for the two providers) counts as "nobody chose it" and may be
- * taken. Any other value is the person's choice: then setup changes none of the keys.
+ * taken. Any other value is the person's choice, also in a key anymodel set before and
+ * the person changed since: then setup changes none of the keys.
  */
 
 export const CLAUDE_MEM_ID = "claude-mem@thedotmack";
 /** The release that brought the openai-compatible provider and the quota fallback (its CHANGELOG). */
 export const CLAUDE_MEM_MIN_VERSION = "13.29.0";
+/**
+ * The release that pins `pydantic<2.14` for its vector search: chroma-mcp 0.2.6 imports a
+ * pydantic helper that pydantic 2.14.0 removed, so before it a fresh install's vector
+ * search stays off (claude-mem's CHANGELOG, 13.35.0, #4595). doctor warns below it.
+ */
+export const CLAUDE_MEM_CHROMA_FIX_VERSION = "13.35.0";
 /** claude-mem's quota fallback: Claude, with claude-mem's own default model, named exactly. */
 export const FALLBACK_PROVIDER = "claude";
 export const FALLBACK_MODEL = "claude-haiku-4-5-20251001";
 
 const API_KEY = "CLAUDE_MEM_OPENAI_COMPAT_API_KEY";
+/** The person's own pool of keys. Never set by anymodel; a pool there is their choice. */
+const API_KEY_POOL = "CLAUDE_MEM_OPENAI_COMPAT_API_KEYS";
+const PROVIDER = "CLAUDE_MEM_PROVIDER";
 
 /** For each key: the values that mean "nobody chose this yet" (claude-mem's defaults). */
 const UNCHOSEN: Readonly<Record<string, readonly string[]>> = {
-  CLAUDE_MEM_PROVIDER: ["", "claude"],
+  [PROVIDER]: ["", "claude"],
   CLAUDE_MEM_OPENAI_COMPAT_PRESET: [""],
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: [""],
   CLAUDE_MEM_OPENAI_COMPAT_MODEL: [""],
@@ -51,6 +65,9 @@ const UNCHOSEN: Readonly<Record<string, readonly string[]>> = {
   CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: ["", "claude"],
   CLAUDE_MEM_QUOTA_FALLBACK_MODEL: [""],
 };
+
+const unchosen = (path: KeyPath, value: unknown) =>
+  typeof value === "string" && (UNCHOSEN[path.at(-1) ?? ""] ?? []).includes(value);
 
 /** The gateway's cheap model, as claude-mem reaches it. */
 export interface CheapTarget {
@@ -103,35 +120,77 @@ export interface ClaudeMemPlan {
 }
 
 /**
- * What setup does for claude-mem: a plan, or a line that says why it does nothing
- * (`null`: nothing to say: claude-mem or the gateway is not there).
+ * What setup does for claude-mem:
+ * - `plan`: the keys to set;
+ * - `note`: a line that says why it does nothing (`null`: nothing to say: the gateway is
+ *   not there, and claude-mem holds nothing of anymodel's);
+ * - `notInstalled`: claude-mem is not installed yet. Setup may install it (a companion
+ *   step) and then plan again.
  */
-export function claudeMemPlan(paths: CliPaths): { plan: ClaudeMemPlan } | { note: string | null } {
+export function claudeMemPlan(
+  paths: CliPaths,
+): { plan: ClaudeMemPlan } | { note: string | null } | { notInstalled: true } {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
-  if (install === null || !existsSync(install.installPath)) return { note: null };
-  const cheap = gatewayCheapTarget(paths.gatewayConfigFile);
-  if ("reason" in cheap) return { note: null };
-  const version = comparableVersion(install.version);
-  if (version === null || Bun.semver.order(version, CLAUDE_MEM_MIN_VERSION) < 0) {
-    return {
-      note: `! claude-mem settings left alone: claude-mem ${install.version ?? "(no version)"} is older than ${CLAUDE_MEM_MIN_VERSION}, which brought what they need. Run: claude plugin update ${CLAUDE_MEM_ID}`,
-    };
-  }
+  if (install === null || !existsSync(install.installPath)) return { notInstalled: true };
 
   const file = paths.claudeMemSettingsFile;
-  let data: Record<string, unknown>;
+  const short = tildify(file, paths.home);
+  const left = (why: string) => ({ note: `! claude-mem settings left alone: ${why}` });
+  let data: JsonObject;
   try {
     data = readJsonObject(file).data;
   } catch (error) {
-    return { note: `! claude-mem settings left alone: ${messageOf(error)}` };
+    return left(messageOf(error));
   }
-  // An older file keeps claude-mem's keys under "env" (claude-mem reads them there).
+  // claude-mem reads its keys under "env" when "env" holds any (an older file).
   const env = data.env;
   const nested = isObject(env) && Object.keys(env).some((key) => key.startsWith("CLAUDE_MEM_"));
   const at = (key: string): KeyPath => (nested ? ["env", key] : [key]);
+  const records = ownedRecords(paths.stateDir, realTarget(file));
+
+  const cheap = gatewayCheapTarget(paths.gatewayConfigFile);
+  if ("reason" in cheap) {
+    // anymodel pointed claude-mem at a backend before, and there is no cheap model now.
+    const provider = getKey(data, at(PROVIDER));
+    if (provider.found && ownership(records, at(PROVIDER), provider) === "ours") {
+      return {
+        note: `! claude-mem still uses the backend anymodel set for it, but ${cheap.reason}. Run anymodel setup again once the gateway has a cheap model, or anymodel restore to put claude-mem back on its own defaults.`,
+      };
+    }
+    return { note: null };
+  }
+
+  const version = comparableVersion(install.version);
+  if (version === null || Bun.semver.order(version, CLAUDE_MEM_MIN_VERSION) < 0) {
+    // The companion check says it already, when plugin.json's range covers it: one note.
+    const companion = companions().find((entry) => entry.id === CLAUDE_MEM_ID);
+    const state = companion === undefined ? null : companionState(paths, companion).kind;
+    if (state === "outside-range" || state === "unknown-version") return { note: null };
+    return left(
+      version === null
+        ? `claude-mem's version ${install.version ?? "(none)"} is unknown, so anymodel cannot tell whether it has what they need (${CLAUDE_MEM_MIN_VERSION} or newer). Run: claude plugin update ${CLAUDE_MEM_ID}`
+        : `claude-mem ${install.version} is older than ${CLAUDE_MEM_MIN_VERSION}, which brought what they need. Run: claude plugin update ${CLAUDE_MEM_ID}`,
+    );
+  }
+
+  // claude-mem rewrites a file that holds only "env" flat on its next start, and drops
+  // any flat key written beside "env" then; a key anymodel wrote there would be lost.
+  if (nested && Object.keys(data).every((key) => key === "env")) {
+    return left(
+      `${short} is in claude-mem's old nested form, which claude-mem rewrites when it next starts. Start a Claude Code session, then run anymodel setup again.`,
+    );
+  }
+
+  const pool = getKey(data, at(API_KEY_POOL));
+  if (pool.found && typeof pool.value === "string" && pool.value.trim() !== "") {
+    return {
+      note: `  claude-mem settings left alone: ${API_KEY_POOL} holds your own keys in ${short} (your choice)`,
+    };
+  }
+
   const target = cheap.target;
   const wanted: Record<string, string> = {
-    CLAUDE_MEM_PROVIDER: "openai-compatible",
+    [PROVIDER]: "openai-compatible",
     CLAUDE_MEM_OPENAI_COMPAT_PRESET: "custom",
     CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: target.baseUrl,
     CLAUDE_MEM_OPENAI_COMPAT_MODEL: target.model,
@@ -141,36 +200,68 @@ export function claudeMemPlan(paths: CliPaths): { plan: ClaudeMemPlan } | { note
   };
 
   // The person's own choice stands: one key set by them, and none of the keys change.
-  const owned = ownedKeys(paths.stateDir, realTarget(file));
-  const isOwned = (path: KeyPath) =>
-    owned.some((entry) => entry.length === path.length && entry.every((s, i) => s === path[i]));
+  // A key anymodel set before and the person changed since is their choice too.
   for (const [key, value] of Object.entries(wanted)) {
-    const current = getKey(data, at(key));
-    if (!current.found || current.value === value || isOwned(at(key))) continue;
-    if (typeof current.value === "string" && (UNCHOSEN[key] ?? []).includes(current.value)) {
-      continue;
-    }
+    const path = at(key);
+    const current = getKey(data, path);
+    if (!current.found || current.value === value) continue;
+    const whose = ownership(records, path, current, unchosen);
+    if (whose === "ours" || (whose === "none" && unchosen(path, current.value))) continue;
     const shown = key === API_KEY ? "another key" : JSON.stringify(current.value);
     return {
-      note: `  claude-mem settings left alone: ${key} is ${shown} in ${tildify(file, paths.home)} (your choice)`,
+      note: `  claude-mem settings left alone: ${key} is ${shown} in ${short} (your choice)`,
     };
   }
   return { plan: { set: Object.entries(wanted).map(([key, value]) => [at(key), value]), target } };
 }
 
 /**
- * Does the backend answer this key, and list the model? Checked before anything is
- * written, so claude-mem is never left on a key or a model that does not work.
+ * Does the backend answer what claude-mem will send: a chat completion for the model,
+ * with this key, at `<base>/chat/completions` (claude-mem's custom preset adds
+ * `/chat/completions` to its base URL)? One token, checked before anything is written,
+ * so claude-mem is never left on a key, a model or an address that does not work. The
+ * key never appears in what it returns.
  */
-export async function checkCheapTarget(target: CheapTarget): Promise<string | null> {
-  const base = target.baseUrl.replace(/\/v1$/, "");
-  const answer = await listModels(base, target.apiKey);
-  if ("error" in answer) return `${target.backend} did not answer (${answer.error})`;
-  if (answer.status !== 200) return `${target.backend} refused its key (HTTP ${answer.status})`;
-  if (!answer.models.some((model) => model.id === target.model)) {
-    return `${target.backend} does not list the model ${target.model}`;
+export async function checkCheapTarget(
+  target: CheapTarget,
+  timeoutMs = 30_000,
+): Promise<string | null> {
+  const url = `${target.baseUrl}/chat/completions`;
+  const where = redactUrl(url);
+  const hide = (text: string) =>
+    target.apiKey === "" ? text : text.replaceAll(target.apiKey, maskKey(target.apiKey));
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { authorization: `Bearer ${target.apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: target.model,
+        messages: [{ role: "user", content: "Say OK." }],
+        max_tokens: 1,
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    return hide(`${target.backend} did not answer at ${where} (${messageOf(error)})`);
   }
-  return null;
+  if (response.ok) {
+    await response.body?.cancel();
+    return null;
+  }
+  const status = response.status;
+  let code: unknown;
+  try {
+    code = ((await response.json()) as { error?: { code?: unknown } } | null)?.error?.code;
+  } catch {
+    code = undefined;
+  }
+  if (status === 401 || status === 403) return `${target.backend} refused its key (HTTP ${status})`;
+  if (status === 404 && code === "model_not_found") {
+    return `${target.backend} does not serve the model ${target.model} (HTTP 404)`;
+  }
+  if (status === 404) return `${target.backend} has no OpenAI chat endpoint at ${where} (HTTP 404)`;
+  return `${target.backend} answered HTTP ${status} to a one-token chat request for ${target.model} at ${where}`;
 }
 
 /** True for a claude-mem key path whose value must never be printed. */
@@ -189,8 +280,7 @@ export function applyClaudeMem(
     stateDir: paths.stateDir,
     set: plan.set,
     dryRun,
-    unchosen: (path, value) =>
-      typeof value === "string" && (UNCHOSEN[path.at(-1) ?? ""] ?? []).includes(value),
+    unchosen,
     secret: isSecretPath,
   });
 }
@@ -202,4 +292,19 @@ export function shownClaudeMemValue(path: KeyPath, value: unknown): string {
     return JSON.stringify(maskKey(value));
   }
   return JSON.stringify(value);
+}
+
+/**
+ * doctor's warning for a claude-mem older than CLAUDE_MEM_CHROMA_FIX_VERSION: its vector
+ * search may not start. Null when it is not installed, or new enough, or its version is
+ * not a version (the companion check reports those).
+ */
+export function claudeMemAdvice(paths: CliPaths): string | null {
+  const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
+  if (install === null || !existsSync(install.installPath)) return null;
+  const version = comparableVersion(install.version);
+  if (version === null || Bun.semver.order(version, CLAUDE_MEM_CHROMA_FIX_VERSION) >= 0) {
+    return null;
+  }
+  return `${CLAUDE_MEM_ID} ${install.version} is older than ${CLAUDE_MEM_CHROMA_FIX_VERSION}: on a fresh install its vector search may not start (pydantic 2.14 broke chroma-mcp; ${CLAUDE_MEM_CHROMA_FIX_VERSION} pins pydantic below it). Run: claude plugin update ${CLAUDE_MEM_ID}`;
 }

@@ -39,9 +39,12 @@ import { type CliPaths, tildify } from "./paths";
 export const AUTO_UPDATE_KEY: KeyPath = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
 
 export interface SetupOptions {
-  /** Show every change; write and run nothing. */
+  /** Show every change; write and run nothing (and reach no network). */
   dryRun: boolean;
-  /** Write a project's auto-mode entries without asking (they are still shown). */
+  /**
+   * Write a project's auto-mode entries without asking. Only on a terminal: with no
+   * terminal they are left out whatever the flags. They are still shown.
+   */
   yes: boolean;
   /** Install the Warp app (asked first, on a terminal), then its Claude plugin. */
   warp: boolean;
@@ -76,10 +79,25 @@ interface Managed {
   autoMode: AutoModeSource | null;
 }
 
+/** What setup prints: changes, then information, then notes (warnings and choices). */
+interface Report {
+  /** One line per change: `+`, `~` or `-` (and `$` for a command, in a dry run). */
+  changes: string[];
+  /** Information: what was left alone, and why. Never a change. */
+  info: string[];
+  /** Warnings (`!`) and what the person chose. */
+  notes: string[];
+}
+
 /** Every change setup makes to files, in order. With `dryRun`, it only reports them. */
-function applySetup(paths: CliPaths, managed: Managed, dryRun: boolean): string[] {
+function applySetup(
+  paths: CliPaths,
+  managed: Managed,
+  dryRun: boolean,
+): { changes: string[]; info: string[] } {
   const short = (path: string) => tildify(path, paths.home);
-  const lines: string[] = [];
+  const changes: string[] = [];
+  const info: string[] = [];
   const launcher = installLauncher(paths.binDir, {
     stateDir: paths.stateDir,
     bunPath: process.execPath,
@@ -87,7 +105,7 @@ function applySetup(paths: CliPaths, managed: Managed, dryRun: boolean): string[
   });
   if (launcher.outcome !== "unchanged") {
     const mark = launcher.outcome === "created" ? "+" : "~";
-    lines.push(`${mark} ${short(launcher.path)}: launcher ${launcher.outcome}`);
+    changes.push(`${mark} ${short(launcher.path)}: launcher ${launcher.outcome}`);
   }
 
   const settings = applyManagedJson({
@@ -97,21 +115,23 @@ function applySetup(paths: CliPaths, managed: Managed, dryRun: boolean): string[
     dryRun,
   });
   for (const change of settings.changes) {
-    lines.push(
+    changes.push(
       `~ ${short(settings.file)}: ${formatKeyPath(change.path)}: ${show(change.before)} -> ${show(change.after)}`,
     );
   }
   for (const skip of settings.skipped) {
-    lines.push(`  ${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
+    info.push(`  ${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
   }
 
   if (managed.autoMode !== null) {
     const result = applyAutoMode(paths.settingsFile, paths.stateDir, managed.autoMode, dryRun);
     const where = `${short(result.file)}: ${formatKeyPath(AUTO_MODE_PATH)}`;
-    for (const entry of result.added) lines.push(`~ ${where}: added ${JSON.stringify(entry)}`);
-    for (const entry of result.removed) lines.push(`~ ${where}: removed ${JSON.stringify(entry)}`);
+    for (const entry of result.added) changes.push(`~ ${where}: added ${JSON.stringify(entry)}`);
+    for (const entry of result.removed) {
+      changes.push(`~ ${where}: removed ${JSON.stringify(entry)}`);
+    }
     for (const entry of result.skipped) {
-      lines.push(
+      info.push(
         `  ${where}: ${JSON.stringify(entry)} is there already (not anymodel's); left alone`,
       );
     }
@@ -120,77 +140,123 @@ function applySetup(paths: CliPaths, managed: Managed, dryRun: boolean): string[
   if (managed.claudeMem !== null) {
     const result = applyClaudeMem(paths, managed.claudeMem, dryRun);
     for (const change of result.changes) {
-      lines.push(
+      changes.push(
         `~ ${short(result.file)}: ${formatKeyPath(change.path)}: ${shownClaudeMemValue(change.path, change.before)} -> ${shownClaudeMemValue(change.path, change.after)}`,
       );
     }
+    // A key that holds the wanted value already is claude-mem's own default (the plan
+    // stops at any other value of the person's): nothing worth a line.
   }
-  return lines;
+  return { changes, info };
 }
 
 /**
  * Shows commands that change the system and asks before they run. True to run them.
- * With no terminal, or a "no", it says so, and nothing runs.
+ * With no terminal, or a "no", it says so (in `notes`), and they do not run.
  */
 function askToRun(
   machine: Machine,
   what: string,
   commands: readonly string[][],
   rerun: string,
+  notes: string[],
 ): boolean {
   console.log(`${what}:`);
   for (const command of commands) console.log(`  $ ${showCommand(command)}`);
   if (machine.confirm === null) {
-    console.log(`No terminal: nothing was run. Run \`${rerun}\` in a terminal to run them.`);
+    notes.push(
+      `! Warp: no terminal, so these commands were not run. Run \`${rerun}\` in a terminal to run them.`,
+    );
     return false;
   }
   if (!machine.confirm("Run these commands now?")) {
-    console.log("Nothing was run.");
+    notes.push("! Warp: these commands were not run (you said no).");
     return false;
-  }
-  return true;
-}
-
-/** Runs each command on the terminal, in order; stops at the first that fails. */
-function runOnTerminal(machine: Machine, commands: readonly string[][]): boolean {
-  for (const command of commands) {
-    const code = machine.runOnTerminal(command);
-    if (code !== 0) {
-      console.log(`! ${showCommand(command)} failed (exit ${code}). Nothing after it ran.`);
-      return false;
-    }
   }
   return true;
 }
 
 /**
- * The auto-mode entries this run writes. They are trust rules, so a change is shown
- * first, then asked (unless --yes). No terminal and no --yes: they are left out.
- * Null: no change to the entries in this run.
+ * Runs each command on the terminal, in order; stops at the first that fails. When one
+ * fails after others ran, it says what was done, and how to undo it (`undo`).
  */
-function decideAutoMode(
+function runOnTerminal(
+  machine: Machine,
+  commands: readonly string[][],
+  undo: string | null,
+  notes: string[],
+): boolean {
+  for (const [index, command] of commands.entries()) {
+    const code = machine.runOnTerminal(command);
+    if (code === 0) continue;
+    notes.push(`! ${showCommand(command)} failed (exit ${code}). Nothing after it ran.`);
+    const done = commands.slice(0, index);
+    if (done.length > 0) {
+      notes.push(
+        "  These ran before it:",
+        ...done.map((ran) => `    $ ${showCommand(ran)}`),
+        ...(undo === null ? [] : [`  To undo them: ${undo}`]),
+      );
+    }
+    return false;
+  }
+  return true;
+}
+
+/**
+ * The auto-mode entries this project asks for, and the change they make. Null: no
+ * project, or the project cannot be read: then `notes` says why, and setup goes on
+ * without them (they are only one part of setup).
+ */
+function planAutoMode(
   paths: CliPaths,
   options: SetupOptions,
   notes: string[],
-): AutoModeSource | null {
-  const wanted = autoModeSource(options.project);
+): { wanted: AutoModeSource; added: string[]; removed: string[] } | null {
+  let wanted: AutoModeSource | null;
+  try {
+    wanted = autoModeSource(options.project, options.machine.which);
+  } catch (error) {
+    notes.push(`! auto-mode entries left out: ${messageOf(error)}`);
+    return null;
+  }
   if (wanted === null) return null;
   const diff = applyAutoMode(paths.settingsFile, paths.stateDir, wanted, true);
-  if (diff.added.length === 0 && diff.removed.length === 0) return wanted;
-  if (options.dryRun) return wanted;
+  return { wanted, added: diff.added, removed: diff.removed };
+}
+
+/**
+ * Asks about the auto-mode entries. They are trust rules, so a change is shown first,
+ * then asked, always on a terminal: `--yes` skips only the question, and with no terminal
+ * they are left out whatever the flags. Null: they are left out in this run.
+ */
+function askAutoMode(
+  paths: CliPaths,
+  options: SetupOptions,
+  planned: { wanted: AutoModeSource; added: string[]; removed: string[] },
+  notes: string[],
+): AutoModeSource | null {
+  const { wanted, added, removed } = planned;
+  if (added.length === 0 && removed.length === 0) return wanted;
   const short = (path: string) => tildify(path, paths.home);
+  const from = wanted.file ?? `${wanted.source}/.claude/anymodel.json`;
   console.log(
-    `Auto mode: trust rules from ${short(wanted.source)}/.claude/anymodel.json ("autoMode"), for ${formatKeyPath(AUTO_MODE_PATH)} in ${short(paths.settingsFile)}:`,
+    `Auto mode: trust rules from ${short(from)} ("autoMode"), for ${formatKeyPath(AUTO_MODE_PATH)} in ${short(paths.settingsFile)}:`,
   );
-  for (const entry of diff.added) console.log(`  + ${JSON.stringify(entry)}`);
-  for (const entry of diff.removed) console.log(`  - ${JSON.stringify(entry)}`);
-  if (options.yes) return wanted;
+  if (wanted.differsFrom !== null) {
+    console.log(
+      `  This worktree's file is not the same as the main checkout's (${short(wanted.differsFrom)}). The rules below come from this worktree's file.`,
+    );
+  }
+  for (const entry of added) console.log(`  + ${JSON.stringify(entry)}`);
+  for (const entry of removed) console.log(`  - ${JSON.stringify(entry)}`);
   if (options.machine.confirm === null) {
     notes.push(
-      "! auto-mode entries left out: they are trust rules, so setup asks first. Run anymodel setup in a terminal, or with --yes.",
+      "! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run anymodel setup in a terminal.",
     );
     return null;
   }
+  if (options.yes) return wanted;
   if (!options.machine.confirm("Write these auto-mode entries?")) {
     notes.push("  auto-mode entries left out (you said no)");
     return null;
@@ -198,18 +264,32 @@ function decideAutoMode(
   return wanted;
 }
 
-/** The claude-mem keys this run writes, once the key and the model answered. Null: none. */
-async function decideClaudeMem(paths: CliPaths, notes: string[]): Promise<ClaudeMemPlan | null> {
+/**
+ * The claude-mem keys this run writes, once the backend answered. Null: none. A dry run
+ * reaches no network: it says which backend a real run would check.
+ */
+async function decideClaudeMem(
+  paths: CliPaths,
+  dryRun: boolean,
+  report: Report,
+): Promise<ClaudeMemPlan | null | "not-installed"> {
   const planned = claudeMemPlan(paths);
+  if ("notInstalled" in planned) return "not-installed";
   if ("note" in planned) {
-    if (planned.note !== null) notes.push(planned.note);
+    if (planned.note !== null) report.notes.push(planned.note);
     return null;
   }
   // Nothing to change: no need to ask the backend.
   if (applyClaudeMem(paths, planned.plan, true).changes.length === 0) return planned.plan;
+  if (dryRun) {
+    report.info.push(
+      `  claude-mem: would check ${planned.plan.target.backend} (one chat request) before writing its settings`,
+    );
+    return planned.plan;
+  }
   const problem = await checkCheapTarget(planned.plan.target);
   if (problem !== null) {
-    notes.push(`! claude-mem settings left alone: ${problem}`);
+    report.notes.push(`! claude-mem settings left alone: ${problem}`);
     return null;
   }
   return planned.plan;
@@ -224,59 +304,58 @@ interface WarpWork {
   /** `claude plugin` steps for Warp's plugin. */
   pluginSteps: CompanionStep[];
   removeShortcuts: boolean;
-  lines: string[];
+  info: string[];
 }
 
+const NO_WARP: WarpWork = {
+  commands: [],
+  stage: false,
+  pluginSteps: [],
+  removeShortcuts: false,
+  info: [],
+};
+
 function planWarp(paths: CliPaths, options: SetupOptions): WarpWork | { error: string } {
+  // Plain setup leaves Warp alone: the app and its plugin come only with --warp.
+  if (!options.warp && !options.removeWarp) return NO_WARP;
   const machine = options.machine;
   const system = detectSystem(machine);
   const app = detectWarpApp(machine, system);
   const version = app.version === null ? "" : ` ${app.version}`;
-  const none: WarpWork = {
-    commands: [],
-    stage: false,
-    pluginSteps: [],
-    removeShortcuts: false,
-    lines: [],
-  };
   if (options.removeWarp) {
     const commands = warpRemoveCommands(machine, system, app);
-    const lines: string[] = [];
+    const info: string[] = [];
     const packageManagerRemovesIt =
       system.kind === "apt" || system.kind === "dnf" || (system.kind === "brew" && app.viaBrew);
     if (app.installed && !packageManagerRemovesIt) {
-      lines.push(
+      info.push(
         machine.platform === "darwin"
           ? "! Warp was not installed with Homebrew: move Warp.app from Applications to the Bin by hand"
           : `! Warp${version} was not installed by a package manager anymodel knows: remove it by hand`,
       );
     }
     return {
-      ...none,
+      ...NO_WARP,
       commands,
       pluginSteps: warpPluginRemoveSteps(paths),
       removeShortcuts: warpDesktopEntries(paths).length > 0,
-      lines,
+      info,
     };
   }
-  if (options.warp) {
-    if (app.installed) {
-      return {
-        ...none,
-        pluginSteps: warpPluginSteps(paths),
-        lines: [`  Warp${version} is installed already`],
-      };
-    }
-    if (system.kind === "none") return { error: system.reason };
+  if (app.installed) {
     return {
-      ...none,
-      commands: warpInstallCommands(machine, system, paths),
-      stage: system.kind === "apt" || system.kind === "dnf",
+      ...NO_WARP,
       pluginSteps: warpPluginSteps(paths),
+      info: [`  Warp${version} is installed already`],
     };
   }
-  // Plain setup: Warp's plugin, only when the Warp app is there.
-  return app.installed ? { ...none, pluginSteps: warpPluginSteps(paths) } : none;
+  if (system.kind === "none") return { error: system.reason };
+  return {
+    ...NO_WARP,
+    commands: warpInstallCommands(machine, system, paths),
+    stage: system.kind === "apt" || system.kind === "dnf",
+    pluginSteps: warpPluginSteps(paths),
+  };
 }
 
 export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<number> {
@@ -292,84 +371,110 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     return 1;
   }
 
-  // Decide everything first: nothing is written or run before the read-only pass below.
-  const notes: string[] = [];
+  // Plan everything first: nothing is written, run or asked before the read-only pass.
+  const report: Report = { changes: [], info: [], notes: [] };
+  let ok = true;
   const warp = planWarp(paths, options);
   if ("error" in warp) {
     console.error(`Cannot install Warp here: ${warp.error}`);
     return 1;
   }
   const companions = companionPlan(paths);
-  notes.push(...companions.notes);
-  const claudeSteps = [...companions.steps, ...warp.pluginSteps];
+  report.notes.push(...companions.notes);
+  let claudeSteps = [...companions.steps, ...warp.pluginSteps];
   if (claudeSteps.length > 0 && machine.which("claude") === null) {
-    console.error(
-      "The claude command is not on PATH. Setup needs it for these steps:\n" +
-        claudeSteps.map((step) => `  $ ${showCommand(step.argv)}`).join("\n"),
+    // Only these steps need claude: the rest of setup still runs.
+    report.notes.push(
+      "! The claude command is not on PATH, so setup skipped these steps. Run them once it is:",
+      ...claudeSteps.map((step) => `  $ ${showCommand(step.argv)}`),
     );
-    return 1;
+    claudeSteps = [];
+    ok = false;
   }
+  const claudeMem = await decideClaudeMem(paths, options.dryRun, report);
+  const autoMode = planAutoMode(paths, options, report.notes);
   const managed: Managed = {
-    claudeMem: await decideClaudeMem(paths, notes),
-    autoMode: decideAutoMode(paths, options, notes),
+    claudeMem: claudeMem === "not-installed" ? null : claudeMem,
+    autoMode: autoMode?.wanted ?? null,
   };
 
   // A read-only pass: a key the user set (autoUpdate: false) throws ForeignKeyError here,
-  // before anything is written or run, the launcher and the state folder included.
+  // before anything is asked, written or run, the launcher and the state folder included.
   const planned = applySetup(paths, managed, true);
 
   if (options.dryRun) {
-    const lines = [
+    const changes = [
       ...warp.commands.map((command) => `$ ${showCommand(command)}`),
-      ...warp.lines,
       ...claudeSteps.map((step) => step.line),
       ...(warp.removeShortcuts ? removeWarpDesktopEntries(paths, true) : []),
-      ...planned,
-      ...notes,
+      ...planned.changes,
     ];
-    console.log(lines.length > 0 ? lines.join("\n") : "Nothing to change.");
+    printReport(
+      { changes, info: [...warp.info, ...planned.info, ...report.info], notes: report.notes },
+      "Nothing to change.",
+    );
     console.log("Dry run: nothing was written or run.");
     return 0;
   }
 
-  // System commands first, asked: a "no", or no terminal, stops setup before any change.
+  // Every question before anything runs. A "no" to one leaves the others as answered;
+  // only what depends on it goes (Warp's plugin and shortcuts go with Warp's commands).
+  if (autoMode !== null) managed.autoMode = askAutoMode(paths, options, autoMode, report.notes);
+  let warpYes = true;
   if (warp.commands.length > 0) {
     const what = options.removeWarp
       ? "To remove Warp, anymodel runs these commands (sudo asks for your password)"
       : "To install Warp from its signed source, anymodel runs these commands (sudo asks for your password)";
     const rerun = options.removeWarp ? "anymodel setup --remove-warp" : "anymodel setup --warp";
-    if (!askToRun(machine, what, warp.commands, rerun)) return 1;
+    warpYes = askToRun(machine, what, warp.commands, rerun, report.notes);
+  }
+
+  let warpDone = warpYes;
+  if (warp.commands.length > 0 && warpYes) {
     try {
       if (warp.stage) await stageWarpFiles(machine, detectSystem(machine), paths);
-      if (!runOnTerminal(machine, warp.commands)) return 1;
+      const undo = options.removeWarp ? null : "anymodel setup --remove-warp";
+      warpDone = runOnTerminal(machine, warp.commands, undo, report.notes);
     } catch (error) {
-      console.log(`! ${messageOf(error)}. Nothing was run.`);
-      return 1;
+      report.notes.push(`! ${messageOf(error)}. No Warp command was run.`);
+      warpDone = false;
     } finally {
       if (warp.stage) clearWarpStage(paths);
     }
   }
+  if (!warpDone) {
+    ok = false;
+    // Warp's plugin and shortcuts follow the app: none of them without it.
+    const warpSteps = new Set(warp.pluginSteps);
+    claudeSteps = claudeSteps.filter((step) => !warpSteps.has(step));
+  }
 
-  const lines: string[] = [...warp.lines];
+  report.info.unshift(...warp.info);
   const steps = runCompanionSteps(claudeSteps, machine);
-  lines.push(...steps.lines);
+  for (const line of steps.lines) (line.startsWith("!") ? report.notes : report.changes).push(line);
+  if (!steps.ok) ok = false;
+
+  // The first run: claude-mem came with a companion step just now, so plan it again.
+  if (claudeMem === "not-installed" && claudeSteps.length > 0) {
+    const again = await decideClaudeMem(paths, false, report);
+    if (again !== "not-installed") managed.claudeMem = again;
+  }
+
   const written = await withLock(
     paths.stateDir,
-    () => [
-      ...(warp.removeShortcuts ? removeWarpDesktopEntries(paths, false) : []),
-      ...applySetup(paths, managed, false),
-    ],
+    () => {
+      const shortcuts =
+        warp.removeShortcuts && warpDone ? removeWarpDesktopEntries(paths, false) : [];
+      const files = applySetup(paths, managed, false);
+      return { changes: [...shortcuts, ...files.changes], info: files.info };
+    },
     { waitMs: 10_000 },
   );
-  lines.push(...written);
+  report.changes.push(...written.changes);
+  report.info.push(...written.info);
 
-  if (lines.length === 0 && notes.length === 0) {
-    console.log("Nothing to change. Setup is up to date.");
-  } else {
-    if (lines.length > 0) console.log(lines.join("\n"));
-    if (notes.length > 0) console.log(notes.join("\n"));
-  }
-  if (written.length > 0) {
+  printReport(report, "Nothing to change. Setup is up to date.");
+  if (written.changes.length > 0) {
     console.log(`Done. Each changed file has a backup in ${short(paths.stateDir)}/backups/.`);
   }
 
@@ -379,5 +484,15 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       `Note: ${short(paths.binDir)} is not on your PATH. Add it, so the anymodel command works.`,
     );
   }
-  return steps.ok ? 0 : 1;
+  return ok ? 0 : 1;
+}
+
+/** Changes first (or `nothing`), then information, then notes. */
+function printReport(report: Report, nothing: string): void {
+  const lines = [
+    ...(report.changes.length > 0 ? report.changes : [nothing]),
+    ...report.info,
+    ...report.notes,
+  ];
+  console.log(lines.join("\n"));
 }

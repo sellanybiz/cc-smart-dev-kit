@@ -83,7 +83,8 @@ An optional local router between Claude Code and the model providers
 
 `setup` owns **managed** parts of user files, and only those:
 
-- in a JSON settings file, single keys (listed in its state, `owned.json`);
+- in a JSON settings file, single keys (listed in its state, `owned.json`, each with the
+  value anymodel wrote there, or only its SHA-256 for a secret);
 - in a JSON list of strings, single entries, each with the source that wants it (listed
   in `owned-entries.json`): the auto-mode block;
 - in a Markdown file, one block between `<!-- anymodel:begin -->` and
@@ -127,6 +128,12 @@ The guarantees:
   be taken; restore removes it, and the program falls back to the same default. Setup checks `settings.json` before it
   writes the launcher, so such a key (for example `autoUpdate: false`) stops it before
   anything is written.
+- **A key the person changed is theirs.** An owned key remembers the value anymodel
+  wrote. When it holds another value now (and not the program's own default), the
+  person chose it: setup does not overwrite it (it stops, as for any key not its own),
+  and restore leaves it and gives up the ownership. A record from an older `owned.json`
+  has no value: it stays owned as before, and gets its value at the next setup. A
+  write that sets a secret leaves the file at mode 600.
 - **`--dry-run`** shows every change and writes nothing at all: no state folder, no
   lock. Every setup runs this read-only pass first, outside the lock.
 - **`restore`** removes what anymodel added and keeps everything else: its own JSON
@@ -225,10 +232,19 @@ plugin only copies it.
   entries instead of adding to them (seen live). When setup creates the list, it puts
   `"$defaults"` first and owns it; it goes only with the list, when nothing but it is
   left. A restore with entries of the person's left keeps it, and no longer claims it.
-- **Trust rules are asked.** A change is shown as `+` / `-` lines, then asked; `--yes`
-  skips the question, not the lines. With no terminal and no `--yes`, the entries are
-  left out and setup says so. A change of the same entries again is no change: nothing
-  is shown or asked.
+- **Trust rules are asked, always of a person at a terminal.** A change is shown as `+` /
+  `-` lines, then asked; `--yes` skips the question, not the lines, and only on a
+  terminal. With no terminal the entries are left out, whatever the flags, and setup
+  says so. A change of the same entries again is no change: nothing is shown or asked.
+- **The question names the file.** In a worktree with its own `anymodel.json`, that file
+  is where the entries come from; when it says something else than the main checkout's,
+  the question says so plainly.
+- **Only one part of setup.** A project setup cannot read (an invalid or too-new
+  `anymodel.json`, git older than 2.31, a worktree whose main checkout is gone) leaves
+  the entries out with a note; the launcher, auto-update and the companions still
+  happen. Outside git, setup needs no git.
+- **Every question first.** The auto-mode question and Warp's commands are asked before
+  anything runs or is written. A "no" drops only what depends on it.
 
 ## Companion plugins
 
@@ -251,39 +267,81 @@ These are Claude Code's own commands on its own files, so `restore` does not und
 claude-mem's summaries run on Claude Haiku, on the person's own login, by default.
 With the gateway set up, `setup` points claude-mem's openai-compatible provider straight
 at the backend of the gateway's cheap model (the scout slot's first backend target), with
-Claude Haiku as claude-mem's quota fallback (`src/machine/claude-mem.ts`).
+Claude Haiku as claude-mem's quota fallback (`src/machine/claude-mem.ts`). The fallback
+takes claude-mem's work while the cheap model is in a quota or rate-limit cooldown, and
+hands it back once the cheap model answers again; it is not a fallback for a backend
+that is down or refuses its key (claude-mem never routes around an authentication
+failure: its CHANGELOG, 13.29.0).
 
 - Seven keys in claude-mem's settings, owned through `applyManagedJson`. claude-mem's
   seeded defaults count as unchosen; any other value of the seven is the person's
-  choice, and then none of them change.
+  choice (also one anymodel wrote and the person changed since, and a key pool of their
+  own in `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS`), and then none of them change.
 - **Straight to the backend, not through the router.** claude-mem speaks OpenAI's format
   and the router speaks Anthropic's, and claude-mem's own fallback already goes back to
   Claude. The key is the backend's key from `gateway.json`.
-- **Checked before the write:** the backend's `/v1/models` must answer the key and list
-  the model; otherwise nothing is written.
+- **Checked before the write, the way claude-mem calls it:** claude-mem's custom preset
+  adds `/chat/completions` to its base URL (its worker, 13.35.0), so setup sends one
+  `POST <backend>/v1/chat/completions` for the model with the key and `max_tokens: 1`;
+  it must answer, or nothing is written. `--dry-run` sends nothing.
+- **An old nested file** (only `env` at the top, holding claude-mem's keys) is left
+  alone: claude-mem itself rewrites such a file flat on its next start, and drops any
+  flat key written beside `env` then (its `loadFromFile`), so a key written either way
+  now would be lost or no longer owned.
+- **No cheap target any more** while the keys are still anymodel's: setup says that
+  claude-mem still points at the old backend, and how to fix it.
 - **No chroma workaround.** An older pin of claude-mem's vector search (`pydantic<2.12`
   through a wrapped `uvx`) is not needed: claude-mem 13.35.0 ships its own pin
-  (`pydantic<2.14`, its CHANGELOG).
+  (`pydantic<2.14`, its CHANGELOG, #4595). `doctor` warns (`!`, never a failure) below
+  13.35.0.
 
 ## Warp
 
-The Warp terminal is opt-in (`setup --warp`): plain `setup` never installs a system app.
-`src/machine/warp.ts` asks the system's own package manager (apt, dnf, Homebrew) whether
-Warp is there, builds the exact install or remove commands, and `setup` shows them and
-asks. They need root, so:
+The Warp terminal is opt-in (`setup --warp`): plain `setup` never installs a system app,
+and never Warp's plugin either. `src/machine/warp.ts` asks the system's own package
+manager (apt, dnf, Homebrew) whether Warp is there, builds the exact install or remove
+commands, and `setup` shows them and asks. They need root, so:
 
 - they run only on a terminal, after the person said yes; `sudo` asks for the password
-  itself, and anymodel never sees, stores or pipes it. With no terminal, setup prints
-  them and stops before it changes anything;
-- the key and the source file are made by anymodel in its own state folder (the key
-  downloaded over HTTPS from Warp's documented address), then put in place by
-  `sudo install`. No downloaded script ever runs;
-- Warp's own source and key layout is kept: the package rewrites
-  `/etc/apt/trusted.gpg.d/warpdotdev.gpg` on its upgrades, and a Warp source already
-  there stays.
+  itself, and anymodel never sees, stores or pipes it. With no terminal, or a "no", the
+  Warp part is left out (its plugin too) and the rest of setup goes on; setup exits 1;
+- the key and the source file are made by anymodel in its own state folder, then put in
+  place by `sudo install` (apt) or imported from there with `rpm --import` (dnf). No
+  downloaded script ever runs;
+- **the key is pinned.** It is downloaded over HTTPS, every redirect checked, and must
+  hold exactly one key with the fingerprint `0913165C78D5B7A41B42AC657FF7AB39D60F803F`
+  (`gpg --show-keys`, with a fresh gpg home in the state folder). That fingerprint came
+  from the key at Warp's documented address, and the same key is built into Warp's own
+  package (below). Another key stops the Warp part before any command runs;
+- `--remove-warp` on dnf removes only the `gpg-pubkey` whose id (version) is the end of
+  that fingerprint, never a key picked by its name;
+- a command that fails half way lists what ran before it and names
+  `anymodel setup --remove-warp` to undo it.
 
-Warp's Claude plugin is not a dependency (a machine may have no Warp). Plain `setup` adds
-it when the app is there; `--remove-warp` removes it with the app.
+**What Warp's .deb writes** (read from the control files of `warp-terminal`
+0.2026.10.07.08.29.stable.00, downloaded from Warp's apt repository and only unpacked
+with `dpkg-deb -e`, never installed). Its postinst:
+
+- writes Warp's key, built into the script, to `<apt trustedparts>/warpdotdev.gpg`
+  (`/etc/apt/trusted.gpg.d/warpdotdev.gpg` with apt's defaults) on every install and
+  upgrade;
+- writes the source `<apt sourceparts>/warpdotdev.sources` (deb822, with a two-line
+  "automatically configured" header, `Architectures: amd64` and
+  `Signed-By: /etc/apt/trusted.gpg.d/warpdotdev.gpg`), but only when neither that file
+  nor `warpdotdev.list` exists;
+- its postrm, on purge, removes the key and both source files.
+
+So anymodel writes the same key path, and the source with the same path and the very
+same text, before the first install; the package then finds its source there and leaves
+it. apt never sees two Warp sources or two Signed-By values. A source already there (the
+package's, or a `.list` from Warp's manual guide) is kept as it is.
+
+Warp's rpm repository has `x86_64` and `aarch64` builds (its repodata), so dnf is used on
+those two; other architectures get the download link, like apt on anything but x86_64.
+
+Warp's Claude plugin is not a dependency (a machine may have no Warp). Only `--warp`
+adds it; `doctor` names `anymodel setup --warp` when the app is there without it.
+`--remove-warp` removes it with the app.
 
 ## Neutral by design
 

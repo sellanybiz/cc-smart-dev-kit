@@ -19,12 +19,15 @@ Commands:
                      Install the launcher in ~/.local/bin, turn on plugin auto-update, add
                      the companion plugins' marketplaces, point claude-mem at the gateway's
                      cheap model (when both are there), and copy the project's auto-mode
-                     entries into your settings (shown and asked; --yes: not asked).
+                     entries into your settings. The entries are trust rules: they are
+                     shown and asked on a terminal (--yes: shown, not asked); with no
+                     terminal they are left out, also with --yes.
                      --project <dir>: the project to read .claude/anymodel.json from
                      (default: this folder). --warp: install the Warp terminal (the
                      commands are shown and asked; sudo asks for your password) and its
                      Claude plugin. --remove-warp: take them out again.
-                     --dry-run prints what would change, and writes and runs nothing.
+                     --dry-run prints what would change, and writes, runs and checks
+                     nothing.
   doctor             Check the install. Exit code 1 when a check fails.
   restore [--yes] [--now]
                      Remove what anymodel added, and keep everything else: its settings

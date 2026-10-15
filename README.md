@@ -54,13 +54,13 @@ After that, use `anymodel setup` to set up again (for example after an update).
 
 | Command | What it does |
 |---|---|
-| `anymodel setup` | Installs the launcher and turns on plugin auto-update. Adds a missing [companion](#companion-plugins) marketplace (or plugin). Points [claude-mem at the gateway's cheap model](#claude-mem-on-the-gateway) when both are set up. Copies the project's [auto-mode entries](#the-auto-mode-block) into your settings, after it shows them and asks. Adds [Warp's](#warp) Claude plugin when the Warp app is there. `--dry-run` shows the changes, and writes and runs nothing at all. A settings key you set yourself (for example `autoUpdate: false`) stops setup before it writes or runs anything. |
-| `anymodel setup --yes` | The same, and writes the auto-mode entries without asking (they are still shown). |
+| `anymodel setup` | Installs the launcher and turns on plugin auto-update. Adds a missing [companion](#companion-plugins) marketplace (or plugin). Points [claude-mem at the gateway's cheap model](#claude-mem-on-the-gateway) when both are set up. Copies the project's [auto-mode entries](#the-auto-mode-block) into your settings, after it shows them and asks. It never touches [Warp](#warp) or its plugin without `--warp`. Every question comes before anything runs or is written. `--dry-run` shows the changes, and writes, runs and checks nothing at all (it reaches no network). A settings key you set yourself (for example `autoUpdate: false`, also after setup had set it) stops setup before it writes or runs anything. Without `claude` on your PATH, setup skips only the `claude plugin …` steps, names them, does the rest, and exits with 1. |
+| `anymodel setup --yes` | On a terminal: the same, and writes the auto-mode entries without asking (they are still shown). With no terminal, they are left out, also with `--yes`. |
 | `anymodel setup --project <dir>` | Reads the auto-mode entries from the project in `<dir>`, not from the folder you are in. |
 | `anymodel setup --warp` | Also installs the Warp terminal, then its Claude plugin. The commands are shown first and asked; `sudo` asks for your password. |
 | `anymodel setup --remove-warp` | Removes the Warp terminal, its package source and key, your Warp shortcuts and its Claude plugin. Shown and asked first. |
-| `anymodel doctor` | Checks the install (the list is below). Prints ✓ or ✗ for each check, and exits with 1 when one fails. |
-| `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block) and keeps everything else. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy and unit. `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
+| `anymodel doctor` | Checks the install (the list is below). Prints ✓ or ✗ for each check, `·` for information and `!` for a warning (neither is a failure), and exits with 1 when a check fails. |
+| `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy and unit. `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
 | `anymodel gateway <command>` | The optional AI gateway (below). |
 | `anymodel version` | Prints the version. |
 
@@ -85,9 +85,14 @@ After that, use `anymodel setup` to set up again (for example after an update).
 - each companion plugin (`claude-mem@thedotmack`, `frontend-design@claude-plugins-official`)
   is installed and on, and inside its version range. anymodel does not load without them.
   ✗ says what to run: `anymodel setup` (its marketplace or the plugin is missing),
-  `claude plugin enable <id>` (you turned it off), or `claude plugin update <id>`;
-- Warp: the app and its version, and its Claude plugin. Not installed is information
-  (`·`). ✗ when the app is there without its plugin, or the plugin without the app;
+  `claude plugin enable <id>` (you turned it off), or `claude plugin update <id>` (too
+  old, or a version that is a commit id, which cannot be checked);
+- claude-mem is 13.35.0 or newer. Older is a warning (`!`), not a failure: before
+  13.35.0, a fresh install's vector search may not start (pydantic 2.14 broke
+  chroma-mcp; 13.35.0 pins pydantic below it);
+- Warp: the app and its version, and its Claude plugin. Not installed, or installed
+  without its plugin (or with it turned off), is information (`·`): Warp is optional.
+  ✗ only for the plugin without the app;
 - no other plugin named `anymodel` is enabled, and the plugin's old id `cc@cc-agentic`
   (its name before version 0.2.0) is not enabled either: two copies of the same hooks
   would run. When the old setup ran on this machine (its folder `~/.claude/cc-agentic`
@@ -184,8 +189,10 @@ Code installs and turns them on with it:
 claude-mem writes a summary of every session, by default with Claude Haiku on your own
 Claude login. When the [gateway](#the-ai-gateway-optional) is set up and claude-mem is
 installed (13.29.0 or newer), `setup` points claude-mem at the gateway's cheap model
-instead, with Claude Haiku as claude-mem's quota fallback (used when the cheap model
-cannot answer). It sets seven keys in `~/.claude-mem/settings.json`
+instead, with Claude Haiku as claude-mem's quota fallback: while the cheap model is in a
+quota or rate-limit cooldown, claude-mem sends its work to Claude, and hands it back
+once the cheap model answers again. It is not a fallback for a backend that is down or
+refuses its key. It sets seven keys in `~/.claude-mem/settings.json`
 (`$CLAUDE_MEM_DATA_DIR/settings.json` when you set that variable):
 
 - `CLAUDE_MEM_PROVIDER`: `openai-compatible`, with `…_PRESET` `custom`;
@@ -198,41 +205,62 @@ The rules:
 
 - **Your choice stands.** claude-mem writes its own defaults into the file on its first
   run; setup changes a key only while it holds that default (`""`, or `claude` for the
-  two providers). One key set to anything else, and setup changes none of them and says
-  so.
-- **Checked first.** Before it writes, setup asks the backend's `/v1/models` with the
-  key, and writes only when the backend answers and lists the model.
-- **The key is never printed**: the output shows its last four characters at most. The
-  file stays mode 600.
-- `restore` removes the keys setup set, so claude-mem goes back to its own defaults.
+  two providers), or the value setup wrote there itself. One key set to anything else
+  (also a key setup set and you changed since), or a key pool of your own in
+  `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS`, and setup changes none of them and says so.
+- **Checked first, the way claude-mem calls it.** Before it writes, setup sends the
+  backend one chat request (`POST <base URL>/chat/completions` with the model and the key,
+  `max_tokens: 1`), and writes only when it answers. A 401 or 403 is a refused key; a 404
+  means no OpenAI chat endpoint there (or, with `model_not_found`, no such model).
+  `--dry-run` sends nothing: it says which backend a real run would check.
+- **The key is never printed**: the output shows its last four characters at most. A
+  write that sets it leaves the file at mode 600.
+- **An old nested file** (only `env` at the top, with claude-mem's keys in it) is left
+  alone: claude-mem rewrites it flat when it next starts. Start a session, then run setup
+  again.
+- **The gateway has no cheap model any more** (removed, or its slots are Claude only)
+  while claude-mem still holds setup's keys: setup says so, and how to fix it (run setup
+  again once there is one, or `restore`).
+- `restore` removes the keys that still hold what setup wrote, so claude-mem goes back
+  to its own defaults; a key you changed since stays.
 
 ## Warp
 
-The [Warp](https://www.warp.dev) terminal is optional. Plain `setup` never installs an
-app; it adds Warp's Claude plugin (`warp@claude-code-warp`, from the marketplace
-`warpdotdev/claude-code-warp`) only when the Warp app is already there.
+The [Warp](https://www.warp.dev) terminal is optional. Plain `setup` never installs the
+app or its Claude plugin (`warp@claude-code-warp`, from the marketplace
+`warpdotdev/claude-code-warp`); only `--warp` does. When the app is there without the
+plugin, `doctor` says so and names `anymodel setup --warp`.
 
 `anymodel setup --warp` installs Warp through your system's own package manager, from
 Warp's signed source:
 
 | System | What runs |
 |---|---|
-| Debian, Ubuntu (x86_64) | Warp's key (downloaded over HTTPS, turned into apt's form by `gpg --dearmor`) into `/etc/apt/trusted.gpg.d/warpdotdev.gpg`, the source file `/etc/apt/sources.list.d/warpdotdev.sources` (kept when a Warp source is there already), `apt-get update`, `apt-get install -y warp-terminal`, all with `sudo` |
-| Fedora, RHEL | `rpm --import` of Warp's key, `/etc/yum.repos.d/warpdotdev.repo` (kept when there), `dnf install -y warp-terminal`, all with `sudo` |
+| Debian, Ubuntu (x86_64) | Warp's key (downloaded over HTTPS, checked, turned into apt's form by `gpg --dearmor`) into `/etc/apt/trusted.gpg.d/warpdotdev.gpg`, the source file `/etc/apt/sources.list.d/warpdotdev.sources` (the same file, text and Signed-By that Warp's own package writes; kept when a Warp source is there already), `apt-get update`, `apt-get install -y warp-terminal`, all with `sudo` |
+| Fedora, RHEL (x86_64, aarch64) | `rpm --import` of Warp's key from the checked copy (never straight from the URL), `/etc/yum.repos.d/warpdotdev.repo` (kept when there), `dnf install -y warp-terminal`, all with `sudo` |
 | macOS | `brew install --cask warp` |
 | anything else | a message with the download link, [warp.dev/download](https://www.warp.dev/download) |
 
-- **The exact commands are shown first, then asked.** With no terminal, setup prints
-  them and stops: nothing runs. `--yes` does not skip this question.
+- **Warp's key is pinned.** It is downloaded over HTTPS only (every redirect too), and
+  must hold exactly one key, with the fingerprint anymodel knows
+  (`0913165C78D5B7A41B42AC657FF7AB39D60F803F`). Anything else stops the Warp part with a
+  message that the key changed, before any command runs.
+- **The exact commands are shown first, then asked**, together with any other question,
+  before anything runs. With no terminal, or a "no", the Warp commands and Warp's plugin
+  are left out; the rest of setup is still done, and setup exits with 1. `--yes` does
+  not skip this question.
 - **`sudo` asks for your password on your terminal.** anymodel never sees, stores or
   pipes it, and never runs a downloaded script.
+- **A command fails half way:** setup lists the commands that ran before it, and says
+  that `anymodel setup --remove-warp` undoes them.
 - Then it adds Warp's Claude plugin.
 
 `anymodel setup --remove-warp` removes the app (`apt-get purge`, `dnf remove`, or
 `brew uninstall --cask`), Warp's package source and key files, your own Warp shortcuts
 (`~/Desktop/dev.warp.Warp.desktop`, `~/.local/share/applications/dev.warp.Warp.desktop`;
 each backed up first), and Warp's Claude plugin, with its marketplace when no other plugin
-of it is installed. Warp's own settings folders stay.
+of it is installed. On Fedora it removes from rpm only the key whose id is Warp's pinned
+key. Warp's own settings folders stay.
 
 ## The auto-mode block
 
@@ -242,8 +270,16 @@ trust rules (`autoMode.environment`) only from your user settings, never from a 
 in its `anymodel.json` (`autoMode`), and `anymodel setup`, run in that project (or with
 `--project <dir>`), copies them into `autoMode.environment` in your `settings.json`:
 
-- **Shown, then asked**, because these are trust rules. `--yes` writes them without the
-  question. With no terminal and no `--yes`, setup leaves them out and says so.
+- **Shown, then asked on a terminal**, because these are trust rules: a person at a
+  terminal always decides. `--yes` skips only the question. With no terminal they are
+  left out, also with `--yes`, and setup says so.
+- **In a worktree**, the question names the file the rules come from: the worktree's own
+  `anymodel.json`, or else the main checkout's. When the worktree's own file says
+  something else than the main checkout's, the question says so.
+- **A project setup cannot read** (an invalid `anymodel.json`, one that needs a newer
+  anymodel, git older than 2.31, or a worktree whose main checkout is gone) leaves only
+  the auto-mode entries out, with a `!` line that says why; the rest of setup is done.
+  Outside git, setup needs no git at all.
 - **Only its own entries.** setup adds each entry at the end of the list and owns it;
   it never changes or removes an entry it did not add. When there is no list yet, it
   starts the list with `"$defaults"`, so Claude Code's built-in entries stay in force.

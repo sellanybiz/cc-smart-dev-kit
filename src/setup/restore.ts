@@ -95,9 +95,11 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
 
 /**
  * Removes everything anymodel added, and keeps everything else:
- * - JSON files: the keys anymodel owns are removed (they did not exist before, or held a
- *   program's own default, because anymodel never overwrites a key someone chose). Keys
- *   others added stay. The list entries anymodel owns are taken out; other entries stay.
+ * - JSON files: the keys anymodel owns are removed while they still hold the value
+ *   anymodel wrote (they did not exist before, or held a program's own default, because
+ *   anymodel never overwrites a key someone chose). A key the person changed since stays,
+ *   and so do keys others added. The list entries anymodel owns are taken out; other
+ *   entries stay.
  * - Markdown files: the anymodel block is removed; the text around it stays.
  * - Files anymodel owns whole (the launcher): back to the state before anymodel's first
  *   change, or removed when anymodel created them.

@@ -9,9 +9,9 @@ import type { Machine } from "./machine";
 
 /**
  * The Warp terminal and its Claude plugin. Opt-in: plain `setup` never installs a system
- * app. `setup --warp` installs Warp through the system's own package manager, from Warp's
- * signed source, then its Claude plugin; `setup --remove-warp` takes both out again.
- * Plain `setup` adds the plugin when the Warp app is already there.
+ * app or Warp's plugin. `setup --warp` installs Warp through the system's own package
+ * manager, from Warp's signed source, then its Claude plugin; `setup --remove-warp` takes
+ * both out again.
  *
  * Every command that needs root runs in front of the person, after they saw the exact
  * list and said yes, on their terminal: `sudo` asks for the password itself. anymodel
@@ -23,21 +23,38 @@ export const WARP_MARKETPLACE = "claude-code-warp";
 export const WARP_DOWNLOAD_URL = "https://www.warp.dev/download";
 /** Warp's signing key, as its install guide names it. */
 export const WARP_KEY_URL = "https://releases.warp.dev/linux/keys/warp.asc";
+/**
+ * The fingerprint of Warp's signing key ("Warp Linux Maintainers (Package Signing
+ * Authority)"), pinned: a downloaded key with another fingerprint is refused. Taken from
+ * the key at WARP_KEY_URL (`gpg --show-keys`) and checked against the copy built into
+ * Warp's own package (the postinst script of warp-terminal 0.2026.10.07.08.29.stable.00,
+ * from Warp's apt repository): both give this fingerprint.
+ */
+export const WARP_KEY_FINGERPRINT = "0913165C78D5B7A41B42AC657FF7AB39D60F803F";
 const PACKAGE = "warp-terminal";
 
-/** Where Warp's own package keeps its key (its upgrades rewrite this file). */
+/**
+ * The key and source paths Warp's own package uses. Its postinst writes the key to
+ * `<apt trustedparts>/warpdotdev.gpg` on every install and upgrade, and the source to
+ * `<apt sourceparts>/warpdotdev.sources` (deb822) when neither that nor `warpdotdev.list`
+ * is there; its purge removes all three. With apt's default folders those are the paths
+ * below, so anymodel writes the same files with the same text, and apt never sees two
+ * Warp sources or two Signed-By values.
+ */
 export const APT_KEY = "/etc/apt/trusted.gpg.d/warpdotdev.gpg";
 export const APT_SOURCE = "/etc/apt/sources.list.d/warpdotdev.sources";
-/** The one-line source file the package itself, or Warp's guide, may have written. */
+/** The one-line source file an older package, or Warp's manual guide, wrote. */
 export const APT_LIST = "/etc/apt/sources.list.d/warpdotdev.list";
 /** The key file Warp's manual apt guide uses. */
 export const APT_GUIDE_KEY = "/etc/apt/keyrings/warpdotdev.gpg";
 export const YUM_REPO = "/etc/yum.repos.d/warpdotdev.repo";
-export const MAC_APP = "/Applications/Warp.app";
 const DESKTOP_ENTRY = "dev.warp.Warp.desktop";
 
-/** The apt source, in the deb822 form; checked with the key above. */
-export const APT_SOURCE_TEXT = `Types: deb
+/** The apt source, byte for byte what Warp's package writes itself (its postinst). */
+export const APT_SOURCE_TEXT = `### THIS FILE IS AUTOMATICALLY CONFIGURED ###
+# You may comment out this entry, but other modifications to the file may be lost.
+
+Types: deb
 URIs: https://releases.warp.dev/linux/deb
 Suites: stable
 Components: main
@@ -101,6 +118,13 @@ export function detectSystem(machine: Machine): WarpSystem {
     if (machine.which("dnf") === null || machine.which("rpm") === null) {
       return { kind: "none", reason: `dnf is missing. Download Warp: ${WARP_DOWNLOAD_URL}` };
     }
+    // Warp's rpm repository has x86_64 and aarch64 builds (its repodata, read 2026-10-15).
+    if (machine.arch !== "x64" && machine.arch !== "arm64") {
+      return {
+        kind: "none",
+        reason: `Warp's rpm source has x86_64 and aarch64 builds; this machine is ${machine.arch}. Download Warp: ${WARP_DOWNLOAD_URL}`,
+      };
+    }
     return { kind: "dnf" };
   }
   return {
@@ -144,12 +168,12 @@ export function detectWarpApp(machine: Machine, system: WarpSystem): WarpApp {
           viaBrew: true,
         };
       }
-      return machine.exists(MAC_APP)
+      return machine.exists(machine.macApp)
         ? { installed: true, version: null, viaBrew: false }
         : { installed: false, version: null };
     }
     case "none":
-      if (machine.platform === "darwin" && machine.exists(MAC_APP)) {
+      if (machine.platform === "darwin" && machine.exists(machine.macApp)) {
         return { installed: true, version: null, viaBrew: false };
       }
       return machine.which(PACKAGE) !== null
@@ -196,7 +220,8 @@ export function warpInstallCommands(
       ];
     case "dnf":
       return [
-        ["sudo", "rpm", "--import", WARP_KEY_URL],
+        // The key downloaded and checked against the pinned fingerprint, never straight from the URL.
+        ["sudo", "rpm", "--import", join(stage, "warp.asc")],
         ...(machine.exists(YUM_REPO) ? [] : [install(join(stage, "warpdotdev.repo"), YUM_REPO)]),
         ["sudo", "dnf", "install", "-y", PACKAGE],
       ];
@@ -208,9 +233,41 @@ export function warpInstallCommands(
 }
 
 /**
- * Makes the files the install commands hand to `sudo install`: Warp's key, downloaded
- * over HTTPS and turned into the binary form apt reads (`gpg --dearmor`), and the source
- * file. Runs only right before the commands, after the person said yes.
+ * The fingerprint of the one key in `file`, read with `gpg --show-keys` (it imports
+ * nothing; its home folder is a fresh one in the stage, never the person's). Throws when
+ * the file holds no key, or more than one: every key in it would be trusted.
+ */
+function keyFingerprint(machine: Machine, stage: string, file: string): string {
+  const home = join(stage, "gnupg");
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const shown = machine.run([
+    "gpg",
+    "--homedir",
+    home,
+    "--batch",
+    "--show-keys",
+    "--with-colons",
+    file,
+  ]);
+  if (shown.exitCode !== 0) {
+    throw new Error(`gpg could not read Warp's key: ${shown.output.trim()}`);
+  }
+  const lines = shown.output.split("\n");
+  const primaries = lines.flatMap((line, index) => (line.startsWith("pub:") ? [index] : []));
+  if (primaries.length !== 1) {
+    throw new Error(
+      `the file at ${WARP_KEY_URL} holds ${primaries.length} keys, not Warp's one key. Nothing was installed`,
+    );
+  }
+  const fpr = lines[(primaries[0] ?? 0) + 1] ?? "";
+  return fpr.startsWith("fpr:") ? (fpr.split(":")[9] ?? "").toUpperCase() : "";
+}
+
+/**
+ * Makes the files the install commands use: Warp's key, downloaded over HTTPS and
+ * checked against the pinned fingerprint, then (apt) turned into the binary form apt
+ * reads (`gpg --dearmor`); and the source or repository file. Runs only right before the
+ * commands, after the person said yes.
  */
 export async function stageWarpFiles(
   machine: Machine,
@@ -221,13 +278,21 @@ export async function stageWarpFiles(
   rmSync(stage, { recursive: true, force: true });
   mkdirSync(stage, { recursive: true, mode: 0o700 });
   chmodSync(stage, 0o700);
+  if (system.kind !== "apt" && system.kind !== "dnf") return;
+  if (machine.which("gpg") === null) {
+    throw new Error("gpg is missing; it checks Warp's signing key. Install gpg first");
+  }
+  const key = join(stage, "warp.asc");
+  writeFileSync(key, await machine.fetchText(WARP_KEY_URL), { mode: 0o644 });
+  const fingerprint = keyFingerprint(machine, stage, key);
+  if (fingerprint !== WARP_KEY_FINGERPRINT) {
+    throw new Error(
+      `Warp's signing key changed: ${WARP_KEY_URL} now holds the key ${fingerprint || "(none)"}, ` +
+        `and anymodel expects ${WARP_KEY_FINGERPRINT}. Nothing was installed. ` +
+        `If Warp really changed its key, an anymodel update brings the new one; until then, install Warp by hand: ${WARP_DOWNLOAD_URL}`,
+    );
+  }
   if (system.kind === "apt") {
-    if (machine.which("gpg") === null) {
-      throw new Error(
-        "gpg is missing; it turns Warp's key into the form apt reads. Install gpg first.",
-      );
-    }
-    writeFileSync(join(stage, "warp.asc"), await machine.fetchText(WARP_KEY_URL), { mode: 0o644 });
     const dearmor = machine.run([
       "gpg",
       "--dearmor",
@@ -259,19 +324,25 @@ export function warpRemoveCommands(machine: Machine, system: WarpSystem, app: Wa
     case "dnf": {
       if (app.installed) commands.push(["sudo", "dnf", "remove", "-y", PACKAGE]);
       if (machine.exists(YUM_REPO)) commands.push(["sudo", "rm", "-f", YUM_REPO]);
-      // rpm keeps each imported key as a gpg-pubkey package; Warp's names Warp.
+      // rpm keeps each imported key as a gpg-pubkey package whose version is the key's id:
+      // the last 8 hex digits of its fingerprint (or more of it, in newer rpm). Only the
+      // one matching the pinned fingerprint is Warp's; a name or summary proves nothing.
       const keys = machine.run([
         "rpm",
         "-q",
         "gpg-pubkey",
         "--qf",
-        "%{NAME}-%{VERSION}-%{RELEASE}\t%{SUMMARY}\n",
+        "%{NAME}-%{VERSION}-%{RELEASE}\t%{VERSION}\n",
       ]);
+      const pinned = WARP_KEY_FINGERPRINT.toLowerCase();
       const warpKeys =
         keys.exitCode === 0
           ? keys.output
               .split("\n")
-              .filter((line) => /warp/i.test(line.split("\t")[1] ?? ""))
+              .filter((line) => {
+                const id = (line.split("\t")[1] ?? "").trim().toLowerCase();
+                return /^[0-9a-f]{8,}$/.test(id) && pinned.endsWith(id);
+              })
               .map((line) => line.split("\t")[0] ?? "")
               .filter((name) => name !== "")
           : [];
@@ -369,7 +440,11 @@ export function showCommand(argv: readonly string[]): string {
     .join(" ");
 }
 
-/** Doctor's Warp line: the app, its version, its plugin, and a plugin left with no app. */
+/**
+ * Doctor's Warp line: the app, its version, its plugin, and a plugin left with no app.
+ * Warp is optional, and so is its plugin: the app without the plugin, or with the plugin
+ * turned off, is information, never a failure.
+ */
 export function warpCheck(
   machine: Machine,
   paths: CliPaths,
@@ -388,14 +463,16 @@ export function warpCheck(
   }
   if (!plugin) {
     return {
-      ok: false,
-      text: `Warp${version} is installed, but its Claude plugin is not. Run: anymodel setup`,
+      ok: true,
+      info: true,
+      text: `Warp${version} is installed, without its Claude plugin (optional: anymodel setup --warp)`,
     };
   }
   if (!pluginEnabled(paths, WARP_PLUGIN_ID)) {
     return {
-      ok: false,
-      text: `Warp${version} is installed, but its Claude plugin is turned off. Run: claude plugin enable ${WARP_PLUGIN_ID}`,
+      ok: true,
+      info: true,
+      text: `Warp${version} is installed, with its Claude plugin turned off (optional: claude plugin enable ${WARP_PLUGIN_ID})`,
     };
   }
   return { ok: true, text: `Warp${version} is installed, with its Claude plugin` };

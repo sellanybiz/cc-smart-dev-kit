@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   chmodSync,
   lstatSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   statSync,
@@ -38,14 +39,14 @@ function setup(content: unknown = USER_SETTINGS) {
 const read = (file: string) => JSON.parse(readFileSync(file, "utf8"));
 
 describe("applyManagedJson", () => {
-  test("adds an owned key and records it in owned.json", () => {
+  test("adds an owned key and records it in owned.json, with the value it wrote", () => {
     const { file, stateDir } = setup();
     const result = applyManagedJson({ file, stateDir, set: [[AUTO_UPDATE, true]] });
     expect(result.written).toBe(true);
     expect(result.changes).toEqual([{ path: AUTO_UPDATE, before: undefined, after: true }]);
     expect(read(file).extraKnownMarketplaces["anymodel"].autoUpdate).toBe(true);
     expect(read(join(stateDir, "owned.json"))).toEqual({
-      [file]: [["extraKnownMarketplaces", "anymodel", "autoUpdate"]],
+      [file]: [{ path: ["extraKnownMarketplaces", "anymodel", "autoUpdate"], value: true }],
     });
   });
 
@@ -174,6 +175,106 @@ describe("applyManagedJson", () => {
   });
 });
 
+describe("applyManagedJson: an owned key remembers the value anymodel wrote", () => {
+  test("the person changes an owned key: it is theirs; setup does not overwrite it, restore leaves it and lets it go", () => {
+    const { file, stateDir } = setup();
+    applyManagedJson({ file, stateDir, set: [[AUTO_UPDATE, true]] });
+    const settings = read(file);
+    settings.extraKnownMarketplaces.anymodel.autoUpdate = false;
+    writeFileSync(file, JSON.stringify(settings, null, 2));
+    const before = readFileSync(file, "utf8");
+    expect(() => applyManagedJson({ file, stateDir, set: [[AUTO_UPDATE, true]] })).toThrow(
+      `${file}: extraKnownMarketplaces.anymodel.autoUpdate is false: it was changed after anymodel set it, so it is your choice now.`,
+    );
+    expect(readFileSync(file, "utf8")).toBe(before);
+
+    const result = applyManagedJson({ file, stateDir, remove: [AUTO_UPDATE] });
+    expect(result.changes).toEqual([]);
+    expect(result.skipped).toEqual([
+      { path: AUTO_UPDATE, reason: "changed since anymodel set it; left alone" },
+    ]);
+    expect(read(file).extraKnownMarketplaces.anymodel.autoUpdate).toBe(false);
+    expect(read(join(stateDir, "owned.json"))).toEqual({});
+  });
+
+  test("restore removes an owned key only while it holds anymodel's value", () => {
+    const { file, stateDir } = setup();
+    applyManagedJson({
+      file,
+      stateDir,
+      set: [
+        [["statusLine"], "ours"],
+        [AUTO_UPDATE, true],
+      ],
+    });
+    const settings = read(file);
+    settings.statusLine = "mine";
+    writeFileSync(file, JSON.stringify(settings, null, 2));
+    expect(restore(stateDir)).toEqual([
+      expect.objectContaining({
+        file,
+        action: "cleaned",
+        details: ["extraKnownMarketplaces.anymodel.autoUpdate"],
+      }),
+    ]);
+    expect(read(file).statusLine).toBe("mine");
+    expect(read(file).extraKnownMarketplaces.anymodel.autoUpdate).toBeUndefined();
+  });
+
+  test("a program's own default in an owned key is still anymodel's to set", () => {
+    const { file, stateDir } = setup({});
+    const unchosen = (_path: readonly string[], value: unknown) => value === "";
+    applyManagedJson({ file, stateDir, set: [[["provider"], "cheap"]], unchosen });
+    // The program reset its settings to its defaults.
+    writeFileSync(file, JSON.stringify({ provider: "" }));
+    const result = applyManagedJson({ file, stateDir, set: [[["provider"], "cheap"]], unchosen });
+    expect(result.changes).toEqual([{ path: ["provider"], before: "", after: "cheap" }]);
+  });
+
+  test("an older owned.json (paths only) still counts as owned, and gets the value on the next run", () => {
+    const { file, stateDir } = setup({ statusLine: "old" });
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, "owned.json"), JSON.stringify({ [file]: [["statusLine"]] }));
+    const result = applyManagedJson({ file, stateDir, set: [[["statusLine"], "new"]] });
+    expect(result.changes).toEqual([{ path: ["statusLine"], before: "old", after: "new" }]);
+    expect(read(join(stateDir, "owned.json"))).toEqual({
+      [file]: [{ path: ["statusLine"], value: "new" }],
+    });
+
+    // Already the wanted value: no write to the file, only the value recorded.
+    writeFileSync(join(stateDir, "owned.json"), JSON.stringify({ [file]: [["statusLine"]] }));
+    const mtime = statSync(file).mtimeMs;
+    const again = applyManagedJson({ file, stateDir, set: [[["statusLine"], "new"]] });
+    expect(again.written).toBe(false);
+    expect(statSync(file).mtimeMs).toBe(mtime);
+    expect(read(join(stateDir, "owned.json"))).toEqual({
+      [file]: [{ path: ["statusLine"], value: "new" }],
+    });
+  });
+
+  test("a secret: owned.json keeps only its hash; the file ends at mode 600; another secret there is the person's", () => {
+    const { file, stateDir } = setup({ other: 1 });
+    chmodSync(file, 0o644);
+    const secret = (path: readonly string[]) => path.at(-1) === "API_KEY";
+    const key = "sk-planted-SECRET-0123456789abcdef";
+    applyManagedJson({ file, stateDir, set: [[["API_KEY"], key]], secret });
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    const ownedText = readFileSync(join(stateDir, "owned.json"), "utf8");
+    expect(ownedText).not.toContain("sk-planted");
+    expect(JSON.parse(ownedText)[file]).toEqual([
+      {
+        path: ["API_KEY"],
+        // sha256 of "\"sk-planted-SECRET-0123456789abcdef\"" (the value as JSON).
+        sha256: "3dbcec2ab8a742d733b3c61dd9625c4ca38695ef2e65935f794894052f27a65d",
+      },
+    ]);
+    writeFileSync(file, JSON.stringify({ other: 1, API_KEY: "sk-their-own-0000000000" }));
+    expect(() => applyManagedJson({ file, stateDir, set: [[["API_KEY"], key]], secret })).toThrow(
+      "API_KEY is a secret: it was changed after anymodel set it",
+    );
+  });
+});
+
 describe("applyManagedJson when another program writes the file at the same time", () => {
   test("a write between our read and our write is kept, and ours is redone", () => {
     const { file, stateDir } = setup();
@@ -223,7 +324,7 @@ describe("applyManagedJson when another program writes the file at the same time
     // anymodel already owns another key in this file; that claim must survive.
     applyManagedJson({ file, stateDir, set: [[["statusLine"], "ours"]] });
     const ownedBefore = read(join(stateDir, "owned.json"));
-    expect(ownedBefore).toEqual({ [file]: [["statusLine"]] });
+    expect(ownedBefore).toEqual({ [file]: [{ path: ["statusLine"], value: "ours" }] });
     let calls = 0;
     expect(() =>
       applyManagedJson({

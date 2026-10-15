@@ -11,14 +11,21 @@ messages, branch names.
 
 - **Neutral examples only:** `example-org/anymodel`, `my-app`, `app-wt-`,
   `test@example.com`, `/home/user`. Never a real repo, host name, user name or home path.
-- **The one exception:** the publisher metadata of the two manifests —
+- **Exception 1, the publisher:** the publisher metadata of the two manifests —
   `.claude-plugin/marketplace.json` (`owner`) and `plugin/.claude-plugin/plugin.json`
   (`author`, `repository`). Nothing else in those two files names anyone either.
+- **Exception 2, third-party package coordinates:** the ids of the third-party plugins
+  and marketplaces the plugin depends on or installs — a plugin id
+  (`claude-mem@thedotmack`), a dependency's marketplace name, the GitHub `owner/repo` a
+  marketplace is added from (`warpdotdev/claude-code-warp`). They are addresses a
+  machine needs, allowed in the manifests, in code and in the docs that name the
+  command to run. They never stand for the owner, a person or a team in prose, and
+  never point at the publisher's own projects.
 - **The code never writes the publisher as text.** It reads the repository from
   `plugin.json` at build time (`src/build-info/`, a Bun macro) and uses
   `MARKETPLACE_SOURCE`. So the publisher reaches command output in one place, built
   from the manifest: the CLI prints `claude plugin marketplace add <publisher>/anymodel`
-  (for example when setup finds no marketplace). That is part of the exception.
+  (for example when setup finds no marketplace). That is part of exception 1.
 
 ## Project details come from the project
 

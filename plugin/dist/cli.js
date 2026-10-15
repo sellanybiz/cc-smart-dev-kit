@@ -1,7 +1,7 @@
 // @bun
 // src/entries/cli.ts
 import { existsSync as existsSync20, statSync as statSync5 } from "fs";
-import { join as join11, resolve as resolve2 } from "path";
+import { join as join12, resolve as resolve2 } from "path";
 
 // src/build-info/names.ts
 var MARKETPLACE = "anymodel";
@@ -33,7 +33,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/cli/doctor.ts
-import { accessSync, constants, existsSync as existsSync11, readFileSync as readFileSync12 } from "fs";
+import { accessSync, constants, existsSync as existsSync12, readFileSync as readFileSync12 } from "fs";
 import { join as join8 } from "path";
 
 // src/gateway/doctor.ts
@@ -6680,6 +6680,7 @@ async function withLock(stateDir, fn, options = {}) {
 }
 
 // src/setup/managed-json.ts
+import { createHash } from "crypto";
 import { existsSync as existsSync2, readFileSync as readFileSync4 } from "fs";
 import { join as join4 } from "path";
 var OWNED_FILE = "owned.json";
@@ -6718,6 +6719,20 @@ function readJsonObject(file) {
   const indent = /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
   return { data: parsed, indent, text };
 }
+function toRecord(entry, file) {
+  if (Array.isArray(entry) && entry.every((segment) => typeof segment === "string")) {
+    return { path: [...entry] };
+  }
+  if (isObject2(entry) && Array.isArray(entry.path) && entry.path.every((segment) => typeof segment === "string")) {
+    const record = { path: [...entry.path] };
+    if (Object.hasOwn(entry, "value"))
+      record.value = entry.value;
+    if (typeof entry.sha256 === "string")
+      record.sha256 = entry.sha256;
+    return record;
+  }
+  throw new Error(`Invalid ${file}: an owned key that is neither a path nor a record`);
+}
 function readOwned(stateDir) {
   const file = join4(stateDir, OWNED_FILE);
   if (!existsSync2(file))
@@ -6725,14 +6740,45 @@ function readOwned(stateDir) {
   const parsed = JSON.parse(readFileSync4(file, "utf8"));
   if (!isObject2(parsed))
     throw new Error(`Invalid ${file}: expected an object`);
-  return parsed;
+  const owned = {};
+  for (const [target, entries] of Object.entries(parsed)) {
+    if (!Array.isArray(entries))
+      throw new Error(`Invalid ${file}: expected a list per file`);
+    owned[target] = entries.map((entry) => toRecord(entry, file));
+  }
+  return owned;
 }
 function writeOwned(stateDir, owned) {
   atomicWrite(join4(stateDir, OWNED_FILE), `${JSON.stringify(owned, null, 2)}
 `, 384);
 }
 function ownedKeys(stateDir, file) {
+  return ownedRecords(stateDir, file).map((record) => record.path);
+}
+function ownedRecords(stateDir, file) {
   return readOwned(stateDir)[file] ?? [];
+}
+function hashOf(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+function recordOf(path, value, secret) {
+  return secret ? { path: [...path], sha256: hashOf(value) } : { path: [...path], value };
+}
+function ownership(records, path, current, unchosen) {
+  const record = records.find((entry) => samePath(entry.path, path));
+  if (record === undefined)
+    return "none";
+  if (!current.found)
+    return "ours";
+  if (record.sha256 !== undefined) {
+    if (hashOf(current.value) === record.sha256)
+      return "ours";
+  } else if (!Object.hasOwn(record, "value")) {
+    return "ours";
+  } else if (Bun.deepEquals(current.value, record.value, true)) {
+    return "ours";
+  }
+  return unchosen?.(path, current.value) ? "ours" : "changed";
 }
 function getKey(data, path) {
   let node = data;
@@ -6771,49 +6817,79 @@ function applyManagedJson(options) {
 }
 function applyOnce(file, options, owned) {
   const { data, indent, text } = readJsonObject(file);
-  const ownedHere = (owned[file] ?? []).map((path) => [...path]);
-  const isOwned = (path) => ownedHere.some((entry) => samePath(entry, path));
+  const ownedHere = owned[file] ?? [];
+  const isSecret = (path) => options.secret?.(path) ?? false;
+  const shown = (path, value) => isSecret(path) ? "a secret" : JSON.stringify(value);
   const changes = [];
   const skipped = [];
-  const claimed = [];
-  const released = [];
+  const updated = [];
+  const dropped = [];
+  let setsSecret = false;
   for (const [path, value] of options.set ?? []) {
     if (path.length === 0)
       throw new Error("applyManagedJson: an empty key path");
+    if (isSecret(path))
+      setsSecret = true;
     const current = getKey(data, path);
+    const whose = ownership(ownedHere, path, current, options.unchosen);
     if (current.found && Bun.deepEquals(current.value, value, true)) {
-      if (!isOwned(path))
+      if (whose === "none") {
         skipped.push({ path, reason: "already set by someone else; left alone" });
+      } else if (whose === "changed") {
+        skipped.push({ path, reason: "set by you since; left alone, no longer anymodel's" });
+        dropped.push(path);
+      } else {
+        updated.push(recordOf(path, value, isSecret(path)));
+      }
       continue;
     }
-    if (current.found && !isOwned(path) && !options.unchosen?.(path, current.value)) {
-      const shown = options.secret?.(path) ? "a secret" : JSON.stringify(current.value);
-      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown}, set by someone else. ` + "anymodel does not overwrite it. Remove it by hand if anymodel should manage it.");
+    if (current.found && whose === "changed") {
+      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}: it was changed after anymodel set it, so it is your choice now. ` + "anymodel does not overwrite it. Remove it by hand if anymodel should manage it again.");
+    }
+    if (current.found && whose === "none" && !options.unchosen?.(path, current.value)) {
+      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}, set by someone else. ` + "anymodel does not overwrite it. Remove it by hand if anymodel should manage it.");
     }
     setKey(data, path, value);
     changes.push({ path, before: current.found ? current.value : undefined, after: value });
-    if (!isOwned(path))
-      claimed.push([...path]);
+    updated.push(recordOf(path, value, isSecret(path)));
   }
   for (const path of options.remove ?? []) {
-    if (!isOwned(path)) {
+    const current = getKey(data, path);
+    const whose = ownership(ownedHere, path, current);
+    if (whose === "none") {
       skipped.push({ path, reason: "not owned by anymodel; left alone" });
       continue;
     }
-    released.push([...path]);
-    const current = getKey(data, path);
+    dropped.push(path);
+    if (whose === "changed") {
+      skipped.push({ path, reason: "changed since anymodel set it; left alone" });
+      continue;
+    }
     if (!current.found)
       continue;
     deleteKey(data, path);
     changes.push({ path, before: current.value, after: undefined });
   }
-  const ownedChanged = claimed.length > 0 || released.length > 0;
+  const touched = (entry) => updated.some((record) => samePath(record.path, entry.path)) || dropped.some((path) => samePath(path, entry.path));
+  const finalOwned = [...ownedHere.filter((entry) => !touched(entry)), ...updated];
+  const ownedChanged = !Bun.deepEquals([...finalOwned].sort(byPath), [...ownedHere].sort(byPath), true);
   if (options.dryRun || changes.length === 0 && !ownedChanged) {
     return { file, changes, skipped, written: false, backup: null };
   }
-  const finalOwned = [...ownedHere, ...claimed].filter((entry) => !released.some((path) => samePath(path, entry)));
-  if (claimed.length > 0)
-    writeOwned(options.stateDir, { ...owned, [file]: [...ownedHere, ...claimed] });
+  const nextState = (records) => {
+    const next = { ...owned, [file]: records };
+    if (records.length === 0)
+      delete next[file];
+    return next;
+  };
+  const changedPaths = changes.filter((change) => change.after !== undefined);
+  if (changedPaths.length > 0) {
+    const pending = [
+      ...ownedHere.filter((entry) => !changedPaths.some((c) => samePath(c.path, entry.path))),
+      ...changedPaths.map((change) => ({ path: [...change.path] }))
+    ];
+    writeOwned(options.stateDir, nextState(pending));
+  }
   let written = false;
   let backup = null;
   if (changes.length > 0) {
@@ -6825,23 +6901,24 @@ function applyOnce(file, options, owned) {
         stateDir: options.stateDir,
         kind: "json-keys",
         newFileMode: 384,
+        ...setsSecret && { mode: 384 },
         expectedContent: text
       });
     } catch (error) {
-      if (claimed.length > 0)
+      if (changedPaths.length > 0)
         writeOwned(options.stateDir, owned);
       throw error;
     }
     written = result.outcome !== "unchanged";
     backup = result.backup;
   }
-  if (released.length > 0 || claimed.length > 0) {
-    const next = { ...owned, [file]: finalOwned };
-    if (finalOwned.length === 0)
-      delete next[file];
-    writeOwned(options.stateDir, next);
-  }
+  writeOwned(options.stateDir, nextState(finalOwned));
   return { file, changes, skipped, written, backup };
+}
+function byPath(a, b) {
+  const left = JSON.stringify(a.path);
+  const right = JSON.stringify(b.path);
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 // src/gateway/router.ts
@@ -8437,31 +8514,8 @@ async function gatewayChecks(options) {
   return checks;
 }
 
-// src/machine/companions.ts
-import { existsSync as existsSync8, readFileSync as readFileSync9 } from "fs";
-
-// src/project/version-range.ts
-var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
-var IDENT = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
-var PARTIAL = `v?${NUMBER}(?:\\.${NUMBER}(?:\\.${NUMBER}(?:-${IDENT})?(?:\\+${IDENT})?)?)?`;
-var COMPARATOR = new RegExp(`^(?:[<>]=?|=|\\^|~)?${PARTIAL}$`);
-var HYPHEN = new RegExp(`^(${PARTIAL})\\s+-\\s+(${PARTIAL})$`);
-function isValidRange(range) {
-  const alternatives = range.split("||").map((part) => part.trim());
-  if (alternatives.some((part) => part === ""))
-    return false;
-  return alternatives.every((part) => {
-    if (HYPHEN.test(part))
-      return true;
-    const comparators = part.replace(/([<>]=?|=|\^|~)\s+/g, "$1").split(/\s+/);
-    return comparators.every((comparator) => COMPARATOR.test(comparator));
-  });
-}
-function satisfiesRange(version, range) {
-  if (!isValidRange(range))
-    throw new Error(`"${range}" is not a valid version range`);
-  return Bun.semver.satisfies(version, range);
-}
+// src/machine/claude-mem.ts
+import { existsSync as existsSync10 } from "fs";
 
 // src/setup/installed-plugins.ts
 import { existsSync as existsSync7, readFileSync as readFileSync8 } from "fs";
@@ -8487,514 +8541,15 @@ function findUserInstall(installedPluginsFile, pluginId = PLUGIN_ID) {
   };
 }
 
-// src/machine/companions.ts
-var MARKETPLACE_SOURCES = {
-  thedotmack: "thedotmack/claude-mem",
-  "claude-plugins-official": "anthropics/claude-plugins-official",
-  "claude-code-warp": "warpdotdev/claude-code-warp"
-};
-function companions(dependencies = DEPENDENCIES) {
-  return dependencies.map((dependency) => {
-    const source = MARKETPLACE_SOURCES[dependency.marketplace];
-    if (source === undefined) {
-      throw new Error(`plugin.json depends on ${dependency.name}@${dependency.marketplace}, but anymodel does not know where the ${dependency.marketplace} marketplace comes from (MARKETPLACE_SOURCES)`);
-    }
-    return {
-      id: `${dependency.name}@${dependency.marketplace}`,
-      name: dependency.name,
-      marketplace: dependency.marketplace,
-      range: dependency.version ?? null,
-      source
-    };
-  });
-}
-function readJson(file) {
-  if (!existsSync8(file))
-    return null;
-  try {
-    const parsed = JSON.parse(readFileSync9(file, "utf8"));
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-function marketplaceAdded(paths, name) {
-  const known = readJson(paths.knownMarketplacesFile);
-  return known !== null && Object.hasOwn(known, name);
-}
-function pluginEnabled(paths, id) {
-  const enabled = readJson(paths.settingsFile)?.enabledPlugins;
-  return typeof enabled === "object" && enabled !== null && enabled[id] === true;
-}
-function comparableVersion(version) {
-  if (version === null)
-    return null;
-  const plain = version.replace(/-[0-9a-f]{12}$/, "");
-  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(plain) ? plain : null;
-}
-function companionState(paths, companion) {
-  const install = findUserInstall(paths.installedPluginsFile, companion.id);
-  if (install === null || !existsSync8(install.installPath)) {
-    return marketplaceAdded(paths, companion.marketplace) ? { kind: "not-installed" } : { kind: "no-marketplace" };
-  }
-  const version = install.version;
-  if (!pluginEnabled(paths, companion.id))
-    return { kind: "off", version };
-  if (companion.range !== null && isValidRange(companion.range)) {
-    const comparable = comparableVersion(version);
-    if (comparable === null || !Bun.semver.satisfies(comparable, companion.range)) {
-      return { kind: "outside-range", version };
-    }
-  }
-  return { kind: "ok", version };
-}
-function companionPlan(paths, list = companions()) {
-  const steps = [];
-  const notes = [];
-  for (const companion of list) {
-    const state = companionState(paths, companion);
-    switch (state.kind) {
-      case "no-marketplace":
-        steps.push({
-          argv: ["claude", "plugin", "marketplace", "add", companion.source],
-          line: `+ marketplace ${companion.marketplace} (${companion.source}), which installs ${companion.id}`
-        });
-        break;
-      case "not-installed":
-        steps.push({
-          argv: ["claude", "plugin", "install", companion.id],
-          line: `+ plugin ${companion.id}`
-        });
-        break;
-      case "off":
-        notes.push(`! ${companion.id} is turned off, and anymodel does not load without it. Run: claude plugin enable ${companion.id}`);
-        break;
-      case "outside-range":
-        notes.push(`! ${companion.id} ${state.version ?? "(no version)"} is outside ${companion.range}, and anymodel does not load with it. Run: claude plugin update ${companion.id}`);
-        break;
-      case "ok":
-        break;
-    }
-  }
-  return { steps, notes };
-}
-function runCompanionSteps(steps, machine) {
-  const lines = [];
-  let ok = true;
-  for (const step of steps) {
-    const result = machine.run(step.argv);
-    if (result.exitCode === 0) {
-      lines.push(step.line);
-    } else {
-      ok = false;
-      const reason = result.output.trim().split(`
-`).at(-1) ?? "";
-      lines.push(`! ${step.argv.join(" ")} failed (exit ${result.exitCode}): ${reason}`);
-    }
-  }
-  return { lines, ok };
-}
-function companionChecks(paths, list = companions()) {
-  return list.map((companion) => companionCheck(paths, companion));
-}
-function companionCheck(paths, companion) {
-  {
-    const state = companionState(paths, companion);
-    switch (state.kind) {
-      case "no-marketplace":
-        return {
-          ok: false,
-          text: `the ${companion.marketplace} marketplace is not added, so ${companion.id} is missing and anymodel does not load. Run: anymodel setup`
-        };
-      case "not-installed":
-        return {
-          ok: false,
-          text: `${companion.id} is not installed, and anymodel does not load without it. Run: anymodel setup`
-        };
-      case "off":
-        return {
-          ok: false,
-          text: `${companion.id} is turned off, and anymodel does not load without it. Run: claude plugin enable ${companion.id}`
-        };
-      case "outside-range":
-        return {
-          ok: false,
-          text: `${companion.id} ${state.version ?? "(no version)"} is outside ${companion.range}. Run: claude plugin update ${companion.id}`
-        };
-      case "ok":
-        return {
-          ok: true,
-          text: `${companion.id} ${state.version ?? "(no version)"} is installed and on`
-        };
-    }
-  }
-}
-
-// src/machine/warp.ts
-import { chmodSync as chmodSync2, existsSync as existsSync9, mkdirSync as mkdirSync4, readFileSync as readFileSync10, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "fs";
-import { join as join6 } from "path";
-var WARP_PLUGIN_ID = "warp@claude-code-warp";
-var WARP_MARKETPLACE = "claude-code-warp";
-var WARP_DOWNLOAD_URL = "https://www.warp.dev/download";
-var WARP_KEY_URL = "https://releases.warp.dev/linux/keys/warp.asc";
-var PACKAGE = "warp-terminal";
-var APT_KEY = "/etc/apt/trusted.gpg.d/warpdotdev.gpg";
-var APT_SOURCE = "/etc/apt/sources.list.d/warpdotdev.sources";
-var APT_LIST = "/etc/apt/sources.list.d/warpdotdev.list";
-var APT_GUIDE_KEY = "/etc/apt/keyrings/warpdotdev.gpg";
-var YUM_REPO = "/etc/yum.repos.d/warpdotdev.repo";
-var MAC_APP = "/Applications/Warp.app";
-var DESKTOP_ENTRY = "dev.warp.Warp.desktop";
-var APT_SOURCE_TEXT = `Types: deb
-URIs: https://releases.warp.dev/linux/deb
-Suites: stable
-Components: main
-Architectures: amd64
-Signed-By: ${APT_KEY}
-`;
-var YUM_REPO_TEXT = `[warpdotdev]
-name=warpdotdev
-baseurl=https://releases.warp.dev/linux/rpm/stable
-enabled=1
-gpgcheck=1
-gpgkey=${WARP_KEY_URL}
-`;
-function osWords(text) {
-  if (text === null)
-    return [];
-  const words = [];
-  for (const line of text.split(`
-`)) {
-    const match = /^(ID|ID_LIKE)=(.*)$/.exec(line.trim());
-    if (match?.[2])
-      words.push(...match[2].replace(/["']/g, "").toLowerCase().split(/\s+/));
-  }
-  return words;
-}
-function detectSystem(machine) {
-  if (machine.platform === "darwin") {
-    return machine.which("brew") !== null ? { kind: "brew" } : { kind: "none", reason: `Homebrew is not installed. Download Warp: ${WARP_DOWNLOAD_URL}` };
-  }
-  if (machine.platform !== "linux") {
-    return {
-      kind: "none",
-      reason: `anymodel installs Warp on Linux and macOS only. Download it: ${WARP_DOWNLOAD_URL}`
-    };
-  }
-  const words = osWords(machine.osRelease());
-  if (words.some((word) => word === "debian" || word === "ubuntu")) {
-    if (machine.which("apt-get") === null || machine.which("dpkg-query") === null) {
-      return { kind: "none", reason: `apt-get is missing. Download Warp: ${WARP_DOWNLOAD_URL}` };
-    }
-    if (machine.arch !== "x64") {
-      return {
-        kind: "none",
-        reason: `Warp's apt source here is for x86_64; this machine is ${machine.arch}. Download Warp: ${WARP_DOWNLOAD_URL}`
-      };
-    }
-    return { kind: "apt" };
-  }
-  if (words.some((word) => ["fedora", "rhel", "centos"].includes(word))) {
-    if (machine.which("dnf") === null || machine.which("rpm") === null) {
-      return { kind: "none", reason: `dnf is missing. Download Warp: ${WARP_DOWNLOAD_URL}` };
-    }
-    return { kind: "dnf" };
-  }
-  return {
-    kind: "none",
-    reason: `anymodel installs Warp with apt (Debian, Ubuntu), dnf (Fedora) or Homebrew (macOS). Download it: ${WARP_DOWNLOAD_URL}`
-  };
-}
-function detectWarpApp(machine, system) {
-  switch (system.kind) {
-    case "apt": {
-      const result = machine.run(["dpkg-query", "--status", PACKAGE]);
-      const field = (name) => new RegExp(`^${name}: (.*)$`, "m").exec(result.output)?.[1]?.trim() ?? null;
-      return result.exitCode === 0 && field("Status")?.endsWith(" installed") === true ? { installed: true, version: field("Version") } : { installed: false, version: null };
-    }
-    case "dnf": {
-      const result = machine.run(["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", PACKAGE]);
-      return result.exitCode === 0 ? { installed: true, version: result.output.trim() || null } : { installed: false, version: null };
-    }
-    case "brew": {
-      const result = machine.run(["brew", "list", "--cask", "--versions", "warp"]);
-      if (result.exitCode === 0 && result.output.trim() !== "") {
-        return {
-          installed: true,
-          version: result.output.trim().split(/\s+/)[1] ?? null,
-          viaBrew: true
-        };
-      }
-      return machine.exists(MAC_APP) ? { installed: true, version: null, viaBrew: false } : { installed: false, version: null };
-    }
-    case "none":
-      if (machine.platform === "darwin" && machine.exists(MAC_APP)) {
-        return { installed: true, version: null, viaBrew: false };
-      }
-      return machine.which(PACKAGE) !== null ? { installed: true, version: null } : { installed: false, version: null };
-  }
-}
-function warpStageDir(paths) {
-  return join6(paths.stateDir, "warp");
-}
-function warpInstallCommands(machine, system, paths) {
-  const stage = warpStageDir(paths);
-  const install = (from, to) => [
-    "sudo",
-    "install",
-    "-D",
-    "-o",
-    "root",
-    "-g",
-    "root",
-    "-m",
-    "644",
-    from,
-    to
-  ];
-  switch (system.kind) {
-    case "apt":
-      return [
-        install(join6(stage, "warpdotdev.gpg"), APT_KEY),
-        ...machine.exists(APT_SOURCE) || machine.exists(APT_LIST) ? [] : [install(join6(stage, "warpdotdev.sources"), APT_SOURCE)],
-        ["sudo", "apt-get", "update"],
-        ["sudo", "apt-get", "install", "-y", PACKAGE]
-      ];
-    case "dnf":
-      return [
-        ["sudo", "rpm", "--import", WARP_KEY_URL],
-        ...machine.exists(YUM_REPO) ? [] : [install(join6(stage, "warpdotdev.repo"), YUM_REPO)],
-        ["sudo", "dnf", "install", "-y", PACKAGE]
-      ];
-    case "brew":
-      return [["brew", "install", "--cask", "warp"]];
-    case "none":
-      return [];
-  }
-}
-async function stageWarpFiles(machine, system, paths) {
-  const stage = warpStageDir(paths);
-  rmSync2(stage, { recursive: true, force: true });
-  mkdirSync4(stage, { recursive: true, mode: 448 });
-  chmodSync2(stage, 448);
-  if (system.kind === "apt") {
-    if (machine.which("gpg") === null) {
-      throw new Error("gpg is missing; it turns Warp's key into the form apt reads. Install gpg first.");
-    }
-    writeFileSync2(join6(stage, "warp.asc"), await machine.fetchText(WARP_KEY_URL), { mode: 420 });
-    const dearmor = machine.run([
-      "gpg",
-      "--dearmor",
-      "--yes",
-      "--output",
-      join6(stage, "warpdotdev.gpg"),
-      join6(stage, "warp.asc")
-    ]);
-    if (dearmor.exitCode !== 0) {
-      throw new Error(`gpg --dearmor failed on Warp's key: ${dearmor.output.trim()}`);
-    }
-    writeFileSync2(join6(stage, "warpdotdev.sources"), APT_SOURCE_TEXT, { mode: 420 });
-  }
-  if (system.kind === "dnf") {
-    writeFileSync2(join6(stage, "warpdotdev.repo"), YUM_REPO_TEXT, { mode: 420 });
-  }
-}
-function warpRemoveCommands(machine, system, app) {
-  const commands = [];
-  switch (system.kind) {
-    case "apt": {
-      if (app.installed)
-        commands.push(["sudo", "apt-get", "purge", "-y", PACKAGE]);
-      const files = [APT_SOURCE, APT_LIST, APT_KEY, APT_GUIDE_KEY].filter(machine.exists);
-      if (files.length > 0)
-        commands.push(["sudo", "rm", "-f", ...files]);
-      break;
-    }
-    case "dnf": {
-      if (app.installed)
-        commands.push(["sudo", "dnf", "remove", "-y", PACKAGE]);
-      if (machine.exists(YUM_REPO))
-        commands.push(["sudo", "rm", "-f", YUM_REPO]);
-      const keys = machine.run([
-        "rpm",
-        "-q",
-        "gpg-pubkey",
-        "--qf",
-        `%{NAME}-%{VERSION}-%{RELEASE}	%{SUMMARY}
-`
-      ]);
-      const warpKeys = keys.exitCode === 0 ? keys.output.split(`
-`).filter((line) => /warp/i.test(line.split("\t")[1] ?? "")).map((line) => line.split("\t")[0] ?? "").filter((name) => name !== "") : [];
-      if (warpKeys.length > 0)
-        commands.push(["sudo", "rpm", "-e", ...warpKeys]);
-      break;
-    }
-    case "brew":
-      if (app.installed && app.viaBrew)
-        commands.push(["brew", "uninstall", "--cask", "warp"]);
-      break;
-    case "none":
-      break;
-  }
-  return commands;
-}
-function warpDesktopEntries(paths) {
-  return [
-    join6(paths.home, "Desktop", DESKTOP_ENTRY),
-    join6(paths.home, ".local", "share", "applications", DESKTOP_ENTRY)
-  ].filter((file) => existsSync9(file));
-}
-function removeWarpDesktopEntries(paths, dryRun) {
-  return warpDesktopEntries(paths).map((file) => {
-    if (!dryRun)
-      removeManagedFile(paths.stateDir, file);
-    return `- ${tildify(file, paths.home)}: Warp shortcut removed`;
-  });
-}
-function warpPluginSteps(paths) {
-  if (findUserInstall(paths.installedPluginsFile, WARP_PLUGIN_ID) !== null)
-    return [];
-  const steps = [];
-  if (!marketplaceAdded(paths, WARP_MARKETPLACE)) {
-    const source = MARKETPLACE_SOURCES[WARP_MARKETPLACE] ?? "";
-    steps.push({
-      argv: ["claude", "plugin", "marketplace", "add", source],
-      line: `+ marketplace ${WARP_MARKETPLACE} (${source})`
-    });
-  }
-  steps.push({
-    argv: ["claude", "plugin", "install", WARP_PLUGIN_ID],
-    line: `+ plugin ${WARP_PLUGIN_ID}`
-  });
-  return steps;
-}
-function otherPluginFrom(paths, marketplace, except) {
-  try {
-    const parsed = JSON.parse(readFileSync10(paths.installedPluginsFile, "utf8"));
-    return Object.keys(parsed.plugins ?? {}).some((id) => id !== except && id.endsWith(`@${marketplace}`));
-  } catch {
-    return false;
-  }
-}
-function warpPluginRemoveSteps(paths) {
-  const steps = [];
-  if (findUserInstall(paths.installedPluginsFile, WARP_PLUGIN_ID) !== null) {
-    steps.push({
-      argv: ["claude", "plugin", "uninstall", WARP_PLUGIN_ID],
-      line: `- plugin ${WARP_PLUGIN_ID}`
-    });
-  }
-  if (marketplaceAdded(paths, WARP_MARKETPLACE) && !otherPluginFrom(paths, WARP_MARKETPLACE, WARP_PLUGIN_ID)) {
-    steps.push({
-      argv: ["claude", "plugin", "marketplace", "remove", WARP_MARKETPLACE],
-      line: `- marketplace ${WARP_MARKETPLACE}`
-    });
-  }
-  return steps;
-}
-function showCommand(argv) {
-  return argv.map((arg) => /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`).join(" ");
-}
-function warpCheck(machine, paths) {
-  const app = detectWarpApp(machine, detectSystem(machine));
-  const plugin = findUserInstall(paths.installedPluginsFile, WARP_PLUGIN_ID) !== null;
-  const version = app.version === null ? "" : ` ${app.version}`;
-  if (!app.installed && !plugin) {
-    return { ok: true, info: true, text: "Warp: not installed (optional: anymodel setup --warp)" };
-  }
-  if (!app.installed) {
-    return {
-      ok: false,
-      text: `the Warp Claude plugin ${WARP_PLUGIN_ID} is installed, but the Warp app is not. Run: anymodel setup --remove-warp (or anymodel setup --warp)`
-    };
-  }
-  if (!plugin) {
-    return {
-      ok: false,
-      text: `Warp${version} is installed, but its Claude plugin is not. Run: anymodel setup`
-    };
-  }
-  if (!pluginEnabled(paths, WARP_PLUGIN_ID)) {
-    return {
-      ok: false,
-      text: `Warp${version} is installed, but its Claude plugin is turned off. Run: claude plugin enable ${WARP_PLUGIN_ID}`
-    };
-  }
-  return { ok: true, text: `Warp${version} is installed, with its Claude plugin` };
-}
-function clearWarpStage(paths) {
-  try {
-    rmSync2(warpStageDir(paths), { recursive: true, force: true });
-  } catch (error) {
-    console.log(`  could not remove ${warpStageDir(paths)}: ${messageOf(error)}`);
-  }
-}
-
-// src/setup/launcher.ts
-import { join as join7 } from "path";
-var LAUNCHER_NAME = "anymodel";
-var FIND_INSTALL_JS = [
-  "const f=process.argv[process.argv.length-1];",
-  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
-  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
-  "if(!e)process.exit(1);",
-  "process.stdout.write(e.installPath);"
-].join("");
-function shellQuote(value) {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-function bakedBunPath(script) {
-  const match = /^baked_bun=('(?:[^']|'\\'')*')$/m.exec(script);
-  if (!match?.[1])
-    return null;
-  return match[1].slice(1, -1).replaceAll("'\\''", "'");
-}
-function launcherScript(bunPath) {
-  return `#!/bin/sh
-# anymodel launcher. Written by "anymodel setup"; setup rewrites it, so do not edit it.
-# It runs the anymodel command from the installed version of the anymodel plugin.
-fail() {
-  echo "anymodel: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
-  exit 1
-}
-baked_bun=${shellQuote(bunPath)}
-if [ -x "$baked_bun" ]; then
-  bun="$baked_bun"
-elif command -v bun >/dev/null 2>&1; then
-  bun=$(command -v bun)
-else
-  echo "anymodel: bun not found (not at $baked_bun, not on PATH). Install bun, then run: anymodel setup" >&2
-  exit 1
-fi
-config_dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-installed="$config_dir/plugins/installed_plugins.json"
-[ -f "$installed" ] || fail "the anymodel plugin is not installed."
-install_path=$("$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the anymodel plugin is not installed."
-[ -n "$install_path" ] || fail "the anymodel plugin is not installed."
-[ -f "$install_path/dist/cli.js" ] || fail "the anymodel plugin folder is missing: $install_path."
-exec "$bun" "$install_path/dist/cli.js" "$@"
-`;
-}
-function installLauncher(binDir, options) {
-  const path = join7(binDir, LAUNCHER_NAME);
-  const { outcome } = writeManagedFile(path, launcherScript(options.bunPath), {
-    stateDir: options.stateDir,
-    kind: "whole-file",
-    mode: 493,
-    ...options.dryRun !== undefined && { dryRun: options.dryRun }
-  });
-  return { path, outcome };
-}
-
 // src/setup/marketplace-access.ts
-import { existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync9 } from "fs";
 var ACCESS_TIMEOUT_MS = 1e4;
 function marketplaceSource(knownMarketplacesFile, name, env = process.env) {
-  if (!existsSync10(knownMarketplacesFile))
+  if (!existsSync8(knownMarketplacesFile))
     return { kind: "missing" };
   let known;
   try {
-    known = JSON.parse(readFileSync11(knownMarketplacesFile, "utf8"));
+    known = JSON.parse(readFileSync9(knownMarketplacesFile, "utf8"));
   } catch {
     return { kind: "missing" };
   }
@@ -9104,15 +8659,784 @@ async function canReadHttp(url) {
   }
 }
 function marketplaceInstallLocation(knownMarketplacesFile, name) {
-  if (!existsSync10(knownMarketplacesFile))
+  if (!existsSync8(knownMarketplacesFile))
     return null;
   try {
-    const known = JSON.parse(readFileSync11(knownMarketplacesFile, "utf8"));
+    const known = JSON.parse(readFileSync9(knownMarketplacesFile, "utf8"));
     const location = known?.[name]?.installLocation;
     return typeof location === "string" && location !== "" ? location : null;
   } catch {
     return null;
   }
+}
+
+// src/machine/companions.ts
+import { existsSync as existsSync9, readFileSync as readFileSync10 } from "fs";
+
+// src/project/version-range.ts
+var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
+var IDENT = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
+var PARTIAL = `v?${NUMBER}(?:\\.${NUMBER}(?:\\.${NUMBER}(?:-${IDENT})?(?:\\+${IDENT})?)?)?`;
+var COMPARATOR = new RegExp(`^(?:[<>]=?|=|\\^|~)?${PARTIAL}$`);
+var HYPHEN = new RegExp(`^(${PARTIAL})\\s+-\\s+(${PARTIAL})$`);
+function isValidRange(range) {
+  const alternatives = range.split("||").map((part) => part.trim());
+  if (alternatives.some((part) => part === ""))
+    return false;
+  return alternatives.every((part) => {
+    if (HYPHEN.test(part))
+      return true;
+    const comparators = part.replace(/([<>]=?|=|\^|~)\s+/g, "$1").split(/\s+/);
+    return comparators.every((comparator) => COMPARATOR.test(comparator));
+  });
+}
+function satisfiesRange(version, range) {
+  if (!isValidRange(range))
+    throw new Error(`"${range}" is not a valid version range`);
+  return Bun.semver.satisfies(version, range);
+}
+
+// src/machine/companions.ts
+var MARKETPLACE_SOURCES = {
+  thedotmack: "thedotmack/claude-mem",
+  "claude-plugins-official": "anthropics/claude-plugins-official",
+  "claude-code-warp": "warpdotdev/claude-code-warp"
+};
+function companions(dependencies = DEPENDENCIES) {
+  return dependencies.map((dependency) => {
+    const source = MARKETPLACE_SOURCES[dependency.marketplace];
+    if (source === undefined) {
+      throw new Error(`plugin.json depends on ${dependency.name}@${dependency.marketplace}, but anymodel does not know where the ${dependency.marketplace} marketplace comes from (MARKETPLACE_SOURCES)`);
+    }
+    return {
+      id: `${dependency.name}@${dependency.marketplace}`,
+      name: dependency.name,
+      marketplace: dependency.marketplace,
+      range: dependency.version ?? null,
+      source
+    };
+  });
+}
+function readJson(file) {
+  if (!existsSync9(file))
+    return null;
+  try {
+    const parsed = JSON.parse(readFileSync10(file, "utf8"));
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function marketplaceAdded(paths, name) {
+  const known = readJson(paths.knownMarketplacesFile);
+  return known !== null && Object.hasOwn(known, name);
+}
+function pluginEnabled(paths, id) {
+  const enabled = readJson(paths.settingsFile)?.enabledPlugins;
+  return typeof enabled === "object" && enabled !== null && enabled[id] === true;
+}
+function comparableVersion(version) {
+  if (version === null)
+    return null;
+  const plain = version.replace(/-[0-9a-f]{12}$/, "");
+  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(plain) ? plain : null;
+}
+function companionState(paths, companion) {
+  const install = findUserInstall(paths.installedPluginsFile, companion.id);
+  if (install === null || !existsSync9(install.installPath)) {
+    return marketplaceAdded(paths, companion.marketplace) ? { kind: "not-installed" } : { kind: "no-marketplace" };
+  }
+  const version = install.version;
+  if (!pluginEnabled(paths, companion.id))
+    return { kind: "off", version };
+  if (companion.range !== null && isValidRange(companion.range)) {
+    const comparable = comparableVersion(version);
+    if (comparable === null)
+      return { kind: "unknown-version", version };
+    if (!Bun.semver.satisfies(comparable, companion.range)) {
+      return { kind: "outside-range", version };
+    }
+  }
+  return { kind: "ok", version };
+}
+function companionPlan(paths, list = companions()) {
+  const steps = [];
+  const notes = [];
+  for (const companion of list) {
+    const state = companionState(paths, companion);
+    switch (state.kind) {
+      case "no-marketplace":
+        steps.push({
+          argv: ["claude", "plugin", "marketplace", "add", companion.source],
+          line: `+ marketplace ${companion.marketplace} (${companion.source}), which installs ${companion.id}`
+        });
+        break;
+      case "not-installed":
+        steps.push({
+          argv: ["claude", "plugin", "install", companion.id],
+          line: `+ plugin ${companion.id}`
+        });
+        break;
+      case "off":
+        notes.push(`! ${companion.id} is turned off, and anymodel does not load without it. Run: claude plugin enable ${companion.id}`);
+        break;
+      case "outside-range":
+        notes.push(`! ${companion.id} ${state.version ?? "(no version)"} is outside ${companion.range}, and anymodel does not load with it. Run: claude plugin update ${companion.id}`);
+        break;
+      case "unknown-version":
+        notes.push(`! ${unknownVersionText(companion, state.version)}`);
+        break;
+      case "ok":
+        break;
+    }
+  }
+  return { steps, notes };
+}
+function runCompanionSteps(steps, machine) {
+  const lines = [];
+  let ok = true;
+  for (const step of steps) {
+    const result = machine.run(step.argv);
+    if (result.exitCode === 0) {
+      lines.push(step.line);
+    } else {
+      ok = false;
+      const reason = result.output.trim().split(`
+`).at(-1) ?? "";
+      lines.push(`! ${step.argv.join(" ")} failed (exit ${result.exitCode}): ${reason}`);
+    }
+  }
+  return { lines, ok };
+}
+function unknownVersionText(companion, version) {
+  return `${companion.id} ${version ?? "(no version)"}: its version is unknown (not a version number), so anymodel cannot check it against ${companion.range}. Run: claude plugin update ${companion.id}`;
+}
+function companionChecks(paths, list = companions()) {
+  return list.map((companion) => companionCheck(paths, companion));
+}
+function companionCheck(paths, companion) {
+  {
+    const state = companionState(paths, companion);
+    switch (state.kind) {
+      case "no-marketplace":
+        return {
+          ok: false,
+          text: `the ${companion.marketplace} marketplace is not added, so ${companion.id} is missing and anymodel does not load. Run: anymodel setup`
+        };
+      case "not-installed":
+        return {
+          ok: false,
+          text: `${companion.id} is not installed, and anymodel does not load without it. Run: anymodel setup`
+        };
+      case "off":
+        return {
+          ok: false,
+          text: `${companion.id} is turned off, and anymodel does not load without it. Run: claude plugin enable ${companion.id}`
+        };
+      case "outside-range":
+        return {
+          ok: false,
+          text: `${companion.id} ${state.version ?? "(no version)"} is outside ${companion.range}. Run: claude plugin update ${companion.id}`
+        };
+      case "unknown-version":
+        return { ok: false, text: unknownVersionText(companion, state.version) };
+      case "ok":
+        return {
+          ok: true,
+          text: `${companion.id} ${state.version ?? "(no version)"} is installed and on`
+        };
+    }
+  }
+}
+
+// src/machine/claude-mem.ts
+var CLAUDE_MEM_ID = "claude-mem@thedotmack";
+var CLAUDE_MEM_MIN_VERSION = "13.29.0";
+var CLAUDE_MEM_CHROMA_FIX_VERSION = "13.35.0";
+var FALLBACK_PROVIDER = "claude";
+var FALLBACK_MODEL = "claude-haiku-4-5-20251001";
+var API_KEY = "CLAUDE_MEM_OPENAI_COMPAT_API_KEY";
+var API_KEY_POOL = "CLAUDE_MEM_OPENAI_COMPAT_API_KEYS";
+var PROVIDER = "CLAUDE_MEM_PROVIDER";
+var UNCHOSEN = {
+  [PROVIDER]: ["", "claude"],
+  CLAUDE_MEM_OPENAI_COMPAT_PRESET: [""],
+  CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: [""],
+  CLAUDE_MEM_OPENAI_COMPAT_MODEL: [""],
+  [API_KEY]: [""],
+  CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: ["", "claude"],
+  CLAUDE_MEM_QUOTA_FALLBACK_MODEL: [""]
+};
+var unchosen = (path, value) => typeof value === "string" && (UNCHOSEN[path.at(-1) ?? ""] ?? []).includes(value);
+function gatewayCheapTarget(gatewayConfigFile) {
+  if (!existsSync10(gatewayConfigFile))
+    return { reason: "the gateway is not set up" };
+  let config;
+  try {
+    config = loadConfigFile(gatewayConfigFile);
+  } catch (error) {
+    return { reason: `gateway.json cannot be used (${messageOf(error)})` };
+  }
+  for (const slot of ["anymodel-scout", "anymodel-worker"]) {
+    for (const text of config.slots[slot] ?? []) {
+      const parsed = parseTarget(text);
+      if ("error" in parsed || parsed.target.kind !== "backend")
+        continue;
+      const backend = config.backends[parsed.target.backend];
+      if (backend === undefined)
+        continue;
+      return {
+        target: {
+          backend: parsed.target.backend,
+          baseUrl: `${backend.baseUrl}/v1`,
+          model: parsed.target.model,
+          apiKey: backend.apiKey
+        }
+      };
+    }
+  }
+  return { reason: "no slot in gateway.json has a cheap target" };
+}
+function claudeMemPlan(paths) {
+  const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
+  if (install === null || !existsSync10(install.installPath))
+    return { notInstalled: true };
+  const file = paths.claudeMemSettingsFile;
+  const short = tildify(file, paths.home);
+  const left = (why) => ({ note: `! claude-mem settings left alone: ${why}` });
+  let data;
+  try {
+    data = readJsonObject(file).data;
+  } catch (error) {
+    return left(messageOf(error));
+  }
+  const env = data.env;
+  const nested = isObject2(env) && Object.keys(env).some((key) => key.startsWith("CLAUDE_MEM_"));
+  const at = (key) => nested ? ["env", key] : [key];
+  const records = ownedRecords(paths.stateDir, realTarget(file));
+  const cheap = gatewayCheapTarget(paths.gatewayConfigFile);
+  if ("reason" in cheap) {
+    const provider = getKey(data, at(PROVIDER));
+    if (provider.found && ownership(records, at(PROVIDER), provider) === "ours") {
+      return {
+        note: `! claude-mem still uses the backend anymodel set for it, but ${cheap.reason}. Run anymodel setup again once the gateway has a cheap model, or anymodel restore to put claude-mem back on its own defaults.`
+      };
+    }
+    return { note: null };
+  }
+  const version = comparableVersion(install.version);
+  if (version === null || Bun.semver.order(version, CLAUDE_MEM_MIN_VERSION) < 0) {
+    const companion = companions().find((entry) => entry.id === CLAUDE_MEM_ID);
+    const state = companion === undefined ? null : companionState(paths, companion).kind;
+    if (state === "outside-range" || state === "unknown-version")
+      return { note: null };
+    return left(version === null ? `claude-mem's version ${install.version ?? "(none)"} is unknown, so anymodel cannot tell whether it has what they need (${CLAUDE_MEM_MIN_VERSION} or newer). Run: claude plugin update ${CLAUDE_MEM_ID}` : `claude-mem ${install.version} is older than ${CLAUDE_MEM_MIN_VERSION}, which brought what they need. Run: claude plugin update ${CLAUDE_MEM_ID}`);
+  }
+  if (nested && Object.keys(data).every((key) => key === "env")) {
+    return left(`${short} is in claude-mem's old nested form, which claude-mem rewrites when it next starts. Start a Claude Code session, then run anymodel setup again.`);
+  }
+  const pool = getKey(data, at(API_KEY_POOL));
+  if (pool.found && typeof pool.value === "string" && pool.value.trim() !== "") {
+    return {
+      note: `  claude-mem settings left alone: ${API_KEY_POOL} holds your own keys in ${short} (your choice)`
+    };
+  }
+  const target = cheap.target;
+  const wanted = {
+    [PROVIDER]: "openai-compatible",
+    CLAUDE_MEM_OPENAI_COMPAT_PRESET: "custom",
+    CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: target.baseUrl,
+    CLAUDE_MEM_OPENAI_COMPAT_MODEL: target.model,
+    [API_KEY]: target.apiKey,
+    CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: FALLBACK_PROVIDER,
+    CLAUDE_MEM_QUOTA_FALLBACK_MODEL: FALLBACK_MODEL
+  };
+  for (const [key, value] of Object.entries(wanted)) {
+    const path = at(key);
+    const current = getKey(data, path);
+    if (!current.found || current.value === value)
+      continue;
+    const whose = ownership(records, path, current, unchosen);
+    if (whose === "ours" || whose === "none" && unchosen(path, current.value))
+      continue;
+    const shown = key === API_KEY ? "another key" : JSON.stringify(current.value);
+    return {
+      note: `  claude-mem settings left alone: ${key} is ${shown} in ${short} (your choice)`
+    };
+  }
+  return { plan: { set: Object.entries(wanted).map(([key, value]) => [at(key), value]), target } };
+}
+async function checkCheapTarget(target, timeoutMs = 30000) {
+  const url = `${target.baseUrl}/chat/completions`;
+  const where = redactUrl(url);
+  const hide = (text) => target.apiKey === "" ? text : text.replaceAll(target.apiKey, maskKey(target.apiKey));
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { authorization: `Bearer ${target.apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: target.model,
+        messages: [{ role: "user", content: "Say OK." }],
+        max_tokens: 1
+      }),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+  } catch (error) {
+    return hide(`${target.backend} did not answer at ${where} (${messageOf(error)})`);
+  }
+  if (response.ok) {
+    await response.body?.cancel();
+    return null;
+  }
+  const status = response.status;
+  let code;
+  try {
+    code = (await response.json())?.error?.code;
+  } catch {
+    code = undefined;
+  }
+  if (status === 401 || status === 403)
+    return `${target.backend} refused its key (HTTP ${status})`;
+  if (status === 404 && code === "model_not_found") {
+    return `${target.backend} does not serve the model ${target.model} (HTTP 404)`;
+  }
+  if (status === 404)
+    return `${target.backend} has no OpenAI chat endpoint at ${where} (HTTP 404)`;
+  return `${target.backend} answered HTTP ${status} to a one-token chat request for ${target.model} at ${where}`;
+}
+function isSecretPath(path) {
+  return path.at(-1) === API_KEY;
+}
+function applyClaudeMem(paths, plan, dryRun) {
+  return applyManagedJson({
+    file: paths.claudeMemSettingsFile,
+    stateDir: paths.stateDir,
+    set: plan.set,
+    dryRun,
+    unchosen,
+    secret: isSecretPath
+  });
+}
+function shownClaudeMemValue(path, value) {
+  if (value === undefined)
+    return "(none)";
+  if (isSecretPath(path) && typeof value === "string" && value !== "") {
+    return JSON.stringify(maskKey(value));
+  }
+  return JSON.stringify(value);
+}
+function claudeMemAdvice(paths) {
+  const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
+  if (install === null || !existsSync10(install.installPath))
+    return null;
+  const version = comparableVersion(install.version);
+  if (version === null || Bun.semver.order(version, CLAUDE_MEM_CHROMA_FIX_VERSION) >= 0) {
+    return null;
+  }
+  return `${CLAUDE_MEM_ID} ${install.version} is older than ${CLAUDE_MEM_CHROMA_FIX_VERSION}: on a fresh install its vector search may not start (pydantic 2.14 broke chroma-mcp; ${CLAUDE_MEM_CHROMA_FIX_VERSION} pins pydantic below it). Run: claude plugin update ${CLAUDE_MEM_ID}`;
+}
+
+// src/machine/warp.ts
+import { chmodSync as chmodSync2, existsSync as existsSync11, mkdirSync as mkdirSync4, readFileSync as readFileSync11, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "fs";
+import { join as join6 } from "path";
+var WARP_PLUGIN_ID = "warp@claude-code-warp";
+var WARP_MARKETPLACE = "claude-code-warp";
+var WARP_DOWNLOAD_URL = "https://www.warp.dev/download";
+var WARP_KEY_URL = "https://releases.warp.dev/linux/keys/warp.asc";
+var WARP_KEY_FINGERPRINT = "0913165C78D5B7A41B42AC657FF7AB39D60F803F";
+var PACKAGE = "warp-terminal";
+var APT_KEY = "/etc/apt/trusted.gpg.d/warpdotdev.gpg";
+var APT_SOURCE = "/etc/apt/sources.list.d/warpdotdev.sources";
+var APT_LIST = "/etc/apt/sources.list.d/warpdotdev.list";
+var APT_GUIDE_KEY = "/etc/apt/keyrings/warpdotdev.gpg";
+var YUM_REPO = "/etc/yum.repos.d/warpdotdev.repo";
+var DESKTOP_ENTRY = "dev.warp.Warp.desktop";
+var APT_SOURCE_TEXT = `### THIS FILE IS AUTOMATICALLY CONFIGURED ###
+# You may comment out this entry, but other modifications to the file may be lost.
+
+Types: deb
+URIs: https://releases.warp.dev/linux/deb
+Suites: stable
+Components: main
+Architectures: amd64
+Signed-By: ${APT_KEY}
+`;
+var YUM_REPO_TEXT = `[warpdotdev]
+name=warpdotdev
+baseurl=https://releases.warp.dev/linux/rpm/stable
+enabled=1
+gpgcheck=1
+gpgkey=${WARP_KEY_URL}
+`;
+function osWords(text) {
+  if (text === null)
+    return [];
+  const words = [];
+  for (const line of text.split(`
+`)) {
+    const match = /^(ID|ID_LIKE)=(.*)$/.exec(line.trim());
+    if (match?.[2])
+      words.push(...match[2].replace(/["']/g, "").toLowerCase().split(/\s+/));
+  }
+  return words;
+}
+function detectSystem(machine) {
+  if (machine.platform === "darwin") {
+    return machine.which("brew") !== null ? { kind: "brew" } : { kind: "none", reason: `Homebrew is not installed. Download Warp: ${WARP_DOWNLOAD_URL}` };
+  }
+  if (machine.platform !== "linux") {
+    return {
+      kind: "none",
+      reason: `anymodel installs Warp on Linux and macOS only. Download it: ${WARP_DOWNLOAD_URL}`
+    };
+  }
+  const words = osWords(machine.osRelease());
+  if (words.some((word) => word === "debian" || word === "ubuntu")) {
+    if (machine.which("apt-get") === null || machine.which("dpkg-query") === null) {
+      return { kind: "none", reason: `apt-get is missing. Download Warp: ${WARP_DOWNLOAD_URL}` };
+    }
+    if (machine.arch !== "x64") {
+      return {
+        kind: "none",
+        reason: `Warp's apt source here is for x86_64; this machine is ${machine.arch}. Download Warp: ${WARP_DOWNLOAD_URL}`
+      };
+    }
+    return { kind: "apt" };
+  }
+  if (words.some((word) => ["fedora", "rhel", "centos"].includes(word))) {
+    if (machine.which("dnf") === null || machine.which("rpm") === null) {
+      return { kind: "none", reason: `dnf is missing. Download Warp: ${WARP_DOWNLOAD_URL}` };
+    }
+    if (machine.arch !== "x64" && machine.arch !== "arm64") {
+      return {
+        kind: "none",
+        reason: `Warp's rpm source has x86_64 and aarch64 builds; this machine is ${machine.arch}. Download Warp: ${WARP_DOWNLOAD_URL}`
+      };
+    }
+    return { kind: "dnf" };
+  }
+  return {
+    kind: "none",
+    reason: `anymodel installs Warp with apt (Debian, Ubuntu), dnf (Fedora) or Homebrew (macOS). Download it: ${WARP_DOWNLOAD_URL}`
+  };
+}
+function detectWarpApp(machine, system) {
+  switch (system.kind) {
+    case "apt": {
+      const result = machine.run(["dpkg-query", "--status", PACKAGE]);
+      const field = (name) => new RegExp(`^${name}: (.*)$`, "m").exec(result.output)?.[1]?.trim() ?? null;
+      return result.exitCode === 0 && field("Status")?.endsWith(" installed") === true ? { installed: true, version: field("Version") } : { installed: false, version: null };
+    }
+    case "dnf": {
+      const result = machine.run(["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", PACKAGE]);
+      return result.exitCode === 0 ? { installed: true, version: result.output.trim() || null } : { installed: false, version: null };
+    }
+    case "brew": {
+      const result = machine.run(["brew", "list", "--cask", "--versions", "warp"]);
+      if (result.exitCode === 0 && result.output.trim() !== "") {
+        return {
+          installed: true,
+          version: result.output.trim().split(/\s+/)[1] ?? null,
+          viaBrew: true
+        };
+      }
+      return machine.exists(machine.macApp) ? { installed: true, version: null, viaBrew: false } : { installed: false, version: null };
+    }
+    case "none":
+      if (machine.platform === "darwin" && machine.exists(machine.macApp)) {
+        return { installed: true, version: null, viaBrew: false };
+      }
+      return machine.which(PACKAGE) !== null ? { installed: true, version: null } : { installed: false, version: null };
+  }
+}
+function warpStageDir(paths) {
+  return join6(paths.stateDir, "warp");
+}
+function warpInstallCommands(machine, system, paths) {
+  const stage = warpStageDir(paths);
+  const install = (from, to) => [
+    "sudo",
+    "install",
+    "-D",
+    "-o",
+    "root",
+    "-g",
+    "root",
+    "-m",
+    "644",
+    from,
+    to
+  ];
+  switch (system.kind) {
+    case "apt":
+      return [
+        install(join6(stage, "warpdotdev.gpg"), APT_KEY),
+        ...machine.exists(APT_SOURCE) || machine.exists(APT_LIST) ? [] : [install(join6(stage, "warpdotdev.sources"), APT_SOURCE)],
+        ["sudo", "apt-get", "update"],
+        ["sudo", "apt-get", "install", "-y", PACKAGE]
+      ];
+    case "dnf":
+      return [
+        ["sudo", "rpm", "--import", join6(stage, "warp.asc")],
+        ...machine.exists(YUM_REPO) ? [] : [install(join6(stage, "warpdotdev.repo"), YUM_REPO)],
+        ["sudo", "dnf", "install", "-y", PACKAGE]
+      ];
+    case "brew":
+      return [["brew", "install", "--cask", "warp"]];
+    case "none":
+      return [];
+  }
+}
+function keyFingerprint(machine, stage, file) {
+  const home = join6(stage, "gnupg");
+  mkdirSync4(home, { recursive: true, mode: 448 });
+  const shown = machine.run([
+    "gpg",
+    "--homedir",
+    home,
+    "--batch",
+    "--show-keys",
+    "--with-colons",
+    file
+  ]);
+  if (shown.exitCode !== 0) {
+    throw new Error(`gpg could not read Warp's key: ${shown.output.trim()}`);
+  }
+  const lines = shown.output.split(`
+`);
+  const primaries = lines.flatMap((line, index) => line.startsWith("pub:") ? [index] : []);
+  if (primaries.length !== 1) {
+    throw new Error(`the file at ${WARP_KEY_URL} holds ${primaries.length} keys, not Warp's one key. Nothing was installed`);
+  }
+  const fpr = lines[(primaries[0] ?? 0) + 1] ?? "";
+  return fpr.startsWith("fpr:") ? (fpr.split(":")[9] ?? "").toUpperCase() : "";
+}
+async function stageWarpFiles(machine, system, paths) {
+  const stage = warpStageDir(paths);
+  rmSync2(stage, { recursive: true, force: true });
+  mkdirSync4(stage, { recursive: true, mode: 448 });
+  chmodSync2(stage, 448);
+  if (system.kind !== "apt" && system.kind !== "dnf")
+    return;
+  if (machine.which("gpg") === null) {
+    throw new Error("gpg is missing; it checks Warp's signing key. Install gpg first");
+  }
+  const key = join6(stage, "warp.asc");
+  writeFileSync2(key, await machine.fetchText(WARP_KEY_URL), { mode: 420 });
+  const fingerprint = keyFingerprint(machine, stage, key);
+  if (fingerprint !== WARP_KEY_FINGERPRINT) {
+    throw new Error(`Warp's signing key changed: ${WARP_KEY_URL} now holds the key ${fingerprint || "(none)"}, ` + `and anymodel expects ${WARP_KEY_FINGERPRINT}. Nothing was installed. ` + `If Warp really changed its key, an anymodel update brings the new one; until then, install Warp by hand: ${WARP_DOWNLOAD_URL}`);
+  }
+  if (system.kind === "apt") {
+    const dearmor = machine.run([
+      "gpg",
+      "--dearmor",
+      "--yes",
+      "--output",
+      join6(stage, "warpdotdev.gpg"),
+      join6(stage, "warp.asc")
+    ]);
+    if (dearmor.exitCode !== 0) {
+      throw new Error(`gpg --dearmor failed on Warp's key: ${dearmor.output.trim()}`);
+    }
+    writeFileSync2(join6(stage, "warpdotdev.sources"), APT_SOURCE_TEXT, { mode: 420 });
+  }
+  if (system.kind === "dnf") {
+    writeFileSync2(join6(stage, "warpdotdev.repo"), YUM_REPO_TEXT, { mode: 420 });
+  }
+}
+function warpRemoveCommands(machine, system, app) {
+  const commands = [];
+  switch (system.kind) {
+    case "apt": {
+      if (app.installed)
+        commands.push(["sudo", "apt-get", "purge", "-y", PACKAGE]);
+      const files = [APT_SOURCE, APT_LIST, APT_KEY, APT_GUIDE_KEY].filter(machine.exists);
+      if (files.length > 0)
+        commands.push(["sudo", "rm", "-f", ...files]);
+      break;
+    }
+    case "dnf": {
+      if (app.installed)
+        commands.push(["sudo", "dnf", "remove", "-y", PACKAGE]);
+      if (machine.exists(YUM_REPO))
+        commands.push(["sudo", "rm", "-f", YUM_REPO]);
+      const keys = machine.run([
+        "rpm",
+        "-q",
+        "gpg-pubkey",
+        "--qf",
+        `%{NAME}-%{VERSION}-%{RELEASE}	%{VERSION}
+`
+      ]);
+      const pinned = WARP_KEY_FINGERPRINT.toLowerCase();
+      const warpKeys = keys.exitCode === 0 ? keys.output.split(`
+`).filter((line) => {
+        const id = (line.split("\t")[1] ?? "").trim().toLowerCase();
+        return /^[0-9a-f]{8,}$/.test(id) && pinned.endsWith(id);
+      }).map((line) => line.split("\t")[0] ?? "").filter((name) => name !== "") : [];
+      if (warpKeys.length > 0)
+        commands.push(["sudo", "rpm", "-e", ...warpKeys]);
+      break;
+    }
+    case "brew":
+      if (app.installed && app.viaBrew)
+        commands.push(["brew", "uninstall", "--cask", "warp"]);
+      break;
+    case "none":
+      break;
+  }
+  return commands;
+}
+function warpDesktopEntries(paths) {
+  return [
+    join6(paths.home, "Desktop", DESKTOP_ENTRY),
+    join6(paths.home, ".local", "share", "applications", DESKTOP_ENTRY)
+  ].filter((file) => existsSync11(file));
+}
+function removeWarpDesktopEntries(paths, dryRun) {
+  return warpDesktopEntries(paths).map((file) => {
+    if (!dryRun)
+      removeManagedFile(paths.stateDir, file);
+    return `- ${tildify(file, paths.home)}: Warp shortcut removed`;
+  });
+}
+function warpPluginSteps(paths) {
+  if (findUserInstall(paths.installedPluginsFile, WARP_PLUGIN_ID) !== null)
+    return [];
+  const steps = [];
+  if (!marketplaceAdded(paths, WARP_MARKETPLACE)) {
+    const source = MARKETPLACE_SOURCES[WARP_MARKETPLACE] ?? "";
+    steps.push({
+      argv: ["claude", "plugin", "marketplace", "add", source],
+      line: `+ marketplace ${WARP_MARKETPLACE} (${source})`
+    });
+  }
+  steps.push({
+    argv: ["claude", "plugin", "install", WARP_PLUGIN_ID],
+    line: `+ plugin ${WARP_PLUGIN_ID}`
+  });
+  return steps;
+}
+function otherPluginFrom(paths, marketplace, except) {
+  try {
+    const parsed = JSON.parse(readFileSync11(paths.installedPluginsFile, "utf8"));
+    return Object.keys(parsed.plugins ?? {}).some((id) => id !== except && id.endsWith(`@${marketplace}`));
+  } catch {
+    return false;
+  }
+}
+function warpPluginRemoveSteps(paths) {
+  const steps = [];
+  if (findUserInstall(paths.installedPluginsFile, WARP_PLUGIN_ID) !== null) {
+    steps.push({
+      argv: ["claude", "plugin", "uninstall", WARP_PLUGIN_ID],
+      line: `- plugin ${WARP_PLUGIN_ID}`
+    });
+  }
+  if (marketplaceAdded(paths, WARP_MARKETPLACE) && !otherPluginFrom(paths, WARP_MARKETPLACE, WARP_PLUGIN_ID)) {
+    steps.push({
+      argv: ["claude", "plugin", "marketplace", "remove", WARP_MARKETPLACE],
+      line: `- marketplace ${WARP_MARKETPLACE}`
+    });
+  }
+  return steps;
+}
+function showCommand(argv) {
+  return argv.map((arg) => /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`).join(" ");
+}
+function warpCheck(machine, paths) {
+  const app = detectWarpApp(machine, detectSystem(machine));
+  const plugin = findUserInstall(paths.installedPluginsFile, WARP_PLUGIN_ID) !== null;
+  const version = app.version === null ? "" : ` ${app.version}`;
+  if (!app.installed && !plugin) {
+    return { ok: true, info: true, text: "Warp: not installed (optional: anymodel setup --warp)" };
+  }
+  if (!app.installed) {
+    return {
+      ok: false,
+      text: `the Warp Claude plugin ${WARP_PLUGIN_ID} is installed, but the Warp app is not. Run: anymodel setup --remove-warp (or anymodel setup --warp)`
+    };
+  }
+  if (!plugin) {
+    return {
+      ok: true,
+      info: true,
+      text: `Warp${version} is installed, without its Claude plugin (optional: anymodel setup --warp)`
+    };
+  }
+  if (!pluginEnabled(paths, WARP_PLUGIN_ID)) {
+    return {
+      ok: true,
+      info: true,
+      text: `Warp${version} is installed, with its Claude plugin turned off (optional: claude plugin enable ${WARP_PLUGIN_ID})`
+    };
+  }
+  return { ok: true, text: `Warp${version} is installed, with its Claude plugin` };
+}
+function clearWarpStage(paths) {
+  try {
+    rmSync2(warpStageDir(paths), { recursive: true, force: true });
+  } catch (error) {
+    console.log(`  could not remove ${warpStageDir(paths)}: ${messageOf(error)}`);
+  }
+}
+
+// src/setup/launcher.ts
+import { join as join7 } from "path";
+var LAUNCHER_NAME = "anymodel";
+var FIND_INSTALL_JS = [
+  "const f=process.argv[process.argv.length-1];",
+  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
+  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+function bakedBunPath(script) {
+  const match = /^baked_bun=('(?:[^']|'\\'')*')$/m.exec(script);
+  if (!match?.[1])
+    return null;
+  return match[1].slice(1, -1).replaceAll("'\\''", "'");
+}
+function launcherScript(bunPath) {
+  return `#!/bin/sh
+# anymodel launcher. Written by "anymodel setup"; setup rewrites it, so do not edit it.
+# It runs the anymodel command from the installed version of the anymodel plugin.
+fail() {
+  echo "anymodel: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
+  exit 1
+}
+baked_bun=${shellQuote(bunPath)}
+if [ -x "$baked_bun" ]; then
+  bun="$baked_bun"
+elif command -v bun >/dev/null 2>&1; then
+  bun=$(command -v bun)
+else
+  echo "anymodel: bun not found (not at $baked_bun, not on PATH). Install bun, then run: anymodel setup" >&2
+  exit 1
+fi
+config_dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+installed="$config_dir/plugins/installed_plugins.json"
+[ -f "$installed" ] || fail "the anymodel plugin is not installed."
+install_path=$("$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the anymodel plugin is not installed."
+[ -n "$install_path" ] || fail "the anymodel plugin is not installed."
+[ -f "$install_path/dist/cli.js" ] || fail "the anymodel plugin folder is missing: $install_path."
+exec "$bun" "$install_path/dist/cli.js" "$@"
+`;
+}
+function installLauncher(binDir, options) {
+  const path = join7(binDir, LAUNCHER_NAME);
+  const { outcome } = writeManagedFile(path, launcherScript(options.bunPath), {
+    stateDir: options.stateDir,
+    kind: "whole-file",
+    mode: 493,
+    ...options.dryRun !== undefined && { dryRun: options.dryRun }
+  });
+  return { path, outcome };
 }
 
 // src/cli/doctor.ts
@@ -9124,7 +9448,7 @@ var UPDATE_BLOCKING_VARS = [
 var FORCE_PLUGIN_UPDATES_VAR = "FORCE_AUTOUPDATE_PLUGINS";
 var MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 function readSettings2(file) {
-  if (!existsSync11(file))
+  if (!existsSync12(file))
     return null;
   try {
     const parsed = JSON.parse(readFileSync12(file, "utf8"));
@@ -9151,7 +9475,7 @@ function checkPlugin(paths) {
     };
   }
   const where = tildify(install.installPath, paths.home);
-  if (!existsSync11(install.installPath)) {
+  if (!existsSync12(install.installPath)) {
     return {
       ok: false,
       text: `the plugin folder is missing: ${where}. Run: ${PLUGIN_INSTALL_COMMAND}`
@@ -9173,7 +9497,7 @@ function isExecutable(file) {
 function checkLauncher(paths) {
   const launcher = join8(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
-  if (!existsSync11(launcher))
+  if (!existsSync12(launcher))
     return { ok: false, text: `no launcher at ${where}. Run: anymodel setup` };
   if (!isExecutable(launcher)) {
     return { ok: false, text: `the launcher ${where} is not executable. Run: anymodel setup` };
@@ -9205,7 +9529,7 @@ async function checkMarketplaceAccess(paths, env) {
     case "unknown":
       return { ok: false, text: `cannot check the marketplace source (${source.type})` };
     case "local":
-      return existsSync11(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : { ok: false, text: `the marketplace folder is missing: ${source.path}` };
+      return existsSync12(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : { ok: false, text: `the marketplace folder is missing: ${source.path}` };
     case "http": {
       const url = redactUrl(source.url);
       const result = await canReadHttp(source.url);
@@ -9323,7 +9647,7 @@ function hasEntry(data, field, key) {
 function checkOldPlugin(settings, paths) {
   const plugins = settings?.enabledPlugins;
   const enabled = isJsonObject6(plugins) && plugins[OLD_PLUGIN_ID] === true;
-  if (!existsSync11(join8(paths.claudeConfigDir, OLD_NAME))) {
+  if (!existsSync12(join8(paths.claudeConfigDir, OLD_NAME))) {
     if (!enabled)
       return null;
     return {
@@ -9336,19 +9660,23 @@ function checkOldPlugin(settings, paths) {
   const left = [
     enabled ? "the plugin enabled" : null,
     hasEntry(readSettings2(paths.installedPluginsFile), "plugins", OLD_PLUGIN_ID) ? "the plugin installed" : null,
-    existsSync11(launcher) ? `its launcher ${short(launcher)}` : null,
+    existsSync12(launcher) ? `its launcher ${short(launcher)}` : null,
     hasEntry(settings, "extraKnownMarketplaces", OLD_NAME) ? `extraKnownMarketplaces.${OLD_NAME} in ${short(paths.settingsFile)}` : null,
     hasEntry(readSettings2(paths.knownMarketplacesFile), null, OLD_NAME) ? `the ${OLD_NAME} marketplace` : null
   ].filter((thing) => thing !== null);
   if (left.length === 0)
     return null;
   const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME}\``;
-  const canRun = existsSync11(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
+  const canRun = existsSync12(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
   const steps = canRun ? `Run \`${OLD_NAME} restore\` first, then \`${then}.` : `Its launcher cannot run, so remove by hand ${short(launcher)} and "${OLD_NAME}" under extraKnownMarketplaces in ${short(paths.settingsFile)}; then run \`${then}.`;
   return {
     ok: false,
     text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}. ${steps}`
   };
+}
+function claudeMemCheck(paths) {
+  const advice = claudeMemAdvice(paths);
+  return advice === null ? null : { ok: true, warn: true, text: advice };
 }
 async function runDoctor(paths, env, gateway) {
   const settings = readSettings2(paths.settingsFile);
@@ -9362,11 +9690,12 @@ async function runDoctor(paths, env, gateway) {
     checkNameClash(settings),
     checkOldPlugin(settings, paths),
     ...companionChecks(paths),
+    claudeMemCheck(paths),
     warpCheck(gateway.machine, paths),
     ...await gatewayChecks({ paths, ...gateway })
   ].filter((check) => check !== null);
   for (const check of checks) {
-    console.log(`${check.info ? "\xB7" : check.ok ? "\u2713" : "\u2717"} ${check.text}`);
+    console.log(`${check.warn ? "!" : check.info ? "\xB7" : check.ok ? "\u2713" : "\u2717"} ${check.text}`);
   }
   return checks.every((check) => check.ok) ? 0 : 1;
 }
@@ -9375,10 +9704,10 @@ async function runDoctor(paths, env, gateway) {
 import { rmSync as rmSync3 } from "fs";
 
 // src/setup/restore.ts
-import { existsSync as existsSync14, readFileSync as readFileSync15 } from "fs";
+import { existsSync as existsSync15, readFileSync as readFileSync15 } from "fs";
 
 // src/setup/managed-entries.ts
-import { existsSync as existsSync12, readFileSync as readFileSync13 } from "fs";
+import { existsSync as existsSync13, readFileSync as readFileSync13 } from "fs";
 import { join as join9 } from "path";
 var OWNED_ENTRIES_FILE = "owned-entries.json";
 var ANCHOR_SOURCE = "";
@@ -9390,7 +9719,7 @@ function isOwnedEntry(value) {
 }
 function readOwnedEntries(stateDir) {
   const file = join9(stateDir, OWNED_ENTRIES_FILE);
-  if (!existsSync12(file))
+  if (!existsSync13(file))
     return {};
   const parsed = JSON.parse(readFileSync13(file, "utf8"));
   const valid = isObject2(parsed) && Object.values(parsed).every((lists) => isObject2(lists) && Object.values(lists).every((list) => Array.isArray(list) && list.every(isOwnedEntry)));
@@ -9563,7 +9892,7 @@ function removeAllOwnedEntries(stateDir, file) {
 }
 
 // src/setup/managed-markdown.ts
-import { existsSync as existsSync13, readFileSync as readFileSync14 } from "fs";
+import { existsSync as existsSync14, readFileSync as readFileSync14 } from "fs";
 var BLOCK_BEGIN = "<!-- anymodel:begin -->";
 var BLOCK_END = "<!-- anymodel:end -->";
 function countOf(text, marker) {
@@ -9604,7 +9933,7 @@ function renderWithoutBlock(current, file = "the file") {
 function writeMarkdown(options, render) {
   const file = realTarget(options.file);
   return retryOnConcurrentChange(file, () => {
-    const text = existsSync13(file) ? readFileSync14(file, "utf8") : null;
+    const text = existsSync14(file) ? readFileSync14(file, "utf8") : null;
     const next = render(text ?? "", file);
     if (text === null && next === "")
       return { outcome: "unchanged", backup: null };
@@ -9631,7 +9960,7 @@ function restoreWholeFile(file, entry, stateDir) {
   if (!baseline)
     return { file, action: "no-backup", details: [] };
   if (baseline.absent) {
-    if (!existsSync14(file))
+    if (!existsSync15(file))
       return { file, action: "unchanged", details: [] };
     return { file, action: "removed", details: [], savedAs: removeManagedFile(stateDir, file) };
   }
@@ -9650,7 +9979,7 @@ function restoreWholeFile(file, entry, stateDir) {
   };
 }
 function isEmpty(file) {
-  if (!existsSync14(file))
+  if (!existsSync15(file))
     return false;
   const text = readFileSync15(file, "utf8").trim();
   return text === "" || text === "{}";
@@ -9801,137 +10130,8 @@ async function runRestore(paths, options) {
 import { existsSync as existsSync18, readFileSync as readFileSync17 } from "fs";
 import { delimiter } from "path";
 
-// src/machine/claude-mem.ts
-import { existsSync as existsSync15 } from "fs";
-var CLAUDE_MEM_ID = "claude-mem@thedotmack";
-var CLAUDE_MEM_MIN_VERSION = "13.29.0";
-var FALLBACK_PROVIDER = "claude";
-var FALLBACK_MODEL = "claude-haiku-4-5-20251001";
-var API_KEY = "CLAUDE_MEM_OPENAI_COMPAT_API_KEY";
-var UNCHOSEN = {
-  CLAUDE_MEM_PROVIDER: ["", "claude"],
-  CLAUDE_MEM_OPENAI_COMPAT_PRESET: [""],
-  CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: [""],
-  CLAUDE_MEM_OPENAI_COMPAT_MODEL: [""],
-  [API_KEY]: [""],
-  CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: ["", "claude"],
-  CLAUDE_MEM_QUOTA_FALLBACK_MODEL: [""]
-};
-function gatewayCheapTarget(gatewayConfigFile) {
-  if (!existsSync15(gatewayConfigFile))
-    return { reason: "the gateway is not set up" };
-  let config;
-  try {
-    config = loadConfigFile(gatewayConfigFile);
-  } catch (error) {
-    return { reason: `gateway.json cannot be used (${messageOf(error)})` };
-  }
-  for (const slot of ["anymodel-scout", "anymodel-worker"]) {
-    for (const text of config.slots[slot] ?? []) {
-      const parsed = parseTarget(text);
-      if ("error" in parsed || parsed.target.kind !== "backend")
-        continue;
-      const backend = config.backends[parsed.target.backend];
-      if (backend === undefined)
-        continue;
-      return {
-        target: {
-          backend: parsed.target.backend,
-          baseUrl: `${backend.baseUrl}/v1`,
-          model: parsed.target.model,
-          apiKey: backend.apiKey
-        }
-      };
-    }
-  }
-  return { reason: "no slot in gateway.json has a cheap target" };
-}
-function claudeMemPlan(paths) {
-  const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
-  if (install === null || !existsSync15(install.installPath))
-    return { note: null };
-  const cheap = gatewayCheapTarget(paths.gatewayConfigFile);
-  if ("reason" in cheap)
-    return { note: null };
-  const version = comparableVersion(install.version);
-  if (version === null || Bun.semver.order(version, CLAUDE_MEM_MIN_VERSION) < 0) {
-    return {
-      note: `! claude-mem settings left alone: claude-mem ${install.version ?? "(no version)"} is older than ${CLAUDE_MEM_MIN_VERSION}, which brought what they need. Run: claude plugin update ${CLAUDE_MEM_ID}`
-    };
-  }
-  const file = paths.claudeMemSettingsFile;
-  let data;
-  try {
-    data = readJsonObject(file).data;
-  } catch (error) {
-    return { note: `! claude-mem settings left alone: ${messageOf(error)}` };
-  }
-  const env = data.env;
-  const nested = isObject2(env) && Object.keys(env).some((key) => key.startsWith("CLAUDE_MEM_"));
-  const at = (key) => nested ? ["env", key] : [key];
-  const target = cheap.target;
-  const wanted = {
-    CLAUDE_MEM_PROVIDER: "openai-compatible",
-    CLAUDE_MEM_OPENAI_COMPAT_PRESET: "custom",
-    CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: target.baseUrl,
-    CLAUDE_MEM_OPENAI_COMPAT_MODEL: target.model,
-    [API_KEY]: target.apiKey,
-    CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: FALLBACK_PROVIDER,
-    CLAUDE_MEM_QUOTA_FALLBACK_MODEL: FALLBACK_MODEL
-  };
-  const owned = ownedKeys(paths.stateDir, realTarget(file));
-  const isOwned = (path) => owned.some((entry) => entry.length === path.length && entry.every((s, i) => s === path[i]));
-  for (const [key, value] of Object.entries(wanted)) {
-    const current = getKey(data, at(key));
-    if (!current.found || current.value === value || isOwned(at(key)))
-      continue;
-    if (typeof current.value === "string" && (UNCHOSEN[key] ?? []).includes(current.value)) {
-      continue;
-    }
-    const shown = key === API_KEY ? "another key" : JSON.stringify(current.value);
-    return {
-      note: `  claude-mem settings left alone: ${key} is ${shown} in ${tildify(file, paths.home)} (your choice)`
-    };
-  }
-  return { plan: { set: Object.entries(wanted).map(([key, value]) => [at(key), value]), target } };
-}
-async function checkCheapTarget(target) {
-  const base = target.baseUrl.replace(/\/v1$/, "");
-  const answer = await listModels(base, target.apiKey);
-  if ("error" in answer)
-    return `${target.backend} did not answer (${answer.error})`;
-  if (answer.status !== 200)
-    return `${target.backend} refused its key (HTTP ${answer.status})`;
-  if (!answer.models.some((model) => model.id === target.model)) {
-    return `${target.backend} does not list the model ${target.model}`;
-  }
-  return null;
-}
-function isSecretPath(path) {
-  return path.at(-1) === API_KEY;
-}
-function applyClaudeMem(paths, plan, dryRun) {
-  return applyManagedJson({
-    file: paths.claudeMemSettingsFile,
-    stateDir: paths.stateDir,
-    set: plan.set,
-    dryRun,
-    unchosen: (path, value) => typeof value === "string" && (UNCHOSEN[path.at(-1) ?? ""] ?? []).includes(value),
-    secret: isSecretPath
-  });
-}
-function shownClaudeMemValue(path, value) {
-  if (value === undefined)
-    return "(none)";
-  if (isSecretPath(path) && typeof value === "string" && value !== "") {
-    return JSON.stringify(maskKey(value));
-  }
-  return JSON.stringify(value);
-}
-
-// src/project/resolve.ts
-import { existsSync as existsSync17, realpathSync as realpathSync2, statSync as statSync4 } from "fs";
-import { join as join10 } from "path";
+// src/setup/auto-mode.ts
+import { join as join11 } from "path";
 
 // src/project/config.ts
 import { existsSync as existsSync16, readFileSync as readFileSync16 } from "fs";
@@ -9991,6 +10191,8 @@ function loadAnymodelConfig(file, pluginVersion = VERSION) {
 }
 
 // src/project/resolve.ts
+import { existsSync as existsSync17, realpathSync as realpathSync2, statSync as statSync4 } from "fs";
+import { join as join10 } from "path";
 var MIN_GIT_VERSION = "2.31.0";
 var REPO_SELECTING_GIT_VARS = [
   "GIT_DIR",
@@ -10078,25 +10280,40 @@ function resolveProject(cwd, options = {}) {
   const mainCheckout = isWorktree ? findMainCheckout(git, cwd) : root;
   const own = join10(root, ".claude", "anymodel.json");
   let config = loadAnymodelConfig(own, options.pluginVersion);
+  let configFile = config === null ? null : own;
   if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    config = loadAnymodelConfig(join10(mainCheckout, ".claude", "anymodel.json"), options.pluginVersion);
+    const main = join10(mainCheckout, ".claude", "anymodel.json");
+    config = loadAnymodelConfig(main, options.pluginVersion);
+    configFile = config === null ? null : main;
   }
-  return { root, commonDir, isWorktree, mainCheckout, config };
+  return { root, commonDir, isWorktree, mainCheckout, config, configFile };
 }
 
 // src/setup/auto-mode.ts
 var AUTO_MODE_PATH = ["autoMode", "environment"];
 var AUTO_MODE_DEFAULTS = "$defaults";
-function autoModeSource(dir) {
-  if (Bun.which("git") === null)
+function autoModeSource(dir, which) {
+  if (which("git") === null)
     return null;
   const project = resolveProject(dir);
   if (project === null)
     return null;
-  return {
-    source: project.mainCheckout ?? project.root,
-    entries: project.config?.autoMode ?? []
-  };
+  const entries = project.config?.autoMode ?? [];
+  let differsFrom = null;
+  const main = project.mainCheckout;
+  const own = join11(project.root, ".claude", "anymodel.json");
+  if (project.isWorktree && main !== null && project.configFile === own) {
+    const mainFile = join11(main, ".claude", "anymodel.json");
+    let mainEntries;
+    try {
+      mainEntries = loadAnymodelConfig(mainFile)?.autoMode ?? [];
+    } catch {
+      mainEntries = null;
+    }
+    if (mainEntries === null || !Bun.deepEquals(mainEntries, entries))
+      differsFrom = mainFile;
+  }
+  return { source: main ?? project.root, entries, file: project.configFile, differsFrom };
 }
 function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
   return applyManagedEntries({
@@ -10128,7 +10345,8 @@ function marketplaceKnown(settingsFile) {
 }
 function applySetup(paths, managed, dryRun) {
   const short = (path) => tildify(path, paths.home);
-  const lines = [];
+  const changes = [];
+  const info = [];
   const launcher = installLauncher(paths.binDir, {
     stateDir: paths.stateDir,
     bunPath: process.execPath,
@@ -10136,7 +10354,7 @@ function applySetup(paths, managed, dryRun) {
   });
   if (launcher.outcome !== "unchanged") {
     const mark = launcher.outcome === "created" ? "+" : "~";
-    lines.push(`${mark} ${short(launcher.path)}: launcher ${launcher.outcome}`);
+    changes.push(`${mark} ${short(launcher.path)}: launcher ${launcher.outcome}`);
   }
   const settings = applyManagedJson({
     file: paths.settingsFile,
@@ -10145,142 +10363,164 @@ function applySetup(paths, managed, dryRun) {
     dryRun
   });
   for (const change of settings.changes) {
-    lines.push(`~ ${short(settings.file)}: ${formatKeyPath(change.path)}: ${show2(change.before)} -> ${show2(change.after)}`);
+    changes.push(`~ ${short(settings.file)}: ${formatKeyPath(change.path)}: ${show2(change.before)} -> ${show2(change.after)}`);
   }
   for (const skip of settings.skipped) {
-    lines.push(`  ${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
+    info.push(`  ${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
   }
   if (managed.autoMode !== null) {
     const result = applyAutoMode(paths.settingsFile, paths.stateDir, managed.autoMode, dryRun);
     const where = `${short(result.file)}: ${formatKeyPath(AUTO_MODE_PATH)}`;
     for (const entry of result.added)
-      lines.push(`~ ${where}: added ${JSON.stringify(entry)}`);
-    for (const entry of result.removed)
-      lines.push(`~ ${where}: removed ${JSON.stringify(entry)}`);
+      changes.push(`~ ${where}: added ${JSON.stringify(entry)}`);
+    for (const entry of result.removed) {
+      changes.push(`~ ${where}: removed ${JSON.stringify(entry)}`);
+    }
     for (const entry of result.skipped) {
-      lines.push(`  ${where}: ${JSON.stringify(entry)} is there already (not anymodel's); left alone`);
+      info.push(`  ${where}: ${JSON.stringify(entry)} is there already (not anymodel's); left alone`);
     }
   }
   if (managed.claudeMem !== null) {
     const result = applyClaudeMem(paths, managed.claudeMem, dryRun);
     for (const change of result.changes) {
-      lines.push(`~ ${short(result.file)}: ${formatKeyPath(change.path)}: ${shownClaudeMemValue(change.path, change.before)} -> ${shownClaudeMemValue(change.path, change.after)}`);
+      changes.push(`~ ${short(result.file)}: ${formatKeyPath(change.path)}: ${shownClaudeMemValue(change.path, change.before)} -> ${shownClaudeMemValue(change.path, change.after)}`);
     }
   }
-  return lines;
+  return { changes, info };
 }
-function askToRun(machine, what, commands, rerun) {
+function askToRun(machine, what, commands, rerun, notes) {
   console.log(`${what}:`);
   for (const command of commands)
     console.log(`  $ ${showCommand(command)}`);
   if (machine.confirm === null) {
-    console.log(`No terminal: nothing was run. Run \`${rerun}\` in a terminal to run them.`);
+    notes.push(`! Warp: no terminal, so these commands were not run. Run \`${rerun}\` in a terminal to run them.`);
     return false;
   }
   if (!machine.confirm("Run these commands now?")) {
-    console.log("Nothing was run.");
+    notes.push("! Warp: these commands were not run (you said no).");
     return false;
   }
   return true;
 }
-function runOnTerminal(machine, commands) {
-  for (const command of commands) {
+function runOnTerminal(machine, commands, undo, notes) {
+  for (const [index, command] of commands.entries()) {
     const code = machine.runOnTerminal(command);
-    if (code !== 0) {
-      console.log(`! ${showCommand(command)} failed (exit ${code}). Nothing after it ran.`);
-      return false;
+    if (code === 0)
+      continue;
+    notes.push(`! ${showCommand(command)} failed (exit ${code}). Nothing after it ran.`);
+    const done = commands.slice(0, index);
+    if (done.length > 0) {
+      notes.push("  These ran before it:", ...done.map((ran) => `    $ ${showCommand(ran)}`), ...undo === null ? [] : [`  To undo them: ${undo}`]);
     }
+    return false;
   }
   return true;
 }
-function decideAutoMode(paths, options, notes) {
-  const wanted = autoModeSource(options.project);
+function planAutoMode(paths, options, notes) {
+  let wanted;
+  try {
+    wanted = autoModeSource(options.project, options.machine.which);
+  } catch (error) {
+    notes.push(`! auto-mode entries left out: ${messageOf(error)}`);
+    return null;
+  }
   if (wanted === null)
     return null;
   const diff = applyAutoMode(paths.settingsFile, paths.stateDir, wanted, true);
-  if (diff.added.length === 0 && diff.removed.length === 0)
-    return wanted;
-  if (options.dryRun)
+  return { wanted, added: diff.added, removed: diff.removed };
+}
+function askAutoMode(paths, options, planned, notes) {
+  const { wanted, added, removed } = planned;
+  if (added.length === 0 && removed.length === 0)
     return wanted;
   const short = (path) => tildify(path, paths.home);
-  console.log(`Auto mode: trust rules from ${short(wanted.source)}/.claude/anymodel.json ("autoMode"), for ${formatKeyPath(AUTO_MODE_PATH)} in ${short(paths.settingsFile)}:`);
-  for (const entry of diff.added)
+  const from = wanted.file ?? `${wanted.source}/.claude/anymodel.json`;
+  console.log(`Auto mode: trust rules from ${short(from)} ("autoMode"), for ${formatKeyPath(AUTO_MODE_PATH)} in ${short(paths.settingsFile)}:`);
+  if (wanted.differsFrom !== null) {
+    console.log(`  This worktree's file is not the same as the main checkout's (${short(wanted.differsFrom)}). The rules below come from this worktree's file.`);
+  }
+  for (const entry of added)
     console.log(`  + ${JSON.stringify(entry)}`);
-  for (const entry of diff.removed)
+  for (const entry of removed)
     console.log(`  - ${JSON.stringify(entry)}`);
-  if (options.yes)
-    return wanted;
   if (options.machine.confirm === null) {
-    notes.push("! auto-mode entries left out: they are trust rules, so setup asks first. Run anymodel setup in a terminal, or with --yes.");
+    notes.push("! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run anymodel setup in a terminal.");
     return null;
   }
+  if (options.yes)
+    return wanted;
   if (!options.machine.confirm("Write these auto-mode entries?")) {
     notes.push("  auto-mode entries left out (you said no)");
     return null;
   }
   return wanted;
 }
-async function decideClaudeMem(paths, notes) {
+async function decideClaudeMem(paths, dryRun, report) {
   const planned = claudeMemPlan(paths);
+  if ("notInstalled" in planned)
+    return "not-installed";
   if ("note" in planned) {
     if (planned.note !== null)
-      notes.push(planned.note);
+      report.notes.push(planned.note);
     return null;
   }
   if (applyClaudeMem(paths, planned.plan, true).changes.length === 0)
     return planned.plan;
+  if (dryRun) {
+    report.info.push(`  claude-mem: would check ${planned.plan.target.backend} (one chat request) before writing its settings`);
+    return planned.plan;
+  }
   const problem = await checkCheapTarget(planned.plan.target);
   if (problem !== null) {
-    notes.push(`! claude-mem settings left alone: ${problem}`);
+    report.notes.push(`! claude-mem settings left alone: ${problem}`);
     return null;
   }
   return planned.plan;
 }
+var NO_WARP = {
+  commands: [],
+  stage: false,
+  pluginSteps: [],
+  removeShortcuts: false,
+  info: []
+};
 function planWarp(paths, options) {
+  if (!options.warp && !options.removeWarp)
+    return NO_WARP;
   const machine = options.machine;
   const system = detectSystem(machine);
   const app = detectWarpApp(machine, system);
   const version = app.version === null ? "" : ` ${app.version}`;
-  const none = {
-    commands: [],
-    stage: false,
-    pluginSteps: [],
-    removeShortcuts: false,
-    lines: []
-  };
   if (options.removeWarp) {
     const commands = warpRemoveCommands(machine, system, app);
-    const lines = [];
+    const info = [];
     const packageManagerRemovesIt = system.kind === "apt" || system.kind === "dnf" || system.kind === "brew" && app.viaBrew;
     if (app.installed && !packageManagerRemovesIt) {
-      lines.push(machine.platform === "darwin" ? "! Warp was not installed with Homebrew: move Warp.app from Applications to the Bin by hand" : `! Warp${version} was not installed by a package manager anymodel knows: remove it by hand`);
+      info.push(machine.platform === "darwin" ? "! Warp was not installed with Homebrew: move Warp.app from Applications to the Bin by hand" : `! Warp${version} was not installed by a package manager anymodel knows: remove it by hand`);
     }
     return {
-      ...none,
+      ...NO_WARP,
       commands,
       pluginSteps: warpPluginRemoveSteps(paths),
       removeShortcuts: warpDesktopEntries(paths).length > 0,
-      lines
+      info
     };
   }
-  if (options.warp) {
-    if (app.installed) {
-      return {
-        ...none,
-        pluginSteps: warpPluginSteps(paths),
-        lines: [`  Warp${version} is installed already`]
-      };
-    }
-    if (system.kind === "none")
-      return { error: system.reason };
+  if (app.installed) {
     return {
-      ...none,
-      commands: warpInstallCommands(machine, system, paths),
-      stage: system.kind === "apt" || system.kind === "dnf",
-      pluginSteps: warpPluginSteps(paths)
+      ...NO_WARP,
+      pluginSteps: warpPluginSteps(paths),
+      info: [`  Warp${version} is installed already`]
     };
   }
-  return app.installed ? { ...none, pluginSteps: warpPluginSteps(paths) } : none;
+  if (system.kind === "none")
+    return { error: system.reason };
+  return {
+    ...NO_WARP,
+    commands: warpInstallCommands(machine, system, paths),
+    stage: system.kind === "apt" || system.kind === "dnf",
+    pluginSteps: warpPluginSteps(paths)
+  };
 }
 async function runSetup(paths, options) {
   const short = (path) => tildify(path, paths.home);
@@ -10291,91 +10531,130 @@ async function runSetup(paths, options) {
 ` + `Then:      ${PLUGIN_INSTALL_COMMAND}`);
     return 1;
   }
-  const notes = [];
+  const report = { changes: [], info: [], notes: [] };
+  let ok = true;
   const warp = planWarp(paths, options);
   if ("error" in warp) {
     console.error(`Cannot install Warp here: ${warp.error}`);
     return 1;
   }
   const companions = companionPlan(paths);
-  notes.push(...companions.notes);
-  const claudeSteps = [...companions.steps, ...warp.pluginSteps];
+  report.notes.push(...companions.notes);
+  let claudeSteps = [...companions.steps, ...warp.pluginSteps];
   if (claudeSteps.length > 0 && machine.which("claude") === null) {
-    console.error(`The claude command is not on PATH. Setup needs it for these steps:
-` + claudeSteps.map((step) => `  $ ${showCommand(step.argv)}`).join(`
-`));
-    return 1;
+    report.notes.push("! The claude command is not on PATH, so setup skipped these steps. Run them once it is:", ...claudeSteps.map((step) => `  $ ${showCommand(step.argv)}`));
+    claudeSteps = [];
+    ok = false;
   }
+  const claudeMem = await decideClaudeMem(paths, options.dryRun, report);
+  const autoMode = planAutoMode(paths, options, report.notes);
   const managed = {
-    claudeMem: await decideClaudeMem(paths, notes),
-    autoMode: decideAutoMode(paths, options, notes)
+    claudeMem: claudeMem === "not-installed" ? null : claudeMem,
+    autoMode: autoMode?.wanted ?? null
   };
   const planned = applySetup(paths, managed, true);
   if (options.dryRun) {
-    const lines = [
+    const changes = [
       ...warp.commands.map((command) => `$ ${showCommand(command)}`),
-      ...warp.lines,
       ...claudeSteps.map((step) => step.line),
       ...warp.removeShortcuts ? removeWarpDesktopEntries(paths, true) : [],
-      ...planned,
-      ...notes
+      ...planned.changes
     ];
-    console.log(lines.length > 0 ? lines.join(`
-`) : "Nothing to change.");
+    printReport({ changes, info: [...warp.info, ...planned.info, ...report.info], notes: report.notes }, "Nothing to change.");
     console.log("Dry run: nothing was written or run.");
     return 0;
   }
+  if (autoMode !== null)
+    managed.autoMode = askAutoMode(paths, options, autoMode, report.notes);
+  let warpYes = true;
   if (warp.commands.length > 0) {
     const what = options.removeWarp ? "To remove Warp, anymodel runs these commands (sudo asks for your password)" : "To install Warp from its signed source, anymodel runs these commands (sudo asks for your password)";
     const rerun = options.removeWarp ? "anymodel setup --remove-warp" : "anymodel setup --warp";
-    if (!askToRun(machine, what, warp.commands, rerun))
-      return 1;
+    warpYes = askToRun(machine, what, warp.commands, rerun, report.notes);
+  }
+  let warpDone = warpYes;
+  if (warp.commands.length > 0 && warpYes) {
     try {
       if (warp.stage)
         await stageWarpFiles(machine, detectSystem(machine), paths);
-      if (!runOnTerminal(machine, warp.commands))
-        return 1;
+      const undo = options.removeWarp ? null : "anymodel setup --remove-warp";
+      warpDone = runOnTerminal(machine, warp.commands, undo, report.notes);
     } catch (error) {
-      console.log(`! ${messageOf(error)}. Nothing was run.`);
-      return 1;
+      report.notes.push(`! ${messageOf(error)}. No Warp command was run.`);
+      warpDone = false;
     } finally {
       if (warp.stage)
         clearWarpStage(paths);
     }
   }
-  const lines = [...warp.lines];
-  const steps = runCompanionSteps(claudeSteps, machine);
-  lines.push(...steps.lines);
-  const written = await withLock(paths.stateDir, () => [
-    ...warp.removeShortcuts ? removeWarpDesktopEntries(paths, false) : [],
-    ...applySetup(paths, managed, false)
-  ], { waitMs: 1e4 });
-  lines.push(...written);
-  if (lines.length === 0 && notes.length === 0) {
-    console.log("Nothing to change. Setup is up to date.");
-  } else {
-    if (lines.length > 0)
-      console.log(lines.join(`
-`));
-    if (notes.length > 0)
-      console.log(notes.join(`
-`));
+  if (!warpDone) {
+    ok = false;
+    const warpSteps = new Set(warp.pluginSteps);
+    claudeSteps = claudeSteps.filter((step) => !warpSteps.has(step));
   }
-  if (written.length > 0) {
+  report.info.unshift(...warp.info);
+  const steps = runCompanionSteps(claudeSteps, machine);
+  for (const line of steps.lines)
+    (line.startsWith("!") ? report.notes : report.changes).push(line);
+  if (!steps.ok)
+    ok = false;
+  if (claudeMem === "not-installed" && claudeSteps.length > 0) {
+    const again = await decideClaudeMem(paths, false, report);
+    if (again !== "not-installed")
+      managed.claudeMem = again;
+  }
+  const written = await withLock(paths.stateDir, () => {
+    const shortcuts = warp.removeShortcuts && warpDone ? removeWarpDesktopEntries(paths, false) : [];
+    const files = applySetup(paths, managed, false);
+    return { changes: [...shortcuts, ...files.changes], info: files.info };
+  }, { waitMs: 1e4 });
+  report.changes.push(...written.changes);
+  report.info.push(...written.info);
+  printReport(report, "Nothing to change. Setup is up to date.");
+  if (written.changes.length > 0) {
     console.log(`Done. Each changed file has a backup in ${short(paths.stateDir)}/backups/.`);
   }
   const pathDirs = (process.env.PATH ?? "").split(delimiter);
   if (!pathDirs.includes(paths.binDir)) {
     console.log(`Note: ${short(paths.binDir)} is not on your PATH. Add it, so the anymodel command works.`);
   }
-  return steps.ok ? 0 : 1;
+  return ok ? 0 : 1;
+}
+function printReport(report, nothing) {
+  const lines = [
+    ...report.changes.length > 0 ? report.changes : [nothing],
+    ...report.info,
+    ...report.notes
+  ];
+  console.log(lines.join(`
+`));
 }
 
 // src/machine/machine.ts
 import { existsSync as existsSync19, readFileSync as readFileSync18 } from "fs";
 var RUN_TIMEOUT_MS = 300000;
+var TEST_HOST_VAR = "ANYMODEL_TEST_HOST";
+function hostFacts(env) {
+  const real = {
+    platform: process.platform,
+    arch: process.arch,
+    osRelease: () => existsSync19("/etc/os-release") ? readFileSync18("/etc/os-release", "utf8") : null,
+    macApp: "/Applications/Warp.app"
+  };
+  const text = env[TEST_HOST_VAR];
+  if (!text)
+    return real;
+  const given = JSON.parse(text);
+  return {
+    platform: given.platform ?? real.platform,
+    arch: given.arch ?? real.arch,
+    osRelease: given.osRelease !== undefined ? () => given.osRelease ?? null : real.osRelease,
+    macApp: given.macApp ?? real.macApp
+  };
+}
 function realMachine(env, confirm2) {
   const PATH = env.PATH ?? "";
+  const host = hostFacts(env);
   return {
     run: (cmd) => {
       try {
@@ -10403,15 +10682,31 @@ function realMachine(env, confirm2) {
     },
     which: (command) => Bun.which(command, { PATH }),
     confirm: confirm2,
-    platform: process.platform,
-    arch: process.arch,
-    osRelease: () => existsSync19("/etc/os-release") ? readFileSync18("/etc/os-release", "utf8") : null,
+    platform: host.platform,
+    arch: host.arch,
+    osRelease: host.osRelease,
+    macApp: host.macApp,
     exists: (path) => existsSync19(path),
     fetchText: async (url) => {
-      const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
-      if (!response.ok)
-        throw new Error(`${url} answered ${response.status}`);
-      return response.text();
+      let at = url;
+      for (let hop = 0;hop <= 5; hop += 1) {
+        if (!at.startsWith("https://")) {
+          throw new Error(`${url} led to ${at}, which is not an HTTPS address`);
+        }
+        const response = await fetch(at, {
+          redirect: "manual",
+          signal: AbortSignal.timeout(30000)
+        });
+        const location = response.headers.get("location");
+        if (response.status >= 300 && response.status < 400 && location !== null) {
+          at = new URL(location, at).href;
+          continue;
+        }
+        if (!response.ok)
+          throw new Error(`${at} answered ${response.status}`);
+        return response.text();
+      }
+      throw new Error(`${url} redirected more than 5 times`);
     }
   };
 }
@@ -10426,12 +10721,15 @@ Commands:
                      Install the launcher in ~/.local/bin, turn on plugin auto-update, add
                      the companion plugins' marketplaces, point claude-mem at the gateway's
                      cheap model (when both are there), and copy the project's auto-mode
-                     entries into your settings (shown and asked; --yes: not asked).
+                     entries into your settings. The entries are trust rules: they are
+                     shown and asked on a terminal (--yes: shown, not asked); with no
+                     terminal they are left out, also with --yes.
                      --project <dir>: the project to read .claude/anymodel.json from
                      (default: this folder). --warp: install the Warp terminal (the
                      commands are shown and asked; sudo asks for your password) and its
                      Claude plugin. --remove-warp: take them out again.
-                     --dry-run prints what would change, and writes and runs nothing.
+                     --dry-run prints what would change, and writes, runs and checks
+                     nothing.
   doctor             Check the install. Exit code 1 when a check fails.
   restore [--yes] [--now]
                      Remove what anymodel added, and keep everything else: its settings
@@ -10451,8 +10749,8 @@ Commands:
 
 Paths follow HOME and CLAUDE_CONFIG_DIR.`;
 function routerBundle() {
-  const beside = join11(import.meta.dir, "router.js");
-  return existsSync20(beside) ? beside : join11(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
+  const beside = join12(import.meta.dir, "router.js");
+  return existsSync20(beside) ? beside : join12(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
 }
 var runner = (cmd) => {
   const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 30000 });

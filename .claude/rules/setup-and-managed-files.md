@@ -52,7 +52,8 @@ Each of them:
 - **Follows a symlink:** a linked dotfile stays a link, and its target gets the change;
   also a link whose target does not exist yet. A new file is tracked under its folder's
   real path.
-- **Keeps the file's mode,** except the launcher, which is always 755.
+- **Keeps the file's mode,** except the launcher, which is always 755, and a JSON write
+  that sets a `secret` key, which leaves the file at 600.
 - **Known limit:** the backup folder's name is the file's real path, encoded
   (`encodeURIComponent`). A real path long enough to make that name longer than 255
   bytes fails with ENAMETOOLONG.
@@ -63,6 +64,13 @@ Each of them:
   overwritten**: `ForeignKeyError`, and nothing is written. The user removes it by hand
   if anymodel should manage it.
 - A key that already has the wanted value but is not ours stays unowned.
+- **An owned key remembers the value anymodel wrote** (`owned.json`: `{ path, value }`,
+  or `{ path, sha256 }` for a `secret`, never the secret itself). When it holds another
+  value now, and not an `unchosen` one, the person changed it: it is theirs. Setting it
+  throws `ForeignKeyError` like any foreign key; removing it (restore) leaves it and
+  drops the ownership. A record with no value (an older `owned.json`, or the claim
+  written just before a write) is owned whatever the key holds, and gets its value at
+  the next write. This is general, in `applyManagedJson`: every caller gets it.
 - **The one exception: an unchosen value.** A caller may name, per key, the values that
   mean "nobody chose this yet" (`unchosen`): a program's own default that the program
   wrote into its file itself. claude-mem does that on its first run, so its seven keys
@@ -109,12 +117,15 @@ Each of them:
 ## `--dry-run` and `restore`
 
 - **`--dry-run`** goes through the same steps and writes nothing at all: no user file,
-  no state folder, no lock. Every new step takes `dryRun` and is tested with it.
+  no state folder, no lock. It reaches no network either: a check it would make (the
+  claude-mem backend) is printed as "would check …". Every new step takes `dryRun` and
+  is tested with it.
   Setup always runs this read-only pass first, outside the lock, also without
   `--dry-run`: a key the user set stops it before anything is written.
 - **`restore`** removes everything anymodel added and keeps everything else:
-  - JSON settings: removes only the keys in `owned.json`. Foreign keys stay, also ones
-    added after setup.
+  - JSON settings: removes only the keys in `owned.json` that still hold anymodel's
+    value. A key the person changed since stays. Foreign keys stay, also ones added
+    after setup.
   - JSON lists: removes only the entries in `owned-entries.json`. The anchor stays when
     the person added an entry since; it is then no longer claimed.
   - Plugins and marketplaces setup added with `claude plugin …` stay: they are Claude
@@ -172,29 +183,45 @@ valid across updates.
   command to run.
 - **Commands that need root** (installing or removing the Warp app) run only in a manual
   `setup --warp` / `--remove-warp`, after the exact list was shown and the person said yes
-  on a terminal. `--yes` never skips that question. With no terminal, setup prints the
-  commands and stops before it changes anything. `sudo` asks for the password itself:
+  on a terminal. `--yes` never skips that question. With no terminal, or a "no", those
+  commands (and Warp's plugin and shortcuts, which go with them) are left out, the rest
+  of setup is done, and setup exits 1. `sudo` asks for the password itself:
   anymodel never sees, stores or pipes one, and never runs a downloaded script (no
   `curl | sh`). Files root needs are made in `<stateDir>/warp/` and put in place with
-  `sudo install`; that folder is removed after the run.
-- **Trust rules are asked too.** The auto-mode entries are shown as `+` / `-` lines,
-  then asked; `--yes` skips the question. No terminal and no `--yes`: they are left out,
-  and setup says so.
-- **`claude plugin …` runs only in a manual setup**, and only for what is missing (a
-  companion's marketplace or plugin, Warp's plugin). It never turns on a plugin the
-  person turned off; it says what to run.
+  `sudo install` (or `rpm --import` from there); that folder is removed after the run.
+  Warp's signing key is downloaded over HTTPS only (each redirect too) and must hold
+  exactly one key, with the pinned fingerprint (`WARP_KEY_FINGERPRINT`).
+- **Trust rules always need a person at a terminal.** The auto-mode entries are shown as
+  `+` / `-` lines, then asked; `--yes` skips the question only on a terminal. With no
+  terminal they are left out whatever the flags, and setup says so. A project setup
+  cannot read (invalid or too-new `anymodel.json`, old git, a missing main checkout)
+  leaves only these entries out, with a `!` note.
+- **Every question comes first.** All questions are asked before anything runs or is
+  written. A "no" to one drops only what depends on it.
+- **`claude plugin …` steps run only when a person runs `anymodel setup`**; nothing in
+  the background (hooks, the self-update) ever runs setup. They run only for what is
+  missing (a companion's marketplace or plugin; Warp's plugin, only with `--warp`). It
+  never turns on a plugin the person turned off; it says what to run. Without `claude` on
+  PATH, these steps are skipped and named, the rest is done, and setup exits 1.
 - **The system is reached through `Machine`** (`src/machine/machine.ts`): commands, the
-  terminal question, the platform, `/etc/os-release`, file checks and downloads. A test
-  hands in a fake one, with fake commands on a PATH of its own.
+  terminal question, the platform, `/etc/os-release`, the Warp app's path, file checks
+  and downloads. A test in the same process hands in a fake one, with fake commands on a
+  PATH of its own; a test that runs the CLI as its own process gives the host's facts in
+  `ANYMODEL_TEST_HOST` and a PATH of fakes, so it never reads the machine it runs on.
 
 ## Command output
 
 - `setup` prints one line per change: `+` created, `~` changed, `-` removed, with `~`
-  for the home folder (`tildify`). Its last line: "Done. Each changed file has a backup
-  in ~/.claude/anymodel/backups/." (the state folder's `backups/`).
+  for the home folder (`tildify`); then information lines (two spaces: what it left
+  alone); then notes (`!`). With no change it prints "Nothing to change. Setup is up to
+  date." first; information may follow. "Done. Each changed file has a backup in
+  ~/.claude/anymodel/backups/." (the state folder's `backups/`) comes only when a file
+  was written.
 - `doctor` prints one `✓` or `✗` line per check. A `✗` line says what to run. A part
-  the person may leave out (the gateway, never set up) is a `·` line: information, never
-  a failure. The list of checks is in `README.md` § Commands; keep it in step.
+  the person may leave out (the gateway, never set up; Warp, with or without its plugin)
+  is a `·` line: information, never a failure. A `!` line is a warning (claude-mem older
+  than 13.35.0), never a failure either. The list of checks is in `README.md`
+  § Commands; keep it in step.
 - Exit codes: 0 done, 1 a failed check or an error, 2 a wrong command or option.
 - A check that reaches the network has a timeout and never asks for a password:
   `git ls-remote` with `GIT_TERMINAL_PROMPT=0`. It adds ssh `BatchMode` only when the

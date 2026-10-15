@@ -96,6 +96,8 @@ export type CompanionState =
   | { kind: "not-installed" }
   | { kind: "off"; version: string | null }
   | { kind: "outside-range"; version: string | null }
+  /** The recorded version is no version number (a commit id): it cannot be checked. */
+  | { kind: "unknown-version"; version: string | null }
   | { kind: "ok"; version: string | null };
 
 export function companionState(paths: CliPaths, companion: Companion): CompanionState {
@@ -109,7 +111,8 @@ export function companionState(paths: CliPaths, companion: Companion): Companion
   if (!pluginEnabled(paths, companion.id)) return { kind: "off", version };
   if (companion.range !== null && isValidRange(companion.range)) {
     const comparable = comparableVersion(version);
-    if (comparable === null || !Bun.semver.satisfies(comparable, companion.range)) {
+    if (comparable === null) return { kind: "unknown-version", version };
+    if (!Bun.semver.satisfies(comparable, companion.range)) {
       return { kind: "outside-range", version };
     }
   }
@@ -159,6 +162,9 @@ export function companionPlan(
           `! ${companion.id} ${state.version ?? "(no version)"} is outside ${companion.range}, and anymodel does not load with it. Run: claude plugin update ${companion.id}`,
         );
         break;
+      case "unknown-version":
+        notes.push(`! ${unknownVersionText(companion, state.version)}`);
+        break;
       case "ok":
         break;
     }
@@ -188,6 +194,11 @@ export function runCompanionSteps(
     }
   }
   return { lines, ok };
+}
+
+/** A companion whose recorded version is a commit id, not a version number. */
+function unknownVersionText(companion: Companion, version: string | null): string {
+  return `${companion.id} ${version ?? "(no version)"}: its version is unknown (not a version number), so anymodel cannot check it against ${companion.range}. Run: claude plugin update ${companion.id}`;
 }
 
 /** One doctor line per companion. */
@@ -222,6 +233,8 @@ function companionCheck(paths: CliPaths, companion: Companion): { ok: boolean; t
           ok: false,
           text: `${companion.id} ${state.version ?? "(no version)"} is outside ${companion.range}. Run: claude plugin update ${companion.id}`,
         };
+      case "unknown-version":
+        return { ok: false, text: unknownVersionText(companion, state.version) };
       case "ok":
         return {
           ok: true,

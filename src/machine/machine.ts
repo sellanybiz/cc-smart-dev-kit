@@ -23,14 +23,57 @@ export interface Machine {
   arch: string;
   /** The text of `/etc/os-release`, or null. */
   osRelease: () => string | null;
-  /** True when a system path exists (`/etc/apt/…`, `/Applications/Warp.app`). */
+  /** Where the Warp app sits on macOS: `/Applications/Warp.app`. */
+  macApp: string;
+  /** True when a system path exists (`/etc/apt/…`, the Warp app). */
   exists: (path: string) => boolean;
-  /** Downloads a text file over HTTPS (Warp's signing key), with a timeout. */
+  /**
+   * Downloads a text file (Warp's signing key), with a timeout. The address, and the
+   * address it ends at after redirects, must be HTTPS.
+   */
   fetchText: (url: string) => Promise<string>;
 }
 
 /** Commands get this long: `claude plugin marketplace add` alone may clone for 120 s. */
 const RUN_TIMEOUT_MS = 300_000;
+
+/**
+ * Tests only: a JSON object in this variable stands in for the host's facts
+ * (`platform`, `arch`, `osRelease`, `macApp`), so a test that runs the CLI as its own
+ * process never reads the machine it runs on. Unset, the real values are used.
+ */
+export const TEST_HOST_VAR = "ANYMODEL_TEST_HOST";
+
+interface HostFacts {
+  platform: NodeJS.Platform;
+  arch: string;
+  osRelease: () => string | null;
+  macApp: string;
+}
+
+function hostFacts(env: Record<string, string | undefined>): HostFacts {
+  const real: HostFacts = {
+    platform: process.platform,
+    arch: process.arch,
+    osRelease: () =>
+      existsSync("/etc/os-release") ? readFileSync("/etc/os-release", "utf8") : null,
+    macApp: "/Applications/Warp.app",
+  };
+  const text = env[TEST_HOST_VAR];
+  if (!text) return real;
+  const given = JSON.parse(text) as Partial<{
+    platform: NodeJS.Platform;
+    arch: string;
+    osRelease: string | null;
+    macApp: string;
+  }>;
+  return {
+    platform: given.platform ?? real.platform,
+    arch: given.arch ?? real.arch,
+    osRelease: given.osRelease !== undefined ? () => given.osRelease ?? null : real.osRelease,
+    macApp: given.macApp ?? real.macApp,
+  };
+}
 
 /** The real machine, with commands found on `env.PATH`. */
 export function realMachine(
@@ -38,6 +81,7 @@ export function realMachine(
   confirm: Machine["confirm"],
 ): Machine {
   const PATH = env.PATH ?? "";
+  const host = hostFacts(env);
   return {
     run: (cmd) => {
       try {
@@ -68,15 +112,32 @@ export function realMachine(
     },
     which: (command) => Bun.which(command, { PATH }),
     confirm,
-    platform: process.platform,
-    arch: process.arch,
-    osRelease: () =>
-      existsSync("/etc/os-release") ? readFileSync("/etc/os-release", "utf8") : null,
+    platform: host.platform,
+    arch: host.arch,
+    osRelease: host.osRelease,
+    macApp: host.macApp,
     exists: (path) => existsSync(path),
     fetchText: async (url) => {
-      const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-      if (!response.ok) throw new Error(`${url} answered ${response.status}`);
-      return response.text();
+      // Redirects are followed one at a time, so no step of the way leaves HTTPS: what
+      // comes back is a signing key.
+      let at = url;
+      for (let hop = 0; hop <= 5; hop += 1) {
+        if (!at.startsWith("https://")) {
+          throw new Error(`${url} led to ${at}, which is not an HTTPS address`);
+        }
+        const response = await fetch(at, {
+          redirect: "manual",
+          signal: AbortSignal.timeout(30_000),
+        });
+        const location = response.headers.get("location");
+        if (response.status >= 300 && response.status < 400 && location !== null) {
+          at = new URL(location, at).href;
+          continue;
+        }
+        if (!response.ok) throw new Error(`${at} answered ${response.status}`);
+        return response.text();
+      }
+      throw new Error(`${url} redirected more than 5 times`);
     },
   };
 }

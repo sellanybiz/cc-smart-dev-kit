@@ -1,3 +1,5 @@
+import { join } from "node:path";
+import { loadAnymodelConfig } from "../project/config";
 import { resolveProject } from "../project/resolve";
 import { applyManagedEntries, type ManagedEntriesResult } from "./managed-entries";
 
@@ -23,22 +25,44 @@ export interface AutoModeSource {
   /** The project's main checkout: one source for all its worktrees. */
   source: string;
   entries: string[];
+  /** The anymodel.json the entries come from; null when the project has none. */
+  file: string | null;
+  /**
+   * In a worktree with its own anymodel.json: the main checkout's file, when its
+   * `autoMode` says something else (or it cannot be read). Null otherwise.
+   */
+  differsFrom: string | null;
 }
 
 /**
  * The project in `dir` and the auto-mode entries it asks for. Null outside git (no
  * project, nothing to copy). A project with no `autoMode` asks for none: the entries
- * setup copied from it before then go.
+ * setup copied from it before then go. Throws what `resolveProject` throws: an invalid
+ * or too-new anymodel.json, git older than 2.31, a worktree whose main checkout is gone.
  */
-export function autoModeSource(dir: string): AutoModeSource | null {
+export function autoModeSource(
+  dir: string,
+  which: (command: string) => string | null,
+): AutoModeSource | null {
   // No git on this machine: no project can be found, so there is nothing to copy.
-  if (Bun.which("git") === null) return null;
+  if (which("git") === null) return null;
   const project = resolveProject(dir);
   if (project === null) return null;
-  return {
-    source: project.mainCheckout ?? project.root,
-    entries: project.config?.autoMode ?? [],
-  };
+  const entries = project.config?.autoMode ?? [];
+  let differsFrom: string | null = null;
+  const main = project.mainCheckout;
+  const own = join(project.root, ".claude", "anymodel.json");
+  if (project.isWorktree && main !== null && project.configFile === own) {
+    const mainFile = join(main, ".claude", "anymodel.json");
+    let mainEntries: string[] | null;
+    try {
+      mainEntries = loadAnymodelConfig(mainFile)?.autoMode ?? [];
+    } catch {
+      mainEntries = null;
+    }
+    if (mainEntries === null || !Bun.deepEquals(mainEntries, entries)) differsFrom = mainFile;
+  }
+  return { source: main ?? project.root, entries, file: project.configFile, differsFrom };
 }
 
 /** Adds or removes the project's entries (or, with `dryRun`, only says what would change). */
