@@ -1,0 +1,88 @@
+# Roadmap
+
+Each phase ships as a plugin release (`release` skill in `.claude/skills/`). How the
+parts fit: `design.md`.
+
+| Phase | What it adds | Status |
+|---|---|---|
+| 1 | Foundation | Done |
+| 2 | The AI gateway | Next |
+| 3 | Hooks and `doctor --live` | Planned |
+| 4 | Shared browser, Serena, MCP registration, session tools | Planned |
+| 5 | Instructions, skills, agents | Planned |
+| 6 | Notifications, claude-mem settings, the auto-mode block | Planned |
+| 7 | Opus and Fable slots, the usage-limit alert | Planned |
+| 8 | Web search | Planned |
+| 9 | The local portal | Planned |
+| 10 | Rollout to machines | Planned |
+
+## 1 — Foundation (done)
+
+The repo, CI, the bundle step and its check, `claude plugin validate --strict`, the
+neutrality check. The `cc.json` contract and project resolution. `cc-agentic setup`,
+`doctor` and `restore`, managed keys and blocks with backups, atomic writes and a lock,
+and the stable launcher.
+
+## 2 — The AI gateway
+
+A local router in front of OmniRoute and Ollama Cloud. It gives cheap models to
+subagent slots, and a judge for auto mode's safety check.
+
+- Slot names: `cc-scout`, `cc-worker`, `cc-judge`.
+- A general `aliases` map in its config, so a machine's old slot names keep working
+  while it moves to the new ones.
+- `setup` runs the router from `~/.local/share/cc/`.
+- The router logs a safety-check request form it does not know, loudly, instead of
+  guessing (`claude-code-contract.md`).
+
+## 3 — Hooks and `doctor --live`
+
+- Worktree create and remove, with the defer check: from `cc.json` when there is one,
+  Claude Code's default when there is not.
+- Guards, and session names.
+- `cc-agentic doctor --live`: a throwaway session in a temp repo that proves the hooks
+  and the worktree contract on the installed Claude Code. It makes the live rows of
+  `claude-code-contract.md` repeatable.
+
+## 4 — Shared browser, Serena, MCP, session tools
+
+- The Playwright MCP server with one Chrome for every session.
+- Serena.
+- `setup` registers MCP servers at user scope, so tool names stay `mcp__<server>__*`.
+- `cc-agentic sessions` and `cc-agentic worktrees`.
+
+## 5 — Instructions, skills, agents
+
+- Always-on instructions, imported from `~/.claude/CLAUDE.md` through a managed block.
+- Opt-in instructions, per project (`cc.json` `instructions`).
+- General skills and agents, which read a project's own additions when they exist.
+
+## 6 — Notifications, claude-mem settings, the auto-mode block
+
+- Notification hooks.
+- claude-mem settings.
+- The auto-mode block: `setup` copies each opted-in project's `autoMode` rules into
+  the user's settings.
+
+## 7 — Opus and Fable slots
+
+Slots keyed by the real model ids, a usage-limit alert, and a status-line warning.
+
+## 8 — Web search
+
+`cc-agentic search`.
+
+## 9 — The local portal
+
+A local web page for the setup. Only the user may reach it: it needs a token, it
+checks for CSRF (a request a different website sends through the user's browser), and
+it checks the `Host` and `Origin` headers of every request.
+
+## 10 — Rollout
+
+The release on every machine, `doctor` green on each.
+
+## After the rollout
+
+Each adopting project removes its own old copies of the pieces the plugin now ships,
+one piece at a time, as `design.md` § The safe switch describes.

@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The whole history, so the version check can find where the PR left its base.
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: A plugin change raises the version
+        # Claude Code updates a plugin only when its version changes.
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: bun scripts/check-version-bump.ts "origin/$BASE_REF"
+
+      - name: Type check
+        run: bun run typecheck
+
+      - name: Lint and format check
+        run: bun run lint
+
+      - name: Neutral (no file names the publisher)
+        run: bun run check:neutral
+
+      - name: Tests
+        run: bun test
+
+      - name: Bundles are up to date
+        run: bun run build:check
+
+      - name: Install the tested Claude Code
+        # The tested version is .claude-code-version at the repo root: raise it on purpose.
+        # In its own folder, so it never touches this repo's package.json or lockfile.
+        # --trust lets its postinstall fetch the native binary.
+        run: |
+          CLAUDE_CODE_VERSION="$(cat .claude-code-version)"
+          mkdir -p "$RUNNER_TEMP/claude-code"
+          cd "$RUNNER_TEMP/claude-code"
+          echo '{"name":"claude-code-ci","private":true}' > package.json
+          bun add --trust "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
+          echo "$RUNNER_TEMP/claude-code/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Validate the plugin
+        run: |
+          claude --version
+          claude plugin validate plugin --strict
+
+      - name: Validate the marketplace
+        run: claude plugin validate . --strict

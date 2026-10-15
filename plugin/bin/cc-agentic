@@ -1,3 +1,3 @@
-#!/usr/bin/env bun
-// Phase 0 spike of the cc-agentic command: shows where it runs from.
-console.log(`cc-agentic (spike) from ${import.meta.dir}; CLAUDE_PLUGIN_ROOT=${process.env.CLAUDE_PLUGIN_ROOT ?? "(unset)"}`);
+#!/bin/sh
+# Runs the cc-agentic command of this plugin version (on the Bash tool's PATH in Claude Code).
+exec bun "$(dirname "$0")/../dist/cli.js" "$@"

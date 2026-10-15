@@ -1,7 +1,7 @@
 {
   "name": "cc",
-  "version": "0.0.2",
-  "description": "Our agentic development setup for Claude Code: gateway, hooks, skills, agents and machine setup.",
+  "version": "0.1.0",
+  "description": "A general agentic development setup for Claude Code, for any project: gateway, hooks, skills, agents and machine setup.",
   "author": { "name": "SellAnyBiz" },
   "repository": "https://github.com/sellanybiz/cc-agentic"
 }
