@@ -41,6 +41,25 @@ describe("the router bundle", () => {
     // It does hold the command name it prints, from build-info/names.
     expect(router).toContain('var COMMAND = "anymodel";');
   });
+
+  test("holds the router's own paths only, never the command's: a CLI path edit leaves it as it is", () => {
+    // `src/cli/paths.ts` holds every path the command uses. In this bundle, one CLI path
+    // added there would rewrite router.js without the router changing, and a changed
+    // router.js restarts the router on every machine. The router reads its own small
+    // module instead (`src/gateway/paths.ts`). This fails when an import brings the CLI
+    // module back in; a stale bundle cannot hide it, because `bun run build:check` (in
+    // `bun run check` and CI) fails on a stale plugin/dist first.
+    const root = join(import.meta.dir, "..", "..");
+    const router = readFileSync(join(root, "plugin", "dist", "router.js"), "utf8");
+    // The router's own paths are there: its config, and its limit state file.
+    expect(router).toContain("gateway.json");
+    expect(router).toContain("gateway-state.json");
+    // The CLI's paths module is not, comment and paths alike.
+    expect(router).not.toContain("src/cli/paths.ts");
+    expect(router).not.toContain("known_marketplaces.json");
+    expect(router).not.toContain("installed_plugins.json");
+    expect(router).not.toContain(".claude-mem");
+  });
 });
 
 describe("the baked build info", () => {

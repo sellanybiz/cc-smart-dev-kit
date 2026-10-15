@@ -51,16 +51,33 @@ export const YUM_REPO = "/etc/yum.repos.d/warpdotdev.repo";
 const DESKTOP_ENTRY = "dev.warp.Warp.desktop";
 
 /** The apt source, byte for byte what Warp's package writes itself (its postinst). */
-export const APT_SOURCE_TEXT = `### THIS FILE IS AUTOMATICALLY CONFIGURED ###
+export function aptSourceText(arch: AptArch): string {
+  return `### THIS FILE IS AUTOMATICALLY CONFIGURED ###
 # You may comment out this entry, but other modifications to the file may be lost.
 
 Types: deb
 URIs: https://releases.warp.dev/linux/deb
 Suites: stable
 Components: main
-Architectures: amd64
+Architectures: ${arch}
 Signed-By: ${APT_KEY}
 `;
+}
+
+/**
+ * The architectures Warp's apt repository has packages for, as its Packages files name
+ * them: `amd64` and `arm64` (read 2026-10-16, `.../dists/stable/main/binary-<arch>/Packages`).
+ * Each package's postinst writes its OWN architecture into the source line, so anymodel
+ * writes the one this machine runs on.
+ */
+export type AptArch = "amd64" | "arm64";
+
+/** The apt architecture of this machine; null for one Warp's apt source has no packages for. */
+export function aptArch(machine: Machine): AptArch | null {
+  if (machine.arch === "x64") return "amd64";
+  if (machine.arch === "arm64") return "arm64";
+  return null;
+}
 
 /** The dnf repository, as Warp's install guide writes it. */
 export const YUM_REPO_TEXT = `[warpdotdev]
@@ -73,7 +90,7 @@ gpgkey=${WARP_KEY_URL}
 
 /** How this system installs Warp. */
 export type WarpSystem =
-  | { kind: "apt" }
+  | { kind: "apt"; arch: AptArch }
   | { kind: "dnf" }
   | { kind: "brew" }
   | { kind: "none"; reason: string };
@@ -106,13 +123,15 @@ export function detectSystem(machine: Machine): WarpSystem {
     if (machine.which("apt-get") === null || machine.which("dpkg-query") === null) {
       return { kind: "none", reason: `apt-get is missing. Download Warp: ${WARP_DOWNLOAD_URL}` };
     }
-    if (machine.arch !== "x64") {
+    // Warp's apt repository has x86_64 and arm64 builds (its Packages files, read 2026-10-16).
+    const arch = aptArch(machine);
+    if (arch === null) {
       return {
         kind: "none",
-        reason: `Warp's apt source here is for x86_64; this machine is ${machine.arch}. Download Warp: ${WARP_DOWNLOAD_URL}`,
+        reason: `Warp's apt source has x86_64 and arm64 builds; this machine is ${machine.arch}. Download Warp: ${WARP_DOWNLOAD_URL}`,
       };
     }
-    return { kind: "apt" };
+    return { kind: "apt", arch };
   }
   if (words.some((word) => ["fedora", "rhel", "centos"].includes(word))) {
     if (machine.which("dnf") === null || machine.which("rpm") === null) {
@@ -304,7 +323,8 @@ export async function stageWarpFiles(
     if (dearmor.exitCode !== 0) {
       throw new Error(`gpg --dearmor failed on Warp's key: ${dearmor.output.trim()}`);
     }
-    writeFileSync(join(stage, "warpdotdev.sources"), APT_SOURCE_TEXT, { mode: 0o644 });
+    // This machine's architecture, as Warp's own package writes it (its postinst).
+    writeFileSync(join(stage, "warpdotdev.sources"), aptSourceText(system.arch), { mode: 0o644 });
   }
   if (system.kind === "dnf") {
     writeFileSync(join(stage, "warpdotdev.repo"), YUM_REPO_TEXT, { mode: 0o644 });

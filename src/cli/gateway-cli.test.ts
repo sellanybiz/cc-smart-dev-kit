@@ -551,6 +551,53 @@ describe("anymodel restore: the gateway in two stages", () => {
     );
   });
 
+  test("a key the person changed after setup is theirs: restore leaves it, and the two stages still finish", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    writeFileSync(m.paths.settings, '{ "model": "opus" }\n');
+    expect((await m.run(["gateway", "setup"])).exitCode).toBe(0);
+    expect((await m.run(["gateway", "on"])).exitCode).toBe(0);
+
+    // The person points Claude Code at their own gateway by hand. That key is theirs from
+    // now on; `ownedGatewayEnvKeys` drops it from the keys that still hold our value.
+    const settings = JSON.parse(readFileSync(m.paths.settings, "utf8")) as {
+      env: Record<string, string>;
+      model: string;
+    };
+    settings.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:19999";
+    writeFileSync(m.paths.settings, `${JSON.stringify(settings, null, 2)}\n`);
+
+    // Stage 1: our keys go, the person's one stays, and running sessions still get their
+    // warning to restart.
+    const first = await m.run(["restore"]);
+    expect(first.stderr).toBe("");
+    expect(first.exitCode).toBe(0);
+    expect(first.stdout).toContain(
+      "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_DEFAULT_HAIKU_MODEL, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, env.ANTHROPIC_DEFAULT_SONNET_MODEL, env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME; everything else kept\n",
+    );
+    expect(first.stdout).toContain(
+      "Restart every running Claude session (they still use the router), then run `anymodel restore` again to stop and remove the router.\n",
+    );
+    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:19999" },
+      model: "opus",
+    });
+
+    // Stage 2: no key that still holds our value is left, so the router goes; the person's
+    // key stays, because it was never anymodel's to remove. (The router keeps running until
+    // the sessions restart: the first `restore` above said so.)
+    const done = await m.runHere(["restore", "--yes"]);
+    expect(done.stderr).toBe("");
+    expect(done.exitCode).toBe(0);
+    expect(existsSync(m.paths.copy)).toBe(false);
+    expect(existsSync(m.paths.unit)).toBe(false);
+    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:19999" },
+      model: "opus",
+    });
+  });
+
   test("--now does both at once, after the warning that every running session fails", async () => {
     const m = machine();
     const server = fakeServer();

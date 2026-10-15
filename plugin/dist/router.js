@@ -11,35 +11,19 @@ var PLUGIN = "anymodel";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
 var COMMAND = "anymodel";
 
-// src/cli/paths.ts
+// src/gateway/paths.ts
 import { homedir } from "os";
 import { join } from "path";
-function cliPaths(env = process.env) {
-  const home = env.HOME || homedir();
-  const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join(home, ".claude");
+function homeDir(env = process.env) {
+  return env.HOME || homedir();
+}
+function routerPaths(env = process.env) {
+  const home = homeDir(env);
   return {
     home,
-    claudeConfigDir,
-    settingsFile: join(claudeConfigDir, "settings.json"),
-    installedPluginsFile: join(claudeConfigDir, "plugins", "installed_plugins.json"),
-    knownMarketplacesFile: join(claudeConfigDir, "plugins", "known_marketplaces.json"),
-    binDir: join(home, ".local", "bin"),
-    stateDir: join(claudeConfigDir, "anymodel"),
     gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json"),
-    routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
-    routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service"),
-    claudeMemSettingsFile: join(claudeMemDataDir(env, home), "settings.json"),
-    routerSocketFile: join(home, ".config", "systemd", "user", "anymodel-router.socket")
+    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json")
   };
-}
-function claudeMemDataDir(env, home) {
-  const dir = env.CLAUDE_MEM_DATA_DIR;
-  if (!dir)
-    return join(home, ".claude-mem");
-  if (dir === "~")
-    return home;
-  return dir.startsWith("~/") ? join(home, dir.slice(2)) : dir;
 }
 
 // src/gateway/router.ts
@@ -7834,9 +7818,9 @@ function exitWhenDone(done, log, cleanup) {
 // src/entries/router.ts
 var tooOld = bunTooOld(Bun.version, process.execPath);
 if (tooOld === null) {
-  const paths = cliPaths();
+  const paths = routerPaths();
   await startRouter(paths.gatewayConfigFile, paths.gatewayStateFile);
 } else {
-  console.error(`anymodel-router: ${tooOld} Upgrade this Bun, then run: ${COMMAND} gateway setup`);
+  console.error(`anymodel-router: ${tooOld} Upgrade this Bun, then run: ${COMMAND} gateway setup (systemd gives up after 5 failed starts, so an upgrade alone is not enough: it clears that limit with reset-failed and starts the router again)`);
   process.exitCode = 1;
 }

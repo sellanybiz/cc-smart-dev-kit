@@ -69,9 +69,11 @@ Where it is checked, each time against the Bun running the code (`Bun.version`):
   checks, which send the backend key.
 - **`gateway setup`** (`installRouter`): refuses to install the router for an older Bun,
   before it asks or writes anything.
-- **The router**, at start: it does not listen on an older Bun. Its unit retries every
-  2 s, so an upgrade in place brings it up; a Bun at another path needs `gateway setup`,
-  which writes that path into the unit.
+- **The router**, at start: it does not listen on an older Bun. systemd stops trying after
+  5 failed starts in 60 s (`StartLimitBurst` in `src/gateway/service.ts`), so upgrading Bun
+  in place does not bring the router back by itself. `gateway setup` does: it clears the
+  start limit (`systemctl --user reset-failed`) and starts the socket and the unit again,
+  with the new Bun's path written into the unit.
 - **The tests**: the preload (`src/testing/setup.ts`) stops `bun test` on an older Bun
   with one line. The `package.json` scripts call `"$npm_execpath"` (the Bun running
   `bun run`), never `bun` from PATH, and tests start subprocesses with
@@ -729,26 +731,30 @@ commands, and `setup` shows them and asks. They need root, so:
 - a command that fails half way lists what ran before it and names
   `anymodel setup --remove-warp` to undo it.
 
-**What Warp's .deb writes** (read from the control files of `warp-terminal`
-0.2026.10.07.08.29.stable.00, downloaded from Warp's apt repository and only unpacked
-with `dpkg-deb -e`, never installed). Its postinst:
+**What Warp's .deb writes** (read from the control member of `warp-terminal`
+0.2026.10.07.08.29.stable.00, the amd64 package and the arm64 one, fetched from Warp's apt
+repository and unpacked, never installed). Its postinst:
 
 - writes Warp's key, built into the script, to `<apt trustedparts>/warpdotdev.gpg`
   (`/etc/apt/trusted.gpg.d/warpdotdev.gpg` with apt's defaults) on every install and
   upgrade;
 - writes the source `<apt sourceparts>/warpdotdev.sources` (deb822, with a two-line
-  "automatically configured" header, `Architectures: amd64` and
+  "automatically configured" header, `Architectures:` — `amd64` in the amd64 package,
+  `arm64` in the arm64 one: each package writes the architecture it is for — and
   `Signed-By: /etc/apt/trusted.gpg.d/warpdotdev.gpg`), but only when neither that file
   nor `warpdotdev.list` exists;
 - its postrm, on purge, removes the key and both source files.
 
 So anymodel writes the same key path, and the source with the same path and the very
-same text, before the first install; the package then finds its source there and leaves
-it. apt never sees two Warp sources or two Signed-By values. A source already there (the
-package's, or a `.list` from Warp's manual guide) is kept as it is.
+same text — this machine's architecture in the `Architectures:` line — before the first
+install; the package then finds its source there and leaves it. apt never sees two Warp
+sources or two Signed-By values. A source already there (the package's, or a `.list`
+from Warp's manual guide) is kept as it is.
 
-Warp's rpm repository has `x86_64` and `aarch64` builds (its repodata), so dnf is used on
-those two; other architectures get the download link, like apt on anything but x86_64.
+Warp's apt repository has `amd64` and `arm64` packages (its `Packages` files, read
+2026-10-16), and its rpm repository `x86_64` and `aarch64` builds (its repodata, read
+2026-10-15), so a Debian-family or Fedora-family machine is installed for on either
+x86_64 or arm64; other architectures get the download link.
 
 Warp's Claude plugin is not a dependency (a machine may have no Warp). Only `--warp`
 adds it; `doctor` names `anymodel setup --warp` when the app is there without it.

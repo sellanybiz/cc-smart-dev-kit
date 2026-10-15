@@ -1,9 +1,7 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { type RouterPaths, routerPaths } from "../gateway/paths";
 
-export interface CliPaths {
-  home: string;
-  /** `$CLAUDE_CONFIG_DIR`, else `~/.claude`. */
+export interface CliPaths extends RouterPaths {
   claudeConfigDir: string;
   settingsFile: string;
   installedPluginsFile: string;
@@ -13,13 +11,6 @@ export interface CliPaths {
   binDir: string;
   /** anymodel's own state: lock, owned keys, changed files. */
   stateDir: string;
-  /** The gateway's config, with the backend keys: `~/.config/anymodel/gateway.json`. */
-  gatewayConfigFile: string;
-  /**
-   * The router's limit state (plan limits seen, model slots on a fallback), which the status
-   * line and the StopFailure hook read: `~/.local/state/anymodel/gateway-state.json`.
-   */
-  gatewayStateFile: string;
   /** The router's long-running copy: `~/.local/share/anymodel/router.js`. */
   routerCopy: string;
   /** The router's systemd user unit: `~/.config/systemd/user/anymodel-router.service`. */
@@ -32,25 +23,24 @@ export interface CliPaths {
 
 /**
  * Every path the CLI touches, from HOME, CLAUDE_CONFIG_DIR and CLAUDE_MEM_DATA_DIR, so tests
- * can point it anywhere.
+ * can point it anywhere. The router's two paths come from `src/gateway/paths.ts`: the router
+ * bundle reads that module, and no CLI path may reach it.
  */
 export function cliPaths(env: Record<string, string | undefined> = process.env): CliPaths {
-  const home = env.HOME || homedir();
-  const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join(home, ".claude");
+  const router = routerPaths(env);
+  const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join(router.home, ".claude");
   return {
-    home,
+    ...router,
     claudeConfigDir,
     settingsFile: join(claudeConfigDir, "settings.json"),
     installedPluginsFile: join(claudeConfigDir, "plugins", "installed_plugins.json"),
     knownMarketplacesFile: join(claudeConfigDir, "plugins", "known_marketplaces.json"),
-    binDir: join(home, ".local", "bin"),
+    binDir: join(router.home, ".local", "bin"),
     stateDir: join(claudeConfigDir, "anymodel"),
-    gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json"),
-    routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
-    routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service"),
-    claudeMemSettingsFile: join(claudeMemDataDir(env, home), "settings.json"),
-    routerSocketFile: join(home, ".config", "systemd", "user", "anymodel-router.socket"),
+    routerCopy: join(router.home, ".local", "share", "anymodel", "router.js"),
+    routerUnitFile: join(router.home, ".config", "systemd", "user", "anymodel-router.service"),
+    claudeMemSettingsFile: join(claudeMemDataDir(env, router.home), "settings.json"),
+    routerSocketFile: join(router.home, ".config", "systemd", "user", "anymodel-router.socket"),
   };
 }
 

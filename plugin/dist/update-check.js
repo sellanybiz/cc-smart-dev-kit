@@ -29,34 +29,48 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/cli/paths.ts
+import { join as join2 } from "path";
+
+// src/gateway/paths.ts
 import { homedir } from "os";
 import { join } from "path";
-function cliPaths(env = process.env) {
-  const home = env.HOME || homedir();
-  const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join(home, ".claude");
+function homeDir(env = process.env) {
+  return env.HOME || homedir();
+}
+function routerPaths(env = process.env) {
+  const home = homeDir(env);
   return {
     home,
-    claudeConfigDir,
-    settingsFile: join(claudeConfigDir, "settings.json"),
-    installedPluginsFile: join(claudeConfigDir, "plugins", "installed_plugins.json"),
-    knownMarketplacesFile: join(claudeConfigDir, "plugins", "known_marketplaces.json"),
-    binDir: join(home, ".local", "bin"),
-    stateDir: join(claudeConfigDir, "anymodel"),
     gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json"),
-    routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
-    routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service"),
-    claudeMemSettingsFile: join(claudeMemDataDir(env, home), "settings.json"),
-    routerSocketFile: join(home, ".config", "systemd", "user", "anymodel-router.socket")
+    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json")
+  };
+}
+
+// src/cli/paths.ts
+function cliPaths(env = process.env) {
+  const router = routerPaths(env);
+  const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join2(router.home, ".claude");
+  return {
+    ...router,
+    claudeConfigDir,
+    settingsFile: join2(claudeConfigDir, "settings.json"),
+    installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
+    knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
+    binDir: join2(router.home, ".local", "bin"),
+    stateDir: join2(claudeConfigDir, "anymodel"),
+    routerCopy: join2(router.home, ".local", "share", "anymodel", "router.js"),
+    routerUnitFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.service"),
+    claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
+    routerSocketFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.socket")
   };
 }
 function claudeMemDataDir(env, home) {
   const dir = env.CLAUDE_MEM_DATA_DIR;
   if (!dir)
-    return join(home, ".claude-mem");
+    return join2(home, ".claude-mem");
   if (dir === "~")
     return home;
-  return dir.startsWith("~/") ? join(home, dir.slice(2)) : dir;
+  return dir.startsWith("~/") ? join2(home, dir.slice(2)) : dir;
 }
 function tildify(path, home) {
   return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
@@ -64,7 +78,7 @@ function tildify(path, home) {
 
 // src/update/apply.ts
 import { existsSync as existsSync3, readFileSync as readFileSync3 } from "fs";
-import { join as join3 } from "path";
+import { join as join4 } from "path";
 
 // src/project/git-env.ts
 var REPO_SELECTING_GIT_VARS = [
@@ -112,7 +126,7 @@ function findUserInstall(installedPluginsFile, pluginId = PLUGIN_ID) {
 
 // src/setup/marketplace-access.ts
 import { existsSync as existsSync2, readFileSync as readFileSync2 } from "fs";
-import { join as join2 } from "path";
+import { join as join3 } from "path";
 var ACCESS_TIMEOUT_MS = 1e4;
 function marketplaceSource(knownMarketplacesFile, name, env = process.env) {
   if (!existsSync2(knownMarketplacesFile))
@@ -262,9 +276,9 @@ function pluginFolderIn(marketplaceJson, plugin) {
 function marketplaceCopyVersion(location, plugin) {
   let folder = "plugin";
   try {
-    folder = pluginFolderIn(readFileSync2(join2(location, ".claude-plugin", "marketplace.json"), "utf8"), plugin) ?? folder;
+    folder = pluginFolderIn(readFileSync2(join3(location, ".claude-plugin", "marketplace.json"), "utf8"), plugin) ?? folder;
   } catch {}
-  const manifest = join2(location, folder, ".claude-plugin", "plugin.json");
+  const manifest = join3(location, folder, ".claude-plugin", "plugin.json");
   try {
     const version = JSON.parse(readFileSync2(manifest, "utf8"))?.version;
     return { manifest, version: typeof version === "string" ? version : null };
@@ -385,7 +399,7 @@ function routerNeedsSetup(paths) {
   const install = findUserInstall(paths.installedPluginsFile);
   if (install === null || !existsSync3(paths.routerCopy))
     return false;
-  const bundle = join3(install.installPath, "dist", "router.js");
+  const bundle = join4(install.installPath, "dist", "router.js");
   return existsSync3(bundle) && readFileSync3(bundle, "utf8") !== readFileSync3(paths.routerCopy, "utf8");
 }
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
@@ -444,7 +458,7 @@ import {
   writeSync
 } from "fs";
 import { hostname } from "os";
-import { join as join4 } from "path";
+import { join as join5 } from "path";
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
 var LOCK_FILE = "lock";
 var TAKEOVER_SUFFIX = ".takeover";
@@ -621,7 +635,7 @@ function takeOverStale(file, judged, fallbackStaleMs, mode) {
 }
 async function withLock(stateDir, fn, options = {}) {
   mkdirSync(stateDir, { recursive: true });
-  const file = join4(stateDir, LOCK_FILE);
+  const file = join5(stateDir, LOCK_FILE);
   const mine = newLockInfo();
   const deadline = Date.now() + (options.waitMs ?? 0);
   const fallbackStaleMs = options.fallbackStaleMs ?? FALLBACK_STALE_MS;
@@ -701,7 +715,7 @@ import {
   statSync as statSync3,
   writeFileSync as writeFileSync2
 } from "fs";
-import { join as join6 } from "path";
+import { join as join7 } from "path";
 
 // src/setup/write.ts
 import {
@@ -721,11 +735,11 @@ import {
   unlinkSync as unlinkSync2,
   writeFileSync
 } from "fs";
-import { basename, dirname, join as join5, resolve } from "path";
+import { basename, dirname, join as join6, resolve } from "path";
 function writeTemp(file, content, mode) {
   const dir = dirname(file);
   mkdirSync2(dir, { recursive: true });
-  const temp = join5(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
+  const temp = join6(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
   try {
     const fd = openSync2(temp, "wx", mode);
     try {
@@ -759,12 +773,12 @@ var CHECK_INTERVAL_MS = 60 * 60 * 1000;
 var LOG_MAX_BYTES = 256 * 1024;
 function updateFiles(stateDir) {
   return {
-    hold: join6(stateDir, "update-hold"),
-    check: join6(stateDir, "update-check.json"),
-    reported: join6(stateDir, "update-reported"),
-    log: join6(stateDir, "update.log"),
-    lockDir: join6(stateDir, "update"),
-    sessions: join6(stateDir, "sessions")
+    hold: join7(stateDir, "update-hold"),
+    check: join7(stateDir, "update-check.json"),
+    reported: join7(stateDir, "update-reported"),
+    log: join7(stateDir, "update.log"),
+    lockDir: join7(stateDir, "update"),
+    sessions: join7(stateDir, "sessions")
   };
 }
 var RESULTS = [
@@ -810,7 +824,7 @@ function readLastCheck(files) {
   }
 }
 function writeLastCheck(files, check) {
-  ensureDir(join6(files.check, ".."));
+  ensureDir(join7(files.check, ".."));
   atomicWrite(files.check, `${JSON.stringify(check, null, 2)}
 `, 384);
 }
@@ -827,7 +841,7 @@ function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
 }
 function appendLog(files, line, nowMs) {
-  ensureDir(join6(files.log, ".."));
+  ensureDir(join7(files.log, ".."));
   try {
     if (statSync3(files.log).size > LOG_MAX_BYTES) {
       const text = readFileSync7(files.log, "utf8");
@@ -847,7 +861,7 @@ function wasReported(files, at) {
   }
 }
 function markReported(files, at) {
-  ensureDir(join6(files.reported, ".."));
+  ensureDir(join7(files.reported, ".."));
   atomicWrite(files.reported, `${at}
 `, 384);
 }
@@ -872,13 +886,13 @@ function registerSession(files, pid, version) {
     return;
   ensureDir(files.sessions);
   for (const name of readdirSync2(files.sessions).filter((entry) => SESSION_FILE.test(entry))) {
-    const file = join6(files.sessions, name);
+    const file = join7(files.sessions, name);
     const session = readSession(file);
     if (session === null || !isRunning(session))
       rmSync(file, { force: true });
   }
   const record = { pid, start, version };
-  atomicWrite(join6(files.sessions, `${pid}.json`), `${JSON.stringify(record)}
+  atomicWrite(join7(files.sessions, `${pid}.json`), `${JSON.stringify(record)}
 `, 384);
 }
 

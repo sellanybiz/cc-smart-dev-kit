@@ -21,7 +21,7 @@ import type { Machine } from "./machine";
 import {
   APT_KEY,
   APT_SOURCE,
-  APT_SOURCE_TEXT,
+  aptSourceText,
   detectSystem,
   warpCheck,
   YUM_REPO,
@@ -59,7 +59,7 @@ describe("setup --warp", () => {
     expect(w.questions).toEqual(["Run these commands now?"]);
     // What root got: Warp's key, and the source that names it.
     expect(readFileSync(join(w.staged, "warpdotdev.gpg"), "utf8")).toBe(FAKE_KEY);
-    expect(readFileSync(join(w.staged, "warpdotdev.sources"), "utf8")).toBe(APT_SOURCE_TEXT);
+    expect(readFileSync(join(w.staged, "warpdotdev.sources"), "utf8")).toBe(aptSourceText("amd64"));
     // The staged files are gone again.
     expect(existsSync(stage)).toBe(false);
     // The commands were shown before the question.
@@ -74,12 +74,14 @@ describe("setup --warp", () => {
     expect(printed).toContain("+ plugin warp@claude-code-warp");
   });
 
-  test("the apt source is byte for byte what Warp's own package writes (its postinst)", () => {
+  test("the apt source is byte for byte what Warp's own package writes (its postinst), per architecture", () => {
     // Copied by hand from the postinst of warp-terminal 0.2026.10.07.08.29.stable.00, with
-    // apt's default folders: the same file, so apt never sees two Warp sources.
+    // apt's default folders: the same file, so apt never sees two Warp sources. Each
+    // package writes its OWN architecture (read from the control member of the amd64 and of
+    // the arm64 package of that version, unpacked, never installed).
     expect(APT_SOURCE).toBe("/etc/apt/sources.list.d/warpdotdev.sources");
     expect(APT_KEY).toBe("/etc/apt/trusted.gpg.d/warpdotdev.gpg");
-    expect(APT_SOURCE_TEXT).toBe(
+    expect(aptSourceText("amd64")).toBe(
       [
         "### THIS FILE IS AUTOMATICALLY CONFIGURED ###",
         "# You may comment out this entry, but other modifications to the file may be lost.",
@@ -90,6 +92,40 @@ describe("setup --warp", () => {
         "Components: main",
         "Architectures: amd64",
         "Signed-By: /etc/apt/trusted.gpg.d/warpdotdev.gpg",
+        "",
+      ].join("\n"),
+    );
+    expect(aptSourceText("arm64")).toBe(
+      [
+        "### THIS FILE IS AUTOMATICALLY CONFIGURED ###",
+        "# You may comment out this entry, but other modifications to the file may be lost.",
+        "",
+        "Types: deb",
+        "URIs: https://releases.warp.dev/linux/deb",
+        "Suites: stable",
+        "Components: main",
+        "Architectures: arm64",
+        "Signed-By: /etc/apt/trusted.gpg.d/warpdotdev.gpg",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("arm64 Debian/Ubuntu: the same apt way, with arm64 in the source (Warp's own package writes it)", async () => {
+    const w = world({ arch: "arm64" });
+    expect(await w.setup({ warp: true })).toBe(0);
+    const stage = STAGE(w.home);
+    expect(readFileSync(join(w.staged, "warpdotdev.sources"), "utf8")).toBe(aptSourceText("arm64"));
+    expect(w.calls()).toBe(
+      [
+        showKeys(stage),
+        `gpg --dearmor --yes --output ${stage}/warpdotdev.gpg ${stage}/warp.asc`,
+        install(`${stage}/warpdotdev.gpg`, APT_KEY),
+        install(`${stage}/warpdotdev.sources`, APT_SOURCE),
+        "sudo apt-get update",
+        "sudo apt-get install -y warp-terminal",
+        "claude plugin marketplace add warpdotdev/claude-code-warp",
+        "claude plugin install warp@claude-code-warp",
         "",
       ].join("\n"),
     );
@@ -209,7 +245,8 @@ describe("setup --warp", () => {
     for (const w of [
       world({ platform: "darwin", os: "", bins: {} }),
       world({ os: ARCH_LINUX }),
-      world({ arch: "arm64" }),
+      // Ubuntu, but an architecture Warp's apt source has no packages for.
+      world({ os: UBUNTU, arch: "riscv64" }),
       world({ os: FEDORA, arch: "ppc64" }),
     ]) {
       if (w.machine.platform === "darwin") {
@@ -405,18 +442,19 @@ describe("doctor's Warp line", () => {
 });
 
 describe("detectSystem", () => {
-  test("reads ID and ID_LIKE: Ubuntu and Debian-like are apt, Fedora is dnf (x86_64 and aarch64); others are none", () => {
+  test("reads ID and ID_LIKE: Ubuntu and Debian-like are apt (x86_64 and arm64), Fedora is dnf (x86_64 and aarch64); others are none", () => {
     const w = world();
     const on = (os: string, extra: Partial<Machine> = {}) =>
       detectSystem({ ...w.machine, osRelease: () => os, ...extra }).kind;
     expect(on(UBUNTU)).toBe("apt");
+    expect(on(UBUNTU, { arch: "arm64" })).toBe("apt");
     expect(on('ID=linuxmint\nID_LIKE="ubuntu debian"\n')).toBe("apt");
     expect(on(FEDORA)).toBe("dnf");
     expect(on(FEDORA, { arch: "arm64" })).toBe("dnf");
     expect(on(FEDORA, { arch: "ppc64" })).toBe("none");
     expect(on('ID="rocky"\nID_LIKE="rhel centos fedora"\n')).toBe("dnf");
     expect(on(ARCH_LINUX)).toBe("none");
-    expect(on(UBUNTU, { arch: "arm64" })).toBe("none");
+    expect(on(UBUNTU, { arch: "riscv64" })).toBe("none");
     expect(on(UBUNTU, { platform: "win32" })).toBe("none");
   });
 });

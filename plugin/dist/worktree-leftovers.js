@@ -3,34 +3,48 @@
 import { appendFileSync } from "fs";
 
 // src/cli/paths.ts
+import { join as join2 } from "path";
+
+// src/gateway/paths.ts
 import { homedir } from "os";
 import { join } from "path";
-function cliPaths(env = process.env) {
-  const home = env.HOME || homedir();
-  const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join(home, ".claude");
+function homeDir(env = process.env) {
+  return env.HOME || homedir();
+}
+function routerPaths(env = process.env) {
+  const home = homeDir(env);
   return {
     home,
-    claudeConfigDir,
-    settingsFile: join(claudeConfigDir, "settings.json"),
-    installedPluginsFile: join(claudeConfigDir, "plugins", "installed_plugins.json"),
-    knownMarketplacesFile: join(claudeConfigDir, "plugins", "known_marketplaces.json"),
-    binDir: join(home, ".local", "bin"),
-    stateDir: join(claudeConfigDir, "anymodel"),
     gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json"),
-    routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
-    routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service"),
-    claudeMemSettingsFile: join(claudeMemDataDir(env, home), "settings.json"),
-    routerSocketFile: join(home, ".config", "systemd", "user", "anymodel-router.socket")
+    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json")
+  };
+}
+
+// src/cli/paths.ts
+function cliPaths(env = process.env) {
+  const router = routerPaths(env);
+  const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join2(router.home, ".claude");
+  return {
+    ...router,
+    claudeConfigDir,
+    settingsFile: join2(claudeConfigDir, "settings.json"),
+    installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
+    knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
+    binDir: join2(router.home, ".local", "bin"),
+    stateDir: join2(claudeConfigDir, "anymodel"),
+    routerCopy: join2(router.home, ".local", "share", "anymodel", "router.js"),
+    routerUnitFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.service"),
+    claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
+    routerSocketFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.socket")
   };
 }
 function claudeMemDataDir(env, home) {
   const dir = env.CLAUDE_MEM_DATA_DIR;
   if (!dir)
-    return join(home, ".claude-mem");
+    return join2(home, ".claude-mem");
   if (dir === "~")
     return home;
-  return dir.startsWith("~/") ? join(home, dir.slice(2)) : dir;
+  return dir.startsWith("~/") ? join2(home, dir.slice(2)) : dir;
 }
 
 // src/project/config.ts
@@ -5912,7 +5926,7 @@ function loadAnymodelConfig(file, pluginVersion = VERSION) {
 
 // src/project/resolve.ts
 import { existsSync as existsSync2, realpathSync, statSync } from "fs";
-import { join as join2 } from "path";
+import { join as join3 } from "path";
 
 // src/project/git-env.ts
 var REPO_SELECTING_GIT_VARS = [
@@ -6014,20 +6028,20 @@ function locateCheckout(cwd, options = {}) {
 }
 function ownHooksOf(checkout) {
   const { root, mainCheckout } = checkout;
-  const own = readOwnHooks(join2(root, ".claude", "anymodel.json"));
+  const own = readOwnHooks(join3(root, ".claude", "anymodel.json"));
   if (own !== null)
     return own;
   if (mainCheckout === null || mainCheckout === root)
     return [];
-  return readOwnHooks(join2(mainCheckout, ".claude", "anymodel.json")) ?? [];
+  return readOwnHooks(join3(mainCheckout, ".claude", "anymodel.json")) ?? [];
 }
 function loadProjectConfig(checkout, pluginVersion) {
   const { root, mainCheckout } = checkout;
-  const own = join2(root, ".claude", "anymodel.json");
+  const own = join3(root, ".claude", "anymodel.json");
   let config = loadAnymodelConfig(own, pluginVersion);
   let configFile = config === null ? null : own;
   if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join2(mainCheckout, ".claude", "anymodel.json");
+    const main = join3(mainCheckout, ".claude", "anymodel.json");
     config = loadAnymodelConfig(main, pluginVersion);
     configFile = config === null ? null : main;
   }
@@ -6137,7 +6151,7 @@ async function runHookEntry(spec) {
 }
 
 // src/hooks/git.ts
-import { basename, dirname, join as join3, resolve } from "path";
+import { basename, dirname, join as join4, resolve } from "path";
 
 // src/setup/marketplace-access.ts
 var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
@@ -6227,7 +6241,7 @@ var CHANGE_DIR = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"])
 // src/hooks/sessions.ts
 import { existsSync as existsSync3, readdirSync, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
 import { uptime } from "os";
-import { join as join4 } from "path";
+import { join as join5 } from "path";
 function parseSessionRecord(json) {
   let value;
   try {
@@ -6252,7 +6266,7 @@ function isRunning(pid) {
   }
 }
 function liveSessions(claudeConfigDir) {
-  const dir = join4(claudeConfigDir, "sessions");
+  const dir = join5(claudeConfigDir, "sessions");
   if (!existsSync3(dir))
     return [];
   const bootedAt = Date.now() - uptime() * 1000;
@@ -6263,9 +6277,9 @@ function liveSessions(claudeConfigDir) {
       continue;
     let text;
     try {
-      if (statSync2(join4(dir, file)).mtimeMs < bootedAt)
+      if (statSync2(join5(dir, file)).mtimeMs < bootedAt)
         continue;
-      text = readFileSync2(join4(dir, file), "utf8");
+      text = readFileSync2(join5(dir, file), "utf8");
     } catch {
       continue;
     }
@@ -6286,11 +6300,11 @@ var FETCH_AGE_MS = 24 * 60 * 60 * 1000;
 
 // src/hooks/worktree-leftovers.ts
 import { readFileSync as readFileSync4, statSync as statSync3 } from "fs";
-import { basename as basename2, isAbsolute, join as join6, resolve as resolve2 } from "path";
+import { basename as basename2, isAbsolute, join as join7, resolve as resolve2 } from "path";
 
 // src/hooks/local-files.ts
 import { lstatSync, readdirSync as readdirSync2, readFileSync as readFileSync3, readlinkSync } from "fs";
-import { join as join5 } from "path";
+import { join as join6 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
@@ -6309,8 +6323,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   const same = (relative) => {
     if (--budget < 0)
       return false;
-    const here = join5(worktree, relative);
-    const there = join5(mainCheckout, relative);
+    const here = join6(worktree, relative);
+    const there = join6(mainCheckout, relative);
     try {
       const a = lstatSync(here);
       const b = lstatSync(there);
@@ -6318,7 +6332,7 @@ function sameAsMain(worktree, mainCheckout, path) {
         return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync(here) === readlinkSync(there);
       }
       if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync2(here).every((entry) => same(join5(relative, entry)));
+        return b.isDirectory() && readdirSync2(here).every((entry) => same(join6(relative, entry)));
       }
       return a.isFile() && b.isFile() && a.size === b.size && readFileSync3(here).equals(readFileSync3(there));
     } catch {
@@ -6346,16 +6360,16 @@ var IDLE_MINUTES = 60;
 function idleMinutes(worktree, now) {
   let admin;
   try {
-    admin = readFileSync4(join6(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync4(join7(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return 0;
   }
   if (!isAbsolute(admin))
     admin = resolve2(worktree, admin);
   let last = 0;
-  for (const file of ["index", "HEAD", join6("logs", "HEAD")]) {
+  for (const file of ["index", "HEAD", join7("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync3(join6(admin, file)).mtimeMs);
+      last = Math.max(last, statSync3(join7(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? 0 : (now - last) / 60000;

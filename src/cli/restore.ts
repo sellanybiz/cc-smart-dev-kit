@@ -102,9 +102,11 @@ function forgetInstructionChoice(stateDir: string, short: (path: string) => stri
 
 /**
  * Restore also undoes the router service when `gateway setup` installed it. Running Claude
- * sessions read `ANTHROPIC_BASE_URL` at start, so while the gateway's env keys are in the
- * settings they still send every request to the router; stopping it would make each of
- * them fail. So, with the router installed:
+ * sessions read `ANTHROPIC_BASE_URL` at start, so while anymodel's gateway env keys are in
+ * the settings they still send every request to the router; stopping it would make each of
+ * them fail. (A key anymodel set and the person changed since is theirs, and does not count
+ * here: `ownedGatewayEnvKeys` keeps only the keys that still hold anymodel's value.) So,
+ * with the router installed:
  *   - stage 1, while anymodel's gateway env keys are there: everything is restored but the
  *     router's copy and units, and the router keeps running. It says to restart the
  *     sessions and run `restore` again.
@@ -126,6 +128,8 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
   ];
   const routerTracked = routerFiles.some((file) => Object.hasOwn(changed, file));
   const unitTracked = options.systemd && Object.hasOwn(changed, realTarget(paths.routerUnitFile));
+  // A key the person changed since is theirs: `ownedGatewayEnvKeys` leaves it out, so it
+  // does not keep the router up for sessions that no longer point at it.
   const sessionsUseRouter =
     routerTracked && ownedGatewayEnvKeys(paths.settingsFile, paths.stateDir).length > 0;
 

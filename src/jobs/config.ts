@@ -21,9 +21,9 @@ import { z } from "zod";
 
 /**
  * The machine's heavy-job settings, `~/.config/anymodel/jobs.json`, and this user's
- * leases, `~/.local/share/anymodel/jobs`. From the home folder `cliPaths()` gives, so a
- * test points them at a temp folder. (Not in `cliPaths()` itself: the router bundle
- * imports that, and must not change with this feature.)
+ * leases, `~/.local/share/anymodel/jobs`. From the home folder the caller passes, so a
+ * test points them at a temp folder. (Not in `cliPaths()` itself: only the jobs code
+ * reads these.)
  */
 export function jobsPaths(home: string): { configFile: string; stateDir: string } {
   return {
