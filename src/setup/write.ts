@@ -3,19 +3,28 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
-/** Backups sit beside the file: `<file>.bak-cc-agentic-<UTC stamp>[-<n>][.absent]`. */
+/**
+ * Backups live in the state folder, never beside the file: a settings file linked from a
+ * dotfiles repo would get backups (with secrets in them) inside that repo, and a backup in
+ * a bin folder would sit on PATH. Each file gets its own subfolder, named by its real path:
+ * `<stateDir>/backups/<encodeURIComponent(real path)>/<name>.bak-cc-agentic-<UTC stamp>[-<n>][.absent|.mode-NNN]`.
+ */
+export const BACKUPS_DIR = "backups";
+/** The middle of a backup's name: `<name>.bak-cc-agentic-<stamp>`. */
 export const BACKUP_INFIX = ".bak-cc-agentic-";
 /** A backup of a file that did not exist yet: restoring it removes the file. */
 export const ABSENT_SUFFIX = ".absent";
@@ -23,14 +32,42 @@ export const ABSENT_SUFFIX = ".absent";
 /** The list of files setup changed, so restore knows where to look. */
 const CHANGED_FILE = "changed.json";
 
+/** How many symlinks realTarget follows before it gives up (a loop). */
+const MAX_LINKS = 40;
+
 /** A UTC stamp that sorts by time as text: 20261015T143005123Z. */
 export function utcStamp(date = new Date()): string {
   return date.toISOString().replace(/[-:.]/g, "");
 }
 
-/** Follows a symlink, so a linked dotfile stays a link and its target gets the change. */
+/**
+ * The real path of `file`, with every symlink followed: a linked dotfile stays a link, and
+ * its target gets the change. A file that does not exist yet gets the real path of its
+ * folder (and a dangling link the path it points to), so the path stays the same once the
+ * file exists.
+ */
 export function realTarget(file: string): string {
-  return existsSync(file) ? realpathSync(file) : file;
+  let path = resolve(file);
+  for (let links = 0; links <= MAX_LINKS; links += 1) {
+    try {
+      return realpathSync(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    let isLink = false;
+    try {
+      isLink = lstatSync(path).isSymbolicLink();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (!isLink) {
+      const parent = dirname(path);
+      return parent === path ? path : join(realTarget(parent), basename(path));
+    }
+    // A dangling link: follow it by hand to where the file will be.
+    path = resolve(dirname(path), readlinkSync(path));
+  }
+  throw new Error(`${file}: too many symlinks (a loop?)`);
 }
 
 /** The permission bits of a file, or null when it does not exist. */
@@ -38,11 +75,8 @@ export function fileMode(file: string): number | null {
   return existsSync(file) ? statSync(file).mode & 0o7777 : null;
 }
 
-/**
- * Writes `content` to `file` atomically: a temp file in the same folder, fsync, then rename.
- * A reader sees the old file or the new one, never half of one.
- */
-export function atomicWrite(file: string, content: string, mode: number): void {
+/** Writes `content` to a new temp file beside `file`, with `mode`, and fsyncs it. Returns its path. */
+function writeTemp(file: string, content: string, mode: number): string {
   const dir = dirname(file);
   mkdirSync(dir, { recursive: true });
   const temp = join(dir, `.${basename(file)}.cc-agentic-tmp-${process.pid}-${crypto.randomUUID()}`);
@@ -56,6 +90,29 @@ export function atomicWrite(file: string, content: string, mode: number): void {
     }
     // openSync's mode passes through the umask; set the bits we were asked for.
     chmodSync(temp, mode);
+  } catch (error) {
+    if (existsSync(temp)) unlinkSync(temp);
+    throw error;
+  }
+  return temp;
+}
+
+/**
+ * Writes `content` to `file` atomically: a temp file in the same folder, fsync, then rename.
+ * A reader sees the old file or the new one, never half of one.
+ *
+ * `beforeRename` runs when the temp file is safely on disk, just before the rename. When
+ * it throws, the temp file is removed and `file` stays as it was.
+ */
+export function atomicWrite(
+  file: string,
+  content: string,
+  mode: number,
+  beforeRename?: () => void,
+): void {
+  const temp = writeTemp(file, content, mode);
+  try {
+    beforeRename?.();
     renameSync(temp, file);
   } catch (error) {
     if (existsSync(temp)) unlinkSync(temp);
@@ -96,11 +153,22 @@ export interface Backup {
   mode: number;
 }
 
+/** The folder that holds the backups of `file`: named by its real path. */
+export function backupDir(stateDir: string, file: string): string {
+  return join(stateDir, BACKUPS_DIR, encodeURIComponent(realTarget(file)));
+}
+
+/** Makes a folder only its owner can read (0700), whatever the umask. */
+function makePrivateDir(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+}
+
 /** Every backup of `file`, oldest first. */
-export function listBackups(file: string): Backup[] {
-  const dir = dirname(file);
+export function listBackups(stateDir: string, file: string): Backup[] {
+  const dir = backupDir(stateDir, file);
   if (!existsSync(dir)) return [];
-  const base = basename(file);
+  const base = basename(realTarget(file));
   return readdirSync(dir)
     .map((name) => parseBackupName(base, name))
     .filter((backup): backup is BackupName => backup !== null)
@@ -112,8 +180,8 @@ export function listBackups(file: string): Backup[] {
 }
 
 /**
- * Copies `file` to a new `target` that is never executable: a copy in a bin folder on
- * PATH must not run as a command. Returns the source's mode.
+ * Copies `file` to a new `target` that is never executable: a copy must never run as a
+ * command. Returns the source's mode.
  */
 export function copyNotExecutable(file: string, target: string): number {
   const mode = fileMode(file) ?? 0o600;
@@ -124,31 +192,36 @@ export function copyNotExecutable(file: string, target: string): number {
 }
 
 /**
- * Saves the current state of `file` beside it before a change.
+ * Saves the current state of `file` in `<stateDir>/backups/` before a change.
  * - A missing file gets an empty `.absent` marker, so restore can remove the file again.
  * - A backup is never executable. When the file was, its mode goes into the name
  *   (`.mode-755`), so restore gives it back.
  */
-export function backupFile(file: string): string {
+export function backupFile(stateDir: string, file: string): string {
+  const real = realTarget(file);
+  const dir = backupDir(stateDir, real);
+  const base = basename(real);
   const stamp = utcStamp();
-  const mode = fileMode(file);
+  const mode = fileMode(real);
   const suffix =
     mode === null ? ABSENT_SUFFIX : (mode & 0o111) !== 0 ? `.mode-${mode.toString(8)}` : "";
+  makePrivateDir(join(stateDir, BACKUPS_DIR));
+  makePrivateDir(dir);
   // Two backups in the same millisecond get a counter, whatever their suffixes, so the
   // order stays clear: <stamp>, <stamp>-1, <stamp>-2 …
-  const sameStamp = existsSync(dirname(file))
-    ? readdirSync(dirname(file))
-        .map((name) => parseBackupName(basename(file), name))
-        .filter((backup): backup is BackupName => backup?.stamp === stamp)
-    : [];
+  const sameStamp = readdirSync(dir)
+    .map((name) => parseBackupName(base, name))
+    .filter((backup): backup is BackupName => backup?.stamp === stamp);
   const counter =
     sameStamp.length === 0 ? 0 : Math.max(...sameStamp.map((backup) => backup.counter)) + 1;
-  const target = `${file}${BACKUP_INFIX}${stamp}${counter === 0 ? "" : `-${counter}`}${suffix}`;
-  mkdirSync(dirname(file), { recursive: true });
+  const target = join(
+    dir,
+    `${base}${BACKUP_INFIX}${stamp}${counter === 0 ? "" : `-${counter}`}${suffix}`,
+  );
   if (mode === null) {
     writeFileSync(target, "", { flag: "wx", mode: 0o600 });
   } else {
-    copyNotExecutable(file, target);
+    copyNotExecutable(real, target);
   }
   return target;
 }
@@ -204,17 +277,20 @@ function writeChanged(stateDir: string, files: Record<string, ChangedEntry>): vo
   );
 }
 
-function recordChange(stateDir: string, file: string, kind: ChangeKind, backup: string): void {
+/** Records that `file` gets a change of `kind`. Returns true when `backup` became its baseline. */
+function recordChange(stateDir: string, file: string, kind: ChangeKind, backup: string): boolean {
   const files = readChanged(stateDir);
   const entry = files[file];
   if (!entry) {
     files[file] = { kinds: [kind], baseline: backup };
-  } else if (!entry.kinds.includes(kind)) {
-    entry.kinds.push(kind);
-  } else {
-    return;
+    writeChanged(stateDir, files);
+    return true;
   }
-  writeChanged(stateDir, files);
+  if (!entry.kinds.includes(kind)) {
+    entry.kinds.push(kind);
+    writeChanged(stateDir, files);
+  }
+  return false;
 }
 
 /** Restore took everything of cc-agentic out of `file`: stop tracking it. */
@@ -266,6 +342,8 @@ export interface ManagedWriteOptions {
    * something else now, nothing is written and ConcurrentChangeError is thrown.
    */
   expectedContent?: string | null;
+  /** Tests only: runs just before the last compare, to play another program's write. */
+  onBeforeCompare?: () => void;
 }
 
 export type WriteOutcome = "unchanged" | "created" | "updated";
@@ -276,9 +354,25 @@ export interface WriteResult {
   backup: string | null;
 }
 
+/** The file's text now, or null when it does not exist. */
+function readCurrent(file: string): string | null {
+  return existsSync(file) ? readFileSync(file, "utf8") : null;
+}
+
 /**
- * The one way cc-agentic changes a file: when the content differs, back it up, write it
- * atomically, and record it for restore. Same content: nothing is written at all.
+ * The one way cc-agentic changes a file: when the content differs, back it up, record it
+ * for restore, and write it atomically. Same content: nothing is written at all.
+ *
+ * The steps, in this order:
+ * 1. the backup, then the record in changed.json (the first time, with that backup as the
+ *    baseline). The record comes before the write: a crash right after the rename must not
+ *    leave a change that restore never sees. A record whose write never happened is
+ *    harmless: restore finds the file as it was and reports it unchanged.
+ * 2. the temp file, written and fsynced;
+ * 3. with `expectedContent`: the file on disk is compared with the text the caller read;
+ * 4. the rename, at once.
+ * Steps 3 and 4 sit next to each other, which narrows the window in which another
+ * program's write could be lost. It does not close it.
  */
 export function writeManagedFile(
   file: string,
@@ -288,26 +382,37 @@ export function writeManagedFile(
   const target = realTarget(file);
   const currentMode = fileMode(target);
   const current = currentMode === null ? null : readFileSync(target, "utf8");
-  if (options.expectedContent !== undefined && !options.dryRun) {
-    if (current !== options.expectedContent) {
+  const checkUnchanged = (now: string | null) => {
+    if (options.expectedContent !== undefined && now !== options.expectedContent) {
       throw new ConcurrentChangeError(`${target} changed after cc-agentic read it.`);
     }
-  }
+  };
+  // An early check too: no backup and no temp file when the file changed already.
+  if (!options.dryRun) checkUnchanged(current);
   const wantedMode = options.mode ?? currentMode ?? options.newFileMode ?? 0o600;
   if (current === content && currentMode === wantedMode) {
     return { outcome: "unchanged", backup: null };
   }
   const outcome: WriteOutcome = currentMode === null ? "created" : "updated";
   if (options.dryRun) return { outcome, backup: null };
-  const backup = backupFile(target);
-  atomicWrite(target, content, wantedMode);
-  recordChange(options.stateDir, target, options.kind, backup);
+  const backup = backupFile(options.stateDir, target);
+  const isBaseline = recordChange(options.stateDir, target, options.kind, backup);
+  try {
+    atomicWrite(target, content, wantedMode, () => {
+      options.onBeforeCompare?.();
+      checkUnchanged(readCurrent(target));
+    });
+  } catch (error) {
+    // Nothing was written. A backup that is not the baseline is only clutter now.
+    if (!isBaseline && existsSync(backup)) unlinkSync(backup);
+    throw error;
+  }
   return { outcome, backup };
 }
 
 /** Removes a file cc-agentic created, after a backup of it. Returns the backup's path. */
-export function removeManagedFile(file: string): string {
-  const backup = backupFile(file);
+export function removeManagedFile(stateDir: string, file: string): string {
+  const backup = backupFile(stateDir, file);
   unlinkSync(file);
   return backup;
 }

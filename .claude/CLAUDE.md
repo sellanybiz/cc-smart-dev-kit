@@ -57,7 +57,7 @@ the first time you use it.
 | `src/cli/` | The `cc-agentic` commands: `setup`, `doctor`, `restore`, `version`. |
 | `src/testing/` | Test helpers: temp folders, a clean git environment. |
 | `plugin/` | What users get: `dist/` (built, committed), `bin/`, `hooks/hooks.json`, the manifest. |
-| `scripts/` | `build.ts` (the bundle step) and `check-neutral.ts` (the neutrality check). |
+| `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check) and `check-version-bump.ts` (CI: a `plugin/` change raises the version). |
 | `docs/` | How the plugin is designed, the phases ahead, and the Claude Code behaviour it relies on. |
 
 Tests sit beside the code as `*.test.ts`.
@@ -75,7 +75,9 @@ Tests sit beside the code as `*.test.ts`.
 | `claude plugin validate plugin --strict` | Checks the plugin manifest. |
 | `claude plugin validate . --strict` | Checks the marketplace manifest. |
 
-CI runs all of them on every pull request, with the tested Claude Code version.
+CI runs all of them on every pull request, with the tested Claude Code version. CI also
+fails a pull request that changes anything under `plugin/` without raising `version` in
+`plugin/.claude-plugin/plugin.json` (`.claude/rules/bundles-and-releases.md`).
 
 ## Rules
 

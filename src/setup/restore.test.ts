@@ -2,14 +2,16 @@ import { describe, expect, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   statSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tempDir } from "../testing/temp";
 import { installLauncher } from "./launcher";
 import { applyManagedJson } from "./managed-json";
@@ -146,10 +148,10 @@ describe("restore: removes what cc-agentic added, keeps the rest", () => {
     applyManagedJson({ file, stateDir, set: [[AUTO_UPDATE, true]] });
     restore(stateDir);
     const mtime = statSync(file).mtimeMs;
-    const backups = listBackups(file).length;
+    const backups = listBackups(stateDir, file).length;
     expect(restore(stateDir)).toEqual([]);
     expect(statSync(file).mtimeMs).toBe(mtime);
-    expect(listBackups(file)).toHaveLength(backups);
+    expect(listBackups(stateDir, file)).toHaveLength(backups);
   });
 
   test("a missing baseline backup: the file is left alone and still tracked", () => {
@@ -157,7 +159,7 @@ describe("restore: removes what cc-agentic added, keeps the rest", () => {
     const file = join(dir, "tool");
     writeFileSync(file, "original\n");
     writeManagedFile(file, "ours\n", { stateDir, kind: "whole-file" });
-    unlinkSync(listBackups(file)[0]?.path ?? "");
+    unlinkSync(listBackups(stateDir, file)[0]?.path ?? "");
     const [result] = restore(stateDir);
     expect(result?.action).toBe("no-backup");
     expect(read(file)).toBe("ours\n");
@@ -179,23 +181,71 @@ describe("backups of executables", () => {
     chmodSync(tool, 0o755);
     writeManagedFile(tool, "#!/bin/sh\necho new\n", { stateDir, kind: "whole-file", mode: 0o755 });
 
-    const backups = listBackups(tool);
+    const backups = listBackups(stateDir, tool);
     expect(backups).toHaveLength(1);
     const backup = backups[0]?.path ?? "";
     expect(backup).toEndWith(".mode-755");
     expect(statSync(backup).mode & 0o777).toBe(0o644);
-    // Nothing in the bin folder is executable except the tool itself.
-    const executables = readdirSync(binDir).filter(
-      (name) => (statSync(join(binDir, name)).mode & 0o111) !== 0,
-    );
-    expect(executables).toEqual(["tool"]);
+    // The bin folder (on PATH) holds the tool alone: the backup is in the state folder.
+    expect(readdirSync(binDir)).toEqual(["tool"]);
+    expect(backup.startsWith(join(stateDir, "backups"))).toBe(true);
 
     const results = restore(stateDir);
     expect(results.find((result) => result.file === tool)?.action).toBe("restored");
     expect(read(tool)).toBe("#!/bin/sh\necho old\n");
     expect(statSync(tool).mode & 0o777).toBe(0o755);
+    expect(readdirSync(binDir)).toEqual(["tool"]);
     // The backup restore made of the state before it is not executable either.
     const savedAs = results.find((result) => result.file === tool)?.savedAs ?? "";
     expect(statSync(savedAs).mode & 0o111).toBe(0);
+  });
+});
+
+describe("where backups live", () => {
+  test("in <stateDir>/backups/<real path, encoded>/, folders 0700, nothing beside the file", () => {
+    const { dir, stateDir } = setup();
+    const file = join(dir, "settings.json");
+    writeFileSync(file, ORIGINAL_SETTINGS);
+    applyManagedJson({ file, stateDir, set: [[AUTO_UPDATE, true]] });
+    const folder = join(stateDir, "backups", encodeURIComponent(file));
+    expect(readdirSync(folder)).toHaveLength(1);
+    expect(readdirSync(folder)[0]).toMatch(/^settings\.json\.bak-cc-agentic-\d{8}T\d{9}Z$/);
+    expect(statSync(join(stateDir, "backups")).mode & 0o777).toBe(0o700);
+    expect(statSync(folder).mode & 0o777).toBe(0o700);
+    expect(readdirSync(dir).sort()).toEqual(["settings.json", "state"]);
+  });
+
+  test("a symlinked file (a dotfiles repo): no backup lands in the repo; restore still works", () => {
+    const { dir, stateDir } = setup();
+    const dotfiles = join(dir, "dotfiles");
+    mkdirSync(dotfiles);
+    const target = join(dotfiles, "settings.json");
+    writeFileSync(target, ORIGINAL_SETTINGS);
+    const link = join(dir, "settings.json");
+    symlinkSync(target, link);
+    applyManagedJson({ file: link, stateDir, set: [[AUTO_UPDATE, true]] });
+    expect(readdirSync(dotfiles)).toEqual(["settings.json"]);
+    // The folder is named by the real path, the link's target.
+    expect(listBackups(stateDir, link).map((backup) => dirname(backup.path))).toEqual([
+      join(stateDir, "backups", encodeURIComponent(target)),
+    ]);
+    restore(stateDir);
+    expect(read(target)).toBe(ORIGINAL_SETTINGS);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readdirSync(dotfiles)).toEqual(["settings.json"]);
+  });
+
+  test("a file setup creates in a linked folder keeps one backup folder, and restore removes it", () => {
+    const { dir, stateDir } = setup();
+    const realBin = join(dir, "real-bin");
+    mkdirSync(realBin);
+    const linkedBin = join(dir, "bin");
+    symlinkSync(realBin, linkedBin);
+    const { path } = installLauncher(linkedBin, { stateDir, bunPath: "/usr/bin/bun" });
+    installLauncher(linkedBin, { stateDir, bunPath: "/opt/bun" });
+    // Both writes are tracked under the real path, so the .absent baseline is found.
+    expect(Object.keys(readChanged(stateDir))).toEqual([join(realBin, "cc-agentic")]);
+    expect(restore(stateDir).map((result) => result.action)).toEqual(["removed"]);
+    expect(existsSync(path)).toBe(false);
   });
 });

@@ -16,7 +16,9 @@ messages, branch names.
   (`author`, `repository`). Nothing else in those two files names anyone either.
 - **The code never writes the publisher as text.** It reads the repository from
   `plugin.json` at build time (`src/build-info/`, a Bun macro) and uses
-  `MARKETPLACE_SOURCE`.
+  `MARKETPLACE_SOURCE`. So the publisher reaches command output in one place, built
+  from the manifest: the CLI prints `claude plugin marketplace add <publisher>/cc-agentic`
+  (for example when setup finds no marketplace). That is part of the exception.
 
 ## Project details come from the project
 
@@ -39,7 +41,8 @@ value into the plugin.
 - skips the two manifests, `bun.lock` and `plugin/dist/` (built from `src/`, which it
   does check).
 
-It knows **only the publisher's name**. Another project's name, a person, a machine or
-a team gets past it. Keeping those out is on you, and on every review.
+It knows **only the publisher's name**, and it reads **only files**. Another project's
+name, a person, a machine or a team gets past it, and so does any name in a commit
+message or a branch name. Keeping those out is on you, and on every review.
 
 A hit is fixed by removing the name — never by adding a file to the skip list.

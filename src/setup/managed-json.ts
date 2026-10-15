@@ -1,6 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { atomicWrite, realTarget, retryOnConcurrentChange, writeManagedFile } from "./write";
+import {
+  atomicWrite,
+  realTarget,
+  retryOnConcurrentChange,
+  type WriteResult,
+  writeManagedFile,
+} from "./write";
 
 /** A key inside a JSON file, as its path of segments: ["extraKnownMarketplaces", "cc-agentic", "autoUpdate"]. */
 export type KeyPath = readonly string[];
@@ -137,17 +143,26 @@ function deleteKey(data: JsonObject, path: KeyPath): void {
  *   the call throws ForeignKeyError and writes nothing.
  * - A key that already has the wanted value but is not owned is left alone, unowned.
  * - No change means no write: no backup, no new file.
- * - When another program (Claude Code) writes the file between our read and our write,
- *   its change is kept: we read again and redo ours, up to 3 times.
+ * - Just before the rename, the file is compared with the text we read. When another
+ *   program (Claude Code) wrote it in between, nothing is written: we read again and redo
+ *   ours, up to 3 times. This narrows the window in which its change could be lost; it
+ *   does not close it.
+ * - Which keys are ours comes from one owned.json snapshot, taken before the first try.
+ *   A failed try writes that snapshot back, so a key another program set in between is
+ *   never taken as ours on the next try.
  */
 export function applyManagedJson(options: ManagedJsonOptions): ManagedJsonResult {
   const file = realTarget(options.file);
-  return retryOnConcurrentChange(file, () => applyOnce(file, options));
+  const snapshot = readOwned(options.stateDir);
+  return retryOnConcurrentChange(file, () => applyOnce(file, options, snapshot));
 }
 
-function applyOnce(file: string, options: ManagedJsonOptions): ManagedJsonResult {
+function applyOnce(
+  file: string,
+  options: ManagedJsonOptions,
+  owned: OwnedState,
+): ManagedJsonResult {
   const { data, indent, text } = readJsonObject(file);
-  const owned = readOwned(options.stateDir);
   const ownedHere: string[][] = (owned[file] ?? []).map((path) => [...path]);
   const isOwned = (path: KeyPath) => ownedHere.some((entry) => samePath(entry, path));
 
@@ -194,19 +209,26 @@ function applyOnce(file: string, options: ManagedJsonOptions): ManagedJsonResult
   const finalOwned = [...ownedHere, ...claimed].filter(
     (entry) => !released.some((path) => samePath(path, entry)),
   );
-  // Claim first: if the file write fails half-way, the next run still knows the key is ours.
+  // Claim first: if the process dies during the write, the next run still knows the key is ours.
   if (claimed.length > 0)
     writeOwned(options.stateDir, { ...owned, [file]: [...ownedHere, ...claimed] });
   let written = false;
   let backup: string | null = null;
   if (changes.length > 0) {
     options.onBeforeWrite?.();
-    const result = writeManagedFile(file, `${JSON.stringify(data, null, indent)}\n`, {
-      stateDir: options.stateDir,
-      kind: "json-keys",
-      newFileMode: 0o600,
-      expectedContent: text,
-    });
+    let result: WriteResult;
+    try {
+      result = writeManagedFile(file, `${JSON.stringify(data, null, indent)}\n`, {
+        stateDir: options.stateDir,
+        kind: "json-keys",
+        newFileMode: 0o600,
+        expectedContent: text,
+      });
+    } catch (error) {
+      // The file was not written: give back this try's claim (owned.json as in the snapshot).
+      if (claimed.length > 0) writeOwned(options.stateDir, owned);
+      throw error;
+    }
     written = result.outcome !== "unchanged";
     backup = result.backup;
   }

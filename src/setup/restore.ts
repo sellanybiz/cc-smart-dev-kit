@@ -33,11 +33,11 @@ function createdByUs(entry: ChangedEntry): boolean {
 }
 
 function restoreWholeFile(file: string, entry: ChangedEntry, stateDir: string): RestoreResult {
-  const baseline = listBackups(file).find((backup) => backup.path === entry.baseline);
+  const baseline = listBackups(stateDir, file).find((backup) => backup.path === entry.baseline);
   if (!baseline) return { file, action: "no-backup", details: [] };
   if (baseline.absent) {
     if (!existsSync(file)) return { file, action: "unchanged", details: [] };
-    return { file, action: "removed", details: [], savedAs: removeManagedFile(file) };
+    return { file, action: "removed", details: [], savedAs: removeManagedFile(stateDir, file) };
   }
   const result = writeManagedFile(file, readFileSync(baseline.path, "utf8"), {
     stateDir,
@@ -80,7 +80,7 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
 
   // cc-agentic created the file, and only an empty shell of ours is left: remove it.
   if (createdByUs(entry) && isEmpty(file)) {
-    const backup = removeManagedFile(file);
+    const backup = removeManagedFile(stateDir, file);
     return { file, action: "removed", details, savedAs: savedAs ?? backup };
   }
   if (details.length === 0) return { file, action: "unchanged", details };

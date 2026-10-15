@@ -50,30 +50,55 @@ import {
   closeSync,
   existsSync as existsSync2,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync as readFileSync2,
+  readlinkSync,
   realpathSync,
   renameSync,
   statSync,
   unlinkSync,
   writeFileSync
 } from "fs";
-import { basename, dirname, join } from "path";
+import { basename, dirname, join, resolve } from "path";
+var BACKUPS_DIR = "backups";
 var BACKUP_INFIX = ".bak-cc-agentic-";
 var ABSENT_SUFFIX = ".absent";
 var CHANGED_FILE = "changed.json";
+var MAX_LINKS = 40;
 function utcStamp(date = new Date) {
   return date.toISOString().replace(/[-:.]/g, "");
 }
 function realTarget(file) {
-  return existsSync2(file) ? realpathSync(file) : file;
+  let path = resolve(file);
+  for (let links = 0;links <= MAX_LINKS; links += 1) {
+    try {
+      return realpathSync(path);
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    let isLink = false;
+    try {
+      isLink = lstatSync(path).isSymbolicLink();
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    if (!isLink) {
+      const parent = dirname(path);
+      return parent === path ? path : join(realTarget(parent), basename(path));
+    }
+    path = resolve(dirname(path), readlinkSync(path));
+  }
+  throw new Error(`${file}: too many symlinks (a loop?)`);
 }
 function fileMode(file) {
   return existsSync2(file) ? statSync(file).mode & 4095 : null;
 }
-function atomicWrite(file, content, mode) {
+function writeTemp(file, content, mode) {
   const dir = dirname(file);
   mkdirSync(dir, { recursive: true });
   const temp = join(dir, `.${basename(file)}.cc-agentic-tmp-${process.pid}-${crypto.randomUUID()}`);
@@ -86,6 +111,17 @@ function atomicWrite(file, content, mode) {
       closeSync(fd);
     }
     chmodSync(temp, mode);
+  } catch (error) {
+    if (existsSync2(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+  return temp;
+}
+function atomicWrite(file, content, mode, beforeRename) {
+  const temp = writeTemp(file, content, mode);
+  try {
+    beforeRename?.();
     renameSync(temp, file);
   } catch (error) {
     if (existsSync2(temp))
@@ -108,11 +144,18 @@ function parseBackupName(base, name) {
     mode: match[4] ? Number.parseInt(match[4], 8) : null
   };
 }
-function listBackups(file) {
-  const dir = dirname(file);
+function backupDir(stateDir, file) {
+  return join(stateDir, BACKUPS_DIR, encodeURIComponent(realTarget(file)));
+}
+function makePrivateDir(dir) {
+  mkdirSync(dir, { recursive: true, mode: 448 });
+  chmodSync(dir, 448);
+}
+function listBackups(stateDir, file) {
+  const dir = backupDir(stateDir, file);
   if (!existsSync2(dir))
     return [];
-  const base = basename(file);
+  const base = basename(realTarget(file));
   return readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup !== null).sort((a, b) => a.stamp === b.stamp ? a.counter - b.counter : a.stamp < b.stamp ? -1 : 1).map((backup) => {
     const path = join(dir, backup.name);
     return { path, absent: backup.absent, mode: backup.mode ?? fileMode(path) ?? 384 };
@@ -125,18 +168,22 @@ function copyNotExecutable(file, target) {
   chmodSync(target, safeMode);
   return mode;
 }
-function backupFile(file) {
+function backupFile(stateDir, file) {
+  const real = realTarget(file);
+  const dir = backupDir(stateDir, real);
+  const base = basename(real);
   const stamp = utcStamp();
-  const mode = fileMode(file);
+  const mode = fileMode(real);
   const suffix = mode === null ? ABSENT_SUFFIX : (mode & 73) !== 0 ? `.mode-${mode.toString(8)}` : "";
-  const sameStamp = existsSync2(dirname(file)) ? readdirSync(dirname(file)).map((name) => parseBackupName(basename(file), name)).filter((backup) => backup?.stamp === stamp) : [];
+  makePrivateDir(join(stateDir, BACKUPS_DIR));
+  makePrivateDir(dir);
+  const sameStamp = readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup?.stamp === stamp);
   const counter = sameStamp.length === 0 ? 0 : Math.max(...sameStamp.map((backup) => backup.counter)) + 1;
-  const target = `${file}${BACKUP_INFIX}${stamp}${counter === 0 ? "" : `-${counter}`}${suffix}`;
-  mkdirSync(dirname(file), { recursive: true });
+  const target = join(dir, `${base}${BACKUP_INFIX}${stamp}${counter === 0 ? "" : `-${counter}`}${suffix}`);
   if (mode === null) {
     writeFileSync(target, "", { flag: "wx", mode: 384 });
   } else {
-    copyNotExecutable(file, target);
+    copyNotExecutable(real, target);
   }
   return target;
 }
@@ -168,12 +215,14 @@ function recordChange(stateDir, file, kind, backup) {
   const entry = files[file];
   if (!entry) {
     files[file] = { kinds: [kind], baseline: backup };
-  } else if (!entry.kinds.includes(kind)) {
-    entry.kinds.push(kind);
-  } else {
-    return;
+    writeChanged(stateDir, files);
+    return true;
   }
-  writeChanged(stateDir, files);
+  if (!entry.kinds.includes(kind)) {
+    entry.kinds.push(kind);
+    writeChanged(stateDir, files);
+  }
+  return false;
 }
 function forgetChange(stateDir, file) {
   const files = readChanged(stateDir);
@@ -200,15 +249,20 @@ function retryOnConcurrentChange(file, fn, attempts = 3) {
     }
   }
 }
+function readCurrent(file) {
+  return existsSync2(file) ? readFileSync2(file, "utf8") : null;
+}
 function writeManagedFile(file, content, options) {
   const target = realTarget(file);
   const currentMode = fileMode(target);
   const current = currentMode === null ? null : readFileSync2(target, "utf8");
-  if (options.expectedContent !== undefined && !options.dryRun) {
-    if (current !== options.expectedContent) {
+  const checkUnchanged = (now) => {
+    if (options.expectedContent !== undefined && now !== options.expectedContent) {
       throw new ConcurrentChangeError(`${target} changed after cc-agentic read it.`);
     }
-  }
+  };
+  if (!options.dryRun)
+    checkUnchanged(current);
   const wantedMode = options.mode ?? currentMode ?? options.newFileMode ?? 384;
   if (current === content && currentMode === wantedMode) {
     return { outcome: "unchanged", backup: null };
@@ -216,13 +270,22 @@ function writeManagedFile(file, content, options) {
   const outcome = currentMode === null ? "created" : "updated";
   if (options.dryRun)
     return { outcome, backup: null };
-  const backup = backupFile(target);
-  atomicWrite(target, content, wantedMode);
-  recordChange(options.stateDir, target, options.kind, backup);
+  const backup = backupFile(options.stateDir, target);
+  const isBaseline = recordChange(options.stateDir, target, options.kind, backup);
+  try {
+    atomicWrite(target, content, wantedMode, () => {
+      options.onBeforeCompare?.();
+      checkUnchanged(readCurrent(target));
+    });
+  } catch (error) {
+    if (!isBaseline && existsSync2(backup))
+      unlinkSync(backup);
+    throw error;
+  }
   return { outcome, backup };
 }
-function removeManagedFile(file) {
-  const backup = backupFile(file);
+function removeManagedFile(stateDir, file) {
+  const backup = backupFile(stateDir, file);
   unlinkSync(file);
   return backup;
 }
@@ -238,6 +301,12 @@ var FIND_INSTALL_JS = [
 ].join("");
 function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+function bakedBunPath(script) {
+  const match = /^baked_bun=('(?:[^']|'\\'')*')$/m.exec(script);
+  if (!match?.[1])
+    return null;
+  return match[1].slice(1, -1).replaceAll("'\\''", "'");
 }
 function launcherScript(bunPath) {
   return `#!/bin/sh
@@ -320,13 +389,51 @@ function marketplaceSource(knownMarketplacesFile, name, env = process.env) {
       return { kind: "unknown", type: source.source };
   }
 }
-function canReadGitRemote(url) {
-  const env = { ...process.env };
-  env.GIT_TERMINAL_PROMPT = "0";
-  env.GIT_SSH_COMMAND ??= "ssh -o BatchMode=yes -o ConnectTimeout=8";
+var BATCH_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=8";
+var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
+function redactUrl(url) {
+  const match = /^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)(.*)$/is.exec(url);
+  let result = url;
+  if (match) {
+    const [, scheme = "", authority = "", rest = ""] = match;
+    const at = authority.lastIndexOf("@");
+    if (at >= 0) {
+      const userinfo = authority.slice(0, at);
+      const host = authority.slice(at + 1);
+      const colon = userinfo.indexOf(":");
+      const safeUser = TOKEN_SCHEMES.has(scheme.toLowerCase()) ? "***" : colon >= 0 ? `${userinfo.slice(0, colon)}:***` : userinfo;
+      result = `${scheme}://${safeUser}@${host}${rest}`;
+    }
+  }
+  const query = result.indexOf("?");
+  return query >= 0 ? `${result.slice(0, query)}?***` : result;
+}
+function redactUrlsIn(text) {
+  return text.replace(/[a-z][a-z0-9+.-]*:\/\/[^\s'"<>]+/gi, (url) => redactUrl(url));
+}
+function hasOwnSshCommand(env) {
+  if (env.GIT_SSH_COMMAND || env.GIT_SSH)
+    return true;
+  try {
+    const result = Bun.spawnSync(["git", "config", "--get", "core.sshCommand"], {
+      env,
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: ACCESS_TIMEOUT_MS
+    });
+    return result.exitCode === 0 && result.stdout.toString().trim() !== "";
+  } catch {
+    return false;
+  }
+}
+function canReadGitRemote(url, baseEnv = process.env) {
+  const env = { ...baseEnv, GIT_TERMINAL_PROMPT: "0" };
+  if (!hasOwnSshCommand(env))
+    env.GIT_SSH_COMMAND = BATCH_SSH_COMMAND;
   try {
     const result = Bun.spawnSync(["git", "ls-remote", url, "HEAD"], {
       env,
+      stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
       timeout: ACCESS_TIMEOUT_MS
@@ -336,9 +443,12 @@ function canReadGitRemote(url) {
     const lines = result.stderr.toString().trim().split(`
 `);
     const detail = result.signalCode ? "timed out" : (lines.at(-1) ?? "").trim();
-    return { ok: false, detail: detail || `git exited with ${result.exitCode}` };
+    return { ok: false, detail: redactUrlsIn(detail) || `git exited with ${result.exitCode}` };
   } catch (error) {
-    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+    return {
+      ok: false,
+      detail: redactUrlsIn(error instanceof Error ? error.message : String(error))
+    };
   }
 }
 async function canReadHttp(url) {
@@ -346,7 +456,21 @@ async function canReadHttp(url) {
     const response = await fetch(url, { signal: AbortSignal.timeout(ACCESS_TIMEOUT_MS) });
     return { ok: response.ok, detail: `HTTP ${response.status}` };
   } catch (error) {
-    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+    return {
+      ok: false,
+      detail: redactUrlsIn(error instanceof Error ? error.message : String(error))
+    };
+  }
+}
+function marketplaceInstallLocation(knownMarketplacesFile, name) {
+  if (!existsSync3(knownMarketplacesFile))
+    return null;
+  try {
+    const known = JSON.parse(readFileSync3(knownMarketplacesFile, "utf8"));
+    const location = known?.[name]?.installLocation;
+    return typeof location === "string" && location !== "" ? location : null;
+  } catch {
+    return null;
   }
 }
 
@@ -371,6 +495,13 @@ function tildify(path, home) {
 }
 
 // src/cli/doctor.ts
+var UPDATE_BLOCKING_VARS = [
+  "DISABLE_AUTOUPDATER",
+  "DISABLE_UPDATES",
+  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+];
+var FORCE_PLUGIN_UPDATES_VAR = "FORCE_AUTOUPDATE_PLUGINS";
+var MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 function readSettings(file) {
   if (!existsSync4(file))
     return null;
@@ -410,26 +541,40 @@ function checkPlugin(paths) {
     text: `${PLUGIN_ID} ${install.version ?? "(no version)"} is installed at ${where}`
   };
 }
+function isExecutable(file) {
+  try {
+    accessSync(file, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 function checkLauncher(paths) {
   const launcher = join4(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
   if (!existsSync4(launcher))
     return { ok: false, text: `no launcher at ${where}. Run: cc-agentic setup` };
-  try {
-    accessSync(launcher, constants.X_OK);
-  } catch {
+  if (!isExecutable(launcher)) {
     return { ok: false, text: `the launcher ${where} is not executable. Run: cc-agentic setup` };
   }
-  if (readFileSync4(launcher, "utf8") !== launcherScript(process.execPath)) {
+  const script = readFileSync4(launcher, "utf8");
+  const bun = bakedBunPath(script);
+  if (bun === null || script !== launcherScript(bun)) {
     return { ok: false, text: `the launcher ${where} is out of date. Run: cc-agentic setup` };
+  }
+  if (!isExecutable(bun)) {
+    return {
+      ok: false,
+      text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-agentic setup`
+    };
   }
   const result = run([launcher, "version"]);
   if (!result.ok)
     return { ok: false, text: `the launcher ${where} does not run: ${result.output}` };
   return { ok: true, text: `the launcher ${where} runs ${result.output}` };
 }
-async function checkMarketplaceAccess(paths) {
-  const source = marketplaceSource(paths.knownMarketplacesFile, MARKETPLACE);
+async function checkMarketplaceAccess(paths, env) {
+  const source = marketplaceSource(paths.knownMarketplacesFile, MARKETPLACE, env);
   switch (source.kind) {
     case "missing":
       return {
@@ -441,16 +586,17 @@ async function checkMarketplaceAccess(paths) {
     case "local":
       return existsSync4(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : { ok: false, text: `the marketplace folder is missing: ${source.path}` };
     case "http": {
+      const url = redactUrl(source.url);
       const result = await canReadHttp(source.url);
-      return result.ok ? { ok: true, text: `can read the marketplace at ${source.url}` } : { ok: false, text: `cannot read the marketplace at ${source.url}: ${result.detail}` };
+      return result.ok ? { ok: true, text: `can read the marketplace at ${url}` } : { ok: false, text: `cannot read the marketplace at ${url}: ${result.detail}` };
     }
     case "git": {
       const failures = [];
       for (const url of source.urls) {
-        const result = canReadGitRemote(url);
+        const result = canReadGitRemote(url, env);
         if (result.ok)
-          return { ok: true, text: `can read the marketplace at ${url}` };
-        failures.push(`${url}: ${result.detail}`);
+          return { ok: true, text: `can read the marketplace at ${redactUrl(url)}` };
+        failures.push(`${redactUrl(url)}: ${result.detail}`);
       }
       return {
         ok: false,
@@ -459,11 +605,81 @@ async function checkMarketplaceAccess(paths) {
     }
   }
 }
+function marketplaceVersion(manifest) {
+  try {
+    const version = JSON.parse(readFileSync4(manifest, "utf8"))?.version;
+    return typeof version === "string" ? version : null;
+  } catch {
+    return null;
+  }
+}
+function checkInstalledVersion(paths) {
+  const install = findUserInstall(paths.installedPluginsFile);
+  if (!install)
+    return null;
+  if (marketplaceSource(paths.knownMarketplacesFile, MARKETPLACE).kind === "missing")
+    return null;
+  const location = marketplaceInstallLocation(paths.knownMarketplacesFile, MARKETPLACE);
+  if (location === null) {
+    return {
+      ok: false,
+      text: `the ${MARKETPLACE} marketplace has no local copy. Run: ${MARKETPLACE_UPDATE_COMMAND}`
+    };
+  }
+  const manifest = join4(location, "plugin", ".claude-plugin", "plugin.json");
+  const latest = marketplaceVersion(manifest);
+  if (latest === null) {
+    return {
+      ok: false,
+      text: `cannot read the version in ${tildify(manifest, paths.home)}. Run: ${MARKETPLACE_UPDATE_COMMAND}`
+    };
+  }
+  const installed = install.version;
+  let order;
+  try {
+    order = installed === null ? -1 : Bun.semver.order(installed, latest);
+  } catch {
+    return {
+      ok: false,
+      text: `cannot compare the installed version ${installed} with the marketplace's ${latest}`
+    };
+  }
+  if (order < 0) {
+    return {
+      ok: false,
+      text: `installed ${installed ?? "(no version)"}, marketplace has ${latest}. Run: ${PLUGIN_UPDATE_COMMAND}`
+    };
+  }
+  return { ok: true, text: `the installed version ${installed} is not behind the marketplace` };
+}
 function checkAutoUpdate(settings, paths) {
   const marketplaces = settings?.extraKnownMarketplaces;
   return marketplaces?.[MARKETPLACE]?.autoUpdate === true ? { ok: true, text: "plugin auto-update is on" } : {
     ok: false,
     text: `plugin auto-update is off in ${tildify(paths.settingsFile, paths.home)}. Run: cc-agentic setup`
+  };
+}
+function isSet(value) {
+  if (typeof value !== "string")
+    return false;
+  return !["", "0", "false", "no", "off"].includes(value.trim().toLowerCase());
+}
+function checkUpdatesNotOff(settings, env, paths) {
+  const settingsEnv = settings?.env ?? {};
+  const where = (name) => [
+    isSet(env[name]) ? "your environment" : null,
+    isSet(settingsEnv[name]) ? `the env of ${tildify(paths.settingsFile, paths.home)}` : null
+  ].filter((place) => place !== null);
+  if (where(FORCE_PLUGIN_UPDATES_VAR).length > 0) {
+    return { ok: true, text: `plugin updates are on (${FORCE_PLUGIN_UPDATES_VAR} is set)` };
+  }
+  const blocking = UPDATE_BLOCKING_VARS.filter((name) => where(name).length > 0);
+  if (blocking.length === 0)
+    return { ok: true, text: "plugin updates are not switched off" };
+  const named = blocking.map((name) => `${name} (in ${where(name).join(" and ")})`).join(", ");
+  return {
+    ok: false,
+    text: `plugin updates are switched off: ${named} ${blocking.length === 1 ? "is" : "are"} set. ` + `Set ${FORCE_PLUGIN_UPDATES_VAR}=1 as well, or remove ${blocking.join(" and ")}.`
   };
 }
 function checkNameClash(settings) {
@@ -474,15 +690,17 @@ function checkNameClash(settings) {
     text: `another plugin named ${PLUGIN} is enabled: ${clashes.join(", ")}. Disable it.`
   };
 }
-async function runDoctor(paths) {
+async function runDoctor(paths, env = process.env) {
   const settings = readSettings(paths.settingsFile);
   const checks = [
     checkPlugin(paths),
+    checkInstalledVersion(paths),
     checkLauncher(paths),
-    await checkMarketplaceAccess(paths),
+    await checkMarketplaceAccess(paths, env),
     checkAutoUpdate(settings, paths),
+    checkUpdatesNotOff(settings, env, paths),
     checkNameClash(settings)
-  ];
+  ].filter((check) => check !== null);
   for (const check of checks)
     console.log(`${check.ok ? "\u2713" : "\u2717"} ${check.text}`);
   return checks.every((check) => check.ok) ? 0 : 1;
@@ -491,24 +709,58 @@ async function runDoctor(paths) {
 // src/setup/lock.ts
 import {
   closeSync as closeSync2,
-  existsSync as existsSync5,
-  linkSync,
   mkdirSync as mkdirSync2,
   openSync as openSync2,
   readFileSync as readFileSync5,
-  renameSync as renameSync2,
   statSync as statSync2,
   unlinkSync as unlinkSync2,
   writeSync
 } from "fs";
+import { hostname } from "os";
 import { join as join5 } from "path";
-var STALE_LOCK_MS = 2 * 60 * 1000;
+var FALLBACK_STALE_MS = 10 * 60 * 1000;
 var LOCK_FILE = "lock";
+var TAKEOVER_SUFFIX = ".takeover";
 
 class LockBusyError extends Error {
   name = "LockBusyError";
 }
-var REFRESH_LOCK_MS = 30 * 1000;
+function procStartTime(pid) {
+  try {
+    const stat = readFileSync5(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    const start = fields[22 - 3];
+    return start && /^\d+$/.test(start) ? start : null;
+  } catch {
+    return null;
+  }
+}
+function psStartTime(pid) {
+  try {
+    const result = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], {
+      env: { ...process.env, LC_ALL: "C" },
+      stdout: "pipe",
+      stderr: "ignore"
+    });
+    const text = result.stdout.toString().trim();
+    return result.exitCode === 0 && text !== "" ? text : null;
+  } catch {
+    return null;
+  }
+}
+function processStartTime(pid, like) {
+  if (like === undefined || like.startsWith("proc:")) {
+    const proc = procStartTime(pid);
+    if (proc !== null)
+      return `proc:${proc}`;
+  }
+  if (like === undefined || like.startsWith("ps:")) {
+    const ps = psStartTime(pid);
+    if (ps !== null)
+      return `ps:${ps}`;
+  }
+  return null;
+}
 function isAlive(pid) {
   try {
     process.kill(pid, 0);
@@ -517,26 +769,54 @@ function isAlive(pid) {
     return error.code === "EPERM";
   }
 }
-function readLock(file) {
+function parseLock(text) {
   try {
-    const parsed = JSON.parse(readFileSync5(file, "utf8"));
-    if (typeof parsed.pid !== "number" || typeof parsed.time !== "number")
+    const parsed = JSON.parse(text);
+    if (typeof parsed.pid !== "number" || typeof parsed.time !== "number" || typeof parsed.token !== "string") {
       return null;
-    return { pid: parsed.pid, time: parsed.time, token: String(parsed.token ?? "") };
+    }
+    return {
+      pid: parsed.pid,
+      startTime: typeof parsed.startTime === "string" ? parsed.startTime : null,
+      host: typeof parsed.host === "string" ? parsed.host : "",
+      time: parsed.time,
+      token: parsed.token
+    };
   } catch {
     return null;
   }
 }
-function isStale(file, info, staleMs) {
-  let age;
+function readHeld(file) {
   try {
-    age = Date.now() - (info?.time ?? statSync2(file).mtimeMs);
-  } catch {
-    return false;
+    const stat = statSync2(file);
+    const info = parseLock(readFileSync5(file, "utf8"));
+    return { info, ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size };
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    throw error;
   }
-  if (age > staleMs)
+}
+function sameHeld(a, b) {
+  if (a.info && b.info)
+    return a.info.token === b.info.token;
+  if (a.info || b.info)
+    return false;
+  return a.ino === b.ino && a.mtimeMs === b.mtimeMs && a.size === b.size;
+}
+function isStale(held, fallbackStaleMs) {
+  const { info } = held;
+  const oldEnough = Date.now() - (info?.time ?? held.mtimeMs) > fallbackStaleMs;
+  if (info === null || info.host !== hostname())
+    return oldEnough;
+  if (!isAlive(info.pid))
     return true;
-  return info !== null && !isAlive(info.pid);
+  if (info.startTime === null)
+    return oldEnough;
+  const now = processStartTime(info.pid, info.startTime);
+  if (now === null)
+    return oldEnough;
+  return now !== info.startTime;
 }
 function tryCreate(file, info) {
   let fd;
@@ -554,71 +834,75 @@ function tryCreate(file, info) {
   }
   return true;
 }
-function takeOverStale(file, judged) {
-  const aside = `${file}.stale-${process.pid}-${crypto.randomUUID()}`;
-  try {
-    renameSync2(file, aside);
-  } catch (error) {
-    if (error.code === "ENOENT")
-      return;
-    throw error;
-  }
-  const moved = readLock(aside);
-  const sameLock = judged === null ? moved === null : moved?.token === judged.token;
-  if (!sameLock) {
-    try {
-      linkSync(aside, file);
-    } catch {}
-  }
-  unlinkSync2(aside);
+var ownStartTime;
+function newLockInfo() {
+  ownStartTime ??= processStartTime(process.pid);
+  return {
+    pid: process.pid,
+    startTime: ownStartTime,
+    host: hostname(),
+    time: Date.now(),
+    token: crypto.randomUUID()
+  };
 }
-function refreshLock(file, mine) {
+function takeOverStale(file, judged, fallbackStaleMs) {
+  const claim = `${file}${TAKEOVER_SUFFIX}`;
+  const me = newLockInfo();
+  if (!tryCreate(claim, me)) {
+    const other = readHeld(claim);
+    if (other && isStale(other, fallbackStaleMs)) {
+      const again = readHeld(claim);
+      if (again && sameHeld(again, other))
+        unlinkSync2(claim);
+    }
+    return false;
+  }
   try {
-    if (readLock(file)?.token !== mine.token)
-      return;
-    mine.time = Date.now();
-    atomicWrite(file, JSON.stringify(mine), 384);
-  } catch (error) {
-    console.error(`cc-agentic: could not refresh the lock ${file}: ${String(error)}`);
+    const now = readHeld(file);
+    if (now && sameHeld(now, judged))
+      unlinkSync2(file);
+    return true;
+  } finally {
+    if (readHeld(claim)?.info?.token === me.token)
+      unlinkSync2(claim);
   }
 }
 async function withLock(stateDir, fn, options = {}) {
   mkdirSync2(stateDir, { recursive: true });
   const file = join5(stateDir, LOCK_FILE);
-  const mine = { pid: process.pid, time: Date.now(), token: crypto.randomUUID() };
+  const mine = newLockInfo();
   const deadline = Date.now() + (options.waitMs ?? 0);
-  const staleMs = options.staleMs ?? STALE_LOCK_MS;
-  const refreshMs = options.refreshMs ?? REFRESH_LOCK_MS;
+  const fallbackStaleMs = options.fallbackStaleMs ?? FALLBACK_STALE_MS;
   for (;; ) {
     mine.time = Date.now();
     if (tryCreate(file, mine))
       break;
-    const held = readLock(file);
-    if (isStale(file, held, staleMs)) {
-      takeOverStale(file, held);
+    const held = readHeld(file);
+    if (held === null)
       continue;
-    }
+    if (isStale(held, fallbackStaleMs) && takeOverStale(file, held, fallbackStaleMs))
+      continue;
     if (Date.now() >= deadline) {
-      const who = held ? `process ${held.pid}` : "another run";
+      const info = held.info;
+      const where = info && info.host !== hostname() ? ` on ${info.host || "another host"}` : "";
+      const who = info ? `process ${info.pid}${where}` : "another run";
       throw new LockBusyError(`cc-agentic is busy: ${who} holds ${file}. Wait for it to finish, then try again.`);
     }
     await Bun.sleep(100);
   }
-  const refresh = setInterval(() => refreshLock(file, mine), refreshMs);
   try {
     return await fn();
   } finally {
-    clearInterval(refresh);
-    if (existsSync5(file) && readLock(file)?.token === mine.token)
+    if (readHeld(file)?.info?.token === mine.token)
       unlinkSync2(file);
   }
 }
 
 // src/setup/restore.ts
-import { existsSync as existsSync8, readFileSync as readFileSync8 } from "fs";
+import { existsSync as existsSync7, readFileSync as readFileSync8 } from "fs";
 
 // src/setup/managed-json.ts
-import { existsSync as existsSync6, readFileSync as readFileSync6 } from "fs";
+import { existsSync as existsSync5, readFileSync as readFileSync6 } from "fs";
 import { join as join6 } from "path";
 var OWNED_FILE = "owned.json";
 
@@ -639,7 +923,7 @@ function samePath(a, b) {
   return a.length === b.length && a.every((segment, index) => segment === b[index]);
 }
 function readJsonObject(file) {
-  if (!existsSync6(file))
+  if (!existsSync5(file))
     return { data: {}, indent: "  ", text: null };
   const text = readFileSync6(file, "utf8");
   if (text.trim() === "")
@@ -658,7 +942,7 @@ function readJsonObject(file) {
 }
 function readOwned(stateDir) {
   const file = join6(stateDir, OWNED_FILE);
-  if (!existsSync6(file))
+  if (!existsSync5(file))
     return {};
   const parsed = JSON.parse(readFileSync6(file, "utf8"));
   if (!isObject(parsed))
@@ -704,11 +988,11 @@ function deleteKey(data, path) {
 }
 function applyManagedJson(options) {
   const file = realTarget(options.file);
-  return retryOnConcurrentChange(file, () => applyOnce(file, options));
+  const snapshot = readOwned(options.stateDir);
+  return retryOnConcurrentChange(file, () => applyOnce(file, options, snapshot));
 }
-function applyOnce(file, options) {
+function applyOnce(file, options, owned) {
   const { data, indent, text } = readJsonObject(file);
-  const owned = readOwned(options.stateDir);
   const ownedHere = (owned[file] ?? []).map((path) => [...path]);
   const isOwned = (path) => ownedHere.some((entry) => samePath(entry, path));
   const changes = [];
@@ -755,13 +1039,20 @@ function applyOnce(file, options) {
   let backup = null;
   if (changes.length > 0) {
     options.onBeforeWrite?.();
-    const result = writeManagedFile(file, `${JSON.stringify(data, null, indent)}
+    let result;
+    try {
+      result = writeManagedFile(file, `${JSON.stringify(data, null, indent)}
 `, {
-      stateDir: options.stateDir,
-      kind: "json-keys",
-      newFileMode: 384,
-      expectedContent: text
-    });
+        stateDir: options.stateDir,
+        kind: "json-keys",
+        newFileMode: 384,
+        expectedContent: text
+      });
+    } catch (error) {
+      if (claimed.length > 0)
+        writeOwned(options.stateDir, owned);
+      throw error;
+    }
     written = result.outcome !== "unchanged";
     backup = result.backup;
   }
@@ -775,7 +1066,7 @@ function applyOnce(file, options) {
 }
 
 // src/setup/managed-markdown.ts
-import { existsSync as existsSync7, readFileSync as readFileSync7 } from "fs";
+import { existsSync as existsSync6, readFileSync as readFileSync7 } from "fs";
 var BLOCK_BEGIN = "<!-- cc-agentic:begin -->";
 var BLOCK_END = "<!-- cc-agentic:end -->";
 function countOf(text, marker) {
@@ -816,7 +1107,7 @@ function renderWithoutBlock(current, file = "the file") {
 function writeMarkdown(options, render) {
   const file = realTarget(options.file);
   return retryOnConcurrentChange(file, () => {
-    const text = existsSync7(file) ? readFileSync7(file, "utf8") : null;
+    const text = existsSync6(file) ? readFileSync7(file, "utf8") : null;
     const next = render(text ?? "", file);
     if (text === null && next === "")
       return { outcome: "unchanged", backup: null };
@@ -839,13 +1130,13 @@ function createdByUs(entry) {
   return entry.baseline?.endsWith(ABSENT_SUFFIX) ?? false;
 }
 function restoreWholeFile(file, entry, stateDir) {
-  const baseline = listBackups(file).find((backup) => backup.path === entry.baseline);
+  const baseline = listBackups(stateDir, file).find((backup) => backup.path === entry.baseline);
   if (!baseline)
     return { file, action: "no-backup", details: [] };
   if (baseline.absent) {
-    if (!existsSync8(file))
+    if (!existsSync7(file))
       return { file, action: "unchanged", details: [] };
-    return { file, action: "removed", details: [], savedAs: removeManagedFile(file) };
+    return { file, action: "removed", details: [], savedAs: removeManagedFile(stateDir, file) };
   }
   const result = writeManagedFile(file, readFileSync8(baseline.path, "utf8"), {
     stateDir,
@@ -862,7 +1153,7 @@ function restoreWholeFile(file, entry, stateDir) {
   };
 }
 function isEmpty(file) {
-  if (!existsSync8(file))
+  if (!existsSync7(file))
     return false;
   const text = readFileSync8(file, "utf8").trim();
   return text === "" || text === "{}";
@@ -885,7 +1176,7 @@ function restorePartly(file, entry, stateDir) {
     savedAs ??= result.backup;
   }
   if (createdByUs(entry) && isEmpty(file)) {
-    const backup = removeManagedFile(file);
+    const backup = removeManagedFile(stateDir, file);
     return { file, action: "removed", details, savedAs: savedAs ?? backup };
   }
   if (details.length === 0)
@@ -936,13 +1227,14 @@ async function runRestore(paths) {
 }
 
 // src/cli/setup.ts
-import { existsSync as existsSync9, readFileSync as readFileSync9 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync9 } from "fs";
+import { delimiter } from "path";
 var AUTO_UPDATE_KEY = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
 function show(value) {
   return value === undefined ? "(none)" : JSON.stringify(value);
 }
 function marketplaceKnown(settingsFile) {
-  if (!existsSync9(settingsFile))
+  if (!existsSync8(settingsFile))
     return false;
   try {
     const settings = JSON.parse(readFileSync9(settingsFile, "utf8"));
@@ -952,6 +1244,32 @@ function marketplaceKnown(settingsFile) {
     return false;
   }
 }
+function applySetup(paths, dryRun) {
+  const short = (path) => tildify(path, paths.home);
+  const lines = [];
+  const launcher = installLauncher(paths.binDir, {
+    stateDir: paths.stateDir,
+    bunPath: process.execPath,
+    dryRun
+  });
+  if (launcher.outcome !== "unchanged") {
+    const mark = launcher.outcome === "created" ? "+" : "~";
+    lines.push(`${mark} ${short(launcher.path)}: launcher ${launcher.outcome}`);
+  }
+  const settings = applyManagedJson({
+    file: paths.settingsFile,
+    stateDir: paths.stateDir,
+    set: [[AUTO_UPDATE_KEY, true]],
+    dryRun
+  });
+  for (const change of settings.changes) {
+    lines.push(`~ ${short(settings.file)}: ${formatKeyPath(change.path)}: ${show(change.before)} -> ${show(change.after)}`);
+  }
+  for (const skip of settings.skipped) {
+    lines.push(`  ${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
+  }
+  return lines;
+}
 async function runSetup(paths, options) {
   const short = (path) => tildify(path, paths.home);
   if (!marketplaceKnown(paths.settingsFile)) {
@@ -960,46 +1278,28 @@ async function runSetup(paths, options) {
 ` + `Then:      ${PLUGIN_INSTALL_COMMAND}`);
     return 1;
   }
-  return withLock(paths.stateDir, () => {
-    const lines = [];
-    const launcher = installLauncher(paths.binDir, {
-      stateDir: paths.stateDir,
-      bunPath: process.execPath,
-      dryRun: options.dryRun
-    });
-    if (launcher.outcome !== "unchanged") {
-      const mark = launcher.outcome === "created" ? "+" : "~";
-      lines.push(`${mark} ${short(launcher.path)}: launcher ${launcher.outcome}`);
-    }
-    const settings = applyManagedJson({
-      file: paths.settingsFile,
-      stateDir: paths.stateDir,
-      set: [[AUTO_UPDATE_KEY, true]],
-      dryRun: options.dryRun
-    });
-    for (const change of settings.changes) {
-      lines.push(`~ ${short(settings.file)}: ${formatKeyPath(change.path)}: ${show(change.before)} -> ${show(change.after)}`);
-    }
-    for (const skip of settings.skipped) {
-      lines.push(`  ${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
-    }
-    if (options.dryRun) {
-      console.log(lines.length > 0 ? lines.join(`
+  const planned = applySetup(paths, true);
+  if (options.dryRun) {
+    console.log(planned.length > 0 ? planned.join(`
 `) : "Nothing to change.");
-      console.log("Dry run: nothing was written.");
-    } else if (lines.length === 0) {
+    console.log("Dry run: nothing was written.");
+  } else {
+    const lines = await withLock(paths.stateDir, () => applySetup(paths, false), {
+      waitMs: 1e4
+    });
+    if (lines.length === 0) {
       console.log("Nothing to change. Setup is up to date.");
     } else {
       console.log(lines.join(`
 `));
-      console.log("Done. Each changed file has a backup beside it (.bak-cc-agentic-<time>).");
+      console.log(`Done. Each changed file has a backup in ${short(paths.stateDir)}/backups/.`);
     }
-    const pathDirs = (process.env.PATH ?? "").split(":");
-    if (!pathDirs.includes(paths.binDir)) {
-      console.log(`Note: ${short(paths.binDir)} is not on your PATH. Add it, so the cc-agentic command works.`);
-    }
-    return 0;
-  }, { waitMs: 1e4 });
+  }
+  const pathDirs = (process.env.PATH ?? "").split(delimiter);
+  if (!pathDirs.includes(paths.binDir)) {
+    console.log(`Note: ${short(paths.binDir)} is not on your PATH. Add it, so the cc-agentic command works.`);
+  }
+  return 0;
 }
 
 // src/entries/cli.ts

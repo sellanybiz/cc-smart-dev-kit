@@ -11,7 +11,9 @@ changing it breaks other people's projects.
 
 ## Where it is read from
 
-`resolveProject(cwd)` finds the git checkout `cwd` is in, then reads:
+`resolveProject(cwd, { pluginVersion?, env? })` finds the git checkout `cwd` is in, then
+reads (`env` is the environment git runs with, so a test can put a fake git first on
+PATH):
 
 1. `<checkout root>/.claude/cc.json` — a linked worktree's own file wins;
 2. else `<main checkout>/.claude/cc.json`;
@@ -19,17 +21,19 @@ changing it breaks other people's projects.
 
 Outside git, or in a bare repo, it returns `null`. It drops the `GIT_*` variables that
 point git at another repo (a git hook sets some), so it always resolves from `cwd`.
+A worktree whose main checkout was moved or deleted, and git older than 2.31, each give
+a clear error that says what is wrong.
 
 ## The fields
 
 | Field | Type | Meaning |
 |---|---|---|
-| `requires` | version range, npm syntax (`">=1.2"`) | The plugin versions this project needs. |
-| `worktrees.base` | string | The branch new worktrees start from. |
-| `worktrees.prefix` | string | The folder-name prefix of a worktree beside the repo. |
-| `worktrees.setup` | string array (argv) | A command run inside a new worktree, e.g. `["bun", "install"]`. |
-| `instructions` | boolean | Turns on the opt-in instructions for this project. |
-| `autoMode` | string array | Auto-mode rules `setup` copies into the user's settings. |
+| `requires` | version range, npm syntax (`">=0.1"`) | The plugin versions this project needs. |
+| `worktrees.base` | string | The branch new worktrees start from. Used from Phase 3. |
+| `worktrees.prefix` | string | The folder-name prefix of a worktree beside the repo. Used from Phase 3. |
+| `worktrees.setup` | string array (argv) | A command run inside a new worktree, e.g. `["bun", "install"]`. Used from Phase 3. |
+| `instructions` | boolean | Turns on the opt-in instructions for this project. Used from Phase 5. |
+| `autoMode` | string array | Auto-mode rules `setup` copies into the user's settings. Used from Phase 6. |
 
 The schema is `ccConfigSchema` in `src/project/config.ts` (zod). The README shows an
 example; keep it in step.

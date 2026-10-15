@@ -22,18 +22,38 @@ Each of them:
 
 - **Writes only on a real change.** The same content again means no write, no backup,
   no new file. A second `setup` prints "Nothing to change."
-- **Backs up first:** `<file>.bak-cc-agentic-<UTC stamp>` beside the file. A file that
-  did not exist gets an empty `.absent` marker. A backup is never executable; an
-  executable's mode goes into the name (`.mode-755`).
-- **Writes atomically:** a temp file in the same folder, fsync, then rename. A reader
-  sees the old file or the new one, never half of one.
-- **Starts again when someone else wrote in between.** Just before the write, it
-  compares the file with the text it read. If they differ, it reads again and redoes the
-  step, up to 3 times.
-- **Follows a symlink:** a linked dotfile stays a link, and its target gets the change.
+- **Writes in this order** (`writeManagedFile`):
+  1. makes the backup;
+  2. records the change in `changed.json` (the file, and the kind: `json-keys`,
+     `markdown-block` or `whole-file`), so `restore` knows what to undo. The first
+     time, that backup becomes the file's baseline. The record needs the backup's path,
+     so the backup comes first. The record comes before the write, so a crash right
+     after the rename never leaves a change that `restore` cannot see;
+  3. writes a temp file in the same folder, and fsyncs it;
+  4. compares the file on disk with the text it read earlier;
+  5. renames the temp file over the file. A reader sees the old file or the new one,
+     never half of one.
+
+  A cheap compare also runs before step 1, so a file that changed already gets no
+  backup and no temp file. When a try fails after step 1, its backup is removed, unless
+  it became the baseline.
+- **Starts again when the compare fails:** it reads the file again and redoes the step,
+  up to 3 times. An ownership claim (a key added to `owned.json`) made in the failed try
+  is undone first. The compare narrows the window for a race with another program
+  (Claude Code writes `settings.json` too); it does not close it.
+- **Keeps backups in the state folder,** `<stateDir>/backups/`, never beside the file.
+  Each file gets its own subfolder, named from its real path. A file that did not exist
+  gets an empty `.absent` marker. A backup is never executable; an executable's mode goes
+  into the backup's name (`.mode-755`). Why not beside the file: a settings file linked
+  from a dotfiles repo would get backups, with secrets in them, inside that repo; and a
+  backup in a `bin` folder would sit on PATH.
+- **Follows a symlink:** a linked dotfile stays a link, and its target gets the change;
+  also a link whose target does not exist yet. A new file is tracked under its folder's
+  real path.
 - **Keeps the file's mode,** except the launcher, which is always 755.
-- **Records the file** in `changed.json`, with the kind of change (`json-keys`,
-  `markdown-block` or `whole-file`) and its first backup, so `restore` knows what to undo.
+- **Known limit:** the backup folder's name is the file's real path, encoded
+  (`encodeURIComponent`). A real path long enough to make that name longer than 255
+  bytes fails with ENAMETOOLONG.
 
 ## Never take what is not ours
 
@@ -45,32 +65,49 @@ Each of them:
   block, stays as it is.
 - A Markdown file with a broken block (not exactly one begin and one end marker, in
   that order) throws and is not written.
+- **Check before the first write.** Setup checks `settings.json` before it writes the
+  launcher, so a key the user set (for example `autoUpdate: false`) fails before
+  anything is written.
 
 ## State, lock and paths
 
-- **State:** `$CLAUDE_CONFIG_DIR/cc-agentic/` (by default `~/.claude/cc-agentic/`):
-  `owned.json`, `changed.json` and the `lock`.
+- **State (`<stateDir>`):** `$CLAUDE_CONFIG_DIR/cc-agentic/` (by default
+  `~/.claude/cc-agentic/`): `owned.json`, `changed.json`, the `lock`, and `backups/`
+  (mode 0700).
 - **The lock:** every command that writes runs inside `withLock`. The lock file is made
-  with O_EXCL (only one process can create it). Its owner refreshes it every 30 seconds.
-  It is stale when its owner is dead, or when it was not refreshed for 2 minutes. A
-  waiting run tries for up to 10 seconds, then says who holds it.
+  with O_EXCL (only one process can create it). It holds the pid, the start time of that
+  process, and the host name. It is stale only when that pid is dead, or alive with a
+  different start time (the pid was reused). When the holder cannot be judged, it is
+  stale after 10 minutes: neither `/proc` nor `ps` gives the start time, the lock was
+  written on another host (a home folder shared between machines), or the lock file
+  cannot be read. Otherwise a live holder is never taken over, however long it runs.
+  There is no refresh timer. A run that removes a stale lock first takes the claim file
+  `lock.takeover` (O_EXCL), so it never removes a live lock that took the stale one's
+  place. A waiting run tries for up to 10 seconds, then says who holds it.
 - **Paths come from `cliPaths()`,** which follows `HOME` and `CLAUDE_CONFIG_DIR`. Never
   call `homedir()` or write `~/.claude` anywhere else: tests point these at a temp folder.
+- **One launcher, many config folders.** The launcher `~/.local/bin/cc-agentic` is
+  shared by every config folder; the state (lock, records, backups) is per config folder.
+  So a `restore` under one `CLAUDE_CONFIG_DIR` can remove a launcher another one relies
+  on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
 
 ## `--dry-run` and `restore`
 
-- **`--dry-run`** goes through the same steps and writes no user file. Every new step
-  takes `dryRun` and is tested with it.
+- **`--dry-run`** goes through the same steps and writes nothing at all: no user file,
+  no state folder, no lock. Every new step takes `dryRun` and is tested with it.
+  Setup always runs this read-only pass first, outside the lock, also without
+  `--dry-run`: a key the user set stops it before anything is written.
 - **`restore`** removes everything cc-agentic added and keeps everything else:
   - JSON settings: removes only the keys in `owned.json`. Foreign keys stay, also ones
     added after setup.
   - Markdown: removes the managed block and keeps the text around it.
-  - Files owned whole (the launcher): puts back the **oldest** backup (the state before
-    cc-agentic's first change), or removes the file when setup created it.
+  - Files owned whole (the launcher): puts back the **baseline**, the backup made at
+    cc-agentic's first change to the file since the last restore. When setup created
+    the file, it removes it.
   - A file setup created, with only an empty `{}` or empty text left, is removed.
   - Each change makes a normal backup first, so a restore can be undone by hand.
   - A restored file is no longer tracked in `changed.json`, so a second `restore`
-    changes nothing. When the oldest backup is missing, the file is left alone.
+    changes nothing. When the baseline backup is missing, the file is left alone.
 - A new kind of managed change must say how `restore` undoes it, with a test.
 
 ## The launcher
@@ -95,8 +132,12 @@ valid across updates.
 ## Command output
 
 - `setup` prints one line per change: `+` created, `~` changed, `-` removed, with `~`
-  for the home folder (`tildify`).
-- `doctor` prints one `✓` or `✗` line per check. A `✗` line says what to run.
+  for the home folder (`tildify`). Its last line: "Done. Each changed file has a backup
+  in ~/.claude/cc-agentic/backups/." (the state folder's `backups/`).
+- `doctor` prints one `✓` or `✗` line per check. A `✗` line says what to run. The
+  list of checks is in `README.md` § Commands; keep it in step.
 - Exit codes: 0 done, 1 a failed check or an error, 2 a wrong command or option.
-- A check that reaches the network has a timeout and never asks for a password
-  (`git ls-remote` with `GIT_TERMINAL_PROMPT=0` and ssh `BatchMode`).
+- A check that reaches the network has a timeout and never asks for a password:
+  `git ls-remote` with `GIT_TERMINAL_PROMPT=0`. It adds ssh `BatchMode` only when the
+  user has no `GIT_SSH_COMMAND`, `GIT_SSH` or `core.sshCommand` of their own.
+- A printed URL never shows credentials: remove them first.

@@ -55,7 +55,7 @@ describe("applyManagedMarkdown", () => {
     const mtime = statSync(file).mtimeMs;
     expect(applyManagedMarkdown({ file, stateDir, body: "x" }).outcome).toBe("unchanged");
     expect(statSync(file).mtimeMs).toBe(mtime);
-    expect(listBackups(file)).toHaveLength(1);
+    expect(listBackups(stateDir, file)).toHaveLength(1);
   });
 
   test("a broken block (begin without end) throws and writes nothing", () => {
@@ -109,7 +109,7 @@ describe("removeManagedMarkdown", () => {
       outcome: "unchanged",
       backup: null,
     });
-    expect(listBackups(file)).toHaveLength(0);
+    expect(listBackups(stateDir, file)).toHaveLength(0);
   });
 
   test("a missing file stays missing", () => {

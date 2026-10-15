@@ -14,13 +14,17 @@ Claude Code behaviour it relies on see `claude-code-contract.md`.
 A plugin alone cannot change a user's `settings.json`, register an MCP server at user
 scope, or keep a service running. A setup command alone has no versions and no update
 channel. Together they get both. The cost is two places to look, so
-`cc-agentic doctor` checks both.
+`cc-agentic doctor` checks both (its list of checks: `README.md` § Commands).
+
+**macOS and Linux for now.** The launcher and `plugin/bin/` are POSIX `sh` scripts.
 
 ### Why a stable launcher
 
 Claude Code installs each version into its own folder,
-`~/.claude/plugins/cache/cc-agentic/cc/<version>/`, and deletes an old folder 14 days
-after an update. A terminal, a systemd unit or a cron job cannot point into a folder
+`~/.claude/plugins/cache/cc-agentic/cc/<version>/`, and deletes an old folder some time
+after an update (14 days, the docs say; not proved yet: `claude-code-contract.md`).
+Installs and updates are keyed by the version, so every change to `plugin/` raises it;
+CI checks that. A terminal, a systemd unit or a cron job cannot point into a folder
 whose name changes. The launcher reads Claude Code's `installed_plugins.json`, finds the
 user-scope install of `cc@cc-agentic`, and runs that version's `dist/cli.js`. It stays
 valid across updates.
@@ -35,7 +39,8 @@ same CLI from its own version folder.
 
 Anything that keeps running (later: the AI gateway's router, the portal) runs from a
 copy that `setup` puts in `~/.local/share/cc/`, never from the version folder. Claude
-Code deletes that folder 14 days after an update, under a running process.
+Code deletes that folder after an update (14 days, not proved yet), even under a
+running process.
 
 ## How `setup` changes user files
 
@@ -48,21 +53,51 @@ Code deletes that folder 14 days after an update, under a running process.
 
 The guarantees:
 
-- **A backup before each write**, beside the file: `<file>.bak-cc-agentic-<time>`.
-- **Atomic writes:** a temp file, then a rename. A reader never sees half a file.
-- **No lost edits:** just before the write, the file is compared with the text that was
-  read. If someone wrote in between, the step starts again (up to 3 times).
-- **A lock** against two runs at once. Its owner refreshes it every 30 seconds; it is
-  stale when its owner is dead or it was not refreshed for 2 minutes.
-- **Never someone else's key:** a key that exists with another value and is not owned
-  is never overwritten; setup stops and says so.
-- **`--dry-run`** shows every change and writes nothing.
-- **`restore`** removes what cc-agentic added and keeps everything else: its own keys,
-  its block, and its whole files (back to the oldest backup, or removed when setup
-  created them). It backs up each file before it changes it. A second restore changes
-  nothing.
+- **A fixed order for each write:**
+  1. make the backup;
+  2. record the change in `changed.json`, so `restore` can undo it (the first time,
+     with that backup as the baseline). The record needs the backup's path, so the
+     backup comes first;
+  3. write a temp file and fsync it;
+  4. compare the file with the text read earlier;
+  5. rename the temp file over it. A reader never sees half a file.
 
-Its state lives in `$CLAUDE_CONFIG_DIR/cc-agentic/` (by default `~/.claude/cc-agentic/`).
+  A cheap compare also runs before the backup, so a file that changed already gets no
+  backup. A backup from a failed try is removed, unless it became the baseline.
+- **Fewer lost edits:** when the compare fails, the step starts again from the read, up
+  to 3 times, and an ownership claim made in the failed try is undone first. The compare
+  narrows the window for a race with another program (Claude Code writes
+  `settings.json` too); it does not close it.
+- **Backups in the state folder,** `<stateDir>/backups/` (mode 0700), one subfolder per
+  file, named from its real path. Never beside the file: a settings file linked from a
+  dotfiles repo would get backups, with secrets in them, inside that repo, and a backup
+  in a `bin` folder would sit on PATH. A backup is never executable; an executable's
+  mode goes into the backup's name.
+- **A lock** against two runs at once. It holds the pid, that process's start time and
+  the host name. It is stale only when the pid is dead, or alive with a different start
+  time (the pid was reused). When the holder cannot be judged, it is stale after 10
+  minutes: neither `/proc` nor `ps` gives the start time, the lock was written on
+  another host (a home folder shared between machines), or the lock cannot be read.
+  Otherwise a live holder is never taken over, and there is no refresh timer. A run
+  that removes a stale lock first takes a claim file, `lock.takeover` (O_EXCL), so it
+  never removes a live lock that took the stale one's place.
+- **Never someone else's key:** a key that exists with another value and is not owned
+  is never overwritten; setup stops and says so. Setup checks `settings.json` before it
+  writes the launcher, so such a key (for example `autoUpdate: false`) stops it before
+  anything is written.
+- **`--dry-run`** shows every change and writes nothing at all: no state folder, no
+  lock. Every setup runs this read-only pass first, outside the lock.
+- **`restore`** removes what cc-agentic added and keeps everything else: its own JSON
+  keys and its Markdown block go; a whole file goes back to its **baseline** (the backup
+  made at cc-agentic's first change to it since the last restore), or is removed when
+  setup created it. It backs up each file before it changes it. A second restore
+  changes nothing.
+
+Its state (`<stateDir>`) lives in `$CLAUDE_CONFIG_DIR/cc-agentic/` (by default
+`~/.claude/cc-agentic/`): `owned.json`, `changed.json`, the lock and `backups/`. The
+state is per config folder, but the launcher in `~/.local/bin` is shared by all of
+them. So a restore under one config folder can remove a launcher another one relies
+on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
 
 ### Who changes what, and when
 
@@ -80,15 +115,19 @@ and gives its own details, with `.claude/cc.json`:
 
 ```json
 {
-  "requires": ">=1.2",
+  "requires": ">=0.1",
   "worktrees": { "base": "main", "prefix": "app-wt-", "setup": ["bun", "install"] },
   "instructions": true,
   "autoMode": ["In my-app: never touch production."]
 }
 ```
 
+The plugin accepts `worktrees`, `instructions` and `autoMode` now and uses them from
+Phase 3, 5 and 6 (`roadmap.md`).
+
 - A hook finds the project from its input's `cwd`, which follows the session into a
-  worktree. A worktree's own `cc.json` wins; else the main checkout's is used.
+  worktree. A worktree's own `cc.json` wins; else the main checkout's is used. A moved
+  or deleted main checkout, and git older than 2.31, each give a clear error.
 - **`requires` is checked before the strict parse.** A project may use a field newer
   than a user's plugin; that user is told to update, not that the field is unknown.
 - **Without `cc.json`, the plugin does Claude Code's default** and its guards stay

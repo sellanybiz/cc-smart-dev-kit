@@ -6,8 +6,10 @@ proved.
 
 - **The tested version** lives in one file: `.claude-code-version` at the repo root. CI
   installs exactly that version for every pull request.
-- **A weekly CI job** tests the newest Claude Code (the tests and both validates) and
-  opens one issue, labelled `claude-code-upgrade`, when it is newer or a check fails.
+- **A weekly CI job** installs the newest Claude Code, runs the tests and both
+  validates, and opens one issue, labelled `claude-code-upgrade`, when it is newer or a
+  check fails. **Only the two validates run Claude Code;** the tests do not. So the job
+  proves only the validate row below; every other row needs the skill.
 - **The `claude-code-upgrade` skill** (`.claude/skills/`) walks this page row by row
   against a new version.
 - **Relying on a new behaviour?** Add its row in the same change.
@@ -51,7 +53,7 @@ Code's file; it shows we read the shape correctly, not that Claude Code still wr
 
 | Behaviour | Last proved on | How it is proved |
 |---|---|---|
-| `claude plugin install` writes `enabledPlugins["cc@cc-agentic"]` and `extraKnownMarketplaces["cc-agentic"]` (with its source) into the user's settings, **without** `autoUpdate`. That is why `setup` sets `autoUpdate: true`. | 2.1.300 | live: Phase 0 spike; unit (our handling): `src/cli/cli.test.ts` › "installs the launcher and turns on auto-update, keeping the other settings" |
+| After `claude plugin marketplace add` and `claude plugin install`, the user's settings hold `enabledPlugins["cc@cc-agentic"]` and `extraKnownMarketplaces["cc-agentic"]` (with its source), **without** `autoUpdate`. That is why `setup` sets `autoUpdate: true`. (The spike ran both commands before it looked. The docs say `marketplace add` writes the marketplace entry and `install` the enabled plugin.) | 2.1.300 | live: Phase 0 spike; unit (our handling): `src/cli/cli.test.ts` › "installs the launcher and turns on auto-update, keeping the other settings" |
 | An update makes a new version folder. A running session keeps the old one until Claude Code restarts. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
 | Installing from a private GitHub repo works over the user's SSH key. | 2.1.300 | live: Phase 0 spike; unit (`doctor`'s access check): `src/cli/cli.test.ts` › "all green after setup, through the launcher; git reads the marketplace over SSH" |
 | `claude plugin validate plugin --strict` and `claude plugin validate . --strict` pass. | 2.1.300 | CI: the "Validate the plugin" and "Validate the marketplace" steps, on `.claude-code-version` and weekly on the newest |
@@ -70,8 +72,10 @@ not know, loudly, so a change shows on the first day.
 
 ## Relied on, not proved yet
 
-The design depends on these, but no test or live check here has proved them. Prove
-each one before the phase that needs it, then move it into a table above.
+The design depends on these, but no test or live check here has proved them. "The docs
+say so" is not proof: a docs page can be ahead of, or behind, the release. Prove each
+one before the phase that needs it ("now": at the first real release), then move it
+into a table above.
 
 - **The defer check:** a plugin WorktreeCreate hook that exits 0 and prints nothing,
   while the project's own hook makes the worktree. (Phase 3)
@@ -79,8 +83,32 @@ each one before the phase that needs it, then move it into a table above.
   `.claude/worktrees/<name>` on a new branch `worktree-<name>` from `HEAD`. The Phase 0
   spike copied this shape; it was not compared with Claude Code's own result. (Phase 3)
 - **An exec-form hook on Windows** runs with `bun.exe`. (Phase 3)
-- **Old version folders are deleted 14 days after an update.** (Phase 2, for the copies
-  in `~/.local/share/cc/`)
+- **Old version folders are deleted 14 days after an update.** The docs say so
+  (code.claude.com/docs/en/plugins/loading). (Phase 2, for the copies in
+  `~/.local/share/cc/`)
+- **Installs and updates are keyed by the plugin version.** A manifest that sets
+  `version` keeps every user on the cached copy until the version changes
+  (code.claude.com/docs/en/plugins/loading). CI's version-bump check
+  (`scripts/check-version-bump.ts`) relies on it. (Now)
+- **`autoUpdate: true` on the user's `extraKnownMarketplaces` entry** makes Claude Code
+  update installed plugins after a session starts. The docs say so
+  (code.claude.com/docs/en/plugins/install); an open bug report
+  (anthropics/claude-code#61854) says only the catalog refreshes. `doctor`'s "behind the
+  marketplace" check catches a missed update either way. (Now)
+- **A project's own entry for the same marketplace wins whole.** When more than one
+  settings file declares a marketplace of the same name, Claude Code uses the entry of
+  the highest-precedence file whole, and inherits none of the user's fields
+  (code.claude.com/docs/en/settings-reference#extraknownmarketplaces, from 2.1.228). So
+  in such a project, the `autoUpdate` that `setup` writes into user settings may be
+  lost. (Now)
+- **`DISABLE_AUTOUPDATER=1` also stops plugin updates** unless
+  `FORCE_AUTOUPDATE_PLUGINS=1` is set too. The docs say so, and name `DISABLE_UPDATES=1` and
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` as doing the same
+  (code.claude.com/docs/en/plugins/loading). `doctor` checks all three, in the
+  environment and in the `env` of `settings.json`, and passes when
+  `FORCE_AUTOUPDATE_PLUGINS` is set. (Now)
+- **Which values count as "set" for these variables.** `doctor` assumes Claude Code
+  treats an empty value, `0`, `false`, `no` or `off` as not set. (Now)
 - **`CLAUDE_CODE_PLUGIN_PREFER_HTTPS`** makes Claude Code fetch a `github` marketplace
   over HTTPS. `doctor` tries HTTPS first when it is set; only our reader is tested
   (`src/setup/marketplace-access.test.ts` › "github with CLAUDE_CODE_PLUGIN_PREFER_HTTPS:

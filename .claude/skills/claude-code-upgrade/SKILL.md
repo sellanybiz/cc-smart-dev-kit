@@ -1,6 +1,6 @@
 ---
 name: claude-code-upgrade
-description: Move the plugin to a newer Claude Code — read the changelog for hooks, plugins, settings, auto mode, MCP and subagents, walk docs/claude-code-contract.md row by row, run the tests and validates against the new version, fix what changed, raise .claude-code-version, release. Use when the weekly CI job opens a claude-code-upgrade issue, or a new Claude Code version is out.
+description: Move the plugin to a newer Claude Code — read the changelog for hooks, plugins, settings, auto mode, MCP and subagents, walk docs/claude-code-contract.md row by row, run the tests and the validates (only the validates run the new version), prove the live rows, fix what changed, raise .claude-code-version, release. Use when the weekly CI job opens a claude-code-upgrade issue, or a new Claude Code version is out.
 ---
 
 # Upgrade to a newer Claude Code
@@ -10,9 +10,11 @@ behaviour is a row in `docs/claude-code-contract.md`. This skill checks those ro
 against the new version, fixes what broke, and records the new tested version.
 
 The tested version lives in one file: `.claude-code-version` at the repo root. CI
-installs exactly that version. A weekly CI job tests the newest Claude Code and opens
-(or updates) one issue with the label `claude-code-upgrade` when it is newer or a
-check fails.
+installs exactly that version. A weekly CI job installs the newest Claude Code, runs the
+tests and both validates, and opens (or updates) one issue with the label
+`claude-code-upgrade` when it is newer or a check fails. **Only the two validates run
+Claude Code.** The tests do not, so a green weekly run proves only that the manifests
+still validate; every other row needs this skill.
 
 ## 1. Find the two versions
 
@@ -43,8 +45,8 @@ about:
 
 Go through `docs/claude-code-contract.md` one row at a time. For each row: does a
 changelog entry touch it? Mark the rows to prove again. A changelog that says nothing
-is not proof: a row proved only live (no unit test) gets proved again live once a
-version has many changes.
+is not proof, and neither is a green `bun run check`: a unit test proves our reader, not
+Claude Code. Once a version has many changes, prove the live rows again live.
 
 ## 4. Test against the new version
 
@@ -56,6 +58,9 @@ version has many changes.
    claude plugin validate plugin --strict
    claude plugin validate . --strict
    ```
+
+   `bun run check` does not run Claude Code; it shows the plugin still builds and its
+   own tests pass. Only the two validates run the new version.
 
 3. From Phase 3 on: `cc-agentic doctor --live`. It runs a throwaway session in a temp
    repo with the plugin and proves the hooks and the worktree contract. It needs a

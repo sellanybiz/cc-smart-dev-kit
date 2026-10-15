@@ -23,6 +23,16 @@ function shellQuote(value: string): string {
 }
 
 /**
+ * The bun path baked into a launcher script by launcherScript(), or null when the script
+ * has no such line (not ours, or from another version). The reverse of shellQuote.
+ */
+export function bakedBunPath(script: string): string | null {
+  const match = /^baked_bun=('(?:[^']|'\\'')*')$/m.exec(script);
+  if (!match?.[1]) return null;
+  return match[1].slice(1, -1).replaceAll("'\\''", "'");
+}
+
+/**
  * The stable launcher: a POSIX sh script that runs the CLI of whichever plugin version
  * Claude Code has installed now. It stays valid across plugin updates.
  *

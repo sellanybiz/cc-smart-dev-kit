@@ -27,6 +27,10 @@ the pull request which version a project should require for the new part.
 2. `bun run build`. The version is baked into `plugin/dist/cli.js`, so the bundle
    changes even when no code did.
 
+CI enforces the bump: a pull request that changes anything under `plugin/` (a rebuilt
+bundle counts) must raise `version` (`scripts/check-version-bump.ts`). Claude Code keys
+installs and updates by the version, so a change without a bump never reaches a user.
+
 ## 3. Check
 
 ```sh

@@ -19,9 +19,10 @@ Claude Code copies only `plugin/` into
 - **`plugin/` holds:** `.claude-plugin/plugin.json` (the manifest), `dist/` (bundles),
   `bin/` (on the Bash tool's PATH in Claude Code), `hooks/hooks.json`, and later
   `skills/`, `agents/` and instructions for users.
-- **Never run anything long-lived from the version folder.** Claude Code deletes it 14
-  days after an update. A long-running part (later: the router, the portal) runs from a
-  copy that `setup` puts in `~/.local/share/cc/`.
+- **Never run anything long-lived from the version folder.** Claude Code deletes an old
+  one after an update: 14 days later, the docs say (not proved yet:
+  `docs/claude-code-contract.md`). A long-running part (later: the router, the portal)
+  runs from a copy that `setup` puts in `~/.local/share/cc/`.
 
 ## Bundles are committed
 
@@ -45,6 +46,11 @@ Claude Code copies only `plugin/` into
   macro (code that runs at build time). The bundle holds those two values only, never
   the rest of the file.
 - So **a version bump changes `plugin/dist/cli.js`**: rebuild after it.
+- **Any change under `plugin/` needs a version bump.** Claude Code keys installs and
+  updates by the version, so without a bump no user ever gets the change. CI enforces
+  it: a pull request that changes anything under `plugin/` must raise `version`
+  (`scripts/check-version-bump.ts`). A change to `src/` that changes a bundle changes
+  `plugin/dist/`, so it needs a bump too.
 - Use `VERSION`, `MARKETPLACE_SOURCE`, `PLUGIN_ID` and the command strings from
   `src/build-info/`. Never write the version, the repository or `cc@cc-agentic` twice.
 
@@ -58,5 +64,6 @@ Claude Code copies only `plugin/` into
 ## Releasing
 
 A new version follows the `release` skill: semver, bump, build, check, both validates,
-pull request, the owner's yes, then the update on one machine. A rollback is a new
+pull request, the owner's yes, then the update on one machine. CI fails a pull request
+that changes `plugin/` without the bump (above). A rollback is a new
 version with the old behaviour, never a lower version number.

@@ -1,9 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, lstatSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
 import { applyManagedJson, ForeignKeyError } from "./managed-json";
-import { ConcurrentChangeError, listBackups, writeManagedFile } from "./write";
+import { restore } from "./restore";
+import { ConcurrentChangeError, listBackups, readChanged, writeManagedFile } from "./write";
 
 const AUTO_UPDATE = ["extraKnownMarketplaces", "cc-agentic", "autoUpdate"] as const;
 
@@ -50,7 +59,7 @@ describe("applyManagedJson", () => {
     const { file, stateDir } = setup();
     const before = readFileSync(file, "utf8");
     applyManagedJson({ file, stateDir, set: [[AUTO_UPDATE, true]] });
-    const backups = listBackups(file);
+    const backups = listBackups(stateDir, file);
     expect(backups).toHaveLength(1);
     expect(readFileSync(backups[0]?.path ?? "", "utf8")).toBe(before);
   });
@@ -62,7 +71,7 @@ describe("applyManagedJson", () => {
     const ownedMtime = statSync(join(stateDir, "owned.json")).mtimeMs;
     const second = applyManagedJson({ file, stateDir, set: [[AUTO_UPDATE, true]] });
     expect(second).toEqual({ file, changes: [], skipped: [], written: false, backup: null });
-    expect(listBackups(file)).toHaveLength(1);
+    expect(listBackups(stateDir, file)).toHaveLength(1);
     expect(statSync(file).mtimeMs).toBe(mtime);
     expect(statSync(join(stateDir, "owned.json")).mtimeMs).toBe(ownedMtime);
   });
@@ -108,7 +117,7 @@ describe("applyManagedJson", () => {
       ForeignKeyError,
     );
     expect(readFileSync(file, "utf8")).toBe(before);
-    expect(listBackups(file)).toHaveLength(0);
+    expect(listBackups(stateDir, file)).toHaveLength(0);
   });
 
   test("leaves a foreign key that already has the wanted value alone, and does not own it", () => {
@@ -153,7 +162,7 @@ describe("applyManagedJson", () => {
     expect(result.changes).toEqual([{ path: AUTO_UPDATE, before: undefined, after: true }]);
     expect(result.written).toBe(false);
     expect(readFileSync(file, "utf8")).toBe(before);
-    expect(listBackups(file)).toHaveLength(0);
+    expect(listBackups(stateDir, file)).toHaveLength(0);
   });
 
   test("a settings file that is not JSON gives an error that names it", () => {
@@ -205,6 +214,83 @@ describe("applyManagedJson when another program writes the file at the same time
     expect(calls).toBe(3);
     expect(read(file).extraKnownMarketplaces["cc-agentic"].autoUpdate).toBeUndefined();
     expect(read(file).k3).toBe(3);
+    // After the last failed try, owned.json is as it was before the first: no claim left.
+    expect(read(join(stateDir, "owned.json"))).toEqual({});
+  });
+
+  test("another program sets the key itself in between: the retry refuses it and does not claim it", () => {
+    const { file, stateDir } = setup();
+    // cc-agentic already owns another key in this file; that claim must survive.
+    applyManagedJson({ file, stateDir, set: [[["statusLine"], "ours"]] });
+    const ownedBefore = read(join(stateDir, "owned.json"));
+    expect(ownedBefore).toEqual({ [file]: [["statusLine"]] });
+    let calls = 0;
+    expect(() =>
+      applyManagedJson({
+        file,
+        stateDir,
+        set: [[AUTO_UPDATE, true]],
+        onBeforeWrite: () => {
+          calls += 1;
+          if (calls > 1) return;
+          // The user turns auto-update off by hand, right between our read and our write.
+          const settings = read(file);
+          settings.extraKnownMarketplaces["cc-agentic"].autoUpdate = false;
+          writeFileSync(file, JSON.stringify(settings, null, 2));
+        },
+      }),
+    ).toThrow(ForeignKeyError);
+    expect(calls).toBe(1);
+    expect(read(file).extraKnownMarketplaces["cc-agentic"].autoUpdate).toBe(false);
+    expect(read(join(stateDir, "owned.json"))).toEqual(ownedBefore);
+  });
+});
+
+describe("writeManagedFile: the order of its steps", () => {
+  test("changed.json records the file before the rename", () => {
+    const { file, stateDir } = setup();
+    let recordedBeforeRename: unknown = "not checked";
+    writeManagedFile(file, "{}\n", {
+      stateDir,
+      kind: "json-keys",
+      onBeforeCompare: () => {
+        recordedBeforeRename = Object.keys(readChanged(stateDir));
+      },
+    });
+    expect(recordedBeforeRename).toEqual([file]);
+  });
+
+  test("a write in the last moment before the rename: theirs stays, no temp file, no extra backup", () => {
+    const { dir, file, stateDir } = setup();
+    const theirs = '{"theirs":true}\n';
+    // A first write makes the baseline backup.
+    writeManagedFile(file, "{}\n", { stateDir, kind: "json-keys" });
+    expect(() =>
+      writeManagedFile(file, '{"ours":true}\n', {
+        stateDir,
+        kind: "json-keys",
+        expectedContent: "{}\n",
+        onBeforeCompare: () => writeFileSync(file, theirs),
+      }),
+    ).toThrow(ConcurrentChangeError);
+    expect(readFileSync(file, "utf8")).toBe(theirs);
+    expect(readdirSync(dir).sort()).toEqual(["settings.json", "state"]);
+    expect(listBackups(stateDir, file)).toHaveLength(1);
+  });
+
+  test("a record whose write never happened is harmless: restore reports the file unchanged", () => {
+    const { file, stateDir } = setup();
+    const before = readFileSync(file, "utf8");
+    expect(() =>
+      writeManagedFile(file, "{}\n", {
+        stateDir,
+        kind: "json-keys",
+        expectedContent: before,
+        onBeforeCompare: () => writeFileSync(file, before.replace("opus", "sonnet")),
+      }),
+    ).toThrow(ConcurrentChangeError);
+    expect(Object.keys(readChanged(stateDir))).toEqual([file]);
+    expect(restore(stateDir)).toEqual([{ file, action: "unchanged", details: [] }]);
   });
 });
 

@@ -3,7 +3,22 @@ import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:f
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
 import { findUserInstall } from "./installed-plugins";
-import { installLauncher } from "./launcher";
+import { bakedBunPath, installLauncher, launcherScript } from "./launcher";
+
+describe("bakedBunPath", () => {
+  test.each([
+    ["/home/user/.bun/bin/bun"],
+    ["/opt/it's here/bun"],
+    ["/a/'quoted'/b'"],
+    ["/with space/and$dollar/bun"],
+  ])("reads back the bun baked into the script: %s", (bun) => {
+    expect(bakedBunPath(launcherScript(bun))).toBe(bun);
+  });
+
+  test("a script without the line gives null", () => {
+    expect(bakedBunPath("#!/bin/sh\nexec bun cli.js\n")).toBeNull();
+  });
+});
 
 /** A fake plugin version whose dist/cli.js prints its name and its arguments as JSON. */
 function fakeVersion(cacheDir: string, version: string): string {
