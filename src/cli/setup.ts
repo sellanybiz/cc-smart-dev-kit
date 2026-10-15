@@ -43,9 +43,10 @@ import {
   removeInstructions,
   setInstructionsOptOut,
 } from "../setup/instructions";
-import { installLauncher } from "../setup/launcher";
+import { installLauncher, LAUNCHER_NAME } from "../setup/launcher";
 import { withLock } from "../setup/lock";
 import { applyManagedJson, formatKeyPath, type KeyPath } from "../setup/managed-json";
+import { atomicWrite } from "../setup/write";
 import { type CliPaths, tildify } from "./paths";
 
 /** The key that turns on auto-update for the anymodel marketplace. Claude Code's install leaves it out. */
@@ -74,6 +75,8 @@ export interface SetupOptions {
   instructions: boolean | null;
   /** The plugin's `instructions` folder, beside `dist/`. */
   instructionsSource: string;
+  /** `--statusline`: set the status line without asking. */
+  statusline: boolean;
 }
 
 function show(value: unknown): string {
@@ -90,6 +93,36 @@ function marketplaceKnown(settingsFile: string): boolean {
     const entry = settings.extraKnownMarketplaces?.[MARKETPLACE];
     return typeof entry === "object" && entry !== null;
   } catch {
+    return false;
+  }
+}
+
+/** Claude Code's status line setting, an owned key when setup sets it. */
+export const STATUSLINE_KEY: KeyPath = ["statusLine"];
+
+/** Says the person answered "no" to the status line: setup does not ask again. */
+export function statuslineDeclinedFile(stateDir: string): string {
+  return join(stateDir, "statusline-declined");
+}
+
+/** A path as one word for the shell that runs the status line command. */
+function shellWord(path: string): string {
+  return /^[\w./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`;
+}
+
+/** The status line setting: the launcher, so it follows plugin updates. */
+export function statuslineSetting(paths: CliPaths): Record<string, string> {
+  return { command: `${shellWord(join(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+}
+
+/** True when settings.json has a `statusLine` of any kind. */
+function hasStatusline(settingsFile: string): boolean {
+  if (!existsSync(settingsFile)) return false;
+  try {
+    const settings = JSON.parse(readFileSync(settingsFile, "utf8")) as Record<string, unknown>;
+    return Object.hasOwn(settings, "statusLine");
+  } catch {
+    // An unreadable file: setup's own pass reports it.
     return false;
   }
 }
@@ -115,6 +148,8 @@ interface Managed {
   autoMode: AutoModeSource | null;
   /** The instructions: where they go, and `SetupOptions.instructions`. */
   instructions: { where: InstructionsPaths; choice: boolean | null };
+  /** Set the status line (`--statusline`, or a "yes" to the question). */
+  statusline: boolean;
 }
 
 /** What setup prints: changes, then information, then notes (warnings and choices). */
@@ -149,7 +184,12 @@ function applySetup(
   const settings = applyManagedJson({
     file: paths.settingsFile,
     stateDir: paths.stateDir,
-    set: [[AUTO_UPDATE_KEY, true]],
+    set: managed.statusline
+      ? [
+          [AUTO_UPDATE_KEY, true],
+          [STATUSLINE_KEY, statuslineSetting(paths)],
+        ]
+      : [[AUTO_UPDATE_KEY, true]],
     dryRun,
   });
   for (const change of settings.changes) {
@@ -315,6 +355,29 @@ function askAutoMode(
 }
 
 /**
+ * The status line is offered, never taken: asked only in a terminal, only when none is
+ * set, and never again after a "no" (`statuslineDeclinedFile`); `--statusline` sets it
+ * without asking, a "no" before or not. One someone else set stays: with `--statusline`,
+ * setup then stops with ForeignKeyError in the read-only pass and writes nothing. Asked
+ * with setup's other questions, before anything runs. True when the answer was "no" (to
+ * remember); a "yes" sets `managed.statusline`.
+ */
+function askStatusline(paths: CliPaths, machine: Machine, managed: Managed): boolean {
+  if (
+    managed.statusline ||
+    machine.confirm === null ||
+    hasStatusline(paths.settingsFile) ||
+    existsSync(statuslineDeclinedFile(paths.stateDir))
+  ) {
+    return false;
+  }
+  managed.statusline = machine.confirm(
+    "Show anymodel's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?",
+  );
+  return !managed.statusline;
+}
+
+/**
  * The claude-mem keys this run writes, once the backend answered. Null: none. A dry run
  * reaches no network: it says which backend a real run would check.
  */
@@ -450,6 +513,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       where: instructionsPaths(paths, options.instructionsSource),
       choice: options.instructions,
     },
+    statusline: options.statusline,
   };
 
   // A read-only pass: a key the user set (autoUpdate: false) throws ForeignKeyError here,
@@ -478,6 +542,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   // Every question before anything runs. A "no" to one leaves the others as answered;
   // only what depends on it goes (Warp's plugin and shortcuts go with Warp's commands).
   if (autoMode !== null) managed.autoMode = askAutoMode(paths, options, autoMode, report.notes);
+  const declined = askStatusline(paths, machine, managed);
   let warpYes = true;
   if (warp.commands.length > 0) {
     const what = options.removeWarp
@@ -524,6 +589,8 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       const shortcuts =
         warp.removeShortcuts && warpDone ? removeWarpDesktopEntries(paths, false) : [];
       const files = applySetup(paths, managed, false);
+      // anymodel's own state, like the lock: not a user file, so no backup.
+      if (declined) atomicWrite(statuslineDeclinedFile(paths.stateDir), "no\n", 0o600);
       return { changes: [...shortcuts, ...files.changes], info: files.info, notes: files.notes };
     },
     { waitMs: 10_000 },

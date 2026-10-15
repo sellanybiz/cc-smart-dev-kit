@@ -90,8 +90,15 @@ An optional local router between Claude Code and the model providers
   `.claude/rules/gateway.md`.
 - Every 4xx / 5xx from any target is logged with the start of its reason, keys masked,
   so a failure can be read in the journal.
-- Auto mode's safety check stays on Claude unless the person turns on the opt-in judge
-  slot.
+- Auto mode's safety check is judged by Claude whenever Claude can answer it. The opt-in
+  judge slot is a fallback only, for when Claude cannot (the plan's usage limit, no valid
+  login), and a target must pass a test check before it is set; the router uses only a
+  target whose test proof is in the config. Otherwise Claude Code asks the person.
+- Opus and Fable stay byte for byte on Anthropic. An opt-in model slot answers from a
+  fallback only at the plan's usage limit, its answers without thinking blocks (Opus
+  refuses one it cannot verify; the owner's yes for this case); the router writes what it
+  saw to a small state file that the status line and the StopFailure alert read. The
+  alert's worker runs through the launcher, never from the plugin's version folder.
 - A config `aliases` map lets a machine's old model names reach the new slots while it
   moves. The plugin ships none; a project's migration writes them.
 - `gateway on` / `off` change Claude Code's settings only as owned keys through

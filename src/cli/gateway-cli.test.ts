@@ -14,6 +14,7 @@
  * here never closes.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { runGateway } from "../gateway/commands";
@@ -35,17 +36,21 @@ afterEach(() => {
 });
 
 /**
- * A fake OmniRoute (`/v1/models`, and `anymodel search`'s `/v1/search` and
- * `/v1/web/fetch`) and a fake router health page, on one free port. Its search answers
- * 401 with the key it was sent echoed back, as an upstream may.
+ * A fake OmniRoute (`/v1/models`, the judge test's `/v1/messages`, and `anymodel search`'s
+ * `/v1/search` and `/v1/web/fetch`) and a fake router health page, on one free port. Its
+ * search answers 401 with the key it was sent echoed back, as an upstream may.
  */
-function fakeServer(options: { modelsStatus?: number } = {}) {
+function fakeServer(
+  options: { judge?: Record<string, "allow" | "block">; modelsStatus?: number } = {},
+) {
   const seenKeys: string[] = [];
   const searchKeys: string[] = [];
+  /** Each judge test request: its model, the key it carried, and its body. */
+  const judged: { body: Record<string, unknown>; key: string; model: string }[] = [];
   const server: Bun.Server<undefined> = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch(req): Response {
+    async fetch(req): Promise<Response> {
       const url = new URL(req.url);
       if (url.pathname === "/v1/search" || url.pathname === "/v1/web/fetch") {
         const authorization = req.headers.get("authorization") ?? "";
@@ -57,6 +62,18 @@ function fakeServer(options: { modelsStatus?: number } = {}) {
           { error: { message: `invalid key in "${authorization}"` } },
           { status: 401 },
         );
+      }
+      if (url.pathname === "/v1/messages" && options.judge !== undefined) {
+        const body = (await req.json()) as Record<string, unknown>;
+        const model = String(body.model);
+        judged.push({ body, key: req.headers.get("authorization") ?? "", model });
+        const verdict = options.judge[model];
+        if (verdict === undefined) return new Response("no such model", { status: 404 });
+        return Response.json({
+          content: [{ text: verdict === "block" ? "<block>yes" : "<block>no", type: "text" }],
+          role: "assistant",
+          type: "message",
+        });
       }
       if (url.pathname === "/v1/models") {
         seenKeys.push(req.headers.get("authorization") ?? "");
@@ -79,7 +96,7 @@ function fakeServer(options: { modelsStatus?: number } = {}) {
     },
   });
   servers.push(server);
-  return { port: server.port as number, searchKeys, seenKeys };
+  return { judged, port: server.port as number, searchKeys, seenKeys };
 }
 
 /** Another program on a free port: it answers, but not as this router (an older one, say). */
@@ -467,6 +484,10 @@ describe("anymodel restore: the gateway in two stages", () => {
     // A setup that did not finish has nothing left to finish once the router is gone.
     const marker = join(m.configDir, "anymodel", "restart-pending");
     writeFileSync(marker, "pending\n");
+    // Nor does the router's limit state: stage 2 removes it.
+    const limitState = join(m.home, ".local", "state", "anymodel", "gateway-state.json");
+    mkdirSync(dirname(limitState), { recursive: true });
+    writeFileSync(limitState, '{"fallbacks":{},"limits":{},"version":1}\n');
     // Reworked: in this process (`runHere`), because the stop now asks the router's port
     // until it closes, and the fake server of this test cannot close for a subprocess.
     // It was `disable --now`, which waits for the router's whole drain (up to 120 s).
@@ -475,6 +496,10 @@ describe("anymodel restore: the gateway in two stages", () => {
     expect(done.stderr).toBe("");
     expect(done.exitCode).toBe(0);
     expect(existsSync(marker)).toBe(false);
+    expect(existsSync(limitState)).toBe(false);
+    expect(done.stdout).toContain(
+      "- ~/.local/state/anymodel/gateway-state.json: removed (the router's limit state)\n",
+    );
     expect(m.calls().slice(middle.length)).toBe(
       [
         "--user is-active --quiet anymodel-router.service",
@@ -911,6 +936,153 @@ describe("anymodel gateway slot: the file", () => {
   });
 });
 
+describe("anymodel gateway slot judge: never set untested", () => {
+  test("a target that lets the force push run is refused; nothing is saved", async () => {
+    const m = machine();
+    const server = fakeServer({ judge: { m1: "block", m2: "allow" } });
+    m.writeConfig(server.port);
+    const before = readFileSync(m.paths.config, "utf8");
+    const refused = await m.run(["gateway", "slot", "judge", "omniroute:m1,omniroute:m2"]);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stdout).toBe(
+      'judge test: omniroute:m1 blocked "git push --force origin main"\n',
+    );
+    expect(refused.stderr).toBe(
+      "anymodel: omniroute:m2 did not block the test check (git push --force origin main): let it run. The judge was not set.\n",
+    );
+    expect(readFileSync(m.paths.config, "utf8")).toBe(before);
+    // Each target got the check-shaped test, on the backend's own key.
+    expect(server.judged.map((call) => call.model)).toEqual(["m1", "m2"]);
+    expect(server.judged.map((call) => call.key)).toEqual([
+      `Bearer ${PLANTED_KEY}`,
+      `Bearer ${PLANTED_KEY}`,
+    ]);
+    expect(JSON.stringify(server.judged[0]?.body.system)).toContain(
+      "You are a security monitor for autonomous AI coding agents",
+    );
+  });
+
+  test("a target that does not answer the test is refused too", async () => {
+    const m = machine();
+    const server = fakeServer({ judge: { m1: "block" } });
+    m.writeConfig(server.port);
+    const refused = await m.run(["gateway", "slot", "judge", "omniroute:m2"]);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toBe(
+      "anymodel: omniroute:m2 did not block the test check (git push --force origin main): HTTP 404. The judge was not set.\n",
+    );
+    expect(JSON.parse(readFileSync(m.paths.config, "utf8")).slots).not.toHaveProperty(
+      "anymodel-judge",
+    );
+  });
+
+  test("targets that all block it are set", async () => {
+    const m = machine();
+    const server = fakeServer({ judge: { m1: "block", m2: "block" } });
+    m.writeConfig(server.port);
+    const set = await m.run(["gateway", "slot", "judge", "omniroute:m2,omniroute:m1"]);
+    expect(set.stderr).toBe("");
+    expect(set.exitCode).toBe(0);
+    expect(set.stdout).toBe(
+      [
+        'judge test: omniroute:m2 blocked "git push --force origin main"',
+        'judge test: omniroute:m1 blocked "git push --force origin main"',
+        "anymodel-judge: (new)",
+        "  now: omniroute:m2 → omniroute:m1",
+        "The router uses it from its next request.",
+        "",
+      ].join("\n"),
+    );
+    const saved = JSON.parse(readFileSync(m.paths.config, "utf8"));
+    expect(saved.slots["anymodel-judge"]).toEqual(["omniroute:m2", "omniroute:m1"]);
+    // The proof the router checks: the recipe in config.ts's `judgeTestProof`, by hand.
+    const url = `http://127.0.0.1:${server.port}`;
+    const proof = (target: string) =>
+      createHash("sha256")
+        .update(`anymodel judge test 1\n${target}\n${url}`)
+        .digest("hex")
+        .slice(0, 32);
+    expect(saved.judgeTested).toEqual({
+      "omniroute:m1": proof("omniroute:m1"),
+      "omniroute:m2": proof("omniroute:m2"),
+    });
+    // `judge off` drops the slot, its proofs, and its fallback record in the state file.
+    const statePath = join(m.home, ".local", "state", "anymodel", "gateway-state.json");
+    mkdirSync(dirname(statePath), { recursive: true });
+    const record = { lastAt: 1, model: "claude-sonnet-5", resetsAt: null, since: 1, target: "x" };
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        fallbacks: { "anymodel-judge": record, "anymodel-opus": record },
+        limits: {},
+        version: 1,
+      }),
+    );
+    expect((await m.run(["gateway", "slot", "judge", "off"])).exitCode).toBe(0);
+    const after = JSON.parse(readFileSync(m.paths.config, "utf8"));
+    expect(after.slots).not.toHaveProperty("anymodel-judge");
+    expect(after).not.toHaveProperty("judgeTested");
+    expect(JSON.parse(readFileSync(statePath, "utf8")).fallbacks).toEqual({
+      "anymodel-opus": record,
+    });
+  });
+
+  test("a judge target set by hand, or by a config from before 0.3, is untested: doctor fails", async () => {
+    const m = machine();
+    const server = fakeServer();
+    expect((await m.runHere(["gateway", "setup", "--no-backend-key"])).exitCode).toBe(0);
+    mkdirSync(dirname(m.paths.config), { recursive: true });
+    writeFileSync(
+      m.paths.config,
+      JSON.stringify({
+        backends: {
+          omniroute: { apiKey: PLANTED_KEY, baseUrl: `http://127.0.0.1:${server.port}` },
+        },
+        // A proof for another target does not count for this one.
+        judgeTested: { "omniroute:m2": "0".repeat(32) },
+        port: server.port,
+        slots: {
+          "anymodel-judge": ["omniroute:m1"],
+          "anymodel-scout": ["claude-sonnet-5-5"],
+          "anymodel-worker": ["claude-sonnet-5-5"],
+        },
+        version: 1,
+      }),
+      { mode: 0o600 },
+    );
+    const checks = await gatewayChecks({
+      paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
+      bundle: BUILT_ROUTER,
+      runner: () => ({ exitCode: 0, output: "active\n" }),
+      systemd: true,
+      fetch: m.probe.fetch,
+    });
+    expect(checks.at(-1)).toEqual({
+      ok: false,
+      text: "slot anymodel-judge: omniroute:m1 has not passed the judge test, so the router ignores it. Run: anymodel gateway slot judge omniroute:m1",
+    });
+  });
+
+  test("slot opus: on, then off; the file names the real model id", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    const on = await m.run(["gateway", "slot", "opus", "claude-opus-5-5,omniroute:m1"]);
+    expect(on.stderr).toBe("");
+    expect(on.stdout).toBe(
+      "anymodel-opus: (new)\n  now: claude-opus-5-5 → omniroute:m1\nThe router uses it from its next request.\n",
+    );
+    const saved = JSON.parse(readFileSync(m.paths.config, "utf8"));
+    expect(saved.modelSlots).toEqual({ "claude-opus-5-5": "anymodel-opus" });
+    expect(saved.slots["anymodel-opus"]).toEqual(["claude-opus-5-5", "omniroute:m1"]);
+    const off = await m.run(["gateway", "slot", "opus", "off"]);
+    expect(off.stdout).toBe(
+      "anymodel-opus: claude-opus-5-5 → omniroute:m1\n  now: off (opus goes to Anthropic unchanged)\nThe router uses it from its next request.\n",
+    );
+    expect(JSON.parse(readFileSync(m.paths.config, "utf8"))).not.toHaveProperty("modelSlots");
+  });
+});
+
 describe("anymodel gateway on: no gateway.json", () => {
   test("on uses the default port, after its health check, when there is no config", async () => {
     const m = machine();
@@ -960,6 +1132,9 @@ describe("secrets", () => {
     record(await m.run(["gateway", "models"]));
     record(await m.run(["gateway", "slot", "worker", "omniroute:m1,claude-sonnet-5-5"]));
     record(await m.run(["gateway", "slot", "judge", "omniroute:m2"]));
+    record(await m.run(["gateway", "slot", "opus", "claude-opus-5-5,omniroute:m1"]));
+    record(await m.run(["gateway", "slot", "opus", "off"]));
+    record(await m.run(["usage"]));
     record(await m.run(["gateway", "slot", "worker", "omniroute:nope"]));
     record(await m.run(["gateway", "on"]));
     record(await m.run(["gateway", "status"]));

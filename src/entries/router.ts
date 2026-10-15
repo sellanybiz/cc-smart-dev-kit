@@ -13,7 +13,8 @@ import { startRouter } from "../gateway/router";
 // brings it up; a Bun elsewhere needs `gateway setup`, which writes its path in the unit.
 const tooOld = bunTooOld(Bun.version, process.execPath);
 if (tooOld === null) {
-  startRouter(cliPaths().gatewayConfigFile);
+  const paths = cliPaths();
+  startRouter(paths.gatewayConfigFile, paths.gatewayStateFile);
 } else {
   console.error(`anymodel-router: ${tooOld} Upgrade this Bun, then run: ${COMMAND} gateway setup`);
   process.exitCode = 1;

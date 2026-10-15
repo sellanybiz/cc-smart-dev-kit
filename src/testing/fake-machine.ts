@@ -16,7 +16,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { runSetup, type SetupOptions } from "../cli/setup";
+import { runSetup, type SetupOptions, statuslineDeclinedFile } from "../cli/setup";
 import type { Machine } from "../machine/machine";
 import { tempDir } from "./temp";
 
@@ -77,6 +77,11 @@ export interface WorldOptions {
   marketplaces?: string[];
   /** The real git on the fake PATH (for a real project). Default: no git. */
   git?: boolean;
+  /**
+   * Setup's status-line question was answered "no" before, so a terminal is not asked it
+   * again. Default: true, so a test about other questions sees only those; false asks it.
+   */
+  statuslineAnswered?: boolean;
 }
 
 export function world(options: WorldOptions = {}) {
@@ -155,6 +160,10 @@ export function world(options: WorldOptions = {}) {
     if (realGit === null) throw new Error("this test needs git");
     symlinkSync(realGit, join(bin, "git"));
   }
+  if (options.statuslineAnswered !== false) {
+    mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 });
+    writeFileSync(statuslineDeclinedFile(paths.stateDir), "no\n", { mode: 0o600 });
+  }
   const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: home };
   const questions: string[] = [];
   const answer = options.answer === undefined ? true : options.answer;
@@ -200,6 +209,7 @@ export function world(options: WorldOptions = {}) {
       machine,
       instructions: null,
       instructionsSource: PLUGIN_INSTRUCTIONS,
+      statusline: false,
       ...extra,
     });
   /** Every call but the read-only questions about what is installed. */

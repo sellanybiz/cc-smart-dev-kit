@@ -6,11 +6,15 @@ import { runDoctor } from "../cli/doctor";
 import { cliPaths } from "../cli/paths";
 import { runRestore } from "../cli/restore";
 import { runSetup } from "../cli/setup";
+import { runStatusline } from "../cli/statusline";
+import { runUsage } from "../cli/usage";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
+import { ALERT_WORKER_COMMAND, parseAlert, runAlert, spawnRunner } from "../hooks/stop-failure";
 import { realMachine } from "../machine/machine";
 import { runSearch } from "../search/command";
+import { LAUNCHER_NAME } from "../setup/launcher";
 
 const HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
 
@@ -18,7 +22,7 @@ Usage: anymodel <command> [options]
 
 Commands:
   setup [--dry-run] [--yes] [--project <dir>] [--warp | --remove-warp]
-        [--no-instructions | --instructions]
+        [--no-instructions | --instructions] [--statusline]
                      Install the launcher in ~/.local/bin, turn on plugin auto-update,
                      install the plugin's instructions for Claude (a copy in
                      ~/.claude/anymodel/instructions/, imported by a block in
@@ -35,6 +39,8 @@ Commands:
                      --no-instructions takes the instructions out and keeps them out: a
                      later plain setup leaves them out too. --instructions brings them
                      back. restore forgets the choice.
+                     --statusline also sets Claude Code's status line to
+                     "anymodel statusline" (asked when run in a terminal).
                      --dry-run prints what would change, and writes, runs and checks
                      nothing.
   doctor             Check the install, and the anymodel files the current project's
@@ -58,6 +64,14 @@ Commands:
                      each result's title, URL and a short snippet. --fetch: one page's
                      text. The query or URL goes to that provider on the internet. Needs
                      the gateway set up.
+  statusline         One line for Claude Code's status bar: plan usage (a warning from
+                     85 %), and any fallback the gateway is using. Reads the JSON
+                     Claude Code passes on stdin.
+  usage [--hours <n>] [--project <folder or name>]
+                     Which models answered on this machine, per session: the main
+                     session's replies and its subagents' apart (how each subagent was
+                     launched, and the share on Opus), from Claude Code's transcripts
+                     (default: the last 6 hours). Read only; no message text.
   version            Print the version.
   --help             Print this help.
 
@@ -129,6 +143,7 @@ async function main(argv: string[]): Promise<number> {
         "--remove-warp",
         "--no-instructions",
         "--instructions",
+        "--statusline",
       ];
       let project = process.cwd();
       const unknown: string[] = [];
@@ -173,7 +188,32 @@ async function main(argv: string[]): Promise<number> {
         machine: realMachine(process.env, ask),
         instructions: off ? false : on ? true : null,
         instructionsSource: instructionsFolder(),
+        statusline: rest.includes("--statusline"),
       });
+    }
+    case "statusline":
+      // Claude Code pipes its JSON in; run by hand in a terminal, there is none to wait for.
+      return runStatusline(
+        paths,
+        () => (process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text()),
+        Date.now(),
+      );
+    case "usage":
+      return runUsage(paths, rest, Date.now());
+    case ALERT_WORKER_COMMAND: {
+      // Not in --help: the StopFailure hook starts it, detached, through the launcher, so the
+      // half hour it may wait for a click runs from the installed version, not the hook's
+      // version folder (src/entries/stop-failure.ts).
+      const alert = rest.length === 1 ? parseAlert(rest[0] ?? "") : null;
+      if (alert === null) {
+        console.error(`Usage: anymodel ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
+        return 2;
+      }
+      const launcher = join(paths.binDir, LAUNCHER_NAME);
+      if (runAlert(alert, process.platform, launcher, spawnRunner) === "no notifier") {
+        console.error(`anymodel: ${alert.title}. ${alert.body}`);
+      }
+      return 0;
     }
     case "doctor":
       return runDoctor(

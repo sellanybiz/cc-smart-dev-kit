@@ -145,4 +145,28 @@ describe("every question comes first", () => {
     expect(readJson(w.paths.settingsFile).autoMode).toEqual({ environment: ["$defaults", RULE] });
     expect(printed).toContain("! Warp: these commands were not run (you said no).");
   });
+  test("the status-line question joins the same pass: auto mode, status line, Warp, all before anything runs", async () => {
+    const repo = project({ autoMode: [RULE] });
+    const order: string[] = [];
+    const w = world({
+      git: true,
+      statuslineAnswered: false,
+      answer: (question) => {
+        order.push(`asked: ${question}`);
+        return question !== "Run these commands now?";
+      },
+      bins: { gpg: 'echo "gpg ran" >&2; exit 1' },
+    });
+    expect(await w.setup({ project: repo, warp: true })).toBe(1);
+    expect(w.calls()).toBe("");
+    expect(order).toEqual([
+      `asked: ${QUESTION}`,
+      "asked: Show anymodel's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?",
+      "asked: Run these commands now?",
+    ]);
+    // The yes to the status line stands; the no to Warp takes only Warp out.
+    const settings = readJson(w.paths.settingsFile);
+    expect(settings.statusLine.command).toEndWith("/.local/bin/anymodel statusline");
+    expect(settings.autoMode).toEqual({ environment: ["$defaults", RULE] });
+  });
 });

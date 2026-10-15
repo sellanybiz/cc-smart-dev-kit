@@ -58,14 +58,17 @@ After that, use `anymodel setup` to set up again (for example after an update).
 
 | Command | What it does |
 |---|---|
-| `anymodel setup` | Installs the launcher, turns on plugin auto-update, and installs the [instructions](#instructions-skills-and-agents): a copy in `~/.claude/anymodel/instructions/`, imported by an anymodel block in `~/.claude/CLAUDE.md` (your own text there is kept); each run refreshes the copy, so run it after a plugin update. Adds a missing [companion](#companion-plugins) marketplace (or plugin). Points [claude-mem at the gateway's cheap model](#claude-mem-on-the-gateway) when both are set up. Copies the project's [auto-mode entries](#the-auto-mode-block) into your settings, after it shows them and asks. It never touches [Warp](#warp) or its plugin without `--warp`. Every question comes before anything runs or is written. `--dry-run` shows the changes, and writes, runs and checks nothing at all (it reaches no network). A settings key you set yourself (for example `autoUpdate: false`, also after setup had set it) stops setup before it writes or runs anything. Without `claude` on your PATH, setup skips only the `claude plugin …` steps, names them, does the rest, and exits with 1. |
+| `anymodel setup` | Installs the launcher, turns on plugin auto-update, and installs the [instructions](#instructions-skills-and-agents): a copy in `~/.claude/anymodel/instructions/`, imported by an anymodel block in `~/.claude/CLAUDE.md` (your own text there is kept); each run refreshes the copy, so run it after a plugin update. Adds a missing [companion](#companion-plugins) marketplace (or plugin). Points [claude-mem at the gateway's cheap model](#claude-mem-on-the-gateway) when both are set up. Copies the project's [auto-mode entries](#the-auto-mode-block) into your settings, after it shows them and asks. It never touches [Warp](#warp) or its plugin without `--warp`. Every question comes before anything runs or is written. `--dry-run` shows the changes, and writes, runs and checks nothing at all (it reaches no network). A settings key you set yourself (for example `autoUpdate: false`, also after setup had set it) stops setup before it writes or runs anything. Without `claude` on your PATH, setup skips only the `claude plugin …` steps, names them, does the rest, and exits with 1. Run in a terminal with no status line set, setup also offers [anymodel's status line](#the-usage-limit-the-alert-the-status-line-and-usage) (once: it remembers a "no"). |
 | `anymodel setup --no-instructions` | Takes the instructions' block and copy out and **keeps them out**: setup stores the choice (`~/.claude/anymodel/no-instructions`), so a later plain `anymodel setup` leaves them out too. `--instructions` clears that choice and installs them again. `restore` clears it as well. |
 | `anymodel setup --yes` | On a terminal: the same, and writes the auto-mode entries without asking (they are still shown). With no terminal, they are left out, also with `--yes`. |
 | `anymodel setup --project <dir>` | Reads the auto-mode entries from the project in `<dir>`, not from the folder you are in. |
 | `anymodel setup --warp` | Also installs the Warp terminal, then its Claude plugin. The commands are shown first and asked; `sudo` asks for your password. |
 | `anymodel setup --remove-warp` | Removes the Warp terminal, its package source and key, your Warp shortcuts and its Claude plugin. Shown and asked first. |
+| `anymodel setup --statusline` | Also sets Claude Code's status line to `anymodel statusline`, as a key anymodel owns, without asking (also after an earlier "no"). It never replaces a status line you set: one you set yourself, also after setup had set it, stops setup before it writes anything, and `restore` leaves it. |
+| `anymodel statusline` | The status line itself: plan usage, a warning from 85 %, and any gateway fallback in use. Reads the JSON Claude Code passes on stdin. |
+| `anymodel usage [--hours <n>] [--project <folder or name>]` | Which models answered on this machine, per session, from Claude Code's transcripts: the main session's replies by model, and apart, its subagents (how each was launched, the model of each reply, the share on Opus). Default: the last 6 hours. Read only; no message text. |
 | `anymodel doctor` | Checks the install, and the anymodel files the current project's `CLAUDE.md` imports (the list is below). Prints ✓ or ✗ for each check, `·` for information and `!` for a warning (neither is a failure), and exits with 1 when a check fails. |
-| `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy and unit. `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
+| `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its unit and its limit state (`~/.local/state/anymodel/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
 | `anymodel gateway <command>` | The optional AI gateway (below). |
 | `anymodel search "<query>" [--max <n>] [--json]`<br>`anymodel search --fetch <url> [--json]` | Searches the web through the gateway's OmniRoute backend (Ollama's web search among its providers), or reads one page's text with `--fetch`. Prints each result's title, its URL and a short snippet. `--max` asks for 1 to 50 results. The query, or the URL, goes to that search or fetch provider on the internet; `--fetch` refuses a local or private address. Needs the gateway set up (below). |
 | `anymodel version` | Prints the version. |
@@ -122,7 +125,8 @@ After that, use `anymodel setup` to set up again (for example after an update).
   run: anymodel gateway setup";
 - the gateway, when it is installed (the router copy or its unit is there): the router
   service is active, the router copy is this plugin version's, the router answers on its
-  port, each backend answers; and, as information, each slot's first target. Without
+  port, each backend answers, every judge target passed the judge test; and, as
+  information, each slot's first target. Without
   `gateway.json` (set up with `--no-backend-key`), a `·` line says every slot answers on
   Claude. When it was never set up, doctor says "gateway: not set up (optional)" as
   information (`·`), not as a failure; with only `gateway.json` left (restore keeps it),
@@ -150,7 +154,9 @@ real Claude on your own login. No prompt text is ever changed. Linux only for no
 | `anymodel gateway setup [--yes] [--backend-key-stdin <backend> \| --no-backend-key]` | Makes `~/.config/anymodel/gateway.json` (mode 600; the key on stdin, never argv), copies the router to `~/.local/share/anymodel/router.js`, writes the systemd user unit `anymodel-router`, starts it, and waits up to 5 s for it to answer. First of all it asks the router's port: when another program holds it (an older router, say), it stops and writes nothing. When the router runs and the copy or unit changed, it says a restart cuts the answers in flight and asks; `--yes` skips the question. A setup that stopped half way is finished by the next one. It never touches Claude Code's settings. |
 | `anymodel gateway status` | Router health, each backend, the slots, and whether Claude Code points at the gateway. Keys are masked. |
 | `anymodel gateway models` | Every model each backend offers, and the slots. |
-| `anymodel gateway slot <scout\|worker\|judge> <target>[,<target>…]` | Sets a slot's targets, checked against the backend's model list. Live, no restart. `slot judge off` puts auto mode's safety check back on Claude. |
+| `anymodel gateway slot <scout\|worker> <target>[,<target>…]` | Sets a slot's targets, checked against the backend's model list. Live, no restart. |
+| `anymodel gateway slot opus claude-opus-5-5,<target>[,…]` | A fallback for Opus (and `slot fable claude-fable-5-1,…` for Fable): Opus still goes to Anthropic unchanged, and only when Anthropic answers with your plan's usage limit does the next target answer, until Opus answers again. Never on a short rate limit or a server error. `slot opus off` turns it off. |
+| `anymodel gateway slot judge <target>[,<target>…]` | A fallback judge for auto mode's safety check, used **only when Claude cannot answer it** (the plan's usage limit, or no valid Claude login). Each target must first block a test check (a force push to `main`), or it is not set. `slot judge off` turns it off. |
 | `anymodel gateway on` | Points Claude Code at the router: sets its env keys in your `settings.json` as keys anymodel owns. A gateway key someone else set stops it; nothing is overwritten. Every running session switches on save. |
 | `anymodel gateway off` | Removes exactly the keys `on` set. Restart the sessions afterwards. |
 | `anymodel gateway serve` | Runs the router in the terminal. |
@@ -174,11 +180,14 @@ real Claude on your own login. No prompt text is ever changed. Linux only for no
    `anymodel gateway setup --no-backend-key` (every slot answers on Claude).
 3. `anymodel gateway status`, then `anymodel gateway on`.
 
-The judge slot, which moves auto mode's safety check to a cheaper model, is **off by
-default**. Turn it on only when you accept the trade-off: a cheaper judge can block good
-work, and a weak one can let a risky command through. "Off by default" relies on the
-router recognising the check by its prompt. If Claude Code rewords that prompt, the check
-is routed by its model name until the router is updated (see
+Auto mode's safety check is judged by Claude whenever Claude can answer it. The judge
+slot is **off by default**, and even when it is set it is only a fallback: it answers a
+check only when Claude cannot (your plan's usage limit, or no valid Claude login). With no
+judge set, Claude Code then asks you. A cheaper judge can block good work, and a weak one
+can let a risky command through, so `slot judge` first tests each target on one obvious
+case and refuses a target that lets it run. "Claude first" relies on the router
+recognising the check by its prompt. If Claude Code rewords that prompt, the check is
+routed by its model name until the router is updated (see
 [docs/gateway.md](docs/gateway.md) § Known limits; [roadmap](docs/roadmap.md) Phase 3).
 
 ### Web search
@@ -193,6 +202,21 @@ OmniRoute caches a query for five minutes. Your OmniRoute key goes only to OmniR
 the query (or the URL) goes on to the search or fetch provider on the internet, so never
 put a key, a private host name or private data in it. The details, the measured numbers
 and the limits: [docs/search.md](docs/search.md).
+
+### The usage limit: the alert, the status line, and `usage`
+
+- **The alert.** When a turn stops at your plan's usage limit, the plugin's StopFailure
+  hook shows a desktop notification about your session's model (only once the gateway is
+  set up). On Linux it offers "Use <target> until it resets", which runs the `slot opus`
+  command above (the model, then Sonnet when only the Opus window ran out, then the worker
+  slot's cheap targets), and "Wait"; after "Use", send a message in Claude Code to go on.
+  On macOS it names the command. A short rate limit gets no alert: Claude Code retries it.
+- **The status line.** `anymodel setup --statusline` sets Claude Code's status line to
+  `anymodel statusline`. It shows your 5-hour and 7-day plan usage, warns from 85 %, and
+  shows any fallback in use.
+- **`anymodel usage`** reads Claude Code's own transcripts and shows, per session, the
+  main session's replies by model and, apart, its subagents: how each was launched, which
+  model wrote each reply, and the share on Opus.
 
 ## Instructions, skills and agents
 

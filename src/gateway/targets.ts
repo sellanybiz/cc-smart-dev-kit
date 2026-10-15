@@ -46,7 +46,7 @@ const BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 /** The prefix of every slot key. */
 export const SLOT_PREFIX = "anymodel-";
 
-/** A slot key: `anymodel-` and a short lower-case name. */
+/** A slot key: `anymodel-` and a short lower-case name. (A model slot: `MODEL_SLOTS`.) */
 const SLOT_KEY = /^anymodel-[a-z0-9][a-z0-9-]*$/;
 
 /**
@@ -184,7 +184,7 @@ export function resolveRoute(model: unknown, config: RouteConfig): Route {
  * `<severity>N` answers; and the `sonnet` alias (with the gateway on, `anymodel-worker`), no
  * thinking field, `<block>yes|no` answers. (docs/claude-code-contract.md)
  */
-const GUARD_PROMPT = "You are a security monitor for autonomous AI coding agents";
+export const GUARD_PROMPT = "You are a security monitor for autonomous AI coding agents";
 
 /**
  * Is this request auto mode's safety check? Its model name says nothing (a `claude-…` id,
@@ -246,14 +246,87 @@ export function resolveRequestRoute(
 }
 
 /**
- * The slot that judges auto mode's safety checks, opt-in and OFF by default: a new config
- * has no such slot, so every check goes to Anthropic untouched (`resolveRequestRoute`).
- * `gateway slot judge <target>[,<target>]` turns it on, for every session, Claude ones
- * too: auto mode then also works at the Claude limit. `gateway slot judge off` removes
- * it. The trade-off: a cheaper judge can block good work, a weak one can let a risky
- * command through, and it reads the conversation (docs/gateway.md).
+ * The fallback judge for auto mode's safety checks, opt-in and OFF by default: a new config
+ * has no such slot. Set or not, every check goes to Claude first (`resolveRequestRoute`);
+ * the judge answers only when Claude cannot: the plan's usage limit, a 401, or no login
+ * (the router's `judgeAsFallback`). So auto mode also works at the Claude limit.
+ * `gateway slot judge <target>[,<target>]` sets it after each target passes the judge test
+ * (`judge-test.ts`); `gateway slot judge off` removes it. The trade-off: a cheaper judge can
+ * block good work, a weak one can let a risky command through, and it reads the
+ * conversation (docs/gateway.md).
  */
 export const JUDGE_SLOT = "anymodel-judge";
+
+/**
+ * The model slots: a fallback for a Claude model Claude Code sends by its real id (the main
+ * session's Opus, a Fable agent). OFF by default: with no entry in the config's
+ * `modelSlots`, `claude-opus-5-5` goes to Anthropic byte for byte, as it always did.
+ * `gateway slot opus claude-opus-5-5,<target>…` turns one on. Its first target is the model
+ * itself, sent byte for byte; the router moves to the next target ONLY when Anthropic
+ * answers with the plan's usage limit (`planUsageLimit`), never on a short 429 or a 5xx.
+ * The value is the family the slot's first target must name, so a typo such as
+ * `slot opus claude-sonnet-5-5,…` is refused.
+ */
+export const MODEL_SLOTS: Readonly<Record<string, string>> = {
+  "anymodel-fable": "fable",
+  "anymodel-opus": "opus",
+};
+
+/** Is this slot key a model slot (`anymodel-opus`, `anymodel-fable`)? */
+export function isModelSlot(slot: string): boolean {
+  return Object.hasOwn(MODEL_SLOTS, slot);
+}
+
+/** The model slot for a model name, from the config's `modelSlots`; null when it has none. */
+export function modelSlotFor(
+  model: unknown,
+  modelSlots: Readonly<Record<string, string>> | undefined,
+): null | { model: string; slot: string } {
+  if (typeof model !== "string" || !model.startsWith("claude-") || modelSlots === undefined) {
+    return null;
+  }
+  const name = withoutContextSuffix(model);
+  if (!Object.hasOwn(modelSlots, name)) return null;
+  const slot = modelSlots[name];
+  return slot === undefined ? null : { model: name, slot };
+}
+
+/**
+ * A subscription plan's usage limit, as Anthropic answers it to a Claude login. Not a short
+ * rate limit: those carry no `anthropic-ratelimit-unified-status: rejected`.
+ *   - `claim`: which window ran out (`five_hour`, `seven_day`, `seven_day_opus`, …), from
+ *     `anthropic-ratelimit-unified-representative-claim`; null when absent or odd.
+ *   - `resetsAt`: when it resets, Unix seconds, from `anthropic-ratelimit-unified-reset`.
+ */
+export interface PlanLimit {
+  claim: null | string;
+  resetsAt: null | number;
+}
+
+/**
+ * Is this answer the plan's usage limit? Status 429, `anthropic-ratelimit-unified-status:
+ * rejected`, and no paid extra usage taking over (`…-overage-status` absent or `rejected`).
+ * Claude Code 2.1.300 reads the same three headers the same way: its own test limiter builds
+ * exactly this answer, and with it Claude Code shows "You've hit your limit · resets …" and
+ * does not retry (docs/claude-code-contract.md). A 429 without these headers is a short
+ * rate limit, which Claude Code retries itself: it is never a plan limit here.
+ */
+export function planUsageLimit(
+  status: number,
+  header: (name: string) => null | string,
+): null | PlanLimit {
+  if (status !== 429) return null;
+  const state = header("anthropic-ratelimit-unified-status")?.trim().toLowerCase();
+  if (state !== "rejected") return null;
+  const overage = header("anthropic-ratelimit-unified-overage-status")?.trim().toLowerCase();
+  if (overage !== undefined && overage !== "" && overage !== "rejected") return null;
+  const claim = header("anthropic-ratelimit-unified-representative-claim")?.trim() ?? "";
+  const reset = Number(header("anthropic-ratelimit-unified-reset")?.trim() ?? "");
+  return {
+    claim: /^[a-z0-9_]{1,40}$/.test(claim) ? claim : null,
+    resetsAt: Number.isInteger(reset) && reset > 0 ? reset : null,
+  };
+}
 
 /** Statuses that mean "this target cannot answer now: try the next one". */
 const FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);

@@ -20,6 +20,7 @@ import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
 import { anymodelImports, runDoctor } from "./doctor";
 import { cliPaths } from "./paths";
+import { type SetupOptions as RunSetupOptions, runSetup } from "./setup";
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 
@@ -223,6 +224,45 @@ function setup(options: SetupOptions = {}) {
 }
 
 const readJson = (file: string) => JSON.parse(readFileSync(file, "utf8"));
+
+/**
+ * For setup or doctor run in this process: a Linux with no package manager anymodel knows,
+ * no Warp app and no command on PATH, so nothing of the host this test runs on is read.
+ */
+function noHostMachine(home: string, confirm: Machine["confirm"]): Machine {
+  return {
+    run: () => ({ exitCode: 1, output: "" }),
+    runOnTerminal: () => 1,
+    which: () => null,
+    confirm,
+    platform: "linux",
+    arch: "x64",
+    osRelease: () => null,
+    macApp: join(home, "no-such-Warp.app"),
+    exists: () => false,
+    fetchText: () => Promise.reject(new Error("no network in this test")),
+  };
+}
+
+/** Plain `anymodel setup` in this process, in `home`, asking with `confirm`. */
+function setupOptions(
+  home: string,
+  confirm: Machine["confirm"],
+  extra: Partial<RunSetupOptions> = {},
+): RunSetupOptions {
+  return {
+    dryRun: false,
+    yes: false,
+    warp: false,
+    removeWarp: false,
+    project: home,
+    machine: noHostMachine(home, confirm),
+    instructions: null,
+    instructionsSource: PLUGIN_INSTRUCTIONS,
+    statusline: false,
+    ...extra,
+  };
+}
 
 /** What a first setup prints for the instructions: the plugin's real files, then the block. */
 const INSTRUCTIONS_CREATED = [
@@ -647,20 +687,8 @@ describe("anymodel doctor", () => {
       { mode: 0o600 },
     );
     const ran: string[][] = [];
-    // A Linux with no package manager anymodel knows and no Warp app: doctor's Warp check
-    // reads nothing of the host this test runs on.
-    const fakeMachine: Machine = {
-      run: () => ({ exitCode: 1, output: "" }),
-      runOnTerminal: () => 1,
-      which: () => null,
-      confirm: null,
-      platform: "linux",
-      arch: "x64",
-      osRelease: () => null,
-      macApp: join(home, "no-such-Warp.app"),
-      exists: () => false,
-      fetchText: () => Promise.reject(new Error("no network in this test")),
-    };
+    // doctor's Warp check reads nothing of the host this test runs on.
+    const fakeMachine = noHostMachine(home, null);
     const out: string[] = [];
     const log = spyOn(console, "log").mockImplementation((...parts: unknown[]) => {
       out.push(parts.join(" "));
@@ -1799,5 +1827,182 @@ describe("anymodel version and help", () => {
     const result = setup().run(["nope"]);
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain("Unknown command: nope");
+  });
+});
+
+describe("anymodel setup --statusline, statusline and usage", () => {
+  test("--statusline sets the status line as an owned key; restore removes it", () => {
+    const { settingsFile, run } = setup();
+    const result = run(["setup", "--statusline"]);
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(
+      '~ ~/.claude/settings.json: statusLine: (none) -> {"command":"',
+    );
+    const line = readJson(settingsFile).statusLine;
+    expect(line.type).toBe("command");
+    expect(line.command).toEndWith("/.local/bin/anymodel statusline");
+    expect(run(["restore", "--yes"]).exitCode).toBe(0);
+    expect(readJson(settingsFile)).not.toHaveProperty("statusLine");
+  });
+
+  test("in a terminal: asked only after the read-only pass; a no is remembered; --statusline still sets it", async () => {
+    const quiet = spyOn(console, "log").mockImplementation(() => undefined);
+    const loud = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const { home, configDir, stateDir, settingsFile } = setup();
+      const paths = cliPaths({ CLAUDE_CONFIG_DIR: configDir, HOME: home });
+      const asked: string[] = [];
+      const say = (answer: boolean) => (question: string) => {
+        asked.push(question);
+        return answer;
+      };
+      // A key someone else set stops setup before the question.
+      const settings = readJson(settingsFile);
+      writeFileSync(
+        settingsFile,
+        JSON.stringify({
+          ...settings,
+          extraKnownMarketplaces: {
+            anymodel: { ...settings.extraKnownMarketplaces.anymodel, autoUpdate: false },
+          },
+        }),
+      );
+      await expect(runSetup(paths, setupOptions(home, say(true)))).rejects.toThrow(
+        "set by someone else",
+      );
+      expect(asked).toEqual([]);
+      writeFileSync(settingsFile, JSON.stringify(settings));
+      // A "no": not set, and remembered.
+      expect(await runSetup(paths, setupOptions(home, say(false)))).toBe(0);
+      expect(asked).toHaveLength(1);
+      expect(readJson(settingsFile)).not.toHaveProperty("statusLine");
+      expect(readFileSync(join(stateDir, "statusline-declined"), "utf8")).toBe("no\n");
+      // Not asked again.
+      expect(await runSetup(paths, setupOptions(home, say(true)))).toBe(0);
+      expect(asked).toHaveLength(1);
+      expect(readJson(settingsFile)).not.toHaveProperty("statusLine");
+      // `--statusline` sets it all the same.
+      expect(await runSetup(paths, setupOptions(home, say(false), { statusline: true }))).toBe(0);
+      expect(asked).toHaveLength(1);
+      expect(readJson(settingsFile).statusLine.command).toEndWith(
+        "/.local/bin/anymodel statusline",
+      );
+    } finally {
+      quiet.mockRestore();
+      loud.mockRestore();
+    }
+  });
+
+  test("--statusline never replaces a status line someone else set", () => {
+    const { settingsFile, run } = setup();
+    const settings = readJson(settingsFile);
+    writeFileSync(
+      settingsFile,
+      JSON.stringify({ ...settings, statusLine: { command: "my-line", type: "command" } }),
+    );
+    const result = run(["setup", "--statusline"]);
+    expect(result.exitCode).toBe(1);
+    expect(readJson(settingsFile).statusLine).toEqual({ command: "my-line", type: "command" });
+    // Without the option and without a terminal, setup does not ask and leaves it alone.
+    expect(run(["setup"]).exitCode).toBe(0);
+    expect(readJson(settingsFile).statusLine).toEqual({ command: "my-line", type: "command" });
+  });
+
+  test("a status line setup set and the person changed since is theirs: setup keeps it, restore leaves it", () => {
+    const { settingsFile, run } = setup();
+    expect(run(["setup", "--statusline"]).exitCode).toBe(0);
+    const mine = { command: "my-line", type: "command" };
+    writeFileSync(settingsFile, JSON.stringify({ ...readJson(settingsFile), statusLine: mine }));
+    // Plain setup does not set the status line: the person's stays.
+    expect(run(["setup"]).exitCode).toBe(0);
+    expect(readJson(settingsFile).statusLine).toEqual(mine);
+    // --statusline stops at the changed key, before anything is written.
+    const again = run(["setup", "--statusline"]);
+    expect(again.exitCode).toBe(1);
+    expect(again.stderr).toContain("statusLine");
+    expect(readJson(settingsFile).statusLine).toEqual(mine);
+    // restore takes out only what still holds setup's value.
+    expect(run(["restore", "--yes"]).exitCode).toBe(0);
+    expect(readJson(settingsFile).statusLine).toEqual(mine);
+  });
+
+  test("statusline reads Claude Code's JSON on stdin and the router's state file", () => {
+    const { home, configDir } = setup();
+    const guard = subprocessGuard();
+    const now = Math.floor(Date.now() / 1000);
+    mkdirSync(join(home, ".local", "state", "anymodel"), { recursive: true });
+    writeFileSync(
+      join(home, ".local", "state", "anymodel", "gateway-state.json"),
+      JSON.stringify({
+        fallbacks: {
+          "anymodel-judge": {
+            lastAt: Date.now(),
+            model: "claude-sonnet-5",
+            resetsAt: null,
+            since: Date.now(),
+            target: "omniroute:m1",
+          },
+        },
+        limits: {},
+        version: 1,
+      }),
+    );
+    const result = Bun.spawnSync([process.execPath, ...guard.args, CLI, "statusline"], {
+      env: { CLAUDE_CONFIG_DIR: configDir, HOME: home, PATH: process.env.PATH ?? "", ...guard.env },
+      stdin: new Blob([
+        JSON.stringify({
+          model: { display_name: "Opus 5.5" },
+          rate_limits: { five_hour: { resets_at: now + 3600, used_percentage: 40 } },
+        }),
+      ]),
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe(
+      "Opus 5.5 · judge: fallback active (omniroute:m1) · 5h 40%\n",
+    );
+  });
+
+  test("usage reads the projects folder; a wrong option exits 2", () => {
+    const { configDir, run } = setup();
+    const folder = join(configDir, "projects", "-home-user-my-app", "session-1", "subagents");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "agent-a.meta.json"), JSON.stringify({ model: "sonnet" }));
+    writeFileSync(
+      join(folder, "agent-a.jsonl"),
+      `${JSON.stringify({
+        cwd: "/home/user/my-app",
+        message: {
+          content: [{ text: "secret words", type: "text" }],
+          id: "m1",
+          model: "glm-5.3-flash",
+        },
+        timestamp: new Date().toISOString(),
+        type: "assistant",
+      })}\n`,
+    );
+    const result = run(["usage", "--hours", "1"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      [
+        "Claude Code replies in the last 1 h, main sessions and subagents apart, from ~/.claude/projects (read only; no message text)",
+        "",
+        "/home/user/my-app  session session-",
+        "  main session, replies by model: none in the window",
+        "  1 subagents, launched as: sonnet 1",
+        "  subagent replies by model: glm-5.3-flash 1",
+        "  subagents on Opus: 0 of 1 replies (0%)",
+        "",
+        "Main sessions: 0 sessions; replies by model: none",
+        "Subagents: 1 in 1 session; replies by model: glm-5.3-flash 1; on Opus: 0 of 1 replies (0%)",
+        "",
+      ].join("\n"),
+    );
+    expect(result.stdout).not.toContain("secret words");
+    const wrong = run(["usage", "--days", "1"]);
+    expect(wrong.exitCode).toBe(2);
+    expect(wrong.stderr).toStartWith("Unknown option: --days");
   });
 });

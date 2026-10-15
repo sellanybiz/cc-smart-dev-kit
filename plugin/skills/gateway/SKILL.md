@@ -1,6 +1,6 @@
 ---
 name: gateway
-description: Use when the person wants cheaper models behind Claude Code's subagents, wants to switch the model behind a slot, or when the local AI gateway (anymodel-router), OmniRoute, Ollama Cloud or a cheap model misbehaves. Covers setting it up, switching a slot, listing reachable models, checking health, turning it on or off, the rule for auto mode's safety judge, changes to the session's own model path, and what never to do. Trigger phrases - "use GLM for subagents", "cheaper subagents", "switch back to Claude subagents", "which models can I use", "ai gateway", "anymodel-router", "the router is down", "subagents are failing".
+description: Use when the person wants cheaper models behind Claude Code's subagents, wants to switch the model behind a slot, hits the plan's usage limit, or when the local AI gateway (anymodel-router), OmniRoute, Ollama Cloud or a cheap model misbehaves. Covers setting it up, switching a slot, the Opus and Fable fallbacks at the usage limit, the fallback judge for auto mode, the status line, the usage report, checking health, turning it on or off, and what never to do. Trigger phrases - "use GLM for subagents", "cheaper subagents", "switch back to Claude subagents", "which models can I use", "ai gateway", "anymodel-router", "the router is down", "subagents are failing", "usage limit", "hit my limit", "use GLM until it resets", "how much is on Opus".
 ---
 
 # The AI Gateway
@@ -57,11 +57,48 @@ Before a new model goes in a slot: compare its context window in `gateway models
 provider's own page, check that it accepts images if subagents look at screenshots, and
 check its cached-input price (subagent tokens are mostly cached re-reads).
 
-## The judge for auto mode
+## The usage limit: Opus and Fable fallbacks ("use GLM until it resets")
+
+When the plan runs out, Claude Code stops: "You've hit your limit · resets …". It does not
+switch models by itself. A **model slot** lets a cheaper model carry on until the reset:
+
+- On: `anymodel gateway slot opus claude-opus-5-5,<backend>:<model>` (Fable:
+  `slot fable claude-fable-5-1,…`). Opus still goes to Anthropic unchanged; only when
+  Anthropic answers with the plan's usage limit does the next target answer. Never on a
+  short rate limit or a server error: Claude Code retries those itself.
+- It ends by itself: the router asks Opus again at most every 10 minutes and goes back
+  once it answers. Off for good: `anymodel gateway slot opus off`.
+- Only when the person asks. Say what leaves Claude: the whole Opus conversation goes to
+  that provider while the fallback is on.
+- The router removes the thinking blocks from the fallback's answers before Claude Code
+  stores them (Opus refuses a thinking block it cannot verify), and gives an answer that
+  held only thinking one short text block. If Opus still answers 400 "Invalid
+  `signature`" (an older conversation), the router log says so: `/rewind` to the message
+  before the fallback answered, or start a new session.
+- A long (`[1m]`, 200k+ tokens) or rich (images, documents, server tools) Opus
+  conversation may be more than the fallback takes. Its 400 gets a WARN in the router
+  log: `/compact`, a new session, or wait for the reset.
+
+**The alert.** With the gateway set up, a turn stopped at the limit shows a desktop
+notification about the session's own model. On Linux, "Use <target> until it resets" runs
+`anymodel gateway slot opus …`: the model, then Sonnet when only Opus's own window ran out
+(`seven_day_opus`), then the worker slot's cheap targets in order; then send a message in
+Claude Code to go on now. "Wait" does nothing. On macOS it names the command. A
+`gateway.json` that cannot be read still gives the alert, without the action.
+
+**The status line.** `anymodel setup --statusline` (asked once in a terminal when none is
+set; a "no" is remembered) shows the 5-hour and 7-day usage, warns from 85 %, and shows
+any fallback in use.
+
+**How much runs on Opus.** `anymodel usage [--hours <n>] [--project <folder or name>]`:
+per session, the main session's replies by model, and apart, its subagents: how they were
+launched, which model wrote each reply, and the share on Opus. Read only; no message text.
+
+## The judge for auto mode: a fallback only
 
 **Auto mode's safety checks (should this action run?) are judged by Claude whenever Claude
-can answer.** Only when Claude cannot — the plan limit is reached, or there is no Claude
-login — does a fallback judge that the person switched on judge them. That fallback must be
+can answer.** Only when Claude cannot — the plan limit is reached, or there is no valid
+Claude login — does a fallback judge that the person switched on judge them. That fallback must be
 the strongest model available, not the cheapest, and it may be set only after it blocked a
 test force push to the main branch. With no fallback judge set, Claude Code asks the person
 before each risky action.
@@ -69,12 +106,22 @@ before each risky action.
 Why: a cheap judge that judged every check wrongly blocked real work three times, and a
 weaker one let a force push through.
 
-So today: keep the judge slot **off** (`anymodel gateway slot judge off`, the default). A
-judge slot that is on takes **every** check, not only the ones Claude cannot answer — that is
-the setup this rule forbids. "Off" relies on the router recognising the check by its prompt:
-if Claude Code rewords that prompt, the check is routed by its model name until the router is
-updated (`docs/gateway.md` in the anymodel repository, § Known limits). "Auto mode blocks
-good work" or "its classifier is unavailable": `gateway slot judge off`.
+The judge slot is off by default, and even when set it answers a check only when Claude
+cannot. "Claude first" relies on the router recognising the check by its prompt (the plugin's
+`docs/gateway.md` § Known limits). Only when the person asks for it:
+
+- On: `anymodel gateway slot judge <target>[,<target>]`. Each target must first block a
+  test check (a force push to `main`); one that does not is refused, and nothing is saved.
+  There is no way to skip the test: pick another model. A judge target added by hand is
+  untested: the router ignores it, and `anymodel doctor` fails until `slot judge` tests it.
+- Off: `anymodel gateway slot judge off`.
+
+**Say the trade-off before you turn it on:** at the limit, a cheaper judge keeps auto mode
+going, but decides worse. It can block good work, and a weak one can let a risky command
+through; the test proves one obvious case only. Every judged check sends the conversation
+and the next action to that provider, and the log has a `WARN safety check judged by …`
+line for each. The judge slot takes no `claude-*` target. "Auto mode blocks good work at
+the limit": `gateway slot judge off`, and Claude Code asks the person instead.
 
 ## Check health
 
@@ -133,6 +180,8 @@ one the moment the port is free.
   `--append-system-prompt`.
 - **Put a backend key on the command line**, or print a key or password anywhere: names
   only.
-- **Turn the judge slot on**: it would judge every safety check (§ The judge for auto mode).
+- **Turn the judge or a model slot on** without the person's yes and the trade-off said.
+- **Send every safety check to a cheap model**, or look for a way around the judge test:
+  the judge is a fallback for when Claude cannot answer, and nothing else.
 - **Restart the router** (`gateway setup --yes`, `systemctl restart`) without telling the
   person that answers in flight are cut.
