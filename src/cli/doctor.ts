@@ -27,6 +27,8 @@ interface Check {
   ok: boolean;
   /** Information only: printed with `·`, never a failure. */
   info?: boolean;
+  /** Worth a look, not a failure: printed with `!`. */
+  warn?: boolean;
   text: string;
 }
 
@@ -395,8 +397,8 @@ export interface DoctorOptions {
 }
 
 /**
- * Prints one ✓ or ✗ line per check, and `·` for information (the gateway, when it was never
- * set up, is optional). Exit code 1 when any check fails.
+ * Prints one ✓ or ✗ line per check, `·` for information (the gateway, when it was never
+ * set up, is optional) and `!` for a warning. Exit code 1 when any check fails.
  */
 export async function runDoctor(
   paths: CliPaths,
@@ -419,7 +421,7 @@ export async function runDoctor(
     ...(live === null ? [] : runLiveCheck(paths, env, live)),
   ].filter((check): check is Check => check !== null);
   for (const check of checks) {
-    console.log(`${check.info ? "·" : check.ok ? "✓" : "✗"} ${check.text}`);
+    console.log(`${check.info ? "·" : check.warn ? "!" : check.ok ? "✓" : "✗"} ${check.text}`);
   }
   return checks.every((check) => check.ok) ? 0 : 1;
 }

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { COMMAND, VERSION } from "../build-info";
 import { runDoctor } from "../cli/doctor";
-import type { LiveRunner } from "../cli/live-check";
+import { type LiveRunner, liveHookCommand } from "../cli/live-check";
 import { cliPaths } from "../cli/paths";
 import { runRestore } from "../cli/restore";
 import { runSetup } from "../cli/setup";
@@ -145,7 +145,13 @@ async function main(argv: string[]): Promise<number> {
       return runDoctor(paths, process.env, {
         gateway: { bundle: routerBundle(), runner, systemd },
         project: { cwd: process.cwd(), pluginHooksFile: join(pluginDir(), "hooks", "hooks.json") },
-        live: rest.includes("--live") ? { pluginDir: pluginDir(), run: liveRunner } : null,
+        live: rest.includes("--live")
+          ? {
+              pluginDir: pluginDir(),
+              hookCommand: liveHookCommand(pluginDir(), process.execPath),
+              run: liveRunner,
+            }
+          : null,
       });
     }
     case "hook": {

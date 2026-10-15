@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   hookEnv,
@@ -10,12 +10,15 @@ import {
   writeClaudeFile,
   writeSessionRecord,
 } from "../testing/hooks";
-import { git, tempDir } from "../testing/temp";
+import { cleanGitEnv, git, tempDir, withSlowGit } from "../testing/temp";
+import { createLockFile } from "./create-lock";
 import { worktreeCreateHook } from "./specs";
 import {
+  addWorktree,
   badName,
   badPrefix,
   configuredFolder,
+  fetchedRecently,
   isSubagentName,
   readBaseRef,
   reuseDecision,
@@ -358,6 +361,121 @@ describe("a session's worktree", () => {
   });
 });
 
+describe("a `git worktree add` that hangs", () => {
+  test("gives up on a timeout, and says how to finish by hand", () => {
+    const repo = makeRepo();
+    const folder = join(tempDir("half-made"), "app-wt-slow");
+    const env = withSlowGit(cleanGitEnv(), ["worktree", "add"]);
+    expect(() =>
+      addWorktree(repo, ["worktree", "add", "--quiet", folder, "fix/slow"], env, folder, 300),
+    ).toThrow(
+      `\`git worktree add --quiet ${folder} fix/slow\` timed out after 0.3 s, so ${folder} may be half made. ` +
+        `Check that it holds nothing you need (and no work of another session), then finish: ` +
+        `git worktree remove --force ${folder}, and git worktree prune`,
+    );
+  });
+
+  test("a git that fails for another reason keeps its own message", () => {
+    const repo = makeRepo();
+    const folder = join(tempDir("no-branch"), "app-wt-missing");
+    expect(() =>
+      addWorktree(
+        repo,
+        ["worktree", "add", "--quiet", folder, "no/such-branch"],
+        cleanGitEnv(),
+        folder,
+        5_000,
+      ),
+    ).toThrow(/^`git worktree add --quiet .*` failed: /);
+  });
+});
+
+describe("the create lock: one creation of a branch at a time", () => {
+  /** A lock file as another live process would leave it (this test's process is alive). */
+  function hold(commonDir: string, branch: string, pid = process.pid): string {
+    const file = createLockFile(commonDir, branch);
+    writeFileSync(
+      file,
+      JSON.stringify({
+        pid,
+        startTime: null,
+        session: "another-session",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        token: "theirs",
+      }),
+    );
+    return file;
+  }
+
+  test("a live holder refuses the create, naming its process and the file", async () => {
+    const repo = makeRepo();
+    optIn(repo);
+    const file = hold(join(repo, ".git"), "fix/busy");
+    const result = await create(repo, "fix/busy");
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toStartWith("worktree not created: another anymodel process (pid ");
+    expect(result.stderr).toContain("is making the worktree for this branch right now.");
+    expect(result.stderr).toContain(`if that process is gone, remove ${file}`);
+    expect(existsSync(join(dirname(repo), "app-wt-fix-busy"))).toBe(false);
+    rmSync(file);
+  });
+
+  test("a lock whose process is gone is taken over, and the create runs", async () => {
+    const { repo } = makeClone();
+    optIn(repo);
+    // A pid no process has (from high down, the first that is not alive).
+    let dead = 0;
+    for (let pid = 999_999; pid > 100_000 && dead === 0; pid--) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        dead = pid;
+      }
+    }
+    expect(dead).toBeGreaterThan(0);
+    const file = hold(join(repo, ".git"), "fix/gone", dead);
+    const result = await create(repo, "fix/gone");
+    expect(result).toEqual({ stdout: join(dirname(repo), "app-wt-fix-gone") });
+    // Released once the create is done.
+    expect(existsSync(file)).toBe(false);
+  });
+
+  test("the lock is released when the create fails too", async () => {
+    const { repo } = makeClone();
+    optIn(repo);
+    git(repo, "remote", "set-url", "origin", join(tempDir("gone"), "missing.git"));
+    const file = createLockFile(join(repo, ".git"), "fix/new");
+    expect((await create(repo, "fix/new")).exitCode).toBe(1); // the fetch fails: refused
+    expect(existsSync(file)).toBe(false);
+  });
+});
+
+describe("the freshness of a fetch", () => {
+  test("a fetch made in a linked worktree counts: it has its own FETCH_HEAD", () => {
+    const { repo } = makeClone();
+    const commonDir = join(repo, ".git");
+    const worktree = join(tempDir("linked"), "app-wt-a");
+    git(repo, "worktree", "add", "-q", "-b", "fix/a", worktree);
+    const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    const commonHead = join(commonDir, "FETCH_HEAD");
+    if (existsSync(commonHead)) utimesSync(commonHead, old, old);
+    expect(fetchedRecently(commonDir)).toBe(false);
+    git(worktree, "fetch", "--quiet", "origin", "main");
+    expect(existsSync(join(commonDir, "worktrees", "app-wt-a", "FETCH_HEAD"))).toBe(true);
+    expect(fetchedRecently(commonDir)).toBe(true);
+  });
+
+  test("a fetch that is a day old, or none at all: not fresh", () => {
+    const { repo } = makeClone();
+    const commonDir = join(repo, ".git");
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    const commonHead = join(commonDir, "FETCH_HEAD");
+    if (existsSync(commonHead)) utimesSync(commonHead, old, old);
+    expect(fetchedRecently(commonDir)).toBe(false);
+    expect(fetchedRecently(join(tempDir("no-git-dir"), ".git"))).toBe(false);
+  });
+});
+
 describe("the frame", () => {
   test("no anymodel.json: exit 1 with the reason, no worktree of any shape", async () => {
     const repo = makeRepo();
@@ -384,7 +502,7 @@ describe("the frame", () => {
     expect(existsSync(join(repo, ".claude", "worktrees"))).toBe(false);
   });
 
-  test("no defer check: another WorktreeCreate in the project's or the user's settings does not silence it", async () => {
+  test("another WorktreeCreate in the project's or the user's settings does not silence it", async () => {
     const repo = makeRepo();
     optIn(repo);
     wireProjectHook(repo, "WorktreeCreate");

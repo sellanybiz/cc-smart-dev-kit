@@ -15,7 +15,7 @@ const HINT =
 
 function check(repo: string, env = hookEnv(), hooksFile = PLUGIN_HOOKS) {
   return projectChecks(repo, env, cliPaths(env), hooksFile).map(
-    (line) => `${line.info ? "·" : line.ok ? "✓" : "✗"} ${line.text}`,
+    (line) => `${line.info ? "·" : line.warn ? "!" : line.ok ? "✓" : "✗"} ${line.text}`,
   );
 }
 
@@ -112,38 +112,95 @@ describe("the worktree engine's wiring", () => {
   });
 });
 
-describe("the plugin hooks a project hook silences (the defer check)", () => {
-  test("one · line for each, naming the plugin hook, the event and tools, the project's command", () => {
+describe("the project's own copies of plugin hooks (ownHooks)", () => {
+  const OTHERS = {
+    PreToolUse: [
+      { matcher: "Bash", hooks: [{ type: "command", command: "./guard.sh" }] },
+      { matcher: "Read", hooks: [{ type: "command", command: "./reads.sh" }] },
+    ],
+    SessionStart: [{ matcher: "startup", hooks: [{ type: "command", command: "./hello.sh" }] }],
+    UserPromptSubmit: [{ hooks: [{ type: "command", command: "bun", args: ["p.ts"] }] }],
+  };
+  const both = (plugin: string, command: string, on: string) =>
+    `! project: the plugin's ${plugin} and the project's ${command} (.claude/settings.json) both run on ${on}, so both may answer. If that is the project's own copy of ${plugin}, list "${plugin}" in ownHooks in .claude/anymodel.json until the copy is removed`;
+
+  test("a project hook next to a plugin hook it does not list: one ! warning each, not a failure", () => {
     const repo = makeRepo();
-    wireOnly(repo, [], {
-      PreToolUse: [
-        { matcher: "Bash", hooks: [{ type: "command", command: "./guard.sh" }] },
-        { matcher: "Read", hooks: [{ type: "command", command: "./reads.sh" }] },
-      ],
-      SessionStart: [{ matcher: "startup", hooks: [{ type: "command", command: "./hello.sh" }] }],
-      UserPromptSubmit: [{ hooks: [{ type: "command", command: "bun", args: ["p.ts"] }] }],
-    });
+    writeClaudeFile(repo, "anymodel.json", { sessionNames: true });
+    wireOnly(repo, [], OTHERS);
     expect(check(repo)).toEqual([
-      "· project: the plugin's git-guard is off here for PreToolUse (Bash): ./guard.sh (.claude/settings.json) runs on the same event",
-      "· project: the plugin's worktree-leftovers is off here for SessionStart (startup): ./hello.sh (.claude/settings.json) runs on the same event",
-      "· project: the plugin's session-name is off here for SessionStart (startup): ./hello.sh (.claude/settings.json) runs on the same event",
-      "· project: the plugin's session-name is off here for UserPromptSubmit: bun p.ts (.claude/settings.json) runs on the same event",
+      both("git-guard", "./guard.sh", "PreToolUse (Bash)"),
+      both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),
+      both("session-name", "./hello.sh", "SessionStart (startup)"),
+      both("session-name", "bun p.ts", "UserPromptSubmit"),
+    ]);
+    const env = hookEnv();
+    expect(projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS).every((l) => l.ok)).toBe(true);
+  });
+
+  test("a listed hook: one · line, and no warning for its copy", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "anymodel.json", { ownHooks: ["git-guard", "session-name"] });
+    wireOnly(repo, [], OTHERS);
+    expect(check(repo)).toEqual([
+      "· project: the plugin's git-guard is off here: .claude/anymodel.json lists it in ownHooks, so the project's own copy answers alone",
+      "· project: the plugin's session-name is off here: .claude/anymodel.json lists it in ownHooks, so the project's own copy answers alone",
+      both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),
     ]);
   });
 
-  test("a project hook for every tool silences each plugin hook on that event, for all its tools", () => {
+  test("a listed hook with no project hook left on its event: ! nothing answers in its place", () => {
     const repo = makeRepo();
+    writeClaudeFile(repo, "anymodel.json", { ownHooks: ["main-folder-guard"] });
+    expect(check(repo)).toEqual([
+      "! project: .claude/anymodel.json lists main-folder-guard in ownHooks, so the plugin's main-folder-guard is off here, but the project's settings wire no hook on PreToolUse (Edit, Write, NotebookEdit): nothing answers in its place. Take \"main-folder-guard\" out of ownHooks once the project's copy is gone",
+    ]);
+  });
+
+  test("a project hook for every tool runs next to each plugin hook on that event, for all its tools", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "anymodel.json", { sessionNames: true });
     wireOnly(repo, [], {
       PostToolUse: [{ matcher: "*", hooks: [{ type: "command", command: "./log.sh" }] }],
     });
     expect(check(repo)).toEqual([
-      "· project: the plugin's after-merge is off here for PostToolUse (Bash, PowerShell): ./log.sh (.claude/settings.json) runs on the same event",
+      both("after-merge", "./log.sh", "PostToolUse (Bash, PowerShell)"),
     ]);
   });
 
+  test("no anymodel.json: the plugin hooks are silent, so nothing can answer twice", () => {
+    const repo = makeRepo();
+    wireOnly(repo, [], OTHERS);
+    expect(check(repo)).toEqual([]);
+  });
+
+  test("the settings of $CLAUDE_PROJECT_DIR, when set, not the checkout's", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "anymodel.json", { sessionNames: true });
+    wireOnly(repo, [], OTHERS);
+    const started = tempDir("project-dir");
+    writeClaudeFile(started, "settings.json", {
+      hooks: {
+        PostToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "./log.sh" }] }],
+      },
+    });
+    const env = { ...hookEnv(), CLAUDE_PROJECT_DIR: started };
+    expect(check(repo, env)).toEqual([both("after-merge", "./log.sh", "PostToolUse (Bash)")]);
+  });
+
+  test("an unknown name in ownHooks: ✗ naming the field", () => {
+    const repo = makeRepo();
+    const file = writeClaudeFile(repo, "anymodel.json", { ownHooks: ["git-gaurd"] });
+    const lines = check(repo);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toStartWith(`✗ project: Invalid ${file}: ownHooks.0: `);
+  });
+
   test("the plugin's hooks.json cannot be read: ✗", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "anymodel.json", { sessionNames: true });
     const missing = join(tempDir("plugin"), "hooks.json");
-    const lines = check(makeRepo(), hookEnv(), missing);
+    const lines = check(repo, hookEnv(), missing);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toStartWith(`✗ cannot read the plugin's hooks (${missing}): `);
   });

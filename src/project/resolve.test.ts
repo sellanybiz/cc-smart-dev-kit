@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { VERSION } from "../build-info";
 import { git, tempDir } from "../testing/temp";
 import { AnymodelConfigError, AnymodelVersionError } from "./config";
-import { locateCheckout, resolveProject } from "./resolve";
+import { locateCheckout, ownHooksOf, resolveProject } from "./resolve";
 
 /** A repo with one commit, so `git worktree add` works. */
 function makeRepo(): string {
@@ -76,6 +76,7 @@ describe("resolveProject", () => {
         sessionNames: true,
         instructions: true,
         autoMode: ["In my-app: never touch production."],
+        ownHooks: ["git-guard", "after-merge"],
       }),
     );
     expect(resolveProject(repo, { pluginVersion: "1.3.0" })?.config).toEqual({
@@ -90,6 +91,7 @@ describe("resolveProject", () => {
       sessionNames: true,
       instructions: true,
       autoMode: ["In my-app: never touch production."],
+      ownHooks: ["git-guard", "after-merge"],
     });
   });
 
@@ -97,6 +99,9 @@ describe("resolveProject", () => {
     [{ protectedBranches: [] }, "protectedBranches:"],
     [{ protectedBranches: [""] }, "protectedBranches.0:"],
     [{ sessionNames: "yes" }, "sessionNames:"],
+    [{ ownHooks: ["git-gaurd"] }, "ownHooks.0:"],
+    [{ ownHooks: ["worktree-create"] }, "ownHooks.0:"],
+    [{ ownHooks: "git-guard" }, "ownHooks:"],
     [
       { worktrees: { base: "dev", prefix: "x-", guardMainFolder: 1 } },
       "worktrees.guardMainFolder:",
@@ -197,6 +202,32 @@ describe("resolveProject", () => {
       mainCheckout: repo,
     });
     expect(locateCheckout(tempDir("nogit"))).toBeNull();
+  });
+
+  test("ownHooksOf reads only ownHooks, from the file loadProjectConfig reads", () => {
+    const repo = makeRepo();
+    const checkout = () => {
+      const found = locateCheckout(repo);
+      if (found === null) throw new Error("no checkout");
+      return found;
+    };
+    expect(ownHooksOf(checkout())).toEqual([]);
+    // Too new and with a field this plugin does not know: the list is still read.
+    writeAnymodelJson(
+      repo,
+      JSON.stringify({ requires: ">=99", future: 1, ownHooks: ["git-guard", 5] }),
+    );
+    expect(ownHooksOf(checkout())).toEqual(["git-guard"]);
+    writeAnymodelJson(repo, "{ not json");
+    expect(ownHooksOf(checkout())).toEqual([]);
+    writeAnymodelJson(repo, JSON.stringify({ ownHooks: ["message-guard"] }));
+    const worktree = join(repo, "..", "wt-own-hooks");
+    git(repo, "worktree", "add", "-q", "-b", "own-hooks", worktree);
+    const inWorktree = locateCheckout(worktree);
+    if (inWorktree === null) throw new Error("no checkout");
+    expect(ownHooksOf(inWorktree)).toEqual(["message-guard"]);
+    writeAnymodelJson(worktree, JSON.stringify({ sessionNames: true }));
+    expect(ownHooksOf(inWorktree)).toEqual([]);
   });
 
   test("a missing folder throws instead of guessing", () => {

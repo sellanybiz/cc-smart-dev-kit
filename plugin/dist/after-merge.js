@@ -5155,6 +5155,14 @@ function satisfiesRange(version, range) {
 }
 
 // src/project/config.ts
+var PLUGIN_HOOK_NAMES = [
+  "git-guard",
+  "main-folder-guard",
+  "message-guard",
+  "after-merge",
+  "worktree-leftovers",
+  "session-name"
+];
 var anymodelConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
@@ -5166,7 +5174,8 @@ var anymodelConfigSchema = strictObject({
   protectedBranches: array(string2().min(1)).min(1).optional(),
   sessionNames: boolean2().optional(),
   instructions: boolean2().optional(),
-  autoMode: array(string2().min(1)).optional()
+  autoMode: array(string2().min(1)).optional(),
+  ownHooks: array(_enum(PLUGIN_HOOK_NAMES)).optional()
 });
 
 class AnymodelConfigError extends Error {
@@ -5192,6 +5201,19 @@ function checkRequires(file, raw, pluginVersion) {
     return;
   if (!satisfiesRange(pluginVersion, requires)) {
     throw new AnymodelVersionError(`${file}: this project needs anymodel ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
+  }
+}
+function readOwnHooks(file) {
+  if (!existsSync(file))
+    return null;
+  try {
+    const raw = JSON.parse(readFileSync(file, "utf8"));
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+      return [];
+    const listed = raw.ownHooks;
+    return Array.isArray(listed) ? listed.filter((name) => typeof name === "string") : [];
+  } catch {
+    return [];
   }
 }
 function loadAnymodelConfig(file, pluginVersion = VERSION) {
@@ -5235,9 +5257,17 @@ function gitEnv(base) {
   }
   return env;
 }
+var RESOLVE_GIT_TIMEOUT_MS = 5000;
 function gitIn(cwd, env) {
   return (args) => {
-    const result = Bun.spawnSync(["git", ...args], { cwd, env, stdout: "pipe", stderr: "pipe" });
+    const result = Bun.spawnSync(["git", ...args], {
+      cwd,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: RESOLVE_GIT_TIMEOUT_MS
+    });
     return {
       ok: result.exitCode === 0,
       stdout: result.stdout.toString(),
@@ -5303,6 +5333,15 @@ function locateCheckout(cwd, options = {}) {
   const mainCheckout = isWorktree ? findMainCheckout(git, cwd) : root;
   return { root, commonDir, isWorktree, mainCheckout };
 }
+function ownHooksOf(checkout) {
+  const { root, mainCheckout } = checkout;
+  const own = readOwnHooks(join2(root, ".claude", "anymodel.json"));
+  if (own !== null)
+    return own;
+  if (mainCheckout === null || mainCheckout === root)
+    return [];
+  return readOwnHooks(join2(mainCheckout, ".claude", "anymodel.json")) ?? [];
+}
 function loadProjectConfig(checkout, pluginVersion) {
   const { root, mainCheckout } = checkout;
   let config = loadAnymodelConfig(join2(root, ".claude", "anymodel.json"), pluginVersion);
@@ -5310,77 +5349,6 @@ function loadProjectConfig(checkout, pluginVersion) {
     config = loadAnymodelConfig(join2(mainCheckout, ".claude", "anymodel.json"), pluginVersion);
   }
   return { ...checkout, config };
-}
-
-// src/hooks/defer.ts
-import { existsSync as existsSync3, readFileSync as readFileSync2 } from "fs";
-import { join as join3 } from "path";
-function matcherSelects(matcher, subject) {
-  if (matcher === undefined || matcher === null || matcher === "" || matcher === "*")
-    return true;
-  if (typeof matcher !== "string")
-    return false;
-  if (subject === null)
-    return true;
-  if (/^[A-Za-z0-9_\- ,|]*$/.test(matcher)) {
-    return matcher.split(/[|,]/).map((part) => part.trim()).includes(subject);
-  }
-  try {
-    return new RegExp(matcher).test(subject);
-  } catch {
-    return false;
-  }
-}
-function hooksOf(file) {
-  if (!existsSync3(file))
-    return null;
-  try {
-    const parsed = JSON.parse(readFileSync2(file, "utf8"));
-    if (typeof parsed !== "object" || parsed === null)
-      return null;
-    const hooks = parsed.hooks;
-    return typeof hooks === "object" && hooks !== null && !Array.isArray(hooks) ? hooks : null;
-  } catch {
-    return null;
-  }
-}
-function describeHandler(handler) {
-  if (typeof handler !== "object" || handler === null)
-    return "(a hook)";
-  const { type, command, args } = handler;
-  if (typeof command !== "string")
-    return typeof type === "string" ? `(a ${type} hook)` : "(a hook)";
-  const rest = Array.isArray(args) ? args.filter((arg) => typeof arg === "string") : [];
-  return [command, ...rest].join(" ");
-}
-function wiredHandlers(file, event, subject) {
-  const groups = hooksOf(file)?.[event];
-  if (!Array.isArray(groups))
-    return [];
-  return groups.flatMap((group) => {
-    if (typeof group !== "object" || group === null)
-      return [];
-    const { matcher, hooks } = group;
-    if (!Array.isArray(hooks) || !matcherSelects(matcher, subject))
-      return [];
-    return hooks.map((handler) => ({ file, command: describeHandler(handler) }));
-  });
-}
-function fileWiresHook(file, event, subject) {
-  return wiredHandlers(file, event, subject).length > 0;
-}
-function deferSources(checkout) {
-  const roots = [checkout.root];
-  if (checkout.mainCheckout !== null && checkout.mainCheckout !== checkout.root) {
-    roots.push(checkout.mainCheckout);
-  }
-  return roots.flatMap((root) => [
-    join3(root, ".claude", "settings.json"),
-    join3(root, ".claude", "settings.local.json")
-  ]);
-}
-function ownHookIn(files, event, subject) {
-  return files.find((file) => fileWiresHook(file, event, subject)) ?? null;
 }
 
 // src/hooks/io.ts
@@ -5410,16 +5378,6 @@ function addContext(event, text) {
 
 // src/hooks/run.ts
 var HOOK_LOG_ENV = "ANYMODEL_HOOK_LOG";
-function deferSubject(input, event) {
-  if (["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest"].includes(event)) {
-    return stringField(input.tool_name);
-  }
-  if (event === "SessionStart")
-    return stringField(input.source);
-  if (event === "SubagentStop" || event === "SubagentStart")
-    return stringField(input.agent_type);
-  return null;
-}
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -5447,9 +5405,8 @@ async function handleHook(spec, text, env) {
     }
     if (checkout === null)
       return outside(input, event, `${cwd} is not in a git checkout`);
-    if (spec.wiring === "plugin" && ownHookIn(deferSources(checkout), event, deferSubject(input, event)) !== null) {
+    if (spec.wiring === "plugin" && ownHooksOf(checkout).includes(spec.name))
       return SILENT;
-    }
     let project;
     try {
       project = loadProjectConfig(checkout);
@@ -5476,12 +5433,14 @@ function logRun(spec, text, result, env) {
     return;
   try {
     const input = parseHookInput(text);
+    const facts = input === null ? {} : spec.logFacts?.(input) ?? {};
     appendFileSync(file, `${JSON.stringify({
       hook: spec.name,
       event: stringField(input?.hook_event_name),
       cwd: stringField(input?.cwd),
       exitCode: result.exitCode ?? 0,
-      stdout: (result.stdout ?? "").slice(0, 2000)
+      stdout: (result.stdout ?? "").slice(0, 2000),
+      ...Object.keys(facts).length === 0 ? {} : { facts }
     })}
 `);
   } catch {}
@@ -5500,12 +5459,12 @@ async function runHookEntry(spec) {
 
 // src/hooks/after-merge.ts
 import { createHash } from "crypto";
-import { existsSync as existsSync4, mkdirSync, writeFileSync } from "fs";
+import { existsSync as existsSync3, mkdirSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join as join4 } from "path";
 
 // src/hooks/git.ts
-import { resolve } from "path";
+import { basename, dirname, join as join3, resolve } from "path";
 
 // src/setup/marketplace-access.ts
 var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
@@ -5556,8 +5515,8 @@ function parseWorktreeList(porcelain) {
   }
   return worktrees;
 }
-function listWorktrees(cwd, env) {
-  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env);
+function listWorktrees(cwd, env, timeoutMs = 15000) {
+  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env, timeoutMs);
   if (!listed.ok)
     throw new Error(`git worktree list failed: ${listed.err}`);
   return parseWorktreeList(listed.out);
@@ -5581,13 +5540,20 @@ var HERE_DOC = /<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([^\s"'<>;&|()]+))/y;
 var HERE_STRING = /@(["'])\r?\n[\s\S]*?\r?\n\1@/y;
 function lex(text, { blind, join }) {
   const segments = [];
+  const piped = [];
   const owed = [];
   let open = false;
   let at = 0;
+  let afterPipe = false;
+  const push = (piece, from) => {
+    segments.push(piece);
+    piped.push(from);
+  };
   function skipBodies() {
-    for (const { stripTabs, word } of owed.splice(0)) {
+    for (const { stripTabs, script, word } of owed.splice(0)) {
       let line = at;
       let closedAt = -1;
+      let bodyEnd = -1;
       while (line < text.length) {
         const end = text.indexOf(`
 `, line);
@@ -5595,11 +5561,18 @@ function lex(text, { blind, join }) {
         const content = text.slice(line, stop).replace(/\r$/, "");
         if ((stripTabs ? content.replace(/^\t+/, "") : content) === word) {
           closedAt = Math.min(stop + 1, text.length);
+          bodyEnd = line;
           break;
         }
         line = stop + 1;
       }
       if (closedAt !== -1) {
+        if (script) {
+          const body = lex(text.slice(at, bodyEnd), { blind, join });
+          for (let i = 0;i < body.segments.length; i++) {
+            push(body.segments[i] ?? "", body.piped[i] ?? null);
+          }
+        }
         at = closedAt;
       } else if (!blind) {
         open = true;
@@ -5662,6 +5635,7 @@ function lex(text, { blind, join }) {
     }
     open = true;
     segments.length = mark;
+    piped.length = mark;
     return raw;
   }
   function read(nested) {
@@ -5720,7 +5694,7 @@ function lex(text, { blind, join }) {
         const opener = HERE_DOC.exec(text);
         const word = opener?.[2] ?? opener?.[3] ?? opener?.[4];
         if (opener !== null && word !== undefined) {
-          owed.push({ stripTabs: opener[1] === "-", word });
+          owed.push({ stripTabs: opener[1] === "-", script: readsStdinShell(current), word });
           take(opener[0]);
           at = HERE_DOC.lastIndex;
         } else {
@@ -5739,8 +5713,10 @@ function lex(text, { blind, join }) {
         }
       }
       if (SEPARATORS.has(char)) {
+        const wasPiped = afterPipe;
+        push(current, wasPiped ? segments[segments.length - 1] ?? null : null);
+        afterPipe = char === "|";
         if (nested && char === ")" && depth === 0) {
-          segments.push(current);
           at++;
           return { raw: `${raw})` };
         }
@@ -5748,7 +5724,6 @@ function lex(text, { blind, join }) {
           depth++;
         if (nested && char === ")")
           depth--;
-        segments.push(current);
         current = "";
         raw += char;
         at++;
@@ -5760,20 +5735,97 @@ function lex(text, { blind, join }) {
       take(char);
       at++;
     }
-    segments.push(current);
+    push(current, afterPipe ? segments[segments.length - 1] ?? null : null);
     return { raw };
   }
   read(false);
-  return { open, segments };
+  return { open, piped, segments };
 }
-function shellSegments(command, { blindWhenOpen = false, joinLines = false } = {}) {
+function shellSteps(command, { blindWhenOpen = false, joinLines = false } = {}) {
   const read = lex(command, { blind: false, join: joinLines });
-  if (read.open && blindWhenOpen)
-    return lex(command, { blind: true, join: joinLines }).segments;
-  return read.segments;
+  const chosen = read.open && blindWhenOpen ? lex(command, { blind: true, join: joinLines }) : read;
+  return chosen.segments.map((text, index) => ({ text, pipedFrom: chosen.piped[index] ?? null }));
 }
-var WRAPPERS = new Set(["builtin", "command", "env", "exec", "nohup", "sudo", "time"]);
+var KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
 var ASSIGNMENT = /^[A-Za-z_]\w*=/;
+var DURATION = (word) => /^\d+(?:\.\d+)?[smhd]?$/.test(word);
+var WRAPPERS = {
+  builtin: { long: [], short: "" },
+  command: { inert: ["-v", "-V"], long: [], short: "" },
+  env: { long: ["--unset", "--chdir", "--split-string"], short: "uCS" },
+  exec: { long: [], short: "a" },
+  ionice: { long: ["--class", "--classdata", "--pid", "--pgid"], short: "cnpPu" },
+  nice: { long: ["--adjustment"], short: "n" },
+  nohup: { long: [], short: "" },
+  stdbuf: { long: ["--input", "--output", "--error"], short: "ioe" },
+  sudo: {
+    long: [
+      "--user",
+      "--group",
+      "--host",
+      "--prompt",
+      "--close-from",
+      "--chdir",
+      "--chroot",
+      "--command-timeout",
+      "--other-user"
+    ],
+    short: "ughpCDRTU"
+  },
+  time: { long: [], short: "" },
+  timeout: { long: ["--signal", "--kill-after"], short: "sk", skip: DURATION },
+  xargs: {
+    long: [
+      "--arg-file",
+      "--delimiter",
+      "--eof",
+      "--max-args",
+      "--max-chars",
+      "--max-lines",
+      "--max-procs",
+      "--replace",
+      "--process-slot-var"
+    ],
+    short: "adEILnPs"
+  }
+};
+var SHELLS = new Set(["bash", "dash", "sh", "zsh"]);
+var REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|>&|&>)(.*)$/;
+function programName(word) {
+  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
+}
+function shortFlags(arg, valued) {
+  let flags = "";
+  for (let i = 1;i < arg.length; i++) {
+    const letter = arg.charAt(i);
+    flags += letter;
+    if (valued.includes(letter))
+      return { flags, wantsNext: i === arg.length - 1 };
+  }
+  return { flags, wantsNext: false };
+}
+function isShort(arg) {
+  return /^-[^-]/.test(arg);
+}
+function afterWrapper(words, from, spec) {
+  let index = from;
+  while (index < words.length) {
+    const word = words[index] ?? "";
+    if (word === "--")
+      return index + 1;
+    if (!isShort(word) && !word.startsWith("--"))
+      break;
+    const name = word.split("=")[0] ?? word;
+    if (spec.inert?.some((inert) => inert === name || inert === word) === true)
+      return;
+    if (word.startsWith("--")) {
+      index += spec.long.includes(name) && !word.includes("=") ? 2 : 1;
+      continue;
+    }
+    index += shortFlags(word, spec.short).wantsNext ? 2 : 1;
+  }
+  return spec.skip?.(words[index] ?? "") === true ? index + 1 : index;
+}
 function wordsOf(segment) {
   const words = segment.match(/(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s"'])+/g) ?? [];
   return words.map((word) => word.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'/g, (_, double, single) => double === undefined ? String(single) : double.replace(/\\(["\\$`])/g, "$1")));
@@ -5782,20 +5834,83 @@ function invocationOf(words) {
   let index = 0;
   while (index < words.length) {
     const word = words[index] ?? "";
-    if (!ASSIGNMENT.test(word) && !WRAPPERS.has(word))
+    if (ASSIGNMENT.test(word) || KEYWORDS.has(word)) {
+      index++;
+      continue;
+    }
+    const spec = WRAPPERS[programName(word)];
+    if (spec === undefined)
       break;
-    index++;
+    const after = afterWrapper(words, index + 1, spec);
+    if (after === undefined)
+      return;
+    index = after;
   }
   const first = words[index];
   if (first === undefined)
     return;
-  const program = (first.split(/[\\/]/).pop() ?? first).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
-  return { args: words.slice(index + 1), program };
+  return { args: words.slice(index + 1), program: programName(first) };
 }
-function nestedCommand(program, args) {
-  if (["bash", "dash", "sh", "zsh"].includes(program)) {
-    const at = args.findIndex((arg) => /^-[a-z]*c$/.test(arg));
-    return at === -1 ? undefined : args[at + 1];
+function shellTakesStdin(args) {
+  let stdin = false;
+  let scriptFile = false;
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    const redirection = REDIRECTION.exec(arg);
+    if (redirection !== null) {
+      if ((redirection[2] ?? "") === "")
+        index++;
+      if ((redirection[1] ?? "").startsWith("<<"))
+        stdin = true;
+      continue;
+    }
+    if (arg === "-") {
+      stdin = true;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      if (arg === "--init-file" || arg === "--rcfile")
+        index++;
+      continue;
+    }
+    if (isShort(arg) || arg.startsWith("+")) {
+      const letters = arg.replace(/^[-+]+/, "");
+      if (letters.includes("c"))
+        return false;
+      if (letters.includes("s"))
+        stdin = true;
+      if (letters === "o")
+        index++;
+      continue;
+    }
+    scriptFile = true;
+  }
+  return stdin || !scriptFile;
+}
+function readsStdinShell(segment) {
+  const invocation = invocationOf(wordsOf(segment));
+  return invocation !== undefined && SHELLS.has(invocation.program) && shellTakesStdin(invocation.args);
+}
+function writtenText(segment) {
+  const invocation = invocationOf(wordsOf(segment));
+  if (invocation === undefined || invocation.args.length === 0)
+    return null;
+  const text = invocation.args.join(" ");
+  return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
+}
+function nestedCommand(program, args, pipedFrom = null) {
+  if (SHELLS.has(program)) {
+    const at = args.findIndex((arg) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(arg));
+    if (at !== -1)
+      return args[at + 1];
+    if (!shellTakesStdin(args))
+      return;
+    const here = args.findIndex((arg) => arg === "<<<" || arg.startsWith("<<<"));
+    if (here !== -1) {
+      const word = args[here] ?? "";
+      return word.length > 3 ? word.slice(3) : args.slice(here + 1).join(" ");
+    }
+    return pipedFrom === null ? undefined : writtenText(pipedFrom) ?? undefined;
   }
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
@@ -5814,14 +5929,14 @@ function nestedCommand(program, args) {
 // src/hooks/after-merge.ts
 function mergeRuns(command, depth = 0) {
   const runs = [];
-  for (const segment of shellSegments(command, { joinLines: true })) {
-    const invocation = invocationOf(wordsOf(segment));
+  for (const step of shellSteps(command, { joinLines: true })) {
+    const invocation = invocationOf(wordsOf(step.text));
     if (invocation === undefined)
       continue;
     const { args, program } = invocation;
     if (program === "gh" && args[0] === "pr" && args[1] === "merge")
       runs.push(args.slice(2));
-    const inner = nestedCommand(program, args);
+    const inner = nestedCommand(program, args, step.pipedFrom);
     if (inner !== undefined && depth < MAX_NESTING)
       runs.push(...mergeRuns(inner, depth + 1));
   }
@@ -5981,7 +6096,7 @@ function afterMerge(context) {
   const origin = runGit(repo, ["remote", "get-url", "origin"], env);
   const record = pr === null ? null : announcedFile(repo, pr.number, env);
   const outcome = mergeOutcome({
-    announced: record !== null && existsSync4(record),
+    announced: record !== null && existsSync3(record),
     base,
     failed: event === "PostToolUseFailure",
     now: Date.now(),
@@ -6004,8 +6119,10 @@ function afterMerge(context) {
 }
 
 // src/hooks/git-guard.ts
-var PUSH_VALUE_OPTIONS = new Set(["--exec", "--push-option", "--receive-pack", "--repo"]);
 var CHANGE_DIR = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
+
+// src/setup/lock.ts
+var FALLBACK_STALE_MS = 10 * 60 * 1000;
 
 // src/hooks/worktree-create.ts
 var FETCH_AGE_MS = 24 * 60 * 60 * 1000;

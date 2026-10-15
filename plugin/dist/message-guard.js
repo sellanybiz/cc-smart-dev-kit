@@ -5155,6 +5155,14 @@ function satisfiesRange(version, range) {
 }
 
 // src/project/config.ts
+var PLUGIN_HOOK_NAMES = [
+  "git-guard",
+  "main-folder-guard",
+  "message-guard",
+  "after-merge",
+  "worktree-leftovers",
+  "session-name"
+];
 var anymodelConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
@@ -5166,7 +5174,8 @@ var anymodelConfigSchema = strictObject({
   protectedBranches: array(string2().min(1)).min(1).optional(),
   sessionNames: boolean2().optional(),
   instructions: boolean2().optional(),
-  autoMode: array(string2().min(1)).optional()
+  autoMode: array(string2().min(1)).optional(),
+  ownHooks: array(_enum(PLUGIN_HOOK_NAMES)).optional()
 });
 
 class AnymodelConfigError extends Error {
@@ -5192,6 +5201,19 @@ function checkRequires(file, raw, pluginVersion) {
     return;
   if (!satisfiesRange(pluginVersion, requires)) {
     throw new AnymodelVersionError(`${file}: this project needs anymodel ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
+  }
+}
+function readOwnHooks(file) {
+  if (!existsSync(file))
+    return null;
+  try {
+    const raw = JSON.parse(readFileSync(file, "utf8"));
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+      return [];
+    const listed = raw.ownHooks;
+    return Array.isArray(listed) ? listed.filter((name) => typeof name === "string") : [];
+  } catch {
+    return [];
   }
 }
 function loadAnymodelConfig(file, pluginVersion = VERSION) {
@@ -5235,9 +5257,17 @@ function gitEnv(base) {
   }
   return env;
 }
+var RESOLVE_GIT_TIMEOUT_MS = 5000;
 function gitIn(cwd, env) {
   return (args) => {
-    const result = Bun.spawnSync(["git", ...args], { cwd, env, stdout: "pipe", stderr: "pipe" });
+    const result = Bun.spawnSync(["git", ...args], {
+      cwd,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: RESOLVE_GIT_TIMEOUT_MS
+    });
     return {
       ok: result.exitCode === 0,
       stdout: result.stdout.toString(),
@@ -5303,6 +5333,15 @@ function locateCheckout(cwd, options = {}) {
   const mainCheckout = isWorktree ? findMainCheckout(git, cwd) : root;
   return { root, commonDir, isWorktree, mainCheckout };
 }
+function ownHooksOf(checkout) {
+  const { root, mainCheckout } = checkout;
+  const own = readOwnHooks(join2(root, ".claude", "anymodel.json"));
+  if (own !== null)
+    return own;
+  if (mainCheckout === null || mainCheckout === root)
+    return [];
+  return readOwnHooks(join2(mainCheckout, ".claude", "anymodel.json")) ?? [];
+}
 function loadProjectConfig(checkout, pluginVersion) {
   const { root, mainCheckout } = checkout;
   let config = loadAnymodelConfig(join2(root, ".claude", "anymodel.json"), pluginVersion);
@@ -5310,77 +5349,6 @@ function loadProjectConfig(checkout, pluginVersion) {
     config = loadAnymodelConfig(join2(mainCheckout, ".claude", "anymodel.json"), pluginVersion);
   }
   return { ...checkout, config };
-}
-
-// src/hooks/defer.ts
-import { existsSync as existsSync3, readFileSync as readFileSync2 } from "fs";
-import { join as join3 } from "path";
-function matcherSelects(matcher, subject) {
-  if (matcher === undefined || matcher === null || matcher === "" || matcher === "*")
-    return true;
-  if (typeof matcher !== "string")
-    return false;
-  if (subject === null)
-    return true;
-  if (/^[A-Za-z0-9_\- ,|]*$/.test(matcher)) {
-    return matcher.split(/[|,]/).map((part) => part.trim()).includes(subject);
-  }
-  try {
-    return new RegExp(matcher).test(subject);
-  } catch {
-    return false;
-  }
-}
-function hooksOf(file) {
-  if (!existsSync3(file))
-    return null;
-  try {
-    const parsed = JSON.parse(readFileSync2(file, "utf8"));
-    if (typeof parsed !== "object" || parsed === null)
-      return null;
-    const hooks = parsed.hooks;
-    return typeof hooks === "object" && hooks !== null && !Array.isArray(hooks) ? hooks : null;
-  } catch {
-    return null;
-  }
-}
-function describeHandler(handler) {
-  if (typeof handler !== "object" || handler === null)
-    return "(a hook)";
-  const { type, command, args } = handler;
-  if (typeof command !== "string")
-    return typeof type === "string" ? `(a ${type} hook)` : "(a hook)";
-  const rest = Array.isArray(args) ? args.filter((arg) => typeof arg === "string") : [];
-  return [command, ...rest].join(" ");
-}
-function wiredHandlers(file, event, subject) {
-  const groups = hooksOf(file)?.[event];
-  if (!Array.isArray(groups))
-    return [];
-  return groups.flatMap((group) => {
-    if (typeof group !== "object" || group === null)
-      return [];
-    const { matcher, hooks } = group;
-    if (!Array.isArray(hooks) || !matcherSelects(matcher, subject))
-      return [];
-    return hooks.map((handler) => ({ file, command: describeHandler(handler) }));
-  });
-}
-function fileWiresHook(file, event, subject) {
-  return wiredHandlers(file, event, subject).length > 0;
-}
-function deferSources(checkout) {
-  const roots = [checkout.root];
-  if (checkout.mainCheckout !== null && checkout.mainCheckout !== checkout.root) {
-    roots.push(checkout.mainCheckout);
-  }
-  return roots.flatMap((root) => [
-    join3(root, ".claude", "settings.json"),
-    join3(root, ".claude", "settings.local.json")
-  ]);
-}
-function ownHookIn(files, event, subject) {
-  return files.find((file) => fileWiresHook(file, event, subject)) ?? null;
 }
 
 // src/hooks/io.ts
@@ -5414,16 +5382,6 @@ function toolDecision(decision, reason) {
 
 // src/hooks/run.ts
 var HOOK_LOG_ENV = "ANYMODEL_HOOK_LOG";
-function deferSubject(input, event) {
-  if (["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest"].includes(event)) {
-    return stringField(input.tool_name);
-  }
-  if (event === "SessionStart")
-    return stringField(input.source);
-  if (event === "SubagentStop" || event === "SubagentStart")
-    return stringField(input.agent_type);
-  return null;
-}
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -5451,9 +5409,8 @@ async function handleHook(spec, text, env) {
     }
     if (checkout === null)
       return outside(input, event, `${cwd} is not in a git checkout`);
-    if (spec.wiring === "plugin" && ownHookIn(deferSources(checkout), event, deferSubject(input, event)) !== null) {
+    if (spec.wiring === "plugin" && ownHooksOf(checkout).includes(spec.name))
       return SILENT;
-    }
     let project;
     try {
       project = loadProjectConfig(checkout);
@@ -5480,12 +5437,14 @@ function logRun(spec, text, result, env) {
     return;
   try {
     const input = parseHookInput(text);
+    const facts = input === null ? {} : spec.logFacts?.(input) ?? {};
     appendFileSync(file, `${JSON.stringify({
       hook: spec.name,
       event: stringField(input?.hook_event_name),
       cwd: stringField(input?.cwd),
       exitCode: result.exitCode ?? 0,
-      stdout: (result.stdout ?? "").slice(0, 2000)
+      stdout: (result.stdout ?? "").slice(0, 2000),
+      ...Object.keys(facts).length === 0 ? {} : { facts }
     })}
 `);
   } catch {}
@@ -5503,12 +5462,14 @@ async function runHookEntry(spec) {
 }
 
 // src/hooks/git.ts
-import { resolve } from "path";
+import { realpathSync as realpathSync2 } from "fs";
+import { basename, dirname, join as join3, resolve } from "path";
 
 // src/setup/marketplace-access.ts
 var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
 // src/hooks/git.ts
+var GUARD_GIT_TIMEOUT_MS = 5000;
 function runGit(cwd, args, env, timeoutMs = 15000) {
   try {
     const result = Bun.spawnSync(["git", ...args], {
@@ -5535,6 +5496,21 @@ function isInside(path, folder, ignoreCase = IGNORE_CASE) {
   const parent = form(folder);
   return child === parent || child.startsWith(`${parent}/`);
 }
+function realPath(path) {
+  const rest = [];
+  let at = resolve(path);
+  for (;; ) {
+    try {
+      return join3(realpathSync2(at), ...rest);
+    } catch {
+      const parent = dirname(at);
+      if (parent === at)
+        return resolve(path);
+      rest.unshift(basename(at));
+      at = parent;
+    }
+  }
+}
 function parseWorktreeList(porcelain) {
   const worktrees = [];
   for (const block of porcelain.split(/\r?\n\r?\n/)) {
@@ -5554,8 +5530,8 @@ function parseWorktreeList(porcelain) {
   }
   return worktrees;
 }
-function listWorktrees(cwd, env) {
-  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env);
+function listWorktrees(cwd, env, timeoutMs = 15000) {
+  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env, timeoutMs);
   if (!listed.ok)
     throw new Error(`git worktree list failed: ${listed.err}`);
   return parseWorktreeList(listed.out);
@@ -5564,7 +5540,8 @@ function listWorktrees(cwd, env) {
 // src/hooks/shell-command.ts
 var SEPARATORS = new Set([`
 `, "\r", "&", "(", ")", ";", "{", "|", "}"]);
-var WRAPPERS = new Set(["builtin", "command", "env", "exec", "nohup", "sudo", "time"]);
+var KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
+var SHELLS = new Set(["bash", "dash", "sh", "zsh"]);
 
 // src/hooks/after-merge.ts
 var MERGE_FLAGS_WITH_VALUE = new Set([
@@ -5583,11 +5560,10 @@ var MERGE_FLAGS_WITH_VALUE = new Set([
 var ANNOUNCE_WINDOW_MS = 15 * 60000;
 
 // src/hooks/git-guard.ts
-var PUSH_VALUE_OPTIONS = new Set(["--exec", "--push-option", "--receive-pack", "--repo"]);
 var CHANGE_DIR = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync4, readdirSync, readFileSync as readFileSync3, statSync as statSync2 } from "fs";
+import { existsSync as existsSync3, readdirSync, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
 import { uptime } from "os";
 import { join as join4 } from "path";
 function parseSessionRecord(json) {
@@ -5615,7 +5591,7 @@ function isRunning(pid) {
 }
 function liveSessions(claudeConfigDir) {
   const dir = join4(claudeConfigDir, "sessions");
-  if (!existsSync4(dir))
+  if (!existsSync3(dir))
     return [];
   const bootedAt = Date.now() - uptime() * 1000;
   const live = [];
@@ -5627,7 +5603,7 @@ function liveSessions(claudeConfigDir) {
     try {
       if (statSync2(join4(dir, file)).mtimeMs < bootedAt)
         continue;
-      text = readFileSync3(join4(dir, file), "utf8");
+      text = readFileSync2(join4(dir, file), "utf8");
     } catch {
       continue;
     }
@@ -5644,7 +5620,7 @@ function liveSessions(claudeConfigDir) {
 function messageLeavesRepo(to, sessions, repoFolders) {
   const name = to.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
   const named = sessions.filter((session) => session.name === name);
-  const outside = named.filter((session) => !repoFolders.some((folder) => isInside(session.cwd, folder)));
+  const outside = named.filter((session) => !repoFolders.some((folder) => isInside(realPath(session.cwd), folder)));
   return named.length > 0 && outside.length === named.length ? outside[0]?.cwd ?? null : null;
 }
 function otherProjectRefusal(to, folder) {
@@ -5667,11 +5643,14 @@ function messageGuard(context) {
   } catch {
     return SILENT;
   }
-  const repo = project.mainCheckout ?? project.root;
-  const folders = listWorktrees(repo, env).map((worktree) => worktree.path);
+  const repo = realPath(project.mainCheckout ?? project.root);
+  const folders = listWorktrees(repo, env, GUARD_GIT_TIMEOUT_MS).map((worktree) => realPath(worktree.path));
   const folder = messageLeavesRepo(to, sessions, folders);
   return folder === null ? SILENT : toolDecision("deny", otherProjectRefusal(to, folder));
 }
+
+// src/setup/lock.ts
+var FALLBACK_STALE_MS = 10 * 60 * 1000;
 
 // src/hooks/worktree-create.ts
 var FETCH_AGE_MS = 24 * 60 * 60 * 1000;

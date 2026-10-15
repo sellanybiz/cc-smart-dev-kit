@@ -13,8 +13,8 @@ changing it breaks other people's projects.
 
 `resolveProject(cwd, { pluginVersion?, env? })` finds the git checkout `cwd` is in, then
 reads (`env` is the environment git runs with, so a test can put a fake git first on
-PATH). It is two steps a hook calls apart: `locateCheckout()` (git only; the defer check
-needs it even when the file is broken), then `loadProjectConfig()`, which reads:
+PATH). It is two steps a hook calls apart: `locateCheckout()` (git only; the `ownHooks`
+read needs it even when the file is broken), then `loadProjectConfig()`, which reads:
 
 1. `<checkout root>/.claude/anymodel.json` — a linked worktree's own file wins;
 2. else `<main checkout>/.claude/anymodel.json`;
@@ -37,15 +37,18 @@ a clear error that says what is wrong.
 | `worktrees.guardMainFolder` | boolean | Refuse edits in the main checkout itself (the main-folder guard). Off when left out. |
 | `protectedBranches` | string array | The branches the git guard asks about before a push. Default `["main"]`. |
 | `sessionNames` | boolean | Each session names itself after its task (the session-name hook). Off when left out. |
+| `ownHooks` | array of plugin hook names | The plugin hooks this project still runs as its own copy (`["git-guard"]`): exactly those stay silent here, so two copies never both answer. Emptied once the project removed its copies (`docs/design.md` § The safe switch). A name that is not a plugin hook is refused by the strict parse (`PLUGIN_HOOK_NAMES` in `src/project/config.ts`). |
 | `instructions` | boolean | Turns on the opt-in instructions for this project. Used from Phase 5. |
 | `autoMode` | string array | Auto-mode rules `setup` copies into the user's settings. Used from Phase 6. |
 
 The schema is `anymodelConfigSchema` in `src/project/config.ts` (zod). The README shows an
 example; keep it in step.
 
-`worktrees.guardMainFolder`, `protectedBranches` and `sessionNames` came with the hooks: a
-project that uses one raises its `requires` to the release that ships them. A hook that
-cannot read the file (too new, or broken) fails closed (`.claude/rules/hooks.md`).
+`worktrees.guardMainFolder`, `protectedBranches`, `sessionNames` and `ownHooks` came with the
+hooks: a project that uses one raises its `requires` to the release that ships them. A hook
+that cannot read the file (too new, or broken) fails closed (`.claude/rules/hooks.md`) —
+except `ownHooks`, which is read on its own (`readOwnHooks`), so a listed hook stays silent
+even then.
 
 ## `requires` first, then the strict parse
 

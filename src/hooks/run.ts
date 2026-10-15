@@ -3,12 +3,14 @@
  *
  * 1. Read the input. Not a JSON object, a wrong event, or a `cwd` that is not a folder in
  *    git: nothing to do.
- * 2. **The defer check** (`defer.ts`), for a hook the plugin wires (`wiring: "plugin"`):
- *    when the project wires its own hook for the same event (and tool), exit 0 and print
- *    nothing, so the project's copy runs alone. It reads only git and the settings files,
- *    so it works even when anymodel.json is broken. A hook the project wires itself
- *    (`wiring: "project"`, run as `anymodel hook <name>`) skips it: that wiring is the
- *    project's opt-in.
+ * 2. **The project's own copy**, for a hook the plugin wires (`wiring: "plugin"`): when
+ *    the project's anymodel.json lists the hook in `ownHooks`, exit 0 and print nothing, so
+ *    the project's copy runs alone. Only that field is read here (`ownHooksOf`), so it
+ *    works even when the rest of the file is broken or needs a newer plugin. Nothing else
+ *    silences a plugin hook: a project hook on the same event does not (it may be a logger,
+ *    and a guard must not go quiet for it). A hook the project wires itself
+ *    (`wiring: "project"`, run as `anymodel hook <name>`) skips this step: that wiring is
+ *    the project's opt-in.
  * 3. Read the project's anymodel.json. When it is broken, needs a newer plugin, or lacks
  *    what the hook `needs`, the hook **fails closed** in its own way (`onConfigProblem`):
  *    a guard asks, WorktreeCreate fails with the reason, an informational hook prints one
@@ -24,8 +26,13 @@
 import { appendFileSync } from "node:fs";
 import { type CliPaths, cliPaths } from "../cli/paths";
 import { type AnymodelConfig, AnymodelConfigError } from "../project/config";
-import { type Checkout, loadProjectConfig, locateCheckout, type Project } from "../project/resolve";
-import { deferSources, ownHookIn } from "./defer";
+import {
+  type Checkout,
+  loadProjectConfig,
+  locateCheckout,
+  ownHooksOf,
+  type Project,
+} from "../project/resolve";
 import { type HookInput, type HookResult, parseHookInput, SILENT, stringField } from "./io";
 
 export type Env = Record<string, string | undefined>;
@@ -49,10 +56,9 @@ export interface HookSpec {
   /** The events it is wired for. Any other event: nothing to do. */
   events: string[];
   /**
-   * Who wires it. "plugin": `plugin/hooks/hooks.json`, so it runs in every project and
-   * stays silent while the project wires its own hook for the same event (the defer check).
-   * "project": the project wires `anymodel hook <name>` in its own settings; that is its
-   * opt-in, so there is no defer check.
+   * Who wires it. "plugin": `plugin/hooks/hooks.json`, so it runs in every project, and
+   * stays silent in one whose anymodel.json lists it in `ownHooks`. "project": the project
+   * wires `anymodel hook <name>` in its own settings; that is its opt-in.
    */
   wiring: "plugin" | "project";
   /**
@@ -72,23 +78,15 @@ export interface HookSpec {
   ) => HookResult;
   /** The answer when `cwd` is missing, not a folder, or outside git. Default: silent. */
   outsideGit?: (input: HookInput, event: string, why: string) => HookResult;
+  /**
+   * Facts for the hook log only (`ANYMODEL_HOOK_LOG`), never part of the answer: what the
+   * hook's own parser read in the input. `doctor --live` reads them to prove a guard read
+   * the call, not only that the hook ran (`.claude/rules/hooks.md` § Quiet output).
+   */
+  logFacts?: (input: HookInput) => Record<string, unknown>;
   run: (context: HookContext) => HookResult | Promise<HookResult>;
   /** The exit code when the hook itself fails. Default 0. */
   crashExitCode?: number;
-}
-
-/**
- * What a matcher is compared with for this input: the tool name for a tool event, the
- * source for SessionStart, the agent type for SubagentStop; null for an event without
- * matchers.
- */
-export function deferSubject(input: HookInput, event: string): string | null {
-  if (["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest"].includes(event)) {
-    return stringField(input.tool_name);
-  }
-  if (event === "SessionStart") return stringField(input.source);
-  if (event === "SubagentStop" || event === "SubagentStart") return stringField(input.agent_type);
-  return null;
 }
 
 function errorMessage(error: unknown): string {
@@ -119,12 +117,7 @@ export async function handleHook(spec: HookSpec, text: string, env: Env): Promis
     }
     if (checkout === null) return outside(input, event, `${cwd} is not in a git checkout`);
 
-    if (
-      spec.wiring === "plugin" &&
-      ownHookIn(deferSources(checkout), event, deferSubject(input, event)) !== null
-    ) {
-      return SILENT;
-    }
+    if (spec.wiring === "plugin" && ownHooksOf(checkout).includes(spec.name)) return SILENT;
 
     let project: Project;
     try {
@@ -146,12 +139,16 @@ export async function handleHook(spec: HookSpec, text: string, env: Env): Promis
   }
 }
 
-/** Appends one line to the hook log, when `ANYMODEL_HOOK_LOG` names one. Never throws. */
+/**
+ * Appends one line to the hook log, when `ANYMODEL_HOOK_LOG` names one. Never throws.
+ * `facts`: what the spec's own parser read (`logFacts`), for `doctor --live`.
+ */
 function logRun(spec: HookSpec, text: string, result: HookResult, env: Env): void {
   const file = env[HOOK_LOG_ENV];
   if (file === undefined || file === "") return;
   try {
     const input = parseHookInput(text);
+    const facts = input === null ? {} : (spec.logFacts?.(input) ?? {});
     appendFileSync(
       file,
       `${JSON.stringify({
@@ -160,6 +157,7 @@ function logRun(spec: HookSpec, text: string, result: HookResult, env: Env): voi
         cwd: stringField(input?.cwd),
         exitCode: result.exitCode ?? 0,
         stdout: (result.stdout ?? "").slice(0, 2000),
+        ...(Object.keys(facts).length === 0 ? {} : { facts }),
       })}\n`,
     );
   } catch {

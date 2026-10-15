@@ -7,10 +7,14 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { RESOLVE_GIT_TIMEOUT_MS } from "../project/resolve";
 import { hookEnv, makeRepo, runEntry, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
+import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { HOOK_LOG_ENV } from "./run";
 import { HOOKS } from "./specs";
+import { ADD_TIMEOUT_MS, SETUP_TIMEOUT_MS } from "./worktree-create";
+import { REMOVE_TIMEOUT_MS } from "./worktree-remove";
 
 const ROOT = join(import.meta.dir, "..", "..");
 
@@ -85,6 +89,15 @@ describe("hooks.json", () => {
     expect(timeout("main-folder-guard")).toBe(10);
     expect(timeout("message-guard")).toBe(10);
   });
+
+  test("every git call inside a hook stays well inside that hook's own timeout", () => {
+    // The project's own hooks: the worktree engine (`project-wiring.ts`).
+    expect(GUARD_GIT_TIMEOUT_MS).toBeLessThan(10_000); // git-guard, main-folder-guard, message-guard
+    expect(RESOLVE_GIT_TIMEOUT_MS).toBeLessThan(10_000); // the frame's project lookup, in every hook
+    expect(ADD_TIMEOUT_MS).toBeLessThan(600_000); // worktree-create
+    expect(SETUP_TIMEOUT_MS).toBeLessThan(600_000); // the setup inside it
+    expect(REMOVE_TIMEOUT_MS).toBeLessThan(60_000); // worktree-remove, subagent-stop
+  });
 });
 
 describe("the entries, run as Claude Code runs them", () => {
@@ -111,8 +124,17 @@ describe("the entries, run as Claude Code runs them", () => {
       },
     });
     expect(run).toEqual({ exitCode: 0, stdout: answer, stderr: "" });
+    // The log line carries the answer, its cwd, and what the guard's parser read (`facts`):
+    // `doctor --live` reads that to prove the guard answered, not only that it ran.
     expect(readFileSync(log, "utf8")).toBe(
-      `${JSON.stringify({ hook: "git-guard", event: "PreToolUse", cwd: repo, exitCode: 0, stdout: answer })}\n`,
+      `${JSON.stringify({
+        hook: "git-guard",
+        event: "PreToolUse",
+        cwd: repo,
+        exitCode: 0,
+        stdout: answer,
+        facts: { programs: ["git"] },
+      })}\n`,
     );
   });
 

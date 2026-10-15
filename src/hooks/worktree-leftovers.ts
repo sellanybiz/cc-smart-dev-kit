@@ -9,7 +9,8 @@
  * A worktree is FINISHED when removing it loses nothing and disturbs no one: it is not
  * locked; no running Claude session works in it; every commit on it is on `origin/<base>`;
  * git has not touched it for an hour (a worktree made a minute ago is not finished, its
- * session has not moved in yet); nothing in it is changed or untracked. A worktree whose
+ * session has not moved in yet); nothing in it is changed or untracked, and it holds no ignored
+ * file that cannot come back (`local-files.ts`). A worktree whose
  * folder is gone is named too (`git worktree prune` forgets it). Nothing is removed here:
  * the note names them, and the person or the session removes them.
  *
@@ -19,6 +20,7 @@ import { readFileSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { hasChanges, isInside, type ListedWorktree, listWorktrees, runGit } from "./git";
 import { addContext, type HookResult, SILENT } from "./io";
+import { localFiles } from "./local-files";
 import type { Env, HookContext } from "./run";
 import { liveSessions, type SessionRecord } from "./sessions";
 
@@ -76,7 +78,9 @@ export function judgeWorktree(
   );
   if (!ahead.ok || ahead.out !== "0") return "kept";
   if (idleMinutes(listed.path, now) < IDLE_MINUTES) return "kept";
-  return hasChanges(listed.path, env) ? "kept" : "finished";
+  if (hasChanges(listed.path, env)) return "kept";
+  // An ignored file that cannot come back (an edited `.env.local`): removing it loses work.
+  return localFiles(listed.path, repo, env)?.length === 0 ? "finished" : "kept";
 }
 
 export function leftoversNote(

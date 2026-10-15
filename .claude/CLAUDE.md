@@ -58,7 +58,7 @@ the first time you use it.
 | `src/project/` | Finds the git project from a folder and reads its `.claude/anymodel.json`. |
 | `src/setup/` | Safe changes to user files: managed keys and blocks, backups, atomic writes, the lock, the launcher, restore, marketplace access. |
 | `src/cli/` | The `anymodel` commands: `setup`, `doctor` (and `--live`; its checks of the current folder's project in `project-checks.ts`), `hook`, `restore`, `session-name`, `version`. |
-| `src/hooks/` | The hooks: the frame every one runs in (`run.ts`, the defer check in `defer.ts`), the guards, the notes, and the worktree engine a project wires itself (`anymodel hook <name>`; its lines in `project-wiring.ts`); `specs.ts` lists them all, by who wires them. |
+| `src/hooks/` | The hooks: the frame every one runs in (`run.ts`), the guards, the notes, the project's own copies (`ownHooks`, `settings-hooks.ts`), and the worktree engine a project wires itself (`anymodel hook <name>`; its lines in `project-wiring.ts`, its create lock in `create-lock.ts`); `specs.ts` lists them all, by who wires them. |
 | `src/gateway/` | The optional AI gateway: the router, its config and slots, `gateway <command>`, its service and its doctor checks. |
 | `src/testing/` | Test helpers: temp folders, a clean git environment, the guard that fails any test reaching the live router's port 20100. |
 | `plugin/` | What users get: `dist/` (built, committed), `bin/` (`anymodel`, and `anymodel-bun`, which the hooks run through), `hooks/hooks.json`, `skills/`, the manifest. |

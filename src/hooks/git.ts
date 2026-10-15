@@ -2,7 +2,8 @@
  * The git the hooks need: run a command with a timeout, list the worktrees, compare folders,
  * and ask whether anything would be lost.
  */
-import { resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { gitEnv } from "../project/resolve";
 import { BATCH_SSH_COMMAND, hasOwnSshCommand } from "../setup/marketplace-access";
 import type { Env } from "./run";
@@ -14,6 +15,13 @@ export interface GitRun {
   /** stderr, trimmed; "timed out" when the timeout stopped it. */
   err: string;
 }
+
+/**
+ * How long one git call inside a PreToolUse guard may take. The guard hook's own timeout is
+ * 10 s (`plugin/hooks/hooks.json`, `project-wiring.ts`), so every git call it makes has to
+ * answer well inside that: a guard that hangs stops the call it guards.
+ */
+export const GUARD_GIT_TIMEOUT_MS = 5_000;
 
 /** A git command in `cwd`, without the GIT_* variables that point at another repo. */
 export function runGit(cwd: string, args: string[], env: Env, timeoutMs = 15_000): GitRun {
@@ -65,6 +73,27 @@ export function samePath(a: string, b: string, ignoreCase = IGNORE_CASE): boolea
   return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
 }
 
+/**
+ * `path` with every link on the way to it resolved: the real path of its deepest folder that
+ * exists, then the part that does not exist yet (the file an edit is about may not exist).
+ * Two paths are the same place only as real paths: macOS puts the temp folder behind a link,
+ * and a checkout can be reached through one.
+ */
+export function realPath(path: string): string {
+  const rest: string[] = [];
+  let at = resolve(path);
+  for (;;) {
+    try {
+      return join(realpathSync(at), ...rest);
+    } catch {
+      const parent = dirname(at);
+      if (parent === at) return resolve(path);
+      rest.unshift(basename(at));
+      at = parent;
+    }
+  }
+}
+
 /** One entry of `git worktree list --porcelain`. The first one is the main checkout. */
 export interface ListedWorktree {
   path: string;
@@ -96,9 +125,13 @@ export function parseWorktreeList(porcelain: string): ListedWorktree[] {
   return worktrees;
 }
 
-/** Every worktree of the repo `cwd` is in; the first one is the main checkout. */
-export function listWorktrees(cwd: string, env: Env): ListedWorktree[] {
-  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env);
+/**
+ * Every worktree of the repo `cwd` is in; the first one is the main checkout. `timeoutMs`:
+ * a PreToolUse guard has 10 s of its own, so it asks for a short one (`.claude/rules/hooks.md`
+ * § Timeouts).
+ */
+export function listWorktrees(cwd: string, env: Env, timeoutMs = 15_000): ListedWorktree[] {
+  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env, timeoutMs);
   if (!listed.ok) throw new Error(`git worktree list failed: ${listed.err}`);
   return parseWorktreeList(listed.out);
 }

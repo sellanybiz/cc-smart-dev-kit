@@ -26,6 +26,11 @@ describe("did the command merge a pull request?", () => {
     ["gh pr merge 5 --disable-auto", false],
     ['echo "gh pr merge 1"', false],
     ["grep 'gh pr merge' notes.md", false],
+    // A shell that reads its script from standard input runs it: a here-doc body, a
+    // here-string, and the text piped into it are read as the commands they are.
+    ["sh <<'EOF'\ngh pr merge 1\nEOF", true],
+    ['sh <<< "gh pr merge 2"', true],
+    ['echo "gh pr merge 3" | sh', true],
     ["cat <<EOF\ngh pr merge 1\nEOF", false],
     ["gh pr view 1", false],
   ])("%j: %j", (command, expected) => {

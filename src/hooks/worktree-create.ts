@@ -28,6 +28,7 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   statSync,
   writeFileSync,
@@ -35,6 +36,7 @@ import {
 import { dirname, join } from "node:path";
 import type { AnymodelConfig } from "../project/config";
 import { gitEnv } from "../project/resolve";
+import { withCreateLock } from "./create-lock";
 import {
   hasRef,
   isInside,
@@ -50,6 +52,12 @@ import { liveSessions, type SessionRecord } from "./sessions";
 
 /** How long the project's setup command may run; the hook's own timeout is 600 s. */
 export const SETUP_TIMEOUT_MS = 540_000;
+/**
+ * How long `git worktree add` may run: minutes on a large repo, and the setup still has to
+ * fit inside the hook's 600 s. A timeout says how to finish by hand (the folder may be half
+ * made, and the hook cannot tell).
+ */
+export const ADD_TIMEOUT_MS = 500_000;
 /** The fetch of the base branch, for a configured worktree. */
 const BASE_FETCH_TIMEOUT_MS = 30_000;
 /** Claude Code's own fetch of the default branch is capped at five seconds. */
@@ -132,19 +140,61 @@ function git(cwd: string, args: string[], env: Env, timeoutMs?: number): string 
   return run.out;
 }
 
+/**
+ * `git worktree add`, which can take minutes on a large repo. A timeout has to say how to
+ * finish: the folder may be half made, and this hook cannot tell how far git got.
+ */
+export function addWorktree(
+  repo: string,
+  args: string[],
+  env: Env,
+  folder: string,
+  timeoutMs = ADD_TIMEOUT_MS,
+): void {
+  const run = runGit(repo, args, env, timeoutMs);
+  if (run.ok) return;
+  const command = `git ${args.join(" ")}`;
+  if (run.err === "timed out") {
+    throw new Refusal(
+      `\`${command}\` timed out after ${timeoutMs / 1000} s, so ${folder} may be half made. ` +
+        `Check that it holds nothing you need (and no work of another session), then finish: ` +
+        `git worktree remove --force ${folder}, and git worktree prune`,
+    );
+  }
+  const reason =
+    run.err
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .at(-1) ?? "";
+  throw new Refusal(`\`${command}\` failed: ${reason}`);
+}
+
 function checkBranchName(repo: string, branch: string, env: Env): void {
   if (!runGit(repo, ["check-ref-format", "--branch", branch], env).ok) {
     throw new Refusal(`"${branch}" is not a valid branch name`);
   }
 }
 
-/** The repo's `FETCH_HEAD` is younger than a day. */
-function fetchedRecently(commonDir: string): boolean {
+/**
+ * The repo's newest `FETCH_HEAD` is younger than a day. Each linked worktree has one of its
+ * own (`git fetch` inside it writes `<common dir>/worktrees/<name>/FETCH_HEAD`), so the
+ * newest of all of them counts: a fetch made from a worktree fetched the whole repo.
+ */
+export function fetchedRecently(commonDir: string): boolean {
+  const worktreesDir = join(commonDir, "worktrees");
+  let linked: string[] = [];
   try {
-    return Date.now() - statSync(join(commonDir, "FETCH_HEAD")).mtimeMs < FETCH_AGE_MS;
+    linked = readdirSync(worktreesDir).map((name) => join(worktreesDir, name, "FETCH_HEAD"));
   } catch {
-    return false;
+    // No linked worktree (or no permission): the common dir's own file still counts.
   }
+  return [join(commonDir, "FETCH_HEAD"), ...linked].some((file) => {
+    try {
+      return Date.now() - statSync(file).mtimeMs < FETCH_AGE_MS;
+    } catch {
+      return false;
+    }
+  });
 }
 
 /**
@@ -328,103 +378,118 @@ function createConfigured(context: HookContext, name: string, worktrees: Worktre
   const branch = name;
   checkBranchName(main, branch, env);
   const folder = configuredFolder(main, worktrees.prefix, name);
+  const session = typeof input.session_id === "string" ? input.session_id : null;
 
-  let sessions: SessionRecord[] | null;
-  try {
-    sessions = liveSessions(paths.claudeConfigDir);
-  } catch {
-    sessions = null;
-  }
-  const decision = reuseDecision({
-    worktrees: listWorktrees(main, env),
-    branch,
-    folder,
-    sessions,
-    askingSession: typeof input.session_id === "string" ? input.session_id : null,
-    folderExists: existsSync,
-  });
-  if (decision.kind === "refuse") throw new Refusal(decision.why);
-
-  let target = folder;
-  if (decision.kind === "reuse") {
-    target = decision.folder;
-  } else {
-    if (existsSync(folder))
-      throw new Refusal(`${folder} exists and is not a worktree of this repo`);
-    const fetched = runGit(
-      main,
-      ["fetch", "--quiet", "origin", worktrees.base],
-      noPromptEnv(env),
-      BASE_FETCH_TIMEOUT_MS,
-    );
-    if (hasRef(main, `refs/heads/${branch}`, env)) {
-      git(main, ["worktree", "add", "--quiet", folder, branch], env);
-    } else if (hasRef(main, `refs/remotes/origin/${branch}`, env)) {
-      git(
-        main,
-        ["worktree", "add", "--quiet", "--track", "-b", branch, folder, `origin/${branch}`],
-        env,
-      );
-    } else if (fetched.ok) {
-      git(
-        main,
-        [
-          "worktree",
-          "add",
-          "--quiet",
-          "--no-track",
-          "-b",
-          branch,
-          folder,
-          `origin/${worktrees.base}`,
-        ],
-        env,
-      );
-    } else {
-      throw new Refusal(
-        `\`git fetch origin ${worktrees.base}\` failed (${fetched.err || "no reason given"}): a new branch starts only from the latest ${worktrees.base}`,
-      );
+  // One creation of a branch at a time, held through `git worktree add` and the setup: a
+  // second session asking for the same branch mid-create gets one clear refusal instead.
+  return withCreateLock(project.commonDir, branch, session, () => {
+    let sessions: SessionRecord[] | null;
+    try {
+      sessions = liveSessions(paths.claudeConfigDir);
+    } catch {
+      sessions = null;
     }
-    copyWorktreeInclude(main, folder, env);
-  }
+    const decision = reuseDecision({
+      worktrees: listWorktrees(main, env),
+      branch,
+      folder,
+      sessions,
+      askingSession: session,
+      folderExists: existsSync,
+    });
+    if (decision.kind === "refuse") throw new Refusal(decision.why);
 
-  // Also for a worktree entered again: a setup that failed last time left no marker.
-  const marker = setupMarker(target, env);
-  if (worktrees.setup !== undefined && !existsSync(marker)) {
-    runSetup(target, worktrees.setup, env);
-    writeFileSync(marker, "");
-  }
-  return target;
+    let target = folder;
+    if (decision.kind === "reuse") {
+      target = decision.folder;
+    } else {
+      if (existsSync(folder))
+        throw new Refusal(`${folder} exists and is not a worktree of this repo`);
+      const fetched = runGit(
+        main,
+        ["fetch", "--quiet", "origin", worktrees.base],
+        noPromptEnv(env),
+        BASE_FETCH_TIMEOUT_MS,
+      );
+      if (hasRef(main, `refs/heads/${branch}`, env)) {
+        addWorktree(main, ["worktree", "add", "--quiet", folder, branch], env, folder);
+      } else if (hasRef(main, `refs/remotes/origin/${branch}`, env)) {
+        addWorktree(
+          main,
+          ["worktree", "add", "--quiet", "--track", "-b", branch, folder, `origin/${branch}`],
+          env,
+          folder,
+        );
+      } else if (fetched.ok) {
+        addWorktree(
+          main,
+          [
+            "worktree",
+            "add",
+            "--quiet",
+            "--no-track",
+            "-b",
+            branch,
+            folder,
+            `origin/${worktrees.base}`,
+          ],
+          env,
+          folder,
+        );
+      } else {
+        throw new Refusal(
+          `\`git fetch origin ${worktrees.base}\` failed (${fetched.err || "no reason given"}): a new branch starts only from the latest ${worktrees.base}`,
+        );
+      }
+      copyWorktreeInclude(main, folder, env);
+    }
+
+    // Also for a worktree entered again: a setup that failed last time left no marker.
+    const marker = setupMarker(target, env);
+    if (worktrees.setup !== undefined && !existsSync(marker)) {
+      runSetup(target, worktrees.setup, env);
+      writeFileSync(marker, "");
+    }
+    return target;
+  });
 }
 
 function createForSubagent(context: HookContext, name: string): string {
-  const { env, paths, project } = context;
+  const { env, paths, project, input } = context;
   const repo = project.mainCheckout ?? project.root;
   const { folder, branch } = subagentShape(repo, name);
   checkBranchName(repo, branch, env);
-  const listed = listWorktrees(repo, env);
-  if (existsSync(folder)) {
-    if (listed.some((worktree) => samePath(worktree.path, folder))) return folder;
-    throw new Refusal(`${folder} exists and is not a worktree of this repo`);
-  }
-  if (hasRef(repo, `refs/heads/${branch}`, env)) {
-    git(repo, ["worktree", "add", "--quiet", folder, branch], env);
-  } else {
-    const settings = [project.root, ...(repo === project.root ? [] : [repo])].flatMap((root) => [
-      join(root, ".claude", "settings.local.json"),
-      join(root, ".claude", "settings.json"),
-    ]);
-    const base = subagentBase(
-      repo,
-      project.commonDir,
-      project.root,
-      readBaseRef([...settings, paths.settingsFile]),
-      env,
-    );
-    git(repo, ["worktree", "add", "--quiet", "--no-track", "-b", branch, folder, base], env);
-  }
-  copyWorktreeInclude(project.root, folder, env);
-  return folder;
+  const session = typeof input.session_id === "string" ? input.session_id : null;
+  return withCreateLock(project.commonDir, branch, session, () => {
+    const listed = listWorktrees(repo, env);
+    if (existsSync(folder)) {
+      if (listed.some((worktree) => samePath(worktree.path, folder))) return folder;
+      throw new Refusal(`${folder} exists and is not a worktree of this repo`);
+    }
+    if (hasRef(repo, `refs/heads/${branch}`, env)) {
+      addWorktree(repo, ["worktree", "add", "--quiet", folder, branch], env, folder);
+    } else {
+      const settings = [project.root, ...(repo === project.root ? [] : [repo])].flatMap((root) => [
+        join(root, ".claude", "settings.local.json"),
+        join(root, ".claude", "settings.json"),
+      ]);
+      const base = subagentBase(
+        repo,
+        project.commonDir,
+        project.root,
+        readBaseRef([...settings, paths.settingsFile]),
+        env,
+      );
+      addWorktree(
+        repo,
+        ["worktree", "add", "--quiet", "--no-track", "-b", branch, folder, base],
+        env,
+        folder,
+      );
+    }
+    copyWorktreeInclude(project.root, folder, env);
+    return folder;
+  });
 }
 
 export function worktreeCreate(context: HookContext): HookResult {

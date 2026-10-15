@@ -6,15 +6,18 @@
  *   `anymodel hook <name>`; wired without `worktrees`, every worktree would fail. Next to the
  *   engine, a second WorktreeCreate hook (the project's or the user's) would make a second
  *   worktree for each request (Claude Code runs both: `docs/claude-code-contract.md`).
- * - **Which plugin hooks a project hook silences**, as information: the defer check is
- *   coarse (any project hook on the same event and tool silences the plugin's), so doctor
- *   names each one it finds.
+ * - **The project's own copies of plugin hooks.** Each hook `ownHooks` lists is off here
+ *   (information); a listed one with no project hook on its event left to answer is a
+ *   warning. A project hook on the same event and tool as a plugin hook the list does NOT
+ *   name is a warning too: both run, so both may answer.
  *
+ * The project's settings are read where Claude Code reads them: `$CLAUDE_PROJECT_DIR` when
+ * it is set (doctor run from a session), else the checkout of the folder doctor runs in.
  * Outside a git project it says nothing.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { deferSources, type WiredHandler, wiredHandlers } from "../hooks/defer";
 import { runsProjectHook } from "../hooks/project-wiring";
+import { projectSettingsFiles, type WiredHandler, wiredHandlers } from "../hooks/settings-hooks";
 import { PROJECT_HOOKS } from "../hooks/specs";
 import { type AnymodelConfig, AnymodelConfigError } from "../project/config";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
@@ -24,6 +27,8 @@ export interface ProjectLine {
   ok: boolean;
   /** Information only, never a failure. */
   info?: boolean;
+  /** Worth a look, but not a failure (`ok` stays true). */
+  warn?: boolean;
   text: string;
 }
 
@@ -33,10 +38,10 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** A settings file as the person knows it: relative to the checkout, else with `~`. */
-function shown(file: string, checkout: Checkout, home: string): string {
-  return file.startsWith(`${checkout.root}/`)
-    ? file.slice(checkout.root.length + 1)
+/** A settings file as the person knows it: relative to the project folder, else with `~`. */
+function shown(file: string, projectDir: string, home: string): string {
+  return file.startsWith(`${projectDir}/`)
+    ? file.slice(projectDir.length + 1)
     : tildify(file, home);
 }
 
@@ -47,7 +52,7 @@ const ENGINE_HINT =
 function engineLines(
   config: AnymodelConfig | null,
   sources: string[],
-  checkout: Checkout,
+  projectDir: string,
   paths: CliPaths,
 ): ProjectLine[] {
   const hooks = PROJECT_HOOKS.map((spec) => {
@@ -80,7 +85,7 @@ function engineLines(
     for (const other of others) {
       lines.push({
         ok: false,
-        text: `project: another WorktreeCreate hook runs too: ${other.command} (${shown(other.file, checkout, paths.home)}). Claude Code runs both and makes two worktrees for each request; remove one`,
+        text: `project: another WorktreeCreate hook runs too: ${other.command} (${shown(other.file, projectDir, paths.home)}). Claude Code runs both and makes two worktrees for each request; remove one`,
       });
     }
   }
@@ -114,11 +119,22 @@ export function readPluginHooks(file: string): PluginHook[] {
   );
 }
 
-/** One line for each project hook that silences a plugin hook (the defer check). */
-function silencedLines(
+/** "PreToolUse (Bash, PowerShell)": an event and the tools or sources it is about. */
+function onEvent(event: string, subjects: Array<string | null>): string {
+  const named = subjects.filter((subject): subject is string => subject !== null);
+  return named.length > 0 ? `${event} (${named.join(", ")})` : event;
+}
+
+/**
+ * The project's own copies of plugin hooks: one · line for each hook `ownHooks` lists, a
+ * warning for a listed hook nothing in the project's settings replaces, and a warning for
+ * each project hook that runs next to an unlisted plugin hook on the same event and tool.
+ */
+function ownCopyLines(
+  config: AnymodelConfig,
   sources: string[],
   pluginHooksFile: string,
-  checkout: Checkout,
+  projectDir: string,
   home: string,
 ): ProjectLine[] {
   let pluginHooks: PluginHook[];
@@ -129,8 +145,32 @@ function silencedLines(
       { ok: false, text: `cannot read the plugin's hooks (${pluginHooksFile}): ${message(error)}` },
     ];
   }
+  const own: string[] = config.ownHooks ?? [];
+  const lines: ProjectLine[] = [];
+  for (const name of own) {
+    const entries = pluginHooks.filter((hook) => hook.name === name);
+    const replaced = entries.some((hook) =>
+      hook.subjects.some((subject) =>
+        sources.some((file) => wiredHandlers(file, hook.event, subject).length > 0),
+      ),
+    );
+    lines.push(
+      replaced
+        ? {
+            ok: true,
+            info: true,
+            text: `project: the plugin's ${name} is off here: .claude/anymodel.json lists it in ownHooks, so the project's own copy answers alone`,
+          }
+        : {
+            ok: true,
+            warn: true,
+            text: `project: .claude/anymodel.json lists ${name} in ownHooks, so the plugin's ${name} is off here, but the project's settings wire no hook on ${entries.map((hook) => onEvent(hook.event, hook.subjects)).join(", ") || "its event"}: nothing answers in its place. Take "${name}" out of ownHooks once the project's copy is gone`,
+          },
+    );
+  }
   const found = new Map<string, { hook: PluginHook; handler: WiredHandler; subjects: string[] }>();
   for (const hook of pluginHooks) {
+    if (own.includes(hook.name)) continue;
     for (const subject of hook.subjects) {
       for (const handler of sources.flatMap((file) => wiredHandlers(file, hook.event, subject))) {
         const key = JSON.stringify([hook.name, hook.event, handler.file, handler.command]);
@@ -140,11 +180,14 @@ function silencedLines(
       }
     }
   }
-  return [...found.values()].map(({ hook, handler, subjects }) => ({
-    ok: true,
-    info: true,
-    text: `project: the plugin's ${hook.name} is off here for ${hook.event}${subjects.length > 0 ? ` (${subjects.join(", ")})` : ""}: ${handler.command} (${shown(handler.file, checkout, home)}) runs on the same event`,
-  }));
+  for (const { hook, handler, subjects } of found.values()) {
+    lines.push({
+      ok: true,
+      warn: true,
+      text: `project: the plugin's ${hook.name} and the project's ${handler.command} (${shown(handler.file, projectDir, home)}) both run on ${onEvent(hook.event, subjects)}, so both may answer. If that is the project's own copy of ${hook.name}, list "${hook.name}" in ownHooks in .claude/anymodel.json until the copy is removed`,
+    });
+  }
+  return lines;
 }
 
 /** The project checks for the folder `cwd`; none outside git. */
@@ -164,15 +207,23 @@ export function projectChecks(
     return [{ ok: false, text: `project: ${message(error)}` }];
   }
   if (checkout === null) return [];
-  const sources = deferSources(checkout);
-  const lines: ProjectLine[] = [];
+  // Where Claude Code reads the project's settings: the folder the session started in.
+  const projectDir =
+    env.CLAUDE_PROJECT_DIR !== undefined && env.CLAUDE_PROJECT_DIR !== ""
+      ? env.CLAUDE_PROJECT_DIR
+      : checkout.root;
+  const sources = projectSettingsFiles(projectDir);
+  let config: AnymodelConfig | null;
   try {
-    const { config } = loadProjectConfig(checkout);
-    lines.push(...engineLines(config, sources, checkout, paths));
+    config = loadProjectConfig(checkout).config;
   } catch (error) {
     if (!(error instanceof AnymodelConfigError)) throw error;
-    lines.push({ ok: false, text: `project: ${error.message}` });
+    return [{ ok: false, text: `project: ${error.message}` }];
   }
-  lines.push(...silencedLines(sources, pluginHooksFile, checkout, paths.home));
+  const lines = engineLines(config, sources, projectDir, paths);
+  // Without anymodel.json every plugin hook is silent: nothing can answer twice.
+  if (config !== null) {
+    lines.push(...ownCopyLines(config, sources, pluginHooksFile, projectDir, paths.home));
+  }
   return lines;
 }

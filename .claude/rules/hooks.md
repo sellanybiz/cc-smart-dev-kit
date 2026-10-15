@@ -18,13 +18,13 @@ the version it was proved on: `docs/claude-code-contract.md`.
 Each spec in `src/hooks/specs.ts` says who wires it (`wiring`):
 
 - **The plugin** (`HOOKS`, `wiring: "plugin"`): in `plugin/hooks/hooks.json`, so it runs in
-  every project. It has the defer check, and stays silent in a project without
-  `anymodel.json`.
+  every project. It stays silent in a project without `anymodel.json`, and in one whose
+  `ownHooks` names it (§ The project's own copy).
 - **The project** (`PROJECT_HOOKS`, `wiring: "project"`): the project wires
   `anymodel hook <name>` in its own `.claude/settings.json`, exactly as the README's
   § Worktrees shows (the lines come from `src/hooks/project-wiring.ts`; a test keeps the
   README the same). Today: the worktree engine (WorktreeCreate, WorktreeRemove,
-  SubagentStop). No defer check: the wiring is the project's opt-in.
+  SubagentStop). No `ownHooks` step: the wiring is the project's opt-in.
 
 **Never wire WorktreeCreate, WorktreeRemove or SubagentStop in `hooks.json`.** A
 WorktreeCreate hook replaces Claude Code's own creation in every project where it is wired,
@@ -71,7 +71,7 @@ Every entry in `plugin/hooks/hooks.json` uses the exec form, never a shell strin
 `handleHook` runs each hook, of both kinds, in this order; never skip a step in a new hook.
 
 1. **Read the input**; not JSON, another event, or a `cwd` outside git: nothing to do.
-2. **The defer check** (below), for a plugin hook only.
+2. **`ownHooks`** (below), for a plugin hook only.
 3. **Read `anymodel.json`**; broken, too new, or without what the hook `needs`: fail
    closed (below).
 4. **Run.**
@@ -93,24 +93,33 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
   remote's default branch, or HEAD with `worktree.baseRef: "head"` or no remote;
   `.worktreeinclude` copied. SubagentStop finds it by that shape. A change to that shape
   needs the contract row proved again first.
+- A session's **new** branch is cut from `origin/<base>` right after
+  `git fetch origin <base>`, so a repo with no `origin` cannot make one: WorktreeCreate
+  fails closed and says the fetch failed. An existing branch is checked out all the same.
 
-## The defer check
+## The project's own copy: `ownHooks`
 
-When a project still wires its own hook for the same event, with a matcher that selects the
-same tool (or source, or agent type), the plugin's hook **exits 0 and prints nothing**, so
-the project's copy runs alone. Nothing runs twice (proved live, with a plugin WorktreeCreate
-next to a project's: one worktree, the project's).
+A project may still have its own copy of a piece the plugin now ships (a guard, a note).
+Where both exist, **the project says which plugin hooks to keep quiet**: `ownHooks` in its
+`.claude/anymodel.json` lists them by name (`["git-guard"]`), and exactly those plugin hooks
+**exit 0 and print nothing**, so the project's copy runs alone.
 
-- It reads `.claude/settings.json` and `.claude/settings.local.json` of the input's checkout
-  and of the main checkout.
-- It needs only git and the settings files, so it runs before `anymodel.json` is read.
-- It is coarse: any project hook on the same event and tool silences the plugin's, whatever
-  it does. `anymodel doctor`, run in a project, lists each plugin hook silenced there and
-  the project command that does it. Say so wherever else it matters.
+- It is explicit on purpose. A project hook on the same event is *not* enough to silence a
+  plugin hook: it may be a logger, a different check, or a copy that does not cover the same
+  commands — and a guard that goes quiet for something that does not replace it leaves the
+  person unguarded.
+- Only `ownHooks` is read there (`ownHooksOf` in `src/project/resolve.ts`, on its own, like
+  `requires`), so it works even when the rest of the file is broken or needs a newer plugin.
+- The names are validated against the plugin's own (`PLUGIN_HOOK_NAMES` in
+  `src/project/config.ts`; a test keeps them equal to `HOOKS`): a typo fails the strict parse.
+- `anymodel doctor`, run in a project, prints one `·` line per listed hook, **warns** (`!`)
+  when a listed hook's event has no project hook left to answer, and warns when a project
+  hook runs next to a plugin hook the list does not name (both may answer).
 
-The project removes its copy only once every machine has the plugin, and then raises
-`requires` in its `anymodel.json` (`docs/design.md` § The safe switch). Every hook gets a
-defer test (the matrix does it for all: a plugin hook goes silent, a project hook runs).
+**The safe switch** (`docs/design.md` § The safe switch): the project lists its copies while
+it still has them → removes them → empties the list → raises `requires`. Every hook gets an
+`ownHooks` test (the matrix does it for all: a plugin hook listed there goes silent; one that
+is not listed still speaks).
 
 ## Fail closed when `anymodel.json` cannot be used
 
@@ -128,7 +137,7 @@ command, the file and field, or the missing field) reaches someone:
 | SubagentStop | keeping the worktree (exit 0: a subagent must finish) |
 | An informational hook | one line of context (`anymodel: <message>`); `after-merge` only after a merge, `session-name` only on stderr |
 
-For a plugin hook the defer check still comes first: a project that wires its own copy keeps
+For a plugin hook `ownHooks` still comes first: a project that lists its own copy there keeps
 it running.
 
 ## Quiet output
@@ -141,18 +150,24 @@ PreToolUse decision is JSON, and SessionStart's text goes into the session's con
 - Diagnostics go to stderr, one short line.
 - A hook that has nothing to do prints nothing.
 - `ANYMODEL_HOOK_LOG`, when set, gets one JSON line per run (`run.ts`: the hook, the event,
-  the input's `cwd`, the exit code, stdout): what `doctor --live` reads. It never changes
-  the answer.
+  the input's `cwd`, the exit code, stdout, and the spec's `logFacts`): what `doctor --live`
+  reads. `logFacts` is for facts about what the hook's own parser read (the git guard logs
+  the programs of the command line), so a live check proves a guard **answered**, not only
+  that it ran. It never changes the answer, and never goes on stdout.
 
 ## Timeouts
 
 - Set `timeout` (seconds) on every hook in `hooks.json` and in the project's lines
   (`project-wiring.ts`). Do not rely on Claude Code's default.
 - Every child process and network call inside a hook has its own timeout, shorter than
-  the hook's (a `git fetch` 5 or 30 s, `gh` 10 s, the setup command 540 s of 600).
-- PreToolUse runs before every matching tool call: keep it fast, with no network.
+  the hook's (a `git fetch` 5 or 30 s, `gh` 10 s, the setup command 540 s of 600,
+  `git worktree add` 500 s, `git worktree remove` 50 s).
+- PreToolUse runs before every matching tool call: keep it fast, with no network. Every git
+  call in a guard takes `GUARD_GIT_TIMEOUT_MS` (5 s) or less, against the hook's own 10 s.
 - A long job (installing packages in a new worktree) gets the long timeout; a guard
   gets a short one.
+- A timeout that can leave something half done (a worktree) has to say how to finish by
+  hand, in the message: the hook cannot tell how far it got.
 
 ## Fail safe
 
@@ -178,8 +193,9 @@ must stay quick: no fetch.
 
 Each hook is tested by running it with a JSON input (`runHook` in `src/testing/hooks.ts`,
 the same frame the entry uses), in a temp git repo (`testing.md`): with and without
-`anymodel.json`, in a worktree, with another hook wired for the same event (the defer
-check), with `requires` not met, and with a broken `anymodel.json`. Assert stdout exactly.
-Each plugin entry also runs once as a subprocess with stdin (`entries.test.ts`); each
-project hook through `anymodel hook` (`src/cli/hook-commands.test.ts`), once through the
-exact line a project wires. The shim has its own tests (`src/hooks/bun-shim.test.ts`).
+`anymodel.json`, in a worktree, with `ownHooks` listing it and with a project hook on the
+same event that is not listed, with `requires` not met, and with a broken `anymodel.json`.
+Assert stdout exactly. Each plugin entry also runs once as a subprocess with stdin
+(`entries.test.ts`); each project hook through `anymodel hook` (`src/cli/hook-commands.test.ts`),
+once through the exact line a project wires. The shim has its own tests
+(`src/hooks/bun-shim.test.ts`), and the create lock its own (`create-lock.test.ts`).

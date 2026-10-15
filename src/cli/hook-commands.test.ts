@@ -258,6 +258,6 @@ test("doctor checks the project of the folder it runs in, against the plugin's o
     `✗ project: "worktrees" is set in .claude/anymodel.json, but the project's settings do not wire WorktreeCreate, WorktreeRemove, SubagentStop to anymodel hook, so Claude Code makes its own worktrees. Run \`anymodel hook\` for the lines to paste (also in the anymodel README, § Worktrees)\n`,
   );
   expect(run.stdout).toContain(
-    "· project: the plugin's git-guard is off here for PreToolUse (Bash): ./g.sh (.claude/settings.json) runs on the same event\n",
+    `! project: the plugin's git-guard and the project's ./g.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of git-guard, list "git-guard" in ownHooks in .claude/anymodel.json until the copy is removed\n`,
   );
 });

@@ -9,9 +9,11 @@
  * says "discard the changes" (seen live). And Claude Code no longer removes a subagent's
  * worktree at all: it keeps every one a hook made, and runs no WorktreeRemove for it.
  *
- * - **WorktreeRemove:** removes the worktree when nothing in it is changed or untracked,
- *   then its branch when every commit on it is also on another branch or a remote. Uncommitted
- *   work: kept, exit 1, and the reason on stderr (Claude Code then says it was not removed).
+ * - **WorktreeRemove:** removes the worktree when nothing in it is changed or untracked and
+ *   it holds no ignored file that cannot come back (`local-files.ts`: an edited `.env.local`,
+ *   a notes file; not `node_modules`, not an unchanged `.worktreeinclude` copy), then its
+ *   branch when every commit on it is also on another branch or a remote. Uncommitted work,
+ *   or such a file: kept, exit 1, and the reason on stderr (Claude Code then says it was not removed).
  *   A folder that is already gone: forgotten (`git worktree prune`), exit 0.
  * - **SubagentStop:** when the subagent worked in a worktree of its own
  *   (`.claude/worktrees/agent-<agent_id>`) and changed nothing (no edit, no commit of its
@@ -29,6 +31,7 @@ import {
   samePath,
 } from "./git";
 import { type HookResult, SILENT, stringField } from "./io";
+import { listSome, localFiles } from "./local-files";
 import type { Env, HookContext } from "./run";
 
 /** Deletes the branch when no commit on it would be lost; says what happened. */
@@ -46,14 +49,25 @@ export function deleteBranchIfCopied(repo: string, branch: string, env: Env): st
 type Removal = { removed: true; said: string } | { removed: false; why: string };
 
 /**
+ * How long `git worktree remove` may run: the WorktreeRemove hook's own timeout is 60 s
+ * (`project-wiring.ts`), and the checks before it take a few.
+ */
+export const REMOVE_TIMEOUT_MS = 50_000;
+
+/**
  * Removes one listed worktree when nothing in it can be lost: not locked, no worktree inside
- * it, nothing changed or untracked. Then its branch, by `deleteBranchIfCopied`.
+ * it, nothing changed or untracked, and no ignored file that cannot come back
+ * (`localFiles`). Then its branch, by `deleteBranchIfCopied`. `mainCheckout`: where an
+ * unchanged `.worktreeinclude` copy still lives. `timeoutMs`: how long `git worktree remove`
+ * may take (a test injects a short one; the hook uses `REMOVE_TIMEOUT_MS`).
  */
 export function removeWorktree(
   repo: string,
+  mainCheckout: string | null,
   found: ListedWorktree,
   all: ListedWorktree[],
   env: Env,
+  timeoutMs = REMOVE_TIMEOUT_MS,
 ): Removal {
   if (found.locked) {
     return {
@@ -74,8 +88,29 @@ export function removeWorktree(
       why: `it has uncommitted changes or untracked files. Commit them first, or remove it yourself: git worktree remove --force ${found.path}`,
     };
   }
-  const removed = runGit(repo, ["worktree", "remove", found.path], env);
-  if (!removed.ok) return { removed: false, why: removed.err };
+  const local = localFiles(found.path, mainCheckout, env);
+  if (local === null) {
+    return {
+      removed: false,
+      why: `git could not list the ignored files in it, so it is unknown whether removing it loses any. Look first, then remove it yourself: git worktree remove --force ${found.path}`,
+    };
+  }
+  if (local.length > 0) {
+    return {
+      removed: false,
+      why: `it holds files git does not keep, which removing it would lose: ${listSome(local, 10)}. Copy out what you need, then remove it yourself: git worktree remove --force ${found.path}`,
+    };
+  }
+  const removed = runGit(repo, ["worktree", "remove", found.path], env, timeoutMs);
+  if (!removed.ok) {
+    return {
+      removed: false,
+      why:
+        removed.err === "timed out"
+          ? `\`git worktree remove\` timed out after ${timeoutMs / 1000} s, so ${found.path} may be half removed. Check that it holds nothing you need, then finish: git worktree remove --force ${found.path}`
+          : removed.err,
+    };
+  }
   const said = [`removed ${found.path}`];
   if (found.branch !== null) said.push(deleteBranchIfCopied(repo, found.branch, env));
   return { removed: true, said: said.join("; ") };
@@ -104,7 +139,7 @@ export function worktreeRemove(context: HookContext): HookResult {
     const said = found.branch === null ? "" : `; ${deleteBranchIfCopied(repo, found.branch, env)}`;
     return { stderr: `forgot ${found.path}: its folder was gone${said}` };
   }
-  const removal = removeWorktree(repo, found, all, env);
+  const removal = removeWorktree(repo, project.mainCheckout, found, all, env);
   return removal.removed
     ? { stderr: removal.said }
     : { exitCode: 1, stderr: `worktree kept: ${removal.why}` };
@@ -133,6 +168,6 @@ export function subagentStop(context: HookContext): HookResult {
   if (found === undefined || found.branch === null) return SILENT;
   // Its own commits are work: the worktree stays, so the person can find them.
   if (ownCommits(repo, found.branch, env) !== 0) return SILENT;
-  const removal = removeWorktree(repo, found, all, env);
+  const removal = removeWorktree(repo, project.mainCheckout, found, all, env);
   return removal.removed ? { stderr: removal.said } : SILENT;
 }

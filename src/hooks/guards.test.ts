@@ -1,5 +1,6 @@
 /** The main-folder guard and the message guard. */
 import { describe, expect, test } from "bun:test";
+import { symlinkSync } from "node:fs";
 import { join } from "node:path";
 import {
   hookEnv,
@@ -107,8 +108,12 @@ describe("the main-folder guard", () => {
     );
   });
 
-  test("the project wires its own Edit hook: silent", async () => {
+  test("anymodel.json lists it in ownHooks (the project runs its own copy): silent", async () => {
     const { repo } = guarded();
+    writeClaudeFile(repo, "anymodel.json", {
+      worktrees: { base: "main", prefix: "app-wt-", guardMainFolder: true },
+      ownHooks: ["main-folder-guard"],
+    });
     wireProjectHook(repo, "PreToolUse", "Edit|Write|NotebookEdit");
     expect(await runHook(mainFolderGuardHook, edit(repo, join(repo, "a.ts")), hookEnv())).toEqual(
       {},
@@ -126,6 +131,25 @@ describe("the main-folder guard", () => {
     expect(inside.stdout).toContain("run claude plugin update anymodel@anymodel");
     expect(
       await runHook(mainFolderGuardHook, edit(repo, join(tempDir("x"), "a.ts")), hookEnv()),
+    ).toEqual({});
+  });
+
+  test("an edit through a symlinked path is still an edit of the main checkout", async () => {
+    const { repo, worktree } = guarded();
+    const link = join(tempDir("link"), "app");
+    symlinkSync(repo, link);
+    expect(
+      await runHook(mainFolderGuardHook, edit(worktree, join(link, "a.ts")), hookEnv()),
+    ).toEqual(deny(mainFolderRefusal(repo, "main")));
+    // A file that does not exist yet, in a folder reached through the link, is in it too.
+    expect(
+      await runHook(mainFolderGuardHook, edit(worktree, join(link, "new", "a.ts")), hookEnv()),
+    ).toEqual(deny(mainFolderRefusal(repo, "main")));
+    // A symlinked worktree is not the main checkout.
+    const wtLink = join(tempDir("link-wt"), "app-wt-fix");
+    symlinkSync(worktree, wtLink);
+    expect(
+      await runHook(mainFolderGuardHook, edit(worktree, join(wtLink, "a.ts")), hookEnv()),
     ).toEqual({});
   });
 });
@@ -190,5 +214,29 @@ describe("the message guard", () => {
     Bun.spawnSync(["mkdir", "-p", dir]);
     await Bun.write(join(dir, `${process.pid}.json`), "{ broken");
     expect(await runHook(messageGuardHook, send(repo, "anyone"), env)).toEqual({});
+  });
+
+  test("a session reached through a symlink is still in this repo (no refusal)", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "anymodel.json", {});
+    const env = hookEnv();
+    const link = join(tempDir("link"), "app");
+    symlinkSync(repo, link);
+    writeSessionRecord(env, { sessionId: "x", cwd: join(link, "src"), name: "through-a-link" });
+    expect(await runHook(messageGuardHook, send(repo, "through-a-link"), env)).toEqual({});
+  });
+
+  test("another project reached through a symlink is still refused", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "anymodel.json", {});
+    const env = hookEnv();
+    const elsewhere = tempDir("elsewhere");
+    const link = join(tempDir("link-elsewhere"), "other");
+    symlinkSync(elsewhere, link);
+    writeSessionRecord(env, { sessionId: "x", cwd: join(link, "src"), name: "other project" });
+    const result = await runHook(messageGuardHook, send(repo, "other project"), env);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    // The refusal names the folder as the session record has it (what ListAgents shows).
+    expect(result.stdout).toContain(`works in ${join(link, "src")}`);
   });
 });

@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { innermostWorktree, listWorktrees, runGit } from "./git";
 import { addContext, type HookResult, SILENT, stringField, toolInput } from "./io";
 import type { Env, HookContext } from "./run";
-import { invocationOf, MAX_NESTING, nestedCommand, shellSegments, wordsOf } from "./shell-command";
+import { invocationOf, MAX_NESTING, nestedCommand, shellSteps, wordsOf } from "./shell-command";
 
 /**
  * The arguments of every `gh pr merge` the command runs, one list each: a command of the
@@ -32,12 +32,12 @@ import { invocationOf, MAX_NESTING, nestedCommand, shellSegments, wordsOf } from
  */
 function mergeRuns(command: string, depth = 0): string[][] {
   const runs: string[][] = [];
-  for (const segment of shellSegments(command, { joinLines: true })) {
-    const invocation = invocationOf(wordsOf(segment));
+  for (const step of shellSteps(command, { joinLines: true })) {
+    const invocation = invocationOf(wordsOf(step.text));
     if (invocation === undefined) continue;
     const { args, program } = invocation;
     if (program === "gh" && args[0] === "pr" && args[1] === "merge") runs.push(args.slice(2));
-    const inner = nestedCommand(program, args);
+    const inner = nestedCommand(program, args, step.pipedFrom);
     if (inner !== undefined && depth < MAX_NESTING) runs.push(...mergeRuns(inner, depth + 1));
   }
   return runs;

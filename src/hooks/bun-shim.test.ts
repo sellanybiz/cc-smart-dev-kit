@@ -69,6 +69,19 @@ describe("anymodel-bun finds bun without PATH", () => {
     expect(runShim({ HOME: home, PATH: tempDir("empty-path") }).stdout).toBe("home-bun a b c\n");
   });
 
+  test("a baked bun path with a ' in it is read as the launcher wrote it", () => {
+    const home = tempDir("shim-home");
+    const baked = fakeBun(join(tempDir("baked-quote"), "o'brien bun"), "baked");
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(join(home, ".local", "bin", "anymodel"), launcherScript(baked));
+    // Nothing else to fall back on: only the baked path can answer.
+    expect(runShim({ HOME: home, PATH: tempDir("empty-path") })).toEqual({
+      exitCode: 0,
+      stdout: "baked a b c\n",
+      stderr: "",
+    });
+  });
+
   test("no bun anywhere: exit 1, one clear line on stderr, nothing on stdout", () => {
     expect(runShim({ HOME: tempDir("shim-home"), PATH: tempDir("empty-path") })).toEqual({
       exitCode: 1,

@@ -18,7 +18,7 @@ const FIND_INSTALL_JS = [
 ].join("");
 
 /** Quotes a value for sh: single quotes, with each ' written as '\''. */
-function shellQuote(value: string): string {
+export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 

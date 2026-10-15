@@ -51,13 +51,17 @@ describe("worktree-leftovers", () => {
     const dirty = add("dirty");
     const ahead = add("ahead");
     const used = add("used");
+    const local = add("local");
     const gone = add("gone");
+    // An ignored file only this worktree holds: removing it would lose it.
+    writeFileSync(join(repo, ".git", "info", "exclude"), "*.key\n");
+    writeFileSync(join(local, "deploy.key"), "secret\n");
     writeFileSync(join(dirty, "x.txt"), "x\n");
     writeFileSync(join(ahead, "y.txt"), "y\n");
     git(ahead, "add", "y.txt");
     git(ahead, "commit", "-q", "-m", "work");
     writeSessionRecord(env, { sessionId: "s", cwd: used, name: "busy" });
-    for (const folder of [done, dirty, ahead, used]) makeIdle(folder);
+    for (const folder of [done, dirty, ahead, used, local]) makeIdle(folder);
     rmSync(gone, { recursive: true, force: true });
     void fresh;
 

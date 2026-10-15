@@ -36,6 +36,7 @@ import { editedFile, mainFolderGuard } from "./main-folder-guard";
 import { messageGuard } from "./message-guard";
 import type { HookSpec } from "./run";
 import { sessionName } from "./session-name";
+import { programsOf } from "./shell-command";
 import { worktreeCreate } from "./worktree-create";
 import { worktreeLeftovers } from "./worktree-leftovers";
 import { subagentStop, worktreeRemove } from "./worktree-remove";
@@ -108,6 +109,12 @@ export const gitGuardHook: HookSpec = {
     return command !== null && runsGit(command)
       ? toolDecision("ask", cannotCheck("this git command", message))
       : SILENT;
+  },
+  // For the hook log: the programs of the command line, read the way the guard reads it, so
+  // `doctor --live` can prove the guard parsed the call (not only that the hook ran).
+  logFacts: (input) => {
+    const command = stringField(toolInput(input).command);
+    return command === null ? {} : { programs: programsOf(command) };
   },
   run: ({ project, input, cwd, env }): HookResult => {
     const config = project.config;

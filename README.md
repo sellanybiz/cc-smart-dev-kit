@@ -97,25 +97,28 @@ After that, use `anymodel setup` to set up again (for example after an update).
   - ✗ when it wires them but has no `worktrees`: each worktree would fail;
   - ✗ for each other WorktreeCreate hook next to the engine's, in the project's settings
     or yours: Claude Code runs both and makes two worktrees;
-  - as information (`·`), each plugin hook a project hook silences (§ The hooks): "the
-    plugin's git-guard is off here for PreToolUse (Bash): `<the project's command>` runs
-    on the same event";
+  - as information (`·`), each plugin hook the project's `ownHooks` turns off here;
+  - `!` warnings (never a failure) for an `ownHooks` entry with no project hook left to
+    answer, and for a project hook that runs next to a plugin hook `ownHooks` does not
+    name: both would answer (§ The hooks);
 - the last live check, as information (`·`), when `doctor --live` passed on this machine
   before: the Claude Code version it passed on, and "run it again" when the installed
   Claude Code is another version.
 
 `doctor --live` makes two throwaway repos in a temp folder and runs one short `claude -p`
-session in each, with this plugin, only the EnterWorktree, ExitWorktree and Bash tools,
-permission for exactly the calls it makes (`--allowedTools`), and a three-step prompt:
-enter a worktree, run `git status` there, leave with "remove". It uses your Claude login
-and costs a few cents. In the repo without `anymodel.json` it checks that the plugin's
-hooks fired (SessionStart, and the git guard before the Bash call), that no WorktreeCreate
-hook ran and Claude Code made its own worktree, and that it removed it. In the repo that
-turned the worktree engine on (`worktrees`, and the lines from § Worktrees, which run your
-launcher), it checks that the engine's WorktreeCreate made the right folder and branch, the
-session worked there, and its WorktreeRemove removed both. When everything passes it
-records the Claude Code version in `~/.claude/anymodel/live-check.json`. The temp folder
-is removed.
+session in each, with **the plugin being checked** (`--plugin-dir`; the engine's lines in
+the temp repo run that same plugin folder, never the installed launcher), only the
+EnterWorktree, ExitWorktree and Bash tools, permission for exactly the calls it makes
+(`--allowedTools`), and a three-step prompt: enter a worktree, run `git status` there,
+leave with "remove". It uses your Claude login and costs a few cents. In the repo without
+`anymodel.json` it checks that the plugin's hooks fired (SessionStart, and the git guard
+before the Bash call), that the git guard read the command line (the hook log names the
+programs it parsed: `git`), that no WorktreeCreate hook ran and Claude Code made its own
+worktree, and that it removed it. In the repo that turned the worktree engine on
+(`worktrees`, and the lines from § Worktrees), it checks that the engine's WorktreeCreate
+made the right folder and branch, the session worked there, and its WorktreeRemove removed
+both. When everything passes it records the Claude Code version in
+`~/.claude/anymodel/live-check.json`. The temp folder is removed.
 
 Setup only changes the keys it owns. Before each change it makes a backup in
 `~/.claude/anymodel/backups/` (a private folder, one subfolder per file), never beside
@@ -182,20 +185,24 @@ says so in one line.
 
 | Hook | When | What it does |
 |---|---|---|
-| `git-guard` | before a Bash or PowerShell command | Asks you before a force-push, a push to a protected branch (`protectedBranches`), `push --all` / `--mirror`, `reset --hard`, `clean -f`, a checkout or restore that throws changes away, `branch -D`, and (with `worktrees`) a bare `git stash` or `stash pop`: every worktree shares one stash. Text in quotes, here-docs and comments is not a command. |
+| `git-guard` | before a Bash or PowerShell command | Asks you before a force-push, a push to a protected branch (`protectedBranches`), `push --all` / `--mirror`, a branch deleted on the remote (`git push origin :x`, `--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that throws changes away, `branch -D`, `stash clear` and an unnamed `stash drop` (they throw work away), and (with `worktrees`) a bare `git stash` or `stash pop`: every worktree shares one stash. Text in quotes, here-docs and comments is not a command; a shell keyword, a wrapper (`timeout 60 git push -f`, `sudo -u me …`), a here-doc fed to `sh`, and the text piped into `sh` are read through. Git's own abbreviations count (`--forc` is `--force`). Not read: a git alias (`-c alias.x=…`, or one of your own), `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file, and a branch it cannot name. |
 | `main-folder-guard` | before Edit, Write, NotebookEdit | With `worktrees.guardMainFolder`: refuses an edit of a file in the main checkout itself, and says how to get into a worktree. |
 | `message-guard` | before SendMessage | Refuses a message to a session that works outside this repo (ListAgents lists every session on the machine). |
 | `after-merge` | after `gh pr merge` | With `worktrees`: the steps to clear the worktree that was merged, and, for a merge into `worktrees.base`, the message to send the other sessions of the repo. |
 | `worktree-leftovers` | a session starts | With `worktrees`: names the worktrees that are finished (every commit on `origin/<base>`, nothing uncommitted, no running session, idle for an hour) or whose folder is gone. It removes nothing. |
 | `session-name` | a session starts; each prompt | With `sessionNames`: asks the session to name itself after its task, then sets that name at the next prompt. |
 
-**A project that still wires its own hook for the same event and tool** (in
-`.claude/settings.json` or `.claude/settings.local.json`) keeps it: the plugin's hook stays
-silent, so nothing runs twice. Any project hook on that event and tool counts, whatever it
-does; `anymodel doctor`, run in the project, lists each plugin hook that is silent there and
-why. When the project's `anymodel.json` needs a newer plugin, or is broken, the hooks fail
-closed: the guards ask before every call they cover, and the message names the update
-command.
+**A project that still has its own copy of a hook says so**: `ownHooks` in its
+`.claude/anymodel.json` lists the plugin hooks that copy replaces (`["git-guard"]`), and
+exactly those plugin hooks stay silent there, so nothing runs twice. Only that list counts:
+a project hook on the same event that is not listed silences nothing, because it may be a
+logger or a different check, and a guard that goes quiet for it would leave you unguarded.
+`anymodel doctor`, run in the project, prints one `·` line per listed hook, and warns (`!`)
+about a listed hook with no project hook left to answer, and about a project hook running
+next to a plugin hook the list does not name. When the project's `anymodel.json` needs a
+newer plugin, or is broken, the hooks fail closed: the guards ask before every call they
+cover, and the message names the update command — and a hook listed in `ownHooks` stays
+silent all the same.
 
 ## Worktrees
 
@@ -260,8 +267,8 @@ in it. A teammate who never ran setup gets a failed worktree, and Claude Code sh
 
 | Hook | When | What it does |
 |---|---|---|
-| `worktree-create` | a worktree is made (`claude -w <name>`, EnterWorktree, a subagent) | A session's worktree: a folder beside the repo, `<prefix><name>` (a `/` becomes `-`), on the branch `<name>`, from the freshly fetched `origin/<base>` (or the existing branch), then your `setup` command inside. A worktree of that branch that exists is entered again, unless another running session works in it. A subagent's worktree: Claude Code's own shape, `.claude/worktrees/agent-<id>` on `worktree-agent-<id>`, from the remote's default branch (or `HEAD` with Claude Code's `worktree.baseRef: "head"`), with no setup. Both get the files `.worktreeinclude` names. |
-| `worktree-remove` | Claude Code removes a worktree a hook made | Removes it only when nothing in it is uncommitted or untracked; then its branch, when every commit on it is also on another branch. Otherwise it keeps it and says why. Claude Code cannot check a worktree outside the repo, so `ExitWorktree` asks for `discard_changes: true` there; this hook still never discards work. |
+| `worktree-create` | a worktree is made (`claude -w <name>`, EnterWorktree, a subagent) | A session's worktree: a folder beside the repo, `<prefix><name>` (a `/` becomes `-`), on the branch `<name>`, from the freshly fetched `origin/<base>` (or the existing branch), then your `setup` command inside. A worktree of that branch that exists is entered again, unless another running session works in it. One creation of a branch runs at a time (a lock in the repo's git folder): a second session asking for the same branch mid-create is refused with one clear line, and a lock whose process is gone is taken over. **A new branch needs `origin`**: the fetch is what makes it start from the latest base, so a repo with no remote refuses and says so (an existing branch is checked out all the same). A subagent's worktree: Claude Code's own shape, `.claude/worktrees/agent-<id>` on `worktree-agent-<id>`, from the remote's default branch (or `HEAD` with Claude Code's `worktree.baseRef: "head"`), with no setup. Both get the files `.worktreeinclude` names. |
+| `worktree-remove` | Claude Code removes a worktree a hook made | Removes it only when nothing in it is uncommitted or untracked **and it holds no ignored file git does not keep** (an edited `.env.local`, a notes file, a key): those cannot come back, so the worktree is kept and the files are named. `node_modules`, build output, caches, and a `.worktreeinclude` copy nobody changed (the main checkout still has it, byte for byte) do not block. Then its branch, when every commit on it is also on another branch. Otherwise it keeps it and says why. Claude Code cannot check a worktree outside the repo, so `ExitWorktree` asks for `discard_changes: true` there; this hook still never discards work. |
 | `subagent-stop` | a subagent ends | Removes its worktree and branch when it changed nothing (Claude Code keeps every worktree a hook made for a subagent). |
 
 Wired without `worktrees` in `anymodel.json`, or with an `anymodel.json` that needs a newer
@@ -271,6 +278,12 @@ the message says why. `anymodel doctor`, run in the project, checks the wiring.
 **Moving from a project's own worktree hook:** replace its WorktreeCreate, WorktreeRemove
 and SubagentStop lines with these, in one commit. Two WorktreeCreate hooks make two
 worktrees for each request; `anymodel doctor` reports a second one.
+
+**A long job has a long timeout, and says what to do when it runs out:** `git worktree add`
+gets 500 s, the `setup` inside 540 s (the hook's own timeout is 600 s), and
+`git worktree remove` 50 s (that hook's is 60 s). On a timeout the message names the folder
+and how to finish by hand (`git worktree remove --force <folder>`, after checking that it
+holds nothing you need).
 
 ## A project's `.claude/anymodel.json`
 
@@ -285,6 +298,7 @@ worktrees for each request; `anymodel doctor` reports a second one.
   },
   "protectedBranches": ["main"],
   "sessionNames": true,
+  "ownHooks": ["git-guard"],
   "instructions": true,
   "autoMode": ["In my-app: never touch production."]
 }
@@ -300,6 +314,7 @@ worktrees for each request; `anymodel doctor` reports a second one.
 | `worktrees.guardMainFolder` | `true`: refuse edits in the main checkout itself. Off when left out. |
 | `protectedBranches` | The branches the git guard asks about before a push. Default `["main"]`. |
 | `sessionNames` | `true`: each session names itself after its task. Off when left out. |
+| `ownHooks` | The plugin hooks this project still runs as its own copy (in its own settings): exactly those stay silent here, so nothing runs twice. `["git-guard"]` while the project still has its own git guard; empty it once that copy is gone (§ The hooks). |
 | `instructions` | Accepted now, used from Phase 5. |
 | `autoMode` | Accepted now, used from Phase 6. |
 

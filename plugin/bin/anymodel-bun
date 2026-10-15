@@ -7,14 +7,31 @@
 #   3. ~/.bun/bin/bun;
 #   4. bun on PATH.
 # Only shell built-ins, so it works with an empty PATH too.
+#
+# The launcher writes its baked bun in single quotes, each ' in the path written as '\''
+# (`shellQuote` in src/setup/launcher.ts); the loop below undoes exactly that, so a bun under
+# a folder like /home/o'brien works.
 launcher="$HOME/.local/bin/anymodel"
 baked=
 if [ -f "$launcher" ]; then
   while IFS= read -r line; do
     case $line in
       "baked_bun='"*"'")
-        baked=${line#"baked_bun='"}
-        baked=${baked%"'"}
+        quoted=${line#"baked_bun='"}
+        quoted=${quoted%"'"}
+        baked=
+        while :; do
+          case $quoted in
+            *"'\''"*)
+              baked="$baked${quoted%%"'\''"*}'"
+              quoted=${quoted#*"'\''"}
+              ;;
+            *)
+              baked="$baked$quoted"
+              break
+              ;;
+          esac
+        done
         break
         ;;
     esac

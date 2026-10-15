@@ -2,16 +2,19 @@
  * Every hook through the same frame (`run.ts`), in a table:
  * - with no anymodel.json: every plugin hook silent; the worktree engine a project wires
  *   fails closed (it needs `worktrees`);
- * - the defer check: the project's own hook for the same event (and tool) silences a
- *   plugin hook, never a hook the project wires itself;
+ * - the project's own copy: a plugin hook its anymodel.json lists in `ownHooks` is silent,
+ *   even when the rest of the file is broken or too new; a project hook on the same event
+ *   that is not listed silences nothing;
  * - `requires` not met (and a broken anymodel.json): each fails closed its own way;
- * - the guard matrix: the plugin's hook on or off × the project's hook wired or not ×
- *   the project's `requires` met or not. Exactly one guard answers a destructive command,
- *   never two; none only when neither is installed.
+ * - the guard matrix: the plugin's hook on or off × the project's hook wired or not × listed
+ *   in `ownHooks` or not × the project's `requires` met or not. Exactly one guard answers a
+ *   destructive command when the project lists the copy it runs; two when it forgot to (what
+ *   `anymodel doctor` warns about); none only when neither is installed.
  */
 import { describe, expect, test } from "bun:test";
 import { chmodSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { PLUGIN_HOOK_NAMES } from "../project/config";
 import {
   hookEnv,
   makeClone,
@@ -46,7 +49,7 @@ const FULL_CONFIG = {
 
 interface Case {
   spec: HookSpec;
-  /** The project's own hook that silences this one: event and matcher. */
+  /** The project's own copy of this hook: event and matcher. */
   own: { event: string; matcher?: string };
   /** A project and an input that make this hook speak. */
   setup: (config: unknown) => { input: Record<string, unknown>; env: Record<string, string> };
@@ -291,6 +294,16 @@ test("the table covers every hook, the plugin's and the project's", () => {
   expect(PROJECT_HOOKS.every((spec) => spec.wiring === "project")).toBe(true);
 });
 
+test("ownHooks accepts exactly the plugin's hooks", () => {
+  const listed: string[] = [...PLUGIN_HOOK_NAMES];
+  expect(listed.sort()).toEqual(HOOKS.map((spec) => spec.name).sort());
+});
+
+/** The full config, with `ownHooks` listing this hook when the plugin wires it. */
+function listing(c: Case, config: Record<string, unknown> = FULL_CONFIG) {
+  return c.spec.wiring === "plugin" ? { ...config, ownHooks: [c.spec.name] } : config;
+}
+
 /** What a hook says: anything at all on stdout or stderr. */
 const speaks = (result: HookResult) => result.stdout !== undefined || result.stderr !== undefined;
 
@@ -303,19 +316,21 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
   });
 
   test.each(["settings.json", "settings.local.json"])(
-    "another hook for the same event in the project's %s: a plugin hook stays silent, a project-wired one runs",
+    "another hook for the same event in the project's %s, not listed in ownHooks: it still speaks",
     async (file) => {
       const { input, env } = c.setup(FULL_CONFIG);
       wireProjectHook(mainOf(input), c.own.event, c.own.matcher, file);
       const result = await runHook(c.spec, input, env);
-      if (c.spec.wiring === "plugin") {
-        expect(result).toEqual({});
-      } else {
-        expect(speaks(result)).toBe(true);
-        expect(result.exitCode ?? 0).toBe(0);
-      }
+      expect(speaks(result)).toBe(true);
+      expect(result.exitCode ?? 0).toBe(0);
     },
   );
+
+  test("listed in ownHooks: a plugin hook stays silent (the project's copy answers)", async () => {
+    if (c.spec.wiring !== "plugin") return;
+    const { input, env } = c.setup(listing(c));
+    expect(await runHook(c.spec, input, env)).toEqual({});
+  });
 
   test("requires not met: fails closed", async () => {
     const { input, env } = c.setup({ requires: ">=99", fieldFromTheFuture: true });
@@ -329,12 +344,18 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
     expect(said).toContain("anymodel.json: worktree: unknown field");
   });
 
-  test("requires not met, and another hook for the same event: a plugin hook stays silent (that one runs), a project-wired one fails closed", async () => {
-    const { input, env } = c.setup({ requires: ">=99" });
+  test("requires not met, and listed in ownHooks: a plugin hook stays silent (the project's copy runs), a project-wired one fails closed", async () => {
+    const { input, env } = c.setup(listing(c, { requires: ">=99", fieldFromTheFuture: true }));
     wireProjectHook(mainOf(input), c.own.event, c.own.matcher);
     const result = await runHook(c.spec, input, env);
     if (c.spec.wiring === "plugin") expect(result).toEqual({});
     else c.failsClosed(result);
+  });
+
+  test("requires not met, another hook for the same event, not listed: fails closed all the same", async () => {
+    const { input, env } = c.setup({ requires: ">=99" });
+    wireProjectHook(mainOf(input), c.own.event, c.own.matcher);
+    c.failsClosed(await runHook(c.spec, input, env));
   });
 });
 
@@ -375,28 +396,31 @@ describe("the guard matrix", () => {
     [gitGuardHook, mainFolderGuardHook, messageGuardHook].includes(c.spec),
   );
 
-  // [plugin installed, project wires its own, requires met, guards that answer]
-  const ROWS: Array<[boolean, boolean, boolean, number]> = [
-    [true, false, true, 1], // the plugin's
-    [true, true, true, 1], // the project's alone: the plugin defers
-    [true, false, false, 1], // the plugin's, failing closed: it asks
-    [true, true, false, 1], // the project's alone
-    [false, true, true, 1], // the project's
-    [false, true, false, 1], // the project's
-    [false, false, true, 0], // nobody: the project removed its copy before the plugin came
-    [false, false, false, 0], // the project's own fail-closed check covers this (design.md)
+  // [plugin installed, project wires its own, listed in ownHooks, requires met, guards that answer]
+  const ROWS: Array<[boolean, boolean, boolean, boolean, number]> = [
+    [true, false, false, true, 1], // the plugin's
+    [true, true, true, true, 1], // the project's alone: listed, so the plugin's is silent
+    [true, true, false, true, 2], // both: the project forgot to list it (doctor warns)
+    [true, false, false, false, 1], // the plugin's, failing closed: it asks
+    [true, true, true, false, 1], // the project's alone: ownHooks is read on its own
+    [false, true, true, true, 1], // the project's
+    [false, true, true, false, 1], // the project's
+    [false, false, false, true, 0], // nobody: the project removed its copy before the plugin came
+    [false, false, false, false, 0], // the project's own fail-closed check covers this (design.md)
   ];
 
   test.each(
     guards.flatMap((c) =>
       ROWS.map(
-        ([plugin, wired, met, expected]) => [c.spec.name, plugin, wired, met, expected, c] as const,
+        ([plugin, wired, listed, met, expected]) =>
+          [c.spec.name, plugin, wired, listed, met, expected, c] as const,
       ),
     ),
   )(
-    "%s: plugin %j, project's own %j, requires met %j → %j",
-    async (_n, plugin, wired, met, expected, c) => {
-      const { input, env } = c.setup(met ? FULL_CONFIG : { requires: ">=99" });
+    "%s: plugin %j, project's own %j, listed %j, requires met %j → %j",
+    async (_n, plugin, wired, listed, met, expected, c) => {
+      const config = met ? FULL_CONFIG : { requires: ">=99" };
+      const { input, env } = c.setup(listed ? listing(c, config) : config);
       if (wired) wireProjectHook(mainOf(input), c.own.event, c.own.matcher);
       const pluginAnswered = plugin
         ? (await runHook(c.spec, input, env)).stdout !== undefined

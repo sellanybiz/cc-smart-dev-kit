@@ -4,31 +4,45 @@
  *
  * It asks before:
  * - a force-push (`--force`, `-f`, `--force-with-lease`, `--force-if-includes`, a `+`
- *   refspec; not a `--dry-run`);
+ *   refspec; not a `--dry-run`); any of these abbreviated the way git accepts (`--forc`);
  * - a push to a protected branch (anymodel.json `protectedBranches`, default `main`):
  *   named, or sent by a bare `git push` / `HEAD` from a folder on that branch (the folder
  *   follows a `cd` / `Set-Location` earlier on the line); `git push --all` / `--mirror`;
- * - `git reset --hard`; `git clean -f` (not a `-n` dry run);
+ * - a branch deleted on the remote (`git push origin :x`, `git push -d origin x`);
+ * - `git reset --hard`; `git clean -f` (not a `-n` dry run); `git worktree remove -f`;
  * - a checkout that discards changes: `git checkout -- <path>`, `checkout .`,
  *   `checkout -f`, `git switch -f` / `--discard-changes`, `git restore <path>` without
  *   `--staged`;
  * - `git branch -D` (deletes a branch that may not be merged);
+ * - `git stash clear`, and `git stash drop` with no stash named: they throw away work;
  * - when the project works in worktrees (`worktrees` in anymodel.json): a bare `git stash`
  *   or `git stash pop`, because every worktree shares one stash.
  *
  * "ask", never "deny": the person may mean it, and a hook cannot tell. Every command of a
  * line is read on its own, through `shell-command.ts`: quoted text, here-doc bodies and
- * comments are data; `$( … )` inside double quotes, and the inner command of `bash -c`,
- * `cmd /c`, `pwsh -c`, `eval` and `iex` (three levels deep), are commands.
+ * comments are data; `$( … )` inside double quotes, the inner command of `bash -c`,
+ * `cmd /c`, `pwsh -c`, `eval` and `iex` (three levels deep), and the script of a shell that
+ * reads it from standard input (`sh <<'EOF' … EOF`, `echo "git push -f" | sh`) are commands.
  *
- * Known limits: a backtick substitution, `-EncodedCommand`, `xargs`, `ssh`, a script file, a
- * `cd` it cannot follow (`cd -`, `cd ~/x`, `cd $DIR`) and a branch it cannot read are not
- * asked about; `git checkout <name>` cannot tell a file from a branch, so it stays silent.
+ * Known limits: a git alias (`-c alias.x=… x`, or one in the user's config), a `branch -f`,
+ * a `checkout -B` and a `switch -C` (they move a branch), a backtick substitution,
+ * `-EncodedCommand`, `ssh`, a script file, a `cd` it cannot follow (`cd -`, `cd ~/x`,
+ * `cd $DIR`) and a branch it cannot read are not asked about; `git checkout <name>` cannot
+ * tell a file from a branch, so it stays silent.
  */
 import { isAbsolute, resolve } from "node:path";
-import { runGit } from "./git";
+import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
 import type { Env } from "./run";
-import { invocationOf, MAX_NESTING, nestedCommand, shellSegments, wordsOf } from "./shell-command";
+import {
+  invocationOf,
+  isShort,
+  MAX_NESTING,
+  nestedCommand,
+  programsOf,
+  shellSteps,
+  shortFlags,
+  wordsOf,
+} from "./shell-command";
 
 /** The branches asked about when anymodel.json names none. */
 export const DEFAULT_PROTECTED_BRANCHES = ["main"];
@@ -46,29 +60,25 @@ export interface GuardOptions {
  */
 type Folder = string | null;
 
-/** `git push` options that take the next word as their value. */
-const PUSH_VALUE_OPTIONS = new Set(["--exec", "--push-option", "--receive-pack", "--repo"]);
+/** `git push` options that take the next word as their value, and the shortest prefix git accepts. */
+const PUSH_VALUE_OPTIONS: Array<[string, number]> = [
+  ["--exec", 4],
+  ["--push-option", 4],
+  ["--receive-pack", 5],
+  ["--repo", 6],
+];
 
 /** Commands that change the folder the rest of the line runs in (bash, cmd, PowerShell). */
 const CHANGE_DIR = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
 
 /**
- * The letters of a short option group (`-fdx` → `fdx`), up to the first one that takes a
- * value (the rest of the word, or the next word when nothing is attached).
+ * True when `arg` is the long option `full`, or a prefix of it that git accepts (git takes
+ * any unique prefix: `--har` is `--hard`, `--force-w` is `--force-with-lease`). `min` is the
+ * shortest prefix that still names one option of that subcommand.
  */
-function shortFlags(arg: string, valued: string): { flags: string; wantsNext: boolean } {
-  let flags = "";
-  for (let i = 1; i < arg.length; i++) {
-    const letter = arg.charAt(i);
-    flags += letter;
-    if (valued.includes(letter)) return { flags, wantsNext: i === arg.length - 1 };
-  }
-  return { flags, wantsNext: false };
-}
-
-/** `-x` or `-xyz`, not `--long` and not a bare `-`. */
-function isShort(arg: string): boolean {
-  return /^-[^-]/.test(arg);
+function longOption(arg: string, full: string, min: number): boolean {
+  const name = arg.split("=")[0] ?? arg;
+  return name.length >= min && name.length <= full.length && full.startsWith(name);
 }
 
 /**
@@ -91,7 +101,7 @@ function movedTo(program: string, folder: Folder, args: string[]): Folder {
 function currentBranch(folder: Folder, dir: string | undefined, env: Env): string | undefined {
   if (folder === null) return undefined;
   const where = dir === undefined ? folder : resolve(folder, dir);
-  const run = runGit(where, ["symbolic-ref", "--short", "-q", "HEAD"], env, 5000);
+  const run = runGit(where, ["symbolic-ref", "--short", "-q", "HEAD"], env, GUARD_GIT_TIMEOUT_MS);
   return run.ok && run.out !== "" ? run.out : undefined;
 }
 
@@ -104,6 +114,7 @@ function pushQuestions(
   const positional: string[] = [];
   let dryRun = false;
   let force = false;
+  let deleting = false;
   let everyBranch = false;
   let repoGiven = false;
   let tagsOnly = false;
@@ -114,17 +125,28 @@ function pushQuestions(
       break;
     }
     if (arg.startsWith("--")) {
-      const name = arg.split("=")[0] ?? arg;
-      if (["--force", "--force-if-includes", "--force-with-lease"].includes(name)) force = true;
-      if (name === "--all" || name === "--mirror") everyBranch = true;
-      if (name === "--dry-run") dryRun = true;
-      if (name === "--tags") tagsOnly = true;
-      if (name === "--repo") repoGiven = true;
-      if (PUSH_VALUE_OPTIONS.has(arg)) i++;
+      if (
+        longOption(arg, "--force", 6) ||
+        longOption(arg, "--force-if-includes", 9) ||
+        longOption(arg, "--force-with-lease", 9)
+      ) {
+        force = true;
+      }
+      if (longOption(arg, "--all", 4) || longOption(arg, "--mirror", 6)) everyBranch = true;
+      if (longOption(arg, "--dry-run", 4)) dryRun = true;
+      if (longOption(arg, "--tags", 4)) tagsOnly = true;
+      if (longOption(arg, "--delete", 5)) deleting = true;
+      if (longOption(arg, "--repo", 6)) repoGiven = true;
+      if (
+        !arg.includes("=") &&
+        PUSH_VALUE_OPTIONS.some(([full, min]) => longOption(arg, full, min))
+      )
+        i++;
     } else if (isShort(arg)) {
       const { flags, wantsNext } = shortFlags(arg, "o");
       if (flags.includes("f")) force = true;
       if (flags.includes("n")) dryRun = true;
+      if (flags.includes("d")) deleting = true;
       if (wantsNext) i++;
     } else {
       positional.push(arg);
@@ -144,6 +166,19 @@ function pushQuestions(
   if (everyBranch) {
     found.push(
       `\`git push --all\` / \`--mirror\` pushes every branch, ${protectedBranches.map((b) => `\`${b}\``).join(", ")} included.`,
+    );
+  }
+  // A branch deleted on the remote: `git push origin :x`, or `--delete x`.
+  const deleted = refspecs
+    .map((refspec) => refspec.replace(/^\+/, ""))
+    .map((spec) => (deleting ? spec : spec.startsWith(":") && spec.length > 1 ? spec.slice(1) : ""))
+    .filter((name) => name !== "")
+    .map((name) => name.replace(/^refs\/heads\//, ""));
+  if (deleted.length > 0) {
+    found.push(
+      `This deletes ${deleted.map((name) => `\`${name}\``).join(", ")} on the remote: the ` +
+        "commits on it are gone for everyone, and a teammate may still be working on it. " +
+        "Approve only if you meant to delete it.",
     );
   }
 
@@ -175,19 +210,31 @@ function pushQuestions(
   return found;
 }
 
-function stashQuestions(args: string[]): string[] {
+function stashQuestions(args: string[], sharedStash: boolean): string[] {
   const sub = args[0];
+  const named = args.slice(1).some((arg) => !arg.startsWith("-"));
+  if (sub === "clear") {
+    return [
+      "`git stash clear` throws away every stash for good: git cannot bring them back. " +
+        "`git stash list` shows what they hold, `git stash show -p` one of them.",
+    ];
+  }
+  if (sub === "drop" && !named) {
+    return [
+      "`git stash drop` with no stash named drops the newest one, whoever made it. " +
+        "`git stash list` shows them; `git stash drop stash@{n}` drops the one you mean.",
+    ];
+  }
+  if (!sharedStash) return [];
   const tagged = args.some(
     (arg) =>
-      arg === "--message" ||
-      arg.startsWith("--message=") ||
-      (isShort(arg) && shortFlags(arg, "m").flags.includes("m")),
+      longOption(arg, "--message", 6) || (isShort(arg) && shortFlags(arg, "m").flags.includes("m")),
   );
   // `git stash` and `git stash -u` are a push with no tag, and so is `save` with no message
-  // word; `pop` takes the newest stash, whoever made it. `list`, `apply <sha>` and `drop`
-  // are how a tagged stash is handled.
+  // word; `pop` takes the newest stash, whoever made it. `list`, `apply <sha>` and
+  // `drop <stash>` are how a tagged stash is handled.
   const untaggedPush = (sub === undefined || sub.startsWith("-") || sub === "push") && !tagged;
-  const saveWithoutMessage = sub === "save" && !args.slice(1).some((arg) => !arg.startsWith("-"));
+  const saveWithoutMessage = sub === "save" && !named;
   if (sub !== "pop" && !untaggedPush && !saveWithoutMessage) return [];
   return [
     "The git stash is shared by every worktree of this repo, so a bare `git stash` or " +
@@ -203,8 +250,8 @@ function discardsChanges(sub: string, rest: string[]): boolean {
     // the uncommitted changes away instead of refusing to switch.
     return rest.some(
       (arg) =>
-        arg === "--force" ||
-        arg === "--discard-changes" ||
+        longOption(arg, "--force", 6) ||
+        longOption(arg, "--discard-changes", 8) ||
         (isShort(arg) && shortFlags(arg, "cC").flags.includes("f")),
     );
   }
@@ -212,25 +259,34 @@ function discardsChanges(sub: string, rest: string[]): boolean {
     const dashes = rest.indexOf("--");
     const pathsGiven = dashes !== -1 && dashes < rest.length - 1;
     const force = rest.some(
-      (arg) => arg === "--force" || (isShort(arg) && shortFlags(arg, "bB").flags.includes("f")),
+      (arg) =>
+        longOption(arg, "--force", 6) ||
+        (isShort(arg) && shortFlags(arg, "bB").flags.includes("f")),
     );
     return pathsGiven || force || rest.slice(0, dashes === -1 ? undefined : dashes).includes(".");
   }
   // `restore` puts files back in the working folder, unless it only unstages them.
   const staged = rest.some(
-    (arg) => arg === "--staged" || (isShort(arg) && shortFlags(arg, "s").flags.includes("S")),
+    (arg) =>
+      longOption(arg, "--staged", 6) || (isShort(arg) && shortFlags(arg, "s").flags.includes("S")),
   );
   const worktree = rest.some(
-    (arg) => arg === "--worktree" || (isShort(arg) && shortFlags(arg, "s").flags.includes("W")),
+    (arg) =>
+      longOption(arg, "--worktree", 6) ||
+      (isShort(arg) && shortFlags(arg, "s").flags.includes("W")),
   );
   return !staged || worktree;
 }
 
 /** `git branch -D`, `-d -f`, `--delete --force`: deletes a branch even if it was never merged. */
 function forceDeletesBranch(rest: string[]): boolean {
-  const has = (long: string | undefined, short: string) =>
-    rest.some((arg) => arg === long || (isShort(arg) && shortFlags(arg, "").flags.includes(short)));
-  return has(undefined, "D") || (has("--delete", "d") && has("--force", "f"));
+  const has = (long: string | undefined, min: number, short: string) =>
+    rest.some(
+      (arg) =>
+        (long !== undefined && longOption(arg, long, min)) ||
+        (isShort(arg) && shortFlags(arg, "").flags.includes(short)),
+    );
+  return has(undefined, 0, "D") || (has("--delete", 5, "d") && has("--force", 6, "f"));
 }
 
 function gitQuestions(args: string[], folder: Folder, options: GuardOptions): string[] {
@@ -253,7 +309,22 @@ function gitQuestions(args: string[], folder: Folder, options: GuardOptions): st
       options.protectedBranches,
     );
   }
-  if (sub === "stash") return options.sharedStash ? stashQuestions(rest) : [];
+  if (sub === "stash") return stashQuestions(rest, options.sharedStash);
+  if (sub === "worktree" && rest[0] === "remove") {
+    const force = rest
+      .slice(1)
+      .some(
+        (arg) =>
+          longOption(arg, "--force", 6) ||
+          (isShort(arg) && shortFlags(arg, "").flags.includes("f")),
+      );
+    if (force) {
+      return [
+        "`git worktree remove --force` deletes a worktree even when it holds uncommitted or " +
+          "untracked work, and git cannot bring that back. Look in it first.",
+      ];
+    }
+  }
   if ((sub === "checkout" || sub === "restore" || sub === "switch") && discardsChanges(sub, rest)) {
     return [
       `\`git ${sub}\` here overwrites files in this folder with another version, and any ` +
@@ -267,7 +338,7 @@ function gitQuestions(args: string[], folder: Folder, options: GuardOptions): st
         "only in the reflog. `git branch -d` deletes a merged branch, and does not ask.",
     ];
   }
-  if (sub === "reset" && rest.includes("--hard")) {
+  if (sub === "reset" && rest.some((arg) => longOption(arg, "--hard", 4))) {
     return [
       "`git reset --hard` throws away every uncommitted change in this folder, for good. " +
         "Approve only if you want them gone; a WIP commit keeps the work first.",
@@ -275,10 +346,13 @@ function gitQuestions(args: string[], folder: Folder, options: GuardOptions): st
   }
   if (sub === "clean") {
     const force = rest.some(
-      (arg) => arg === "--force" || (isShort(arg) && shortFlags(arg, "e").flags.includes("f")),
+      (arg) =>
+        longOption(arg, "--force", 6) || (isShort(arg) && shortFlags(arg, "e").flags.includes("f")),
     );
     const dryRun = rest.some(
-      (arg) => arg === "--dry-run" || (isShort(arg) && shortFlags(arg, "e").flags.includes("n")),
+      (arg) =>
+        longOption(arg, "--dry-run", 4) ||
+        (isShort(arg) && shortFlags(arg, "e").flags.includes("n")),
     );
     if (force && !dryRun) {
       return [
@@ -305,13 +379,13 @@ function inspect(
   const found: string[] = [];
   let folder = cwd;
   // A quote left open is read blind: more pieces, so nothing hides inside it.
-  for (const segment of shellSegments(command, { blindWhenOpen: true, joinLines })) {
-    const invocation = invocationOf(wordsOf(segment));
+  for (const step of shellSteps(command, { blindWhenOpen: true, joinLines })) {
+    const invocation = invocationOf(wordsOf(step.text));
     if (invocation === undefined) continue;
     const { args, program } = invocation;
     if (program === "git") found.push(...gitQuestions(args, folder, options));
     if (CHANGE_DIR.has(program)) folder = movedTo(program, folder, args);
-    const inner = nestedCommand(program, args);
+    const inner = nestedCommand(program, args, step.pipedFrom);
     if (inner !== undefined && depth < MAX_NESTING) {
       found.push(...inspect(inner, folder, joinLines, options, depth + 1));
     }
@@ -336,13 +410,5 @@ export function guardQuestions(command: string, cwd: string, options: GuardOptio
 
 /** True when the command line runs git at all (what the guard asks about when it cannot read its config). */
 export function runsGit(command: string): boolean {
-  const runs = (line: string, depth: number): boolean =>
-    shellSegments(line, { blindWhenOpen: true, joinLines: true }).some((segment) => {
-      const invocation = invocationOf(wordsOf(segment));
-      if (invocation === undefined) return false;
-      if (invocation.program === "git") return true;
-      const inner = nestedCommand(invocation.program, invocation.args);
-      return inner !== undefined && depth < MAX_NESTING && runs(inner, depth + 1);
-    });
-  return runs(command, 0);
+  return programsOf(command).includes("git");
 }

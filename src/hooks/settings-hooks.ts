@@ -1,24 +1,14 @@
 /**
- * The defer check: a plugin hook stays silent while the project still wires its own hook
- * for the same event (and a matcher that covers the same tool or source).
+ * The hooks a Claude Code settings file wires: what `anymodel doctor` reads to check a
+ * project's wiring (the worktree engine's lines, and a project hook that runs next to a
+ * plugin hook on the same event and tool).
  *
- * Why: a project may still carry its own copy of a piece the plugin now ships (a guard, a
- * note). Claude Code runs every matching hook, the plugin's and the project's, so both
- * would act: two questions for one command. So the plugin's hook exits 0 and prints
- * nothing, and the project's copy runs alone, until the project removes it
- * (`docs/design.md` § The safe switch).
- *
- * The check is coarse on purpose: it cannot tell what a project's hook does, only when it
- * runs. A project hook on the same event and tool, whatever it does, silences the plugin's.
- * `anymodel doctor` lists each one it finds in the project it runs in, so the silence is
- * visible.
- *
- * Only the hooks `plugin/hooks/hooks.json` wires have the check. The worktree hooks a
- * project wires itself (`anymodel hook <name>`) run because the project asked for them.
+ * No hook reads these files: what Claude Code loaded for a session is not knowable from a
+ * hook (a worktree's settings may differ from the ones the session started with), so a
+ * plugin hook steps aside only for what the project's anymodel.json says (`ownHooks`).
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Checkout } from "../project/resolve";
 
 /**
  * True when a settings `matcher` selects `subject` (a tool name, a SessionStart source, an
@@ -90,28 +80,10 @@ export function wiredHandlers(file: string, event: string, subject: string | nul
   });
 }
 
-/** True when `file` wires at least one hook handler for `event` whose matcher selects `subject`. */
-export function fileWiresHook(file: string, event: string, subject: string | null): boolean {
-  return wiredHandlers(file, event, subject).length > 0;
-}
-
-/**
- * The settings files whose hooks count as the project's own: `.claude/settings.json` and
- * `.claude/settings.local.json` of the checkout `cwd` is in and of the main checkout. A
- * session in a worktree may have loaded either one.
- */
-export function deferSources(checkout: Checkout): string[] {
-  const roots = [checkout.root];
-  if (checkout.mainCheckout !== null && checkout.mainCheckout !== checkout.root) {
-    roots.push(checkout.mainCheckout);
-  }
-  return roots.flatMap((root) => [
-    join(root, ".claude", "settings.json"),
-    join(root, ".claude", "settings.local.json"),
-  ]);
-}
-
-/** The first of `files` that wires its own hook for `event` and `subject`, or null. */
-export function ownHookIn(files: string[], event: string, subject: string | null): string | null {
-  return files.find((file) => fileWiresHook(file, event, subject)) ?? null;
+/** A project's two settings files: `.claude/settings.json` and `.claude/settings.local.json`. */
+export function projectSettingsFiles(projectDir: string): string[] {
+  return [
+    join(projectDir, ".claude", "settings.json"),
+    join(projectDir, ".claude", "settings.local.json"),
+  ];
 }

@@ -12,7 +12,7 @@
  * through: a guard that failed on its own bug would stop every edit.
  */
 import { isAbsolute, resolve } from "node:path";
-import { innermostWorktree, isInside, listWorktrees } from "./git";
+import { GUARD_GIT_TIMEOUT_MS, innermostWorktree, isInside, listWorktrees, realPath } from "./git";
 import {
   type HookInput,
   type HookResult,
@@ -23,12 +23,15 @@ import {
 } from "./io";
 import type { HookContext } from "./run";
 
-/** The file an edit is about, as an absolute path; null when the call names none. */
+/**
+ * The file an edit is about, as an absolute real path (`realPath`: a link on the way to it
+ * must not hide which checkout it is in); null when the call names none.
+ */
 export function editedFile(input: HookInput, cwd: string): string | null {
   const fields = toolInput(input);
   const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
   if (path === null) return null;
-  return isAbsolute(path) ? resolve(path) : resolve(cwd, path);
+  return realPath(isAbsolute(path) ? resolve(path) : resolve(cwd, path));
 }
 
 /** True when `file` is in the main checkout itself: inside it, and in no worktree inside it. */
@@ -51,11 +54,12 @@ export function mainFolderGuard(context: HookContext): HookResult {
   if (worktreesConfig?.guardMainFolder !== true || project.mainCheckout === null) return SILENT;
   const file = editedFile(input, cwd);
   if (file === null) return SILENT;
-  const [, ...worktrees] = listWorktrees(project.mainCheckout, env);
+  const main = realPath(project.mainCheckout);
+  const [, ...worktrees] = listWorktrees(main, env, GUARD_GIT_TIMEOUT_MS);
   return editsMainFolder(
     file,
-    project.mainCheckout,
-    worktrees.map((worktree) => worktree.path),
+    main,
+    worktrees.map((worktree) => realPath(worktree.path)),
   )
     ? toolDecision("deny", mainFolderRefusal(project.mainCheckout, worktreesConfig.base))
     : SILENT;

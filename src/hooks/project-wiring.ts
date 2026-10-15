@@ -29,8 +29,11 @@ export function projectHookCommand(name: string): string {
   return `${LAUNCHER_IN_SHELL} hook ${name}`;
 }
 
-/** The `hooks` block a project pastes into its `.claude/settings.json`. */
-export function projectHookSettings(): {
+/**
+ * The `hooks` block a project pastes into its `.claude/settings.json`. `commandFor`: how each
+ * hook runs; the default is the launcher, and `doctor --live` wires the plugin it is checking.
+ */
+export function projectHookSettings(commandFor: (name: string) => string = projectHookCommand): {
   hooks: Record<
     string,
     Array<{ hooks: Array<{ type: string; command: string; timeout: number }> }>
@@ -41,9 +44,7 @@ export function projectHookSettings(): {
     const timeout = TIMEOUTS[spec.name];
     if (timeout === undefined) throw new Error(`no timeout for the project hook ${spec.name}`);
     for (const event of spec.events) {
-      hooks[event] = [
-        { hooks: [{ type: "command", command: projectHookCommand(spec.name), timeout }] },
-      ];
+      hooks[event] = [{ hooks: [{ type: "command", command: commandFor(spec.name), timeout }] }];
     }
   }
   return { hooks };

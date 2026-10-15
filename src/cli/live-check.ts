@@ -6,22 +6,24 @@
  * In a temp folder it makes two throwaway repos: one without anymodel.json, where Claude
  * Code makes its own worktrees, and one that turned the worktree engine on (`worktrees` in
  * anymodel.json, and the three `anymodel hook` lines in its `.claude/settings.json`, exactly
- * as the README says), cloned from a local bare "origin". In each it runs one `claude -p`
- * session with this plugin (`--plugin-dir`), only the EnterWorktree, ExitWorktree and Bash
- * tools, permission for exactly those calls (no permission mode that skips the checks),
- * and a tiny prompt: enter a worktree, run `git status` there, leave it with "remove".
- * Every hook run is logged (`ANYMODEL_HOOK_LOG`), and the check reads that log and git:
+ * as the README says, each running **the plugin being checked**: this CLI's own
+ * `plugin/dist/cli.js` with the bun running it, never the installed launcher). It clones the
+ * second from a local bare "origin". In each it runs one `claude -p` session with this
+ * plugin (`--plugin-dir`), only the EnterWorktree, ExitWorktree and Bash tools, permission
+ * for exactly those calls (no permission mode that skips the checks), and a tiny prompt:
+ * enter a worktree, run `git status` there, leave it with "remove". Every hook run is logged
+ * (`ANYMODEL_HOOK_LOG`), with what the hook's own parser read (`logFacts`), and the check
+ * reads that log and git:
  *
  * - the plugin's hooks fired: SessionStart, and the git guard before the Bash call;
+ * - the git guard read the command (its log names the programs it parsed: `git`);
  * - without anymodel.json: no WorktreeCreate hook ran, Claude Code made its own worktree,
  *   and the session worked in it (the git guard's `cwd`); ExitWorktree removed it;
- * - with the engine: its WorktreeCreate made the configured folder, through the launcher,
- *   and the session worked there; its WorktreeRemove removed the folder and the branch.
+ * - with the engine: its WorktreeCreate made the configured folder, through the plugin under
+ *   test, and the session worked there; its WorktreeRemove removed the folder and the branch.
  *
- * The project-wired hooks run the launcher (`~/.local/bin/anymodel`), so the engine proved is
- * the installed plugin's, the one every project uses. When every check passes, the Claude
- * Code version is recorded in the state folder (`live-check.json`); plain `doctor` then
- * shows it. The temp folder is removed at the end.
+ * When every check passes, the Claude Code version is recorded in the state folder
+ * (`live-check.json`); plain `doctor` then shows it. The temp folder is removed at the end.
  */
 import {
   existsSync,
@@ -35,8 +37,9 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { VERSION } from "../build-info";
-import { projectHookSettingsText } from "../hooks/project-wiring";
+import { projectHookSettings } from "../hooks/project-wiring";
 import { HOOK_LOG_ENV } from "../hooks/run";
+import { shellQuote } from "../setup/launcher";
 import { atomicWrite } from "../setup/write";
 import type { CliPaths } from "./paths";
 
@@ -70,8 +73,24 @@ export type LiveRunner = (
 export interface LiveDeps {
   /** The plugin folder to load: the one holding this CLI's `dist/`. */
   pluginDir: string;
+  /**
+   * How each project hook runs in the temp repo. The plugin under test, never the installed
+   * launcher `~/.local/bin/anymodel`: a live check proves this plugin, whatever version is
+   * installed (`liveHookCommand`).
+   */
+  hookCommand: (name: string) => string;
   /** Runs `claude` (and git, to set up the repos). */
   run: LiveRunner;
+}
+
+/**
+ * How a project's hooks run in the live check: the plugin folder this CLI belongs to, its
+ * `dist/cli.js` run with `bunPath` (the bun running this CLI). The launcher is not used: it
+ * always runs the *installed* version, which is not what `doctor --live` checks.
+ */
+export function liveHookCommand(pluginDir: string, bunPath: string): (name: string) => string {
+  const command = `${shellQuote(bunPath)} ${shellQuote(join(pluginDir, "dist", "cli.js"))}`;
+  return (name) => `${command} hook ${name}`;
 }
 
 export function liveRecordFile(stateDir: string): string {
@@ -115,6 +134,8 @@ interface LoggedRun {
   cwd: string | null;
   exitCode: number;
   stdout: string;
+  /** What the hook's own parser read (its spec's `logFacts`): the git guard's programs. */
+  facts?: { programs?: string[] };
 }
 
 function readLog(file: string): LoggedRun[] {
@@ -177,6 +198,8 @@ function proveIn(
   const removed = runs.find((run) => run.event === "WorktreeRemove");
   const guarded = runs.filter((run) => run.hook === "git-guard" && run.event === "PreToolUse");
   const guardedThere = guarded.some((run) => run.cwd === expected.folder);
+  // Firing is not answering: the guard logs the programs its own parser read in the command.
+  const guardParsed = guarded.some((run) => run.facts?.programs?.includes("git") === true);
   const branchLeft = deps.run(
     ["git", "rev-parse", "--verify", "--quiet", `refs/heads/${expected.branch}`],
     { cwd: repo, env, timeoutMs: 10_000 },
@@ -195,6 +218,17 @@ function proveIn(
   );
 
   const where = guarded.length === 0 ? "no Bash call" : guarded.map((run) => run.cwd).join(", ");
+  lines.push(
+    guardParsed
+      ? {
+          ok: true,
+          text: `${label}: the git guard read the command line (it parsed git) before the Bash call`,
+        }
+      : {
+          ok: false,
+          text: `${label}: the git guard ${guarded.length === 0 ? "never ran" : `ran in ${where} without parsing a command`}: its log names no git program. ${said}`,
+        },
+  );
   if (expected.maker === "engine") {
     lines.push(
       created?.exitCode === 0 && created.stdout === expected.folder && guardedThere
@@ -283,7 +317,10 @@ export function runLiveCheck(
       join(configured, ".claude", "anymodel.json"),
       `${JSON.stringify({ worktrees: { base: "main", prefix: LIVE_PREFIX } })}\n`,
     );
-    writeFileSync(join(configured, ".claude", "settings.json"), `${projectHookSettingsText()}\n`);
+    writeFileSync(
+      join(configured, ".claude", "settings.json"),
+      `${JSON.stringify(projectHookSettings(deps.hookCommand), null, 2)}\n`,
+    );
     git(configured, "add", "README.md", ".claude/anymodel.json", ".claude/settings.json");
     git(configured, "commit", "-q", "-m", "first");
     git(configured, "push", "-q", "origin", "main");

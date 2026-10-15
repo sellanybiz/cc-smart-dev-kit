@@ -1,10 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { locateCheckout } from "../project/resolve";
 import { makeRepo, wireProjectHook } from "../testing/hooks";
-import { git, tempDir } from "../testing/temp";
-import { deferSources, fileWiresHook, matcherSelects, ownHookIn, wiredHandlers } from "./defer";
+import { tempDir } from "../testing/temp";
+import { matcherSelects, projectSettingsFiles, wiredHandlers } from "./settings-hooks";
 
 describe("matcherSelects: Claude Code's matcher rules", () => {
   test.each([
@@ -37,27 +36,6 @@ describe("matcherSelects: Claude Code's matcher rules", () => {
 
   test("a matcher that is not a string selects nothing", () => {
     expect(matcherSelects(5, "Bash")).toBe(false);
-  });
-});
-
-describe("fileWiresHook", () => {
-  test("a hook for the event and a matching tool counts; another tool or event does not", () => {
-    const repo = makeRepo();
-    const file = wireProjectHook(repo, "PreToolUse", "Bash");
-    expect(fileWiresHook(file, "PreToolUse", "Bash")).toBe(true);
-    expect(fileWiresHook(file, "PreToolUse", "Edit")).toBe(false);
-    expect(fileWiresHook(file, "PostToolUse", "Bash")).toBe(false);
-  });
-
-  test("a group with no handlers, a missing file and a broken file do not count", () => {
-    const dir = tempDir("settings");
-    const empty = join(dir, "empty.json");
-    writeFileSync(empty, JSON.stringify({ hooks: { WorktreeCreate: [{ hooks: [] }] } }));
-    expect(fileWiresHook(empty, "WorktreeCreate", null)).toBe(false);
-    expect(fileWiresHook(join(dir, "missing.json"), "WorktreeCreate", null)).toBe(false);
-    const broken = join(dir, "broken.json");
-    writeFileSync(broken, "{ not json");
-    expect(fileWiresHook(broken, "WorktreeCreate", null)).toBe(false);
   });
 });
 
@@ -94,32 +72,29 @@ describe("wiredHandlers", () => {
     ]);
     expect(wiredHandlers(file, "PostToolUse", "Bash")).toEqual([]);
   });
+
+  test("a hook for the event and a matching tool counts; another tool or event does not", () => {
+    const file = wireProjectHook(makeRepo(), "PreToolUse", "Bash");
+    expect(wiredHandlers(file, "PreToolUse", "Bash")).toEqual([{ file, command: "true" }]);
+    expect(wiredHandlers(file, "PreToolUse", "Edit")).toEqual([]);
+    expect(wiredHandlers(file, "PostToolUse", "Bash")).toEqual([]);
+  });
+
+  test("a group with no handlers, a missing file and a broken file wire nothing", () => {
+    const dir = tempDir("settings");
+    const empty = join(dir, "empty.json");
+    writeFileSync(empty, JSON.stringify({ hooks: { WorktreeCreate: [{ hooks: [] }] } }));
+    expect(wiredHandlers(empty, "WorktreeCreate", null)).toEqual([]);
+    expect(wiredHandlers(join(dir, "missing.json"), "WorktreeCreate", null)).toEqual([]);
+    const broken = join(dir, "broken.json");
+    writeFileSync(broken, "{ not json");
+    expect(wiredHandlers(broken, "WorktreeCreate", null)).toEqual([]);
+  });
 });
 
-describe("deferSources", () => {
-  test("the checkout's and the main checkout's settings, both files each, and nothing else", () => {
-    const repo = makeRepo();
-    const worktree = join(repo, "..", "wt");
-    git(repo, "worktree", "add", "-q", "-b", "wt", worktree);
-    const checkout = locateCheckout(worktree);
-    if (checkout === null) throw new Error("no checkout");
-    expect(deferSources(checkout)).toEqual([
-      join(worktree, ".claude", "settings.json"),
-      join(worktree, ".claude", "settings.local.json"),
-      join(repo, ".claude", "settings.json"),
-      join(repo, ".claude", "settings.local.json"),
-    ]);
-  });
-
-  test("the main checkout's settings.local.json silences a hook running in a worktree", () => {
-    const repo = makeRepo();
-    const worktree = join(repo, "..", "wt");
-    git(repo, "worktree", "add", "-q", "-b", "wt", worktree);
-    mkdirSync(join(repo, ".claude"), { recursive: true });
-    const local = wireProjectHook(repo, "PreToolUse", "Bash", "settings.local.json");
-    const checkout = locateCheckout(worktree);
-    if (checkout === null) throw new Error("no checkout");
-    expect(ownHookIn(deferSources(checkout), "PreToolUse", "Bash")).toBe(local);
-    expect(ownHookIn(deferSources(checkout), "PreToolUse", "Edit")).toBeNull();
-  });
+test("projectSettingsFiles: the project's settings.json and settings.local.json", () => {
+  expect(projectSettingsFiles("/p")).toEqual([
+    join("/p", ".claude", "settings.json"),
+    join("/p", ".claude", "settings.local.json"),
+  ]);
 });

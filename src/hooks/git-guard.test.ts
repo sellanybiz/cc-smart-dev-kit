@@ -3,8 +3,8 @@
  * look-alikes that MUST pass: a guard that asks about `git push origin fix/devtools` gets
  * switched off. Every expected answer is written by hand.
  *
- * Most tests read the questions directly (`guardQuestions`); the hook itself, with the
- * defer check and anymodel.json, is tested at the end and in `matrix.test.ts`.
+ * Most tests read the questions directly (`guardQuestions`); the hook itself, with
+ * `ownHooks` and anymodel.json, is tested at the end and in `matrix.test.ts`.
  */
 import { afterAll, beforeAll, describe, expect, test as it } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -399,6 +399,195 @@ describe("git branch -D asks", () => {
   });
 });
 
+describe("a shell keyword or a wrapper before the command is stepped over", () => {
+  it.each([
+    ["if true; then git push -f; fi"],
+    ["if git push -f; then echo ok; fi"], // the condition runs too
+    ["while true; do git push -f; break; done"],
+    ["until false; do git push -f; done"],
+    ["! git push -f"],
+    ["timeout 60 git push -f"],
+    ["timeout -s KILL 30 git push -f"],
+    ["timeout --foreground 60s git push -f"],
+    ["env -i git push -f"],
+    ["env -u PATH -C /tmp git push -f"],
+    ["env -i FOO=bar git push -f"],
+    ["nice git push -f"],
+    ["nice -n 5 git push -f"],
+    ["sudo -u me git push -f"],
+    ["sudo -u me -H git push -f"],
+    ["exec -a a-name git push -f"],
+    ["command -p git push -f"],
+    ["stdbuf -o0 git push -f"],
+    ["stdbuf -i0 -o0 -e0 git push -f"],
+    ["ionice -c2 -n7 git push -f"],
+    ["xargs git push -f"],
+    ["xargs -0 -n 1 git push -f"],
+    ["xargs -I{} git push -f"],
+  ])("asks about %j", (command) => {
+    expect(guard(command)).toContain("force-push");
+  });
+
+  it.each([
+    ["command -v git"],
+    ["command -V git"],
+    ["nice -n 5 echo hi"],
+    ["timeout 60 git status"],
+    ["sudo -u me git log"],
+    ["env -i git fetch"],
+    ["xargs echo git"],
+    ['bash -c "echo timeout 60 git push -f"'],
+  ])("lets %j through", (command) => {
+    expect(guard(command)).toBeUndefined();
+  });
+
+  it("finds a branch -D inside a loop, and a keyword with no command after it", () => {
+    expect(guard("for b in a; do git branch -D z; done")).toContain("`git branch -D`");
+    expect(guard("if git branch -D z; then echo ok; fi")).toContain("`git branch -D`");
+    expect(guard("while true; do git branch -D z; done")).toContain("`git branch -D`");
+    expect(guard("! git branch -D z")).toContain("`git branch -D`");
+    expect(guard("then")).toBeUndefined();
+    expect(guard("done")).toBeUndefined();
+  });
+});
+
+describe("a long option abbreviated as git accepts it asks", () => {
+  it.each([
+    ["git push --forc"],
+    ["git push --force-w"],
+    ["git push --force-with-l origin fix/x"],
+    ["git push --force-if-i origin fix/x"],
+    ["git push --mirr"],
+    ["git reset --ha"],
+    ["git reset --har origin/dev"],
+    ["git clean --forc"],
+    ["git checkout --forc fix/x"],
+    ["git switch --discard fix/x"],
+    ["git switch --force fix/x"],
+    ["git branch --dele --forc fix/x"],
+    ["git branch --del --forc fix/x"],
+    ["git worktree remove --forc ../wt"],
+  ])("%j", (command) => {
+    expect(guard(command)).toBeDefined();
+  });
+
+  it("a dry run with an abbreviated option still sends nothing", () => {
+    expect(guard("git push --dr --forc")).toBeUndefined();
+    expect(guard("git clean --dr -f")).toBeUndefined();
+    expect(guard("git push --dry --forc")).toBeUndefined();
+  });
+
+  it.each([
+    ["git push --tags"],
+    ["git push --follow-tags origin fix/x"],
+    ["git reset --soft HEAD~1"],
+    ["git switch --detach HEAD~1"],
+    ["git branch --format '%(refname)'"],
+    ["git clean --dry-run -d"],
+    ["git checkout --track origin/fix/x"],
+  ])("lets %j through", (command) => {
+    expect(guard(command)).toBeUndefined();
+  });
+});
+
+describe("a shell that reads its script from standard input is read", () => {
+  it.each([
+    ["sh <<'EOF'\ngit push -f\nEOF"],
+    ["bash -s <<'EOF'\ngit push -f\nEOF"],
+    ["zsh <<EOF\ngit push -f\nEOF"],
+    ['sh <<< "git push -f"'],
+    ['sh <<< "git push -f" && echo done'],
+    ['echo "git push -f" | sh'],
+    ["printf 'git push -f\\n' | bash"],
+    ['echo "cd /tmp && git push -f" | dash'],
+    ["bash -ce 'git push -f'"],
+    ["sh -ec 'git push -f'"],
+    ["bash -c 'git push -f'"], // -c was already read
+  ])("asks about %j", (command) => {
+    expect(guard(command)).toContain("force-push");
+  });
+
+  it("reads the here-doc body of a shell as its script", () => {
+    expect(guard("bash <<'EOF'\ngit reset --hard\nEOF")).toContain("`git reset --hard`");
+    expect(guard("sh <<'EOF'\ngit branch -D fix/x\nEOF")).toContain("`git branch -D`");
+    expect(guard("bash -s <<'EOF'\ngit clean -fd\nEOF")).toContain("`git clean -f`");
+    expect(guard("sh -s <<'EOF'\ngit stash clear\nEOF")).toContain("`git stash clear`");
+    // Two commands in one body: each is read on its own.
+    expect(guard("sh <<'EOF'\necho hi\ngit push -f\nEOF")).toContain("force-push");
+    expect(guard("sh <<'EOF'\necho git push -f\nEOF")).toBeUndefined();
+  });
+
+  it.each([
+    ["sh script.sh"],
+    ["bash -c 'git status'"],
+    ["sh -c 'echo hi' | sh"],
+    ["echo hi | sh"],
+    ["printf 'hi\\n' | sh"],
+    ["cat script.sh | sh"],
+    ["cat <<'EOF'\ngit push -f\nEOF"], // `cat`'s here-doc is data, and cat is no shell
+    ["git commit -F - <<'EOF'\nfix\n\ngit push -f\nEOF"],
+    ["sh -c 'git log' <<'EOF'\necho hi\nEOF"], // -c's script is the word, not the body
+    ["bash script.sh <<'EOF'\ngit push -f\nEOF"], // a script file: the body is its stdin
+  ])("lets %j through", (command) => {
+    expect(guard(command)).toBeUndefined();
+  });
+
+  it("runsGit sees git behind a wrapper, a keyword and a piped shell", () => {
+    expect(runsGit("timeout 60 git status")).toBe(true);
+    expect(runsGit("if true; then git status; fi")).toBe(true);
+    expect(runsGit('echo "git status" | sh')).toBe(true);
+    expect(runsGit("sudo -u me git status")).toBe(true);
+    expect(runsGit("command -v git")).toBe(false);
+    expect(runsGit("nice -n 5 echo hi")).toBe(false);
+  });
+});
+
+describe("more work-destroying forms ask", () => {
+  it.each([
+    ["git stash clear"],
+    ["git stash drop"],
+    ["git stash drop -q"],
+    ["git worktree remove -f ../other"],
+    ["git worktree remove --force ../other"],
+    ["git push origin :fix/x"],
+    ["git push origin +:fix/x"],
+    ["git push -d origin fix/x"],
+    ["git push --delete origin fix/x"],
+    ["git push --dele origin fix/x"],
+  ])("%j", (command) => {
+    expect(guard(command)).toBeDefined();
+  });
+
+  it.each([
+    ["git stash drop stash@{1}"],
+    ["git stash drop -q stash@{1}"],
+    ["git worktree remove ../other"],
+    ["git worktree list"],
+    ["git worktree add ../other fix/x"],
+    ["git stash list"],
+    ["git push origin fix/x"],
+    ["git push origin fix/x:fix/y"],
+    ["git branch -d fix/merged"],
+  ])("lets %j through", (command) => {
+    expect(guard(command)).toBeUndefined();
+  });
+
+  it("stash clear and an unnamed drop ask also when the project has no worktrees", () => {
+    expect(guard("git stash clear", neutral, false)).toContain("`git stash clear`");
+    expect(guard("git stash drop", neutral, false)).toContain("no stash named");
+  });
+
+  it("a named drop and a tagged push do not ask in a project without worktrees", () => {
+    expect(guard("git stash drop stash@{0}", neutral, false)).toBeUndefined();
+    expect(guard("git stash push -u -m wip", neutral, false)).toBeUndefined();
+  });
+
+  it("says which branch a remote delete would remove", () => {
+    expect(guard("git push origin :fix/x")).toContain("deletes `fix/x` on the remote");
+    expect(guard("git push -d origin fix/x")).toContain("deletes `fix/x` on the remote");
+  });
+});
+
 describe("harmless forms do not ask", () => {
   it.each([
     ["git push --dry-run"],
@@ -471,17 +660,18 @@ describe("the hook", () => {
     );
   });
 
-  it("stays silent when the project wires its own Bash hook (the defer check)", async () => {
+  it("stays silent when anymodel.json lists it in ownHooks (the project runs its own copy)", async () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", {});
+    writeClaudeFile(repo, "anymodel.json", { ownHooks: ["git-guard"] });
     wireProjectHook(repo, "PreToolUse", "Bash|PowerShell");
     expect(await runHook(gitGuardHook, input(repo, "git push -f"), hookEnv())).toEqual({});
   });
 
-  it("still asks when the project's own hook is for another tool", async () => {
+  it("still asks when a project hook on Bash is not listed in ownHooks (a logger must not silence it)", async () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", {});
-    wireProjectHook(repo, "PreToolUse", "Edit|Write");
+    writeClaudeFile(repo, "anymodel.json", { ownHooks: ["session-name"] });
+    wireProjectHook(repo, "PreToolUse", "Bash|PowerShell");
+    wireProjectHook(repo, "PreToolUse", "Bash", "settings.local.json");
     const result = await runHook(gitGuardHook, input(repo, "git push -f"), hookEnv());
     expect(result.stdout).toContain('"permissionDecision":"ask"');
   });
