@@ -7,7 +7,8 @@ paths:
 # Setup And Managed Files
 
 `anymodel setup` changes files that belong to the user: `~/.claude/settings.json`,
-later `~/.claude/CLAUDE.md`, the launcher. A mistake there breaks someone's Claude Code.
+`~/.claude/CLAUDE.md` (one block that imports the instructions' copy), the launcher. A
+mistake there breaks someone's Claude Code.
 So every change to a user's file goes through `src/setup/`, and nothing else writes one.
 
 ## The one way to write

@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { applyManagedJson, formatKeyPath, ownedKeys } from "./managed-json";
 import { removeManagedMarkdown } from "./managed-markdown";
 import {
@@ -7,6 +8,7 @@ import {
   forgetChange,
   listBackups,
   readChanged,
+  realTarget,
   removeManagedFile,
   writeManagedFile,
 } from "./write";
@@ -28,7 +30,7 @@ export interface RestoreResult {
 }
 
 /** The baseline is an `.absent` marker: the file did not exist before anymodel. */
-function createdByUs(entry: ChangedEntry): boolean {
+export function createdByUs(entry: ChangedEntry): boolean {
   return entry.baseline?.endsWith(ABSENT_SUFFIX) ?? false;
 }
 
@@ -100,15 +102,41 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
  * `except`: files (their real paths, as `changed.json` records them) left as they are and
  * still tracked, for a later restore. `restore` uses it for the router's copy and unit
  * while running sessions still use the router.
+ *
+ * `only`: restore just these files (real paths); every other file stays as it is and
+ * still tracked. `setup --no-instructions` uses it for the instructions and their block.
+ *
+ * A removed file leaves no empty folder behind inside the state folder (the instructions'
+ * folders); a folder outside it is never touched.
  */
-export function restore(stateDir: string, options: { except?: string[] } = {}): RestoreResult[] {
+export function restore(
+  stateDir: string,
+  options: { except?: string[]; only?: string[] } = {},
+): RestoreResult[] {
   const except = new Set(options.except ?? []);
-  const entries = Object.entries(readChanged(stateDir)).filter(([file]) => !except.has(file));
+  const only = options.only === undefined ? null : new Set(options.only);
+  const entries = Object.entries(readChanged(stateDir)).filter(
+    ([file]) => !except.has(file) && (only === null || only.has(file)),
+  );
   return entries.map(([file, entry]) => {
     const result = entry.kinds.includes("whole-file")
       ? restoreWholeFile(file, entry, stateDir)
       : restorePartly(file, entry, stateDir);
     if (result.action !== "no-backup") forgetChange(stateDir, file);
+    if (result.action === "removed") removeEmptyFolders(file, stateDir);
     return result;
   });
+}
+
+/**
+ * Removes the folders above `file` that are empty now, up to (not including) the state
+ * folder. A folder outside the state folder, or one with anything in it, stays.
+ */
+function removeEmptyFolders(file: string, stateDir: string): void {
+  const root = realTarget(stateDir);
+  let dir = dirname(file);
+  while (dir.startsWith(`${root}/`) && existsSync(dir) && readdirSync(dir).length === 0) {
+    rmdirSync(dir);
+    dir = dirname(dir);
+  }
 }

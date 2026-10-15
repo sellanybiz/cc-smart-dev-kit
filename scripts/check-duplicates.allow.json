@@ -1,0 +1,8 @@
+{
+  "allowed": [
+    {
+      "sentence": "You do not commit, push, start agents, message other sessions or ask the person.",
+      "reason": "Each agent runs in its own context and sees only its own file, so every agent that has these limits must carry them itself; a pointer would not reach it."
+    }
+  ]
+}

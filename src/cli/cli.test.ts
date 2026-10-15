@@ -131,6 +131,23 @@ function setup(options: SetupOptions = {}) {
 
 const readJson = (file: string) => JSON.parse(readFileSync(file, "utf8"));
 
+/** What a first setup prints for the instructions: the plugin's real files, then the block. */
+const INSTRUCTIONS_CREATED = [
+  "+ ~/.claude/anymodel/instructions/core.md: created",
+  "+ ~/.claude/anymodel/instructions/optin/worktrees.md: created",
+  "+ ~/.claude/CLAUDE.md: created, with the anymodel block",
+];
+
+/** The block setup writes into ~/.claude/CLAUDE.md. */
+const BLOCK = [
+  "<!-- anymodel:begin -->",
+  "<!-- Written by anymodel setup. `anymodel setup --no-instructions` takes it out. -->",
+  "@~/.claude/anymodel/instructions/core.md",
+  "<!-- anymodel:end -->",
+].join("\n");
+
+const PLUGIN_INSTRUCTIONS = join(import.meta.dir, "..", "..", "plugin", "instructions");
+
 describe("anymodel setup", () => {
   test("installs the launcher and turns on auto-update, keeping the other settings", () => {
     const { settingsFile, launcher, run } = setup();
@@ -140,6 +157,7 @@ describe("anymodel setup", () => {
       [
         "+ ~/.local/bin/anymodel: launcher created",
         "~ ~/.claude/settings.json: extraKnownMarketplaces.anymodel.autoUpdate: (none) -> true",
+        ...INSTRUCTIONS_CREATED,
         "Done. Each changed file has a backup in ~/.claude/anymodel/backups/.",
         "",
       ].join("\n"),
@@ -162,7 +180,12 @@ describe("anymodel setup", () => {
     run(["setup"]);
     expect(listBackups(stateDir, settingsFile)).toHaveLength(1);
     expect(readdirSync(binDir)).toEqual(["anymodel"]);
-    expect(readdirSync(configDir).sort()).toEqual(["anymodel", "plugins", "settings.json"]);
+    expect(readdirSync(configDir).sort()).toEqual([
+      "CLAUDE.md",
+      "anymodel",
+      "plugins",
+      "settings.json",
+    ]);
   });
 
   test("a second run changes nothing", () => {
@@ -183,6 +206,7 @@ describe("anymodel setup", () => {
       [
         "+ ~/.local/bin/anymodel: launcher created",
         "~ ~/.claude/settings.json: extraKnownMarketplaces.anymodel.autoUpdate: (none) -> true",
+        ...INSTRUCTIONS_CREATED,
         "Dry run: nothing was written.",
         "",
       ].join("\n"),
@@ -235,6 +259,107 @@ describe("anymodel setup", () => {
     expect(result.exitCode).toBe(0);
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
     expect(existsSync(launcher)).toBe(false);
+  });
+});
+
+describe("anymodel setup: the instructions", () => {
+  test("a copy of the plugin's files, imported by a block after the user's own text", () => {
+    const { configDir, stateDir, run } = setup();
+    const claudeMd = join(configDir, "CLAUDE.md");
+    writeFileSync(claudeMd, "# My notes\n\nAnswer in short sentences.\n");
+    const result = run(["setup"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("~ ~/.claude/CLAUDE.md: anymodel block added\n");
+    expect(readFileSync(claudeMd, "utf8")).toBe(
+      `# My notes\n\nAnswer in short sentences.\n\n${BLOCK}\n`,
+    );
+    const copy = join(stateDir, "instructions");
+    expect(readFileSync(join(copy, "core.md"), "utf8")).toBe(
+      readFileSync(join(PLUGIN_INSTRUCTIONS, "core.md"), "utf8"),
+    );
+    expect(readFileSync(join(copy, "optin", "worktrees.md"), "utf8")).toBe(
+      readFileSync(join(PLUGIN_INSTRUCTIONS, "optin", "worktrees.md"), "utf8"),
+    );
+  });
+
+  test("a setup refreshes a copy someone edited, and changes nothing else", () => {
+    const { stateDir, run } = setup();
+    run(["setup"]);
+    writeFileSync(join(stateDir, "instructions", "core.md"), "# Edited by hand\n");
+    const result = run(["setup"]);
+    expect(result.stdout).toBe(
+      [
+        "~ ~/.claude/anymodel/instructions/core.md: updated",
+        "Done. Each changed file has a backup in ~/.claude/anymodel/backups/.",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("--no-instructions on a fresh machine: no copy, no CLAUDE.md", () => {
+    const { configDir, stateDir, run } = setup();
+    const result = run(["setup", "--no-instructions"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      [
+        "+ ~/.local/bin/anymodel: launcher created",
+        "~ ~/.claude/settings.json: extraKnownMarketplaces.anymodel.autoUpdate: (none) -> true",
+        "Done. Each changed file has a backup in ~/.claude/anymodel/backups/.",
+        "",
+      ].join("\n"),
+    );
+    expect(existsSync(join(configDir, "CLAUDE.md"))).toBe(false);
+    expect(existsSync(join(stateDir, "instructions"))).toBe(false);
+  });
+
+  test("--no-instructions after a setup takes them out and keeps the user's text", () => {
+    const { configDir, stateDir, run } = setup();
+    const claudeMd = join(configDir, "CLAUDE.md");
+    writeFileSync(claudeMd, "# My notes\n");
+    run(["setup"]);
+    const dry = run(["setup", "--no-instructions", "--dry-run"]);
+    const expected = [
+      "~ ~/.claude/CLAUDE.md: anymodel block removed",
+      "- ~/.claude/anymodel/instructions/core.md: removed",
+      "- ~/.claude/anymodel/instructions/optin/worktrees.md: removed",
+    ];
+    expect(dry.stdout).toBe([...expected, "Dry run: nothing was written.", ""].join("\n"));
+    expect(readFileSync(claudeMd, "utf8")).toContain(BLOCK);
+
+    const result = run(["setup", "--no-instructions"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      [
+        ...expected,
+        "Done. Each changed file has a backup in ~/.claude/anymodel/backups/.",
+        "",
+      ].join("\n"),
+    );
+    expect(readFileSync(claudeMd, "utf8")).toBe("# My notes\n");
+    expect(existsSync(join(stateDir, "instructions"))).toBe(false);
+    expect(run(["setup", "--no-instructions"]).stdout).toBe(
+      "Nothing to change. Setup is up to date.\n",
+    );
+  });
+
+  test("restore removes the copy and the block; the user's text stays", () => {
+    const { configDir, stateDir, run } = setup();
+    const claudeMd = join(configDir, "CLAUDE.md");
+    writeFileSync(claudeMd, "# My notes\n");
+    run(["setup"]);
+    const result = run(["restore"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("~ ~/.claude/CLAUDE.md: removed the anymodel block");
+    expect(readFileSync(claudeMd, "utf8")).toBe("# My notes\n");
+    expect(existsSync(join(stateDir, "instructions"))).toBe(false);
+  });
+
+  test("an unknown setup option is refused with exit 2, and nothing is written", () => {
+    const { stateDir, run } = setup();
+    const result = run(["setup", "--no-instruction"]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toStartWith("Unknown option: --no-instruction\n");
+    expect(existsSync(stateDir)).toBe(false);
   });
 });
 

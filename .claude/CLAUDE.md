@@ -23,9 +23,10 @@ The plugin, the marketplace and the command are all `anymodel`: the plugin id is
 - **`.claude/`** (this file, its rules, skills and settings) is for working **on** this
   repo. It never reaches a user's machine.
 - **`plugin/`** is what users get. Claude Code copies only this folder to each machine.
-  Its own instructions, skills and agents arrive in Phase 5. They are written for **any**
-  project, so they follow the plugin's rules (neutral, and they read a project's own
-  additions), not the rules in this folder.
+  Its own instructions (`plugin/instructions/`), skills, agents and output style are
+  written for **any** project, so they follow the plugin's rules (neutral, one home per
+  rule, and they read a project's own additions), not the rules in this folder. How they
+  fit: `docs/design.md` § Instructions, skills and agents.
 
 Do not mix them: a rule for working on this repo never goes into `plugin/`, and a skill
 for users never goes into `.claude/`.
@@ -60,8 +61,8 @@ the first time you use it.
 | `src/cli/` | The `anymodel` commands: `setup`, `doctor`, `restore`, `version`. |
 | `src/gateway/` | The optional AI gateway: the router, its config and slots, `gateway <command>`, its service and its doctor checks. |
 | `src/testing/` | Test helpers: temp folders, a clean git environment, the guard that fails any test reaching the live router's port 20100. |
-| `plugin/` | What users get: `dist/` (built, committed), `bin/`, `hooks/hooks.json`, `skills/`, the manifest. |
-| `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check) and `check-version-bump.ts` (CI: a `plugin/` change raises the version). |
+| `plugin/` | What users get: `dist/` (built, committed), `bin/`, `hooks/hooks.json`, `instructions/` (`setup` copies and imports them), `skills/`, `agents/`, `output-styles/`, the manifest. |
+| `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check), `check-duplicates.ts` (one home per rule in `plugin/`) and `check-version-bump.ts` (CI: a `plugin/` change raises the version). |
 | `docs/` | How the plugin is designed, the phases ahead, and the Claude Code behaviour it relies on. |
 
 Tests sit beside the code as `*.test.ts`.
@@ -74,6 +75,7 @@ Tests sit beside the code as `*.test.ts`.
 | `bun run typecheck` | `tsc --noEmit`. |
 | `bun run lint` | Biome: lint and format check. `bun run format` fixes formatting. |
 | `bun run check:neutral` | Fails when a file names the publisher. |
+| `bun run check:duplicates` | Fails when a sentence of 12+ words repeats across the plugin's instructions, skills, agents and output styles. |
 | `bun test` | The tests. |
 | `bun run build` / `build:check` | Rebuild `plugin/dist`, or fail when it is stale. |
 | `claude plugin validate plugin --strict` | Checks the plugin manifest. |

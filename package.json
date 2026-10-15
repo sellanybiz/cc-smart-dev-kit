@@ -10,7 +10,8 @@
     "build": "bun scripts/build.ts",
     "build:check": "bun scripts/build.ts --check",
     "check:neutral": "bun scripts/check-neutral.ts",
-    "check": "bun run typecheck && bun run lint && bun run check:neutral && bun run test && bun run build:check"
+    "check:duplicates": "bun scripts/check-duplicates.ts",
+    "check": "bun run typecheck && bun run lint && bun run check:neutral && bun run check:duplicates && bun run test && bun run build:check"
   },
   "dependencies": {
     "zod": "^4.6.7"

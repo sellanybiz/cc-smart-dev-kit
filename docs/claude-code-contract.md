@@ -58,6 +58,21 @@ Code's file; it shows we read the shape correctly, not that Claude Code still wr
 | Installing from a private GitHub repo works over the user's SSH key. | 2.1.300 | live: Phase 0 spike; unit (`doctor`'s access check): `src/cli/cli.test.ts` › "all green after setup, through the launcher; git reads the marketplace over SSH" |
 | `claude plugin validate plugin --strict` and `claude plugin validate . --strict` pass. | 2.1.300 | CI: the "Validate the plugin" and "Validate the marketplace" steps, on `.claude-code-version` and weekly on the newest |
 
+## Instructions, skills and agents
+
+| Behaviour | Last proved on | How it is proved |
+|---|---|---|
+| An `@path` import in the user's `<config dir>/CLAUDE.md` loads the imported file into the **main session**: as `@~/.claude/…` (with `HOME` and `CLAUDE_CONFIG_DIR` set to a throwaway folder), as a path relative to that `CLAUDE.md`, and as an absolute path. The managed block's HTML-comment markers do not stop it. | 2.1.300 | live, 2026-10-15: `claude -p` in a throwaway `HOME` and `CLAUDE_CONFIG_DIR` (no login; requests through the local gateway's scout slot), a marker word in the imported file, asked "what is the code word?" — answered with it in all three forms; the control without the import answered "NONE". unit (what setup writes): `src/setup/instructions.test.ts`, `src/cli/cli.test.ts` › "anymodel setup: the instructions" |
+| The same import reaches a **general-purpose subagent**. | 2.1.300 | live, 2026-10-15: the same setup; the main session started one `general-purpose` agent whose whole prompt was the question (its transcript shows no code word in the prompt), and it answered with the marker word |
+| A plugin's agents and skills are named `<plugin>:<name>` (`anymodel:reviewer`, `anymodel:review`); a plugin's output style is not switched on by loading the plugin. | 2.1.300 | live, 2026-10-15: `claude -p --plugin-dir plugin --output-format stream-json --verbose` in a throwaway config; the init event listed `anymodel:code-explorer`, `anymodel:reviewer`, `anymodel:rules-maintainer`, `anymodel:ui-verifier` and every `anymodel:` skill, with `output_style: default` |
+
+How to repeat the import check by hand: make a folder with `home/.claude/CLAUDE.md` holding
+`@~/.claude/anymodel/instructions/marker.md`, put a code word in that file, and run
+`claude -p "What is the code word in your instructions? Reply NONE if there is none."` with
+`HOME` and `CLAUDE_CONFIG_DIR` pointed there. Without a login there, point
+`ANTHROPIC_BASE_URL` at a running gateway and use its scout slot as the model. Never edit
+the real `~/.claude/CLAUDE.md` for it.
+
 ## The gateway
 
 The request shapes the router (`src/gateway/`) relies on. They were seen in the requests
@@ -130,9 +145,10 @@ into a table above.
   HTTPS first"). (Phase 3)
 - **An MCP server served from a plugin gets a new tool-name prefix**, and one
   registered at user scope keeps `mcp__<server>__*`. (Phase 4)
-- **An import of `~/.claude/anymodel/instructions/*.md` in `~/.claude/CLAUDE.md`** loads in the main
-  session and in subagents; an import in a project's `CLAUDE.md` asks once, then loads.
-  (Phase 5)
+- **An import in a project's `CLAUDE.md` of a file outside the project** (the opt-in
+  instructions, `@~/.claude/anymodel/instructions/optin/worktrees.md`) asks the person once,
+  then loads. The docs say so; `claude -p` cannot show the question. The user-level import is
+  proved (§ Instructions, skills and agents). (Phase 5; prove it in an interactive session.)
 - **Auto mode reads its rules only from user settings,** not from a project's. (Phase 6)
 
 The row that was here, "a running session keeps the gateway env keys it started with",

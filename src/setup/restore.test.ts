@@ -61,6 +61,36 @@ describe("restore: except", () => {
   });
 });
 
+describe("restore: only", () => {
+  test("restores just the files named; every other file stays as it is and tracked", () => {
+    const { dir, stateDir } = setup();
+    const settings = join(dir, "settings.json");
+    const copy = join(stateDir, "instructions", "core.md");
+    writeFileSync(settings, ORIGINAL_SETTINGS);
+    applyManagedJson({ file: settings, stateDir, set: [[AUTO_UPDATE, true]] });
+    writeManagedFile(copy, "# Core\n", { stateDir, kind: "whole-file", mode: 0o644 });
+
+    const result = restore(stateDir, { only: [copy] });
+    expect(result.map((entry) => [entry.file, entry.action])).toEqual([[copy, "removed"]]);
+    expect(read(settings)).not.toBe(ORIGINAL_SETTINGS);
+    expect(Object.keys(readChanged(stateDir))).toEqual([settings]);
+  });
+
+  test("a removed file's empty folders go, up to the state folder; a folder outside it stays", () => {
+    const { dir, stateDir } = setup();
+    const inside = join(stateDir, "instructions", "optin", "worktrees.md");
+    const outside = join(dir, "bin", "tool");
+    writeManagedFile(inside, "# Worktrees\n", { stateDir, kind: "whole-file", mode: 0o644 });
+    writeManagedFile(outside, "#!/bin/sh\n", { stateDir, kind: "whole-file", mode: 0o755 });
+
+    restore(stateDir);
+    expect(existsSync(join(stateDir, "instructions"))).toBe(false);
+    expect(existsSync(stateDir)).toBe(true);
+    expect(existsSync(outside)).toBe(false);
+    expect(existsSync(join(dir, "bin"))).toBe(true);
+  });
+});
+
 describe("restore: removes what anymodel added, keeps the rest", () => {
   test("a key added by someone else after setup survives a restore", () => {
     const { dir, stateDir } = setup();
