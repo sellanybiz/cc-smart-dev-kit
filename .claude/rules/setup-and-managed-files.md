@@ -2,6 +2,7 @@
 paths:
   - "src/setup/**"
   - "src/cli/**"
+  - "src/machine/**"
 ---
 
 # Setup And Managed Files
@@ -15,6 +16,7 @@ So every change to a user's file goes through `src/setup/`, and nothing else wri
 | Kind of file | Use | Owns |
 |---|---|---|
 | JSON settings | `applyManagedJson` | single keys, listed in `owned.json` |
+| A JSON list of strings (`autoMode.environment`) | `applyManagedEntries` | single entries, each with its source, listed in `owned-entries.json` |
 | Markdown | `applyManagedMarkdown` | one block between `<!-- anymodel:begin -->` and `<!-- anymodel:end -->` |
 | A file it owns whole (the launcher) | `writeManagedFile` | the whole file |
 
@@ -61,6 +63,19 @@ Each of them:
   overwritten**: `ForeignKeyError`, and nothing is written. The user removes it by hand
   if anymodel should manage it.
 - A key that already has the wanted value but is not ours stays unowned.
+- **The one exception: an unchosen value.** A caller may name, per key, the values that
+  mean "nobody chose this yet" (`unchosen`): a program's own default that the program
+  wrote into its file itself. claude-mem does that on its first run, so its seven keys
+  may be taken while they hold `""` (or `claude`, for its two providers). Any other value
+  is the person's choice: `claudeMemPlan` then changes none of the keys. Restore removes
+  the key, and the program falls back to the same default.
+- **A secret is never printed.** A key whose value is a secret (claude-mem's API key) is
+  named in `secret`: an error says "a secret", and setup's output masks it.
+- **List entries:** setup adds an entry at the end and owns it; it never changes,
+  reorders or removes an entry it did not add, and an entry already there stays
+  unowned. Each entry is owned per source (a project); it leaves the list when its last
+  source drops it. An `anchor` (`"$defaults"`) goes first when setup creates the list
+  and goes only with it.
 - Removal removes only owned keys. Every other key, and the text around a Markdown
   block, stays as it is.
 - A Markdown file with a broken block (not exactly one begin and one end marker, in
@@ -72,7 +87,7 @@ Each of them:
 ## State, lock and paths
 
 - **State (`<stateDir>`):** `$CLAUDE_CONFIG_DIR/anymodel/` (by default
-  `~/.claude/anymodel/`): `owned.json`, `changed.json`, the `lock`, and `backups/`
+  `~/.claude/anymodel/`): `owned.json`, `owned-entries.json`, `changed.json`, the `lock`, and `backups/`
   (mode 0700).
 - **The lock:** every command that writes runs inside `withLock`. The lock file is made
   with O_EXCL (only one process can create it). It holds the pid, the start time of that
@@ -100,6 +115,11 @@ Each of them:
 - **`restore`** removes everything anymodel added and keeps everything else:
   - JSON settings: removes only the keys in `owned.json`. Foreign keys stay, also ones
     added after setup.
+  - JSON lists: removes only the entries in `owned-entries.json`. The anchor stays when
+    the person added an entry since; it is then no longer claimed.
+  - Plugins and marketplaces setup added with `claude plugin …` stay: they are Claude
+    Code's own changes to its own files, and removing claude-mem would remove the
+    person's memory plugin.
   - Markdown: removes the managed block and keeps the text around it.
   - Files owned whole (the launcher): puts back the **baseline**, the backup made at
     anymodel's first change to the file since the last restore. When setup created
@@ -150,6 +170,22 @@ valid across updates.
   hook (Phase 3) only refreshes managed files.
 - Setup refuses to start before `claude plugin marketplace add` has run, and says which
   command to run.
+- **Commands that need root** (installing or removing the Warp app) run only in a manual
+  `setup --warp` / `--remove-warp`, after the exact list was shown and the person said yes
+  on a terminal. `--yes` never skips that question. With no terminal, setup prints the
+  commands and stops before it changes anything. `sudo` asks for the password itself:
+  anymodel never sees, stores or pipes one, and never runs a downloaded script (no
+  `curl | sh`). Files root needs are made in `<stateDir>/warp/` and put in place with
+  `sudo install`; that folder is removed after the run.
+- **Trust rules are asked too.** The auto-mode entries are shown as `+` / `-` lines,
+  then asked; `--yes` skips the question. No terminal and no `--yes`: they are left out,
+  and setup says so.
+- **`claude plugin …` runs only in a manual setup**, and only for what is missing (a
+  companion's marketplace or plugin, Warp's plugin). It never turns on a plugin the
+  person turned off; it says what to run.
+- **The system is reached through `Machine`** (`src/machine/machine.ts`): commands, the
+  terminal question, the platform, `/etc/os-release`, file checks and downloads. A test
+  hands in a fake one, with fake commands on a PATH of its own.
 
 ## Command output
 

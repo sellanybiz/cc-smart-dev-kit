@@ -33,7 +33,7 @@ a clear error that says what is wrong.
 | `worktrees.prefix` | string | The folder-name prefix of a worktree beside the repo. Used from Phase 3. |
 | `worktrees.setup` | string array (argv) | A command run inside a new worktree, e.g. `["bun", "install"]`. Used from Phase 3. |
 | `instructions` | boolean | Turns on the opt-in instructions for this project. Used from Phase 5. |
-| `autoMode` | string array | Auto-mode rules `setup` copies into the user's settings. Used from Phase 6. |
+| `autoMode` | string array | Auto-mode rules `setup` copies into the user's `autoMode.environment` (`src/setup/auto-mode.ts`). Used now. |
 
 The schema is `anymodelConfigSchema` in `src/project/config.ts` (zod). The README shows an
 example; keep it in step.

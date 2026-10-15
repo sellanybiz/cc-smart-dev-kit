@@ -56,8 +56,9 @@ the first time you use it.
 | `src/entries/*.ts` | One file per bundle. Each becomes `plugin/dist/<name>.js`. |
 | `src/build-info/` | The version and the marketplace source, baked in from `plugin.json` at build time; the fixed names, without the version, in `names.ts` (the router bundle uses those). |
 | `src/project/` | Finds the git project from a folder and reads its `.claude/anymodel.json`. |
-| `src/setup/` | Safe changes to user files: managed keys and blocks, backups, atomic writes, the lock, the launcher, restore, marketplace access. |
+| `src/setup/` | Safe changes to user files: managed keys, list entries and blocks, backups, atomic writes, the lock, the launcher, restore, marketplace access, the auto-mode block. |
 | `src/cli/` | The `anymodel` commands: `setup`, `doctor`, `restore`, `version`. |
+| `src/machine/` | Machine setup: the companion plugins, claude-mem's settings, Warp, and `Machine` (the system, faked in tests). |
 | `src/gateway/` | The optional AI gateway: the router, its config and slots, `gateway <command>`, its service and its doctor checks. |
 | `src/testing/` | Test helpers: temp folders, a clean git environment, the guard that fails any test reaching the live router's port 20100. |
 | `plugin/` | What users get: `dist/` (built, committed), `bin/`, `hooks/hooks.json`, `skills/`, the manifest. |
@@ -92,7 +93,7 @@ Each rule loads itself when you touch a file it covers.
 | `neutrality.md` | every turn | No names; where project details come from. |
 | `bundles-and-releases.md` | `src/`, `scripts/`, `plugin/`, `package.json` | Committed bundles, what `plugin/` may hold, versions. |
 | `hooks.md` | `src/hooks/`, `src/entries/`, `plugin/hooks/` | The hook contract (Phase 3). |
-| `setup-and-managed-files.md` | `src/setup/`, `src/cli/` | How the command changes user files. |
+| `setup-and-managed-files.md` | `src/setup/`, `src/cli/`, `src/machine/` | How the command changes user files and the system. |
 | `gateway.md` | `src/gateway/`, `src/entries/router.ts`, the gateway skill and doc | Never change prompt text; the login reaches Anthropic only; the judge is opt-in; secrets; restarts. |
 | `anymodel-json.md` | `src/project/` | The `.claude/anymodel.json` contract. |
 | `testing.md` | `*.test.ts`, `src/testing/` | Temp folders only; every test can fail. |

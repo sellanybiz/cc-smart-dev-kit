@@ -10,6 +10,9 @@ import {
 } from "../build-info";
 import { gatewayChecks } from "../gateway/doctor";
 import type { Runner } from "../gateway/service";
+import { companionChecks } from "../machine/companions";
+import type { Machine } from "../machine/machine";
+import { warpCheck } from "../machine/warp";
 import { findUserInstall } from "../setup/installed-plugins";
 import { bakedBunPath, LAUNCHER_NAME, launcherScript } from "../setup/launcher";
 import {
@@ -353,6 +356,8 @@ export interface DoctorGateway {
   bundle: string;
   runner: Runner;
   systemd: boolean;
+  /** Asks the system about Warp (its package manager); a test passes fakes. */
+  machine: Machine;
 }
 
 /**
@@ -374,6 +379,8 @@ export async function runDoctor(
     checkUpdatesNotOff(settings, env, paths),
     checkNameClash(settings),
     checkOldPlugin(settings, paths),
+    ...companionChecks(paths),
+    warpCheck(gateway.machine, paths),
     ...(await gatewayChecks({ paths, ...gateway })),
   ].filter((check): check is Check => check !== null);
   for (const check of checks) {

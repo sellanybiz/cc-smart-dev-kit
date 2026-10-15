@@ -58,6 +58,31 @@ Code's file; it shows we read the shape correctly, not that Claude Code still wr
 | Installing from a private GitHub repo works over the user's SSH key. | 2.1.300 | live: Phase 0 spike; unit (`doctor`'s access check): `src/cli/cli.test.ts` › "all green after setup, through the launcher; git reads the marketplace over SSH" |
 | `claude plugin validate plugin --strict` and `claude plugin validate . --strict` pass. | 2.1.300 | CI: the "Validate the plugin" and "Validate the marketplace" steps, on `.claude-code-version` and weekly on the newest |
 
+## Plugin dependencies
+
+Seen live on 2026-10-15 in throwaway config folders (`HOME` and `CLAUDE_CONFIG_DIR` both
+under a scratch folder), with this repo's folder added as the `anymodel` marketplace.
+Docs: code.claude.com/docs/en/plugins/dependencies (read 2026-10-15).
+
+| Behaviour | Last proved on | How it is proved |
+|---|---|---|
+| `plugin.json` `dependencies` takes `{"name", "marketplace", "version"}` objects, and `marketplace.json` takes `allowCrossMarketplaceDependenciesOn`; both validates pass `--strict` with them. | 2.1.300 | CI: the two validate steps |
+| A dependency comes only from a marketplace the user added. Without it, `claude plugin install anymodel@anymodel` exits 0 with `Warning: dependency "claude-mem@thedotmack" was not installed (no marketplace you have added lists it) … "anymodel" will not load without them`, and `claude plugin list` shows anymodel `✘ failed to load`. (Why `setup` adds the marketplaces.) | 2.1.300 | live; unit (our side): `src/cli/cli.test.ts` › "their marketplaces are not added: setup adds each, which installs the plugin" |
+| `claude plugin marketplace add <source>` installs the missing dependencies of installed plugins (`(+ 1 dependency: claude-mem)`), and then anymodel loads. The entry it writes in `installed_plugins.json` carries `"auto": true`. | 2.1.300 | live: by hand, and through `anymodel setup` from this repo's source |
+| Without `allowCrossMarketplaceDependenciesOn`, a dependency from another marketplace is not installed, even with that marketplace added: the install exits 0, and anymodel fails to load. | 2.1.300 | live: a copy of this marketplace with the field removed |
+| A dependency already installed and enabled at user scope stays as it is: an older claude-mem in range (13.30.0) kept its `installedAt` and `gitCommitSha`. | 2.1.300 | live |
+| An installed dependency outside the range stops the install: `Dependency "claude-mem@thedotmack" is installed at 13.28.0, which does not satisfy: >=13.29.0`, and `claude plugin list` shows `Requires "claude-mem@thedotmack" >=13.29.0, installed 13.28.0`. | 2.1.300 | live; unit (doctor's check): `src/cli/cli.test.ts` › "not added, turned off, or outside the range: one ✗ each, with what to run" |
+| claude-mem tags its releases `v<version>`, not `claude-mem--v<version>`, and its marketplace points at it by a relative path (`./plugin`). So the range finds no tag, the install takes the marketplace's current copy (13.39.0, no commit suffix), and the range is checked when the plugin loads. A tag-resolved version would carry a 12-character commit suffix (the docs); doctor drops it before the range check. | 2.1.300 | live (`git ls-remote --tags`, and the installed version); unit (our reader): `src/cli/cli.test.ts` › "a version resolved from a git tag carries a commit suffix; the range is checked without it" |
+| A dependency with no `version` (frontend-design) is recorded with a commit id as its version (`8f814f49002f`). | 2.1.300 | live |
+| `enabledPlugins["<id>"]: true` in user settings means the plugin is on; doctor reads it for each companion. | 2.1.300 | live (the settings after the installs); unit (our reader): `src/cli/cli.test.ts` › "not added, turned off, or outside the range: one ✗ each, with what to run" |
+
+## Auto mode
+
+| Behaviour | Last proved on | How it is proved |
+|---|---|---|
+| Auto mode reads `autoMode.environment` from the user's `settings.json` and not from a project's `.claude/settings.json`: run in the project, `claude auto-mode config` listed the entry `setup` wrote into user settings, and not the one in the project's own settings. After `restore`, the entry was gone. | 2.1.300 | live: `claude auto-mode config` in a throwaway config; unit (our side): `src/cli/cli.test.ts` › "anymodel setup: the auto-mode block" (all tests) |
+| `"$defaults"` in `autoMode.environment` keeps the built-in entries: with it, `claude auto-mode config` gave 22 entries, one of them ours and one the built-in "Trusted repo"; without it, only ours. (Why setup starts a new list with `"$defaults"`.) | 2.1.300 | live: `claude auto-mode config`; unit: `src/setup/managed-entries.test.ts` › "no list yet: creates it with the anchor first, then the entries, all owned" |
+
 ## The gateway
 
 The request shapes the router (`src/gateway/`) relies on. They were seen in the requests
@@ -133,7 +158,6 @@ into a table above.
 - **An import of `~/.claude/anymodel/instructions/*.md` in `~/.claude/CLAUDE.md`** loads in the main
   session and in subagents; an import in a project's `CLAUDE.md` asks once, then loads.
   (Phase 5)
-- **Auto mode reads its rules only from user settings,** not from a project's. (Phase 6)
 
 The row that was here, "a running session keeps the gateway env keys it started with",
 is now the gateway table's row "A running session picks up a change to the `env` of

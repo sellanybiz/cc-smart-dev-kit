@@ -14,7 +14,7 @@ export type KeyPath = readonly string[];
 /** The keys anymodel owns, per file: `<stateDir>/owned.json`. */
 const OWNED_FILE = "owned.json";
 
-type JsonObject = Record<string, unknown>;
+export type JsonObject = Record<string, unknown>;
 type OwnedState = Record<string, string[][]>;
 
 export interface JsonChange {
@@ -31,6 +31,14 @@ export interface ManagedJsonOptions {
   /** Keys to remove. Only keys anymodel owns are removed. */
   remove?: readonly KeyPath[];
   dryRun?: boolean;
+  /**
+   * A value that means "nobody chose this yet" (a program's own default, written into the
+   * file by that program): such a key is not someone else's, so anymodel may take it.
+   * Restore then removes it, and the program falls back to its default again.
+   */
+  unchosen?: (path: KeyPath, value: unknown) => boolean;
+  /** A key whose value must never be printed (an API key): errors say "a secret" instead. */
+  secret?: (path: KeyPath) => boolean;
   /** Tests only: runs after the read and before the write, to play another program's write. */
   onBeforeWrite?: () => void;
 }
@@ -60,7 +68,7 @@ export function formatKeyPath(path: KeyPath): string {
     .join("");
 }
 
-function isObject(value: unknown): value is JsonObject {
+export function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -69,7 +77,11 @@ function samePath(a: KeyPath, b: KeyPath): boolean {
 }
 
 /** The file's object, its indent, and the exact text read (null: no file), for the race check. */
-function readJsonObject(file: string): { data: JsonObject; indent: string; text: string | null } {
+export function readJsonObject(file: string): {
+  data: JsonObject;
+  indent: string;
+  text: string | null;
+} {
   if (!existsSync(file)) return { data: {}, indent: "  ", text: null };
   const text = readFileSync(file, "utf8");
   if (text.trim() === "") return { data: {}, indent: "  ", text };
@@ -103,7 +115,7 @@ export function ownedKeys(stateDir: string, file: string): KeyPath[] {
 }
 
 /** Reads a key; `found` is false when any segment is missing. */
-function getKey(data: JsonObject, path: KeyPath): { found: boolean; value: unknown } {
+export function getKey(data: JsonObject, path: KeyPath): { found: boolean; value: unknown } {
   let node: unknown = data;
   for (const segment of path) {
     if (!isObject(node) || !Object.hasOwn(node, segment)) return { found: false, value: undefined };
@@ -112,7 +124,7 @@ function getKey(data: JsonObject, path: KeyPath): { found: boolean; value: unkno
   return { found: true, value: node };
 }
 
-function setKey(data: JsonObject, path: KeyPath, value: unknown): void {
+export function setKey(data: JsonObject, path: KeyPath, value: unknown): void {
   let node = data;
   for (const [index, segment] of path.slice(0, -1).entries()) {
     const next = node[segment];
@@ -129,7 +141,7 @@ function setKey(data: JsonObject, path: KeyPath, value: unknown): void {
   if (leaf !== undefined) node[leaf] = structuredClone(value);
 }
 
-function deleteKey(data: JsonObject, path: KeyPath): void {
+export function deleteKey(data: JsonObject, path: KeyPath): void {
   const parent = getKey(data, path.slice(0, -1));
   const leaf = path.at(-1);
   if (parent.found && isObject(parent.value) && leaf !== undefined) delete parent.value[leaf];
@@ -178,9 +190,10 @@ function applyOnce(
       if (!isOwned(path)) skipped.push({ path, reason: "already set by someone else; left alone" });
       continue;
     }
-    if (current.found && !isOwned(path)) {
+    if (current.found && !isOwned(path) && !options.unchosen?.(path, current.value)) {
+      const shown = options.secret?.(path) ? "a secret" : JSON.stringify(current.value);
       throw new ForeignKeyError(
-        `${file}: ${formatKeyPath(path)} is ${JSON.stringify(current.value)}, set by someone else. ` +
+        `${file}: ${formatKeyPath(path)} is ${shown}, set by someone else. ` +
           "anymodel does not overwrite it. Remove it by hand if anymodel should manage it.",
       );
     }

@@ -15,16 +15,21 @@ function cliPaths(env = process.env) {
     stateDir: join(claudeConfigDir, "anymodel"),
     gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
     routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
-    routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service")
+    routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service"),
+    claudeMemSettingsFile: join(claudeMemDataDir(env, home), "settings.json")
   };
 }
-function tildify(path, home) {
-  return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+function claudeMemDataDir(env, home) {
+  const dir = env.CLAUDE_MEM_DATA_DIR;
+  if (!dir)
+    return join(home, ".claude-mem");
+  if (dir === "~")
+    return home;
+  return dir.startsWith("~/") ? join(home, dir.slice(2)) : dir;
 }
 
 // src/gateway/config.ts
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
-import { dirname as dirname2 } from "path";
+import { mkdirSync, readFileSync, statSync } from "fs";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -5812,255 +5817,8 @@ var PLUGIN = "anymodel";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
 var COMMAND = "anymodel";
 
-// src/setup/write.ts
-import {
-  chmodSync,
-  closeSync,
-  existsSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  readlinkSync,
-  realpathSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync
-} from "fs";
-import { basename, dirname, join as join2, resolve } from "path";
-var BACKUPS_DIR = "backups";
-var BACKUP_INFIX = ".bak-anymodel-";
-var ABSENT_SUFFIX = ".absent";
-var CHANGED_FILE = "changed.json";
-var MAX_LINKS = 40;
-function utcStamp(date = new Date) {
-  return date.toISOString().replace(/[-:.]/g, "");
-}
-function realTarget(file) {
-  let path = resolve(file);
-  for (let links = 0;links <= MAX_LINKS; links += 1) {
-    try {
-      return realpathSync(path);
-    } catch (error) {
-      if (error.code !== "ENOENT")
-        throw error;
-    }
-    let isLink = false;
-    try {
-      isLink = lstatSync(path).isSymbolicLink();
-    } catch (error) {
-      if (error.code !== "ENOENT")
-        throw error;
-    }
-    if (!isLink) {
-      const parent = dirname(path);
-      return parent === path ? path : join2(realTarget(parent), basename(path));
-    }
-    path = resolve(dirname(path), readlinkSync(path));
-  }
-  throw new Error(`${file}: too many symlinks (a loop?)`);
-}
-function fileMode(file) {
-  return existsSync(file) ? statSync(file).mode & 4095 : null;
-}
-function writeTemp(file, content, mode) {
-  const dir = dirname(file);
-  mkdirSync(dir, { recursive: true });
-  const temp = join2(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
-  try {
-    const fd = openSync(temp, "wx", mode);
-    try {
-      writeFileSync(fd, content);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    chmodSync(temp, mode);
-  } catch (error) {
-    if (existsSync(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-  return temp;
-}
-function atomicWrite(file, content, mode, beforeRename) {
-  const temp = writeTemp(file, content, mode);
-  try {
-    beforeRename?.();
-    renameSync(temp, file);
-  } catch (error) {
-    if (existsSync(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-}
-function parseBackupName(base, name) {
-  const prefix = `${base}${BACKUP_INFIX}`;
-  if (!name.startsWith(prefix))
-    return null;
-  const match = /^(\d{8}T\d{9}Z)(?:-(\d+))?(?:(\.absent)|\.mode-([0-7]{3,4}))?$/.exec(name.slice(prefix.length));
-  if (!match?.[1])
-    return null;
-  return {
-    name,
-    stamp: match[1],
-    counter: match[2] ? Number(match[2]) : 0,
-    absent: match[3] !== undefined,
-    mode: match[4] ? Number.parseInt(match[4], 8) : null
-  };
-}
-function backupDir(stateDir, file) {
-  return join2(stateDir, BACKUPS_DIR, encodeURIComponent(realTarget(file)));
-}
-function makePrivateDir(dir) {
-  mkdirSync(dir, { recursive: true, mode: 448 });
-  chmodSync(dir, 448);
-}
-function listBackups(stateDir, file) {
-  const dir = backupDir(stateDir, file);
-  if (!existsSync(dir))
-    return [];
-  const base = basename(realTarget(file));
-  return readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup !== null).sort((a, b) => a.stamp === b.stamp ? a.counter - b.counter : a.stamp < b.stamp ? -1 : 1).map((backup) => {
-    const path = join2(dir, backup.name);
-    return { path, absent: backup.absent, mode: backup.mode ?? fileMode(path) ?? 384 };
-  });
-}
-function copyNotExecutable(file, target) {
-  const mode = fileMode(file) ?? 384;
-  const safeMode = mode & ~73;
-  writeFileSync(target, readFileSync(file), { flag: "wx", mode: safeMode });
-  chmodSync(target, safeMode);
-  return mode;
-}
-function backupFile(stateDir, file) {
-  const real = realTarget(file);
-  const dir = backupDir(stateDir, real);
-  const base = basename(real);
-  const stamp = utcStamp();
-  const mode = fileMode(real);
-  const suffix = mode === null ? ABSENT_SUFFIX : (mode & 73) !== 0 ? `.mode-${mode.toString(8)}` : "";
-  makePrivateDir(join2(stateDir, BACKUPS_DIR));
-  makePrivateDir(dir);
-  const sameStamp = readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup?.stamp === stamp);
-  const counter = sameStamp.length === 0 ? 0 : Math.max(...sameStamp.map((backup) => backup.counter)) + 1;
-  const target = join2(dir, `${base}${BACKUP_INFIX}${stamp}${counter === 0 ? "" : `-${counter}`}${suffix}`);
-  if (mode === null) {
-    writeFileSync(target, "", { flag: "wx", mode: 384 });
-  } else {
-    copyNotExecutable(real, target);
-  }
-  return target;
-}
-var CHANGE_KINDS = ["json-keys", "markdown-block", "whole-file"];
-function isChangedEntry(value) {
-  if (typeof value !== "object" || value === null)
-    return false;
-  const entry = value;
-  return Array.isArray(entry.kinds) && entry.kinds.every((kind) => CHANGE_KINDS.includes(kind)) && (entry.baseline === null || typeof entry.baseline === "string");
-}
-function readChanged(stateDir) {
-  const file = join2(stateDir, CHANGED_FILE);
-  if (!existsSync(file))
-    return {};
-  const parsed = JSON.parse(readFileSync(file, "utf8"));
-  const files = parsed?.files;
-  if (typeof files !== "object" || files === null || !Object.values(files).every((entry) => isChangedEntry(entry))) {
-    throw new Error(`Invalid ${file}: expected { "files": { <path>: { kinds, baseline } } }`);
-  }
-  return files;
-}
-function writeChanged(stateDir, files) {
-  const sorted = Object.fromEntries(Object.entries(files).sort(([a], [b]) => a < b ? -1 : 1));
-  atomicWrite(join2(stateDir, CHANGED_FILE), `${JSON.stringify({ files: sorted }, null, 2)}
-`, 384);
-}
-function recordChange(stateDir, file, kind, backup) {
-  const files = readChanged(stateDir);
-  const entry = files[file];
-  if (!entry) {
-    files[file] = { kinds: [kind], baseline: backup };
-    writeChanged(stateDir, files);
-    return true;
-  }
-  if (!entry.kinds.includes(kind)) {
-    entry.kinds.push(kind);
-    writeChanged(stateDir, files);
-  }
-  return false;
-}
-function forgetChange(stateDir, file) {
-  const files = readChanged(stateDir);
-  if (!(file in files))
-    return;
-  delete files[file];
-  writeChanged(stateDir, files);
-}
-
-class ConcurrentChangeError extends Error {
-  name = "ConcurrentChangeError";
-}
-function retryOnConcurrentChange(file, fn, attempts = 3) {
-  for (let attempt = 1;; attempt += 1) {
-    try {
-      return fn();
-    } catch (error) {
-      if (!(error instanceof ConcurrentChangeError) || attempt >= attempts) {
-        if (error instanceof ConcurrentChangeError) {
-          throw new ConcurrentChangeError(`${file} kept changing while anymodel tried to update it (${attempts} tries). ` + "Close the program that writes it (for example Claude Code), then run again.");
-        }
-        throw error;
-      }
-    }
-  }
-}
-function readCurrent(file) {
-  return existsSync(file) ? readFileSync(file, "utf8") : null;
-}
-function writeManagedFile(file, content, options) {
-  const target = realTarget(file);
-  const currentMode = fileMode(target);
-  const current = currentMode === null ? null : readFileSync(target, "utf8");
-  const checkUnchanged = (now) => {
-    if (options.expectedContent !== undefined && now !== options.expectedContent) {
-      throw new ConcurrentChangeError(`${target} changed after anymodel read it.`);
-    }
-  };
-  if (!options.dryRun)
-    checkUnchanged(current);
-  const wantedMode = options.mode ?? currentMode ?? options.newFileMode ?? 384;
-  if (current === content && currentMode === wantedMode) {
-    return { outcome: "unchanged", backup: null };
-  }
-  const outcome = currentMode === null ? "created" : "updated";
-  if (options.dryRun)
-    return { outcome, backup: null };
-  const backup = backupFile(options.stateDir, target);
-  const isBaseline = recordChange(options.stateDir, target, options.kind, backup);
-  try {
-    atomicWrite(target, content, wantedMode, () => {
-      options.onBeforeCompare?.();
-      checkUnchanged(readCurrent(target));
-    });
-  } catch (error) {
-    if (!isBaseline && existsSync(backup))
-      unlinkSync(backup);
-    throw error;
-  }
-  return { outcome, backup };
-}
-function removeManagedFile(stateDir, file) {
-  const backup = backupFile(stateDir, file);
-  unlinkSync(file);
-  return backup;
-}
-
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
-var SLOT_PREFIX = "anymodel-";
 var SLOT_KEY = /^anymodel-[a-z0-9][a-z0-9-]*$/;
 var CONTEXT_SUFFIX = /\[1m\]$/i;
 function isBackendName(name) {
@@ -6096,10 +5854,6 @@ function parseTarget(text) {
     return { error: `"${text}" names no model after "${backend}:"` };
   }
   return { target: { backend, kind: "backend", model } };
-}
-function slotKeyFromArg(arg) {
-  const key = arg.startsWith(SLOT_PREFIX) ? arg : `${SLOT_PREFIX}${arg}`;
-  return isSlotKey(key) ? key : null;
 }
 function resolveAlias(model, aliases) {
   if (typeof model !== "string" || model === "")
@@ -6275,7 +6029,7 @@ function parseConfig(raw) {
 function loadConfigFile(path) {
   let mode;
   try {
-    mode = statSync2(path).mode;
+    mode = statSync(path).mode;
   } catch (error) {
     throw new ConfigError(`cannot read ${path}: ${messageOf(error)}`, { cause: error });
   }
@@ -6284,7 +6038,7 @@ function loadConfigFile(path) {
   }
   let raw;
   try {
-    raw = JSON.parse(readFileSync2(path, "utf8"));
+    raw = JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
     throw new ConfigError(`${path} is not valid JSON. Fix it by hand.`, { cause: error });
   }
@@ -6293,15 +6047,6 @@ function loadConfigFile(path) {
     throw new ConfigError(`${path} is not a valid gateway config:
 ${parsed.error}`);
   return parsed.config;
-}
-function saveConfig(path, config) {
-  const parsed = parseConfig(config);
-  if ("error" in parsed)
-    throw new ConfigError(`refusing to save an invalid config:
-${parsed.error}`);
-  mkdirSync2(dirname2(path), { mode: 448, recursive: true });
-  atomicWrite(path, `${JSON.stringify(parsed.config, null, 2)}
-`, 384);
 }
 function emptyConfig() {
   return {
@@ -6317,7 +6062,7 @@ function emptyConfig() {
     version: 1
   };
 }
-var REAL_WATCH_DEPS = { load: loadConfigFile, stat: statSync2 };
+var REAL_WATCH_DEPS = { load: loadConfigFile, stat: statSync };
 function watchConfig(path, log, deps = REAL_WATCH_DEPS) {
   let current = emptyConfig();
   let good = false;

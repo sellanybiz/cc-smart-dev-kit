@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { removeAllOwnedEntries } from "./managed-entries";
 import { applyManagedJson, formatKeyPath, ownedKeys } from "./managed-json";
 import { removeManagedMarkdown } from "./managed-markdown";
 import {
@@ -72,6 +73,11 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
       savedAs ??= result.backup;
     }
   }
+  if (entry.kinds.includes("json-entries")) {
+    const result = removeAllOwnedEntries(stateDir, file);
+    details.push(...result.removed.map((removed) => `the entry ${JSON.stringify(removed)}`));
+    savedAs ??= result.backup;
+  }
   if (entry.kinds.includes("markdown-block")) {
     const result = removeManagedMarkdown({ file, stateDir });
     if (result.outcome !== "unchanged") details.push("the anymodel block");
@@ -89,8 +95,9 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
 
 /**
  * Removes everything anymodel added, and keeps everything else:
- * - JSON files: the keys anymodel owns are removed (they did not exist before, because
- *   anymodel never overwrites a key it does not own). Keys others added stay.
+ * - JSON files: the keys anymodel owns are removed (they did not exist before, or held a
+ *   program's own default, because anymodel never overwrites a key someone chose). Keys
+ *   others added stay. The list entries anymodel owns are taken out; other entries stay.
  * - Markdown files: the anymodel block is removed; the text around it stays.
  * - Files anymodel owns whole (the launcher): back to the state before anymodel's first
  *   change, or removed when anymodel created them.

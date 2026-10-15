@@ -28,7 +28,9 @@ Claude Code copies only `plugin/` into
 ## Bundles are committed
 
 `bun run build` (`scripts/build.ts`) turns each `src/entries/<name>.ts` into
-`plugin/dist/<name>.js`: target bun, ESM, not minified, one flat folder.
+`plugin/dist/<name>.js`: target bun, ESM, not minified, one flat folder. **One build per
+entry:** built together, Bun keeps a library export in every bundle when any entry uses
+it, so a CLI change could change `router.js`.
 
 - **After any change under `src/`, run `bun run build` and commit `plugin/dist` in the
   same commit.** `bun run build:check` (in `bun run check` and CI) builds into a temp
@@ -44,8 +46,8 @@ Claude Code copies only `plugin/` into
 `version` in `plugin/.claude-plugin/plugin.json`. The marketplace manifest has none.
 
 - `src/build-info/` reads `version` and `repository` from `plugin.json` through a Bun
-  macro (code that runs at build time). The bundle holds those two values only, never
-  the rest of the file.
+  macro (code that runs at build time), and the `dependencies` list (the companion
+  plugins). The bundle holds those values only, never the rest of the file.
 - So **a version bump changes `plugin/dist/cli.js`**: rebuild after it.
 - **But never `plugin/dist/router.js`.** A changed router bundle makes `gateway setup`
   restart the router on every machine, which cuts answers in flight. So code in the

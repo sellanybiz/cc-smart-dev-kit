@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { MARKETPLACE_SOURCE, VERSION } from ".";
+import { tempDir } from "../testing/temp";
+import { DEPENDENCIES, MARKETPLACE_SOURCE, VERSION } from ".";
 import { parseRepository, readBuildInfo } from "./manifest";
 
 describe("parseRepository", () => {
@@ -45,7 +46,45 @@ describe("the router bundle", () => {
 describe("the baked build info", () => {
   test("matches plugin.json, read now", () => {
     const manifest = join(import.meta.dir, "..", "..", "plugin", ".claude-plugin", "plugin.json");
-    expect({ version: VERSION, repo: MARKETPLACE_SOURCE }).toEqual(readBuildInfo(manifest));
+    expect({ version: VERSION, repo: MARKETPLACE_SOURCE, dependencies: DEPENDENCIES }).toEqual(
+      readBuildInfo(manifest),
+    );
     expect(MARKETPLACE_SOURCE).toMatch(/^[^/\s]+\/[^/\s]+$/);
+  });
+});
+
+describe("readBuildInfo: dependencies", () => {
+  const write = (manifest: unknown) => {
+    const file = join(tempDir("manifest"), "plugin.json");
+    writeFileSync(file, JSON.stringify(manifest));
+    return file;
+  };
+  const base = { version: "1.0.0", repository: "example-org/anymodel" };
+
+  test("reads each name, marketplace and range; none means an empty list", () => {
+    expect(readBuildInfo(write(base)).dependencies).toEqual([]);
+    expect(
+      readBuildInfo(
+        write({
+          ...base,
+          dependencies: [
+            { name: "memory", marketplace: "example-mkt", version: ">=1.2.0" },
+            { name: "design", marketplace: "other-mkt" },
+          ],
+        }),
+      ).dependencies,
+    ).toEqual([
+      { name: "memory", marketplace: "example-mkt", version: ">=1.2.0" },
+      { name: "design", marketplace: "other-mkt" },
+    ]);
+  });
+
+  test.each([
+    [{ dependencies: "memory" }, '"dependencies" is not a list'],
+    [{ dependencies: ["memory"] }, 'write it as { "name", "marketplace" }'],
+    [{ dependencies: [{ name: "memory" }] }, 'needs a "name" and a "marketplace"'],
+    [{ dependencies: [{ name: "m", marketplace: "x", version: 1 }] }, '"version" is not a string'],
+  ])("%p throws", (extra, message) => {
+    expect(() => readBuildInfo(write({ ...base, ...extra }))).toThrow(message);
   });
 });

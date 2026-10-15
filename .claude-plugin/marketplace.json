@@ -4,6 +4,7 @@
   "metadata": {
     "description": "Use any model with Claude Code: a local gateway, plus hooks, skills, agents and machine setup, for any project."
   },
+  "allowCrossMarketplaceDependenciesOn": ["thedotmack", "claude-plugins-official"],
   "plugins": [
     {
       "name": "anymodel",
