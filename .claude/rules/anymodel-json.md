@@ -13,7 +13,8 @@ changing it breaks other people's projects.
 
 `resolveProject(cwd, { pluginVersion?, env? })` finds the git checkout `cwd` is in, then
 reads (`env` is the environment git runs with, so a test can put a fake git first on
-PATH):
+PATH). It is two steps a hook calls apart: `locateCheckout()` (git only; the defer check
+needs it even when the file is broken), then `loadProjectConfig()`, which reads:
 
 1. `<checkout root>/.claude/anymodel.json` — a linked worktree's own file wins;
 2. else `<main checkout>/.claude/anymodel.json`;
@@ -29,14 +30,21 @@ a clear error that says what is wrong.
 | Field | Type | Meaning |
 |---|---|---|
 | `requires` | version range, npm syntax (`">=0.1"`) | The plugin versions this project needs. |
-| `worktrees.base` | string | The branch new worktrees start from. Used from Phase 3. |
-| `worktrees.prefix` | string | The folder-name prefix of a worktree beside the repo. Used from Phase 3. |
-| `worktrees.setup` | string array (argv) | A command run inside a new worktree, e.g. `["bun", "install"]`. Used from Phase 3. |
+| `worktrees.base` | string | The branch new worktrees start from (`origin/<base>`, freshly fetched); also the base the after-merge and leftovers hooks compare with. |
+| `worktrees.prefix` | string | The folder-name prefix of a worktree beside the repo. No `/` or `\` (the hook refuses one). |
+| `worktrees.setup` | string array (argv) | A command run inside a new worktree, e.g. `["bun", "install"]`. |
+| `worktrees.guardMainFolder` | boolean | Refuse edits in the main checkout itself (the main-folder guard). Off when left out. |
+| `protectedBranches` | string array | The branches the git guard asks about before a push. Default `["main"]`. |
+| `sessionNames` | boolean | Each session names itself after its task (the session-name hook). Off when left out. |
 | `instructions` | boolean | Turns on the opt-in instructions for this project. Used from Phase 5. |
 | `autoMode` | string array | Auto-mode rules `setup` copies into the user's settings. Used from Phase 6. |
 
 The schema is `anymodelConfigSchema` in `src/project/config.ts` (zod). The README shows an
 example; keep it in step.
+
+`worktrees.guardMainFolder`, `protectedBranches` and `sessionNames` came with the hooks: a
+project that uses one raises its `requires` to the release that ships them. A hook that
+cannot read the file (too new, or broken) fails closed (`.claude/rules/hooks.md`).
 
 ## `requires` first, then the strict parse
 

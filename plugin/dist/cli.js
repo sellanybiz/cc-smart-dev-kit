@@ -1,7 +1,7 @@
 // @bun
 // src/entries/cli.ts
-import { existsSync as existsSync13 } from "fs";
-import { join as join8 } from "path";
+import { existsSync as existsSync15 } from "fs";
+import { basename as basename2, dirname as dirname4, join as join10 } from "path";
 
 // src/build-info/names.ts
 var MARKETPLACE = "anymodel";
@@ -21,8 +21,8 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/cli/doctor.ts
-import { accessSync, constants, existsSync as existsSync9, readFileSync as readFileSync10 } from "fs";
-import { join as join7 } from "path";
+import { accessSync, constants, existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
+import { join as join8 } from "path";
 
 // src/gateway/doctor.ts
 import { existsSync as existsSync6, readFileSync as readFileSync7 } from "fs";
@@ -1072,6 +1072,7 @@ function datetime(args) {
 var anyString = /^[\s\S]{0,}$/;
 var integer = /^-?\d+$/;
 var number = /^-?\d+(?:\.\d+)?$/;
+var boolean = /^(?:true|false)$/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
@@ -1952,6 +1953,26 @@ var $ZodNumber = /* @__PURE__ */ $constructor("$ZodNumber", (inst, def) => {
 var $ZodNumberFormat = /* @__PURE__ */ $constructor("$ZodNumberFormat", (inst, def) => {
   $ZodCheckNumberFormat.init(inst, def);
   $ZodNumber.init(inst, def);
+});
+var $ZodBoolean = /* @__PURE__ */ $constructor("$ZodBoolean", (inst, def) => {
+  $ZodType.init(inst, def);
+  inst._zod.pattern = boolean;
+  inst._zod.parse = (payload, _ctx) => {
+    if (def.coerce)
+      try {
+        payload.value = Boolean(payload.value);
+      } catch (_) {}
+    const input = payload.value;
+    if (typeof input === "boolean")
+      return payload;
+    payload.issues.push({
+      expected: "boolean",
+      code: "invalid_type",
+      input,
+      inst
+    });
+    return payload;
+  };
 });
 var $ZodUnknown = /* @__PURE__ */ $constructor("$ZodUnknown", (inst, def) => {
   $ZodType.init(inst, def);
@@ -3666,6 +3687,12 @@ function _int(Class, params) {
     ...normalizeParams(params)
   });
 }
+function _boolean(Class, params) {
+  return new Class({
+    type: "boolean",
+    ...normalizeParams(params)
+  });
+}
 function _unknown(Class) {
   return new Class({
     type: "unknown"
@@ -4547,6 +4574,9 @@ var numberProcessor = (schema, ctx, _json, params) => {
     if (rest.length)
       json.allOf = [...json.allOf ?? [], ...rest.map((m) => ({ multipleOf: m }))];
   }
+};
+var booleanProcessor = (_schema, _ctx, json, _params) => {
+  json.type = "boolean";
 };
 var neverProcessor = (_schema, _ctx, json, _params) => {
   json.not = {};
@@ -5447,6 +5477,14 @@ var ZodNumberFormat = /* @__PURE__ */ $constructor("ZodNumberFormat", (inst, def
 function int(params) {
   return _int(ZodNumberFormat, params);
 }
+var ZodBoolean = /* @__PURE__ */ $constructor("ZodBoolean", (inst, def) => {
+  $ZodBoolean.init(inst, def);
+  ZodType.init(inst, def);
+  inst._zod.processJSONSchema = (ctx, json, params) => booleanProcessor(inst, ctx, json, params);
+});
+function boolean2(params) {
+  return _boolean(ZodBoolean, params);
+}
 var ZodUnknown = /* @__PURE__ */ $constructor("ZodUnknown", (inst, def) => {
   $ZodUnknown.init(inst, def);
   ZodType.init(inst, def);
@@ -5539,6 +5577,14 @@ var ZodObject = /* @__PURE__ */ $constructor("ZodObject", (inst, def) => {
     return required(ZodNonOptional, this, args[0]);
   }
 });
+function strictObject(shape, params) {
+  return new ZodObject({
+    type: "object",
+    shape,
+    catchall: never(),
+    ...normalizeParams(params)
+  });
+}
 function looseObject(shape, params) {
   return new ZodObject({
     type: "object",
@@ -8573,6 +8619,196 @@ function marketplaceInstallLocation(knownMarketplacesFile, name) {
   }
 }
 
+// src/cli/live-check.ts
+import {
+  existsSync as existsSync9,
+  mkdirSync as mkdirSync4,
+  mkdtempSync,
+  readFileSync as readFileSync10,
+  realpathSync as realpathSync2,
+  rmSync as rmSync2,
+  writeFileSync as writeFileSync2
+} from "fs";
+import { tmpdir } from "os";
+import { dirname as dirname3, join as join7 } from "path";
+
+// src/project/version-range.ts
+var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
+var IDENT = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
+var PARTIAL = `v?${NUMBER}(?:\\.${NUMBER}(?:\\.${NUMBER}(?:-${IDENT})?(?:\\+${IDENT})?)?)?`;
+var COMPARATOR = new RegExp(`^(?:[<>]=?|=|\\^|~)?${PARTIAL}$`);
+var HYPHEN = new RegExp(`^(${PARTIAL})\\s+-\\s+(${PARTIAL})$`);
+function isValidRange(range) {
+  const alternatives = range.split("||").map((part) => part.trim());
+  if (alternatives.some((part) => part === ""))
+    return false;
+  return alternatives.every((part) => {
+    if (HYPHEN.test(part))
+      return true;
+    const comparators = part.replace(/([<>]=?|=|\^|~)\s+/g, "$1").split(/\s+/);
+    return comparators.every((comparator) => COMPARATOR.test(comparator));
+  });
+}
+
+// src/project/config.ts
+var anymodelConfigSchema = strictObject({
+  requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
+  worktrees: strictObject({
+    base: string2().min(1),
+    prefix: string2().min(1),
+    setup: array(string2().min(1)).min(1).optional(),
+    guardMainFolder: boolean2().optional()
+  }).optional(),
+  protectedBranches: array(string2().min(1)).min(1).optional(),
+  sessionNames: boolean2().optional(),
+  instructions: boolean2().optional(),
+  autoMode: array(string2().min(1)).optional()
+});
+
+// src/hooks/run.ts
+var HOOK_LOG_ENV = "ANYMODEL_HOOK_LOG";
+
+// src/cli/live-check.ts
+var LIVE_NAME = "anymodel-live-check";
+var LIVE_PREFIX = "live-wt-";
+var SESSION_TIMEOUT_MS = 240000;
+function liveRecordFile(stateDir) {
+  return join7(stateDir, "live-check.json");
+}
+function readLiveRecord(stateDir) {
+  try {
+    const parsed = JSON.parse(readFileSync10(liveRecordFile(stateDir), "utf8"));
+    return typeof parsed.claudeCode === "string" && typeof parsed.plugin === "string" && typeof parsed.passedAt === "string" ? { claudeCode: parsed.claudeCode, plugin: parsed.plugin, passedAt: parsed.passedAt } : null;
+  } catch {
+    return null;
+  }
+}
+function parseClaudeVersion(output) {
+  return /(\d+\.\d+\.\d+)/.exec(output)?.[1] ?? null;
+}
+var LIVE_PROMPT = `Call the EnterWorktree tool with name "${LIVE_NAME}". Then call the ExitWorktree tool ` + 'with action "remove" and discard_changes true. Then reply with the single word done. ' + "Do nothing else.";
+function readLog(file) {
+  if (!existsSync9(file))
+    return [];
+  return readFileSync10(file, "utf8").split(`
+`).filter((line) => line.trim() !== "").flatMap((line) => {
+    try {
+      return [JSON.parse(line)];
+    } catch {
+      return [];
+    }
+  });
+}
+var GIT_ID = {
+  GIT_AUTHOR_NAME: "anymodel live check",
+  GIT_AUTHOR_EMAIL: "live-check@example.com",
+  GIT_COMMITTER_NAME: "anymodel live check",
+  GIT_COMMITTER_EMAIL: "live-check@example.com"
+};
+function proveIn(label, repo, expected, deps, env) {
+  const log = join7(dirname3(repo), `${label}-hooks.log`);
+  const session = deps.run([
+    "claude",
+    "-p",
+    "--plugin-dir",
+    deps.pluginDir,
+    "--permission-mode",
+    "bypassPermissions",
+    "--tools",
+    "EnterWorktree,ExitWorktree",
+    "--strict-mcp-config",
+    "--no-session-persistence",
+    LIVE_PROMPT
+  ], { cwd: repo, env: { ...env, [HOOK_LOG_ENV]: log }, timeoutMs: SESSION_TIMEOUT_MS });
+  const runs = readLog(log);
+  const fired = (event) => runs.some((run) => run.event === event);
+  const created = runs.find((run) => run.event === "WorktreeCreate" && run.exitCode === 0);
+  const removed = runs.find((run) => run.event === "WorktreeRemove");
+  const branchLeft = deps.run(["git", "rev-parse", "--verify", "--quiet", `refs/heads/${expected.branch}`], {
+    cwd: repo,
+    env,
+    timeoutMs: 1e4
+  });
+  const lines = [];
+  const events = ["SessionStart", "WorktreeCreate", "WorktreeRemove"];
+  const missing = events.filter((event) => !fired(event));
+  lines.push(missing.length === 0 ? { ok: true, text: `${label}: the plugin's hooks fired (${events.join(", ")})` } : {
+    ok: false,
+    text: `${label}: no ${missing.join(", ")} hook ran. claude exited ${session.exitCode}: ${session.output.trim().split(`
+`).slice(-3).join(" ")}`
+  });
+  lines.push(created?.stdout === expected.folder ? { ok: true, text: `${label}: WorktreeCreate made ${expected.folder}` } : {
+    ok: false,
+    text: `${label}: WorktreeCreate gave ${created?.stdout || "no folder"}, expected ${expected.folder}`
+  });
+  const gone = !existsSync9(expected.folder) && branchLeft.exitCode !== 0;
+  lines.push(gone && removed?.exitCode === 0 ? {
+    ok: true,
+    text: `${label}: WorktreeRemove removed the folder and the branch ${expected.branch}`
+  } : {
+    ok: false,
+    text: `${label}: after WorktreeRemove (${removed === undefined ? "did not run" : `exit ${removed.exitCode}`}) ${existsSync9(expected.folder) ? "the folder is still there" : "the folder is gone"}, ${branchLeft.exitCode === 0 ? `the branch ${expected.branch} is still there` : "the branch is gone"}`
+  });
+  return lines;
+}
+function runLiveCheck(paths, env, deps) {
+  const version = parseClaudeVersion(deps.run(["claude", "--version"], { cwd: tmpdir(), env, timeoutMs: 20000 }).output);
+  if (version === null) {
+    return [
+      { ok: false, text: "live: `claude --version` gave no version: is Claude Code installed?" }
+    ];
+  }
+  const root = realpathSync2(mkdtempSync(join7(tmpdir(), "anymodel-live-")));
+  try {
+    const gitEnv = { ...env, ...GIT_ID };
+    const git = (cwd, ...args) => {
+      const result = deps.run(["git", ...args], { cwd, env: gitEnv, timeoutMs: 20000 });
+      if (result.exitCode !== 0)
+        throw new Error(`git ${args.join(" ")} failed: ${result.output}`);
+    };
+    const plain = join7(root, "plain");
+    mkdirSync4(plain);
+    git(plain, "init", "-q", "-b", "main");
+    writeFileSync2(join7(plain, "README.md"), `live check
+`);
+    git(plain, "add", "README.md");
+    git(plain, "commit", "-q", "-m", "first");
+    const origin = join7(root, "origin.git");
+    git(root, "init", "-q", "--bare", "-b", "main", origin);
+    const configured = join7(root, "configured");
+    git(root, "clone", "-q", origin, configured);
+    writeFileSync2(join7(configured, "README.md"), `live check
+`);
+    mkdirSync4(join7(configured, ".claude"));
+    writeFileSync2(join7(configured, ".claude", "anymodel.json"), `${JSON.stringify({ worktrees: { base: "main", prefix: LIVE_PREFIX } })}
+`);
+    git(configured, "add", "README.md", ".claude/anymodel.json");
+    git(configured, "commit", "-q", "-m", "first");
+    git(configured, "push", "-q", "origin", "main");
+    const lines = [
+      ...proveIn("without anymodel.json", plain, {
+        folder: join7(plain, ".claude", "worktrees", LIVE_NAME),
+        branch: `worktree-${LIVE_NAME}`
+      }, deps, env),
+      ...proveIn("with anymodel.json", configured, { folder: join7(root, `${LIVE_PREFIX}${LIVE_NAME}`), branch: LIVE_NAME }, deps, env)
+    ].map((line) => ({ ...line, text: `live, ${line.text}` }));
+    if (lines.every((line) => line.ok)) {
+      mkdirSync4(paths.stateDir, { recursive: true, mode: 448 });
+      const record = {
+        claudeCode: version,
+        plugin: VERSION,
+        passedAt: new Date().toISOString()
+      };
+      atomicWrite(liveRecordFile(paths.stateDir), `${JSON.stringify(record, null, 2)}
+`, 384);
+      lines.push({ ok: true, text: `live: passed on Claude Code ${version}; recorded` });
+    }
+    return lines;
+  } finally {
+    rmSync2(root, { recursive: true, force: true });
+  }
+}
+
 // src/cli/doctor.ts
 var UPDATE_BLOCKING_VARS = [
   "DISABLE_AUTOUPDATER",
@@ -8582,10 +8818,10 @@ var UPDATE_BLOCKING_VARS = [
 var FORCE_PLUGIN_UPDATES_VAR = "FORCE_AUTOUPDATE_PLUGINS";
 var MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 function readSettings2(file) {
-  if (!existsSync9(file))
+  if (!existsSync10(file))
     return null;
   try {
-    const parsed = JSON.parse(readFileSync10(file, "utf8"));
+    const parsed = JSON.parse(readFileSync11(file, "utf8"));
     return typeof parsed === "object" && parsed !== null ? parsed : null;
   } catch {
     return null;
@@ -8609,7 +8845,7 @@ function checkPlugin(paths) {
     };
   }
   const where = tildify(install.installPath, paths.home);
-  if (!existsSync9(install.installPath)) {
+  if (!existsSync10(install.installPath)) {
     return {
       ok: false,
       text: `the plugin folder is missing: ${where}. Run: ${PLUGIN_INSTALL_COMMAND}`
@@ -8629,14 +8865,14 @@ function isExecutable(file) {
   }
 }
 function checkLauncher(paths) {
-  const launcher = join7(paths.binDir, LAUNCHER_NAME);
+  const launcher = join8(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
-  if (!existsSync9(launcher))
+  if (!existsSync10(launcher))
     return { ok: false, text: `no launcher at ${where}. Run: anymodel setup` };
   if (!isExecutable(launcher)) {
     return { ok: false, text: `the launcher ${where} is not executable. Run: anymodel setup` };
   }
-  const script = readFileSync10(launcher, "utf8");
+  const script = readFileSync11(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
     return { ok: false, text: `the launcher ${where} is out of date. Run: anymodel setup` };
@@ -8663,7 +8899,7 @@ async function checkMarketplaceAccess(paths, env) {
     case "unknown":
       return { ok: false, text: `cannot check the marketplace source (${source.type})` };
     case "local":
-      return existsSync9(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : { ok: false, text: `the marketplace folder is missing: ${source.path}` };
+      return existsSync10(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : { ok: false, text: `the marketplace folder is missing: ${source.path}` };
     case "http": {
       const url = redactUrl(source.url);
       const result = await canReadHttp(source.url);
@@ -8686,7 +8922,7 @@ async function checkMarketplaceAccess(paths, env) {
 }
 function marketplaceVersion(manifest) {
   try {
-    const version = JSON.parse(readFileSync10(manifest, "utf8"))?.version;
+    const version = JSON.parse(readFileSync11(manifest, "utf8"))?.version;
     return typeof version === "string" ? version : null;
   } catch {
     return null;
@@ -8705,7 +8941,7 @@ function checkInstalledVersion(paths) {
       text: `the ${MARKETPLACE} marketplace has no local copy. Run: ${MARKETPLACE_UPDATE_COMMAND}`
     };
   }
-  const manifest = join7(location, "plugin", ".claude-plugin", "plugin.json");
+  const manifest = join8(location, "plugin", ".claude-plugin", "plugin.json");
   const latest = marketplaceVersion(manifest);
   if (latest === null) {
     return {
@@ -8781,7 +9017,7 @@ function hasEntry(data, field, key) {
 function checkOldPlugin(settings, paths) {
   const plugins = settings?.enabledPlugins;
   const enabled = isJsonObject6(plugins) && plugins[OLD_PLUGIN_ID] === true;
-  if (!existsSync9(join7(paths.claudeConfigDir, OLD_NAME))) {
+  if (!existsSync10(join8(paths.claudeConfigDir, OLD_NAME))) {
     if (!enabled)
       return null;
     return {
@@ -8790,25 +9026,43 @@ function checkOldPlugin(settings, paths) {
     };
   }
   const short = (path) => tildify(path, paths.home);
-  const launcher = join7(paths.binDir, OLD_NAME);
+  const launcher = join8(paths.binDir, OLD_NAME);
   const left = [
     enabled ? "the plugin enabled" : null,
     hasEntry(readSettings2(paths.installedPluginsFile), "plugins", OLD_PLUGIN_ID) ? "the plugin installed" : null,
-    existsSync9(launcher) ? `its launcher ${short(launcher)}` : null,
+    existsSync10(launcher) ? `its launcher ${short(launcher)}` : null,
     hasEntry(settings, "extraKnownMarketplaces", OLD_NAME) ? `extraKnownMarketplaces.${OLD_NAME} in ${short(paths.settingsFile)}` : null,
     hasEntry(readSettings2(paths.knownMarketplacesFile), null, OLD_NAME) ? `the ${OLD_NAME} marketplace` : null
   ].filter((thing) => thing !== null);
   if (left.length === 0)
     return null;
   const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME}\``;
-  const canRun = existsSync9(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
+  const canRun = existsSync10(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
   const steps = canRun ? `Run \`${OLD_NAME} restore\` first, then \`${then}.` : `Its launcher cannot run, so remove by hand ${short(launcher)} and "${OLD_NAME}" under extraKnownMarketplaces in ${short(paths.settingsFile)}; then run \`${then}.`;
   return {
     ok: false,
     text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}. ${steps}`
   };
 }
-async function runDoctor(paths, env, gateway) {
+function checkLiveRecord(paths) {
+  const record = readLiveRecord(paths.stateDir);
+  if (record === null)
+    return null;
+  const now = parseClaudeVersion(run2(["claude", "--version"]).output);
+  if (now !== null && now !== record.claudeCode) {
+    return {
+      ok: true,
+      info: true,
+      text: `the live check last passed on Claude Code ${record.claudeCode}; this machine has ${now}. Run: anymodel doctor --live`
+    };
+  }
+  return {
+    ok: true,
+    info: true,
+    text: `the live check passed on Claude Code ${record.claudeCode} (plugin ${record.plugin})`
+  };
+}
+async function runDoctor(paths, env, gateway, live = null) {
   const settings = readSettings2(paths.settingsFile);
   const checks = [
     checkPlugin(paths),
@@ -8819,7 +9073,9 @@ async function runDoctor(paths, env, gateway) {
     checkUpdatesNotOff(settings, env, paths),
     checkNameClash(settings),
     checkOldPlugin(settings, paths),
-    ...await gatewayChecks({ paths, ...gateway })
+    ...await gatewayChecks({ paths, ...gateway }),
+    live === null ? checkLiveRecord(paths) : null,
+    ...live === null ? [] : runLiveCheck(paths, env, live)
   ].filter((check) => check !== null);
   for (const check of checks) {
     console.log(`${check.info ? "\xB7" : check.ok ? "\u2713" : "\u2717"} ${check.text}`);
@@ -8828,13 +9084,13 @@ async function runDoctor(paths, env, gateway) {
 }
 
 // src/cli/restore.ts
-import { rmSync as rmSync2 } from "fs";
+import { rmSync as rmSync3 } from "fs";
 
 // src/setup/restore.ts
-import { existsSync as existsSync11, readFileSync as readFileSync12 } from "fs";
+import { existsSync as existsSync12, readFileSync as readFileSync13 } from "fs";
 
 // src/setup/managed-markdown.ts
-import { existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
+import { existsSync as existsSync11, readFileSync as readFileSync12 } from "fs";
 var BLOCK_BEGIN = "<!-- anymodel:begin -->";
 var BLOCK_END = "<!-- anymodel:end -->";
 function countOf(text, marker) {
@@ -8875,7 +9131,7 @@ function renderWithoutBlock(current, file = "the file") {
 function writeMarkdown(options, render) {
   const file = realTarget(options.file);
   return retryOnConcurrentChange(file, () => {
-    const text = existsSync10(file) ? readFileSync11(file, "utf8") : null;
+    const text = existsSync11(file) ? readFileSync12(file, "utf8") : null;
     const next = render(text ?? "", file);
     if (text === null && next === "")
       return { outcome: "unchanged", backup: null };
@@ -8902,11 +9158,11 @@ function restoreWholeFile(file, entry, stateDir) {
   if (!baseline)
     return { file, action: "no-backup", details: [] };
   if (baseline.absent) {
-    if (!existsSync11(file))
+    if (!existsSync12(file))
       return { file, action: "unchanged", details: [] };
     return { file, action: "removed", details: [], savedAs: removeManagedFile(stateDir, file) };
   }
-  const result = writeManagedFile(file, readFileSync12(baseline.path, "utf8"), {
+  const result = writeManagedFile(file, readFileSync13(baseline.path, "utf8"), {
     stateDir,
     kind: "whole-file",
     mode: baseline.mode
@@ -8921,9 +9177,9 @@ function restoreWholeFile(file, entry, stateDir) {
   };
 }
 function isEmpty(file) {
-  if (!existsSync11(file))
+  if (!existsSync12(file))
     return false;
-  const text = readFileSync12(file, "utf8").trim();
+  const text = readFileSync13(file, "utf8").trim();
   return text === "" || text === "{}";
 }
 function restorePartly(file, entry, stateDir) {
@@ -9053,7 +9309,7 @@ async function runRestore(paths, options) {
     const results = restore(paths.stateDir);
     if (unitTracked)
       options.runner(["systemctl", "--user", "daemon-reload"]);
-    rmSync2(restartPendingFile(paths.stateDir), { force: true });
+    rmSync3(restartPendingFile(paths.stateDir), { force: true });
     if (results.length === 0) {
       console.log("Nothing to restore: anymodel has nothing in any file.");
       return 0;
@@ -9064,17 +9320,17 @@ async function runRestore(paths, options) {
 }
 
 // src/cli/setup.ts
-import { existsSync as existsSync12, readFileSync as readFileSync13 } from "fs";
+import { existsSync as existsSync13, readFileSync as readFileSync14 } from "fs";
 import { delimiter } from "path";
 var AUTO_UPDATE_KEY = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
 function show2(value) {
   return value === undefined ? "(none)" : JSON.stringify(value);
 }
 function marketplaceKnown(settingsFile) {
-  if (!existsSync12(settingsFile))
+  if (!existsSync13(settingsFile))
     return false;
   try {
-    const settings = JSON.parse(readFileSync13(settingsFile, "utf8"));
+    const settings = JSON.parse(readFileSync14(settingsFile, "utf8"));
     const entry = settings.extraKnownMarketplaces?.[MARKETPLACE];
     return typeof entry === "object" && entry !== null;
   } catch {
@@ -9139,6 +9395,40 @@ async function runSetup(paths, options) {
   return 0;
 }
 
+// src/hooks/session-name.ts
+import { existsSync as existsSync14, mkdirSync as mkdirSync5, readFileSync as readFileSync15, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "fs";
+import { tmpdir as tmpdir2 } from "os";
+import { join as join9 } from "path";
+var MAX_SESSION_NAME = 60;
+function isSessionId(value) {
+  return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+}
+function cleanSessionName(raw) {
+  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
+  const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
+  if (plain === "")
+    return null;
+  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
+}
+function namesDir(env) {
+  return join9(env.TMPDIR || tmpdir2(), "anymodel-session-names");
+}
+function writeAtomic(file, text) {
+  const partial = `${file}.${process.pid}.tmp`;
+  writeFileSync3(partial, text);
+  renameSync2(partial, file);
+}
+function recordSessionName(sessionId, raw, env) {
+  if (!isSessionId(sessionId))
+    throw new Error(`"${sessionId}" is not a session id`);
+  const name = cleanSessionName(raw);
+  if (name === null)
+    throw new Error("the name is empty");
+  mkdirSync5(namesDir(env), { recursive: true });
+  writeAtomic(join9(namesDir(env), `${sessionId}.name`), name);
+  return name;
+}
+
 // src/entries/cli.ts
 var HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
 
@@ -9147,7 +9437,12 @@ Usage: anymodel <command> [options]
 Commands:
   setup [--dry-run]  Install the launcher in ~/.local/bin and turn on plugin auto-update.
                      --dry-run prints what would change and writes nothing.
-  doctor             Check the install. Exit code 1 when a check fails.
+  doctor [--live]    Check the install. Exit code 1 when a check fails.
+                     --live: also run two throwaway Claude Code sessions in temp repos,
+                     to prove the hooks and the worktree contract on this Claude Code
+                     (uses your login; a few cents). Records the version it passed on.
+  session-name <session id> <name>
+                     Name a Claude session after its task (for the session-name hook).
   restore [--yes] [--now]
                      Remove what anymodel added, and keep everything else: its settings
                      keys, its Markdown blocks, and the files it created (the launcher,
@@ -9164,9 +9459,30 @@ Commands:
 
 Paths follow HOME and CLAUDE_CONFIG_DIR.`;
 function routerBundle() {
-  const beside = join8(import.meta.dir, "router.js");
-  return existsSync13(beside) ? beside : join8(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
+  const beside = join10(import.meta.dir, "router.js");
+  return existsSync15(beside) ? beside : join10(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
 }
+function pluginDir() {
+  return basename2(import.meta.dir) === "dist" ? dirname4(import.meta.dir) : join10(import.meta.dir, "..", "..", "plugin");
+}
+var liveRunner = (argv, { cwd, env, timeoutMs }) => {
+  try {
+    const result = Bun.spawnSync(argv, {
+      cwd,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs
+    });
+    return {
+      exitCode: result.exitCode ?? 1,
+      output: `${result.stdout.toString()}${result.stderr.toString()}`
+    };
+  } catch (error) {
+    return { exitCode: 1, output: error instanceof Error ? error.message : String(error) };
+  }
+};
 var runner = (cmd) => {
   const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 30000 });
   return {
@@ -9202,12 +9518,28 @@ ${HELP}`);
       }
       return runSetup(paths, { dryRun: rest.includes("--dry-run") });
     }
-    case "doctor":
-      return runDoctor(paths, process.env, {
-        bundle: routerBundle(),
-        runner,
-        systemd
-      });
+    case "doctor": {
+      const unknown = rest.filter((arg) => arg !== "--live");
+      if (unknown.length > 0) {
+        console.error(`Unknown option: ${unknown.join(" ")}
+
+${HELP}`);
+        return 2;
+      }
+      return runDoctor(paths, process.env, { bundle: routerBundle(), runner, systemd }, rest.includes("--live") ? { pluginDir: pluginDir(), run: liveRunner } : null);
+    }
+    case "session-name": {
+      const [sessionId, ...words] = rest;
+      if (sessionId === undefined || words.length === 0) {
+        console.error(`Usage: ${COMMAND} session-name <session id> <name>
+
+${HELP}`);
+        return 2;
+      }
+      const name = recordSessionName(sessionId, words.join(" "), process.env);
+      console.log(`This session will be named "${name}" from the next prompt.`);
+      return 0;
+    }
     case "restore": {
       const unknown = rest.filter((arg) => arg !== "--yes" && arg !== "--now");
       if (unknown.length > 0) {

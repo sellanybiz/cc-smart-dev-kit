@@ -19,6 +19,7 @@ import {
   marketplaceSource,
   redactUrl,
 } from "../setup/marketplace-access";
+import { type LiveDeps, parseClaudeVersion, readLiveRecord, runLiveCheck } from "./live-check";
 import { type CliPaths, tildify } from "./paths";
 
 interface Check {
@@ -348,6 +349,29 @@ function checkOldPlugin(settings: Record<string, unknown> | null, paths: CliPath
   };
 }
 
+/**
+ * The last live check (`doctor --live`), as information. Nothing when it never ran, so a
+ * machine that never asked for it sees no line. When the installed Claude Code is not the
+ * one it passed on, the line says to run it again.
+ */
+function checkLiveRecord(paths: CliPaths): Check | null {
+  const record = readLiveRecord(paths.stateDir);
+  if (record === null) return null;
+  const now = parseClaudeVersion(run(["claude", "--version"]).output);
+  if (now !== null && now !== record.claudeCode) {
+    return {
+      ok: true,
+      info: true,
+      text: `the live check last passed on Claude Code ${record.claudeCode}; this machine has ${now}. Run: anymodel doctor --live`,
+    };
+  }
+  return {
+    ok: true,
+    info: true,
+    text: `the live check passed on Claude Code ${record.claudeCode} (plugin ${record.plugin})`,
+  };
+}
+
 /** What the gateway checks need: the plugin's router bundle, a command runner, systemd or not. */
 export interface DoctorGateway {
   bundle: string;
@@ -357,12 +381,14 @@ export interface DoctorGateway {
 
 /**
  * Prints one ✓ or ✗ line per check, and `·` for information (the gateway, when it was never
- * set up, is optional). Exit code 1 when any check fails.
+ * set up, is optional). Exit code 1 when any check fails. `live`: also run the live check
+ * (`doctor --live`), which starts real Claude Code sessions.
  */
 export async function runDoctor(
   paths: CliPaths,
   env: Env,
   gateway: DoctorGateway,
+  live: LiveDeps | null = null,
 ): Promise<number> {
   const settings = readSettings(paths.settingsFile);
   const checks = [
@@ -375,6 +401,8 @@ export async function runDoctor(
     checkNameClash(settings),
     checkOldPlugin(settings, paths),
     ...(await gatewayChecks({ paths, ...gateway })),
+    live === null ? checkLiveRecord(paths) : null,
+    ...(live === null ? [] : runLiveCheck(paths, env, live)),
   ].filter((check): check is Check => check !== null);
   for (const check of checks) {
     console.log(`${check.info ? "·" : check.ok ? "✓" : "✗"} ${check.text}`);

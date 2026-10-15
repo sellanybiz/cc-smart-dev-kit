@@ -1,13 +1,15 @@
 import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { VERSION } from "../build-info";
+import { basename, dirname, join } from "node:path";
+import { COMMAND, VERSION } from "../build-info";
 import { runDoctor } from "../cli/doctor";
+import type { LiveRunner } from "../cli/live-check";
 import { cliPaths } from "../cli/paths";
 import { runRestore } from "../cli/restore";
 import { runSetup } from "../cli/setup";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
+import { recordSessionName } from "../hooks/session-name";
 
 const HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
 
@@ -16,7 +18,12 @@ Usage: anymodel <command> [options]
 Commands:
   setup [--dry-run]  Install the launcher in ~/.local/bin and turn on plugin auto-update.
                      --dry-run prints what would change and writes nothing.
-  doctor             Check the install. Exit code 1 when a check fails.
+  doctor [--live]    Check the install. Exit code 1 when a check fails.
+                     --live: also run two throwaway Claude Code sessions in temp repos,
+                     to prove the hooks and the worktree contract on this Claude Code
+                     (uses your login; a few cents). Records the version it passed on.
+  session-name <session id> <name>
+                     Name a Claude session after its task (for the session-name hook).
   restore [--yes] [--now]
                      Remove what anymodel added, and keep everything else: its settings
                      keys, its Markdown blocks, and the files it created (the launcher,
@@ -43,6 +50,35 @@ function routerBundle(): string {
     ? beside
     : join(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
 }
+
+/**
+ * The plugin folder this CLI belongs to (`plugin/`, holding `dist/`): what `doctor --live`
+ * loads with `--plugin-dir`. Run from the source, the repo's `plugin/`.
+ */
+function pluginDir(): string {
+  return basename(import.meta.dir) === "dist"
+    ? dirname(import.meta.dir)
+    : join(import.meta.dir, "..", "..", "plugin");
+}
+
+const liveRunner: LiveRunner = (argv, { cwd, env, timeoutMs }) => {
+  try {
+    const result = Bun.spawnSync(argv, {
+      cwd,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+    });
+    return {
+      exitCode: result.exitCode ?? 1,
+      output: `${result.stdout.toString()}${result.stderr.toString()}`,
+    };
+  } catch (error) {
+    return { exitCode: 1, output: error instanceof Error ? error.message : String(error) };
+  }
+};
 
 const runner: Runner = (cmd) => {
   const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 30_000 });
@@ -84,12 +120,29 @@ async function main(argv: string[]): Promise<number> {
       }
       return runSetup(paths, { dryRun: rest.includes("--dry-run") });
     }
-    case "doctor":
-      return runDoctor(paths, process.env, {
-        bundle: routerBundle(),
-        runner,
-        systemd,
-      });
+    case "doctor": {
+      const unknown = rest.filter((arg) => arg !== "--live");
+      if (unknown.length > 0) {
+        console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+        return 2;
+      }
+      return runDoctor(
+        paths,
+        process.env,
+        { bundle: routerBundle(), runner, systemd },
+        rest.includes("--live") ? { pluginDir: pluginDir(), run: liveRunner } : null,
+      );
+    }
+    case "session-name": {
+      const [sessionId, ...words] = rest;
+      if (sessionId === undefined || words.length === 0) {
+        console.error(`Usage: ${COMMAND} session-name <session id> <name>\n\n${HELP}`);
+        return 2;
+      }
+      const name = recordSessionName(sessionId, words.join(" "), process.env);
+      console.log(`This session will be named "${name}" from the next prompt.`);
+      return 0;
+    }
     case "restore": {
       const unknown = rest.filter((arg) => arg !== "--yes" && arg !== "--now");
       if (unknown.length > 0) {

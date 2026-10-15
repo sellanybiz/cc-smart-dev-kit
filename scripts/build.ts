@@ -22,20 +22,28 @@ function entryPoints(): string[] {
     .map((name) => join(entriesDir, name));
 }
 
+/**
+ * One build per entry, never one build of all of them: Bun drops the unused code of a shared
+ * module (zod, say) by what ALL the entries of a build use, so a new bundle would change the
+ * others. The router bundle must change only when its own code does: a changed `router.js`
+ * makes every machine restart its router (`.claude/rules/bundles-and-releases.md`).
+ */
 async function buildInto(outdir: string): Promise<void> {
   rmSync(outdir, { recursive: true, force: true });
-  const result = await Bun.build({
-    entrypoints: entryPoints(),
-    outdir,
-    root: entriesDir,
-    target: "bun",
-    format: "esm",
-    minify: false,
-    naming: "[name].js",
-  });
-  if (!result.success) {
-    for (const log of result.logs) console.error(log);
-    throw new Error("The build failed.");
+  for (const entry of entryPoints()) {
+    const result = await Bun.build({
+      entrypoints: [entry],
+      outdir,
+      root: entriesDir,
+      target: "bun",
+      format: "esm",
+      minify: false,
+      naming: "[name].js",
+    });
+    if (!result.success) {
+      for (const log of result.logs) console.error(log);
+      throw new Error(`The build of ${entry} failed.`);
+    }
   }
 }
 

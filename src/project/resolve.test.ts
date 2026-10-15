@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { VERSION } from "../build-info";
 import { git, tempDir } from "../testing/temp";
 import { AnymodelConfigError, AnymodelVersionError } from "./config";
-import { resolveProject } from "./resolve";
+import { locateCheckout, resolveProject } from "./resolve";
 
 /** A repo with one commit, so `git worktree add` works. */
 function makeRepo(): string {
@@ -66,17 +66,45 @@ describe("resolveProject", () => {
       repo,
       JSON.stringify({
         requires: ">=1.2",
-        worktrees: { base: "dev", prefix: "app-wt-", setup: ["bun", "install"] },
+        worktrees: {
+          base: "dev",
+          prefix: "app-wt-",
+          setup: ["bun", "install"],
+          guardMainFolder: true,
+        },
+        protectedBranches: ["main", "release"],
+        sessionNames: true,
         instructions: true,
         autoMode: ["In my-app: never touch production."],
       }),
     );
     expect(resolveProject(repo, { pluginVersion: "1.3.0" })?.config).toEqual({
       requires: ">=1.2",
-      worktrees: { base: "dev", prefix: "app-wt-", setup: ["bun", "install"] },
+      worktrees: {
+        base: "dev",
+        prefix: "app-wt-",
+        setup: ["bun", "install"],
+        guardMainFolder: true,
+      },
+      protectedBranches: ["main", "release"],
+      sessionNames: true,
       instructions: true,
       autoMode: ["In my-app: never touch production."],
     });
+  });
+
+  test.each([
+    [{ protectedBranches: [] }, "protectedBranches:"],
+    [{ protectedBranches: [""] }, "protectedBranches.0:"],
+    [{ sessionNames: "yes" }, "sessionNames:"],
+    [
+      { worktrees: { base: "dev", prefix: "x-", guardMainFolder: 1 } },
+      "worktrees.guardMainFolder:",
+    ],
+  ])("the hook fields are checked: %j names %j", (content, field) => {
+    const repo = makeRepo();
+    const file = writeAnymodelJson(repo, JSON.stringify(content));
+    expect(() => resolveProject(repo)).toThrow(`Invalid ${file}: ${field}`);
   });
 
   test("a worktree without its own anymodel.json falls back to the main checkout's", () => {
@@ -157,6 +185,18 @@ describe("resolveProject", () => {
     const repo = makeRepo();
     const file = writeAnymodelJson(repo, "{ not json");
     expect(() => resolveProject(repo)).toThrow(`Invalid ${file}: not valid JSON`);
+  });
+
+  test("locateCheckout finds the checkout without reading anymodel.json, even a broken one", () => {
+    const repo = makeRepo();
+    writeAnymodelJson(repo, "{ not json");
+    expect(locateCheckout(repo)).toEqual({
+      root: repo,
+      commonDir: join(repo, ".git"),
+      isWorktree: false,
+      mainCheckout: repo,
+    });
+    expect(locateCheckout(tempDir("nogit"))).toBeNull();
   });
 
   test("a missing folder throws instead of guessing", () => {

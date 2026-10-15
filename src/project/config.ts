@@ -21,8 +21,20 @@ export const anymodelConfigSchema = z.strictObject({
       prefix: z.string().min(1),
       /** A command (argv form) run inside a new worktree, e.g. ["bun", "install"]. */
       setup: z.array(z.string().min(1)).min(1).optional(),
+      /**
+       * Refuse an Edit, Write or NotebookEdit of a file in the main checkout itself (not in
+       * a worktree): there, every change goes in a worktree. Off when left out.
+       */
+      guardMainFolder: z.boolean().optional(),
     })
     .optional(),
+  /**
+   * The branches the git guard asks about before a push to one of them, as git names them
+   * (["main", "release"]). When left out: ["main"].
+   */
+  protectedBranches: z.array(z.string().min(1)).min(1).optional(),
+  /** Each session names itself after its task: a note at its start, the title at the next prompt. */
+  sessionNames: z.boolean().optional(),
   /** Turn on the opt-in instructions for this project. */
   instructions: z.boolean().optional(),
   /** Auto-mode rules this project adds to the user's settings. */

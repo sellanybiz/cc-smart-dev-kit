@@ -28,7 +28,10 @@ Claude Code copies only `plugin/` into
 ## Bundles are committed
 
 `bun run build` (`scripts/build.ts`) turns each `src/entries/<name>.ts` into
-`plugin/dist/<name>.js`: target bun, ESM, not minified, one flat folder.
+`plugin/dist/<name>.js`: target bun, ESM, not minified, one flat folder. **Each entry is
+built on its own** (one `Bun.build` per entry): Bun drops a shared module's unused code by
+what all the entries of one build use, so building them together made a new bundle change
+the others, `router.js` included.
 
 - **After any change under `src/`, run `bun run build` and commit `plugin/dist` in the
   same commit.** `bun run build:check` (in `bun run check` and CI) builds into a temp

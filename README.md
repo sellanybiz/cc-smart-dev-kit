@@ -47,7 +47,8 @@ After that, use `anymodel setup` to set up again (for example after an update).
 | Command | What it does |
 |---|---|
 | `anymodel setup` | Installs the launcher and turns on plugin auto-update. `--dry-run` shows the changes and writes nothing at all. A settings key you set yourself (for example `autoUpdate: false`) stops setup before it writes anything. |
-| `anymodel doctor` | Checks the install (the list is below). Prints ✓ or ✗ for each check, and exits with 1 when one fails. |
+| `anymodel doctor [--live]` | Checks the install (the list is below). Prints ✓ or ✗ for each check, and exits with 1 when one fails. `--live` also proves the hooks on the Claude Code installed here (below); it never runs without the flag. |
+| `anymodel session-name <session id> <name>` | Names a Claude session after its task. A session runs it itself when the project turns on `sessionNames` (below). |
 | `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, its block) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy and unit. `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
 | `anymodel gateway <command>` | The optional AI gateway (below). |
 | `anymodel version` | Prints the version. |
@@ -86,7 +87,17 @@ After that, use `anymodel setup` to set up again (for example after an update).
   `gateway.json` (set up with `--no-backend-key`), a `·` line says every slot answers on
   Claude. When it was never set up, doctor says "gateway: not set up (optional)" as
   information (`·`), not as a failure; with only `gateway.json` left (restore keeps it),
-  "gateway.json kept; the gateway is not installed".
+  "gateway.json kept; the gateway is not installed";
+- the last live check, as information (`·`), when `doctor --live` passed on this machine
+  before: the Claude Code version it passed on, and "run it again" when the installed
+  Claude Code is another version.
+
+`doctor --live` makes two throwaway repos in a temp folder (one without `anymodel.json`, one
+with it) and runs one short `claude -p` session in each, with this plugin, only the
+EnterWorktree and ExitWorktree tools, and a two-step prompt. It uses your Claude login and
+costs a few cents. It checks that the hooks fired, that WorktreeCreate made the right folder
+and branch, and that WorktreeRemove removed both. When everything passes it records the
+Claude Code version in `~/.claude/anymodel/live-check.json`. The temp folder is removed.
 
 Setup only changes the keys it owns. Before each change it makes a backup in
 `~/.claude/anymodel/backups/` (a private folder, one subfolder per file), never beside
@@ -141,26 +152,69 @@ router recognising the check by its prompt. If Claude Code rewords that prompt, 
 is routed by its model name until the router is updated (see
 [docs/gateway.md](docs/gateway.md) § Known limits; [roadmap](docs/roadmap.md) Phase 3).
 
+## The hooks
+
+The plugin's hooks run in every project. **A project without `.claude/anymodel.json`
+notices only one of them:** a WorktreeCreate hook replaces Claude Code's own worktree
+creation everywhere (a hook cannot step aside), so the plugin makes Claude Code's own
+shape there: `.claude/worktrees/<name>` on the branch `worktree-<name>`, from the remote's
+default branch (or `HEAD` with Claude Code's `worktree.baseRef: "head"`), with the files
+`.worktreeinclude` names copied in; and it removes a subagent's unchanged worktree when the
+subagent stops, as Claude Code does. Every other hook stays silent there.
+
+| Hook | When | What it does |
+|---|---|---|
+| `worktree-create` | a worktree is made (`claude -w`, EnterWorktree, a subagent) | With `worktrees` in `anymodel.json`: a folder beside the repo, `<prefix><name>` (a `/` becomes `-`), on the branch `<name>`, from the freshly fetched `origin/<base>` (or the existing branch), then your `setup` command inside. A worktree of that branch that exists is entered again, unless another running session works in it. Without: Claude Code's own shape (above). |
+| `worktree-remove` | Claude Code removes a worktree a hook made | Removes it only when nothing in it is uncommitted or untracked; then its branch, when every commit on it is also on another branch. Otherwise it keeps it and says why. Claude Code cannot check a worktree outside the repo, so `ExitWorktree` asks for `discard_changes: true` there; this hook still never discards work. |
+| `subagent-stop` | a subagent ends | Removes its worktree and branch when it changed nothing. |
+| `git-guard` | before a Bash or PowerShell command | Asks you before a force-push, a push to a protected branch (`protectedBranches`), `push --all` / `--mirror`, `reset --hard`, `clean -f`, a checkout or restore that throws changes away, `branch -D`, and (with `worktrees`) a bare `git stash` or `stash pop`: every worktree shares one stash. Text in quotes, here-docs and comments is not a command. |
+| `main-folder-guard` | before Edit, Write, NotebookEdit | With `worktrees.guardMainFolder`: refuses an edit of a file in the main checkout itself, and says how to get into a worktree. |
+| `message-guard` | before SendMessage | Refuses a message to a session that works outside this repo (ListAgents lists every session on the machine). |
+| `after-merge` | after `gh pr merge` | With `worktrees`: the steps to clear the worktree that was merged, and, for a merge into `worktrees.base`, the message to send the other sessions of the repo. |
+| `worktree-leftovers` | a session starts | With `worktrees`: names the worktrees that are finished (every commit on `origin/<base>`, nothing uncommitted, no running session, idle for an hour) or whose folder is gone. It removes nothing. |
+| `session-name` | a session starts; each prompt | With `sessionNames`: asks the session to name itself after its task, then sets that name at the next prompt. |
+
+Every hook except the worktree ones is off without `anymodel.json`. **A project that still
+wires its own hook for the same event and tool** (in `.claude/settings.json` or
+`.claude/settings.local.json`) keeps it: the plugin's hook stays silent, so nothing runs
+twice. Any project hook on that event and tool counts, whatever it does. When the project's
+`anymodel.json` needs a newer plugin, or is broken, the hooks fail closed: the guards ask
+before every call they cover, WorktreeCreate fails, and the message names the update
+command.
+
 ## A project's `.claude/anymodel.json`
 
 ```json
 {
   "requires": ">=0.1",
-  "worktrees": { "base": "main", "prefix": "app-wt-", "setup": ["bun", "install"] },
+  "worktrees": {
+    "base": "main",
+    "prefix": "app-wt-",
+    "setup": ["bun", "install"],
+    "guardMainFolder": true
+  },
+  "protectedBranches": ["main"],
+  "sessionNames": true,
   "instructions": true,
   "autoMode": ["In my-app: never touch production."]
 }
 ```
 
-| Field | Status |
+| Field | What it does |
 |---|---|
-| `requires` | Used now. |
-| `worktrees` | Accepted now, used from Phase 3. |
+| `requires` | The plugin versions this project needs, as a version range (npm syntax). |
+| `worktrees.base` | The branch a new worktree starts from (`origin/<base>`, fetched first). |
+| `worktrees.prefix` | The folder-name prefix of a worktree beside the repo (no `/`). |
+| `worktrees.setup` | A command run inside a new worktree, as a list of words (`["bun", "install"]`). Its output goes to the hook's log, not to Claude. When it fails, the worktree stays and the next request for it runs the setup again. |
+| `worktrees.guardMainFolder` | `true`: refuse edits in the main checkout itself. Off when left out. |
+| `protectedBranches` | The branches the git guard asks about before a push. Default `["main"]`. |
+| `sessionNames` | `true`: each session names itself after its task. Off when left out. |
 | `instructions` | Accepted now, used from Phase 5. |
 | `autoMode` | Accepted now, used from Phase 6. |
 
 `requires` is a version range (npm syntax). When the installed plugin is outside it, the
-plugin says so and asks you to run `claude plugin update anymodel@anymodel`.
+plugin says so and asks you to run `claude plugin update anymodel@anymodel`. A project that
+uses a field raises its `requires` to the release that brought the field.
 
 ## Develop
 

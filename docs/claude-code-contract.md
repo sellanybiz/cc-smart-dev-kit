@@ -15,34 +15,43 @@ proved.
 - **Relying on a new behaviour?** Add its row in the same change.
 
 "Live" means a person ran Claude Code with the plugin and looked: the Phase 0 spike, a
-throwaway project with a logging hook. From Phase 3, `anymodel doctor --live` repeats
-those checks. A "unit" proof tests **our reader** on a hand-written copy of Claude
+throwaway project with a logging hook; in Phase 3, throwaway `claude -p` sessions with
+`--plugin-dir` and a hook log. `anymodel doctor --live` repeats the rows that name it: the
+hooks fire, and the worktree contract holds on the installed Claude Code. A "unit" proof tests **our reader** on a hand-written copy of Claude
 Code's file; it shows we read the shape correctly, not that Claude Code still writes it.
 
 ## Hooks
 
 | Behaviour | Last proved on | How it is proved |
 |---|---|---|
-| An exec-form hook runs: `{"type":"command","command":"bun","args":["${CLAUDE_PLUGIN_ROOT}/dist/<n>.js"]}`. `${CLAUDE_PLUGIN_ROOT}` is filled in inside `args`. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
-| SessionStart and PreToolUse hooks fire from a plugin. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
-| The hook input's `cwd` follows the session into a worktree. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
-| `CLAUDE_PROJECT_DIR` stays at the folder the session started in, also in a worktree. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
+| An exec-form hook runs: `{"type":"command","command":"bun","args":["${CLAUDE_PLUGIN_ROOT}/dist/<n>.js"]}`. `${CLAUDE_PLUGIN_ROOT}` is filled in inside `args`. | 2.1.300 | live: Phase 0 spike; Phase 3 (every hook of `hooks.json` ran from `--plugin-dir`); `doctor --live` |
+| SessionStart, UserPromptSubmit, PreToolUse and PostToolUse hooks fire from a plugin (also in `claude -p`). | 2.1.300 | live: Phase 0 spike; Phase 3 (the hook log: `worktree-leftovers` and `session-name` at SessionStart, `session-name` at UserPromptSubmit, `git-guard` and `after-merge` around a Bash call); SessionStart repeated by `doctor --live` |
+| A plugin loaded with `--plugin-dir` runs its hooks even when a plugin of the same name is installed and enabled (the installed `anymodel` 0.2.1, with no hooks, was there). | 2.1.300 | live: Phase 3; every `doctor --live` relies on it |
+| The hook input's `cwd` follows the session into a worktree. WorktreeRemove's input `cwd`, and its process folder, are the worktree being removed. | 2.1.300 | live: Phase 0 spike; Phase 3 (a logging hook); `doctor --live` (WorktreeRemove finds the repo from that `cwd`) |
+| `CLAUDE_PROJECT_DIR` stays at the folder the session started in, also in a worktree. | 2.1.300 | live: Phase 0 spike |
+| The `hooks` of a settings file have the shape `{"<event>":[{"matcher":"…","hooks":[{"type":"command",…}]}]}`; a matcher is "*" / "" / missing (all), a list of exact names (only letters, digits, `_`, `-`, space, `,`, `\|`), or else an unanchored JavaScript regular expression. (What the defer check reads.) | 2.1.300 | docs (code.claude.com/docs/en/hooks § matcher, read 2026-10-15); unit (our reader): `src/hooks/defer.test.ts` › "matcherSelects: Claude Code's matcher rules"; the live defer row below used a project hook of this shape |
+| Claude Code's records of the running sessions, `<config folder>/sessions/<pid>.json`, carry `pid`, `sessionId`, `cwd` (it follows the session into a worktree) and `name` (the one ListAgents shows). Not a documented format. (Read by the message guard, the worktree reuse check and the leftovers note.) | 2.1.300 | live: the keys seen on this machine's records, 2026-10-15; unit (our reader): `src/hooks/guards.test.ts` › "the message guard", `worktree-create.test.ts` › "another running session works in the worktree: refused" |
 
 ## Worktrees
 
 | Behaviour | Last proved on | How it is proved |
 |---|---|---|
-| WorktreeCreate input has `name`, `cwd` and `session_id`. The hook prints the worktree's folder on stdout. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
-| A project's WorktreeCreate and a plugin's both run: two worktrees are made, and the project's path is used. So the plugin's hook must defer. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
-| `ExitWorktree` with `remove` needs a WorktreeRemove hook (for a worktree a WorktreeCreate hook made). | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
+| WorktreeCreate input has `name`, `cwd` and `session_id`. `name` is the name as asked, a `/` included (`feat/y`). The hook prints the worktree's folder on stdout. | 2.1.300 | live: Phase 0 spike; Phase 3 (a logging hook); `doctor --live` |
+| **Claude Code's default worktree** (no WorktreeCreate hook): `<repo>/.claude/worktrees/<name>` on a new branch `worktree-<name>`, a `/` in the name becoming `+` in both (`feat/x` → `feat+x`, `worktree-feat+x`); from the remote's default branch (`origin/HEAD`), **not** the local HEAD, unless `worktree.baseRef` is `"head"`; locked (`claude session <name> (pid …)`) while the session runs. (What the plugin's default shape copies.) | 2.1.300 | live: Phase 3, a throwaway repo with a local "origin" one commit behind the local `main`: the worktree started at `origin/main`. The docs (code.claude.com/docs/en/worktrees) say the rest: `worktree.baseRef`, the 24-hour fetch, `.worktreeinclude`. unit (our copy): `src/hooks/worktree-create.test.ts` › "without anymodel.json: Claude Code's default" |
+| A WorktreeCreate hook that exits 0 and prints nothing, **alone**, makes the creation fail: "The WorktreeCreate hook ran without an error but didn't output a worktree path". There is no fallback to the default. (Why the plugin must do the default itself.) | 2.1.300 | live: Phase 3, EnterWorktree in a throwaway repo with only a silent plugin hook |
+| A project's WorktreeCreate and a plugin's both run: two worktrees are made, and the project's path is used. So the plugin's hook must defer. | 2.1.300 | live: Phase 0 spike |
+| **The defer check:** a plugin WorktreeCreate that exits 0 and prints nothing, next to the project's own (in its `.claude/settings.json`), gives exactly one worktree, and Claude Code uses the project's path; for `claude -w <name>` and for EnterWorktree alike. | 2.1.300 | live: Phase 3, twice with a silent probe plugin and once with this plugin (its hook log: `worktree-create` exit 0, empty stdout; one new worktree, the project hook's, where the session ran `pwd`); unit: `src/hooks/matrix.test.ts` › "the project wires its own: exit 0 and nothing at all" (every hook) |
+| A subagent's worktree (`isolation: "worktree"`) is asked for with the name `agent-<17 hex>`. Its SubagentStop input has `cwd` (inside that worktree), `agent_id` (the same hex) and `agent_type`. Claude Code keeps a worktree a hook made for a subagent and runs no WorktreeRemove for it (the docs). | 2.1.300 | live: Phase 3 (a logging hook; then this plugin's `subagent-stop` removed an unchanged subagent worktree and its branch); unit: `src/hooks/worktree-remove.test.ts` › "SubagentStop" |
+| WorktreeRemove input has `worktree_path`, `cwd` and `session_id`, and **no** field that says to discard changes, also when ExitWorktree passed `discard_changes: true`. Exit 0 counts as removed; exit 1 keeps it: "Exited worktree but could not remove it — kept at <path>". | 2.1.300 | live: Phase 3 (a logging hook; then this plugin's `worktree-remove` exited 1 on a worktree with an untracked file, and Claude Code kept it); `doctor --live` (exit 0, removed) |
+| `ExitWorktree` with `remove` on a hook-made worktree **outside** the repo is refused unless the call passes `discard_changes: true` (Claude Code "couldn't check the worktree for uncommitted changes"); inside `.claude/worktrees/` it is not. With `discard_changes`, the WorktreeRemove hook is the only check. | 2.1.300 | live: Phase 0 spike; Phase 3 (the first `doctor --live` run, without `discard_changes`: refused for the configured shape, removed for the default one); `doctor --live` passes `discard_changes: true` |
 
 ## The plugin on disk
 
 | Behaviour | Last proved on | How it is proved |
 |---|---|---|
-| Only `plugin/` is copied, to `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
-| `plugin/bin/` is on the Bash tool's PATH. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
-| `CLAUDE_PLUGIN_ROOT` is **not** set in the Bash tool. (So `plugin/bin/anymodel` finds `dist/` from its own location.) | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
+| Only `plugin/` is copied, to `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`. | 2.1.300 | live: Phase 0 spike |
+| `plugin/bin/` is on the Bash tool's PATH. | 2.1.300 | live: Phase 0 spike |
+| `CLAUDE_PLUGIN_ROOT` is **not** set in the Bash tool. (So `plugin/bin/anymodel` finds `dist/` from its own location.) | 2.1.300 | live: Phase 0 spike |
 | `plugins/installed_plugins.json` has the shape `{"version":2,"plugins":{"anymodel@anymodel":[{"scope":"user","installPath":"…","version":"…","gitCommitSha":"…"}]}}`. The launcher and `doctor` read the `scope: "user"` entry. | 2.1.300 | live: Phase 0 spike; unit (our reader): `src/setup/launcher.test.ts` › "finds the user-scope entry and its version", "ignores a project-scope install and uses the user-scope one" |
 | `plugins/known_marketplaces.json` has the shape `{"<marketplace>":{"source":{"source":"github","repo":"<owner>/<name>"},"installLocation":"…"}}`. | 2.1.300 | live: Phase 0 spike; unit (our reader): `src/setup/marketplace-access.test.ts` › "github: SSH first, then HTTPS" |
 
@@ -54,7 +63,7 @@ Code's file; it shows we read the shape correctly, not that Claude Code still wr
 | Behaviour | Last proved on | How it is proved |
 |---|---|---|
 | After `claude plugin marketplace add` and `claude plugin install`, the user's settings hold `enabledPlugins["anymodel@anymodel"]` and `extraKnownMarketplaces["anymodel"]` (with its source), **without** `autoUpdate`. That is why `setup` sets `autoUpdate: true`. (The spike ran both commands before it looked. The docs say `marketplace add` writes the marketplace entry and `install` the enabled plugin.) | 2.1.300 | live: Phase 0 spike; unit (our handling): `src/cli/cli.test.ts` › "installs the launcher and turns on auto-update, keeping the other settings" |
-| An update makes a new version folder. A running session keeps the old one until Claude Code restarts. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
+| An update makes a new version folder. A running session keeps the old one until Claude Code restarts. | 2.1.300 | live: Phase 0 spike |
 | Installing from a private GitHub repo works over the user's SSH key. | 2.1.300 | live: Phase 0 spike; unit (`doctor`'s access check): `src/cli/cli.test.ts` › "all green after setup, through the launcher; git reads the marketplace over SSH" |
 | `claude plugin validate plugin --strict` and `claude plugin validate . --strict` pass. | 2.1.300 | CI: the "Validate the plugin" and "Validate the marketplace" steps, on `.claude-code-version` and weekly on the newest |
 
@@ -91,16 +100,19 @@ say so" is not proof: a docs page can be ahead of, or behind, the release. Prove
 one before the phase that needs it ("now": at the first real release), then move it
 into a table above.
 
-- **The defer check:** a plugin WorktreeCreate hook that exits 0 and prints nothing,
-  while the project's own hook makes the worktree. (Phase 3)
-- **The default worktree:** without a WorktreeCreate hook, Claude Code makes
-  `.claude/worktrees/<name>` on a new branch `worktree-<name>` from `HEAD`. The Phase 0
-  spike copied this shape; it was not compared with Claude Code's own result. (Phase 3)
-- **An exec-form hook on Windows** runs with `bun.exe`. (Phase 3)
+- **An exec-form hook on Windows** runs with `bun.exe`. (Phase 10, on a Windows machine)
+- **A PreToolUse `ask` from a plugin hook puts the question to the person**, labelled
+  `[plugin:anymodel]`, also in auto mode; in `claude -p` nobody can answer, so the call is
+  denied and Claude reads the reason. The docs say so (code.claude.com/docs/en/hooks §
+  PreToolUse decision control). The git guard relies on it. (Before the first release with
+  the guards: one interactive session.)
+- **`sessionTitle` in a UserPromptSubmit answer renames the session**, the name ListAgents
+  shows included. The docs list the field; the hook this one was ported from saw it work
+  on an older Claude Code. (Before the first release with `sessionNames`.)
 - **Old version folders are deleted 14 days after an update.** The docs say so
   (code.claude.com/docs/en/plugins/loading). The gateway's router runs from a copy in
-  `~/.local/share/anymodel/` either way, so a deletion cannot stop it. (Phase 3, with
-  `doctor --live`)
+  `~/.local/share/anymodel/` either way, so a deletion cannot stop it. (`doctor --live`
+  does not prove it: it loads the plugin with `--plugin-dir`, from no version folder.)
 - **Installs and updates are keyed by the plugin version.** A manifest that sets
   `version` keeps every user on the cached copy until the version changes
   (code.claude.com/docs/en/plugins/loading). CI's version-bump check
@@ -141,3 +153,8 @@ is now the gateway table's row "A running session picks up a change to the `env`
 `restore`'s two stages (`src/cli/gateway-cli.test.ts` › "anymodel restore: the gateway
 in two stages", our side only) were built on the old assumption and stay as they are
 until the observation is repeated, for a removed key too (`docs/roadmap.md`).
+
+The two rows that were here for Phase 3 are now in the Worktrees table, both proved live.
+"The default worktree" was **wrong** as written: Claude Code starts a new worktree from the
+remote's default branch, not from `HEAD` (unless `worktree.baseRef` is `"head"`), and turns
+a `/` in the name into `+`. The plugin's default shape follows what was seen.

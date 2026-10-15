@@ -139,7 +139,8 @@ on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
 
 ### Who changes what, and when
 
-- **The SessionStart hook** (Phase 3 on) only refreshes managed files, under the lock.
+- **A SessionStart hook** only refreshes managed files, under the lock, or adds a note to
+  the session (§ The hooks).
 - **A manual run** (`anymodel setup`, `anymodel gateway setup`, `restore`) is the
   only thing that restarts or stops a service or changes a permission. It shows the change
   first, and asks before it cuts the answers in flight.
@@ -161,8 +162,9 @@ and gives its own details, with `.claude/anymodel.json`:
 }
 ```
 
-The plugin accepts `worktrees`, `instructions` and `autoMode` now and uses them from
-Phase 3, 5 and 6 (`roadmap.md`).
+The hooks use `worktrees`, `protectedBranches` and `sessionNames` (§ The hooks); the
+plugin accepts `instructions` and `autoMode` now and uses them from Phase 5 and 6
+(`roadmap.md`).
 
 - A hook finds the project from its input's `cwd`, which follows the session into a
   worktree. A worktree's own `anymodel.json` wins; else the main checkout's is used. A moved
@@ -179,13 +181,120 @@ A general skill reads the project's own additions when they exist. For example,
 the project's text wins. The plugin stays general; each project keeps its own rules in
 its own repo.
 
+## The hooks
+
+The plugin's hooks live in `src/hooks/`; each one is a bundle (`src/entries/<name>.ts` →
+`plugin/dist/<name>.js`) wired in exec form in `plugin/hooks/hooks.json`. The contract they
+follow: `.claude/rules/hooks.md`. The Claude Code behaviour they rely on, each row proved:
+`claude-code-contract.md` § Hooks and § Worktrees.
+
+### One frame for every hook
+
+Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
+
+1. **Read the input.** Not JSON, another event, or a `cwd` outside git: nothing to do.
+2. **The defer check.** When the project wires its own hook for the same event, with a
+   matcher that selects the same tool (or source, or agent type), the plugin's hook exits 0
+   and prints nothing, so the project's copy runs alone (§ The safe switch). It reads the
+   `.claude/settings.json` and `.claude/settings.local.json` of the checkout the input's
+   `cwd` is in and of the main checkout; for the worktree events also the user's
+   `settings.json`, because a second creator anywhere makes a second worktree. It needs only
+   git and those files, so it works even when `anymodel.json` is broken. It is coarse on
+   purpose: it cannot tell what a project's hook does, so any project hook on the same event
+   and tool silences the plugin's.
+3. **Read `anymodel.json`.** When it is broken or needs a newer plugin, the hook **fails
+   closed**, each in the way that suits its event: a guard asks the person (it cannot know
+   whether the project turned it on), WorktreeCreate fails with the update command,
+   WorktreeRemove keeps the worktree, an informational hook says one line. "Closed" never
+   means silent: a person who has not updated must hear why.
+4. **Run.** Any error is one line on stderr and exit 0 (a hook's bug never stops work),
+   except WorktreeCreate and WorktreeRemove, which exit 1: they cannot succeed without
+   their folder.
+
+### The worktree engine
+
+A WorktreeCreate hook **replaces** Claude Code's own creation, in every project, and a hook
+that prints no folder makes the creation fail (proved live). A plugin hook cannot step aside
+for a project that never opted in. So the plugin does Claude Code's default itself there:
+
+- **Without `anymodel.json`, and for every subagent (`agent-<hex>`):** Claude Code's shape,
+  `<main checkout>/.claude/worktrees/<name>` on the branch `worktree-<name>` (a `/` in the
+  name becomes `+`, as Claude Code does). The base follows Claude Code's
+  `worktree.baseRef` setting: `"fresh"` (the default) is the remote's default branch
+  (`origin/HEAD`), fetched when the repo was not fetched for a day, at most 5 s and never
+  asking for a password; `"head"`, or no remote, is the asking checkout's HEAD. No setup.
+- **With `worktrees` in `anymodel.json`:** `<parent of the main checkout>/<prefix><name>`
+  (a `/` becomes `-`) on the branch `<name>`. An existing worktree of that branch is
+  entered again, unless another running session works in it. Otherwise an existing branch
+  is checked out, or a new one is cut (not tracking the base) from `origin/<base>` right
+  after `git fetch origin <base>`; a failed fetch refuses, because a new branch starts only
+  from the latest base. Then the project's `setup` runs inside (argv, at most 9 minutes,
+  its output on stderr). A setup that fails leaves the worktree and exits 1; entering it
+  again runs setup again (a marker in the worktree's git folder records a finished setup).
+- **Both** copy the gitignored files `.worktreeinclude` names, which Claude Code no longer
+  does once a hook makes the worktree.
+
+**WorktreeRemove** removes a worktree only when nothing can be lost: not the main checkout,
+not locked, no worktree inside it, nothing changed or untracked. Then its branch, when every
+commit on it is also on another branch or a remote. Uncommitted work: kept, exit 1, and
+Claude Code says it was not removed. Its input carries no "discard" field (seen live), and
+Claude Code cannot check a worktree outside the repo itself, so `ExitWorktree` needs
+`discard_changes: true` there: this hook is then the last check, and it never discards.
+
+**SubagentStop** does what Claude Code does without hooks: a subagent's worktree that
+changed nothing (no edit, no commit of its own) goes, with its branch. Claude Code keeps
+every worktree a hook made for a subagent and runs no WorktreeRemove for it (its docs; seen
+live). It cleans only the worktrees the plugin's own WorktreeCreate made: it defers when
+the project wires its own WorktreeCreate too.
+
+What the default shape does **not** reproduce, by design or not yet: the lock Claude Code
+puts on a worktree while a session uses it, the marker its periodic sweep looks for (so the
+sweep keeps plugin-made worktrees), the reset of a reused clean worktree to the default
+branch, `--worktree "#123"` (a pull request), and the neutralised filter drivers (Git LFS
+files arrive as they would with a plain `git worktree add`).
+
+### The other hooks
+
+| Hook | Event (matcher) | On when | What it does |
+|---|---|---|---|
+| `git-guard` | PreToolUse (Bash, PowerShell) | `anymodel.json` exists | Asks before a force-push, a push to a protected branch (`protectedBranches`, default `main`), `push --all`/`--mirror`, `reset --hard`, `clean -f`, a checkout or restore that discards changes, `branch -D`, and (with `worktrees`) a bare `git stash` / `stash pop`. One shell lexer (`shell-command.ts`) reads each command of a line; quoted text, here-docs and comments are data. "Ask", never "deny": the person may mean it. |
+| `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit) | `worktrees.guardMainFolder` | Denies an edit of a file in the main checkout itself, with the way into a worktree. |
+| `message-guard` | PreToolUse (SendMessage) | `anymodel.json` exists | Denies a message to a session that works outside this repo (from Claude Code's session records). |
+| `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After `gh pr merge`: the steps that clear the merged worktree, and the message to send the other sessions when it went into `worktrees.base`. |
+| `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no running session, idle an hour) and the ones whose folder is gone. Removes nothing. |
+| `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`anymodel session-name`), then sets that as its title at the next prompt. |
+
+Without `anymodel.json` every one of them is silent: a project that never opted in sees only
+Claude Code's own worktrees.
+
+**Left in the project that had them** (project values or project tools, not general): a ban
+on one package manager, the local database wipe guard, the heavy-job guard, a pull request
+into a release branch, the main checkout following the base branch after each merge
+(installs and migrations), the notes about one project's dev notes, migrations and env
+files, and the claude-mem start-folder note. **Waiting for Phase 4:** the Serena root
+record (Serena's edits in the main-folder guard) and the Playwright output folder, both tied
+to MCP servers the plugin registers in Phase 4. **Not ported:** the Windows helper that
+removes a worktree after the session lets go of it (the plugin is macOS and Linux for now).
+
+### `doctor --live`
+
+`anymodel doctor --live` (opt-in; it uses the person's login and costs a few cents) makes two
+throwaway repos in a temp folder, one without and one with `anymodel.json`, and runs one
+`claude -p` session in each with this plugin (`--plugin-dir`), only the EnterWorktree and
+ExitWorktree tools, and a two-step prompt. Every hook run is logged (`ANYMODEL_HOOK_LOG`),
+and it checks: the hooks fired, WorktreeCreate made the right shape, WorktreeRemove removed
+the folder and the branch. When all pass it records the Claude Code version in the state
+folder (`live-check.json`); plain `doctor` shows that line, and says to run it again when
+the installed Claude Code is another version.
+
 ## The safe switch
 
 A project may already have its own copy of a piece the plugin now ships (a worktree
 hook, a guard). Moving it to the plugin must never run it twice or leave a gap:
 
 1. **A plugin release adds the piece, with a defer check.** The plugin's hook stays
-   silent while the project still wires its own copy.
+   silent while the project still wires its own copy (§ The hooks › One frame for every
+   hook; proved live for WorktreeCreate: one worktree, at the project's path).
 2. Every machine gets the plugin, and `anymodel doctor` is green on each.
 3. **Then the project removes its copy** and raises `requires` in its `anymodel.json`.
 4. **A small fail-closed check in the project** covers a machine without the plugin: it

@@ -40,7 +40,8 @@ const REPO_SELECTING_GIT_VARS = [
   "GIT_NAMESPACE",
 ];
 
-function gitEnv(base: Record<string, string | undefined>): Record<string, string> {
+/** `base` without the GIT_* variables that would point git at another repo than its folder. */
+export function gitEnv(base: Record<string, string | undefined>): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(base)) {
     if (value !== undefined && !REPO_SELECTING_GIT_VARS.includes(key)) env[key] = value;
@@ -90,13 +91,15 @@ function findMainCheckout(git: Git, cwd: string): string | null {
   return realpathSync(path);
 }
 
+/** Where a checkout is, without its anymodel.json: what a hook needs before it reads the file. */
+export type Checkout = Omit<Project, "config">;
+
 /**
- * Finds the git project `cwd` is in, and its anymodel.json.
- * Returns null outside git. Throws when git is older than 2.31 or the main checkout is
- * missing, AnymodelVersionError when the project needs another plugin version, and AnymodelConfigError
- * when an anymodel.json is invalid.
+ * Finds the git checkout `cwd` is in, reading no anymodel.json. Returns null outside git or
+ * in a bare repo. Throws when git is older than 2.31 or the main checkout is missing.
+ * A hook calls it first, so its defer check works even when the anymodel.json is broken.
  */
-export function resolveProject(cwd: string, options: ResolveOptions = {}): Project | null {
+export function locateCheckout(cwd: string, options: ResolveOptions = {}): Checkout | null {
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
@@ -126,14 +129,30 @@ export function resolveProject(cwd: string, options: ResolveOptions = {}): Proje
   const commonDir = realpathSync(common);
   const isWorktree = realpathSync(gitDir) !== commonDir;
   const mainCheckout = isWorktree ? findMainCheckout(git, cwd) : root;
+  return { root, commonDir, isWorktree, mainCheckout };
+}
 
-  const own = join(root, ".claude", "anymodel.json");
-  let config = loadAnymodelConfig(own, options.pluginVersion);
+/**
+ * Reads the anymodel.json of a located checkout: its own, else the main checkout's.
+ * Throws AnymodelVersionError when the project needs another plugin version, and
+ * AnymodelConfigError when an anymodel.json is invalid.
+ */
+export function loadProjectConfig(checkout: Checkout, pluginVersion?: string): Project {
+  const { root, mainCheckout } = checkout;
+  let config = loadAnymodelConfig(join(root, ".claude", "anymodel.json"), pluginVersion);
   if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    config = loadAnymodelConfig(
-      join(mainCheckout, ".claude", "anymodel.json"),
-      options.pluginVersion,
-    );
+    config = loadAnymodelConfig(join(mainCheckout, ".claude", "anymodel.json"), pluginVersion);
   }
-  return { root, commonDir, isWorktree, mainCheckout, config };
+  return { ...checkout, config };
+}
+
+/**
+ * Finds the git project `cwd` is in, and its anymodel.json.
+ * Returns null outside git. Throws when git is older than 2.31 or the main checkout is
+ * missing, AnymodelVersionError when the project needs another plugin version, and AnymodelConfigError
+ * when an anymodel.json is invalid.
+ */
+export function resolveProject(cwd: string, options: ResolveOptions = {}): Project | null {
+  const checkout = locateCheckout(cwd, options);
+  return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
 }
