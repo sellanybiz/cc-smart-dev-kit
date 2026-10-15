@@ -251,6 +251,8 @@ describe("anymodel doctor", () => {
         "✓ can read the marketplace at git@github.com:example-org/anymodel.git",
         "✓ plugin auto-update is on",
         "✓ plugin updates are not switched off",
+        // The self-update has not checked yet: information, not a failure.
+        "· background update: no check yet (a new Claude session checks, at most once an hour)",
         "✓ no other enabled plugin is named anymodel",
         // The gateway is optional: never set up is information, not a failure.
         "· gateway: not set up (optional). To use it: anymodel gateway setup",

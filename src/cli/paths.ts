@@ -19,6 +19,8 @@ export interface CliPaths {
   routerCopy: string;
   /** The router's systemd user unit: `~/.config/systemd/user/anymodel-router.service`. */
   routerUnitFile: string;
+  /** The socket unit that holds the router's port: `~/.config/systemd/user/anymodel-router.socket`. */
+  routerSocketFile: string;
 }
 
 /** Every path the CLI touches, from HOME and CLAUDE_CONFIG_DIR, so tests can point it anywhere. */
@@ -36,6 +38,7 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
     routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
     routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service"),
+    routerSocketFile: join(home, ".config", "systemd", "user", "anymodel-router.socket"),
   };
 }
 

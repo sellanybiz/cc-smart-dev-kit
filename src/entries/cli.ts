@@ -5,6 +5,7 @@ import { runDoctor } from "../cli/doctor";
 import { cliPaths } from "../cli/paths";
 import { runRestore } from "../cli/restore";
 import { runSetup } from "../cli/setup";
+import { runUpdate } from "../cli/update";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
@@ -20,12 +21,18 @@ Commands:
   restore [--yes] [--now]
                      Remove what anymodel added, and keep everything else: its settings
                      keys, its Markdown blocks, and the files it created (the launcher,
-                     the router copy and unit). Each changed file gets a backup first.
+                     the router copy and units). Each changed file gets a backup first.
                      With the gateway on, it runs in two stages: first everything but the
                      router, which the running sessions still use; after you restart
                      them, again to stop and remove the router (it asks; --yes: without
                      asking). --now: both at once, and every running session fails until
                      it restarts.
+  update [--check | --hold | --resume]
+                     Install a newer anymodel now, with the output of each step.
+                     --check: only say whether a newer version exists. A new Claude
+                     session checks by itself, at most once an hour, and installs it in
+                     the background; --hold stops that on this machine, --resume starts
+                     it again. Nothing restarts: restart the sessions to load it.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      anymodel gateway --help lists them.
   version            Print the version.
@@ -44,8 +51,11 @@ function routerBundle(): string {
     : join(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
 }
 
+// 180 s: a `systemctl --user restart` of the router returns only once the old router has
+// drained its answers in flight (the unit's TimeoutStopSec, 120 s). A shorter timeout
+// would kill systemctl mid-wait and report a restart that is still going on as failed.
 const runner: Runner = (cmd) => {
-  const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 30_000 });
+  const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 180_000 });
   return {
     exitCode: result.exitCode ?? 1,
     output: `${result.stdout.toString()}${result.stderr.toString()}`,
@@ -105,6 +115,8 @@ async function main(argv: string[]): Promise<number> {
         probe: realProbe(),
       });
     }
+    case "update":
+      return runUpdate(paths, process.env, rest);
     case "gateway":
       return runGateway(rest, gatewayContext(paths));
     case "version":

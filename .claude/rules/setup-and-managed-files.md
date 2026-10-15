@@ -117,8 +117,9 @@ Each of them:
     (`ownedGatewayEnvKeys`): it restores everything except the router's files
     (`restore(stateDir, { except })`, which leaves them tracked) and says to restart
     every running session, then run `restore` again. Nothing stops, nothing is asked.
-  - **stage 2**, with no such key left: it disables and stops the unit first, while its
-    file is still there (`stopRouter`: `is-active`, `disable`, `stop --no-block`, then up
+  - **stage 2**, with no such key left: it disables and stops the unit and its socket
+    first, while their files are still there (`stopRouter`: `is-active`, `disable` of
+    both, one `stop --no-block` of both, then up
     to 15 s while this router still answers on the config's port; the drain finishes in
     the background), then restores the files, runs `systemctl --user daemon-reload`, and
     removes the restart-pending marker. It waits only for the unit's own router: a unit
@@ -145,9 +146,10 @@ valid across updates.
 
 - Restarts and permission changes happen only in a manual run (`anymodel setup`,
   `gateway setup`, `restore`) that shows the change first. A restart or stop of a running
-  service says that answers in flight are cut, and asks: `confirm()` on a terminal; with
-  no terminal, it stops and changes nothing unless `--yes` was given. The SessionStart
-  hook (Phase 3) only refreshes managed files.
+  service says what it cuts, and asks: `confirm()` on a terminal; with no terminal, it
+  stops and changes nothing unless `--yes` was given. The SessionStart hook only
+  refreshes managed files and starts the background self-update (`hooks.md`), which
+  installs a new plugin version with `claude plugin` commands and restarts nothing.
 - Setup refuses to start before `claude plugin marketplace add` has run, and says which
   command to run.
 

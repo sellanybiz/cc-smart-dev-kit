@@ -96,9 +96,11 @@ person's yes.
 ## Update the router
 
 After a plugin update, `doctor` says the router copy is not this version's.
-`anymodel gateway setup` copies the new one. It **asks before the restart**: a restart
-cuts every answer in flight on the machine. Ask the person for the moment; use `--yes`
-only when they said yes.
+`anymodel gateway setup` copies the new one. It **asks before the restart**. Under its
+socket unit a restart lets the answers in flight finish and new requests wait, so none
+fails; but the first setup that moves an older router to its socket makes new requests
+fail until the old router has drained (up to 120 s), and setup says so. Ask the person
+for the moment; use `--yes` only when they said yes.
 
 ## Never
 
@@ -115,4 +117,5 @@ only when they said yes.
   only.
 - **Turn the judge on** without the person's yes and the trade-off said.
 - **Restart the router** (`gateway setup --yes`, `systemctl restart`) without telling the
-  person that answers in flight are cut.
+  person what the restart does: requests wait during the drain, and the first move to the
+  socket makes them fail for one drain.

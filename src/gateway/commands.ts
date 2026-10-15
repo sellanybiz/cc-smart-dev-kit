@@ -33,7 +33,7 @@ import {
 } from "./config";
 import { type HealthProbe, routerHealth } from "./health";
 import { startRouter } from "./router";
-import { type InstallOptions, installRouter, RESTART_WARNING, type Runner } from "./service";
+import { INSTALL_WARNINGS, type InstallOptions, installRouter, type Runner } from "./service";
 import { maskKey, settingsReport, shownValue, turnOff, turnOn } from "./settings";
 import { JUDGE_SLOT, parseTarget, slotKeyFromArg, type Target } from "./targets";
 
@@ -423,6 +423,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
     bundle: ctx.bundle,
     copyPath: paths.routerCopy,
     unitPath: paths.routerUnitFile,
+    socketPath: paths.routerSocketFile,
     home: paths.home,
     stateDir: paths.stateDir,
     port: configuredPort(configPath),
@@ -448,7 +449,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
           yes: true,
           confirm: null,
           say: (line) => {
-            if (line !== RESTART_WARNING) console.log(line);
+            if (!INSTALL_WARNINGS.includes(line)) console.log(line);
           },
         }),
       );
@@ -550,7 +551,7 @@ export async function runGateway(args: string[], ctx: GatewayContext): Promise<n
       return noArgs(() => commandOff(ctx));
     case "serve":
       return noArgs(async () => {
-        startRouter(ctx.paths.gatewayConfigFile);
+        await startRouter(ctx.paths.gatewayConfigFile);
         return 0;
       });
     case undefined:

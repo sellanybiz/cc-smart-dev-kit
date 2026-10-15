@@ -27,6 +27,10 @@ Code's file; it shows we read the shape correctly, not that Claude Code still wr
 | SessionStart and PreToolUse hooks fire from a plugin. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
 | The hook input's `cwd` follows the session into a worktree. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
 | `CLAUDE_PROJECT_DIR` stays at the folder the session started in, also in a worktree. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
+| A hook gets `CLAUDE_PID`, the pid of the Claude Code process, which is also the hook's parent. The self-update records each session under it. | 2.1.300 | live: a logging SessionStart hook in a throwaway config folder (2026-10-15); unit (our side): `src/update/update.test.ts` › "the hook records its session; a record of a process that is gone is dropped" |
+| SessionStart hooks run in `claude -p` too, also with no login (the session ends "Not logged in" after the hooks ran). | 2.1.300 | live: throwaway config folder, `claude --plugin-dir … -p hi` (2026-10-15) |
+| A process a SessionStart hook starts detached (`setsid`, no pipe to the hook) outlives the hook and the session, and Claude Code does not wait for it. From there, `claude plugin marketplace update anymodel` and `claude plugin update anymodel@anymodel --scope user` work, with the hook's environment (`CLAUDECODE=1`, `CLAUDE_CONFIG_DIR`, …). | 2.1.300 | live: in a throwaway config folder, installed from the real marketplace, set one release behind (installed 0.2.0, the copy on a local commit); a real session start of this build (`--plugin-dir`) installed 0.2.1 in the background, 11 s later (2026-10-15). unit (our side): `src/update/update.test.ts` › "a newer version: the hook returns at once …", which fails when the child holds the hook's stdout |
+| A SessionStart hook's JSON answer `{"systemMessage": "…"}` is shown to the person. The self-update uses it once, after a failed background update. | not proved | unit (what we print): `src/update/update.test.ts` › "a failed update: recorded; the next session start says so once, as a systemMessage" |
 
 ## Worktrees
 
@@ -108,8 +112,10 @@ into a table above.
 - **`autoUpdate: true` on the user's `extraKnownMarketplaces` entry** makes Claude Code
   update installed plugins after a session starts. The docs say so
   (code.claude.com/docs/en/plugins/install); an open bug report
-  (anthropics/claude-code#61854) says only the catalog refreshes. `doctor`'s "behind the
-  marketplace" check catches a missed update either way. (Now)
+  (anthropics/claude-code#61854) says only the catalog refreshes, and on 2026-10-15 one
+  machine saw neither happen within 15 minutes. So the plugin updates itself
+  (`design.md` § Updates), and `doctor`'s "behind the marketplace" check catches a missed
+  update either way. (Now)
 - **A project's own entry for the same marketplace wins whole.** When more than one
   settings file declares a marketplace of the same name, Claude Code uses the entry of
   the highest-precedence file whole, and inherits none of the user's fields
@@ -141,3 +147,17 @@ is now the gateway table's row "A running session picks up a change to the `env`
 `restore`'s two stages (`src/cli/gateway-cli.test.ts` › "anymodel restore: the gateway
 in two stages", our side only) were built on the old assumption and stay as they are
 until the observation is repeated, for a removed key too (`docs/roadmap.md`).
+
+## Not Claude Code, relied on the same way: systemd and Bun
+
+The router's restart without refused requests (`gateway.md` § The service) relies on
+these. They are not Claude Code's, but they can change with a release all the same.
+
+| Behaviour | Last proved on | How it is proved |
+|---|---|---|
+| `Bun.serve` cannot serve on an inherited listening socket: it has no `fd` option, and an unknown `fd` is ignored (it serves on its default port). `node:http`'s `listen({ fd: 3 })` binds a random port instead. | Bun 1.4.2 | live: `systemd-socket-activate` and a one-file server (2026-10-15); the types: `node_modules/bun-types/serve.d.ts` |
+| `node:net`'s `createServer().listen({ fd: 3 })` accepts on the socket systemd passed. | Bun 1.4.2 | live, the same way; test: `src/gateway/listen.test.ts` › "serves its health page and a whole stream on the socket's port, through the relay" |
+| `Bun.serve` on a unix socket closes a connection after 10 s with nothing sent unless `idleTimeout: 0` is given (the types allow the option only beside a port; `server.timeout(req, 0)` does not help). | Bun 1.4.2 | live: a 14 s silent answer, three ways (2026-10-15); test: `listen.test.ts` › "a stream silent for 12 s is not cut behind the relay", which fails without the option |
+| A socket unit keeps the port open while its service restarts: new connections wait in its queue for the new process. | systemd 259 | live: throwaway units, 0 of 66 requests failed across a restart (2026-10-15) |
+| systemd refuses to start a socket unit while its service still runs or drains ("Socket service … already active, refusing"). And when the service's stop runs, a start of its socket waits for that stop to finish; a start of both in one call does not, and fails. | systemd 259 | live: throwaway units (2026-10-15); the start order is asserted in `src/gateway/commands.test.ts` › "the move from the older unit …" |
+| `stop --no-block` of the socket and the service in one call closes the port, and no connection starts the router again. | systemd 259 | live: the real `stopRouter` on throwaway units (2026-10-15) |

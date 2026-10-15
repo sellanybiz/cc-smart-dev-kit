@@ -1,7 +1,7 @@
 // @bun
 // src/entries/cli.ts
-import { existsSync as existsSync13 } from "fs";
-import { join as join8 } from "path";
+import { existsSync as existsSync15 } from "fs";
+import { join as join13 } from "path";
 
 // src/build-info/names.ts
 var MARKETPLACE = "anymodel";
@@ -21,8 +21,8 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/cli/doctor.ts
-import { accessSync, constants, existsSync as existsSync9, readFileSync as readFileSync10 } from "fs";
-import { join as join7 } from "path";
+import { accessSync, constants, existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
+import { join as join11 } from "path";
 
 // src/gateway/doctor.ts
 import { existsSync as existsSync6, readFileSync as readFileSync7 } from "fs";
@@ -43,7 +43,8 @@ function cliPaths(env = process.env) {
     stateDir: join(claudeConfigDir, "anymodel"),
     gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
     routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
-    routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service")
+    routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service"),
+    routerSocketFile: join(home, ".config", "systemd", "user", "anymodel-router.socket")
   };
 }
 function tildify(path, home) {
@@ -6771,6 +6772,74 @@ function applyOnce(file, options, owned) {
   return { file, changes, skipped, written, backup };
 }
 
+// src/gateway/listen.ts
+import { mkdtempSync, rmSync } from "fs";
+import net from "net";
+import { tmpdir } from "os";
+import { join as join5 } from "path";
+var SD_LISTEN_FDS_START = 3;
+var LISTEN_VARS = ["LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES"];
+function inheritedListenFd(env, pid) {
+  const listenPid = env.LISTEN_PID;
+  const count = env.LISTEN_FDS;
+  if (listenPid === undefined || count === undefined)
+    return null;
+  if (Number(listenPid) !== pid)
+    return null;
+  const fds = Number(count);
+  if (!Number.isInteger(fds) || fds < 1)
+    return null;
+  if (fds !== 1) {
+    throw new Error(`systemd passed ${fds} sockets (LISTEN_FDS); anymodel-router takes one`);
+  }
+  return SD_LISTEN_FDS_START;
+}
+function innerSocketPath(env, pid) {
+  const runtime = env.RUNTIME_DIRECTORY?.split(":")[0];
+  if (runtime) {
+    const path = join5(runtime, `router-${pid}.sock`);
+    rmSync(path, { force: true });
+    return { cleanup: () => rmSync(path, { force: true }), path };
+  }
+  const dir = mkdtempSync(join5(tmpdir(), "anymodel-router-"));
+  return {
+    cleanup: () => rmSync(dir, { force: true, recursive: true }),
+    path: join5(dir, "router.sock")
+  };
+}
+function relayConnection(client, path) {
+  const inner = net.connect(path);
+  client.setNoDelay(true);
+  client.on("error", () => inner.destroy());
+  inner.on("error", () => client.destroy());
+  client.on("close", () => inner.destroy());
+  client.pipe(inner);
+  inner.pipe(client);
+}
+function listenOnFd(fd, inner) {
+  const server = net.createServer({ pauseOnConnect: true }, (client) => {
+    inner.then((path) => relayConnection(client, path), () => client.destroy());
+  });
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ fd }, () => {
+      server.off("error", reject);
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        server.close();
+        reject(new Error(`file descriptor ${fd} is not a TCP listening socket`));
+        return;
+      }
+      resolve({ port: address.port, server });
+    });
+  });
+}
+function serveUnix(path, fetch2) {
+  const options = { fetch: fetch2, unix: path };
+  Object.assign(options, { idleTimeout: 0 });
+  return Bun.serve(options);
+}
+
 // src/gateway/router.ts
 var HEALTH_PATH = "/__anymodel/health";
 var MESSAGES_PATH = "/v1/messages";
@@ -7534,11 +7603,11 @@ function createRouter(deps) {
     return outcome.response;
   };
 }
-function startRouter(configPath) {
+async function startRouter(configPath, env = process.env) {
   const log = (line) => console.log(line);
   const source = watchConfig(configPath, log);
-  const { port } = source.get();
-  const handler = createRouter({
+  const configPort = source.get().port;
+  const handlerFor = (port) => createRouter({
     configPath,
     fetch: (url, init) => fetch(url, init),
     getConfig: () => source.get(),
@@ -7546,16 +7615,52 @@ function startRouter(configPath) {
     now: () => Date.now(),
     port
   });
-  const server = Bun.serve({ fetch: handler, hostname: "127.0.0.1", idleTimeout: 0, port });
-  log(`anymodel-router listening on http://127.0.0.1:${port} (config ${configPath})`);
-  process.once("SIGTERM", () => {
-    log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
-    server.stop(false).then(() => process.exit(0), (error) => {
-      log(`ERROR while stopping: ${messageOf(error)}`);
-      process.exit(1);
+  const fd = inheritedListenFd(env, process.pid);
+  for (const name of LISTEN_VARS)
+    delete env[name];
+  if (fd === null) {
+    const server = Bun.serve({
+      fetch: handlerFor(configPort),
+      hostname: "127.0.0.1",
+      idleTimeout: 0,
+      port: configPort
     });
+    log(`anymodel-router listening on http://127.0.0.1:${configPort} (config ${configPath})`);
+    process.once("SIGTERM", () => {
+      log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
+      exitWhenDone(server.stop(false), log, () => {});
+    });
+    return;
+  }
+  const inner = innerSocketPath(env, process.pid);
+  let innerReady = () => {};
+  const ready = new Promise((resolve) => {
+    innerReady = resolve;
   });
-  return server;
+  const relay = await listenOnFd(fd, ready);
+  if (relay.port !== configPort) {
+    log(`WARN the socket listens on port ${relay.port}, the config says ${configPort}: serving on ${relay.port}. Run: anymodel gateway setup`);
+  }
+  const server = serveUnix(inner.path, handlerFor(relay.port));
+  innerReady(inner.path);
+  log(`anymodel-router listening on http://127.0.0.1:${relay.port} (the socket systemd holds; config ${configPath})`);
+  process.once("SIGTERM", () => {
+    log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting; new connections wait in the socket for the next router`);
+    const relayClosed = new Promise((resolve) => {
+      relay.server.close(() => resolve());
+    });
+    exitWhenDone(Promise.all([server.stop(false), relayClosed]), log, inner.cleanup);
+  });
+}
+function exitWhenDone(done, log, cleanup) {
+  done.then(() => {
+    cleanup();
+    process.exit(0);
+  }, (error) => {
+    log(`ERROR while stopping: ${messageOf(error)}`);
+    cleanup();
+    process.exit(1);
+  });
 }
 
 // src/gateway/health.ts
@@ -7634,29 +7739,62 @@ async function waitForRouter(port, probe, waitMs = 5000) {
 }
 
 // src/gateway/service.ts
-import { existsSync as existsSync3, readFileSync as readFileSync5, rmSync } from "fs";
-import { join as join5 } from "path";
+import { existsSync as existsSync3, readFileSync as readFileSync5, rmSync as rmSync2 } from "fs";
+import { basename as basename2, join as join6 } from "path";
 var UNIT_NAME = "anymodel-router.service";
+var SOCKET_NAME = "anymodel-router.socket";
 var UP_TO_DATE = "router already up to date (no restart)";
-var RESTART_WARNING = "anymodel-router is running. A restart cuts the answers in flight in running Claude sessions on this machine (Claude Code retries them).";
-function renderUnit(bunPath, copyPath) {
-  for (const path of [bunPath, copyPath]) {
-    if (/["\\\n%]/.test(path))
-      throw new Error(`cannot put ${JSON.stringify(path)} in a unit file`);
+var RESTART_WARNING = "anymodel-router is running. A restart lets its answers in flight finish first (up to 120 s; a longer one is cut, and Claude Code retries it). New requests wait in its socket meanwhile; none fails.";
+var MOVE_WARNING = "anymodel-router is running without its socket unit. This setup moves it to one, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
+var PORT_WARNING = "anymodel-router is running, and its socket moves to a new port. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
+var INSTALL_WARNINGS = [RESTART_WARNING, MOVE_WARNING, PORT_WARNING];
+function checkUnitPath(path) {
+  if (/["\\\n%]/.test(path))
+    throw new Error(`cannot put ${JSON.stringify(path)} in a unit file`);
+}
+function stem(unitName) {
+  return unitName.replace(/\.(service|socket)$/, "");
+}
+function renderSocket(port, unitName = UNIT_NAME) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`not a port: ${port}`);
   }
-  return `# anymodel-router: the local AI gateway for Claude Code (127.0.0.1 only).
+  return `# ${stem(unitName)}: the socket of the local AI gateway for Claude Code (127.0.0.1 only).
 # Written by \`${COMMAND} gateway setup\`; edits here are overwritten by the next setup.
-# It runs a copy of the router, never a file in the plugin's version folder.
-# Its config: ~/.config/anymodel/gateway.json.
+# systemd holds the router's port, so a request waits while the router restarts.
 
 [Unit]
-Description=anymodel-router: local AI gateway for Claude Code (127.0.0.1 only)
+Description=${stem(unitName)} socket: holds 127.0.0.1:${port} across router restarts
+
+[Socket]
+ListenStream=127.0.0.1:${port}
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target
+`;
+}
+function renderUnit(bunPath, copyPath, socketName = SOCKET_NAME) {
+  for (const path of [bunPath, copyPath])
+    checkUnitPath(path);
+  const name = stem(socketName);
+  return `# ${name}: the local AI gateway for Claude Code (127.0.0.1 only).
+# Written by \`${COMMAND} gateway setup\`; edits here are overwritten by the next setup.
+# It runs a copy of the router, never a file in the plugin's version folder.
+# Its config: ~/.config/anymodel/gateway.json. Its port: ${socketName}.
+
+[Unit]
+Description=${name}: local AI gateway for Claude Code (127.0.0.1 only)
+Wants=${socketName}
+After=${socketName}
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 ExecStart="${bunPath}" --no-env-file "${copyPath}"
 WorkingDirectory=%h
+RuntimeDirectory=${name}
+RuntimeDirectoryMode=0700
 Restart=always
 RestartSec=2
 KillMode=mixed
@@ -7666,6 +7804,7 @@ NoNewPrivileges=true
 
 [Install]
 WantedBy=default.target
+Also=${socketName}
 `;
 }
 function run(runner, cmd) {
@@ -7675,27 +7814,31 @@ function run(runner, cmd) {
 ${result.output.trim()}`);
   }
 }
-function unitActive(runner) {
-  return runner(["systemctl", "--user", "is-active", "--quiet", UNIT_NAME]).exitCode === 0;
+function unitActive(runner, unitName = UNIT_NAME) {
+  return runner(["systemctl", "--user", "is-active", "--quiet", unitName]).exitCode === 0;
 }
-function unitState(runner) {
-  const result = runner(["systemctl", "--user", "is-active", UNIT_NAME]);
+function unitState(runner, unitName = UNIT_NAME) {
+  const result = runner(["systemctl", "--user", "is-active", unitName]);
   return result.output.trim().split(`
 `)[0]?.trim() || "unknown";
 }
 var DRAIN_NOTE = "waiting for the old router to finish its answers (up to 120 s)";
 function restartPendingFile(stateDir) {
-  return join5(stateDir, "restart-pending");
+  return join6(stateDir, "restart-pending");
 }
 var HEALTH_WAIT_MS = 5000;
 async function installRouter(options) {
+  const unitName = basename2(options.unitPath);
+  const socketName = basename2(options.socketPath);
   const port = await probeRouterPort(options.port, options.probe.fetch);
-  if (port.state === "other") {
+  const socketOpen = unitActive(options.runner, socketName);
+  if (port.state === "other" && !socketOpen) {
     throw new Error(`port ${options.port} is used by another program (an older router? stop it first)`);
   }
   const short = (path) => tildify(path, options.home);
   const copyText = readFileSync5(options.bundle, "utf8");
-  const unitText = renderUnit(options.bunPath, options.copyPath);
+  const unitText = renderUnit(options.bunPath, options.copyPath, socketName);
+  const socketText = renderSocket(options.port, unitName);
   const marker = restartPendingFile(options.stateDir);
   const write = (file, text, dryRun) => writeManagedFile(file, text, {
     stateDir: options.stateDir,
@@ -7705,16 +7848,19 @@ async function installRouter(options) {
   });
   const copyPlan = write(options.copyPath, copyText, true).outcome;
   const unitPlan = write(options.unitPath, unitText, true).outcome;
-  if (copyPlan === "unchanged" && unitPlan === "unchanged" && !existsSync3(marker)) {
+  const socketPlan = write(options.socketPath, socketText, true).outcome;
+  const filesUnchanged = copyPlan === "unchanged" && unitPlan === "unchanged" && socketPlan === "unchanged";
+  if (filesUnchanged && socketOpen && !existsSync3(marker)) {
     if (options.dryRun)
       return "up-to-date";
-    run(options.runner, ["systemctl", "--user", "enable", "--now", UNIT_NAME]);
+    run(options.runner, ["systemctl", "--user", "enable", "--now", socketName, unitName]);
     options.say(UP_TO_DATE);
     return "up-to-date";
   }
-  const active = unitActive(options.runner);
+  const rebind = !socketOpen || socketPlan !== "unchanged";
+  const active = unitActive(options.runner, unitName);
   if (active) {
-    options.say(RESTART_WARNING);
+    options.say(!rebind ? RESTART_WARNING : socketOpen ? PORT_WARNING : MOVE_WARNING);
     if (!options.yes) {
       const yes = options.confirm?.("Restart anymodel-router now?") ?? null;
       if (yes !== true) {
@@ -7727,34 +7873,51 @@ async function installRouter(options) {
     return "installed";
   atomicWrite(marker, `${COMMAND} gateway setup started a router restart at ${new Date(options.probe.now()).toISOString()}; it has not answered yet.
 `, 384);
-  const copy = write(options.copyPath, copyText, false);
-  if (copy.outcome !== "unchanged") {
-    options.say(`${copy.outcome === "created" ? "+" : "~"} ${short(options.copyPath)}: router copy ${copy.outcome}`);
-  }
-  const unit = write(options.unitPath, unitText, false);
-  if (unit.outcome !== "unchanged") {
-    options.say(`${unit.outcome === "created" ? "+" : "~"} ${short(options.unitPath)}: unit ${unit.outcome}`);
-  }
+  const said = (file, what, outcome) => {
+    if (outcome !== "unchanged") {
+      options.say(`${outcome === "created" ? "+" : "~"} ${short(file)}: ${what} ${outcome}`);
+    }
+  };
+  said(options.copyPath, "router copy", write(options.copyPath, copyText, false).outcome);
+  said(options.unitPath, "unit", write(options.unitPath, unitText, false).outcome);
+  said(options.socketPath, "socket unit", write(options.socketPath, socketText, false).outcome);
   run(options.runner, ["systemctl", "--user", "daemon-reload"]);
-  run(options.runner, ["systemctl", "--user", "enable", UNIT_NAME]);
-  if (active)
-    options.say("restarting anymodel-router");
-  else if (unitState(options.runner) === "deactivating")
-    options.say(DRAIN_NOTE);
-  run(options.runner, ["systemctl", "--user", "restart", UNIT_NAME]);
-  if (!await waitForRouter(options.port, options.probe, HEALTH_WAIT_MS)) {
-    throw new Error(`${UNIT_NAME} did not answer on 127.0.0.1:${options.port} within ${HEALTH_WAIT_MS / 1000} s of the restart (systemctl --user is-active: ${unitState(options.runner)}). See why: journalctl --user -u anymodel-router -n 30. Then run ${COMMAND} gateway setup again.`);
+  run(options.runner, ["systemctl", "--user", "enable", socketName, unitName]);
+  if (rebind) {
+    const state = unitState(options.runner, unitName);
+    if (state === "active" || state === "deactivating")
+      options.say(DRAIN_NOTE);
+    if (state !== "inactive" && state !== "failed") {
+      run(options.runner, ["systemctl", "--user", "stop", "--no-block", unitName]);
+    }
+    if (socketOpen)
+      run(options.runner, ["systemctl", "--user", "stop", socketName]);
+    const openSocket = ["systemctl", "--user", "start", socketName];
+    const opened = options.runner(openSocket);
+    if (opened.exitCode !== 0) {
+      throw new Error(`${openSocket.join(" ")} failed (exit ${opened.exitCode}):
+${opened.output.trim()}
+Is another program on 127.0.0.1:${options.port}? See: ss -ltnp, and journalctl --user -u ${socketName} -n 30. Then run ${COMMAND} gateway setup again.`);
+    }
+    run(options.runner, ["systemctl", "--user", "start", unitName]);
+  } else {
+    if (active)
+      options.say(`restarting ${stem(unitName)} (new requests wait in its socket)`);
+    run(options.runner, ["systemctl", "--user", "restart", unitName]);
   }
-  rmSync(marker, { force: true });
-  options.say(`enabled and (re)started ${UNIT_NAME}`);
+  if (!await waitForRouter(options.port, options.probe, HEALTH_WAIT_MS)) {
+    throw new Error(`${unitName} did not answer on 127.0.0.1:${options.port} within ${HEALTH_WAIT_MS / 1000} s of the restart (systemctl --user is-active: ${unitState(options.runner, unitName)}). See why: journalctl --user -u ${stem(unitName)} -n 30. Then run ${COMMAND} gateway setup again.`);
+  }
+  rmSync2(marker, { force: true });
+  options.say(`enabled and (re)started ${unitName} and ${socketName}`);
   return "installed";
 }
 var STOP_WAIT_MS = 15000;
 var HOLDS_ITS_PORT = new Set(["active", "deactivating"]);
-async function stopRouter(runner, port, probe) {
-  const state = port === null ? null : unitState(runner);
-  run(runner, ["systemctl", "--user", "disable", UNIT_NAME]);
-  run(runner, ["systemctl", "--user", "stop", "--no-block", UNIT_NAME]);
+async function stopRouter(runner, port, probe, names = { socket: SOCKET_NAME, unit: UNIT_NAME }) {
+  const state = port === null ? null : unitState(runner, names.unit);
+  run(runner, ["systemctl", "--user", "disable", names.socket, names.unit]);
+  run(runner, ["systemctl", "--user", "stop", "--no-block", names.socket, names.unit]);
   if (port === null || state === null)
     return { kind: "no-port" };
   if (!HOLDS_ITS_PORT.has(state))
@@ -7764,7 +7927,7 @@ async function stopRouter(runner, port, probe) {
     return { kind: "closed" };
   if (result.state === "other")
     return { detail: result.detail, kind: "other" };
-  throw new Error(`${UNIT_NAME} is disabled and was told to stop, but 127.0.0.1:${port} still takes connections after ${STOP_WAIT_MS / 1000} s. Nothing else was restored. See why: systemctl --user status anymodel-router (and ss -ltnp for another program on the port). Then run ${COMMAND} restore again.`);
+  throw new Error(`${names.unit} is disabled and was told to stop, but 127.0.0.1:${port} still takes connections after ${STOP_WAIT_MS / 1000} s. Nothing else was restored. See why: systemctl --user status ${stem(names.unit)} (and ss -ltnp for another program on the port). Then run ${COMMAND} restore again.`);
 }
 
 // src/gateway/settings.ts
@@ -8162,6 +8325,7 @@ async function commandSetup(ctx, args) {
     bundle: ctx.bundle,
     copyPath: paths.routerCopy,
     unitPath: paths.routerUnitFile,
+    socketPath: paths.routerSocketFile,
     home: paths.home,
     stateDir: paths.stateDir,
     port: configuredPort(configPath),
@@ -8182,7 +8346,7 @@ async function commandSetup(ctx, args) {
       yes: true,
       confirm: null,
       say: (line) => {
-        if (line !== RESTART_WARNING)
+        if (!INSTALL_WARNINGS.includes(line))
           console.log(line);
       }
     }));
@@ -8258,7 +8422,7 @@ async function runGateway(args, ctx) {
       return noArgs(() => commandOff(ctx));
     case "serve":
       return noArgs(async () => {
-        startRouter(ctx.paths.gatewayConfigFile);
+        await startRouter(ctx.paths.gatewayConfigFile);
         return 0;
       });
     case undefined:
@@ -8287,7 +8451,7 @@ async function gatewayChecks(options) {
       text: `a gateway setup did not finish; run: ${COMMAND} gateway setup`
     });
   }
-  const installed = existsSync6(paths.routerCopy) || existsSync6(paths.routerUnitFile);
+  const installed = existsSync6(paths.routerCopy) || existsSync6(paths.routerUnitFile) || existsSync6(paths.routerSocketFile);
   if (!installed) {
     checks.push(existsSync6(paths.gatewayConfigFile) ? {
       ok: true,
@@ -8337,6 +8501,7 @@ async function gatewayChecks(options) {
       return checks;
     }
   }
+  checks.push(socketCheck(options, config.port));
   const health = await routerHealth(config.port, options.fetch);
   checks.push("error" in health ? {
     ok: false,
@@ -8362,6 +8527,28 @@ async function gatewayChecks(options) {
     });
   }
   return checks;
+}
+function socketCheck(options, port) {
+  const { paths } = options;
+  const where = tildify(paths.routerSocketFile, paths.home);
+  if (!existsSync6(paths.routerSocketFile)) {
+    return {
+      ok: false,
+      text: `no socket unit at ${where}: a router restart makes new requests fail while the old router drains. ${SETUP}`
+    };
+  }
+  if (readFileSync7(paths.routerSocketFile, "utf8") !== renderSocket(port)) {
+    return {
+      ok: false,
+      text: `the socket unit ${where} is not the one setup writes for port ${port}. ${SETUP}`
+    };
+  }
+  if (!options.systemd)
+    return { ok: true, text: `the socket unit ${where} is up to date` };
+  const state = options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
+  const word = state.output.trim().split(`
+`)[0] || "unknown";
+  return state.exitCode === 0 ? { ok: true, text: `the router's socket (${SOCKET_NAME}) holds 127.0.0.1:${port}` } : { ok: false, text: `the router's socket (${SOCKET_NAME}) is ${word}. ${SETUP}` };
 }
 
 // src/setup/installed-plugins.ts
@@ -8389,7 +8576,7 @@ function findUserInstall(installedPluginsFile) {
 }
 
 // src/setup/launcher.ts
-import { join as join6 } from "path";
+import { join as join7 } from "path";
 var LAUNCHER_NAME = "anymodel";
 var FIND_INSTALL_JS = [
   "const f=process.argv[process.argv.length-1];",
@@ -8434,7 +8621,7 @@ exec "$bun" "$install_path/dist/cli.js" "$@"
 `;
 }
 function installLauncher(binDir, options) {
-  const path = join6(binDir, LAUNCHER_NAME);
+  const path = join7(binDir, LAUNCHER_NAME);
   const { outcome } = writeManagedFile(path, launcherScript(options.bunPath), {
     stateDir: options.stateDir,
     kind: "whole-file",
@@ -8446,6 +8633,7 @@ function installLauncher(binDir, options) {
 
 // src/setup/marketplace-access.ts
 import { existsSync as existsSync8, readFileSync as readFileSync9 } from "fs";
+import { join as join8 } from "path";
 var ACCESS_TIMEOUT_MS = 1e4;
 function marketplaceSource(knownMarketplacesFile, name, env = process.env) {
   if (!existsSync8(knownMarketplacesFile))
@@ -8461,6 +8649,8 @@ function marketplaceSource(knownMarketplacesFile, name, env = process.env) {
   if (!source || typeof source.source !== "string")
     return { kind: "missing" };
   const text = (key) => typeof source[key] === "string" ? source[key] : null;
+  const ref = text("ref");
+  const withRef = ref ? { ref } : {};
   switch (source.source) {
     case "github": {
       const repo = text("repo");
@@ -8469,11 +8659,11 @@ function marketplaceSource(knownMarketplacesFile, name, env = process.env) {
       const ssh = `git@github.com:${repo}.git`;
       const https = `https://github.com/${repo}.git`;
       const preferHttps = Boolean(env.CLAUDE_CODE_PLUGIN_PREFER_HTTPS);
-      return { kind: "git", urls: preferHttps ? [https, ssh] : [ssh, https] };
+      return { kind: "git", urls: preferHttps ? [https, ssh] : [ssh, https], ...withRef };
     }
     case "git": {
       const url = text("url");
-      return url ? { kind: "git", urls: [url] } : { kind: "unknown", type: "git without url" };
+      return url ? { kind: "git", urls: [url], ...withRef } : { kind: "unknown", type: "git without url" };
     }
     case "url": {
       const url = text("url");
@@ -8526,11 +8716,31 @@ function hasOwnSshCommand(env) {
   }
 }
 function canReadGitRemote(url, baseEnv = process.env) {
+  const result = lsRemote(url, "HEAD", baseEnv);
+  return result.ok ? { ok: true, detail: "" } : result;
+}
+function gitAccessEnv(baseEnv) {
   const env = { ...baseEnv, GIT_TERMINAL_PROMPT: "0" };
   if (!hasOwnSshCommand(env))
     env.GIT_SSH_COMMAND = BATCH_SSH_COMMAND;
+  return env;
+}
+function gitRemoteHead(url, ref, baseEnv = process.env) {
+  const result = lsRemote(url, ref, baseEnv);
+  if (!result.ok)
+    return result;
+  const lines = result.stdout.split(`
+`).map((line) => line.trim().split(/\s+/)).filter((fields) => fields.length === 2);
+  const line = lines.find(([, name]) => name.endsWith("^{}")) ?? lines[0];
+  if (line === undefined || !/^[0-9a-f]{40,64}$/.test(line[0])) {
+    return { detail: `the remote has no ${ref}`, ok: false };
+  }
+  return { ok: true, sha: line[0] };
+}
+function lsRemote(url, ref, baseEnv) {
+  const env = gitAccessEnv(baseEnv);
   try {
-    const result = Bun.spawnSync(["git", "ls-remote", url, "HEAD"], {
+    const result = Bun.spawnSync(["git", "ls-remote", url, ref], {
       env,
       stdin: "ignore",
       stdout: "pipe",
@@ -8538,7 +8748,7 @@ function canReadGitRemote(url, baseEnv = process.env) {
       timeout: ACCESS_TIMEOUT_MS
     });
     if (result.exitCode === 0)
-      return { ok: true, detail: "" };
+      return { ok: true, stdout: result.stdout.toString() };
     const lines = result.stderr.toString().trim().split(`
 `);
     const detail = result.signalCode ? "timed out" : (lines.at(-1) ?? "").trim();
@@ -8572,6 +8782,314 @@ function marketplaceInstallLocation(knownMarketplacesFile, name) {
     return null;
   }
 }
+function pluginFolderIn(marketplaceJson, plugin) {
+  try {
+    const manifest = JSON.parse(marketplaceJson);
+    const plugins = Array.isArray(manifest?.plugins) ? manifest.plugins : [];
+    const entry = plugins.find((candidate) => typeof candidate === "object" && candidate !== null && candidate.name === plugin);
+    if (typeof entry?.source !== "string")
+      return null;
+    const folder = entry.source.replace(/^\.\//, "").replace(/\/+$/, "");
+    return folder === "" || folder.split("/").includes("..") ? null : folder;
+  } catch {
+    return null;
+  }
+}
+function marketplaceCopyVersion(location, plugin) {
+  let folder = "plugin";
+  try {
+    folder = pluginFolderIn(readFileSync9(join8(location, ".claude-plugin", "marketplace.json"), "utf8"), plugin) ?? folder;
+  } catch {}
+  const manifest = join8(location, folder, ".claude-plugin", "plugin.json");
+  try {
+    const version = JSON.parse(readFileSync9(manifest, "utf8"))?.version;
+    return { manifest, version: typeof version === "string" ? version : null };
+  } catch {
+    return { manifest, version: null };
+  }
+}
+
+// src/update/check.ts
+import { mkdtempSync as mkdtempSync2, rmSync as rmSync3 } from "fs";
+import { tmpdir as tmpdir2 } from "os";
+import { join as join9 } from "path";
+
+// src/project/git-env.ts
+var REPO_SELECTING_GIT_VARS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_PREFIX",
+  "GIT_NAMESPACE"
+];
+function gitEnv(base) {
+  const env = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value !== undefined && !REPO_SELECTING_GIT_VARS.includes(key))
+      env[key] = value;
+  }
+  return env;
+}
+
+// src/update/check.ts
+var GIT_TIMEOUT_MS = 20000;
+function isOlder(a, b) {
+  if (b === null)
+    return false;
+  if (a === null)
+    return true;
+  try {
+    return Bun.semver.order(a, b) < 0;
+  } catch {
+    return false;
+  }
+}
+function localHead(folder, env) {
+  try {
+    const result = Bun.spawnSync(["git", "-C", folder, "rev-parse", "HEAD"], {
+      env: gitEnv(env),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: GIT_TIMEOUT_MS
+    });
+    const head = result.stdout.toString().trim();
+    return result.exitCode === 0 && /^[0-9a-f]{40,64}$/.test(head) ? head : null;
+  } catch {
+    return null;
+  }
+}
+function checkForUpdate(paths, env) {
+  const install = findUserInstall(paths.installedPluginsFile);
+  if (install === null)
+    return { kind: "not-installed" };
+  const source = marketplaceSource(paths.knownMarketplacesFile, MARKETPLACE, env);
+  if (source.kind === "missing") {
+    return { detail: `the ${MARKETPLACE} marketplace is not added`, kind: "no-marketplace" };
+  }
+  const location = marketplaceInstallLocation(paths.knownMarketplacesFile, MARKETPLACE);
+  if (location === null) {
+    return {
+      detail: `the ${MARKETPLACE} marketplace has no local copy`,
+      kind: "no-marketplace"
+    };
+  }
+  const inCopy = marketplaceCopyVersion(location, PLUGIN).version;
+  let remote = null;
+  let catalogBehind = false;
+  if (source.kind === "git") {
+    const ref = source.ref ?? "HEAD";
+    const failures = [];
+    for (const url of source.urls) {
+      const head = gitRemoteHead(url, ref, env);
+      if (head.ok) {
+        remote = { head: head.sha, ref, url };
+        break;
+      }
+      failures.push(`${redactUrl(url)}: ${head.detail}`);
+    }
+    if (remote === null)
+      return { detail: failures.join("; "), kind: "unreachable" };
+    catalogBehind = localHead(location, env) !== remote.head;
+  }
+  if (catalogBehind || isOlder(install.version, inCopy)) {
+    return {
+      catalogBehind,
+      inCopy,
+      installed: install.version,
+      kind: "behind",
+      remote
+    };
+  }
+  return { installed: install.version ?? "(no version)", kind: "up-to-date" };
+}
+function remotePluginVersion(url, ref, baseEnv) {
+  const env = gitAccessEnv(gitEnv(baseEnv));
+  const dir = mkdtempSync2(join9(tmpdir2(), "anymodel-update-check-"));
+  const git = (args) => {
+    const result = Bun.spawnSync(["git", ...args], {
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: GIT_TIMEOUT_MS
+    });
+    return {
+      ok: result.exitCode === 0,
+      stderr: redactUrlsIn(result.stderr.toString().trim().split(`
+`).at(-1) ?? ""),
+      stdout: result.stdout.toString()
+    };
+  };
+  try {
+    const init = git(["init", "-q", "--bare", dir]);
+    if (!init.ok)
+      return { detail: `git init: ${init.stderr}`, ok: false };
+    const fetch2 = git(["-C", dir, "fetch", "-q", "--depth", "1", "--no-tags", url, ref]);
+    if (!fetch2.ok)
+      return { detail: fetch2.stderr || "git fetch failed", ok: false };
+    const marketplace = git(["-C", dir, "show", "FETCH_HEAD:.claude-plugin/marketplace.json"]);
+    const folder = marketplace.ok && pluginFolderIn(marketplace.stdout, PLUGIN) || "plugin";
+    const manifest = git(["-C", dir, "show", `FETCH_HEAD:${folder}/.claude-plugin/plugin.json`]);
+    if (!manifest.ok)
+      return { detail: `no ${folder}/.claude-plugin/plugin.json`, ok: false };
+    const version = JSON.parse(manifest.stdout)?.version;
+    return typeof version === "string" ? { ok: true, version } : { detail: `no version in ${folder}/.claude-plugin/plugin.json`, ok: false };
+  } catch (error) {
+    return {
+      detail: redactUrlsIn(error instanceof Error ? error.message : String(error)),
+      ok: false
+    };
+  } finally {
+    rmSync3(dir, { force: true, recursive: true });
+  }
+}
+
+// src/update/state.ts
+import {
+  appendFileSync,
+  existsSync as existsSync9,
+  mkdirSync as mkdirSync4,
+  readdirSync as readdirSync2,
+  readFileSync as readFileSync10,
+  rmSync as rmSync4,
+  statSync as statSync4,
+  writeFileSync as writeFileSync2
+} from "fs";
+import { join as join10 } from "path";
+var CHECK_INTERVAL_MS = 60 * 60 * 1000;
+var LOG_MAX_BYTES = 256 * 1024;
+function updateFiles(stateDir) {
+  return {
+    hold: join10(stateDir, "update-hold"),
+    check: join10(stateDir, "update-check.json"),
+    reported: join10(stateDir, "update-reported"),
+    log: join10(stateDir, "update.log"),
+    lockDir: join10(stateDir, "update"),
+    sessions: join10(stateDir, "sessions")
+  };
+}
+var RESULTS = ["checking", "up-to-date", "updated", "skipped", "failed"];
+function ensureDir(dir) {
+  mkdirSync4(dir, { recursive: true, mode: 448 });
+}
+function readLastCheck(files) {
+  try {
+    const parsed = JSON.parse(readFileSync10(files.check, "utf8"));
+    if (typeof parsed?.at !== "string" || Number.isNaN(Date.parse(parsed.at)) || !RESULTS.includes(parsed.result) || typeof parsed.detail !== "string") {
+      return null;
+    }
+    return { at: parsed.at, detail: parsed.detail, result: parsed.result };
+  } catch {
+    return null;
+  }
+}
+function writeLastCheck(files, check) {
+  ensureDir(join10(files.check, ".."));
+  atomicWrite(files.check, `${JSON.stringify(check, null, 2)}
+`, 384);
+}
+function isDue(last, nowMs) {
+  if (last === null)
+    return true;
+  const at = Date.parse(last.at);
+  return nowMs - at >= CHECK_INTERVAL_MS || at > nowMs + 60000;
+}
+function isHeld(files) {
+  return existsSync9(files.hold);
+}
+function heldSince(files) {
+  try {
+    const text = readFileSync10(files.hold, "utf8").trim();
+    return text === "" ? "an unknown time" : text;
+  } catch {
+    return null;
+  }
+}
+function hold(files, nowMs) {
+  if (isHeld(files))
+    return false;
+  ensureDir(join10(files.hold, ".."));
+  atomicWrite(files.hold, `${isoSeconds(nowMs)}
+`, 384);
+  return true;
+}
+function resume(files) {
+  if (!isHeld(files))
+    return false;
+  rmSync4(files.hold, { force: true });
+  return true;
+}
+function isoSeconds(ms) {
+  return `${new Date(ms).toISOString().slice(0, 19)}Z`;
+}
+function appendLog(files, line, nowMs) {
+  ensureDir(join10(files.log, ".."));
+  try {
+    if (statSync4(files.log).size > LOG_MAX_BYTES) {
+      const text = readFileSync10(files.log, "utf8");
+      const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
+      writeFileSync2(files.log, keep.slice(keep.indexOf(`
+`) + 1), { mode: 384 });
+    }
+  } catch {}
+  appendFileSync(files.log, `${isoSeconds(nowMs)} ${line}
+`, { mode: 384 });
+}
+function wasReported(files, at) {
+  try {
+    return readFileSync10(files.reported, "utf8").trim() === at;
+  } catch {
+    return false;
+  }
+}
+function markReported(files, at) {
+  ensureDir(join10(files.reported, ".."));
+  atomicWrite(files.reported, `${at}
+`, 384);
+}
+function readSession(file) {
+  try {
+    const parsed = JSON.parse(readFileSync10(file, "utf8"));
+    if (typeof parsed?.pid !== "number" || typeof parsed.start !== "string" || typeof parsed.version !== "string") {
+      return null;
+    }
+    return { pid: parsed.pid, start: parsed.start, version: parsed.version };
+  } catch {
+    return null;
+  }
+}
+var SESSION_FILE = /^\d+\.json$/;
+function isRunning(session) {
+  return processStartTime(session.pid, session.start) === session.start;
+}
+function registerSession(files, pid, version) {
+  const start = processStartTime(pid);
+  if (start === null)
+    return;
+  ensureDir(files.sessions);
+  for (const name of readdirSync2(files.sessions).filter((entry) => SESSION_FILE.test(entry))) {
+    const file = join10(files.sessions, name);
+    const session = readSession(file);
+    if (session === null || !isRunning(session))
+      rmSync4(file, { force: true });
+  }
+  const record = { pid, start, version };
+  atomicWrite(join10(files.sessions, `${pid}.json`), `${JSON.stringify(record)}
+`, 384);
+}
+function runningSessions(files) {
+  let names;
+  try {
+    names = readdirSync2(files.sessions);
+  } catch {
+    return [];
+  }
+  return names.filter((name) => SESSION_FILE.test(name)).map((name) => readSession(join10(files.sessions, name))).filter((session) => session !== null && isRunning(session));
+}
 
 // src/cli/doctor.ts
 var UPDATE_BLOCKING_VARS = [
@@ -8582,10 +9100,10 @@ var UPDATE_BLOCKING_VARS = [
 var FORCE_PLUGIN_UPDATES_VAR = "FORCE_AUTOUPDATE_PLUGINS";
 var MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 function readSettings2(file) {
-  if (!existsSync9(file))
+  if (!existsSync10(file))
     return null;
   try {
-    const parsed = JSON.parse(readFileSync10(file, "utf8"));
+    const parsed = JSON.parse(readFileSync11(file, "utf8"));
     return typeof parsed === "object" && parsed !== null ? parsed : null;
   } catch {
     return null;
@@ -8609,7 +9127,7 @@ function checkPlugin(paths) {
     };
   }
   const where = tildify(install.installPath, paths.home);
-  if (!existsSync9(install.installPath)) {
+  if (!existsSync10(install.installPath)) {
     return {
       ok: false,
       text: `the plugin folder is missing: ${where}. Run: ${PLUGIN_INSTALL_COMMAND}`
@@ -8629,14 +9147,14 @@ function isExecutable(file) {
   }
 }
 function checkLauncher(paths) {
-  const launcher = join7(paths.binDir, LAUNCHER_NAME);
+  const launcher = join11(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
-  if (!existsSync9(launcher))
+  if (!existsSync10(launcher))
     return { ok: false, text: `no launcher at ${where}. Run: anymodel setup` };
   if (!isExecutable(launcher)) {
     return { ok: false, text: `the launcher ${where} is not executable. Run: anymodel setup` };
   }
-  const script = readFileSync10(launcher, "utf8");
+  const script = readFileSync11(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
     return { ok: false, text: `the launcher ${where} is out of date. Run: anymodel setup` };
@@ -8663,7 +9181,7 @@ async function checkMarketplaceAccess(paths, env) {
     case "unknown":
       return { ok: false, text: `cannot check the marketplace source (${source.type})` };
     case "local":
-      return existsSync9(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : { ok: false, text: `the marketplace folder is missing: ${source.path}` };
+      return existsSync10(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : { ok: false, text: `the marketplace folder is missing: ${source.path}` };
     case "http": {
       const url = redactUrl(source.url);
       const result = await canReadHttp(source.url);
@@ -8684,14 +9202,6 @@ async function checkMarketplaceAccess(paths, env) {
     }
   }
 }
-function marketplaceVersion(manifest) {
-  try {
-    const version = JSON.parse(readFileSync10(manifest, "utf8"))?.version;
-    return typeof version === "string" ? version : null;
-  } catch {
-    return null;
-  }
-}
 function checkInstalledVersion(paths) {
   const install = findUserInstall(paths.installedPluginsFile);
   if (!install)
@@ -8705,8 +9215,7 @@ function checkInstalledVersion(paths) {
       text: `the ${MARKETPLACE} marketplace has no local copy. Run: ${MARKETPLACE_UPDATE_COMMAND}`
     };
   }
-  const manifest = join7(location, "plugin", ".claude-plugin", "plugin.json");
-  const latest = marketplaceVersion(manifest);
+  const { manifest, version: latest } = marketplaceCopyVersion(location, PLUGIN);
   if (latest === null) {
     return {
       ok: false,
@@ -8761,6 +9270,73 @@ function checkUpdatesNotOff(settings, env, paths) {
     text: `plugin updates are switched off: ${named} ${blocking.length === 1 ? "is" : "are"} set. ` + `Set ${FORCE_PLUGIN_UPDATES_VAR}=1 as well, or remove ${blocking.join(" and ")}.`
   };
 }
+function checkSelfUpdate(paths) {
+  const files = updateFiles(paths.stateDir);
+  const checks = [];
+  const since = heldSince(files);
+  if (since !== null) {
+    checks.push({
+      ok: true,
+      info: true,
+      text: `background updates are on hold (since ${since}). To resume: ${COMMAND} update --resume`
+    });
+  }
+  const last = readLastCheck(files);
+  const log = tildify(files.log, paths.home);
+  if (last === null) {
+    checks.push({
+      ok: true,
+      info: true,
+      text: "background update: no check yet (a new Claude session checks, at most once an hour)"
+    });
+  } else {
+    switch (last.result) {
+      case "up-to-date":
+        checks.push({
+          ok: true,
+          text: `background update: last check ${last.at}: ${last.detail} is the newest`
+        });
+        break;
+      case "updated":
+        checks.push({
+          ok: true,
+          text: `background update: last check ${last.at}: installed ${last.detail}`
+        });
+        break;
+      case "checking":
+        checks.push({
+          ok: true,
+          info: true,
+          text: `background update: a check started at ${last.at} (${log})`
+        });
+        break;
+      case "skipped":
+        checks.push({
+          ok: true,
+          info: true,
+          text: `background update: last check ${last.at}: ${last.detail}`
+        });
+        break;
+      case "failed":
+        checks.push({
+          ok: false,
+          text: `background update: the last check, ${last.at}, failed: ${last.detail}. The log: ${log}. To try now: ${COMMAND} update`
+        });
+        break;
+    }
+  }
+  const installed = findUserInstall(paths.installedPluginsFile)?.version ?? null;
+  const older = runningSessions(files).filter((session) => isOlder(session.version, installed));
+  if (older.length > 0) {
+    const versions = [...new Set(older.map((session) => session.version))].sort().join(", ");
+    checks.push({
+      ok: true,
+      info: true,
+      text: `${older.length} running Claude session${older.length === 1 ? "" : "s"} loaded ${PLUGIN} ${versions}; ${installed} is installed. Restart ${older.length === 1 ? "it" : "them"} to load it.`
+    });
+  }
+  return checks;
+}
 function checkNameClash(settings) {
   const enabled = settings?.enabledPlugins ?? {};
   const clashes = Object.entries(enabled).filter(([id, on]) => on === true && id.startsWith(`${PLUGIN}@`) && id !== PLUGIN_ID).map(([id]) => id);
@@ -8781,7 +9357,7 @@ function hasEntry(data, field, key) {
 function checkOldPlugin(settings, paths) {
   const plugins = settings?.enabledPlugins;
   const enabled = isJsonObject6(plugins) && plugins[OLD_PLUGIN_ID] === true;
-  if (!existsSync9(join7(paths.claudeConfigDir, OLD_NAME))) {
+  if (!existsSync10(join11(paths.claudeConfigDir, OLD_NAME))) {
     if (!enabled)
       return null;
     return {
@@ -8790,18 +9366,18 @@ function checkOldPlugin(settings, paths) {
     };
   }
   const short = (path) => tildify(path, paths.home);
-  const launcher = join7(paths.binDir, OLD_NAME);
+  const launcher = join11(paths.binDir, OLD_NAME);
   const left = [
     enabled ? "the plugin enabled" : null,
     hasEntry(readSettings2(paths.installedPluginsFile), "plugins", OLD_PLUGIN_ID) ? "the plugin installed" : null,
-    existsSync9(launcher) ? `its launcher ${short(launcher)}` : null,
+    existsSync10(launcher) ? `its launcher ${short(launcher)}` : null,
     hasEntry(settings, "extraKnownMarketplaces", OLD_NAME) ? `extraKnownMarketplaces.${OLD_NAME} in ${short(paths.settingsFile)}` : null,
     hasEntry(readSettings2(paths.knownMarketplacesFile), null, OLD_NAME) ? `the ${OLD_NAME} marketplace` : null
   ].filter((thing) => thing !== null);
   if (left.length === 0)
     return null;
   const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME}\``;
-  const canRun = existsSync9(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
+  const canRun = existsSync10(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
   const steps = canRun ? `Run \`${OLD_NAME} restore\` first, then \`${then}.` : `Its launcher cannot run, so remove by hand ${short(launcher)} and "${OLD_NAME}" under extraKnownMarketplaces in ${short(paths.settingsFile)}; then run \`${then}.`;
   return {
     ok: false,
@@ -8817,6 +9393,7 @@ async function runDoctor(paths, env, gateway) {
     await checkMarketplaceAccess(paths, env),
     checkAutoUpdate(settings, paths),
     checkUpdatesNotOff(settings, env, paths),
+    ...checkSelfUpdate(paths),
     checkNameClash(settings),
     checkOldPlugin(settings, paths),
     ...await gatewayChecks({ paths, ...gateway })
@@ -8828,13 +9405,13 @@ async function runDoctor(paths, env, gateway) {
 }
 
 // src/cli/restore.ts
-import { rmSync as rmSync2 } from "fs";
+import { rmSync as rmSync5 } from "fs";
 
 // src/setup/restore.ts
-import { existsSync as existsSync11, readFileSync as readFileSync12 } from "fs";
+import { existsSync as existsSync12, readFileSync as readFileSync13 } from "fs";
 
 // src/setup/managed-markdown.ts
-import { existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
+import { existsSync as existsSync11, readFileSync as readFileSync12 } from "fs";
 var BLOCK_BEGIN = "<!-- anymodel:begin -->";
 var BLOCK_END = "<!-- anymodel:end -->";
 function countOf(text, marker) {
@@ -8875,7 +9452,7 @@ function renderWithoutBlock(current, file = "the file") {
 function writeMarkdown(options, render) {
   const file = realTarget(options.file);
   return retryOnConcurrentChange(file, () => {
-    const text = existsSync10(file) ? readFileSync11(file, "utf8") : null;
+    const text = existsSync11(file) ? readFileSync12(file, "utf8") : null;
     const next = render(text ?? "", file);
     if (text === null && next === "")
       return { outcome: "unchanged", backup: null };
@@ -8902,11 +9479,11 @@ function restoreWholeFile(file, entry, stateDir) {
   if (!baseline)
     return { file, action: "no-backup", details: [] };
   if (baseline.absent) {
-    if (!existsSync11(file))
+    if (!existsSync12(file))
       return { file, action: "unchanged", details: [] };
     return { file, action: "removed", details: [], savedAs: removeManagedFile(stateDir, file) };
   }
-  const result = writeManagedFile(file, readFileSync12(baseline.path, "utf8"), {
+  const result = writeManagedFile(file, readFileSync13(baseline.path, "utf8"), {
     stateDir,
     kind: "whole-file",
     mode: baseline.mode
@@ -8921,9 +9498,9 @@ function restoreWholeFile(file, entry, stateDir) {
   };
 }
 function isEmpty(file) {
-  if (!existsSync11(file))
+  if (!existsSync12(file))
     return false;
-  const text = readFileSync12(file, "utf8").trim();
+  const text = readFileSync13(file, "utf8").trim();
   return text === "" || text === "{}";
 }
 function restorePartly(file, entry, stateDir) {
@@ -8978,6 +9555,7 @@ function describe2(result, short) {
       return `! ${file}: the backup from before anymodel is missing; left alone`;
   }
 }
+var UNITS = `${UNIT_NAME} and ${SOCKET_NAME}`;
 var STOP_WARNING = "anymodel-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.";
 var NOW_WARNING = `restore --now stops anymodel-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
 var STAGE_ONE_DONE = `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
@@ -9002,7 +9580,11 @@ function print(results, short) {
 async function runRestore(paths, options) {
   const short = (path) => tildify(path, paths.home);
   const changed = readChanged(paths.stateDir);
-  const routerFiles = [realTarget(paths.routerCopy), realTarget(paths.routerUnitFile)];
+  const routerFiles = [
+    realTarget(paths.routerCopy),
+    realTarget(paths.routerUnitFile),
+    realTarget(paths.routerSocketFile)
+  ];
   const routerTracked = routerFiles.some((file) => Object.hasOwn(changed, file));
   const unitTracked = options.systemd && Object.hasOwn(changed, realTarget(paths.routerUnitFile));
   const sessionsUseRouter = routerTracked && ownedGatewayEnvKeys(paths.settingsFile, paths.stateDir).length > 0;
@@ -9035,25 +9617,25 @@ async function runRestore(paths, options) {
       const stopped = await stopRouter(options.runner, port, options.probe);
       switch (stopped.kind) {
         case "closed":
-          console.log(`- ${UNIT_NAME}: disabled and stopped (port ${port} closed; answers in flight finish in the background)`);
+          console.log(`- ${UNITS}: disabled and stopped (port ${port} closed; answers in flight finish in the background)`);
           break;
         case "no-port":
-          console.log(`- ${UNIT_NAME}: disabled and stopping`);
+          console.log(`- ${UNITS}: disabled and stopping`);
           break;
         case "not-running":
           console.log(`  ${UNIT_NAME} was not running (systemctl --user is-active: ${stopped.state}); not waiting for port ${port}`);
-          console.log(`- ${UNIT_NAME}: disabled and stopped`);
+          console.log(`- ${UNITS}: disabled and stopped`);
           break;
         case "other":
           console.log(`  port ${port} answers, but not as this router (${stopped.detail}); not waiting for it`);
-          console.log(`- ${UNIT_NAME}: disabled and stopping`);
+          console.log(`- ${UNITS}: disabled and stopping`);
           break;
       }
     }
     const results = restore(paths.stateDir);
     if (unitTracked)
       options.runner(["systemctl", "--user", "daemon-reload"]);
-    rmSync2(restartPendingFile(paths.stateDir), { force: true });
+    rmSync5(restartPendingFile(paths.stateDir), { force: true });
     if (results.length === 0) {
       console.log("Nothing to restore: anymodel has nothing in any file.");
       return 0;
@@ -9064,17 +9646,17 @@ async function runRestore(paths, options) {
 }
 
 // src/cli/setup.ts
-import { existsSync as existsSync12, readFileSync as readFileSync13 } from "fs";
+import { existsSync as existsSync13, readFileSync as readFileSync14 } from "fs";
 import { delimiter } from "path";
 var AUTO_UPDATE_KEY = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
 function show2(value) {
   return value === undefined ? "(none)" : JSON.stringify(value);
 }
 function marketplaceKnown(settingsFile) {
-  if (!existsSync12(settingsFile))
+  if (!existsSync13(settingsFile))
     return false;
   try {
-    const settings = JSON.parse(readFileSync13(settingsFile, "utf8"));
+    const settings = JSON.parse(readFileSync14(settingsFile, "utf8"));
     const entry = settings.extraKnownMarketplaces?.[MARKETPLACE];
     return typeof entry === "object" && entry !== null;
   } catch {
@@ -9139,6 +9721,218 @@ async function runSetup(paths, options) {
   return 0;
 }
 
+// src/cli/update.ts
+import { existsSync as existsSync14, readFileSync as readFileSync15 } from "fs";
+import { join as join12 } from "path";
+
+// src/update/apply.ts
+var CLAUDE_TIMEOUT_MS = 180000;
+var MARKETPLACE_REFRESH = ["plugin", "marketplace", "update", MARKETPLACE];
+var PLUGIN_UPDATE = ["plugin", "update", PLUGIN_ID, "--scope", "user"];
+function applyUpdate(paths, claude, run, say) {
+  const before = findUserInstall(paths.installedPluginsFile)?.version ?? null;
+  const fail = (detail) => ({ after: before, before, detail, ok: false });
+  if (claude === null)
+    return fail("the claude command is not on PATH");
+  const step = (args) => {
+    say(`claude ${args.join(" ")}`);
+    const result = run([claude, ...args]);
+    if (result.exitCode === 0)
+      return null;
+    const last = result.output.trim().split(`
+`).at(-1)?.trim();
+    return `claude ${args.join(" ")} failed (exit ${result.exitCode})${last ? `: ${last}` : ""}`;
+  };
+  const refreshed = step(MARKETPLACE_REFRESH);
+  if (refreshed !== null)
+    return fail(refreshed);
+  const location = marketplaceInstallLocation(paths.knownMarketplacesFile, MARKETPLACE);
+  const inCopy = location === null ? null : marketplaceCopyVersion(location, PLUGIN).version;
+  if (isOlder(before, inCopy)) {
+    const updated = step(PLUGIN_UPDATE);
+    if (updated !== null)
+      return fail(updated);
+  }
+  const after = findUserInstall(paths.installedPluginsFile)?.version ?? null;
+  return { after, before, detail: "", ok: true };
+}
+function shownVersion(version) {
+  return version !== null && /^[0-9A-Za-z.+-]{1,40}$/.test(version) ? version : "a new version";
+}
+function installedText(version) {
+  return `${PLUGIN} ${shownVersion(version)} installed; restart Claude sessions to load it`;
+}
+function notifyCommand(text, platform, which) {
+  if (platform === "linux") {
+    const notifySend = which("notify-send");
+    return notifySend === null ? null : [notifySend, PLUGIN, text];
+  }
+  if (platform === "darwin") {
+    const osascript = which("osascript");
+    return osascript === null ? null : [osascript, "-e", `display notification ${JSON.stringify(text)} with title "${PLUGIN}"`];
+  }
+  return null;
+}
+function capturingRunner(env) {
+  return (argv) => {
+    try {
+      const result = Bun.spawnSync(argv, {
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: CLAUDE_TIMEOUT_MS
+      });
+      return {
+        exitCode: result.exitCode ?? 1,
+        output: `${result.stdout.toString()}${result.stderr.toString()}`
+      };
+    } catch (error) {
+      return { exitCode: 1, output: error instanceof Error ? error.message : String(error) };
+    }
+  };
+}
+
+// src/cli/update.ts
+var UPDATE_USAGE = `Usage: ${COMMAND} update [--check | --hold | --resume]`;
+var terminalRunner = (env) => {
+  return (argv) => {
+    try {
+      const result = Bun.spawnSync(argv, {
+        env,
+        stdin: "ignore",
+        stdout: "inherit",
+        stderr: "inherit",
+        timeout: CLAUDE_TIMEOUT_MS
+      });
+      return { exitCode: result.exitCode ?? 1, output: "" };
+    } catch (error) {
+      return { exitCode: 1, output: error instanceof Error ? error.message : String(error) };
+    }
+  };
+};
+function cannotUpdate(status) {
+  switch (status.kind) {
+    case "not-installed":
+      console.error(`${PLUGIN_ID} is not installed for this user. Run: ${PLUGIN_INSTALL_COMMAND}`);
+      return 1;
+    case "no-marketplace":
+      console.error(`${status.detail}. Run: ${MARKETPLACE_ADD_COMMAND}`);
+      return 1;
+    case "unreachable":
+      console.error(`cannot read the marketplace (${status.detail}). Check your git access: an SSH key, or a git credential helper.`);
+      return 1;
+    default:
+      return null;
+  }
+}
+async function check(paths, env) {
+  const status = checkForUpdate(paths, env);
+  const stop = cannotUpdate(status);
+  if (stop !== null)
+    return stop;
+  if (status.kind === "up-to-date") {
+    console.log(`${PLUGIN} ${status.installed} is the newest version.`);
+    return 0;
+  }
+  if (status.kind !== "behind")
+    return 1;
+  const installed = status.installed ?? "(no version)";
+  let available = status.inCopy;
+  if (status.catalogBehind && status.remote !== null) {
+    const remote = remotePluginVersion(status.remote.url, status.remote.ref, env);
+    if (!remote.ok) {
+      console.log(`The marketplace has commits this machine has not fetched (${redactUrl(status.remote.url)}); their version could not be read (${remote.detail}). Run: ${COMMAND} update`);
+      return 0;
+    }
+    available = remote.version;
+  }
+  if (isOlder(status.installed, available)) {
+    console.log(`${PLUGIN} ${available} is available (installed: ${installed}). Run: ${COMMAND} update`);
+  } else {
+    console.log(`${PLUGIN} ${installed} is the newest version${status.catalogBehind ? " (the marketplace has newer commits, with no new version)" : ""}.`);
+  }
+  return 0;
+}
+function routerNeedsSetup(paths) {
+  const install = findUserInstall(paths.installedPluginsFile);
+  if (install === null || !existsSync14(paths.routerCopy))
+    return false;
+  const bundle = join12(install.installPath, "dist", "router.js");
+  return existsSync14(bundle) && readFileSync15(bundle, "utf8") !== readFileSync15(paths.routerCopy, "utf8");
+}
+async function updateNow(paths, env, now) {
+  const files = updateFiles(paths.stateDir);
+  return withLock(files.lockDir, () => {
+    const at = isoSeconds(now());
+    const record = (result, detail) => writeLastCheck(files, { at, detail, result });
+    const status = checkForUpdate(paths, env);
+    const stop = cannotUpdate(status);
+    if (stop !== null) {
+      record(status.kind === "unreachable" ? "failed" : "skipped", "detail" in status ? status.detail : `${PLUGIN_ID} is not installed`);
+      return stop;
+    }
+    let code = 0;
+    if (status.kind === "up-to-date") {
+      console.log(`${PLUGIN} ${status.installed} is up to date.`);
+      record("up-to-date", status.installed);
+    } else {
+      const claude = Bun.which("claude", { PATH: env.PATH ?? "" });
+      const result = applyUpdate(paths, claude, terminalRunner(env), (line) => console.log(`$ ${line}`));
+      if (!result.ok) {
+        console.error(result.detail);
+        record("failed", result.detail);
+        code = 1;
+      } else if (result.after === result.before) {
+        console.log(`${PLUGIN} ${result.after ?? "(no version)"} is the newest version.`);
+        record("up-to-date", result.after ?? "(no version)");
+      } else {
+        console.log(`${PLUGIN} ${result.after ?? "(no version)"} installed (was ${result.before ?? "none"}). Restart Claude sessions to load it.`);
+        record("updated", `${result.after ?? "(no version)"} (was ${result.before ?? "none"})`);
+        if (routerNeedsSetup(paths)) {
+          console.log(`Its router changed too. To run it: ${COMMAND} gateway setup (it asks before the restart).`);
+        }
+      }
+    }
+    if (isHeld(files)) {
+      console.log(`Background updates stay on hold (since ${heldSince(files)}). To resume them: ${COMMAND} update --resume`);
+    }
+    return code;
+  }, { waitMs: 1e4 });
+}
+async function runUpdate(paths, env, args, now = () => Date.now()) {
+  const files = updateFiles(paths.stateDir);
+  if (args.length > 1) {
+    console.error(UPDATE_USAGE);
+    return 2;
+  }
+  switch (args[0]) {
+    case undefined:
+      return updateNow(paths, env, now);
+    case "--check":
+      return check(paths, env);
+    case "--hold":
+      return withLock(paths.stateDir, () => {
+        if (!hold(files, now())) {
+          console.log(`Background updates were already on hold (since ${heldSince(files)}).`);
+        } else {
+          console.log(`Background updates are on hold: a new Claude session no longer checks for a newer ${PLUGIN}. To resume: ${COMMAND} update --resume`);
+        }
+        return 0;
+      }, { waitMs: 1e4 });
+    case "--resume":
+      return withLock(paths.stateDir, () => {
+        console.log(resume(files) ? `Background updates resume: a new Claude session checks for a newer ${PLUGIN}, at most once an hour (${tildify(files.log, paths.home)}).` : "Background updates were not on hold.");
+        return 0;
+      }, { waitMs: 1e4 });
+    default:
+      console.error(`Unknown option: ${args[0]}
+
+${UPDATE_USAGE}`);
+      return 2;
+  }
+}
+
 // src/entries/cli.ts
 var HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
 
@@ -9151,12 +9945,18 @@ Commands:
   restore [--yes] [--now]
                      Remove what anymodel added, and keep everything else: its settings
                      keys, its Markdown blocks, and the files it created (the launcher,
-                     the router copy and unit). Each changed file gets a backup first.
+                     the router copy and units). Each changed file gets a backup first.
                      With the gateway on, it runs in two stages: first everything but the
                      router, which the running sessions still use; after you restart
                      them, again to stop and remove the router (it asks; --yes: without
                      asking). --now: both at once, and every running session fails until
                      it restarts.
+  update [--check | --hold | --resume]
+                     Install a newer anymodel now, with the output of each step.
+                     --check: only say whether a newer version exists. A new Claude
+                     session checks by itself, at most once an hour, and installs it in
+                     the background; --hold stops that on this machine, --resume starts
+                     it again. Nothing restarts: restart the sessions to load it.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      anymodel gateway --help lists them.
   version            Print the version.
@@ -9164,11 +9964,11 @@ Commands:
 
 Paths follow HOME and CLAUDE_CONFIG_DIR.`;
 function routerBundle() {
-  const beside = join8(import.meta.dir, "router.js");
-  return existsSync13(beside) ? beside : join8(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
+  const beside = join13(import.meta.dir, "router.js");
+  return existsSync15(beside) ? beside : join13(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
 }
 var runner = (cmd) => {
-  const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 30000 });
+  const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 180000 });
   return {
     exitCode: result.exitCode ?? 1,
     output: `${result.stdout.toString()}${result.stderr.toString()}`
@@ -9225,6 +10025,8 @@ ${HELP}`);
         probe: realProbe()
       });
     }
+    case "update":
+      return runUpdate(paths, process.env, rest);
     case "gateway":
       return runGateway(rest, gatewayContext(paths));
     case "version":

@@ -15,7 +15,8 @@ function cliPaths(env = process.env) {
     stateDir: join(claudeConfigDir, "anymodel"),
     gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
     routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
-    routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service")
+    routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service"),
+    routerSocketFile: join(home, ".config", "systemd", "user", "anymodel-router.socket")
   };
 }
 function tildify(path, home) {
@@ -6358,6 +6359,74 @@ ${good ? "keeping the last good config" : NO_CONFIG_MEANS}`);
   };
 }
 
+// src/gateway/listen.ts
+import { mkdtempSync, rmSync } from "fs";
+import net from "net";
+import { tmpdir } from "os";
+import { join as join3 } from "path";
+var SD_LISTEN_FDS_START = 3;
+var LISTEN_VARS = ["LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES"];
+function inheritedListenFd(env, pid) {
+  const listenPid = env.LISTEN_PID;
+  const count = env.LISTEN_FDS;
+  if (listenPid === undefined || count === undefined)
+    return null;
+  if (Number(listenPid) !== pid)
+    return null;
+  const fds = Number(count);
+  if (!Number.isInteger(fds) || fds < 1)
+    return null;
+  if (fds !== 1) {
+    throw new Error(`systemd passed ${fds} sockets (LISTEN_FDS); anymodel-router takes one`);
+  }
+  return SD_LISTEN_FDS_START;
+}
+function innerSocketPath(env, pid) {
+  const runtime = env.RUNTIME_DIRECTORY?.split(":")[0];
+  if (runtime) {
+    const path = join3(runtime, `router-${pid}.sock`);
+    rmSync(path, { force: true });
+    return { cleanup: () => rmSync(path, { force: true }), path };
+  }
+  const dir = mkdtempSync(join3(tmpdir(), "anymodel-router-"));
+  return {
+    cleanup: () => rmSync(dir, { force: true, recursive: true }),
+    path: join3(dir, "router.sock")
+  };
+}
+function relayConnection(client, path) {
+  const inner = net.connect(path);
+  client.setNoDelay(true);
+  client.on("error", () => inner.destroy());
+  inner.on("error", () => client.destroy());
+  client.on("close", () => inner.destroy());
+  client.pipe(inner);
+  inner.pipe(client);
+}
+function listenOnFd(fd, inner) {
+  const server = net.createServer({ pauseOnConnect: true }, (client) => {
+    inner.then((path) => relayConnection(client, path), () => client.destroy());
+  });
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ fd }, () => {
+      server.off("error", reject);
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        server.close();
+        reject(new Error(`file descriptor ${fd} is not a TCP listening socket`));
+        return;
+      }
+      resolve({ port: address.port, server });
+    });
+  });
+}
+function serveUnix(path, fetch2) {
+  const options = { fetch: fetch2, unix: path };
+  Object.assign(options, { idleTimeout: 0 });
+  return Bun.serve(options);
+}
+
 // src/gateway/router.ts
 var HEALTH_PATH = "/__anymodel/health";
 var MESSAGES_PATH = "/v1/messages";
@@ -7121,11 +7190,11 @@ function createRouter(deps) {
     return outcome.response;
   };
 }
-function startRouter(configPath) {
+async function startRouter(configPath, env = process.env) {
   const log = (line) => console.log(line);
   const source = watchConfig(configPath, log);
-  const { port } = source.get();
-  const handler = createRouter({
+  const configPort = source.get().port;
+  const handlerFor = (port) => createRouter({
     configPath,
     fetch: (url, init) => fetch(url, init),
     getConfig: () => source.get(),
@@ -7133,17 +7202,53 @@ function startRouter(configPath) {
     now: () => Date.now(),
     port
   });
-  const server = Bun.serve({ fetch: handler, hostname: "127.0.0.1", idleTimeout: 0, port });
-  log(`anymodel-router listening on http://127.0.0.1:${port} (config ${configPath})`);
-  process.once("SIGTERM", () => {
-    log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
-    server.stop(false).then(() => process.exit(0), (error) => {
-      log(`ERROR while stopping: ${messageOf(error)}`);
-      process.exit(1);
+  const fd = inheritedListenFd(env, process.pid);
+  for (const name of LISTEN_VARS)
+    delete env[name];
+  if (fd === null) {
+    const server = Bun.serve({
+      fetch: handlerFor(configPort),
+      hostname: "127.0.0.1",
+      idleTimeout: 0,
+      port: configPort
     });
+    log(`anymodel-router listening on http://127.0.0.1:${configPort} (config ${configPath})`);
+    process.once("SIGTERM", () => {
+      log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
+      exitWhenDone(server.stop(false), log, () => {});
+    });
+    return;
+  }
+  const inner = innerSocketPath(env, process.pid);
+  let innerReady = () => {};
+  const ready = new Promise((resolve) => {
+    innerReady = resolve;
   });
-  return server;
+  const relay = await listenOnFd(fd, ready);
+  if (relay.port !== configPort) {
+    log(`WARN the socket listens on port ${relay.port}, the config says ${configPort}: serving on ${relay.port}. Run: anymodel gateway setup`);
+  }
+  const server = serveUnix(inner.path, handlerFor(relay.port));
+  innerReady(inner.path);
+  log(`anymodel-router listening on http://127.0.0.1:${relay.port} (the socket systemd holds; config ${configPath})`);
+  process.once("SIGTERM", () => {
+    log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting; new connections wait in the socket for the next router`);
+    const relayClosed = new Promise((resolve) => {
+      relay.server.close(() => resolve());
+    });
+    exitWhenDone(Promise.all([server.stop(false), relayClosed]), log, inner.cleanup);
+  });
+}
+function exitWhenDone(done, log, cleanup) {
+  done.then(() => {
+    cleanup();
+    process.exit(0);
+  }, (error) => {
+    log(`ERROR while stopping: ${messageOf(error)}`);
+    cleanup();
+    process.exit(1);
+  });
 }
 
 // src/entries/router.ts
-startRouter(cliPaths().gatewayConfigFile);
+await startRouter(cliPaths().gatewayConfigFile);

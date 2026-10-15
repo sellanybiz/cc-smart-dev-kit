@@ -23,8 +23,9 @@ The rules for changing it: `.claude/rules/gateway.md`.
 - **No prompt text is ever changed.** A cheap backend gets two named format translations
   and nothing else (§ What a cheap backend sees).
 - Only this machine can reach the router (§ Local only).
-- It runs as a systemd user unit from a copy in `~/.local/share/anymodel/`. **Linux only
-  for now.**
+- It runs as a systemd user unit from a copy in `~/.local/share/anymodel/`, behind a
+  socket unit that holds its port, so a restart makes new requests wait instead of
+  fail (§ The service). **Linux only for now.**
 
 ## The request path
 
@@ -269,6 +270,8 @@ cannot send those cross-site without a CORS preflight, which the router never an
 | A setup that did not finish | `~/.claude/anymodel/restart-pending` (the state folder): written before the copy and the unit, removed once the restarted router answers |
 | The router that runs | `~/.local/share/anymodel/router.js`, a copy of the plugin's `dist/router.js` |
 | The service | `~/.config/systemd/user/anymodel-router.service` |
+| The socket that holds the port | `~/.config/systemd/user/anymodel-router.socket` (`ListenStream=127.0.0.1:<port>`) |
+| The router's inner socket | `$XDG_RUNTIME_DIR/anymodel-router/router-<pid>.sock` (systemd makes the folder, mode 0700, and removes it when the unit stops) |
 | Health | `GET http://127.0.0.1:<port>/__anymodel/health`: counts, resting targets, slots; never a key |
 
 With no good config the router still starts: both slots answer from `claude-sonnet-5-5`
@@ -277,62 +280,153 @@ on the own login, and one error line names the file.
 ## The service
 
 The plugin's version folder changes with each update, and Claude Code deletes an old one
-some time after an update, even under a running process. So `gateway setup`:
+some time after an update, even under a running process. So the router runs from a copy,
+as two systemd user units:
+
+- **`anymodel-router.socket`** holds `127.0.0.1:<port>` (socket activation: systemd, not
+  the router, opens the port and keeps it open);
+- **`anymodel-router.service`** runs the copy. systemd hands it the open socket as file
+  descriptor 3 (`LISTEN_FDS=1`, `LISTEN_PID` = the router).
+
+### Why a socket unit
+
+Every Claude session on the machine sends every request through the router. A plain unit
+that binds the port itself closes it the moment it gets SIGTERM, then drains its answers
+in flight for up to 120 s (`TimeoutStopSec`), and only then does the new router start: for
+that whole time every new request of every session fails. With the socket unit, the port
+never closes: during a restart a new connection waits in the socket's queue, and the new
+router takes it as soon as it runs.
+
+### How the router serves on the inherited socket
+
+Bun's own server cannot serve on a file descriptor it inherited: `Bun.serve` has no such
+option (Bun 1.4.2, `bun-types` `serve.d.ts`), and `node:http`'s `listen({ fd: 3 })` binds
+a random port instead (tried). `node:net` can: `net.createServer().listen({ fd: 3 })`
+accepts on the inherited socket (tried, under `systemd-socket-activate`). So the router
+(`src/gateway/listen.ts`):
+
+1. reads `LISTEN_PID` / `LISTEN_FDS` (only when `LISTEN_PID` is its own pid; more than
+   one socket is an error) and removes them from its environment;
+2. accepts on fd 3 with `node:net`, and relays each connection byte for byte to its own
+   `Bun.serve` on a unix socket in `$RUNTIME_DIRECTORY` (`RuntimeDirectory=` in the unit,
+   mode 0700, only this user can open it). Connections that come before that server is
+   up wait, paused. The router's code, its Host and Origin checks and its log are the same
+   as without the socket; the Host check uses the port the socket really listens on;
+3. turns Bun's idle cut-off off on that unix server too: without `idleTimeout: 0`, Bun
+   closes a unix connection after 10 s with nothing sent, which cuts a model that thinks
+   for a while (tried; Bun's types allow the option only beside a port, so it is set
+   after the typed object is built);
+4. on SIGTERM stops accepting (systemd keeps the socket), finishes every answer in
+   flight, and exits once the last relayed connection has closed. A client that goes away
+   drops its inner connection at once, so the router stops the upstream call.
+
+Started without a socket (`gateway serve` in a terminal, or a unit whose socket failed to
+open), the router binds the config's port itself, as before.
+
+### `gateway setup`
 
 1. asks the router's port (the config's; with no config, 20100) before anything else:
    no answer (connection refused) means free, a 200 health answer with `ok: true` means
-   this router, and **anything else, a timeout included, stops setup** with "port N is
-   used by another program (an older router? stop it first)", nothing written;
-2. checks everything and writes nothing: the config, the copy, the unit;
-3. when the router is running and the copy or the unit changed (or an earlier setup did
-   not finish), says that **a restart cuts the answers in flight** in every running
-   session, and asks (`--yes` skips the question; without a terminal and without
-   `--yes`, it stops and changes nothing);
+   this router. **Anything else stops setup** with "port N is used by another program (an
+   older router? stop it first)", nothing written; except a port that gives no answer in
+   time while `anymodel-router.socket` is active: that is our socket with its router down
+   or restarting, and setup goes on;
+2. checks everything and writes nothing: the config, the copy, the two units;
+3. when the router is running and the copy or a unit changed (or an earlier setup did not
+   finish), says what the restart does and asks (`--yes` skips the question; without a
+   terminal and without `--yes`, it stops and changes nothing). Three texts:
+   - the socket is open: "A restart lets its answers in flight finish first (up to 120 s;
+     a longer one is cut, and Claude Code retries it). New requests wait in its socket
+     meanwhile; none fails.";
+   - the move from an older version's plain unit (no socket open): "This restart cannot:
+     until the old router has finished its answers in flight (up to 120 s), new requests
+     fail (Claude Code retries them).";
+   - a new port in `gateway.json` (the socket reopens there): the same, "its socket moves
+     to a new port";
 4. makes the config when there is none (the backend key comes on stdin, never argv);
-5. writes the **restart-pending marker**, then copies `dist/router.js` to
-   `~/.local/share/anymodel/router.js` and writes the unit, both through `src/setup/`
-   (backup, record for `restore`, atomic write);
-6. runs `systemctl --user daemon-reload`, `enable`, and `restart` (which starts it when it
-   was stopped). Right after `restore`, the old router may still drain its answers
-   (`is-active` says `deactivating`): `restart` then waits for that, so setup first says
-   "waiting for the old router to finish its answers (up to 120 s)". Then it waits up to
-   5 s for the health page. It answers: the marker goes.
-   It does not: setup fails with the unit's `is-active` state and the hint
-   `journalctl --user -u anymodel-router -n 30`, and the marker stays, so `doctor` shows
-   ✗ "a gateway setup did not finish" and the next `gateway setup` restarts again, even
-   with the files up to date.
+5. writes the **restart-pending marker**, then the copy and the two units, all through
+   `src/setup/` (backup, record for `restore`, atomic write);
+6. runs `systemctl --user daemon-reload` and `enable anymodel-router.socket
+   anymodel-router.service`, then one of two ways:
+   - **the socket is open and its file did not change:** `restart anymodel-router.service`.
+     The socket stays open; `restart` returns once the old router has drained and the new
+     one runs. The command runner's timeout is 180 s, longer than that drain;
+   - **otherwise** (the move from the plain unit, a changed port, a socket that is not
+     open): `stop --no-block anymodel-router.service` (the old router closes its own port
+     at SIGTERM), `stop anymodel-router.socket` when it was open, then `start
+     anymodel-router.socket`, then `start anymodel-router.service`. systemd orders a stop
+     before a start of units that are ordered against each other, so the socket's start
+     waits until the old router has exited, and then binds a free port. **Two calls, the
+     socket first:** started in one call, the service's start takes the place of its
+     stop job, and systemd refuses the socket while the old router still drains ("Socket
+     service … already active, refusing"; seen live). When the old router still runs or
+     drains, setup first says "waiting for the old router to finish its answers (up to
+     120 s)". A socket that cannot open (another program on the port, a `gateway serve`
+     in a terminal, say) fails with the hint to look at `ss -ltnp` and the socket's
+     journal.
+   Then it waits up to 5 s for the health page. It answers: the marker goes. It does not:
+   setup fails with the unit's `is-active` state and the hint `journalctl --user -u
+   anymodel-router -n 30`, and the marker stays, so `doctor` shows ✗ "a gateway setup did
+   not finish" and the next `gateway setup` restarts again, even with the files up to
+   date.
 
-With nothing changed and no marker, only `enable --now`.
+With nothing changed, the socket open and no marker: only `enable --now` of both units.
 
-The unit runs the absolute path of the `bun` that ran setup on the copy, with
-`--no-env-file`. It restarts itself (`Restart=always`, no start limit). On SIGTERM the
-router stops taking requests and exits once the answers in flight are done (up to 120 s).
-User services run at boot only with linger on (`loginctl enable-linger $USER`, once, by
-the person).
+The service unit: the absolute path of the `bun` that ran setup on the copy, with
+`--no-env-file`; `Wants=` and `After=` the socket; `RuntimeDirectory=anymodel-router`
+(0700); `Restart=always` with no start limit; `KillMode=mixed`, `TimeoutStopSec=120`;
+`WantedBy=default.target` and `Also=anymodel-router.socket`. The socket unit:
+`ListenStream=127.0.0.1:<port>`, `NoDelay=true`, `WantedBy=sockets.target`. User services
+run at boot only with linger on (`loginctl enable-linger $USER`, once, by the person).
 
-`anymodel restore` undoes it, in **two stages** while the gateway is on. It assumes a
+### What was proved, and how
+
+- **Live, with throwaway user units** (`amtest-router.socket` / `.service` in
+  `$XDG_RUNTIME_DIR/systemd/user`, port 20991, a scratch HOME, `enable --runtime`; never
+  the real unit, its port or `~/.config/systemd`), systemd 259, Bun 1.4.2, a fake
+  backend streaming one event a second for 15 s, and a health request every 200 ms:
+  - a restart under the socket (the real `installRouter`): the stream in flight ended
+    whole, **0 of 66 requests failed**; the slowest waited 11.4 s, the old router's drain;
+  - the same restart of a plain unit: **59 of 120 failed** (connection refused) during
+    the drain;
+  - the move from a plain unit to the socket (the real `installRouter`): the stream ended
+    whole, and 53 requests failed during the one drain, as setup's warning says;
+  - `stopRouter` (restore): both units stopped, the port closed, and no probe started the
+    router again.
+- **Unit tests with fakes** (`src/gateway/commands.test.ts`, `src/cli/gateway-cli.test.ts`):
+  every `systemctl` call and its order, both restart ways, the warnings, the marker, the
+  port probe, the units' text.
+- **Real router, real socket** (`src/gateway/listen.test.ts`, under
+  `systemd-socket-activate`, the router's entry, a free port of the test's own): health
+  and a whole stream through the relay, the Host check on the socket's port, a SIGTERM
+  that lets the answer finish and exits 0, and a stream silent for 12 s (which fails
+  without `idleTimeout: 0` on the unix server: tried).
+
+### `anymodel restore`
+
+It undoes the service in **two stages** while the gateway is on. It assumes a
 running session keeps the `ANTHROPIC_BASE_URL` it started with, so that stopping the
 router while the env keys are there would make every running session fail. (One live
 look saw sessions pick up changed env keys at once: `claude-code-contract.md`. Until
 that is repeated, for removed keys too, the two stages stay.)
 
 1. **Stage 1** (anymodel's gateway env keys are in `settings.json`): everything is
-   restored but the router's copy and unit, the env keys included; the router keeps
+   restored but the router's copy and units, the env keys included; the router keeps
    running. It says: restart every running Claude session, then run `restore` again.
-2. **Stage 2** (no such key left): it asks the unit's state (`systemctl --user
-   is-active`), disables the unit and stops it with `systemctl --user stop --no-block`
-   (asking first when it runs; `--yes` skips the question), then asks the router's port
-   (the config's) while this router answers there, for up to 15 s. The router closes its
-   port at once on SIGTERM and finishes its answers in flight in the background, so
-   restore does not wait the up to 120 s of that drain, while every new request already
+2. **Stage 2** (no such key left): it asks the service's state (`systemctl --user
+   is-active`), disables both units, and stops both in **one** call, `systemctl --user stop
+   --no-block anymodel-router.socket anymodel-router.service` (asking first when it runs;
+   `--yes` skips the question): in one call, no connection reopens the router in between.
+   Then it asks the router's port (the config's) while this router answers there, for up
+   to 15 s. The socket closes at once and the router closes its own copy at SIGTERM, so
+   restore does not wait the up to 120 s of the drain, while every new request already
    fails. It waits only for the unit's own router: when the unit was not `active` or
    `deactivating` (a crash loop because another program holds the port, say), or the
    port answers but not as this router (a `404`, another program), it prints one note
    and goes on. This router still answering after 15 s stops restore with an error,
-   nothing else restored. Then it removes the copy and the unit, reloads systemd, and
+   nothing else restored. Then it removes the copy and the units, reloads systemd, and
    clears the restart-pending marker. With an unusable `gateway.json` the port is
-   unknown: the stop is sent, and nothing is waited for. (The health answer names the
-   router's port too, but it can only be asked on a port already known.)
+   unknown: the stop is sent, and nothing is waited for.
 
 `restore --now` does both at once, after the warning that every running Claude session
 fails until it restarts (asked, or `--yes`). Restore leaves `gateway.json`, which holds
@@ -377,10 +471,19 @@ stop the router only after every session restarted.
   knows the prompt: under a cheap slot's name, an unrecognised check goes to that slot's
   targets until the router is updated (`docs/roadmap.md` Phase 3: log an unknown check
   form loudly).
-- `gateway setup` takes "this router answers on the port" as success after a restart.
-  When another `anymodel-router` (a `gateway serve` in a terminal) holds the port, the
-  unit's own router cannot bind, yet setup sees an answer and succeeds. Stop the other
-  one first.
+- `gateway setup` takes "this router answers on the port" as success after a `restart`
+  under the socket. When another `anymodel-router` (a `gateway serve` in a terminal)
+  answers there, it cannot tell the two apart. (On the way that opens the socket, the
+  socket fails to bind instead, and setup says so.) Stop the other one first.
+- **The move to the socket unit refuses requests once.** The first `gateway setup` of a
+  version with the socket, on a machine whose router runs from the older plain unit,
+  waits for the old router's drain with the port closed: systemd refuses to open a
+  socket while its service still runs. Every later restart refuses none.
+- **A restart still waits for the drain.** New requests do not fail, but they wait until
+  the old router has finished its answers in flight (up to 120 s). Claude Code waits
+  much longer for an answer than that.
+- **The relay** costs one extra local connection per client connection, inside the
+  router's own process. It copies bytes and never reads or changes them.
 - If the router is down, every Claude Code request fails. The service restarts itself;
   `gateway off` and a restart of the sessions is the way out.
 - **A model's context window can disagree** in three places: what Claude Code assumes
@@ -399,7 +502,9 @@ Start with `anymodel gateway status`, then `anymodel doctor`.
 
 | Symptom | Check | Fix |
 |---|---|---|
-| Every Claude request fails | `gateway status`; `systemctl --user status anymodel-router`; `journalctl --user -u anymodel-router` | Restart the unit. Still broken: `gateway off`, restart the sessions |
+| Every Claude request fails | `gateway status`; `systemctl --user status anymodel-router.socket anymodel-router`; `journalctl --user -u anymodel-router` | Restart the unit. Still broken: `gateway off`, restart the sessions |
+| Every Claude request hangs | the socket is open but its router does not run: `systemctl --user status anymodel-router` | `anymodel gateway setup` (it goes on although the port does not answer), or `systemctl --user restart anymodel-router` |
+| `doctor`: no socket unit, or it is not the one setup writes | a router set up by an older version, or `port` changed in `gateway.json` | `anymodel gateway setup` (the move refuses requests once, during the old router's drain) |
 | Subagents are slow or answer from Claude | the log's `fallbacks=` and `skipped=`; the health page's `cooling` | the backend is down or busy; wait out the cooldown |
 | A slot request ends `→ claude-… 400` | the `WARN claude-… answered 400` line next to it (written just after it): Anthropic's reason | a field outside `messages`, `system` and `tools` that the Claude target refuses: add it to `requestForClaudeFallback`'s table (with a test and a contract row). A reason inside the messages (a prefill, a cheap model's thinking blocks) is not translated: § What a Claude target sees |
 | `403 … accepts requests from this machine only` | the caller sends `Origin` or a foreign `Host` | use `http://127.0.0.1:<port>` from a local program |

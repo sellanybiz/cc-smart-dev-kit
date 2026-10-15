@@ -26,10 +26,15 @@ import { parseModelList } from "./backends";
 import { ensureConfig, planSlotChange } from "./commands";
 import { type GatewayConfig, loadConfigFile } from "./config";
 import {
+  DRAIN_NOTE,
   installRouter,
+  MOVE_WARNING,
+  PORT_WARNING,
   RESTART_WARNING,
+  renderSocket,
   renderUnit,
   STOP_WAIT_MS,
+  socketPort,
   stopRouter,
   UP_TO_DATE,
 } from "./service";
@@ -435,18 +440,21 @@ describe("setup, slot and models helpers", () => {
 
 describe("router service install", () => {
   /**
-   * A home, the plugin's router bundle, a fake systemctl that logs each call, and a fake
-   * health probe on a made-up port: the router answers there while the unit is active
-   * (`port.answers`), and another program holds it when `port.taken`. Its clock moves only
-   * when the code sleeps. No network.
+   * A home, the plugin's router bundle, a fake systemctl that logs each call and keeps the
+   * state of the service and of its socket apart, and a fake health probe on a made-up
+   * port: the router answers there while the service is active (`port.answers`), another
+   * program holds it when `port.taken`, and no answer comes in time when `port.timeout`
+   * (a socket whose router is down holds the connection). Its clock moves only when the
+   * code sleeps. No network.
    */
   function machine() {
     const home = tempDir("gateway-install");
     const bundle = join(home, "plugin", "dist", "router.js");
     mkdirSync(join(home, "plugin", "dist"), { recursive: true });
     writeFileSync(bundle, "// router v1\n");
-    /** `idle`: what `is-active` says while the unit is not active. */
-    const state = { active: false, fail: false, idle: "activating" };
+    /** `idle`: what `is-active` says of the service while it is not active. */
+    /** `failOn`: the one systemctl command (`start`, …) that fails, as systemd's job would. */
+    const state = { active: false, fail: false, failOn: "", idle: "inactive", socket: false };
     const port: {
       answers: boolean;
       reply: (() => Response) | null;
@@ -462,19 +470,22 @@ describe("router service install", () => {
     const marker = join(stateDir, "restart-pending");
     const copyPath = join(home, ".local", "share", "anymodel", "router.js");
     const unitPath = join(home, ".config", "systemd", "user", "anymodel-router.service");
+    const socketPath = join(home, ".config", "systemd", "user", "anymodel-router.socket");
     const install = (options: {
       yes?: boolean;
       confirm?: ((question: string) => boolean) | null;
       dryRun?: boolean;
+      port?: number;
     }) =>
       installRouter({
         bunPath: "/opt/bun/bin/bun",
         bundle,
         copyPath,
         unitPath,
+        socketPath,
         home,
         stateDir,
-        port: FAKE_PORT,
+        port: options.port ?? FAKE_PORT,
         probe: {
           fetch: async (url) => {
             probed.push(url);
@@ -495,11 +506,26 @@ describe("router service install", () => {
             `${cmd[2]}: ${existsSync(marker) ? "marker" : "no marker"}, ${existsSync(copyPath) ? "copy" : "no copy"}`,
           );
           if (state.fail) return { exitCode: 1, output: "Failed to connect to bus" };
-          if (cmd[2] === "is-active") {
-            const word = state.active ? "active" : state.idle;
-            return { exitCode: state.active ? 0 : 3, output: cmd[3] === "--quiet" ? "" : word };
+          if (cmd[2] === state.failOn) {
+            return { exitCode: 1, output: "Job for anymodel-router.socket failed.\n" };
           }
-          if (cmd[2] === "restart" || cmd[3] === "--now") state.active = true;
+          const names = cmd.slice(3).filter((arg) => !arg.startsWith("--"));
+          if (cmd[2] === "is-active") {
+            const active = names[0]?.endsWith(".socket") ? state.socket : state.active;
+            const word = active
+              ? "active"
+              : names[0]?.endsWith(".socket")
+                ? "inactive"
+                : state.idle;
+            return { exitCode: active ? 0 : 3, output: cmd[3] === "--quiet" ? "" : word };
+          }
+          const starts = cmd[2] === "start" || cmd[2] === "restart" || cmd[3] === "--now";
+          for (const name of names) {
+            const on = starts ? true : cmd[2] === "stop" ? false : null;
+            if (on === null) continue;
+            if (name.endsWith(".socket")) state.socket = on;
+            else state.active = on;
+          }
           return { exitCode: 0, output: "" };
         },
         say: (line) => events.push(line),
@@ -512,6 +538,7 @@ describe("router service install", () => {
       bundle,
       copyPath,
       unitPath,
+      socketPath,
       state,
       port,
       clock,
@@ -524,77 +551,84 @@ describe("router service install", () => {
     };
   }
 
-  // Changed on purpose: a unit that is not active is asked its state once more before the
-  // restart (the `is-active` line without --quiet), to say when it still drains.
-  it("first install: copies the bundle, writes the unit, reloads, enables and starts it", async () => {
+  const ENABLED = "enabled and (re)started anymodel-router.service and anymodel-router.socket";
+
+  it("first install: the copy, the unit and the socket; reload, enable, then start both", async () => {
     const m = machine();
     expect(await m.install({})).toBe("installed");
     expect(m.events).toEqual([
+      "$ systemctl --user is-active --quiet anymodel-router.socket",
       "$ systemctl --user is-active --quiet anymodel-router.service",
       "+ ~/.local/share/anymodel/router.js: router copy created",
       "+ ~/.config/systemd/user/anymodel-router.service: unit created",
+      "+ ~/.config/systemd/user/anymodel-router.socket: socket unit created",
       "$ systemctl --user daemon-reload",
-      "$ systemctl --user enable anymodel-router.service",
+      "$ systemctl --user enable anymodel-router.socket anymodel-router.service",
+      // Nothing runs, so nothing is stopped; the port is asked once, then both start.
       "$ systemctl --user is-active anymodel-router.service",
-      "$ systemctl --user restart anymodel-router.service",
-      "enabled and (re)started anymodel-router.service",
+      "$ systemctl --user start anymodel-router.socket",
+      "$ systemctl --user start anymodel-router.service",
+      ENABLED,
     ]);
     expect(readFileSync(m.copyPath, "utf8")).toBe("// router v1\n");
     expect(statSync(m.copyPath).mode & 0o777).toBe(0o644);
     expect(readFileSync(m.unitPath, "utf8")).toContain(
       `\nExecStart="/opt/bun/bin/bun" --no-env-file "${m.copyPath}"\n`,
     );
+    expect(readFileSync(m.socketPath, "utf8")).toBe(renderSocket(FAKE_PORT));
+    expect(statSync(m.socketPath).mode & 0o777).toBe(0o644);
   });
 
-  it("right after restore, the old router still draining: it says it waits, then restarts", async () => {
+  it("right after restore, the old router still draining: it says it waits, stops it without blocking, then starts both", async () => {
     const m = machine();
     // restore's `stop --no-block` returned at once; the old router finishes its answers.
     m.state.idle = "deactivating";
     expect(await m.install({})).toBe("installed");
-    expect(m.events).toEqual([
-      "$ systemctl --user is-active --quiet anymodel-router.service",
-      "+ ~/.local/share/anymodel/router.js: router copy created",
-      "+ ~/.config/systemd/user/anymodel-router.service: unit created",
+    expect(m.events.slice(5)).toEqual([
       "$ systemctl --user daemon-reload",
-      "$ systemctl --user enable anymodel-router.service",
+      "$ systemctl --user enable anymodel-router.socket anymodel-router.service",
       "$ systemctl --user is-active anymodel-router.service",
       "waiting for the old router to finish its answers (up to 120 s)",
-      "$ systemctl --user restart anymodel-router.service",
-      "enabled and (re)started anymodel-router.service",
+      "$ systemctl --user stop --no-block anymodel-router.service",
+      "$ systemctl --user start anymodel-router.socket",
+      "$ systemctl --user start anymodel-router.service",
+      ENABLED,
     ]);
   });
 
-  it("again with nothing changed: no restart, only enable --now", async () => {
+  it("again with nothing changed and the socket open: no restart, only enable --now", async () => {
     const m = machine();
     await m.install({});
     m.events.length = 0;
     expect(await m.install({})).toBe("up-to-date");
     expect(m.events).toEqual([
-      "$ systemctl --user enable --now anymodel-router.service",
+      "$ systemctl --user is-active --quiet anymodel-router.socket",
+      "$ systemctl --user enable --now anymodel-router.socket anymodel-router.service",
       UP_TO_DATE,
     ]);
     expect(UP_TO_DATE).toBe("router already up to date (no restart)");
     expect(readdirSync(join(m.home, ".local", "share", "anymodel"))).toEqual(["router.js"]);
   });
 
-  it("a new bundle while the router runs: it warns, and without a yes or a terminal it changes nothing", async () => {
+  it("a new bundle while the router runs on its socket: the restart warning says new requests wait; no yes, no change", async () => {
     const m = machine();
     await m.install({});
     writeFileSync(m.bundle, "// router v2\n");
     m.events.length = 0;
     expect(await m.install({})).toBe("declined");
     expect(m.events).toEqual([
+      "$ systemctl --user is-active --quiet anymodel-router.socket",
       "$ systemctl --user is-active --quiet anymodel-router.service",
       RESTART_WARNING,
       "Nothing was changed. Run again with --yes to restart: anymodel gateway setup --yes",
     ]);
     expect(RESTART_WARNING).toBe(
-      "anymodel-router is running. A restart cuts the answers in flight in running Claude sessions on this machine (Claude Code retries them).",
+      "anymodel-router is running. A restart lets its answers in flight finish first (up to 120 s; a longer one is cut, and Claude Code retries it). New requests wait in its socket meanwhile; none fails.",
     );
     expect(readFileSync(m.copyPath, "utf8")).toBe("// router v1\n");
   });
 
-  it("the person says no: nothing changes; yes: the new copy, then the restart", async () => {
+  it("the person says no: nothing changes; yes: the new copy, then a restart of the service alone (the socket stays open)", async () => {
     const m = machine();
     await m.install({});
     writeFileSync(m.bundle, "// router v2\n");
@@ -621,16 +655,102 @@ describe("router service install", () => {
     ).toBe("installed");
     expect(asked).toEqual(["Restart anymodel-router now?", "Restart anymodel-router now?"]);
     expect(m.events).toEqual([
+      "$ systemctl --user is-active --quiet anymodel-router.socket",
       "$ systemctl --user is-active --quiet anymodel-router.service",
       RESTART_WARNING,
       "~ ~/.local/share/anymodel/router.js: router copy updated",
       "$ systemctl --user daemon-reload",
-      "$ systemctl --user enable anymodel-router.service",
-      "restarting anymodel-router",
+      "$ systemctl --user enable anymodel-router.socket anymodel-router.service",
+      "restarting anymodel-router (new requests wait in its socket)",
       "$ systemctl --user restart anymodel-router.service",
-      "enabled and (re)started anymodel-router.service",
+      ENABLED,
     ]);
     expect(readFileSync(m.copyPath, "utf8")).toBe("// router v2\n");
+    // Never a stop or restart of the socket: it holds the port the whole time.
+    expect(m.events.some((event) => /(stop|restart).*\.socket/.test(event))).toBe(false);
+  });
+
+  it("the move from the older unit (no socket, the router holds the port): its own warning, then stop without blocking, the port closes, both start", async () => {
+    const m = machine();
+    // The older setup: a copy and a unit without a socket, and the router running.
+    mkdirSync(join(m.home, ".config", "systemd", "user"), { recursive: true });
+    mkdirSync(join(m.home, ".local", "share", "anymodel"), { recursive: true });
+    writeFileSync(m.copyPath, "// router v0\n");
+    writeFileSync(m.unitPath, "[Service]\nExecStart=/opt/bun/bin/bun old\n");
+    m.state.active = true;
+    expect(await m.install({})).toBe("declined");
+    expect(m.events).toEqual([
+      "$ systemctl --user is-active --quiet anymodel-router.socket",
+      "$ systemctl --user is-active --quiet anymodel-router.service",
+      MOVE_WARNING,
+      "Nothing was changed. Run again with --yes to restart: anymodel gateway setup --yes",
+    ]);
+    expect(MOVE_WARNING).toBe(
+      "anymodel-router is running without its socket unit. This setup moves it to one, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).",
+    );
+    m.events.length = 0;
+    m.probed.length = 0;
+    expect(await m.install({ yes: true })).toBe("installed");
+    expect(m.events).toEqual([
+      "$ systemctl --user is-active --quiet anymodel-router.socket",
+      "$ systemctl --user is-active --quiet anymodel-router.service",
+      MOVE_WARNING,
+      "~ ~/.local/share/anymodel/router.js: router copy updated",
+      "~ ~/.config/systemd/user/anymodel-router.service: unit updated",
+      "+ ~/.config/systemd/user/anymodel-router.socket: socket unit created",
+      "$ systemctl --user daemon-reload",
+      "$ systemctl --user enable anymodel-router.socket anymodel-router.service",
+      "$ systemctl --user is-active anymodel-router.service",
+      DRAIN_NOTE,
+      // Not a blocking stop: it would wait the whole drain. The old router closes its
+      // port at SIGTERM; the start waits for its drain in systemd.
+      "$ systemctl --user stop --no-block anymodel-router.service",
+      "$ systemctl --user start anymodel-router.socket",
+      "$ systemctl --user start anymodel-router.service",
+      ENABLED,
+    ]);
+    // Asked first (ours), then after the start. No wait for the port between: systemd
+    // starts the socket only once the old router's stop has finished.
+    expect(m.probed).toEqual([
+      `http://127.0.0.1:${FAKE_PORT}/__anymodel/health`,
+      `http://127.0.0.1:${FAKE_PORT}/__anymodel/health`,
+    ]);
+  });
+
+  it("a socket that cannot open (another program on the port): an error that says where to look; the marker stays", async () => {
+    const m = machine();
+    // systemd fails the start when the socket cannot bind its port.
+    m.state.failOn = "start";
+    await expect(m.install({})).rejects.toThrow(
+      `systemctl --user start anymodel-router.socket failed (exit 1):\nJob for anymodel-router.socket failed.\nIs another program on 127.0.0.1:${FAKE_PORT}? See: ss -ltnp, and journalctl --user -u anymodel-router.socket -n 30. Then run anymodel gateway setup again.`,
+    );
+    expect(existsSync(m.marker)).toBe(true);
+  });
+
+  it("a changed port: the socket is reopened on it (stop the service without blocking, stop the socket, start both)", async () => {
+    const m = machine();
+    await m.install({});
+    m.events.length = 0;
+    expect(await m.install({ port: FAKE_PORT + 1, yes: true })).toBe("installed");
+    expect(PORT_WARNING).toBe(
+      "anymodel-router is running, and its socket moves to a new port. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).",
+    );
+    expect(m.events).toEqual([
+      "$ systemctl --user is-active --quiet anymodel-router.socket",
+      "$ systemctl --user is-active --quiet anymodel-router.service",
+      PORT_WARNING,
+      "~ ~/.config/systemd/user/anymodel-router.socket: socket unit updated",
+      "$ systemctl --user daemon-reload",
+      "$ systemctl --user enable anymodel-router.socket anymodel-router.service",
+      "$ systemctl --user is-active anymodel-router.service",
+      DRAIN_NOTE,
+      "$ systemctl --user stop --no-block anymodel-router.service",
+      "$ systemctl --user stop anymodel-router.socket",
+      "$ systemctl --user start anymodel-router.socket",
+      "$ systemctl --user start anymodel-router.service",
+      ENABLED,
+    ]);
+    expect(socketPort(readFileSync(m.socketPath, "utf8"))).toBe(FAKE_PORT + 1);
   });
 
   it("--yes restarts without asking", async () => {
@@ -648,12 +768,16 @@ describe("router service install", () => {
     expect(readFileSync(m.copyPath, "utf8")).toBe("// router v2\n");
   });
 
-  it("a dry run writes nothing and runs only the is-active question", async () => {
+  it("a dry run writes nothing and runs only the is-active questions", async () => {
     const m = machine();
     expect(await m.install({ dryRun: true })).toBe("installed");
-    expect(m.events).toEqual(["$ systemctl --user is-active --quiet anymodel-router.service"]);
+    expect(m.events).toEqual([
+      "$ systemctl --user is-active --quiet anymodel-router.socket",
+      "$ systemctl --user is-active --quiet anymodel-router.service",
+    ]);
     expect(existsSync(m.copyPath)).toBe(false);
     expect(existsSync(m.unitPath)).toBe(false);
+    expect(existsSync(m.socketPath)).toBe(false);
   });
 
   it("install stops at the first failing command", async () => {
@@ -667,6 +791,7 @@ describe("router service install", () => {
       "systemctl --user daemon-reload failed (exit 1):\nFailed to connect to bus",
     );
     expect(m.events.filter((event) => event.startsWith("$ "))).toEqual([
+      "$ systemctl --user is-active --quiet anymodel-router.socket",
       "$ systemctl --user is-active --quiet anymodel-router.service",
       "$ systemctl --user daemon-reload",
     ]);
@@ -681,7 +806,8 @@ describe("router service install", () => {
       const m = machine();
       m.port.taken = true;
       await expect(m.install({ dryRun, yes: true })).rejects.toThrow(NOT_OURS);
-      expect(m.events).toEqual([]);
+      // Changed on purpose: the socket is asked too: an open socket of ours is not "another program".
+      expect(m.events).toEqual(["$ systemctl --user is-active --quiet anymodel-router.socket"]);
       expect(m.probed).toEqual([`http://127.0.0.1:${FAKE_PORT}/__anymodel/health`]);
       expect(existsSync(m.copyPath)).toBe(false);
       expect(existsSync(m.unitPath)).toBe(false);
@@ -698,29 +824,48 @@ describe("router service install", () => {
       const m = machine();
       m.port.reply = reply;
       await expect(m.install({ yes: true })).rejects.toThrow(NOT_OURS);
-      expect(m.events).toEqual([]);
+      expect(m.events).toEqual(["$ systemctl --user is-active --quiet anymodel-router.socket"]);
       expect(existsSync(m.stateDir)).toBe(false);
     }
     const slow = machine();
     slow.port.timeout = true;
     await expect(slow.install({ yes: true })).rejects.toThrow(NOT_OURS);
-    expect(slow.events).toEqual([]);
+    expect(slow.events).toEqual(["$ systemctl --user is-active --quiet anymodel-router.socket"]);
     expect(existsSync(slow.copyPath)).toBe(false);
+  });
+
+  it("no answer in time while our socket is open: its router is down, not another program; setup goes on", async () => {
+    const m = machine();
+    await m.install({});
+    // The socket holds the connection, and no router takes it (a crash loop, say).
+    m.port.timeout = true;
+    m.events.length = 0;
+    writeFileSync(m.bundle, "// router v2\n");
+    m.state.active = false;
+    m.state.idle = "activating";
+    await expect(m.install({ yes: true })).rejects.toThrow(
+      `anymodel-router.service did not answer on 127.0.0.1:${FAKE_PORT} within 5 s of the restart`,
+    );
+    // It wrote the new copy and restarted the service; only the answer never came.
+    expect(m.events).toContain("~ ~/.local/share/anymodel/router.js: router copy updated");
+    expect(m.events).toContain("$ systemctl --user restart anymodel-router.service");
+    expect(readFileSync(m.copyPath, "utf8")).toBe("// router v2\n");
   });
 
   it("the marker is there from before the copy until the restarted router answers, then gone", async () => {
     const m = machine();
     expect(await m.install({})).toBe("installed");
-    // Changed on purpose: the second is-active, before the restart (see "first install").
     expect(m.markerAt).toEqual([
+      "is-active: no marker, no copy",
       "is-active: no marker, no copy",
       "daemon-reload: marker, copy",
       "enable: marker, copy",
       "is-active: marker, copy",
-      "restart: marker, copy",
+      "start: marker, copy",
+      "start: marker, copy",
     ]);
     expect(existsSync(m.marker)).toBe(false);
-    expect(m.events.at(-1)).toBe("enabled and (re)started anymodel-router.service");
+    expect(m.events.at(-1)).toBe(ENABLED);
   });
 
   it("a router that never answers after the restart: an error naming the unit's state and its log; the marker stays", async () => {
@@ -744,6 +889,7 @@ describe("router service install", () => {
     // The files are up to date, but the marker says the restart never finished.
     expect(await m.install({})).toBe("declined");
     expect(m.events).toEqual([
+      "$ systemctl --user is-active --quiet anymodel-router.socket",
       "$ systemctl --user is-active --quiet anymodel-router.service",
       RESTART_WARNING,
       "Nothing was changed. Run again with --yes to restart: anymodel gateway setup --yes",
@@ -752,13 +898,14 @@ describe("router service install", () => {
     m.events.length = 0;
     expect(await m.install({ yes: true })).toBe("installed");
     expect(m.events).toEqual([
+      "$ systemctl --user is-active --quiet anymodel-router.socket",
       "$ systemctl --user is-active --quiet anymodel-router.service",
       RESTART_WARNING,
       "$ systemctl --user daemon-reload",
-      "$ systemctl --user enable anymodel-router.service",
-      "restarting anymodel-router",
+      "$ systemctl --user enable anymodel-router.socket anymodel-router.service",
+      "restarting anymodel-router (new requests wait in its socket)",
       "$ systemctl --user restart anymodel-router.service",
-      "enabled and (re)started anymodel-router.service",
+      ENABLED,
     ]);
     expect(existsSync(m.marker)).toBe(false);
     // Up to date and no marker: the shortcut again.
@@ -766,18 +913,20 @@ describe("router service install", () => {
     expect(await m.install({})).toBe("up-to-date");
   });
 
-  it("restore removes the copy and the unit that setup created", async () => {
+  it("restore removes the copy and the two units that setup created", async () => {
     const m = machine();
     await m.install({});
     const results = restore(join(m.home, ".claude", "anymodel"));
     expect(results.map((result) => [result.file, result.action]).sort()).toEqual(
       [
         [m.unitPath, "removed"],
+        [m.socketPath, "removed"],
         [m.copyPath, "removed"],
       ].sort(),
     );
     expect(existsSync(m.copyPath)).toBe(false);
     expect(existsSync(m.unitPath)).toBe(false);
+    expect(existsSync(m.socketPath)).toBe(false);
   });
 
   it("the unit file, as written", () => {
@@ -786,16 +935,20 @@ describe("router service install", () => {
         "# anymodel-router: the local AI gateway for Claude Code (127.0.0.1 only).",
         "# Written by `anymodel gateway setup`; edits here are overwritten by the next setup.",
         "# It runs a copy of the router, never a file in the plugin's version folder.",
-        "# Its config: ~/.config/anymodel/gateway.json.",
+        "# Its config: ~/.config/anymodel/gateway.json. Its port: anymodel-router.socket.",
         "",
         "[Unit]",
         "Description=anymodel-router: local AI gateway for Claude Code (127.0.0.1 only)",
+        "Wants=anymodel-router.socket",
+        "After=anymodel-router.socket",
         "StartLimitIntervalSec=0",
         "",
         "[Service]",
         "Type=simple",
         'ExecStart="/opt/bun/bin/bun" --no-env-file "/home/user/.local/share/anymodel/router.js"',
         "WorkingDirectory=%h",
+        "RuntimeDirectory=anymodel-router",
+        "RuntimeDirectoryMode=0700",
         "Restart=always",
         "RestartSec=2",
         "KillMode=mixed",
@@ -805,9 +958,37 @@ describe("router service install", () => {
         "",
         "[Install]",
         "WantedBy=default.target",
+        "Also=anymodel-router.socket",
         "",
       ].join("\n"),
     );
+  });
+
+  it("the socket unit, as written, and the port read back from it", () => {
+    const text = renderSocket(20100);
+    expect(text).toBe(
+      [
+        "# anymodel-router: the socket of the local AI gateway for Claude Code (127.0.0.1 only).",
+        "# Written by `anymodel gateway setup`; edits here are overwritten by the next setup.",
+        "# systemd holds the router's port, so a request waits while the router restarts.",
+        "",
+        "[Unit]",
+        "Description=anymodel-router socket: holds 127.0.0.1:20100 across router restarts",
+        "",
+        "[Socket]",
+        "ListenStream=127.0.0.1:20100",
+        "NoDelay=true",
+        "",
+        "[Install]",
+        "WantedBy=sockets.target",
+        "",
+      ].join("\n"),
+    );
+    expect(socketPort(text)).toBe(20100);
+    expect(socketPort("[Socket]\nListenStream=0.0.0.0:20100\n")).toBe(null);
+    for (const bad of [0, 65_536, 1.5, Number.NaN]) {
+      expect(() => renderSocket(bad)).toThrow("not a port");
+    }
   });
 
   it("a path with a quote, a backslash or a % cannot go into the unit file", () => {
@@ -869,8 +1050,9 @@ describe("router service stop", () => {
 
   const HEALTH = `probe http://127.0.0.1:${FAKE_PORT}/__anymodel/health`;
   const IS_ACTIVE = "$ systemctl --user is-active anymodel-router.service";
-  const DISABLE = "$ systemctl --user disable anymodel-router.service";
-  const STOP = "$ systemctl --user stop --no-block anymodel-router.service";
+  // Both units in one call each: the socket must not reopen the router between them.
+  const DISABLE = "$ systemctl --user disable anymodel-router.socket anymodel-router.service";
+  const STOP = "$ systemctl --user stop --no-block anymodel-router.socket anymodel-router.service";
 
   // Changed on purpose, in the tests below that list the calls: the unit's state is asked
   // first (IS_ACTIVE), so the port is waited for only while the unit itself runs.
@@ -941,7 +1123,7 @@ describe("router service stop", () => {
   it("a failing systemctl stops it before anything else", async () => {
     const m = stopMachine({ failOn: "disable", heldPolls: 0 });
     await expect(stopRouter(m.runner, FAKE_PORT, m.probe)).rejects.toThrow(
-      "systemctl --user disable anymodel-router.service failed (exit 1):\nFailed to connect to bus",
+      "systemctl --user disable anymodel-router.socket anymodel-router.service failed (exit 1):\nFailed to connect to bus",
     );
     expect(m.events).toEqual([IS_ACTIVE, DISABLE]);
   });

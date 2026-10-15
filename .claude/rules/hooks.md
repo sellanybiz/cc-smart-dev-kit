@@ -81,11 +81,26 @@ A bug in a hook must never stop a user's work.
 - What a guard does when the project's `anymodel.json` is broken or needs a newer plugin is
   decided in Phase 3 and written here then.
 
-## Session start refreshes, nothing more
+## Session start refreshes and checks for updates, nothing more
 
-The SessionStart hook only refreshes managed files, through `src/setup/` under its lock.
-It never restarts a service, never changes a permission, and never asks a question.
-Those happen only in a manual `anymodel setup` run that shows the change first.
+The SessionStart hook refreshes managed files, through `src/setup/` under its lock, and
+starts the background self-update (`src/update/`, the owner's decision of 2026-10-15). It
+never restarts a service, never changes a permission, and never asks a question. Those
+happen only in a manual run that shows the change first.
+
+The self-update hook (`src/entries/update-check.ts`) is machine-wide, not a project's
+piece, so it has no `anymodel.json` and no defer check. Its rules:
+
+- **Return at once.** No network and no lock in the hook: it starts the check in a
+  detached process (`detached: true`, stdio all `"ignore"`, so no pipe keeps Claude Code
+  waiting) and returns. The test with a slow fake `claude` fails when it waits.
+- **At most one check an hour**, decided again under the update lock in the background,
+  so sessions that start together check once. Nothing while `update-hold` exists.
+- **Silent on success.** It prints only one `systemMessage`, once, after a failed
+  background update.
+- **Only Claude Code's own commands install:** `claude plugin marketplace update`, then
+  `claude plugin update … --scope user`. Never `-y` (a marketplace-declared command needs
+  a person), never a restart of the router or a session.
 
 ## Tests
 

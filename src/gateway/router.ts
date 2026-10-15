@@ -55,6 +55,8 @@
  *     email addresses masked. It is written in the background: the client's answer never
  *     waits for the log.
  *   - On SIGTERM it stops taking requests and exits once the running ones finish.
+ *     Under systemd, the socket unit holds the port meanwhile, so new connections wait
+ *     for the next router instead of being refused (`startRouter`, `./listen.ts`).
  *
  * `createRouter` is the handler, with everything it touches passed in, so the tests
  * drive it with fake upstreams. `startRouter` serves it (`anymodel gateway serve`, and
@@ -62,6 +64,7 @@
  */
 
 import { type GatewayConfig, messageOf, watchConfig } from "./config";
+import { inheritedListenFd, innerSocketPath, LISTEN_VARS, listenOnFd, serveUnix } from "./listen";
 import {
   cooldownSeconds,
   fallbackKind,
@@ -1310,37 +1313,107 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   };
 }
 
-/** Serve the router on 127.0.0.1: `anymodel gateway serve`, and the systemd unit. */
-export function startRouter(configPath: string) {
+/**
+ * Serve the router on 127.0.0.1: `anymodel gateway serve`, and the systemd unit.
+ *
+ * Under the unit, systemd's `anymodel-router.socket` holds the port and passes it in
+ * (socket activation, `./listen.ts`): the router accepts on that socket and relays each
+ * connection to its own server on a private unix socket. Started any other way (a
+ * terminal, a unit without the socket), it binds the config's port itself.
+ *
+ * `env` is the process's environment; the socket-activation variables are removed from
+ * it once read, so a child process never takes the socket for its own.
+ */
+export async function startRouter(
+  configPath: string,
+  env: Record<string, string | undefined> = process.env,
+): Promise<void> {
   const log = (line: string) => console.log(line);
   // A missing or bad file at start does not stop the router: it runs `emptyConfig()`
   // (both slots on Claude Sonnet 5.5) and picks the file up once it is fixed.
   const source = watchConfig(configPath, log);
-  const { port } = source.get();
-  const handler = createRouter({
-    configPath,
-    fetch: (url, init) => fetch(url, init),
-    getConfig: () => source.get(),
-    log,
-    now: () => Date.now(),
-    port,
+  const configPort = source.get().port;
+  const handlerFor = (port: number) =>
+    createRouter({
+      configPath,
+      fetch: (url, init) => fetch(url, init),
+      getConfig: () => source.get(),
+      log,
+      now: () => Date.now(),
+      port,
+    });
+
+  const fd = inheritedListenFd(env, process.pid);
+  for (const name of LISTEN_VARS) delete env[name];
+
+  if (fd === null) {
+    // `idleTimeout: 0` turns Bun's 10-second idle cut-off off: a model that thinks
+    // for a minute sends nothing in between, and the stream must not be dropped.
+    const server = Bun.serve({
+      fetch: handlerFor(configPort),
+      hostname: "127.0.0.1",
+      idleTimeout: 0,
+      port: configPort,
+    });
+    log(`anymodel-router listening on http://127.0.0.1:${configPort} (config ${configPath})`);
+    // systemd stops (and restarts) with SIGTERM. `stop(false)` stops taking new
+    // connections and lets every answer in flight finish; its promise resolves once
+    // the last connection has closed. The unit's TimeoutStopSec bounds the wait.
+    process.once("SIGTERM", () => {
+      log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
+      exitWhenDone(server.stop(false), log, () => {});
+    });
+    return;
+  }
+
+  // Socket activation. Connections that arrive before the inner server is up wait, paused.
+  const inner = innerSocketPath(env, process.pid);
+  let innerReady: (path: string) => void = () => {};
+  const ready = new Promise<string>((resolve) => {
+    innerReady = resolve;
   });
-  // `idleTimeout: 0` turns Bun's 10-second idle cut-off off: a model that thinks
-  // for a minute sends nothing in between, and the stream must not be dropped.
-  const server = Bun.serve({ fetch: handler, hostname: "127.0.0.1", idleTimeout: 0, port });
-  log(`anymodel-router listening on http://127.0.0.1:${port} (config ${configPath})`);
-  // systemd stops (and restarts) with SIGTERM. `stop(false)` stops taking new
-  // connections and lets every answer in flight finish; its promise resolves once
-  // the last connection has closed. The unit's TimeoutStopSec bounds the wait.
-  process.once("SIGTERM", () => {
-    log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
-    server.stop(false).then(
-      () => process.exit(0),
-      (error: unknown) => {
-        log(`ERROR while stopping: ${messageOf(error)}`);
-        process.exit(1);
-      },
+  const relay = await listenOnFd(fd, ready);
+  // The Host check uses the port the socket really listens on. The config's port reaches
+  // the socket only through `gateway setup`, which writes it into the socket unit.
+  if (relay.port !== configPort) {
+    log(
+      `WARN the socket listens on port ${relay.port}, the config says ${configPort}: serving on ${relay.port}. Run: anymodel gateway setup`,
     );
+  }
+  const server = serveUnix(inner.path, handlerFor(relay.port));
+  innerReady(inner.path);
+  log(
+    `anymodel-router listening on http://127.0.0.1:${relay.port} (the socket systemd holds; config ${configPath})`,
+  );
+  // On SIGTERM it stops accepting. systemd keeps the socket open, so a new connection
+  // waits in its queue for the next router instead of being refused. Every answer in
+  // flight finishes; the router exits once the last relayed connection has closed.
+  process.once("SIGTERM", () => {
+    log(
+      `SIGTERM: finishing ${server.pendingRequests} request(s), then exiting; new connections wait in the socket for the next router`,
+    );
+    const relayClosed = new Promise<void>((resolve) => {
+      relay.server.close(() => resolve());
+    });
+    exitWhenDone(Promise.all([server.stop(false), relayClosed]), log, inner.cleanup);
   });
-  return server;
+}
+
+/** Exits 0 once `done` resolves (1 when it fails), after `cleanup`. */
+function exitWhenDone(
+  done: Promise<unknown>,
+  log: (line: string) => void,
+  cleanup: () => void,
+): void {
+  done.then(
+    () => {
+      cleanup();
+      process.exit(0);
+    },
+    (error: unknown) => {
+      log(`ERROR while stopping: ${messageOf(error)}`);
+      cleanup();
+      process.exit(1);
+    },
+  );
 }

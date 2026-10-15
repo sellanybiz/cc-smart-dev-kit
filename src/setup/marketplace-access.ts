@@ -1,9 +1,14 @@
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
-/** How to reach a marketplace, from Claude Code's `plugins/known_marketplaces.json`. */
+/**
+ * How to reach a marketplace, from Claude Code's `plugins/known_marketplaces.json`. A git
+ * source may name a `ref` (a branch or tag) that Claude Code follows instead of the
+ * default branch.
+ */
 export type MarketplaceSource =
   | { kind: "missing" }
-  | { kind: "git"; urls: string[] }
+  | { kind: "git"; ref?: string; urls: string[] }
   | { kind: "http"; url: string }
   | { kind: "local"; path: string }
   | { kind: "unknown"; type: string };
@@ -32,6 +37,8 @@ export function marketplaceSource(
   if (!source || typeof source.source !== "string") return { kind: "missing" };
 
   const text = (key: string) => (typeof source[key] === "string" ? (source[key] as string) : null);
+  const ref = text("ref");
+  const withRef = ref ? { ref } : {};
   switch (source.source) {
     case "github": {
       const repo = text("repo");
@@ -39,11 +46,13 @@ export function marketplaceSource(
       const ssh = `git@github.com:${repo}.git`;
       const https = `https://github.com/${repo}.git`;
       const preferHttps = Boolean(env.CLAUDE_CODE_PLUGIN_PREFER_HTTPS);
-      return { kind: "git", urls: preferHttps ? [https, ssh] : [ssh, https] };
+      return { kind: "git", urls: preferHttps ? [https, ssh] : [ssh, https], ...withRef };
     }
     case "git": {
       const url = text("url");
-      return url ? { kind: "git", urls: [url] } : { kind: "unknown", type: "git without url" };
+      return url
+        ? { kind: "git", urls: [url], ...withRef }
+        : { kind: "unknown", type: "git without url" };
     }
     case "url": {
       const url = text("url");
@@ -128,17 +137,60 @@ export function canReadGitRemote(
   url: string,
   baseEnv: Record<string, string | undefined> = process.env,
 ): { ok: boolean; detail: string } {
+  const result = lsRemote(url, "HEAD", baseEnv);
+  return result.ok ? { ok: true, detail: "" } : result;
+}
+
+/**
+ * The environment for git reading a remote: never asks for a password, and ssh in batch
+ * mode unless the user has an ssh command of their own (see `canReadGitRemote`).
+ */
+export function gitAccessEnv(
+  baseEnv: Record<string, string | undefined>,
+): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...baseEnv, GIT_TERMINAL_PROMPT: "0" };
   if (!hasOwnSshCommand(env)) env.GIT_SSH_COMMAND = BATCH_SSH_COMMAND;
+  return env;
+}
+
+/**
+ * The commit a remote's `ref` points at (`git ls-remote <url> <ref>`), or why it could not
+ * be read, redacted. For an annotated tag it is the commit the tag points at (the `^{}`
+ * line). Same access rules as `canReadGitRemote`.
+ */
+export function gitRemoteHead(
+  url: string,
+  ref: string,
+  baseEnv: Record<string, string | undefined> = process.env,
+): { detail: string; ok: false } | { ok: true; sha: string } {
+  const result = lsRemote(url, ref, baseEnv);
+  if (!result.ok) return result;
+  const lines = result.stdout
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/))
+    .filter((fields): fields is [string, string] => fields.length === 2);
+  const line = lines.find(([, name]) => name.endsWith("^{}")) ?? lines[0];
+  if (line === undefined || !/^[0-9a-f]{40,64}$/.test(line[0])) {
+    return { detail: `the remote has no ${ref}`, ok: false };
+  }
+  return { ok: true, sha: line[0] };
+}
+
+function lsRemote(
+  url: string,
+  ref: string,
+  baseEnv: Record<string, string | undefined>,
+): { detail: string; ok: false } | { ok: true; stdout: string } {
+  const env = gitAccessEnv(baseEnv);
   try {
-    const result = Bun.spawnSync(["git", "ls-remote", url, "HEAD"], {
+    const result = Bun.spawnSync(["git", "ls-remote", url, ref], {
       env,
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
       timeout: ACCESS_TIMEOUT_MS,
     });
-    if (result.exitCode === 0) return { ok: true, detail: "" };
+    if (result.exitCode === 0) return { ok: true, stdout: result.stdout.toString() };
     const lines = result.stderr.toString().trim().split("\n");
     const detail = result.signalCode ? "timed out" : (lines.at(-1) ?? "").trim();
     return { ok: false, detail: redactUrlsIn(detail) || `git exited with ${result.exitCode}` };
@@ -181,5 +233,57 @@ export function marketplaceInstallLocation(
     return typeof location === "string" && location !== "" ? location : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Where the plugin's folder is inside a marketplace: its `source` in the marketplace's
+ * `.claude-plugin/marketplace.json` (`"./plugin"`), without the leading `./`. Null when
+ * the text is not such a manifest, or names the plugin with another kind of source.
+ */
+export function pluginFolderIn(marketplaceJson: string, plugin: string): null | string {
+  try {
+    const manifest = JSON.parse(marketplaceJson) as { plugins?: unknown } | null;
+    const plugins = Array.isArray(manifest?.plugins) ? manifest.plugins : [];
+    const entry = plugins.find(
+      (candidate): candidate is { name: string; source: unknown } =>
+        typeof candidate === "object" &&
+        candidate !== null &&
+        (candidate as { name?: unknown }).name === plugin,
+    );
+    if (typeof entry?.source !== "string") return null;
+    const folder = entry.source.replace(/^\.\//, "").replace(/\/+$/, "");
+    return folder === "" || folder.split("/").includes("..") ? null : folder;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The plugin version in a marketplace's local copy (`installLocation`): the `version` of
+ * the plugin manifest in the folder the marketplace names for `plugin` (`plugin/` when it
+ * names none). `manifest` is where it looked; `version` is null when it cannot be read.
+ */
+export function marketplaceCopyVersion(
+  location: string,
+  plugin: string,
+): { manifest: string; version: null | string } {
+  let folder = "plugin";
+  try {
+    folder =
+      pluginFolderIn(
+        readFileSync(join(location, ".claude-plugin", "marketplace.json"), "utf8"),
+        plugin,
+      ) ?? folder;
+  } catch {
+    // No marketplace manifest there: the plugin's usual folder.
+  }
+  const manifest = join(location, folder, ".claude-plugin", "plugin.json");
+  try {
+    const version = (JSON.parse(readFileSync(manifest, "utf8")) as { version?: unknown } | null)
+      ?.version;
+    return { manifest, version: typeof version === "string" ? version : null };
+  } catch {
+    return { manifest, version: null };
   }
 }

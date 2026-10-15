@@ -10,7 +10,7 @@ import { listModels } from "./backends";
 import { NEEDS_SYSTEMD } from "./commands";
 import { emptyConfig, loadConfigFile, messageOf } from "./config";
 import { type HealthFetch, routerHealth } from "./health";
-import { type Runner, restartPendingFile, UNIT_NAME } from "./service";
+import { type Runner, renderSocket, restartPendingFile, SOCKET_NAME, UNIT_NAME } from "./service";
 import { shownValue } from "./settings";
 import { JUDGE_SLOT } from "./targets";
 
@@ -48,7 +48,10 @@ export async function gatewayChecks(options: {
 
   // Installed means the router copy or its unit is there. `gateway.json` alone is kept on
   // purpose (by restore, say): it holds the person's key.
-  const installed = existsSync(paths.routerCopy) || existsSync(paths.routerUnitFile);
+  const installed =
+    existsSync(paths.routerCopy) ||
+    existsSync(paths.routerUnitFile) ||
+    existsSync(paths.routerSocketFile);
   if (!installed) {
     checks.push(
       existsSync(paths.gatewayConfigFile)
@@ -114,6 +117,8 @@ export async function gatewayChecks(options: {
     }
   }
 
+  checks.push(socketCheck(options, config.port));
+
   const health = await routerHealth(config.port, options.fetch);
   checks.push(
     "error" in health
@@ -152,4 +157,35 @@ export async function gatewayChecks(options: {
     });
   }
   return checks;
+}
+
+/**
+ * The socket unit holds the router's port across restarts. Without it (a router set up by
+ * an older plugin version), or on another port than the config's, a restart refuses new requests
+ * while the old router drains.
+ */
+function socketCheck(
+  options: { paths: CliPaths; runner: Runner; systemd: boolean },
+  port: number,
+): DoctorCheck {
+  const { paths } = options;
+  const where = tildify(paths.routerSocketFile, paths.home);
+  if (!existsSync(paths.routerSocketFile)) {
+    return {
+      ok: false,
+      text: `no socket unit at ${where}: a router restart makes new requests fail while the old router drains. ${SETUP}`,
+    };
+  }
+  if (readFileSync(paths.routerSocketFile, "utf8") !== renderSocket(port)) {
+    return {
+      ok: false,
+      text: `the socket unit ${where} is not the one setup writes for port ${port}. ${SETUP}`,
+    };
+  }
+  if (!options.systemd) return { ok: true, text: `the socket unit ${where} is up to date` };
+  const state = options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
+  const word = state.output.trim().split("\n")[0] || "unknown";
+  return state.exitCode === 0
+    ? { ok: true, text: `the router's socket (${SOCKET_NAME}) holds 127.0.0.1:${port}` }
+    : { ok: false, text: `the router's socket (${SOCKET_NAME}) is ${word}. ${SETUP}` };
 }

@@ -48,9 +48,28 @@ After that, use `anymodel setup` to set up again (for example after an update).
 |---|---|
 | `anymodel setup` | Installs the launcher and turns on plugin auto-update. `--dry-run` shows the changes and writes nothing at all. A settings key you set yourself (for example `autoUpdate: false`) stops setup before it writes anything. |
 | `anymodel doctor` | Checks the install (the list is below). Prints ✓ or ✗ for each check, and exits with 1 when one fails. |
-| `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, its block) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy and unit. `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
+| `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, its block) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy and units. `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
+| `anymodel update [--check \| --hold \| --resume]` | Installs a newer anymodel now, showing each step: `claude plugin marketplace update anymodel`, then `claude plugin update anymodel@anymodel --scope user` when there is a newer version. `--check` only says whether a newer version exists (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Nothing restarts: restart Claude sessions to load the new version. |
 | `anymodel gateway <command>` | The optional AI gateway (below). |
 | `anymodel version` | Prints the version. |
+
+### The background update
+
+Claude Code's own plugin auto-update can fail to run (anthropics/claude-code#61854), so
+anymodel updates itself. When a Claude session starts, its hook checks, **at most once an
+hour**, in the background, and never makes the session wait or prints anything:
+
+1. It compares the marketplace's remote head (`git ls-remote`, which never asks for a
+   password) with Claude Code's local copy, and the installed version with the copy's.
+2. When either is behind, it runs the same two commands as `anymodel update`, logs each
+   step to `~/.claude/anymodel/update.log`, and shows one desktop notification when a
+   new version was installed (`notify-send` on Linux, `osascript` on macOS): "anymodel
+   X installed; restart Claude sessions to load it".
+
+It never restarts the router, a service or a session. A new router still needs
+`anymodel gateway setup`, which asks first. When a background update fails, the next
+session start says so once. The trade-off, accepted on purpose: a bad release reaches
+every machine within the hour. `anymodel update --hold` keeps one machine where it is.
 
 `doctor` checks that:
 
@@ -66,6 +85,10 @@ After that, use `anymodel setup` to set up again (for example after an update).
   (`GIT_SSH_COMMAND`, `GIT_SSH` or `core.sshCommand`). It prints URLs without
   credentials;
 - auto-update is on for the plugin;
+- the background update: the last check and its result (a failed check is a ✗ that
+  names the log; a check still to come is information), whether it is on hold, and, as
+  information, running Claude sessions that loaded an older version than the one
+  installed now;
 - updates are not switched off. It fails when `DISABLE_AUTOUPDATER`, `DISABLE_UPDATES`
   or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set, in your environment or in the
   `env` of `settings.json`, without `FORCE_AUTOUPDATE_PLUGINS`. A value that is empty,
@@ -80,9 +103,11 @@ After that, use `anymodel setup` to set up again (for example after an update).
   cc@cc-agentic`, then `claude plugin marketplace remove cc-agentic`;
 - no gateway setup stopped half way: while one did, ✗ "a gateway setup did not finish;
   run: anymodel gateway setup";
-- the gateway, when it is installed (the router copy or its unit is there): the router
-  service is active, the router copy is this plugin version's, the router answers on its
-  port, each backend answers; and, as information, each slot's first target. Without
+- the gateway, when it is installed (the router copy or one of its units is there): the
+  router service is active, the router copy is this plugin version's, the socket unit
+  `anymodel-router.socket` is there, listens on the config's port and is active (a
+  router set up by an older version has none: ✗ "Run: anymodel gateway setup"), the
+  router answers on its port, each backend answers; and, as information, each slot's first target. Without
   `gateway.json` (set up with `--no-backend-key`), a `·` line says every slot answers on
   Claude. When it was never set up, doctor says "gateway: not set up (optional)" as
   information (`·`), not as a failure; with only `gateway.json` left (restore keeps it),
@@ -107,7 +132,7 @@ real Claude on your own login. No prompt text is ever changed. Linux only for no
 
 | Command | What it does |
 |---|---|
-| `anymodel gateway setup [--yes] [--backend-key-stdin <backend> \| --no-backend-key]` | Makes `~/.config/anymodel/gateway.json` (mode 600; the key on stdin, never argv), copies the router to `~/.local/share/anymodel/router.js`, writes the systemd user unit `anymodel-router`, starts it, and waits up to 5 s for it to answer. First of all it asks the router's port: when another program holds it (an older router, say), it stops and writes nothing. When the router runs and the copy or unit changed, it says a restart cuts the answers in flight and asks; `--yes` skips the question. A setup that stopped half way is finished by the next one. It never touches Claude Code's settings. |
+| `anymodel gateway setup [--yes] [--backend-key-stdin <backend> \| --no-backend-key]` | Makes `~/.config/anymodel/gateway.json` (mode 600; the key on stdin, never argv), copies the router to `~/.local/share/anymodel/router.js`, writes the systemd user units `anymodel-router.socket` (it holds the port) and `anymodel-router.service`, starts them, and waits up to 5 s for the router to answer. First of all it asks the router's port: when another program holds it (an older router, say), it stops and writes nothing. When the router runs and the copy or a unit changed, it says what the restart does and asks; `--yes` skips the question. A restart lets the answers in flight finish, and new requests wait in the socket meanwhile, so none fails. The one exception is the first setup that moves a router from an older version to its socket: until the old router has finished its answers (up to 120 s), new requests fail, as on every restart before. A setup that stopped half way is finished by the next one. It never touches Claude Code's settings. |
 | `anymodel gateway status` | Router health, each backend, the slots, and whether Claude Code points at the gateway. Keys are masked. |
 | `anymodel gateway models` | Every model each backend offers, and the slots. |
 | `anymodel gateway slot <scout\|worker\|judge> <target>[,<target>…]` | Sets a slot's targets, checked against the backend's model list. Live, no restart. `slot judge off` puts auto mode's safety check back on Claude. |
