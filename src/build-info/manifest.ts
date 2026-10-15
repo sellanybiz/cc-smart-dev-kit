@@ -6,6 +6,36 @@ export interface BuildInfo {
   version: string;
   /** The marketplace source as `<owner>/<name>`, from plugin.json's `repository`. */
   repo: string;
+  /** The companion plugins from plugin.json's `dependencies`, each with its marketplace. */
+  dependencies: Dependency[];
+}
+
+/** One entry of plugin.json's `dependencies`, in the object form this plugin uses. */
+export interface Dependency {
+  name: string;
+  /** The marketplace it comes from. */
+  marketplace: string;
+  /** A semver range, when the dependency has one. */
+  version?: string;
+}
+
+function readDependencies(manifestFile: string, raw: unknown): Dependency[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) throw new Error(`${manifestFile}: "dependencies" is not a list`);
+  return raw.map((entry, index) => {
+    const where = `${manifestFile}: dependencies[${index}]`;
+    if (typeof entry !== "object" || entry === null) {
+      throw new Error(`${where}: write it as { "name", "marketplace" }`);
+    }
+    const { name, marketplace, version } = entry as Record<string, unknown>;
+    if (typeof name !== "string" || typeof marketplace !== "string") {
+      throw new Error(`${where}: needs a "name" and a "marketplace"`);
+    }
+    if (version !== undefined && typeof version !== "string") {
+      throw new Error(`${where}: "version" is not a string`);
+    }
+    return { name, marketplace, ...(version !== undefined && { version }) };
+  });
 }
 
 /**
@@ -34,15 +64,20 @@ export function readBuildInfo(manifestFile: string): BuildInfo {
   const manifest = JSON.parse(readFileSync(manifestFile, "utf8")) as {
     version?: unknown;
     repository?: unknown;
+    dependencies?: unknown;
   };
   if (typeof manifest.version !== "string") throw new Error(`${manifestFile}: no "version"`);
   if (typeof manifest.repository !== "string") throw new Error(`${manifestFile}: no "repository"`);
-  return { version: manifest.version, repo: parseRepository(manifest.repository) };
+  return {
+    version: manifest.version,
+    repo: parseRepository(manifest.repository),
+    dependencies: readDependencies(manifestFile, manifest.dependencies),
+  };
 }
 
 /**
  * A Bun macro (imported `with { type: "macro" }`): it runs when the code is transpiled,
- * so the bundle holds only these two values, never the rest of plugin.json.
+ * so the bundle holds only these values, never the rest of plugin.json.
  */
 export function buildInfo(): BuildInfo {
   return readBuildInfo(

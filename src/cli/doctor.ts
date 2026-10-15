@@ -14,6 +14,10 @@ import {
 } from "../build-info";
 import { gatewayChecks } from "../gateway/doctor";
 import type { Runner } from "../gateway/service";
+import { claudeMemAdvice } from "../machine/claude-mem";
+import { companionChecks } from "../machine/companions";
+import type { Machine } from "../machine/machine";
+import { warpCheck } from "../machine/warp";
 import { findUserInstall } from "../setup/installed-plugins";
 import {
   copyDifferences,
@@ -38,6 +42,8 @@ interface Check {
   ok: boolean;
   /** Information only: printed with `·`, never a failure. */
   info?: boolean;
+  /** A warning: printed with `!`, never a failure. */
+  warn?: boolean;
   text: string;
 }
 
@@ -489,11 +495,19 @@ export interface DoctorLocal {
   cwd: string;
 }
 
+/** A claude-mem whose vector search may not start: a warning, never a failure. */
+function claudeMemCheck(paths: CliPaths): Check | null {
+  const advice = claudeMemAdvice(paths);
+  return advice === null ? null : { ok: true, warn: true, text: advice };
+}
+
 /** What the gateway checks need: the plugin's router bundle, a command runner, systemd or not. */
 export interface DoctorGateway {
   bundle: string;
   runner: Runner;
   systemd: boolean;
+  /** Asks the system about Warp (its package manager); a test passes fakes. */
+  machine: Machine;
 }
 
 /** The Bun running doctor (through the launcher, the bun baked into it). */
@@ -546,10 +560,13 @@ export async function runDoctor(
     checkUpdatesNotOff(settings, env, paths),
     checkNameClash(settings),
     checkOldPlugin(settings, paths),
+    ...companionChecks(paths),
+    claudeMemCheck(paths),
+    warpCheck(gateway.machine, paths),
     ...(runtime.ok ? await gatewayChecks({ paths, ...gateway }) : [skipped]),
   ].filter((check): check is Check => check !== null);
   for (const check of checks) {
-    console.log(`${check.info ? "·" : check.ok ? "✓" : "✗"} ${check.text}`);
+    console.log(`${check.warn ? "!" : check.info ? "·" : check.ok ? "✓" : "✗"} ${check.text}`);
   }
   return checks.every((check) => check.ok) ? 0 : 1;
 }

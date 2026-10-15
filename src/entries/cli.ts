@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { VERSION } from "../build-info";
 import { oldBunRefusal } from "../cli/bun-check";
 import { runDoctor } from "../cli/doctor";
@@ -9,6 +9,7 @@ import { runSetup } from "../cli/setup";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
+import { realMachine } from "../machine/machine";
 import { runSearch } from "../search/command";
 
 const HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
@@ -16,21 +17,34 @@ const HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Cla
 Usage: anymodel <command> [options]
 
 Commands:
-  setup [--dry-run] [--no-instructions | --instructions]
+  setup [--dry-run] [--yes] [--project <dir>] [--warp | --remove-warp]
+        [--no-instructions | --instructions]
                      Install the launcher in ~/.local/bin, turn on plugin auto-update,
-                     and install the plugin's instructions for Claude: a copy in
+                     install the plugin's instructions for Claude (a copy in
                      ~/.claude/anymodel/instructions/, imported by a block in
-                     ~/.claude/CLAUDE.md. --no-instructions takes them out and keeps
-                     them out: a later plain setup leaves them out too. --instructions
-                     brings them back. restore forgets the choice. --dry-run prints what
-                     would change and writes nothing.
+                     ~/.claude/CLAUDE.md), add the companion plugins' marketplaces, point
+                     claude-mem at the gateway's cheap model (when both are there), and
+                     copy the project's auto-mode entries into your settings. The entries
+                     are trust rules: they are shown and asked on a terminal (--yes:
+                     shown, not asked); with no terminal they are left out, also with
+                     --yes.
+                     --project <dir>: the project to read .claude/anymodel.json from
+                     (default: this folder). --warp: install the Warp terminal (the
+                     commands are shown and asked; sudo asks for your password) and its
+                     Claude plugin. --remove-warp: take them out again.
+                     --no-instructions takes the instructions out and keeps them out: a
+                     later plain setup leaves them out too. --instructions brings them
+                     back. restore forgets the choice.
+                     --dry-run prints what would change, and writes, runs and checks
+                     nothing.
   doctor             Check the install, and the anymodel files the current project's
                      CLAUDE.md imports. Exit code 1 when a check fails.
   restore [--yes] [--now]
                      Remove what anymodel added, and keep everything else: its settings
-                     keys, its Markdown blocks, and the files it created (the launcher,
-                     the instructions, the router copy and unit). Each changed file gets
-                     a backup first.
+                     keys and entries (claude-mem's settings, the auto-mode entries), its
+                     Markdown blocks, and the files it created (the launcher, the
+                     instructions, the router copy and unit). Each changed file gets a
+                     backup first. Plugins and marketplaces setup added stay installed.
                      With the gateway on, it runs in two stages: first everything but the
                      router, which the running sessions still use; after you restart
                      them, again to stop and remove the router (it asks; --yes: without
@@ -108,8 +122,30 @@ async function main(argv: string[]): Promise<number> {
 
   switch (command) {
     case "setup": {
-      const known = ["--dry-run", "--no-instructions", "--instructions"];
-      const unknown = rest.filter((arg) => !known.includes(arg));
+      const flags = [
+        "--dry-run",
+        "--yes",
+        "--warp",
+        "--remove-warp",
+        "--no-instructions",
+        "--instructions",
+      ];
+      let project = process.cwd();
+      const unknown: string[] = [];
+      for (let index = 0; index < rest.length; index += 1) {
+        const arg = rest[index] ?? "";
+        if (arg === "--project") {
+          const dir = rest[index + 1];
+          if (dir === undefined || dir.startsWith("--")) {
+            console.error(`--project needs a folder\n\n${HELP}`);
+            return 2;
+          }
+          project = resolve(dir);
+          index += 1;
+        } else if (!flags.includes(arg)) {
+          unknown.push(arg);
+        }
+      }
       if (unknown.length > 0) {
         console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
         return 2;
@@ -120,8 +156,21 @@ async function main(argv: string[]): Promise<number> {
         console.error(`Use --no-instructions or --instructions, not both.\n\n${HELP}`);
         return 2;
       }
+      if (rest.includes("--warp") && rest.includes("--remove-warp")) {
+        console.error(`--warp and --remove-warp do opposite things: give one\n\n${HELP}`);
+        return 2;
+      }
+      if (!existsSync(project) || !statSync(project).isDirectory()) {
+        console.error(`--project: ${project} is not a folder`);
+        return 2;
+      }
       return runSetup(paths, {
         dryRun: rest.includes("--dry-run"),
+        yes: rest.includes("--yes"),
+        warp: rest.includes("--warp"),
+        removeWarp: rest.includes("--remove-warp"),
+        project,
+        machine: realMachine(process.env, ask),
         instructions: off ? false : on ? true : null,
         instructionsSource: instructionsFolder(),
       });
@@ -130,7 +179,7 @@ async function main(argv: string[]): Promise<number> {
       return runDoctor(
         paths,
         process.env,
-        { bundle: routerBundle(), runner, systemd },
+        { bundle: routerBundle(), runner, systemd, machine: realMachine(process.env, null) },
         { instructionsSource: instructionsFolder(), cwd: process.cwd() },
         { path: process.execPath, version: Bun.version },
       );

@@ -34,6 +34,7 @@ describe("resolveProject", () => {
       isWorktree: false,
       mainCheckout: repo,
       config: null,
+      configFile: null,
     };
     expect(resolveProject(repo)).toEqual(expected);
     expect(resolveProject(join(repo, "src", "deep"))).toEqual(expected);
@@ -49,6 +50,7 @@ describe("resolveProject", () => {
       isWorktree: true,
       mainCheckout: repo,
       config: null,
+      configFile: null,
     });
   });
 
@@ -85,6 +87,7 @@ describe("resolveProject", () => {
     const worktree = join(repo, "..", "wt-fallback");
     git(repo, "worktree", "add", "-q", "-b", "fallback", worktree);
     expect(resolveProject(worktree)?.config).toEqual({ instructions: true });
+    expect(resolveProject(worktree)?.configFile).toBe(join(repo, ".claude", "anymodel.json"));
   });
 
   test("a worktree's own anymodel.json wins over the main checkout's", () => {
@@ -94,6 +97,7 @@ describe("resolveProject", () => {
     git(repo, "worktree", "add", "-q", "-b", "own", worktree);
     writeAnymodelJson(worktree, JSON.stringify({ instructions: false }));
     expect(resolveProject(worktree)?.config).toEqual({ instructions: false });
+    expect(resolveProject(worktree)?.configFile).toBe(join(worktree, ".claude", "anymodel.json"));
   });
 
   test("an invalid anymodel.json throws an error that names the file and the field", () => {

@@ -229,10 +229,12 @@ export function backupFile(stateDir: string, file: string): string {
 /**
  * What anymodel changed in a file, so restore knows how to take it out again:
  * - `json-keys`: keys listed in owned.json; restore removes them and keeps the rest.
+ * - `json-entries`: entries of a JSON string list, listed in owned-entries.json; restore
+ *   removes them and keeps every other entry.
  * - `markdown-block`: one anymodel block; restore removes it and keeps the text around it.
  * - `whole-file`: the file is anymodel's (the launcher); restore puts back the baseline.
  */
-export type ChangeKind = "json-keys" | "markdown-block" | "whole-file";
+export type ChangeKind = "json-keys" | "json-entries" | "markdown-block" | "whole-file";
 
 export interface ChangedEntry {
   kinds: ChangeKind[];
@@ -240,7 +242,12 @@ export interface ChangedEntry {
   baseline: string | null;
 }
 
-const CHANGE_KINDS: readonly ChangeKind[] = ["json-keys", "markdown-block", "whole-file"];
+const CHANGE_KINDS: readonly ChangeKind[] = [
+  "json-keys",
+  "json-entries",
+  "markdown-block",
+  "whole-file",
+];
 
 function isChangedEntry(value: unknown): value is ChangedEntry {
   if (typeof value !== "object" || value === null) return false;

@@ -22,20 +22,28 @@ function entryPoints(): string[] {
     .map((name) => join(entriesDir, name));
 }
 
+/**
+ * One build per entry. Built together, Bun keeps a library export in every bundle when
+ * any entry uses it (zod's `boolean`, used by the CLI, landed in router.js), so a CLI
+ * change would change router.js, and a changed router.js makes every machine restart its
+ * router. Built alone, a bundle holds only what its own entry reaches.
+ */
 async function buildInto(outdir: string): Promise<void> {
   rmSync(outdir, { recursive: true, force: true });
-  const result = await Bun.build({
-    entrypoints: entryPoints(),
-    outdir,
-    root: entriesDir,
-    target: "bun",
-    format: "esm",
-    minify: false,
-    naming: "[name].js",
-  });
-  if (!result.success) {
-    for (const log of result.logs) console.error(log);
-    throw new Error("The build failed.");
+  for (const entry of entryPoints()) {
+    const result = await Bun.build({
+      entrypoints: [entry],
+      outdir,
+      root: entriesDir,
+      target: "bun",
+      format: "esm",
+      minify: false,
+      naming: "[name].js",
+    });
+    if (!result.success) {
+      for (const log of result.logs) console.error(log);
+      throw new Error(`The build of ${entry} failed.`);
+    }
   }
 }
 
