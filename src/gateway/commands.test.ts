@@ -33,6 +33,8 @@ import {
   RESTART_WARNING,
   renderSocket,
   renderUnit,
+  SOCKET_CHANGED_WARNING,
+  SOCKET_STOPPED_WARNING,
   STOP_WAIT_MS,
   socketPort,
   stopRouter,
@@ -506,7 +508,7 @@ describe("router service install", () => {
             `${cmd[2]}: ${existsSync(marker) ? "marker" : "no marker"}, ${existsSync(copyPath) ? "copy" : "no copy"}`,
           );
           if (state.fail) return { exitCode: 1, output: "Failed to connect to bus" };
-          if (cmd[2] === state.failOn) {
+          if (cmd[2] === state.failOn || cmd.slice(2).join(" ") === state.failOn) {
             return { exitCode: 1, output: "Job for anymodel-router.socket failed.\n" };
           }
           const names = cmd.slice(3).filter((arg) => !arg.startsWith("--"));
@@ -566,6 +568,7 @@ describe("router service install", () => {
       "$ systemctl --user enable anymodel-router.socket anymodel-router.service",
       // Nothing runs, so nothing is stopped; the port is asked once, then both start.
       "$ systemctl --user is-active anymodel-router.service",
+      "$ systemctl --user reset-failed anymodel-router.socket anymodel-router.service",
       "$ systemctl --user start anymodel-router.socket",
       "$ systemctl --user start anymodel-router.service",
       ENABLED,
@@ -590,6 +593,7 @@ describe("router service install", () => {
       "$ systemctl --user is-active anymodel-router.service",
       "waiting for the old router to finish its answers (up to 120 s)",
       "$ systemctl --user stop --no-block anymodel-router.service",
+      "$ systemctl --user reset-failed anymodel-router.socket anymodel-router.service",
       "$ systemctl --user start anymodel-router.socket",
       "$ systemctl --user start anymodel-router.service",
       ENABLED,
@@ -705,6 +709,7 @@ describe("router service install", () => {
       // Not a blocking stop: it would wait the whole drain. The old router closes its
       // port at SIGTERM; the start waits for its drain in systemd.
       "$ systemctl --user stop --no-block anymodel-router.service",
+      "$ systemctl --user reset-failed anymodel-router.socket anymodel-router.service",
       "$ systemctl --user start anymodel-router.socket",
       "$ systemctl --user start anymodel-router.service",
       ENABLED,
@@ -717,14 +722,68 @@ describe("router service install", () => {
     ]);
   });
 
-  it("a socket that cannot open (another program on the port): an error that says where to look; the marker stays", async () => {
+  it("a socket that cannot open: said, with where to look; the router starts without it and binds the port itself", async () => {
     const m = machine();
     // systemd fails the start when the socket cannot bind its port.
-    m.state.failOn = "start";
+    m.state.failOn = "start anymodel-router.socket";
+    expect(await m.install({})).toBe("installed");
+    expect(m.events.slice(-4)).toEqual([
+      "$ systemctl --user start anymodel-router.socket",
+      `systemctl --user start anymodel-router.socket failed (exit 1): Job for anymodel-router.socket failed. Starting anymodel-router without its socket: the router binds 127.0.0.1:${FAKE_PORT} itself, and until the socket opens, a restart refuses new requests while the old router drains. Is another program on that port? See: ss -ltnp, and journalctl --user -u anymodel-router.socket -n 30. Then run anymodel gateway setup again.`,
+      "$ systemctl --user start anymodel-router.service",
+      ENABLED,
+    ]);
+    // The router answered: the marker goes. `doctor` still names the closed socket.
+    expect(existsSync(m.marker)).toBe(false);
+  });
+
+  it("a socket that cannot open and a router that cannot bind either: the error names the unit's log; the marker stays", async () => {
+    const m = machine();
+    m.state.failOn = "start anymodel-router.socket";
+    m.port.answers = false;
     await expect(m.install({})).rejects.toThrow(
-      `systemctl --user start anymodel-router.socket failed (exit 1):\nJob for anymodel-router.socket failed.\nIs another program on 127.0.0.1:${FAKE_PORT}? See: ss -ltnp, and journalctl --user -u anymodel-router.socket -n 30. Then run anymodel gateway setup again.`,
+      `anymodel-router.service did not answer on 127.0.0.1:${FAKE_PORT} within 5 s of the restart`,
     );
     expect(existsSync(m.marker)).toBe(true);
+  });
+
+  it("a stopped socket whose unit file is there: its own warning (not the move's), then it opens again", async () => {
+    const m = machine();
+    await m.install({});
+    // Stopped by hand, or closed by systemd after the router hit its start limit.
+    m.state.socket = false;
+    m.events.length = 0;
+    expect(await m.install({ yes: true })).toBe("installed");
+    expect(SOCKET_STOPPED_WARNING).toBe(
+      "anymodel-router is running, but its socket is not open: the router holds the port itself. This setup opens the socket again, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).",
+    );
+    expect(m.events).toEqual([
+      "$ systemctl --user is-active --quiet anymodel-router.socket",
+      "$ systemctl --user is-active --quiet anymodel-router.service",
+      SOCKET_STOPPED_WARNING,
+      "$ systemctl --user daemon-reload",
+      "$ systemctl --user enable anymodel-router.socket anymodel-router.service",
+      "$ systemctl --user is-active anymodel-router.service",
+      DRAIN_NOTE,
+      "$ systemctl --user stop --no-block anymodel-router.service",
+      "$ systemctl --user reset-failed anymodel-router.socket anymodel-router.service",
+      "$ systemctl --user start anymodel-router.socket",
+      "$ systemctl --user start anymodel-router.service",
+      ENABLED,
+    ]);
+  });
+
+  it("a socket unit that changed on the same port: its own warning (not the port's)", async () => {
+    const m = machine();
+    await m.install({});
+    // An older text of the same socket unit (a later version changed the template).
+    writeFileSync(m.socketPath, renderSocket(FAKE_PORT).replace("NoDelay=true\n", ""));
+    m.events.length = 0;
+    expect(await m.install({})).toBe("declined");
+    expect(SOCKET_CHANGED_WARNING).toBe(
+      "anymodel-router is running, and its socket unit changed, so the socket closes and opens again. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).",
+    );
+    expect(m.events.slice(2, 3)).toEqual([SOCKET_CHANGED_WARNING]);
   });
 
   it("a changed port: the socket is reopened on it (stop the service without blocking, stop the socket, start both)", async () => {
@@ -746,6 +805,7 @@ describe("router service install", () => {
       DRAIN_NOTE,
       "$ systemctl --user stop --no-block anymodel-router.service",
       "$ systemctl --user stop anymodel-router.socket",
+      "$ systemctl --user reset-failed anymodel-router.socket anymodel-router.service",
       "$ systemctl --user start anymodel-router.socket",
       "$ systemctl --user start anymodel-router.service",
       ENABLED,
@@ -861,6 +921,7 @@ describe("router service install", () => {
       "daemon-reload: marker, copy",
       "enable: marker, copy",
       "is-active: marker, copy",
+      "reset-failed: marker, copy",
       "start: marker, copy",
       "start: marker, copy",
     ]);
@@ -941,7 +1002,8 @@ describe("router service install", () => {
         "Description=anymodel-router: local AI gateway for Claude Code (127.0.0.1 only)",
         "Wants=anymodel-router.socket",
         "After=anymodel-router.socket",
-        "StartLimitIntervalSec=0",
+        "StartLimitIntervalSec=60",
+        "StartLimitBurst=5",
         "",
         "[Service]",
         "Type=simple",

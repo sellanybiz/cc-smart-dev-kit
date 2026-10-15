@@ -4,7 +4,7 @@
  *
  *   update-hold         while it exists, the SessionStart hook checks nothing
  *   update-check.json   the last check: when, its result, and the detail
- *   update-reported     the time of the failed check a session was already told about
+ *   update-reported     the failure a session was already told about (its time, or its streak start)
  *   update.log          one line per step of each check, newest last, kept small
  *   update/lock         held by the one check or update that runs (`withLock`)
  *   sessions/<pid>.json the plugin version each running Claude session loaded
@@ -24,7 +24,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { processStartTime } from "../setup/lock";
+import { lockIsHeld, processStartTime } from "../setup/lock";
 import { atomicWrite } from "../setup/write";
 
 /** At most one check an hour per config folder. */
@@ -61,8 +61,17 @@ export type CheckResult =
   | "up-to-date"
   /** A newer version was installed. */
   | "updated"
-  /** Nothing to check here (no install, no marketplace): not a failure. */
+  /**
+   * Nothing to do here (no install, no marketplace, updates switched off, Claude Code
+   * busy with the same marketplace): not a failure.
+   */
   | "skipped"
+  /**
+   * The marketplace could not be read, for less than `UNREACHABLE_FAILS_AFTER_HOURS` in a
+   * row (a laptop offline for a day, say): information, not a failure. After that it is
+   * recorded as `failed`.
+   */
+  | "unreachable"
   | "failed";
 
 export interface LastCheck {
@@ -71,9 +80,46 @@ export interface LastCheck {
   result: CheckResult;
   /** In words: the version found, or why it failed. Never a URL with credentials. */
   detail: string;
+  /**
+   * While the marketplace cannot be read, check after check: when that began (the first
+   * such check's `at`). Absent once a check reads it again.
+   */
+  since?: string;
 }
 
-const RESULTS: readonly CheckResult[] = ["checking", "up-to-date", "updated", "skipped", "failed"];
+const RESULTS: readonly CheckResult[] = [
+  "checking",
+  "up-to-date",
+  "updated",
+  "skipped",
+  "unreachable",
+  "failed",
+];
+
+/** An unreadable marketplace counts as a failure only after this long in a row. */
+export const UNREACHABLE_FAILS_AFTER_HOURS = 24;
+const UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
+
+/**
+ * The record of a check that could not read the marketplace. `previous` is the record
+ * before it (a `checking` one carries the streak on). It stays `unreachable` (information)
+ * until the marketplace has been unreadable for 24 h in a row, then becomes `failed`.
+ */
+export function unreachableCheck(
+  previous: LastCheck | null,
+  at: string,
+  nowMs: number,
+  detail: string,
+): LastCheck {
+  const since = previous?.since ?? at;
+  const failed = nowMs - Date.parse(since) >= UNREACHABLE_FAILS_AFTER_MS;
+  return {
+    at,
+    detail: `cannot read the marketplace${failed ? ` since ${since}` : ""} (${detail})`,
+    result: failed ? "failed" : "unreachable",
+    since,
+  };
+}
 
 function ensureDir(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -91,7 +137,15 @@ export function readLastCheck(files: UpdateFiles): LastCheck | null {
     ) {
       return null;
     }
-    return { at: parsed.at, detail: parsed.detail, result: parsed.result as CheckResult };
+    const check: LastCheck = {
+      at: parsed.at,
+      detail: parsed.detail,
+      result: parsed.result as CheckResult,
+    };
+    if (typeof parsed.since === "string" && !Number.isNaN(Date.parse(parsed.since))) {
+      check.since = parsed.since;
+    }
+    return check;
   } catch {
     return null;
   }
@@ -127,7 +181,11 @@ export function heldSince(files: UpdateFiles): null | string {
   }
 }
 
-/** Holds background updates; false when they were held already. */
+/**
+ * Holds background updates; false when they were held already. One atomic write and no
+ * lock: a check that runs now keeps the update lock until it ends, and the next check
+ * reads the hold.
+ */
 export function hold(files: UpdateFiles, nowMs: number): boolean {
   if (isHeld(files)) return false;
   ensureDir(join(files.hold, ".."));
@@ -135,11 +193,16 @@ export function hold(files: UpdateFiles, nowMs: number): boolean {
   return true;
 }
 
-/** Resumes background updates; false when they were not held. */
+/** Resumes background updates; false when they were not held. No lock, as `hold`. */
 export function resume(files: UpdateFiles): boolean {
   if (!isHeld(files)) return false;
   rmSync(files.hold, { force: true });
   return true;
+}
+
+/** True while a check or an update holds the update lock (a stale lock does not count). */
+export function checkRunning(files: UpdateFiles): boolean {
+  return lockIsHeld(files.lockDir);
 }
 
 /** A time as ISO 8601 in UTC, to the second: `2026-10-15T10:00:00Z`. */
@@ -162,7 +225,7 @@ export function appendLog(files: UpdateFiles, line: string, nowMs: number): void
   appendFileSync(files.log, `${isoSeconds(nowMs)} ${line}\n`, { mode: 0o600 });
 }
 
-/** True when the failed check at `at` was already shown to a session. */
+/** True when the failure keyed `at` (its time, or its streak's `since`) was already told. */
 export function wasReported(files: UpdateFiles, at: string): boolean {
   try {
     return readFileSync(files.reported, "utf8").trim() === at;

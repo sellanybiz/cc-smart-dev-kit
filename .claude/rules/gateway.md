@@ -82,6 +82,15 @@ can block good work, and a weak one can let a risky command through.
   holds it across restarts and passes it as fd 3 (`src/gateway/listen.ts`). Keep the
   router able to serve both ways (inherited socket, or its own bind for `gateway serve`),
   and keep `idleTimeout: 0` on its inner unix server (`listen.test.ts` fails without it).
+- **Keep the relay's drain** (`listen.ts`, its tests in `listen.test.ts` › "the relay's
+  drain at SIGTERM"): the inner connection opens on the client's first byte; at SIGTERM a
+  connection with no byte after `IDLE_GRACE_MS` is closed; the inner server stops only
+  after every pending inner connect settled; a client's half close is not passed on (Bun
+  drops a connection at its client's end); the relay server keeps its `error` listener.
+- **The unit keeps its start limit** (`StartLimitBurst` / `StartLimitIntervalSec`): a
+  crash loop then ends with systemd closing the socket, so requests are refused instead
+  of hanging. The way that opens the socket runs `reset-failed` of both units first, and
+  when the socket cannot open it says so and starts the service without it.
 - A restart waits for the old router's drain (new requests wait in the socket).
   `gateway setup` restarts only when the copy or a unit changed (or the restart-pending
   marker says an earlier setup did not finish), says what the restart does first, and
@@ -90,8 +99,9 @@ can block good work, and a weak one can let a risky command through.
   the restart it waits for the health page, and keeps the marker when that never answers.
 - **Opening the socket while an old router runs:** `stop --no-block` the service, then
   `start` the socket, then `start` the service: two calls, socket first. One call with
-  both makes systemd refuse the socket (seen live). The move from the plain unit refuses
-  requests for one drain: setup's `MOVE_WARNING` says so.
+  both makes systemd refuse the socket (seen live). Every way that (re)opens the socket
+  refuses requests for one drain, and the warning names the real cause (`restartWarning`:
+  the move, a stopped socket, a new port, a changed socket unit).
 - Stopping the router while running sessions still point at it makes each of them fail.
   So `restore` stops it only once anymodel's gateway env keys are gone (its stage 2), and
   asks first; `--now` does it at once, after saying every session fails until it restarts.

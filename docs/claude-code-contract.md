@@ -24,6 +24,8 @@ Code's file; it shows we read the shape correctly, not that Claude Code still wr
 | Behaviour | Last proved on | How it is proved |
 |---|---|---|
 | An exec-form hook runs: `{"type":"command","command":"bun","args":["${CLAUDE_PLUGIN_ROOT}/dist/<n>.js"]}`. `${CLAUDE_PLUGIN_ROOT}` is filled in inside `args`. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
+| `${CLAUDE_PLUGIN_ROOT}` is filled in inside an exec-form hook's `command` too, so `"command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun"` runs the plugin's shim. A hook whose `command` is `bun` does not run when PATH has no bun (nothing is recorded); through the shim it runs, with bun found from the launcher. | 2.1.300 | live: a logging plugin, then this branch's plugin, with `claude --plugin-dir … -p hi` in a throwaway HOME and config folder, PATH = claude only plus `/usr/bin:/bin` (2026-10-15); unit (our side): `src/setup/bun-shim.test.ts` |
+| A hook's input does not say whether the session is interactive or `claude -p` (both carry `session_id`, `transcript_path`, `cwd`, `hook_event_name`, `source`; only the interactive one also had `model`). Its environment does: `CLAUDE_CODE_SESSION_ATTENDED` is `0` in `-p` and `1` interactive (and `CLAUDE_CODE_ENTRYPOINT` is `sdk-cli` against `cli`). The self-update tells a failure only to an attended session. | 2.1.300 | live: a logging SessionStart hook in a throwaway HOME and config folder, `claude -p hi` and an interactive `claude` under `script` (2026-10-15); unit (our side): `src/update/update.test.ts` › "a failure is told to an attended session only …" |
 | SessionStart and PreToolUse hooks fire from a plugin. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
 | The hook input's `cwd` follows the session into a worktree. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
 | `CLAUDE_PROJECT_DIR` stays at the folder the session started in, also in a worktree. | 2.1.300 | live: Phase 0 spike; repeatable with `doctor --live` from Phase 3 |
@@ -127,7 +129,8 @@ into a table above.
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` as doing the same
   (code.claude.com/docs/en/plugins/loading). `doctor` checks all three, in the
   environment and in the `env` of `settings.json`, and passes when
-  `FORCE_AUTOUPDATE_PLUGINS` is set. (Now)
+  `FORCE_AUTOUPDATE_PLUGINS` is set; the background self-update skips its check under the
+  same rule (`src/update/opt-out.ts`). (Now)
 - **Which values count as "set" for these variables.** `doctor` assumes Claude Code
   treats an empty value, `0`, `false`, `no` or `off` as not set. (Now)
 - **`CLAUDE_CODE_PLUGIN_PREFER_HTTPS`** makes Claude Code fetch a `github` marketplace
@@ -161,3 +164,6 @@ these. They are not Claude Code's, but they can change with a release all the sa
 | A socket unit keeps the port open while its service restarts: new connections wait in its queue for the new process. | systemd 259 | live: throwaway units, 0 of 66 requests failed across a restart (2026-10-15) |
 | systemd refuses to start a socket unit while its service still runs or drains ("Socket service … already active, refusing"). And when the service's stop runs, a start of its socket waits for that stop to finish; a start of both in one call does not, and fails. | systemd 259 | live: throwaway units (2026-10-15); the start order is asserted in `src/gateway/commands.test.ts` › "the move from the older unit …" |
 | `stop --no-block` of the socket and the service in one call closes the port, and no connection starts the router again. | systemd 259 | live: the real `stopRouter` on throwaway units (2026-10-15) |
+| A socket-activated service that hits its start limit makes systemd close the socket too (socket result `service-start-limit-hit`), with or without a connection waiting; a waiting connection is reset, later ones are refused. A start within the limit's window fails until `reset-failed`. | systemd 259 | live: throwaway units with a failing `ExecStart`, rendered by `renderUnit` (2026-10-15); the `reset-failed` call is asserted in `src/gateway/commands.test.ts` |
+| `Bun.serve` drops a connection whose client ends its sending side (a half close) before it answers, over TCP and a unix socket. | Bun 1.4.2 | live: a one-file probe, 300 ms answer, with and without the client's `end()` (2026-10-15); test (our side): `listen.test.ts` › "a client that half-closes after its request still gets the whole answer" |
+| `node:net` in Bun emits no `error` on its server when an accept fails for too many open files; the connection stays in the queue. (Node emits one, and crashes without a listener.) | Bun 1.4.2 | live: a server under `prlimit --nofile=30:30` and 60 clients from another process (2026-10-15); the listener is tested with an emitted error: `listen.test.ts` › "an error the relay's server emits later is logged; the process runs on" |

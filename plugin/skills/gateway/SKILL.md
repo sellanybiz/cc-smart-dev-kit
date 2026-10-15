@@ -76,8 +76,12 @@ unavailable": `gateway slot judge off`.
 - The log: `journalctl --user -u anymodel-router -f`. One line per request; never a key.
   A target that answers 4xx / 5xx (Anthropic too) gets a `WARN` line with the start of
   its error reason, keys masked: read it first when a slot fails.
-- Every Claude Code request fails: the router is down. `systemctl --user restart
-  anymodel-router`; still down: `anymodel gateway off`, then restart the sessions.
+- Every Claude Code request hangs or fails: the router is down. `anymodel doctor` says
+  which: its socket is open but no router answers (requests wait), or the router failed
+  to start again and again, so systemd closed its socket (requests are refused at once).
+  `journalctl --user -u anymodel-router -n 30` says why; fix it, then `anymodel gateway
+  setup` (it opens both again). Still down: `anymodel gateway off`, then restart the
+  sessions.
 - `doctor` says "a gateway setup did not finish": the router did not answer after a
   setup's restart. `journalctl --user -u anymodel-router -n 30` says why; fix it, then
   `anymodel gateway setup` again (it asks before the restart).
@@ -97,9 +101,11 @@ person's yes.
 
 After a plugin update, `doctor` says the router copy is not this version's.
 `anymodel gateway setup` copies the new one. It **asks before the restart**. Under its
-socket unit a restart lets the answers in flight finish and new requests wait, so none
-fails; but the first setup that moves an older router to its socket makes new requests
-fail until the old router has drained (up to 120 s), and setup says so. Ask the person
+socket unit a restart lets the answers in flight finish (up to 120 s; a longer one is
+cut, and Claude Code retries it) and new requests wait, so none fails; but a setup that
+must open the socket again (the move of an older router to its socket, a stopped socket,
+a new port or socket unit) makes new requests fail until the old router has drained, and
+setup's warning says which case it is. Ask the person
 for the moment; use `--yes` only when they said yes.
 
 ## Never

@@ -117,15 +117,13 @@ export async function gatewayChecks(options: {
     }
   }
 
-  checks.push(socketCheck(options, config.port));
+  const socket = socketCheck(options, config.port);
+  checks.push(socket.check);
 
   const health = await routerHealth(config.port, options.fetch);
   checks.push(
     "error" in health
-      ? {
-          ok: false,
-          text: `the router does not answer on 127.0.0.1:${config.port} (${health.error})`,
-        }
+      ? { ok: false, text: notAnswering(config.port, health.error, socket.state) }
       : { ok: true, text: `the router answers on 127.0.0.1:${config.port}` },
   );
 
@@ -159,6 +157,30 @@ export async function gatewayChecks(options: {
   return checks;
 }
 
+/** Where to look when the router does not start. */
+const ROUTER_LOG = `journalctl --user -u ${UNIT_NAME.replace(/\.service$/, "")} -n 30`;
+
+/**
+ * The socket's state, as far as the router's health check needs it:
+ *   - `open`: the socket is active (it holds the port);
+ *   - `start-limit`: systemd closed it because the router failed to start too often
+ *     (its result `service-start-limit-hit`);
+ *   - `other`: anything else, or not asked (no systemd, no socket unit).
+ */
+type SocketState = "open" | "start-limit" | "other";
+
+/** The ✗ text of a router that does not answer, from what its socket says. */
+function notAnswering(port: number, error: string, socket: SocketState): string {
+  switch (socket) {
+    case "open":
+      return `the socket holds 127.0.0.1:${port}, but the router does not answer (${error}): every request waits in the socket and gets no answer. See why: ${ROUTER_LOG}. Then: ${COMMAND} gateway setup`;
+    case "start-limit":
+      return `the router failed to start again and again, so systemd closed its socket: every request to 127.0.0.1:${port} is refused (${error}). See why: ${ROUTER_LOG}. Then: ${COMMAND} gateway setup`;
+    case "other":
+      return `the router does not answer on 127.0.0.1:${port} (${error})`;
+  }
+}
+
 /**
  * The socket unit holds the router's port across restarts. Without it (a router set up by
  * an older plugin version), or on another port than the config's, a restart refuses new requests
@@ -167,25 +189,50 @@ export async function gatewayChecks(options: {
 function socketCheck(
   options: { paths: CliPaths; runner: Runner; systemd: boolean },
   port: number,
-): DoctorCheck {
+): { check: DoctorCheck; state: SocketState } {
   const { paths } = options;
   const where = tildify(paths.routerSocketFile, paths.home);
   if (!existsSync(paths.routerSocketFile)) {
     return {
-      ok: false,
-      text: `no socket unit at ${where}: a router restart makes new requests fail while the old router drains. ${SETUP}`,
+      check: {
+        ok: false,
+        text: `no socket unit at ${where}: a router restart makes new requests fail while the old router drains. ${SETUP}`,
+      },
+      state: "other",
     };
   }
   if (readFileSync(paths.routerSocketFile, "utf8") !== renderSocket(port)) {
     return {
-      ok: false,
-      text: `the socket unit ${where} is not the one setup writes for port ${port}. ${SETUP}`,
+      check: {
+        ok: false,
+        text: `the socket unit ${where} is not the one setup writes for port ${port}. ${SETUP}`,
+      },
+      state: "other",
     };
   }
-  if (!options.systemd) return { ok: true, text: `the socket unit ${where} is up to date` };
-  const state = options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
-  const word = state.output.trim().split("\n")[0] || "unknown";
-  return state.exitCode === 0
-    ? { ok: true, text: `the router's socket (${SOCKET_NAME}) holds 127.0.0.1:${port}` }
-    : { ok: false, text: `the router's socket (${SOCKET_NAME}) is ${word}. ${SETUP}` };
+  if (!options.systemd) {
+    return { check: { ok: true, text: `the socket unit ${where} is up to date` }, state: "other" };
+  }
+  const active = options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
+  const word = active.output.trim().split("\n")[0] || "unknown";
+  if (active.exitCode === 0) {
+    return {
+      check: { ok: true, text: `the router's socket (${SOCKET_NAME}) holds 127.0.0.1:${port}` },
+      state: "open",
+    };
+  }
+  const result = options.runner([
+    "systemctl",
+    "--user",
+    "show",
+    "-p",
+    "Result",
+    "--value",
+    SOCKET_NAME,
+  ]);
+  const limit = result.exitCode === 0 && result.output.trim() === "service-start-limit-hit";
+  return {
+    check: { ok: false, text: `the router's socket (${SOCKET_NAME}) is ${word}. ${SETUP}` },
+    state: limit ? "start-limit" : "other",
+  };
 }

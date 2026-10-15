@@ -10,8 +10,6 @@
  * The background check and this command share the update lock, so they never run at once.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   COMMAND,
   MARKETPLACE_ADD_COMMAND,
@@ -19,18 +17,27 @@ import {
   PLUGIN_ID,
   PLUGIN_INSTALL_COMMAND,
 } from "../build-info";
-import { findUserInstall } from "../setup/installed-plugins";
 import { withLock } from "../setup/lock";
 import { redactUrl } from "../setup/marketplace-access";
-import { applyUpdate, CLAUDE_TIMEOUT_MS, type CommandRunner } from "../update/apply";
+import {
+  applyUpdate,
+  CLAUDE_TIMEOUT_MS,
+  type CommandRunner,
+  commandContext,
+  ROUTER_SETUP_HINT,
+  routerNeedsSetup,
+} from "../update/apply";
 import { checkForUpdate, isOlder, remotePluginVersion, type UpdateStatus } from "../update/check";
 import {
   type CheckResult,
+  checkRunning,
   heldSince,
   hold,
   isHeld,
   isoSeconds,
+  readLastCheck,
   resume,
+  unreachableCheck,
   updateFiles,
   writeLastCheck,
 } from "../update/state";
@@ -40,12 +47,16 @@ type Env = Record<string, string | undefined>;
 
 export const UPDATE_USAGE = `Usage: ${COMMAND} update [--check | --hold | --resume]`;
 
-/** Runs a command with its output on this terminal. */
-const terminalRunner = (env: Env): CommandRunner => {
+/** Said by `--hold` and `--resume` while a check holds the update lock. */
+export const CHECK_RUNNING = "A check is running now; it finishes.";
+
+/** Runs a command with its output on this terminal, in the home folder, without git's repo variables. */
+const terminalRunner = (env: Env, home: string): CommandRunner => {
+  const context = commandContext(env, home);
   return (argv) => {
     try {
       const result = Bun.spawnSync(argv, {
-        env,
+        ...context,
         stdin: "ignore",
         stdout: "inherit",
         stderr: "inherit",
@@ -110,31 +121,24 @@ async function check(paths: CliPaths, env: Env): Promise<number> {
   return 0;
 }
 
-/** When the router copy differs from the installed version's router: `gateway setup` is due. */
-function routerNeedsSetup(paths: CliPaths): boolean {
-  const install = findUserInstall(paths.installedPluginsFile);
-  if (install === null || !existsSync(paths.routerCopy)) return false;
-  const bundle = join(install.installPath, "dist", "router.js");
-  return (
-    existsSync(bundle) && readFileSync(bundle, "utf8") !== readFileSync(paths.routerCopy, "utf8")
-  );
-}
-
 async function updateNow(paths: CliPaths, env: Env, now: () => number): Promise<number> {
   const files = updateFiles(paths.stateDir);
   return withLock(
     files.lockDir,
     () => {
       const at = isoSeconds(now());
+      const previous = readLastCheck(files);
       const record = (result: CheckResult, detail: string) =>
         writeLastCheck(files, { at, detail, result });
       const status = checkForUpdate(paths, env);
       const stop = cannotUpdate(status);
       if (stop !== null) {
-        record(
-          status.kind === "unreachable" ? "failed" : "skipped",
-          "detail" in status ? status.detail : `${PLUGIN_ID} is not installed`,
-        );
+        if (status.kind === "unreachable") {
+          // The same rule as the background check: a failure only after 24 h in a row.
+          writeLastCheck(files, unreachableCheck(previous, at, now(), status.detail));
+        } else {
+          record("skipped", "detail" in status ? status.detail : `${PLUGIN_ID} is not installed`);
+        }
         return stop;
       }
       let code = 0;
@@ -143,12 +147,12 @@ async function updateNow(paths: CliPaths, env: Env, now: () => number): Promise<
         record("up-to-date", status.installed);
       } else {
         const claude = Bun.which("claude", { PATH: env.PATH ?? "" });
-        const result = applyUpdate(paths, claude, terminalRunner(env), (line) =>
+        const result = applyUpdate(paths, claude, terminalRunner(env, paths.home), (line) =>
           console.log(`$ ${line}`),
         );
         if (!result.ok) {
           console.error(result.detail);
-          record("failed", result.detail);
+          record(result.busy === true ? "skipped" : "failed", result.detail);
           code = 1;
         } else if (result.after === result.before) {
           console.log(`${PLUGIN} ${result.after ?? "(no version)"} is the newest version.`);
@@ -157,8 +161,12 @@ async function updateNow(paths: CliPaths, env: Env, now: () => number): Promise<
           console.log(
             `${PLUGIN} ${result.after ?? "(no version)"} installed (was ${result.before ?? "none"}). Restart Claude sessions to load it.`,
           );
-          record("updated", `${result.after ?? "(no version)"} (was ${result.before ?? "none"})`);
-          if (routerNeedsSetup(paths)) {
+          const routerChanged = routerNeedsSetup(paths);
+          record(
+            "updated",
+            `${result.after ?? "(no version)"} (was ${result.before ?? "none"})${routerChanged ? `; ${ROUTER_SETUP_HINT}` : ""}`,
+          );
+          if (routerChanged) {
             console.log(
               `Its router changed too. To run it: ${COMMAND} gateway setup (it asks before the restart).`,
             );
@@ -193,34 +201,25 @@ export async function runUpdate(
       return updateNow(paths, env, now);
     case "--check":
       return check(paths, env);
+    // No lock: one atomic write (or removal). A check that runs now is not waited for.
     case "--hold":
-      return withLock(
-        paths.stateDir,
-        () => {
-          if (!hold(files, now())) {
-            console.log(`Background updates were already on hold (since ${heldSince(files)}).`);
-          } else {
-            console.log(
-              `Background updates are on hold: a new Claude session no longer checks for a newer ${PLUGIN}. To resume: ${COMMAND} update --resume`,
-            );
-          }
-          return 0;
-        },
-        { waitMs: 10_000 },
-      );
+      if (!hold(files, now())) {
+        console.log(`Background updates were already on hold (since ${heldSince(files)}).`);
+      } else {
+        console.log(
+          `Background updates are on hold: a new Claude session no longer checks for a newer ${PLUGIN}. To resume: ${COMMAND} update --resume`,
+        );
+      }
+      if (checkRunning(files)) console.log(CHECK_RUNNING);
+      return 0;
     case "--resume":
-      return withLock(
-        paths.stateDir,
-        () => {
-          console.log(
-            resume(files)
-              ? `Background updates resume: a new Claude session checks for a newer ${PLUGIN}, at most once an hour (${tildify(files.log, paths.home)}).`
-              : "Background updates were not on hold.",
-          );
-          return 0;
-        },
-        { waitMs: 10_000 },
+      console.log(
+        resume(files)
+          ? `Background updates resume: a new Claude session checks for a newer ${PLUGIN}, at most once an hour (${tildify(files.log, paths.home)}).`
+          : "Background updates were not on hold.",
       );
+      if (checkRunning(files)) console.log(CHECK_RUNNING);
+      return 0;
     default:
       console.error(`Unknown option: ${args[0]}\n\n${UPDATE_USAGE}`);
       return 2;

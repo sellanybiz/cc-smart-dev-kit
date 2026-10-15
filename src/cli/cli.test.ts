@@ -338,7 +338,7 @@ describe("anymodel doctor", () => {
       const off = run(["doctor"], { [name]: "1" });
       expect(off.exitCode).toBe(1);
       expect(off.stdout).toContain(
-        `✗ plugin updates are switched off: ${name} (in your environment) is set. ` +
+        `✗ plugin updates are switched off: ${name} (in your environment) is set, so the background update skips them too. ` +
           `Set FORCE_AUTOUPDATE_PLUGINS=1 as well, or remove ${name}.\n`,
       );
       const forced = run(["doctor"], { [name]: "1", FORCE_AUTOUPDATE_PLUGINS: "1" });
@@ -356,7 +356,7 @@ describe("anymodel doctor", () => {
     settings.env = { DISABLE_UPDATES: "true" };
     writeFileSync(settingsFile, JSON.stringify(settings));
     expect(run(["doctor"], { DISABLE_AUTOUPDATER: "0" }).stdout).toContain(
-      "✗ plugin updates are switched off: DISABLE_UPDATES (in the env of ~/.claude/settings.json) is set. " +
+      "✗ plugin updates are switched off: DISABLE_UPDATES (in the env of ~/.claude/settings.json) is set, so the background update skips them too. " +
         "Set FORCE_AUTOUPDATE_PLUGINS=1 as well, or remove DISABLE_UPDATES.\n",
     );
   });

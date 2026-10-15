@@ -1372,7 +1372,7 @@ export async function startRouter(
   const ready = new Promise<string>((resolve) => {
     innerReady = resolve;
   });
-  const relay = await listenOnFd(fd, ready);
+  const relay = await listenOnFd(fd, ready, log);
   // The Host check uses the port the socket really listens on. The config's port reaches
   // the socket only through `gateway setup`, which writes it into the socket unit.
   if (relay.port !== configPort) {
@@ -1386,16 +1386,17 @@ export async function startRouter(
     `anymodel-router listening on http://127.0.0.1:${relay.port} (the socket systemd holds; config ${configPath})`,
   );
   // On SIGTERM it stops accepting. systemd keeps the socket open, so a new connection
-  // waits in its queue for the next router instead of being refused. Every answer in
-  // flight finishes; the router exits once the last relayed connection has closed.
+  // waits in its queue for the next router instead of being refused. A connection that
+  // sent nothing is closed (`IDLE_GRACE_MS`); every answer in flight finishes. The inner
+  // server stops only once every relayed request has reached it, and the router exits
+  // once the last relayed connection has closed.
   process.once("SIGTERM", () => {
     log(
       `SIGTERM: finishing ${server.pendingRequests} request(s), then exiting; new connections wait in the socket for the next router`,
     );
-    const relayClosed = new Promise<void>((resolve) => {
-      relay.server.close(() => resolve());
-    });
-    exitWhenDone(Promise.all([server.stop(false), relayClosed]), log, inner.cleanup);
+    const drain = relay.drain();
+    const stopped = drain.connected.then(() => server.stop(false));
+    exitWhenDone(Promise.all([stopped, drain.closed]), log, inner.cleanup);
   });
 }
 

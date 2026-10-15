@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { withLock } from "../setup/lock";
+import { lockIsHeld, withLock } from "../setup/lock";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import { installedText, notifyCommand } from "./apply";
@@ -47,8 +47,12 @@ interface MachineOptions {
   gitFails?: boolean;
   /** `claude plugin update` fails. */
   claudeFails?: boolean;
+  /** `claude plugin marketplace update` fails, printing this line on stderr. */
+  refreshFails?: string;
   /** Seconds the fake `claude` sleeps in `marketplace update`. */
   claudeSleeps?: number;
+  /** More environment for the hook and the CLI (Claude Code's switches, git's variables). */
+  env?: Record<string, string>;
 }
 
 /** A temp machine as `claude plugin install anymodel@anymodel` leaves it, with fakes on PATH. */
@@ -118,8 +122,12 @@ function machine(options: MachineOptions = {}) {
   ]);
   script("claude", [
     `echo "$*" >> ${q(join(fake, "claude.log"))}`,
+    // Where it runs, and git's repo variables it was given.
+    `echo "cwd=$(pwd) GIT_DIR=\${GIT_DIR-unset} GIT_WORK_TREE=\${GIT_WORK_TREE-unset} GIT_INDEX_FILE=\${GIT_INDEX_FILE-unset}" >> ${q(join(fake, "claude-env.log"))}`,
     'case "$*" in',
-    `  "plugin marketplace update anymodel") sleep ${options.claudeSleeps ?? 0}; cp ${q(join(fake, "copy-after"))} ${q(join(copy, "plugin", ".claude-plugin", "plugin.json"))}; echo '${remoteHead}' > ${q(join(fake, "local-head"))}; echo refreshed ;;`,
+    options.refreshFails !== undefined
+      ? `  "plugin marketplace update anymodel") echo ${q(options.refreshFails)} >&2; exit 1 ;;`
+      : `  "plugin marketplace update anymodel") sleep ${options.claudeSleeps ?? 0}; cp ${q(join(fake, "copy-after"))} ${q(join(copy, "plugin", ".claude-plugin", "plugin.json"))}; echo '${remoteHead}' > ${q(join(fake, "local-head"))}; echo refreshed ;;`,
     options.claudeFails === true
       ? '  "plugin update anymodel@anymodel --scope user") echo "Failed to update: network" >&2; exit 1 ;;'
       : `  "plugin update anymodel@anymodel --scope user") cp ${q(join(fake, "installed-after"))} ${q(join(plugins, "installed_plugins.json"))}; echo updated ;;`,
@@ -135,6 +143,7 @@ function machine(options: MachineOptions = {}) {
     CLAUDE_PID: String(process.pid),
     HOME: home,
     PATH: `${bin}:/usr/bin:/bin`,
+    ...options.env,
   };
   const paths = cliPaths(env);
   const files = updateFiles(paths.stateDir);
@@ -162,12 +171,15 @@ function machine(options: MachineOptions = {}) {
   const hook = () =>
     spawn([HOOK], JSON.stringify({ cwd: home, hook_event_name: "SessionStart", session_id: "s1" }));
   const cli = (args: string[]) => spawn([CLI, ...args]);
-  /** Waits until the background check wrote a result other than "checking". */
+  /**
+   * Waits until the background check wrote a result other than "checking" and let go of
+   * the update lock: its notification comes after the result, still under the lock.
+   */
   const settled = async (timeoutMs = 15_000) => {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const last = readLastCheck(files);
-      if (last !== null && last.result !== "checking") return last;
+      if (last !== null && last.result !== "checking" && !lockIsHeld(files.lockDir)) return last;
       if (Date.now() > deadline)
         throw new Error(`no result after ${timeoutMs} ms: ${read("git.log")}`);
       await Bun.sleep(50);
@@ -267,22 +279,282 @@ describe("the SessionStart hook and the background check, end to end", () => {
     expect((await m.hook()).stdout).toBe("");
   }, 30_000);
 
-  test("an unreachable marketplace: a failed check naming both URLs, nothing run", async () => {
+  test("an unreachable marketplace: not a failure yet (both URLs named), nothing run, no session told", async () => {
     const m = machine({ gitFails: true });
+    await m.hook();
+    const last = await m.settled();
+    expect(last).toEqual({
+      at: last.at,
+      detail:
+        "cannot read the marketplace (git@github.com:example-org/anymodel.git: fatal: could not read from remote repository; https://github.com/example-org/anymodel.git: fatal: could not read from remote repository)",
+      result: "unreachable",
+      since: last.at,
+    });
+    expect(m.read("claude.log")).toBe("");
+    expect((await m.hook()).stdout).toBe("");
+  }, 30_000);
+
+  test("the detached check and its claude commands run in the home folder, without git's repo variables", async () => {
+    // As when Claude Code runs inside a git hook: its hooks inherit these.
+    const m = machine({
+      env: {
+        GIT_DIR: "/elsewhere/.git",
+        GIT_INDEX_FILE: "/elsewhere/.git/index",
+        GIT_WORK_TREE: "/elsewhere",
+      },
+      remoteHead: HEAD_B,
+    });
+    // The hook runs in this repo's folder (the test's own), like a session in a project.
+    await m.hook();
+    expect((await m.settled()).result).toBe("updated");
+    const clean = `cwd=${m.home} GIT_DIR=unset GIT_WORK_TREE=unset GIT_INDEX_FILE=unset\n`;
+    expect(m.read("claude-env.log")).toBe(clean + clean);
+  }, 30_000);
+
+  test("a failed command's output: every URL in it loses its credentials, in the record and the log", async () => {
+    const m = machine({
+      refreshFails:
+        "fatal: unable to access https://user:s3cret-token@git.example.com/org/anymodel.git/: Could not resolve host",
+      remoteHead: HEAD_B,
+    });
     await m.hook();
     const last = await m.settled();
     expect(last.result).toBe("failed");
     expect(last.detail).toBe(
-      "cannot read the marketplace (git@github.com:example-org/anymodel.git: fatal: could not read from remote repository; https://github.com/example-org/anymodel.git: fatal: could not read from remote repository)",
+      "claude plugin marketplace update anymodel failed (exit 1): fatal: unable to access https://***@git.example.com/org/anymodel.git/: Could not resolve host",
     );
+    expect(readFileSync(m.files.log, "utf8")).not.toContain("s3cret-token");
+    expect(readFileSync(m.files.check, "utf8")).not.toContain("s3cret-token");
+    // The session that is told sees it the same way.
+    expect((await m.hook()).stdout).not.toContain("s3cret-token");
+  }, 30_000);
+
+  test("Claude Code's own refresh holding git's index.lock: skipped, not failed; no session told", async () => {
+    const m = machine({
+      refreshFails:
+        "fatal: Unable to create '/home/u/.claude/plugins/marketplaces/anymodel/.git/index.lock': File exists.",
+      remoteHead: HEAD_B,
+    });
+    await m.hook();
+    expect(await m.settled()).toMatchObject({
+      detail:
+        "Claude Code was refreshing the same marketplace (git's index.lock was taken); the next check tries again",
+      result: "skipped",
+    });
+    expect((await m.hook()).stdout).toBe("");
+  }, 30_000);
+
+  test("a new version whose router differs from the running copy: the notification adds the gateway setup hint", async () => {
+    const m = machine({ remoteHead: HEAD_B });
+    // The gateway runs a copy of the old router; the installed version has another one.
+    const installPath = join(
+      m.home,
+      ".claude",
+      "plugins",
+      "cache",
+      "anymodel",
+      "anymodel",
+      "1.0.0",
+    );
+    mkdirSync(join(installPath, "dist"), { recursive: true });
+    writeFileSync(join(installPath, "dist", "router.js"), "// router v2\n");
+    mkdirSync(join(m.home, ".local", "share", "anymodel"), { recursive: true });
+    writeFileSync(join(m.home, ".local", "share", "anymodel", "router.js"), "// router v1\n");
+    await m.hook();
+    expect(await m.settled()).toMatchObject({
+      detail:
+        "1.1.0 (was 1.0.0); its router changed: to run it, anymodel gateway setup (it asks before the restart)",
+      result: "updated",
+    });
+    expect(m.read("notify.log")).toBe(
+      "notify-send anymodel anymodel 1.1.0 installed; restart Claude sessions to load it; its router changed: to run it, anymodel gateway setup (it asks before the restart)\n",
+    );
+  }, 30_000);
+
+  test("Claude Code's switch for updates set: the hook starts nothing, says nothing, and records why", async () => {
+    const m = machine({ env: { DISABLE_AUTOUPDATER: "1" }, remoteHead: HEAD_B });
+    const run = await m.hook();
+    expect(run.stdout).toBe("");
+    expect(run.stderr).toBe("");
+    expect(readLastCheck(m.files)).toMatchObject({
+      detail: "DISABLE_AUTOUPDATER is set",
+      result: "skipped",
+    });
+    // No check ran: no git, no claude, no lock.
+    expect(m.read("git.log")).toBe("");
     expect(m.read("claude.log")).toBe("");
+    const doctor = await m.cli(["doctor"]);
+    expect(doctor.stdout).toContain("skipped: DISABLE_AUTOUPDATER is set\n");
   }, 30_000);
 });
 
+describe("Claude Code's switches for updates", () => {
+  test("each switch stops the hook (from the environment or settings.json); FORCE_AUTOUPDATE_PLUGINS lets it run", () => {
+    for (const name of [
+      "DISABLE_AUTOUPDATER",
+      "DISABLE_UPDATES",
+      "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    ]) {
+      const m = machine();
+      const blocked = hookHere(m, NOW, { ...m.env, [name]: "1" });
+      expect(blocked).toEqual({ answer: "", started: 0 });
+      expect(readLastCheck(m.files)).toEqual({
+        at: "2026-10-15T10:00:00Z",
+        detail: `${name} is set`,
+        result: "skipped",
+      });
+      // Recorded once: a later session start keeps the first time.
+      hookHere(m, NOW + 5_000, { ...m.env, [name]: "1" });
+      expect(readLastCheck(m.files)?.at).toBe("2026-10-15T10:00:00Z");
+      // An hour on (the skip counts as a check for the throttle).
+      expect(
+        hookHere(m, NOW + CHECK_INTERVAL_MS, {
+          ...m.env,
+          [name]: "1",
+          FORCE_AUTOUPDATE_PLUGINS: "1",
+        }).started,
+      ).toBe(1);
+      // `0` is not set.
+      expect(hookHere(m, NOW + CHECK_INTERVAL_MS, { ...m.env, [name]: "0" }).started).toBe(1);
+    }
+    const m = machine();
+    writeFileSync(m.paths.settingsFile, JSON.stringify({ env: { DISABLE_UPDATES: "true" } }));
+    expect(hookHere(m).started).toBe(0);
+    expect(readLastCheck(m.files)?.detail).toBe("DISABLE_UPDATES is set");
+  });
+
+  test("checked again under the lock: a background check that already started does nothing but record it", async () => {
+    const m = machine({ remoteHead: HEAD_B });
+    let ran = 0;
+    await backgroundCheck({
+      claude: "/nowhere/claude",
+      env: { ...m.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+      notify: () => {},
+      now: () => NOW,
+      paths: m.paths,
+      run: () => {
+        ran += 1;
+        return { exitCode: 0, output: "" };
+      },
+    });
+    expect(ran).toBe(0);
+    expect(m.read("git.log")).toBe("");
+    expect(readLastCheck(m.files)).toEqual({
+      at: "2026-10-15T10:00:00Z",
+      detail: "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set",
+      result: "skipped",
+    });
+  });
+});
+
+describe("a failure: when it counts, and who is told", () => {
+  /** One background check at `nowMs`, in this process; git and claude are the fakes. */
+  const checkAt = (m: ReturnType<typeof machine>, nowMs: number) =>
+    backgroundCheck({
+      claude: null,
+      env: m.env,
+      notify: () => {},
+      now: () => nowMs,
+      paths: m.paths,
+      run: () => ({ exitCode: 1, output: "" }),
+    });
+
+  test("an unreachable marketplace counts as failed only after 24 h in a row; a check that reads it ends the streak", async () => {
+    const m = machine({ gitFails: true });
+    const HOUR = 60 * 60 * 1000;
+    await checkAt(m, NOW);
+    expect(readLastCheck(m.files)).toMatchObject({
+      result: "unreachable",
+      since: "2026-10-15T10:00:00Z",
+    });
+    await checkAt(m, NOW + 23 * HOUR);
+    expect(readLastCheck(m.files)).toMatchObject({
+      at: "2026-10-16T09:00:00Z",
+      result: "unreachable",
+      since: "2026-10-15T10:00:00Z",
+    });
+    await checkAt(m, NOW + 24 * HOUR);
+    const failed = readLastCheck(m.files);
+    expect(failed?.result).toBe("failed");
+    expect(failed?.detail).toStartWith(
+      "cannot read the marketplace since 2026-10-15T10:00:00Z (git@github.com:example-org/anymodel.git: ",
+    );
+    const doctor = await m.cli(["doctor"]);
+    expect(doctor.stdout).toContain(
+      "✗ background update: the last check, 2026-10-16T10:00:00Z, failed: cannot read the marketplace since 2026-10-15T10:00:00Z",
+    );
+    // The marketplace answers again: no streak left.
+    writeFileSync(
+      join(m.home, "fake", "bin", "git"),
+      "#!/bin/sh\ncase \"$*\" in config*) exit 1 ;; ls-remote*) printf '%s\\tHEAD\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;; *rev-parse*) echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;; esac\n",
+    );
+    await checkAt(m, NOW + 25 * HOUR);
+    expect(readLastCheck(m.files)).toEqual({
+      at: "2026-10-16T11:00:00Z",
+      detail: "1.0.0",
+      result: "up-to-date",
+    });
+  });
+
+  test("doctor: an unreachable marketplace is information, with since when", async () => {
+    const m = machine();
+    writeLastCheck(m.files, {
+      at: "2026-10-15T11:00:00Z",
+      detail: "cannot read the marketplace (x: offline)",
+      result: "unreachable",
+      since: "2026-10-15T10:00:00Z",
+    });
+    const doctor = await m.cli(["doctor"]);
+    expect(doctor.stdout).toContain(
+      "· background update: last check 2026-10-15T11:00:00Z: cannot read the marketplace (x: offline), since 2026-10-15T10:00:00Z. It counts as a failure only after 24 h in a row. To look now: anymodel update --check\n",
+    );
+  }, 30_000);
+
+  test("a failure is told to an attended session only: a `claude -p` session neither shows it nor uses it up", () => {
+    const m = machine();
+    writeLastCheck(m.files, { at: "2026-10-15T09:00:00Z", detail: "boom", result: "failed" });
+    // `claude -p`: Claude Code sets CLAUDE_CODE_SESSION_ATTENDED=0 for its hooks.
+    const unattended = { ...m.env, CLAUDE_CODE_SESSION_ATTENDED: "0" };
+    expect(hookHere(m, NOW, unattended).answer).toBe("");
+    expect(hookHere(m, NOW, unattended).answer).toBe("");
+    const attended = { ...m.env, CLAUDE_CODE_SESSION_ATTENDED: "1" };
+    expect(JSON.parse(hookHere(m, NOW, attended).answer)).toEqual({
+      systemMessage:
+        "anymodel: the background update failed at 2026-10-15T09:00:00Z (boom). The log: ~/.claude/anymodel/update.log. To try now: anymodel update",
+    });
+    expect(hookHere(m, NOW, attended).answer).toBe("");
+  });
+
+  test("an unreadable marketplace past 24 h is told once for its streak, not after every hourly check", () => {
+    const m = machine();
+    const failedAt = (at: string) =>
+      writeLastCheck(m.files, {
+        at,
+        detail: "cannot read the marketplace since 2026-10-14T09:00:00Z (x: offline)",
+        result: "failed",
+        since: "2026-10-14T09:00:00Z",
+      });
+    failedAt("2026-10-15T09:00:00Z");
+    expect(hookHere(m).answer).toContain("the background update failed at 2026-10-15T09:00:00Z");
+    failedAt("2026-10-15T10:00:00Z");
+    expect(hookHere(m, NOW + CHECK_INTERVAL_MS).answer).toBe("");
+    // Another failure (no streak): told again.
+    writeLastCheck(m.files, { at: "2026-10-15T11:00:00Z", detail: "boom", result: "failed" });
+    expect(hookHere(m, NOW + 2 * CHECK_INTERVAL_MS).answer).toContain(
+      "failed at 2026-10-15T11:00:00Z",
+    );
+  });
+});
+
 /** The hook's logic in this process, with a spy for the background start. */
-function hookHere(m: ReturnType<typeof machine>, nowMs = NOW) {
+function hookHere(
+  m: ReturnType<typeof machine>,
+  nowMs = NOW,
+  env: Record<string, string | undefined> = m.env,
+) {
   let started = 0;
   const answer = sessionStart({
+    env,
     nowMs,
     paths: m.paths,
     sessionPid: process.pid,
@@ -333,6 +605,34 @@ describe("the throttle, the hold and the lock", () => {
     expect(hookHere(m).started).toBe(1);
     expect((await m.cli(["update", "--resume"])).stdout).toBe(
       "Background updates were not on hold.\n",
+    );
+  }, 30_000);
+
+  test("--hold and --resume take no lock: they answer at once while a check (and a setup) holds its lock, and say the check finishes", async () => {
+    const m = machine();
+    // This test's process holds both locks: the update lock (a check runs) and the setup lock.
+    let release: () => void = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const update = withLock(m.files.lockDir, () => released);
+    const setup = withLock(m.paths.stateDir, () => released);
+    await Bun.sleep(20);
+    const held = await m.cli(["update", "--hold"]);
+    expect(held.exitCode).toBe(0);
+    expect(held.stdout).toBe(
+      "Background updates are on hold: a new Claude session no longer checks for a newer anymodel. To resume: anymodel update --resume\nA check is running now; it finishes.\n",
+    );
+    expect(held.ms).toBeLessThan(5_000);
+    const resumed = await m.cli(["update", "--resume"]);
+    expect(resumed.stdout).toBe(
+      "Background updates resume: a new Claude session checks for a newer anymodel, at most once an hour (~/.claude/anymodel/update.log).\nA check is running now; it finishes.\n",
+    );
+    release();
+    await Promise.all([update, setup]);
+    // No check runs: only the answer.
+    expect((await m.cli(["update", "--hold"])).stdout).toBe(
+      "Background updates are on hold: a new Claude session no longer checks for a newer anymodel. To resume: anymodel update --resume\n",
     );
   }, 30_000);
 

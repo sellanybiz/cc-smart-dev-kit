@@ -14,10 +14,11 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import { join } from "node:path";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
-import { inheritedListenFd, SD_LISTEN_FDS_START } from "./listen";
+import { IDLE_GRACE_MS, inheritedListenFd, SD_LISTEN_FDS_START } from "./listen";
 
 const ROUTER_ENTRY = join(import.meta.dir, "..", "entries", "router.ts");
 const ACTIVATE = Bun.which("systemd-socket-activate");
@@ -219,4 +220,188 @@ describe.skipIf(ACTIVATE === null)("the router on a socket systemd passed (fd 3)
     expect(answer.status).toBe(200);
     expect(await answer.text()).toEndWith('event: message_stop\ndata: {"type":"message_stop"}\n\n');
   }, 30_000);
+});
+
+/** A raw TCP connection to 127.0.0.1:`port` (a half close allowed); resolves once connected. */
+function rawConnect(port: number): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ allowHalfOpen: true, host: "127.0.0.1", port });
+    socket.once("connect", () => resolve(socket));
+    socket.once("error", reject);
+  });
+}
+
+/** Everything `socket` receives until the other side closes it. */
+function readAll(socket: net.Socket): Promise<string> {
+  return new Promise((resolve) => {
+    let text = "";
+    socket.on("data", (chunk) => {
+      text += chunk.toString();
+    });
+    socket.on("error", () => resolve(text));
+    socket.once("end", () => resolve(text));
+    socket.once("close", () => resolve(text));
+  });
+}
+
+/** Reads from `socket` until `done(text)`. */
+function readUntilText(socket: net.Socket, done: (text: string) => boolean): Promise<string> {
+  return new Promise((resolve) => {
+    let text = "";
+    const onData = (chunk: Buffer) => {
+      text += chunk.toString();
+      if (done(text)) {
+        socket.off("data", onData);
+        resolve(text);
+      }
+    };
+    socket.on("data", onData);
+  });
+}
+
+const healthRequest = (port: number, extra = "") =>
+  `GET /__anymodel/health HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n${extra}\r\n`;
+
+/**
+ * Asks the health page on a new connection, closed after the answer. The router accepts
+ * in order, so a connection made earlier was accepted by then: a SIGTERM afterwards finds
+ * it in the relay, not still in the socket's queue (where it would wait for the next
+ * router under a socket unit).
+ */
+async function acceptedBefore(port: number): Promise<void> {
+  const health = await fetch(`http://127.0.0.1:${port}/__anymodel/health`, {
+    headers: { connection: "close" },
+  });
+  expect(health.status).toBe(200);
+  await health.text();
+}
+
+describe.skipIf(ACTIVATE === null)("the relay alone (no router behind it)", () => {
+  /**
+   * A script that runs `listenOnFd` on fd 3 towards an inner socket that does not exist,
+   * prints each log line, and, on "boom" from stdin, makes the relay's server emit an
+   * error, as Node does when an accept fails.
+   */
+  async function bareRelay(port: number) {
+    const dir = tempDir("relay");
+    const script = join(dir, "relay.ts");
+    writeFileSync(
+      script,
+      [
+        `import { listenOnFd } from ${JSON.stringify(join(import.meta.dir, "listen.ts"))};`,
+        `const relay = await listenOnFd(3, Promise.resolve(${JSON.stringify(join(dir, "none.sock"))}), (line) => console.log(line));`,
+        'console.log("ready");',
+        'for await (const chunk of Bun.stdin.stream()) if (new TextDecoder().decode(chunk).includes("boom")) { relay.server.emit("error", new Error("accept failed: EMFILE")); console.log("still running"); }',
+        "",
+      ].join("\n"),
+    );
+    const guard = subprocessGuard();
+    const proc = Bun.spawn(
+      [ACTIVATE as string, "-l", `127.0.0.1:${port}`, process.execPath, ...guard.args, script],
+      {
+        env: { PATH: process.env.PATH ?? "", ...guard.env },
+        stderr: "pipe",
+        stdin: "pipe",
+        stdout: "pipe",
+      },
+    );
+    procs.push(proc);
+    await readUntil(proc.stderr, (text) => text.includes(`Listening on 127.0.0.1:${port}`));
+    return proc;
+  }
+
+  test("an inner connection that cannot open is logged, and its client closed", async () => {
+    const port = freePort();
+    const proc = await bareRelay(port);
+    const socket = await rawConnect(port);
+    const closed = readAll(socket);
+    socket.write(healthRequest(port));
+    expect(await closed).toBe("");
+    const out = await readUntil(proc.stdout, (text) => text.includes("WARN"));
+    expect(out).toContain(
+      "WARN relay: cannot reach the router's own server at /", // the temp folder's path
+    );
+    expect(out).toContain("none.sock: ");
+  }, 20_000);
+
+  test("an error the relay's server emits later is logged; the process runs on", async () => {
+    const port = freePort();
+    const proc = await bareRelay(port);
+    // A connection starts the script (systemd-socket-activate runs it on the first one).
+    const socket = await rawConnect(port);
+    await readUntil(proc.stdout, (text) => text.includes("ready"));
+    proc.stdin.write("boom\n");
+    await proc.stdin.flush();
+    const out = await readUntil(proc.stdout, (text) => text.includes("still running"));
+    expect(out).toContain("WARN relay: the socket's server: accept failed: EMFILE\n");
+    expect(proc.exitCode).toBe(null);
+    socket.destroy();
+  }, 20_000);
+});
+
+describe.skipIf(ACTIVATE === null)("the relay's drain at SIGTERM", () => {
+  test("a connection that never sends a byte does not hold the drain: the router exits within 2 s", async () => {
+    const port = freePort();
+    const router = await activatedRouter(port, port, slowBackend(0));
+    // The first connection starts the router; it sends nothing, ever (an idle `nc`).
+    const idle = await rawConnect(port);
+    const closed = readAll(idle);
+    await acceptedBefore(port);
+    const started = performance.now();
+    router.proc.kill("SIGTERM");
+    expect(await router.proc.exited).toBe(0);
+    expect(performance.now() - started).toBeLessThan(2_000);
+    // The router closed it: nothing was sent either way.
+    expect(await closed).toBe("");
+  }, 20_000);
+
+  test("a keep-alive connection idle after its answer does not hold the drain either", async () => {
+    const port = freePort();
+    const router = await activatedRouter(port, port, slowBackend(0));
+    const socket = await rawConnect(port);
+    socket.write(healthRequest(port));
+    const first = await readUntilText(socket, (text) => text.includes('"ok":true'));
+    expect(first).toStartWith("HTTP/1.1 200 OK\r\n");
+    const closed = readAll(socket);
+    const started = performance.now();
+    router.proc.kill("SIGTERM");
+    expect(await router.proc.exited).toBe(0);
+    expect(performance.now() - started).toBeLessThan(2_000);
+    await closed;
+  }, 20_000);
+
+  test("a request sent just after SIGTERM, on a connection made before it, is still answered", async () => {
+    const port = freePort();
+    const router = await activatedRouter(port, port, slowBackend(0));
+    const socket = await rawConnect(port);
+    await acceptedBefore(port);
+    router.proc.kill("SIGTERM");
+    // Well inside the grace a connection gets for its first byte.
+    await Bun.sleep(IDLE_GRACE_MS / 5);
+    socket.write(healthRequest(port, "Connection: close\r\n"));
+    const answer = await readAll(socket);
+    expect(answer).toStartWith("HTTP/1.1 200 OK\r\n");
+    expect(answer).toContain('"ok":true');
+    expect(await router.proc.exited).toBe(0);
+  }, 20_000);
+
+  test("a client that half-closes after its request still gets the whole answer", async () => {
+    const port = freePort();
+    const router = await activatedRouter(port, port, slowBackend(300));
+    const socket = await rawConnect(port);
+    const body = MESSAGE.body;
+    socket.write(
+      `POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nanthropic-version: 2023-06-01\r\ncontent-type: application/json\r\ncontent-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+    );
+    // Its sending side ends (FIN); its receiving side stays open for the answer.
+    socket.end();
+    const closed = readAll(socket);
+    // The chunked answer's last chunk.
+    const answer = await readUntilText(socket, (text) => text.endsWith("\r\n0\r\n\r\n"));
+    expect(answer).toStartWith("HTTP/1.1 200 OK\r\n");
+    expect(answer).toContain('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+    router.proc.kill("SIGTERM");
+    expect(await router.proc.exited).toBe(0);
+    await closed;
+  }, 20_000);
 });

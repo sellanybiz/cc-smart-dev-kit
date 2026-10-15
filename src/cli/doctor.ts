@@ -22,7 +22,14 @@ import {
   redactUrl,
 } from "../setup/marketplace-access";
 import { isOlder } from "../update/check";
-import { heldSince, readLastCheck, runningSessions, updateFiles } from "../update/state";
+import { FORCE_PLUGIN_UPDATES_VAR, updateOptOuts } from "../update/opt-out";
+import {
+  heldSince,
+  readLastCheck,
+  runningSessions,
+  UNREACHABLE_FAILS_AFTER_HOURS,
+  updateFiles,
+} from "../update/state";
 import { type CliPaths, tildify } from "./paths";
 
 interface Check {
@@ -31,14 +38,6 @@ interface Check {
   info?: boolean;
   text: string;
 }
-
-/** Claude Code variables that also stop plugin updates, unless FORCE_AUTOUPDATE_PLUGINS is set. */
-export const UPDATE_BLOCKING_VARS = [
-  "DISABLE_AUTOUPDATER",
-  "DISABLE_UPDATES",
-  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
-] as const;
-export const FORCE_PLUGIN_UPDATES_VAR = "FORCE_AUTOUPDATE_PLUGINS";
 
 /** The marketplace command that refreshes Claude Code's local copy of the marketplace. */
 export const MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
@@ -223,39 +222,36 @@ function checkAutoUpdate(settings: Record<string, unknown> | null, paths: CliPat
       };
 }
 
-/** True when a variable is set to something other than empty, 0, false, no or off. */
-function isSet(value: unknown): boolean {
-  if (typeof value !== "string") return false;
-  return !["", "0", "false", "no", "off"].includes(value.trim().toLowerCase());
-}
-
 /**
- * Updates must not be switched off: each of UPDATE_BLOCKING_VARS also stops plugin
- * updates, unless FORCE_AUTOUPDATE_PLUGINS is set too. Claude Code reads them from its
- * environment and from the `env` of settings.json, so doctor looks in both.
+ * Updates must not be switched off: each of UPDATE_BLOCKING_VARS (`src/update/opt-out.ts`)
+ * also stops plugin updates, Claude Code's and anymodel's background update alike, unless
+ * FORCE_AUTOUPDATE_PLUGINS is set too. Claude Code reads them from its environment and
+ * from the `env` of settings.json, so doctor looks in both.
  */
 function checkUpdatesNotOff(
   settings: Record<string, unknown> | null,
   env: Env,
   paths: CliPaths,
 ): Check {
-  const settingsEnv = (settings?.env ?? {}) as Record<string, unknown>;
-  const where = (name: string) =>
-    [
-      isSet(env[name]) ? "your environment" : null,
-      isSet(settingsEnv[name]) ? `the env of ${tildify(paths.settingsFile, paths.home)}` : null,
-    ].filter((place): place is string => place !== null);
-  if (where(FORCE_PLUGIN_UPDATES_VAR).length > 0) {
+  const fromSettings = (settings?.env ?? {}) as Record<string, unknown>;
+  const { blocking, forced } = updateOptOuts(env, fromSettings);
+  if (forced) {
     return { ok: true, text: `plugin updates are on (${FORCE_PLUGIN_UPDATES_VAR} is set)` };
   }
-  const blocking = UPDATE_BLOCKING_VARS.filter((name) => where(name).length > 0);
   if (blocking.length === 0) return { ok: true, text: "plugin updates are not switched off" };
-  const named = blocking.map((name) => `${name} (in ${where(name).join(" and ")})`).join(", ");
+  const settingsPlace = `the env of ${tildify(paths.settingsFile, paths.home)}`;
+  const named = blocking
+    .map((v) => {
+      const places = [v.inEnv ? "your environment" : null, v.inSettings ? settingsPlace : null];
+      return `${v.name} (in ${places.filter((place) => place !== null).join(" and ")})`;
+    })
+    .join(", ");
+  const names = blocking.map((v) => v.name);
   return {
     ok: false,
     text:
-      `plugin updates are switched off: ${named} ${blocking.length === 1 ? "is" : "are"} set. ` +
-      `Set ${FORCE_PLUGIN_UPDATES_VAR}=1 as well, or remove ${blocking.join(" and ")}.`,
+      `plugin updates are switched off: ${named} ${names.length === 1 ? "is" : "are"} set, so the background update skips them too. ` +
+      `Set ${FORCE_PLUGIN_UPDATES_VAR}=1 as well, or remove ${names.join(" and ")}.`,
   };
 }
 
@@ -308,7 +304,14 @@ function checkSelfUpdate(paths: CliPaths): Check[] {
         checks.push({
           ok: true,
           info: true,
-          text: `background update: last check ${last.at}: ${last.detail}`,
+          text: `background update: last check ${last.at}: skipped: ${last.detail}`,
+        });
+        break;
+      case "unreachable":
+        checks.push({
+          ok: true,
+          info: true,
+          text: `background update: last check ${last.at}: ${last.detail}, since ${last.since ?? last.at}. It counts as a failure only after ${UNREACHABLE_FAILS_AFTER_HOURS} h in a row. To look now: ${COMMAND} update --check`,
         });
         break;
       case "failed":

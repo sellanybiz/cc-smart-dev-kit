@@ -40,6 +40,30 @@ function tildify(path, home) {
   return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
 }
 
+// src/update/apply.ts
+import { existsSync as existsSync3, readFileSync as readFileSync3 } from "fs";
+import { join as join4 } from "path";
+
+// src/project/git-env.ts
+var REPO_SELECTING_GIT_VARS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_PREFIX",
+  "GIT_NAMESPACE"
+];
+function gitEnv(base) {
+  const env = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value !== undefined && !REPO_SELECTING_GIT_VARS.includes(key))
+      env[key] = value;
+  }
+  return env;
+}
+
 // src/setup/installed-plugins.ts
 import { existsSync, readFileSync } from "fs";
 function findUserInstall(installedPluginsFile) {
@@ -246,28 +270,6 @@ function marketplaceCopyVersion(location, plugin) {
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join as join3 } from "path";
-
-// src/project/git-env.ts
-var REPO_SELECTING_GIT_VARS = [
-  "GIT_DIR",
-  "GIT_WORK_TREE",
-  "GIT_COMMON_DIR",
-  "GIT_INDEX_FILE",
-  "GIT_OBJECT_DIRECTORY",
-  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-  "GIT_PREFIX",
-  "GIT_NAMESPACE"
-];
-function gitEnv(base) {
-  const env = {};
-  for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined && !REPO_SELECTING_GIT_VARS.includes(key))
-      env[key] = value;
-  }
-  return env;
-}
-
-// src/update/check.ts
 var GIT_TIMEOUT_MS = 20000;
 function isOlder(a, b) {
   if (b === null)
@@ -385,6 +387,7 @@ function remotePluginVersion(url, ref, baseEnv) {
 var CLAUDE_TIMEOUT_MS = 180000;
 var MARKETPLACE_REFRESH = ["plugin", "marketplace", "update", MARKETPLACE];
 var PLUGIN_UPDATE = ["plugin", "update", PLUGIN_ID, "--scope", "user"];
+var BUSY_DETAIL = "Claude Code was refreshing the same marketplace (git's index.lock was taken); the next check tries again";
 function applyUpdate(paths, claude, run, say) {
   const before = findUserInstall(paths.installedPluginsFile)?.version ?? null;
   const fail = (detail) => ({ after: before, before, detail, ok: false });
@@ -395,28 +398,40 @@ function applyUpdate(paths, claude, run, say) {
     const result = run([claude, ...args]);
     if (result.exitCode === 0)
       return null;
-    const last = result.output.trim().split(`
-`).at(-1)?.trim();
-    return `claude ${args.join(" ")} failed (exit ${result.exitCode})${last ? `: ${last}` : ""}`;
+    if (result.output.includes("index.lock")) {
+      return { after: before, before, busy: true, detail: BUSY_DETAIL, ok: false };
+    }
+    const last = redactUrlsIn(result.output.trim().split(`
+`).at(-1)?.trim() ?? "");
+    return fail(`claude ${args.join(" ")} failed (exit ${result.exitCode})${last ? `: ${last}` : ""}`);
   };
   const refreshed = step(MARKETPLACE_REFRESH);
   if (refreshed !== null)
-    return fail(refreshed);
+    return refreshed;
   const location = marketplaceInstallLocation(paths.knownMarketplacesFile, MARKETPLACE);
   const inCopy = location === null ? null : marketplaceCopyVersion(location, PLUGIN).version;
   if (isOlder(before, inCopy)) {
     const updated = step(PLUGIN_UPDATE);
     if (updated !== null)
-      return fail(updated);
+      return updated;
   }
   const after = findUserInstall(paths.installedPluginsFile)?.version ?? null;
   return { after, before, detail: "", ok: true };
 }
+function routerNeedsSetup(paths) {
+  const install = findUserInstall(paths.installedPluginsFile);
+  if (install === null || !existsSync3(paths.routerCopy))
+    return false;
+  const bundle = join4(install.installPath, "dist", "router.js");
+  return existsSync3(bundle) && readFileSync3(bundle, "utf8") !== readFileSync3(paths.routerCopy, "utf8");
+}
+var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
 function shownVersion(version) {
   return version !== null && /^[0-9A-Za-z.+-]{1,40}$/.test(version) ? version : "a new version";
 }
-function installedText(version) {
-  return `${PLUGIN} ${shownVersion(version)} installed; restart Claude sessions to load it`;
+function installedText(version, routerChanged = false) {
+  const text = `${PLUGIN} ${shownVersion(version)} installed; restart Claude sessions to load it`;
+  return routerChanged ? `${text}; ${ROUTER_SETUP_HINT}` : text;
 }
 function notifyCommand(text, platform, which) {
   if (platform === "linux") {
@@ -429,11 +444,15 @@ function notifyCommand(text, platform, which) {
   }
   return null;
 }
-function capturingRunner(env) {
+function commandContext(env, home) {
+  return { cwd: home, env: gitEnv(env) };
+}
+function capturingRunner(env, home) {
+  const context = commandContext(env, home);
   return (argv) => {
     try {
       const result = Bun.spawnSync(argv, {
-        env,
+        ...context,
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
@@ -454,13 +473,13 @@ import {
   closeSync,
   mkdirSync,
   openSync,
-  readFileSync as readFileSync3,
+  readFileSync as readFileSync4,
   statSync,
   unlinkSync,
   writeSync
 } from "fs";
 import { hostname } from "os";
-import { join as join4 } from "path";
+import { join as join5 } from "path";
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
 var LOCK_FILE = "lock";
 var TAKEOVER_SUFFIX = ".takeover";
@@ -470,7 +489,7 @@ class LockBusyError extends Error {
 }
 function procStartTime(pid) {
   try {
-    const stat = readFileSync3(`/proc/${pid}/stat`, "utf8");
+    const stat = readFileSync4(`/proc/${pid}/stat`, "utf8");
     const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
     const start = fields[22 - 3];
     return start && /^\d+$/.test(start) ? start : null;
@@ -532,7 +551,7 @@ function parseLock(text) {
 function readHeld(file) {
   try {
     const stat = statSync(file);
-    const info = parseLock(readFileSync3(file, "utf8"));
+    const info = parseLock(readFileSync4(file, "utf8"));
     return { info, ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size };
   } catch (error) {
     if (error.code === "ENOENT")
@@ -610,9 +629,17 @@ function takeOverStale(file, judged, fallbackStaleMs) {
       unlinkSync(claim);
   }
 }
+function lockIsHeld(stateDir, fallbackStaleMs = FALLBACK_STALE_MS) {
+  try {
+    const held = readHeld(join5(stateDir, LOCK_FILE));
+    return held !== null && !isStale(held, fallbackStaleMs);
+  } catch {
+    return false;
+  }
+}
 async function withLock(stateDir, fn, options = {}) {
   mkdirSync(stateDir, { recursive: true });
-  const file = join4(stateDir, LOCK_FILE);
+  const file = join5(stateDir, LOCK_FILE);
   const mine = newLockInfo();
   const deadline = Date.now() + (options.waitMs ?? 0);
   const fallbackStaleMs = options.fallbackStaleMs ?? FALLBACK_STALE_MS;
@@ -641,30 +668,68 @@ async function withLock(stateDir, fn, options = {}) {
   }
 }
 
+// src/update/opt-out.ts
+import { readFileSync as readFileSync5 } from "fs";
+var UPDATE_BLOCKING_VARS = [
+  "DISABLE_AUTOUPDATER",
+  "DISABLE_UPDATES",
+  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+];
+var FORCE_PLUGIN_UPDATES_VAR = "FORCE_AUTOUPDATE_PLUGINS";
+function isSet(value) {
+  if (typeof value !== "string")
+    return false;
+  return !["", "0", "false", "no", "off"].includes(value.trim().toLowerCase());
+}
+function settingsEnv(settingsFile) {
+  try {
+    const parsed = JSON.parse(readFileSync5(settingsFile, "utf8"));
+    const env = parsed?.env;
+    return typeof env === "object" && env !== null && !Array.isArray(env) ? env : {};
+  } catch {
+    return {};
+  }
+}
+function updateOptOuts(env, fromSettings) {
+  const where = (name) => ({
+    inEnv: isSet(env[name]),
+    inSettings: isSet(fromSettings[name]),
+    name
+  });
+  const force = where(FORCE_PLUGIN_UPDATES_VAR);
+  if (force.inEnv || force.inSettings)
+    return { blocking: [], forced: true };
+  const blocking = UPDATE_BLOCKING_VARS.map(where).filter((v) => v.inEnv || v.inSettings);
+  return { blocking, forced: false };
+}
+function blockingVar(env, settingsFile) {
+  return updateOptOuts(env, settingsEnv(settingsFile)).blocking[0]?.name ?? null;
+}
+
 // src/update/state.ts
 import {
   appendFileSync,
-  existsSync as existsSync4,
+  existsSync as existsSync5,
   mkdirSync as mkdirSync3,
   readdirSync as readdirSync2,
-  readFileSync as readFileSync5,
+  readFileSync as readFileSync7,
   rmSync as rmSync2,
   statSync as statSync3,
   writeFileSync as writeFileSync2
 } from "fs";
-import { join as join6 } from "path";
+import { join as join7 } from "path";
 
 // src/setup/write.ts
 import {
   chmodSync,
   closeSync as closeSync2,
-  existsSync as existsSync3,
+  existsSync as existsSync4,
   fsyncSync,
   lstatSync,
   mkdirSync as mkdirSync2,
   openSync as openSync2,
   readdirSync,
-  readFileSync as readFileSync4,
+  readFileSync as readFileSync6,
   readlinkSync,
   realpathSync,
   renameSync,
@@ -672,7 +737,7 @@ import {
   unlinkSync as unlinkSync2,
   writeFileSync
 } from "fs";
-import { basename, dirname, join as join5, resolve } from "path";
+import { basename, dirname, join as join6, resolve } from "path";
 var BACKUPS_DIR = "backups";
 var BACKUP_INFIX = ".bak-anymodel-";
 var ABSENT_SUFFIX = ".absent";
@@ -699,19 +764,19 @@ function realTarget(file) {
     }
     if (!isLink) {
       const parent = dirname(path);
-      return parent === path ? path : join5(realTarget(parent), basename(path));
+      return parent === path ? path : join6(realTarget(parent), basename(path));
     }
     path = resolve(dirname(path), readlinkSync(path));
   }
   throw new Error(`${file}: too many symlinks (a loop?)`);
 }
 function fileMode(file) {
-  return existsSync3(file) ? statSync2(file).mode & 4095 : null;
+  return existsSync4(file) ? statSync2(file).mode & 4095 : null;
 }
 function writeTemp(file, content, mode) {
   const dir = dirname(file);
   mkdirSync2(dir, { recursive: true });
-  const temp = join5(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
+  const temp = join6(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
   try {
     const fd = openSync2(temp, "wx", mode);
     try {
@@ -722,7 +787,7 @@ function writeTemp(file, content, mode) {
     }
     chmodSync(temp, mode);
   } catch (error) {
-    if (existsSync3(temp))
+    if (existsSync4(temp))
       unlinkSync2(temp);
     throw error;
   }
@@ -734,7 +799,7 @@ function atomicWrite(file, content, mode, beforeRename) {
     beforeRename?.();
     renameSync(temp, file);
   } catch (error) {
-    if (existsSync3(temp))
+    if (existsSync4(temp))
       unlinkSync2(temp);
     throw error;
   }
@@ -755,7 +820,7 @@ function parseBackupName(base, name) {
   };
 }
 function backupDir(stateDir, file) {
-  return join5(stateDir, BACKUPS_DIR, encodeURIComponent(realTarget(file)));
+  return join6(stateDir, BACKUPS_DIR, encodeURIComponent(realTarget(file)));
 }
 function makePrivateDir(dir) {
   mkdirSync2(dir, { recursive: true, mode: 448 });
@@ -763,18 +828,18 @@ function makePrivateDir(dir) {
 }
 function listBackups(stateDir, file) {
   const dir = backupDir(stateDir, file);
-  if (!existsSync3(dir))
+  if (!existsSync4(dir))
     return [];
   const base = basename(realTarget(file));
   return readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup !== null).sort((a, b) => a.stamp === b.stamp ? a.counter - b.counter : a.stamp < b.stamp ? -1 : 1).map((backup) => {
-    const path = join5(dir, backup.name);
+    const path = join6(dir, backup.name);
     return { path, absent: backup.absent, mode: backup.mode ?? fileMode(path) ?? 384 };
   });
 }
 function copyNotExecutable(file, target) {
   const mode = fileMode(file) ?? 384;
   const safeMode = mode & ~73;
-  writeFileSync(target, readFileSync4(file), { flag: "wx", mode: safeMode });
+  writeFileSync(target, readFileSync6(file), { flag: "wx", mode: safeMode });
   chmodSync(target, safeMode);
   return mode;
 }
@@ -785,11 +850,11 @@ function backupFile(stateDir, file) {
   const stamp = utcStamp();
   const mode = fileMode(real);
   const suffix = mode === null ? ABSENT_SUFFIX : (mode & 73) !== 0 ? `.mode-${mode.toString(8)}` : "";
-  makePrivateDir(join5(stateDir, BACKUPS_DIR));
+  makePrivateDir(join6(stateDir, BACKUPS_DIR));
   makePrivateDir(dir);
   const sameStamp = readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup?.stamp === stamp);
   const counter = sameStamp.length === 0 ? 0 : Math.max(...sameStamp.map((backup) => backup.counter)) + 1;
-  const target = join5(dir, `${base}${BACKUP_INFIX}${stamp}${counter === 0 ? "" : `-${counter}`}${suffix}`);
+  const target = join6(dir, `${base}${BACKUP_INFIX}${stamp}${counter === 0 ? "" : `-${counter}`}${suffix}`);
   if (mode === null) {
     writeFileSync(target, "", { flag: "wx", mode: 384 });
   } else {
@@ -805,10 +870,10 @@ function isChangedEntry(value) {
   return Array.isArray(entry.kinds) && entry.kinds.every((kind) => CHANGE_KINDS.includes(kind)) && (entry.baseline === null || typeof entry.baseline === "string");
 }
 function readChanged(stateDir) {
-  const file = join5(stateDir, CHANGED_FILE);
-  if (!existsSync3(file))
+  const file = join6(stateDir, CHANGED_FILE);
+  if (!existsSync4(file))
     return {};
-  const parsed = JSON.parse(readFileSync4(file, "utf8"));
+  const parsed = JSON.parse(readFileSync6(file, "utf8"));
   const files = parsed?.files;
   if (typeof files !== "object" || files === null || !Object.values(files).every((entry) => isChangedEntry(entry))) {
     throw new Error(`Invalid ${file}: expected { "files": { <path>: { kinds, baseline } } }`);
@@ -817,7 +882,7 @@ function readChanged(stateDir) {
 }
 function writeChanged(stateDir, files) {
   const sorted = Object.fromEntries(Object.entries(files).sort(([a], [b]) => a < b ? -1 : 1));
-  atomicWrite(join5(stateDir, CHANGED_FILE), `${JSON.stringify({ files: sorted }, null, 2)}
+  atomicWrite(join6(stateDir, CHANGED_FILE), `${JSON.stringify({ files: sorted }, null, 2)}
 `, 384);
 }
 function recordChange(stateDir, file, kind, backup) {
@@ -860,12 +925,12 @@ function retryOnConcurrentChange(file, fn, attempts = 3) {
   }
 }
 function readCurrent(file) {
-  return existsSync3(file) ? readFileSync4(file, "utf8") : null;
+  return existsSync4(file) ? readFileSync6(file, "utf8") : null;
 }
 function writeManagedFile(file, content, options) {
   const target = realTarget(file);
   const currentMode = fileMode(target);
-  const current = currentMode === null ? null : readFileSync4(target, "utf8");
+  const current = currentMode === null ? null : readFileSync6(target, "utf8");
   const checkUnchanged = (now) => {
     if (options.expectedContent !== undefined && now !== options.expectedContent) {
       throw new ConcurrentChangeError(`${target} changed after anymodel read it.`);
@@ -888,7 +953,7 @@ function writeManagedFile(file, content, options) {
       checkUnchanged(readCurrent(target));
     });
   } catch (error) {
-    if (!isBaseline && existsSync3(backup))
+    if (!isBaseline && existsSync4(backup))
       unlinkSync2(backup);
     throw error;
   }
@@ -905,31 +970,58 @@ var CHECK_INTERVAL_MS = 60 * 60 * 1000;
 var LOG_MAX_BYTES = 256 * 1024;
 function updateFiles(stateDir) {
   return {
-    hold: join6(stateDir, "update-hold"),
-    check: join6(stateDir, "update-check.json"),
-    reported: join6(stateDir, "update-reported"),
-    log: join6(stateDir, "update.log"),
-    lockDir: join6(stateDir, "update"),
-    sessions: join6(stateDir, "sessions")
+    hold: join7(stateDir, "update-hold"),
+    check: join7(stateDir, "update-check.json"),
+    reported: join7(stateDir, "update-reported"),
+    log: join7(stateDir, "update.log"),
+    lockDir: join7(stateDir, "update"),
+    sessions: join7(stateDir, "sessions")
   };
 }
-var RESULTS = ["checking", "up-to-date", "updated", "skipped", "failed"];
+var RESULTS = [
+  "checking",
+  "up-to-date",
+  "updated",
+  "skipped",
+  "unreachable",
+  "failed"
+];
+var UNREACHABLE_FAILS_AFTER_HOURS = 24;
+var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
+function unreachableCheck(previous, at, nowMs, detail) {
+  const since = previous?.since ?? at;
+  const failed = nowMs - Date.parse(since) >= UNREACHABLE_FAILS_AFTER_MS;
+  return {
+    at,
+    detail: `cannot read the marketplace${failed ? ` since ${since}` : ""} (${detail})`,
+    result: failed ? "failed" : "unreachable",
+    since
+  };
+}
 function ensureDir(dir) {
   mkdirSync3(dir, { recursive: true, mode: 448 });
 }
 function readLastCheck(files) {
   try {
-    const parsed = JSON.parse(readFileSync5(files.check, "utf8"));
+    const parsed = JSON.parse(readFileSync7(files.check, "utf8"));
     if (typeof parsed?.at !== "string" || Number.isNaN(Date.parse(parsed.at)) || !RESULTS.includes(parsed.result) || typeof parsed.detail !== "string") {
       return null;
     }
-    return { at: parsed.at, detail: parsed.detail, result: parsed.result };
+    const check = {
+      at: parsed.at,
+      detail: parsed.detail,
+      result: parsed.result
+    };
+    if (typeof parsed.since === "string" && !Number.isNaN(Date.parse(parsed.since))) {
+      check.since = parsed.since;
+    }
+    return check;
   } catch {
     return null;
   }
 }
 function writeLastCheck(files, check) {
-  ensureDir(join6(files.check, ".."));
+  ensureDir(join7(files.check, ".."));
   atomicWrite(files.check, `${JSON.stringify(check, null, 2)}
 `, 384);
 }
@@ -940,11 +1032,11 @@ function isDue(last, nowMs) {
   return nowMs - at >= CHECK_INTERVAL_MS || at > nowMs + 60000;
 }
 function isHeld(files) {
-  return existsSync4(files.hold);
+  return existsSync5(files.hold);
 }
 function heldSince(files) {
   try {
-    const text = readFileSync5(files.hold, "utf8").trim();
+    const text = readFileSync7(files.hold, "utf8").trim();
     return text === "" ? "an unknown time" : text;
   } catch {
     return null;
@@ -953,7 +1045,7 @@ function heldSince(files) {
 function hold(files, nowMs) {
   if (isHeld(files))
     return false;
-  ensureDir(join6(files.hold, ".."));
+  ensureDir(join7(files.hold, ".."));
   atomicWrite(files.hold, `${isoSeconds(nowMs)}
 `, 384);
   return true;
@@ -964,14 +1056,17 @@ function resume(files) {
   rmSync2(files.hold, { force: true });
   return true;
 }
+function checkRunning(files) {
+  return lockIsHeld(files.lockDir);
+}
 function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
 }
 function appendLog(files, line, nowMs) {
-  ensureDir(join6(files.log, ".."));
+  ensureDir(join7(files.log, ".."));
   try {
     if (statSync3(files.log).size > LOG_MAX_BYTES) {
-      const text = readFileSync5(files.log, "utf8");
+      const text = readFileSync7(files.log, "utf8");
       const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
       writeFileSync2(files.log, keep.slice(keep.indexOf(`
 `) + 1), { mode: 384 });
@@ -982,19 +1077,19 @@ function appendLog(files, line, nowMs) {
 }
 function wasReported(files, at) {
   try {
-    return readFileSync5(files.reported, "utf8").trim() === at;
+    return readFileSync7(files.reported, "utf8").trim() === at;
   } catch {
     return false;
   }
 }
 function markReported(files, at) {
-  ensureDir(join6(files.reported, ".."));
+  ensureDir(join7(files.reported, ".."));
   atomicWrite(files.reported, `${at}
 `, 384);
 }
 function readSession(file) {
   try {
-    const parsed = JSON.parse(readFileSync5(file, "utf8"));
+    const parsed = JSON.parse(readFileSync7(file, "utf8"));
     if (typeof parsed?.pid !== "number" || typeof parsed.start !== "string" || typeof parsed.version !== "string") {
       return null;
     }
@@ -1013,13 +1108,13 @@ function registerSession(files, pid, version) {
     return;
   ensureDir(files.sessions);
   for (const name of readdirSync2(files.sessions).filter((entry) => SESSION_FILE.test(entry))) {
-    const file = join6(files.sessions, name);
+    const file = join7(files.sessions, name);
     const session = readSession(file);
     if (session === null || !isRunning(session))
       rmSync2(file, { force: true });
   }
   const record = { pid, start, version };
-  atomicWrite(join6(files.sessions, `${pid}.json`), `${JSON.stringify(record)}
+  atomicWrite(join7(files.sessions, `${pid}.json`), `${JSON.stringify(record)}
 `, 384);
 }
 function runningSessions(files) {
@@ -1029,12 +1124,18 @@ function runningSessions(files) {
   } catch {
     return [];
   }
-  return names.filter((name) => SESSION_FILE.test(name)).map((name) => readSession(join6(files.sessions, name))).filter((session) => session !== null && isRunning(session));
+  return names.filter((name) => SESSION_FILE.test(name)).map((name) => readSession(join7(files.sessions, name))).filter((session) => session !== null && isRunning(session));
 }
 
 // src/update/background.ts
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
+}
+function optOutDetail(name) {
+  return `${name} is set`;
+}
+function isAttended(env) {
+  return env.CLAUDE_CODE_SESSION_ATTENDED !== "0";
 }
 function sessionStart(deps) {
   const files = updateFiles(deps.paths.stateDir);
@@ -1043,9 +1144,18 @@ function sessionStart(deps) {
   if (isHeld(files))
     return "";
   const last = readLastCheck(files);
+  const blocked = blockingVar(deps.env, deps.paths.settingsFile);
+  if (blocked !== null) {
+    const detail = optOutDetail(blocked);
+    if (last?.result !== "skipped" || last.detail !== detail) {
+      writeLastCheck(files, { at: isoSeconds(deps.nowMs), detail, result: "skipped" });
+    }
+    return "";
+  }
   let answer = "";
-  if (last?.result === "failed" && !wasReported(files, last.at)) {
-    markReported(files, last.at);
+  const reportKey = last?.since ?? last?.at ?? "";
+  if (last?.result === "failed" && !wasReported(files, reportKey) && isAttended(deps.env)) {
+    markReported(files, reportKey);
     answer = JSON.stringify({
       systemMessage: `${PLUGIN}: the background update failed at ${last.at} (${last.detail}). The log: ${tildify(files.log, deps.paths.home)}. To try now: ${COMMAND} update`
     });
@@ -1060,14 +1170,26 @@ async function backgroundCheck(deps) {
   let at = isoSeconds(deps.now());
   try {
     await withLock(files.lockDir, () => {
-      if (isHeld(files) || !isDue(readLastCheck(files), deps.now()))
+      const previous = readLastCheck(files);
+      if (isHeld(files) || !isDue(previous, deps.now()))
         return;
       at = isoSeconds(deps.now());
-      writeLastCheck(files, { at, detail: "", result: "checking" });
-      const record = (result, detail) => {
-        writeLastCheck(files, { at, detail, result });
-        log(`${result}: ${detail}`);
+      const write = (check) => {
+        writeLastCheck(files, check);
+        log(`${check.result}: ${check.detail}`);
       };
+      const record = (result, detail) => write({ at, detail, result });
+      const blocked = blockingVar(deps.env, deps.paths.settingsFile);
+      if (blocked !== null) {
+        record("skipped", optOutDetail(blocked));
+        return;
+      }
+      writeLastCheck(files, {
+        at,
+        detail: "",
+        result: "checking",
+        ...previous?.since !== undefined && { since: previous.since }
+      });
       const status = checkForUpdate(deps.paths, deps.env);
       switch (status.kind) {
         case "not-installed":
@@ -1077,7 +1199,7 @@ async function backgroundCheck(deps) {
           record("skipped", status.detail);
           return;
         case "unreachable":
-          record("failed", `cannot read the marketplace (${status.detail})`);
+          write(unreachableCheck(previous, at, deps.now(), status.detail));
           return;
         case "up-to-date":
           record("up-to-date", status.installed);
@@ -1085,6 +1207,10 @@ async function backgroundCheck(deps) {
         case "behind": {
           log(`newer: installed ${status.installed ?? "(no version)"}, the marketplace copy ${status.inCopy ?? "(unreadable)"}${status.catalogBehind ? ", and the copy is behind the remote" : ""}`);
           const result = applyUpdate(deps.paths, deps.claude, deps.run, (line) => log(`run: ${line}`));
+          if (result.busy === true) {
+            record("skipped", result.detail);
+            return;
+          }
           if (!result.ok) {
             record("failed", result.detail);
             return;
@@ -1093,8 +1219,9 @@ async function backgroundCheck(deps) {
             record("up-to-date", result.after ?? "(no version)");
             return;
           }
-          record("updated", `${result.after ?? "(no version)"} (was ${result.before ?? "none"})`);
-          deps.notify(installedText(result.after));
+          const routerChanged = routerNeedsSetup(deps.paths);
+          record("updated", `${result.after ?? "(no version)"} (was ${result.before ?? "none"})${routerChanged ? `; ${ROUTER_SETUP_HINT}` : ""}`);
+          deps.notify(installedText(result.after, routerChanged));
           return;
         }
       }
@@ -1102,7 +1229,7 @@ async function backgroundCheck(deps) {
   } catch (error) {
     if (error instanceof LockBusyError)
       return;
-    const detail = messageOf(error);
+    const detail = redactUrlsIn(messageOf(error));
     try {
       writeLastCheck(files, { at, detail, result: "failed" });
       log(`failed: ${detail}`);
@@ -1119,29 +1246,31 @@ function sessionPid() {
 }
 if (process.argv.includes("--background")) {
   const which = (command) => Bun.which(command, { PATH: env.PATH ?? "" });
+  const run = capturingRunner(env, paths.home);
   await backgroundCheck({
     paths,
     env,
     now: () => Date.now(),
     claude: which("claude"),
-    run: capturingRunner(env),
+    run,
     notify: (text) => {
       const argv = notifyCommand(text, process.platform, which);
       if (argv !== null)
-        capturingRunner(env)(argv);
+        run(argv);
     }
   });
 } else {
   try {
     const answer = sessionStart({
       paths,
+      env,
       nowMs: Date.now(),
       sessionPid: sessionPid(),
       version: VERSION,
       spawnBackground: () => {
         Bun.spawn([process.execPath, Bun.main, "--background"], {
+          ...commandContext(env, paths.home),
           detached: true,
-          env,
           stdio: ["ignore", "ignore", "ignore"]
         }).unref();
       }

@@ -21,7 +21,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/cli/doctor.ts
-import { accessSync, constants, existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
+import { accessSync, constants, existsSync as existsSync10, readFileSync as readFileSync12 } from "fs";
 import { join as join11 } from "path";
 
 // src/gateway/doctor.ts
@@ -6577,6 +6577,14 @@ function takeOverStale(file, judged, fallbackStaleMs) {
       unlinkSync2(claim);
   }
 }
+function lockIsHeld(stateDir, fallbackStaleMs = FALLBACK_STALE_MS) {
+  try {
+    const held = readHeld(join3(stateDir, LOCK_FILE));
+    return held !== null && !isStale(held, fallbackStaleMs);
+  } catch {
+    return false;
+  }
+}
 async function withLock(stateDir, fn, options = {}) {
   mkdirSync3(stateDir, { recursive: true });
   const file = join3(stateDir, LOCK_FILE);
@@ -6807,30 +6815,105 @@ function innerSocketPath(env, pid) {
     path: join5(dir, "router.sock")
   };
 }
-function relayConnection(client, path) {
-  const inner = net.connect(path);
-  client.setNoDelay(true);
-  client.on("error", () => inner.destroy());
-  inner.on("error", () => client.destroy());
-  client.on("close", () => inner.destroy());
-  client.pipe(inner);
-  inner.pipe(client);
+var IDLE_GRACE_MS = 500;
+function relay(entry, path, log, changed) {
+  const { client } = entry;
+  const endedFirst = () => {
+    client.off("data", firstByte);
+    client.destroy();
+  };
+  const firstByte = (first) => {
+    client.off("end", endedFirst);
+    client.pause();
+    entry.state = "connecting";
+    const inner = net.connect({ path });
+    inner.once("connect", () => {
+      entry.state = "relaying";
+      changed();
+    });
+    inner.on("error", (error) => {
+      if (entry.state === "connecting") {
+        log(`WARN relay: cannot reach the router's own server at ${path}: ${error.message}`);
+      }
+      client.destroy();
+    });
+    inner.once("close", (hadError) => {
+      if (hadError || client.writableFinished) {
+        client.destroy();
+        return;
+      }
+      client.once("finish", () => client.destroy());
+      client.end();
+    });
+    client.once("close", () => inner.destroy());
+    inner.write(first);
+    client.pipe(inner, { end: false });
+    inner.pipe(client);
+  };
+  client.once("data", firstByte);
+  client.once("end", endedFirst);
+  client.resume();
 }
-function listenOnFd(fd, inner) {
-  const server = net.createServer({ pauseOnConnect: true }, (client) => {
-    inner.then((path) => relayConnection(client, path), () => client.destroy());
+function listenOnFd(fd, inner, log) {
+  const tracked = new Set;
+  let draining = false;
+  let graceOver = false;
+  const connectedWaiters = [];
+  const closedWaiters = [];
+  const changed = () => {
+    if (!draining)
+      return;
+    const pending = [...tracked].some((entry) => entry.state !== "relaying");
+    if (graceOver && !pending)
+      for (const done of connectedWaiters.splice(0))
+        done();
+    if (tracked.size === 0)
+      for (const done of closedWaiters.splice(0))
+        done();
+  };
+  const server = net.createServer({ allowHalfOpen: true, pauseOnConnect: true }, (client) => {
+    const entry = { client, state: "waiting" };
+    tracked.add(entry);
+    client.setNoDelay(true);
+    client.on("error", () => client.destroy());
+    client.once("close", () => {
+      tracked.delete(entry);
+      changed();
+    });
+    inner.then((path) => {
+      if (!client.destroyed)
+        relay(entry, path, log, changed);
+    }, () => client.destroy());
   });
+  const drain = () => {
+    if (!draining) {
+      draining = true;
+      server.close();
+      setTimeout(() => {
+        graceOver = true;
+        for (const entry of tracked)
+          if (entry.state === "waiting")
+            entry.client.destroy();
+        changed();
+      }, IDLE_GRACE_MS);
+    }
+    const connected = new Promise((resolve) => connectedWaiters.push(resolve));
+    const closed = new Promise((resolve) => closedWaiters.push(resolve));
+    changed();
+    return { closed, connected };
+  };
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen({ fd }, () => {
       server.off("error", reject);
+      server.on("error", (error) => log(`WARN relay: the socket's server: ${error.message}`));
       const address = server.address();
       if (address === null || typeof address === "string") {
         server.close();
         reject(new Error(`file descriptor ${fd} is not a TCP listening socket`));
         return;
       }
-      resolve({ port: address.port, server });
+      resolve({ drain, port: address.port, server });
     });
   });
 }
@@ -7637,7 +7720,7 @@ async function startRouter(configPath, env = process.env) {
   const ready = new Promise((resolve) => {
     innerReady = resolve;
   });
-  const relay = await listenOnFd(fd, ready);
+  const relay = await listenOnFd(fd, ready, log);
   if (relay.port !== configPort) {
     log(`WARN the socket listens on port ${relay.port}, the config says ${configPort}: serving on ${relay.port}. Run: anymodel gateway setup`);
   }
@@ -7646,10 +7729,9 @@ async function startRouter(configPath, env = process.env) {
   log(`anymodel-router listening on http://127.0.0.1:${relay.port} (the socket systemd holds; config ${configPath})`);
   process.once("SIGTERM", () => {
     log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting; new connections wait in the socket for the next router`);
-    const relayClosed = new Promise((resolve) => {
-      relay.server.close(() => resolve());
-    });
-    exitWhenDone(Promise.all([server.stop(false), relayClosed]), log, inner.cleanup);
+    const drain = relay.drain();
+    const stopped = drain.connected.then(() => server.stop(false));
+    exitWhenDone(Promise.all([stopped, drain.closed]), log, inner.cleanup);
   });
 }
 function exitWhenDone(done, log, cleanup) {
@@ -7746,8 +7828,18 @@ var SOCKET_NAME = "anymodel-router.socket";
 var UP_TO_DATE = "router already up to date (no restart)";
 var RESTART_WARNING = "anymodel-router is running. A restart lets its answers in flight finish first (up to 120 s; a longer one is cut, and Claude Code retries it). New requests wait in its socket meanwhile; none fails.";
 var MOVE_WARNING = "anymodel-router is running without its socket unit. This setup moves it to one, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
+var SOCKET_STOPPED_WARNING = "anymodel-router is running, but its socket is not open: the router holds the port itself. This setup opens the socket again, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
 var PORT_WARNING = "anymodel-router is running, and its socket moves to a new port. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
-var INSTALL_WARNINGS = [RESTART_WARNING, MOVE_WARNING, PORT_WARNING];
+var SOCKET_CHANGED_WARNING = "anymodel-router is running, and its socket unit changed, so the socket closes and opens again. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
+var INSTALL_WARNINGS = [
+  RESTART_WARNING,
+  MOVE_WARNING,
+  SOCKET_STOPPED_WARNING,
+  PORT_WARNING,
+  SOCKET_CHANGED_WARNING
+];
+var START_LIMIT_BURST = 5;
+var START_LIMIT_SECONDS = 60;
 function checkUnitPath(path) {
   if (/["\\\n%]/.test(path))
     throw new Error(`cannot put ${JSON.stringify(path)} in a unit file`);
@@ -7787,7 +7879,8 @@ function renderUnit(bunPath, copyPath, socketName = SOCKET_NAME) {
 Description=${name}: local AI gateway for Claude Code (127.0.0.1 only)
 Wants=${socketName}
 After=${socketName}
-StartLimitIntervalSec=0
+StartLimitIntervalSec=${START_LIMIT_SECONDS}
+StartLimitBurst=${START_LIMIT_BURST}
 
 [Service]
 Type=simple
@@ -7806,6 +7899,10 @@ NoNewPrivileges=true
 WantedBy=default.target
 Also=${socketName}
 `;
+}
+function socketPort(text) {
+  const match = /^ListenStream=127\.0\.0\.1:(\d+)$/m.exec(text);
+  return match?.[1] ? Number(match[1]) : null;
 }
 function run(runner, cmd) {
   const result = runner(cmd);
@@ -7827,6 +7924,14 @@ function restartPendingFile(stateDir) {
   return join6(stateDir, "restart-pending");
 }
 var HEALTH_WAIT_MS = 5000;
+function restartWarning(rebind, socketOpen, socketPlan, socketPath, port) {
+  if (!rebind)
+    return RESTART_WARNING;
+  if (!socketOpen)
+    return socketPlan === "created" ? MOVE_WARNING : SOCKET_STOPPED_WARNING;
+  const oldPort = existsSync3(socketPath) ? socketPort(readFileSync5(socketPath, "utf8")) : null;
+  return oldPort !== null && oldPort !== port ? PORT_WARNING : SOCKET_CHANGED_WARNING;
+}
 async function installRouter(options) {
   const unitName = basename2(options.unitPath);
   const socketName = basename2(options.socketPath);
@@ -7860,7 +7965,7 @@ async function installRouter(options) {
   const rebind = !socketOpen || socketPlan !== "unchanged";
   const active = unitActive(options.runner, unitName);
   if (active) {
-    options.say(!rebind ? RESTART_WARNING : socketOpen ? PORT_WARNING : MOVE_WARNING);
+    options.say(restartWarning(rebind, socketOpen, socketPlan, options.socketPath, options.port));
     if (!options.yes) {
       const yes = options.confirm?.("Restart anymodel-router now?") ?? null;
       if (yes !== true) {
@@ -7892,12 +7997,12 @@ async function installRouter(options) {
     }
     if (socketOpen)
       run(options.runner, ["systemctl", "--user", "stop", socketName]);
+    options.runner(["systemctl", "--user", "reset-failed", socketName, unitName]);
     const openSocket = ["systemctl", "--user", "start", socketName];
     const opened = options.runner(openSocket);
     if (opened.exitCode !== 0) {
-      throw new Error(`${openSocket.join(" ")} failed (exit ${opened.exitCode}):
-${opened.output.trim()}
-Is another program on 127.0.0.1:${options.port}? See: ss -ltnp, and journalctl --user -u ${socketName} -n 30. Then run ${COMMAND} gateway setup again.`);
+      options.say(`${openSocket.join(" ")} failed (exit ${opened.exitCode}): ${(opened.output.trim().split(`
+`)[0] ?? "").replace(/\.$/, "")}. Starting ${stem(unitName)} without its socket: the router binds 127.0.0.1:${options.port} itself, and until the socket opens, a restart refuses new requests while the old router drains. Is another program on that port? See: ss -ltnp, and journalctl --user -u ${socketName} -n 30. Then run ${COMMAND} gateway setup again.`);
     }
     run(options.runner, ["systemctl", "--user", "start", unitName]);
   } else {
@@ -8501,12 +8606,10 @@ async function gatewayChecks(options) {
       return checks;
     }
   }
-  checks.push(socketCheck(options, config.port));
+  const socket = socketCheck(options, config.port);
+  checks.push(socket.check);
   const health = await routerHealth(config.port, options.fetch);
-  checks.push("error" in health ? {
-    ok: false,
-    text: `the router does not answer on 127.0.0.1:${config.port} (${health.error})`
-  } : { ok: true, text: `the router answers on 127.0.0.1:${config.port}` });
+  checks.push("error" in health ? { ok: false, text: notAnswering(config.port, health.error, socket.state) } : { ok: true, text: `the router answers on 127.0.0.1:${config.port}` });
   for (const [name, backend] of Object.entries(config.backends)) {
     const url = shownValue(backend.baseUrl);
     const listed = await listModels(backend.baseUrl, backend.apiKey, 5000);
@@ -8528,27 +8631,64 @@ async function gatewayChecks(options) {
   }
   return checks;
 }
+var ROUTER_LOG = `journalctl --user -u ${UNIT_NAME.replace(/\.service$/, "")} -n 30`;
+function notAnswering(port, error, socket) {
+  switch (socket) {
+    case "open":
+      return `the socket holds 127.0.0.1:${port}, but the router does not answer (${error}): every request waits in the socket and gets no answer. See why: ${ROUTER_LOG}. Then: ${COMMAND} gateway setup`;
+    case "start-limit":
+      return `the router failed to start again and again, so systemd closed its socket: every request to 127.0.0.1:${port} is refused (${error}). See why: ${ROUTER_LOG}. Then: ${COMMAND} gateway setup`;
+    case "other":
+      return `the router does not answer on 127.0.0.1:${port} (${error})`;
+  }
+}
 function socketCheck(options, port) {
   const { paths } = options;
   const where = tildify(paths.routerSocketFile, paths.home);
   if (!existsSync6(paths.routerSocketFile)) {
     return {
-      ok: false,
-      text: `no socket unit at ${where}: a router restart makes new requests fail while the old router drains. ${SETUP}`
+      check: {
+        ok: false,
+        text: `no socket unit at ${where}: a router restart makes new requests fail while the old router drains. ${SETUP}`
+      },
+      state: "other"
     };
   }
   if (readFileSync7(paths.routerSocketFile, "utf8") !== renderSocket(port)) {
     return {
-      ok: false,
-      text: `the socket unit ${where} is not the one setup writes for port ${port}. ${SETUP}`
+      check: {
+        ok: false,
+        text: `the socket unit ${where} is not the one setup writes for port ${port}. ${SETUP}`
+      },
+      state: "other"
     };
   }
-  if (!options.systemd)
-    return { ok: true, text: `the socket unit ${where} is up to date` };
-  const state = options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
-  const word = state.output.trim().split(`
+  if (!options.systemd) {
+    return { check: { ok: true, text: `the socket unit ${where} is up to date` }, state: "other" };
+  }
+  const active = options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
+  const word = active.output.trim().split(`
 `)[0] || "unknown";
-  return state.exitCode === 0 ? { ok: true, text: `the router's socket (${SOCKET_NAME}) holds 127.0.0.1:${port}` } : { ok: false, text: `the router's socket (${SOCKET_NAME}) is ${word}. ${SETUP}` };
+  if (active.exitCode === 0) {
+    return {
+      check: { ok: true, text: `the router's socket (${SOCKET_NAME}) holds 127.0.0.1:${port}` },
+      state: "open"
+    };
+  }
+  const result = options.runner([
+    "systemctl",
+    "--user",
+    "show",
+    "-p",
+    "Result",
+    "--value",
+    SOCKET_NAME
+  ]);
+  const limit = result.exitCode === 0 && result.output.trim() === "service-start-limit-hit";
+  return {
+    check: { ok: false, text: `the router's socket (${SOCKET_NAME}) is ${word}. ${SETUP}` },
+    state: limit ? "start-limit" : "other"
+  };
 }
 
 // src/setup/installed-plugins.ts
@@ -8948,13 +9088,51 @@ function remotePluginVersion(url, ref, baseEnv) {
   }
 }
 
+// src/update/opt-out.ts
+import { readFileSync as readFileSync10 } from "fs";
+var UPDATE_BLOCKING_VARS = [
+  "DISABLE_AUTOUPDATER",
+  "DISABLE_UPDATES",
+  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+];
+var FORCE_PLUGIN_UPDATES_VAR = "FORCE_AUTOUPDATE_PLUGINS";
+function isSet(value) {
+  if (typeof value !== "string")
+    return false;
+  return !["", "0", "false", "no", "off"].includes(value.trim().toLowerCase());
+}
+function settingsEnv(settingsFile) {
+  try {
+    const parsed = JSON.parse(readFileSync10(settingsFile, "utf8"));
+    const env = parsed?.env;
+    return typeof env === "object" && env !== null && !Array.isArray(env) ? env : {};
+  } catch {
+    return {};
+  }
+}
+function updateOptOuts(env, fromSettings) {
+  const where = (name) => ({
+    inEnv: isSet(env[name]),
+    inSettings: isSet(fromSettings[name]),
+    name
+  });
+  const force = where(FORCE_PLUGIN_UPDATES_VAR);
+  if (force.inEnv || force.inSettings)
+    return { blocking: [], forced: true };
+  const blocking = UPDATE_BLOCKING_VARS.map(where).filter((v) => v.inEnv || v.inSettings);
+  return { blocking, forced: false };
+}
+function blockingVar(env, settingsFile) {
+  return updateOptOuts(env, settingsEnv(settingsFile)).blocking[0]?.name ?? null;
+}
+
 // src/update/state.ts
 import {
   appendFileSync,
   existsSync as existsSync9,
   mkdirSync as mkdirSync4,
   readdirSync as readdirSync2,
-  readFileSync as readFileSync10,
+  readFileSync as readFileSync11,
   rmSync as rmSync4,
   statSync as statSync4,
   writeFileSync as writeFileSync2
@@ -8972,17 +9150,44 @@ function updateFiles(stateDir) {
     sessions: join10(stateDir, "sessions")
   };
 }
-var RESULTS = ["checking", "up-to-date", "updated", "skipped", "failed"];
+var RESULTS = [
+  "checking",
+  "up-to-date",
+  "updated",
+  "skipped",
+  "unreachable",
+  "failed"
+];
+var UNREACHABLE_FAILS_AFTER_HOURS = 24;
+var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
+function unreachableCheck(previous, at, nowMs, detail) {
+  const since = previous?.since ?? at;
+  const failed = nowMs - Date.parse(since) >= UNREACHABLE_FAILS_AFTER_MS;
+  return {
+    at,
+    detail: `cannot read the marketplace${failed ? ` since ${since}` : ""} (${detail})`,
+    result: failed ? "failed" : "unreachable",
+    since
+  };
+}
 function ensureDir(dir) {
   mkdirSync4(dir, { recursive: true, mode: 448 });
 }
 function readLastCheck(files) {
   try {
-    const parsed = JSON.parse(readFileSync10(files.check, "utf8"));
+    const parsed = JSON.parse(readFileSync11(files.check, "utf8"));
     if (typeof parsed?.at !== "string" || Number.isNaN(Date.parse(parsed.at)) || !RESULTS.includes(parsed.result) || typeof parsed.detail !== "string") {
       return null;
     }
-    return { at: parsed.at, detail: parsed.detail, result: parsed.result };
+    const check = {
+      at: parsed.at,
+      detail: parsed.detail,
+      result: parsed.result
+    };
+    if (typeof parsed.since === "string" && !Number.isNaN(Date.parse(parsed.since))) {
+      check.since = parsed.since;
+    }
+    return check;
   } catch {
     return null;
   }
@@ -9003,7 +9208,7 @@ function isHeld(files) {
 }
 function heldSince(files) {
   try {
-    const text = readFileSync10(files.hold, "utf8").trim();
+    const text = readFileSync11(files.hold, "utf8").trim();
     return text === "" ? "an unknown time" : text;
   } catch {
     return null;
@@ -9023,6 +9228,9 @@ function resume(files) {
   rmSync4(files.hold, { force: true });
   return true;
 }
+function checkRunning(files) {
+  return lockIsHeld(files.lockDir);
+}
 function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
 }
@@ -9030,7 +9238,7 @@ function appendLog(files, line, nowMs) {
   ensureDir(join10(files.log, ".."));
   try {
     if (statSync4(files.log).size > LOG_MAX_BYTES) {
-      const text = readFileSync10(files.log, "utf8");
+      const text = readFileSync11(files.log, "utf8");
       const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
       writeFileSync2(files.log, keep.slice(keep.indexOf(`
 `) + 1), { mode: 384 });
@@ -9041,7 +9249,7 @@ function appendLog(files, line, nowMs) {
 }
 function wasReported(files, at) {
   try {
-    return readFileSync10(files.reported, "utf8").trim() === at;
+    return readFileSync11(files.reported, "utf8").trim() === at;
   } catch {
     return false;
   }
@@ -9053,7 +9261,7 @@ function markReported(files, at) {
 }
 function readSession(file) {
   try {
-    const parsed = JSON.parse(readFileSync10(file, "utf8"));
+    const parsed = JSON.parse(readFileSync11(file, "utf8"));
     if (typeof parsed?.pid !== "number" || typeof parsed.start !== "string" || typeof parsed.version !== "string") {
       return null;
     }
@@ -9092,18 +9300,12 @@ function runningSessions(files) {
 }
 
 // src/cli/doctor.ts
-var UPDATE_BLOCKING_VARS = [
-  "DISABLE_AUTOUPDATER",
-  "DISABLE_UPDATES",
-  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
-];
-var FORCE_PLUGIN_UPDATES_VAR = "FORCE_AUTOUPDATE_PLUGINS";
 var MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 function readSettings2(file) {
   if (!existsSync10(file))
     return null;
   try {
-    const parsed = JSON.parse(readFileSync11(file, "utf8"));
+    const parsed = JSON.parse(readFileSync12(file, "utf8"));
     return typeof parsed === "object" && parsed !== null ? parsed : null;
   } catch {
     return null;
@@ -9154,7 +9356,7 @@ function checkLauncher(paths) {
   if (!isExecutable(launcher)) {
     return { ok: false, text: `the launcher ${where} is not executable. Run: anymodel setup` };
   }
-  const script = readFileSync11(launcher, "utf8");
+  const script = readFileSync12(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
     return { ok: false, text: `the launcher ${where} is out of date. Run: anymodel setup` };
@@ -9247,27 +9449,23 @@ function checkAutoUpdate(settings, paths) {
     text: `plugin auto-update is off in ${tildify(paths.settingsFile, paths.home)}. Run: anymodel setup`
   };
 }
-function isSet(value) {
-  if (typeof value !== "string")
-    return false;
-  return !["", "0", "false", "no", "off"].includes(value.trim().toLowerCase());
-}
 function checkUpdatesNotOff(settings, env, paths) {
-  const settingsEnv = settings?.env ?? {};
-  const where = (name) => [
-    isSet(env[name]) ? "your environment" : null,
-    isSet(settingsEnv[name]) ? `the env of ${tildify(paths.settingsFile, paths.home)}` : null
-  ].filter((place) => place !== null);
-  if (where(FORCE_PLUGIN_UPDATES_VAR).length > 0) {
+  const fromSettings = settings?.env ?? {};
+  const { blocking, forced } = updateOptOuts(env, fromSettings);
+  if (forced) {
     return { ok: true, text: `plugin updates are on (${FORCE_PLUGIN_UPDATES_VAR} is set)` };
   }
-  const blocking = UPDATE_BLOCKING_VARS.filter((name) => where(name).length > 0);
   if (blocking.length === 0)
     return { ok: true, text: "plugin updates are not switched off" };
-  const named = blocking.map((name) => `${name} (in ${where(name).join(" and ")})`).join(", ");
+  const settingsPlace = `the env of ${tildify(paths.settingsFile, paths.home)}`;
+  const named = blocking.map((v) => {
+    const places = [v.inEnv ? "your environment" : null, v.inSettings ? settingsPlace : null];
+    return `${v.name} (in ${places.filter((place) => place !== null).join(" and ")})`;
+  }).join(", ");
+  const names = blocking.map((v) => v.name);
   return {
     ok: false,
-    text: `plugin updates are switched off: ${named} ${blocking.length === 1 ? "is" : "are"} set. ` + `Set ${FORCE_PLUGIN_UPDATES_VAR}=1 as well, or remove ${blocking.join(" and ")}.`
+    text: `plugin updates are switched off: ${named} ${names.length === 1 ? "is" : "are"} set, so the background update skips them too. ` + `Set ${FORCE_PLUGIN_UPDATES_VAR}=1 as well, or remove ${names.join(" and ")}.`
   };
 }
 function checkSelfUpdate(paths) {
@@ -9314,7 +9512,14 @@ function checkSelfUpdate(paths) {
         checks.push({
           ok: true,
           info: true,
-          text: `background update: last check ${last.at}: ${last.detail}`
+          text: `background update: last check ${last.at}: skipped: ${last.detail}`
+        });
+        break;
+      case "unreachable":
+        checks.push({
+          ok: true,
+          info: true,
+          text: `background update: last check ${last.at}: ${last.detail}, since ${last.since ?? last.at}. It counts as a failure only after ${UNREACHABLE_FAILS_AFTER_HOURS} h in a row. To look now: ${COMMAND} update --check`
         });
         break;
       case "failed":
@@ -9408,10 +9613,10 @@ async function runDoctor(paths, env, gateway) {
 import { rmSync as rmSync5 } from "fs";
 
 // src/setup/restore.ts
-import { existsSync as existsSync12, readFileSync as readFileSync13 } from "fs";
+import { existsSync as existsSync12, readFileSync as readFileSync14 } from "fs";
 
 // src/setup/managed-markdown.ts
-import { existsSync as existsSync11, readFileSync as readFileSync12 } from "fs";
+import { existsSync as existsSync11, readFileSync as readFileSync13 } from "fs";
 var BLOCK_BEGIN = "<!-- anymodel:begin -->";
 var BLOCK_END = "<!-- anymodel:end -->";
 function countOf(text, marker) {
@@ -9452,7 +9657,7 @@ function renderWithoutBlock(current, file = "the file") {
 function writeMarkdown(options, render) {
   const file = realTarget(options.file);
   return retryOnConcurrentChange(file, () => {
-    const text = existsSync11(file) ? readFileSync12(file, "utf8") : null;
+    const text = existsSync11(file) ? readFileSync13(file, "utf8") : null;
     const next = render(text ?? "", file);
     if (text === null && next === "")
       return { outcome: "unchanged", backup: null };
@@ -9483,7 +9688,7 @@ function restoreWholeFile(file, entry, stateDir) {
       return { file, action: "unchanged", details: [] };
     return { file, action: "removed", details: [], savedAs: removeManagedFile(stateDir, file) };
   }
-  const result = writeManagedFile(file, readFileSync13(baseline.path, "utf8"), {
+  const result = writeManagedFile(file, readFileSync14(baseline.path, "utf8"), {
     stateDir,
     kind: "whole-file",
     mode: baseline.mode
@@ -9500,7 +9705,7 @@ function restoreWholeFile(file, entry, stateDir) {
 function isEmpty(file) {
   if (!existsSync12(file))
     return false;
-  const text = readFileSync13(file, "utf8").trim();
+  const text = readFileSync14(file, "utf8").trim();
   return text === "" || text === "{}";
 }
 function restorePartly(file, entry, stateDir) {
@@ -9646,7 +9851,7 @@ async function runRestore(paths, options) {
 }
 
 // src/cli/setup.ts
-import { existsSync as existsSync13, readFileSync as readFileSync14 } from "fs";
+import { existsSync as existsSync13, readFileSync as readFileSync15 } from "fs";
 import { delimiter } from "path";
 var AUTO_UPDATE_KEY = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
 function show2(value) {
@@ -9656,7 +9861,7 @@ function marketplaceKnown(settingsFile) {
   if (!existsSync13(settingsFile))
     return false;
   try {
-    const settings = JSON.parse(readFileSync14(settingsFile, "utf8"));
+    const settings = JSON.parse(readFileSync15(settingsFile, "utf8"));
     const entry = settings.extraKnownMarketplaces?.[MARKETPLACE];
     return typeof entry === "object" && entry !== null;
   } catch {
@@ -9721,14 +9926,13 @@ async function runSetup(paths, options) {
   return 0;
 }
 
-// src/cli/update.ts
-import { existsSync as existsSync14, readFileSync as readFileSync15 } from "fs";
-import { join as join12 } from "path";
-
 // src/update/apply.ts
+import { existsSync as existsSync14, readFileSync as readFileSync16 } from "fs";
+import { join as join12 } from "path";
 var CLAUDE_TIMEOUT_MS = 180000;
 var MARKETPLACE_REFRESH = ["plugin", "marketplace", "update", MARKETPLACE];
 var PLUGIN_UPDATE = ["plugin", "update", PLUGIN_ID, "--scope", "user"];
+var BUSY_DETAIL = "Claude Code was refreshing the same marketplace (git's index.lock was taken); the next check tries again";
 function applyUpdate(paths, claude, run, say) {
   const before = findUserInstall(paths.installedPluginsFile)?.version ?? null;
   const fail = (detail) => ({ after: before, before, detail, ok: false });
@@ -9739,28 +9943,40 @@ function applyUpdate(paths, claude, run, say) {
     const result = run([claude, ...args]);
     if (result.exitCode === 0)
       return null;
-    const last = result.output.trim().split(`
-`).at(-1)?.trim();
-    return `claude ${args.join(" ")} failed (exit ${result.exitCode})${last ? `: ${last}` : ""}`;
+    if (result.output.includes("index.lock")) {
+      return { after: before, before, busy: true, detail: BUSY_DETAIL, ok: false };
+    }
+    const last = redactUrlsIn(result.output.trim().split(`
+`).at(-1)?.trim() ?? "");
+    return fail(`claude ${args.join(" ")} failed (exit ${result.exitCode})${last ? `: ${last}` : ""}`);
   };
   const refreshed = step(MARKETPLACE_REFRESH);
   if (refreshed !== null)
-    return fail(refreshed);
+    return refreshed;
   const location = marketplaceInstallLocation(paths.knownMarketplacesFile, MARKETPLACE);
   const inCopy = location === null ? null : marketplaceCopyVersion(location, PLUGIN).version;
   if (isOlder(before, inCopy)) {
     const updated = step(PLUGIN_UPDATE);
     if (updated !== null)
-      return fail(updated);
+      return updated;
   }
   const after = findUserInstall(paths.installedPluginsFile)?.version ?? null;
   return { after, before, detail: "", ok: true };
 }
+function routerNeedsSetup(paths) {
+  const install = findUserInstall(paths.installedPluginsFile);
+  if (install === null || !existsSync14(paths.routerCopy))
+    return false;
+  const bundle = join12(install.installPath, "dist", "router.js");
+  return existsSync14(bundle) && readFileSync16(bundle, "utf8") !== readFileSync16(paths.routerCopy, "utf8");
+}
+var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
 function shownVersion(version) {
   return version !== null && /^[0-9A-Za-z.+-]{1,40}$/.test(version) ? version : "a new version";
 }
-function installedText(version) {
-  return `${PLUGIN} ${shownVersion(version)} installed; restart Claude sessions to load it`;
+function installedText(version, routerChanged = false) {
+  const text = `${PLUGIN} ${shownVersion(version)} installed; restart Claude sessions to load it`;
+  return routerChanged ? `${text}; ${ROUTER_SETUP_HINT}` : text;
 }
 function notifyCommand(text, platform, which) {
   if (platform === "linux") {
@@ -9773,11 +9989,15 @@ function notifyCommand(text, platform, which) {
   }
   return null;
 }
-function capturingRunner(env) {
+function commandContext(env, home) {
+  return { cwd: home, env: gitEnv(env) };
+}
+function capturingRunner(env, home) {
+  const context = commandContext(env, home);
   return (argv) => {
     try {
       const result = Bun.spawnSync(argv, {
-        env,
+        ...context,
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
@@ -9795,11 +10015,13 @@ function capturingRunner(env) {
 
 // src/cli/update.ts
 var UPDATE_USAGE = `Usage: ${COMMAND} update [--check | --hold | --resume]`;
-var terminalRunner = (env) => {
+var CHECK_RUNNING = "A check is running now; it finishes.";
+var terminalRunner = (env, home) => {
+  const context = commandContext(env, home);
   return (argv) => {
     try {
       const result = Bun.spawnSync(argv, {
-        env,
+        ...context,
         stdin: "ignore",
         stdout: "inherit",
         stderr: "inherit",
@@ -9854,22 +10076,20 @@ async function check(paths, env) {
   }
   return 0;
 }
-function routerNeedsSetup(paths) {
-  const install = findUserInstall(paths.installedPluginsFile);
-  if (install === null || !existsSync14(paths.routerCopy))
-    return false;
-  const bundle = join12(install.installPath, "dist", "router.js");
-  return existsSync14(bundle) && readFileSync15(bundle, "utf8") !== readFileSync15(paths.routerCopy, "utf8");
-}
 async function updateNow(paths, env, now) {
   const files = updateFiles(paths.stateDir);
   return withLock(files.lockDir, () => {
     const at = isoSeconds(now());
+    const previous = readLastCheck(files);
     const record = (result, detail) => writeLastCheck(files, { at, detail, result });
     const status = checkForUpdate(paths, env);
     const stop = cannotUpdate(status);
     if (stop !== null) {
-      record(status.kind === "unreachable" ? "failed" : "skipped", "detail" in status ? status.detail : `${PLUGIN_ID} is not installed`);
+      if (status.kind === "unreachable") {
+        writeLastCheck(files, unreachableCheck(previous, at, now(), status.detail));
+      } else {
+        record("skipped", "detail" in status ? status.detail : `${PLUGIN_ID} is not installed`);
+      }
       return stop;
     }
     let code = 0;
@@ -9878,18 +10098,19 @@ async function updateNow(paths, env, now) {
       record("up-to-date", status.installed);
     } else {
       const claude = Bun.which("claude", { PATH: env.PATH ?? "" });
-      const result = applyUpdate(paths, claude, terminalRunner(env), (line) => console.log(`$ ${line}`));
+      const result = applyUpdate(paths, claude, terminalRunner(env, paths.home), (line) => console.log(`$ ${line}`));
       if (!result.ok) {
         console.error(result.detail);
-        record("failed", result.detail);
+        record(result.busy === true ? "skipped" : "failed", result.detail);
         code = 1;
       } else if (result.after === result.before) {
         console.log(`${PLUGIN} ${result.after ?? "(no version)"} is the newest version.`);
         record("up-to-date", result.after ?? "(no version)");
       } else {
         console.log(`${PLUGIN} ${result.after ?? "(no version)"} installed (was ${result.before ?? "none"}). Restart Claude sessions to load it.`);
-        record("updated", `${result.after ?? "(no version)"} (was ${result.before ?? "none"})`);
-        if (routerNeedsSetup(paths)) {
+        const routerChanged = routerNeedsSetup(paths);
+        record("updated", `${result.after ?? "(no version)"} (was ${result.before ?? "none"})${routerChanged ? `; ${ROUTER_SETUP_HINT}` : ""}`);
+        if (routerChanged) {
           console.log(`Its router changed too. To run it: ${COMMAND} gateway setup (it asks before the restart).`);
         }
       }
@@ -9912,19 +10133,19 @@ async function runUpdate(paths, env, args, now = () => Date.now()) {
     case "--check":
       return check(paths, env);
     case "--hold":
-      return withLock(paths.stateDir, () => {
-        if (!hold(files, now())) {
-          console.log(`Background updates were already on hold (since ${heldSince(files)}).`);
-        } else {
-          console.log(`Background updates are on hold: a new Claude session no longer checks for a newer ${PLUGIN}. To resume: ${COMMAND} update --resume`);
-        }
-        return 0;
-      }, { waitMs: 1e4 });
+      if (!hold(files, now())) {
+        console.log(`Background updates were already on hold (since ${heldSince(files)}).`);
+      } else {
+        console.log(`Background updates are on hold: a new Claude session no longer checks for a newer ${PLUGIN}. To resume: ${COMMAND} update --resume`);
+      }
+      if (checkRunning(files))
+        console.log(CHECK_RUNNING);
+      return 0;
     case "--resume":
-      return withLock(paths.stateDir, () => {
-        console.log(resume(files) ? `Background updates resume: a new Claude session checks for a newer ${PLUGIN}, at most once an hour (${tildify(files.log, paths.home)}).` : "Background updates were not on hold.");
-        return 0;
-      }, { waitMs: 1e4 });
+      console.log(resume(files) ? `Background updates resume: a new Claude session checks for a newer ${PLUGIN}, at most once an hour (${tildify(files.log, paths.home)}).` : "Background updates were not on hold.");
+      if (checkRunning(files))
+        console.log(CHECK_RUNNING);
+      return 0;
     default:
       console.error(`Unknown option: ${args[0]}
 

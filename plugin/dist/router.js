@@ -6394,30 +6394,105 @@ function innerSocketPath(env, pid) {
     path: join3(dir, "router.sock")
   };
 }
-function relayConnection(client, path) {
-  const inner = net.connect(path);
-  client.setNoDelay(true);
-  client.on("error", () => inner.destroy());
-  inner.on("error", () => client.destroy());
-  client.on("close", () => inner.destroy());
-  client.pipe(inner);
-  inner.pipe(client);
+var IDLE_GRACE_MS = 500;
+function relay(entry, path, log, changed) {
+  const { client } = entry;
+  const endedFirst = () => {
+    client.off("data", firstByte);
+    client.destroy();
+  };
+  const firstByte = (first) => {
+    client.off("end", endedFirst);
+    client.pause();
+    entry.state = "connecting";
+    const inner = net.connect({ path });
+    inner.once("connect", () => {
+      entry.state = "relaying";
+      changed();
+    });
+    inner.on("error", (error) => {
+      if (entry.state === "connecting") {
+        log(`WARN relay: cannot reach the router's own server at ${path}: ${error.message}`);
+      }
+      client.destroy();
+    });
+    inner.once("close", (hadError) => {
+      if (hadError || client.writableFinished) {
+        client.destroy();
+        return;
+      }
+      client.once("finish", () => client.destroy());
+      client.end();
+    });
+    client.once("close", () => inner.destroy());
+    inner.write(first);
+    client.pipe(inner, { end: false });
+    inner.pipe(client);
+  };
+  client.once("data", firstByte);
+  client.once("end", endedFirst);
+  client.resume();
 }
-function listenOnFd(fd, inner) {
-  const server = net.createServer({ pauseOnConnect: true }, (client) => {
-    inner.then((path) => relayConnection(client, path), () => client.destroy());
+function listenOnFd(fd, inner, log) {
+  const tracked = new Set;
+  let draining = false;
+  let graceOver = false;
+  const connectedWaiters = [];
+  const closedWaiters = [];
+  const changed = () => {
+    if (!draining)
+      return;
+    const pending = [...tracked].some((entry) => entry.state !== "relaying");
+    if (graceOver && !pending)
+      for (const done of connectedWaiters.splice(0))
+        done();
+    if (tracked.size === 0)
+      for (const done of closedWaiters.splice(0))
+        done();
+  };
+  const server = net.createServer({ allowHalfOpen: true, pauseOnConnect: true }, (client) => {
+    const entry = { client, state: "waiting" };
+    tracked.add(entry);
+    client.setNoDelay(true);
+    client.on("error", () => client.destroy());
+    client.once("close", () => {
+      tracked.delete(entry);
+      changed();
+    });
+    inner.then((path) => {
+      if (!client.destroyed)
+        relay(entry, path, log, changed);
+    }, () => client.destroy());
   });
+  const drain = () => {
+    if (!draining) {
+      draining = true;
+      server.close();
+      setTimeout(() => {
+        graceOver = true;
+        for (const entry of tracked)
+          if (entry.state === "waiting")
+            entry.client.destroy();
+        changed();
+      }, IDLE_GRACE_MS);
+    }
+    const connected = new Promise((resolve) => connectedWaiters.push(resolve));
+    const closed = new Promise((resolve) => closedWaiters.push(resolve));
+    changed();
+    return { closed, connected };
+  };
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen({ fd }, () => {
       server.off("error", reject);
+      server.on("error", (error) => log(`WARN relay: the socket's server: ${error.message}`));
       const address = server.address();
       if (address === null || typeof address === "string") {
         server.close();
         reject(new Error(`file descriptor ${fd} is not a TCP listening socket`));
         return;
       }
-      resolve({ port: address.port, server });
+      resolve({ drain, port: address.port, server });
     });
   });
 }
@@ -7224,7 +7299,7 @@ async function startRouter(configPath, env = process.env) {
   const ready = new Promise((resolve) => {
     innerReady = resolve;
   });
-  const relay = await listenOnFd(fd, ready);
+  const relay = await listenOnFd(fd, ready, log);
   if (relay.port !== configPort) {
     log(`WARN the socket listens on port ${relay.port}, the config says ${configPort}: serving on ${relay.port}. Run: anymodel gateway setup`);
   }
@@ -7233,10 +7308,9 @@ async function startRouter(configPath, env = process.env) {
   log(`anymodel-router listening on http://127.0.0.1:${relay.port} (the socket systemd holds; config ${configPath})`);
   process.once("SIGTERM", () => {
     log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting; new connections wait in the socket for the next router`);
-    const relayClosed = new Promise((resolve) => {
-      relay.server.close(() => resolve());
-    });
-    exitWhenDone(Promise.all([server.stop(false), relayClosed]), log, inner.cleanup);
+    const drain = relay.drain();
+    const stopped = drain.connected.then(() => server.stop(false));
+    exitWhenDone(Promise.all([stopped, drain.closed]), log, inner.cleanup);
   });
 }
 function exitWhenDone(done, log, cleanup) {

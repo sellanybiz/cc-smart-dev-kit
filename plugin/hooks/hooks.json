@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
             "args": ["${CLAUDE_PLUGIN_ROOT}/dist/update-check.js"],
             "timeout": 10
           }

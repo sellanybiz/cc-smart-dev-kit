@@ -225,6 +225,19 @@ function takeOverStale(file: string, judged: Held, fallbackStaleMs: number): boo
 }
 
 /**
+ * True while a live run holds the lock in `stateDir`; a stale lock (`isStale`) and no lock
+ * are false. It only looks: it never takes, waits for or removes the lock.
+ */
+export function lockIsHeld(stateDir: string, fallbackStaleMs = FALLBACK_STALE_MS): boolean {
+  try {
+    const held = readHeld(join(stateDir, LOCK_FILE));
+    return held !== null && !isStale(held, fallbackStaleMs);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Runs `fn` while holding an exclusive lock file in `stateDir` (created with O_EXCL).
  * The lock holds the pid, the start time of that process and the host name. It is taken
  * over only when its holder is gone (isStale), so a long run keeps it, also one that is

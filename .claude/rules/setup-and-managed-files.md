@@ -147,9 +147,9 @@ valid across updates.
 - Restarts and permission changes happen only in a manual run (`anymodel setup`,
   `gateway setup`, `restore`) that shows the change first. A restart or stop of a running
   service says what it cuts, and asks: `confirm()` on a terminal; with no terminal, it
-  stops and changes nothing unless `--yes` was given. The SessionStart hook only
-  refreshes managed files and starts the background self-update (`hooks.md`), which
-  installs a new plugin version with `claude plugin` commands and restarts nothing.
+  stops and changes nothing unless `--yes` was given. The SessionStart hook only starts
+  the background self-update (`hooks.md`), which installs a new plugin version with
+  `claude plugin` commands and restarts nothing.
 - Setup refuses to start before `claude plugin marketplace add` has run, and says which
   command to run.
 
@@ -162,7 +162,9 @@ valid across updates.
   the person may leave out (the gateway, never set up) is a `·` line: information, never
   a failure. The list of checks is in `README.md` § Commands; keep it in step.
 - Exit codes: 0 done, 1 a failed check or an error, 2 a wrong command or option.
-- A check that reaches the network has a timeout and never asks for a password:
+- A check that reaches the network has a timeout and no password prompt in a terminal:
   `git ls-remote` with `GIT_TERMINAL_PROMPT=0`. It adds ssh `BatchMode` only when the
-  user has no `GIT_SSH_COMMAND`, `GIT_SSH` or `core.sshCommand` of their own.
+  user has no `GIT_SSH_COMMAND`, `GIT_SSH` or `core.sshCommand` of their own. A git
+  credential helper with a window of its own may still show one; say so, never "never
+  asks for a password".
 - A printed URL never shows credentials: remove them first.

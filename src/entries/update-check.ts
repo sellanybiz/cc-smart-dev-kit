@@ -3,7 +3,7 @@
 // records the session and starts the check when one is due (src/update/background.ts).
 import { PLUGIN, VERSION } from "../build-info";
 import { cliPaths } from "../cli/paths";
-import { capturingRunner, notifyCommand } from "../update/apply";
+import { capturingRunner, commandContext, notifyCommand } from "../update/apply";
 import { backgroundCheck, sessionStart } from "../update/background";
 
 const env = process.env;
@@ -17,30 +17,33 @@ function sessionPid(): null | number {
 
 if (process.argv.includes("--background")) {
   const which = (command: string) => Bun.which(command, { PATH: env.PATH ?? "" });
+  const run = capturingRunner(env, paths.home);
   await backgroundCheck({
     paths,
     env,
     now: () => Date.now(),
     claude: which("claude"),
-    run: capturingRunner(env),
+    run,
     notify: (text) => {
       const argv = notifyCommand(text, process.platform, which);
-      if (argv !== null) capturingRunner(env)(argv);
+      if (argv !== null) run(argv);
     },
   });
 } else {
   try {
     const answer = sessionStart({
       paths,
+      env,
       nowMs: Date.now(),
       sessionPid: sessionPid(),
       version: VERSION,
       spawnBackground: () => {
         // Detached (its own session, setsid) with no pipe to this hook: it outlives the
-        // hook, and Claude Code never waits for it.
+        // hook, and Claude Code never waits for it. In the home folder, without the git
+        // variables of the session's repo (`commandContext`).
         Bun.spawn([process.execPath, Bun.main, "--background"], {
+          ...commandContext(env, paths.home),
           detached: true,
-          env,
           stdio: ["ignore", "ignore", "ignore"],
         }).unref();
       },

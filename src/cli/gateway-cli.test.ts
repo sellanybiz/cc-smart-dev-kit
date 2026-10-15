@@ -311,6 +311,7 @@ describe("anymodel gateway setup", () => {
         // still drains; nothing runs, so nothing is stopped. Changed on purpose: the
         // socket opens the port first, then the router starts on it.
         "--user is-active anymodel-router.service",
+        "--user reset-failed anymodel-router.socket anymodel-router.service",
         "--user start anymodel-router.socket",
         "--user start anymodel-router.service",
         "",
@@ -861,6 +862,69 @@ describe("anymodel doctor: a gateway that is not installed, or half", () => {
     ]);
     // Asked of the fake, never the network.
     expect(m.probed).toEqual(["http://127.0.0.1:20100/__anymodel/health"]);
+  });
+
+  /**
+   * The router's two lines when it does not answer, with a systemctl that answers per
+   * command: the service's state, the socket's state, and the socket's `Result`.
+   */
+  async function notAnswering(units: { service: string; socket: string; result: string }) {
+    const m = machine();
+    expect((await m.runHere(["gateway", "setup", "--no-backend-key"])).exitCode).toBe(0);
+    const asked: string[] = [];
+    const checks = await gatewayChecks({
+      paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
+      bundle: BUILT_ROUTER,
+      runner: (cmd) => {
+        asked.push(cmd.slice(2).join(" "));
+        if (cmd[2] === "show") return { exitCode: 0, output: `${units.result}\n` };
+        const word = cmd.at(-1)?.endsWith(".socket") ? units.socket : units.service;
+        return { exitCode: word === "active" ? 0 : 3, output: `${word}\n` };
+      },
+      systemd: true,
+      // An open socket with no router holds the connection: no answer in time.
+      fetch: async () => {
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      },
+    });
+    const lines = checks.map((check) => `${check.info ? "·" : check.ok ? "✓" : "✗"} ${check.text}`);
+    return { asked, lines };
+  }
+
+  test("the socket open and its router not answering (a crash loop): ✗ says requests wait, names the router's log", async () => {
+    const { lines } = await notAnswering({
+      result: "success",
+      service: "activating",
+      socket: "active",
+    });
+    expect(lines.slice(3, 5)).toEqual([
+      "✓ the router's socket (anymodel-router.socket) holds 127.0.0.1:20100",
+      "✗ the socket holds 127.0.0.1:20100, but the router does not answer (The operation timed out.): every request waits in the socket and gets no answer. See why: journalctl --user -u anymodel-router -n 30. Then: anymodel gateway setup",
+    ]);
+  });
+
+  test("the socket closed by systemd after the router's start limit: ✗ says every request is refused, names the router's log", async () => {
+    const { asked, lines } = await notAnswering({
+      result: "service-start-limit-hit",
+      service: "failed",
+      socket: "failed",
+    });
+    expect(asked).toContain("show -p Result --value anymodel-router.socket");
+    expect(lines.slice(3, 5)).toEqual([
+      "✗ the router's socket (anymodel-router.socket) is failed. Run: anymodel gateway setup",
+      "✗ the router failed to start again and again, so systemd closed its socket: every request to 127.0.0.1:20100 is refused (The operation timed out.). See why: journalctl --user -u anymodel-router -n 30. Then: anymodel gateway setup",
+    ]);
+  });
+
+  test("a socket stopped for another reason: the plain line", async () => {
+    const { lines } = await notAnswering({
+      result: "success",
+      service: "inactive",
+      socket: "inactive",
+    });
+    expect(lines[4]).toBe(
+      "✗ the router does not answer on 127.0.0.1:20100 (The operation timed out.)",
+    );
   });
 });
 

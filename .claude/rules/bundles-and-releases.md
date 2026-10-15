@@ -38,6 +38,9 @@ Claude Code copies only `plugin/` into
 - **A new bundle is a new file in `src/entries/`.** A test file there is skipped.
 - `plugin/bin/anymodel` is written by hand. It finds `dist/cli.js` from its own
   location (`dirname "$0"`), because `CLAUDE_PLUGIN_ROOT` is not set in the Bash tool.
+- `plugin/bin/anymodel-bun` is written by hand too: the hooks' way to bun when PATH has
+  none (`hooks.md`). It reads the launcher's `baked_bun=` line, so a change to that line
+  in `launcherScript` changes the shim too (`src/setup/bun-shim.test.ts`).
 
 ## The version lives in one place
 

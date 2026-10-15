@@ -15,10 +15,11 @@
  * the copy or a unit really changed (or an earlier setup did not finish:
  * `restartPendingFile`), and only after the person said yes (or gave `--yes`).
  *
- * The one restart that cannot keep the port open is the move from the older unit (no
- * socket) to this shape: systemd refuses to start a socket while its service still runs,
- * and starts it only once the old router has drained, so new requests fail until then,
- * as on every restart before. Setup says so before it asks.
+ * The restarts that cannot keep the port open are those that must (re)open the socket:
+ * the move from the older unit (no socket) to this shape, a socket that is not open, a
+ * changed socket unit or port. systemd refuses to start a socket while its service still
+ * runs, and starts it only once the old router has drained, so new requests fail until
+ * then, as on every restart before. Setup names the case before it asks.
  */
 
 import { existsSync, readFileSync, rmSync } from "node:fs";
@@ -48,12 +49,34 @@ export const RESTART_WARNING =
 export const MOVE_WARNING =
   "anymodel-router is running without its socket unit. This setup moves it to one, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
 
+/**
+ * Said before the restart that opens the socket again: its unit file is there, but the
+ * socket is not open (stopped by hand, or closed by systemd after the router failed to
+ * start too often), so a running router holds the port itself.
+ */
+export const SOCKET_STOPPED_WARNING =
+  "anymodel-router is running, but its socket is not open: the router holds the port itself. This setup opens the socket again, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
+
 /** Said before the restart that reopens the socket on a new port (the config's changed). */
 export const PORT_WARNING =
   "anymodel-router is running, and its socket moves to a new port. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
 
+/** Said before the restart that reopens the socket on the same port: its unit file changed. */
+export const SOCKET_CHANGED_WARNING =
+  "anymodel-router is running, and its socket unit changed, so the socket closes and opens again. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
+
 /** Every warning `installRouter` says before its question. */
-export const INSTALL_WARNINGS: readonly string[] = [RESTART_WARNING, MOVE_WARNING, PORT_WARNING];
+export const INSTALL_WARNINGS: readonly string[] = [
+  RESTART_WARNING,
+  MOVE_WARNING,
+  SOCKET_STOPPED_WARNING,
+  PORT_WARNING,
+  SOCKET_CHANGED_WARNING,
+];
+
+/** How often the router may fail to start within `START_LIMIT_SECONDS` before systemd gives up. */
+export const START_LIMIT_BURST = 5;
+export const START_LIMIT_SECONDS = 60;
 
 /** Runs a command and waits; a test passes its own. */
 export type Runner = (cmd: string[]) => { exitCode: number; output: string };
@@ -110,8 +133,12 @@ WantedBy=sockets.target
  *   the answers in flight are done. `KillMode=mixed` sends that SIGTERM to the router
  *   alone, and only after `TimeoutStopSec` the SIGKILL to everything left. 120 s lets a
  *   normal answer finish; a longer one is cut, and Claude Code retries it.
- * - `StartLimitIntervalSec=0`: no start limit, so a crash loop keeps retrying every 2 s
- *   and never parks the unit in "failed": every session depends on it.
+ * - A start limit (`START_LIMIT_BURST` starts within `START_LIMIT_SECONDS`): a router that
+ *   cannot start (a crash loop) stops being retried, and systemd then closes the socket
+ *   too (its result `service-start-limit-hit`; seen live, systemd 259). The port refuses
+ *   again, so every request fails at once with "connection refused" instead of waiting
+ *   in an open socket for an answer that never comes. `doctor` says so; `gateway setup`
+ *   opens both again. One crash is retried after 2 s, as before.
  * - `WantedBy=default.target`: the router starts at login, so the first request does not
  *   wait for it; `Also=` enables the socket with it.
  */
@@ -127,7 +154,8 @@ export function renderUnit(bunPath: string, copyPath: string, socketName = SOCKE
 Description=${name}: local AI gateway for Claude Code (127.0.0.1 only)
 Wants=${socketName}
 After=${socketName}
-StartLimitIntervalSec=0
+StartLimitIntervalSec=${START_LIMIT_SECONDS}
+StartLimitBurst=${START_LIMIT_BURST}
 
 [Service]
 Type=simple
@@ -219,6 +247,25 @@ export function restartPendingFile(stateDir: string): string {
 const HEALTH_WAIT_MS = 5_000;
 
 /**
+ * What a restart of the running router does, from what really changed: a restart under the
+ * open socket refuses nothing; every way that (re)opens the socket refuses new requests
+ * for one drain, and the warning names why it reopens.
+ */
+function restartWarning(
+  rebind: boolean,
+  socketOpen: boolean,
+  socketPlan: string,
+  socketPath: string,
+  port: number,
+): string {
+  if (!rebind) return RESTART_WARNING;
+  // Not open: no socket unit yet (the move from the older unit), or one that was stopped.
+  if (!socketOpen) return socketPlan === "created" ? MOVE_WARNING : SOCKET_STOPPED_WARNING;
+  const oldPort = existsSync(socketPath) ? socketPort(readFileSync(socketPath, "utf8")) : null;
+  return oldPort !== null && oldPort !== port ? PORT_WARNING : SOCKET_CHANGED_WARNING;
+}
+
+/**
  * Puts the copy and the two units in place, then starts them, or restarts the router when
  * the copy or a unit changed (or an earlier setup did not finish). Re-running it is the
  * upgrade path. A running router is restarted only after a yes; without one nothing is
@@ -232,10 +279,12 @@ const HEALTH_WAIT_MS = 5_000;
  * Two ways to (re)start:
  *   - the socket is open and its file did not change: `restart` the service. The socket
  *     keeps the port; new requests wait for the new router.
- *   - otherwise (the move from the older unit, a changed port, a socket that is not
+ *   - otherwise (the move from the older unit, a changed socket unit, a socket that is not
  *     open): stop the service without waiting (`--no-block`: the old router closes its
- *     port at once and drains), stop the socket when it is open, then start the socket
- *     and the service. systemd starts them once the old router has drained.
+ *     port at once and drains), stop the socket when it is open, clear a start limit the
+ *     units hit (`reset-failed`), then start the socket and the service. systemd starts
+ *     them once the old router has drained. A socket that cannot open is said, and the
+ *     service starts without it: the router binds the port itself.
  * After either, it waits for the health page; when that never answers, it throws with
  * the unit's state, and the restart-pending marker stays.
  */
@@ -277,11 +326,11 @@ export async function installRouter(options: InstallOptions): Promise<InstallRes
   }
 
   // The socket must (re)open: it is not open (the move from the older unit, whose router
-  // holds the port itself), or it listens on another port.
+  // holds the port itself, or a socket that was stopped), or its unit changed.
   const rebind = !socketOpen || socketPlan !== "unchanged";
   const active = unitActive(options.runner, unitName);
   if (active) {
-    options.say(!rebind ? RESTART_WARNING : socketOpen ? PORT_WARNING : MOVE_WARNING);
+    options.say(restartWarning(rebind, socketOpen, socketPlan, options.socketPath, options.port));
     if (!options.yes) {
       const yes = options.confirm?.("Restart anymodel-router now?") ?? null;
       if (yes !== true) {
@@ -328,16 +377,21 @@ export async function installRouter(options: InstallOptions): Promise<InstallRes
     // systemd runs a stop before a start of units ordered against each other (the
     // service is After= its socket), so this returns once the old router has drained.
     if (socketOpen) run(options.runner, ["systemctl", "--user", "stop", socketName]);
+    // A unit that hit its start limit (a crash loop; systemd then closed the socket too)
+    // would refuse a start within the limit's window: clear that first. Its answer does
+    // not matter (a unit that did not fail has nothing to clear).
+    options.runner(["systemctl", "--user", "reset-failed", socketName, unitName]);
     // The same order makes the socket's start wait for the old router's exit, so it binds
     // a free port. Two calls, socket first: started together, the service's start takes
     // the place of its stop, and systemd refuses the socket while the old router still
     // drains (seen live). A port still taken is another program's (a `gateway serve` in
-    // a terminal): the socket fails to open, and setup says where to look.
+    // a terminal): the socket fails to open. Then the router starts without it and binds
+    // the port itself (when it can), so the gateway still serves, and setup says so.
     const openSocket = ["systemctl", "--user", "start", socketName];
     const opened = options.runner(openSocket);
     if (opened.exitCode !== 0) {
-      throw new Error(
-        `${openSocket.join(" ")} failed (exit ${opened.exitCode}):\n${opened.output.trim()}\nIs another program on 127.0.0.1:${options.port}? See: ss -ltnp, and journalctl --user -u ${socketName} -n 30. Then run ${COMMAND} gateway setup again.`,
+      options.say(
+        `${openSocket.join(" ")} failed (exit ${opened.exitCode}): ${(opened.output.trim().split("\n")[0] ?? "").replace(/\.$/, "")}. Starting ${stem(unitName)} without its socket: the router binds 127.0.0.1:${options.port} itself, and until the socket opens, a restart refuses new requests while the old router drains. Is another program on that port? See: ss -ltnp, and journalctl --user -u ${socketName} -n 30. Then run ${COMMAND} gateway setup again.`,
       );
     }
     run(options.runner, ["systemctl", "--user", "start", unitName]);
