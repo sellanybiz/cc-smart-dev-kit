@@ -96,9 +96,15 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
  *   change, or removed when anymodel created them.
  * Each change makes a backup first. Afterwards the file is no longer tracked, so a second
  * restore changes nothing.
+ *
+ * `except`: files (their real paths, as `changed.json` records them) left as they are and
+ * still tracked, for a later restore. `restore` uses it for the router's copy and unit
+ * while running sessions still use the router.
  */
-export function restore(stateDir: string): RestoreResult[] {
-  return Object.entries(readChanged(stateDir)).map(([file, entry]) => {
+export function restore(stateDir: string, options: { except?: string[] } = {}): RestoreResult[] {
+  const except = new Set(options.except ?? []);
+  const entries = Object.entries(readChanged(stateDir)).filter(([file]) => !except.has(file));
+  return entries.map(([file, entry]) => {
     const result = entry.kinds.includes("whole-file")
       ? restoreWholeFile(file, entry, stateDir)
       : restorePartly(file, entry, stateDir);

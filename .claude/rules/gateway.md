@@ -65,12 +65,20 @@ can block good work, and a weak one can let a risky command through.
 - The unit runs the copy in `~/.local/share/anymodel/`, with the absolute bun path,
   never a file under `${CLAUDE_PLUGIN_ROOT}`.
 - A restart cuts every answer in flight on the machine. `gateway setup` restarts only
-  when the copy or the unit changed, says so first, and asks unless `--yes`. `restore`
-  asks the same before it stops the router.
+  when the copy or the unit changed (or the restart-pending marker says an earlier setup
+  did not finish), says so first, and asks unless `--yes`. Before any write or question
+  it asks the port, and stops when another program holds it; after the restart it waits
+  for the health page, and keeps the marker when that never answers.
+- Stopping the router while running sessions still point at it makes each of them fail.
+  So `restore` stops it only once anymodel's gateway env keys are gone (its stage 2), and
+  asks first; `--now` does it at once, after saying every session fails until it restarts.
 - In tests, `systemctl` is a fake on PATH (or a fake runner), and every config a test
-  writes names a free port of the test's own. **Never run the router, `status` or `on`
-  in a test without such a config**: the default port may belong to a router running on
-  the machine.
+  writes names a free port of the test's own. **Never run the router, `setup`, `status`
+  or `on` in a test without such a config, or a fake probe**: the default port may belong
+  to a router running on the machine. The port guard fails a test that tries
+  (`.claude/rules/testing.md` § Never the live router's port).
+- The router bundle carries no version: import names from `src/build-info/names.ts`
+  there (`.claude/rules/bundles-and-releases.md`).
 
 ## Names
 

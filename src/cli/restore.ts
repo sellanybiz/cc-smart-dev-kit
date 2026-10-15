@@ -1,5 +1,13 @@
+import { rmSync } from "node:fs";
 import { COMMAND } from "../build-info";
-import { type Runner, stopRouter, UNIT_NAME, unitActive } from "../gateway/service";
+import {
+  type Runner,
+  restartPendingFile,
+  stopRouter,
+  UNIT_NAME,
+  unitActive,
+} from "../gateway/service";
+import { ownedGatewayEnvKeys } from "../gateway/settings";
 import { withLock } from "../setup/lock";
 import { type RestoreResult, restore } from "../setup/restore";
 import { readChanged, realTarget } from "../setup/write";
@@ -25,38 +33,110 @@ function describe(result: RestoreResult, short: (path: string) => string): strin
 export const STOP_WARNING =
   "anymodel-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.";
 
+/** Said before `restore --now`, and before the question. */
+export const NOW_WARNING = `restore --now stops anymodel-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
+
+/** Said at the end of stage 1. */
+export const STAGE_ONE_DONE = `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
+
 export interface RestoreOptions {
   /** `--yes`: stop a running router without asking. */
   yes: boolean;
+  /** `--now`: both stages at once, though running sessions still use the router. */
+  now: boolean;
   runner: Runner;
   systemd: boolean;
   /** Asks the person; null when there is no terminal. */
   confirm: ((question: string) => boolean) | null;
 }
 
+/** Asks before something that cuts running sessions; true to go on. Prints why it stops. */
+function askFirst(
+  options: RestoreOptions,
+  warning: string,
+  question: string,
+  again: string,
+): boolean {
+  console.log(warning);
+  if (options.yes) return true;
+  const yes = options.confirm?.(question) ?? null;
+  if (yes === true) return true;
+  console.log(
+    yes === null ? `Nothing was changed. Run again with --yes ${again}` : "Nothing was changed.",
+  );
+  return false;
+}
+
+function print(results: RestoreResult[], short: (path: string) => string): void {
+  for (const result of results) {
+    console.log(describe(result, short));
+    if (result.savedAs) {
+      console.log(`  (its state before this restore: ${short(result.savedAs)})`);
+    }
+  }
+}
+
 /**
- * Restore also undoes the router service when `gateway setup` installed its unit: it stops
- * and disables the unit (while its file is still there), then removes the files, then
- * reloads systemd. Stopping a running router cuts the answers in flight, so it asks first.
+ * Restore also undoes the router service when `gateway setup` installed it. Running Claude
+ * sessions read `ANTHROPIC_BASE_URL` at start, so while the gateway's env keys are in the
+ * settings they still send every request to the router; stopping it would make each of
+ * them fail. So, with the router installed:
+ *   - stage 1, while anymodel's gateway env keys are there: everything is restored but the
+ *     router's copy and unit, and the router keeps running. It says to restart the
+ *     sessions and run `restore` again.
+ *   - stage 2, with no such key left: it stops and disables the unit (asking first when it
+ *     runs, because that cuts answers in flight), restores the rest (the copy and the unit
+ *     are removed), reloads systemd, and clears the restart-pending marker.
+ *   - `--now`: both at once, after the warning that every running session fails until it
+ *     restarts (asked, or `--yes`).
  */
 export async function runRestore(paths: CliPaths, options: RestoreOptions): Promise<number> {
   const short = (path: string) => tildify(path, paths.home);
-  const unitTracked =
-    options.systemd && Object.hasOwn(readChanged(paths.stateDir), realTarget(paths.routerUnitFile));
-  if (unitTracked && unitActive(options.runner)) {
-    console.log(STOP_WARNING);
-    if (!options.yes) {
-      const yes = options.confirm?.("Stop anymodel-router and restore?") ?? null;
-      if (yes !== true) {
-        console.log(
-          yes === null
-            ? `Nothing was changed. Run again with --yes to stop it: ${COMMAND} restore --yes`
-            : "Nothing was changed.",
-        );
-        return 1;
-      }
+  const changed = readChanged(paths.stateDir);
+  const routerFiles = [realTarget(paths.routerCopy), realTarget(paths.routerUnitFile)];
+  const routerTracked = routerFiles.some((file) => Object.hasOwn(changed, file));
+  const unitTracked = options.systemd && Object.hasOwn(changed, realTarget(paths.routerUnitFile));
+  const sessionsUseRouter =
+    routerTracked && ownedGatewayEnvKeys(paths.settingsFile, paths.stateDir).length > 0;
+
+  if (sessionsUseRouter && !options.now) {
+    // Stage 1: nothing stops, so nothing is asked.
+    return withLock(
+      paths.stateDir,
+      () => {
+        const results = restore(paths.stateDir, { except: routerFiles });
+        print(results, short);
+        console.log(STAGE_ONE_DONE);
+        return results.some((result) => result.action === "no-backup") ? 1 : 0;
+      },
+      { waitMs: 10_000 },
+    );
+  }
+
+  if (sessionsUseRouter) {
+    if (
+      !askFirst(
+        options,
+        NOW_WARNING,
+        "Stop anymodel-router and restore everything now?",
+        `to do it now: ${COMMAND} restore --now --yes`,
+      )
+    ) {
+      return 1;
+    }
+  } else if (unitTracked && unitActive(options.runner)) {
+    if (
+      !askFirst(
+        options,
+        STOP_WARNING,
+        "Stop anymodel-router and restore?",
+        `to stop it: ${COMMAND} restore --yes`,
+      )
+    ) {
+      return 1;
     }
   }
+
   return withLock(
     paths.stateDir,
     () => {
@@ -66,16 +146,13 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       }
       const results = restore(paths.stateDir);
       if (unitTracked) options.runner(["systemctl", "--user", "daemon-reload"]);
+      // The router is gone: a setup that did not finish has nothing left to finish.
+      rmSync(restartPendingFile(paths.stateDir), { force: true });
       if (results.length === 0) {
         console.log("Nothing to restore: anymodel has nothing in any file.");
         return 0;
       }
-      for (const result of results) {
-        console.log(describe(result, short));
-        if (result.savedAs) {
-          console.log(`  (its state before this restore: ${short(result.savedAs)})`);
-        }
-      }
+      print(results, short);
       return results.some((result) => result.action === "no-backup") ? 1 : 0;
     },
     { waitMs: 10_000 },

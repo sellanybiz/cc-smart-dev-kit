@@ -26,10 +26,12 @@
  *     answered 429 / 5xx rests a while (`cooldownSeconds`); the last target of a slot is
  *     always tried. A client that hangs up rests nothing.
  *   - An explicit `<backend>:<model>` → that backend, no fallback.
- *   - Auto mode's safety check (`isAutoModeGuard`) → the `anymodel-judge` slot, only when
- *     the person turned it on (it is off by default). Without that slot it stays on
- *     Claude: a `claude-…` check untouched, a slot-named one to that slot's Claude
- *     targets only (`resolveRequestRoute`).
+ *   - Auto mode's safety check (`isAutoModeGuard`, on the request as it came, so an old
+ *     name in `aliases` is seen too) → the `anymodel-judge` slot, only when the person
+ *     turned it on (it is off by default). Without that slot it stays on Claude: a
+ *     `claude-…` check untouched, a slot-named one to that slot's Claude targets only, and
+ *     one whose name leads to no Claude target (a cheap-only slot, or an alias to
+ *     `<backend>:<model>`) to Anthropic as it was sent (`resolveRequestRoute`).
  *   - No prompt text is ever changed. A cheap backend gets only the named format
  *     translations below; Anthropic gets the bytes as they came.
  *   - A cheap backend never sees Claude Code's tool search: `toolSearchForBackend`.
@@ -802,14 +804,15 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       }
     }
     // No body when the client sent none: a DELETE must not gain `content-length: 0`.
-    // Replaced below when an alias changes the model.
-    let bytes =
+    // `bytes` is replaced below when an alias changes the model; `sent` never is.
+    const sent =
       req.method === "GET" || req.method === "HEAD" || req.body === null
         ? null
         : new Uint8Array(await req.arrayBuffer());
+    let bytes = sent;
 
-    const direct = async (): Promise<Outcome> => {
-      const result = await send(req, anthropicUpstream(req, url, config, bytes), null);
+    const direct = async (body = bytes): Promise<Outcome> => {
+      const result = await send(req, anthropicUpstream(req, url, config, body), null);
       const response =
         "response" in result
           ? relay(result.response, null)
@@ -837,7 +840,10 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       };
     }
     if (typeof parsed.model === "string") model.name = parsed.model;
-    // An old name first, so the rest routes on the name it stands for; even the safety
+    // The safety check is recognised on the request as it came, an old name included: an
+    // alias may point at a cheap backend, and with the judge off the check stays on Claude.
+    const guard = isAutoModeGuard(parsed, config.aliases);
+    // Then the old name, so the rest routes on the name it stands for; even the safety
     // check, whose newer form is sent under the sonnet name.
     const alias = resolveAlias(parsed.model, config.aliases);
     let body = parsed;
@@ -852,7 +858,6 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       body = { ...parsed, model: alias.to };
       bytes = encoder.encode(JSON.stringify(body));
     }
-    const guard = isAutoModeGuard(body);
     // Its newer form carries the sonnet slot's name; the log must still tell it apart.
     if (guard) model.name = `${model.name} (safety check)`;
     const judge = guard ? resolveRoute(JUDGE_SLOT, config) : null;
@@ -873,8 +878,10 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       }
       return chain(req, url, config, body, judge.targets, JUDGE_SLOT, true);
     }
-    const decided = resolveRequestRoute(body, config);
+    const decided = resolveRequestRoute(body, config, guard);
     if (decided.kind === "anthropic") return direct();
+    // A check with no Claude target behind its name: Anthropic gets what Claude Code sent.
+    if (decided.kind === "anthropic-as-sent") return direct(sent);
     if (decided.kind === "unknown-slot") {
       const slots = Object.keys(config.slots);
       return {

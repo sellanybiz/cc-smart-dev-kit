@@ -7,9 +7,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { listModels } from "./backends";
-import { NEEDS_SYSTEMD, routerHealth } from "./commands";
-import { loadConfigFile, messageOf } from "./config";
-import { type Runner, UNIT_NAME } from "./service";
+import { NEEDS_SYSTEMD } from "./commands";
+import { emptyConfig, loadConfigFile, messageOf } from "./config";
+import { type HealthFetch, routerHealth } from "./health";
+import { type Runner, restartPendingFile, UNIT_NAME } from "./service";
+import { shownValue } from "./settings";
 import { JUDGE_SLOT } from "./targets";
 
 export interface DoctorCheck {
@@ -28,22 +30,41 @@ export async function gatewayChecks(options: {
   bundle: string;
   runner: Runner;
   systemd: boolean;
+  /** Asks the router's health page; a test passes a fake. The real `fetch` by default. */
+  fetch?: HealthFetch;
 }): Promise<DoctorCheck[]> {
   const { paths } = options;
   const short = (path: string) => tildify(path, paths.home);
-  const setUp = [paths.gatewayConfigFile, paths.routerCopy, paths.routerUnitFile].some((file) =>
-    existsSync(file),
-  );
-  if (!setUp) {
-    return [
-      {
-        ok: true,
-        info: true,
-        text: `gateway: not set up (optional). To use it: ${COMMAND} gateway setup`,
-      },
-    ];
-  }
   const checks: DoctorCheck[] = [];
+
+  // A setup that stopped between its first write and a router that answers: whatever
+  // else is there, the gateway may be half installed.
+  if (existsSync(restartPendingFile(paths.stateDir))) {
+    checks.push({
+      ok: false,
+      text: `a gateway setup did not finish; run: ${COMMAND} gateway setup`,
+    });
+  }
+
+  // Installed means the router copy or its unit is there. `gateway.json` alone is kept on
+  // purpose (by restore, say): it holds the person's key.
+  const installed = existsSync(paths.routerCopy) || existsSync(paths.routerUnitFile);
+  if (!installed) {
+    checks.push(
+      existsSync(paths.gatewayConfigFile)
+        ? {
+            ok: true,
+            info: true,
+            text: `gateway.json kept (${short(paths.gatewayConfigFile)}); the gateway is not installed. To use it: ${COMMAND} gateway setup`,
+          }
+        : {
+            ok: true,
+            info: true,
+            text: `gateway: not set up (optional). To use it: ${COMMAND} gateway setup`,
+          },
+    );
+    return checks;
+  }
 
   if (!options.systemd) {
     checks.push({
@@ -75,14 +96,25 @@ export async function gatewayChecks(options: {
   }
 
   let config: ReturnType<typeof loadConfigFile>;
-  try {
-    config = loadConfigFile(paths.gatewayConfigFile);
-  } catch (error) {
-    checks.push({ ok: false, text: `gateway config: ${messageOf(error)}` });
-    return checks;
+  if (!existsSync(paths.gatewayConfigFile)) {
+    // Set up with --no-backend-key: the router runs `emptyConfig()` on the default port,
+    // every slot on Claude. Nothing is wrong; it is only not cheap yet.
+    config = emptyConfig();
+    checks.push({
+      ok: true,
+      info: true,
+      text: `no ${short(paths.gatewayConfigFile)} yet: the router answers every slot on your own Claude login. To add a backend: ${COMMAND} gateway setup --backend-key-stdin omniroute < key-file`,
+    });
+  } else {
+    try {
+      config = loadConfigFile(paths.gatewayConfigFile);
+    } catch (error) {
+      checks.push({ ok: false, text: `gateway config: ${messageOf(error)}` });
+      return checks;
+    }
   }
 
-  const health = await routerHealth(config.port);
+  const health = await routerHealth(config.port, options.fetch);
   checks.push(
     "error" in health
       ? {
@@ -93,18 +125,17 @@ export async function gatewayChecks(options: {
   );
 
   for (const [name, backend] of Object.entries(config.backends)) {
+    // A base URL may carry a user and password: never printed.
+    const url = shownValue(backend.baseUrl);
     const listed = await listModels(backend.baseUrl, backend.apiKey, 5_000);
     checks.push(
       "error" in listed
-        ? {
-            ok: false,
-            text: `backend ${name} (${backend.baseUrl}) is unreachable: ${listed.error}`,
-          }
+        ? { ok: false, text: `backend ${name} (${url}) is unreachable: ${listed.error}` }
         : listed.status === 200
-          ? { ok: true, text: `backend ${name} (${backend.baseUrl}) answers` }
+          ? { ok: true, text: `backend ${name} (${url}) answers` }
           : {
               ok: false,
-              text: `backend ${name} (${backend.baseUrl}) answered HTTP ${listed.status}; check its key`,
+              text: `backend ${name} (${url}) answered HTTP ${listed.status}; check its key`,
             },
     );
   }

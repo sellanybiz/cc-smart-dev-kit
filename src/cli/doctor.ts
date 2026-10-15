@@ -286,14 +286,65 @@ function checkNameClash(settings: Record<string, unknown> | null): Check {
  * hooks run.
  */
 export const OLD_PLUGIN_ID = "cc@cc-agentic";
+/** The old marketplace's name, which was also the old command and the old state folder's. */
+const OLD_NAME = "cc-agentic";
 
-/** The old plugin is still enabled: ✗. Not enabled: no line at all. */
-function checkOldPlugin(settings: Record<string, unknown> | null): Check | null {
-  const enabled = (settings?.enabledPlugins ?? {}) as Record<string, unknown>;
-  if (enabled[OLD_PLUGIN_ID] !== true) return null;
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** True when `key` is a key of the object at `field` of `data`. */
+function hasEntry(data: Record<string, unknown> | null, field: string | null, key: string) {
+  const node = field === null ? data : data?.[field];
+  return isJsonObject(node) && Object.hasOwn(node, key);
+}
+
+/**
+ * What the old plugin (before 0.2.0) left behind.
+ *
+ * Without its state folder (`<config folder>/cc-agentic`), only an enabled old plugin is
+ * reported, as before: two copies of the same hooks would run. With it, the old `setup`
+ * ran on this machine, so any of these is a leftover: the old plugin enabled or
+ * installed, its launcher `~/.local/bin/cc-agentic`, `extraKnownMarketplaces.cc-agentic`
+ * in settings.json, or the marketplace in Claude Code's list. The order to clear them:
+ * the old `restore` first (it removes what the old setup wrote), while its launcher still
+ * runs; then the plugin; then the marketplace. A launcher that cannot run cannot restore,
+ * so the two things the old setup wrote are named for removal by hand.
+ */
+function checkOldPlugin(settings: Record<string, unknown> | null, paths: CliPaths): Check | null {
+  const plugins = settings?.enabledPlugins;
+  const enabled = isJsonObject(plugins) && plugins[OLD_PLUGIN_ID] === true;
+  if (!existsSync(join(paths.claudeConfigDir, OLD_NAME))) {
+    if (!enabled) return null;
+    return {
+      ok: false,
+      text: `the old plugin ${OLD_PLUGIN_ID} is still enabled: two copies of the same hooks would run. Run: claude plugin uninstall ${OLD_PLUGIN_ID}`,
+    };
+  }
+  const short = (path: string) => tildify(path, paths.home);
+  const launcher = join(paths.binDir, OLD_NAME);
+  const left = [
+    enabled ? "the plugin enabled" : null,
+    hasEntry(readSettings(paths.installedPluginsFile), "plugins", OLD_PLUGIN_ID)
+      ? "the plugin installed"
+      : null,
+    existsSync(launcher) ? `its launcher ${short(launcher)}` : null,
+    hasEntry(settings, "extraKnownMarketplaces", OLD_NAME)
+      ? `extraKnownMarketplaces.${OLD_NAME} in ${short(paths.settingsFile)}`
+      : null,
+    hasEntry(readSettings(paths.knownMarketplacesFile), null, OLD_NAME)
+      ? `the ${OLD_NAME} marketplace`
+      : null,
+  ].filter((thing): thing is string => thing !== null);
+  if (left.length === 0) return null;
+  const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME}\``;
+  const canRun = existsSync(launcher) && isExecutable(launcher) && run([launcher, "version"]).ok;
+  const steps = canRun
+    ? `Run \`${OLD_NAME} restore\` first, then \`${then}.`
+    : `Its launcher cannot run, so remove by hand ${short(launcher)} and "${OLD_NAME}" under extraKnownMarketplaces in ${short(paths.settingsFile)}; then run \`${then}.`;
   return {
     ok: false,
-    text: `the old plugin ${OLD_PLUGIN_ID} is still enabled: two copies of the same hooks would run. Run: claude plugin uninstall ${OLD_PLUGIN_ID}`,
+    text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}. ${steps}`,
   };
 }
 
@@ -322,7 +373,7 @@ export async function runDoctor(
     checkAutoUpdate(settings, paths),
     checkUpdatesNotOff(settings, env, paths),
     checkNameClash(settings),
-    checkOldPlugin(settings),
+    checkOldPlugin(settings, paths),
     ...(await gatewayChecks({ paths, ...gateway })),
   ].filter((check): check is Check => check !== null);
   for (const check of checks) {

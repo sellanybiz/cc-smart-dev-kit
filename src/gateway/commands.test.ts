@@ -38,6 +38,17 @@ import {
 
 const NO_POSIX_MODES = process.platform === "win32";
 
+/** A made-up port for the fake probes: never the default one, where a real router may run. */
+const FAKE_PORT = 20999;
+
+/** What Bun's `fetch` throws when nothing listens on the port. */
+function connectionRefused(): Error {
+  return Object.assign(
+    new TypeError("Unable to connect. Is the computer able to access the url?"),
+    { code: "ConnectionRefused" },
+  );
+}
+
 function config(): GatewayConfig {
   return {
     aliases: {},
@@ -157,8 +168,14 @@ describe("Claude Code settings: on / off", () => {
         caught = error;
       }
       expect(caught).toBeInstanceOf(ForeignKeyError);
+      // Changed on purpose: for ENABLE_TOOL_SEARCH, which many people set themselves, the
+      // message says so, and what removing it does.
+      const yourOwn =
+        key === "ENABLE_TOOL_SEARCH"
+          ? ' Many people set ENABLE_TOOL_SEARCH themselves; removing it by hand lets anymodel gateway on manage it (it sets "true", and gateway off removes it again).'
+          : "";
       expect((caught as Error).message).toBe(
-        `${file}: env.${key} is ${shown}, set by someone else. anymodel does not overwrite it. Remove it by hand if anymodel should manage it.`,
+        `${file}: env.${key} is ${shown}, set by someone else. anymodel does not overwrite it. Remove it by hand if anymodel should manage it.${yourOwn}`,
       );
       expect(readFileSync(file, "utf8")).toBe(before);
       expect(existsSync(stateDir)).toBe(false);
@@ -410,14 +427,31 @@ describe("setup, slot and models helpers", () => {
 // ─── The router service: copy, unit, systemctl ──────────────────────────────────
 
 describe("router service install", () => {
-  /** A home, the plugin's router bundle, and a fake systemctl that logs each call. */
+  /**
+   * A home, the plugin's router bundle, a fake systemctl that logs each call, and a fake
+   * health probe on a made-up port: the router answers there while the unit is active
+   * (`port.answers`), and another program holds it when `port.taken`. Its clock moves only
+   * when the code sleeps. No network.
+   */
   function machine() {
     const home = tempDir("gateway-install");
     const bundle = join(home, "plugin", "dist", "router.js");
     mkdirSync(join(home, "plugin", "dist"), { recursive: true });
     writeFileSync(bundle, "// router v1\n");
     const state = { active: false, fail: false };
+    const port: {
+      answers: boolean;
+      reply: (() => Response) | null;
+      taken: boolean;
+      timeout: boolean;
+    } = { answers: true, reply: null, taken: false, timeout: false };
+    /** At each systemctl call: is the restart-pending marker there, and the copy? */
+    const markerAt: string[] = [];
+    const clock = { now: Date.UTC(2026, 9, 15, 10, 0, 0) };
+    const probed: string[] = [];
     const events: string[] = [];
+    const stateDir = join(home, ".claude", "anymodel");
+    const marker = join(stateDir, "restart-pending");
     const copyPath = join(home, ".local", "share", "anymodel", "router.js");
     const unitPath = join(home, ".config", "systemd", "user", "anymodel-router.service");
     const install = (options: {
@@ -431,11 +465,32 @@ describe("router service install", () => {
         copyPath,
         unitPath,
         home,
-        stateDir: join(home, ".claude", "anymodel"),
+        stateDir,
+        port: FAKE_PORT,
+        probe: {
+          fetch: async (url) => {
+            probed.push(url);
+            if (port.timeout) throw new DOMException("The operation timed out.", "TimeoutError");
+            if (port.taken) return new Response("not found", { status: 404 });
+            if (port.reply !== null) return port.reply();
+            if (state.active && port.answers) return Response.json({ ok: true, port: FAKE_PORT });
+            throw connectionRefused();
+          },
+          now: () => clock.now,
+          sleep: async (ms) => {
+            clock.now += ms;
+          },
+        },
         runner: (cmd) => {
           events.push(`$ ${cmd.join(" ")}`);
+          markerAt.push(
+            `${cmd[2]}: ${existsSync(marker) ? "marker" : "no marker"}, ${existsSync(copyPath) ? "copy" : "no copy"}`,
+          );
           if (state.fail) return { exitCode: 1, output: "Failed to connect to bus" };
-          if (cmd[2] === "is-active") return { exitCode: state.active ? 0 : 3, output: "" };
+          if (cmd[2] === "is-active") {
+            const word = state.active ? "active" : "activating";
+            return { exitCode: state.active ? 0 : 3, output: cmd[3] === "--quiet" ? "" : word };
+          }
           if (cmd[2] === "restart" || cmd[3] === "--now") state.active = true;
           return { exitCode: 0, output: "" };
         },
@@ -444,12 +499,26 @@ describe("router service install", () => {
         confirm: options.confirm === undefined ? null : options.confirm,
         ...(options.dryRun !== undefined && { dryRun: options.dryRun }),
       });
-    return { home, bundle, copyPath, unitPath, state, events, install };
+    return {
+      home,
+      bundle,
+      copyPath,
+      unitPath,
+      state,
+      port,
+      clock,
+      probed,
+      events,
+      install,
+      marker,
+      markerAt,
+      stateDir,
+    };
   }
 
-  it("first install: copies the bundle, writes the unit, reloads, enables and starts it", () => {
+  it("first install: copies the bundle, writes the unit, reloads, enables and starts it", async () => {
     const m = machine();
-    expect(m.install({})).toBe("installed");
+    expect(await m.install({})).toBe("installed");
     expect(m.events).toEqual([
       "$ systemctl --user is-active --quiet anymodel-router.service",
       "+ ~/.local/share/anymodel/router.js: router copy created",
@@ -466,11 +535,11 @@ describe("router service install", () => {
     );
   });
 
-  it("again with nothing changed: no restart, only enable --now", () => {
+  it("again with nothing changed: no restart, only enable --now", async () => {
     const m = machine();
-    m.install({});
+    await m.install({});
     m.events.length = 0;
-    expect(m.install({})).toBe("up-to-date");
+    expect(await m.install({})).toBe("up-to-date");
     expect(m.events).toEqual([
       "$ systemctl --user enable --now anymodel-router.service",
       UP_TO_DATE,
@@ -479,12 +548,12 @@ describe("router service install", () => {
     expect(readdirSync(join(m.home, ".local", "share", "anymodel"))).toEqual(["router.js"]);
   });
 
-  it("a new bundle while the router runs: it warns, and without a yes or a terminal it changes nothing", () => {
+  it("a new bundle while the router runs: it warns, and without a yes or a terminal it changes nothing", async () => {
     const m = machine();
-    m.install({});
+    await m.install({});
     writeFileSync(m.bundle, "// router v2\n");
     m.events.length = 0;
-    expect(m.install({})).toBe("declined");
+    expect(await m.install({})).toBe("declined");
     expect(m.events).toEqual([
       "$ systemctl --user is-active --quiet anymodel-router.service",
       RESTART_WARNING,
@@ -496,14 +565,14 @@ describe("router service install", () => {
     expect(readFileSync(m.copyPath, "utf8")).toBe("// router v1\n");
   });
 
-  it("the person says no: nothing changes; yes: the new copy, then the restart", () => {
+  it("the person says no: nothing changes; yes: the new copy, then the restart", async () => {
     const m = machine();
-    m.install({});
+    await m.install({});
     writeFileSync(m.bundle, "// router v2\n");
     const asked: string[] = [];
     m.events.length = 0;
     expect(
-      m.install({
+      await m.install({
         confirm: (question) => {
           asked.push(question);
           return false;
@@ -514,7 +583,7 @@ describe("router service install", () => {
     expect(readFileSync(m.copyPath, "utf8")).toBe("// router v1\n");
     m.events.length = 0;
     expect(
-      m.install({
+      await m.install({
         confirm: (question) => {
           asked.push(question);
           return true;
@@ -535,11 +604,11 @@ describe("router service install", () => {
     expect(readFileSync(m.copyPath, "utf8")).toBe("// router v2\n");
   });
 
-  it("--yes restarts without asking", () => {
+  it("--yes restarts without asking", async () => {
     const m = machine();
-    m.install({});
+    await m.install({});
     writeFileSync(m.bundle, "// router v2\n");
-    const result = m.install({
+    const result = await m.install({
       yes: true,
       confirm: () => {
         throw new Error("asked although --yes was given");
@@ -550,22 +619,22 @@ describe("router service install", () => {
     expect(readFileSync(m.copyPath, "utf8")).toBe("// router v2\n");
   });
 
-  it("a dry run writes nothing and runs only the is-active question", () => {
+  it("a dry run writes nothing and runs only the is-active question", async () => {
     const m = machine();
-    expect(m.install({ dryRun: true })).toBe("installed");
+    expect(await m.install({ dryRun: true })).toBe("installed");
     expect(m.events).toEqual(["$ systemctl --user is-active --quiet anymodel-router.service"]);
     expect(existsSync(m.copyPath)).toBe(false);
     expect(existsSync(m.unitPath)).toBe(false);
   });
 
-  it("install stops at the first failing command", () => {
+  it("install stops at the first failing command", async () => {
     const m = machine();
-    m.install({});
+    await m.install({});
     writeFileSync(m.bundle, "// router v2\n");
     m.state.fail = true;
     m.events.length = 0;
     // is-active fails too (not active): the copy is written, then daemon-reload fails.
-    expect(() => m.install({})).toThrow(
+    await expect(m.install({})).rejects.toThrow(
       "systemctl --user daemon-reload failed (exit 1):\nFailed to connect to bus",
     );
     expect(m.events.filter((event) => event.startsWith("$ "))).toEqual([
@@ -574,9 +643,101 @@ describe("router service install", () => {
     ]);
   });
 
-  it("restore removes the copy and the unit that setup created", () => {
+  // ─── The port, and the restart-pending marker ────────────────────────────────
+
+  const NOT_OURS = `port ${FAKE_PORT} is used by another program (an older router? stop it first)`;
+
+  it("a port another program holds: refused before any question or write; the dry run too", async () => {
+    for (const dryRun of [false, true]) {
+      const m = machine();
+      m.port.taken = true;
+      await expect(m.install({ dryRun, yes: true })).rejects.toThrow(NOT_OURS);
+      expect(m.events).toEqual([]);
+      expect(m.probed).toEqual([`http://127.0.0.1:${FAKE_PORT}/__anymodel/health`]);
+      expect(existsSync(m.copyPath)).toBe(false);
+      expect(existsSync(m.unitPath)).toBe(false);
+      expect(existsSync(m.stateDir)).toBe(false);
+    }
+  });
+
+  it("a 200 that is not this router's health, or no answer in time: refused the same way", async () => {
+    for (const reply of [
+      () => new Response("<html>hello</html>", { status: 200 }),
+      () => Response.json({ ok: false }),
+      () => Response.json({ status: "ok" }),
+    ]) {
+      const m = machine();
+      m.port.reply = reply;
+      await expect(m.install({ yes: true })).rejects.toThrow(NOT_OURS);
+      expect(m.events).toEqual([]);
+      expect(existsSync(m.stateDir)).toBe(false);
+    }
+    const slow = machine();
+    slow.port.timeout = true;
+    await expect(slow.install({ yes: true })).rejects.toThrow(NOT_OURS);
+    expect(slow.events).toEqual([]);
+    expect(existsSync(slow.copyPath)).toBe(false);
+  });
+
+  it("the marker is there from before the copy until the restarted router answers, then gone", async () => {
     const m = machine();
-    m.install({});
+    expect(await m.install({})).toBe("installed");
+    expect(m.markerAt).toEqual([
+      "is-active: no marker, no copy",
+      "daemon-reload: marker, copy",
+      "enable: marker, copy",
+      "restart: marker, copy",
+    ]);
+    expect(existsSync(m.marker)).toBe(false);
+    expect(m.events.at(-1)).toBe("enabled and (re)started anymodel-router.service");
+  });
+
+  it("a router that never answers after the restart: an error naming the unit's state and its log; the marker stays", async () => {
+    const m = machine();
+    m.port.answers = false;
+    await expect(m.install({})).rejects.toThrow(
+      `anymodel-router.service did not answer on 127.0.0.1:${FAKE_PORT} within 5 s of the restart (systemctl --user is-active: active). See why: journalctl --user -u anymodel-router -n 30. Then run anymodel gateway setup again.`,
+    );
+    expect(existsSync(m.marker)).toBe(true);
+    // It waited 5 s by its clock, asking every 200 ms, and no longer.
+    expect(m.clock.now).toBe(Date.UTC(2026, 9, 15, 10, 0, 5));
+    expect(m.events.at(-1)).toBe("$ systemctl --user is-active anymodel-router.service");
+  });
+
+  it("a re-run that finds the marker restarts though nothing changed (asking first), and clears it", async () => {
+    const m = machine();
+    m.port.answers = false;
+    await expect(m.install({})).rejects.toThrow("did not answer");
+    m.port.answers = true;
+    m.events.length = 0;
+    // The files are up to date, but the marker says the restart never finished.
+    expect(await m.install({})).toBe("declined");
+    expect(m.events).toEqual([
+      "$ systemctl --user is-active --quiet anymodel-router.service",
+      RESTART_WARNING,
+      "Nothing was changed. Run again with --yes to restart: anymodel gateway setup --yes",
+    ]);
+    expect(existsSync(m.marker)).toBe(true);
+    m.events.length = 0;
+    expect(await m.install({ yes: true })).toBe("installed");
+    expect(m.events).toEqual([
+      "$ systemctl --user is-active --quiet anymodel-router.service",
+      RESTART_WARNING,
+      "$ systemctl --user daemon-reload",
+      "$ systemctl --user enable anymodel-router.service",
+      "restarting anymodel-router",
+      "$ systemctl --user restart anymodel-router.service",
+      "enabled and (re)started anymodel-router.service",
+    ]);
+    expect(existsSync(m.marker)).toBe(false);
+    // Up to date and no marker: the shortcut again.
+    m.events.length = 0;
+    expect(await m.install({})).toBe("up-to-date");
+  });
+
+  it("restore removes the copy and the unit that setup created", async () => {
+    const m = machine();
+    await m.install({});
     const results = restore(join(m.home, ".claude", "anymodel"));
     expect(results.map((result) => [result.file, result.action]).sort()).toEqual(
       [

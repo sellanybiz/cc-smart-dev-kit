@@ -24,9 +24,15 @@ providers. It is optional. How it works and why: the plugin's `docs/gateway.md`.
 ## Set it up
 
 1. A backend first, for example OmniRoute with an Ollama Cloud connection, and an API key
-   for the router. The key goes **on stdin, never on the command line**:
-   `anymodel gateway setup --backend-key-stdin omniroute < key-file`.
+   for the router. Setup writes `http://127.0.0.1:20128` as the `omniroute` backend's
+   address; OmniRoute elsewhere: change `backends.omniroute.baseUrl` in
+   `~/.config/anymodel/gateway.json` after setup. The first key is the `omniroute`
+   backend's. It goes **on stdin, from a file, never on the command line**:
+   `anymodel gateway setup --backend-key-stdin omniroute < key-file` (typed, it shows on
+   the screen and needs Ctrl-D).
    No key yet: `anymodel gateway setup --no-backend-key` (every slot answers on Claude).
+   Setup stops, writing nothing, when another program holds the router's port (an older
+   router, say): stop that program first.
 2. `anymodel gateway status`: the router is up, the backend answers, the slots look right.
 3. `anymodel gateway on`. 🔴 **Every running Claude session on the machine switches on
    save.** Pick the moment with the person.
@@ -46,8 +52,10 @@ check its cached-input price (subagent tokens are mostly cached re-reads).
 
 ## The judge for auto mode: opt-in
 
-Auto mode's safety check (should this action run?) stays on Claude by default. Only when
-the person asks for it:
+Auto mode's safety check (should this action run?) stays on Claude by default. "Off by
+default" relies on the router recognising the check by its prompt: if Claude Code rewords
+that prompt, the check is routed by its model name until the router is updated (the
+plugin's `docs/gateway.md` § Known limits). Only when the person asks for it:
 
 - On: `anymodel gateway slot judge <target>[,<target>]`.
 - Off: `anymodel gateway slot judge off`.
@@ -66,11 +74,20 @@ unavailable": `gateway slot judge off`.
 - The log: `journalctl --user -u anymodel-router -f`. One line per request; never a key.
 - Every Claude Code request fails: the router is down. `systemctl --user restart
   anymodel-router`; still down: `anymodel gateway off`, then restart the sessions.
+- `doctor` says "a gateway setup did not finish": the router did not answer after a
+  setup's restart. `journalctl --user -u anymodel-router -n 30` says why; fix it, then
+  `anymodel gateway setup` again (it asks before the restart).
 
 ## Turn it off
 
 `anymodel gateway off` removes exactly the keys `on` set. Running sessions need a
 restart. Stop the router only after every session restarted, or they fail.
+
+`anymodel restore` takes the gateway out in two stages for the same reason: the first run
+removes the env keys (and everything else but the router) and says to restart every
+session; the second run stops and removes the router (it asks first). `restore --now`
+does both at once, and every running session fails until it restarts: only with the
+person's yes.
 
 ## Update the router
 

@@ -1,7 +1,13 @@
 // @bun
 // src/entries/cli.ts
-import { existsSync as existsSync12 } from "fs";
+import { existsSync as existsSync13 } from "fs";
 import { join as join8 } from "path";
+
+// src/build-info/names.ts
+var MARKETPLACE = "anymodel";
+var PLUGIN = "anymodel";
+var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
+var COMMAND = "anymodel";
 
 // src/build-info/index.ts
 var info = {
@@ -10,20 +16,16 @@ var info = {
 };
 var VERSION = info.version;
 var MARKETPLACE_SOURCE = info.repo;
-var MARKETPLACE = "anymodel";
-var PLUGIN = "anymodel";
-var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-var COMMAND = "anymodel";
 var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
 var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/cli/doctor.ts
-import { accessSync, constants, existsSync as existsSync8, readFileSync as readFileSync10 } from "fs";
+import { accessSync, constants, existsSync as existsSync9, readFileSync as readFileSync10 } from "fs";
 import { join as join7 } from "path";
 
 // src/gateway/doctor.ts
-import { existsSync as existsSync5, readFileSync as readFileSync7 } from "fs";
+import { existsSync as existsSync6, readFileSync as readFileSync7 } from "fs";
 
 // src/cli/paths.ts
 import { homedir } from "os";
@@ -49,17 +51,8 @@ function tildify(path, home) {
 }
 
 // src/gateway/config.ts
-import { randomUUID } from "crypto";
-import {
-  chmodSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync
-} from "fs";
-import { dirname, join as join2 } from "path";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
+import { dirname as dirname2 } from "path";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -5546,13 +5539,13 @@ var ZodObject = /* @__PURE__ */ $constructor("ZodObject", (inst, def) => {
     return required(ZodNonOptional, this, args[0]);
   }
 });
-function object(shape, params) {
-  const def = {
+function looseObject(shape, params) {
+  return new ZodObject({
     type: "object",
-    shape: shape ?? {},
+    shape,
+    catchall: unknown(),
     ...normalizeParams(params)
-  };
-  return new ZodObject(def);
+  });
 }
 var ZodUnion = /* @__PURE__ */ $constructor("ZodUnion", (inst, def) => {
   $ZodUnion.init(inst, def);
@@ -5841,6 +5834,252 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
+// src/setup/write.ts
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from "fs";
+import { basename, dirname, join as join2, resolve } from "path";
+var BACKUPS_DIR = "backups";
+var BACKUP_INFIX = ".bak-anymodel-";
+var ABSENT_SUFFIX = ".absent";
+var CHANGED_FILE = "changed.json";
+var MAX_LINKS = 40;
+function utcStamp(date = new Date) {
+  return date.toISOString().replace(/[-:.]/g, "");
+}
+function realTarget(file) {
+  let path = resolve(file);
+  for (let links = 0;links <= MAX_LINKS; links += 1) {
+    try {
+      return realpathSync(path);
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    let isLink = false;
+    try {
+      isLink = lstatSync(path).isSymbolicLink();
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    if (!isLink) {
+      const parent = dirname(path);
+      return parent === path ? path : join2(realTarget(parent), basename(path));
+    }
+    path = resolve(dirname(path), readlinkSync(path));
+  }
+  throw new Error(`${file}: too many symlinks (a loop?)`);
+}
+function fileMode(file) {
+  return existsSync(file) ? statSync(file).mode & 4095 : null;
+}
+function writeTemp(file, content, mode) {
+  const dir = dirname(file);
+  mkdirSync(dir, { recursive: true });
+  const temp = join2(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
+  try {
+    const fd = openSync(temp, "wx", mode);
+    try {
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    chmodSync(temp, mode);
+  } catch (error) {
+    if (existsSync(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+  return temp;
+}
+function atomicWrite(file, content, mode, beforeRename) {
+  const temp = writeTemp(file, content, mode);
+  try {
+    beforeRename?.();
+    renameSync(temp, file);
+  } catch (error) {
+    if (existsSync(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+}
+function parseBackupName(base, name) {
+  const prefix = `${base}${BACKUP_INFIX}`;
+  if (!name.startsWith(prefix))
+    return null;
+  const match = /^(\d{8}T\d{9}Z)(?:-(\d+))?(?:(\.absent)|\.mode-([0-7]{3,4}))?$/.exec(name.slice(prefix.length));
+  if (!match?.[1])
+    return null;
+  return {
+    name,
+    stamp: match[1],
+    counter: match[2] ? Number(match[2]) : 0,
+    absent: match[3] !== undefined,
+    mode: match[4] ? Number.parseInt(match[4], 8) : null
+  };
+}
+function backupDir(stateDir, file) {
+  return join2(stateDir, BACKUPS_DIR, encodeURIComponent(realTarget(file)));
+}
+function makePrivateDir(dir) {
+  mkdirSync(dir, { recursive: true, mode: 448 });
+  chmodSync(dir, 448);
+}
+function listBackups(stateDir, file) {
+  const dir = backupDir(stateDir, file);
+  if (!existsSync(dir))
+    return [];
+  const base = basename(realTarget(file));
+  return readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup !== null).sort((a, b) => a.stamp === b.stamp ? a.counter - b.counter : a.stamp < b.stamp ? -1 : 1).map((backup) => {
+    const path = join2(dir, backup.name);
+    return { path, absent: backup.absent, mode: backup.mode ?? fileMode(path) ?? 384 };
+  });
+}
+function copyNotExecutable(file, target) {
+  const mode = fileMode(file) ?? 384;
+  const safeMode = mode & ~73;
+  writeFileSync(target, readFileSync(file), { flag: "wx", mode: safeMode });
+  chmodSync(target, safeMode);
+  return mode;
+}
+function backupFile(stateDir, file) {
+  const real = realTarget(file);
+  const dir = backupDir(stateDir, real);
+  const base = basename(real);
+  const stamp = utcStamp();
+  const mode = fileMode(real);
+  const suffix = mode === null ? ABSENT_SUFFIX : (mode & 73) !== 0 ? `.mode-${mode.toString(8)}` : "";
+  makePrivateDir(join2(stateDir, BACKUPS_DIR));
+  makePrivateDir(dir);
+  const sameStamp = readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup?.stamp === stamp);
+  const counter = sameStamp.length === 0 ? 0 : Math.max(...sameStamp.map((backup) => backup.counter)) + 1;
+  const target = join2(dir, `${base}${BACKUP_INFIX}${stamp}${counter === 0 ? "" : `-${counter}`}${suffix}`);
+  if (mode === null) {
+    writeFileSync(target, "", { flag: "wx", mode: 384 });
+  } else {
+    copyNotExecutable(real, target);
+  }
+  return target;
+}
+var CHANGE_KINDS = ["json-keys", "markdown-block", "whole-file"];
+function isChangedEntry(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const entry = value;
+  return Array.isArray(entry.kinds) && entry.kinds.every((kind) => CHANGE_KINDS.includes(kind)) && (entry.baseline === null || typeof entry.baseline === "string");
+}
+function readChanged(stateDir) {
+  const file = join2(stateDir, CHANGED_FILE);
+  if (!existsSync(file))
+    return {};
+  const parsed = JSON.parse(readFileSync(file, "utf8"));
+  const files = parsed?.files;
+  if (typeof files !== "object" || files === null || !Object.values(files).every((entry) => isChangedEntry(entry))) {
+    throw new Error(`Invalid ${file}: expected { "files": { <path>: { kinds, baseline } } }`);
+  }
+  return files;
+}
+function writeChanged(stateDir, files) {
+  const sorted = Object.fromEntries(Object.entries(files).sort(([a], [b]) => a < b ? -1 : 1));
+  atomicWrite(join2(stateDir, CHANGED_FILE), `${JSON.stringify({ files: sorted }, null, 2)}
+`, 384);
+}
+function recordChange(stateDir, file, kind, backup) {
+  const files = readChanged(stateDir);
+  const entry = files[file];
+  if (!entry) {
+    files[file] = { kinds: [kind], baseline: backup };
+    writeChanged(stateDir, files);
+    return true;
+  }
+  if (!entry.kinds.includes(kind)) {
+    entry.kinds.push(kind);
+    writeChanged(stateDir, files);
+  }
+  return false;
+}
+function forgetChange(stateDir, file) {
+  const files = readChanged(stateDir);
+  if (!(file in files))
+    return;
+  delete files[file];
+  writeChanged(stateDir, files);
+}
+
+class ConcurrentChangeError extends Error {
+  name = "ConcurrentChangeError";
+}
+function retryOnConcurrentChange(file, fn, attempts = 3) {
+  for (let attempt = 1;; attempt += 1) {
+    try {
+      return fn();
+    } catch (error) {
+      if (!(error instanceof ConcurrentChangeError) || attempt >= attempts) {
+        if (error instanceof ConcurrentChangeError) {
+          throw new ConcurrentChangeError(`${file} kept changing while anymodel tried to update it (${attempts} tries). ` + "Close the program that writes it (for example Claude Code), then run again.");
+        }
+        throw error;
+      }
+    }
+  }
+}
+function readCurrent(file) {
+  return existsSync(file) ? readFileSync(file, "utf8") : null;
+}
+function writeManagedFile(file, content, options) {
+  const target = realTarget(file);
+  const currentMode = fileMode(target);
+  const current = currentMode === null ? null : readFileSync(target, "utf8");
+  const checkUnchanged = (now) => {
+    if (options.expectedContent !== undefined && now !== options.expectedContent) {
+      throw new ConcurrentChangeError(`${target} changed after anymodel read it.`);
+    }
+  };
+  if (!options.dryRun)
+    checkUnchanged(current);
+  const wantedMode = options.mode ?? currentMode ?? options.newFileMode ?? 384;
+  if (current === content && currentMode === wantedMode) {
+    return { outcome: "unchanged", backup: null };
+  }
+  const outcome = currentMode === null ? "created" : "updated";
+  if (options.dryRun)
+    return { outcome, backup: null };
+  const backup = backupFile(options.stateDir, target);
+  const isBaseline = recordChange(options.stateDir, target, options.kind, backup);
+  try {
+    atomicWrite(target, content, wantedMode, () => {
+      options.onBeforeCompare?.();
+      checkUnchanged(readCurrent(target));
+    });
+  } catch (error) {
+    if (!isBaseline && existsSync(backup))
+      unlinkSync(backup);
+    throw error;
+  }
+  return { outcome, backup };
+}
+function removeManagedFile(stateDir, file) {
+  const backup = backupFile(stateDir, file);
+  unlinkSync(file);
+  return backup;
+}
+
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 var SLOT_PREFIX = "anymodel-";
@@ -5917,15 +6156,17 @@ function resolveRoute(model, config) {
   return { kind: "anthropic" };
 }
 var GUARD_PROMPT = "You are a security monitor for autonomous AI coding agents";
-function isAutoModeGuard(body) {
+function isAutoModeGuard(body, aliases = {}) {
   const model = body.model;
   if (typeof model !== "string")
     return false;
   const tools = body.tools;
   if (Array.isArray(tools) && tools.length > 0)
     return false;
-  if (!model.startsWith("claude-") && !isSlotKey(withoutContextSuffix(model)))
+  const name = withoutContextSuffix(model);
+  if (!model.startsWith("claude-") && !isSlotKey(name) && !Object.hasOwn(aliases, name)) {
     return false;
+  }
   const system = body.system;
   if (typeof system === "string")
     return system.includes(GUARD_PROMPT);
@@ -5937,12 +6178,16 @@ function isAutoModeGuard(body) {
     return typeof block.text === "string" && block.text.includes(GUARD_PROMPT);
   });
 }
-function resolveRequestRoute(body, config) {
+function resolveRequestRoute(body, config, guard) {
   const route = resolveRoute(body.model, config);
-  if (route.kind !== "slot" || !isAutoModeGuard(body))
+  if (!guard)
+    return route;
+  if (route.kind === "explicit")
+    return { kind: "anthropic-as-sent" };
+  if (route.kind !== "slot")
     return route;
   const claude = route.targets.filter((target) => target.kind === "anthropic");
-  return claude.length > 0 ? { ...route, targets: claude } : { kind: "anthropic" };
+  return claude.length > 0 ? { ...route, targets: claude } : { kind: "anthropic-as-sent" };
 }
 var JUDGE_SLOT = "anymodel-judge";
 var FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
@@ -5974,17 +6219,17 @@ var DEFAULT_FIRST_BYTE_MS = 60000;
 var FALLBACK_SLOT_TARGET = "claude-sonnet-5-5";
 var NO_CONFIG_MEANS = `every haiku / sonnet call answers on ${FALLBACK_SLOT_TARGET} (your own Claude login) until it is fixed`;
 var baseUrl = url({ protocol: /^https?$/ }).transform((url2) => url2.replace(/\/+$/, ""));
-var backendSchema = object({
+var backendSchema = looseObject({
   apiKey: string2().min(1),
   baseUrl
 });
-var gatewayConfigSchema = object({
+var gatewayConfigSchema = looseObject({
   aliases: record(string2(), string2()).default({}),
   anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
   backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
   slots: record(string2().refine(isSlotKey, "a slot key is anymodel-<name>"), array(string2()).min(1)),
-  timeouts: object({ firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS) }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
+  timeouts: looseObject({ firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS) }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {
   for (const [slot, targets] of Object.entries(config.slots)) {
@@ -6052,7 +6297,7 @@ function parseConfig(raw) {
 function loadConfigFile(path) {
   let mode;
   try {
-    mode = statSync(path).mode;
+    mode = statSync2(path).mode;
   } catch (error) {
     throw new ConfigError(`cannot read ${path}: ${messageOf(error)}`, { cause: error });
   }
@@ -6061,7 +6306,7 @@ function loadConfigFile(path) {
   }
   let raw;
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    raw = JSON.parse(readFileSync2(path, "utf8"));
   } catch (error) {
     throw new ConfigError(`${path} is not valid JSON. Fix it by hand.`, { cause: error });
   }
@@ -6071,24 +6316,13 @@ function loadConfigFile(path) {
 ${parsed.error}`);
   return parsed.config;
 }
-function writeFileAtomic(path, text, mode) {
-  const temp = join2(dirname(path), `.${randomUUID()}.tmp`);
-  try {
-    writeFileSync(temp, text, { flag: "wx", mode });
-    chmodSync(temp, mode);
-    renameSync(temp, path);
-  } catch (error) {
-    rmSync(temp, { force: true });
-    throw error;
-  }
-}
 function saveConfig(path, config) {
   const parsed = parseConfig(config);
   if ("error" in parsed)
     throw new ConfigError(`refusing to save an invalid config:
 ${parsed.error}`);
-  mkdirSync(dirname(path), { mode: 448, recursive: true });
-  writeFileAtomic(path, `${JSON.stringify(parsed.config, null, 2)}
+  mkdirSync2(dirname2(path), { mode: 448, recursive: true });
+  atomicWrite(path, `${JSON.stringify(parsed.config, null, 2)}
 `, 384);
 }
 function emptyConfig() {
@@ -6105,7 +6339,7 @@ function emptyConfig() {
     version: 1
   };
 }
-var REAL_WATCH_DEPS = { load: loadConfigFile, stat: statSync };
+var REAL_WATCH_DEPS = { load: loadConfigFile, stat: statSync2 };
 function watchConfig(path, log, deps = REAL_WATCH_DEPS) {
   let current = emptyConfig();
   let good = false;
@@ -6179,16 +6413,16 @@ async function listModels(baseUrl, apiKey, timeoutMs = 1e4) {
 }
 
 // src/gateway/commands.ts
-import { existsSync as existsSync4 } from "fs";
+import { existsSync as existsSync5 } from "fs";
 
 // src/setup/lock.ts
 import {
-  closeSync,
-  mkdirSync as mkdirSync2,
-  openSync,
-  readFileSync as readFileSync2,
-  statSync as statSync2,
-  unlinkSync,
+  closeSync as closeSync2,
+  mkdirSync as mkdirSync3,
+  openSync as openSync2,
+  readFileSync as readFileSync3,
+  statSync as statSync3,
+  unlinkSync as unlinkSync2,
   writeSync
 } from "fs";
 import { hostname } from "os";
@@ -6202,7 +6436,7 @@ class LockBusyError extends Error {
 }
 function procStartTime(pid) {
   try {
-    const stat = readFileSync2(`/proc/${pid}/stat`, "utf8");
+    const stat = readFileSync3(`/proc/${pid}/stat`, "utf8");
     const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
     const start = fields[22 - 3];
     return start && /^\d+$/.test(start) ? start : null;
@@ -6263,8 +6497,8 @@ function parseLock(text) {
 }
 function readHeld(file) {
   try {
-    const stat = statSync2(file);
-    const info = parseLock(readFileSync2(file, "utf8"));
+    const stat = statSync3(file);
+    const info = parseLock(readFileSync3(file, "utf8"));
     return { info, ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size };
   } catch (error) {
     if (error.code === "ENOENT")
@@ -6296,7 +6530,7 @@ function isStale(held, fallbackStaleMs) {
 function tryCreate(file, info) {
   let fd;
   try {
-    fd = openSync(file, "wx", 384);
+    fd = openSync2(file, "wx", 384);
   } catch (error) {
     if (error.code === "EEXIST")
       return false;
@@ -6305,7 +6539,7 @@ function tryCreate(file, info) {
   try {
     writeSync(fd, JSON.stringify(info));
   } finally {
-    closeSync(fd);
+    closeSync2(fd);
   }
   return true;
 }
@@ -6328,22 +6562,22 @@ function takeOverStale(file, judged, fallbackStaleMs) {
     if (other && isStale(other, fallbackStaleMs)) {
       const again = readHeld(claim);
       if (again && sameHeld(again, other))
-        unlinkSync(claim);
+        unlinkSync2(claim);
     }
     return false;
   }
   try {
     const now = readHeld(file);
     if (now && sameHeld(now, judged))
-      unlinkSync(file);
+      unlinkSync2(file);
     return true;
   } finally {
     if (readHeld(claim)?.info?.token === me.token)
-      unlinkSync(claim);
+      unlinkSync2(claim);
   }
 }
 async function withLock(stateDir, fn, options = {}) {
-  mkdirSync2(stateDir, { recursive: true });
+  mkdirSync3(stateDir, { recursive: true });
   const file = join3(stateDir, LOCK_FILE);
   const mine = newLockInfo();
   const deadline = Date.now() + (options.waitMs ?? 0);
@@ -6369,261 +6603,13 @@ async function withLock(stateDir, fn, options = {}) {
     return await fn();
   } finally {
     if (readHeld(file)?.info?.token === mine.token)
-      unlinkSync(file);
+      unlinkSync2(file);
   }
 }
 
 // src/setup/managed-json.ts
 import { existsSync as existsSync2, readFileSync as readFileSync4 } from "fs";
-import { join as join5 } from "path";
-
-// src/setup/write.ts
-import {
-  chmodSync as chmodSync2,
-  closeSync as closeSync2,
-  existsSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync as mkdirSync3,
-  openSync as openSync2,
-  readdirSync,
-  readFileSync as readFileSync3,
-  readlinkSync,
-  realpathSync,
-  renameSync as renameSync2,
-  statSync as statSync3,
-  unlinkSync as unlinkSync2,
-  writeFileSync as writeFileSync2
-} from "fs";
-import { basename, dirname as dirname2, join as join4, resolve } from "path";
-var BACKUPS_DIR = "backups";
-var BACKUP_INFIX = ".bak-anymodel-";
-var ABSENT_SUFFIX = ".absent";
-var CHANGED_FILE = "changed.json";
-var MAX_LINKS = 40;
-function utcStamp(date = new Date) {
-  return date.toISOString().replace(/[-:.]/g, "");
-}
-function realTarget(file) {
-  let path = resolve(file);
-  for (let links = 0;links <= MAX_LINKS; links += 1) {
-    try {
-      return realpathSync(path);
-    } catch (error) {
-      if (error.code !== "ENOENT")
-        throw error;
-    }
-    let isLink = false;
-    try {
-      isLink = lstatSync(path).isSymbolicLink();
-    } catch (error) {
-      if (error.code !== "ENOENT")
-        throw error;
-    }
-    if (!isLink) {
-      const parent = dirname2(path);
-      return parent === path ? path : join4(realTarget(parent), basename(path));
-    }
-    path = resolve(dirname2(path), readlinkSync(path));
-  }
-  throw new Error(`${file}: too many symlinks (a loop?)`);
-}
-function fileMode(file) {
-  return existsSync(file) ? statSync3(file).mode & 4095 : null;
-}
-function writeTemp(file, content, mode) {
-  const dir = dirname2(file);
-  mkdirSync3(dir, { recursive: true });
-  const temp = join4(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
-  try {
-    const fd = openSync2(temp, "wx", mode);
-    try {
-      writeFileSync2(fd, content);
-      fsyncSync(fd);
-    } finally {
-      closeSync2(fd);
-    }
-    chmodSync2(temp, mode);
-  } catch (error) {
-    if (existsSync(temp))
-      unlinkSync2(temp);
-    throw error;
-  }
-  return temp;
-}
-function atomicWrite(file, content, mode, beforeRename) {
-  const temp = writeTemp(file, content, mode);
-  try {
-    beforeRename?.();
-    renameSync2(temp, file);
-  } catch (error) {
-    if (existsSync(temp))
-      unlinkSync2(temp);
-    throw error;
-  }
-}
-function parseBackupName(base, name) {
-  const prefix = `${base}${BACKUP_INFIX}`;
-  if (!name.startsWith(prefix))
-    return null;
-  const match = /^(\d{8}T\d{9}Z)(?:-(\d+))?(?:(\.absent)|\.mode-([0-7]{3,4}))?$/.exec(name.slice(prefix.length));
-  if (!match?.[1])
-    return null;
-  return {
-    name,
-    stamp: match[1],
-    counter: match[2] ? Number(match[2]) : 0,
-    absent: match[3] !== undefined,
-    mode: match[4] ? Number.parseInt(match[4], 8) : null
-  };
-}
-function backupDir(stateDir, file) {
-  return join4(stateDir, BACKUPS_DIR, encodeURIComponent(realTarget(file)));
-}
-function makePrivateDir(dir) {
-  mkdirSync3(dir, { recursive: true, mode: 448 });
-  chmodSync2(dir, 448);
-}
-function listBackups(stateDir, file) {
-  const dir = backupDir(stateDir, file);
-  if (!existsSync(dir))
-    return [];
-  const base = basename(realTarget(file));
-  return readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup !== null).sort((a, b) => a.stamp === b.stamp ? a.counter - b.counter : a.stamp < b.stamp ? -1 : 1).map((backup) => {
-    const path = join4(dir, backup.name);
-    return { path, absent: backup.absent, mode: backup.mode ?? fileMode(path) ?? 384 };
-  });
-}
-function copyNotExecutable(file, target) {
-  const mode = fileMode(file) ?? 384;
-  const safeMode = mode & ~73;
-  writeFileSync2(target, readFileSync3(file), { flag: "wx", mode: safeMode });
-  chmodSync2(target, safeMode);
-  return mode;
-}
-function backupFile(stateDir, file) {
-  const real = realTarget(file);
-  const dir = backupDir(stateDir, real);
-  const base = basename(real);
-  const stamp = utcStamp();
-  const mode = fileMode(real);
-  const suffix = mode === null ? ABSENT_SUFFIX : (mode & 73) !== 0 ? `.mode-${mode.toString(8)}` : "";
-  makePrivateDir(join4(stateDir, BACKUPS_DIR));
-  makePrivateDir(dir);
-  const sameStamp = readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup?.stamp === stamp);
-  const counter = sameStamp.length === 0 ? 0 : Math.max(...sameStamp.map((backup) => backup.counter)) + 1;
-  const target = join4(dir, `${base}${BACKUP_INFIX}${stamp}${counter === 0 ? "" : `-${counter}`}${suffix}`);
-  if (mode === null) {
-    writeFileSync2(target, "", { flag: "wx", mode: 384 });
-  } else {
-    copyNotExecutable(real, target);
-  }
-  return target;
-}
-var CHANGE_KINDS = ["json-keys", "markdown-block", "whole-file"];
-function isChangedEntry(value) {
-  if (typeof value !== "object" || value === null)
-    return false;
-  const entry = value;
-  return Array.isArray(entry.kinds) && entry.kinds.every((kind) => CHANGE_KINDS.includes(kind)) && (entry.baseline === null || typeof entry.baseline === "string");
-}
-function readChanged(stateDir) {
-  const file = join4(stateDir, CHANGED_FILE);
-  if (!existsSync(file))
-    return {};
-  const parsed = JSON.parse(readFileSync3(file, "utf8"));
-  const files = parsed?.files;
-  if (typeof files !== "object" || files === null || !Object.values(files).every((entry) => isChangedEntry(entry))) {
-    throw new Error(`Invalid ${file}: expected { "files": { <path>: { kinds, baseline } } }`);
-  }
-  return files;
-}
-function writeChanged(stateDir, files) {
-  const sorted = Object.fromEntries(Object.entries(files).sort(([a], [b]) => a < b ? -1 : 1));
-  atomicWrite(join4(stateDir, CHANGED_FILE), `${JSON.stringify({ files: sorted }, null, 2)}
-`, 384);
-}
-function recordChange(stateDir, file, kind, backup) {
-  const files = readChanged(stateDir);
-  const entry = files[file];
-  if (!entry) {
-    files[file] = { kinds: [kind], baseline: backup };
-    writeChanged(stateDir, files);
-    return true;
-  }
-  if (!entry.kinds.includes(kind)) {
-    entry.kinds.push(kind);
-    writeChanged(stateDir, files);
-  }
-  return false;
-}
-function forgetChange(stateDir, file) {
-  const files = readChanged(stateDir);
-  if (!(file in files))
-    return;
-  delete files[file];
-  writeChanged(stateDir, files);
-}
-
-class ConcurrentChangeError extends Error {
-  name = "ConcurrentChangeError";
-}
-function retryOnConcurrentChange(file, fn, attempts = 3) {
-  for (let attempt = 1;; attempt += 1) {
-    try {
-      return fn();
-    } catch (error) {
-      if (!(error instanceof ConcurrentChangeError) || attempt >= attempts) {
-        if (error instanceof ConcurrentChangeError) {
-          throw new ConcurrentChangeError(`${file} kept changing while anymodel tried to update it (${attempts} tries). ` + "Close the program that writes it (for example Claude Code), then run again.");
-        }
-        throw error;
-      }
-    }
-  }
-}
-function readCurrent(file) {
-  return existsSync(file) ? readFileSync3(file, "utf8") : null;
-}
-function writeManagedFile(file, content, options) {
-  const target = realTarget(file);
-  const currentMode = fileMode(target);
-  const current = currentMode === null ? null : readFileSync3(target, "utf8");
-  const checkUnchanged = (now) => {
-    if (options.expectedContent !== undefined && now !== options.expectedContent) {
-      throw new ConcurrentChangeError(`${target} changed after anymodel read it.`);
-    }
-  };
-  if (!options.dryRun)
-    checkUnchanged(current);
-  const wantedMode = options.mode ?? currentMode ?? options.newFileMode ?? 384;
-  if (current === content && currentMode === wantedMode) {
-    return { outcome: "unchanged", backup: null };
-  }
-  const outcome = currentMode === null ? "created" : "updated";
-  if (options.dryRun)
-    return { outcome, backup: null };
-  const backup = backupFile(options.stateDir, target);
-  const isBaseline = recordChange(options.stateDir, target, options.kind, backup);
-  try {
-    atomicWrite(target, content, wantedMode, () => {
-      options.onBeforeCompare?.();
-      checkUnchanged(readCurrent(target));
-    });
-  } catch (error) {
-    if (!isBaseline && existsSync(backup))
-      unlinkSync2(backup);
-    throw error;
-  }
-  return { outcome, backup };
-}
-function removeManagedFile(stateDir, file) {
-  const backup = backupFile(stateDir, file);
-  unlinkSync2(file);
-  return backup;
-}
-
-// src/setup/managed-json.ts
+import { join as join4 } from "path";
 var OWNED_FILE = "owned.json";
 
 class ForeignKeyError extends Error {
@@ -6661,7 +6647,7 @@ function readJsonObject(file) {
   return { data: parsed, indent, text };
 }
 function readOwned(stateDir) {
-  const file = join5(stateDir, OWNED_FILE);
+  const file = join4(stateDir, OWNED_FILE);
   if (!existsSync2(file))
     return {};
   const parsed = JSON.parse(readFileSync4(file, "utf8"));
@@ -6670,7 +6656,7 @@ function readOwned(stateDir) {
   return parsed;
 }
 function writeOwned(stateDir, owned) {
-  atomicWrite(join5(stateDir, OWNED_FILE), `${JSON.stringify(owned, null, 2)}
+  atomicWrite(join4(stateDir, OWNED_FILE), `${JSON.stringify(owned, null, 2)}
 `, 384);
 }
 function ownedKeys(stateDir, file) {
@@ -7284,9 +7270,10 @@ function createRouter(deps) {
         return refusal("anymodel-router wants content-type: application/json and an anthropic-version header");
       }
     }
-    let bytes = req.method === "GET" || req.method === "HEAD" || req.body === null ? null : new Uint8Array(await req.arrayBuffer());
-    const direct = async () => {
-      const result = await send(req, anthropicUpstream(req, url, config, bytes), null);
+    const sent = req.method === "GET" || req.method === "HEAD" || req.body === null ? null : new Uint8Array(await req.arrayBuffer());
+    let bytes = sent;
+    const direct = async (body = bytes) => {
+      const result = await send(req, anthropicUpstream(req, url, config, body), null);
       const response = "response" in result ? relay(result.response, null) : anthropicError(502, "api_error", `anymodel-router: Anthropic did not answer (${result.failure})`);
       return { fallbacks: 0, response, skipped: 0, target: "anthropic" };
     };
@@ -7303,6 +7290,7 @@ function createRouter(deps) {
     }
     if (typeof parsed.model === "string")
       model.name = parsed.model;
+    const guard = isAutoModeGuard(parsed, config.aliases);
     const alias = resolveAlias(parsed.model, config.aliases);
     let body = parsed;
     if (alias !== null) {
@@ -7313,7 +7301,6 @@ function createRouter(deps) {
       body = { ...parsed, model: alias.to };
       bytes = encoder.encode(JSON.stringify(body));
     }
-    const guard = isAutoModeGuard(body);
     if (guard)
       model.name = `${model.name} (safety check)`;
     const judge = guard ? resolveRoute(JUDGE_SLOT, config) : null;
@@ -7329,9 +7316,11 @@ function createRouter(deps) {
       }
       return chain(req, url, config, body, judge.targets, JUDGE_SLOT, true);
     }
-    const decided = resolveRequestRoute(body, config);
+    const decided = resolveRequestRoute(body, config, guard);
     if (decided.kind === "anthropic")
       return direct();
+    if (decided.kind === "anthropic-as-sent")
+      return direct(sent);
     if (decided.kind === "unknown-slot") {
       const slots = Object.keys(config.slots);
       return {
@@ -7421,8 +7410,73 @@ function startRouter(configPath) {
   return server;
 }
 
+// src/gateway/health.ts
+function realProbe() {
+  return {
+    fetch: (url, init) => fetch(url, init),
+    now: () => Date.now(),
+    sleep: (ms) => Bun.sleep(ms)
+  };
+}
+function isJsonObject3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function healthUrl(port) {
+  return `http://127.0.0.1:${port}${HEALTH_PATH}`;
+}
+async function routerHealth(port, fetchImpl = (url, init) => fetch(url, init)) {
+  try {
+    const response = await fetchImpl(healthUrl(port), { signal: AbortSignal.timeout(3000) });
+    if (!response.ok) {
+      await response.body?.cancel();
+      return { error: `HTTP ${response.status}` };
+    }
+    return { body: await response.json() };
+  } catch (error) {
+    return { error: messageOf(error) };
+  }
+}
+function isConnectionRefused(error) {
+  if (typeof error !== "object" || error === null || !("code" in error))
+    return false;
+  return error.code === "ConnectionRefused" || error.code === "ECONNREFUSED";
+}
+async function probeRouterPort(port, fetchImpl, timeoutMs = 2000) {
+  let response;
+  try {
+    response = await fetchImpl(healthUrl(port), { signal: AbortSignal.timeout(timeoutMs) });
+  } catch (error) {
+    if (isConnectionRefused(error))
+      return { state: "free" };
+    return { detail: messageOf(error), state: "other" };
+  }
+  if (response.status !== 200) {
+    await response.body?.cancel();
+    return { detail: `HTTP ${response.status}`, state: "other" };
+  }
+  let body;
+  try {
+    body = await response.json();
+  } catch (error) {
+    return { detail: `not a health answer (${messageOf(error)})`, state: "other" };
+  }
+  return isJsonObject3(body) && body.ok === true ? { state: "ours" } : { detail: "not this router's health answer", state: "other" };
+}
+async function waitForRouter(port, probe, waitMs = 5000) {
+  const deadline = probe.now() + waitMs;
+  for (;; ) {
+    const result = await probeRouterPort(port, probe.fetch, 1000);
+    if (result.state === "ours")
+      return true;
+    if (probe.now() >= deadline)
+      return false;
+    await probe.sleep(200);
+  }
+}
+
 // src/gateway/service.ts
-import { readFileSync as readFileSync5 } from "fs";
+import { existsSync as existsSync3, readFileSync as readFileSync5, rmSync } from "fs";
+import { join as join5 } from "path";
 var UNIT_NAME = "anymodel-router.service";
 var UP_TO_DATE = "router already up to date (no restart)";
 var RESTART_WARNING = "anymodel-router is running. A restart cuts the answers in flight in running Claude sessions on this machine (Claude Code retries them).";
@@ -7465,10 +7519,19 @@ ${result.output.trim()}`);
 function unitActive(runner) {
   return runner(["systemctl", "--user", "is-active", "--quiet", UNIT_NAME]).exitCode === 0;
 }
-function installRouter(options) {
+function restartPendingFile(stateDir) {
+  return join5(stateDir, "restart-pending");
+}
+var HEALTH_WAIT_MS = 5000;
+async function installRouter(options) {
+  const port = await probeRouterPort(options.port, options.probe.fetch);
+  if (port.state === "other") {
+    throw new Error(`port ${options.port} is used by another program (an older router? stop it first)`);
+  }
   const short = (path) => tildify(path, options.home);
   const copyText = readFileSync5(options.bundle, "utf8");
   const unitText = renderUnit(options.bunPath, options.copyPath);
+  const marker = restartPendingFile(options.stateDir);
   const write = (file, text, dryRun) => writeManagedFile(file, text, {
     stateDir: options.stateDir,
     kind: "whole-file",
@@ -7477,7 +7540,7 @@ function installRouter(options) {
   });
   const copyPlan = write(options.copyPath, copyText, true).outcome;
   const unitPlan = write(options.unitPath, unitText, true).outcome;
-  if (copyPlan === "unchanged" && unitPlan === "unchanged") {
+  if (copyPlan === "unchanged" && unitPlan === "unchanged" && !existsSync3(marker)) {
     if (options.dryRun)
       return "up-to-date";
     run(options.runner, ["systemctl", "--user", "enable", "--now", UNIT_NAME]);
@@ -7497,6 +7560,8 @@ function installRouter(options) {
   }
   if (options.dryRun)
     return "installed";
+  atomicWrite(marker, `${COMMAND} gateway setup started a router restart at ${new Date(options.probe.now()).toISOString()}; it has not answered yet.
+`, 384);
   const copy = write(options.copyPath, copyText, false);
   if (copy.outcome !== "unchanged") {
     options.say(`${copy.outcome === "created" ? "+" : "~"} ${short(options.copyPath)}: router copy ${copy.outcome}`);
@@ -7510,6 +7575,13 @@ function installRouter(options) {
   if (active)
     options.say("restarting anymodel-router");
   run(options.runner, ["systemctl", "--user", "restart", UNIT_NAME]);
+  if (!await waitForRouter(options.port, options.probe, HEALTH_WAIT_MS)) {
+    const state = options.runner(["systemctl", "--user", "is-active", UNIT_NAME]);
+    const word = state.output.trim().split(`
+`)[0] || "unknown";
+    throw new Error(`${UNIT_NAME} did not answer on 127.0.0.1:${options.port} within ${HEALTH_WAIT_MS / 1000} s of the restart (systemctl --user is-active: ${word}). See why: journalctl --user -u anymodel-router -n 30. Then run ${COMMAND} gateway setup again.`);
+  }
+  rmSync(marker, { force: true });
   options.say(`enabled and (re)started ${UNIT_NAME}`);
   return "installed";
 }
@@ -7518,7 +7590,7 @@ function stopRouter(runner) {
 }
 
 // src/gateway/settings.ts
-import { existsSync as existsSync3, readFileSync as readFileSync6 } from "fs";
+import { existsSync as existsSync4, readFileSync as readFileSync6 } from "fs";
 function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
@@ -7541,11 +7613,11 @@ var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
 var SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
 var LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 var envPath = (key) => ["env", key];
-function isJsonObject3(value) {
+function isJsonObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function readSettings(path) {
-  if (!existsSync3(path))
+  if (!existsSync4(path))
     return {};
   let parsed;
   try {
@@ -7553,10 +7625,10 @@ function readSettings(path) {
   } catch {
     throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
   }
-  if (!isJsonObject3(parsed))
+  if (!isJsonObject4(parsed))
     throw new Error(`${path} is not a JSON object; not touching it`);
   const env = parsed.env;
-  if (env !== undefined && !isJsonObject3(env))
+  if (env !== undefined && !isJsonObject4(env))
     throw new Error(`${path} has an "env" that is not an object`);
   return parsed;
 }
@@ -7569,16 +7641,20 @@ function shownValue(value) {
     return maskKey(text);
   return /^sk-|[A-Za-z0-9_-]{32,}/.test(text) ? maskKey(text) : text;
 }
+function ownedGatewayEnvKeys(settingsFile, stateDir) {
+  const owned = ownedKeys(stateDir, realTarget(settingsFile));
+  return GATEWAY_ENV_KEYS.filter((key) => owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key));
+}
 function assertNoForeignGatewayKeys(settingsFile, stateDir) {
   const env = readSettings(settingsFile).env;
-  if (!isJsonObject3(env))
+  if (!isJsonObject4(env))
     return;
-  const owned = ownedKeys(stateDir, realTarget(settingsFile));
-  const isOwned = (key) => owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key);
+  const owned = new Set(ownedGatewayEnvKeys(settingsFile, stateDir));
   for (const key of GATEWAY_ENV_KEYS) {
-    if (!Object.hasOwn(env, key) || isOwned(key))
+    if (!Object.hasOwn(env, key) || owned.has(key))
       continue;
-    throw new ForeignKeyError(`${settingsFile}: ${formatKeyPath(envPath(key))} is ${shownValue(env[key])}, set by someone else. ` + `${COMMAND} does not overwrite it. Remove it by hand if ${COMMAND} should manage it.`);
+    const yourOwn = key === "ENABLE_TOOL_SEARCH" ? ` Many people set ENABLE_TOOL_SEARCH themselves; removing it by hand lets ${COMMAND} gateway on manage it (it sets "true", and gateway off removes it again).` : "";
+    throw new ForeignKeyError(`${settingsFile}: ${formatKeyPath(envPath(key))} is ${shownValue(env[key])}, set by someone else. ` + `${COMMAND} does not overwrite it. Remove it by hand if ${COMMAND} should manage it.${yourOwn}`);
   }
 }
 function turnOn(options) {
@@ -7604,12 +7680,12 @@ function turnOff(options) {
     remove: GATEWAY_ENV_KEYS.map(envPath),
     ...options.dryRun !== undefined && { dryRun: options.dryRun }
   });
-  const foreign = result.skipped.map((skip) => skip.path[1]).filter((key) => key !== undefined && isJsonObject3(env) && Object.hasOwn(env, key));
+  const foreign = result.skipped.map((skip) => skip.path[1]).filter((key) => key !== undefined && isJsonObject4(env) && Object.hasOwn(env, key));
   return { result, foreign };
 }
 function settingsReport(settingsPath) {
   const settings = readSettings(settingsPath);
-  const env = isJsonObject3(settings.env) ? settings.env : {};
+  const env = isJsonObject4(settings.env) ? settings.env : {};
   const baseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? shownValue(env.ANTHROPIC_BASE_URL) : null;
   const loginOverrides = LOGIN_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
   if (Object.hasOwn(settings, "apiKeyHelper"))
@@ -7635,7 +7711,7 @@ Commands:
   off                    Remove what "on" set. Restart the sessions afterwards.
   serve                  Run the router in this terminal.`;
 var NEEDS_SYSTEMD = "the gateway service needs systemd (Linux) for now.";
-function isJsonObject4(value) {
+function isJsonObject5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 var KNOWN_BACKENDS = {
@@ -7665,7 +7741,7 @@ function defaultConfig(omnirouteKey) {
   };
 }
 function ensureConfig(configPath, key, options = {}) {
-  if (!existsSync4(configPath)) {
+  if (!existsSync5(configPath)) {
     if (key === null && options.allowNone === true) {
       return `no config at ${configPath} yet: the router answers every slot on your own Claude login until the OmniRoute key is added (setup --backend-key-stdin omniroute)`;
     }
@@ -7691,6 +7767,9 @@ function ensureConfig(configPath, key, options = {}) {
     });
   }
   return `set the key of backend "${key.backend}" (${maskKey(key.value)}) in ${configPath}`;
+}
+function configuredPort(configPath) {
+  return existsSync5(configPath) ? loadConfigFile(configPath).port : DEFAULT_PORT;
 }
 function planSlotChange(config, slotArg, targetsText, modelsByBackend) {
   const key = slotKeyFromArg(slotArg);
@@ -7739,20 +7818,6 @@ function planSlotChange(config, slotArg, targetsText, modelsByBackend) {
     return { error: checked.error };
   return { config: checked.config, key, next, old: config.slots[key] ?? [] };
 }
-async function routerHealth(port) {
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}${HEALTH_PATH}`, {
-      signal: AbortSignal.timeout(3000)
-    });
-    if (!response.ok) {
-      await response.body?.cancel();
-      return { error: `HTTP ${response.status}` };
-    }
-    return { body: await response.json() };
-  } catch (error) {
-    return { error: messageOf(error) };
-  }
-}
 function printSlots(config) {
   console.log(`
 Slots (first that answers wins):`);
@@ -7776,7 +7841,7 @@ async function commandModels(ctx) {
   const config = loadConfigFile(ctx.paths.gatewayConfigFile);
   for (const [name, backend] of Object.entries(config.backends)) {
     console.log(`
-${name}  ${backend.baseUrl}  (key ${maskKey(backend.apiKey)})`);
+${name}  ${shownValue(backend.baseUrl)}  (key ${maskKey(backend.apiKey)})`);
     const listed = await listModels(backend.baseUrl, backend.apiKey);
     if ("error" in listed)
       console.log(`  unreachable: ${listed.error}`);
@@ -7814,10 +7879,16 @@ async function commandSlot(ctx, args) {
     const listed = await listModels(backend.baseUrl, backend.apiKey);
     modelsByBackend[name] = "models" in listed && listed.status === 200 ? listed.models.map((m) => m.id) : null;
   }
-  const plan = planSlotChange(config, slotArg, targets, modelsByBackend);
-  if ("error" in plan)
-    throw new Error(plan.error);
-  saveConfig(configPath, plan.config);
+  const first = planSlotChange(config, slotArg, targets, modelsByBackend);
+  if ("error" in first)
+    throw new Error(first.error);
+  const plan = await withLock(ctx.paths.stateDir, () => {
+    const again = planSlotChange(loadConfigFile(configPath), slotArg, targets, modelsByBackend);
+    if ("error" in again)
+      throw new Error(again.error);
+    saveConfig(configPath, again.config);
+    return again;
+  }, { waitMs: 1e4 });
   const now = plan.next.length === 0 ? "off (auto mode's safety check on Claude)" : plan.next.join(" \u2192 ");
   console.log(`${plan.key}: ${plan.old.join(" \u2192 ") || "(new)"}
   now: ${now}`);
@@ -7840,15 +7911,15 @@ async function commandStatus(ctx) {
     console.log(`config: ${messageOf(error)}`);
   }
   const port = config?.port ?? DEFAULT_PORT;
-  const health = await routerHealth(port);
+  const health = await routerHealth(port, ctx.probe.fetch);
   if ("error" in health)
     console.log(`router: DOWN on 127.0.0.1:${port} (${health.error})`);
   else {
-    const body = isJsonObject4(health.body) ? health.body : {};
+    const body = isJsonObject5(health.body) ? health.body : {};
     console.log(`router: up on 127.0.0.1:${String(body.port)} for ${String(body.uptimeSec)} s, ${String(body.requests)} requests, ${String(body.fallbacks)} fallbacks`);
     if (body.port !== port)
       console.log(`  WARN the config says port ${port}; restart the router to move it`);
-    const cooling = isJsonObject4(body.cooling) ? Object.entries(body.cooling) : [];
+    const cooling = isJsonObject5(body.cooling) ? Object.entries(body.cooling) : [];
     for (const [target, seconds] of cooling)
       console.log(`  resting: ${target} for ${String(seconds)} s more`);
   }
@@ -7856,7 +7927,7 @@ async function commandStatus(ctx) {
     for (const [name, backend] of Object.entries(config.backends)) {
       const listed = await listModels(backend.baseUrl, backend.apiKey);
       const state = "error" in listed ? `unreachable (${listed.error})` : `HTTP ${listed.status}`;
-      console.log(`backend ${name}: ${backend.baseUrl} key ${maskKey(backend.apiKey)} \u2192 ${state}`);
+      console.log(`backend ${name}: ${shownValue(backend.baseUrl)} key ${maskKey(backend.apiKey)} \u2192 ${state}`);
     }
     printSlots(config);
   }
@@ -7915,6 +7986,8 @@ async function commandSetup(ctx, args) {
     unitPath: paths.routerUnitFile,
     home: paths.home,
     stateDir: paths.stateDir,
+    port: configuredPort(configPath),
+    probe: ctx.probe,
     runner: ctx.runner,
     say: (line) => console.log(line),
     yes: options.yes,
@@ -7922,12 +7995,12 @@ async function commandSetup(ctx, args) {
     ...overrides
   });
   ensureConfig(configPath, key, { allowNone: options.noKey, dryRun: true });
-  if (installRouter(install({ dryRun: true })) === "declined")
+  if (await installRouter(install({ dryRun: true })) === "declined")
     return 1;
-  return withLock(paths.stateDir, () => {
+  return withLock(paths.stateDir, async () => {
     const said = ensureConfig(configPath, key, { allowNone: options.noKey });
     console.log(said.replaceAll(configPath, tildify(configPath, paths.home)));
-    installRouter(install({
+    await installRouter(install({
       yes: true,
       confirm: null,
       say: (line) => {
@@ -7949,12 +8022,12 @@ function changeLines(result, home) {
 }
 async function commandOn(ctx) {
   const { paths } = ctx;
-  const config = loadConfigFile(paths.gatewayConfigFile);
-  const health = await routerHealth(config.port);
+  const port = configuredPort(paths.gatewayConfigFile);
+  const health = await routerHealth(port, ctx.probe.fetch);
   if ("error" in health) {
-    throw new Error(`the router does not answer on 127.0.0.1:${config.port} (${health.error}); every Claude request would fail. Run ${COMMAND} gateway setup first.`);
+    throw new Error(`the router does not answer on 127.0.0.1:${port} (${health.error}); every Claude request would fail. Run ${COMMAND} gateway setup first.`);
   }
-  const options = { settingsFile: paths.settingsFile, stateDir: paths.stateDir, port: config.port };
+  const options = { settingsFile: paths.settingsFile, stateDir: paths.stateDir, port };
   turnOn({ ...options, dryRun: true });
   const result = await withLock(paths.stateDir, () => turnOn(options), { waitMs: 1e4 });
   if (result.changes.length === 0) {
@@ -8029,17 +8102,26 @@ var SETUP = `Run: ${COMMAND} gateway setup`;
 async function gatewayChecks(options) {
   const { paths } = options;
   const short = (path) => tildify(path, paths.home);
-  const setUp = [paths.gatewayConfigFile, paths.routerCopy, paths.routerUnitFile].some((file) => existsSync5(file));
-  if (!setUp) {
-    return [
-      {
-        ok: true,
-        info: true,
-        text: `gateway: not set up (optional). To use it: ${COMMAND} gateway setup`
-      }
-    ];
-  }
   const checks = [];
+  if (existsSync6(restartPendingFile(paths.stateDir))) {
+    checks.push({
+      ok: false,
+      text: `a gateway setup did not finish; run: ${COMMAND} gateway setup`
+    });
+  }
+  const installed = existsSync6(paths.routerCopy) || existsSync6(paths.routerUnitFile);
+  if (!installed) {
+    checks.push(existsSync6(paths.gatewayConfigFile) ? {
+      ok: true,
+      info: true,
+      text: `gateway.json kept (${short(paths.gatewayConfigFile)}); the gateway is not installed. To use it: ${COMMAND} gateway setup`
+    } : {
+      ok: true,
+      info: true,
+      text: `gateway: not set up (optional). To use it: ${COMMAND} gateway setup`
+    });
+    return checks;
+  }
   if (!options.systemd) {
     checks.push({
       ok: false,
@@ -8051,9 +8133,9 @@ async function gatewayChecks(options) {
 `)[0] || "unknown";
     checks.push(state.exitCode === 0 ? { ok: true, text: `the router service (${UNIT_NAME}) is active` } : { ok: false, text: `the router service (${UNIT_NAME}) is ${word}. ${SETUP}` });
   }
-  if (!existsSync5(paths.routerCopy)) {
+  if (!existsSync6(paths.routerCopy)) {
     checks.push({ ok: false, text: `no router copy at ${short(paths.routerCopy)}. ${SETUP}` });
-  } else if (existsSync5(options.bundle) && readFileSync7(paths.routerCopy, "utf8") !== readFileSync7(options.bundle, "utf8")) {
+  } else if (existsSync6(options.bundle) && readFileSync7(paths.routerCopy, "utf8") !== readFileSync7(options.bundle, "utf8")) {
     checks.push({
       ok: false,
       text: `the router copy ${short(paths.routerCopy)} is not this plugin version's router. ${SETUP}`
@@ -8062,25 +8144,32 @@ async function gatewayChecks(options) {
     checks.push({ ok: true, text: `the router copy ${short(paths.routerCopy)} is up to date` });
   }
   let config;
-  try {
-    config = loadConfigFile(paths.gatewayConfigFile);
-  } catch (error) {
-    checks.push({ ok: false, text: `gateway config: ${messageOf(error)}` });
-    return checks;
+  if (!existsSync6(paths.gatewayConfigFile)) {
+    config = emptyConfig();
+    checks.push({
+      ok: true,
+      info: true,
+      text: `no ${short(paths.gatewayConfigFile)} yet: the router answers every slot on your own Claude login. To add a backend: ${COMMAND} gateway setup --backend-key-stdin omniroute < key-file`
+    });
+  } else {
+    try {
+      config = loadConfigFile(paths.gatewayConfigFile);
+    } catch (error) {
+      checks.push({ ok: false, text: `gateway config: ${messageOf(error)}` });
+      return checks;
+    }
   }
-  const health = await routerHealth(config.port);
+  const health = await routerHealth(config.port, options.fetch);
   checks.push("error" in health ? {
     ok: false,
     text: `the router does not answer on 127.0.0.1:${config.port} (${health.error})`
   } : { ok: true, text: `the router answers on 127.0.0.1:${config.port}` });
   for (const [name, backend] of Object.entries(config.backends)) {
+    const url = shownValue(backend.baseUrl);
     const listed = await listModels(backend.baseUrl, backend.apiKey, 5000);
-    checks.push("error" in listed ? {
+    checks.push("error" in listed ? { ok: false, text: `backend ${name} (${url}) is unreachable: ${listed.error}` } : listed.status === 200 ? { ok: true, text: `backend ${name} (${url}) answers` } : {
       ok: false,
-      text: `backend ${name} (${backend.baseUrl}) is unreachable: ${listed.error}`
-    } : listed.status === 200 ? { ok: true, text: `backend ${name} (${backend.baseUrl}) answers` } : {
-      ok: false,
-      text: `backend ${name} (${backend.baseUrl}) answered HTTP ${listed.status}; check its key`
+      text: `backend ${name} (${url}) answered HTTP ${listed.status}; check its key`
     });
   }
   for (const slot of Object.keys(config.slots).sort()) {
@@ -8098,9 +8187,9 @@ async function gatewayChecks(options) {
 }
 
 // src/setup/installed-plugins.ts
-import { existsSync as existsSync6, readFileSync as readFileSync8 } from "fs";
+import { existsSync as existsSync7, readFileSync as readFileSync8 } from "fs";
 function findUserInstall(installedPluginsFile) {
-  if (!existsSync6(installedPluginsFile))
+  if (!existsSync7(installedPluginsFile))
     return null;
   let parsed;
   try {
@@ -8178,10 +8267,10 @@ function installLauncher(binDir, options) {
 }
 
 // src/setup/marketplace-access.ts
-import { existsSync as existsSync7, readFileSync as readFileSync9 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync9 } from "fs";
 var ACCESS_TIMEOUT_MS = 1e4;
 function marketplaceSource(knownMarketplacesFile, name, env = process.env) {
-  if (!existsSync7(knownMarketplacesFile))
+  if (!existsSync8(knownMarketplacesFile))
     return { kind: "missing" };
   let known;
   try {
@@ -8295,7 +8384,7 @@ async function canReadHttp(url) {
   }
 }
 function marketplaceInstallLocation(knownMarketplacesFile, name) {
-  if (!existsSync7(knownMarketplacesFile))
+  if (!existsSync8(knownMarketplacesFile))
     return null;
   try {
     const known = JSON.parse(readFileSync9(knownMarketplacesFile, "utf8"));
@@ -8315,7 +8404,7 @@ var UPDATE_BLOCKING_VARS = [
 var FORCE_PLUGIN_UPDATES_VAR = "FORCE_AUTOUPDATE_PLUGINS";
 var MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 function readSettings2(file) {
-  if (!existsSync8(file))
+  if (!existsSync9(file))
     return null;
   try {
     const parsed = JSON.parse(readFileSync10(file, "utf8"));
@@ -8342,7 +8431,7 @@ function checkPlugin(paths) {
     };
   }
   const where = tildify(install.installPath, paths.home);
-  if (!existsSync8(install.installPath)) {
+  if (!existsSync9(install.installPath)) {
     return {
       ok: false,
       text: `the plugin folder is missing: ${where}. Run: ${PLUGIN_INSTALL_COMMAND}`
@@ -8364,7 +8453,7 @@ function isExecutable(file) {
 function checkLauncher(paths) {
   const launcher = join7(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
-  if (!existsSync8(launcher))
+  if (!existsSync9(launcher))
     return { ok: false, text: `no launcher at ${where}. Run: anymodel setup` };
   if (!isExecutable(launcher)) {
     return { ok: false, text: `the launcher ${where} is not executable. Run: anymodel setup` };
@@ -8396,7 +8485,7 @@ async function checkMarketplaceAccess(paths, env) {
     case "unknown":
       return { ok: false, text: `cannot check the marketplace source (${source.type})` };
     case "local":
-      return existsSync8(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : { ok: false, text: `the marketplace folder is missing: ${source.path}` };
+      return existsSync9(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : { ok: false, text: `the marketplace folder is missing: ${source.path}` };
     case "http": {
       const url = redactUrl(source.url);
       const result = await canReadHttp(source.url);
@@ -8503,13 +8592,42 @@ function checkNameClash(settings) {
   };
 }
 var OLD_PLUGIN_ID = "cc@cc-agentic";
-function checkOldPlugin(settings) {
-  const enabled = settings?.enabledPlugins ?? {};
-  if (enabled[OLD_PLUGIN_ID] !== true)
+var OLD_NAME = "cc-agentic";
+function isJsonObject6(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function hasEntry(data, field, key) {
+  const node = field === null ? data : data?.[field];
+  return isJsonObject6(node) && Object.hasOwn(node, key);
+}
+function checkOldPlugin(settings, paths) {
+  const plugins = settings?.enabledPlugins;
+  const enabled = isJsonObject6(plugins) && plugins[OLD_PLUGIN_ID] === true;
+  if (!existsSync9(join7(paths.claudeConfigDir, OLD_NAME))) {
+    if (!enabled)
+      return null;
+    return {
+      ok: false,
+      text: `the old plugin ${OLD_PLUGIN_ID} is still enabled: two copies of the same hooks would run. Run: claude plugin uninstall ${OLD_PLUGIN_ID}`
+    };
+  }
+  const short = (path) => tildify(path, paths.home);
+  const launcher = join7(paths.binDir, OLD_NAME);
+  const left = [
+    enabled ? "the plugin enabled" : null,
+    hasEntry(readSettings2(paths.installedPluginsFile), "plugins", OLD_PLUGIN_ID) ? "the plugin installed" : null,
+    existsSync9(launcher) ? `its launcher ${short(launcher)}` : null,
+    hasEntry(settings, "extraKnownMarketplaces", OLD_NAME) ? `extraKnownMarketplaces.${OLD_NAME} in ${short(paths.settingsFile)}` : null,
+    hasEntry(readSettings2(paths.knownMarketplacesFile), null, OLD_NAME) ? `the ${OLD_NAME} marketplace` : null
+  ].filter((thing) => thing !== null);
+  if (left.length === 0)
     return null;
+  const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME}\``;
+  const canRun = existsSync9(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
+  const steps = canRun ? `Run \`${OLD_NAME} restore\` first, then \`${then}.` : `Its launcher cannot run, so remove by hand ${short(launcher)} and "${OLD_NAME}" under extraKnownMarketplaces in ${short(paths.settingsFile)}; then run \`${then}.`;
   return {
     ok: false,
-    text: `the old plugin ${OLD_PLUGIN_ID} is still enabled: two copies of the same hooks would run. Run: claude plugin uninstall ${OLD_PLUGIN_ID}`
+    text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}. ${steps}`
   };
 }
 async function runDoctor(paths, env, gateway) {
@@ -8522,7 +8640,7 @@ async function runDoctor(paths, env, gateway) {
     checkAutoUpdate(settings, paths),
     checkUpdatesNotOff(settings, env, paths),
     checkNameClash(settings),
-    checkOldPlugin(settings),
+    checkOldPlugin(settings, paths),
     ...await gatewayChecks({ paths, ...gateway })
   ].filter((check) => check !== null);
   for (const check of checks) {
@@ -8531,11 +8649,14 @@ async function runDoctor(paths, env, gateway) {
   return checks.every((check) => check.ok) ? 0 : 1;
 }
 
+// src/cli/restore.ts
+import { rmSync as rmSync2 } from "fs";
+
 // src/setup/restore.ts
-import { existsSync as existsSync10, readFileSync as readFileSync12 } from "fs";
+import { existsSync as existsSync11, readFileSync as readFileSync12 } from "fs";
 
 // src/setup/managed-markdown.ts
-import { existsSync as existsSync9, readFileSync as readFileSync11 } from "fs";
+import { existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
 var BLOCK_BEGIN = "<!-- anymodel:begin -->";
 var BLOCK_END = "<!-- anymodel:end -->";
 function countOf(text, marker) {
@@ -8576,7 +8697,7 @@ function renderWithoutBlock(current, file = "the file") {
 function writeMarkdown(options, render) {
   const file = realTarget(options.file);
   return retryOnConcurrentChange(file, () => {
-    const text = existsSync9(file) ? readFileSync11(file, "utf8") : null;
+    const text = existsSync10(file) ? readFileSync11(file, "utf8") : null;
     const next = render(text ?? "", file);
     if (text === null && next === "")
       return { outcome: "unchanged", backup: null };
@@ -8603,7 +8724,7 @@ function restoreWholeFile(file, entry, stateDir) {
   if (!baseline)
     return { file, action: "no-backup", details: [] };
   if (baseline.absent) {
-    if (!existsSync10(file))
+    if (!existsSync11(file))
       return { file, action: "unchanged", details: [] };
     return { file, action: "removed", details: [], savedAs: removeManagedFile(stateDir, file) };
   }
@@ -8622,7 +8743,7 @@ function restoreWholeFile(file, entry, stateDir) {
   };
 }
 function isEmpty(file) {
-  if (!existsSync10(file))
+  if (!existsSync11(file))
     return false;
   const text = readFileSync12(file, "utf8").trim();
   return text === "" || text === "{}";
@@ -8652,8 +8773,10 @@ function restorePartly(file, entry, stateDir) {
     return { file, action: "unchanged", details };
   return { file, action: "cleaned", details, ...savedAs && { savedAs } };
 }
-function restore(stateDir) {
-  return Object.entries(readChanged(stateDir)).map(([file, entry]) => {
+function restore(stateDir, options = {}) {
+  const except = new Set(options.except ?? []);
+  const entries = Object.entries(readChanged(stateDir)).filter(([file]) => !except.has(file));
+  return entries.map(([file, entry]) => {
     const result = entry.kinds.includes("whole-file") ? restoreWholeFile(file, entry, stateDir) : restorePartly(file, entry, stateDir);
     if (result.action !== "no-backup")
       forgetChange(stateDir, file);
@@ -8678,17 +8801,48 @@ function describe2(result, short) {
   }
 }
 var STOP_WARNING = "anymodel-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.";
+var NOW_WARNING = `restore --now stops anymodel-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
+var STAGE_ONE_DONE = `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
+function askFirst(options, warning, question, again) {
+  console.log(warning);
+  if (options.yes)
+    return true;
+  const yes = options.confirm?.(question) ?? null;
+  if (yes === true)
+    return true;
+  console.log(yes === null ? `Nothing was changed. Run again with --yes ${again}` : "Nothing was changed.");
+  return false;
+}
+function print(results, short) {
+  for (const result of results) {
+    console.log(describe2(result, short));
+    if (result.savedAs) {
+      console.log(`  (its state before this restore: ${short(result.savedAs)})`);
+    }
+  }
+}
 async function runRestore(paths, options) {
   const short = (path) => tildify(path, paths.home);
-  const unitTracked = options.systemd && Object.hasOwn(readChanged(paths.stateDir), realTarget(paths.routerUnitFile));
-  if (unitTracked && unitActive(options.runner)) {
-    console.log(STOP_WARNING);
-    if (!options.yes) {
-      const yes = options.confirm?.("Stop anymodel-router and restore?") ?? null;
-      if (yes !== true) {
-        console.log(yes === null ? `Nothing was changed. Run again with --yes to stop it: ${COMMAND} restore --yes` : "Nothing was changed.");
-        return 1;
-      }
+  const changed = readChanged(paths.stateDir);
+  const routerFiles = [realTarget(paths.routerCopy), realTarget(paths.routerUnitFile)];
+  const routerTracked = routerFiles.some((file) => Object.hasOwn(changed, file));
+  const unitTracked = options.systemd && Object.hasOwn(changed, realTarget(paths.routerUnitFile));
+  const sessionsUseRouter = routerTracked && ownedGatewayEnvKeys(paths.settingsFile, paths.stateDir).length > 0;
+  if (sessionsUseRouter && !options.now) {
+    return withLock(paths.stateDir, () => {
+      const results = restore(paths.stateDir, { except: routerFiles });
+      print(results, short);
+      console.log(STAGE_ONE_DONE);
+      return results.some((result) => result.action === "no-backup") ? 1 : 0;
+    }, { waitMs: 1e4 });
+  }
+  if (sessionsUseRouter) {
+    if (!askFirst(options, NOW_WARNING, "Stop anymodel-router and restore everything now?", `to do it now: ${COMMAND} restore --now --yes`)) {
+      return 1;
+    }
+  } else if (unitTracked && unitActive(options.runner)) {
+    if (!askFirst(options, STOP_WARNING, "Stop anymodel-router and restore?", `to stop it: ${COMMAND} restore --yes`)) {
+      return 1;
     }
   }
   return withLock(paths.stateDir, () => {
@@ -8699,29 +8853,25 @@ async function runRestore(paths, options) {
     const results = restore(paths.stateDir);
     if (unitTracked)
       options.runner(["systemctl", "--user", "daemon-reload"]);
+    rmSync2(restartPendingFile(paths.stateDir), { force: true });
     if (results.length === 0) {
       console.log("Nothing to restore: anymodel has nothing in any file.");
       return 0;
     }
-    for (const result of results) {
-      console.log(describe2(result, short));
-      if (result.savedAs) {
-        console.log(`  (its state before this restore: ${short(result.savedAs)})`);
-      }
-    }
+    print(results, short);
     return results.some((result) => result.action === "no-backup") ? 1 : 0;
   }, { waitMs: 1e4 });
 }
 
 // src/cli/setup.ts
-import { existsSync as existsSync11, readFileSync as readFileSync13 } from "fs";
+import { existsSync as existsSync12, readFileSync as readFileSync13 } from "fs";
 import { delimiter } from "path";
 var AUTO_UPDATE_KEY = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
 function show2(value) {
   return value === undefined ? "(none)" : JSON.stringify(value);
 }
 function marketplaceKnown(settingsFile) {
-  if (!existsSync11(settingsFile))
+  if (!existsSync12(settingsFile))
     return false;
   try {
     const settings = JSON.parse(readFileSync13(settingsFile, "utf8"));
@@ -8798,10 +8948,15 @@ Commands:
   setup [--dry-run]  Install the launcher in ~/.local/bin and turn on plugin auto-update.
                      --dry-run prints what would change and writes nothing.
   doctor             Check the install. Exit code 1 when a check fails.
-  restore [--yes]    Remove what anymodel added, and keep everything else: its settings
+  restore [--yes] [--now]
+                     Remove what anymodel added, and keep everything else: its settings
                      keys, its Markdown blocks, and the files it created (the launcher,
                      the router copy and unit). Each changed file gets a backup first.
-                     It stops a running router; --yes: without asking.
+                     With the gateway on, it runs in two stages: first everything but the
+                     router, which the running sessions still use; after you restart
+                     them, again to stop and remove the router (it asks; --yes: without
+                     asking). --now: both at once, and every running session fails until
+                     it restarts.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      anymodel gateway --help lists them.
   version            Print the version.
@@ -8810,7 +8965,7 @@ Commands:
 Paths follow HOME and CLAUDE_CONFIG_DIR.`;
 function routerBundle() {
   const beside = join8(import.meta.dir, "router.js");
-  return existsSync12(beside) ? beside : join8(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
+  return existsSync13(beside) ? beside : join8(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
 }
 var runner = (cmd) => {
   const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 30000 });
@@ -8829,7 +8984,8 @@ function gatewayContext(paths) {
     runner,
     readStdin: () => Bun.stdin.text(),
     confirm: ask,
-    systemd
+    systemd,
+    probe: realProbe()
   };
 }
 async function main(argv) {
@@ -8853,14 +9009,20 @@ ${HELP}`);
         systemd
       });
     case "restore": {
-      const unknown = rest.filter((arg) => arg !== "--yes");
+      const unknown = rest.filter((arg) => arg !== "--yes" && arg !== "--now");
       if (unknown.length > 0) {
         console.error(`Unknown option: ${unknown.join(" ")}
 
 ${HELP}`);
         return 2;
       }
-      return runRestore(paths, { yes: rest.includes("--yes"), runner, systemd, confirm: ask });
+      return runRestore(paths, {
+        yes: rest.includes("--yes"),
+        now: rest.includes("--now"),
+        runner,
+        systemd,
+        confirm: ask
+      });
     }
     case "gateway":
       return runGateway(rest, gatewayContext(paths));

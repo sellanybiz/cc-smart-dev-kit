@@ -54,12 +54,12 @@ the first time you use it.
 | Path | What it holds |
 |---|---|
 | `src/entries/*.ts` | One file per bundle. Each becomes `plugin/dist/<name>.js`. |
-| `src/build-info/` | The version and the marketplace source, baked in from `plugin.json` at build time. |
+| `src/build-info/` | The version and the marketplace source, baked in from `plugin.json` at build time; the fixed names, without the version, in `names.ts` (the router bundle uses those). |
 | `src/project/` | Finds the git project from a folder and reads its `.claude/anymodel.json`. |
 | `src/setup/` | Safe changes to user files: managed keys and blocks, backups, atomic writes, the lock, the launcher, restore, marketplace access. |
 | `src/cli/` | The `anymodel` commands: `setup`, `doctor`, `restore`, `version`. |
 | `src/gateway/` | The optional AI gateway: the router, its config and slots, `gateway <command>`, its service and its doctor checks. |
-| `src/testing/` | Test helpers: temp folders, a clean git environment. |
+| `src/testing/` | Test helpers: temp folders, a clean git environment, the guard that fails any test reaching the live router's port 20100. |
 | `plugin/` | What users get: `dist/` (built, committed), `bin/`, `hooks/hooks.json`, `skills/`, the manifest. |
 | `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check) and `check-version-bump.ts` (CI: a `plugin/` change raises the version). |
 | `docs/` | How the plugin is designed, the phases ahead, and the Claude Code behaviour it relies on. |

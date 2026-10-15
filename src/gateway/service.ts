@@ -6,13 +6,16 @@
  * folder some time after an update, even under a running process. Both files go through
  * `writeManagedFile` (backup, record for `restore`, atomic write). A restart cuts every
  * answer in flight on the machine, so the service restarts only when the copy or the
- * unit really changed, and only after the person said yes (or gave `--yes`).
+ * unit really changed (or an earlier setup did not finish: `restartPendingFile`), and
+ * only after the person said yes (or gave `--yes`).
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { COMMAND } from "../build-info";
 import { tildify } from "../cli/paths";
-import { writeManagedFile } from "../setup/write";
+import { atomicWrite, writeManagedFile } from "../setup/write";
+import { type HealthProbe, probeRouterPort, waitForRouter } from "./health";
 
 /** The systemd user unit's name. */
 export const UNIT_NAME = "anymodel-router.service";
@@ -89,6 +92,10 @@ export interface InstallOptions {
   unitPath: string;
   home: string;
   stateDir: string;
+  /** The port in the config (the default without one): the router listens there. */
+  port: number;
+  /** Asks the port, and waits for the router after the restart; a test passes fakes. */
+  probe: HealthProbe;
   runner: Runner;
   say: (line: string) => void;
   /** `--yes`: restart without asking. */
@@ -101,14 +108,40 @@ export interface InstallOptions {
 export type InstallResult = "up-to-date" | "installed" | "declined";
 
 /**
- * Puts the copy and the unit in place, then enables and starts the unit, or restarts it
- * when the copy or the unit changed. Re-running it is the upgrade path. A running router
- * is restarted only after a yes; without one nothing is written (`declined`).
+ * The marker of a setup that has not finished: written before the copy and the unit, and
+ * removed only once the restarted router answers its health page. While it exists, the
+ * next `gateway setup` restarts the unit even when the files are up to date, and `doctor`
+ * says the setup did not finish.
  */
-export function installRouter(options: InstallOptions): InstallResult {
+export function restartPendingFile(stateDir: string): string {
+  return join(stateDir, "restart-pending");
+}
+
+/** How long `installRouter` waits for the restarted router to answer. */
+const HEALTH_WAIT_MS = 5_000;
+
+/**
+ * Puts the copy and the unit in place, then enables and starts the unit, or restarts it
+ * when the copy or the unit changed (or an earlier setup did not finish). Re-running it is
+ * the upgrade path. A running router is restarted only after a yes; without one nothing is
+ * written (`declined`).
+ *
+ * First of all, before any write or question, it asks the port: a program that is not
+ * this router there (an older router, say) stops it, with nothing written. After the
+ * restart it waits for the health page; when that never answers, it throws with the
+ * unit's state, and the restart-pending marker stays.
+ */
+export async function installRouter(options: InstallOptions): Promise<InstallResult> {
+  const port = await probeRouterPort(options.port, options.probe.fetch);
+  if (port.state === "other") {
+    throw new Error(
+      `port ${options.port} is used by another program (an older router? stop it first)`,
+    );
+  }
   const short = (path: string) => tildify(path, options.home);
   const copyText = readFileSync(options.bundle, "utf8");
   const unitText = renderUnit(options.bunPath, options.copyPath);
+  const marker = restartPendingFile(options.stateDir);
   const write = (file: string, text: string, dryRun: boolean) =>
     writeManagedFile(file, text, {
       stateDir: options.stateDir,
@@ -120,7 +153,7 @@ export function installRouter(options: InstallOptions): InstallResult {
   // A read-only pass first: what would change, before anything is written or asked.
   const copyPlan = write(options.copyPath, copyText, true).outcome;
   const unitPlan = write(options.unitPath, unitText, true).outcome;
-  if (copyPlan === "unchanged" && unitPlan === "unchanged") {
+  if (copyPlan === "unchanged" && unitPlan === "unchanged" && !existsSync(marker)) {
     if (options.dryRun) return "up-to-date";
     // Starts it if it was stopped; leaves a running router alone.
     run(options.runner, ["systemctl", "--user", "enable", "--now", UNIT_NAME]);
@@ -145,6 +178,12 @@ export function installRouter(options: InstallOptions): InstallResult {
   }
   if (options.dryRun) return "installed";
 
+  // Before the files: a crash from here on leaves the marker, and the next setup restarts.
+  atomicWrite(
+    marker,
+    `${COMMAND} gateway setup started a router restart at ${new Date(options.probe.now()).toISOString()}; it has not answered yet.\n`,
+    0o600,
+  );
   const copy = write(options.copyPath, copyText, false);
   if (copy.outcome !== "unchanged") {
     options.say(
@@ -162,6 +201,14 @@ export function installRouter(options: InstallOptions): InstallResult {
   if (active) options.say("restarting anymodel-router");
   // `restart` starts it when stopped, and loads the new copy when running.
   run(options.runner, ["systemctl", "--user", "restart", UNIT_NAME]);
+  if (!(await waitForRouter(options.port, options.probe, HEALTH_WAIT_MS))) {
+    const state = options.runner(["systemctl", "--user", "is-active", UNIT_NAME]);
+    const word = state.output.trim().split("\n")[0] || "unknown";
+    throw new Error(
+      `${UNIT_NAME} did not answer on 127.0.0.1:${options.port} within ${HEALTH_WAIT_MS / 1000} s of the restart (systemctl --user is-active: ${word}). See why: journalctl --user -u anymodel-router -n 30. Then run ${COMMAND} gateway setup again.`,
+    );
+  }
+  rmSync(marker, { force: true });
   options.say(`enabled and (re)started ${UNIT_NAME}`);
   return "installed";
 }

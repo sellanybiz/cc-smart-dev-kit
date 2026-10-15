@@ -31,9 +31,10 @@ import {
   parseConfig,
   saveConfig,
 } from "./config";
-import { HEALTH_PATH, startRouter } from "./router";
+import { type HealthProbe, routerHealth } from "./health";
+import { startRouter } from "./router";
 import { type InstallOptions, installRouter, RESTART_WARNING, type Runner } from "./service";
-import { maskKey, settingsReport, turnOff, turnOn } from "./settings";
+import { maskKey, settingsReport, shownValue, turnOff, turnOn } from "./settings";
 import { JUDGE_SLOT, parseTarget, slotKeyFromArg, type Target } from "./targets";
 
 export const USAGE = `Usage: ${COMMAND} gateway <command>
@@ -65,6 +66,11 @@ export interface GatewayContext {
   confirm: ((question: string) => boolean) | null;
   /** False where there is no systemd (macOS, Windows). */
   systemd: boolean;
+  /**
+   * Asks the router's health page and waits for it: `realProbe()` in use. A test passes
+   * fakes, so it never reaches a port where a real router may run.
+   */
+  probe: HealthProbe;
 }
 
 /** The message when the service cannot run here. */
@@ -166,6 +172,15 @@ export function ensureConfig(
 }
 
 /**
+ * The port the router listens on: the config's, or `DEFAULT_PORT` when there is no config
+ * file (the router then runs `emptyConfig()`, every slot on Claude, on that port). A file
+ * that is there but cannot be used throws: its port is unknown.
+ */
+export function configuredPort(configPath: string): number {
+  return existsSync(configPath) ? loadConfigFile(configPath).port : DEFAULT_PORT;
+}
+
+/**
  * The config with one slot changed, after checking every target: it parses, its backend
  * exists, and its model is in that backend's list. `claude-…` targets are taken as they
  * are: Anthropic's list is not reachable without the person's login. `judge off` removes
@@ -227,22 +242,6 @@ export function planSlotChange(
   return { config: checked.config, key, next, old: config.slots[key] ?? [] };
 }
 
-/** The router's own health answer on this machine, with a short timeout. */
-export async function routerHealth(port: number): Promise<{ body: unknown } | { error: string }> {
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}${HEALTH_PATH}`, {
-      signal: AbortSignal.timeout(3_000),
-    });
-    if (!response.ok) {
-      await response.body?.cancel();
-      return { error: `HTTP ${response.status}` };
-    }
-    return { body: await response.json() };
-  } catch (error) {
-    return { error: messageOf(error) };
-  }
-}
-
 function printSlots(config: GatewayConfig): void {
   console.log("\nSlots (first that answers wins):");
   const keys = Object.keys(config.slots).sort();
@@ -264,7 +263,7 @@ function printSlots(config: GatewayConfig): void {
 async function commandModels(ctx: GatewayContext): Promise<number> {
   const config = loadConfigFile(ctx.paths.gatewayConfigFile);
   for (const [name, backend] of Object.entries(config.backends)) {
-    console.log(`\n${name}  ${backend.baseUrl}  (key ${maskKey(backend.apiKey)})`);
+    console.log(`\n${name}  ${shownValue(backend.baseUrl)}  (key ${maskKey(backend.apiKey)})`);
     const listed = await listModels(backend.baseUrl, backend.apiKey);
     if ("error" in listed) console.log(`  unreachable: ${listed.error}`);
     else if (listed.status !== 200) console.log(`  /v1/models answered HTTP ${listed.status}`);
@@ -293,6 +292,7 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
   }
   const configPath = ctx.paths.gatewayConfigFile;
   const config = loadConfigFile(configPath);
+  // The model lists come from the network, so they are read before the lock.
   const modelsByBackend: Record<string, null | string[]> = {};
   for (const text of targets.split(",")) {
     const parsed = parseTarget(text);
@@ -304,9 +304,20 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
     modelsByBackend[name] =
       "models" in listed && listed.status === 200 ? listed.models.map((m) => m.id) : null;
   }
-  const plan = planSlotChange(config, slotArg, targets, modelsByBackend);
-  if ("error" in plan) throw new Error(plan.error);
-  saveConfig(configPath, plan.config);
+  const first = planSlotChange(config, slotArg, targets, modelsByBackend);
+  if ("error" in first) throw new Error(first.error);
+  // Read again and save inside the lock: another command may have changed the file since
+  // (a key set by `gateway setup`, another slot), and its change must not be lost.
+  const plan = await withLock(
+    ctx.paths.stateDir,
+    () => {
+      const again = planSlotChange(loadConfigFile(configPath), slotArg, targets, modelsByBackend);
+      if ("error" in again) throw new Error(again.error);
+      saveConfig(configPath, again.config);
+      return again;
+    },
+    { waitMs: 10_000 },
+  );
   const now =
     plan.next.length === 0 ? "off (auto mode's safety check on Claude)" : plan.next.join(" → ");
   console.log(`${plan.key}: ${plan.old.join(" → ") || "(new)"}\n  now: ${now}`);
@@ -336,7 +347,7 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
   }
   // Without a good config the router runs on the default port.
   const port = config?.port ?? DEFAULT_PORT;
-  const health = await routerHealth(port);
+  const health = await routerHealth(port, ctx.probe.fetch);
   if ("error" in health) console.log(`router: DOWN on 127.0.0.1:${port} (${health.error})`);
   else {
     const body = isJsonObject(health.body) ? health.body : {};
@@ -353,7 +364,9 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
     for (const [name, backend] of Object.entries(config.backends)) {
       const listed = await listModels(backend.baseUrl, backend.apiKey);
       const state = "error" in listed ? `unreachable (${listed.error})` : `HTTP ${listed.status}`;
-      console.log(`backend ${name}: ${backend.baseUrl} key ${maskKey(backend.apiKey)} → ${state}`);
+      console.log(
+        `backend ${name}: ${shownValue(backend.baseUrl)} key ${maskKey(backend.apiKey)} → ${state}`,
+      );
     }
     printSlots(config);
   }
@@ -412,22 +425,25 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
     unitPath: paths.routerUnitFile,
     home: paths.home,
     stateDir: paths.stateDir,
+    port: configuredPort(configPath),
+    probe: ctx.probe,
     runner: ctx.runner,
     say: (line) => console.log(line),
     yes: options.yes,
     confirm: ctx.confirm,
     ...overrides,
   });
-  // Everything is checked, and the question asked, before the lock and before any write.
+  // Everything is checked, the port asked and the question answered, before the lock and
+  // before any write.
   ensureConfig(configPath, key, { allowNone: options.noKey, dryRun: true });
-  if (installRouter(install({ dryRun: true })) === "declined") return 1;
+  if ((await installRouter(install({ dryRun: true }))) === "declined") return 1;
   return withLock(
     paths.stateDir,
-    () => {
+    async () => {
       const said = ensureConfig(configPath, key, { allowNone: options.noKey });
       console.log(said.replaceAll(configPath, tildify(configPath, paths.home)));
       // The question was answered above: the warning is not repeated, and nothing asks again.
-      installRouter(
+      await installRouter(
         install({
           yes: true,
           confirm: null,
@@ -460,14 +476,14 @@ function changeLines(result: ManagedJsonResult, home: string): string[] {
 
 async function commandOn(ctx: GatewayContext): Promise<number> {
   const { paths } = ctx;
-  const config = loadConfigFile(paths.gatewayConfigFile);
-  const health = await routerHealth(config.port);
+  const port = configuredPort(paths.gatewayConfigFile);
+  const health = await routerHealth(port, ctx.probe.fetch);
   if ("error" in health) {
     throw new Error(
-      `the router does not answer on 127.0.0.1:${config.port} (${health.error}); every Claude request would fail. Run ${COMMAND} gateway setup first.`,
+      `the router does not answer on 127.0.0.1:${port} (${health.error}); every Claude request would fail. Run ${COMMAND} gateway setup first.`,
     );
   }
-  const options = { settingsFile: paths.settingsFile, stateDir: paths.stateDir, port: config.port };
+  const options = { settingsFile: paths.settingsFile, stateDir: paths.stateDir, port };
   // A read-only pass first: a key someone else set stops it before anything is written.
   turnOn({ ...options, dryRun: true });
   const result = await withLock(paths.stateDir, () => turnOn(options), { waitMs: 10_000 });

@@ -48,7 +48,7 @@ After that, use `anymodel setup` to set up again (for example after an update).
 |---|---|
 | `anymodel setup` | Installs the launcher and turns on plugin auto-update. `--dry-run` shows the changes and writes nothing at all. A settings key you set yourself (for example `autoUpdate: false`) stops setup before it writes anything. |
 | `anymodel doctor` | Checks the install (the list is below). Prints ✓ or ✗ for each check, and exits with 1 when one fails. |
-| `anymodel restore [--yes]` | Removes what setup added (its settings keys, its block) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. When `gateway setup` installed the router, restore stops and disables it first (it asks, because that cuts answers in flight; `--yes` skips the question) and removes its copy and unit; it keeps `gateway.json`, which holds your key. A second restore changes nothing. |
+| `anymodel restore [--yes] [--now]` | Removes what setup added (its settings keys, its block) and keeps everything else. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second stops and disables the router (it asks, because that cuts answers in flight; `--yes` skips the question) and removes its copy and unit. `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
 | `anymodel gateway <command>` | The optional AI gateway (below). |
 | `anymodel version` | Prints the version. |
 
@@ -72,11 +72,21 @@ After that, use `anymodel setup` to set up again (for example after an update).
   `0`, `false`, `no` or `off` counts as not set;
 - no other plugin named `anymodel` is enabled, and the plugin's old id `cc@cc-agentic`
   (its name before version 0.2.0) is not enabled either: two copies of the same hooks
-  would run;
-- the gateway, when it is set up: the router service is active, the router copy is this
-  plugin version's, the router answers on its port, each backend answers; and, as
-  information, each slot's first target. When it was never set up, doctor says
-  "gateway: not set up (optional)" as information (`·`), not as a failure.
+  would run. When the old setup ran on this machine (its folder `~/.claude/cc-agentic`
+  is there), anything else it left fails too: the old plugin installed, its launcher
+  `~/.local/bin/cc-agentic`, `extraKnownMarketplaces.cc-agentic`, or the `cc-agentic`
+  marketplace. The ✗ gives the order: `cc-agentic restore` first (or, when the old
+  launcher cannot run, the two things to remove by hand), then `claude plugin uninstall
+  cc@cc-agentic`, then `claude plugin marketplace remove cc-agentic`;
+- no gateway setup stopped half way: while one did, ✗ "a gateway setup did not finish;
+  run: anymodel gateway setup";
+- the gateway, when it is installed (the router copy or its unit is there): the router
+  service is active, the router copy is this plugin version's, the router answers on its
+  port, each backend answers; and, as information, each slot's first target. Without
+  `gateway.json` (set up with `--no-backend-key`), a `·` line says every slot answers on
+  Claude. When it was never set up, doctor says "gateway: not set up (optional)" as
+  information (`·`), not as a failure; with only `gateway.json` left (restore keeps it),
+  "gateway.json kept; the gateway is not installed".
 
 Setup only changes the keys it owns. Before each change it makes a backup in
 `~/.claude/anymodel/backups/` (a private folder, one subfolder per file), never beside
@@ -97,7 +107,7 @@ real Claude on your own login. No prompt text is ever changed. Linux only for no
 
 | Command | What it does |
 |---|---|
-| `anymodel gateway setup [--yes] [--backend-key-stdin <backend> \| --no-backend-key]` | Makes `~/.config/anymodel/gateway.json` (mode 600; the key on stdin, never argv), copies the router to `~/.local/share/anymodel/router.js`, writes the systemd user unit `anymodel-router`, and starts it. When the router runs and the copy or unit changed, it says a restart cuts the answers in flight and asks; `--yes` skips the question. It never touches Claude Code's settings. |
+| `anymodel gateway setup [--yes] [--backend-key-stdin <backend> \| --no-backend-key]` | Makes `~/.config/anymodel/gateway.json` (mode 600; the key on stdin, never argv), copies the router to `~/.local/share/anymodel/router.js`, writes the systemd user unit `anymodel-router`, starts it, and waits up to 5 s for it to answer. First of all it asks the router's port: when another program holds it (an older router, say), it stops and writes nothing. When the router runs and the copy or unit changed, it says a restart cuts the answers in flight and asks; `--yes` skips the question. A setup that stopped half way is finished by the next one. It never touches Claude Code's settings. |
 | `anymodel gateway status` | Router health, each backend, the slots, and whether Claude Code points at the gateway. Keys are masked. |
 | `anymodel gateway models` | Every model each backend offers, and the slots. |
 | `anymodel gateway slot <scout\|worker\|judge> <target>[,<target>…]` | Sets a slot's targets, checked against the backend's model list. Live, no restart. `slot judge off` puts auto mode's safety check back on Claude. |
@@ -105,9 +115,31 @@ real Claude on your own login. No prompt text is ever changed. Linux only for no
 | `anymodel gateway off` | Removes exactly the keys `on` set. Restart the sessions afterwards. |
 | `anymodel gateway serve` | Runs the router in the terminal. |
 
+### First setup
+
+1. Run OmniRoute on this machine at `http://127.0.0.1:20128`: setup writes that address
+   for the `omniroute` backend. Give it a connection to a provider (Ollama Cloud, say),
+   and make an API key in it for the router. OmniRoute somewhere else: after setup,
+   change `backends.omniroute.baseUrl` in `~/.config/anymodel/gateway.json`.
+2. Save that key in a file only you can read, and give it to setup **on stdin**. The
+   first key is always the `omniroute` backend's: the default slots use it.
+
+   ```sh
+   anymodel gateway setup --backend-key-stdin omniroute < key-file
+   ```
+
+   Why a file: a key typed at the prompt shows on the screen, and setup reads to the end
+   of the input, so typing it also needs Ctrl-D. A key as an argument would land in the
+   shell history and the process list, so setup refuses one there. No key yet:
+   `anymodel gateway setup --no-backend-key` (every slot answers on Claude).
+3. `anymodel gateway status`, then `anymodel gateway on`.
+
 The judge slot, which moves auto mode's safety check to a cheaper model, is **off by
 default**. Turn it on only when you accept the trade-off: a cheaper judge can block good
-work, and a weak one can let a risky command through.
+work, and a weak one can let a risky command through. "Off by default" relies on the
+router recognising the check by its prompt. If Claude Code rewords that prompt, the check
+is routed by its model name until the router is updated (see
+[docs/gateway.md](docs/gateway.md) § Known limits; [roadmap](docs/roadmap.md) Phase 3).
 
 ## A project's `.claude/anymodel.json`
 

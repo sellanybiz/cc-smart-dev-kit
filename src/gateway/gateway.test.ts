@@ -1,6 +1,16 @@
 /**
- * The AI gateway: router, targets and config (ported from the project that wrote it; every
- * assertion kept, names and paths renamed).
+ * The AI gateway: router, targets and config.
+ *
+ * Ported from the project that wrote it, from its version in which the judge slot was on
+ * by default. Names, paths and example text are renamed; every router assertion is kept.
+ * The judge default is the one behaviour that changed (off now), and no assertion in this
+ * file changed with it: the safety-check tests already ran on `config()`, which has no
+ * judge slot, like a new config, and turn the judge on with `withJudge()`. What changed
+ * with it: "with the judge off (the default), a safety check reaches Anthropic unchanged"
+ * is new here, and in `commands.test.ts` the default slot table lost its `anymodel-judge`
+ * row ("creates the config only with the OmniRoute key…"); the old project's assertion
+ * about its own `guard` slot name, whose text said the judge was on, was not ported. New
+ * since the port: the aliases tests, and "prompts stay as Claude Code wrote them".
  *
  * What it guards:
  *   - The person's own Claude login (`authorization: Bearer sk-ant-oat…`, and the account
@@ -11,9 +21,11 @@
  *   - Fallback moves on only before an answer reaches Claude Code, on the statuses the
  *     design names; an OmniRoute stream that opens with 200 and then reports an error
  *     in-band also moves on; the last target's answer is returned as it is.
- *   - Auto mode's safety check goes to the `anymodel-judge` slot, in every session; with no
- *     such slot it stays on Claude (a `claude-…` one byte for byte, a slot-named one to the
- *     slot's Claude targets).
+ *   - Auto mode's safety check stays on Claude by default (a new config has no
+ *     `anymodel-judge` slot): a `claude-…` one byte for byte, a slot-named one to the slot's
+ *     Claude targets, and one whose name (an alias included) leads to no Claude target to
+ *     Anthropic as it was sent. With a judge slot, which only the person turns on, every
+ *     check in every session goes there.
  *   - Reasoning switched off reaches a cheap backend in a form OmniRoute reads.
  *   - Streams pass chunk by chunk, nothing held back once the first event is out.
  *   - Only this machine can use it (Host, Origin, JSON + anthropic-version).
@@ -1741,6 +1753,88 @@ describe("aliases", () => {
     );
   });
 
+  /** Auto mode's safety check, newer form, under `model`. */
+  function aliasedCheck(model: string): Record<string, unknown> {
+    return {
+      max_tokens: 2112,
+      messages: [{ content: "<transcript>git push --force</transcript>", role: "user" }],
+      metadata: { user_id: `user_acct-42_${TOKEN}` },
+      model,
+      system: "You are a security monitor for autonomous AI coding agents.",
+    };
+  }
+
+  it("judge off: a check under an alias to <backend>:<model> never reaches it; Anthropic gets the bytes as sent", async () => {
+    const { calls, handle, logs } = router([() => new Response("{}")], {
+      config: aliased({ "old-worker": "omniroute:glm-5.3-flash" }),
+    });
+    const sent = JSON.stringify(aliasedCheck("old-worker[1m]"));
+    await handle(clientRequest({ body: sent }));
+    expect(calls.map((call) => call.url)).toEqual(["https://anthropic.test/v1/messages?beta=true"]);
+    expect(nth(calls, 0).body).toBe(sent);
+    expect(nth(calls, 0).headers).toContainEqual(["authorization", `Bearer ${TOKEN}`]);
+    expect(logs.at(-1)).toBe(
+      "2026-10-15T10:00:00.000Z POST /v1/messages old-worker[1m] (safety check) → anthropic 200 0ms fallbacks=0",
+    );
+  });
+
+  it("an old name in the aliases is a name the check can carry; without the alias it is not", () => {
+    const check = aliasedCheck("old-worker[1m]");
+    expect(isAutoModeGuard(check, { "old-worker": "omniroute:glm-5.3-flash" })).toBe(true);
+    expect(isAutoModeGuard(check)).toBe(false);
+    expect(isAutoModeGuard(check, { "other-name": "anymodel-worker" })).toBe(false);
+  });
+
+  it("judge on: the same check goes to the judge", async () => {
+    const judged = aliased(
+      { "old-worker": "omniroute:glm-5.3-flash" },
+      { slots: { ...config().slots, "anymodel-judge": ["ollama:deepseek-v4.1-flash"] } },
+    );
+    const { calls, handle } = router([() => new Response("{}")], { config: judged });
+    await handle(clientRequest({ body: JSON.stringify(aliasedCheck("old-worker[1m]")) }));
+    expect(calls.map((call) => call.url)).toEqual(["https://ollama.test/v1/messages"]);
+    expectNoLogin(nth(calls, 0));
+  });
+
+  it("a request under that alias that is not the check still goes to the backend", async () => {
+    const { calls, handle } = router([() => new Response("{}")], {
+      config: aliased({ "old-worker": "omniroute:glm-5.3-flash" }),
+    });
+    await handle(clientRequest({ body: JSON.stringify(message("old-worker[1m]")) }));
+    expect(calls.map((call) => call.url)).toEqual(["http://omni.test/v1/messages"]);
+    expect(JSON.parse(nth(calls, 0).body ?? "")).toEqual(cheapBodyFor("glm-5.3-flash"));
+    expectNoLogin(nth(calls, 0));
+  });
+
+  it("judge off: a check under an alias to a slot with no Claude target goes to Anthropic as sent", async () => {
+    // config()'s anymodel-cheap: GLM and DeepSeek only.
+    const { calls, handle } = router([() => new Response("not found", { status: 404 })], {
+      config: aliased({ "old-cheap": "anymodel-cheap" }),
+    });
+    const sent = JSON.stringify(aliasedCheck("old-cheap"));
+    const res = await handle(clientRequest({ body: sent }));
+    expect(res.status).toBe(404);
+    expect(calls.map((call) => call.url)).toEqual(["https://anthropic.test/v1/messages?beta=true"]);
+    expect(nth(calls, 0).body).toBe(sent);
+  });
+
+  it("judge off: a check under an alias to a slot with a Claude target, or to claude-…, reaches Claude with only the model changed", async () => {
+    const { calls, handle } = router([() => new Response("{}"), () => new Response("{}")], {
+      config: aliased({ "old-model": "claude-opus-5-5", "old-scout": "anymodel-scout" }),
+    });
+    const scout = aliasedCheck("old-scout[1m]");
+    await handle(clientRequest({ body: JSON.stringify(scout) }));
+    const model = aliasedCheck("old-model");
+    await handle(clientRequest({ body: JSON.stringify(model) }));
+    // config()'s anymodel-scout: GLM, DeepSeek, then Claude Sonnet 5.5: only the last.
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://anthropic.test/v1/messages?beta=true",
+      "https://anthropic.test/v1/messages?beta=true",
+    ]);
+    expect(nth(calls, 0).body).toBe(JSON.stringify({ ...scout, model: "claude-sonnet-5-5" }));
+    expect(nth(calls, 1).body).toBe(JSON.stringify({ ...model, model: "claude-opus-5-5" }));
+  });
+
   it("a name with no alias is not touched: claude-* and unknown names go to Anthropic as they came", async () => {
     const { calls, handle, logs } = router([() => new Response("{}"), () => new Response("{}")], {
       config: aliased({ "old-cheap": "anymodel-cheap" }),
@@ -1944,11 +2038,79 @@ describe("prompts stay as Claude Code wrote them", () => {
     expect(sent.output_config).toEqual({ effort: "none" });
   });
 
-  it("the two translations change no prompt text", () => {
-    const body = promptBody("anymodel-cheap");
+  it("the two translations change no prompt text: only the tool_reference block becomes its named text", () => {
+    // promptBody, plus what tool search adds: a ToolSearch answer with a tool_reference
+    // block, and a deferred tool it names.
+    const base = promptBody("anymodel-cheap");
+    const searchResult = {
+      content: [
+        { text: "Found 1 tool.  Spacing kept.", type: "text" },
+        { tool_name: "mcp__browser__navigate", type: "tool_reference" },
+      ],
+      tool_use_id: "toolu_2",
+      type: "tool_result",
+    };
+    const navigate = {
+      defer_loading: true,
+      description: "Open a page.  As written.",
+      input_schema: { type: "object" },
+      name: "mcp__browser__navigate",
+    };
+    const body: Record<string, unknown> = {
+      ...base,
+      messages: [
+        ...(base.messages as unknown[]),
+        { content: [searchResult, { text: "Go on.", type: "text" }], role: "user" },
+      ],
+      tools: [...(base.tools as unknown[]), navigate],
+    };
     const translated = reasoningOffForBackend(toolSearchForBackend(body), { absentIsOff: true });
-    expect(translated.system).toEqual(body.system);
-    expect(translated.messages).toEqual(body.messages);
-    expect(translated.tools).toEqual(body.tools);
+
+    // Every system block and every message byte-identical, but that one block.
+    expect(JSON.stringify(translated.system)).toBe(JSON.stringify(base.system));
+    expect(JSON.stringify(translated.messages)).toBe(
+      JSON.stringify([
+        { content: "Fix the bug in parser.ts.  Keep   the spacing.", role: "user" },
+        {
+          content: [
+            { text: "Reading the file first.", type: "text" },
+            { id: "toolu_1", input: { path: "parser.ts" }, name: "Read", type: "tool_use" },
+          ],
+          role: "assistant",
+        },
+        {
+          content: [
+            { content: "export function parse() {}", tool_use_id: "toolu_1", type: "tool_result" },
+            { text: "Now fix it.", type: "text" },
+          ],
+          role: "user",
+        },
+        {
+          content: [
+            {
+              content: [
+                { text: "Found 1 tool.  Spacing kept.", type: "text" },
+                { text: "Tool loaded: mcp__browser__navigate", type: "text" },
+              ],
+              tool_use_id: "toolu_2",
+              type: "tool_result",
+            },
+            { text: "Go on.", type: "text" },
+          ],
+          role: "user",
+        },
+      ]),
+    );
+    // The named tool is a plain definition now; its words are as written.
+    expect(translated.tools).toEqual([
+      { input_schema: { type: "object" }, name: "Read" },
+      {
+        description: "Open a page.  As written.",
+        input_schema: { type: "object" },
+        name: "mcp__browser__navigate",
+      },
+    ]);
+    // The input is not changed in place.
+    expect(body.tools).toEqual([...(base.tools as unknown[]), navigate]);
   });
 });

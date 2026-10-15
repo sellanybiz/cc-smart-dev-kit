@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MARKETPLACE_SOURCE, VERSION } from ".";
 import { parseRepository, readBuildInfo } from "./manifest";
@@ -20,6 +21,25 @@ describe("parseRepository", () => {
       expect(() => parseRepository(url)).toThrow("Cannot read <owner>/<name>");
     },
   );
+});
+
+describe("the router bundle", () => {
+  test("holds no version and no repository: a version bump leaves it as it is", () => {
+    // A changed router.js makes `gateway setup` restart the router on every machine, so
+    // only a real router change may change it. The version is baked by build-info's index;
+    // the router imports the names from build-info/names instead.
+    const root = join(import.meta.dir, "..", "..");
+    const manifest = JSON.parse(
+      readFileSync(join(root, "plugin", ".claude-plugin", "plugin.json"), "utf8"),
+    ) as { repository: string; version: string };
+    const router = readFileSync(join(root, "plugin", "dist", "router.js"), "utf8");
+    expect(router).not.toContain(`"${manifest.version}"`);
+    expect(router).not.toContain(parseRepository(manifest.repository));
+    expect(router).not.toContain('"repo"');
+    expect(router).not.toContain("repo:");
+    // It does hold the command name it prints, from build-info/names.
+    expect(router).toContain('var COMMAND = "anymodel";');
+  });
 });
 
 describe("the baked build info", () => {

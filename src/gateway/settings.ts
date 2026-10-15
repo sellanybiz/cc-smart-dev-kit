@@ -99,6 +99,18 @@ export function shownValue(value: unknown): string {
 }
 
 /**
+ * The gateway env keys anymodel owns in the settings file: `gateway on` set them, and
+ * neither `off` nor `restore` took them out yet. While there is one, running Claude
+ * sessions may still send every request to the router.
+ */
+export function ownedGatewayEnvKeys(settingsFile: string, stateDir: string): string[] {
+  const owned = ownedKeys(stateDir, realTarget(settingsFile));
+  return GATEWAY_ENV_KEYS.filter((key) =>
+    owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key),
+  );
+}
+
+/**
  * Throws ForeignKeyError when a gateway key is in the settings and anymodel does not own
  * it, also when it already has the wanted value: then `gateway off` could not remove it,
  * and the gateway would stay half on. An older install, or the person, set it; they remove
@@ -107,14 +119,17 @@ export function shownValue(value: unknown): string {
 export function assertNoForeignGatewayKeys(settingsFile: string, stateDir: string): void {
   const env = readSettings(settingsFile).env;
   if (!isJsonObject(env)) return;
-  const owned = ownedKeys(stateDir, realTarget(settingsFile));
-  const isOwned = (key: string) =>
-    owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key);
+  const owned = new Set(ownedGatewayEnvKeys(settingsFile, stateDir));
   for (const key of GATEWAY_ENV_KEYS) {
-    if (!Object.hasOwn(env, key) || isOwned(key)) continue;
+    if (!Object.hasOwn(env, key) || owned.has(key)) continue;
+    // Many people set ENABLE_TOOL_SEARCH themselves, for their own reasons: say so.
+    const yourOwn =
+      key === "ENABLE_TOOL_SEARCH"
+        ? ` Many people set ENABLE_TOOL_SEARCH themselves; removing it by hand lets ${COMMAND} gateway on manage it (it sets "true", and gateway off removes it again).`
+        : "";
     throw new ForeignKeyError(
       `${settingsFile}: ${formatKeyPath(envPath(key))} is ${shownValue(env[key])}, set by someone else. ` +
-        `${COMMAND} does not overwrite it. Remove it by hand if ${COMMAND} should manage it.`,
+        `${COMMAND} does not overwrite it. Remove it by hand if ${COMMAND} should manage it.${yourOwn}`,
     );
   }
 }

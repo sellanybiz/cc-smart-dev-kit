@@ -47,6 +47,12 @@ Claude Code copies only `plugin/` into
   macro (code that runs at build time). The bundle holds those two values only, never
   the rest of the file.
 - So **a version bump changes `plugin/dist/cli.js`**: rebuild after it.
+- **But never `plugin/dist/router.js`.** A changed router bundle makes `gateway setup`
+  restart the router on every machine, which cuts answers in flight. So code in the
+  router bundle imports the fixed names (`COMMAND`, `PLUGIN`, …) from
+  `src/build-info/names.ts`, never from `src/build-info` (its index bakes in the
+  version). `src/build-info/manifest.test.ts` › "the router bundle" fails when the
+  version or the repository gets into `router.js`.
 - **Any change under `plugin/` needs a version bump.** Claude Code keys installs and
   updates by the version, so without a bump no user ever gets the change. CI enforces
   it: a pull request that changes anything under `plugin/` must raise `version`

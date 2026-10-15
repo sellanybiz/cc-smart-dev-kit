@@ -23,17 +23,8 @@ function tildify(path, home) {
 }
 
 // src/gateway/config.ts
-import { randomUUID } from "crypto";
-import {
-  chmodSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync
-} from "fs";
-import { dirname, join as join2 } from "path";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
+import { dirname as dirname2 } from "path";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -5520,13 +5511,13 @@ var ZodObject = /* @__PURE__ */ $constructor("ZodObject", (inst, def) => {
     return required(ZodNonOptional, this, args[0]);
   }
 });
-function object(shape, params) {
-  const def = {
+function looseObject(shape, params) {
+  return new ZodObject({
     type: "object",
-    shape: shape ?? {},
+    shape,
+    catchall: unknown(),
     ...normalizeParams(params)
-  };
-  return new ZodObject(def);
+  });
 }
 var ZodUnion = /* @__PURE__ */ $constructor("ZodUnion", (inst, def) => {
   $ZodUnion.init(inst, def);
@@ -5815,20 +5806,257 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
-// src/build-info/index.ts
-var info = {
-  version: "0.2.0",
-  repo: "sellanybiz/anymodel"
-};
-var VERSION = info.version;
-var MARKETPLACE_SOURCE = info.repo;
+// src/build-info/names.ts
 var MARKETPLACE = "anymodel";
 var PLUGIN = "anymodel";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
 var COMMAND = "anymodel";
-var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
-var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
-var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
+
+// src/setup/write.ts
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from "fs";
+import { basename, dirname, join as join2, resolve } from "path";
+var BACKUPS_DIR = "backups";
+var BACKUP_INFIX = ".bak-anymodel-";
+var ABSENT_SUFFIX = ".absent";
+var CHANGED_FILE = "changed.json";
+var MAX_LINKS = 40;
+function utcStamp(date = new Date) {
+  return date.toISOString().replace(/[-:.]/g, "");
+}
+function realTarget(file) {
+  let path = resolve(file);
+  for (let links = 0;links <= MAX_LINKS; links += 1) {
+    try {
+      return realpathSync(path);
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    let isLink = false;
+    try {
+      isLink = lstatSync(path).isSymbolicLink();
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    if (!isLink) {
+      const parent = dirname(path);
+      return parent === path ? path : join2(realTarget(parent), basename(path));
+    }
+    path = resolve(dirname(path), readlinkSync(path));
+  }
+  throw new Error(`${file}: too many symlinks (a loop?)`);
+}
+function fileMode(file) {
+  return existsSync(file) ? statSync(file).mode & 4095 : null;
+}
+function writeTemp(file, content, mode) {
+  const dir = dirname(file);
+  mkdirSync(dir, { recursive: true });
+  const temp = join2(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
+  try {
+    const fd = openSync(temp, "wx", mode);
+    try {
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    chmodSync(temp, mode);
+  } catch (error) {
+    if (existsSync(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+  return temp;
+}
+function atomicWrite(file, content, mode, beforeRename) {
+  const temp = writeTemp(file, content, mode);
+  try {
+    beforeRename?.();
+    renameSync(temp, file);
+  } catch (error) {
+    if (existsSync(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+}
+function parseBackupName(base, name) {
+  const prefix = `${base}${BACKUP_INFIX}`;
+  if (!name.startsWith(prefix))
+    return null;
+  const match = /^(\d{8}T\d{9}Z)(?:-(\d+))?(?:(\.absent)|\.mode-([0-7]{3,4}))?$/.exec(name.slice(prefix.length));
+  if (!match?.[1])
+    return null;
+  return {
+    name,
+    stamp: match[1],
+    counter: match[2] ? Number(match[2]) : 0,
+    absent: match[3] !== undefined,
+    mode: match[4] ? Number.parseInt(match[4], 8) : null
+  };
+}
+function backupDir(stateDir, file) {
+  return join2(stateDir, BACKUPS_DIR, encodeURIComponent(realTarget(file)));
+}
+function makePrivateDir(dir) {
+  mkdirSync(dir, { recursive: true, mode: 448 });
+  chmodSync(dir, 448);
+}
+function listBackups(stateDir, file) {
+  const dir = backupDir(stateDir, file);
+  if (!existsSync(dir))
+    return [];
+  const base = basename(realTarget(file));
+  return readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup !== null).sort((a, b) => a.stamp === b.stamp ? a.counter - b.counter : a.stamp < b.stamp ? -1 : 1).map((backup) => {
+    const path = join2(dir, backup.name);
+    return { path, absent: backup.absent, mode: backup.mode ?? fileMode(path) ?? 384 };
+  });
+}
+function copyNotExecutable(file, target) {
+  const mode = fileMode(file) ?? 384;
+  const safeMode = mode & ~73;
+  writeFileSync(target, readFileSync(file), { flag: "wx", mode: safeMode });
+  chmodSync(target, safeMode);
+  return mode;
+}
+function backupFile(stateDir, file) {
+  const real = realTarget(file);
+  const dir = backupDir(stateDir, real);
+  const base = basename(real);
+  const stamp = utcStamp();
+  const mode = fileMode(real);
+  const suffix = mode === null ? ABSENT_SUFFIX : (mode & 73) !== 0 ? `.mode-${mode.toString(8)}` : "";
+  makePrivateDir(join2(stateDir, BACKUPS_DIR));
+  makePrivateDir(dir);
+  const sameStamp = readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup?.stamp === stamp);
+  const counter = sameStamp.length === 0 ? 0 : Math.max(...sameStamp.map((backup) => backup.counter)) + 1;
+  const target = join2(dir, `${base}${BACKUP_INFIX}${stamp}${counter === 0 ? "" : `-${counter}`}${suffix}`);
+  if (mode === null) {
+    writeFileSync(target, "", { flag: "wx", mode: 384 });
+  } else {
+    copyNotExecutable(real, target);
+  }
+  return target;
+}
+var CHANGE_KINDS = ["json-keys", "markdown-block", "whole-file"];
+function isChangedEntry(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const entry = value;
+  return Array.isArray(entry.kinds) && entry.kinds.every((kind) => CHANGE_KINDS.includes(kind)) && (entry.baseline === null || typeof entry.baseline === "string");
+}
+function readChanged(stateDir) {
+  const file = join2(stateDir, CHANGED_FILE);
+  if (!existsSync(file))
+    return {};
+  const parsed = JSON.parse(readFileSync(file, "utf8"));
+  const files = parsed?.files;
+  if (typeof files !== "object" || files === null || !Object.values(files).every((entry) => isChangedEntry(entry))) {
+    throw new Error(`Invalid ${file}: expected { "files": { <path>: { kinds, baseline } } }`);
+  }
+  return files;
+}
+function writeChanged(stateDir, files) {
+  const sorted = Object.fromEntries(Object.entries(files).sort(([a], [b]) => a < b ? -1 : 1));
+  atomicWrite(join2(stateDir, CHANGED_FILE), `${JSON.stringify({ files: sorted }, null, 2)}
+`, 384);
+}
+function recordChange(stateDir, file, kind, backup) {
+  const files = readChanged(stateDir);
+  const entry = files[file];
+  if (!entry) {
+    files[file] = { kinds: [kind], baseline: backup };
+    writeChanged(stateDir, files);
+    return true;
+  }
+  if (!entry.kinds.includes(kind)) {
+    entry.kinds.push(kind);
+    writeChanged(stateDir, files);
+  }
+  return false;
+}
+function forgetChange(stateDir, file) {
+  const files = readChanged(stateDir);
+  if (!(file in files))
+    return;
+  delete files[file];
+  writeChanged(stateDir, files);
+}
+
+class ConcurrentChangeError extends Error {
+  name = "ConcurrentChangeError";
+}
+function retryOnConcurrentChange(file, fn, attempts = 3) {
+  for (let attempt = 1;; attempt += 1) {
+    try {
+      return fn();
+    } catch (error) {
+      if (!(error instanceof ConcurrentChangeError) || attempt >= attempts) {
+        if (error instanceof ConcurrentChangeError) {
+          throw new ConcurrentChangeError(`${file} kept changing while anymodel tried to update it (${attempts} tries). ` + "Close the program that writes it (for example Claude Code), then run again.");
+        }
+        throw error;
+      }
+    }
+  }
+}
+function readCurrent(file) {
+  return existsSync(file) ? readFileSync(file, "utf8") : null;
+}
+function writeManagedFile(file, content, options) {
+  const target = realTarget(file);
+  const currentMode = fileMode(target);
+  const current = currentMode === null ? null : readFileSync(target, "utf8");
+  const checkUnchanged = (now) => {
+    if (options.expectedContent !== undefined && now !== options.expectedContent) {
+      throw new ConcurrentChangeError(`${target} changed after anymodel read it.`);
+    }
+  };
+  if (!options.dryRun)
+    checkUnchanged(current);
+  const wantedMode = options.mode ?? currentMode ?? options.newFileMode ?? 384;
+  if (current === content && currentMode === wantedMode) {
+    return { outcome: "unchanged", backup: null };
+  }
+  const outcome = currentMode === null ? "created" : "updated";
+  if (options.dryRun)
+    return { outcome, backup: null };
+  const backup = backupFile(options.stateDir, target);
+  const isBaseline = recordChange(options.stateDir, target, options.kind, backup);
+  try {
+    atomicWrite(target, content, wantedMode, () => {
+      options.onBeforeCompare?.();
+      checkUnchanged(readCurrent(target));
+    });
+  } catch (error) {
+    if (!isBaseline && existsSync(backup))
+      unlinkSync(backup);
+    throw error;
+  }
+  return { outcome, backup };
+}
+function removeManagedFile(stateDir, file) {
+  const backup = backupFile(stateDir, file);
+  unlinkSync(file);
+  return backup;
+}
 
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
@@ -5906,15 +6134,17 @@ function resolveRoute(model, config) {
   return { kind: "anthropic" };
 }
 var GUARD_PROMPT = "You are a security monitor for autonomous AI coding agents";
-function isAutoModeGuard(body) {
+function isAutoModeGuard(body, aliases = {}) {
   const model = body.model;
   if (typeof model !== "string")
     return false;
   const tools = body.tools;
   if (Array.isArray(tools) && tools.length > 0)
     return false;
-  if (!model.startsWith("claude-") && !isSlotKey(withoutContextSuffix(model)))
+  const name = withoutContextSuffix(model);
+  if (!model.startsWith("claude-") && !isSlotKey(name) && !Object.hasOwn(aliases, name)) {
     return false;
+  }
   const system = body.system;
   if (typeof system === "string")
     return system.includes(GUARD_PROMPT);
@@ -5926,12 +6156,16 @@ function isAutoModeGuard(body) {
     return typeof block.text === "string" && block.text.includes(GUARD_PROMPT);
   });
 }
-function resolveRequestRoute(body, config) {
+function resolveRequestRoute(body, config, guard) {
   const route = resolveRoute(body.model, config);
-  if (route.kind !== "slot" || !isAutoModeGuard(body))
+  if (!guard)
+    return route;
+  if (route.kind === "explicit")
+    return { kind: "anthropic-as-sent" };
+  if (route.kind !== "slot")
     return route;
   const claude = route.targets.filter((target) => target.kind === "anthropic");
-  return claude.length > 0 ? { ...route, targets: claude } : { kind: "anthropic" };
+  return claude.length > 0 ? { ...route, targets: claude } : { kind: "anthropic-as-sent" };
 }
 var JUDGE_SLOT = "anymodel-judge";
 var FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
@@ -5963,17 +6197,17 @@ var DEFAULT_FIRST_BYTE_MS = 60000;
 var FALLBACK_SLOT_TARGET = "claude-sonnet-5-5";
 var NO_CONFIG_MEANS = `every haiku / sonnet call answers on ${FALLBACK_SLOT_TARGET} (your own Claude login) until it is fixed`;
 var baseUrl = url({ protocol: /^https?$/ }).transform((url2) => url2.replace(/\/+$/, ""));
-var backendSchema = object({
+var backendSchema = looseObject({
   apiKey: string2().min(1),
   baseUrl
 });
-var gatewayConfigSchema = object({
+var gatewayConfigSchema = looseObject({
   aliases: record(string2(), string2()).default({}),
   anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
   backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
   slots: record(string2().refine(isSlotKey, "a slot key is anymodel-<name>"), array(string2()).min(1)),
-  timeouts: object({ firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS) }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
+  timeouts: looseObject({ firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS) }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {
   for (const [slot, targets] of Object.entries(config.slots)) {
@@ -6041,7 +6275,7 @@ function parseConfig(raw) {
 function loadConfigFile(path) {
   let mode;
   try {
-    mode = statSync(path).mode;
+    mode = statSync2(path).mode;
   } catch (error) {
     throw new ConfigError(`cannot read ${path}: ${messageOf(error)}`, { cause: error });
   }
@@ -6050,7 +6284,7 @@ function loadConfigFile(path) {
   }
   let raw;
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    raw = JSON.parse(readFileSync2(path, "utf8"));
   } catch (error) {
     throw new ConfigError(`${path} is not valid JSON. Fix it by hand.`, { cause: error });
   }
@@ -6060,24 +6294,13 @@ function loadConfigFile(path) {
 ${parsed.error}`);
   return parsed.config;
 }
-function writeFileAtomic(path, text, mode) {
-  const temp = join2(dirname(path), `.${randomUUID()}.tmp`);
-  try {
-    writeFileSync(temp, text, { flag: "wx", mode });
-    chmodSync(temp, mode);
-    renameSync(temp, path);
-  } catch (error) {
-    rmSync(temp, { force: true });
-    throw error;
-  }
-}
 function saveConfig(path, config) {
   const parsed = parseConfig(config);
   if ("error" in parsed)
     throw new ConfigError(`refusing to save an invalid config:
 ${parsed.error}`);
-  mkdirSync(dirname(path), { mode: 448, recursive: true });
-  writeFileAtomic(path, `${JSON.stringify(parsed.config, null, 2)}
+  mkdirSync2(dirname2(path), { mode: 448, recursive: true });
+  atomicWrite(path, `${JSON.stringify(parsed.config, null, 2)}
 `, 384);
 }
 function emptyConfig() {
@@ -6094,7 +6317,7 @@ function emptyConfig() {
     version: 1
   };
 }
-var REAL_WATCH_DEPS = { load: loadConfigFile, stat: statSync };
+var REAL_WATCH_DEPS = { load: loadConfigFile, stat: statSync2 };
 function watchConfig(path, log, deps = REAL_WATCH_DEPS) {
   let current = emptyConfig();
   let good = false;
@@ -6634,9 +6857,10 @@ function createRouter(deps) {
         return refusal("anymodel-router wants content-type: application/json and an anthropic-version header");
       }
     }
-    let bytes = req.method === "GET" || req.method === "HEAD" || req.body === null ? null : new Uint8Array(await req.arrayBuffer());
-    const direct = async () => {
-      const result = await send(req, anthropicUpstream(req, url, config, bytes), null);
+    const sent = req.method === "GET" || req.method === "HEAD" || req.body === null ? null : new Uint8Array(await req.arrayBuffer());
+    let bytes = sent;
+    const direct = async (body = bytes) => {
+      const result = await send(req, anthropicUpstream(req, url, config, body), null);
       const response = "response" in result ? relay(result.response, null) : anthropicError(502, "api_error", `anymodel-router: Anthropic did not answer (${result.failure})`);
       return { fallbacks: 0, response, skipped: 0, target: "anthropic" };
     };
@@ -6653,6 +6877,7 @@ function createRouter(deps) {
     }
     if (typeof parsed.model === "string")
       model.name = parsed.model;
+    const guard = isAutoModeGuard(parsed, config.aliases);
     const alias = resolveAlias(parsed.model, config.aliases);
     let body = parsed;
     if (alias !== null) {
@@ -6663,7 +6888,6 @@ function createRouter(deps) {
       body = { ...parsed, model: alias.to };
       bytes = encoder.encode(JSON.stringify(body));
     }
-    const guard = isAutoModeGuard(body);
     if (guard)
       model.name = `${model.name} (safety check)`;
     const judge = guard ? resolveRoute(JUDGE_SLOT, config) : null;
@@ -6679,9 +6903,11 @@ function createRouter(deps) {
       }
       return chain(req, url, config, body, judge.targets, JUDGE_SLOT, true);
     }
-    const decided = resolveRequestRoute(body, config);
+    const decided = resolveRequestRoute(body, config, guard);
     if (decided.kind === "anthropic")
       return direct();
+    if (decided.kind === "anthropic-as-sent")
+      return direct(sent);
     if (decided.kind === "unknown-slot") {
       const slots = Object.keys(config.slots);
       return {

@@ -48,6 +48,11 @@ a check.
 1. Commit `plugin.json`, `plugin/dist/` and the change in one commit.
 2. Open a pull request into `main`. In its body: what changed for a user, the version
    step and why, and anything a user must run (`anymodel setup`, a restart).
+   The router changed (`plugin/dist/router.js` differs from the last release, which is
+   `main`: `git diff origin/main -- plugin/dist/router.js`)? Say so in the body: each
+   machine with the gateway runs `anymodel gateway setup`, which asks before it restarts
+   the router (a restart cuts the answers in flight). A version bump alone does not
+   change `router.js`: the router takes no baked version (`src/build-info/names.ts`).
 3. Wait for CI to go green.
 4. **The merge waits for the owner's yes.** Ask once; do not merge on your own.
 
@@ -65,7 +70,10 @@ keeps the old one. After the restart:
 - `anymodel version` prints the new version;
 - `anymodel doctor` is all `✓`;
 - when the release changed what `setup` manages, run `anymodel setup --dry-run`, read
-  the change, then `anymodel setup`.
+  the change, then `anymodel setup`;
+- when the release changed the router, and this machine runs the gateway: `doctor` says
+  the router copy is not this version's; run `anymodel gateway setup` (it asks before the
+  restart).
 
 Something wrong? Roll back (below) before other machines start.
 

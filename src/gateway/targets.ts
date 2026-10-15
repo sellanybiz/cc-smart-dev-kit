@@ -10,8 +10,9 @@
  *   - anything else            → Anthropic, untouched: never a guess at a backend.
  * An alias from the config's `aliases` is resolved first (`resolveAlias`), so an old
  * model name reaches its new slot. One request is recognised by its body, not its name:
- * auto mode's safety check (`isAutoModeGuard`) goes to the `anymodel-judge` slot
- * (`JUDGE_SLOT`), or stays on Claude in a config without one (`resolveRequestRoute`).
+ * auto mode's safety check (`isAutoModeGuard`, on the request as it came) goes to the
+ * `anymodel-judge` slot (`JUDGE_SLOT`), or stays on Claude in a config without one
+ * (`resolveRequestRoute`), also when an alias would send it to a cheap backend.
  *
  * A target is written as text in the config and on the command line (and an explicit
  * `<backend>:<model>` works as a model name too, for a one-off try):
@@ -125,6 +126,11 @@ export function resolveAlias(
 export type Route =
   /** `claude-…`, no model, or a name the router does not know: Anthropic, bytes untouched. */
   | { kind: "anthropic" }
+  /**
+   * Auto mode's safety check that would reach no Claude target (`resolveRequestRoute`):
+   * Anthropic, with the bytes as Claude Code sent them, before any alias.
+   */
+  | { kind: "anthropic-as-sent" }
   /** `<backend>:<model>` naming a configured backend: that backend alone, no fallback. */
   | { kind: "explicit"; target: BackendTarget }
   /** A configured slot key: its targets in order. */
@@ -181,18 +187,26 @@ export function resolveRoute(model: unknown, config: RouteConfig): Route {
 const GUARD_PROMPT = "You are a security monitor for autonomous AI coding agents";
 
 /**
- * Is this request auto mode's safety check? Its model name says nothing (a `claude-…` id
- * or the sonnet slot), so only its system prompt tells it apart. An explicit
- * `<backend>:<model>` is someone's own test and keeps its route. When Claude Code
- * changes the prompt, the check stops matching and goes by its model name.
+ * Is this request auto mode's safety check? Its model name says nothing (a `claude-…` id,
+ * the sonnet slot, or an old name in the config's `aliases`), so only its system prompt
+ * tells it apart. Call it on the request as it came, before the alias is applied: an
+ * alias may point at `<backend>:<model>`, and the check must still be seen. An explicit
+ * `<backend>:<model>` sent as the model name is someone's own test and keeps its route.
+ * When Claude Code changes the prompt, the check stops matching and goes by its model name.
  */
-export function isAutoModeGuard(body: Record<string, unknown>): boolean {
+export function isAutoModeGuard(
+  body: Record<string, unknown>,
+  aliases: Readonly<Record<string, string>> = {},
+): boolean {
   const model = body.model;
   if (typeof model !== "string") return false;
   // The check offers no tools; a request that does is a conversation quoting the prompt.
   const tools = body.tools;
   if (Array.isArray(tools) && tools.length > 0) return false;
-  if (!model.startsWith("claude-") && !isSlotKey(withoutContextSuffix(model))) return false;
+  const name = withoutContextSuffix(model);
+  if (!model.startsWith("claude-") && !isSlotKey(name) && !Object.hasOwn(aliases, name)) {
+    return false;
+  }
   const system = body.system;
   if (typeof system === "string") return system.includes(GUARD_PROMPT);
   if (!Array.isArray(system)) return false;
@@ -203,23 +217,32 @@ export function isAutoModeGuard(body: Record<string, unknown>): boolean {
 }
 
 /**
- * The route for a whole `/v1/messages` body: by its model name, except auto mode's
- * safety check when the config has no `anymodel-judge` slot (with one, the router sends every
- * check there before this runs): then the check stays on Claude. Its older form names a
- * `claude-…` model and goes to Anthropic untouched; under a slot name it goes to that
- * slot's Claude targets only. A slot with none sends it to Anthropic as it came, which
- * refuses the slot name; Claude Code then retries the check on another Claude model,
- * which goes to Anthropic untouched. A `claude-…` check keeps its own model: Claude Code
- * builds the body for the model it names, and Claude Sonnet 5.5 answered 400 to the
- * older form's `thinking: disabled` (it wants `between_tools`). A slot-named check
- * carries no thinking field (Claude Code knows no features for a slot name), and
- * Sonnet 5.5 took it.
+ * The route for a whole `/v1/messages` body, after any alias: by its model name, except
+ * auto mode's safety check (`guard`: `isAutoModeGuard` on the request as it came) when the
+ * config has no `anymodel-judge` slot (with one, the router sends every check there before
+ * this runs). Then the check stays on Claude:
+ *   - a `claude-…` model (sent so, or an alias to one) → Anthropic with that model;
+ *   - a slot with a Claude target → only that slot's Claude targets (only `model` changes);
+ *   - a slot with none, or a `<backend>:<model>` (only an alias leads there) →
+ *     `anthropic-as-sent`: Anthropic gets the request as Claude Code sent it, before any
+ *     alias. It refuses the unknown name; Claude Code then retries the check on another
+ *     Claude model, which goes to Anthropic untouched.
+ * A `claude-…` check keeps its own model: Claude Code builds the body for the model it
+ * names, and Claude Sonnet 5.5 answered 400 to the older form's `thinking: disabled` (it
+ * wants `between_tools`). A slot-named check carries no thinking field (Claude Code knows
+ * no features for a slot name), and Sonnet 5.5 took it.
  */
-export function resolveRequestRoute(body: Record<string, unknown>, config: RouteConfig): Route {
+export function resolveRequestRoute(
+  body: Record<string, unknown>,
+  config: RouteConfig,
+  guard: boolean,
+): Route {
   const route = resolveRoute(body.model, config);
-  if (route.kind !== "slot" || !isAutoModeGuard(body)) return route;
+  if (!guard) return route;
+  if (route.kind === "explicit") return { kind: "anthropic-as-sent" };
+  if (route.kind !== "slot") return route;
   const claude = route.targets.filter((target) => target.kind === "anthropic");
-  return claude.length > 0 ? { ...route, targets: claude } : { kind: "anthropic" };
+  return claude.length > 0 ? { ...route, targets: claude } : { kind: "anthropic-as-sent" };
 }
 
 /**

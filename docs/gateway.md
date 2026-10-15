@@ -100,7 +100,10 @@ check `(safety check)`, and `[judge]` when the judge slot takes it.
 
 - **Judge off:** a `claude-…` check goes to Anthropic byte for byte. A check sent under a
   slot name goes to that slot's `claude-…` target only (only `model` changes), never to a
-  cheap model.
+  cheap model. A check whose name leads to no Claude target (a slot with none, or an
+  alias to `<backend>:<model>`) goes to Anthropic exactly as Claude Code sent it, before
+  any alias; Anthropic refuses the unknown name, and Claude Code retries the check on
+  another Claude model.
 - **Judge on:** the check goes to the judge's targets, with reasoning off
   (`reasoningOffForBackend`); a judge that hangs gets `timeouts.firstByteMs` before the
   next one is asked. `count_tokens` for a check answers 404 (nothing reaches Claude).
@@ -116,8 +119,10 @@ A config may map old model names to new ones:
 { "aliases": { "old-scout": "anymodel-scout", "old-model": "omniroute:glm-5.3-flash" } }
 ```
 
-- The router resolves an alias **before** it routes, so even a safety check sent under an
-  old name is recognised. It logs each alias once per name.
+- The router resolves an alias **before** it routes. It recognises the safety check on
+  the request as it came, so a check sent under an old name is still the check: with the
+  judge off it stays on Claude even when the alias points at a cheap backend (§ The judge
+  slot). It logs each alias once per name.
 - An alias names a configured slot, or a target whose backend is configured. **An alias to
   an alias is an error at load**, so there are no chains and no loops.
 - An alias cannot have a slot's name, a `claude-…` name, or `[1m]` on it.
@@ -187,8 +192,9 @@ cannot send those cross-site without a CORS preflight, which the router never an
 
 | What | Where |
 |---|---|
-| Source | `src/gateway/`: `router.ts`, `targets.ts`, `config.ts`, `backends.ts`, `settings.ts`, `service.ts`, `commands.ts`, `doctor.ts`; the bundle entry `src/entries/router.ts` |
-| Config: backend keys, slots, aliases, port | `~/.config/anymodel/gateway.json`, mode **600**. A file others can read is refused. Read again when it changes, so `gateway slot` is live. A bad edit keeps the last good config, with one error line |
+| Source | `src/gateway/`: `router.ts`, `targets.ts`, `config.ts`, `backends.ts`, `settings.ts`, `health.ts`, `service.ts`, `commands.ts`, `doctor.ts`; the bundle entry `src/entries/router.ts` |
+| Config: backend keys, slots, aliases, port | `~/.config/anymodel/gateway.json`, mode **600**. A file others can read is refused. Read again when it changes, so `gateway slot` is live. A bad edit keeps the last good config, with one error line. A command saves it atomically, inside the state lock, and keeps any field it does not know |
+| A setup that did not finish | `~/.claude/anymodel/restart-pending` (the state folder): written before the copy and the unit, removed once the restarted router answers |
 | The router that runs | `~/.local/share/anymodel/router.js`, a copy of the plugin's `dist/router.js` |
 | The service | `~/.config/systemd/user/anymodel-router.service` |
 | Health | `GET http://127.0.0.1:<port>/__anymodel/health`: counts, resting targets, slots; never a key |
@@ -201,15 +207,27 @@ on the own login, and one error line names the file.
 The plugin's version folder changes with each update, and Claude Code deletes an old one
 some time after an update, even under a running process. So `gateway setup`:
 
-1. checks everything first and writes nothing: the config, the copy, the unit;
-2. when the router is running and the copy or the unit changed, says that **a restart
-   cuts the answers in flight** in every running session, and asks (`--yes` skips the
-   question; without a terminal and without `--yes`, it stops and changes nothing);
-3. makes the config when there is none (the backend key comes on stdin, never argv);
-4. copies `dist/router.js` to `~/.local/share/anymodel/router.js` and writes the unit,
-   both through `src/setup/` (backup, record for `restore`, atomic write);
-5. runs `systemctl --user daemon-reload`, `enable`, and `restart` (which starts it when it
-   was stopped). With nothing changed, only `enable --now`.
+1. asks the router's port (the config's; with no config, 20100) before anything else:
+   no answer (connection refused) means free, a 200 health answer with `ok: true` means
+   this router, and **anything else, a timeout included, stops setup** with "port N is
+   used by another program (an older router? stop it first)", nothing written;
+2. checks everything and writes nothing: the config, the copy, the unit;
+3. when the router is running and the copy or the unit changed (or an earlier setup did
+   not finish), says that **a restart cuts the answers in flight** in every running
+   session, and asks (`--yes` skips the question; without a terminal and without
+   `--yes`, it stops and changes nothing);
+4. makes the config when there is none (the backend key comes on stdin, never argv);
+5. writes the **restart-pending marker**, then copies `dist/router.js` to
+   `~/.local/share/anymodel/router.js` and writes the unit, both through `src/setup/`
+   (backup, record for `restore`, atomic write);
+6. runs `systemctl --user daemon-reload`, `enable`, and `restart` (which starts it when it
+   was stopped), then waits up to 5 s for the health page. It answers: the marker goes.
+   It does not: setup fails with the unit's `is-active` state and the hint
+   `journalctl --user -u anymodel-router -n 30`, and the marker stays, so `doctor` shows
+   ✗ "a gateway setup did not finish" and the next `gateway setup` restarts again, even
+   with the files up to date.
+
+With nothing changed and no marker, only `enable --now`.
 
 The unit runs the absolute path of the `bun` that ran setup on the copy, with
 `--no-env-file`. It restarts itself (`Restart=always`, no start limit). On SIGTERM the
@@ -217,9 +235,21 @@ router stops taking requests and exits once the answers in flight are done (up t
 User services run at boot only with linger on (`loginctl enable-linger $USER`, once, by
 the person).
 
-`anymodel restore` undoes it: it stops and disables the unit (asking first when it
-runs), removes the copy and the unit, and removes the env keys. It leaves
-`gateway.json`, which holds the person's key.
+`anymodel restore` undoes it, in **two stages** while the gateway is on. A running
+session keeps the `ANTHROPIC_BASE_URL` it started with, so stopping the router while the
+env keys are there would make every running session fail.
+
+1. **Stage 1** (anymodel's gateway env keys are in `settings.json`): everything is
+   restored but the router's copy and unit, the env keys included; the router keeps
+   running. It says: restart every running Claude session, then run `restore` again.
+2. **Stage 2** (no such key left): it stops and disables the unit (asking first when it
+   runs; `--yes` skips the question), removes the copy and the unit, reloads systemd, and
+   clears the restart-pending marker.
+
+`restore --now` does both at once, after the warning that every running Claude session
+fails until it restarts (asked, or `--yes`). Restore leaves `gateway.json`, which holds
+the person's key; `doctor` then says, as information, "gateway.json kept; the gateway is
+not installed".
 
 ## What `gateway on` writes
 
@@ -239,8 +269,11 @@ when one of them is set.
 
 A gateway key that exists and that `anymodel` did not set stops `gateway on`, and the
 value is shown masked; nothing is overwritten. Remove it by hand first (a project moving
-from its own gateway does it in its migration). `on` also refuses while the router does
-not answer: every Claude request would fail.
+from its own gateway does it in its migration). `ENABLE_TOOL_SEARCH` gets a word of its
+own in that message: many people set it themselves. `on` also refuses while the router
+does not answer: every Claude request would fail. With no `gateway.json` (set up with
+`--no-backend-key`), `on` uses the default port, 20100, where the router then runs with
+every slot on Claude.
 
 Saving `settings.json` switches every running session at once. Removing keys needs a
 restart of each session; stop the router only after every session restarted.
@@ -251,7 +284,14 @@ restart of each session; stop the router only after every session restarted.
 - **Linux only** for now: systemd user units and file modes.
 - When Claude Code changes the safety check's prompt, the router stops recognising it,
   and the check goes by its model name. The log shows it: the lines lose their
-  `(safety check)` mark.
+  `(safety check)` mark. So "the judge is off by default" holds only while the router
+  knows the prompt: under a cheap slot's name, an unrecognised check goes to that slot's
+  targets until the router is updated (`docs/roadmap.md` Phase 3: log an unknown check
+  form loudly).
+- `gateway setup` takes "this router answers on the port" as success after a restart.
+  When another `anymodel-router` (a `gateway serve` in a terminal) holds the port, the
+  unit's own router cannot bind, yet setup sees an answer and succeeds. Stop the other
+  one first.
 - If the router is down, every Claude Code request fails. The service restarts itself;
   `gateway off` and a restart of the sessions is the way out.
 - **A model's context window can disagree** in three places: what Claude Code assumes
@@ -278,4 +318,6 @@ Start with `anymodel gateway status`, then `anymodel doctor`.
 | Every `haiku` / `sonnet` call answers from Claude Sonnet | the log says the config cannot be used | `chmod 600 ~/.config/anymodel/gateway.json`; fix the JSON (read on the next request) |
 | `gateway on` stops: set by someone else | an older install's env keys | remove those keys by hand, then `gateway on` |
 | `doctor`: the router copy is not this version's | the plugin was updated | `anymodel gateway setup` (it asks before the restart) |
+| `gateway setup`: `port N is used by another program` | `ss -ltnp` shows who holds it; often an older router | stop that program, or set another `port` in `gateway.json` |
+| `doctor`: `a gateway setup did not finish` | the router did not answer after setup's restart: `journalctl --user -u anymodel-router -n 30` | fix the cause, then `anymodel gateway setup` again |
 | Auto mode blocks good work, or says its classifier is unavailable | the log's `(safety check) [judge]` lines | `gateway slot judge off` |

@@ -61,8 +61,16 @@ An optional local router between Claude Code and the model providers
 - `gateway on` / `off` change Claude Code's settings only as owned keys through
   `src/setup/`, so `restore` undoes them, and a key someone else set stops it.
 - A restart of the router cuts every answer in flight on the machine. So only a manual
-  `gateway setup` restarts it, only when the copy or the unit changed, and only after the
-  person says yes (or gives `--yes`). `restore` asks the same before it stops it.
+  `gateway setup` restarts it, only when the copy or the unit changed (or an earlier
+  setup did not finish: the restart-pending marker), and only after the person says yes
+  (or gives `--yes`). Before anything, setup asks the port and stops when another
+  program holds it; after the restart it waits for the health page.
+- Running sessions keep the router's address until they restart. So `restore` takes the
+  gateway out in two stages: first the env keys (the router keeps running), then, after
+  the sessions restarted, the router (asked first). `restore --now` does both, with a
+  warning.
+- The router bundle carries no version (`src/build-info/names.ts`), so a version bump
+  alone never changes `router.js` and never makes a machine restart its router.
 
 ## How `setup` changes user files
 
@@ -112,8 +120,9 @@ The guarantees:
 - **`restore`** removes what anymodel added and keeps everything else: its own JSON
   keys and its Markdown block go; a whole file goes back to its **baseline** (the backup
   made at anymodel's first change to it since the last restore), or is removed when
-  setup created it. It backs up each file before it changes it. A second restore
-  changes nothing.
+  setup created it. It backs up each file before it changes it. With the gateway on, the
+  router's copy and unit wait for a second restore (§ The AI gateway). A restore with
+  nothing left changes nothing.
 
 Its state (`<stateDir>`) lives in `$CLAUDE_CONFIG_DIR/anymodel/` (by default
 `~/.claude/anymodel/`): `owned.json`, `changed.json`, the lock and `backups/`. The

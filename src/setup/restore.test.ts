@@ -39,6 +39,28 @@ function setup() {
 
 const read = (file: string) => readFileSync(file, "utf8");
 
+describe("restore: except", () => {
+  test("a file in `except` is left as it is and stays tracked; the next restore takes it", () => {
+    const { dir, stateDir } = setup();
+    const settings = join(dir, "settings.json");
+    const copy = join(dir, "router.js");
+    writeFileSync(settings, ORIGINAL_SETTINGS);
+    applyManagedJson({ file: settings, stateDir, set: [[AUTO_UPDATE, true]] });
+    writeManagedFile(copy, "// router\n", { stateDir, kind: "whole-file", mode: 0o644 });
+
+    const first = restore(stateDir, { except: [copy] });
+    expect(first.map((result) => [result.file, result.action])).toEqual([[settings, "cleaned"]]);
+    expect(read(settings)).toBe(ORIGINAL_SETTINGS);
+    expect(read(copy)).toBe("// router\n");
+    expect(Object.keys(readChanged(stateDir))).toEqual([copy]);
+
+    const second = restore(stateDir);
+    expect(second.map((result) => [result.file, result.action])).toEqual([[copy, "removed"]]);
+    expect(existsSync(copy)).toBe(false);
+    expect(readChanged(stateDir)).toEqual({});
+  });
+});
+
 describe("restore: removes what anymodel added, keeps the rest", () => {
   test("a key added by someone else after setup survives a restore", () => {
     const { dir, stateDir } = setup();

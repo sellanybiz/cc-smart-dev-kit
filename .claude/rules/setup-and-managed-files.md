@@ -109,10 +109,19 @@ Each of them:
   - A restored file is no longer tracked in `changed.json`, so a second `restore`
     changes nothing. When the baseline backup is missing, the file is left alone.
 - A new kind of managed change must say how `restore` undoes it, with a test.
-- **A service is a managed change too.** When `gateway setup` installed the router's unit
-  (it is in `changed.json`), `restore` stops and disables it first, while its file is still
-  there, then restores the files, then runs `systemctl --user daemon-reload`. Stopping a
-  running router cuts answers in flight, so restore asks first, or needs `--yes`.
+- **A service is a managed change too.** When `gateway setup` installed the router (its
+  copy or unit is in `changed.json`), `restore` works in two stages, because running
+  sessions keep pointing at the router until they restart:
+  - **stage 1**, while anymodel's gateway env keys are in `settings.json`
+    (`ownedGatewayEnvKeys`): it restores everything except the router's files
+    (`restore(stateDir, { except })`, which leaves them tracked) and says to restart
+    every running session, then run `restore` again. Nothing stops, nothing is asked.
+  - **stage 2**, with no such key left: it stops and disables the unit first, while its
+    file is still there, then restores the files, runs `systemctl --user daemon-reload`,
+    and removes the restart-pending marker. Stopping a running router cuts answers in
+    flight, so it asks first, or needs `--yes`.
+  - **`--now`**: both at once, after the warning that every running session fails until
+    it restarts; asked, or `--yes`.
 
 ## The launcher
 

@@ -6,6 +6,7 @@ import { cliPaths } from "../cli/paths";
 import { runRestore } from "../cli/restore";
 import { runSetup } from "../cli/setup";
 import { type GatewayContext, runGateway } from "../gateway/commands";
+import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
 
 const HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
@@ -16,10 +17,15 @@ Commands:
   setup [--dry-run]  Install the launcher in ~/.local/bin and turn on plugin auto-update.
                      --dry-run prints what would change and writes nothing.
   doctor             Check the install. Exit code 1 when a check fails.
-  restore [--yes]    Remove what anymodel added, and keep everything else: its settings
+  restore [--yes] [--now]
+                     Remove what anymodel added, and keep everything else: its settings
                      keys, its Markdown blocks, and the files it created (the launcher,
                      the router copy and unit). Each changed file gets a backup first.
-                     It stops a running router; --yes: without asking.
+                     With the gateway on, it runs in two stages: first everything but the
+                     router, which the running sessions still use; after you restart
+                     them, again to stop and remove the router (it asks; --yes: without
+                     asking). --now: both at once, and every running session fails until
+                     it restarts.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      anymodel gateway --help lists them.
   version            Print the version.
@@ -61,6 +67,7 @@ function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
     readStdin: () => Bun.stdin.text(),
     confirm: ask,
     systemd,
+    probe: realProbe(),
   };
 }
 
@@ -84,12 +91,18 @@ async function main(argv: string[]): Promise<number> {
         systemd,
       });
     case "restore": {
-      const unknown = rest.filter((arg) => arg !== "--yes");
+      const unknown = rest.filter((arg) => arg !== "--yes" && arg !== "--now");
       if (unknown.length > 0) {
         console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
         return 2;
       }
-      return runRestore(paths, { yes: rest.includes("--yes"), runner, systemd, confirm: ask });
+      return runRestore(paths, {
+        yes: rest.includes("--yes"),
+        now: rest.includes("--now"),
+        runner,
+        systemd,
+        confirm: ask,
+      });
     }
     case "gateway":
       return runGateway(rest, gatewayContext(paths));

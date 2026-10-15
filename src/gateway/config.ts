@@ -12,19 +12,13 @@
  * The design: docs/gateway.md.
  */
 
-import { randomUUID } from "node:crypto";
-import {
-  chmodSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdirSync, readFileSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import { z } from "zod";
-import { COMMAND } from "../build-info";
+// From ./names, not the index: the index bakes in the version, and the router bundle
+// must not change with it (a changed bundle restarts every machine's router).
+import { COMMAND } from "../build-info/names";
+import { atomicWrite } from "../setup/write";
 import { isBackendName, isSlotKey, JUDGE_SLOT, parseTarget, withoutContextSuffix } from "./targets";
 
 export const DEFAULT_PORT = 20100;
@@ -40,13 +34,15 @@ const NO_CONFIG_MEANS = `every haiku / sonnet call answers on ${FALLBACK_SLOT_TA
 /** An http(s) URL, without the trailing slash, so `base + "/v1/messages"` is clean. */
 const baseUrl = z.url({ protocol: /^https?$/ }).transform((url) => url.replace(/\/+$/, ""));
 
-const backendSchema = z.object({
+// Loose objects (the top level, each backend, `timeouts`): a field this version does not
+// know, written by a newer version or by hand, is kept when a command saves the file.
+const backendSchema = z.looseObject({
   apiKey: z.string().min(1),
   baseUrl,
 });
 
 export const gatewayConfigSchema = z
-  .object({
+  .looseObject({
     /**
      * Old model names and what they mean now: `{"<old name>": "<slot or target>"}`. The
      * router resolves an alias before it routes. The plugin ships none; a project's own
@@ -63,7 +59,7 @@ export const gatewayConfigSchema = z
       z.array(z.string()).min(1),
     ),
     timeouts: z
-      .object({ firstByteMs: z.int().positive().default(DEFAULT_FIRST_BYTE_MS) })
+      .looseObject({ firstByteMs: z.int().positive().default(DEFAULT_FIRST_BYTE_MS) })
       .default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
     version: z.literal(1),
   })
@@ -183,30 +179,18 @@ export function loadConfigFile(path: string): GatewayConfig {
 }
 
 /**
- * Write a file so no reader ever sees half of it: a temp file in the same folder (same
- * disk, so the rename is atomic), with its mode set before any byte is in it, then a
- * rename over the old one.
+ * Save a config: checked first, folder made owner-only, file mode 600, and atomic
+ * (`atomicWrite`: a temp file in the same folder, created with mode 600 before any byte
+ * is in it, fsynced, then renamed over the old one; a reader never sees half a file).
+ * A caller that read the file first saves inside `withLock`, so two commands never
+ * overwrite each other's change.
  */
-export function writeFileAtomic(path: string, text: string, mode: number): void {
-  const temp = join(dirname(path), `.${randomUUID()}.tmp`);
-  try {
-    writeFileSync(temp, text, { flag: "wx", mode });
-    // The umask can only remove bits from `mode`; set it exactly anyway.
-    chmodSync(temp, mode);
-    renameSync(temp, path);
-  } catch (error) {
-    rmSync(temp, { force: true });
-    throw error;
-  }
-}
-
-/** Save a config: checked first, folder made owner-only, file mode 600, atomic. */
 export function saveConfig(path: string, config: GatewayConfig): void {
   const parsed = parseConfig(config);
   if ("error" in parsed)
     throw new ConfigError(`refusing to save an invalid config:\n${parsed.error}`);
   mkdirSync(dirname(path), { mode: 0o700, recursive: true });
-  writeFileAtomic(path, `${JSON.stringify(parsed.config, null, 2)}\n`, 0o600);
+  atomicWrite(path, `${JSON.stringify(parsed.config, null, 2)}\n`, 0o600);
 }
 
 /**

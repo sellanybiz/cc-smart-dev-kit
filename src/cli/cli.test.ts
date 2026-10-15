@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { MARKETPLACE_SOURCE, VERSION } from "../build-info";
 import { installLauncher } from "../setup/launcher";
 import { listBackups } from "../setup/write";
+import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
@@ -102,8 +103,10 @@ function setup(options: SetupOptions = {}) {
     PATH: `${fakeBin}:${join(home, ".local", "bin")}:${process.env.PATH ?? ""}`,
   };
   const run = (args: string[], extraEnv: Record<string, string> = {}) => {
-    const result = Bun.spawnSync(["bun", CLI, ...args], {
-      env: { ...env, ...extraEnv },
+    // The live-router guard runs in the CLI too: no test may reach port 20100.
+    const guard = subprocessGuard();
+    const result = Bun.spawnSync(["bun", ...guard.args, CLI, ...args], {
+      env: { ...env, ...extraEnv, ...guard.env },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -426,6 +429,63 @@ describe("anymodel doctor", () => {
     settings.enabledPlugins["cc@cc-agentic"] = false;
     writeFileSync(settingsFile, JSON.stringify(settings));
     expect(run(["doctor"]).stdout).not.toContain("cc@cc-agentic");
+  });
+
+  /** The old plugin's state folder: the old `setup` ran on this machine. */
+  function oldSetupRan(configDir: string) {
+    mkdirSync(join(configDir, "cc-agentic", "backups"), { recursive: true });
+  }
+
+  test("old plugin leftovers with a launcher that runs: restore with it first, then uninstall, then remove the marketplace", () => {
+    const { configDir, binDir, settingsFile, run } = setup();
+    run(["setup"]);
+    oldSetupRan(configDir);
+    const oldLauncher = join(binDir, "cc-agentic");
+    writeFileSync(oldLauncher, '#!/bin/sh\necho "cc-agentic 0.1.0"\n');
+    chmodSync(oldLauncher, 0o755);
+    const settings = readJson(settingsFile);
+    settings.enabledPlugins["cc@cc-agentic"] = true;
+    settings.extraKnownMarketplaces["cc-agentic"] = { autoUpdate: true };
+    writeFileSync(settingsFile, JSON.stringify(settings));
+    const result = run(["doctor"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain(
+      "✗ the old plugin cc@cc-agentic (before 0.2.0) left the plugin enabled, its launcher ~/.local/bin/cc-agentic, extraKnownMarketplaces.cc-agentic in ~/.claude/settings.json. Run `cc-agentic restore` first, then `claude plugin uninstall cc@cc-agentic`, then `claude plugin marketplace remove cc-agentic`.\n",
+    );
+  });
+
+  test("old plugin leftovers with a launcher that cannot run: the two things to remove by hand, then uninstall and remove", () => {
+    const { configDir, binDir, run } = setup();
+    run(["setup"]);
+    oldSetupRan(configDir);
+    // The launcher is there but fails (its plugin is gone); the marketplace is still known.
+    const oldLauncher = join(binDir, "cc-agentic");
+    writeFileSync(oldLauncher, "#!/bin/sh\necho 'cc-agentic is not installed' >&2\nexit 1\n");
+    chmodSync(oldLauncher, 0o755);
+    const known = join(configDir, "plugins", "known_marketplaces.json");
+    writeFileSync(
+      known,
+      JSON.stringify({
+        ...readJson(known),
+        "cc-agentic": { source: { repo: "example-org/cc-agentic", source: "github" } },
+      }),
+    );
+    const installed = join(configDir, "plugins", "installed_plugins.json");
+    const plugins = readJson(installed);
+    plugins.plugins["cc@cc-agentic"] = [{ installPath: "/gone", scope: "user", version: "0.1.0" }];
+    writeFileSync(installed, JSON.stringify(plugins));
+    const result = run(["doctor"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain(
+      '✗ the old plugin cc@cc-agentic (before 0.2.0) left the plugin installed, its launcher ~/.local/bin/cc-agentic, the cc-agentic marketplace. Its launcher cannot run, so remove by hand ~/.local/bin/cc-agentic and "cc-agentic" under extraKnownMarketplaces in ~/.claude/settings.json; then run `claude plugin uninstall cc@cc-agentic`, then `claude plugin marketplace remove cc-agentic`.\n',
+    );
+  });
+
+  test("the old state folder with nothing else left: no line", () => {
+    const { configDir, run } = setup();
+    run(["setup"]);
+    oldSetupRan(configDir);
+    expect(run(["doctor"]).stdout).not.toContain("cc-agentic");
   });
 
   test("another plugin named anymodel is enabled: ✗, exit 1", () => {
