@@ -123,19 +123,39 @@ person chose and that passed the test; otherwise by the person, because Claude C
 
 - The unit runs the copy in `~/.local/share/anymodel/`, with the absolute bun path,
   never a file under `${CLAUDE_PLUGIN_ROOT}`.
-- A restart cuts every answer in flight on the machine. `gateway setup` restarts only
-  when the copy or the unit changed (or the restart-pending marker says an earlier setup
-  did not finish), says so first, and asks unless `--yes`. Before any write or question
-  it asks the port, and stops when another program holds it; after the restart it waits
-  for the health page, and keeps the marker when that never answers.
+- **The port belongs to `anymodel-router.socket`**, never to the router alone: systemd
+  holds it across restarts and passes it as fd 3 (`src/gateway/listen.ts`). Keep the
+  router able to serve both ways (inherited socket, or its own bind for `gateway serve`),
+  and keep `idleTimeout: 0` on its inner unix server (`listen.test.ts` fails without it).
+- **Keep the relay's drain** (`listen.ts`, its tests in `listen.test.ts` › "the relay's
+  drain at SIGTERM"): the inner connection opens on the client's first byte; at SIGTERM a
+  connection with no byte after `IDLE_GRACE_MS` is closed; the inner server stops only
+  after every pending inner connect settled; a client's half close is not passed on (Bun
+  drops a connection at its client's end); the relay server keeps its `error` listener.
+- **The unit keeps its start limit** (`StartLimitBurst` / `StartLimitIntervalSec`): a
+  crash loop then ends with systemd closing the socket, so requests are refused instead
+  of hanging. The way that opens the socket runs `reset-failed` of both units first, and
+  when the socket cannot open it says so and starts the service without it.
+- A restart waits for the old router's drain (new requests wait in the socket).
+  `gateway setup` restarts only when the copy or a unit changed (or the restart-pending
+  marker says an earlier setup did not finish), says what the restart does first, and
+  asks unless `--yes`. Before any write or question it asks the port, and stops when
+  another program holds it (a port that hangs while our socket is open is ours); after
+  the restart it waits for the health page, and keeps the marker when that never answers.
+- **Opening the socket while an old router runs:** `stop --no-block` the service, then
+  `start` the socket, then `start` the service: two calls, socket first. One call with
+  both makes systemd refuse the socket (seen live). Every way that (re)opens the socket
+  refuses requests for one drain, and the warning names the real cause (`restartWarning`:
+  the move, a stopped socket, a new port, a changed socket unit).
 - Stopping the router while running sessions still point at it makes each of them fail.
   So `restore` stops it only once anymodel's gateway env keys are gone (its stage 2), and
   asks first; `--now` does it at once, after saying every session fails until it restarts.
 - **Never `disable --now` or a blocking `stop`.** systemd then waits for the router's
   drain (up to `TimeoutStopSec`, 120 s) while its port is already closed. `stopRouter`
-  asks `is-active`, runs `disable`, then `stop --no-block`, then asks the port (the
-  injected probe) while this router answers there, for up to 15 s, and throws when it
-  still does. It waits only when the unit was `active` or `deactivating`, and stops
+  asks `is-active`, runs `disable` of both units, then one `stop --no-block` of the
+  socket and the service together (so no connection reopens the router between them),
+  then asks the port (the injected probe) while this router answers there, for up to
+  15 s, and throws when it still does. It waits only when the unit was `active` or `deactivating`, and stops
   asking when the port answers as another program: a wait for a router the unit did not
   start (a crash loop, a `gateway serve` by hand) would never end. Right after it,
   `gateway setup` says it waits for the old router's drain when `is-active` says

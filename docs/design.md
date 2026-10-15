@@ -41,7 +41,8 @@ Anything that keeps running (the AI gateway's router; later the portal) runs fro
 in `~/.local/share/anymodel/`, never from the version folder. Claude Code deletes that
 folder after an update (14 days, not proved yet), even under a running process.
 `anymodel gateway setup` copies `dist/router.js` there and writes a systemd user unit
-that runs the copy with the absolute path of `bun`. A new plugin version changes nothing
+that runs the copy with the absolute path of `bun`, and a socket unit that holds the
+router's port across restarts (`gateway.md` § The service). A new plugin version changes nothing
 that runs until the person runs `gateway setup` again; `doctor` says when the copy is
 older than the installed version.
 
@@ -103,17 +104,28 @@ An optional local router between Claude Code and the model providers
   moves. The plugin ships none; a project's migration writes them.
 - `gateway on` / `off` change Claude Code's settings only as owned keys through
   `src/setup/`, so `restore` undoes them, and a key someone else set stops it.
-- A restart of the router cuts every answer in flight on the machine. So only a manual
-  `gateway setup` restarts it, only when the copy or the unit changed (or an earlier
-  setup did not finish: the restart-pending marker), and only after the person says yes
-  (or gives `--yes`). Before anything, setup asks the port and stops when another
-  program holds it; after the restart it waits for the health page.
+- Every session on the machine goes through the router, so its restart must not make
+  them fail. systemd's `anymodel-router.socket` holds the port (socket activation) and
+  passes it to the router; the router accepts on it with `node:net` (Bun's own server
+  cannot take an inherited socket) and relays each connection to its own server on a
+  private unix socket. On a restart the old router finishes its answers (up to 120 s;
+  a longer one is cut, and Claude Code retries it) and new requests wait in the socket:
+  none fails (proved live). A connection that never sends a byte is closed after half a
+  second, so it cannot hold the drain. A router that keeps failing to start is given up
+  after 5 starts in 60 s, and systemd closes the socket with it, so requests are refused
+  at once instead of hanging (proved live). The restart still waits for that drain,
+  so only a manual `gateway setup` restarts it, only when the copy or a unit changed (or
+  an earlier setup did not finish: the restart-pending marker), and only after the
+  person says yes (or gives `--yes`). The first setup that moves a router from the older
+  plain unit cannot keep the port open (systemd will not open a socket while its service
+  runs), and says so before it asks. Before anything, setup asks the port and stops when
+  another program holds it; after the restart it waits for the health page.
 - Running sessions are taken to keep the router's address until they restart (one live
   look saw otherwise; `claude-code-contract.md`). So `restore` takes the gateway out in
   two stages: first the env keys (the router keeps running), then, after the sessions
   restarted, the router (asked first). `restore --now` does both, with a warning. The
-  stop never waits for the router's drain: `disable`, `stop --no-block`, then up to 15 s
-  for its port to close.
+  stop never waits for the router's drain: `disable`, then one `stop --no-block` of the
+  socket and the service together, then up to 15 s for the port to close.
 - The router bundle carries no version (`src/build-info/names.ts`), so a version bump
   alone never changes `router.js` and never makes a machine restart its router.
 
@@ -238,13 +250,70 @@ on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
 
 ### Who changes what, and when
 
-- **The SessionStart hook** (Phase 3 on) only refreshes managed files, under the lock.
+- **The SessionStart hook** starts the background self-update (§ Updates). It writes no
+  user file, and never restarts or stops anything. (Refreshing managed files from it is
+  not built yet; `anymodel setup` does that by hand.)
+- **The background self-update** installs a newer plugin version with Claude Code's own
+  `claude plugin` commands. It writes no user file and restarts nothing.
 - **A manual run** (`anymodel setup`, `anymodel gateway setup`, `restore`) is the
   only thing that restarts or stops a service or changes a permission. It shows the change
   first, and asks before it cuts the answers in flight.
 
 So an automatic update can never restart something or widen a permission without the
-user seeing it.
+user seeing it: a new router version runs only after `gateway setup`, which asks.
+
+## Updates
+
+Claude Code's own plugin auto-update (`autoUpdate: true`, which `setup` turns on) did not
+run on a machine where it was on: 15 minutes after a session started, not even the
+marketplace copy was refreshed (anthropics/claude-code#61854). The same two commands by
+hand worked at once. So the plugin updates itself (the owner's decision, 2026-10-15):
+
+- **The SessionStart hook** (`src/entries/update-check.ts`, logic in
+  `src/update/background.ts`) records which version the session loaded, and starts the
+  check in a **detached** process (its own session, no pipe to the hook) when one is due:
+  at most once an hour per config folder, and not while updates are held. It needs no
+  network and no lock, and returns at once (about 60 ms on a loaded machine, most of it
+  bun's own start). It prints nothing, unless the last background check failed and no
+  session was told yet: then one `systemMessage`, to an attended session only (Claude
+  Code sets `CLAUDE_CODE_SESSION_ATTENDED=0` for the hooks of `claude -p`; such a session
+  neither shows it nor counts as told). It runs bun through `plugin/bin/anymodel-bun`,
+  which looks where the launcher does, so a Claude Code started with no bun on PATH
+  still runs it.
+- **Claude Code's switches for updates are honoured.** While `DISABLE_AUTOUPDATER`,
+  `DISABLE_UPDATES` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set (environment or
+  the `env` of `settings.json`) and `FORCE_AUTOUPDATE_PLUGINS` is not, the hook starts
+  nothing and only records "skipped: <name> is set"; the background check asks again
+  under its lock. One list for both, and for `doctor`: `src/update/opt-out.ts`.
+- **The background check** takes the update lock (`<stateDir>/update/lock`, the same
+  `withLock` as setup, but its own file, so a slow update never blocks `anymodel setup`),
+  asks again whether a check is due (two sessions starting together check once), then
+  compares the remote head (`git ls-remote`) with Claude Code's copy, and the installed
+  version with the copy's (`src/update/check.ts`). When either is behind it runs `claude
+  plugin marketplace update anymodel`, then `claude plugin update anymodel@anymodel
+  --scope user` when the copy holds a newer version; logs each step to
+  `<stateDir>/update.log`; records the result in `update-check.json`; and shows one
+  desktop notification when a new version was installed (with the `gateway setup` hint
+  when its router differs from the running copy). The detached process and both commands
+  run in the home folder, without git variables that point at another repo (`GIT_DIR`,
+  `GIT_INDEX_FILE`, …, which a session inside a git hook may carry). A command's output
+  that goes into a record passes through the URL redaction. Not failures: a marketplace
+  that cannot be read is `unreachable` (information) until it has been so for 24 hours in
+  a row, and Claude Code's own refresh holding git's `index.lock` at that moment is
+  `skipped`.
+- **`anymodel update`** does the same in the terminal, with each command's output;
+  `--check` only reads (the remote's version comes from a shallow fetch into a temp
+  folder, never from Claude Code's copy); `--hold` / `--resume` switch the background
+  update off and on for this machine, with one atomic write and no lock, and say so when
+  a check is running now (it finishes).
+- **`doctor`** shows the last check and its result, the hold, and running sessions that
+  loaded an older version than the one installed now.
+
+The trade-off, accepted: a bad release reaches every machine within the hour, without a
+person running anything. A rollback is a new, higher version, which reaches them the same
+way; `--hold` keeps one machine where it is. Proved live: a real Claude Code session's
+SessionStart hook started the background check, which outlived the session and ran both
+`claude plugin` commands, in a throwaway config folder (`claude-code-contract.md`).
 
 ## Per-project opt-in: `.claude/anymodel.json`
 

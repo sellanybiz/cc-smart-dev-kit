@@ -29,7 +29,8 @@ function cliPaths(env = process.env) {
     gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json"),
     routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
     routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service"),
-    claudeMemSettingsFile: join(claudeMemDataDir(env, home), "settings.json")
+    claudeMemSettingsFile: join(claudeMemDataDir(env, home), "settings.json"),
+    routerSocketFile: join(home, ".config", "systemd", "user", "anymodel-router.socket")
   };
 }
 function claudeMemDataDir(env, home) {
@@ -6580,6 +6581,149 @@ function formatLimitState(state) {
 `;
 }
 
+// src/gateway/listen.ts
+import { mkdtempSync, rmSync } from "fs";
+import net from "net";
+import { tmpdir } from "os";
+import { join as join3 } from "path";
+var SD_LISTEN_FDS_START = 3;
+var LISTEN_VARS = ["LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES"];
+function inheritedListenFd(env, pid) {
+  const listenPid = env.LISTEN_PID;
+  const count = env.LISTEN_FDS;
+  if (listenPid === undefined || count === undefined)
+    return null;
+  if (Number(listenPid) !== pid)
+    return null;
+  const fds = Number(count);
+  if (!Number.isInteger(fds) || fds < 1)
+    return null;
+  if (fds !== 1) {
+    throw new Error(`systemd passed ${fds} sockets (LISTEN_FDS); anymodel-router takes one`);
+  }
+  return SD_LISTEN_FDS_START;
+}
+function innerSocketPath(env, pid) {
+  const runtime = env.RUNTIME_DIRECTORY?.split(":")[0];
+  if (runtime) {
+    const path = join3(runtime, `router-${pid}.sock`);
+    rmSync(path, { force: true });
+    return { cleanup: () => rmSync(path, { force: true }), path };
+  }
+  const dir = mkdtempSync(join3(tmpdir(), "anymodel-router-"));
+  return {
+    cleanup: () => rmSync(dir, { force: true, recursive: true }),
+    path: join3(dir, "router.sock")
+  };
+}
+var IDLE_GRACE_MS = 500;
+function relay(entry, path, log, changed) {
+  const { client } = entry;
+  const endedFirst = () => {
+    client.off("data", firstByte);
+    client.destroy();
+  };
+  const firstByte = (first) => {
+    client.off("end", endedFirst);
+    client.pause();
+    entry.state = "connecting";
+    const inner = net.connect({ path });
+    inner.once("connect", () => {
+      entry.state = "relaying";
+      changed();
+    });
+    inner.on("error", (error) => {
+      if (entry.state === "connecting") {
+        log(`WARN relay: cannot reach the router's own server at ${path}: ${error.message}`);
+      }
+      client.destroy();
+    });
+    inner.once("close", (hadError) => {
+      if (hadError || client.writableFinished) {
+        client.destroy();
+        return;
+      }
+      client.once("finish", () => client.destroy());
+      client.end();
+    });
+    client.once("close", () => inner.destroy());
+    inner.write(first);
+    client.pipe(inner, { end: false });
+    inner.pipe(client);
+  };
+  client.once("data", firstByte);
+  client.once("end", endedFirst);
+  client.resume();
+}
+function listenOnFd(fd, inner, log) {
+  const tracked = new Set;
+  let draining = false;
+  let graceOver = false;
+  const connectedWaiters = [];
+  const closedWaiters = [];
+  const changed = () => {
+    if (!draining)
+      return;
+    const pending = [...tracked].some((entry) => entry.state !== "relaying");
+    if (graceOver && !pending)
+      for (const done of connectedWaiters.splice(0))
+        done();
+    if (tracked.size === 0)
+      for (const done of closedWaiters.splice(0))
+        done();
+  };
+  const server = net.createServer({ allowHalfOpen: true, pauseOnConnect: true }, (client) => {
+    const entry = { client, state: "waiting" };
+    tracked.add(entry);
+    client.setNoDelay(true);
+    client.on("error", () => client.destroy());
+    client.once("close", () => {
+      tracked.delete(entry);
+      changed();
+    });
+    inner.then((path) => {
+      if (!client.destroyed)
+        relay(entry, path, log, changed);
+    }, () => client.destroy());
+  });
+  const drain = () => {
+    if (!draining) {
+      draining = true;
+      server.close();
+      setTimeout(() => {
+        graceOver = true;
+        for (const entry of tracked)
+          if (entry.state === "waiting")
+            entry.client.destroy();
+        changed();
+      }, IDLE_GRACE_MS);
+    }
+    const connected = new Promise((resolve) => connectedWaiters.push(resolve));
+    const closed = new Promise((resolve) => closedWaiters.push(resolve));
+    changed();
+    return { closed, connected };
+  };
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ fd }, () => {
+      server.off("error", reject);
+      server.on("error", (error) => log(`WARN relay: the socket's server: ${error.message}`));
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        server.close();
+        reject(new Error(`file descriptor ${fd} is not a TCP listening socket`));
+        return;
+      }
+      resolve({ drain, port: address.port, server });
+    });
+  });
+}
+function serveUnix(path, fetch2) {
+  const options = { fetch: fetch2, unix: path };
+  Object.assign(options, { idleTimeout: 0 });
+  return Bun.serve(options);
+}
+
 // src/gateway/plain-text.ts
 var CONTROL = /[\p{Cc}\p{Cf}]/gu;
 var CONTROL_BUT_LINES = /[^\P{Cc}\n\t]|\p{Cf}/gu;
@@ -7624,11 +7768,11 @@ function createRouter(deps) {
     return outcome.response;
   };
 }
-function startRouter(configPath, statePath) {
+async function startRouter(configPath, statePath, env = process.env) {
   const log = (line) => console.log(line);
   const source = watchConfig(configPath, log);
-  const { port } = source.get();
-  const handler = createRouter({
+  const configPort = source.get().port;
+  const handlerFor = (port) => createRouter({
     configPath,
     fetch: (url, init) => fetch(url, init),
     getConfig: () => source.get(),
@@ -7640,23 +7784,58 @@ function startRouter(configPath, statePath) {
       atomicWrite(statePath, text, 384);
     }
   });
-  const server = Bun.serve({ fetch: handler, hostname: "127.0.0.1", idleTimeout: 0, port });
-  log(`anymodel-router listening on http://127.0.0.1:${port} (config ${configPath})`);
-  process.once("SIGTERM", () => {
-    log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
-    server.stop(false).then(() => process.exit(0), (error) => {
-      log(`ERROR while stopping: ${messageOf(error)}`);
-      process.exit(1);
+  const fd = inheritedListenFd(env, process.pid);
+  for (const name of LISTEN_VARS)
+    delete env[name];
+  if (fd === null) {
+    const server = Bun.serve({
+      fetch: handlerFor(configPort),
+      hostname: "127.0.0.1",
+      idleTimeout: 0,
+      port: configPort
     });
+    log(`anymodel-router listening on http://127.0.0.1:${configPort} (config ${configPath})`);
+    process.once("SIGTERM", () => {
+      log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
+      exitWhenDone(server.stop(false), log, () => {});
+    });
+    return;
+  }
+  const inner = innerSocketPath(env, process.pid);
+  let innerReady = () => {};
+  const ready = new Promise((resolve) => {
+    innerReady = resolve;
   });
-  return server;
+  const relay = await listenOnFd(fd, ready, log);
+  if (relay.port !== configPort) {
+    log(`WARN the socket listens on port ${relay.port}, the config says ${configPort}: serving on ${relay.port}. Run: anymodel gateway setup`);
+  }
+  const server = serveUnix(inner.path, handlerFor(relay.port));
+  innerReady(inner.path);
+  log(`anymodel-router listening on http://127.0.0.1:${relay.port} (the socket systemd holds; config ${configPath})`);
+  process.once("SIGTERM", () => {
+    log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting; new connections wait in the socket for the next router`);
+    const drain = relay.drain();
+    const stopped = drain.connected.then(() => server.stop(false));
+    exitWhenDone(Promise.all([stopped, drain.closed]), log, inner.cleanup);
+  });
+}
+function exitWhenDone(done, log, cleanup) {
+  done.then(() => {
+    cleanup();
+    process.exit(0);
+  }, (error) => {
+    log(`ERROR while stopping: ${messageOf(error)}`);
+    cleanup();
+    process.exit(1);
+  });
 }
 
 // src/entries/router.ts
 var tooOld = bunTooOld(Bun.version, process.execPath);
 if (tooOld === null) {
   const paths = cliPaths();
-  startRouter(paths.gatewayConfigFile, paths.gatewayStateFile);
+  await startRouter(paths.gatewayConfigFile, paths.gatewayStateFile);
 } else {
   console.error(`anymodel-router: ${tooOld} Upgrade this Bun, then run: ${COMMAND} gateway setup`);
   process.exitCode = 1;

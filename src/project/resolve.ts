@@ -1,6 +1,7 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { type AnymodelConfig, loadAnymodelConfig } from "./config";
+import { gitEnv } from "./git-env";
 
 export interface Project {
   /** The top folder of the checkout `cwd` is in (a linked worktree's own folder). */
@@ -26,29 +27,6 @@ export interface ResolveOptions {
 
 /** `rev-parse --path-format` came in git 2.31. */
 export const MIN_GIT_VERSION = "2.31.0";
-
-/**
- * Git variables that would point git at another repo than `cwd`.
- * A git hook sets some of them, so we drop them: we always resolve from `cwd`.
- */
-const REPO_SELECTING_GIT_VARS = [
-  "GIT_DIR",
-  "GIT_WORK_TREE",
-  "GIT_COMMON_DIR",
-  "GIT_INDEX_FILE",
-  "GIT_OBJECT_DIRECTORY",
-  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-  "GIT_PREFIX",
-  "GIT_NAMESPACE",
-];
-
-function gitEnv(base: Record<string, string | undefined>): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined && !REPO_SELECTING_GIT_VARS.includes(key)) env[key] = value;
-  }
-  return env;
-}
 
 type Git = (args: string[]) => { ok: boolean; stdout: string; stderr: string };
 

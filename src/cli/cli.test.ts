@@ -624,6 +624,8 @@ describe("anymodel doctor", () => {
         "✓ can read the marketplace at git@github.com:example-org/anymodel.git",
         "✓ plugin auto-update is on",
         "✓ plugin updates are not switched off",
+        // The self-update has not checked yet: information, not a failure.
+        "· background update: no check yet (a new Claude session checks, at most once an hour)",
         "✓ no other enabled plugin is named anymodel",
         "✓ claude-mem@thedotmack 13.39.0 is installed and on",
         "✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
@@ -723,6 +725,7 @@ describe("anymodel doctor", () => {
       "✓ the marketplace folder ~/marketplace exists",
       "✗ plugin auto-update is off in ~/.claude/settings.json. Run: anymodel setup",
       "✓ plugin updates are not switched off",
+      "· background update: no check yet (a new Claude session checks, at most once an hour)",
       "✓ no other enabled plugin is named anymodel",
       "✓ claude-mem@thedotmack 13.39.0 is installed and on",
       "✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
@@ -824,7 +827,7 @@ describe("anymodel doctor", () => {
       const off = run(["doctor"], { [name]: "1" });
       expect(off.exitCode).toBe(1);
       expect(off.stdout).toContain(
-        `✗ plugin updates are switched off: ${name} (in your environment) is set. ` +
+        `✗ plugin updates are switched off: ${name} (in your environment) is set, so the background update skips them too. ` +
           `Set FORCE_AUTOUPDATE_PLUGINS=1 as well, or remove ${name}.\n`,
       );
       const forced = run(["doctor"], { [name]: "1", FORCE_AUTOUPDATE_PLUGINS: "1" });
@@ -842,7 +845,7 @@ describe("anymodel doctor", () => {
     settings.env = { DISABLE_UPDATES: "true" };
     writeFileSync(settingsFile, JSON.stringify(settings));
     expect(run(["doctor"], { DISABLE_AUTOUPDATER: "0" }).stdout).toContain(
-      "✗ plugin updates are switched off: DISABLE_UPDATES (in the env of ~/.claude/settings.json) is set. " +
+      "✗ plugin updates are switched off: DISABLE_UPDATES (in the env of ~/.claude/settings.json) is set, so the background update skips them too. " +
         "Set FORCE_AUTOUPDATE_PLUGINS=1 as well, or remove DISABLE_UPDATES.\n",
     );
   });

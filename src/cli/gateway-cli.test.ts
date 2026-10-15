@@ -119,8 +119,10 @@ function machine(options: { systemctl?: boolean } = {}) {
   mkdirSync(fakeBin);
   const log = join(home, "systemctl.log");
   const state = join(home, "unit-state");
+  const socketState = join(home, "socket-state");
   if (options.systemctl !== false) {
-    // Shell builtins only: PATH holds nothing else.
+    // Shell builtins only: PATH holds nothing else. The service and its socket each keep
+    // their own state; a command acts on the units it names.
     writeFileSync(
       join(fakeBin, "systemctl"),
       [
@@ -128,11 +130,18 @@ function machine(options: { systemctl?: boolean } = {}) {
         `echo "$*" >> '${log}'`,
         "s=inactive",
         `[ -e '${state}' ] && read s < '${state}'`,
+        "k=inactive",
+        `[ -e '${socketState}' ] && read k < '${socketState}'`,
+        "set_to() {",
+        `  case "$2" in *.service*) echo "$1" > '${state}' ;; esac`,
+        `  case "$2" in *.socket*) echo "$1" > '${socketState}' ;; esac`,
+        "}",
         'case "$*" in',
-        '  *is-active*) [ "$1" = "--user" ] || exit 9; case "$*" in *--quiet*) ;; *) echo "$s" ;; esac; [ "$s" = active ] && exit 0; exit 3 ;;',
+        '  *is-active*) [ "$1" = "--user" ] || exit 9; case "$*" in *.socket*) w=$k ;; *) w=$s ;; esac; case "$*" in *--quiet*) ;; *) echo "$w" ;; esac; [ "$w" = active ] && exit 0; exit 3 ;;',
         // `disable` alone leaves a running unit running, as systemd does; `stop` stops it.
-        `  *disable*--now*|*" stop "*) echo inactive > '${state}' ;;`,
-        `  *restart*|*--now*) echo active > '${state}' ;;`,
+        '  *disable*--now*|*" stop "*) set_to inactive "$*" ;;',
+        `  *" restart "*) echo active > '${state}' ;;`,
+        '  *" start "*|*--now*) set_to active "$*" ;;',
         "esac",
         "exit 0",
         "",
@@ -161,6 +170,7 @@ function machine(options: { systemctl?: boolean } = {}) {
     config: join(home, ".config", "anymodel", "gateway.json"),
     copy: join(home, ".local", "share", "anymodel", "router.js"),
     unit: join(home, ".config", "systemd", "user", "anymodel-router.service"),
+    socket: join(home, ".config", "systemd", "user", "anymodel-router.socket"),
     settings: join(configDir, "settings.json"),
   };
   const calls = () => (existsSync(log) ? readFileSync(log, "utf8") : "");
@@ -311,7 +321,8 @@ describe("anymodel gateway setup", () => {
         `no config at ~/.config/anymodel/gateway.json yet: the router answers every slot on your own Claude login until the OmniRoute key is added (setup --backend-key-stdin omniroute)`,
         "+ ~/.local/share/anymodel/router.js: router copy created",
         "+ ~/.config/systemd/user/anymodel-router.service: unit created",
-        "enabled and (re)started anymodel-router.service",
+        "+ ~/.config/systemd/user/anymodel-router.socket: socket unit created",
+        "enabled and (re)started anymodel-router.service and anymodel-router.socket",
         "Claude Code does not use the gateway yet. Check it: anymodel gateway status. Then: anymodel gateway on.",
         "",
       ].join("\n"),
@@ -320,18 +331,24 @@ describe("anymodel gateway setup", () => {
     expect(readFileSync(m.paths.unit, "utf8")).toContain(
       `\nExecStart="${process.execPath}" --no-env-file "${m.paths.copy}"\n`,
     );
+    expect(readFileSync(m.paths.socket, "utf8")).toContain("\nListenStream=127.0.0.1:20100\n");
     expect(existsSync(m.paths.config)).toBe(false);
     expect(m.calls()).toBe(
       [
-        // The read-only pass, then the writing pass, each asks once.
+        // The read-only pass, then the writing pass, each asks the socket and the unit.
+        "--user is-active --quiet anymodel-router.socket",
         "--user is-active --quiet anymodel-router.service",
+        "--user is-active --quiet anymodel-router.socket",
         "--user is-active --quiet anymodel-router.service",
         "--user daemon-reload",
-        "--user enable anymodel-router.service",
-        // Changed on purpose: a unit that is not active is asked its state before the
-        // restart, to say when an old router still drains.
+        "--user enable anymodel-router.socket anymodel-router.service",
+        // A unit that is not active is asked its state, to say when an old router
+        // still drains; nothing runs, so nothing is stopped. Changed on purpose: the
+        // socket opens the port first, then the router starts on it.
         "--user is-active anymodel-router.service",
-        "--user restart anymodel-router.service",
+        "--user reset-failed anymodel-router.socket anymodel-router.service",
+        "--user start anymodel-router.socket",
+        "--user start anymodel-router.service",
         "",
       ].join("\n"),
     );
@@ -345,7 +362,9 @@ describe("anymodel gateway setup", () => {
     const again = await m.runHere(["gateway", "setup", "--no-backend-key"]);
     expect(again.exitCode).toBe(0);
     expect(again.stdout).toContain("router already up to date (no restart)\n");
-    expect(m.calls().endsWith("--user enable --now anymodel-router.service\n")).toBe(true);
+    expect(
+      m.calls().endsWith("--user enable --now anymodel-router.socket anymodel-router.service\n"),
+    ).toBe(true);
   });
 
   // Reworked: a config on the fake server's port first, so setup asks that port, never
@@ -361,23 +380,23 @@ describe("anymodel gateway setup", () => {
     expect(refused.exitCode).toBe(1);
     expect(refused.stdout).toBe(
       [
-        "anymodel-router is running. A restart cuts the answers in flight in running Claude sessions on this machine (Claude Code retries them).",
+        "anymodel-router is running. A restart lets its answers in flight finish first (up to 120 s; a longer one is cut, and Claude Code retries it). New requests wait in its socket meanwhile; none fails.",
         "Nothing was changed. Run again with --yes to restart: anymodel gateway setup --yes",
         "",
       ].join("\n"),
     );
     expect(readFileSync(m.paths.copy, "utf8")).toBe("// an older router\n");
     expect(m.calls().slice(before.length)).toBe(
-      "--user is-active --quiet anymodel-router.service\n",
+      "--user is-active --quiet anymodel-router.socket\n--user is-active --quiet anymodel-router.service\n",
     );
 
     const yes = await m.run(["gateway", "setup", "--yes"]);
     expect(yes.exitCode).toBe(0);
     expect(yes.stdout).toContain(
-      "anymodel-router is running. A restart cuts the answers in flight in running Claude sessions on this machine (Claude Code retries them).\n",
+      "anymodel-router is running. A restart lets its answers in flight finish first (up to 120 s; a longer one is cut, and Claude Code retries it). New requests wait in its socket meanwhile; none fails.\n",
     );
     expect(yes.stdout).toContain("~ ~/.local/share/anymodel/router.js: router copy updated\n");
-    expect(yes.stdout).toContain("restarting anymodel-router\n");
+    expect(yes.stdout).toContain("restarting anymodel-router (new requests wait in its socket)\n");
     expect(m.calls().endsWith("--user restart anymodel-router.service\n")).toBe(true);
     expect(readFileSync(m.paths.copy).equals(readFileSync(BUILT_ROUTER))).toBe(true);
   });
@@ -432,7 +451,9 @@ describe("anymodel gateway setup: the port", () => {
     expect(existsSync(m.paths.copy)).toBe(false);
     expect(existsSync(m.paths.unit)).toBe(false);
     expect(existsSync(join(m.home, ".claude", "anymodel"))).toBe(false);
-    expect(m.calls()).toBe("");
+    // Changed on purpose: the socket is asked first, since an open socket of ours holds
+    // the port without an answer while its router restarts. It is not open: refused.
+    expect(m.calls()).toBe("--user is-active --quiet anymodel-router.socket\n");
   });
 });
 
@@ -505,8 +526,8 @@ describe("anymodel restore: the gateway in two stages", () => {
         "--user is-active --quiet anymodel-router.service",
         // Changed on purpose: the stop asks the unit's state, to wait only for its own port.
         "--user is-active anymodel-router.service",
-        "--user disable anymodel-router.service",
-        "--user stop --no-block anymodel-router.service",
+        "--user disable anymodel-router.socket anymodel-router.service",
+        "--user stop --no-block anymodel-router.socket anymodel-router.service",
         "--user daemon-reload",
         "",
       ].join("\n"),
@@ -514,13 +535,14 @@ describe("anymodel restore: the gateway in two stages", () => {
     // The config's port was asked once the stop was sent, and it was closed.
     expect(m.probed).toEqual([`http://127.0.0.1:${server.port}/__anymodel/health`]);
     expect(done.stdout).toContain(
-      `- anymodel-router.service: disabled and stopped (port ${server.port} closed; answers in flight finish in the background)\n`,
+      `- anymodel-router.service and anymodel-router.socket: disabled and stopped (port ${server.port} closed; answers in flight finish in the background)\n`,
     );
     expect(done.stdout).toContain(
       "- ~/.local/share/anymodel/router.js: removed (anymodel had created it)\n",
     );
     expect(existsSync(m.paths.copy)).toBe(false);
     expect(existsSync(m.paths.unit)).toBe(false);
+    expect(existsSync(m.paths.socket)).toBe(false);
     // The config holds the person's key: restore leaves it.
     expect(existsSync(m.paths.config)).toBe(true);
     // A third restore has nothing left to do.
@@ -556,7 +578,7 @@ describe("anymodel restore: the gateway in two stages", () => {
     expect(done.stderr).toBe("");
     expect(done.exitCode).toBe(0);
     expect(done.stdout).toStartWith(
-      `restore --now stops anymodel-router while Claude sessions still use it: every running Claude session fails until it restarts.\n- anymodel-router.service: disabled and stopped (port ${server.port} closed; answers in flight finish in the background)\n`,
+      `restore --now stops anymodel-router while Claude sessions still use it: every running Claude session fails until it restarts.\n- anymodel-router.service and anymodel-router.socket: disabled and stopped (port ${server.port} closed; answers in flight finish in the background)\n`,
     );
     expect(done.stdout).toContain(`${STAGE_1_KEYS}\n`);
     // The warning above is the question: no `is-active --quiet` first. Changed on purpose:
@@ -564,8 +586,8 @@ describe("anymodel restore: the gateway in two stages", () => {
     expect(m.calls().slice(before.length)).toBe(
       [
         "--user is-active anymodel-router.service",
-        "--user disable anymodel-router.service",
-        "--user stop --no-block anymodel-router.service",
+        "--user disable anymodel-router.socket anymodel-router.service",
+        "--user stop --no-block anymodel-router.socket anymodel-router.service",
         "--user daemon-reload",
         "",
       ].join("\n"),
@@ -625,7 +647,7 @@ describe("anymodel restore: the gateway in two stages", () => {
       [
         NOW_WARNING,
         `  port ${server.port} answers, but not as this router (HTTP 404); not waiting for it`,
-        "- anymodel-router.service: disabled and stopping",
+        "- anymodel-router.service and anymodel-router.socket: disabled and stopping",
         "",
       ].join("\n"),
     );
@@ -655,7 +677,7 @@ describe("anymodel restore: the gateway in two stages", () => {
       [
         NOW_WARNING,
         `  anymodel-router.service was not running (systemctl --user is-active: activating); not waiting for port ${server.port}`,
-        "- anymodel-router.service: disabled and stopped",
+        "- anymodel-router.service and anymodel-router.socket: disabled and stopped",
         "",
       ].join("\n"),
     );
@@ -665,8 +687,8 @@ describe("anymodel restore: the gateway in two stages", () => {
     expect(m.calls().slice(before.length)).toBe(
       [
         "--user is-active anymodel-router.service",
-        "--user disable anymodel-router.service",
-        "--user stop --no-block anymodel-router.service",
+        "--user disable anymodel-router.socket anymodel-router.service",
+        "--user stop --no-block anymodel-router.socket anymodel-router.service",
         "--user daemon-reload",
         "",
       ].join("\n"),
@@ -694,7 +716,7 @@ describe("anymodel restore: the gateway in two stages", () => {
       [
         NOW_WARNING,
         `  cannot read the router's port (${m.paths.config} is not valid JSON. Fix it by hand.); not waiting for it`,
-        "- anymodel-router.service: disabled and stopping",
+        "- anymodel-router.service and anymodel-router.socket: disabled and stopping",
         "",
       ].join("\n"),
     );
@@ -702,8 +724,8 @@ describe("anymodel restore: the gateway in two stages", () => {
     expect(m.probed).toEqual([]);
     expect(m.calls().slice(before.length)).toBe(
       [
-        "--user disable anymodel-router.service",
-        "--user stop --no-block anymodel-router.service",
+        "--user disable anymodel-router.socket anymodel-router.service",
+        "--user stop --no-block anymodel-router.socket anymodel-router.service",
         "--user daemon-reload",
         "",
       ].join("\n"),
@@ -787,6 +809,7 @@ describe("anymodel doctor: the gateway", () => {
       [
         "✓ the router service (anymodel-router.service) is active",
         "✓ the router copy ~/.local/share/anymodel/router.js is up to date",
+        `✓ the router's socket (anymodel-router.socket) holds 127.0.0.1:${server.port}`,
         `✓ the router answers on 127.0.0.1:${server.port}`,
         `✓ backend omniroute (http://127.0.0.1:${server.port}) answers`,
         "· slot anymodel-scout: first target omniroute:m1",
@@ -874,6 +897,7 @@ describe("anymodel doctor: a gateway that is not installed, or half", () => {
       "✓ the router service (anymodel-router.service) is active",
       "✓ the router copy ~/.local/share/anymodel/router.js is up to date",
       "· no ~/.config/anymodel/gateway.json yet: the router answers every slot on your own Claude login. To add a backend: anymodel gateway setup --backend-key-stdin omniroute < key-file",
+      "✓ the router's socket (anymodel-router.socket) holds 127.0.0.1:20100",
       "✓ the router answers on 127.0.0.1:20100",
       "· slot anymodel-scout: first target claude-sonnet-5-5",
       "· slot anymodel-worker: first target claude-sonnet-5-5",
@@ -881,6 +905,69 @@ describe("anymodel doctor: a gateway that is not installed, or half", () => {
     ]);
     // Asked of the fake, never the network.
     expect(m.probed).toEqual(["http://127.0.0.1:20100/__anymodel/health"]);
+  });
+
+  /**
+   * The router's two lines when it does not answer, with a systemctl that answers per
+   * command: the service's state, the socket's state, and the socket's `Result`.
+   */
+  async function notAnswering(units: { service: string; socket: string; result: string }) {
+    const m = machine();
+    expect((await m.runHere(["gateway", "setup", "--no-backend-key"])).exitCode).toBe(0);
+    const asked: string[] = [];
+    const checks = await gatewayChecks({
+      paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
+      bundle: BUILT_ROUTER,
+      runner: (cmd) => {
+        asked.push(cmd.slice(2).join(" "));
+        if (cmd[2] === "show") return { exitCode: 0, output: `${units.result}\n` };
+        const word = cmd.at(-1)?.endsWith(".socket") ? units.socket : units.service;
+        return { exitCode: word === "active" ? 0 : 3, output: `${word}\n` };
+      },
+      systemd: true,
+      // An open socket with no router holds the connection: no answer in time.
+      fetch: async () => {
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      },
+    });
+    const lines = checks.map((check) => `${check.info ? "·" : check.ok ? "✓" : "✗"} ${check.text}`);
+    return { asked, lines };
+  }
+
+  test("the socket open and its router not answering (a crash loop): ✗ says requests wait, names the router's log", async () => {
+    const { lines } = await notAnswering({
+      result: "success",
+      service: "activating",
+      socket: "active",
+    });
+    expect(lines.slice(3, 5)).toEqual([
+      "✓ the router's socket (anymodel-router.socket) holds 127.0.0.1:20100",
+      "✗ the socket holds 127.0.0.1:20100, but the router does not answer (The operation timed out.): every request waits in the socket and gets no answer. See why: journalctl --user -u anymodel-router -n 30. Then: anymodel gateway setup",
+    ]);
+  });
+
+  test("the socket closed by systemd after the router's start limit: ✗ says every request is refused, names the router's log", async () => {
+    const { asked, lines } = await notAnswering({
+      result: "service-start-limit-hit",
+      service: "failed",
+      socket: "failed",
+    });
+    expect(asked).toContain("show -p Result --value anymodel-router.socket");
+    expect(lines.slice(3, 5)).toEqual([
+      "✗ the router's socket (anymodel-router.socket) is failed. Run: anymodel gateway setup",
+      "✗ the router failed to start again and again, so systemd closed its socket: every request to 127.0.0.1:20100 is refused (The operation timed out.). See why: journalctl --user -u anymodel-router -n 30. Then: anymodel gateway setup",
+    ]);
+  });
+
+  test("a socket stopped for another reason: the plain line", async () => {
+    const { lines } = await notAnswering({
+      result: "success",
+      service: "inactive",
+      socket: "inactive",
+    });
+    expect(lines[4]).toBe(
+      "✗ the router does not answer on 127.0.0.1:20100 (The operation timed out.)",
+    );
   });
 });
 

@@ -26,6 +26,8 @@ export interface CliPaths {
   routerUnitFile: string;
   /** claude-mem's settings: `$CLAUDE_MEM_DATA_DIR/settings.json`, else `~/.claude-mem/settings.json`. */
   claudeMemSettingsFile: string;
+  /** The socket unit that holds the router's port: `~/.config/systemd/user/anymodel-router.socket`. */
+  routerSocketFile: string;
 }
 
 /**
@@ -48,6 +50,7 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
     routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service"),
     claudeMemSettingsFile: join(claudeMemDataDir(env, home), "settings.json"),
+    routerSocketFile: join(home, ".config", "systemd", "user", "anymodel-router.socket"),
   };
 }
 

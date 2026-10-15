@@ -1,0 +1,22 @@
+#!/bin/sh
+# Runs bun for the plugin's hooks (hooks/hooks.json), also where PATH has no bun: Claude
+# Code started from a desktop launcher or a service has a short PATH. It looks where the
+# launcher ~/.local/bin/anymodel does: first the bun that `anymodel setup` baked into that
+# launcher, then $BUN_INSTALL/bin/bun and ~/.bun/bin/bun (bun's own install folders),
+# then bun on PATH. A hook must never stop a session: with no bun anywhere it says so in
+# one line on stderr and exits 0.
+baked=""
+launcher="$HOME/.local/bin/anymodel"
+if [ -r "$launcher" ]; then
+  while IFS= read -r line; do
+    case $line in
+      "baked_bun='"*"'") baked=${line#"baked_bun='"} && baked=${baked%"'"} ;;
+    esac
+  done <"$launcher"
+fi
+for candidate in "$baked" "${BUN_INSTALL:+$BUN_INSTALL/bin/bun}" "$HOME/.bun/bin/bun"; do
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then exec "$candidate" "$@"; fi
+done
+if command -v bun >/dev/null 2>&1; then exec bun "$@"; fi
+echo "anymodel: bun not found (not in ~/.local/bin/anymodel, \$BUN_INSTALL/bin, ~/.bun/bin or PATH), so the hook did not run. Install bun, then run: anymodel setup" >&2
+exit 0

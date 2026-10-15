@@ -7,6 +7,7 @@ import { cliPaths } from "../cli/paths";
 import { runRestore } from "../cli/restore";
 import { runSetup } from "../cli/setup";
 import { runStatusline } from "../cli/statusline";
+import { runUpdate } from "../cli/update";
 import { runUsage } from "../cli/usage";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { realProbe } from "../gateway/health";
@@ -51,13 +52,19 @@ Commands:
                      Remove what anymodel added, and keep everything else: its settings
                      keys and entries (claude-mem's settings, the auto-mode entries), its
                      Markdown blocks, and the files it created (the launcher, the
-                     instructions, the router copy and unit). Each changed file gets a
+                     instructions, the router copy and units). Each changed file gets a
                      backup first. Plugins and marketplaces setup added stay installed.
                      With the gateway on, it runs in two stages: first everything but the
                      router, which the running sessions still use; after you restart
                      them, again to stop and remove the router (it asks; --yes: without
                      asking). --now: both at once, and every running session fails until
                      it restarts.
+  update [--check | --hold | --resume]
+                     Install a newer anymodel now, with the output of each step.
+                     --check: only say whether a newer version exists. A new Claude
+                     session checks by itself, at most once an hour, and installs it in
+                     the background; --hold stops that on this machine, --resume starts
+                     it again. Nothing restarts: restart the sessions to load it.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      anymodel gateway --help lists them.
   job <command>      The queue for heavy jobs (type checks, test runs, builds):
@@ -101,8 +108,11 @@ function instructionsFolder(): string {
   return existsSync(beside) ? beside : join(import.meta.dir, "..", "..", "plugin", "instructions");
 }
 
+// 180 s: a `systemctl --user restart` of the router returns only once the old router has
+// drained its answers in flight (the unit's TimeoutStopSec, 120 s). A shorter timeout
+// would kill systemctl mid-wait and report a restart that is still going on as failed.
 const runner: Runner = (cmd) => {
-  const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 30_000 });
+  const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 180_000 });
   return {
     exitCode: result.exitCode ?? 1,
     output: `${result.stdout.toString()}${result.stderr.toString()}`,
@@ -242,6 +252,8 @@ async function main(argv: string[]): Promise<number> {
         probe: realProbe(),
       });
     }
+    case "update":
+      return runUpdate(paths, process.env, rest);
     case "gateway":
       return runGateway(rest, gatewayContext(paths));
     case "search":

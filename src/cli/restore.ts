@@ -6,6 +6,7 @@ import type { HealthProbe } from "../gateway/health";
 import {
   type Runner,
   restartPendingFile,
+  SOCKET_NAME,
   stopRouter,
   UNIT_NAME,
   unitActive,
@@ -32,6 +33,9 @@ function describe(result: RestoreResult, short: (path: string) => string): strin
       return `! ${file}: the backup from before anymodel is missing; left alone`;
   }
 }
+
+/** The router's two units, as restore names them. */
+const UNITS = `${UNIT_NAME} and ${SOCKET_NAME}`;
 
 /** Said before restore stops a running router, and before the question. */
 export const STOP_WARNING =
@@ -102,12 +106,12 @@ function forgetInstructionChoice(stateDir: string, short: (path: string) => stri
  * settings they still send every request to the router; stopping it would make each of
  * them fail. So, with the router installed:
  *   - stage 1, while anymodel's gateway env keys are there: everything is restored but the
- *     router's copy and unit, and the router keeps running. It says to restart the
+ *     router's copy and units, and the router keeps running. It says to restart the
  *     sessions and run `restore` again.
- *   - stage 2, with no such key left: it disables and stops the unit (asking first when it
+ *   - stage 2, with no such key left: it disables and stops the unit and its socket (asking first when it
  *     runs, because that cuts answers in flight) and waits up to 15 s for its port to
  *     close (`stopRouter`; the drain goes on in the background), restores the rest (the
- *     copy and the unit are removed), reloads systemd, and clears the restart-pending
+ *     copy and the units are removed), reloads systemd, and clears the restart-pending
  *     marker.
  *   - `--now`: both at once, after the warning that every running session fails until it
  *     restarts (asked, or `--yes`).
@@ -115,7 +119,11 @@ function forgetInstructionChoice(stateDir: string, short: (path: string) => stri
 export async function runRestore(paths: CliPaths, options: RestoreOptions): Promise<number> {
   const short = (path: string) => tildify(path, paths.home);
   const changed = readChanged(paths.stateDir);
-  const routerFiles = [realTarget(paths.routerCopy), realTarget(paths.routerUnitFile)];
+  const routerFiles = [
+    realTarget(paths.routerCopy),
+    realTarget(paths.routerUnitFile),
+    realTarget(paths.routerSocketFile),
+  ];
   const routerTracked = routerFiles.some((file) => Object.hasOwn(changed, file));
   const unitTracked = options.systemd && Object.hasOwn(changed, realTarget(paths.routerUnitFile));
   const sessionsUseRouter =
@@ -178,23 +186,23 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
         switch (stopped.kind) {
           case "closed":
             console.log(
-              `- ${UNIT_NAME}: disabled and stopped (port ${port} closed; answers in flight finish in the background)`,
+              `- ${UNITS}: disabled and stopped (port ${port} closed; answers in flight finish in the background)`,
             );
             break;
           case "no-port":
-            console.log(`- ${UNIT_NAME}: disabled and stopping`);
+            console.log(`- ${UNITS}: disabled and stopping`);
             break;
           case "not-running":
             console.log(
               `  ${UNIT_NAME} was not running (systemctl --user is-active: ${stopped.state}); not waiting for port ${port}`,
             );
-            console.log(`- ${UNIT_NAME}: disabled and stopped`);
+            console.log(`- ${UNITS}: disabled and stopped`);
             break;
           case "other":
             console.log(
               `  port ${port} answers, but not as this router (${stopped.detail}); not waiting for it`,
             );
-            console.log(`- ${UNIT_NAME}: disabled and stopping`);
+            console.log(`- ${UNITS}: disabled and stopping`);
             break;
         }
       }

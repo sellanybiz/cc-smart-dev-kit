@@ -22,7 +22,8 @@ function cliPaths(env = process.env) {
     gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json"),
     routerCopy: join(home, ".local", "share", "anymodel", "router.js"),
     routerUnitFile: join(home, ".config", "systemd", "user", "anymodel-router.service"),
-    claudeMemSettingsFile: join(claudeMemDataDir(env, home), "settings.json")
+    claudeMemSettingsFile: join(claudeMemDataDir(env, home), "settings.json"),
+    routerSocketFile: join(home, ".config", "systemd", "user", "anymodel-router.socket")
   };
 }
 function claudeMemDataDir(env, home) {

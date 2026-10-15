@@ -31,10 +31,20 @@ import { bakedBunPath, LAUNCHER_NAME, launcherScript } from "../setup/launcher";
 import {
   canReadGitRemote,
   canReadHttp,
+  marketplaceCopyVersion,
   marketplaceInstallLocation,
   marketplaceSource,
   redactUrl,
 } from "../setup/marketplace-access";
+import { isOlder } from "../update/check";
+import { FORCE_PLUGIN_UPDATES_VAR, updateOptOuts } from "../update/opt-out";
+import {
+  heldSince,
+  readLastCheck,
+  runningSessions,
+  UNREACHABLE_FAILS_AFTER_HOURS,
+  updateFiles,
+} from "../update/state";
 import { type CliPaths, tildify } from "./paths";
 import { instructionsPaths } from "./setup";
 
@@ -47,16 +57,8 @@ interface Check {
   text: string;
 }
 
-/** Claude Code variables that also stop plugin updates, unless FORCE_AUTOUPDATE_PLUGINS is set. */
-export const UPDATE_BLOCKING_VARS = [
-  "DISABLE_AUTOUPDATER",
-  "DISABLE_UPDATES",
-  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
-] as const;
-export const FORCE_PLUGIN_UPDATES_VAR = "FORCE_AUTOUPDATE_PLUGINS";
-
 /** The marketplace command that refreshes Claude Code's local copy of the marketplace. */
-const MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
+export const MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 
 type Env = Record<string, string | undefined>;
 
@@ -184,17 +186,6 @@ async function checkMarketplaceAccess(paths: CliPaths, env: Env): Promise<Check>
   }
 }
 
-/** The `version` in the plugin manifest of the marketplace's local copy, or null. */
-function marketplaceVersion(manifest: string): string | null {
-  try {
-    const version = (JSON.parse(readFileSync(manifest, "utf8")) as { version?: unknown } | null)
-      ?.version;
-    return typeof version === "string" ? version : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Is the installed version behind the marketplace's local copy? Then auto-update did not
  * install it (Claude Code's `autoUpdate` may refresh only the catalog). Null when there is
@@ -211,8 +202,7 @@ function checkInstalledVersion(paths: CliPaths): Check | null {
       text: `the ${MARKETPLACE} marketplace has no local copy. Run: ${MARKETPLACE_UPDATE_COMMAND}`,
     };
   }
-  const manifest = join(location, "plugin", ".claude-plugin", "plugin.json");
-  const latest = marketplaceVersion(manifest);
+  const { manifest, version: latest } = marketplaceCopyVersion(location, PLUGIN);
   if (latest === null) {
     return {
       ok: false,
@@ -250,40 +240,117 @@ function checkAutoUpdate(settings: Record<string, unknown> | null, paths: CliPat
       };
 }
 
-/** True when a variable is set to something other than empty, 0, false, no or off. */
-function isSet(value: unknown): boolean {
-  if (typeof value !== "string") return false;
-  return !["", "0", "false", "no", "off"].includes(value.trim().toLowerCase());
-}
-
 /**
- * Updates must not be switched off: each of UPDATE_BLOCKING_VARS also stops plugin
- * updates, unless FORCE_AUTOUPDATE_PLUGINS is set too. Claude Code reads them from its
- * environment and from the `env` of settings.json, so doctor looks in both.
+ * Updates must not be switched off: each of UPDATE_BLOCKING_VARS (`src/update/opt-out.ts`)
+ * also stops plugin updates, Claude Code's and anymodel's background update alike, unless
+ * FORCE_AUTOUPDATE_PLUGINS is set too. Claude Code reads them from its environment and
+ * from the `env` of settings.json, so doctor looks in both.
  */
 function checkUpdatesNotOff(
   settings: Record<string, unknown> | null,
   env: Env,
   paths: CliPaths,
 ): Check {
-  const settingsEnv = (settings?.env ?? {}) as Record<string, unknown>;
-  const where = (name: string) =>
-    [
-      isSet(env[name]) ? "your environment" : null,
-      isSet(settingsEnv[name]) ? `the env of ${tildify(paths.settingsFile, paths.home)}` : null,
-    ].filter((place): place is string => place !== null);
-  if (where(FORCE_PLUGIN_UPDATES_VAR).length > 0) {
+  const fromSettings = (settings?.env ?? {}) as Record<string, unknown>;
+  const { blocking, forced } = updateOptOuts(env, fromSettings);
+  if (forced) {
     return { ok: true, text: `plugin updates are on (${FORCE_PLUGIN_UPDATES_VAR} is set)` };
   }
-  const blocking = UPDATE_BLOCKING_VARS.filter((name) => where(name).length > 0);
   if (blocking.length === 0) return { ok: true, text: "plugin updates are not switched off" };
-  const named = blocking.map((name) => `${name} (in ${where(name).join(" and ")})`).join(", ");
+  const settingsPlace = `the env of ${tildify(paths.settingsFile, paths.home)}`;
+  const named = blocking
+    .map((v) => {
+      const places = [v.inEnv ? "your environment" : null, v.inSettings ? settingsPlace : null];
+      return `${v.name} (in ${places.filter((place) => place !== null).join(" and ")})`;
+    })
+    .join(", ");
+  const names = blocking.map((v) => v.name);
   return {
     ok: false,
     text:
-      `plugin updates are switched off: ${named} ${blocking.length === 1 ? "is" : "are"} set. ` +
-      `Set ${FORCE_PLUGIN_UPDATES_VAR}=1 as well, or remove ${blocking.join(" and ")}.`,
+      `plugin updates are switched off: ${named} ${names.length === 1 ? "is" : "are"} set, so the background update skips them too. ` +
+      `Set ${FORCE_PLUGIN_UPDATES_VAR}=1 as well, or remove ${names.join(" and ")}.`,
   };
+}
+
+/**
+ * The self-update (`src/update/`): a hold, the last background check, and running
+ * sessions that loaded an older version than the one installed now. A hold and a check
+ * still to come are information; only a failed check is a ✗.
+ */
+function checkSelfUpdate(paths: CliPaths): Check[] {
+  const files = updateFiles(paths.stateDir);
+  const checks: Check[] = [];
+  const since = heldSince(files);
+  if (since !== null) {
+    checks.push({
+      ok: true,
+      info: true,
+      text: `background updates are on hold (since ${since}). To resume: ${COMMAND} update --resume`,
+    });
+  }
+  const last = readLastCheck(files);
+  const log = tildify(files.log, paths.home);
+  if (last === null) {
+    checks.push({
+      ok: true,
+      info: true,
+      text: "background update: no check yet (a new Claude session checks, at most once an hour)",
+    });
+  } else {
+    switch (last.result) {
+      case "up-to-date":
+        checks.push({
+          ok: true,
+          text: `background update: last check ${last.at}: ${last.detail} is the newest`,
+        });
+        break;
+      case "updated":
+        checks.push({
+          ok: true,
+          text: `background update: last check ${last.at}: installed ${last.detail}`,
+        });
+        break;
+      case "checking":
+        checks.push({
+          ok: true,
+          info: true,
+          text: `background update: a check started at ${last.at} (${log})`,
+        });
+        break;
+      case "skipped":
+        checks.push({
+          ok: true,
+          info: true,
+          text: `background update: last check ${last.at}: skipped: ${last.detail}`,
+        });
+        break;
+      case "unreachable":
+        checks.push({
+          ok: true,
+          info: true,
+          text: `background update: last check ${last.at}: ${last.detail}, since ${last.since ?? last.at}. It counts as a failure only after ${UNREACHABLE_FAILS_AFTER_HOURS} h in a row. To look now: ${COMMAND} update --check`,
+        });
+        break;
+      case "failed":
+        checks.push({
+          ok: false,
+          text: `background update: the last check, ${last.at}, failed: ${last.detail}. The log: ${log}. To try now: ${COMMAND} update`,
+        });
+        break;
+    }
+  }
+  const installed = findUserInstall(paths.installedPluginsFile)?.version ?? null;
+  const older = runningSessions(files).filter((session) => isOlder(session.version, installed));
+  if (older.length > 0) {
+    const versions = [...new Set(older.map((session) => session.version))].sort().join(", ");
+    checks.push({
+      ok: true,
+      info: true,
+      text: `${older.length} running Claude session${older.length === 1 ? "" : "s"} loaded ${PLUGIN} ${versions}; ${installed} is installed. Restart ${older.length === 1 ? "it" : "them"} to load it.`,
+    });
+  }
+  return checks;
 }
 
 function checkNameClash(settings: Record<string, unknown> | null): Check {
@@ -558,6 +625,7 @@ export async function runDoctor(
     await checkMarketplaceAccess(paths, env),
     checkAutoUpdate(settings, paths),
     checkUpdatesNotOff(settings, env, paths),
+    ...checkSelfUpdate(paths),
     checkNameClash(settings),
     checkOldPlugin(settings, paths),
     ...companionChecks(paths),
