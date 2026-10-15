@@ -2686,6 +2686,28 @@ var $ZodEnum = /* @__PURE__ */ $constructor("$ZodEnum", (inst, def) => {
     return payload;
   };
 });
+var $ZodLiteral = /* @__PURE__ */ $constructor("$ZodLiteral", (inst, def) => {
+  $ZodType.init(inst, def);
+  const values = new Set(def.values);
+  inst._zod.values = values;
+  defineLazyInternal(inst, "pattern", (zod) => {
+    const vals = zod.def.values;
+    return new RegExp(vals.length ? `^(${vals.map((o) => typeof o === "string" ? escapeRegex(o) : o ? escapeRegex(o.toString()) : String(o)).join("|")})$` : "^[^\\s\\S]$");
+  });
+  inst._zod.parse = (payload, _ctx) => {
+    const input = payload.value;
+    if (values.has(input)) {
+      return payload;
+    }
+    payload.issues.push({
+      code: "invalid_value",
+      values: def.values,
+      input,
+      inst
+    });
+    return payload;
+  };
+});
 var $ZodTransform = /* @__PURE__ */ $constructor("$ZodTransform", (inst, def) => {
   $ZodType.init(inst, def);
   inst._zod.optin = "optional";
@@ -4543,6 +4565,45 @@ var enumProcessor = (schema, _ctx, json, _params) => {
     json.type = "string";
   json.enum = values;
 };
+var literalProcessor = (schema, ctx, json, params) => {
+  const def = schema._zod.def;
+  if (def.values.length === 0) {
+    json.not = {};
+    return;
+  }
+  const vals = [];
+  for (const val of def.values) {
+    if (val === undefined) {
+      if (handleUnrepresentable(schema, ctx, json, params, "Literal `undefined` cannot be represented in JSON Schema"))
+        return;
+    } else if (typeof val === "bigint") {
+      if (handleUnrepresentable(schema, ctx, json, params, "BigInt literals cannot be represented in JSON Schema"))
+        return;
+      vals.push(Number(val));
+    } else {
+      vals.push(val);
+    }
+  }
+  if (vals.length === 0) {} else if (vals.length === 1) {
+    const val = vals[0];
+    json.type = val === null ? "null" : typeof val;
+    if (ctx.target === "draft-04" || ctx.target === "openapi-3.0") {
+      json.enum = [val];
+    } else {
+      json.const = val;
+    }
+  } else {
+    if (vals.every((v) => typeof v === "number"))
+      json.type = "number";
+    if (vals.every((v) => typeof v === "string"))
+      json.type = "string";
+    if (vals.every((v) => typeof v === "boolean"))
+      json.type = "boolean";
+    if (vals.every((v) => v === null))
+      json.type = "null";
+    json.enum = vals;
+  }
+};
 var customProcessor = (schema, ctx, json, params) => {
   handleUnrepresentable(schema, ctx, json, params, "Custom types cannot be represented in JSON Schema");
 };
@@ -5250,6 +5311,9 @@ var ZodURL = /* @__PURE__ */ $constructor("ZodURL", (inst, def) => {
   $ZodURL.init(inst, def);
   ZodStringFormat.init(inst, def);
 });
+function url(params) {
+  return _url(ZodURL, params);
+}
 var ZodEmoji = /* @__PURE__ */ $constructor("ZodEmoji", (inst, def) => {
   $ZodEmoji.init(inst, def);
   ZodStringFormat.init(inst, def);
@@ -5494,6 +5558,14 @@ function strictObject(shape, params) {
     ...normalizeParams(params)
   });
 }
+function looseObject(shape, params) {
+  return new ZodObject({
+    type: "object",
+    shape,
+    catchall: unknown(),
+    ...normalizeParams(params)
+  });
+}
 var ZodUnion = /* @__PURE__ */ $constructor("ZodUnion", (inst, def) => {
   $ZodUnion.init(inst, def);
   ZodType.init(inst, def);
@@ -5586,6 +5658,27 @@ function _enum(values, params) {
   return new ZodEnum({
     type: "enum",
     entries,
+    ...normalizeParams(params)
+  });
+}
+var ZodLiteral = /* @__PURE__ */ $constructor("ZodLiteral", (inst, def) => {
+  $ZodLiteral.init(inst, def);
+  ZodType.init(inst, def);
+  inst._zod.processJSONSchema = (ctx, json, params) => literalProcessor(inst, ctx, json, params);
+  inst.values = new Set(def.values);
+  Object.defineProperty(inst, "value", {
+    get() {
+      if (def.values.length > 1) {
+        throw new Error("This schema contains multiple valid literal values. Use `.values` instead.");
+      }
+      return def.values[0];
+    }
+  });
+});
+function literal(value, params) {
+  return new ZodLiteral({
+    type: "literal",
+    values: Array.isArray(value) ? value : [value],
     ...normalizeParams(params)
   });
 }
@@ -5764,6 +5857,7 @@ function superRefine(fn, params) {
 var MARKETPLACE = "anymodel";
 var PLUGIN = "anymodel";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
+var COMMAND = "anymodel";
 
 // src/build-info/index.ts
 var info = {
@@ -5847,6 +5941,8 @@ var PLUGIN_HOOK_NAMES = [
   "git-guard",
   "main-folder-guard",
   "message-guard",
+  "agent-guard",
+  "job-route",
   "after-merge",
   "worktree-leftovers",
   "session-name"
@@ -5863,7 +5959,7 @@ var anymodelConfigSchema = strictObject({
   sessionNames: boolean2().optional(),
   instructions: boolean2().optional(),
   autoMode: array(string2().min(1)).optional(),
-  jobs: strictObject({ kinds: kindsSchema.optional() }).optional(),
+  jobs: strictObject({ kinds: kindsSchema.optional(), route: boolean2().optional() }).optional(),
   ownHooks: array(_enum(PLUGIN_HOOK_NAMES)).optional()
 });
 
@@ -6095,17 +6191,18 @@ async function handleHook(spec, text, env) {
     if (event === null || !spec.events.includes(event))
       return SILENT;
     const cwd = stringField(input.cwd);
+    const context = { env, paths: cliPaths(env) };
     const outside = spec.outsideGit ?? (() => SILENT);
     if (cwd === null)
-      return outside(input, event, "the hook input has no cwd");
+      return outside(input, event, "the hook input has no cwd", context);
     let checkout;
     try {
       checkout = locateCheckout(cwd, { env });
     } catch (error) {
-      return outside(input, event, errorMessage(error));
+      return outside(input, event, errorMessage(error), context);
     }
     if (checkout === null)
-      return outside(input, event, `${cwd} is not in a git checkout`);
+      return outside(input, event, `${cwd} is not in a git checkout`, context);
     if (spec.wiring === "plugin" && ownHooksOf(checkout).includes(spec.name))
       return SILENT;
     let project;
@@ -6113,14 +6210,14 @@ async function handleHook(spec, text, env) {
       project = loadProjectConfig(checkout);
     } catch (error) {
       if (error instanceof AnymodelConfigError) {
-        return spec.onConfigProblem(error.message, input, event, checkout);
+        return spec.onConfigProblem(error.message, input, event, checkout, context);
       }
       throw error;
     }
     const missing = spec.needs?.(project.config) ?? null;
     if (missing !== null)
-      return spec.onConfigProblem(missing, input, event, checkout);
-    return await spec.run({ input, event, cwd, project, env, paths: cliPaths(env) });
+      return spec.onConfigProblem(missing, input, event, checkout, context);
+    return await spec.run({ input, event, cwd, project, env, paths: context.paths });
   } catch (error) {
     return {
       exitCode: spec.crashExitCode ?? 0,
@@ -6134,7 +6231,7 @@ function logRun(spec, text, result, env) {
     return;
   try {
     const input = parseHookInput(text);
-    const facts = input === null ? {} : spec.logFacts?.(input) ?? {};
+    const facts = input === null ? {} : spec.logFacts?.(input, { env, paths: cliPaths(env) }) ?? {};
     appendFileSync(file, `${JSON.stringify({
       hook: spec.name,
       event: stringField(input?.hook_event_name),
@@ -6157,6 +6254,34 @@ async function runHookEntry(spec) {
 `);
   process.exit(result.exitCode ?? 0);
 }
+
+// src/shell/command.ts
+var SEPARATORS = new Set([`
+`, "\r", "&", "(", ")", ";", "{", "|", "}"]);
+var PREFIX_WORDS = new Set(["builtin", "command", "env", "exec", "nohup", "sudo", "time"]);
+
+// src/jobs/classify.ts
+var BUN_COMMANDS = new Set([
+  "add",
+  "build",
+  "create",
+  "exec",
+  "i",
+  "init",
+  "install",
+  "link",
+  "outdated",
+  "patch",
+  "pm",
+  "publish",
+  "remove",
+  "repl",
+  "rm",
+  "test",
+  "unlink",
+  "update",
+  "upgrade"
+]);
 
 // src/setup/marketplace-access.ts
 var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
@@ -6182,8 +6307,8 @@ function runGit(cwd, args, env, timeoutMs = 15000) {
 var IGNORE_CASE = process.platform === "win32";
 
 // src/hooks/shell-command.ts
-var MAX_NESTING = 3;
-var SEPARATORS = new Set([`
+var MAX_NESTING2 = 3;
+var SEPARATORS2 = new Set([`
 `, "\r", "&", "(", ")", ";", "{", "|", "}"]);
 var CONTINUATION = /[\\`][ \t]*\r?\n/y;
 var HERE_DOC = /<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([^\s"'<>;&|()]+))/y;
@@ -6362,7 +6487,7 @@ function lex(text, { blind, join }) {
           continue;
         }
       }
-      if (SEPARATORS.has(char)) {
+      if (SEPARATORS2.has(char)) {
         const wasPiped = afterPipe;
         push(current, wasPiped ? segments[segments.length - 1] ?? null : null);
         afterPipe = char === "|";
@@ -6476,11 +6601,11 @@ function afterWrapper(words, from, spec) {
   }
   return spec.skip?.(words[index] ?? "") === true ? index + 1 : index;
 }
-function wordsOf(segment) {
+function wordsOf2(segment) {
   const words = segment.match(/(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s"'])+/g) ?? [];
   return words.map((word) => word.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'/g, (_, double, single) => double === undefined ? String(single) : double.replace(/\\(["\\$`])/g, "$1")));
 }
-function invocationOf(words) {
+function invocationOf2(words) {
   let index = 0;
   while (index < words.length) {
     const word = words[index] ?? "";
@@ -6538,17 +6663,17 @@ function shellTakesStdin(args) {
   return stdin || !scriptFile;
 }
 function readsStdinShell(segment) {
-  const invocation = invocationOf(wordsOf(segment));
+  const invocation = invocationOf2(wordsOf2(segment));
   return invocation !== undefined && SHELLS.has(invocation.program) && shellTakesStdin(invocation.args);
 }
 function writtenText(segment) {
-  const invocation = invocationOf(wordsOf(segment));
+  const invocation = invocationOf2(wordsOf2(segment));
   if (invocation === undefined || invocation.args.length === 0)
     return null;
   const text = invocation.args.join(" ");
   return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
 }
-function nestedCommand(program, args, pipedFrom = null) {
+function nestedCommand2(program, args, pipedFrom = null) {
   if (SHELLS.has(program)) {
     const at = args.findIndex((arg) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(arg));
     if (at !== -1)
@@ -6579,12 +6704,12 @@ function programsOf(command) {
   const found = [];
   const walk = (line, depth) => {
     for (const step of shellSteps(line, { blindWhenOpen: true, joinLines: true })) {
-      const invocation = invocationOf(wordsOf(step.text));
+      const invocation = invocationOf2(wordsOf2(step.text));
       if (invocation === undefined)
         continue;
       found.push(invocation.program);
-      const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
-      if (inner !== undefined && depth < MAX_NESTING)
+      const inner = nestedCommand2(invocation.program, invocation.args, step.pipedFrom);
+      if (inner !== undefined && depth < MAX_NESTING2)
         walk(inner, depth + 1);
     }
   };
@@ -6607,6 +6732,189 @@ var MERGE_FLAGS_WITH_VALUE = new Set([
   "-t"
 ]);
 var ANNOUNCE_WINDOW_MS = 15 * 60000;
+
+// src/gateway/targets.ts
+var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
+var SLOT_KEY = /^anymodel-[a-z0-9][a-z0-9-]*$/;
+var CONTEXT_SUFFIX = /\[1m\]$/i;
+function isBackendName(name) {
+  return BACKEND_NAME.test(name);
+}
+function isSlotKey(name) {
+  return SLOT_KEY.test(name);
+}
+function withoutContextSuffix(name) {
+  return name.replace(CONTEXT_SUFFIX, "");
+}
+function parseTarget(text) {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("claude-")) {
+    if (trimmed.length === "claude-".length || /\s/.test(trimmed)) {
+      return { error: `"${text}" is not a Claude model id` };
+    }
+    return { target: { kind: "anthropic", model: trimmed } };
+  }
+  const colon = trimmed.indexOf(":");
+  if (colon === -1) {
+    return { error: `"${text}" is neither claude-<id> nor <backend>:<model>` };
+  }
+  const backend = trimmed.slice(0, colon);
+  const model = trimmed.slice(colon + 1);
+  if (!isBackendName(backend)) {
+    return { error: `"${backend}" is not a backend name (a-z, 0-9, - and _)` };
+  }
+  if (model === "" || /\s/.test(model)) {
+    return { error: `"${text}" names no model after "${backend}:"` };
+  }
+  return { target: { backend, kind: "backend", model } };
+}
+var JUDGE_SLOT = "anymodel-judge";
+var MODEL_SLOTS = {
+  "anymodel-fable": "fable",
+  "anymodel-opus": "opus"
+};
+var FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
+
+// src/gateway/config.ts
+var DEFAULT_PORT = 20100;
+var DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
+var DEFAULT_FIRST_BYTE_MS = 60000;
+var FALLBACK_SLOT_TARGET = "claude-sonnet-5-5";
+var NO_CONFIG_MEANS = `every haiku / sonnet call answers on ${FALLBACK_SLOT_TARGET} (your own Claude login) until it is fixed`;
+var baseUrl = url({ protocol: /^https?$/ }).transform((url2) => url2.replace(/\/+$/, ""));
+var backendSchema = looseObject({
+  apiKey: string2().min(1),
+  baseUrl
+});
+var gatewayConfigSchema = looseObject({
+  aliases: record(string2(), string2()).default({}),
+  anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
+  backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
+  judgeTested: record(string2(), string2()).optional(),
+  modelSlots: record(string2(), string2()).optional(),
+  port: int().min(1).max(65535).default(DEFAULT_PORT),
+  slots: record(string2().refine(isSlotKey, "a slot key is anymodel-<name>"), array(string2()).min(1)),
+  timeouts: looseObject({ firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS) }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
+  version: literal(1)
+}).superRefine((config, ctx) => {
+  for (const [slot, targets] of Object.entries(config.slots)) {
+    targets.forEach((text, index) => {
+      const parsed = parseTarget(text);
+      if ("error" in parsed) {
+        ctx.addIssue({ code: "custom", message: parsed.error, path: ["slots", slot, index] });
+      } else if (slot === JUDGE_SLOT && parsed.target.kind === "anthropic") {
+        ctx.addIssue({
+          code: "custom",
+          message: `${JUDGE_SLOT} takes no claude-\u2026 target; use "${COMMAND} gateway slot judge off" to put the checks on Claude`,
+          path: ["slots", slot, index]
+        });
+      } else if (parsed.target.kind === "backend" && !Object.hasOwn(config.backends, parsed.target.backend)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `"${text}" names backend "${parsed.target.backend}", which is not in backends`,
+          path: ["slots", slot, index]
+        });
+      }
+    });
+  }
+  for (const [name, to] of Object.entries(config.aliases)) {
+    const error = aliasError(name, to, config);
+    if (error !== null)
+      ctx.addIssue({ code: "custom", message: error, path: ["aliases", name] });
+  }
+  for (const [model, slot] of Object.entries(config.modelSlots ?? {})) {
+    const error = modelSlotError(model, slot, config.slots);
+    if (error !== null) {
+      ctx.addIssue({ code: "custom", message: error, path: ["modelSlots", model] });
+    }
+  }
+});
+function modelSlotError(model, slot, slots) {
+  if (!model.startsWith("claude-") || /\s/.test(model) || model === "claude-") {
+    return `modelSlots key "${model}" is not a Claude model id`;
+  }
+  if (withoutContextSuffix(model) !== model) {
+    return `modelSlots key "${model}": write it without [1m]; the router looks names up without it`;
+  }
+  const family = Object.hasOwn(MODEL_SLOTS, slot) ? MODEL_SLOTS[slot] : undefined;
+  if (family === undefined) {
+    return `modelSlots "${model}" points at "${slot}", which is not a model slot (${Object.keys(MODEL_SLOTS).sort().join(", ")})`;
+  }
+  if (!model.includes(`-${family}-`)) {
+    return `modelSlots "${model}" points at ${slot}, which is for ${family} models`;
+  }
+  const targets = Object.hasOwn(slots, slot) ? slots[slot] : undefined;
+  if (targets === undefined)
+    return `modelSlots "${model}" points at slot "${slot}", which is not in slots`;
+  if (targets[0] !== model) {
+    return `slot ${slot} must start with "${model}" itself: that target is the model, sent unchanged`;
+  }
+  if (targets.length < 2) {
+    return `slot ${slot} names no target after "${model}" to answer at its usage limit`;
+  }
+  return null;
+}
+function aliasError(name, to, config) {
+  if (name.trim() === "" || /\s/.test(name))
+    return `alias "${name}" is not a model name`;
+  if (withoutContextSuffix(name) !== name) {
+    return `alias "${name}": write it without [1m]; the router looks names up without it`;
+  }
+  if (name.startsWith("claude-"))
+    return `alias "${name}": a claude-\u2026 name cannot be an alias`;
+  if (Object.hasOwn(config.slots, name)) {
+    return `alias "${name}" has the name of a slot; a slot cannot be an alias too`;
+  }
+  if (Object.hasOwn(config.aliases, to)) {
+    return `alias "${name}" points at "${to}", which is an alias too; point it at a slot or a model`;
+  }
+  if (isSlotKey(to)) {
+    return Object.hasOwn(config.slots, to) ? null : `alias "${name}" points at slot "${to}", which is not in slots`;
+  }
+  const parsed = parseTarget(to);
+  if ("error" in parsed)
+    return `alias "${name}": ${parsed.error}`;
+  if (parsed.target.kind === "backend" && !Object.hasOwn(config.backends, parsed.target.backend)) {
+    return `alias "${name}" names backend "${parsed.target.backend}", which is not in backends`;
+  }
+  return null;
+}
+
+// src/gateway/settings.ts
+function gatewayEnv(port) {
+  return {
+    ENABLE_TOOL_SEARCH: "true",
+    ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: "anymodel-scout[1m]",
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: `Cheap model for search and reading: the scout slot (${COMMAND} gateway slot scout \u2026)`,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (cheap)",
+    ANTHROPIC_DEFAULT_SONNET_MODEL: "anymodel-worker[1m]",
+    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: `Cheap model for routine code and docs: the worker slot (${COMMAND} gateway slot worker \u2026)`,
+    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (cheap)"
+  };
+}
+var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
+
+// src/hooks/transcript.ts
+var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
+
+// src/hooks/agent-guard.ts
+var NO_WORKFLOW_MODEL = [
+  "This Workflow launch names no `model` the guard can read.",
+  "An agent given none runs on the session's model and effort, which nobody chose \u2014 and a `model` held in a variable is not visible to a hook.",
+  "Write `model` and `effort` as string literals in the `agent(...)` options."
+].join(`
+`);
+var NO_MODEL = [
+  "This Agent launch names no `model`.",
+  "An agent given none runs on the session's model and effort, which nobody chose: pass `model` and `effort` on every launch."
+].join(`
+`);
+var NO_EFFORT = [
+  "This Agent launch names no `effort`.",
+  "An agent given none runs at the session's effort: pass `effort` on every launch (on Claude: `low`, `medium`, `high`, `xhigh`; `max` only for the hardest problem)."
+].join(`
+`);
 
 // src/hooks/git-guard.ts
 import { isAbsolute, resolve } from "path";
@@ -6821,7 +7129,7 @@ function inspect(command, cwd, joinLines, options, depth = 0) {
   const found = [];
   let folder = cwd;
   for (const step of shellSteps(command, { blindWhenOpen: true, joinLines })) {
-    const invocation = invocationOf(wordsOf(step.text));
+    const invocation = invocationOf2(wordsOf2(step.text));
     if (invocation === undefined)
       continue;
     const { args, program } = invocation;
@@ -6829,8 +7137,8 @@ function inspect(command, cwd, joinLines, options, depth = 0) {
       found.push(...gitQuestions(args, folder, options));
     if (CHANGE_DIR.has(program))
       folder = movedTo(program, folder, args);
-    const inner = nestedCommand(program, args, step.pipedFrom);
-    if (inner !== undefined && depth < MAX_NESTING) {
+    const inner = nestedCommand2(program, args, step.pipedFrom);
+    if (inner !== undefined && depth < MAX_NESTING2) {
       found.push(...inspect(inner, folder, joinLines, options, depth + 1));
     }
   }
@@ -6847,6 +7155,18 @@ function guardQuestions(command, cwd, options) {
 function runsGit(command) {
   return programsOf(command).includes("git");
 }
+
+// src/setup/launcher.ts
+var FIND_INSTALL_JS = [
+  "const f=process.argv[process.argv.length-1];",
+  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
+  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
+
+// src/hooks/job-route.ts
+var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${COMMAND}"`;
 
 // src/setup/lock.ts
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
@@ -6886,6 +7206,8 @@ var gitGuardHook = {
 `));
   }
 };
+var USER_HOOKS = ["stop-failure", "update-check", "notify"];
+var MACHINE_WIDE_HOOKS = [...USER_HOOKS, "agent-guard"];
 
 // src/entries/git-guard.ts
 await runHookEntry(gitGuardHook);

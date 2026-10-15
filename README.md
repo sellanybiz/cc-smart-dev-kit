@@ -297,7 +297,9 @@ and the limits: [docs/search.md](docs/search.md).
   shows any fallback in use.
 - **`anymodel usage`** reads Claude Code's own transcripts and shows, per session, the
   main session's replies by model and, apart, its subagents: how each was launched, which
-  model wrote each reply, and the share on Opus.
+  model wrote each reply, and the share on Opus. It also lists the Opus and Fable launches
+  the `agent-guard` hook allowed, with the reason each one gave (review, or its
+  `Opus reason:` / `Fable reason:` word) — an Opus or Fable agent spends your own plan usage.
 
 ## Instructions, skills and agents
 
@@ -311,8 +313,8 @@ per change set. Also: the role, delegation, each subagent's model and effort, re
 principles, how to end a turn, and keeping docs true. `anymodel setup` installs them for your
 user, **on by default**:
 
-- a copy goes to `~/.claude/anymodel/instructions/` (refreshed by every setup, so run setup
-  after a plugin update);
+- a copy goes to `~/.claude/anymodel/instructions/` (refreshed by every setup, and by the
+  first session start after a plugin update);
 - one block in `~/.claude/CLAUDE.md` imports it:
 
   ```markdown
@@ -541,8 +543,9 @@ and optional shared folders for containers or users on one host, in
 `~/.config/anymodel/jobs.json`.
 ## The hooks
 
-The plugin's hooks run in every project, and **a project without `.claude/anymodel.json`
-does not notice them**: each one stays silent there. The plugin ships no worktree hook:
+The plugin's hooks run in every project. Most stay silent in a **project without
+`.claude/anymodel.json`**; the two that are about your machine, not a project — `agent-guard`
+and `notify` — run there too (§ Desktop notifications below). The plugin ships no worktree hook:
 Claude Code makes its own worktrees, unless a project turns on the worktree engine
 (§ Worktrees). Each hook runs through `bin/anymodel-bun`, which finds bun even when your
 PATH has none: the bun `anymodel setup` saved in the launcher first, then
@@ -556,13 +559,17 @@ closed), and every other hook writes one line on stderr and the session goes on
 | `git-guard` | before a Bash or PowerShell command | Asks you before a force-push, a push to a protected branch (`protectedBranches`), `push --all` / `--mirror`, a branch deleted on the remote (`git push origin :x`, `--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that throws changes away, `branch -D`, `stash clear` and an unnamed `stash drop` (they throw work away), and (with `worktrees`) a bare `git stash` or `stash pop`: every worktree shares one stash. Text in quotes, here-docs and comments is not a command; a shell keyword, a wrapper (`timeout 60 git push -f`, `sudo -u me …`), a here-doc fed to `sh`, and the text piped into `sh` are read through. Git's own abbreviations count (`--forc` is `--force`). Not read: a git alias (`-c alias.x=…`, or one of your own), `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file, and a branch it cannot name. |
 | `main-folder-guard` | before Edit, Write, NotebookEdit | With `worktrees.guardMainFolder`: refuses an edit of a file in the main checkout itself, and says how to get into a worktree. |
 | `message-guard` | before SendMessage | Refuses a message to a session that works outside this repo (ListAgents lists every session on the machine). |
+| `agent-guard` | before an Agent launch | **Machine-wide** (it runs with or without `.claude/anymodel.json`): it resolves the model the launch really runs on and holds the model rules. A launch with no `model` or no `effort` is refused (it would inherit the session's, which nobody chose); a cheap gateway slot needs `effort: "max"`; Claude Opus is allowed for a review agent, and any other Opus launch needs an `Opus reason: <word>` line and asks you to approve it (in `claude -p`, with nobody to answer, it is refused; a review is not); Claude Fable only for a read-only agent with a `Fable reason: <word> - <why>` line, and Claude Code then asks you to approve each one. A fork runs on the session's model and needs no `model`; an unknown session model counts as Opus. A **Workflow** call is judged the same way, from the `agent(...)` options in its script — a launch whose `model` is built at run time is refused, never guessed — because (proved live) a workflow's agents run inside the tool and pass no hook of their own. Every Opus or Fable launch is recorded, and `anymodel usage` lists them with why. |
+| `job-route` | before a Bash command | With `"jobs": { "route": true }`: a heavy command (the project's own [kinds](docs/jobs.md#kinds)) is sent through the machine's queue — rewritten to `anymodel job run --kind <kind> -- <command>`, byte for byte the same command. A command already inside `anymodel job run` is left as it is. |
 | `after-merge` | after `gh pr merge` | With `worktrees`: the steps to clear the worktree that was merged, and, for a merge into `worktrees.base`, the message to send the other sessions of the repo. |
 | `worktree-leftovers` | a session starts | With `worktrees`: names the worktrees that are finished (every commit on `origin/<base>`, nothing uncommitted, no running session, idle for an hour) or whose folder is gone. It removes nothing. |
 | `session-name` | a session starts; each prompt | With `sessionNames`: asks the session to name itself after its task, then sets that name at the next prompt. |
 
 **A project that still has its own copy of a hook says so**: `ownHooks` in its
 `.claude/anymodel.json` lists the plugin hooks that copy replaces (`["git-guard"]`), and
-exactly those plugin hooks stay silent there, so nothing runs twice. Only that list counts:
+exactly those plugin hooks stay silent there, so nothing runs twice. `agent-guard` is
+machine-wide — it runs without anymodel.json too — but it is in that list like the others,
+so a project with its own Agent guard silences it the same way. Only that list counts:
 a project hook on the same event that is not listed silences nothing, because it may be a
 logger or a different check, and a guard that goes quiet for it would leave you unguarded.
 `anymodel doctor`, run in the project, prints one `·` line per listed hook, and warns (`!`)
@@ -571,6 +578,16 @@ next to a plugin hook the list does not name. When the project's `anymodel.json`
 newer plugin, or is broken, the hooks fail closed: the guards ask before every call they
 cover, and the message names the update command — and a hook listed in `ownHooks` stays
 silent all the same.
+
+### Desktop notifications
+
+Two more hooks are about your machine, not a project, so they run in every folder and read
+no `.claude/anymodel.json`: `notify` shows a desktop notification when Claude asks for
+permission or input, and when a turn ends (one notification per event), through
+`notify-send` on Linux or `osascript` on macOS, and stays silent with no notifier and
+**inside Warp**, whose own Claude Code plugin notifies (Warp sets `TERM_PROGRAM`). The
+`update-check` hook is the third: the background self-update, which also brings the
+managed instructions copy up to a new plugin version at the first session start.
 
 ## Worktrees
 
@@ -669,7 +686,7 @@ holds nothing you need).
   "ownHooks": ["git-guard"],
   "instructions": true,
   "autoMode": ["In my-app: never touch production."],
-  "jobs": { "kinds": { "e2e": { "gb": 4, "match": [{ "script": "test:e2e" }] } } }
+  "jobs": { "kinds": { "e2e": { "gb": 4, "match": [{ "script": "test:e2e" }] } }, "route": true }
 }
 ```
 
@@ -687,6 +704,7 @@ holds nothing you need).
 | `instructions` | Accepted now. Today a project loads the opt-in instructions with its own import line (§ Instructions, skills and agents); the field does not load them yet. |
 | `autoMode` | Used now: `setup` copies it into your settings ([The auto-mode block](#the-auto-mode-block)). |
 | `jobs.kinds` | Used now: the project's own heavy-job kinds over the defaults ([docs/jobs.md](docs/jobs.md) § Kinds). |
+| `jobs.route` | `true`: the `job-route` hook sends a heavy Bash command through `anymodel job run` instead of running it raw (§ The hooks). Off when left out. |
 
 `requires` is a version range (npm syntax). When the installed plugin is outside it, the
 plugin says so and asks you to run `claude plugin update anymodel@anymodel`. A project that

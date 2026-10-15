@@ -50,7 +50,7 @@ function claudeMemDataDir(env, home) {
 }
 
 // src/hooks/stop-failure.ts
-import { closeSync, existsSync as existsSync2, fstatSync, openSync, readFileSync as readFileSync3, readSync } from "fs";
+import { existsSync as existsSync2, readFileSync as readFileSync3 } from "fs";
 
 // src/build-info/names.ts
 var MARKETPLACE = "anymodel";
@@ -6177,13 +6177,57 @@ function settingsReport(settingsPath) {
   return { baseUrl, loginOverrides, subagentOverrides };
 }
 
+// src/hooks/transcript.ts
+import { closeSync, fstatSync, openSync, readSync } from "fs";
+var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
+function isJsonObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function lastClaudeModel(transcriptPath) {
+  let text;
+  try {
+    const fd = openSync(transcriptPath, "r");
+    try {
+      const size = fstatSync(fd).size;
+      const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+      const buffer = Buffer.alloc(length);
+      readSync(fd, buffer, 0, length, size - length);
+      text = buffer.toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+  const lines = text.split(`
+`);
+  for (let index = lines.length - 1;index >= 0; index -= 1) {
+    const line = lines[index] ?? "";
+    if (!line.includes('"assistant"'))
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isJsonObject2(entry) || entry.type !== "assistant" || !isJsonObject2(entry.message)) {
+      continue;
+    }
+    const model = entry.message.model;
+    if (typeof model === "string" && model.startsWith("claude-"))
+      return model;
+  }
+  return null;
+}
+
 // src/hooks/stop-failure.ts
 var LIMIT_TEXT = /^You've hit your (?:[\w-]+ ){0,3}limit\b/;
 var NOT_LIMIT_TEXT = /\(not your usage limit\)/;
 var STATE_FRESH_MS = 2 * 60000;
 var OTHER_CLAUDE = "claude-sonnet-5-5";
 var ALERT_WORKER_COMMAND = "alert-worker";
-function isJsonObject2(value) {
+function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function slotOf(model) {
@@ -6207,7 +6251,7 @@ function shortName(target) {
   return target.slice(target.lastIndexOf("/") + 1).replace(/^[^:]*:/, "");
 }
 function planAlert(input, ctx) {
-  if (!isJsonObject2(input) || input.error !== "rate_limit")
+  if (!isJsonObject3(input) || input.error !== "rate_limit")
     return null;
   const text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
   if (NOT_LIMIT_TEXT.test(text))
@@ -6266,44 +6310,6 @@ function planAlert(input, ctx) {
     title
   };
 }
-var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
-function lastClaudeModel(transcriptPath) {
-  let text;
-  try {
-    const fd = openSync(transcriptPath, "r");
-    try {
-      const size = fstatSync(fd).size;
-      const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
-      const buffer = Buffer.alloc(length);
-      readSync(fd, buffer, 0, length, size - length);
-      text = buffer.toString("utf8");
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    return null;
-  }
-  const lines = text.split(`
-`);
-  for (let index = lines.length - 1;index >= 0; index -= 1) {
-    const line = lines[index] ?? "";
-    if (!line.includes('"assistant"'))
-      continue;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!isJsonObject2(entry) || entry.type !== "assistant" || !isJsonObject2(entry.message)) {
-      continue;
-    }
-    const model = entry.message.model;
-    if (typeof model === "string" && model.startsWith("claude-"))
-      return model;
-  }
-  return null;
-}
 function readAlertContext(paths, nowMs, input) {
   const gatewaySetUp = existsSync2(paths.gatewayConfigFile);
   let config = null;
@@ -6326,7 +6332,7 @@ function readAlertContext(paths, nowMs, input) {
   } catch {
     gatewayOn = false;
   }
-  const transcript = isJsonObject2(input) && typeof input.transcript_path === "string" ? input.transcript_path : null;
+  const transcript = isJsonObject3(input) && typeof input.transcript_path === "string" ? input.transcript_path : null;
   const sessionModel = transcript === null ? null : lastClaudeModel(transcript);
   return { config, gatewayOn, gatewaySetUp, nowMs, sessionModel, state };
 }

@@ -1197,6 +1197,45 @@ describe("anymodel gateway slot judge: never set untested", () => {
     });
   });
 
+  test("a cheap slot falling back to Opus or Fable: ! a warning, never a failure", async () => {
+    const m = machine();
+    const server = fakeServer();
+    expect((await m.runHere(["gateway", "setup", "--no-backend-key"])).exitCode).toBe(0);
+    mkdirSync(dirname(m.paths.config), { recursive: true });
+    writeFileSync(
+      m.paths.config,
+      JSON.stringify({
+        backends: {
+          omniroute: { apiKey: PLANTED_KEY, baseUrl: `http://127.0.0.1:${server.port}` },
+        },
+        modelSlots: { "claude-opus-5-5": "anymodel-opus" },
+        port: server.port,
+        slots: {
+          "anymodel-opus": ["claude-opus-5-5", "omniroute:m1"],
+          "anymodel-scout": ["omniroute:m1", "claude-fable-5-1"],
+          "anymodel-worker": ["omniroute:m1", "claude-sonnet-5-5"],
+        },
+        version: 1,
+      }),
+      { mode: 0o600 },
+    );
+    const checks = await gatewayChecks({
+      paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
+      bundle: BUILT_ROUTER,
+      runner: () => ({ exitCode: 0, output: "active\n" }),
+      systemd: true,
+      fetch: m.probe.fetch,
+    });
+    const warnings = checks.filter((check) => check.warn === true);
+    expect(warnings.map((check) => check.text)).toEqual([
+      "slot anymodel-scout falls back to claude-fable-5-1: a cheap slot that answers on Claude Opus or Fable spends your own plan usage. To change it: anymodel gateway slot anymodel-scout <targets>",
+    ]);
+    // A warning is not a failure, and the model slot is left alone (its first target IS the model).
+    expect(warnings.every((check) => check.ok)).toBe(true);
+    expect(checks.some((check) => check.text.includes("anymodel-opus falls back"))).toBe(false);
+    expect(checks.some((check) => check.text.includes("anymodel-worker falls back"))).toBe(false);
+  });
+
   test("slot opus: on, then off; the file names the real model id", async () => {
     const m = machine();
     const server = fakeServer();

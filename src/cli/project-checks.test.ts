@@ -130,9 +130,9 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     wireOnly(repo, [], OTHERS);
     expect(check(repo)).toEqual([
       both("git-guard", "./guard.sh", "PreToolUse (Bash)"),
+      both("job-route", "./guard.sh", "PreToolUse (Bash)"),
       both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),
       both("session-name", "./hello.sh", "SessionStart (startup)"),
-      both("update-check", "./hello.sh", "SessionStart"),
       both("session-name", "bun p.ts", "UserPromptSubmit"),
     ]);
     const env = hookEnv();
@@ -146,9 +146,37 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     expect(check(repo)).toEqual([
       "· project: the plugin's git-guard is off here: .claude/anymodel.json lists it in ownHooks, so the project's own copy answers alone",
       "· project: the plugin's session-name is off here: .claude/anymodel.json lists it in ownHooks, so the project's own copy answers alone",
+      both("job-route", "./guard.sh", "PreToolUse (Bash)"),
       both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),
-      both("update-check", "./hello.sh", "SessionStart"),
     ]);
+  });
+
+  test("a project hook on SessionStart: no warning for the machine-wide update-check", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "anymodel.json", {
+      ownHooks: ["session-name", "worktree-leftovers"],
+    });
+    wireOnly(repo, [], { SessionStart: OTHERS.SessionStart });
+    expect(check(repo)).toEqual([
+      "· project: the plugin's session-name is off here: .claude/anymodel.json lists it in ownHooks, so the project's own copy answers alone",
+      "· project: the plugin's worktree-leftovers is off here: .claude/anymodel.json lists it in ownHooks, so the project's own copy answers alone",
+    ]);
+  });
+
+  test("a project hook on the Agent event: no warning for the machine-wide agent-guard", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "anymodel.json", { sessionNames: true });
+    wireOnly(repo, [], {
+      PreToolUse: [
+        {
+          matcher: "Agent|Task|Workflow",
+          hooks: [{ type: "command", command: "./agent-guard.sh" }],
+        },
+      ],
+    });
+    // The machine-wide hooks (notify, update-check, agent-guard) answer about the machine,
+    // not this project: a project hook beside one is not a second copy of a plugin piece.
+    expect(check(repo)).toEqual([]);
   });
 
   test("a listed hook with no project hook left on its event: ! nothing answers in its place", () => {

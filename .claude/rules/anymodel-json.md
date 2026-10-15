@@ -41,6 +41,7 @@ a clear error that says what is wrong.
 | `instructions` | boolean | Turns on the opt-in instructions for this project. Not acted on yet: since Phase 5 a project loads them with its own import line (`README.md`). |
 | `autoMode` | string array | Auto-mode rules `setup` copies into the user's `autoMode.environment` (`src/setup/auto-mode.ts`). Used now. |
 | `jobs.kinds` | object: kind name to kind | The project's heavy-job kinds over the defaults (`src/jobs/kinds.ts`, `docs/jobs.md`). Used now. |
+| `jobs.route` | boolean | `true`: the `job-route` hook sends a heavy Bash command through `anymodel job run` instead of running it raw (`src/hooks/job-route.ts`, `docs/jobs.md` § The route). Off when left out. Used now. |
 
 The schema is `anymodelConfigSchema` in `src/project/config.ts` (zod). The README shows an
 example; keep it in step.

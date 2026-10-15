@@ -25,8 +25,12 @@ export interface HookInput {
   tool_name?: unknown;
   tool_input?: unknown;
   tool_response?: unknown;
+  /** PreToolUse, PostToolUse: the tool call's id (the model's `tool_use` block). */
+  tool_use_id?: unknown;
   /** UserPromptSubmit. */
   prompt?: unknown;
+  /** The session's transcript: every event carries it (StopFailure, PreToolUse, …). */
+  transcript_path?: unknown;
 }
 
 /** A hook's answer. Nothing set: exit 0, nothing printed. */

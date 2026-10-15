@@ -386,9 +386,12 @@ created and that holds nothing else is removed.
   whose stamp names another version. `doctor` uses it (and compares each file with the
   plugin's). `refreshInstructionsCopy(paths, version)` brings only the copy up to that
   version: no block, no other step, no question, nothing when opted out or never installed.
-  It is meant for the **new** version's first run after an update: the update itself runs
-  the old version's code, which does not know the new files. Until something calls it, a
-  plugin update reaches the copy at the next `setup` run.
+  It is the **new** version's first session start that calls it: the update itself runs the
+  old version's code, which does not know the new files, so the `update-check` SessionStart
+  hook refreshes the copy through `refreshInstructionsAtSessionStart` — the copy only,
+  quietly, one stderr line when it fails, and nothing when another session holds the state
+  lock (that one is doing it). A plugin update therefore reaches the copy within the first
+  session after it, and `setup` still refreshes it as before.
 
 **A project's import of an opt-in file loads nothing where the copy is missing** (a teammate
 without anymodel, or after `--no-instructions`), and Claude Code says nothing. `doctor` reads
@@ -552,12 +555,87 @@ worktrees).
 | `git-guard` | PreToolUse (Bash, PowerShell) | `anymodel.json` exists | Asks before a force-push (git's abbreviations included: `--forc`), a push to a protected branch (`protectedBranches`, default `main`), `push --all`/`--mirror`, a branch deleted on the remote (`git push origin :x`, `-d`/`--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that discards changes, `branch -D`, `stash clear` and an unnamed `stash drop`, and (with `worktrees`) a bare `git stash` / `stash pop`. One shell lexer (`shell-command.ts`) reads each command of a line; quoted text, here-docs and comments are data, and shell keywords, wrappers (`timeout 60 git push -f`, `env -i sudo -u me …`, `xargs …`), the here-doc a shell reads as its script, and the text piped into one are read through. Known limits: a git alias, `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file. "Ask", never "deny": the person may mean it. |
 | `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit) | `worktrees.guardMainFolder` | Denies an edit of a file in the main checkout itself, with the way into a worktree. |
 | `message-guard` | PreToolUse (SendMessage) | `anymodel.json` exists | Denies a message to a session that works outside this repo (from Claude Code's session records). |
+| `agent-guard` | PreToolUse (Agent, Task) | **machine-wide** | The model a launch really runs on, and the owner's model rules (2026-10-16): no `model`/no `effort` → deny; a cheap slot needs `effort: "max"`; Opus only for a review or with an `Opus reason:` word; Fable only read-only, with a `Fable reason:` word, as an **ask** (never build). Every Opus/Fable launch is recorded with its reason. § The Agent guard. |
+| `job-route` | PreToolUse (Bash) | `jobs.route` | A heavy command is rewritten to `anymodel job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301). § The job route. |
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After `gh pr merge`: the steps that clear the merged worktree, and the message to send the other sessions when it went into `worktrees.base`. |
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone. Removes nothing. |
 | `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`anymodel session-name`), then sets that as its title at the next prompt. |
 
-Without `anymodel.json` every one of them is silent: a project that never opted in sees only
-Claude Code's own worktrees.
+Without `anymodel.json` every one of them is silent — except `agent-guard`, which is about
+the machine (§ The Agent guard) — so a project that never opted in sees only Claude Code's
+own worktrees. The machine-wide `notify` hook never reads the file at all (§ The notifier).
+
+### The Agent guard
+
+`agent-guard` (PreToolUse on `Agent`, and the older name `Task`) is **machine-wide**, like
+`update-check`: it runs with or without `.claude/anymodel.json`, and a broken or too new file
+does not change its answer (the frame hands it the input and the environment instead, and its
+`outsideGit` and `onConfigProblem` judge on). A project may still silence it through
+`ownHooks`, which is read on its own: the list works even when the rest of the file is broken.
+It is wired `--missing=ask`: a guard fails closed.
+
+Why the owner asked for it (2026-10-16): an Agent call that names no model runs on the
+session's model — on an Opus session, every plain `Explore` is an Opus spawn — and an Opus or
+Fable agent spends the person's own plan usage. So the guard reads the launch's `model`,
+`effort`, `subagent_type` and prompt, and resolves the model the launch will really run on:
+
+1. a family name (`haiku|sonnet|opus|fable`) goes through Claude Code's own override
+   (`ANTHROPIC_DEFAULT_<FAMILY>_MODEL`; all four exist on 2.1.301, Fable included), then the
+   gateway's model slot for that family — whose first target is the Claude model itself;
+2. a full id, a slot key or `<backend>:<model>` is resolved as itself (a slot's first target
+   answers, `modelSlots` keeps the Claude id first);
+3. a `fork` always inherits: its model is the session's own, read from the tail of the hook
+   input's `transcript_path` (`lastClaudeModel`, shared with the StopFailure alert), else from
+   `ANTHROPIC_MODEL`; an unknown one counts as Claude Opus.
+
+A **Workflow** tool call is judged too: its `agent(...)` launches run inside the tool and pass
+no hook of their own (proved live on 2.1.301 — a project hook with the matcher
+`Agent|Task|Workflow` saw the `Workflow` call and nothing else), so the guard reads the
+`script` text: the `model`, `effort` and `agentType` of each call, and its prompt when that
+is a string literal (`readWorkflowScript`). A `model` held in a variable, or a prompt built at
+run time, is refused for an Opus or Fable launch rather than guessed. The strictest launch of
+the call answers for the whole call.
+
+The rules are in one table in `src/hooks/agent-guard.ts` (its header), the two lists a person
+may extend are environment variables (`ANYMODEL_AGENT_GUARD_REVIEW_AGENTS`,
+`ANYMODEL_AGENT_GUARD_READ_ONLY_AGENTS`), and the answer is a PreToolUse `deny` (the rule, in
+words, to Claude) or an `ask` (a Fable launch, and an Opus launch that is not a review and
+carries an `Opus reason:` line — the person approves each one). An `ask` in a session nobody
+watches (`claude -p`, `CLAUDE_CODE_SESSION_ATTENDED=0`) is refused just like a deny — Claude
+Code cannot ask anyone there (proved live on 2.1.301) — so the guard answers that denial with
+a message that says why, and only a review stays allowed there. Every allowed or asked
+Opus/Fable launch is recorded once, by its `tool_use_id`, in
+`<stateDir>/agent-launches.jsonl` with its reason, and `anymodel usage` lists them (count,
+why) — the transcripts say which model wrote a reply, never why it was allowed.
+
+### The notifier
+
+`notify` is a `USER_HOOKS` bundle: it never enters the frame and reads no `anymodel.json`,
+because it is about the machine. Wired on `Notification` (the "needs you" types) and `Stop`,
+it shows one desktop notification per event through the machine's own notifier
+(`notify-send`, `osascript` — the same selection `src/update/` uses), and stays silent with no
+notifier, on another platform, and **inside Warp** (`TERM_PROGRAM=WarpTerminal`), whose own
+Claude Code plugin already shows a finished turn, a question and a permission request — a
+second alert for one event is the thing this hook avoids. The idle wait (`idle_prompt`) is
+left out: the `Stop` notification already announced that finished turn. The notifier starts
+detached, so a slow one never holds the hook, and a `claude -p` session's exit does not cut
+the notification off. `setup` does not touch anyone's own notification hooks yet: a person
+with those removes them by hand when they switch to this one.
+
+### The job route
+
+`job-route` (PreToolUse on Bash) is the heavy-job queue's door: with `"jobs": { "route": true }`
+in the project's `.claude/anymodel.json`, a command its kinds classify as heavy is sent
+through the queue instead of running raw (`docs/jobs.md` § The route). It answers with
+Claude Code's `updatedInput` — the same tool input, its `command` replaced by
+`"$HOME/.local/bin/anymodel" job run --kind <kind> -- <command>` — proved live on 2.1.301
+(`claude-code-contract.md`). It gives no `permissionDecision`: the rewrite replaces the input
+and the permission system still decides about the new command, so a person's own rule for
+Bash keeps working. `REWRITE_SUPPORTED` in the hook is the one switch, and with it false the
+same command line is denied instead, never silently left raw. A command already
+inside `anymodel job run` is left alone, and `ownHooks` can silence the hook where a project
+keeps its own. It is the one guard that changes the call rather than asking about it, which is
+why it is opt-in per project.
 
 **Left in the project that had them** (project values or project tools, not general): a ban
 on one package manager, the local database wipe guard, the heavy-job guard, a pull request
@@ -612,7 +690,10 @@ Rollback is a new release with the old behaviour. A version number never goes do
 `anymodel doctor` follows the switch at both ends: a name in `ownHooks` whose event has no
 project hook left to answer is a warning (the project is unguarded while it is listed), and
 a project hook running next to a plugin hook that is not listed is a warning too (both may
-answer the same command).
+answer the same command). The second warning leaves the machine-wide hooks out
+(`MACHINE_WIDE_HOOKS` in `src/hooks/specs.ts`: `stop-failure`, `update-check`, `notify` and
+`agent-guard`): they answer about the machine, not the project, so a project hook on their
+event is not a second copy of a plugin piece.
 
 The worktree engine is not part of the switch, because the project wires it itself: a project
 with its own worktree hooks moves by replacing those lines with the engine's, in one commit

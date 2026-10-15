@@ -22,6 +22,7 @@ import { runJobCommand } from "../jobs/commands";
 import { realMemoryFacts } from "../jobs/memory";
 import { realMachine } from "../machine/machine";
 import { runSearch } from "../search/command";
+import { instructionsFolder } from "../setup/instructions";
 import { LAUNCHER_NAME } from "../setup/launcher";
 
 const HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
@@ -126,11 +127,6 @@ function routerBundle(): string {
  * The plugin's instructions folder (plugin/instructions), beside dist/. Run from the source
  * (src/entries/cli.ts), the repo's plugin/instructions.
  */
-function instructionsFolder(): string {
-  const beside = join(import.meta.dir, "..", "instructions");
-  return existsSync(beside) ? beside : join(import.meta.dir, "..", "..", "plugin", "instructions");
-}
-
 /**
  * The plugin folder this CLI belongs to (`plugin/`, holding `dist/`): what `doctor --live`
  * loads with `--plugin-dir`. Run from the source, the repo's `plugin/`.
@@ -253,7 +249,7 @@ async function main(argv: string[]): Promise<number> {
         project,
         machine: realMachine(process.env, ask),
         instructions: off ? false : on ? true : null,
-        instructionsSource: instructionsFolder(),
+        instructionsSource: instructionsFolder(import.meta.dir),
         statusline: rest.includes("--statusline"),
       });
     }
@@ -295,7 +291,7 @@ async function main(argv: string[]): Promise<number> {
           systemd,
           machine: realMachine(process.env, null),
         },
-        local: { instructionsSource: instructionsFolder(), cwd: process.cwd() },
+        local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
         project: { cwd: process.cwd(), pluginHooksFile: join(pluginDir(), "hooks", "hooks.json") },
         live: rest.includes("--live")
           ? {

@@ -25,6 +25,7 @@ import {
   instructionsBlockBody,
   instructionsNeedRefresh,
   instructionsOptedOut,
+  instructionsPaths,
   readVersionStamp,
 } from "../setup/instructions";
 import { bakedBunPath, LAUNCHER_NAME, launcherScript } from "../setup/launcher";
@@ -48,7 +49,6 @@ import {
 import { type LiveDeps, parseClaudeVersion, readLiveRecord, runLiveCheck } from "./live-check";
 import { type CliPaths, tildify } from "./paths";
 import { projectChecks } from "./project-checks";
-import { instructionsPaths } from "./setup";
 
 interface Check {
   ok: boolean;

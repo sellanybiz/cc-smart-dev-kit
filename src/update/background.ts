@@ -15,6 +15,7 @@
 
 import { COMMAND, PLUGIN, PLUGIN_ID } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
+import { type InstructionsPaths, refreshInstructionsCopy } from "../setup/instructions";
 import { LockBusyError, withLock } from "../setup/lock";
 import { redactUrlsIn } from "../setup/marketplace-access";
 import {
@@ -126,6 +127,41 @@ export interface BackgroundDeps {
   run: CommandRunner;
   /** Shows a desktop notification, where the machine has a way to. */
   notify: (text: string) => void;
+}
+
+/** What the instructions refresh needs: where the copy goes, and this session's version. */
+export interface InstructionsRefreshDeps {
+  /** The managed copy's paths (`instructionsPaths`), with the plugin's instructions as source. */
+  where: InstructionsPaths;
+  /** The plugin version this session loaded: the copy is brought up to it. */
+  version: string;
+  /** One line, when the refresh fails; the session goes on either way. */
+  log: (line: string) => void;
+  /** How long it may wait for the state folder's lock. Default 2 s. */
+  waitMs?: number;
+}
+
+/**
+ * The one thing a session start does for the instructions: a plugin update installs the new
+ * version's files, but the running version's code wrote the managed copy — so the **first
+ * session start of a new version** brings the copy up to it. The copy only: never the
+ * `CLAUDE.md` block, never a question, nothing when the person chose `--no-instructions` or
+ * setup never installed it (`instructionsNeedRefresh`), and nothing when another process
+ * holds the state lock (it does the work). A failure is one line, and the session goes on.
+ */
+export async function refreshInstructionsAtSessionStart(
+  deps: InstructionsRefreshDeps,
+): Promise<void> {
+  try {
+    await refreshInstructionsCopy(deps.where, deps.version, { waitMs: deps.waitMs ?? 2_000 });
+  } catch (error) {
+    // Another session holds the state lock: it is doing the refresh, or has just done it.
+    // Nothing is wrong, and a session start says nothing about it.
+    if (error instanceof LockBusyError) return;
+    deps.log(
+      `${PLUGIN}: the instructions copy was not refreshed (${messageOf(error)}). A plain ${COMMAND} setup brings it up to date.`,
+    );
+  }
 }
 
 /**

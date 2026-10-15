@@ -36,10 +36,10 @@ import {
   autoModeSource,
 } from "../setup/auto-mode";
 import {
-  ALWAYS_ON_FILE,
   type InstructionsPaths,
   installInstructions,
   instructionsOptedOut,
+  instructionsPaths,
   removeInstructions,
   setInstructionsOptOut,
 } from "../setup/instructions";
@@ -125,21 +125,6 @@ function hasStatusline(settingsFile: string): boolean {
     // An unreadable file: setup's own pass reports it.
     return false;
   }
-}
-
-/** Where the instructions go, and how the CLAUDE.md block names them. */
-export function instructionsPaths(paths: CliPaths, source: string): InstructionsPaths {
-  const target = join(paths.stateDir, "instructions");
-  return {
-    source,
-    target,
-    // Not a field of cliPaths: only this file builds it, and the shared table holds the
-    // paths more than one command uses.
-    claudeMd: join(paths.claudeConfigDir, "CLAUDE.md"),
-    stateDir: paths.stateDir,
-    // `~/...` keeps a CLAUDE.md shared between machines (a dotfiles repo) right on each one.
-    importPath: tildify(join(target, ALWAYS_ON_FILE), paths.home),
-  };
 }
 
 /** What the managed writes cover, decided before the read-only pass. */

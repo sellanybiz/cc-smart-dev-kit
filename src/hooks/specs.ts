@@ -10,14 +10,16 @@
  * | git-guard | PreToolUse (Bash, PowerShell) | asking before every command that runs git |
  * | main-folder-guard | PreToolUse (Edit, Write, NotebookEdit) | asking before every edit in the repo |
  * | message-guard | PreToolUse (SendMessage) | asking before every message |
+ * | agent-guard | PreToolUse (Agent, Task, Workflow) | machine-wide: it judges the same way without anymodel.json (`agent-guard.ts`) |
+ * | job-route | PreToolUse (Bash) | asking about a heavy command, classified with the default kinds |
  * | after-merge | PostToolUse, PostToolUseFailure (Bash, PowerShell) | one line after a merge |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
  *
- * Two more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they are about
+ * Three more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they are about
  * the person, not a project, so they never enter the frame and read no `anymodel.json` —
- * `stop-failure` (the usage-limit alert) and `update-check` (the background self-update).
- *
+ * `stop-failure` (the usage-limit alert), `update-check` (the background self-update and the
+ * instructions copy) and `notify` (desktop notifications, silent inside Warp).
  * A project wires these itself, as `anymodel hook <name>` (`PROJECT_HOOKS`): the worktree
  * engine. A plugin WorktreeCreate would replace Claude Code's own worktrees in every
  * project, so the engine is opt-in (`docs/design.md` § The worktree engine). Each needs
@@ -31,11 +33,23 @@
  */
 
 import { existsSync } from "node:fs";
+import { classifyHeavyCommand } from "../jobs/classify";
+import { mergeKinds } from "../jobs/kinds";
 import type { AnymodelConfig } from "../project/config";
 import { afterMerge, mergesPullRequest } from "./after-merge";
+import { agentGuard, guardFacts } from "./agent-guard";
 import { isInside } from "./git";
 import { DEFAULT_PROTECTED_BRANCHES, guardQuestions, runsGit } from "./git-guard";
-import { addContext, type HookResult, SILENT, stringField, toolDecision, toolInput } from "./io";
+import {
+  addContext,
+  type HookInput,
+  type HookResult,
+  SILENT,
+  stringField,
+  toolDecision,
+  toolInput,
+} from "./io";
+import { jobRoute, routeFacts } from "./job-route";
 import { editedFile, mainFolderGuard } from "./main-folder-guard";
 import { messageGuard } from "./message-guard";
 import type { HookSpec } from "./run";
@@ -186,11 +200,65 @@ export const sessionNameHook: HookSpec = {
   run: sessionName,
 };
 
+/**
+ * The Agent guard: PreToolUse on the Agent tool (and the older name `Task`). **Machine-wide**:
+ * it runs with or without anymodel.json (like `update-check`), and its answer never depends on
+ * the project's file — it judges the model and effort a launch names (§ `agent-guard.ts`). A
+ * project that runs its own Agent guard lists `"agent-guard"` in `ownHooks`, and this one
+ * stays silent there. `onConfigProblem` and `outsideGit` judge the same way: a broken or too
+ * new anymodel.json, or a folder that is not in git, does not change which model a launch runs
+ * on.
+ */
+export const agentGuardHook: HookSpec = {
+  name: "agent-guard",
+  events: ["PreToolUse"],
+  wiring: "plugin",
+  onConfigProblem: (_message, input, _event, _checkout, context) =>
+    agentGuard(input, context.env, context.paths, cwdOf(input)),
+  outsideGit: (input, _event, _why, context) =>
+    agentGuard(input, context.env, context.paths, cwdOf(input)),
+  logFacts: guardFacts,
+  run: ({ input, env, paths, cwd }) => agentGuard(input, env, paths, cwd),
+};
+
+/**
+ * The job queue's door: PreToolUse on Bash, for a project that turned it on
+ * (`"jobs": { "route": true }`). A heavy command is rewritten to run through
+ * `anymodel job run` (or refused with that command line, `job-route.ts`). Off by default,
+ * and silent when it is off: this is the one guard that changes the call rather than
+ * asking about it.
+ */
+export const jobRouteHook: HookSpec = {
+  name: "job-route",
+  events: ["PreToolUse"],
+  wiring: "plugin",
+  onConfigProblem: (message, input) => {
+    // Broken file: whether this project routes heavy commands cannot be read. The guard asks
+    // about the commands in its domain, the way the other guards do, and about no others.
+    const command = stringField(toolInput(input).command);
+    return command === null || classifyHeavyCommand(command, mergeKinds(undefined)) === null
+      ? SILENT
+      : toolDecision(
+          "ask",
+          cannotCheck("whether this project routes heavy commands through its job queue", message),
+        );
+  },
+  logFacts: routeFacts,
+  run: jobRoute,
+};
+
+/** The input's `cwd` for the guard's record; empty when it names none. */
+function cwdOf(input: HookInput): string {
+  return stringField(input.cwd) ?? "";
+}
+
 /** The hooks the plugin wires in `plugin/hooks/hooks.json`, by their bundle name. */
 export const HOOKS: readonly HookSpec[] = [
   gitGuardHook,
   mainFolderGuardHook,
   messageGuardHook,
+  agentGuardHook,
+  jobRouteHook,
   afterMergeHook,
   worktreeLeftoversHook,
   sessionNameHook,
@@ -203,7 +271,16 @@ export const HOOKS: readonly HookSpec[] = [
  * `stop-failure` (the usage-limit alert, `src/hooks/stop-failure.ts`) and `update-check`
  * (the background self-update, `src/update/`).
  */
-export const USER_HOOKS: readonly string[] = ["stop-failure", "update-check"];
+export const USER_HOOKS: readonly string[] = ["stop-failure", "update-check", "notify"];
+
+/**
+ * Every hook that answers about the **machine**, not a project: the `USER_HOOKS` bundles
+ * (they never read anymodel.json at all) and `agent-guard`, a plugin hook whose answer does
+ * not depend on the project's file either. `doctor`'s project checks never warn about a
+ * project hook that runs beside one of these: it is the person's own business, not a second
+ * copy of a project piece, and `USER_HOOKS` cannot be listed in `ownHooks` in any case.
+ */
+export const MACHINE_WIDE_HOOKS: readonly string[] = [...USER_HOOKS, "agent-guard"];
 
 /** The hooks a project wires itself, as `anymodel hook <name>`: the worktree engine. */
 export const PROJECT_HOOKS: readonly HookSpec[] = [

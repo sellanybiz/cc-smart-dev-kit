@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, relative, sep } from "node:path";
+import { type CliPaths, tildify } from "../cli/paths";
 import { withLock } from "./lock";
 import {
   applyManagedMarkdown,
@@ -68,6 +69,31 @@ export interface InstructionsPaths {
   stateDir: string;
   /** How the block names the always-on file: `~/.claude/...` under HOME, else absolute. */
   importPath: string;
+}
+
+/** Where the instructions go, and how the `CLAUDE.md` block names them. */
+export function instructionsPaths(paths: CliPaths, source: string): InstructionsPaths {
+  const target = join(paths.stateDir, "instructions");
+  return {
+    source,
+    target,
+    // Not a field of cliPaths: only this file builds it, and the shared table holds the
+    // paths more than one command uses.
+    claudeMd: join(paths.claudeConfigDir, "CLAUDE.md"),
+    stateDir: paths.stateDir,
+    // `~/...` keeps a CLAUDE.md shared between machines (a dotfiles repo) right on each one.
+    importPath: tildify(join(target, ALWAYS_ON_FILE), paths.home),
+  };
+}
+
+/**
+ * The plugin's `instructions/` folder, found from the folder of the bundle that runs
+ * (`import.meta.dir`): `plugin/instructions` beside `dist/` on an installed machine, the
+ * repo's `plugin/instructions` when the bundle runs from `src/entries/`.
+ */
+export function instructionsFolder(bundleDir: string): string {
+  const beside = join(bundleDir, "..", "instructions");
+  return existsSync(beside) ? beside : join(bundleDir, "..", "..", "plugin", "instructions");
 }
 
 /** One printed line of setup: `<mark> <file>: <what>`. */

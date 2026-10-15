@@ -6,14 +6,20 @@
  * Nothing here reaches the network, the real ~/.claude or the real `claude`.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import {
+  installInstructions,
+  instructionsPaths,
+  optOutFile,
+  readVersionStamp,
+} from "../setup/instructions";
 import { lockIsHeld, withLock } from "../setup/lock";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import { installedText, notifyCommand } from "./apply";
-import { backgroundCheck, sessionStart } from "./background";
+import { backgroundCheck, refreshInstructionsAtSessionStart, sessionStart } from "./background";
 import { isOlder } from "./check";
 import {
   CHECK_INTERVAL_MS,
@@ -851,5 +857,109 @@ describe("the notification", () => {
     expect(isOlder("1.2.0", "1.1.0")).toBe(false);
     expect(isOlder(null, "1.1.0")).toBe(true);
     expect(isOlder("1.0.0", null)).toBe(false);
+  });
+});
+
+describe("the instructions copy at a session start", () => {
+  /** The plugin's instructions folder, as the plugin ships it. */
+  const source = (): string => {
+    const dir = tempDir("instructions-source");
+    mkdirSync(join(dir, "optin"), { recursive: true });
+    writeFileSync(join(dir, "core.md"), "# Core\n\nThe plugin's own rules.\n");
+    writeFileSync(join(dir, "optin", "worktrees.md"), "# Worktrees\n");
+    return dir;
+  };
+
+  test("a copy behind this version is refreshed: the copy only, quietly", async () => {
+    const home = tempDir("instructions-home");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    const where = instructionsPaths(paths, source());
+    installInstructions(where, false, "0.2.0");
+    // What the person's CLAUDE.md looks like after they edited it: the refresh never
+    // touches it (a \`setup\` run is what writes or updates the block).
+    const edited = `${readFileSync(where.claudeMd, "utf8")}\nMy own note.\n`;
+    writeFileSync(where.claudeMd, edited);
+    writeFileSync(join(where.source, "core.md"), "# Core\n\nThe new version's rules.\n");
+    const said: string[] = [];
+
+    await refreshInstructionsAtSessionStart({
+      where,
+      version: "0.3.0",
+      log: (line) => said.push(line),
+    });
+
+    expect(readFileSync(join(where.target, "core.md"), "utf8")).toContain("The new version's");
+    expect(readFileSync(where.claudeMd, "utf8")).toBe(edited);
+    expect(readVersionStamp(where.stateDir)).toBe("0.3.0");
+    expect(said).toEqual([]);
+  });
+
+  test("nothing when the person chose --no-instructions, and nothing when setup never ran", async () => {
+    const home = tempDir("instructions-home");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    const where = instructionsPaths(paths, source());
+    const said: string[] = [];
+    const log = (line: string) => said.push(line);
+
+    // Never installed: no copy, no state folder, nothing to do.
+    await refreshInstructionsAtSessionStart({ where, version: "0.3.0", log });
+    expect(existsSync(where.target)).toBe(false);
+    expect(said).toEqual([]);
+
+    installInstructions(where, false, "0.2.0");
+    writeFileSync(optOutFile(where.stateDir), "");
+    await refreshInstructionsAtSessionStart({ where, version: "0.3.0", log });
+    expect(readVersionStamp(where.stateDir)).toBe("0.2.0");
+    expect(said).toEqual([]);
+  });
+
+  test("a refresh that cannot run is one line, and the session goes on", async () => {
+    const home = tempDir("instructions-home");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    const where = instructionsPaths(paths, source());
+    installInstructions(where, false, "0.2.0");
+    // The new version's files are not there (a half-installed plugin folder).
+    rmSync(where.source, { force: true, recursive: true });
+    const said: string[] = [];
+
+    await refreshInstructionsAtSessionStart({
+      where,
+      version: "0.3.0",
+      log: (line) => said.push(line),
+    });
+
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain("the instructions copy was not refreshed");
+    expect(readVersionStamp(where.stateDir)).toBe("0.2.0");
+  });
+
+  test("another session holds the state lock: silent (it is doing the refresh)", async () => {
+    const home = tempDir("instructions-home");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    const where = instructionsPaths(paths, source());
+    installInstructions(where, false, "0.2.0");
+    writeFileSync(join(where.source, "core.md"), "# Core\n\nThe new version's rules.\n");
+    let release: () => void = () => {};
+    const busy = withLock(
+      where.stateDir,
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    await Bun.sleep(20);
+    const said: string[] = [];
+
+    await refreshInstructionsAtSessionStart({
+      where,
+      version: "0.3.0",
+      log: (line) => said.push(line),
+      waitMs: 50,
+    });
+
+    expect(said).toEqual([]);
+    expect(readVersionStamp(where.stateDir)).toBe("0.2.0");
+    release();
+    await busy;
   });
 });
