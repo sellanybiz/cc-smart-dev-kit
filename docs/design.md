@@ -86,12 +86,16 @@ One queue for the whole machine (`src/jobs/`, design and limits in `jobs.md`):
 - `anymodel job run --kind <kind> -- <command>` reserves the job's gigabytes, waits while
   they are not free, runs the job, and gives them back however it ends. Kinds and sizes
   are defaults a project can replace in its `anymodel.json` (`jobs.kinds`); a machine sets
-  its limits in `~/.config/anymodel/jobs.json`.
+  its limits in `~/.config/anymodel/jobs.json`. `--exclusive <name>` (with a kind, or
+  alone) also keeps a name to one job at a time: a lease that holds the name.
+- **The job runs in a process group of its own**, so a signal reaches its workers too,
+  and its memory is given back only once the group (and its systemd scope) is empty.
 - **Leases are files, judged like the lock.** Each reservation is a small file naming
   its writer's pid and start time. A file whose writer is gone (a dead or reused pid) is
   stale and the next reader removes it, through the same `holderIsGone` as setup's lock.
   So nothing needs cleaning after a crash, and no native code (`flock`) is needed. A
-  writer another host or pid namespace cannot see keeps its files alive with a heartbeat.
+  writer in another pid namespace (a container on the same host) keeps its files alive
+  with a heartbeat. A shared folder is for one host: one clock, no network file system.
 - **Two kinds of budget,** this machine's and optional shared folders (containers or
   users on one host), taken in a fixed order and given back in reverse, so they never
   wait on each other in a circle. Oldest first, fair share on shared folders, a live check

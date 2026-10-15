@@ -5,7 +5,14 @@
  * `sh` scripts.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { processStartTime } from "../setup/lock";
@@ -231,7 +238,8 @@ describe("job run: the lease", () => {
     const jobPid = Number((await readUntil(child.stdout, "\n")).trim());
     child.kill("SIGKILL");
     await child.exited;
-    process.kill(jobPid, "SIGKILL"); // the job itself lives on, unaccounted (docs/jobs.md § Limits)
+    // The job itself lives on, unaccounted (docs/jobs.md § Limits): its own group.
+    process.kill(-jobPid, "SIGKILL");
     expect(jsonFiles(m.leases)).toHaveLength(1);
     const status = cli(m, ["status"]);
     expect(status.stdout).toContain(
@@ -268,7 +276,11 @@ describe("job run: what it refuses", () => {
   test("a wrong command line: exit 2 and the usage", () => {
     const m = machine();
     for (const [args, line] of [
-      [["run", "--", "true"], "[anymodel job] --kind <kind> is required"],
+      [["run", "--", "true"], "[anymodel job] --kind <kind> or --exclusive <name> is required"],
+      [
+        ["run", "--exclusive", "my image", "--", "true"],
+        "[anymodel job] --exclusive takes a name: letters, digits, . _ : -, at most 64 characters",
+      ],
       [["run", "--kind", "tsc", "true"], "[anymodel job] put -- before the command"],
       [["run", "--kind", "tsc", "--"], "[anymodel job] no command after --"],
       [
@@ -314,20 +326,104 @@ describe("job run: what it refuses", () => {
     expect(clean).toEqual({ code: 0, stdout: "unset\n", stderr: "" });
   });
 
-  test("a broken jobs.json: exit 1, naming the file and the field", () => {
+  // Exit 1 would read as the job's own failure (a type check that found an error).
+  test("a broken jobs.json: exit 2, naming the file and the field; the job never starts", () => {
     const m = machine({ launch: "sometimes" });
-    const result = cli(m, ["run", "--kind", "tsc", "--", "true"]);
-    expect(result.code).toBe(1);
+    const result = cli(m, ["run", "--kind", "tsc", "--", "sh", "-c", "echo ran"]);
+    expect(result.code).toBe(2);
+    expect(result.stdout).toBe("");
     expect(result.stderr).toStartWith(
-      `anymodel: Invalid ${join(m.home, ".config", "anymodel", "jobs.json")}: launch: `,
+      `[anymodel job] Invalid ${join(m.home, ".config", "anymodel", "jobs.json")}: launch: `,
     );
+  });
+
+  test("a broken anymodel.json, or a state folder that cannot be made: exit 2", () => {
+    const m = machine();
+    git(m.cwd, "init", "-q");
+    mkdirSync(join(m.cwd, ".claude"));
+    writeFileSync(join(m.cwd, ".claude", "anymodel.json"), "{ not json");
+    const broken = cli(m, ["run", "--kind", "tsc", "--", "sh", "-c", "echo ran"]);
+    expect(broken.code).toBe(2);
+    expect(broken.stdout).toBe("");
+    expect(broken.stderr).toStartWith("[anymodel job] ");
+
+    const blocked = machine({ stateDir: "/proc/anymodel-no-such-folder" });
+    const result = cli(blocked, ["run", "--kind", "tsc", "--", "sh", "-c", "echo ran"]);
+    expect(result).toEqual({
+      code: 2,
+      stdout: "",
+      stderr:
+        "[anymodel job] The state folder /proc/anymodel-no-such-folder cannot be made (ENOENT).\n",
+    });
   });
 });
 
+describe("job run --exclusive", () => {
+  test("one job with the name at a time: the second waits, then runs", async () => {
+    const m = machine();
+    const first = start(m, [
+      "run",
+      "--exclusive",
+      "image",
+      "--",
+      "sh",
+      "-c",
+      "echo started; sleep 30",
+    ]);
+    expect(await readUntil(first.stdout, "started")).toBe("started\n");
+    const lease = JSON.parse(readFileSync(join(m.leases, jsonFiles(m.leases)[0] ?? ""), "utf8"));
+    expect(lease).toMatchObject({ gb: 0, exclusive: "image" });
+    expect(JSON.parse(lease.record)).toMatchObject({ exclusive: "image", kind: "", gb: 0 });
+
+    const second = start(m, ["run", "--exclusive", "image", "--", "echo", "second"]);
+    const err = await readUntil(second.stderr, "Why:");
+    expect(err).toContain(
+      "[anymodel job] Heavy job waits for memory: echo second needs 0 GB and the turn for --exclusive image.",
+    );
+    expect(err).toContain(
+      "Why: another job with --exclusive image holds this machine's turn for that name.",
+    );
+    // A job with another name, or memory only, does not wait for it.
+    expect(cli(m, ["run", "--exclusive", "deploy", "--", "true"]).code).toBe(0);
+    expect(cli(m, ["run", "--kind", "tsc", "--", "true"]).code).toBe(0);
+
+    first.kill("SIGTERM");
+    expect(await first.exited).toBe(143);
+    expect(await second.exited).toBe(0);
+    expect(await new Response(second.stdout).text()).toBe("second\n");
+    expect(jsonFiles(m.leases)).toEqual([]);
+  });
+
+  test("with a kind: the kind's memory and the name together", () => {
+    const m = machine();
+    const result = cli(m, [
+      "run",
+      "--kind",
+      "tsc",
+      "--exclusive",
+      "image",
+      "--",
+      "sh",
+      "-c",
+      `cat "${m.leases}"/*.json`,
+    ]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ gb: 8, exclusive: "image" });
+  });
+});
+
+/** A shared folder as a machine's own setup prepares it. */
+function sharedFolder(budget: number): string {
+  const dir = tempDir("jobs-shared");
+  writeFileSync(join(dir, "budget"), `${budget}\n`);
+  mkdirSync(join(dir, "leases"));
+  mkdirSync(join(dir, "tickets"));
+  return dir;
+}
+
 describe("job status", () => {
   test("names the holders and the free GB, here and on a shared folder", () => {
-    const shared = tempDir("jobs-shared");
-    writeFileSync(join(shared, "budget"), "30\n");
+    const shared = sharedFolder(30);
     const m = machine({ sharedDirs: [shared, join(shared, "missing")] });
     const holder = liveHolder();
     plantLease(m.leases, holder.pid, 8, Date.UTC(2026, 9, 11, 9, 5));
@@ -346,6 +442,39 @@ describe("job status", () => {
       "",
     ]);
   });
+
+  // Two users who list the same folders in another order would each take one first, and
+  // could each wait for the other's.
+  test("uses the shared folders in one order, whatever order jobs.json lists them in", () => {
+    const [first = "", second = ""] = [sharedFolder(30), sharedFolder(30)].sort();
+    writeFileSync(join(second, "budget"), "20\n");
+    const m = machine({ sharedDirs: [second, first, second] });
+    const result = cli(m, ["status"]);
+    expect(result.stdout.split("\n").filter((line) => line.startsWith("Shared folder"))).toEqual([
+      `Shared folder ${first}: 30 of 30 GB free`,
+      `Shared folder ${second}: 20 of 20 GB free`,
+    ]);
+  });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "a store it cannot read is one line saying so, and the rest still prints",
+    () => {
+      const shared = sharedFolder(30);
+      const m = machine({ sharedDirs: [shared] });
+      mkdirSync(m.leases, { recursive: true });
+      chmodSync(m.leases, 0o300); // it may write there, not list it
+      try {
+        const result = cli(m, ["status"]);
+        expect(result.code).toBe(0);
+        expect(result.stdout).toContain(
+          `This machine (~/.local/share/anymodel/jobs): cannot be read (EACCES: permission denied, scandir '${m.leases}')\n`,
+        );
+        expect(result.stdout).toContain(`Shared folder ${shared}: 30 of 30 GB free\n`);
+      } finally {
+        chmodSync(m.leases, 0o700);
+      }
+    },
+  );
 });
 
 describe("job kinds", () => {

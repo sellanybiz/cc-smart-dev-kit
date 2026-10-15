@@ -27,6 +27,14 @@
  * A JOB BIGGER THAN A BUDGET waits until nothing else holds that budget, then takes all
  * of it and runs alone.
  *
+ * EXCLUSIVE NAMES (`job run --exclusive <name>`)
+ *   At most one job with that name holds a lease at a time: on this machine always, and in
+ *   a shared folder whose `exclusive` file lists the name. Its ticket waits in the same
+ *   line, oldest first, among the jobs with that name. A name can come with memory (a kind)
+ *   or alone (0 GB): a 0 GB job never waits behind jobs that only wait for memory. A
+ *   ticket that waits for a name someone holds does not hold up jobs that need only
+ *   memory: it cannot run anyway, and it is still the oldest once the name is free.
+ *
  * THE LIVE CHECK: this machine only, where free memory can be read
  *   The budget is a guess about what never queues. So a job also waits while the real
  *   free memory, less what admitted jobs reserved but have not used yet, is below what it
@@ -46,9 +54,18 @@
 export interface QueuedJob {
   /** The command's folder: named in other jobs' waiting lines. */
   checkout: string;
+  /** `--exclusive <name>`: at most one job with this name runs at a time. */
+  exclusive?: string | undefined;
   /** What it reserves. */
   gb: number;
+  /** The kind, or "" for a job with a name only (`--exclusive` without `--kind`). */
   kind: string;
+  /**
+   * A job inside another heavy job that still needs its name: it takes the name as soon as
+   * nobody holds it, without a place in the line. In the line it could wait behind a job
+   * that waits for memory its own parent holds, and neither would ever move.
+   */
+  nested?: boolean;
   /** The process that holds the reservation (the `job run` process). */
   pid: number;
   /** The command as a person reads it: `bunx tsc --noEmit`. */
@@ -65,6 +82,8 @@ export interface Reservation {
 
 export interface HolderRecord {
   checkout: string;
+  /** The `--exclusive` name, in a store that keeps that name to one job. */
+  exclusive?: string;
   /** What the holder reserves, or (a ticket) needs. */
   gb: number;
   kind: string;
@@ -95,8 +114,9 @@ export function parseHolder(text: string): HolderRecord | null {
     return null; // not JSON: an unknown holder
   }
   if (!isObject(value) || value.v !== 1) return null;
-  const { checkout, gb, kind, person, pid, since, what } = value;
+  const { checkout, exclusive, gb, kind, person, pid, since, what } = value;
   if (
+    (exclusive !== undefined && typeof exclusive !== "string") ||
     typeof checkout !== "string" ||
     typeof kind !== "string" ||
     typeof person !== "string" ||
@@ -110,7 +130,26 @@ export function parseHolder(text: string): HolderRecord | null {
   ) {
     return null;
   }
-  return { checkout, gb, kind, person, pid, since, v: 1, what };
+  return {
+    checkout,
+    ...(exclusive !== undefined && { exclusive }),
+    gb,
+    kind,
+    person,
+    pid,
+    since,
+    v: 1,
+    what,
+  };
+}
+
+/** What a record runs, for a person: "build, next build" or "exclusive image, docker build ." */
+export function describeHolder(record: HolderRecord): string {
+  const labels = [
+    ...(record.kind === "" ? [] : [record.kind]),
+    ...(record.exclusive === undefined ? [] : [`exclusive ${record.exclusive}`]),
+  ];
+  return [...labels, `${record.what} in ${record.checkout}`].join(", ");
 }
 
 // ── What a store offers (the lease folder, or a test's fake) ───────────────────
@@ -153,14 +192,19 @@ export interface Store {
   enqueue(recordText: string): Promise<StoreTicket | null>;
   /** Memory held right now. */
   held(): Promise<readonly StoreHeld[]>;
+  /** Does this store keep `name` to one job at a time? This machine: always. */
+  keepsExclusive(name: string): Promise<boolean>;
   /** "this machine", or a shared folder: how waiting lines name it. */
   readonly label: string;
   /** Live readings of this machine's memory, or none. */
   readonly live?: (() => LiveReading | null) | undefined;
   /** Used by several machines or users: fair share applies, and its pids may be foreign. */
   readonly shared: boolean;
-  /** All `gb` or nothing. Null when it is not all free right now. */
-  tryTake(gb: number, recordText: string): Promise<StoreUnits | null>;
+  /**
+   * All `gb` or nothing, and with `exclusive`, only while no lease holds that name. Null
+   * when that is not so right now.
+   */
+  tryTake(gb: number, recordText: string, exclusive?: string): Promise<StoreUnits | null>;
 }
 
 // ── The decision: pure, so every rule above is tested without a store ─────────
@@ -168,10 +212,24 @@ export interface Store {
 const GIB = 1024 ** 3;
 
 /**
- * Does a job needing `needGb` fit the machine's real memory? `heldGbHere` is what jobs
- * admitted here reserved; what they have not used yet is that less the heavy jobs'
- * group's memory now (or all of it, when the group cannot be read). With nothing admitted
- * here it always fits (THE LIVE CHECK above).
+ * What admitted jobs reserved but have not used yet: their reservations less what the
+ * heavy jobs' group uses now.
+ *
+ * When the group cannot be read (no slice: a choom or plain launch, macOS), used and
+ * not-yet-used cannot be told apart. Counting all of it as not yet used would count the
+ * memory those jobs already use twice: once as gone from the free memory, and once again
+ * as a reservation. Jobs would then wait for memory that is there. So without a reading
+ * this is 0: the live check is plain free memory, and the budget covers the rest.
+ */
+export function notYetUsedGb(heldGbHere: number, sliceBytes: number | null): number {
+  if (sliceBytes === null) return 0;
+  return Math.max(0, heldGbHere - sliceBytes / GIB);
+}
+
+/**
+ * Does a job needing `needGb` fit the machine's real memory? The free memory, less what
+ * admitted jobs have not used yet (`notYetUsedGb`). With nothing admitted here it always
+ * fits (THE LIVE CHECK above).
  */
 export function liveCheckFits(input: {
   heldGbHere: number;
@@ -180,9 +238,9 @@ export function liveCheckFits(input: {
   sliceBytes: number | null;
 }): boolean {
   if (input.heldGbHere <= 0) return true;
-  const usedGb = input.sliceBytes === null ? 0 : input.sliceBytes / GIB;
-  const notYetUsedGb = Math.max(0, input.heldGbHere - usedGb);
-  return input.availableBytes / GIB - notYetUsedGb >= input.needGb;
+  return (
+    input.availableBytes / GIB - notYetUsedGb(input.heldGbHere, input.sliceBytes) >= input.needGb
+  );
 }
 
 export interface ParsedHeld {
@@ -191,6 +249,10 @@ export interface ParsedHeld {
 }
 
 export interface ParsedEntry {
+  /** The exclusive name the ticket waits for, or null. */
+  exclusive: string | null;
+  /** What it needs. A ticket whose text does not parse needs nothing. */
+  gb: number;
   mine: boolean;
   person: string | null;
   /** A ticket whose text does not parse sorts last: it never holds anyone up. */
@@ -201,6 +263,8 @@ export interface ParsedEntry {
 export function parseEntry(entry: StoreLineEntry): ParsedEntry {
   const record = parseHolder(entry.text);
   return {
+    exclusive: record?.exclusive ?? null,
+    gb: record?.gb ?? 0,
     mine: entry.mine,
     person: record?.person ?? null,
     since: record?.since ?? Number.POSITIVE_INFINITY,
@@ -217,6 +281,7 @@ export type WaitReason =
   | { capacityGb: number; heldGb: number; kind: "fair-share" }
   | { capacityGb: number; kind: "alone" }
   | { freeGb: number; kind: "no-room" }
+  | { kind: "exclusive"; name: string }
   | { kind: "behind" }
   | { kind: "no-ticket" };
 
@@ -224,6 +289,8 @@ export type Decision = { take: number } | { wait: WaitReason };
 
 export interface DecideInput {
   capacityGb: number;
+  /** The exclusive name this job needs in this store, or null. */
+  exclusive: string | null;
   gb: number;
   held: readonly ParsedHeld[];
   line: readonly ParsedEntry[];
@@ -240,6 +307,7 @@ function gbHeldBy(held: readonly ParsedHeld[], person: string): number {
 /** May this job take memory now, and how much? Every rule of the header, in one place. */
 export function decide(input: DecideInput): Decision {
   const heldGb = input.held.reduce((sum, unit) => sum + unit.gb, 0);
+  const heldNames = new Set(input.held.map((unit) => unit.holder?.exclusive));
   const { line } = input;
   // Fair share: a person at half the budget or more steps aside while someone else waits.
   const steppedAside = (person: string | null): boolean =>
@@ -249,7 +317,11 @@ export function decide(input: DecideInput): Decision {
     line.some((entry) => entry.person !== null && entry.person !== person);
   const me = line.find((entry) => entry.mine);
   if (me === undefined) return { wait: { kind: "no-ticket" } };
-  if (steppedAside(input.person)) {
+  if (input.exclusive !== null && heldNames.has(input.exclusive)) {
+    return { wait: { kind: "exclusive", name: input.exclusive } };
+  }
+  const needsMemory = input.gb > 0;
+  if (needsMemory && steppedAside(input.person)) {
     return {
       wait: {
         capacityGb: input.capacityGb,
@@ -258,10 +330,21 @@ export function decide(input: DecideInput): Decision {
       },
     };
   }
-  const ahead = line.some(
-    (entry) => !entry.mine && isBefore(entry, me) && !steppedAside(entry.person),
-  );
+  // An older ticket goes first when it wants what this job wants: the same name, or
+  // memory both need. One that waits for a name someone holds cannot run anyway: it
+  // holds up nobody's memory.
+  const ahead = line.some((entry) => {
+    if (entry.mine || !isBefore(entry, me)) return false;
+    if (entry.exclusive !== null && entry.exclusive === input.exclusive) return true;
+    return (
+      needsMemory &&
+      entry.gb > 0 &&
+      !steppedAside(entry.person) &&
+      !(entry.exclusive !== null && heldNames.has(entry.exclusive))
+    );
+  });
   if (ahead) return { wait: { kind: "behind" } };
+  if (!needsMemory) return { take: 0 };
 
   if (input.gb > input.capacityGb) {
     // Bigger than the whole budget: alone, or not at all. Alone, the live check passes.
@@ -280,12 +363,11 @@ export function decide(input: DecideInput): Decision {
       sliceBytes: input.live.sliceBytes,
     })
   ) {
-    const usedGb = input.live.sliceBytes === null ? 0 : input.live.sliceBytes / GIB;
     return {
       wait: {
         availableGb: input.live.availableBytes / GIB,
         kind: "live",
-        notYetUsedGb: Math.max(0, heldGb - usedGb),
+        notYetUsedGb: notYetUsedGb(heldGb, input.live.sliceBytes),
       },
     };
   }
@@ -322,10 +404,14 @@ function reasonText(reason: WaitReason, store: string): string {
       return `it needs more than ${store}'s whole budget of ${reason.capacityGb} GB, so it runs alone once nothing else holds any`;
     case "behind":
       return `an older job is first in ${store}'s line`;
+    case "exclusive":
+      return `another job with --exclusive ${reason.name} holds ${store}'s turn for that name`;
     case "fair-share":
       return `this machine already holds ${reason.heldGb} of ${store}'s ${reason.capacityGb} GB while another person waits`;
     case "live":
-      return `${store} has ${oneDecimal(reason.availableGb)} GB really free, and running jobs will still grow into ${oneDecimal(reason.notYetUsedGb)} GB of it`;
+      return reason.notYetUsedGb > 0
+        ? `${store} has ${oneDecimal(reason.availableGb)} GB really free, and running jobs will still grow into ${oneDecimal(reason.notYetUsedGb)} GB of it`
+        : `${store} has only ${oneDecimal(reason.availableGb)} GB really free`;
     case "no-room":
       return `only ${reason.freeGb} GB of ${store}'s budget is free`;
     case "no-ticket":
@@ -345,10 +431,11 @@ export function holderLines(held: readonly ParsedHeld[], store: string, now: num
     group.gb += unit.gb;
     groups.set(key, group);
   }
+  // integration: plainText (the record is another writer's text)
   return [...groups.values()].map(({ gb, record }) =>
     record === null
       ? `  ${store}: ${gb} GB held by an unknown holder`
-      : `  ${store}: ${gb} GB held by ${record.person}: ${record.kind}, ${record.what} in ${record.checkout}, since ${formatSince(record.since, now)} (pid ${record.pid})`,
+      : `  ${store}: ${gb} GB held by ${record.person}: ${describeHolder(record)}, since ${formatSince(record.since, now)} (pid ${record.pid})`,
   );
 }
 
@@ -409,9 +496,10 @@ export async function acquireFrom(
   const pollMs = options.pollMs ?? POLL_MS;
   const lineEveryMs = options.waitingLineEveryMs ?? WAITING_LINE_EVERY_MS;
   const note = options.onNote ?? options.onWaiting;
-  const recordText = (since: number) =>
+  const recordText = (since: number, exclusive: string | null) =>
     holderText({
       checkout: job.checkout,
+      ...(exclusive !== null && { exclusive }),
       gb: job.gb,
       kind: job.kind,
       person: options.person,
@@ -420,6 +508,10 @@ export async function acquireFrom(
       v: 1,
       what: job.what,
     });
+  const wants =
+    job.exclusive === undefined
+      ? `needs ${job.gb} GB`
+      : `needs ${job.gb} GB and the turn for --exclusive ${job.exclusive}`;
 
   const taken: StoreUnits[] = [];
   const release = once(() => {
@@ -436,18 +528,24 @@ export async function acquireFrom(
     const waited = Math.round((at - waitStartedAt) / 60_000);
     const budgets: string[] = [];
     const holders: string[] = [];
+    // The report only describes. A store it cannot read is named so, and never stops the
+    // wait: a throw here would leave the store being waited on, this machine's too.
     for (const each of stores) {
-      const capacity = await each.capacityGb();
-      const held = (await each.held()).map((unit) => ({
-        gb: unit.gb,
-        holder: parseHolder(unit.text),
-      }));
-      const free = Math.max(0, capacity - held.reduce((sum, unit) => sum + unit.gb, 0));
-      budgets.push(`${each.label}: ${free} of ${capacity} GB free`);
-      holders.push(...holderLines(held, each.label, at));
+      try {
+        const capacity = await each.capacityGb();
+        const held = (await each.held()).map((unit) => ({
+          gb: unit.gb,
+          holder: parseHolder(unit.text),
+        }));
+        const free = Math.max(0, capacity - held.reduce((sum, unit) => sum + unit.gb, 0));
+        budgets.push(`${each.label}: ${free} of ${capacity} GB free`);
+        holders.push(...holderLines(held, each.label, at));
+      } catch {
+        budgets.push(`${each.label}: cannot be read`);
+      }
     }
     options.onWaiting(
-      `Heavy job waits for memory: ${job.what} needs ${job.gb} GB${waited > 0 ? ` (waiting ${waited} min)` : ""}. ${budgets.join("; ")}. Why: ${reasonText(reason, store.label)}.`,
+      `Heavy job waits for memory: ${job.what} ${wants}${waited > 0 ? ` (waiting ${waited} min)` : ""}. ${budgets.join("; ")}. Why: ${reasonText(reason, store.label)}.`,
     );
     for (const line of holders) options.onWaiting(line);
   };
@@ -459,20 +557,35 @@ export async function acquireFrom(
   const takeFrom = async (store: Store): Promise<StoreUnits> => {
     let ticket: StoreTicket | null = null;
     try {
+      const exclusive =
+        job.exclusive !== undefined && (await store.keepsExclusive(job.exclusive))
+          ? job.exclusive
+          : null;
+      // Nothing to take here: no memory, and no name this store keeps.
+      if (job.gb <= 0 && exclusive === null) return NOTHING_HELD;
       for (;;) {
         stopIfAsked();
-        ticket ??= await store.enqueue(recordText(now()));
         let reason: WaitReason;
-        if (ticket === null) {
+        // A nested job holds no place in the line (QueuedJob.nested): only itself.
+        if (job.nested !== true) ticket ??= await store.enqueue(recordText(now(), exclusive));
+        if (ticket === null && job.nested !== true) {
           reason = { kind: "no-ticket" };
         } else {
-          const line = (await ticket.line()).map(parseEntry);
+          const line =
+            ticket === null
+              ? [{ exclusive, gb: job.gb, mine: true, person: options.person, since: 0, tie: "" }]
+              : (await ticket.line()).map(parseEntry);
           const me = line.find((entry) => entry.mine);
-          // Not first, and no fair share to skip anyone: the store need not be read.
+          // An older ticket that needs only memory, as this job does, and no fair share to
+          // skip anyone: the store need not be read.
           const plainlyBehind =
             !store.shared &&
             me !== undefined &&
-            line.some((entry) => !entry.mine && isBefore(entry, me));
+            job.gb > 0 &&
+            line.some(
+              (entry) =>
+                !entry.mine && isBefore(entry, me) && entry.gb > 0 && entry.exclusive === null,
+            );
           let decision: Decision;
           if (plainlyBehind) {
             decision = { wait: { kind: "behind" } };
@@ -483,6 +596,7 @@ export async function acquireFrom(
             }));
             decision = decide({
               capacityGb: await store.capacityGb(),
+              exclusive,
               gb: job.gb,
               held,
               line,
@@ -492,7 +606,11 @@ export async function acquireFrom(
             });
           }
           if ("take" in decision) {
-            const units = await store.tryTake(decision.take, recordText(now()));
+            const units = await store.tryTake(
+              decision.take,
+              recordText(now(), exclusive),
+              exclusive ?? undefined,
+            );
             if (units !== null) return units;
             // Someone took part of it between the look and the take: look again.
             reason = { freeGb: 0, kind: "no-room" };
@@ -526,11 +644,13 @@ export async function acquireFrom(
 
 /**
  * The pids in the reservations `held` returns. From a shared store, only those `person`
- * wrote: another machine's pids belong to another process table.
+ * wrote: another machine's pids belong to another process table. With `exclusive`, only
+ * the holders of that name.
  */
 export async function pidsHolding(
   stores: readonly Store[],
   person: string,
+  exclusive?: string,
 ): Promise<ReadonlySet<number>> {
   const pids = new Set<number>();
   for (const store of stores) {
@@ -546,6 +666,7 @@ export async function pidsHolding(
       const record = parseHolder(unit.text);
       if (record === null) continue;
       if (store.shared && record.person !== person) continue;
+      if (exclusive !== undefined && record.exclusive !== exclusive) continue;
       pids.add(record.pid);
     }
   }

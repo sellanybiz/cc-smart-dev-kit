@@ -6,6 +6,9 @@
  */
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tempDir } from "../testing/temp";
 import {
   ancestorPids,
   isInsideHeavyJob,
@@ -20,8 +23,13 @@ import {
   exitCodeOf,
   type LaunchFacts,
   launchArgv,
+  oomKiller,
   oomKills,
   probeArgv,
+  realLaunchFacts,
+  realScope,
+  realSliceControl,
+  type ScopeHandle,
   type SignalSource,
   sliceMemoryMax,
   spawnAndWait,
@@ -184,6 +192,8 @@ describe("the argv of each launch", () => {
   test("unit names carry no colon, and the start time in base 36", () => {
     expect(unitName(SLICE, "lint:typed", 7, 46_655)).toBe("anymodel-heavy-lint-typed-7-zzz.scope");
     expect(unitName("jobs.slice", "image:build", 8, 36)).toBe("jobs-image-build-8-10.scope");
+    // A job with a name only (`--exclusive`) has no kind.
+    expect(unitName(SLICE, "", 7, 36)).toBe("anymodel-heavy-job-7-10.scope");
     // A `job run` killed with SIGKILL can leave its scope; a new one with its pid must not
     // collide with it ("unit exists": exit 1, read as a failure).
     expect(unitName(SLICE, "tsc", 99, 1000)).not.toBe(unitName(SLICE, "tsc", 99, 1001));
@@ -215,6 +225,18 @@ describe("exit codes, the kill count, the ceiling", () => {
     expect(oomKills("low 0\nhigh 0\nmax 12\noom 2\noom_kill 5\noom_group_kill 1\n")).toBe(5);
     expect(oomKills("low 0\noom_group_kill 4\n")).toBeNull();
     expect(oomKills(null)).toBeNull();
+  });
+
+  // `oom` rises only when the slice's own ceiling was hit; a kill by the machine-wide OOM
+  // killer raises `oom_kill` alone.
+  test("tells the slice's ceiling from the machine's OOM killer, and says when it cannot", () => {
+    const events = (oom: number | null, kills: number) =>
+      `${oom === null ? "" : `oom ${oom}\n`}oom_kill ${kills}\n`;
+    expect(oomKiller(events(1, 2), events(2, 3))).toBe("ceiling");
+    expect(oomKiller(events(1, 2), events(1, 3))).toBe("machine");
+    expect(oomKiller(events(null, 2), events(null, 3))).toBe("unknown");
+    expect(oomKiller(events(1, 3), events(2, 3))).toBeNull();
+    expect(oomKiller(null, events(1, 3))).toBeNull();
   });
 
   test("the slice's ceiling is the machine budget, never below the job, in whole GB", () => {
@@ -314,12 +336,132 @@ describe("spawnAndWait: real children", () => {
     expect(await running).toBe(129);
   });
 
-  test("does NOT send SIGINT on (the terminal already did), and keeps waiting", async () => {
+  // In its own session the job no longer gets the terminal's Ctrl+C: `job run` sends it
+  // on, once (a test runner reads a second one as "force quit").
+  test("sends SIGINT on, once", async () => {
     const signals: EventEmitter & SignalSource = new EventEmitter();
-    const running = spawnAndWait(["sh", "-c", "sleep 0.3; exit 5"], signals);
+    const running = spawnAndWait(["sleep", "30"], signals);
     expect(signals.listenerCount("SIGINT")).toBe(1);
     signals.emit("SIGINT");
-    expect(await running).toBe(5);
+    expect(await running).toBe(130);
+  });
+
+  test("starts the job in a process group of its own", async () => {
+    const dir = tempDir("group");
+    const out = join(dir, "ids");
+    // ps prints the job's pid and its group: one and the same.
+    const code = await spawnAndWait(
+      ["sh", "-c", `ps -o pid=,pgid= -p $$ > "${out}"`],
+      new EventEmitter(),
+    );
+    expect(code).toBe(0);
+    const [pid, pgid] = readFileSync(out, "utf8").trim().split(/\s+/);
+    expect(pgid).toBe(pid);
+    expect(Number(pgid)).not.toBe(process.pid);
+  });
+
+  // A test runner's workers, a build's helpers: they hold the memory too.
+  test("sends a signal to the whole group, workers too, and ends once they are gone", async () => {
+    const dir = tempDir("group");
+    const pidFile = join(dir, "worker");
+    const signals = new EventEmitter();
+    // A long grace: only the signal to the group can end this test in time.
+    const running = spawnAndWait(
+      ["sh", "-c", `sleep 30 & echo $! > "${pidFile}"; wait`],
+      signals,
+      () => undefined,
+      { leftoverGraceMs: 60_000 },
+    );
+    const worker = await waitForPid(pidFile);
+    signals.emit("SIGTERM");
+    expect(await running).toBe(143);
+    expect(isRunning(worker)).toBe(false);
+  });
+
+  test("gives back only once the leftovers are gone: stopped after a short grace", async () => {
+    const dir = tempDir("group");
+    const pidFile = join(dir, "worker");
+    const said: string[] = [];
+    // The first process ends at once; its worker would run on for 30 s.
+    const code = await spawnAndWait(
+      ["sh", "-c", `sleep 30 & echo $! > "${pidFile}"`],
+      new EventEmitter(),
+      (line) => said.push(line),
+      { leftoverGraceMs: 100, killWaitMs: 2_000 },
+    );
+    expect(code).toBe(0);
+    expect(isRunning(Number(readFileSync(pidFile, "utf8")))).toBe(false);
+    expect(said).toEqual(["the job left processes running: stopping them, so its memory is free"]);
+  });
+
+  test("in a scope: the signal reaches the scope too, and it waits until the scope is empty", async () => {
+    const killed: NodeJS.Signals[] = [];
+    let empty = false;
+    const scope: ScopeHandle = { kill: (signal) => killed.push(signal), isEmpty: () => empty };
+    const signals = new EventEmitter();
+    let finished = false;
+    const running = spawnAndWait(["sleep", "30"], signals, () => undefined, {
+      scope,
+      leftoverGraceMs: 60_000,
+    }).then((code) => {
+      finished = true;
+      return code;
+    });
+    signals.emit("SIGHUP");
+    expect(killed).toEqual(["SIGHUP"]);
+    await Bun.sleep(300);
+    expect(finished).toBe(false);
+    empty = true;
+    expect(await running).toBe(129);
+  });
+});
+
+/** Waits for a pid file a child writes, and returns the pid. */
+async function waitForPid(file: string): Promise<number> {
+  for (let i = 0; i < 200; i++) {
+    if (existsSync(file)) {
+      const text = readFileSync(file, "utf8").trim();
+      if (text !== "") return Number(text);
+    }
+    await Bun.sleep(10);
+  }
+  throw new Error(`no pid in ${file}`);
+}
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe("systemd probes never hang", () => {
+  /** A fake `systemctl` and `systemd-run` that never answer, first on PATH. */
+  function hangingSystemd(): () => void {
+    const bin = tempDir("bin");
+    for (const name of ["systemctl", "systemd-run"]) {
+      writeFileSync(join(bin, name), "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+    }
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path ?? ""}`;
+    return () => {
+      process.env.PATH = path;
+    };
+  }
+
+  test("a probe, the ceiling and a scope's kill give up after the timeout", () => {
+    const restore = hangingSystemd();
+    try {
+      const started = Date.now();
+      expect(realLaunchFacts(SLICE, 200).probeScope(true)).toBe(false);
+      expect(realSliceControl(() => null, 200).setMemoryMax(SLICE, "8G")).toBe(false);
+      realScope(SLICE, "anymodel-heavy-tsc-1-a.scope", () => null, 200)?.kill("SIGTERM");
+      expect(Date.now() - started).toBeLessThan(3_000);
+    } finally {
+      restore();
+    }
   });
 });
 
@@ -337,19 +479,32 @@ function recorder(): Recorder {
 
 function deps(
   r: Recorder,
-  overrides: Partial<JobDeps> & { oom?: [number, number]; code?: number } = {},
+  overrides: Partial<JobDeps> & {
+    /** `oom_kill` before and after. */
+    oom?: [number, number];
+    /** `oom` (the slice's ceiling hit) before and after; none: the line is not there. */
+    limitHits?: [number, number];
+    code?: number;
+  } = {},
 ): JobDeps {
-  const { code = 0, oom, ...rest } = overrides;
+  const { code = 0, oom, limitHits, ...rest } = overrides;
   const oomReads = oom === undefined ? [] : [...oom];
+  const hitReads = limitHits === undefined ? [] : [...limitHits];
   return {
     acquire: (job, onWaiting) => {
+      const name = job.exclusive === undefined ? "" : ` exclusive ${job.exclusive}`;
+      const nested = job.nested === true ? " nested" : "";
       r.events.push(
-        `acquire ${job.kind} ${job.gb} GB pid ${job.pid} in ${job.checkout}: ${job.what}`,
+        `acquire ${job.kind} ${job.gb} GB${name}${nested} pid ${job.pid} in ${job.checkout}: ${job.what}`,
       );
       onWaiting("waiting: 8 GB held by host-a (tsc)");
       return Promise.resolve({ gb: job.gb, release: () => r.events.push("release") });
     },
     isNested: () => Promise.resolve(false),
+    ancestorHoldsName: (name) => {
+      r.events.push(`ancestor holds ${name}?`);
+      return Promise.resolve(false);
+    },
     launchFacts: () => ({
       hasChoom: true,
       hasSystemdRun: true,
@@ -361,9 +516,9 @@ function deps(
       },
     }),
     memoryMaxFor: (size) => `${32 + size}G`,
-    run: (argv) => {
+    run: (argv, scopeUnit) => {
       r.runs.push(argv);
-      r.events.push("run");
+      r.events.push(scopeUnit === null ? "run" : `run in ${scopeUnit}`);
       return Promise.resolve(code);
     },
     say: (line) => r.said.push(line),
@@ -372,7 +527,9 @@ function deps(
       readFile: (path) => {
         r.events.push(`read ${path}`);
         const value = oomReads.shift();
-        return value === undefined ? null : `oom 0\noom_kill ${value}\n`;
+        const hits = hitReads.shift();
+        if (value === undefined) return null;
+        return `${hits === undefined ? "" : `oom ${hits}\n`}oom_kill ${value}\n`;
       },
       setMemoryMax: (slice, value) => {
         r.events.push(`set ${slice} MemoryMax=${value}`);
@@ -412,7 +569,7 @@ describe("runJob", () => {
       "probe",
       "set anymodel-heavy.slice MemoryMax=40G",
       "read /sys/fs/cgroup/user.slice/x/anymodel-heavy.slice/memory.events",
-      "run",
+      "run in anymodel-heavy-test-run-4242-zzz.scope",
       "read /sys/fs/cgroup/user.slice/x/anymodel-heavy.slice/memory.events",
       "release",
     ]);
@@ -451,9 +608,22 @@ describe("runJob", () => {
 
   test("says 'killed for memory' when the slice's oom_kill rose, and keeps the job's code", async () => {
     const r = recorder();
-    expect(await runJob(request, deps(r, { code: 1, oom: [2, 3] }))).toBe(1);
+    expect(await runJob(request, deps(r, { code: 1, oom: [2, 3], limitHits: [4, 5] }))).toBe(1);
     expect(r.said[1]).toBe(
       "killed for memory: the heavy jobs running here together went over anymodel-heavy.slice's ceiling, and the kernel stopped the largest. Run it again when fewer heavy jobs run (exit code 1).",
+    );
+  });
+
+  test("names the machine's OOM killer when the slice's ceiling was not hit, and both when it cannot tell", async () => {
+    const machine = recorder();
+    await runJob(request, deps(machine, { code: 137, oom: [2, 3], limitHits: [4, 4] }));
+    expect(machine.said[1]).toBe(
+      "killed for memory: the whole machine ran out of memory, and the kernel's OOM killer stopped this job first (its kill mark). Run it again when more memory is free (exit code 137).",
+    );
+    const unknown = recorder();
+    await runJob(request, deps(unknown, { code: 1, oom: [2, 3] }));
+    expect(unknown.said[1]).toBe(
+      "killed for memory (the slice's ceiling or the machine's OOM killer). Run it again when fewer heavy jobs run (exit code 1).",
     );
   });
 
@@ -475,6 +645,50 @@ describe("runJob", () => {
     );
     expect(r.events).toEqual(["run"]);
     expect(r.runs).toEqual([["vitest", "run", "src/a.test.ts"]]);
+  });
+
+  test("a nested job with a name its ancestors do not hold takes the name (0 GB, no line), then runs directly", async () => {
+    const r = recorder();
+    const nested = deps(r, { code: 4, isNested: () => Promise.resolve(true) });
+    expect(await runJob({ ...request, exclusive: "image" }, nested)).toBe(4);
+    expect(r.events).toEqual([
+      "ancestor holds image?",
+      "acquire test:run 0 GB exclusive image nested pid 4242 in /home/user/app-wt-x: vitest run src/a.test.ts",
+      "run",
+      "release",
+    ]);
+    expect(r.runs).toEqual([["vitest", "run", "src/a.test.ts"]]);
+  });
+
+  test("a nested job whose ancestor holds its name already runs directly", async () => {
+    const r = recorder();
+    const base = deps(r, { isNested: () => Promise.resolve(true) });
+    await runJob(
+      { ...request, exclusive: "image" },
+      { ...base, ancestorHoldsName: () => Promise.resolve(true) },
+    );
+    expect(r.events).toEqual(["run"]);
+  });
+
+  test("a job with a name only (no kind, 0 GB) takes the name and runs plain", async () => {
+    const r = recorder();
+    await runJob(
+      {
+        ...request,
+        command: ["docker", "build", "."],
+        exclusive: "image",
+        gb: 0,
+        kind: "",
+        spec: null,
+      },
+      deps(r),
+    );
+    expect(r.events).toEqual([
+      "acquire  0 GB exclusive image pid 4242 in /home/user/app-wt-x: docker build .",
+      "run",
+      "release",
+    ]);
+    expect(r.runs).toEqual([["docker", "build", "."]]);
   });
 
   test("a print-only job (0 GB) runs plain: no probe, no ceiling change", async () => {

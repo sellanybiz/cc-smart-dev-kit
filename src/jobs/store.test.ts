@@ -9,19 +9,24 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  rmSync,
   statSync,
   unlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { processStartTime } from "../setup/lock";
 import { tempDir } from "../testing/temp";
 import { acquireFrom, holderText, type Reservation } from "./queue";
 import {
   currentFileHolder,
   type FileHolder,
   leaseStore,
+  mountTypeOf,
+  networkFileSystem,
   openSharedStore,
+  type SharedFolderFacts,
   UNSEEN_STALE_MS,
 } from "./store";
 
@@ -193,6 +198,8 @@ describe("a shared view: two machines, one folder", () => {
 
   test("one budget for both: what host-a holds, host-b waits for", async () => {
     const dir = tempDir("shared");
+    mkdirSync(join(dir, "leases"));
+    mkdirSync(join(dir, "tickets"));
     const shared = (host: string) =>
       leaseStore({
         dir,
@@ -231,6 +238,205 @@ describe("a shared view: two machines, one folder", () => {
   });
 });
 
+describe("leaseStore: other users' files", () => {
+  test("writes lease and ticket files every user can read, whatever the umask", async () => {
+    const dir = tempDir("store");
+    const before = process.umask(0o077);
+    try {
+      const machine = store(dir);
+      const units = await machine.tryTake(2, record("host-a", 2));
+      const ticket = await machine.enqueue(record("host-a", 2));
+      const [lease] = leaseFiles(dir);
+      const [waiting] = readdirSync(join(dir, "tickets"));
+      expect(statSync(join(dir, "leases", lease ?? "")).mode & 0o777).toBe(0o644);
+      expect(statSync(join(dir, "tickets", waiting ?? "")).mode & 0o777).toBe(0o644);
+      units?.release();
+      ticket?.release();
+    } finally {
+      process.umask(before);
+    }
+  });
+
+  test("takes memory under a lock every user can read, whatever the umask", async () => {
+    const dir = tempDir("store");
+    let lockMode: number | null = null;
+    const before = process.umask(0o077);
+    try {
+      const machine = leaseStore({
+        dir,
+        label: "this machine",
+        shared: false,
+        // Read under the folder's lock: the lock file is there.
+        capacityGb: () => {
+          lockMode = statSync(join(dir, "lock")).mode & 0o777;
+          return 10;
+        },
+      });
+      (await machine.tryTake(2, record("host-a", 2)))?.release();
+    } finally {
+      process.umask(before);
+    }
+    expect(lockMode as number | null).toBe(0o664);
+  });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "a lock it may not read means busy (try again), never a failed store",
+    async () => {
+      const dir = tempDir("store");
+      const lock = join(dir, "lock");
+      writeFileSync(lock, "{}");
+      chmodSync(lock, 0o000);
+      expect(await store(dir).tryTake(2, record("host-a", 2))).toBeNull();
+      expect(leaseFiles(dir)).toEqual([]);
+    },
+  );
+
+  test.skipIf(process.getuid?.() === 0)(
+    "a lease it may not read counts nothing, says so once, and goes once nobody touches it",
+    async () => {
+      const dir = tempDir("store");
+      const fresh = plantLease(dir, currentFileHolder(), 4);
+      const old = plantLease(dir, currentFileHolder(), 6, UNSEEN_STALE_MS + 30_000);
+      chmodSync(fresh, 0o000);
+      chmodSync(old, 0o000);
+      const notes: string[] = [];
+      const machine = leaseStore({
+        dir,
+        label: "this machine",
+        shared: false,
+        capacityGb: () => 10,
+        onNote: (line) => notes.push(line),
+      });
+      expect(await machine.held()).toEqual([]);
+      expect(await machine.held()).toEqual([]);
+      expect(notes).toEqual([
+        `${fresh} cannot be read (EACCES): its GB do not count until its writer stops touching it.`,
+      ]);
+      expect(existsSync(fresh)).toBe(true);
+      expect(existsSync(old)).toBe(false);
+    },
+  );
+});
+
+describe("leaseStore: a look", () => {
+  test("removes a temp file a crashed writer left once it is a minute old, never a fresh one", async () => {
+    const dir = tempDir("store");
+    mkdirSync(join(dir, "leases"));
+    const left = join(dir, "leases", ".left.tmp");
+    const writing = join(dir, "leases", ".writing.tmp");
+    writeFileSync(left, "{");
+    writeFileSync(writing, "{");
+    const old = (Date.now() - 61_000) / 1000;
+    utimesSync(left, old, old);
+    await store(dir).held();
+    expect(existsSync(left)).toBe(false);
+    expect(existsSync(writing)).toBe(true);
+  });
+
+  // On macOS each read starts `ps`: one per file every half second adds up.
+  test("reads each pid's start time once per look, however many files it holds", async () => {
+    const dir = tempDir("store");
+    for (const gb of [1, 2, 3]) plantLease(dir, currentFileHolder(), gb);
+    const reads: number[] = [];
+    const machine = leaseStore({
+      dir,
+      label: "this machine",
+      shared: false,
+      capacityGb: () => 10,
+      startTimeOf: (pid, like) => {
+        reads.push(pid);
+        return processStartTime(pid, like);
+      },
+    });
+    expect((await machine.held()).map((unit) => unit.gb).sort()).toEqual([1, 2, 3]);
+    expect(reads).toEqual([process.pid]);
+    await machine.held();
+    expect(reads).toEqual([process.pid, process.pid]);
+  });
+});
+
+describe("leaseStore: exclusive names", () => {
+  test("takes a name only while no lease holds it, with or without memory", async () => {
+    const dir = tempDir("store");
+    const machine = store(dir, 10);
+    const first = await machine.tryTake(0, record("host-a", 0), "image");
+    expect(first?.gb).toBe(0);
+    expect(await machine.tryTake(4, record("host-a", 4), "image")).toBeNull();
+    const other = await machine.tryTake(4, record("host-a", 4), "deploy");
+    expect(other?.gb).toBe(4);
+    first?.release();
+    const second = await machine.tryTake(4, record("host-a", 4), "image");
+    expect(second?.gb).toBe(4);
+    other?.release();
+    second?.release();
+  });
+
+  test("this machine keeps every name; a shared folder only the names its exclusive file lists", async () => {
+    const dir = tempDir("shared");
+    writeFileSync(join(dir, "budget"), "30\n");
+    mkdirSync(join(dir, "leases"));
+    mkdirSync(join(dir, "tickets"));
+    expect(await store(tempDir("store")).keepsExclusive("image")).toBe(true);
+    const opened = openSharedStore(dir);
+    if (!("store" in opened)) throw new Error(opened.note);
+    expect(await opened.store.keepsExclusive("image")).toBe(false);
+    writeFileSync(join(dir, "exclusive"), "# one name a line\nimage\n\n  deploy  # the release\n");
+    expect(await opened.store.keepsExclusive("image")).toBe(true);
+    expect(await opened.store.keepsExclusive("deploy")).toBe(true);
+    expect(await opened.store.keepsExclusive("build")).toBe(false);
+  });
+});
+
+describe("network file systems", () => {
+  const facts = (type: number | null, mountinfo: string | null = null): SharedFolderFacts => ({
+    platform: "linux",
+    fsType: () => type,
+    mountinfo: () => mountinfo,
+  });
+  const fuseMount = (point: string, type: string) =>
+    `36 25 0:45 / ${point} rw,nosuid - ${type} remote:/x rw\n24 1 8:1 / / rw - ext4 /dev/sda1 rw`;
+
+  test("names NFS, SMB and 9p by the kernel's magic number", () => {
+    expect(networkFileSystem("/srv/x", facts(0x6969))).toBe("NFS");
+    expect(networkFileSystem("/srv/x", facts(0xfe534d42))).toBe("SMB2");
+    expect(networkFileSystem("/srv/x", facts(0x01021997))).toBe("9p");
+    // ext4, tmpfs: local.
+    expect(networkFileSystem("/srv/x", facts(0xef53))).toBeNull();
+    expect(networkFileSystem("/srv/x", facts(0x01021994))).toBeNull();
+    // Not Linux: the numbers mean other things there; no check.
+    expect(networkFileSystem("/srv/x", { ...facts(0x6969), platform: "darwin" })).toBeNull();
+  });
+
+  test("names a FUSE mount by its subtype: sshfs reaches another machine, a local one does not", () => {
+    const fuse = 0x65735546;
+    expect(networkFileSystem("/srv/x", facts(fuse, fuseMount("/srv", "fuse.sshfs")))).toBe(
+      "fuse.sshfs",
+    );
+    expect(networkFileSystem("/srv/x", facts(fuse, fuseMount("/srv", "fuse.gocryptfs")))).toBe(
+      null,
+    );
+  });
+
+  test("finds the mount that holds a path: the longest mount point, spaces unescaped", () => {
+    const info = [
+      "24 1 8:1 / / rw - ext4 /dev/sda1 rw",
+      "36 24 0:45 / /srv/heavy\\040jobs rw - fuse.sshfs host:/x rw",
+      "37 24 0:46 / /srv/heavy rw - nfs4 host:/y rw",
+    ].join("\n");
+    expect(mountTypeOf("/srv/heavy jobs/leases", info)).toBe("fuse.sshfs");
+    expect(mountTypeOf("/srv/heavy", info)).toBe("nfs4");
+    expect(mountTypeOf("/srv/heavyweight", info)).toBe("ext4");
+  });
+
+  test("leaves out a shared folder on one, and says why", () => {
+    const dir = tempDir("shared");
+    writeFileSync(join(dir, "budget"), "30\n");
+    expect(openSharedStore(dir, { facts: facts(0x6969) })).toEqual({
+      note: `The shared folder ${dir} is left out: it is on a network file system (NFS). A shared folder is for one host: containers or users on this machine, through a bind mount.`,
+    });
+  });
+});
+
 describe("openSharedStore", () => {
   test("leaves out a missing folder, and says so", () => {
     const dir = join(tempDir("shared"), "missing");
@@ -250,18 +456,45 @@ describe("openSharedStore", () => {
     });
   });
 
+  // The machine's own setup prepares the folder: the plugin makes nothing in it.
+  test("leaves out a folder without its leases/ or tickets/, names the missing one, and makes none", () => {
+    const dir = tempDir("shared");
+    writeFileSync(join(dir, "budget"), "30\n");
+    expect(openSharedStore(dir)).toEqual({
+      note: `The shared folder ${dir} is left out: ${join(dir, "leases")} is missing.`,
+    });
+    mkdirSync(join(dir, "leases"));
+    expect(openSharedStore(dir)).toEqual({
+      note: `The shared folder ${dir} is left out: ${join(dir, "tickets")} is missing.`,
+    });
+    expect(readdirSync(dir).sort()).toEqual(["budget", "leases"]);
+  });
+
+  test("a shared store never makes a folder: a take after its leases/ went away fails", async () => {
+    const dir = tempDir("shared");
+    writeFileSync(join(dir, "budget"), "30\n");
+    mkdirSync(join(dir, "leases"));
+    mkdirSync(join(dir, "tickets"));
+    const opened = openSharedStore(dir);
+    if (!("store" in opened)) throw new Error(opened.note);
+    rmSync(join(dir, "leases"), { recursive: true });
+    await expect(opened.store.tryTake(2, record("host-a", 2))).rejects.toThrow("ENOENT");
+    expect(existsSync(join(dir, "leases"))).toBe(false);
+  });
+
   test.skipIf(process.getuid?.() === 0)(
     "leaves out a folder where a file cannot be written, and says why",
     () => {
       const dir = tempDir("shared");
       writeFileSync(join(dir, "budget"), "30\n");
-      chmodSync(dir, 0o500);
+      mkdirSync(join(dir, "leases"), { mode: 0o500 });
+      mkdirSync(join(dir, "tickets"));
       try {
         expect(openSharedStore(dir)).toEqual({
           note: `The shared folder ${dir} is left out: ${join(dir, "leases")} cannot be written (EACCES).`,
         });
       } finally {
-        chmodSync(dir, 0o700);
+        chmodSync(join(dir, "leases"), 0o700);
       }
     },
   );
@@ -269,6 +502,8 @@ describe("openSharedStore", () => {
   test("uses a working folder, and reads its budget for every decision", async () => {
     const dir = tempDir("shared");
     writeFileSync(join(dir, "budget"), "30\n");
+    mkdirSync(join(dir, "leases"));
+    mkdirSync(join(dir, "tickets"));
     const opened = openSharedStore(dir);
     if (!("store" in opened)) throw new Error(opened.note);
     expect(opened.store.shared).toBe(true);

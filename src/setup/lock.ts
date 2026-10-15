@@ -1,8 +1,10 @@
 import {
   closeSync,
+  fchmodSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readlinkSync,
   statSync,
   unlinkSync,
   writeSync,
@@ -13,7 +15,7 @@ import { join } from "node:path";
 /**
  * When a lock cannot be judged by its process, it is stale after this long: the start
  * time cannot be read, the lock was written on another host (a home folder shared between
- * machines), or the file cannot be read at all.
+ * machines) or in another pid namespace (a container), or the file cannot be read at all.
  */
 export const FALLBACK_STALE_MS = 10 * 60 * 1000;
 
@@ -27,6 +29,12 @@ export interface ProcessHolder {
   /** When the holder process started (`proc:<ticks>` or `ps:<date>`), or null when unknown. */
   startTime: string | null;
   host: string;
+  /**
+   * The holder's pid namespace (`/proc/self/ns/pid`, Linux), or null when not known (not
+   * Linux, or a lock an older plugin wrote). Two containers on one host may share a host
+   * name, and each has its own pids: a pid from another namespace says nothing here.
+   */
+  pidns?: string | null;
 }
 
 interface LockInfo extends ProcessHolder {
@@ -53,6 +61,12 @@ export interface LockOptions {
   waitMs?: number;
   /** When a lock cannot be judged by its process: stale after this. Default: 10 minutes. */
   fallbackStaleMs?: number;
+  /**
+   * The mode of the lock file and its take-over claim. Default 0600: setup's lock is
+   * private. A folder several users share (the heavy-job queue) passes 0664, so every user
+   * can read who holds it and judge it. Set with fchmod, so the umask never narrows it.
+   */
+  mode?: number;
 }
 
 /** Field 22 of /proc/<pid>/stat: the start time in clock ticks after boot (Linux). */
@@ -100,6 +114,20 @@ export function processStartTime(pid: number, like?: string): string | null {
   return null;
 }
 
+/** Reads a start time the way `processStartTime` does; one look may pass a cached reader. */
+export type StartTimeReader = (pid: number, like?: string) => string | null;
+
+/** This process's pid namespace (`/proc/self/ns/pid`), or null where there is none. */
+export function ownPidNamespace(): string | null {
+  try {
+    return readlinkSync("/proc/self/ns/pid");
+  } catch {
+    return null; // not Linux
+  }
+}
+
+let ownPidns: string | null | undefined;
+
 function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -124,6 +152,7 @@ function parseLock(text: string): LockInfo | null {
       pid: parsed.pid,
       startTime: typeof parsed.startTime === "string" ? parsed.startTime : null,
       host: typeof parsed.host === "string" ? parsed.host : "",
+      pidns: typeof parsed.pidns === "string" ? parsed.pidns : null,
       time: parsed.time,
       token: parsed.token,
     };
@@ -132,16 +161,29 @@ function parseLock(text: string): LockInfo | null {
   }
 }
 
-/** The lock file as it is now, or null when it is gone. */
+/**
+ * The lock file as it is now, or null when it is gone. A lock this user may not read
+ * (another user wrote it with a narrow mode) is held all the same: busy, with no content,
+ * judged by its age.
+ */
 function readHeld(file: string): Held | null {
+  let stat: ReturnType<typeof statSync>;
   try {
-    const stat = statSync(file);
-    const info = parseLock(readFileSync(file, "utf8"));
-    return { info, ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size };
+    stat = statSync(file);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
+  let info: LockInfo | null;
+  try {
+    info = parseLock(readFileSync(file, "utf8"));
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return null;
+    if (code !== "EACCES" && code !== "EPERM") throw error;
+    info = null;
+  }
+  return { info, ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size };
 }
 
 /** The same lock: the same token, or (both unreadable) the same file, unchanged. */
@@ -154,19 +196,25 @@ function sameHeld(a: Held, b: Held): boolean {
 /**
  * True when `holder` is gone: its pid is dead, or alive with another start time (the pid
  * was reused). A live holder is never gone, however long it runs. When it cannot be judged
- * (null: unreadable, or from a place whose processes we cannot see; another host; no start
- * time), it is gone once `lastSeenMs` is more than `fallbackStaleMs` ago.
+ * (null: unreadable; another host; another pid namespace; no start time), it is gone once
+ * `lastSeenMs` is more than `fallbackStaleMs` ago.
  */
 export function holderIsGone(
   holder: ProcessHolder | null,
   lastSeenMs: number,
   fallbackStaleMs: number,
+  startTimeOf: StartTimeReader = processStartTime,
 ): boolean {
   const oldEnough = Date.now() - lastSeenMs > fallbackStaleMs;
   if (holder === null || holder.host !== hostname()) return oldEnough;
+  // A pid from another pid namespace (a container on this host) is not one of ours. A
+  // holder that did not say (null: an older plugin, or not Linux) is judged by its pid.
+  ownPidns ??= ownPidNamespace();
+  const theirs = holder.pidns ?? null;
+  if (theirs !== null && ownPidns !== null && theirs !== ownPidns) return oldEnough;
   if (!isAlive(holder.pid)) return true;
   if (holder.startTime === null) return oldEnough;
-  const now = processStartTime(holder.pid, holder.startTime);
+  const now = startTimeOf(holder.pid, holder.startTime);
   if (now === null) return oldEnough;
   return now !== holder.startTime;
 }
@@ -176,16 +224,20 @@ function isStale(held: Held, fallbackStaleMs: number): boolean {
   return holderIsGone(held.info, held.info?.time ?? held.mtimeMs, fallbackStaleMs);
 }
 
-/** Creates `file` with O_EXCL (only one process can), holding `info`. False when it exists. */
-function tryCreate(file: string, info: LockInfo): boolean {
+/**
+ * Creates `file` with O_EXCL (only one process can), holding `info`, with exactly `mode`
+ * (fchmod: the umask may have narrowed the mode `open` gave it). False when it exists.
+ */
+function tryCreate(file: string, info: LockInfo, mode: number): boolean {
   let fd: number;
   try {
-    fd = openSync(file, "wx", 0o600);
+    fd = openSync(file, "wx", mode);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
     throw error;
   }
   try {
+    fchmodSync(fd, mode);
     writeSync(fd, JSON.stringify(info));
   } finally {
     closeSync(fd);
@@ -195,10 +247,11 @@ function tryCreate(file: string, info: LockInfo): boolean {
 
 let ownStartTime: string | null | undefined;
 
-/** This process, as a holder: its pid, its start time and the host name. */
-export function currentHolder(): ProcessHolder {
+/** This process, as a holder: its pid, its start time, the host name, its pid namespace. */
+export function currentHolder(): ProcessHolder & { pidns: string | null } {
   ownStartTime ??= processStartTime(process.pid);
-  return { pid: process.pid, startTime: ownStartTime, host: hostname() };
+  ownPidns ??= ownPidNamespace();
+  return { pid: process.pid, startTime: ownStartTime, host: hostname(), pidns: ownPidns };
 }
 
 function newLockInfo(): LockInfo {
@@ -213,10 +266,10 @@ function newLockInfo(): LockInfo {
  * lock, and nobody can create a new one while it exists. So when the lock still is the
  * one we judged, we remove exactly that one, never a live lock that took its place.
  */
-function takeOverStale(file: string, judged: Held, fallbackStaleMs: number): boolean {
+function takeOverStale(file: string, judged: Held, fallbackStaleMs: number, mode: number): boolean {
   const claim = `${file}${TAKEOVER_SUFFIX}`;
   const me = newLockInfo();
-  if (!tryCreate(claim, me)) {
+  if (!tryCreate(claim, me, mode)) {
     // Another run holds the claim. The claim is stale only when that run died during its
     // take-over; then we remove the claim, and a later attempt tries again.
     const other = readHeld(claim);
@@ -237,9 +290,10 @@ function takeOverStale(file: string, judged: Held, fallbackStaleMs: number): boo
 
 /**
  * Runs `fn` while holding an exclusive lock file in `stateDir` (created with O_EXCL).
- * The lock holds the pid, the start time of that process and the host name. It is taken
- * over only when its holder is gone (isStale), so a long run keeps it, also one that is
- * busy with synchronous work. A waiting run tries until `waitMs`, then says who holds it.
+ * The lock holds the pid, the start time of that process, the host name and the pid
+ * namespace. It is taken over only when its holder is gone (isStale), so a long run keeps
+ * it, also one that is busy with synchronous work. A waiting run tries until `waitMs`,
+ * then says who holds it.
  */
 export async function withLock<T>(
   stateDir: string,
@@ -251,13 +305,16 @@ export async function withLock<T>(
   const mine = newLockInfo();
   const deadline = Date.now() + (options.waitMs ?? 0);
   const fallbackStaleMs = options.fallbackStaleMs ?? FALLBACK_STALE_MS;
+  const mode = options.mode ?? 0o600;
 
   for (;;) {
     mine.time = Date.now();
-    if (tryCreate(file, mine)) break;
+    if (tryCreate(file, mine, mode)) break;
     const held = readHeld(file);
     if (held === null) continue; // released just now: try again at once
-    if (isStale(held, fallbackStaleMs) && takeOverStale(file, held, fallbackStaleMs)) continue;
+    if (isStale(held, fallbackStaleMs) && takeOverStale(file, held, fallbackStaleMs, mode)) {
+      continue;
+    }
     if (Date.now() >= deadline) {
       const info = held.info;
       const where = info && info.host !== hostname() ? ` on ${info.host || "another host"}` : "";

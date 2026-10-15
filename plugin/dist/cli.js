@@ -6470,9 +6470,11 @@ import { existsSync as existsSync5 } from "fs";
 // src/setup/lock.ts
 import {
   closeSync as closeSync2,
+  fchmodSync,
   mkdirSync as mkdirSync3,
   openSync as openSync2,
   readFileSync as readFileSync3,
+  readlinkSync as readlinkSync2,
   statSync as statSync3,
   unlinkSync as unlinkSync2,
   writeSync
@@ -6522,6 +6524,14 @@ function processStartTime(pid, like) {
   }
   return null;
 }
+function ownPidNamespace() {
+  try {
+    return readlinkSync2("/proc/self/ns/pid");
+  } catch {
+    return null;
+  }
+}
+var ownPidns;
 function isAlive(pid) {
   try {
     process.kill(pid, 0);
@@ -6540,6 +6550,7 @@ function parseLock(text) {
       pid: parsed.pid,
       startTime: typeof parsed.startTime === "string" ? parsed.startTime : null,
       host: typeof parsed.host === "string" ? parsed.host : "",
+      pidns: typeof parsed.pidns === "string" ? parsed.pidns : null,
       time: parsed.time,
       token: parsed.token
     };
@@ -6548,15 +6559,26 @@ function parseLock(text) {
   }
 }
 function readHeld(file) {
+  let stat;
   try {
-    const stat = statSync3(file);
-    const info = parseLock(readFileSync3(file, "utf8"));
-    return { info, ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size };
+    stat = statSync3(file);
   } catch (error) {
     if (error.code === "ENOENT")
       return null;
     throw error;
   }
+  let info;
+  try {
+    info = parseLock(readFileSync3(file, "utf8"));
+  } catch (error) {
+    const code = error.code;
+    if (code === "ENOENT")
+      return null;
+    if (code !== "EACCES" && code !== "EPERM")
+      throw error;
+    info = null;
+  }
+  return { info, ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size };
 }
 function sameHeld(a, b) {
   if (a.info && b.info)
@@ -6565,15 +6587,19 @@ function sameHeld(a, b) {
     return false;
   return a.ino === b.ino && a.mtimeMs === b.mtimeMs && a.size === b.size;
 }
-function holderIsGone(holder, lastSeenMs, fallbackStaleMs) {
+function holderIsGone(holder, lastSeenMs, fallbackStaleMs, startTimeOf = processStartTime) {
   const oldEnough = Date.now() - lastSeenMs > fallbackStaleMs;
   if (holder === null || holder.host !== hostname())
+    return oldEnough;
+  ownPidns ??= ownPidNamespace();
+  const theirs = holder.pidns ?? null;
+  if (theirs !== null && ownPidns !== null && theirs !== ownPidns)
     return oldEnough;
   if (!isAlive(holder.pid))
     return true;
   if (holder.startTime === null)
     return oldEnough;
-  const now = processStartTime(holder.pid, holder.startTime);
+  const now = startTimeOf(holder.pid, holder.startTime);
   if (now === null)
     return oldEnough;
   return now !== holder.startTime;
@@ -6581,16 +6607,17 @@ function holderIsGone(holder, lastSeenMs, fallbackStaleMs) {
 function isStale(held, fallbackStaleMs) {
   return holderIsGone(held.info, held.info?.time ?? held.mtimeMs, fallbackStaleMs);
 }
-function tryCreate(file, info) {
+function tryCreate(file, info, mode) {
   let fd;
   try {
-    fd = openSync2(file, "wx", 384);
+    fd = openSync2(file, "wx", mode);
   } catch (error) {
     if (error.code === "EEXIST")
       return false;
     throw error;
   }
   try {
+    fchmodSync(fd, mode);
     writeSync(fd, JSON.stringify(info));
   } finally {
     closeSync2(fd);
@@ -6600,15 +6627,16 @@ function tryCreate(file, info) {
 var ownStartTime;
 function currentHolder() {
   ownStartTime ??= processStartTime(process.pid);
-  return { pid: process.pid, startTime: ownStartTime, host: hostname() };
+  ownPidns ??= ownPidNamespace();
+  return { pid: process.pid, startTime: ownStartTime, host: hostname(), pidns: ownPidns };
 }
 function newLockInfo() {
   return { ...currentHolder(), time: Date.now(), token: crypto.randomUUID() };
 }
-function takeOverStale(file, judged, fallbackStaleMs) {
+function takeOverStale(file, judged, fallbackStaleMs, mode) {
   const claim = `${file}${TAKEOVER_SUFFIX}`;
   const me = newLockInfo();
-  if (!tryCreate(claim, me)) {
+  if (!tryCreate(claim, me, mode)) {
     const other = readHeld(claim);
     if (other && isStale(other, fallbackStaleMs)) {
       const again = readHeld(claim);
@@ -6633,15 +6661,17 @@ async function withLock(stateDir, fn, options = {}) {
   const mine = newLockInfo();
   const deadline = Date.now() + (options.waitMs ?? 0);
   const fallbackStaleMs = options.fallbackStaleMs ?? FALLBACK_STALE_MS;
+  const mode = options.mode ?? 384;
   for (;; ) {
     mine.time = Date.now();
-    if (tryCreate(file, mine))
+    if (tryCreate(file, mine, mode))
       break;
     const held = readHeld(file);
     if (held === null)
       continue;
-    if (isStale(held, fallbackStaleMs) && takeOverStale(file, held, fallbackStaleMs))
+    if (isStale(held, fallbackStaleMs) && takeOverStale(file, held, fallbackStaleMs, mode)) {
       continue;
+    }
     if (Date.now() >= deadline) {
       const info = held.info;
       const where = info && info.host !== hostname() ? ` on ${info.host || "another host"}` : "";
@@ -9911,6 +9941,7 @@ function sliceBytes(read, uid, slice) {
 }
 
 // src/jobs/launch.ts
+var SYSTEMD_TIMEOUT_MS = 1e4;
 var HEAVY_OOM_SCORE_ADJ = 900;
 function chooseLaunch(facts) {
   if (facts.platform !== "linux")
@@ -9954,7 +9985,7 @@ function probeArgv(slice, oomPolicy) {
 }
 function unitName(slice, kind, pid, startedAt) {
   const prefix = slice.replace(/\.slice$/, "");
-  const safeKind = kind.replace(/[^A-Za-z0-9_-]/g, "-");
+  const safeKind = kind === "" ? "job" : kind.replace(/[^A-Za-z0-9_-]/g, "-");
   return `${prefix}-${safeKind}-${String(pid)}-${startedAt.toString(36)}.scope`;
 }
 function launchArgv(launch, command, where) {
@@ -9983,11 +10014,38 @@ function exitCodeOf(code, signal) {
   const number = constants2.signals[signal];
   return 128 + (number ?? 0);
 }
-function oomKills(memoryEvents) {
+function memoryEvent(memoryEvents, key) {
   if (memoryEvents === null)
     return null;
-  const match = /^oom_kill (\d+)$/m.exec(memoryEvents);
+  const match = new RegExp(`^${key} (\\d+)$`, "m").exec(memoryEvents);
   return match?.[1] === undefined ? null : Number(match[1]);
+}
+function oomKills(memoryEvents) {
+  return memoryEvent(memoryEvents, "oom_kill");
+}
+function oomLimitHits(memoryEvents) {
+  return memoryEvent(memoryEvents, "oom");
+}
+function oomKiller(before, after) {
+  const killsBefore = oomKills(before);
+  const killsAfter = oomKills(after);
+  if (killsBefore === null || killsAfter === null || killsAfter <= killsBefore)
+    return null;
+  const hitsBefore = oomLimitHits(before);
+  const hitsAfter = oomLimitHits(after);
+  if (hitsBefore === null || hitsAfter === null)
+    return "unknown";
+  return hitsAfter > hitsBefore ? "ceiling" : "machine";
+}
+function killedForMemoryLine(killer, slice, code) {
+  switch (killer) {
+    case "ceiling":
+      return `killed for memory: the heavy jobs running here together went over ${slice}'s ceiling, and the kernel stopped the largest. Run it again when fewer heavy jobs run (exit code ${String(code)}).`;
+    case "machine":
+      return `killed for memory: the whole machine ran out of memory, and the kernel's OOM killer stopped this job first (its kill mark). Run it again when more memory is free (exit code ${String(code)}).`;
+    case "unknown":
+      return `killed for memory (the slice's ceiling or the machine's OOM killer). Run it again when fewer heavy jobs run (exit code ${String(code)}).`;
+  }
 }
 function sliceMemoryMax(budgetGb, jobGb) {
   return `${String(Math.max(Math.floor(budgetGb), Math.ceil(jobGb)))}G`;
@@ -10003,33 +10061,69 @@ function ceilingArgv(slice, memoryMax) {
     "MemorySwapMax=0"
   ];
 }
-var FORWARDED = ["SIGTERM", "SIGHUP"];
+var FORWARDED = ["SIGINT", "SIGTERM", "SIGHUP"];
+var LEFTOVER_GRACE_MS = 2000;
+var KILL_WAIT_MS = 5000;
+var GROUP_POLL_MS = 50;
+function signalGroup(pgid, signal) {
+  try {
+    process.kill(-pgid, signal);
+  } catch {}
+}
+function groupIsEmpty(pgid) {
+  try {
+    process.kill(-pgid, 0);
+    return false;
+  } catch (error) {
+    return error.code === "ESRCH";
+  }
+}
 function spawnAndWait(argv, signals = process, say = () => {
   return;
-}) {
+}, options = {}) {
   const [program, ...args] = argv;
+  const scope = options.scope ?? null;
+  const pollMs = options.pollMs ?? GROUP_POLL_MS;
   return new Promise((resolve) => {
-    const child = spawn(program, args, { stdio: "inherit" });
-    const keepWaiting = () => {
-      return;
+    const child = spawn(program, args, { stdio: "inherit", detached: true });
+    const pgid = child.pid;
+    const sendAll = (signal) => {
+      if (pgid !== undefined)
+        signalGroup(pgid, signal);
+      scope?.kill(signal);
     };
-    const listeners = FORWARDED.map((signal) => [
-      signal,
-      () => {
-        child.kill(signal);
+    const isEmpty = () => (pgid === undefined || groupIsEmpty(pgid)) && (scope?.isEmpty() ?? true);
+    const emptyWithin = async (ms) => {
+      const end = Date.now() + ms;
+      for (;; ) {
+        if (isEmpty())
+          return true;
+        if (Date.now() >= end)
+          return false;
+        await Bun.sleep(pollMs);
       }
-    ]);
+    };
+    const listeners = FORWARDED.map((signal) => [signal, () => sendAll(signal)]);
     for (const [signal, listener] of listeners)
       signals.on(signal, listener);
-    signals.on("SIGINT", keepWaiting);
     let finished = false;
-    const done = (code) => {
+    const done = async (code) => {
       if (finished)
         return;
       finished = true;
+      if (!await emptyWithin(options.leftoverGraceMs ?? LEFTOVER_GRACE_MS)) {
+        const killWaitMs = options.killWaitMs ?? KILL_WAIT_MS;
+        say("the job left processes running: stopping them, so its memory is free");
+        sendAll("SIGTERM");
+        if (!await emptyWithin(killWaitMs)) {
+          sendAll("SIGKILL");
+          if (!await emptyWithin(killWaitMs)) {
+            say("some of the job's processes still run: its memory is given back anyway");
+          }
+        }
+      }
       for (const [signal, listener] of listeners)
         signals.off(signal, listener);
-      signals.off("SIGINT", keepWaiting);
       resolve(code);
     };
     child.once("error", (error) => {
@@ -10041,32 +10135,51 @@ function spawnAndWait(argv, signals = process, say = () => {
     });
   });
 }
-function exitsZero(argv) {
+function exitsZero(argv, timeoutMs) {
   const [program, ...args] = argv;
-  return spawnSync(program, args, { stdio: "ignore" }).status === 0;
+  return spawnSync(program, args, { stdio: "ignore", timeout: timeoutMs }).status === 0;
 }
-function canRun(program) {
-  return spawnSync(program, ["--version"], { stdio: "ignore" }).error === undefined;
+function canRun(program, timeoutMs) {
+  return spawnSync(program, ["--version"], { stdio: "ignore", timeout: timeoutMs }).error === undefined;
 }
-function realLaunchFacts(slice) {
+function realLaunchFacts(slice, timeoutMs = SYSTEMD_TIMEOUT_MS) {
   const uid = process.getuid?.();
   const linux = process.platform === "linux";
   return {
     platform: process.platform,
     hasUserRuntimeDir: uid !== undefined && existsSync16(`/run/user/${String(uid)}`),
-    hasSystemdRun: linux && canRun("systemd-run"),
-    hasChoom: linux && canRun("choom"),
-    probeScope: (withOomPolicy) => exitsZero(probeArgv(slice, withOomPolicy))
+    hasSystemdRun: linux && canRun("systemd-run", timeoutMs),
+    hasChoom: linux && canRun("choom", timeoutMs),
+    probeScope: (withOomPolicy) => exitsZero(probeArgv(slice, withOomPolicy), timeoutMs)
   };
 }
-function realSliceControl(read) {
+function realSliceControl(read, timeoutMs = SYSTEMD_TIMEOUT_MS) {
   return {
-    setMemoryMax: (slice, value) => exitsZero(ceilingArgv(slice, value)),
+    setMemoryMax: (slice, value) => exitsZero(ceilingArgv(slice, value), timeoutMs),
     controlGroup: (slice) => {
       const uid = process.getuid?.();
       return uid === undefined ? null : userSliceCgroup(uid, slice);
     },
     readFile: read
+  };
+}
+function scopeKillArgv(unit, signal) {
+  return ["systemctl", "--user", "kill", `--signal=${signal}`, unit];
+}
+function realScope(slice, unit, read, timeoutMs = SYSTEMD_TIMEOUT_MS) {
+  const uid = process.getuid?.();
+  if (uid === undefined)
+    return null;
+  const events = `/sys/fs/cgroup${userSliceCgroup(uid, slice)}/${unit}/cgroup.events`;
+  return {
+    kill: (signal) => {
+      const [program, ...args] = scopeKillArgv(unit, signal);
+      spawnSync(program, args, { stdio: "ignore", timeout: timeoutMs });
+    },
+    isEmpty: () => {
+      const text = read(events);
+      return text === null || /^populated 0$/m.test(text);
+    }
   };
 }
 
@@ -10086,23 +10199,45 @@ function parseHolder(text) {
   }
   if (!isObject3(value) || value.v !== 1)
     return null;
-  const { checkout, gb, kind, person, pid, since, what } = value;
-  if (typeof checkout !== "string" || typeof kind !== "string" || typeof person !== "string" || typeof what !== "string" || typeof gb !== "number" || !Number.isFinite(gb) || typeof pid !== "number" || !Number.isInteger(pid) || typeof since !== "number" || !Number.isFinite(since)) {
+  const { checkout, exclusive, gb, kind, person, pid, since, what } = value;
+  if (exclusive !== undefined && typeof exclusive !== "string" || typeof checkout !== "string" || typeof kind !== "string" || typeof person !== "string" || typeof what !== "string" || typeof gb !== "number" || !Number.isFinite(gb) || typeof pid !== "number" || !Number.isInteger(pid) || typeof since !== "number" || !Number.isFinite(since)) {
     return null;
   }
-  return { checkout, gb, kind, person, pid, since, v: 1, what };
+  return {
+    checkout,
+    ...exclusive !== undefined && { exclusive },
+    gb,
+    kind,
+    person,
+    pid,
+    since,
+    v: 1,
+    what
+  };
+}
+function describeHolder(record) {
+  const labels = [
+    ...record.kind === "" ? [] : [record.kind],
+    ...record.exclusive === undefined ? [] : [`exclusive ${record.exclusive}`]
+  ];
+  return [...labels, `${record.what} in ${record.checkout}`].join(", ");
 }
 var GIB2 = 1024 ** 3;
+function notYetUsedGb(heldGbHere, sliceBytes) {
+  if (sliceBytes === null)
+    return 0;
+  return Math.max(0, heldGbHere - sliceBytes / GIB2);
+}
 function liveCheckFits(input) {
   if (input.heldGbHere <= 0)
     return true;
-  const usedGb = input.sliceBytes === null ? 0 : input.sliceBytes / GIB2;
-  const notYetUsedGb = Math.max(0, input.heldGbHere - usedGb);
-  return input.availableBytes / GIB2 - notYetUsedGb >= input.needGb;
+  return input.availableBytes / GIB2 - notYetUsedGb(input.heldGbHere, input.sliceBytes) >= input.needGb;
 }
 function parseEntry(entry) {
   const record = parseHolder(entry.text);
   return {
+    exclusive: record?.exclusive ?? null,
+    gb: record?.gb ?? 0,
     mine: entry.mine,
     person: record?.person ?? null,
     since: record?.since ?? Number.POSITIVE_INFINITY,
@@ -10117,12 +10252,17 @@ function gbHeldBy(held, person) {
 }
 function decide(input) {
   const heldGb = input.held.reduce((sum, unit) => sum + unit.gb, 0);
+  const heldNames = new Set(input.held.map((unit) => unit.holder?.exclusive));
   const { line } = input;
   const steppedAside = (person) => input.shared && person !== null && gbHeldBy(input.held, person) * 2 >= input.capacityGb && line.some((entry) => entry.person !== null && entry.person !== person);
   const me = line.find((entry) => entry.mine);
   if (me === undefined)
     return { wait: { kind: "no-ticket" } };
-  if (steppedAside(input.person)) {
+  if (input.exclusive !== null && heldNames.has(input.exclusive)) {
+    return { wait: { kind: "exclusive", name: input.exclusive } };
+  }
+  const needsMemory = input.gb > 0;
+  if (needsMemory && steppedAside(input.person)) {
     return {
       wait: {
         capacityGb: input.capacityGb,
@@ -10131,9 +10271,17 @@ function decide(input) {
       }
     };
   }
-  const ahead = line.some((entry) => !entry.mine && isBefore(entry, me) && !steppedAside(entry.person));
+  const ahead = line.some((entry) => {
+    if (entry.mine || !isBefore(entry, me))
+      return false;
+    if (entry.exclusive !== null && entry.exclusive === input.exclusive)
+      return true;
+    return needsMemory && entry.gb > 0 && !steppedAside(entry.person) && !(entry.exclusive !== null && heldNames.has(entry.exclusive));
+  });
   if (ahead)
     return { wait: { kind: "behind" } };
+  if (!needsMemory)
+    return { take: 0 };
   if (input.gb > input.capacityGb) {
     return heldGb > 0 ? { wait: { capacityGb: input.capacityGb, kind: "alone" } } : { take: input.capacityGb };
   }
@@ -10146,12 +10294,11 @@ function decide(input) {
     needGb: input.gb,
     sliceBytes: input.live.sliceBytes
   })) {
-    const usedGb = input.live.sliceBytes === null ? 0 : input.live.sliceBytes / GIB2;
     return {
       wait: {
         availableGb: input.live.availableBytes / GIB2,
         kind: "live",
-        notYetUsedGb: Math.max(0, heldGb - usedGb)
+        notYetUsedGb: notYetUsedGb(heldGb, input.live.sliceBytes)
       }
     };
   }
@@ -10176,10 +10323,12 @@ function reasonText(reason, store) {
       return `it needs more than ${store}'s whole budget of ${reason.capacityGb} GB, so it runs alone once nothing else holds any`;
     case "behind":
       return `an older job is first in ${store}'s line`;
+    case "exclusive":
+      return `another job with --exclusive ${reason.name} holds ${store}'s turn for that name`;
     case "fair-share":
       return `this machine already holds ${reason.heldGb} of ${store}'s ${reason.capacityGb} GB while another person waits`;
     case "live":
-      return `${store} has ${oneDecimal(reason.availableGb)} GB really free, and running jobs will still grow into ${oneDecimal(reason.notYetUsedGb)} GB of it`;
+      return reason.notYetUsedGb > 0 ? `${store} has ${oneDecimal(reason.availableGb)} GB really free, and running jobs will still grow into ${oneDecimal(reason.notYetUsedGb)} GB of it` : `${store} has only ${oneDecimal(reason.availableGb)} GB really free`;
     case "no-room":
       return `only ${reason.freeGb} GB of ${store}'s budget is free`;
     case "no-ticket":
@@ -10194,7 +10343,7 @@ function holderLines(held, store, now) {
     group.gb += unit.gb;
     groups.set(key, group);
   }
-  return [...groups.values()].map(({ gb, record }) => record === null ? `  ${store}: ${gb} GB held by an unknown holder` : `  ${store}: ${gb} GB held by ${record.person}: ${record.kind}, ${record.what} in ${record.checkout}, since ${formatSince(record.since, now)} (pid ${record.pid})`);
+  return [...groups.values()].map(({ gb, record }) => record === null ? `  ${store}: ${gb} GB held by an unknown holder` : `  ${store}: ${gb} GB held by ${record.person}: ${describeHolder(record)}, since ${formatSince(record.since, now)} (pid ${record.pid})`);
 }
 var POLL_MS = 500;
 var WAITING_LINE_EVERY_MS = 60000;
@@ -10223,8 +10372,9 @@ async function acquireFrom(stores, job, options) {
   const pollMs = options.pollMs ?? POLL_MS;
   const lineEveryMs = options.waitingLineEveryMs ?? WAITING_LINE_EVERY_MS;
   const note = options.onNote ?? options.onWaiting;
-  const recordText = (since) => holderText({
+  const recordText = (since, exclusive) => holderText({
     checkout: job.checkout,
+    ...exclusive !== null && { exclusive },
     gb: job.gb,
     kind: job.kind,
     person: options.person,
@@ -10233,6 +10383,7 @@ async function acquireFrom(stores, job, options) {
     v: 1,
     what: job.what
   });
+  const wants = job.exclusive === undefined ? `needs ${job.gb} GB` : `needs ${job.gb} GB and the turn for --exclusive ${job.exclusive}`;
   const taken = [];
   const release = once(() => {
     for (const units of [...taken].reverse())
@@ -10250,16 +10401,20 @@ async function acquireFrom(stores, job, options) {
     const budgets = [];
     const holders = [];
     for (const each of stores) {
-      const capacity = await each.capacityGb();
-      const held = (await each.held()).map((unit) => ({
-        gb: unit.gb,
-        holder: parseHolder(unit.text)
-      }));
-      const free = Math.max(0, capacity - held.reduce((sum, unit) => sum + unit.gb, 0));
-      budgets.push(`${each.label}: ${free} of ${capacity} GB free`);
-      holders.push(...holderLines(held, each.label, at));
+      try {
+        const capacity = await each.capacityGb();
+        const held = (await each.held()).map((unit) => ({
+          gb: unit.gb,
+          holder: parseHolder(unit.text)
+        }));
+        const free = Math.max(0, capacity - held.reduce((sum, unit) => sum + unit.gb, 0));
+        budgets.push(`${each.label}: ${free} of ${capacity} GB free`);
+        holders.push(...holderLines(held, each.label, at));
+      } catch {
+        budgets.push(`${each.label}: cannot be read`);
+      }
     }
-    options.onWaiting(`Heavy job waits for memory: ${job.what} needs ${job.gb} GB${waited > 0 ? ` (waiting ${waited} min)` : ""}. ${budgets.join("; ")}. Why: ${reasonText(reason, store.label)}.`);
+    options.onWaiting(`Heavy job waits for memory: ${job.what} ${wants}${waited > 0 ? ` (waiting ${waited} min)` : ""}. ${budgets.join("; ")}. Why: ${reasonText(reason, store.label)}.`);
     for (const line of holders)
       options.onWaiting(line);
   };
@@ -10270,16 +10425,20 @@ async function acquireFrom(stores, job, options) {
   const takeFrom = async (store) => {
     let ticket = null;
     try {
+      const exclusive = job.exclusive !== undefined && await store.keepsExclusive(job.exclusive) ? job.exclusive : null;
+      if (job.gb <= 0 && exclusive === null)
+        return NOTHING_HELD;
       for (;; ) {
         stopIfAsked();
-        ticket ??= await store.enqueue(recordText(now()));
         let reason;
-        if (ticket === null) {
+        if (job.nested !== true)
+          ticket ??= await store.enqueue(recordText(now(), exclusive));
+        if (ticket === null && job.nested !== true) {
           reason = { kind: "no-ticket" };
         } else {
-          const line = (await ticket.line()).map(parseEntry);
+          const line = ticket === null ? [{ exclusive, gb: job.gb, mine: true, person: options.person, since: 0, tie: "" }] : (await ticket.line()).map(parseEntry);
           const me = line.find((entry) => entry.mine);
-          const plainlyBehind = !store.shared && me !== undefined && line.some((entry) => !entry.mine && isBefore(entry, me));
+          const plainlyBehind = !store.shared && me !== undefined && job.gb > 0 && line.some((entry) => !entry.mine && isBefore(entry, me) && entry.gb > 0 && entry.exclusive === null);
           let decision;
           if (plainlyBehind) {
             decision = { wait: { kind: "behind" } };
@@ -10290,6 +10449,7 @@ async function acquireFrom(stores, job, options) {
             }));
             decision = decide({
               capacityGb: await store.capacityGb(),
+              exclusive,
               gb: job.gb,
               held,
               line,
@@ -10299,7 +10459,7 @@ async function acquireFrom(stores, job, options) {
             });
           }
           if ("take" in decision) {
-            const units = await store.tryTake(decision.take, recordText(now()));
+            const units = await store.tryTake(decision.take, recordText(now(), exclusive), exclusive ?? undefined);
             if (units !== null)
               return units;
             reason = { freeGb: 0, kind: "no-room" };
@@ -10328,7 +10488,7 @@ async function acquireFrom(stores, job, options) {
   }
   return { gb: job.gb, release };
 }
-async function pidsHolding(stores, person) {
+async function pidsHolding(stores, person, exclusive) {
   const pids = new Set;
   for (const store of stores) {
     let held;
@@ -10342,6 +10502,8 @@ async function pidsHolding(stores, person) {
       if (record === null)
         continue;
       if (store.shared && record.person !== person)
+        continue;
+      if (exclusive !== undefined && record.exclusive !== exclusive)
         continue;
       pids.add(record.pid);
     }
@@ -10358,21 +10520,51 @@ function takesOptions(command) {
   const invocation = invocationOf([...command]);
   return invocation === undefined || nestedCommand(invocation.program, invocation.args) === undefined;
 }
-async function runJob(request, deps) {
-  const { command, gb, kind, pid, spec } = request;
-  if (await deps.isNested())
-    return deps.run(command);
-  const reservation = await deps.acquire({ checkout: request.checkout, gb, kind, pid, what: describeCommand(command) }, deps.say);
+async function runNested(request, deps) {
+  const { exclusive } = request;
+  if (exclusive === undefined || await deps.ancestorHoldsName(exclusive)) {
+    return deps.run(request.command, null);
+  }
+  const reservation = await deps.acquire({
+    checkout: request.checkout,
+    exclusive,
+    gb: 0,
+    kind: request.kind,
+    nested: true,
+    pid: request.pid,
+    what: describeCommand(request.command)
+  }, deps.say);
   try {
     if (deps.stopped?.() === true)
       return 1;
-    const workers = spec.workers;
-    const sized = workers !== undefined && gb > 0 && takesOptions(command) ? withWorkers(spec, command, deps.workersFor(gb, workers.gbEach)) : command;
+    return await deps.run(request.command, null);
+  } finally {
+    reservation.release();
+  }
+}
+async function runJob(request, deps) {
+  const { command, gb, kind, pid, spec } = request;
+  if (await deps.isNested())
+    return runNested(request, deps);
+  const reservation = await deps.acquire({
+    checkout: request.checkout,
+    exclusive: request.exclusive,
+    gb,
+    kind,
+    pid,
+    what: describeCommand(command)
+  }, deps.say);
+  try {
+    if (deps.stopped?.() === true)
+      return 1;
+    const workers = spec?.workers;
+    const sized = spec !== null && workers !== undefined && gb > 0 && takesOptions(command) ? withWorkers(spec, command, deps.workersFor(gb, workers.gbEach)) : command;
     const facts = gb === 0 ? null : deps.launchFacts();
     const launch = facts === null ? { mode: "plain" } : chooseLaunch(facts);
     if ("note" in launch && launch.note !== undefined)
       deps.say(launch.note);
     let eventsPath = null;
+    let scopeUnit = null;
     if (launch.mode === "scope") {
       const memoryMax = deps.memoryMaxFor(gb);
       if (!deps.slice.setMemoryMax(request.slice, memoryMax)) {
@@ -10380,13 +10572,14 @@ async function runJob(request, deps) {
       }
       const group = deps.slice.controlGroup(request.slice);
       eventsPath = group === null ? null : `/sys/fs/cgroup${group}/memory.events`;
+      scopeUnit = unitName(request.slice, kind, pid, request.startedAt);
     }
-    const before = eventsPath === null ? null : oomKills(deps.slice.readFile(eventsPath));
-    const code = await deps.run(launchArgv(launch, sized, { kind, pid, slice: request.slice, startedAt: request.startedAt }));
-    const after = eventsPath === null ? null : oomKills(deps.slice.readFile(eventsPath));
-    if (code !== 0 && before !== null && after !== null && after > before) {
-      deps.say(`killed for memory: the heavy jobs running here together went over ${request.slice}'s ceiling, ` + `and the kernel stopped the largest. Run it again when fewer heavy jobs run (exit code ${String(code)}).`);
-    }
+    const before = eventsPath === null ? null : deps.slice.readFile(eventsPath);
+    const code = await deps.run(launchArgv(launch, sized, { kind, pid, slice: request.slice, startedAt: request.startedAt }), scopeUnit);
+    const after = eventsPath === null ? null : deps.slice.readFile(eventsPath);
+    const killer = code === 0 ? null : oomKiller(before, after);
+    if (killer !== null)
+      deps.say(killedForMemoryLine(killer, request.slice, code));
     return code;
   } finally {
     reservation.release();
@@ -10395,44 +10588,41 @@ async function runJob(request, deps) {
 
 // src/jobs/store.ts
 import {
+  chmodSync as chmodSync2,
   existsSync as existsSync17,
   mkdirSync as mkdirSync4,
   readdirSync as readdirSync2,
   readFileSync as readFileSync18,
-  readlinkSync as readlinkSync2,
+  realpathSync as realpathSync3,
   renameSync as renameSync2,
+  statfsSync,
   statSync as statSync5,
   unlinkSync as unlinkSync3,
   utimesSync,
   writeFileSync as writeFileSync2
 } from "fs";
 import { join as join10 } from "path";
-var HEARTBEAT_MS = 30000;
-var UNSEEN_STALE_MS = 2 * 60000;
+var HEARTBEAT_MS = 5000;
+var UNSEEN_STALE_MS = 30000;
 var LOCK_STALE_MS = 30000;
 var LOCK_WAIT_MS = 2000;
-function pidNamespace() {
-  try {
-    return readlinkSync2("/proc/self/ns/pid");
-  } catch {
-    return null;
-  }
-}
-var self;
+var LOCK_MODE = 436;
+var FILE_MODE = 420;
+var LEFTOVER_MS = 60000;
 function currentFileHolder() {
-  self ??= { ...currentHolder(), pidns: pidNamespace() };
-  return self;
+  return currentHolder();
 }
 function parseStoreFile(text) {
   try {
     const value = JSON.parse(text);
     const holder = value?.holder;
-    if (value?.store !== 1 || typeof value.gb !== "number" || !Number.isFinite(value.gb) || typeof value.record !== "string" || typeof holder !== "object" || holder === null || typeof holder.pid !== "number" || typeof holder.host !== "string") {
+    if (value?.store !== 1 || typeof value.gb !== "number" || !Number.isFinite(value.gb) || typeof value.record !== "string" || value.exclusive !== undefined && typeof value.exclusive !== "string" || typeof holder !== "object" || holder === null || typeof holder.pid !== "number" || typeof holder.host !== "string") {
       return null;
     }
     return {
       store: 1,
       gb: value.gb,
+      ...value.exclusive !== undefined && { exclusive: value.exclusive },
       record: value.record,
       holder: {
         pid: holder.pid,
@@ -10451,8 +10641,14 @@ function errorCode(error) {
 function writeWhole(file, text, token) {
   const dir = file.slice(0, file.lastIndexOf("/"));
   const temp = join10(dir, `.${token}.tmp`);
-  writeFileSync2(temp, text, { mode: 420 });
-  renameSync2(temp, file);
+  writeFileSync2(temp, text, { mode: FILE_MODE });
+  try {
+    chmodSync2(temp, FILE_MODE);
+    renameSync2(temp, file);
+  } catch (error) {
+    removeQuietly(temp);
+    throw error;
+  }
 }
 function removeQuietly(file) {
   try {
@@ -10461,13 +10657,15 @@ function removeQuietly(file) {
 }
 function leaseStore(options) {
   const me = options.self ?? currentFileHolder();
-  const isGone = options.isGone ?? ((holder, lastSeenMs) => {
+  const isGone = options.isGone ?? ((holder, lastSeenMs, startTimeOf) => {
     const visible = holder !== null && holder.host === me.host && holder.pidns === me.pidns;
-    return holderIsGone(visible ? holder : null, lastSeenMs, UNSEEN_STALE_MS);
+    return holderIsGone(visible ? holder : null, lastSeenMs, UNSEEN_STALE_MS, startTimeOf);
   });
+  const readStartTime = options.startTimeOf ?? processStartTime;
   const leases = join10(options.dir, "leases");
   const tickets = join10(options.dir, "tickets");
   const mine = new Map;
+  const noted = new Set;
   let timer = null;
   const beat = () => {
     const now = new Date;
@@ -10499,6 +10697,18 @@ function leaseStore(options) {
       timer = null;
     }
   };
+  const noteOnce = (path, line) => {
+    if (noted.has(path))
+      return;
+    noted.add(path);
+    options.onNote?.(line);
+  };
+  const removeLeftover = (path) => {
+    try {
+      if (Date.now() - statSync5(path).mtimeMs > LEFTOVER_MS)
+        removeQuietly(path);
+    } catch {}
+  };
   const readLive = (folder) => {
     let names;
     try {
@@ -10508,41 +10718,74 @@ function leaseStore(options) {
         return [];
       throw error;
     }
+    const startTimes = new Map;
+    const startTimeOf = (pid, like) => {
+      const key = `${pid}\x00${like?.split(":")[0] ?? ""}`;
+      if (!startTimes.has(key))
+        startTimes.set(key, readStartTime(pid, like));
+      return startTimes.get(key) ?? null;
+    };
     const live = [];
     for (const name of names) {
-      if (!name.endsWith(".json") || name.startsWith("."))
-        continue;
       const path = join10(folder, name);
+      if (name.startsWith(".")) {
+        if (name.endsWith(".tmp") || name.startsWith(".probe-"))
+          removeLeftover(path);
+        continue;
+      }
+      if (!name.endsWith(".json"))
+        continue;
       let text;
       let mtimeMs;
       try {
         mtimeMs = statSync5(path).mtimeMs;
-        text = readFileSync18(path, "utf8");
       } catch (error) {
         if (errorCode(error) === "ENOENT")
           continue;
         throw error;
       }
-      const file = parseStoreFile(text);
+      let unreadable = null;
+      try {
+        text = readFileSync18(path, "utf8");
+      } catch (error) {
+        const code = errorCode(error);
+        if (code === "ENOENT")
+          continue;
+        if (code !== "EACCES" && code !== "EPERM")
+          throw error;
+        unreadable = code;
+        text = null;
+      }
+      const file = text === null ? null : parseStoreFile(text);
       if (mine.has(path)) {
         if (file !== null)
           live.push({ token: name.slice(0, -5), file });
         continue;
       }
-      if (isGone(file?.holder ?? null, mtimeMs)) {
+      if (isGone(file?.holder ?? null, mtimeMs, startTimeOf)) {
         removeQuietly(path);
         continue;
+      }
+      if (unreadable !== null) {
+        noteOnce(path, `${path} cannot be read (${unreadable}): its GB do not count until its writer stops touching it.`);
       }
       if (file !== null)
         live.push({ token: name.slice(0, -5), file });
     }
     return live;
   };
-  const write = (folder, gb, record) => {
+  const write = (folder, gb, record, exclusive) => {
     const token = crypto.randomUUID();
     const path = join10(folder, `${token}.json`);
-    const text = JSON.stringify({ store: 1, gb, holder: me, record });
-    mkdirSync4(folder, { recursive: true });
+    const text = JSON.stringify({
+      store: 1,
+      gb,
+      ...exclusive !== undefined && { exclusive },
+      holder: me,
+      record
+    });
+    if (!options.shared)
+      mkdirSync4(folder, { recursive: true });
     writeWhole(path, text, token);
     hold(path, text);
     return { path, token };
@@ -10553,6 +10796,7 @@ function leaseStore(options) {
     shared: options.shared,
     live: options.live,
     capacityGb: () => Promise.resolve().then(options.capacityGb),
+    keepsExclusive: (name) => Promise.resolve().then(() => options.keepsExclusive?.(name) ?? true),
     held: () => Promise.resolve().then(() => readLive(leases).map(({ file }) => ({ gb: file.gb, text: file.record }))),
     waiting: () => Promise.resolve().then(() => readLive(tickets).map(({ file }) => ({ gb: file.gb, text: file.record }))),
     enqueue: (recordText) => Promise.resolve().then(() => {
@@ -10567,15 +10811,19 @@ function leaseStore(options) {
         release: () => letGo(path)
       };
     }),
-    tryTake: async (gb, recordText) => {
+    tryTake: async (gb, recordText, exclusive) => {
       try {
         return await withLock(options.dir, () => {
-          const heldGb = readLive(leases).reduce((sum, { file }) => sum + file.gb, 0);
-          if (heldGb + gb > options.capacityGb())
+          const held = readLive(leases);
+          if (exclusive !== undefined && held.some(({ file }) => file.exclusive === exclusive)) {
             return null;
-          const { path } = write(leases, gb, recordText);
+          }
+          const heldGb = held.reduce((sum, { file }) => sum + file.gb, 0);
+          if (gb > 0 && heldGb + gb > options.capacityGb())
+            return null;
+          const { path } = write(leases, gb, recordText, exclusive);
           return { gb, release: () => letGo(path) };
-        }, { waitMs: LOCK_WAIT_MS, fallbackStaleMs: LOCK_STALE_MS });
+        }, { waitMs: LOCK_WAIT_MS, fallbackStaleMs: LOCK_STALE_MS, mode: LOCK_MODE });
       } catch (error) {
         if (error instanceof LockBusyError)
           return null;
@@ -10598,23 +10846,133 @@ function readBudgetFile(dir) {
   }
   return { gb: Number(value) };
 }
-function openSharedStore(dir) {
+function readExclusiveNames(dir) {
+  let text;
+  try {
+    text = readFileSync18(join10(dir, "exclusive"), "utf8");
+  } catch (error) {
+    if (errorCode(error) === "ENOENT")
+      return new Set;
+    throw error;
+  }
+  return new Set(text.split(`
+`).map((line) => line.replace(/#.*/, "").trim()).filter((line) => line !== ""));
+}
+var NETWORK_FS = new Map([
+  [26985, "NFS"],
+  [20859, "SMB"],
+  [4283649346, "CIFS"],
+  [4266872130, "SMB2"],
+  [16914839, "9p"],
+  [1397113167, "AFS"],
+  [1799439955, "AFS"],
+  [12805120, "Ceph"],
+  [1937076805, "Coda"],
+  [22092, "NCP"],
+  [198183888, "Lustre"],
+  [18225520, "GFS2"],
+  [1952539503, "OCFS2"]
+]);
+var FUSE_MAGIC = 1702057286;
+var NETWORK_FUSE = new Set([
+  "sshfs",
+  "rclone",
+  "s3fs",
+  "gcsfuse",
+  "goofys",
+  "glusterfs",
+  "juicefs",
+  "davfs",
+  "curlftpfs",
+  "cephfs"
+]);
+function unescapeMount(path) {
+  return path.replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(Number.parseInt(octal, 8)));
+}
+function mountTypeOf(path, mountinfo) {
+  let best = null;
+  for (const line of mountinfo.split(`
+`)) {
+    const [left, right] = line.split(" - ");
+    const point = left?.split(" ")[4];
+    const type = right?.split(" ")[0];
+    if (point === undefined || type === undefined)
+      continue;
+    const mount = unescapeMount(point);
+    const inside = mount === "/" || path === mount || path.startsWith(`${mount}/`);
+    if (inside && (best === null || mount.length >= best.point.length)) {
+      best = { point: mount, type };
+    }
+  }
+  return best?.type ?? null;
+}
+var realSharedFolderFacts = {
+  platform: process.platform,
+  fsType: (dir) => {
+    try {
+      return statfsSync(dir).type;
+    } catch {
+      return null;
+    }
+  },
+  mountinfo: () => {
+    try {
+      return readFileSync18("/proc/self/mountinfo", "utf8");
+    } catch {
+      return null;
+    }
+  }
+};
+function networkFileSystem(dir, facts) {
+  if (facts.platform !== "linux")
+    return null;
+  const type = facts.fsType(dir);
+  if (type === null)
+    return null;
+  const known = NETWORK_FS.get(type);
+  if (known !== undefined)
+    return known;
+  if (type !== FUSE_MAGIC)
+    return null;
+  const info = facts.mountinfo();
+  let real = dir;
+  try {
+    real = realpathSync3(dir);
+  } catch {}
+  const mount = info === null ? null : mountTypeOf(real, info);
+  const subtype = mount?.startsWith("fuse.") ? mount.slice(5) : null;
+  return subtype !== null && NETWORK_FUSE.has(subtype) ? `fuse.${subtype}` : null;
+}
+function openSharedStore(dir, options = {}) {
   if (!existsSync17(dir)) {
     return { note: `The shared folder ${dir} is missing: this job runs without its budget.` };
+  }
+  const network = networkFileSystem(dir, options.facts ?? realSharedFolderFacts);
+  if (network !== null) {
+    return {
+      note: `The shared folder ${dir} is left out: it is on a network file system (${network}). A shared folder is for one host: containers or users on this machine, through a bind mount.`
+    };
   }
   const budget = readBudgetFile(dir);
   if ("problem" in budget) {
     return { note: `The shared folder ${dir} is left out: ${budget.problem}.` };
   }
   for (const folder of ["leases", "tickets"]) {
-    const probe = join10(dir, folder, `.probe-${crypto.randomUUID()}`);
+    const path = join10(dir, folder);
+    let isFolder = false;
     try {
-      mkdirSync4(join10(dir, folder), { recursive: true });
+      isFolder = statSync5(path).isDirectory();
+    } catch {}
+    if (!isFolder) {
+      return { note: `The shared folder ${dir} is left out: ${path} is missing.` };
+    }
+    const probe = join10(path, `.probe-${crypto.randomUUID()}`);
+    try {
       writeFileSync2(probe, "");
       unlinkSync3(probe);
     } catch (error) {
       return {
-        note: `The shared folder ${dir} is left out: ${join10(dir, folder)} cannot be written (${errorCode(error) ?? String(error)}).`
+        note: `The shared folder ${dir} is left out: ${path} cannot be written (${errorCode(error) ?? String(error)}).`
       };
     }
   }
@@ -10627,7 +10985,9 @@ function openSharedStore(dir) {
       if ("problem" in now)
         throw new Error(now.problem);
       return now.gb;
-    }
+    },
+    keepsExclusive: (name) => readExclusiveNames(dir).has(name),
+    ...options.onNote !== undefined && { onNote: options.onNote }
   });
   return { store };
 }
@@ -10636,9 +10996,11 @@ function openSharedStore(dir) {
 var USAGE2 = `Usage: ${COMMAND} job <command>
 
 Commands:
-  run --kind <kind> [--gb <n>] -- <command...>
+  run [--kind <kind>] [--gb <n>] [--exclusive <name>] -- <command...>
                  Wait until this machine has the memory for the job, then run it.
-                 Its output, exit code and signals pass through.
+                 Its output, exit code and signals pass through. --exclusive: at
+                 most one job with that name at a time, in order. --kind, or
+                 --exclusive, or both.
   status         Who holds memory, who waits, and how much is free.
   kinds          The kinds of heavy job, and what each reserves.
 
@@ -10655,9 +11017,14 @@ function machineBudget(config, memory) {
     why: `${Math.floor(total / GIB)} GB of memory less ${reserve} GB kept for everything else`
   };
 }
-function openStores(ctx, config) {
+function openStores(ctx, config, onNote) {
   const dir = config.stateDir ?? jobsPaths(ctx.paths.home).stateDir;
-  mkdirSync5(dir, { recursive: true, mode: 448 });
+  try {
+    mkdirSync5(dir, { recursive: true, mode: 448 });
+  } catch (error) {
+    const code = error.code ?? String(error);
+    throw new JobsConfigError(`The state folder ${dir} cannot be made (${code}).`);
+  }
   const budget = machineBudget(config, ctx.memory);
   const uid = process.getuid?.();
   const slice = config.slice ?? DEFAULT_SLICE;
@@ -10673,12 +11040,13 @@ function openStores(ctx, config) {
     label: "this machine",
     shared: false,
     capacityGb: () => machineBudget(config, ctx.memory).gb,
-    live
+    live,
+    onNote
   });
   const shared = [];
   const notes = [];
-  for (const sharedDir of config.sharedDirs ?? []) {
-    const opened = openSharedStore(sharedDir);
+  for (const sharedDir of [...new Set(config.sharedDirs ?? [])].sort()) {
+    const opened = openSharedStore(sharedDir, { onNote });
     if ("store" in opened)
       shared.push(opened.store);
     else
@@ -10706,37 +11074,48 @@ function projectKinds(cwd) {
   const project = resolveProject(cwd);
   return mergeKinds(project?.config?.jobs?.kinds);
 }
+var EXCLUSIVE_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 function parseRunArgs(args) {
   let kind = null;
   let gb = null;
+  let exclusive = null;
   let index = 0;
   while (index < args.length && args[index] !== "--") {
     const arg = args[index] ?? "";
     if (!arg.startsWith("-"))
       return { error: "put -- before the command" };
     const [name, inline] = arg.includes("=") ? arg.split(/=(.*)/s, 2) : [arg, undefined];
-    if (name !== "--kind" && name !== "--gb")
+    if (name !== "--kind" && name !== "--gb" && name !== "--exclusive") {
       return { error: `unknown option: ${arg}` };
+    }
     const value = inline ?? args[index + 1];
     if (value === undefined || value === "--")
       return { error: `${name} needs a value` };
     index += inline === undefined ? 2 : 1;
     if (name === "--kind")
       kind = value;
-    else {
+    else if (name === "--exclusive") {
+      if (!EXCLUSIVE_NAME.test(value)) {
+        return {
+          error: "--exclusive takes a name: letters, digits, . _ : -, at most 64 characters"
+        };
+      }
+      exclusive = value;
+    } else {
       if (!/^\d+$/.test(value))
         return { error: "--gb takes a whole number of GB" };
       gb = Number(value);
     }
   }
-  if (kind === null)
-    return { error: "--kind <kind> is required" };
+  if (kind === null && exclusive === null) {
+    return { error: "--kind <kind> or --exclusive <name> is required" };
+  }
   if (args[index] !== "--")
     return { error: "put -- before the command" };
   const [program, ...rest] = args.slice(index + 1);
   if (program === undefined || program === "")
     return { error: "no command after --" };
-  return { kind, gb, command: [program, ...rest] };
+  return { kind, gb, exclusive, command: [program, ...rest] };
 }
 async function jobRun(args, ctx) {
   const parsed = parseRunArgs(args);
@@ -10751,20 +11130,29 @@ ${USAGE2}`);
     ctx.say(`${PREFIX} this folder has ${envFiles.join(", ")}, and bun was started without --no-env-file: ` + `the job would get their values. Run "${COMMAND} setup" to update the launcher, then try again.`);
     return 2;
   }
-  const config = loadJobsConfig(jobsPaths(ctx.paths.home).configFile);
-  const kinds = projectKinds(ctx.cwd);
-  const spec = kinds[parsed.kind];
+  const say = (line) => ctx.say(`${PREFIX} ${line}`);
+  let config;
+  let kinds;
+  let opened;
+  try {
+    config = loadJobsConfig(jobsPaths(ctx.paths.home).configFile);
+    kinds = projectKinds(ctx.cwd);
+    opened = openStores(ctx, config, say);
+  } catch (error) {
+    say(error instanceof Error ? error.message : String(error));
+    return 2;
+  }
+  const spec = parsed.kind === null ? null : kinds[parsed.kind];
   if (spec === undefined) {
     ctx.say(`${PREFIX} unknown kind "${parsed.kind}": one of ${Object.keys(kinds).join(", ")}`);
     return 2;
   }
-  const say = (line) => ctx.say(`${PREFIX} ${line}`);
-  const opened = openStores(ctx, config);
   const stores = [opened.machine, ...opened.shared];
   const now = ctx.now ?? Date.now;
   const slice = config.slice ?? DEFAULT_SLICE;
   const call = toolCallOfArgv(parsed.command);
-  const gb = parsed.gb ?? reservedGb(spec, call.args, isFileIn(ctx.cwd));
+  const gb = parsed.gb ?? (spec === null ? 0 : reservedGb(spec, call.args, isFileIn(ctx.cwd)));
+  const exclusive = parsed.exclusive ?? undefined;
   const stop = new AbortController;
   let caught = null;
   const onSignal = (signal) => () => {
@@ -10779,29 +11167,33 @@ ${USAGE2}`);
   const releaseOnExit = () => held?.release();
   process.once("exit", releaseOnExit);
   try {
+    const nestedIn = (exclusiveName) => isInsideHeavyJob({
+      platform: process.platform,
+      pid: process.pid,
+      readStat: readProcStat,
+      holderPids: () => pidsHolding(stores, hostname2(), exclusiveName)
+    });
     const code = await runJob({
-      kind: parsed.kind,
+      kind: parsed.kind ?? "",
       spec,
       command: parsed.command,
+      exclusive,
       gb,
       pid: process.pid,
       checkout: ctx.cwd,
       slice,
       startedAt: now()
     }, {
-      isNested: () => isInsideHeavyJob({
-        platform: process.platform,
-        pid: process.pid,
-        readStat: readProcStat,
-        holderPids: () => pidsHolding(stores, hostname2())
-      }),
+      isNested: () => nestedIn(),
+      ancestorHoldsName: (name) => nestedIn(name),
       acquire: async (job, onWaiting) => {
         for (const note of opened.notes)
           say(note);
-        if (job.gb <= 0)
+        if (job.gb <= 0 && job.exclusive === undefined) {
           return { gb: 0, release: () => {
             return;
           } };
+        }
         const reservation = await acquireFrom(stores, job, {
           onWaiting,
           person: hostname2(),
@@ -10815,9 +11207,10 @@ ${USAGE2}`);
       memoryMaxFor: (size) => sliceMemoryMax(opened.budget.gb, size),
       launchFacts: () => config.launch === "plain" ? null : realLaunchFacts(slice),
       slice: realSliceControl(ctx.memory.read),
-      run: (argv) => {
+      run: (argv, scopeUnit) => {
         started = true;
-        return spawnAndWait(argv, process, say);
+        const scope = scopeUnit === null ? null : realScope(slice, scopeUnit, ctx.memory.read);
+        return spawnAndWait(argv, process, say, { scope });
       },
       say,
       stopped: () => stop.signal.aborted
@@ -10836,21 +11229,20 @@ ${USAGE2}`);
 async function storeLines(store, title, now) {
   const lines = [];
   let capacity;
+  let held;
+  let waiting;
   try {
     capacity = await store.capacityGb();
+    held = (await store.held()).map((unit) => ({ gb: unit.gb, holder: parseHolder(unit.text) }));
+    waiting = (await store.waiting()).map((unit) => parseHolder(unit.text)).sort((a, b) => (a?.since ?? Number.POSITIVE_INFINITY) - (b?.since ?? Number.POSITIVE_INFINITY));
   } catch (error) {
     return [`${title}: cannot be read (${error instanceof Error ? error.message : String(error)})`];
   }
-  const held = (await store.held()).map((unit) => ({
-    gb: unit.gb,
-    holder: parseHolder(unit.text)
-  }));
   const heldGb = held.reduce((sum, unit) => sum + unit.gb, 0);
   lines.push(`${title}: ${Math.max(0, capacity - heldGb)} of ${capacity} GB free`);
   lines.push(...holderLines(held, store.label, now));
-  const waiting = (await store.waiting()).map((unit) => parseHolder(unit.text)).sort((a, b) => (a?.since ?? Number.POSITIVE_INFINITY) - (b?.since ?? Number.POSITIVE_INFINITY));
   for (const record of waiting) {
-    lines.push(record === null ? `  ${store.label}: an unknown job waits` : `  ${store.label}: waits for ${record.gb} GB: ${record.person}: ${record.kind}, ${record.what} in ${record.checkout}, since ${formatSince(record.since, now)} (pid ${record.pid})`);
+    lines.push(record === null ? `  ${store.label}: an unknown job waits` : `  ${store.label}: waits for ${record.gb} GB: ${record.person}: ${describeHolder(record)}, since ${formatSince(record.since, now)} (pid ${record.pid})`);
   }
   if (held.length === 0 && waiting.length === 0)
     lines.push("  nothing held, nobody waits");
@@ -10858,7 +11250,7 @@ async function storeLines(store, title, now) {
 }
 async function jobStatus(ctx) {
   const config = loadJobsConfig(jobsPaths(ctx.paths.home).configFile);
-  const opened = openStores(ctx, config);
+  const opened = openStores(ctx, config, ctx.print);
   const now = (ctx.now ?? Date.now)();
   const home = ctx.paths.home;
   const memory = machineMemory(ctx.memory);

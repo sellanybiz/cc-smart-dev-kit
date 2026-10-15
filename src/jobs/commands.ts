@@ -19,6 +19,7 @@ import { toolCallOfArgv } from "./classify";
 import {
   DEFAULT_RESERVE_GB,
   DEFAULT_SLICE,
+  JobsConfigError,
   type JobsMachineConfig,
   jobsPaths,
   loadJobsConfig,
@@ -34,6 +35,7 @@ import {
 import {
   exitCodeOf,
   realLaunchFacts,
+  realScope,
   realSliceControl,
   sliceMemoryMax,
   spawnAndWait,
@@ -41,7 +43,9 @@ import {
 import { GIB, type MemoryFacts, machineBudgetGb, machineMemory, sliceBytes } from "./memory";
 import {
   acquireFrom,
+  describeHolder,
   formatSince,
+  type HolderRecord,
   holderLines,
   type LiveReading,
   oneDecimal,
@@ -55,9 +59,11 @@ import { type LeaseStore, leaseStore, openSharedStore } from "./store";
 export const USAGE = `Usage: ${COMMAND} job <command>
 
 Commands:
-  run --kind <kind> [--gb <n>] -- <command...>
+  run [--kind <kind>] [--gb <n>] [--exclusive <name>] -- <command...>
                  Wait until this machine has the memory for the job, then run it.
-                 Its output, exit code and signals pass through.
+                 Its output, exit code and signals pass through. --exclusive: at
+                 most one job with that name at a time, in order. --kind, or
+                 --exclusive, or both.
   status         Who holds memory, who waits, and how much is free.
   kinds          The kinds of heavy job, and what each reserves.
 
@@ -101,9 +107,18 @@ function machineBudget(
   };
 }
 
-function openStores(ctx: JobContext, config: JobsMachineConfig): OpenedStores {
+function openStores(
+  ctx: JobContext,
+  config: JobsMachineConfig,
+  onNote: (line: string) => void,
+): OpenedStores {
   const dir = config.stateDir ?? jobsPaths(ctx.paths.home).stateDir;
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? String(error);
+    throw new JobsConfigError(`The state folder ${dir} cannot be made (${code}).`);
+  }
   const budget = machineBudget(config, ctx.memory);
   const uid = process.getuid?.();
   const slice = config.slice ?? DEFAULT_SLICE;
@@ -122,11 +137,14 @@ function openStores(ctx: JobContext, config: JobsMachineConfig): OpenedStores {
     shared: false,
     capacityGb: () => machineBudget(config, ctx.memory).gb,
     live,
+    onNote,
   });
   const shared: LeaseStore[] = [];
   const notes: string[] = [];
-  for (const sharedDir of config.sharedDirs ?? []) {
-    const opened = openSharedStore(sharedDir);
+  // One order for every user: two users who list the same folders in another order could
+  // otherwise each hold one and wait for the other's.
+  for (const sharedDir of [...new Set(config.sharedDirs ?? [])].sort()) {
+    const opened = openSharedStore(sharedDir, { onNote });
     if ("store" in opened) shared.push(opened.store);
     else notes.push(opened.note);
   }
@@ -158,34 +176,50 @@ function projectKinds(cwd: string): Kinds {
 }
 
 interface RunArgs {
-  kind: string;
+  kind: string | null;
   gb: number | null;
+  exclusive: string | null;
   command: [string, ...string[]];
 }
+
+/** An `--exclusive` name: a word, as a person types it in a script. */
+const EXCLUSIVE_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 
 function parseRunArgs(args: readonly string[]): RunArgs | { error: string } {
   let kind: string | null = null;
   let gb: number | null = null;
+  let exclusive: string | null = null;
   let index = 0;
   while (index < args.length && args[index] !== "--") {
     const arg = args[index] ?? "";
     if (!arg.startsWith("-")) return { error: "put -- before the command" };
     const [name, inline] = arg.includes("=") ? arg.split(/=(.*)/s, 2) : [arg, undefined];
-    if (name !== "--kind" && name !== "--gb") return { error: `unknown option: ${arg}` };
+    if (name !== "--kind" && name !== "--gb" && name !== "--exclusive") {
+      return { error: `unknown option: ${arg}` };
+    }
     const value = inline ?? args[index + 1];
     if (value === undefined || value === "--") return { error: `${name} needs a value` };
     index += inline === undefined ? 2 : 1;
     if (name === "--kind") kind = value;
-    else {
+    else if (name === "--exclusive") {
+      if (!EXCLUSIVE_NAME.test(value)) {
+        return {
+          error: "--exclusive takes a name: letters, digits, . _ : -, at most 64 characters",
+        };
+      }
+      exclusive = value;
+    } else {
       if (!/^\d+$/.test(value)) return { error: "--gb takes a whole number of GB" };
       gb = Number(value);
     }
   }
-  if (kind === null) return { error: "--kind <kind> is required" };
+  if (kind === null && exclusive === null) {
+    return { error: "--kind <kind> or --exclusive <name> is required" };
+  }
   if (args[index] !== "--") return { error: "put -- before the command" };
   const [program, ...rest] = args.slice(index + 1);
   if (program === undefined || program === "") return { error: "no command after --" };
-  return { kind, gb, command: [program, ...rest] };
+  return { kind, gb, exclusive, command: [program, ...rest] };
 }
 
 /** `job run`: returns the exit code to end with. */
@@ -205,20 +239,31 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
     );
     return 2;
   }
-  const config = loadJobsConfig(jobsPaths(ctx.paths.home).configFile);
-  const kinds = projectKinds(ctx.cwd);
-  const spec = kinds[parsed.kind];
+  const say = (line: string) => ctx.say(`${PREFIX} ${line}`);
+  // A config this run cannot use (jobs.json, anymodel.json, the state folder) ends it
+  // before anything starts, as a wrong command line does: exit 2, never the job's code.
+  let config: JobsMachineConfig;
+  let kinds: Kinds;
+  let opened: OpenedStores;
+  try {
+    config = loadJobsConfig(jobsPaths(ctx.paths.home).configFile);
+    kinds = projectKinds(ctx.cwd);
+    opened = openStores(ctx, config, say);
+  } catch (error) {
+    say(error instanceof Error ? error.message : String(error));
+    return 2;
+  }
+  const spec = parsed.kind === null ? null : kinds[parsed.kind];
   if (spec === undefined) {
     ctx.say(`${PREFIX} unknown kind "${parsed.kind}": one of ${Object.keys(kinds).join(", ")}`);
     return 2;
   }
-  const say = (line: string) => ctx.say(`${PREFIX} ${line}`);
-  const opened = openStores(ctx, config);
   const stores = [opened.machine, ...opened.shared];
   const now = ctx.now ?? Date.now;
   const slice = config.slice ?? DEFAULT_SLICE;
   const call = toolCallOfArgv(parsed.command);
-  const gb = parsed.gb ?? reservedGb(spec, call.args, isFileIn(ctx.cwd));
+  const gb = parsed.gb ?? (spec === null ? 0 : reservedGb(spec, call.args, isFileIn(ctx.cwd)));
+  const exclusive = parsed.exclusive ?? undefined;
 
   // A signal while it waits: give back what it holds, and end as a shell would.
   const stop = new AbortController();
@@ -237,11 +282,19 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
   process.once("exit", releaseOnExit);
 
   try {
+    const nestedIn = (exclusiveName?: string) =>
+      isInsideHeavyJob({
+        platform: process.platform,
+        pid: process.pid,
+        readStat: readProcStat,
+        holderPids: () => pidsHolding(stores, hostname(), exclusiveName),
+      });
     const code = await runJob(
       {
-        kind: parsed.kind,
+        kind: parsed.kind ?? "",
         spec,
         command: parsed.command,
+        exclusive,
         gb,
         pid: process.pid,
         checkout: ctx.cwd,
@@ -249,16 +302,14 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
         startedAt: now(),
       },
       {
-        isNested: () =>
-          isInsideHeavyJob({
-            platform: process.platform,
-            pid: process.pid,
-            readStat: readProcStat,
-            holderPids: () => pidsHolding(stores, hostname()),
-          }),
+        isNested: () => nestedIn(),
+        ancestorHoldsName: (name) => nestedIn(name),
         acquire: async (job, onWaiting) => {
           for (const note of opened.notes) say(note);
-          if (job.gb <= 0) return { gb: 0, release: () => undefined };
+          // Nothing to reserve and no name to hold: no queue at all.
+          if (job.gb <= 0 && job.exclusive === undefined) {
+            return { gb: 0, release: () => undefined };
+          }
           const reservation = await acquireFrom(stores, job, {
             onWaiting,
             person: hostname(),
@@ -272,9 +323,10 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
         memoryMaxFor: (size) => sliceMemoryMax(opened.budget.gb, size),
         launchFacts: () => (config.launch === "plain" ? null : realLaunchFacts(slice)),
         slice: realSliceControl(ctx.memory.read),
-        run: (argv) => {
+        run: (argv, scopeUnit) => {
           started = true;
-          return spawnAndWait(argv, process, say);
+          const scope = scopeUnit === null ? null : realScope(slice, scopeUnit, ctx.memory.read);
+          return spawnAndWait(argv, process, say, { scope });
         },
         say,
         stopped: () => stop.signal.aborted,
@@ -291,32 +343,32 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
   }
 }
 
-/** The lines of one store for `job status`. */
+/** The lines of one store for `job status`. A store it cannot read is one line saying so. */
 async function storeLines(store: LeaseStore, title: string, now: number): Promise<string[]> {
   const lines: string[] = [];
   let capacity: number;
+  let held: { gb: number; holder: HolderRecord | null }[];
+  let waiting: (HolderRecord | null)[];
   try {
     capacity = await store.capacityGb();
+    held = (await store.held()).map((unit) => ({ gb: unit.gb, holder: parseHolder(unit.text) }));
+    waiting = (await store.waiting())
+      .map((unit) => parseHolder(unit.text))
+      .sort(
+        (a, b) => (a?.since ?? Number.POSITIVE_INFINITY) - (b?.since ?? Number.POSITIVE_INFINITY),
+      );
   } catch (error) {
     return [`${title}: cannot be read (${error instanceof Error ? error.message : String(error)})`];
   }
-  const held = (await store.held()).map((unit) => ({
-    gb: unit.gb,
-    holder: parseHolder(unit.text),
-  }));
   const heldGb = held.reduce((sum, unit) => sum + unit.gb, 0);
   lines.push(`${title}: ${Math.max(0, capacity - heldGb)} of ${capacity} GB free`);
   lines.push(...holderLines(held, store.label, now));
-  const waiting = (await store.waiting())
-    .map((unit) => parseHolder(unit.text))
-    .sort(
-      (a, b) => (a?.since ?? Number.POSITIVE_INFINITY) - (b?.since ?? Number.POSITIVE_INFINITY),
-    );
+  // integration: plainText (the record is another writer's text)
   for (const record of waiting) {
     lines.push(
       record === null
         ? `  ${store.label}: an unknown job waits`
-        : `  ${store.label}: waits for ${record.gb} GB: ${record.person}: ${record.kind}, ${record.what} in ${record.checkout}, since ${formatSince(record.since, now)} (pid ${record.pid})`,
+        : `  ${store.label}: waits for ${record.gb} GB: ${record.person}: ${describeHolder(record)}, since ${formatSince(record.since, now)} (pid ${record.pid})`,
     );
   }
   if (held.length === 0 && waiting.length === 0) lines.push("  nothing held, nobody waits");
@@ -326,7 +378,7 @@ async function storeLines(store: LeaseStore, title: string, now: number): Promis
 /** `job status`. */
 async function jobStatus(ctx: JobContext): Promise<number> {
   const config = loadJobsConfig(jobsPaths(ctx.paths.home).configFile);
-  const opened = openStores(ctx, config);
+  const opened = openStores(ctx, config, ctx.print);
   const now = (ctx.now ?? Date.now)();
   const home = ctx.paths.home;
   const memory = machineMemory(ctx.memory);

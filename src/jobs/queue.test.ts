@@ -92,14 +92,21 @@ function heldBy(person: string, gb: number, pid = 1) {
   }));
 }
 
-function entry(tie: string, since: number, person: string | null, mine = false): ParsedEntry {
-  return { mine, person, since, tie };
+function entry(
+  tie: string,
+  since: number,
+  person: string | null,
+  mine = false,
+  wants: { gb?: number; exclusive?: string } = {},
+): ParsedEntry {
+  return { exclusive: wants.exclusive ?? null, gb: wants.gb ?? 8, mine, person, since, tie };
 }
 
 const alone = [entry("m", 1, "host-a", true)];
 
 const base: DecideInput = {
   capacityGb: 30,
+  exclusive: null,
   gb: 8,
   held: [],
   line: alone,
@@ -188,6 +195,43 @@ describe("decide", () => {
   });
 });
 
+describe("decide: exclusive names", () => {
+  const holdsName = (name: string) => [
+    { gb: 0, holder: { ...must(heldBy("host-a", 1)[0], "a unit").holder, exclusive: name } },
+  ];
+  const named = (tie: string, since: number, mine: boolean, gb: number, name?: string) =>
+    entry(tie, since, "host-a", mine, { gb, ...(name !== undefined && { exclusive: name }) });
+
+  test("waits while a lease holds its name, with room to spare", () => {
+    expect(decide({ ...base, exclusive: "image", held: holdsName("image") })).toEqual({
+      wait: { kind: "exclusive", name: "image" },
+    });
+    // Another name is no matter.
+    expect(decide({ ...base, exclusive: "image", held: holdsName("deploy") })).toEqual({
+      take: 8,
+    });
+  });
+
+  test("waits behind an older ticket with its name, even one that needs no memory", () => {
+    const line = [named("a", 1, false, 0, "image"), named("m", 2, true, 8, "image")];
+    expect(decide({ ...base, exclusive: "image", line })).toEqual({ wait: { kind: "behind" } });
+  });
+
+  test("a name-only job (0 GB) never waits behind jobs that wait for memory", () => {
+    const line = [named("a", 1, false, 14), named("m", 2, true, 0, "image")];
+    expect(
+      decide({ ...base, exclusive: "image", gb: 0, held: heldBy("host-a", 30), line }),
+    ).toEqual({ take: 0 });
+  });
+
+  test("an older ticket waiting for a held name holds up nobody's memory", () => {
+    const line = [named("a", 1, false, 14, "image"), named("m", 2, true, 8)];
+    expect(decide({ ...base, held: holdsName("image"), line })).toEqual({ take: 8 });
+    // Once the name is free, it is first again.
+    expect(decide({ ...base, line })).toEqual({ wait: { kind: "behind" } });
+  });
+});
+
 describe("liveCheckFits", () => {
   test("counts reserved-but-unused memory against the free memory", () => {
     const fits = (heldGbHere: number, availableGb: number, sliceGb: number | null) =>
@@ -199,10 +243,22 @@ describe("liveCheckFits", () => {
       });
     expect(fits(8, 16, 0)).toBe(true);
     expect(fits(8, 15, 0)).toBe(false);
-    // The group cannot be read: all of the reservation counts as still to come.
-    expect(fits(8, 15, null)).toBe(false);
     // The jobs use more than they reserved: nothing more is still to come.
     expect(fits(8, 8, 12)).toBe(true);
+  });
+
+  // Used and not yet used cannot be told apart: counting the reservation again would count
+  // what the jobs already use twice (it is already gone from the free memory).
+  test("without a reading of the group, it is the plain free memory", () => {
+    const fits = (availableGb: number) =>
+      liveCheckFits({
+        heldGbHere: 8,
+        availableBytes: availableGb * GIB,
+        needGb: 8,
+        sliceBytes: null,
+      });
+    expect(fits(8)).toBe(true);
+    expect(fits(7.9)).toBe(false);
   });
 
   // Otherwise a full browser could make a type check wait for ever.
@@ -225,8 +281,11 @@ class FakeStore implements Store {
   readonly live?: (() => LiveReading | null) | undefined;
   capacity: number;
   maxHeld = 0;
-  private readonly units = new Map<number, StoreHeld>();
+  /** The most leases with one exclusive name at once. */
+  maxSameName = 0;
+  private readonly units = new Map<number, StoreHeld & { exclusive?: string }>();
   private readonly tickets = new Map<string, string>();
+  private readonly names: ReadonlySet<string> | null;
   private next = 0;
 
   constructor(options: {
@@ -234,11 +293,18 @@ class FakeStore implements Store {
     label: string;
     live?: (() => LiveReading | null) | undefined;
     shared?: boolean;
+    /** The exclusive names it keeps; default (this machine): every name. */
+    names?: readonly string[];
   }) {
     this.capacity = options.capacity;
     this.label = options.label;
     this.shared = options.shared ?? false;
     this.live = options.live;
+    this.names = options.names === undefined ? null : new Set(options.names);
+  }
+
+  keepsExclusive(name: string): Promise<boolean> {
+    return Promise.resolve(this.names === null || this.names.has(name));
   }
 
   heldGb(): number {
@@ -274,7 +340,7 @@ class FakeStore implements Store {
   }
 
   held(): Promise<readonly StoreHeld[]> {
-    return Promise.resolve([...this.units.values()]);
+    return Promise.resolve([...this.units.values()].map(({ gb, text }) => ({ gb, text })));
   }
 
   /** A live ticket outside the engine, with whatever text its holder wrote. */
@@ -289,11 +355,15 @@ class FakeStore implements Store {
     return () => this.units.delete(id);
   }
 
-  tryTake(gb: number, recordText: string): Promise<StoreUnits | null> {
-    if (this.capacity - this.heldGb() < gb) return Promise.resolve(null);
+  tryTake(gb: number, recordText: string, exclusive?: string): Promise<StoreUnits | null> {
+    const sameName = () =>
+      [...this.units.values()].filter((unit) => unit.exclusive === exclusive).length;
+    if (exclusive !== undefined && sameName() > 0) return Promise.resolve(null);
+    if (gb > 0 && this.capacity - this.heldGb() < gb) return Promise.resolve(null);
     const id = this.next++;
-    this.units.set(id, { gb, text: recordText });
+    this.units.set(id, { gb, text: recordText, ...(exclusive !== undefined && { exclusive }) });
     this.maxHeld = Math.max(this.maxHeld, this.heldGb());
+    if (exclusive !== undefined) this.maxSameName = Math.max(this.maxSameName, sameName());
     return Promise.resolve({
       gb,
       release: () => {
@@ -413,7 +483,7 @@ describe("acquireFrom: the waiting order", () => {
     const lone = start([store], job(8), time);
     await settle();
     expect(lone.reservation?.gb).toBe(8);
-    // A second one does wait: the first may still grow into the little that is free.
+    // A second one does wait: another heavy job runs here, and the free memory is short.
     const next = start([store], job(8), time);
     await settle(100);
     expect(next.reservation).toBeNull();
@@ -681,6 +751,109 @@ describe("acquireFrom: a store that fails", () => {
       "The heavy-job queue for /srv/shared failed (EIO): this job runs without that budget.",
     ]);
     expect(broken.liveTickets()).toBe(0);
+  });
+
+  // The waiting report reads every store. A shared one it cannot read must not end the wait
+  // on this machine's own budget: the job would run on a full machine.
+  test("a shared store that cannot be read never drops this machine's budget: the job keeps waiting", async () => {
+    const time = fakeTime();
+    const machine = new FakeStore({ capacity: 10, label: "this machine" });
+    const broken = new FakeStore({ capacity: 30, label: "/srv/shared", shared: true });
+    broken.held = () => Promise.reject(new Error("EIO"));
+    const blocker = machine.hold(10, "not a record");
+    const lines: string[] = [];
+    const notes: string[] = [];
+    let admitted: Reservation | null = null;
+    void acquireFrom([machine, broken], job(4), {
+      now: time.now,
+      onNote: (line) => notes.push(line),
+      onWaiting: (line) => lines.push(line),
+      person: "host-a",
+      sleep: time.sleep,
+    }).then((reservation) => {
+      admitted = reservation;
+    });
+    await settle(100);
+    expect(admitted).toBeNull();
+    expect(lines[0]).toBe(
+      "Heavy job waits for memory: job 4 GB needs 4 GB. this machine: 0 of 10 GB free; /srv/shared: cannot be read. Why: only 0 GB of this machine's budget is free.",
+    );
+    expect(notes).toEqual([]);
+    blocker();
+    await settle(100);
+    expect((admitted as Reservation | null)?.gb).toBe(4);
+    expect(machine.heldGb()).toBe(4);
+    expect(notes).toEqual([
+      "The heavy-job queue for /srv/shared failed (EIO): this job runs without that budget.",
+    ]);
+  });
+});
+
+describe("acquireFrom: exclusive names", () => {
+  const named = (gb: number, what: string, extra: Partial<QueuedJob> = {}): QueuedJob => ({
+    ...job(gb, what),
+    exclusive: "image",
+    ...extra,
+  });
+
+  test("one job per name at a time, in the order they came; memory-only jobs pass", async () => {
+    const time = fakeTime();
+    const machine = new FakeStore({ capacity: 32, label: "this machine" });
+    const first = start([machine], named(0, "first"), time);
+    await settle();
+    const second = start([machine], named(0, "second"), time);
+    const third = start([machine], named(4, "third"), time);
+    const memoryOnly = start([machine], job(8), time);
+    await settle(100);
+    expect(first.reservation).not.toBeNull();
+    expect(second.reservation).toBeNull();
+    expect(third.reservation).toBeNull();
+    expect(memoryOnly.reservation?.gb).toBe(8);
+    first.reservation?.release();
+    await settle(100);
+    expect(second.reservation).not.toBeNull();
+    expect(third.reservation).toBeNull();
+    second.reservation?.release();
+    await settle(100);
+    expect(third.reservation?.gb).toBe(4);
+    expect(machine.maxSameName).toBe(1);
+  });
+
+  test("in a shared folder only when it lists the name", async () => {
+    for (const [names, secondWaits] of [
+      [[], false],
+      [["image"], true],
+    ] as const) {
+      const time = fakeTime();
+      const host = new FakeStore({ capacity: 30, label: "/srv/shared", names, shared: true });
+      const machineA = new FakeStore({ capacity: 10, label: "this machine" });
+      const machineB = new FakeStore({ capacity: 10, label: "this machine" });
+      const first = start([machineA, host], named(4, "a"), time, "host-a");
+      await settle(100);
+      const second = start([machineB, host], named(4, "b"), time, "host-b");
+      await settle(100);
+      expect(first.reservation?.gb).toBe(4);
+      expect(second.reservation === null).toBe(secondWaits);
+    }
+  });
+
+  // Its parent holds memory an older ticket with the name waits for: in the line, the
+  // nested job would wait behind that ticket, and the parent for the nested job.
+  test("a nested job takes a free name at once, without a place in the line", async () => {
+    const time = fakeTime();
+    const machine = new FakeStore({ capacity: 10, label: "this machine" });
+    const parent = machine.hold(10, "the parent job");
+    const older = start([machine], named(8, "older"), time);
+    await settle(50);
+    expect(older.reservation).toBeNull();
+    const nested = start([machine], named(0, "nested", { nested: true }), time);
+    await settle(50);
+    expect(nested.reservation).not.toBeNull();
+    expect(machine.liveTickets()).toBe(1);
+    nested.reservation?.release();
+    parent();
+    await settle(100);
+    expect(older.reservation?.gb).toBe(8);
   });
 });
 
