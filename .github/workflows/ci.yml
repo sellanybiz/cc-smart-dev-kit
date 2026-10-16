@@ -49,6 +49,9 @@ jobs:
       - name: One home per rule (no sentence repeats across the plugin's instructions)
         run: bun run check:duplicates
 
+      - name: The general instructions stay inside their line budget
+        run: bun run check:core-lines
+
       - name: Tests
         run: bun test
 

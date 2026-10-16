@@ -5,8 +5,9 @@
 import { describe, expect, it } from "bun:test";
 import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { SafetyCheckState } from "../gateway/safety-checks";
 import { tempDir } from "../testing/temp";
-import { collectUsage, formatUsage, usageOptions } from "./usage";
+import { collectUsage, formatSafetyChecks, formatUsage, usageOptions } from "./usage";
 
 const NOW = Date.UTC(2026, 9, 15, 12, 0, 0);
 const SINCE = NOW - 6 * 3_600_000;
@@ -214,5 +215,48 @@ describe("usage", () => {
       error: '--hours wants a number above 0, not "0"',
     });
     expect(usageOptions(["--days", "2"])).toEqual({ error: "Unknown option: --days" });
+  });
+});
+
+describe("the auto-mode safety checks the router counted", () => {
+  /** One day's record, as the router's file holds it, written by hand. */
+  const day = (checks: number, input: number, output: number, fallback = 0) => ({
+    anthropic: { cacheRead: 0, cacheWrite: 0, checks, input, output },
+    checks: checks + fallback,
+    fallback: { cacheRead: 20, cacheWrite: 1, checks: fallback, input: 0, output: 0 },
+  });
+
+  it("shows today and the seven days before it, newest first, and says what it cannot know", () => {
+    const state: SafetyCheckState = {
+      days: {
+        "2026-10-15": day(3, 1234, 7, 2),
+        "2026-10-14": day(1, 90, 1),
+        // Seven days back: the oldest day in the window.
+        "2026-10-08": day(4, 400, 9),
+        // Eight days back: not shown.
+        "2026-10-07": day(9, 900, 9),
+      },
+      version: 1,
+    };
+    expect(formatSafetyChecks(state, NOW, "UTC")).toEqual([
+      "",
+      "Auto mode's safety checks the router counted on this machine:",
+      "  today (2026-10-15): 5 checks — Anthropic 3 (1234 in, 7 out, 0 cache read, 0 cache write); a fallback 2 (0 in, 0 out, 20 cache read, 1 cache write)",
+      "  2026-10-14: 1 check — Anthropic 1 (90 in, 1 out, 0 cache read, 0 cache write)",
+      "  2026-10-08: 4 checks — Anthropic 4 (400 in, 9 out, 0 cache read, 0 cache write)",
+      "  The tokens are what each answer's `usage` reported; whether they count against a Pro, Max or Team plan's limit is not confirmed (Anthropic's docs say they do on Enterprise and API accounts).",
+    ]);
+  });
+
+  it("no file, or nothing in the window: one line saying so", () => {
+    const none = [
+      "",
+      "Auto mode's safety checks the router counted on this machine:",
+      "  none in the last 8 days (the gateway must be set up, and a session must have run with auto mode on)",
+    ];
+    expect(formatSafetyChecks(null, NOW, "UTC")).toEqual(none);
+    expect(
+      formatSafetyChecks({ days: { "2026-09-01": day(2, 1, 1) }, version: 1 }, NOW, "UTC"),
+    ).toEqual(none);
   });
 });

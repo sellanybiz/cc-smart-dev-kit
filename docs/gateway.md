@@ -22,7 +22,8 @@ The rules for changing it: `.claude/rules/gateway.md`.
   so work does not stop when an affordable model fails.
 - **Auto mode's safety check** is judged by Claude whenever Claude can answer it. The
   opt-in `cc-smart-dev-kit-judge` slot is a fallback only, for when Claude cannot; otherwise Claude
-  Code asks the person (§ The judge slot).
+  Code asks the person (§ The judge slot). Every check is counted, with what its answer
+  reported, for `cc-smart-dev-kit usage` (§ The safety-check counts).
 - The router writes the plan limits it sees to a small state file, which the status line
   and the usage-limit alert read (§ The limit state, the status line, the alert).
 - **No prompt text is ever changed.** An affordable backend gets two named format translations
@@ -306,7 +307,42 @@ launcher, a plain notification with no action.
 (`<config>/projects/*/<session>.jsonl`, `…/<session>/subagents/*.jsonl` and `.meta.json`)
 and reports, per session, the main session's replies by model and, apart, its subagents:
 how many, how each was launched, the model of each reply, and the share on Opus. A file
-last changed before the window is not read.
+last changed before the window is not read. Its other half is the router's safety-check
+counts (§ The safety-check counts).
+
+## The safety-check counts
+
+Auto mode sends one request per action it judges (the check, § The judge slot). That is a
+model call nobody sees: it is not a session's reply — not a turn of any conversation, so no
+transcript holds it and no report showed it. So the router counts it
+(`src/gateway/safety-checks.ts`), and `cc-smart-dev-kit usage` shows the days.
+
+- **What is counted, per local day** (the machine's own day, not UTC's): every safety check
+  the router handled; which side answered it — Anthropic, or a fallback target (the judge);
+  and the input, output and cache tokens that answer's `usage` reported. On a stream the
+  counts are `message_start`'s input and cache ones (its `output_tokens` is a partial 1) and
+  the **last** `message_delta`'s final `output_tokens`; on an answer that did not stream,
+  the body's `usage`. A field an answer does not report counts as 0, never as a guess.
+- **The answer itself is never touched.** The router hands each chunk to Claude Code first
+  and keeps a copy for the reader — same chunks, same order, nothing held back, and the copy
+  is read only once the client has the last byte, in the background. A client that hangs up
+  cancels the upstream as it always did. An answer the reader cannot make sense of (an
+  encoding the router does not decode, a body that is not JSON or a stream, more than
+  256 KB) is still counted as a check; only its tokens are missing.
+- **The file**, `~/.local/state/cc-smart-dev-kit/safety-checks.json`, mode 600, written
+  atomically in the background, the newest 30 days kept. Counts and four numbers per day:
+  never a prompt, an answer, a model name or a key. The router reads it when it starts, so a
+  restart (an update, a crash) goes on counting the same days rather than starting over.
+- **`cc-smart-dev-kit usage` shows today and the seven days before it**, one line per day,
+  Anthropic and a fallback apart.
+- **What it cannot say:** whether those tokens count against a Pro, Max or Team plan's
+  limit. Anthropic's docs say they do for Enterprise and API accounts; for the others it is
+  not confirmed, and `usage` prints that caveat under the numbers
+  (`README.md` § The usage limit).
+- Only a `/v1/messages` request is counted. A `count_tokens` for a check counts tokens, it
+  judges nothing, and the check never goes there by itself.
+- **This changed the router**, so a machine updates the copy it runs: after an update, run
+  `cc-smart-dev-kit gateway setup` (it asks before it restarts the router).
 
 ## Aliases
 
@@ -479,7 +515,7 @@ cannot send those cross-site without a CORS preflight, which the router never an
 
 | What | Where |
 |---|---|
-| Source | `src/gateway/`: `router.ts`, `targets.ts`, `config.ts`, `limit-state.ts`, `judge-test.ts`, `fallback-answer.ts`, `backends.ts`, `settings.ts`, `health.ts`, `service.ts`, `commands.ts`, `doctor.ts`; the bundle entry `src/entries/router.ts`. The status line and `usage`: `src/cli/statusline.ts`, `src/cli/usage.ts`; the alert: `src/hooks/stop-failure.ts`, `src/entries/stop-failure.ts` |
+| Source | `src/gateway/`: `router.ts`, `targets.ts`, `config.ts`, `limit-state.ts`, `safety-checks.ts`, `judge-test.ts`, `fallback-answer.ts`, `backends.ts`, `settings.ts`, `health.ts`, `service.ts`, `commands.ts`, `doctor.ts`; the bundle entry `src/entries/router.ts`. The status line and `usage`: `src/cli/statusline.ts`, `src/cli/usage.ts`; the alert: `src/hooks/stop-failure.ts`, `src/entries/stop-failure.ts` |
 | Config: backend keys, slots, aliases, port | `~/.config/cc-smart-dev-kit/gateway.json`, mode **600**. A file others can read is refused. Read again when it changes, so `gateway slot` is live. A bad edit keeps the last good config, with one error line. A command saves it atomically, inside the state lock, and keeps any field it does not know |
 | A setup that did not finish | `~/.claude/cc-smart-dev-kit/restart-pending` (the state folder): written before the copy and the unit, removed once the restarted router answers |
 | The router that runs | `~/.local/share/cc-smart-dev-kit/router.js`, a copy of the plugin's `dist/router.js` |
@@ -488,6 +524,7 @@ cannot send those cross-site without a CORS preflight, which the router never an
 | The router's inner socket | `$XDG_RUNTIME_DIR/cc-smart-dev-kit-router/router-<pid>.sock` (systemd makes the folder, mode 0700, and removes it when the unit stops) |
 | Health | `GET http://127.0.0.1:<port>/__cc-smart-dev-kit/health`: counts, resting targets, Claude models resting at their plan limit (`limited`), slots, `modelSlots`; never a key |
 | The limit state | `~/.local/state/cc-smart-dev-kit/gateway-state.json`, mode 600, written by the router: plan limits seen, slots on a fallback. Read by `cc-smart-dev-kit statusline` and the StopFailure hook |
+| The safety-check counts | `~/.local/state/cc-smart-dev-kit/safety-checks.json`, mode 600, written by the router: auto mode's checks by local day, who answered each (Anthropic or a fallback), and the tokens their answers reported. Read by `cc-smart-dev-kit usage`; the newest 30 days are kept (§ The safety-check counts) |
 
 With no good config the router still starts: both slots answer from `claude-sonnet-5-5`
 on the own login, and one error line names the file.

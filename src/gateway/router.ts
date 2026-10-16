@@ -36,6 +36,10 @@
  *     leads to no Claude target (an affordable-only slot, or an alias to `<backend>:<model>`) to
  *     Anthropic as it was sent (`resolveRequestRoute`). The `cc-smart-dev-kit-judge` slot, when
  *     the person set one, answers only when Claude cannot (`judgeAsFallback`).
+ *   - Every safety check is counted, by local day, in the router's state folder
+ *     (`safety-checks.ts`): how many went through, who answered each, and the tokens its
+ *     answer's `usage` reported. The answer passes to Claude Code byte for byte, and the
+ *     count is read from a copy on the way; `cc-smart-dev-kit usage` shows the days.
  *   - Every Claude answer's headers (never its body) say whether the plan's usage limit
  *     was reached; the router writes that to its state file, for the status line and the
  *     StopFailure alert (`limit-state.ts`).
@@ -69,7 +73,7 @@
  * the systemd unit through `src/entries/router.ts`). The design: docs/gateway.md.
  */
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 // From ./names, not the index: the index bakes in the version (bundles-and-releases.md).
 import { COMMAND } from "../build-info/names";
@@ -79,7 +83,20 @@ import { cleanFallbackResponse } from "./fallback-answer";
 import { directIfLoopback } from "./hosts";
 import { emptyLimitState, formatLimitState, type LimitState } from "./limit-state";
 import { inheritedListenFd, innerSocketPath, LISTEN_VARS, listenOnFd, serveUnix } from "./listen";
+import type { RouterPaths } from "./paths";
 import { oneLine } from "./plain-text";
+import {
+  addCheckTokens,
+  type CheckSide,
+  type CheckTokens,
+  checkUsageFromAnswer,
+  emptySafetyChecks,
+  formatSafetyCheckState,
+  localDay,
+  parseSafetyCheckState,
+  recordSafetyCheck,
+  type SafetyCheckState,
+} from "./safety-checks";
 import {
   COOLDOWN_MAX_SEC,
   cooldownSeconds,
@@ -138,11 +155,21 @@ export interface RouterDeps {
   fallbackAnswersAsIs?: boolean;
   fetch: FetchLike;
   getConfig: () => GatewayConfig;
+  /**
+   * The safety-check counts already on disk (`safety-checks.ts`), read once when the router
+   * starts so a restart goes on counting the same days. Absent, or null: none yet.
+   */
+  loadSafetyChecks?: () => null | string;
   log: (line: string) => void;
   /** Milliseconds since the epoch. */
   now: () => number;
   /** The port the server is bound to; the `Host` guard checks it. */
   port: number;
+  /**
+   * Writes the safety-check counts' text (`safety-checks.ts`). Called in the background,
+   * never before an answer; it may throw, and the router logs that once. Absent: no file.
+   */
+  saveSafetyChecks?: (text: string) => void;
   /**
    * Writes the limit state file's text (`limit-state.ts`). Called in the background, never
    * before an answer; it may throw, and the router logs that once. Absent: no file.
@@ -717,6 +744,54 @@ interface Outcome {
 type Attempt = { failure: string; status: null | number } | { response: Response };
 
 /**
+ * How much of a safety check's answer is kept to read its `usage`. The answer to a check
+ * that judges one action is a few hundred bytes; past this the check is still counted and
+ * its tokens are not, so a surprising answer cannot grow the router's memory.
+ */
+const CHECK_USAGE_MAX_BYTES = 256 * 1024;
+
+/**
+ * A state file the router writes in the background: one write for any number of changes in
+ * a row, after the answer went out (a timer, never a microtask). `what` names the file in a
+ * failure line, which is logged once per distinct error. With no writer for it, every call
+ * is a no-op.
+ */
+function stateWriter(deps: RouterDeps, what: string, save: undefined | (() => void)): () => void {
+  if (save === undefined) return () => {};
+  let queued = false;
+  let lastError = "";
+  return () => {
+    if (queued) return;
+    queued = true;
+    const task = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        queued = false;
+        try {
+          save();
+          lastError = "";
+        } catch (error) {
+          const message = messageOf(error);
+          if (message !== lastError) deps.log(`ERROR cannot write ${what}: ${message}`);
+          lastError = message;
+        }
+        resolve();
+      }, 0);
+    });
+    deps.background?.(task);
+  };
+}
+
+/**
+ * Who answered a safety check, from the target's text as the log names it: `anthropic`, or
+ * a Claude model id, is Claude; any other target that answered is a fallback (the judge
+ * slot, which never holds a `claude-…` target). `none`: no target answered it.
+ */
+function answeredSide(target: string): CheckSide | null {
+  if (target === "none") return null;
+  return target === "anthropic" || target.startsWith("claude-") ? "anthropic" : "fallback";
+}
+
+/**
  * What the error log and the cancel read from an answer. Structural, so a `clone()` fits
  * too: its type comes from another set of declarations than `Response`.
  */
@@ -737,6 +812,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   const translationsLogged = new Set<string>();
   /** What the state file says: plan limits seen, model slots on a fallback. */
   const limitState: LimitState = emptyLimitState();
+  /** Auto mode's safety checks counted so far, by local day (`safety-checks.ts`). */
+  const safetyChecks: SafetyCheckState = loadedSafetyChecks();
   /**
    * Claude model id → the time (ms) until which its model slot skips it: it answered with
    * the plan's usage limit. Apart from `cooling`, so that a short 429 from another slot's
@@ -755,30 +832,45 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   const cleanedLogged = new Set<string>();
   /** The config the fallback records were last checked against (`dropRemovedFallbacks`). */
   let checkedConfig: GatewayConfig | null = null;
-  let saveQueued = false;
-  let lastSaveError = "";
 
   /** Write the state file in the background, once for any number of changes in a row. */
-  function persist(): void {
-    const save = deps.saveState;
-    if (save === undefined || saveQueued) return;
-    saveQueued = true;
-    // A timer, not a microtask: the write must never run before the answer goes out.
-    const task = new Promise<void>((resolve) => {
-      setTimeout(() => {
-        saveQueued = false;
-        try {
-          save(formatLimitState(limitState));
-          lastSaveError = "";
-        } catch (error) {
-          const message = messageOf(error);
-          if (message !== lastSaveError) deps.log(`ERROR cannot write the limit state: ${message}`);
-          lastSaveError = message;
-        }
-        resolve();
-      }, 0);
-    });
-    deps.background?.(task);
+  const persist = stateWriter(
+    deps,
+    "the limit state",
+    deps.saveState === undefined ? undefined : () => deps.saveState?.(formatLimitState(limitState)),
+  );
+  /** The same, for the safety-check counts (`safety-checks.ts`). */
+  const persistChecks = stateWriter(
+    deps,
+    "the safety-check counts",
+    deps.saveSafetyChecks === undefined
+      ? undefined
+      : () => deps.saveSafetyChecks?.(formatSafetyCheckState(safetyChecks)),
+  );
+
+  /**
+   * The safety-check counts the router starts from: what the file holds (a restart goes on
+   * counting the same days), or none. A file that cannot be read or understood is said so
+   * once, and counting starts from none — an older or a hand-edited file never stops the
+   * router.
+   */
+  function loadedSafetyChecks(): SafetyCheckState {
+    const load = deps.loadSafetyChecks;
+    if (load === undefined) return emptySafetyChecks();
+    let text: null | string;
+    try {
+      text = load();
+    } catch (error) {
+      deps.log(`WARN cannot read the safety-check counts: ${messageOf(error)}`);
+      return emptySafetyChecks();
+    }
+    if (text === null) return emptySafetyChecks();
+    const parsed = parseSafetyCheckState(text);
+    if (parsed === null) {
+      deps.log("WARN the safety-check file is not one this version reads; counting starts over");
+      return emptySafetyChecks();
+    }
+    return parsed;
   }
 
   /**
@@ -1562,6 +1654,126 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     persist();
   }
 
+  /**
+   * Count one auto mode safety check (`safety-checks.ts`), and read the tokens its answer
+   * reported. The check counts as soon as it has an answer; the tokens are read from a copy
+   * of the bytes on their way to Claude Code (`observedAnswer`) and written in the
+   * background, so the count never slows an answer and never changes a byte of it.
+   */
+  function countedCheck(judged: Promise<Outcome>): Promise<Outcome> {
+    const day = localDay(deps.now());
+    return judged.then((outcome) => {
+      const side = answeredSide(outcome.target);
+      recordSafetyCheck(safetyChecks, day, side);
+      persistChecks();
+      return {
+        ...outcome,
+        response: observedAnswer(outcome.response, (tokens) => {
+          if (tokens === null || side === null) return;
+          addCheckTokens(safetyChecks, day, side, tokens);
+          persistChecks();
+        }),
+      };
+    });
+  }
+
+  /**
+   * An answer as Claude Code gets it: byte for byte, and counted on the way. Every chunk is
+   * handed to the client first and a copy is kept for the reader, so the client's own
+   * backpressure still holds the upstream, nothing is held back, and `note` runs only once
+   * the client has the last byte — in the background, never on the answer's path. A client
+   * that hangs up cancels the upstream exactly as it did before.
+   *
+   * An answer the reader cannot make sense of (an encoding the router does not decode, a
+   * body that is not JSON or a stream, more than `CHECK_USAGE_MAX_BYTES`) reports null: the
+   * check is counted, its tokens are not. That is what an answer with no `usage` says too,
+   * and guessing one would be worse than not knowing.
+   */
+  function observedAnswer(
+    response: Response,
+    note: (tokens: null | CheckTokens) => void,
+  ): Response {
+    const body = response.body;
+    if (body === null) {
+      note(null);
+      return response;
+    }
+    const streaming = (response.headers.get("content-type") ?? "").includes("text/event-stream");
+    const reader = body.getReader();
+    let chunks: Uint8Array[] = [];
+    let kept = 0;
+    let keep = true;
+    let ended = false;
+    /** The bytes the client got, as text: decompressed when the answer came compressed,
+     * because the client decodes it and this reader must read what the client reads. Null
+     * when the encoding is one the router cannot decode. */
+    const answerText = async (): Promise<null | string> => {
+      if (!keep) return null;
+      const encoding = (response.headers.get("content-encoding") ?? "").trim().toLowerCase();
+      const format =
+        encoding === "" || encoding === "identity" ? null : decompressionFormat(encoding);
+      if (format === null && encoding !== "" && encoding !== "identity") return null;
+      const bytes = new Uint8Array(kept);
+      let at = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, at);
+        at += chunk.byteLength;
+      }
+      if (format === null) return new TextDecoder().decode(bytes);
+      const decoded = new Response(bytes).body;
+      if (decoded === null) return null;
+      return await new Response(decoded.pipeThrough(new DecompressionStream(format))).text();
+    };
+    const finish = (): void => {
+      if (ended) return;
+      ended = true;
+      const task = answerText().then(
+        (answer) => note(answer === null ? null : checkUsageFromAnswer(answer, streaming)),
+        // A decode that fails reads as an answer with no usage: the client got its bytes
+        // either way, and the check is counted.
+        () => note(null),
+      );
+      deps.background?.(task);
+    };
+    const counted = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        finish();
+        return reader.cancel(reason);
+      },
+      async pull(controller) {
+        let step: Awaited<ReturnType<typeof reader.read>>;
+        try {
+          step = await reader.read();
+        } catch (error) {
+          // The client gets the same failure it got before the counting existed.
+          controller.error(error);
+          finish();
+          return;
+        }
+        if (step.done) {
+          controller.close();
+          finish();
+          return;
+        }
+        controller.enqueue(step.value);
+        if (!keep) return;
+        kept += step.value.byteLength;
+        if (kept > CHECK_USAGE_MAX_BYTES) {
+          // A surprising answer: the check is counted, its tokens are not.
+          keep = false;
+          chunks = [];
+          return;
+        }
+        chunks.push(step.value);
+      },
+    });
+    return new Response(counted, {
+      headers: response.headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  }
+
   async function route(req: Request, url: URL, model: { name: string }): Promise<Outcome> {
     const config = deps.getConfig();
     dropRemovedFallbacks(config);
@@ -1672,10 +1884,14 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     // the judge only when Claude cannot answer it (`judgeAsFallback`). count_tokens never.
     // Only targets `gateway slot judge` tested; an untested one is ignored, with one WARN.
     const judgeTargets = guard ? judgeTargetsOf(config, true) : [];
-    if (judgeTargets.length > 0 && url.pathname === MESSAGES_PATH) {
-      return judgeAsFallback(req, url, config, body, model, judgeTargets, claudeRoute);
-    }
-    return claudeRoute();
+    const judged =
+      judgeTargets.length > 0 && url.pathname === MESSAGES_PATH
+        ? judgeAsFallback(req, url, config, body, model, judgeTargets, claudeRoute)
+        : claudeRoute();
+    // Auto mode's safety check, counted (`countedCheck`). A check is a `/v1/messages`
+    // request: a `count_tokens` for one counts tokens, it judges nothing, and the check
+    // itself never goes there (`count_tokens` is refused a fallback above).
+    return guard && url.pathname === MESSAGES_PATH ? countedCheck(judged) : judged;
 
     /** The request's way to Claude, or by its name: everything but the judge fallback. */
     // Not `async`: it only hands back a promise, and an extra async step would reorder the
@@ -1801,29 +2017,45 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
  * it once read, so a child process never takes the socket for its own.
  */
 export async function startRouter(
-  configPath: string,
-  statePath: string,
+  paths: RouterPaths,
   env: Record<string, string | undefined> = process.env,
 ): Promise<void> {
   const log = (line: string) => console.log(line);
+  const configPath = paths.gatewayConfigFile;
+  const statePath = paths.gatewayStateFile;
   // A missing or bad file at start does not stop the router: it runs `emptyConfig()`
   // (both slots on Claude Sonnet 5.5) and picks the file up once it is fixed.
   const source = watchConfig(configPath, log);
   const configPort = source.get().port;
+  // Mode 600 in an owner-only folder: they name models, times and counts, nothing secret,
+  // but they are the person's own state.
+  const writeState = (file: string, text: string) => {
+    mkdirSync(dirname(file), { mode: 0o700, recursive: true });
+    atomicWrite(file, text, 0o600);
+  };
   const handlerFor = (port: number) =>
     createRouter({
       configPath,
       fetch: (url, init) => fetch(url, init),
       getConfig: () => source.get(),
+      // The safety checks counted before this router started, so a restart (an update, a
+      // crash) goes on counting the same days. A file that is not there yet is the first
+      // run, not a failure; an unreadable one is said so once, by the router itself.
+      loadSafetyChecks: () => {
+        try {
+          return readFileSync(paths.safetyChecksFile, "utf8");
+        } catch (error) {
+          // The first run on this machine: no file yet. Anything else (a mode, a folder
+          // that is not there) is said once, by the router.
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+          throw error;
+        }
+      },
       log,
       now: () => Date.now(),
       port,
-      // Mode 600 in an owner-only folder: it names models and times, nothing secret, but it is
-      // the person's own state.
-      saveState: (text) => {
-        mkdirSync(dirname(statePath), { mode: 0o700, recursive: true });
-        atomicWrite(statePath, text, 0o600);
-      },
+      saveSafetyChecks: (text) => writeState(paths.safetyChecksFile, text),
+      saveState: (text) => writeState(statePath, text),
     });
 
   const fd = inheritedListenFd(env, process.pid);

@@ -22,12 +22,13 @@ function routerPaths(env = process.env) {
   return {
     home,
     gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json")
+    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
+    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json")
   };
 }
 
 // src/gateway/router.ts
-import { mkdirSync as mkdirSync3 } from "fs";
+import { mkdirSync as mkdirSync3, readFileSync as readFileSync3 } from "fs";
 import { dirname as dirname2 } from "path";
 
 // src/setup/write.ts
@@ -6729,6 +6730,152 @@ function oneLine(text, max, options = {}) {
   return line.length > max ? `${cutText(line, max)}${options.mark ?? ""}` : line;
 }
 
+// src/gateway/safety-checks.ts
+var SAFETY_CHECK_DAYS = 30;
+var countSchema = object({
+  cacheRead: number2(),
+  cacheWrite: number2(),
+  checks: number2(),
+  input: number2(),
+  output: number2()
+});
+var daySchema = object({
+  anthropic: countSchema,
+  checks: number2(),
+  fallback: countSchema
+});
+var stateSchema2 = object({
+  days: record(string2(), daySchema),
+  version: literal(1)
+});
+function emptySafetyChecks() {
+  return { days: {}, version: 1 };
+}
+function formatSafetyCheckState(state) {
+  return `${JSON.stringify(state, null, 2)}
+`;
+}
+function parseSafetyCheckState(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = stateSchema2.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+function localDay(ms, timeZone) {
+  return new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone,
+    year: "numeric"
+  }).format(new Date(ms));
+}
+function dayRecord(state, day) {
+  const existing = state.days[day];
+  if (existing !== undefined)
+    return existing;
+  const fresh = {
+    anthropic: { cacheRead: 0, cacheWrite: 0, checks: 0, input: 0, output: 0 },
+    checks: 0,
+    fallback: { cacheRead: 0, cacheWrite: 0, checks: 0, input: 0, output: 0 }
+  };
+  state.days[day] = fresh;
+  return fresh;
+}
+function pruneSafetyChecks(state, keep = SAFETY_CHECK_DAYS) {
+  const days = Object.keys(state.days).sort();
+  for (const day of days.slice(0, Math.max(0, days.length - keep)))
+    delete state.days[day];
+}
+function recordSafetyCheck(state, day, side) {
+  const record2 = dayRecord(state, day);
+  record2.checks += 1;
+  if (side !== null)
+    record2[side].checks += 1;
+  pruneSafetyChecks(state);
+}
+function addCheckTokens(state, day, side, tokens) {
+  const count = state.days[day]?.[side];
+  if (count === undefined)
+    return;
+  count.cacheRead += tokens.cacheRead;
+  count.cacheWrite += tokens.cacheWrite;
+  count.input += tokens.input;
+  count.output += tokens.output;
+}
+function isJsonObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function tokenCount(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
+    return null;
+  return Math.round(value);
+}
+function tokensOf(usage) {
+  if (!isJsonObject2(usage))
+    return null;
+  const input = tokenCount(usage.input_tokens);
+  const output = tokenCount(usage.output_tokens);
+  const cacheRead = tokenCount(usage.cache_read_input_tokens);
+  const cacheWrite = tokenCount(usage.cache_creation_input_tokens);
+  if (input === null && output === null && cacheRead === null && cacheWrite === null)
+    return null;
+  return {
+    cacheRead: cacheRead ?? 0,
+    cacheWrite: cacheWrite ?? 0,
+    input: input ?? 0,
+    output: output ?? 0
+  };
+}
+function eventData(text) {
+  const out = [];
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice("data:".length).replace(/^ /, ""));
+    if (data.length > 0)
+      out.push(data.join(`
+`));
+  }
+  return out;
+}
+function checkUsageFromAnswer(text, streaming) {
+  if (!streaming) {
+    let body;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return null;
+    }
+    return tokensOf(isJsonObject2(body) ? body.usage : undefined);
+  }
+  let start = null;
+  let output = null;
+  for (const data of eventData(text)) {
+    let event;
+    try {
+      event = JSON.parse(data);
+    } catch {
+      continue;
+    }
+    if (!isJsonObject2(event))
+      continue;
+    if (event.type === "message_start" && isJsonObject2(event.message)) {
+      start = tokensOf(event.message.usage) ?? start;
+    }
+    if (event.type === "message_delta") {
+      output = tokenCount(isJsonObject2(event.usage) ? event.usage.output_tokens : undefined) ?? output;
+    }
+  }
+  if (start === null && output === null)
+    return null;
+  return {
+    ...start ?? { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 },
+    output: output ?? start?.output ?? 0
+  };
+}
+
 // src/gateway/router.ts
 var FALLBACK_SAVE_EVERY_MS = 60000;
 var LIMIT_REST_MIN_SEC = 60;
@@ -6936,10 +7083,10 @@ function toolSearchForBackend(body) {
   const messages = body.messages;
   if (Array.isArray(messages)) {
     out.messages = messages.map((message) => {
-      if (!isJsonObject2(message) || !Array.isArray(message.content))
+      if (!isJsonObject3(message) || !Array.isArray(message.content))
         return message;
       const content = message.content.map((block) => {
-        if (!isJsonObject2(block) || block.type !== "tool_result")
+        if (!isJsonObject3(block) || block.type !== "tool_result")
           return block;
         const inner = block.content;
         if (!Array.isArray(inner))
@@ -6947,7 +7094,7 @@ function toolSearchForBackend(body) {
         return {
           ...block,
           content: inner.map((part) => {
-            if (!isJsonObject2(part) || part.type !== "tool_reference")
+            if (!isJsonObject3(part) || part.type !== "tool_reference")
               return part;
             const name = part.tool_name;
             if (typeof name !== "string")
@@ -6963,7 +7110,7 @@ function toolSearchForBackend(body) {
   const tools = body.tools;
   if (Array.isArray(tools)) {
     out.tools = tools.flatMap((tool) => {
-      if (!isJsonObject2(tool) || tool.defer_loading !== true)
+      if (!isJsonObject3(tool) || tool.defer_loading !== true)
         return [tool];
       const name = tool.name;
       if (typeof name !== "string" || !referenced.has(name))
@@ -6977,10 +7124,10 @@ function toolSearchForBackend(body) {
 }
 function reasoningOffForBackend(body, options = {}) {
   const thinking = body.thinking;
-  const off = isJsonObject2(thinking) ? thinking.type === "disabled" : thinking === undefined && options.absentIsOff === true;
+  const off = isJsonObject3(thinking) ? thinking.type === "disabled" : thinking === undefined && options.absentIsOff === true;
   if (!off)
     return body;
-  const outputConfig = isJsonObject2(body.output_config) ? body.output_config : {};
+  const outputConfig = isJsonObject3(body.output_config) ? body.output_config : {};
   if (outputConfig.effort !== undefined)
     return body;
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
@@ -6998,11 +7145,11 @@ function requestForClaudeFallback(body, model) {
   const out = { ...body };
   const changes = [];
   const thinking = body.thinking;
-  if (isJsonObject2(thinking) && thinking.type === "disabled") {
+  if (isJsonObject3(thinking) && thinking.type === "disabled") {
     if (rules.thinkingOff === "left out") {
       delete out.thinking;
       changes.push("thinking disabled -> left out (always on)");
-      const outputConfig = isJsonObject2(body.output_config) ? body.output_config : undefined;
+      const outputConfig = isJsonObject3(body.output_config) ? body.output_config : undefined;
       if (outputConfig?.effort === undefined) {
         out.output_config = { ...outputConfig, effort: "low" };
         changes.push("effort low (nearest to thinking off)");
@@ -7011,17 +7158,17 @@ function requestForClaudeFallback(body, model) {
       out.thinking = { type: "between_tools" };
       changes.push("thinking disabled -> between_tools");
       const outputConfig = body.output_config;
-      if (isJsonObject2(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
+      if (isJsonObject3(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
         out.output_config = { ...outputConfig, effort: "high" };
         changes.push(`effort ${outputConfig.effort} -> high`);
       }
     }
-  } else if (isJsonObject2(thinking) && thinking.type === "enabled") {
+  } else if (isJsonObject3(thinking) && thinking.type === "enabled") {
     out.thinking = thinking.display === undefined ? { type: "adaptive" } : { display: thinking.display, type: "adaptive" };
     changes.push("thinking enabled (budget) -> adaptive");
   }
   const toolChoice = body.tool_choice;
-  if (isJsonObject2(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
+  if (isJsonObject3(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
     out.tool_choice = toolChoice.disable_parallel_tool_use === undefined ? { type: "auto" } : { disable_parallel_tool_use: toolChoice.disable_parallel_tool_use, type: "auto" };
     changes.push(`tool_choice ${toolChoice.type} -> auto`);
   }
@@ -7038,7 +7185,7 @@ function requestForClaudeFallback(body, model) {
   return changes.length > 0 ? { body: out, changes } : { body, changes };
 }
 var encoder = new TextEncoder;
-function isJsonObject2(value) {
+function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function parseBody(bytes) {
@@ -7048,7 +7195,7 @@ function parseBody(bytes) {
   } catch {
     return null;
   }
-  return isJsonObject2(parsed) ? parsed : null;
+  return isJsonObject3(parsed) ? parsed : null;
 }
 function deadline(ms) {
   let timer;
@@ -7056,6 +7203,39 @@ function deadline(ms) {
     timer = setTimeout(() => resolve("timeout"), Math.max(0, ms));
   });
   return { clear: () => clearTimeout(timer), done };
+}
+var CHECK_USAGE_MAX_BYTES = 256 * 1024;
+function stateWriter(deps, what, save) {
+  if (save === undefined)
+    return () => {};
+  let queued = false;
+  let lastError = "";
+  return () => {
+    if (queued)
+      return;
+    queued = true;
+    const task = new Promise((resolve) => {
+      setTimeout(() => {
+        queued = false;
+        try {
+          save();
+          lastError = "";
+        } catch (error) {
+          const message = messageOf(error);
+          if (message !== lastError)
+            deps.log(`ERROR cannot write ${what}: ${message}`);
+          lastError = message;
+        }
+        resolve();
+      }, 0);
+    });
+    deps.background?.(task);
+  };
+}
+function answeredSide(target) {
+  if (target === "none")
+    return null;
+  return target === "anthropic" || target.startsWith("claude-") ? "anthropic" : "fallback";
 }
 function createRouter(deps) {
   const startedAt = deps.now();
@@ -7065,34 +7245,33 @@ function createRouter(deps) {
   const aliasesLogged = new Set;
   const translationsLogged = new Set;
   const limitState = emptyLimitState();
+  const safetyChecks = loadedSafetyChecks();
   const limitedUntil = new Map;
   const fellBack = new Set;
   const untestedLogged = new Set;
   const cleanedLogged = new Set;
   let checkedConfig = null;
-  let saveQueued = false;
-  let lastSaveError = "";
-  function persist() {
-    const save = deps.saveState;
-    if (save === undefined || saveQueued)
-      return;
-    saveQueued = true;
-    const task = new Promise((resolve) => {
-      setTimeout(() => {
-        saveQueued = false;
-        try {
-          save(formatLimitState(limitState));
-          lastSaveError = "";
-        } catch (error) {
-          const message = messageOf(error);
-          if (message !== lastSaveError)
-            deps.log(`ERROR cannot write the limit state: ${message}`);
-          lastSaveError = message;
-        }
-        resolve();
-      }, 0);
-    });
-    deps.background?.(task);
+  const persist = stateWriter(deps, "the limit state", deps.saveState === undefined ? undefined : () => deps.saveState?.(formatLimitState(limitState)));
+  const persistChecks = stateWriter(deps, "the safety-check counts", deps.saveSafetyChecks === undefined ? undefined : () => deps.saveSafetyChecks?.(formatSafetyCheckState(safetyChecks)));
+  function loadedSafetyChecks() {
+    const load = deps.loadSafetyChecks;
+    if (load === undefined)
+      return emptySafetyChecks();
+    let text;
+    try {
+      text = load();
+    } catch (error) {
+      deps.log(`WARN cannot read the safety-check counts: ${messageOf(error)}`);
+      return emptySafetyChecks();
+    }
+    if (text === null)
+      return emptySafetyChecks();
+    const parsed = parseSafetyCheckState(text);
+    if (parsed === null) {
+      deps.log("WARN the safety-check file is not one this version reads; counting starts over");
+      return emptySafetyChecks();
+    }
+    return parsed;
   }
   function observeClaude(model, response, path) {
     if (path !== MESSAGES_PATH)
@@ -7609,6 +7788,99 @@ function createRouter(deps) {
     deps.log(`${JUDGE_SLOT}: Claude answers safety checks again; the judge fallback is over`);
     persist();
   }
+  function countedCheck(judged) {
+    const day = localDay(deps.now());
+    return judged.then((outcome) => {
+      const side = answeredSide(outcome.target);
+      recordSafetyCheck(safetyChecks, day, side);
+      persistChecks();
+      return {
+        ...outcome,
+        response: observedAnswer(outcome.response, (tokens) => {
+          if (tokens === null || side === null)
+            return;
+          addCheckTokens(safetyChecks, day, side, tokens);
+          persistChecks();
+        })
+      };
+    });
+  }
+  function observedAnswer(response, note) {
+    const body = response.body;
+    if (body === null) {
+      note(null);
+      return response;
+    }
+    const streaming = (response.headers.get("content-type") ?? "").includes("text/event-stream");
+    const reader = body.getReader();
+    let chunks = [];
+    let kept = 0;
+    let keep = true;
+    let ended = false;
+    const answerText = async () => {
+      if (!keep)
+        return null;
+      const encoding = (response.headers.get("content-encoding") ?? "").trim().toLowerCase();
+      const format = encoding === "" || encoding === "identity" ? null : decompressionFormat(encoding);
+      if (format === null && encoding !== "" && encoding !== "identity")
+        return null;
+      const bytes = new Uint8Array(kept);
+      let at = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, at);
+        at += chunk.byteLength;
+      }
+      if (format === null)
+        return new TextDecoder().decode(bytes);
+      const decoded = new Response(bytes).body;
+      if (decoded === null)
+        return null;
+      return await new Response(decoded.pipeThrough(new DecompressionStream(format))).text();
+    };
+    const finish = () => {
+      if (ended)
+        return;
+      ended = true;
+      const task = answerText().then((answer) => note(answer === null ? null : checkUsageFromAnswer(answer, streaming)), () => note(null));
+      deps.background?.(task);
+    };
+    const counted = new ReadableStream({
+      cancel(reason) {
+        finish();
+        return reader.cancel(reason);
+      },
+      async pull(controller) {
+        let step;
+        try {
+          step = await reader.read();
+        } catch (error) {
+          controller.error(error);
+          finish();
+          return;
+        }
+        if (step.done) {
+          controller.close();
+          finish();
+          return;
+        }
+        controller.enqueue(step.value);
+        if (!keep)
+          return;
+        kept += step.value.byteLength;
+        if (kept > CHECK_USAGE_MAX_BYTES) {
+          keep = false;
+          chunks = [];
+          return;
+        }
+        chunks.push(step.value);
+      }
+    });
+    return new Response(counted, {
+      headers: response.headers,
+      status: response.status,
+      statusText: response.statusText
+    });
+  }
   async function route(req, url, model) {
     const config = deps.getConfig();
     dropRemovedFallbacks(config);
@@ -7666,10 +7938,8 @@ function createRouter(deps) {
     if (guard)
       model.name = `${model.name} (safety check)`;
     const judgeTargets = guard ? judgeTargetsOf(config, true) : [];
-    if (judgeTargets.length > 0 && url.pathname === MESSAGES_PATH) {
-      return judgeAsFallback(req, url, config, body, model, judgeTargets, claudeRoute);
-    }
-    return claudeRoute();
+    const judged = judgeTargets.length > 0 && url.pathname === MESSAGES_PATH ? judgeAsFallback(req, url, config, body, model, judgeTargets, claudeRoute) : claudeRoute();
+    return guard && url.pathname === MESSAGES_PATH ? countedCheck(judged) : judged;
     function claudeRoute() {
       const found = guard || alias !== null || url.pathname !== MESSAGES_PATH ? null : modelSlotFor(body.model, config.modelSlots);
       const slotRoute = found === null ? null : resolveRoute(found.slot, config);
@@ -7752,21 +8022,34 @@ function createRouter(deps) {
     return outcome.response;
   };
 }
-async function startRouter(configPath, statePath, env = process.env) {
+async function startRouter(paths, env = process.env) {
   const log = (line) => console.log(line);
+  const configPath = paths.gatewayConfigFile;
+  const statePath = paths.gatewayStateFile;
   const source = watchConfig(configPath, log);
   const configPort = source.get().port;
+  const writeState = (file, text) => {
+    mkdirSync3(dirname2(file), { mode: 448, recursive: true });
+    atomicWrite(file, text, 384);
+  };
   const handlerFor = (port) => createRouter({
     configPath,
     fetch: (url, init) => fetch(url, init),
     getConfig: () => source.get(),
+    loadSafetyChecks: () => {
+      try {
+        return readFileSync3(paths.safetyChecksFile, "utf8");
+      } catch (error) {
+        if (error.code === "ENOENT")
+          return null;
+        throw error;
+      }
+    },
     log,
     now: () => Date.now(),
     port,
-    saveState: (text) => {
-      mkdirSync3(dirname2(statePath), { mode: 448, recursive: true });
-      atomicWrite(statePath, text, 384);
-    }
+    saveSafetyChecks: (text) => writeState(paths.safetyChecksFile, text),
+    saveState: (text) => writeState(statePath, text)
   });
   const fd = inheritedListenFd(env, process.pid);
   for (const name of LISTEN_VARS)
@@ -7818,8 +8101,7 @@ function exitWhenDone(done, log, cleanup) {
 // src/entries/router.ts
 var tooOld = bunTooOld(Bun.version, process.execPath);
 if (tooOld === null) {
-  const paths = routerPaths();
-  await startRouter(paths.gatewayConfigFile, paths.gatewayStateFile);
+  await startRouter(routerPaths());
 } else {
   console.error(`cc-smart-dev-kit-router: ${tooOld} Upgrade this Bun, then run: ${COMMAND} gateway setup (systemd gives up after 5 failed starts, so an upgrade alone is not enough: it clears that limit with reset-failed and starts the router again)`);
   process.exitCode = 1;

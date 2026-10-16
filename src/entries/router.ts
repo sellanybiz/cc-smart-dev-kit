@@ -17,8 +17,7 @@ import { startRouter } from "../gateway/router";
 // reset-failed`) and starts the socket and the unit again, with the new Bun's path.
 const tooOld = bunTooOld(Bun.version, process.execPath);
 if (tooOld === null) {
-  const paths = routerPaths();
-  await startRouter(paths.gatewayConfigFile, paths.gatewayStateFile);
+  await startRouter(routerPaths());
 } else {
   console.error(
     `cc-smart-dev-kit-router: ${tooOld} Upgrade this Bun, then run: ${COMMAND} gateway setup (systemd gives up after 5 failed starts, so an upgrade alone is not enough: it clears that limit with reset-failed and starts the router again)`,
