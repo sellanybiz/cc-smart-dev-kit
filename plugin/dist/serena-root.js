@@ -6063,6 +6063,7 @@ var workflowSchema = strictObject({
   mergeMethod: _enum(["merge", "squash", "rebase"]).optional(),
   deleteBranch: boolean2().optional(),
   reviewBeforePush: boolean2().optional(),
+  reviewAgents: array(string2().min(1)).min(1).refine((agents) => new Set(agents).size === agents.length, "an agent is listed twice").optional(),
   clearWorktreeAfterMerge: boolean2().optional(),
   alerts: strictObject({
     events: alertEventsSchema.optional(),
@@ -6078,6 +6079,7 @@ var workflowDefaults = {
   mergeMethod: "merge",
   deleteBranch: false,
   reviewBeforePush: true,
+  reviewAgents: ["cc-smart-dev-kit:reviewer"],
   clearWorktreeAfterMerge: false,
   alerts: {
     events: [...ALERT_EVENTS],
@@ -6094,6 +6096,7 @@ var POLICY_KEYS = [
   "mergeMethod",
   "deleteBranch",
   "reviewBeforePush",
+  "reviewAgents",
   "clearWorktreeAfterMerge",
   "alerts.events",
   "alerts.sound",
@@ -6144,6 +6147,7 @@ var PLUGIN_HOOK_NAMES = [
   "agent-guard",
   "job-route",
   "after-merge",
+  "review-record",
   "worktree-leftovers",
   "session-name"
 ];
@@ -7467,29 +7471,359 @@ function programsOf(command) {
 }
 
 // src/hooks/after-merge.ts
-function pullRequestMerges(command, depth = 0) {
-  const runs = [];
-  for (const step of shellSteps(command, { joinLines: true })) {
-    const invocation = invocationOf2(wordsOf2(step.text));
-    if (invocation === undefined)
-      continue;
-    const { args, program } = invocation;
-    if (program === "gh" && args[0] === "pr" && args[1] === "merge")
-      runs.push(args.slice(2));
-    const inner = nestedCommand2(program, args, step.pipedFrom);
-    if (inner !== undefined && depth < MAX_NESTING2)
-      runs.push(...pullRequestMerges(inner, depth + 1));
-  }
-  return runs;
+var GH_COMMANDS = new Set([
+  "accessibility",
+  "actions",
+  "agent-task",
+  "alias",
+  "api",
+  "attestation",
+  "auth",
+  "browse",
+  "cache",
+  "co",
+  "codespace",
+  "completion",
+  "config",
+  "copilot",
+  "discussion",
+  "environment",
+  "exit-codes",
+  "extension",
+  "formatting",
+  "gist",
+  "gpg-key",
+  "help",
+  "issue",
+  "label",
+  "licenses",
+  "mintty",
+  "org",
+  "pr",
+  "preview",
+  "project",
+  "reference",
+  "release",
+  "repo",
+  "ruleset",
+  "run",
+  "search",
+  "secret",
+  "skill",
+  "ssh-key",
+  "status",
+  "telemetry",
+  "variable",
+  "workflow"
+]);
+function call(fields = {}) {
+  return {
+    target: null,
+    refusal: null,
+    unread: null,
+    arms: false,
+    disarms: false,
+    unknown: null,
+    ...fields
+  };
 }
+var CHANGE_DIR = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
+var ENV_PROGRAM = /^(?:.*[\\/])?env(?:\.(?:exe|cmd))?$/i;
+var GH_POINTING_TEXT = /GH_(?:REPO|HOST)/;
+var GH_POINTING = /^GH_(?:REPO|HOST)=/;
 var isAutoFlag = (word) => /^--auto(?:=|$)/.test(word);
 var isDisableAutoFlag = (word) => /^--disable-auto(?:=|$)/.test(word);
-var isArmingFlag = (word) => isAutoFlag(word) || isDisableAutoFlag(word);
-function mergesPullRequest(command) {
-  return pullRequestMerges(command).some((words) => !words.some(isArmingFlag));
+function pullRequestMerges(command, aliases = null, depth = 0, movedBefore = null) {
+  const calls = [];
+  let moved = movedBefore;
+  for (const step of shellSteps(command, { joinLines: true })) {
+    const words = wordsOf2(step.text);
+    if (words.some((word) => GH_POINTING_TEXT.test(word))) {
+      moved ??= "an earlier step in the same command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";
+    }
+    const invocation = invocationOf2(words);
+    const runnerWord = RUNNERS[programName(words[0] ?? "")];
+    if (invocation === undefined) {
+      if (runnerWord !== undefined)
+        moved ??= runnerWord.moved;
+      continue;
+    }
+    const { args, program } = invocation;
+    if (program === "git")
+      moved ??= gitMoved(args);
+    else if (CHANGE_DIR.has(program)) {
+      moved ??= `an earlier \`${program}\` in the same command changes the folder it runs in`;
+    }
+    const runner = runnerOf(program, prefixWords(words, args));
+    if (runner === null && runnerWord !== undefined)
+      moved ??= runnerWord.moved;
+    if (program === "gh" && runner === null) {
+      calls.push(...dispatch(args, moved ?? prefixMoved(words, args), aliases, depth));
+      moved ??= ghSwitchReason(args, aliases, depth);
+    } else if (runner !== null) {
+      calls.push(...runnerCalls(words, runner, moved ?? prefixMoved(words, args), aliases, depth));
+    }
+    const inner = nestedCommand2(program, args, step.pipedFrom);
+    if (inner !== undefined && depth < MAX_NESTING2) {
+      calls.push(...pullRequestMerges(inner, aliases, depth + 1, moved));
+    }
+    const script = suScript(program, args);
+    if (script !== undefined && depth < MAX_NESTING2) {
+      calls.push(...runnerCallsOfScript(script, runner ?? SU_RUNNER, moved, aliases, depth));
+    }
+  }
+  return calls;
 }
-function requestsMerge(command) {
-  return pullRequestMerges(command).some((words) => !words.some(isDisableAutoFlag));
+function prefixWords(words, args) {
+  return words.slice(0, Math.max(0, words.length - args.length - 1));
+}
+function suScript(program, args) {
+  if (program !== "su")
+    return;
+  const at = args.findIndex((arg) => arg === "-c" || /^-[a-zA-Z]*c[a-zA-Z]*$/.test(arg));
+  return at === -1 ? undefined : args[at + 1];
+}
+var RUNNERS = {
+  doas: {
+    feeds: false,
+    moved: "an earlier `doas` in the same command may run the merge as another user",
+    reason: "the merge runs under `doas`, with another user's login and gh config"
+  },
+  find: {
+    feeds: false,
+    moved: "an earlier `find` in the same command may run the merge once for each match",
+    reason: "the merge runs from `find -exec`, once for each match"
+  },
+  parallel: {
+    feeds: true,
+    moved: "an earlier `parallel` in the same command may feed the merge its arguments from outside the line",
+    reason: "the merge runs from `parallel`, whose arguments come from outside the line"
+  },
+  su: {
+    feeds: true,
+    moved: "an earlier `su` in the same command may run the merge in another shell, with its own environment",
+    reason: "the merge runs from `su`, whose command and environment come from outside the line"
+  },
+  sudo: {
+    feeds: false,
+    moved: "an earlier `sudo` in the same command may run the merge under another user",
+    reason: "the merge runs under `sudo`, with another user's login and gh config"
+  },
+  watch: {
+    feeds: false,
+    moved: "an earlier `watch` in the same command may run the merge over and over",
+    reason: "the merge runs from `watch`, over and over"
+  },
+  xargs: {
+    feeds: true,
+    moved: "an earlier `xargs` in the same command may feed the merge its arguments from outside the line",
+    reason: "the merge runs from `xargs`, whose arguments come from outside the line"
+  }
+};
+var SU_RUNNER = {
+  feeds: true,
+  name: "su",
+  reason: "the merge runs from `su`, whose command and environment come from outside the line"
+};
+function runnerOf(program, before) {
+  for (const word of [program, ...before]) {
+    const name = programName(word);
+    const spec = RUNNERS[name];
+    if (spec !== undefined)
+      return { feeds: spec.feeds, name, reason: spec.reason };
+  }
+  return null;
+}
+function runnerCalls(words, runner, moved, aliases, depth) {
+  const at = words.findIndex((word) => programName(word) === "gh");
+  if (at !== -1)
+    return refuseRunner(dispatch(words.slice(at + 1), null, aliases, depth), runner);
+  const held = words.find((word) => /\bgh\b/i.test(word) && /\bmerge\b/i.test(word));
+  if (held === undefined)
+    return [];
+  return refuseRunner(pullRequestMerges(held, aliases, depth + 1, moved), runner);
+}
+function runnerCallsOfScript(script, runner, moved, aliases, depth) {
+  return refuseRunner(pullRequestMerges(script, aliases, depth + 1, moved), runner);
+}
+function refuseRunner(calls, runner) {
+  return calls.filter((one) => !one.disarms).map((one) => call({ target: runner.feeds ? null : one.target, refusal: runner.reason }));
+}
+function gitMoved(args) {
+  let index = 0;
+  let otherFolder = false;
+  for (;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "-C") {
+      otherFolder = true;
+      index += 1;
+    } else if (["--git-dir", "--namespace", "--work-tree", "-c"].includes(arg)) {
+      index += 1;
+    } else if (!arg.startsWith("-")) {
+      break;
+    }
+  }
+  if (otherFolder)
+    return "an earlier `git -C` in the same command runs in another folder";
+  const sub = args[index];
+  if (sub === "switch" || sub === "checkout") {
+    return `an earlier \`git ${sub}\` in the same command may change the branch it merges from`;
+  }
+  return null;
+}
+function prefixMoved(words, args) {
+  const before = words.slice(0, Math.max(0, words.length - args.length - 1));
+  if (before.some((word) => GH_POINTING.test(word))) {
+    return "the merge sets `GH_REPO`/`GH_HOST` itself, so which repository it merges in is not certain";
+  }
+  if (before.some((word) => ENV_PROGRAM.test(word))) {
+    return "the merge runs through `env`, so which environment gh sees is not certain";
+  }
+  return null;
+}
+function leadingFlags(words) {
+  let repo = null;
+  let index = 0;
+  for (;index < words.length; index++) {
+    const word = words[index] ?? "";
+    if (word === "--")
+      return { rest: words.slice(index + 1), repo, unknown: null, help: false };
+    if (!word.startsWith("-"))
+      break;
+    if (word === "-h" || word === "--help") {
+      return { rest: [], repo, unknown: null, help: true };
+    }
+    if (word === "-R" || word === "--repo")
+      repo = words[++index] ?? null;
+    else if (word.startsWith("--repo="))
+      repo = word.slice("--repo=".length) || null;
+    else if (isShort(word) && word.startsWith("-R"))
+      repo = word.slice(2) || null;
+    else
+      return { rest: words.slice(index + 1), repo, unknown: word, help: false };
+  }
+  return { rest: words.slice(index), repo, unknown: null, help: false };
+}
+function couldBeMerge(rest) {
+  const command = rest[0]?.toLowerCase();
+  if (command === undefined)
+    return false;
+  if (command === "api")
+    return true;
+  if (command === "pr")
+    return rest.slice(1).some((word) => word.toLowerCase() === "merge");
+  return !GH_COMMANDS.has(command);
+}
+function dispatch(words, moved, aliases, depth, repo = null) {
+  const leading = leadingFlags(words);
+  const carried = repo ?? leading.repo;
+  if (leading.unknown !== null) {
+    return couldBeMerge(leading.rest) ? [
+      call({
+        refusal: `the command carries \`${leading.unknown}\` before the gh command, which this guard does not know`
+      })
+    ] : [];
+  }
+  const word = leading.rest[0];
+  if (word === undefined)
+    return [];
+  const command = word.toLowerCase();
+  if (command === "pr")
+    return prCalls(leading.rest.slice(1), moved, carried);
+  if (command === "api")
+    return apiCalls(leading.rest.slice(1));
+  if (GH_COMMANDS.has(command))
+    return [];
+  const rest = leading.rest.slice(1);
+  if (aliases === null)
+    return [call({ unknown: command })];
+  const expansion = aliases.get(command);
+  if (expansion === undefined) {
+    return leading.rest.some((word) => /merge/i.test(word)) ? [
+      call({
+        refusal: `\`gh ${command}\` is no gh command or alias, and its words name a merge, which this guard does not judge`
+      })
+    ] : [];
+  }
+  if (expansion.startsWith("!")) {
+    return [
+      call({ refusal: `\`gh ${command}\` is a shell alias, so what it runs cannot be read` })
+    ];
+  }
+  if (depth >= MAX_NESTING2) {
+    return [
+      call({
+        refusal: `\`gh ${command}\` expands to further commands, which this guard does not follow`
+      })
+    ];
+  }
+  return dispatch([...wordsOf2(expansion), ...rest], moved, aliases, depth + 1, carried);
+}
+function ghSwitchReason(words, aliases, depth) {
+  if (depth > MAX_NESTING2)
+    return null;
+  const leading = leadingFlags(words);
+  if (leading.unknown !== null)
+    return null;
+  const command = leading.rest[0]?.toLowerCase();
+  const args = leading.rest.slice(1);
+  if (command === "co") {
+    return "an earlier `gh co` in the same command changes the branch gh works on";
+  }
+  if (command === "pr" && args[0] === "checkout") {
+    return "an earlier `gh pr checkout` in the same command changes the branch gh works on";
+  }
+  if (command === "repo" && args[0] === "set-default") {
+    return "an earlier `gh repo set-default` in the same command changes the repository gh works on";
+  }
+  if (command === undefined || GH_COMMANDS.has(command))
+    return null;
+  const expansion = aliases?.get(command);
+  if (expansion === undefined || expansion.startsWith("!"))
+    return null;
+  return ghSwitchReason([...wordsOf2(expansion), ...args], aliases, depth + 1);
+}
+function prCalls(rest, moved, carried) {
+  let repo = null;
+  let index = 0;
+  for (;index < rest.length; index++) {
+    const word = rest[index] ?? "";
+    if (word === "--") {
+      index += 1;
+      break;
+    }
+    if (!word.startsWith("-"))
+      break;
+    if (word === "-h" || word === "--help")
+      return [];
+    if (word === "-R" || word === "--repo")
+      repo = rest[++index] ?? null;
+    else if (word.startsWith("--repo="))
+      repo = word.slice("--repo=".length) || null;
+    else if (isShort(word) && word.startsWith("-R"))
+      repo = word.slice(2) || null;
+    else {
+      return [
+        call({
+          refusal: `\`gh pr\` takes a flag this guard does not know (\`${word}\`), so it cannot tell whether this is a merge`
+        })
+      ];
+    }
+  }
+  if (rest[index] !== "merge")
+    return [];
+  const args = rest.slice(index + 1);
+  if (args.some((arg) => arg === "-h" || arg === "--help"))
+    return [];
+  const named = namedPullRequest(args);
+  return [
+    call({
+      target: { ref: named.ref, repo: repo ?? named.repo ?? carried },
+      refusal: moved,
+      arms: args.some(isAutoFlag),
+      disarms: args.some(isDisableAutoFlag)
+    })
+  ];
 }
 var MERGE_FLAGS_WITH_VALUE = new Set([
   "--author-email",
@@ -7497,35 +7831,257 @@ var MERGE_FLAGS_WITH_VALUE = new Set([
   "--body-file",
   "--match-head-commit",
   "--repo",
-  "--subject",
-  "-A",
-  "-b",
-  "-F",
-  "-R",
-  "-t"
+  "--subject"
 ]);
-function mergeTarget(command) {
-  const runs = pullRequestMerges(command);
-  const words = runs.find((run) => !run.some(isArmingFlag)) ?? runs[0];
-  if (words === undefined)
-    return null;
+var MERGE_SHORT_WITH_VALUE = "AbtFR";
+function namedPullRequest(words) {
   let ref = null;
   let repo = null;
-  for (let i = 0;i < words.length; i++) {
-    const word = words[i];
-    if (word === undefined)
+  for (let index = 0;index < words.length; index++) {
+    const word = words[index] ?? "";
+    if (word === "--") {
+      ref ??= words[index + 1] || null;
       break;
-    if (word.startsWith("-")) {
-      const [flag, value] = word.split("=", 2);
-      if (flag === "--repo" || flag === "-R")
-        repo = (value ?? words[i + 1] ?? "") || null;
-      if (!word.includes("=") && MERGE_FLAGS_WITH_VALUE.has(word))
-        i += 1;
+    }
+    if (word.startsWith("--")) {
+      const at = word.indexOf("=");
+      const name = at === -1 ? word : word.slice(0, at);
+      const value = at === -1 ? undefined : word.slice(at + 1);
+      if (name === "--repo")
+        repo = value ?? words[index + 1] ?? null;
+      if (value === undefined && MERGE_FLAGS_WITH_VALUE.has(name))
+        index += 1;
+      continue;
+    }
+    if (isShort(word)) {
+      const { flags, wantsNext } = shortFlags(word, MERGE_SHORT_WITH_VALUE);
+      const letter = flags.slice(-1);
+      if (letter !== "" && MERGE_SHORT_WITH_VALUE.includes(letter)) {
+        const value = wantsNext ? words[index + 1] ?? null : word.slice(flags.length + 1);
+        if (letter === "R")
+          repo = value === "" ? null : value;
+        if (wantsNext)
+          index += 1;
+      }
       continue;
     }
     ref ??= word || null;
   }
   return { ref, repo };
+}
+var API_VALUE_FLAGS = new Set([
+  "--cache",
+  "--field",
+  "--header",
+  "--hostname",
+  "--input",
+  "--jq",
+  "--method",
+  "--preview",
+  "--raw-field",
+  "--template",
+  "-F",
+  "-H",
+  "-X",
+  "-f",
+  "-p",
+  "-q",
+  "-t"
+]);
+var API_PLAIN_FLAGS = new Set([
+  "--allow-escape-sequences",
+  "--include",
+  "--paginate",
+  "--silent",
+  "--slurp",
+  "--verbose",
+  "-i"
+]);
+var API_VALUE_LETTERS = "FHXfpqt";
+var API_MERGE_REFUSAL = "it merges with `gh api`, a form this guard does not judge";
+function apiCalls(rest) {
+  const fields = [];
+  let endpoint = null;
+  let body = false;
+  for (let index = 0;index < rest.length; index++) {
+    const word = rest[index] ?? "";
+    if (word === "--") {
+      endpoint ??= rest[index + 1] ?? null;
+      break;
+    }
+    if (word === "-h" || word === "--help")
+      return [];
+    if (word.startsWith("--")) {
+      const at = word.indexOf("=");
+      const name = at === -1 ? word : word.slice(0, at);
+      if (!API_VALUE_FLAGS.has(name) && !API_PLAIN_FLAGS.has(name)) {
+        return [
+          call({
+            refusal: `\`gh api\` takes a flag this guard does not know (\`${name}\`), so it cannot tell whether this is a merge`
+          })
+        ];
+      }
+      if (name === "--input")
+        body = true;
+      if (name === "--field" || name === "--raw-field") {
+        fields.push(at === -1 ? rest[index + 1] ?? "" : word.slice(at + 1));
+      }
+      if (at === -1 && API_VALUE_FLAGS.has(name))
+        index += 1;
+      continue;
+    }
+    if (isShort(word)) {
+      const { flags, wantsNext } = shortFlags(word, API_VALUE_LETTERS);
+      const unknown = flags.split("").find((one) => one !== "i" && !API_VALUE_LETTERS.includes(one));
+      if (unknown !== undefined) {
+        return [
+          call({
+            refusal: `\`gh api\` takes a flag this guard does not know (\`-${unknown}\`), so it cannot tell whether this is a merge`
+          })
+        ];
+      }
+      const letter = flags.slice(-1);
+      if (letter === "" || !API_VALUE_LETTERS.includes(letter))
+        continue;
+      const value = wantsNext ? rest[index + 1] ?? "" : word.slice(flags.length + 1);
+      if (wantsNext)
+        index += 1;
+      if (letter === "f" || letter === "F")
+        fields.push(value);
+      continue;
+    }
+    endpoint ??= word;
+  }
+  if (endpoint === null)
+    return [];
+  if (isGraphqlEndpoint(endpoint))
+    return graphqlCalls(fields, body);
+  if (endpoint.endsWith("/")) {
+    return [
+      call({
+        refusal: "the `gh api` path is cut short (gh's `{owner}`-style placeholders are read as parts of the command line), so this guard cannot tell which API path it reaches"
+      })
+    ];
+  }
+  const merged = pullRequestMergePath(endpoint);
+  return merged === null ? [] : [call({ target: merged, refusal: API_MERGE_REFUSAL })];
+}
+function isGraphqlEndpoint(endpoint) {
+  const path = endpoint.replace(/[?#].*$/, "").replace(/\/+$/, "").toLowerCase();
+  return path === "graphql" || path.endsWith("/graphql");
+}
+function graphqlCalls(fields, body) {
+  if (body) {
+    return [
+      call({
+        refusal: "the GraphQL request is read from a file or standard input, so this guard cannot read the query"
+      })
+    ];
+  }
+  for (const field of fields) {
+    if (!field.startsWith("query="))
+      continue;
+    const query = field.slice("query=".length);
+    if (query.startsWith("@") || /\$\(|\$\{|`/.test(query)) {
+      return [
+        call({
+          refusal: "the GraphQL query is read from a file or built by the shell, so this guard cannot read it"
+        })
+      ];
+    }
+    if (/mergePullRequest|enablePullRequestAutoMerge/i.test(query)) {
+      return [
+        call({
+          refusal: "the GraphQL query it sends merges a pull request (`mergePullRequest`), which this guard does not judge"
+        })
+      ];
+    }
+  }
+  return [];
+}
+function pullRequestMergePath(endpoint) {
+  const path = endpoint.replace(/^https?:\/\/[^/]+/i, "").replace(/[?#].*$/, "").replace(/^\/+|\/+$/g, "");
+  const match = /^repos\/([^/]+)\/([^/]+)\/pulls\/([^/]+)\/merge$/.exec(path);
+  const [, owner, name, number] = match ?? [];
+  if (owner === undefined || name === undefined || number === undefined)
+    return null;
+  const placeholder = (part) => part.includes("{");
+  return {
+    ref: number,
+    repo: placeholder(owner) || placeholder(name) ? null : `${owner}/${name}`
+  };
+}
+function mergeCalls(command, folder, env, timeoutMs = ALIAS_TIMEOUT_MS) {
+  const unread = pullRequestMerges(command);
+  if (!unread.some((one) => one.unknown !== null))
+    return unread;
+  const aliases = readGhAliases(folder, env, timeoutMs);
+  if (aliases === null) {
+    return [...unread.filter((one) => one.unknown === null), call({ unread: "its aliases" })];
+  }
+  return pullRequestMerges(command, aliases);
+}
+var GH_TIMEOUT_MS = 1e4;
+var ALIAS_TIMEOUT_MS = 3000;
+function readGhAliases(folder, env, timeoutMs = ALIAS_TIMEOUT_MS) {
+  if (timeoutMs <= 0)
+    return null;
+  try {
+    const run = Bun.spawnSync(["gh", "alias", "list"], {
+      cwd: folder,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs
+    });
+    const out = run.stdout.toString();
+    if (run.exitCode !== 0) {
+      return /no aliases configured/i.test(`${out}${run.stderr.toString()}`) ? new Map : null;
+    }
+    return parseAliasList(out);
+  } catch {
+    return null;
+  }
+}
+function parseAliasList(text) {
+  const aliases = new Map;
+  for (const line of text.split(/\r?\n/)) {
+    if (line.trim() === "")
+      continue;
+    const match = /^([^\s:][^:]*):[ \t]?(.*)$/.exec(line);
+    const name = match?.[1]?.trim();
+    const rest = match?.[2]?.trim();
+    if (name === undefined || rest === undefined)
+      return null;
+    const expansion = unquoteYaml(rest);
+    if (expansion === null)
+      return null;
+    aliases.set(name, expansion);
+  }
+  return aliases;
+}
+function unquoteYaml(value) {
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replace(/''/g, "'");
+  }
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    return value.slice(1, -1).replace(/\\"/g, '"');
+  }
+  if (/^[|>&*]/.test(value))
+    return null;
+  return value;
+}
+function mergesPullRequest(command) {
+  return pullRequestMerges(command).some((one) => !one.arms && !one.disarms && (one.target !== null || one.refusal !== null));
+}
+function requestsMerge(command) {
+  return pullRequestMerges(command).some((one) => !one.disarms);
+}
+function mergeTargetOf(calls) {
+  const named = calls.filter((one) => one.target !== null);
+  const chosen = named.find((one) => !one.arms && !one.disarms) ?? named[0];
+  return chosen?.target ?? null;
 }
 var PULL_REQUEST_FIELDS = "number,title,baseRefName,headRefName,state,url,mergedAt";
 function parsePullRequestView(json) {
@@ -7552,13 +8108,16 @@ function pullRequestRepository(url) {
   const match = /github\.com\/([^/\s]+)\/([^/\s]+)\/pull\//i.exec(url);
   return match === null ? null : `${match[1] ?? ""}/${match[2] ?? ""}`.toLowerCase();
 }
-function remoteRepository(remote) {
-  const match = /[/:]([^/:\s]+)\/([^/:\s]+?)(?:\.git)?\/?$/.exec(remote.trim());
-  return match === null ? null : `${match[1] ?? ""}/${match[2] ?? ""}`.toLowerCase();
+function repositoryKey(spec) {
+  const parts = spec.trim().replace(/\.git$/i, "").replace(/\/+$/, "").split(/[/:]/).filter((part) => part !== "");
+  if (parts.length < 2)
+    return null;
+  const [owner, name] = parts.slice(-2);
+  return owner === undefined || name === undefined ? null : `${owner}/${name}`.toLowerCase();
 }
 function sameRepository(prUrl, origin) {
   const pr = pullRequestRepository(prUrl);
-  return pr !== null && pr === remoteRepository(origin);
+  return pr !== null && pr === repositoryKey(origin);
 }
 var ANNOUNCE_WINDOW_MS = 15 * 60000;
 function mergeOutcome(params) {
@@ -7613,7 +8172,7 @@ function viewPullRequest(ref, repo, folder, env) {
       ...repo === null ? [] : ["--repo", repo],
       "--json",
       PULL_REQUEST_FIELDS
-    ], { cwd: folder, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 1e4 });
+    ], { cwd: folder, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: GH_TIMEOUT_MS });
     return view.exitCode === 0 ? parsePullRequestView(view.stdout.toString()) : null;
   } catch {
     return null;
@@ -7629,9 +8188,10 @@ function afterMerge(context) {
   if (base === undefined)
     return SILENT;
   const command = stringField(toolInput(input).command);
-  if (command === null || !mergesPullRequest(command))
+  if (command === null)
     return SILENT;
-  const target = mergeTarget(command);
+  const calls = mergeCalls(command, cwd, env).filter((one) => !one.arms && !one.disarms);
+  const target = mergeTargetOf(calls);
   if (target === null)
     return SILENT;
   const repo = project.mainCheckout ?? project.root;
@@ -8776,7 +9336,7 @@ var PUSH_VALUE_OPTIONS = [
   ["--receive-pack", 5],
   ["--repo", 6]
 ];
-var CHANGE_DIR = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
+var CHANGE_DIR2 = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
 function longOption(arg, full, min) {
   const name = arg.split("=")[0] ?? arg;
   return name.length >= min && name.length <= full.length && full.startsWith(name);
@@ -8986,7 +9546,7 @@ function inspect2(command, cwd, joinLines, options, depth = 0) {
     const { args, program } = invocation;
     if (program === "git")
       found.push(...gitQuestions(args, folder, options));
-    if (CHANGE_DIR.has(program))
+    if (CHANGE_DIR2.has(program))
       folder = movedTo(program, folder, args);
     const inner = nestedCommand2(program, args, step.pipedFrom);
     if (inner !== undefined && depth < MAX_NESTING2) {
@@ -9527,6 +10087,7 @@ function resolveWorkflow(paths, projectConfig) {
     mergeMethod: of("mergeMethod", merged.mergeMethod ?? workflowDefaults.mergeMethod),
     deleteBranch: of("deleteBranch", merged.deleteBranch ?? workflowDefaults.deleteBranch),
     reviewBeforePush: of("reviewBeforePush", merged.reviewBeforePush ?? workflowDefaults.reviewBeforePush),
+    reviewAgents: of("reviewAgents", merged.reviewAgents ?? [...workflowDefaults.reviewAgents]),
     clearWorktreeAfterMerge: of("clearWorktreeAfterMerge", merged.clearWorktreeAfterMerge ?? workflowDefaults.clearWorktreeAfterMerge),
     alerts: alertsFrom(personal, project),
     switches: {
@@ -9542,6 +10103,7 @@ function resolveWorkflow(paths, projectConfig) {
 import { createHash as createHash2 } from "crypto";
 import { mkdirSync as mkdirSync5, readFileSync as readFileSync9 } from "fs";
 import { dirname as dirname3, join as join11 } from "path";
+var REVIEWS_KEPT = 50;
 var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
 function repoKey(repo) {
   return createHash2("sha256").update(repo).digest("hex").slice(0, 16);
@@ -9567,9 +10129,33 @@ function readReviews(file) {
 function hasReview(file, sha) {
   return readReviews(file)[sha] !== undefined;
 }
+function recordReview(file, sha, atMs) {
+  const record = readReviews(file);
+  const before = record[sha];
+  if (before !== undefined)
+    return { added: false, at: before };
+  const at = new Date(atMs).toISOString();
+  record[sha] = at;
+  const kept = {};
+  for (const [commit, time] of Object.entries(record).sort(([, a], [, b]) => b.localeCompare(a)).slice(0, REVIEWS_KEPT)) {
+    kept[commit] = time;
+  }
+  mkdirSync5(dirname3(file), { mode: 448, recursive: true });
+  atomicWrite(file, `${JSON.stringify(kept, null, 2)}
+`, 384);
+  return { added: true, at };
+}
 
 // src/hooks/merge-guard.ts
-var GH_TIMEOUT_MS = 1e4;
+var GH_TIMEOUT_MS2 = 1e4;
+var GUARD_BUDGET_MS = 25000;
+var BUDGET_MARGIN_MS = 2000;
+var GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
+function budgetMs(env) {
+  const given = Number(env[GUARD_BUDGET_ENV]);
+  return Number.isFinite(given) && given > 0 ? given : GUARD_BUDGET_MS;
+}
+var ALIAS_LIMIT_MS = 3000;
 var PULL_REQUEST_FACTS = "number,baseRefName,headRefOid";
 function parsePullRequestFacts(json) {
   try {
@@ -9630,7 +10216,7 @@ function mergeRefusal(facts) {
     return `its required checks are not all green: ${list}`;
   }
   if (facts.reviewBeforePush && !facts.reviewed) {
-    return `the head commit ${facts.headOid.slice(0, 7)} has no recorded review (reviewBeforePush is on: run the review, then \`cc-smart-dev-kit workflow review-done\`)`;
+    return `the head commit ${facts.headOid.slice(0, 7)} has no recorded review (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)`;
   }
   return null;
 }
@@ -9642,6 +10228,9 @@ function notChecked(what, env) {
   const why = ghMissing(env) ? "gh is not installed" : `gh could not read ${what}`;
   return `cc-smart-dev-kit could not check this merge: ${why}. Approve the merge yourself if it is right.`;
 }
+function notInTime(what) {
+  return `cc-smart-dev-kit could not check this merge in time: reading ${what} would have taken longer than the guard's own budget allows. Approve the merge yourself if it is right.`;
+}
 function ghMissing(env) {
   try {
     return Bun.which("gh", { PATH: env.PATH ?? "" }) === null;
@@ -9649,7 +10238,7 @@ function ghMissing(env) {
     return false;
   }
 }
-function ghStdout(args, folder, env) {
+function ghStdout(args, folder, env, timeoutMs) {
   try {
     const run = Bun.spawnSync(["gh", ...args], {
       cwd: folder,
@@ -9657,7 +10246,7 @@ function ghStdout(args, folder, env) {
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
-      timeout: GH_TIMEOUT_MS
+      timeout: timeoutMs
     });
     const out = run.stdout.toString();
     return out.trim() === "" ? null : out;
@@ -9665,7 +10254,7 @@ function ghStdout(args, folder, env) {
     return null;
   }
 }
-function viewPullRequest2(target, folder, env) {
+function viewPullRequest2(target, folder, env, timeoutMs = GH_TIMEOUT_MS2) {
   const out = ghStdout([
     "pr",
     "view",
@@ -9673,10 +10262,10 @@ function viewPullRequest2(target, folder, env) {
     ...target.repo === null ? [] : ["--repo", target.repo],
     "--json",
     PULL_REQUEST_FACTS
-  ], folder, env);
+  ], folder, env, timeoutMs);
   return out === null ? null : parsePullRequestFacts(out);
 }
-function requiredChecks(number, repo, folder, env) {
+function requiredChecks(number, repo, folder, env, timeoutMs = GH_TIMEOUT_MS2) {
   const out = ghStdout([
     "pr",
     "checks",
@@ -9685,20 +10274,33 @@ function requiredChecks(number, repo, folder, env) {
     ...repo === null ? [] : ["--repo", repo],
     "--json",
     "name,bucket"
-  ], folder, env);
+  ], folder, env, timeoutMs);
   return out === null ? null : parseRequiredChecks(out);
 }
-function defaultBranchOf(folder, env, repo = null) {
-  const out = ghStdout(["repo", "view", ...repo === null ? [] : ["--repo", repo], "--json", "defaultBranchRef"], folder, env);
+function defaultBranchOf(folder, env, repo = null, timeoutMs = GH_TIMEOUT_MS2) {
+  const out = ghStdout(["repo", "view", ...repo === null ? [] : [repo], "--json", "defaultBranchRef"], folder, env, timeoutMs);
   return out === null ? null : parseDefaultBranch(out);
+}
+function ownRepository(project, env, timeoutMs) {
+  const folder = project.mainCheckout ?? project.root;
+  const origin = runGit(folder, ["remote", "get-url", "origin"], env, timeoutMs);
+  return origin.ok && origin.out !== "" ? repositoryKey(origin.out) : null;
+}
+function foreignRepository(repo, own) {
+  if (repo === null)
+    return null;
+  const named = repositoryKey(repo);
+  if (own !== null && named !== null && named === own)
+    return null;
+  return own === null ? `the command names the repository ${repo}, and cc-smart-dev-kit could not read this project's own (\`git remote get-url origin\`), so it cannot tell whether they are the same one` : `the command names the repository ${repo}, and the autoMerge policy covers only this project's own repository (${own})`;
+}
+function numericRef(ref) {
+  return ref !== null && /^\d+$/.test(ref) ? Number(ref) : null;
 }
 function mergeGuard(context) {
   const { project, input, env, cwd, paths } = context;
   const command = stringField(toolInput(input).command);
   if (command === null || !requestsMerge(command))
-    return SILENT;
-  const target = mergeTarget(command);
-  if (target === null)
     return SILENT;
   const config = project.config;
   if (config === null)
@@ -9713,29 +10315,79 @@ function mergeGuard(context) {
   const off = autoMergeOff(resolved);
   if (off !== null)
     return toolDecision("ask", notByItself(off));
-  const view = viewPullRequest2(target, cwd, env);
-  if (view === null) {
-    return toolDecision("ask", notChecked("the pull request this command names", env));
+  const startedAt = Date.now();
+  const budgetAt = startedAt + budgetMs(env);
+  const timeFor = (limitMs) => Math.min(limitMs, budgetAt - Date.now() - BUDGET_MARGIN_MS);
+  const merges = mergeCalls(command, cwd, env, timeFor(ALIAS_LIMIT_MS)).filter((one) => !one.disarms);
+  const defaultBranches = new Map;
+  let own = null;
+  let ownRead = false;
+  for (const merge of merges) {
+    const number = numericRef(merge.target?.ref ?? null);
+    if (merge.unread !== null)
+      return toolDecision("ask", notChecked(merge.unread, env));
+    if (merge.refusal !== null)
+      return toolDecision("ask", notByItself(merge.refusal, number));
+    const target = merge.target;
+    if (target === null)
+      continue;
+    if (target.repo !== null) {
+      if (!ownRead) {
+        const left = timeFor(GUARD_GIT_TIMEOUT_MS);
+        if (left <= 0)
+          return toolDecision("ask", notInTime("this project's own repository"));
+        own = ownRepository(project, env, left);
+        ownRead = true;
+      }
+      const foreign = foreignRepository(target.repo, own);
+      if (foreign !== null)
+        return toolDecision("ask", notByItself(foreign, number));
+    }
+    const viewLeft = timeFor(GH_TIMEOUT_MS2);
+    if (viewLeft <= 0) {
+      return toolDecision("ask", notInTime("the pull request this command names"));
+    }
+    const view = viewPullRequest2(target, cwd, env, viewLeft);
+    if (view === null) {
+      return toolDecision("ask", notChecked("the pull request this command names", env));
+    }
+    const where = target.repo ?? "";
+    if (!defaultBranches.has(where)) {
+      const branchLeft = timeFor(GH_TIMEOUT_MS2);
+      if (branchLeft <= 0) {
+        return toolDecision("ask", notInTime("this repository's default branch"));
+      }
+      defaultBranches.set(where, defaultBranchOf(cwd, env, target.repo, branchLeft));
+    }
+    const defaultBranch = defaultBranches.get(where) ?? null;
+    if (defaultBranch === null) {
+      return toolDecision("ask", notChecked("this repository's default branch", env));
+    }
+    const branchRefusal = autoMergeRefusal(resolved, config, view.base, defaultBranch);
+    let checks = null;
+    if (branchRefusal === null) {
+      const checksLeft = timeFor(GH_TIMEOUT_MS2);
+      if (checksLeft <= 0) {
+        return toolDecision("ask", notInTime(`the required checks of #${view.number}`));
+      }
+      checks = requiredChecks(view.number, target.repo, cwd, env, checksLeft);
+      if (checks === null) {
+        return toolDecision("ask", notChecked(`the required checks of #${view.number}`, env));
+      }
+    }
+    const repository = project.mainCheckout ?? project.root;
+    const reviewed = !resolved.reviewBeforePush.value || hasReview(reviewsFile(paths.stateDir, repository), view.headOid);
+    const reason = mergeRefusal({
+      branchRefusal,
+      checks,
+      headOid: view.headOid,
+      reviewBeforePush: resolved.reviewBeforePush.value,
+      reviewed
+    });
+    if (reason !== null)
+      return toolDecision("ask", notByItself(reason, view.number));
   }
-  const defaultBranch = defaultBranchOf(cwd, env, target.repo);
-  if (defaultBranch === null) {
-    return toolDecision("ask", notChecked("this repository's default branch", env));
-  }
-  const branchRefusal = autoMergeRefusal(resolved, config, view.base, defaultBranch);
-  const checks = branchRefusal === null ? requiredChecks(view.number, target.repo, cwd, env) : null;
-  if (branchRefusal === null && checks === null) {
-    return toolDecision("ask", notChecked(`the required checks of #${view.number}`, env));
-  }
-  const repository = project.mainCheckout ?? project.root;
-  const reviewed = !resolved.reviewBeforePush.value || hasReview(reviewsFile(paths.stateDir, repository), view.headOid);
-  const reason = mergeRefusal({
-    branchRefusal,
-    checks,
-    headOid: view.headOid,
-    reviewBeforePush: resolved.reviewBeforePush.value,
-    reviewed
-  });
-  return reason === null ? SILENT : toolDecision("ask", notByItself(reason, view.number));
+  return SILENT;
 }
 
 // src/hooks/sessions.ts
@@ -9825,10 +10477,123 @@ function messageGuard(context) {
   return folder === null ? SILENT : toolDecision("deny", otherProjectRefusal(to, folder));
 }
 
-// src/hooks/session-name.ts
-import { existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync11, renameSync as renameSync2, writeFileSync as writeFileSync4 } from "fs";
-import { tmpdir as tmpdir2 } from "os";
+// src/hooks/local-files.ts
+import { lstatSync as lstatSync2, readdirSync as readdirSync4, readFileSync as readFileSync11, readlinkSync as readlinkSync2 } from "fs";
 import { join as join13 } from "path";
+var REBUILDABLE = [
+  /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
+  /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
+  /(?:^|\/)(?:\.cache|\.vite|\.eslintcache|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.hypothesis|\.terraform|\.dart_tool)\/?$/,
+  /\.(?:tsbuildinfo|pyc|pyo)$/,
+  /(?:^|\/)\.DS_Store$/,
+  /(?:^|\/)Thumbs\.db$/,
+  /(?:^|\/)(?:npm-debug|yarn-debug|yarn-error|pnpm-debug|lerna-debug)\.log/
+];
+var MAX_COMPARED = 2000;
+function parseIgnored(porcelain) {
+  return porcelain.split("\x00").filter((entry) => entry.startsWith("!! ")).map((entry) => entry.slice(3));
+}
+function sameAsMain(worktree, mainCheckout, path) {
+  let budget = MAX_COMPARED;
+  const same = (relative) => {
+    if (--budget < 0)
+      return false;
+    const here = join13(worktree, relative);
+    const there = join13(mainCheckout, relative);
+    try {
+      const a = lstatSync2(here);
+      const b = lstatSync2(there);
+      if (a.isSymbolicLink() || b.isSymbolicLink()) {
+        return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync2(here) === readlinkSync2(there);
+      }
+      if (a.isDirectory()) {
+        return b.isDirectory() && readdirSync4(here).every((entry) => same(join13(relative, entry)));
+      }
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync11(here).equals(readFileSync11(there));
+    } catch {
+      return false;
+    }
+  };
+  return same(path.replace(/\/$/, ""));
+}
+function localFiles(worktree, mainCheckout, env) {
+  const status = runGit(worktree, [
+    "--no-optional-locks",
+    "status",
+    "--porcelain",
+    "-z",
+    "--ignored=traditional",
+    "--untracked-files=normal"
+  ], env, 30000);
+  if (!status.ok)
+    return null;
+  return parseIgnored(status.out).filter((entry) => !REBUILDABLE.some((pattern) => pattern.test(entry)) && !(mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry)));
+}
+
+// src/hooks/worktree-remove.ts
+function subagentWorktreeOf(cwd, agentId) {
+  if (agentId === null || !/^[0-9a-f]+$/.test(agentId))
+    return null;
+  const found = new RegExp(String.raw`^(.*[\\/]\.claude[\\/]worktrees[\\/]agent-${agentId})(?:[\\/]|$)`).exec(cwd);
+  return found?.[1] ?? null;
+}
+
+// src/hooks/review-record.ts
+function agentTypeOf(input) {
+  return stringField(input.agent_type);
+}
+function recordsReview(agent, agents) {
+  const key = agentKey(agent);
+  return agents.some((name) => agentKey(name) === key);
+}
+function headCommit(folder, env) {
+  const run = runGit(folder, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], env, GUARD_GIT_TIMEOUT_MS);
+  return run.ok && /^[0-9a-f]{40,64}$/.test(run.out) ? run.out : null;
+}
+function couldNotWrite(why) {
+  return { stderr: `cc-smart-dev-kit review-record: cannot write the record (${why})` };
+}
+function inSubagentWorktree(cwd, agentId) {
+  if (subagentWorktreeOf(cwd, agentId) !== null)
+    return true;
+  return /[\\/]\.claude[\\/]worktrees[\\/]agent-[0-9a-f]+(?:[\\/]|$)/.test(cwd);
+}
+function reviewRecord(context) {
+  const { project, input, env, cwd, paths } = context;
+  const config = project.config;
+  if (config === null)
+    return SILENT;
+  const agent = agentTypeOf(input);
+  if (agent === null)
+    return SILENT;
+  if (inSubagentWorktree(cwd, stringField(input.agent_id)))
+    return SILENT;
+  let resolved;
+  try {
+    resolved = resolveWorkflow(paths, config);
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      stderr: `cc-smart-dev-kit review-record: the workflow settings cannot be read (${why})`
+    };
+  }
+  if (!recordsReview(agent, resolved.reviewAgents.value))
+    return SILENT;
+  const commit = headCommit(cwd, env);
+  if (commit === null)
+    return SILENT;
+  try {
+    recordReview(reviewsFile(paths.stateDir, project.mainCheckout ?? project.root), commit, Date.now());
+  } catch (error) {
+    return couldNotWrite(error instanceof Error ? error.message : String(error));
+  }
+  return SILENT;
+}
+
+// src/hooks/session-name.ts
+import { existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync12, renameSync as renameSync2, writeFileSync as writeFileSync4 } from "fs";
+import { tmpdir as tmpdir2 } from "os";
+import { join as join14 } from "path";
 var MAX_SESSION_NAME = 60;
 function isSessionId(value) {
   return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
@@ -9841,11 +10606,11 @@ function cleanSessionName(raw) {
   return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
 }
 function namesDir(env) {
-  return join13(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
+  return join14(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
 }
 function readName(file) {
   try {
-    return existsSync9(file) ? cleanSessionName(readFileSync11(file, "utf8")) : null;
+    return existsSync9(file) ? cleanSessionName(readFileSync12(file, "utf8")) : null;
   } catch {
     return null;
   }
@@ -9867,7 +10632,7 @@ function sessionName(context) {
   if (!isSessionId(sessionId))
     return SILENT;
   const dir = namesDir(env);
-  const wanted = readName(join13(dir, `${sessionId}.name`));
+  const wanted = readName(join14(dir, `${sessionId}.name`));
   const note = namingNote(sessionId, wanted);
   if (event === "SessionStart") {
     return {
@@ -9876,7 +10641,7 @@ function sessionName(context) {
       })
     };
   }
-  const appliedFile = join13(dir, sessionId);
+  const appliedFile = join14(dir, sessionId);
   const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
   if (title !== null) {
     mkdirSync6(dir, { recursive: true });
@@ -9898,61 +10663,6 @@ var FETCH_AGE_MS = 24 * 60 * 60 * 1000;
 // src/hooks/worktree-leftovers.ts
 import { readFileSync as readFileSync13, statSync as statSync7 } from "fs";
 import { basename as basename3, isAbsolute as isAbsolute4, join as join15, resolve as resolve6 } from "path";
-
-// src/hooks/local-files.ts
-import { lstatSync as lstatSync2, readdirSync as readdirSync4, readFileSync as readFileSync12, readlinkSync as readlinkSync2 } from "fs";
-import { join as join14 } from "path";
-var REBUILDABLE = [
-  /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
-  /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
-  /(?:^|\/)(?:\.cache|\.vite|\.eslintcache|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.hypothesis|\.terraform|\.dart_tool)\/?$/,
-  /\.(?:tsbuildinfo|pyc|pyo)$/,
-  /(?:^|\/)\.DS_Store$/,
-  /(?:^|\/)Thumbs\.db$/,
-  /(?:^|\/)(?:npm-debug|yarn-debug|yarn-error|pnpm-debug|lerna-debug)\.log/
-];
-var MAX_COMPARED = 2000;
-function parseIgnored(porcelain) {
-  return porcelain.split("\x00").filter((entry) => entry.startsWith("!! ")).map((entry) => entry.slice(3));
-}
-function sameAsMain(worktree, mainCheckout, path) {
-  let budget = MAX_COMPARED;
-  const same = (relative) => {
-    if (--budget < 0)
-      return false;
-    const here = join14(worktree, relative);
-    const there = join14(mainCheckout, relative);
-    try {
-      const a = lstatSync2(here);
-      const b = lstatSync2(there);
-      if (a.isSymbolicLink() || b.isSymbolicLink()) {
-        return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync2(here) === readlinkSync2(there);
-      }
-      if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync4(here).every((entry) => same(join14(relative, entry)));
-      }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync12(here).equals(readFileSync12(there));
-    } catch {
-      return false;
-    }
-  };
-  return same(path.replace(/\/$/, ""));
-}
-function localFiles(worktree, mainCheckout, env) {
-  const status = runGit(worktree, [
-    "--no-optional-locks",
-    "status",
-    "--porcelain",
-    "-z",
-    "--ignored=traditional",
-    "--untracked-files=normal"
-  ], env, 30000);
-  if (!status.ok)
-    return null;
-  return parseIgnored(status.out).filter((entry) => !REBUILDABLE.some((pattern) => pattern.test(entry)) && !(mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry)));
-}
-
-// src/hooks/worktree-leftovers.ts
 var IDLE_MINUTES = 60;
 function idleMinutes(worktree, now) {
   let admin;
@@ -10121,6 +10831,16 @@ var afterMergeHook = {
   },
   run: afterMerge
 };
+var reviewRecordHook = {
+  name: "review-record",
+  events: ["SubagentStop"],
+  wiring: "plugin",
+  onConfigProblem: (message, input) => {
+    const agent = agentTypeOf(input);
+    return agent !== null && recordsReview(agent, workflowDefaults.reviewAgents) ? { stderr: `cc-smart-dev-kit review-record: ${message}` } : SILENT;
+  },
+  run: reviewRecord
+};
 var worktreeLeftoversHook = {
   name: "worktree-leftovers",
   events: ["SessionStart"],
@@ -10167,6 +10887,7 @@ var HOOKS = [
   agentGuardHook,
   jobRouteHook,
   afterMergeHook,
+  reviewRecordHook,
   worktreeLeftoversHook,
   sessionNameHook
 ];

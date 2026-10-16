@@ -6404,6 +6404,7 @@ var workflowSchema = strictObject({
   mergeMethod: _enum(["merge", "squash", "rebase"]).optional(),
   deleteBranch: boolean2().optional(),
   reviewBeforePush: boolean2().optional(),
+  reviewAgents: array(string2().min(1)).min(1).refine((agents) => new Set(agents).size === agents.length, "an agent is listed twice").optional(),
   clearWorktreeAfterMerge: boolean2().optional(),
   alerts: strictObject({
     events: alertEventsSchema.optional(),
@@ -6419,6 +6420,7 @@ var workflowDefaults = {
   mergeMethod: "merge",
   deleteBranch: false,
   reviewBeforePush: true,
+  reviewAgents: ["cc-smart-dev-kit:reviewer"],
   clearWorktreeAfterMerge: false,
   alerts: {
     events: [...ALERT_EVENTS],
@@ -6435,6 +6437,7 @@ var POLICY_KEYS = [
   "mergeMethod",
   "deleteBranch",
   "reviewBeforePush",
+  "reviewAgents",
   "clearWorktreeAfterMerge",
   "alerts.events",
   "alerts.sound",
@@ -6485,6 +6488,7 @@ var PLUGIN_HOOK_NAMES = [
   "agent-guard",
   "job-route",
   "after-merge",
+  "review-record",
   "worktree-leftovers",
   "session-name"
 ];
@@ -6807,17 +6811,10 @@ function resolveAlerts(paths, projectConfig) {
   const personal = loadWorkflow(personalWorkflowFile(paths));
   return alertsFrom(personal, projectConfig?.workflow ?? {});
 }
-function defaultAlerts() {
-  return {
-    events: { value: [...workflowDefaults.alerts.events], source: "default" },
-    sound: { value: workflowDefaults.alerts.sound, source: "default" },
-    usagePercent: { value: workflowDefaults.alerts.usagePercent, source: "default" }
-  };
-}
 
 // src/workflow/alerts.ts
 function fallbackLine(problems) {
-  return `cc-smart-dev-kit: the alerts fall back to the built-in defaults (${problems.join("; ")})`;
+  return `cc-smart-dev-kit: the alerts use the settings that can be read (${problems.join("; ")})`;
 }
 function alertsAt(paths, cwd, env) {
   const problems = [];
@@ -6837,7 +6834,10 @@ function alertsAt(paths, cwd, env) {
     return { alerts, problem: problems.length === 0 ? null : fallbackLine(problems) };
   } catch (error) {
     problems.push(error instanceof Error ? error.message : String(error));
-    return { alerts: defaultAlerts(), problem: fallbackLine(problems) };
+    return {
+      alerts: alertsFrom({}, project?.workflow ?? {}),
+      problem: fallbackLine(problems)
+    };
   }
 }
 
