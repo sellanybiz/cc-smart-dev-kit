@@ -476,7 +476,7 @@ footer.bottom .wrap {
    keeps the whole row and the button goes under it, at the right. */
 @media (max-width: 640px) {
   .codebox.oneline { flex-wrap: wrap; }
-  .codebox.oneline pre { flex-basis: 100%; }
+  .codebox.oneline pre { flex-basis: 100%; padding: 14px 10px; }
   .codebox.oneline .codehead { width: 100%; justify-content: flex-end; padding: 0 6px 6px; }
 }
 .codehead code { font-size: 13px; }
