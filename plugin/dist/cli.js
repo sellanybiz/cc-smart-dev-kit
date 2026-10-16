@@ -1,7 +1,7 @@
 // @bun
 // src/entries/cli.ts
 import { existsSync as existsSync40, statSync as statSync13 } from "fs";
-import { basename as basename7, dirname as dirname9, join as join35, resolve as resolve7 } from "path";
+import { basename as basename7, dirname as dirname11, join as join35, resolve as resolve7 } from "path";
 
 // src/build-info/names.ts
 var MARKETPLACE = "cc-smart-dev-kit";
@@ -7067,7 +7067,7 @@ function ownership(records, path, current, unchosen) {
   if (record === undefined)
     return "none";
   if (!current.found)
-    return "ours";
+    return "changed";
   if (record.sha256 !== undefined) {
     if (hashOf(current.value) === record.sha256)
       return "ours";
@@ -7163,7 +7163,10 @@ function applyOnce(file, options, owned) {
     }
     dropped.push(path);
     if (whose === "changed") {
-      skipped.push({ path, reason: "changed since cc-smart-dev-kit set it; left alone" });
+      skipped.push({
+        path,
+        reason: current.found ? "changed since cc-smart-dev-kit set it; left alone" : "not in the file any more (removed since cc-smart-dev-kit set it); left alone"
+      });
       continue;
     }
     if (!current.found)
@@ -8793,8 +8796,8 @@ function realProbe() {
 function isJsonObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function healthUrl(port) {
-  return `http://127.0.0.1:${port}${HEALTH_PATH}`;
+function healthUrl(port, path = HEALTH_PATH) {
+  return `http://127.0.0.1:${port}${path}`;
 }
 async function routerHealth(port, fetchImpl = (url, init) => fetch(url, init)) {
   try {
@@ -8813,10 +8816,10 @@ function isConnectionRefused(error) {
     return false;
   return error.code === "ConnectionRefused" || error.code === "ECONNREFUSED";
 }
-async function probeRouterPort(port, fetchImpl, timeoutMs = 2000) {
+async function probeRouterPort(port, fetchImpl, timeoutMs = 2000, path = HEALTH_PATH) {
   let response;
   try {
-    response = await fetchImpl(healthUrl(port), { signal: AbortSignal.timeout(timeoutMs) });
+    response = await fetchImpl(healthUrl(port, path), { signal: AbortSignal.timeout(timeoutMs) });
   } catch (error) {
     if (isConnectionRefused(error))
       return { state: "free" };
@@ -8834,10 +8837,10 @@ async function probeRouterPort(port, fetchImpl, timeoutMs = 2000) {
   }
   return isJsonObject4(body) && body.ok === true ? { state: "ours" } : { detail: "not this router's health answer", state: "other" };
 }
-async function waitWhileRouterAnswers(port, probe, waitMs) {
+async function waitWhileRouterAnswers(port, probe, waitMs, path = HEALTH_PATH) {
   const deadline = probe.now() + waitMs;
   for (;; ) {
-    const result = await probeRouterPort(port, probe.fetch, 1000);
+    const result = await probeRouterPort(port, probe.fetch, 1000, path);
     if (result.state !== "ours")
       return result;
     if (probe.now() >= deadline)
@@ -9140,10 +9143,34 @@ async function installRouter(options) {
 }
 var STOP_WAIT_MS = 15000;
 var HOLDS_ITS_PORT = new Set(["active", "deactivating"]);
-async function stopRouter(runner, port, probe, names = { socket: SOCKET_NAME, unit: UNIT_NAME }) {
+function stopUnits(runner, options) {
+  const result = { missing: [], refused: [], stopped: [] };
+  const there = options.names.filter((name) => {
+    if (existsSync3(join7(options.dir, name)))
+      return true;
+    result.missing.push(name);
+    return false;
+  });
+  if (there.length === 0)
+    return result;
+  for (const args of [["disable"], ["stop", "--no-block"]]) {
+    const cmd = ["systemctl", "--user", ...args, ...there];
+    const ran = runner(cmd);
+    if (ran.exitCode !== 0) {
+      result.refused.push({ command: cmd.join(" "), exitCode: ran.exitCode, output: ran.output });
+    }
+  }
+  result.stopped = there;
+  return result;
+}
+async function stopRouter(runner, port, probe, names) {
   const state = port === null ? null : unitState(runner, names.unit);
-  run(runner, ["systemctl", "--user", "disable", names.socket, names.unit]);
-  run(runner, ["systemctl", "--user", "stop", "--no-block", names.socket, names.unit]);
+  const stop = stopUnits(runner, { dir: names.dir, names: [names.socket, names.unit] });
+  const refused = stop.refused[0];
+  if (refused !== undefined) {
+    throw new Error(`${refused.command} failed (exit ${refused.exitCode}):
+${refused.output.trim()}`);
+  }
   if (port === null || state === null)
     return { kind: "no-port" };
   if (!HOLDS_ITS_PORT.has(state))
@@ -9209,15 +9236,19 @@ function shownValue(value) {
   return /^sk-|[A-Za-z0-9_-]{32,}/.test(text) ? maskKey(text) : text;
 }
 function ownedGatewayEnvKeys(settingsFile, stateDir) {
-  const records = ownedRecords(stateDir, realTarget(settingsFile));
   const settings = currentSettings(settingsFile);
+  if (settings === null) {
+    const owned = ownedKeys(stateDir, realTarget(settingsFile));
+    return GATEWAY_ENV_KEYS.filter((key) => owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key));
+  }
+  const records = ownedRecords(stateDir, realTarget(settingsFile));
   return GATEWAY_ENV_KEYS.filter((key) => ownership(records, envPath(key), getKey(settings, envPath(key))) === "ours");
 }
 function currentSettings(settingsFile) {
   try {
     return readSettings(settingsFile);
   } catch {
-    return {};
+    return null;
   }
 }
 function assertNoForeignGatewayKeys(settingsFile, stateDir) {
@@ -16418,13 +16449,14 @@ async function runDoctor(paths, env, { bun, gateway, local, project, live }) {
 
 // src/cli/migrate.ts
 import { existsSync as existsSync30, readdirSync as readdirSync8, readFileSync as readFileSync32, renameSync as renameSync3, rmSync as rmSync8, statSync as statSync9 } from "fs";
-import { basename as basename5, join as join28 } from "path";
+import { basename as basename5, dirname as dirname9, join as join28 } from "path";
 var OLD = {
   name: "anymodel",
   pluginId: "anymodel@anymodel",
   marketplace: "anymodel",
   unit: "anymodel-router.service",
   socket: "anymodel-router.socket",
+  healthPath: "/__anymodel/health",
   blockBegin: "<!-- anymodel:begin -->",
   blockEnd: "<!-- anymodel:end -->",
   backupInfix: ".bak-anymodel-"
@@ -16441,37 +16473,89 @@ function oldGatewayEnv(port) {
     ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (cheap)"
   };
 }
-function migratePaths(paths) {
-  const systemd = join28(paths.home, ".config", "systemd", "user");
+function migrateUnits(paths, overrides = {}) {
+  return {
+    dir: overrides.dir ?? dirname9(paths.routerUnitFile),
+    oldUnit: overrides.oldUnit ?? OLD.unit,
+    oldSocket: overrides.oldSocket ?? OLD.socket,
+    unit: overrides.unit ?? basename5(paths.routerUnitFile),
+    socket: overrides.socket ?? basename5(paths.routerSocketFile)
+  };
+}
+function migratePaths(paths, units) {
   return {
     oldConfigDir: join28(paths.home, ".config", OLD.name),
+    configDir: join28(paths.home, ".config", COMMAND),
     oldStateDir: join28(paths.claudeConfigDir, OLD.name),
     stateDir: paths.stateDir,
     oldShareDir: join28(paths.home, ".local", "share", OLD.name),
+    shareDir: join28(paths.home, ".local", "share", COMMAND),
     oldStateHomeDir: join28(paths.home, ".local", "state", OLD.name),
+    stateHomeDir: join28(paths.home, ".local", "state", COMMAND),
     oldLauncher: join28(paths.binDir, OLD.name),
     launcher: join28(paths.binDir, LAUNCHER_NAME),
-    oldUnitFile: join28(systemd, OLD.unit),
-    oldSocketFile: join28(systemd, OLD.socket)
+    oldUnitFile: join28(units.dir, units.oldUnit),
+    oldSocketFile: join28(units.dir, units.oldSocket),
+    unitFile: join28(units.dir, units.unit),
+    socketFile: join28(units.dir, units.socket)
   };
 }
-function renamedSegment(segment) {
-  if (segment === OLD.name)
-    return COMMAND;
-  if (segment.startsWith(`${OLD.name}-`))
-    return `${COMMAND}${segment.slice(OLD.name.length)}`;
-  return segment;
+function movedFolders(old) {
+  return [
+    {
+      from: old.oldConfigDir,
+      to: old.configDir,
+      what: "the gateway config, and the machine's job settings"
+    },
+    { from: old.oldStateDir, to: old.stateDir, what: "the state folder: records and backups" },
+    {
+      from: old.oldShareDir,
+      to: old.shareDir,
+      what: "the router's copy, and the heavy jobs' state"
+    },
+    { from: old.oldStateHomeDir, to: old.stateHomeDir, what: "the router's limit state" }
+  ];
 }
-function renamedPath(path) {
-  return path.split("/").map(renamedSegment).join("/");
+function movedFile(old) {
+  return { from: old.oldLauncher, to: old.launcher, what: "the launcher" };
 }
-function renamedBackupName(name) {
-  const at = name.indexOf(OLD.backupInfix);
-  if (at === -1)
-    return name;
-  const base = name.slice(0, at);
-  const rest = name.slice(at + OLD.backupInfix.length);
-  return `${renamedSegment(base)}${BACKUP_INFIX}${rest}`;
+function renamedPairs(old) {
+  return [
+    ...movedFolders(old).map(({ from, to }) => ({ from, to })),
+    { from: old.oldLauncher, to: old.launcher },
+    { from: old.oldUnitFile, to: old.unitFile },
+    { from: old.oldSocketFile, to: old.socketFile }
+  ];
+}
+function makeRenamer(old, units) {
+  const pairs = renamedPairs(old);
+  return {
+    path(file) {
+      for (const { from, to } of pairs) {
+        if (file === from)
+          return to;
+        if (file.startsWith(`${from}/`))
+          return to + file.slice(from.length);
+      }
+      return file;
+    },
+    backupName(name) {
+      const at = name.indexOf(OLD.backupInfix);
+      if (at === -1)
+        return name;
+      const base = name.slice(0, at);
+      const rest = name.slice(at + OLD.backupInfix.length);
+      const renamed = base === OLD.name ? COMMAND : base === units.oldUnit ? units.unit : base === units.oldSocket ? units.socket : base;
+      return `${renamed}${BACKUP_INFIX}${rest}`;
+    },
+    slot(name) {
+      if (name === OLD.name)
+        return COMMAND;
+      if (name.startsWith(`${OLD.name}-`))
+        return `${COMMAND}${name.slice(OLD.name.length)}`;
+      return name;
+    }
+  };
 }
 function say(mark, path, what) {
   if (path === null)
@@ -16485,8 +16569,54 @@ function installCommands() {
     `claude plugin install ${PLUGIN_ID}`
   ];
 }
-function oldPiecesPresent(old) {
-  return [
+var MIGRATE_STEPS = [
+  "folders",
+  "records",
+  "gateway-config",
+  "limit-state",
+  "settings",
+  "instructions",
+  "launcher",
+  "router",
+  "old-plugin"
+];
+function progressFile(stateDir) {
+  return join28(stateDir, "migrate-progress.json");
+}
+function readProgress(stateDir) {
+  try {
+    const parsed = JSON.parse(readFileSync32(progressFile(stateDir), "utf8"));
+    if (!isObject2(parsed) || !Array.isArray(parsed.steps))
+      return null;
+    const steps = parsed.steps.filter((step) => MIGRATE_STEPS.includes(String(step)));
+    return { at: typeof parsed.at === "string" ? parsed.at : "", steps };
+  } catch {
+    return null;
+  }
+}
+function writeProgress(stateDir, progress) {
+  atomicWrite(progressFile(stateDir), `${JSON.stringify(progress, null, 2)}
+`, 384);
+}
+var BOOKKEEPING_NAMES = [
+  "agent-launches.jsonl",
+  "lock",
+  "migrate-progress.json",
+  "notify.json",
+  "sessions",
+  "update",
+  "update-check.json",
+  "update-hold",
+  "update-reported",
+  "update.log"
+];
+function foreignStateEntries(old) {
+  if (!existsSync30(old.stateDir))
+    return [];
+  return readdirSync8(old.stateDir).filter((name) => !BOOKKEEPING_NAMES.includes(name));
+}
+function oldPiecesPresent(paths, old, renamer) {
+  if ([
     old.oldConfigDir,
     old.oldStateDir,
     old.oldShareDir,
@@ -16494,34 +16624,79 @@ function oldPiecesPresent(old) {
     old.oldLauncher,
     old.oldUnitFile,
     old.oldSocketFile
-  ].some((path) => existsSync30(path));
+  ].some((path) => existsSync30(path))) {
+    return true;
+  }
+  if (readProgress(old.stateDir) !== null)
+    return true;
+  const configFile = existsSync30(paths.gatewayConfigFile) ? paths.gatewayConfigFile : join28(old.oldConfigDir, "gateway.json");
+  if (oldNamesInConfig(configFile, renamer))
+    return true;
+  const claudeMd = join28(paths.claudeConfigDir, "CLAUDE.md");
+  if (readText(claudeMd)?.includes(OLD.blockBegin) === true)
+    return true;
+  return recordsNameOldPaths(oldStateFolder(old), renamer);
 }
-function folderPairs(paths, old) {
-  return [
-    {
-      from: old.oldConfigDir,
-      to: join28(paths.home, ".config", COMMAND),
-      what: "the gateway config, and the machine's job settings"
-    },
-    { from: old.oldStateDir, to: old.stateDir, what: "the state folder: records and backups" },
-    {
-      from: old.oldShareDir,
-      to: join28(paths.home, ".local", "share", COMMAND),
-      what: "the router's copy, and the heavy jobs' state"
-    },
-    {
-      from: old.oldStateHomeDir,
-      to: join28(paths.home, ".local", "state", COMMAND),
-      what: "the router's limit state"
+function oldStateFolder(old) {
+  return existsSync30(old.oldStateDir) ? old.oldStateDir : old.stateDir;
+}
+function readText(file) {
+  try {
+    return readFileSync32(file, "utf8");
+  } catch {
+    return null;
+  }
+}
+function oldNamesInConfig(file, renamer) {
+  const text = readText(file);
+  if (text === null)
+    return false;
+  try {
+    const raw = JSON.parse(text);
+    if (!isObject2(raw))
+      return false;
+    const slots = isObject2(raw.slots) ? Object.keys(raw.slots) : [];
+    const modelSlots = isObject2(raw.modelSlots) ? Object.values(raw.modelSlots) : [];
+    const aliases = isObject2(raw.aliases) ? Object.values(raw.aliases) : [];
+    return [...slots, ...modelSlots, ...aliases].some((name) => typeof name === "string" && renamer.slot(name) !== name);
+  } catch {
+    return false;
+  }
+}
+function recordsNameOldPaths(stateDir, renamer) {
+  for (const name of ["owned.json", "owned-entries.json", "changed.json"]) {
+    const text = readText(join28(stateDir, name));
+    if (text === null)
+      continue;
+    try {
+      const parsed = JSON.parse(text);
+      if (!isObject2(parsed))
+        continue;
+      const keys = name === "changed.json" && isObject2(parsed.files) ? parsed.files : parsed;
+      if (!isObject2(keys))
+        continue;
+      if (Object.keys(keys).some((file) => renamer.path(file) !== file))
+        return true;
+    } catch {}
+  }
+  const backups = join28(stateDir, "backups");
+  if (existsSync30(backups)) {
+    for (const folder of readdirSync8(backups)) {
+      if (renamer.path(decodeURIComponent(folder)) !== decodeURIComponent(folder))
+        return true;
     }
-  ];
+  }
+  return false;
 }
-function blockedTargets(paths, old) {
+function blockedTargets(old) {
   const blocked = [];
-  for (const { from, to } of folderPairs(paths, old)) {
-    if (existsSync30(from) && existsSync30(to)) {
-      blocked.push(`${to} is already there: ${from} cannot be moved onto it, and two folders are never merged by themselves. Move or remove one of them by hand, then run again.`);
-    }
+  for (const { from, to } of movedFolders(old)) {
+    if (!existsSync30(from) || !existsSync30(to))
+      continue;
+    if (to === old.stateDir && foreignStateEntries(old).length === 0)
+      continue;
+    const foreign = to === old.stateDir ? foreignStateEntries(old) : null;
+    blocked.push(foreign === null || foreign.length === 0 ? `${to} is already there: ${from} cannot be moved onto it, and two folders are never merged by themselves. Move or remove one of them by hand, then run again.` : `${to} is already there, and it holds ${foreign.join(", ")}: it is this version's own state folder. ${from} holds the old setup's files, which this move brings in, so move or remove ${to} by hand (its own files are the ones to look at first), then run again.`);
   }
   if (existsSync30(old.oldLauncher) && existsSync30(old.launcher)) {
     blocked.push(`${old.launcher} is already there: ${old.oldLauncher} cannot be moved onto it. Remove the old launcher by hand, then run again.`);
@@ -16535,7 +16710,33 @@ function move(from, to, dryRun) {
     renameSync3(from, to);
   return true;
 }
-function rewriteStateFolder(stateDir, dryRun) {
+function absorbStateFolder(from, to, dryRun) {
+  if (!existsSync30(from))
+    return 0;
+  let moved = 0;
+  for (const name of readdirSync8(from)) {
+    const source = join28(from, name);
+    const target = join28(to, name);
+    if (!existsSync30(target)) {
+      moved += 1;
+      if (!dryRun)
+        renameSync3(source, target);
+      continue;
+    }
+    if (statSync9(source).isDirectory() && statSync9(target).isDirectory()) {
+      moved += absorbStateFolder(source, target, dryRun);
+      if (!dryRun)
+        rmSync8(source, { recursive: true, force: true });
+      continue;
+    }
+    if (!dryRun)
+      rmSync8(source, { recursive: true, force: true });
+  }
+  if (!dryRun && readdirSync8(from).length === 0)
+    rmSync8(from, { recursive: true, force: true });
+  return moved;
+}
+function rewriteStateFolder(stateDir, renamer, dryRun) {
   let files = 0;
   let backups = 0;
   const rewriteJson = (name, rewrite) => {
@@ -16553,8 +16754,8 @@ function rewriteStateFolder(stateDir, dryRun) {
     backupFile(stateDir, file);
     atomicWrite(file, next, 384);
   };
-  rewriteJson("owned.json", (parsed) => isObject2(parsed) ? Object.fromEntries(Object.entries(parsed).map(([file, records]) => [renamedPath(file), records])) : parsed);
-  rewriteJson("owned-entries.json", (parsed) => isObject2(parsed) ? Object.fromEntries(Object.entries(parsed).map(([file, lists]) => [renamedPath(file), lists])) : parsed);
+  rewriteJson("owned.json", (parsed) => isObject2(parsed) ? Object.fromEntries(Object.entries(parsed).map(([file, records]) => [renamer.path(file), records])) : parsed);
+  rewriteJson("owned-entries.json", (parsed) => isObject2(parsed) ? Object.fromEntries(Object.entries(parsed).map(([file, lists]) => [renamer.path(file), lists])) : parsed);
   rewriteJson("changed.json", (parsed) => {
     const changed = parsed?.files;
     if (!isObject2(changed))
@@ -16562,10 +16763,10 @@ function rewriteStateFolder(stateDir, dryRun) {
     return {
       ...parsed,
       files: Object.fromEntries(Object.entries(changed).map(([file, entry]) => [
-        renamedPath(file),
+        renamer.path(file),
         isObject2(entry) && typeof entry.baseline === "string" ? {
           ...entry,
-          baseline: join28(backupDir(stateDir, renamedPath(file)), renamedBackupName(basename5(entry.baseline)))
+          baseline: join28(backupDir(stateDir, renamer.path(file)), renamer.backupName(basename5(entry.baseline)))
         } : entry
       ]))
     };
@@ -16576,14 +16777,14 @@ function rewriteStateFolder(stateDir, dryRun) {
   for (const folder of readdirSync8(backupsDir)) {
     const folderPath = join28(backupsDir, folder);
     for (const name of readdirSync8(folderPath)) {
-      const renamed = renamedBackupName(name);
+      const renamed = renamer.backupName(name);
       if (renamed === name)
         continue;
       backups += 1;
       if (!dryRun)
         renameSync3(join28(folderPath, name), join28(folderPath, renamed));
     }
-    const renamedFolder = encodeURIComponent(renamedPath(decodeURIComponent(folder)));
+    const renamedFolder = encodeURIComponent(renamer.path(decodeURIComponent(folder)));
     if (renamedFolder === folder)
       continue;
     backups += 1;
@@ -16638,22 +16839,26 @@ function readOldConfig(file) {
     throw new ConfigError(`${file} is not valid JSON. Fix it by hand.`);
   }
 }
-function rewriteGatewayConfig(config) {
+function rewriteGatewayConfig(config, renamer) {
   const renamed = [];
   const slots = {};
   const oldSlots = isObject2(config.slots) ? config.slots : {};
   for (const [slot, targets] of Object.entries(oldSlots)) {
-    const next = renamedSegment(slot);
+    const next = renamer.slot(slot);
     slots[next] = targets;
     if (next !== slot)
       renamed.push([slot, next]);
   }
   const aliases = isObject2(config.aliases) ? { ...config.aliases } : {};
+  for (const [name, to] of Object.entries(aliases)) {
+    if (typeof to === "string" && renamer.slot(to) !== to)
+      aliases[name] = renamer.slot(to);
+  }
   for (const [oldSlot, next] of renamed)
     aliases[oldSlot] = next;
   const modelSlots = isObject2(config.modelSlots) ? Object.fromEntries(Object.entries(config.modelSlots).map(([model, slot]) => [
     model,
-    typeof slot === "string" ? renamedSegment(slot) : slot
+    typeof slot === "string" ? renamer.slot(slot) : slot
   ])) : undefined;
   if (renamed.length === 0)
     return null;
@@ -16667,7 +16872,7 @@ function oldConfigPort(config) {
   const port = config.port;
   return typeof port === "number" && Number.isInteger(port) ? port : DEFAULT_PORT;
 }
-function rewriteLimitState(file, stateDir, dryRun) {
+function rewriteLimitState(file, stateDir, renamer, dryRun) {
   if (!existsSync30(file))
     return 0;
   let parsed;
@@ -16681,7 +16886,7 @@ function rewriteLimitState(file, stateDir, dryRun) {
   let changed = 0;
   const fallbacks = {};
   for (const [slot, record] of Object.entries(parsed.fallbacks)) {
-    const renamed = renamedSegment(slot);
+    const renamed = renamer.slot(slot);
     if (renamed !== slot)
       changed += 1;
     fallbacks[renamed] = record;
@@ -16696,10 +16901,10 @@ function rewriteLimitState(file, stateDir, dryRun) {
   }
   return changed;
 }
-function migrateInstructions(paths, options) {
+function migrateInstructions(paths, stateDir, options) {
   const lines = [];
   const claudeMd = join28(paths.claudeConfigDir, "CLAUDE.md");
-  if (instructionsOptedOut(paths.stateDir)) {
+  if (instructionsOptedOut(stateDir)) {
     lines.push({
       mark: " ",
       file: claudeMd,
@@ -16712,7 +16917,7 @@ function migrateInstructions(paths, options) {
     return lines;
   const block = text.replaceAll(OLD.blockBegin, BLOCK_BEGIN).replaceAll(OLD.blockEnd, BLOCK_END);
   const result = writeManagedFile(claudeMd, block, {
-    stateDir: paths.stateDir,
+    stateDir,
     kind: "markdown-block",
     expectedContent: text,
     ...options.dryRun && { dryRun: true }
@@ -16724,63 +16929,103 @@ function migrateInstructions(paths, options) {
       what: "the instructions block now carries this version's markers"
     });
   }
-  const instructions = instructionsPaths(paths, options.instructionsSource);
+  const instructions = instructionsPaths({ ...paths, stateDir }, options.instructionsSource);
   for (const line of installInstructions(instructions, options.dryRun, VERSION)) {
     lines.push({ mark: line.mark, file: line.file, what: line.what });
   }
   return lines;
 }
-async function migrateRouter(paths, old, options, port) {
-  const short = (path) => tildify(path, paths.home);
-  if (!existsSync30(old.oldUnitFile) && !existsSync30(old.oldSocketFile))
-    return 0;
-  if (!options.systemd) {
-    say("!", null, `the old router units are there, but this machine has no systemd: remove ${short(old.oldUnitFile)} and ${short(old.oldSocketFile)} by hand, then run ${COMMAND} gateway setup`);
-    return 0;
+var OLD_PORT_WAIT_MS = 15000;
+function judgeTargets(config) {
+  const tested = config?.judgeTested;
+  return isObject2(tested) ? Object.keys(tested) : [];
+}
+function readPlan(paths, old, units, renamer, options) {
+  const install = findUserInstall(paths.installedPluginsFile);
+  if (install === null) {
+    return {
+      error: [
+        `${PLUGIN_ID} is not installed yet, and migrate needs it: its files are what the old ones are moved into. Install it first:`,
+        ...installCommands().map((command) => `  ${command}`)
+      ].join(`
+`)
+    };
   }
-  if (options.dryRun) {
-    say("~", short(paths.routerUnitFile), `would be written, and ${OLD.unit} and ${OLD.socket} stopped, disabled and removed`);
-    return 0;
-  }
-  if (unitActive(options.runner, basename5(old.oldUnitFile)) || unitActive(options.runner, basename5(old.oldSocketFile))) {
-    console.log(`
-${OLD.unit} is running. This replaces it: until the new router answers, requests from running Claude sessions fail (up to 120 s; Claude Code retries them).`);
-    const yes = options.yes ? true : options.confirm?.(`Stop ${OLD.unit} and start ${UNIT_NAME}?`) ?? null;
-    if (yes !== true) {
-      say("!", null, `the old router was left as it is. Run again with --yes to replace it`);
-      return 0;
+  const blocked = blockedTargets(old);
+  if (blocked.length > 0)
+    return { error: blocked.join(`
+`) };
+  const configFile = existsSync30(paths.gatewayConfigFile) ? paths.gatewayConfigFile : existsSync30(join28(old.oldConfigDir, "gateway.json")) ? join28(old.oldConfigDir, "gateway.json") : null;
+  let rawConfig = null;
+  if (configFile !== null) {
+    try {
+      rawConfig = readOldConfig(configFile);
+    } catch (error) {
+      return { error: messageOf(error) };
     }
   }
-  const stopped = await stopRouter(options.runner, port, options.probe, {
-    socket: basename5(old.oldSocketFile),
-    unit: basename5(old.oldUnitFile)
-  });
-  if (stopped.kind === "other") {
-    say(" ", null, `port ${String(port)} answers, but not as this router (${stopped.detail}); not waiting for it`);
+  const rewrite = rawConfig === null ? null : rewriteGatewayConfig(rawConfig, renamer);
+  const config = rewrite === null ? rawConfig : rewrite.config;
+  let port = rawConfig === null ? DEFAULT_PORT : oldConfigPort(rawConfig);
+  if (config !== null) {
+    const parsed = parseConfig(config);
+    if ("error" in parsed) {
+      return { error: `${configFile ?? ""} is not a valid gateway config:
+${parsed.error}` };
+    }
+    port = parsed.config.port;
   }
-  say("-", `${OLD.unit}, ${OLD.socket}`, stopped.kind === "closed" ? `disabled and stopped (port ${String(port)} closed; answers in flight finish in the background)` : "disabled and stopped");
-  await installRouter({
-    bunPath: options.bunPath,
-    bunVersion: options.bunVersion,
-    bundle: options.bundle,
-    copyPath: paths.routerCopy,
-    unitPath: paths.routerUnitFile,
-    socketPath: paths.routerSocketFile,
-    home: paths.home,
-    stateDir: paths.stateDir,
-    port,
-    probe: options.probe,
-    runner: options.runner,
-    say: (line) => console.log(`  ${line}`),
-    yes: true,
-    confirm: null
-  });
-  rmSync8(old.oldUnitFile, { force: true });
-  rmSync8(old.oldSocketFile, { force: true });
-  say("-", `${short(old.oldUnitFile)}, ${short(old.oldSocketFile)}`, "removed (this version's units are in their place)");
-  return 0;
+  const stateDir = oldStateFolder(old);
+  if (existsSync30(paths.settingsFile)) {
+    try {
+      const parsed = JSON.parse(readFileSync32(paths.settingsFile, "utf8"));
+      if (!isObject2(parsed)) {
+        return {
+          error: `${paths.settingsFile} must hold a JSON object. Fix it by hand, then run again.`
+        };
+      }
+    } catch (error) {
+      return {
+        error: `${paths.settingsFile} is not valid JSON (${messageOf(error)}). Fix it by hand, then run again.`
+      };
+    }
+  }
+  try {
+    ownedRecords(stateDir, realTarget(paths.settingsFile));
+    ownedEntries(stateDir, realTarget(paths.settingsFile));
+    readChanged(stateDir);
+  } catch (error) {
+    return { error: messageOf(error) };
+  }
+  return {
+    plan: {
+      absorbState: existsSync30(old.stateDir) && foreignStateEntries(old).length === 0,
+      config,
+      configFile,
+      done: readProgress(old.stateDir)?.steps ?? [],
+      judgeTargets: judgeTargets(rawConfig),
+      oldPlugin: findUserInstall(paths.installedPluginsFile, OLD.pluginId),
+      oldRouterActive: options.systemd && (unitActive(options.runner, units.oldUnit) || existsSync30(old.oldSocketFile) && unitActive(options.runner, units.oldSocket)),
+      port: options.router?.port ?? port,
+      rewrite,
+      running: runningSessions(updateFiles(stateDir))
+    }
+  };
 }
-function migrateOldPlugin(options) {
+function askQuestions(units, options, plan) {
+  if (plan.oldRouterActive && !options.yes) {
+    console.log(`
+${units.oldUnit} is running. This replaces it: until the new router answers, requests from running Claude sessions fail (up to 120 s; Claude Code retries them).`);
+    const answer = options.confirm?.(`Stop ${units.oldUnit} and start ${units.unit}?`) ?? null;
+    if (answer !== true)
+      return null;
+  }
+  const uninstall = plan.oldPlugin !== null && options.confirm?.("Uninstall the old plugin now?") === true;
+  return { uninstall };
+}
+function migrateOldPlugin(options, plan, yes) {
+  if (plan.oldPlugin === null)
+    return;
   const commands = [
     `claude plugin uninstall ${OLD.pluginId}`,
     `claude plugin marketplace remove ${OLD.marketplace}`
@@ -16790,9 +17035,7 @@ The old plugin is still installed, and its hooks would run beside these.`);
   console.log("Take it out:");
   for (const command of commands)
     console.log(`  ${command}`);
-  if (options.dryRun)
-    return;
-  if (options.confirm?.("Uninstall the old plugin now?") !== true)
+  if (options.dryRun || !yes)
     return;
   for (const command of commands) {
     const result = options.runner(command.split(" "));
@@ -16803,114 +17046,252 @@ The old plugin is still installed, and its hooks would run beside these.`);
 }
 async function runMigrate(paths, options) {
   const short = (path) => tildify(path, paths.home);
-  const old = migratePaths(paths);
+  const units = migrateUnits(paths, options.router?.units ?? {});
+  const old = migratePaths(paths, units);
+  const renamer = makeRenamer(old, units);
   if (options.env.CLAUDECODE !== undefined) {
     console.error(`${COMMAND} migrate cannot run inside a Claude Code session: it replaces the router this session's own model traffic goes through. Run it in your own terminal, then restart your sessions.`);
     return 1;
   }
-  if (!oldPiecesPresent(old)) {
+  const tooOld = bunTooOld(options.bunVersion, tildify(options.bunPath, paths.home));
+  if (tooOld !== null) {
+    console.error(`${COMMAND}: ${tooOld} Upgrade this Bun, then run migrate again.`);
+    return 1;
+  }
+  if (!oldPiecesPresent(paths, old, renamer)) {
     console.log("Nothing to move.");
     return 0;
   }
-  if (findUserInstall(paths.installedPluginsFile) === null) {
-    console.error(`${PLUGIN_ID} is not installed yet, and migrate needs it: its files are what the old ones are moved into. Install it first:`);
-    for (const command of installCommands())
-      console.error(`  ${command}`);
+  const read = readPlan(paths, old, units, renamer, options);
+  if ("error" in read) {
+    console.error(read.error);
     return 1;
   }
-  const blocked = blockedTargets(paths, old);
-  if (blocked.length > 0) {
-    for (const line of blocked)
-      console.error(line);
-    return 1;
-  }
-  const configFile = existsSync30(paths.gatewayConfigFile) ? paths.gatewayConfigFile : existsSync30(join28(old.oldConfigDir, "gateway.json")) ? join28(old.oldConfigDir, "gateway.json") : null;
-  const rawConfig = configFile === null ? null : readOldConfig(configFile);
-  const port = rawConfig === null ? DEFAULT_PORT : oldConfigPort(rawConfig);
+  const { plan } = read;
   console.log(`Moving this machine from the old ${OLD.name} names to ${COMMAND} ${VERSION}.
 `);
-  for (const { from, to, what } of folderPairs(paths, old)) {
-    if (!move(from, to, options.dryRun))
-      continue;
-    say("+", short(to), `moved from ${short(from)} (${what})`);
+  for (const session of plan.running) {
+    say("!", null, `a Claude session that started with the old plugin is still running (pid ${String(session.pid)}, ${session.version}): close it first, and start it again here. Until then it may write the old folders again.`);
   }
-  const stateDirNow = options.dryRun ? old.oldStateDir : old.stateDir;
-  if (existsSync30(stateDirNow)) {
-    const written = rewriteStateFolder(stateDirNow, options.dryRun);
-    if (written.files > 0 || written.backups > 0) {
-      say("~", short(old.stateDir), `${String(written.files)} record file(s) and ${String(written.backups)} backup name(s) now name this version's files`);
+  const answers = options.dryRun ? null : askQuestions(units, options, plan);
+  if (!options.dryRun && answers === null) {
+    console.error(`Nothing was moved: ${units.oldUnit} is running, and this move replaces it. Run migrate in your own terminal, or again with --yes to replace the router without being asked.`);
+    return 1;
+  }
+  const finished = new Set(plan.done);
+  const steps = MIGRATE_STEPS.filter((step) => !finished.has(step));
+  if (steps.length === 0) {
+    console.log(`${COMMAND} migrate already finished on this machine; nothing is left to do.`);
+    if (options.dryRun) {
+      console.log(`
+Dry run: nothing was written, run or stopped.`);
+      return 0;
     }
+    rmSync8(progressFile(paths.stateDir), { force: true });
+    return 0;
   }
-  if (move(old.oldLauncher, old.launcher, options.dryRun)) {
-    say("~", short(old.launcher), `moved from ${short(old.oldLauncher)}`);
+  console.log(`${options.dryRun ? "A real run would do these steps" : "Steps"}: ${steps.join(", ")}.
+`);
+  if (options.dryRun && plan.oldRouterActive && !options.yes) {
+    say(" ", null, `would ask: Stop ${units.oldUnit} and start ${units.unit}?`);
   }
-  if (rawConfig !== null) {
-    const rewrite = rewriteGatewayConfig(rawConfig);
-    if (rewrite !== null) {
-      const parsed = parseConfig(rewrite.config);
+  const stateDir = options.dryRun ? old.oldStateDir : old.stateDir;
+  const gatewayStateFile = options.dryRun ? join28(old.oldStateHomeDir, basename5(paths.gatewayStateFile)) : paths.gatewayStateFile;
+  const progress = {
+    at: new Date(options.probe.now()).toISOString(),
+    steps: [...plan.done]
+  };
+  const record = (step) => {
+    if (!progress.steps.includes(step))
+      progress.steps.push(step);
+    writeProgress(paths.stateDir, progress);
+    options.onStepDone?.(step);
+  };
+  const stepBody = {
+    folders: () => {
+      const launcher = movedFile(old);
+      for (const { from, to, what } of [...movedFolders(old), launcher]) {
+        const into = to === old.stateDir && plan.absorbState;
+        const absorb = to === old.stateDir && existsSync30(from) && existsSync30(to);
+        const moved = absorb ? absorbStateFolder(from, to, options.dryRun) : Number(move(from, to, options.dryRun));
+        if (moved === 0)
+          continue;
+        if (from === launcher.from) {
+          say("~", short(to), `moved from ${short(from)}`);
+        } else {
+          say("+", short(to), into ? `moved from ${short(from)}, into this version's own state folder (${what})` : `moved from ${short(from)} (${what})`);
+        }
+      }
+    },
+    records: () => {
+      const written = rewriteStateFolder(stateDir, renamer, options.dryRun);
+      if (written.files > 0 || written.backups > 0) {
+        say("~", short(old.stateDir), `${String(written.files)} record file(s) and ${String(written.backups)} backup name(s) now name this version's files`);
+      }
+    },
+    "gateway-config": () => {
+      if (plan.rewrite === null || plan.config === null)
+        return;
+      const parsed = parseConfig(plan.config);
       if ("error" in parsed) {
-        throw new ConfigError(`${configFile ?? ""} is not a valid gateway config:
+        throw new ConfigError(`${plan.configFile ?? ""} is not a valid gateway config:
 ${parsed.error}`);
       }
-      say("~", short(paths.gatewayConfigFile), `${String(rewrite.slots.length)} slot(s) renamed, and an alias added for ${rewrite.aliases.map(([name]) => name).join(", ")}, so sessions that are still running keep working`);
-      if (!options.dryRun) {
-        backupFile(paths.stateDir, paths.gatewayConfigFile);
-        saveConfig(paths.gatewayConfigFile, parsed.config);
+      say("~", short(paths.gatewayConfigFile), `${String(plan.rewrite.slots.length)} slot(s) renamed, and an alias added for ${plan.rewrite.aliases.map(([name]) => name).join(", ")}, so sessions that are still running keep working`);
+      if (options.dryRun)
+        return;
+      backupFile(paths.stateDir, paths.gatewayConfigFile);
+      saveConfig(paths.gatewayConfigFile, parsed.config);
+    },
+    "limit-state": () => {
+      const fallbacks = rewriteLimitState(gatewayStateFile, stateDir, renamer, options.dryRun);
+      if (fallbacks > 0) {
+        say("~", short(paths.gatewayStateFile), `${String(fallbacks)} fallback record(s) renamed`);
       }
-    }
-  }
-  const fallbacks = rewriteLimitState(paths.gatewayStateFile, paths.stateDir, options.dryRun);
-  if (fallbacks > 0) {
-    say("~", short(paths.gatewayStateFile), `${String(fallbacks)} fallback record(s) renamed`);
-  }
-  const migrateFiles = async () => {
-    const oldEnv = oldGatewayEnv(port);
-    const newEnv = gatewayEnv(port);
-    const changes = settingsChanges(paths.settingsFile, paths.stateDir, oldEnv, newEnv);
-    if (changes.set.length > 0) {
-      const result = applyManagedJson({
-        file: paths.settingsFile,
-        stateDir: paths.stateDir,
-        set: changes.set.map(([key, value]) => [["env", key], value]),
-        ...options.dryRun && { dryRun: true }
-      });
-      if (result.changes.length > 0) {
-        say("~", short(paths.settingsFile), `${String(result.changes.length)} gateway key(s) now name this version's slots and words`);
+    },
+    settings: () => {
+      const oldEnv = oldGatewayEnv(plan.port);
+      const newEnv = gatewayEnv(plan.port);
+      const changes = settingsChanges(paths.settingsFile, stateDir, oldEnv, newEnv);
+      if (changes.set.length > 0) {
+        const result = applyManagedJson({
+          file: paths.settingsFile,
+          stateDir,
+          set: changes.set.map(([key, value]) => [["env", key], value]),
+          ...options.dryRun && { dryRun: true }
+        });
+        if (result.changes.length > 0) {
+          say("~", short(paths.settingsFile), `${String(result.changes.length)} gateway key(s) now name this version's slots and words`);
+        }
+      } else if (existsSync30(paths.settingsFile)) {
+        say(" ", null, `${short(paths.settingsFile)}: no gateway key of the old setup's is left to change`);
       }
-    } else if (existsSync30(paths.settingsFile)) {
-      say(" ", null, `${short(paths.settingsFile)}: no gateway key of the old setup's is left to change`);
-    }
-    for (const key of changes.kept) {
-      say("!", null, `env.${key} still names an old slot, and it is not this plugin's to change (you set it, or its record is gone): it keeps working, because the router's config now has an alias for every old slot name. Write this version's name in ${short(paths.settingsFile)} when you want it.`);
-    }
-    for (const line of migrateInstructions(paths, options)) {
-      say(line.mark, line.file, line.what);
-    }
-    if (existsSync30(old.launcher)) {
+      for (const key of changes.kept) {
+        say("!", null, `env.${key} still names an old slot, and it is not this plugin's to change (you set it, or its record is gone): it keeps working, because the router's config now has an alias for every old slot name. Write this version's name in ${short(paths.settingsFile)} when you want it.`);
+      }
+    },
+    instructions: () => {
+      for (const line of migrateInstructions(paths, stateDir, options)) {
+        say(line.mark, line.file, line.what);
+      }
+    },
+    launcher: () => {
+      if (!existsSync30(old.oldLauncher) && !existsSync30(old.launcher))
+        return;
+      if (options.dryRun) {
+        const outcome = existsSync30(old.oldLauncher) ? "updated" : "created";
+        say("~", short(old.launcher), `written for this version (${outcome})`);
+        return;
+      }
       const { outcome } = installLauncher(paths.binDir, {
-        stateDir: paths.stateDir,
-        bunPath: options.bunPath,
-        ...options.dryRun && { dryRun: true }
+        stateDir,
+        bunPath: options.bunPath
       });
       if (outcome !== "unchanged") {
         say("~", short(old.launcher), `written for this version (${outcome})`);
       }
+    },
+    router: async () => {
+      const existing = [
+        { file: old.oldSocketFile, name: units.oldSocket },
+        { file: old.oldUnitFile, name: units.oldUnit }
+      ].filter((unit) => existsSync30(unit.file));
+      if (existing.length === 0)
+        return;
+      const names = existing.map((unit) => unit.name).join(", ");
+      if (options.dryRun) {
+        say("~", short(old.unitFile), `would be written; ${names} stopped, disabled and removed`);
+        return;
+      }
+      if (!options.systemd) {
+        say("!", null, `the old router units are there, but this machine has no systemd: remove ${existing.map((unit) => short(unit.file)).join(" and ")} by hand, then run ${COMMAND} gateway setup`);
+        return;
+      }
+      const stop = stopUnits(options.runner, {
+        dir: units.dir,
+        names: existing.map((unit) => unit.name)
+      });
+      for (const refused of stop.refused) {
+        say(" ", null, `${refused.command} failed (exit ${String(refused.exitCode)}): ${refused.output.trim().split(`
+`)[0] ?? ""} \u2014 going on`);
+      }
+      say("-", names, plan.oldRouterActive ? "disabled and stopped" : "not running; disabled all the same");
+      const waited = await waitWhileRouterAnswers(plan.port, options.probe, OLD_PORT_WAIT_MS, OLD.healthPath);
+      if (waited.state === "held") {
+        throw new Error(`${units.oldUnit} was told to stop, but its port 127.0.0.1:${String(plan.port)} still answers after ${String(OLD_PORT_WAIT_MS / 1000)} s. This version's router was not installed, so nothing takes the port. See why: systemctl --user status ${units.oldUnit.replace(/\.service$/, "")}, and ss -ltnp. Then run ${COMMAND} migrate again: it picks up here.`);
+      }
+      if (waited.state === "other") {
+        say(" ", null, `port ${String(plan.port)} answers, but not as ${OLD.name}-router (${waited.detail}); not waiting for it`);
+      } else {
+        say(" ", null, `port ${String(plan.port)} is free; answers in flight finish in the background`);
+      }
+      await installRouter({
+        bunPath: options.bunPath,
+        bunVersion: options.bunVersion,
+        bundle: options.bundle,
+        copyPath: paths.routerCopy,
+        unitPath: old.unitFile,
+        socketPath: old.socketFile,
+        home: paths.home,
+        stateDir: paths.stateDir,
+        port: plan.port,
+        probe: options.probe,
+        runner: options.runner,
+        say: (line) => console.log(`  ${line}`),
+        yes: true,
+        confirm: null
+      });
+      for (const unit of existing)
+        rmSync8(unit.file, { force: true });
+      say("-", existing.map((unit) => short(unit.file)).join(", "), "removed (this version's units are in their place)");
+    },
+    "old-plugin": () => {
+      migrateOldPlugin(options, plan, answers?.uninstall === true);
     }
   };
-  if (options.dryRun)
-    await migrateFiles();
-  else
-    await withLock(paths.stateDir, migrateFiles, { waitMs: 1e4 });
-  await migrateRouter(paths, old, options, port);
-  migrateOldPlugin(options);
-  console.log(options.dryRun ? `
-Dry run: nothing was written, run or stopped.` : `
+  const runSteps = async () => {
+    for (const step of steps) {
+      try {
+        await stepBody[step]();
+        if (!options.dryRun)
+          record(step);
+      } catch (error) {
+        console.error(`
+! the ${step} step failed: ${messageOf(error)}`);
+        console.error(progress.steps.length === 0 ? "  Nothing was changed." : `  Finished, and kept: ${progress.steps.join(", ")}.`);
+        console.error(`  Run ${COMMAND} migrate again: it goes on from here (every step is safe to repeat).`);
+        return 1;
+      }
+    }
+    return 0;
+  };
+  let code;
+  try {
+    code = options.dryRun ? await runSteps() : await withLock(paths.stateDir, runSteps, { waitMs: 1e4 });
+  } catch (error) {
+    console.error(`${COMMAND}: ${messageOf(error)}`);
+    return 1;
+  }
+  if (code !== 0)
+    return code;
+  if (plan.judgeTargets.length > 0) {
+    console.log(`
+The judge test does not carry over: its proof names the old command. Test the judge again: ${COMMAND} gateway slot judge ${plan.judgeTargets.join(",")}`);
+  }
+  if (options.dryRun) {
+    console.log(`
+Dry run: nothing was written, run or stopped.`);
+    return 0;
+  }
+  rmSync8(progressFile(paths.stateDir), { force: true });
+  console.log(`
 Done. Restart every running Claude session: until then they still hold the old names (the router's aliases keep them working).`);
   return 0;
 }
 
 // src/cli/restore.ts
 import { existsSync as existsSync31, rmSync as rmSync9 } from "fs";
+import { dirname as dirname10 } from "path";
 function describe2(result, short) {
   const file = short(result.file);
   switch (result.action) {
@@ -16993,7 +17374,11 @@ async function runRestore(paths, options) {
         console.log(`  cannot read the router's port (${messageOf(error)}); not waiting for it`);
         port = null;
       }
-      const stopped = await stopRouter(options.runner, port, options.probe);
+      const stopped = await stopRouter(options.runner, port, options.probe, {
+        dir: dirname10(paths.routerUnitFile),
+        socket: SOCKET_NAME,
+        unit: UNIT_NAME
+      });
       switch (stopped.kind) {
         case "closed":
           console.log(`- ${UNITS}: disabled and stopped (port ${port} closed; answers in flight finish in the background)`);
@@ -20081,8 +20466,15 @@ Commands:
                      keys the old setup owned (the slots' names and words), the
                      instructions block in ~/.claude/CLAUDE.md, the gateway config's
                      slots (with an alias for each old name, so running sessions keep
-                     working), and the router units. Refuses to run inside a Claude Code
-                     session: run it in your own terminal, then restart your sessions.
+                     working), and the router units. On a 0.2.x machine this command does
+                     not exist yet: run the installed plugin's dist/cli.js with bun
+                     (README, Moving from anymodel).
+                     It reads and checks everything, then asks every question, and writes
+                     nothing before they are answered: a "no" leaves the machine as it
+                     was. It then prints its steps and walks them; a step that fails keeps
+                     what the steps before it did, and running it again goes on from there.
+                     Refuses to run inside a Claude Code session: run it in your own
+                     terminal, then restart your sessions.
                      --yes: no questions (the router is replaced without asking). The old
                      plugin is uninstalled only after a terminal yes.
   update [--check | --hold | --resume]
@@ -20125,7 +20517,7 @@ function routerBundle() {
   return existsSync40(beside) ? beside : join35(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
 }
 function pluginDir() {
-  return basename7(import.meta.dir) === "dist" ? dirname9(import.meta.dir) : join35(import.meta.dir, "..", "..", "plugin");
+  return basename7(import.meta.dir) === "dist" ? dirname11(import.meta.dir) : join35(import.meta.dir, "..", "..", "plugin");
 }
 var liveRunner = (argv, { cwd, env, timeoutMs }) => {
   try {
