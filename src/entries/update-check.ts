@@ -4,8 +4,8 @@
 // (the copy only, quietly), and starts the check when one is due (src/update/background.ts).
 import { PLUGIN, VERSION } from "../build-info";
 import { cliPaths } from "../cli/paths";
-import { pluginFolderBeside } from "../setup/bun-config";
 import { startDetached } from "../hooks/detached";
+import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder, instructionsPaths } from "../setup/instructions";
 import { capturingRunner, commandContext, notifyCommand } from "../update/apply";
 import {

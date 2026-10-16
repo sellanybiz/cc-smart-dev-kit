@@ -21,8 +21,8 @@ import { tempDir } from "../testing/temp";
 import { installedText, notifyCommand } from "./apply";
 import {
   backgroundCheck,
-  backgroundCommand,
   backgroundCheckArgv,
+  backgroundCommand,
   refreshInstructionsAtSessionStart,
   sessionStart,
 } from "./background";

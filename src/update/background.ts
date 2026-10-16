@@ -15,8 +15,8 @@
 
 import { COMMAND, PLUGIN, PLUGIN_ID } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
-import { bunConfigArg } from "../setup/bun-config";
 import { detachedArgv } from "../hooks/detached";
+import { bunConfigArg } from "../setup/bun-config";
 import { type InstructionsPaths, refreshInstructionsCopy } from "../setup/instructions";
 import { LockBusyError, withLock } from "../setup/lock";
 import { redactUrlsIn } from "../setup/marketplace-access";
