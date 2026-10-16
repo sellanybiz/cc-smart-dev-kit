@@ -145,6 +145,23 @@ nav.pages a[aria-current="page"] { background: var(--chip-bg); color: var(--acce
   border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text);
   cursor: pointer;
 }
+/* ── The header on a phone ────────────────────────────────────────────────
+   Every row above is a flex row that wraps, so at 390px the brand, the router chip, the Bun
+   chip, the four links and the theme toggle each took a line (about 280px before the page).
+   Here they become three rows: the brand and the theme toggle, the two chips, then the four
+   links on one row of equal columns — 44px tall each, the touch target size kept. The order
+   is the CSS order property, so the desktop layout (and its own order) never changes. */
+@media (max-width: 640px) {
+  header.top .wrap { gap: 8px 12px; }
+  .brand { order: 1; }
+  .theme { order: 2; margin-left: auto; }
+  .chips { order: 3; width: 100%; }
+  nav.pages {
+    order: 4; width: 100%; margin-left: 0; display: grid; gap: 4px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  nav.pages a { justify-content: center; padding: 0 6px; }
+}
 .privatebar { background: var(--code-bg); color: var(--code-text); }
 .privatebar .wrap {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px 20px;
@@ -153,7 +170,9 @@ nav.pages a[aria-current="page"] { background: var(--chip-bg); color: var(--acce
 .privatebar span { display: inline-flex; align-items: center; gap: 6px; }
 
 /* ── Layout ─────────────────────────────────────────────────────────────── */
-main { display: flex; flex-direction: column; gap: 28px; padding-top: 32px; padding-bottom: 48px; }
+/* main carries the wrap class too, and that class's padding rule beat the element rule
+   below, so the page head sat right under the privacy strip. Qualified, this one wins. */
+main.wrap { display: flex; flex-direction: column; gap: 28px; padding-top: 32px; padding-bottom: 48px; }
 section { display: flex; flex-direction: column; gap: 12px; }
 .pagehead { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
 .pagehead p { margin-top: 6px; color: var(--muted); }
@@ -343,6 +362,14 @@ footer.bottom .wrap {
 `;
 
 /**
+ * The portal's own icon (`/assets/icon.svg`): the header's terminal glyph, nothing from the
+ * internet. The page links it as `rel="icon"`, so a browser never asks for `/favicon.ico`;
+ * `img-src 'self'` in the policy covers it.
+ */
+export const PORTAL_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="#7fa8f0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"></rect><path d="M7 10l3 2-3 2"></path><path d="M12 15h5"></path></svg>
+`;
+
+/**
  * The theme, before the first paint. A separate small file, loaded in the head with no
  * `defer`: a stored light choice never shows a dark flash. `localStorage` is read in a
  * `try` block — a browser with storage switched off gets the default (dark), not an error.
@@ -373,6 +400,10 @@ export const PORTAL_JS = `(function () {
     }).then(function (response) {
       return response.json().catch(function () { return { ok: false, lines: ["The portal answered something it should not have."] }; })
         .then(function (data) { data.status = response.status; return data; });
+    }).catch(function () {
+      // The portal stopped (its 30 minutes ran out, or someone pressed Ctrl+C): every caller
+      // then draws this as a failure, and a button left on "Working…" goes back to its label.
+      return { ok: false, lines: ["The portal is not running. Run cc-smart-dev-kit portal again."], status: 0 };
     });
   }
 
@@ -393,7 +424,8 @@ export const PORTAL_JS = `(function () {
     node.appendChild(document.createTextNode((list && list[0]) || (ok ? "Done." : "It did not work.")));
     if (list && list.length > 1) {
       var more = document.createElement("div");
-      more.appendChild(lines(list.slice(1)));
+      var rest = lines(list.slice(1));
+      for (var i = 0; i < rest.length; i += 1) more.appendChild(rest[i]);
       node.appendChild(more);
     }
   }
@@ -480,7 +512,18 @@ export const PORTAL_JS = `(function () {
   var live = document.querySelector("[data-live]");
   if (live) {
     var paused = false;
-    var timer = setInterval(function () { if (!paused) location.reload(); }, 5000);
+    // The auto=1 query marks this reload as the page's own, not the person asking: the
+    // portal serves the page and does NOT count it as activity, so a Health tab left open
+    // cannot hold the portal (and its 30-minute idle clock) open forever. A hidden tab is not
+    // reloaded at all; it looks once more when it comes back.
+    var again = function () {
+      if (paused || document.hidden) return;
+      location.replace(location.pathname + "?auto=1");
+    };
+    var timer = setInterval(again, 5000);
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) again();
+    });
     var pause = document.querySelector("[data-pause]");
     if (pause) {
       pause.addEventListener("click", function () {
@@ -488,6 +531,7 @@ export const PORTAL_JS = `(function () {
         pause.textContent = paused ? "Resume" : "Pause";
       });
     }
+
     var only = document.querySelector("[data-only-warn]");
     if (only) {
       var apply = function () {
@@ -540,7 +584,14 @@ export const PORTAL_JS = `(function () {
         var state = tested[slot + "\\u0000" + target];
         var mark = document.createElement("span");
         if (state === "good") { mark.className = "ok"; mark.textContent = "\\u2713 tested, it answered"; }
-        else if (state === "bad") { mark.className = "badmark"; mark.textContent = "\\u2717 it did not answer as it should \\u2014 Save is off until every target passes"; }
+        else if (state === "bad") {
+          mark.className = "badmark";
+          // The same rule as the note and as the command line: Save is held off for the judge
+          // slot alone; another slot's chain with a failing target is refused by the CLI.
+          mark.textContent = slot === "judge"
+            ? "\\u2717 it did not block the test \\u2014 Save is off until every judge target shows blocked \\u2713"
+            : "\\u2717 it did not answer as it should \\u2014 the command line refuses a chain like this";
+        }
         else if (state === "blocked") { mark.className = "ok"; mark.textContent = "\\u2713 blocked"; }
         else { mark.className = "muted"; mark.textContent = "Not tested yet."; }
         what.appendChild(mark);
@@ -580,9 +631,14 @@ export const PORTAL_JS = `(function () {
       return "answers if the one above fails or rests";
     };
 
+    // The command line's own judge rule: a claude-... target in the judge slot is allowed and
+    // never used (the router uses a judge target only after the force-push test, and a Claude
+    // target cannot be tested from here), so Save waits only on the backend targets.
     var untestedJudge = function (chain) {
       if (slot !== "judge") return false;
-      return chain.some(function (target) { return tested[slot + "\\u0000" + target] !== "blocked"; });
+      return chain.some(function (target) {
+        return target.indexOf("claude-") !== 0 && tested[slot + "\\u0000" + target] !== "blocked";
+      });
     };
 
     Array.prototype.forEach.call(slotsRoot.querySelectorAll("[data-pick]"), function (button) {

@@ -70,7 +70,7 @@ const unchosen = (path: KeyPath, value: unknown) =>
   typeof value === "string" && (UNCHOSEN[path.at(-1) ?? ""] ?? []).includes(value);
 
 /** The gateway's affordable model, as claude-mem reaches it. */
-export interface CheapTarget {
+export interface AffordableTarget {
   /** The backend's name in gateway.json. */
   backend: string;
   /** Its OpenAI-compatible base: `<backend baseUrl>/v1`. */
@@ -86,7 +86,7 @@ export interface CheapTarget {
  */
 export function gatewayAffordableTarget(
   gatewayConfigFile: string,
-): { target: CheapTarget } | { reason: string } {
+): { target: AffordableTarget } | { reason: string } {
   if (!existsSync(gatewayConfigFile)) return { reason: "the gateway is not set up" };
   let config: ReturnType<typeof loadConfigFile>;
   try {
@@ -116,7 +116,7 @@ export function gatewayAffordableTarget(
 export interface ClaudeMemPlan {
   /** The keys to set, with their path (flat, or under `env` in an older file). */
   set: Array<readonly [KeyPath, string]>;
-  target: CheapTarget;
+  target: AffordableTarget;
 }
 
 /**
@@ -223,7 +223,7 @@ export function claudeMemPlan(
  * key never appears in what it returns.
  */
 export async function checkAffordableTarget(
-  target: CheapTarget,
+  target: AffordableTarget,
   timeoutMs = 30_000,
 ): Promise<string | null> {
   const url = `${target.baseUrl}/chat/completions`;

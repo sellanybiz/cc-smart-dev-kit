@@ -1,6 +1,6 @@
 // @bun
 // src/entries/portal.ts
-import { join as join32 } from "path";
+import { join as join33 } from "path";
 
 // src/build-info/names.ts
 var MARKETPLACE = "cc-smart-dev-kit";
@@ -8337,14 +8337,22 @@ the updates, the heavy-job queue and the companions. It binds 127.0.0.1 only.
 It prints a link with a one-time token, and stops after 30 minutes with no request. It
 refuses to run inside a Claude Code session: run it in your own terminal, and never open it
 in the browser Claude drives.`;
-function parsePortalArgs(args) {
+function parseArgs(args, allowPluginDir) {
   let noOpen = false;
+  let pluginDir = null;
   let port = DEFAULT_PORTAL_PORT;
   for (let index = 0;index < args.length; index += 1) {
     const arg = args[index] ?? "";
     if (arg === "--no-open")
       noOpen = true;
-    else if (arg === "--port") {
+    else if (arg === "--plugin-dir" && allowPluginDir) {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        return { error: "--plugin-dir needs a folder" };
+      }
+      pluginDir = value;
+      index += 1;
+    } else if (arg === "--port") {
       const value = args[index + 1];
       if (value === undefined || value.startsWith("--"))
         return { error: "--port needs a port" };
@@ -8356,17 +8364,60 @@ function parsePortalArgs(args) {
     } else
       return { error: `Unknown option: ${arg}` };
   }
-  return { noOpen, port };
+  return { noOpen, pluginDir, port };
+}
+function parsePortalChildArgs(args) {
+  return parseArgs(args, true);
 }
 function claudeCodeRefusal(env) {
   return env.CLAUDECODE === undefined ? null : `${COMMAND} portal cannot run inside a Claude Code session: the portal is for you, not for Claude. It changes this machine's model path and the safety judge, and a session must never do that for itself. Run it in your own terminal \u2014 and never open the page in the browser Claude drives.`;
+}
+
+// src/portal/plugin-folder.ts
+import { existsSync as existsSync4 } from "fs";
+
+// src/setup/installed-plugins.ts
+import { existsSync as existsSync3, readFileSync as readFileSync4 } from "fs";
+function findUserInstall(installedPluginsFile, pluginId = PLUGIN_ID) {
+  if (!existsSync3(installedPluginsFile))
+    return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync4(installedPluginsFile, "utf8"));
+  } catch {
+    return null;
+  }
+  const plugins = parsed?.plugins;
+  const entries = plugins?.[pluginId];
+  if (!Array.isArray(entries))
+    return null;
+  const entry = entries.find((candidate) => typeof candidate === "object" && candidate !== null && candidate.scope === "user" && typeof candidate.installPath === "string");
+  if (!entry)
+    return null;
+  return {
+    installPath: entry.installPath,
+    version: typeof entry.version === "string" ? entry.version : null
+  };
+}
+
+// src/portal/plugin-folder.ts
+function resolvePluginFolder(installedPluginsFile, fallback) {
+  const installed = findUserInstall(installedPluginsFile);
+  if (installed !== null && existsSync4(installed.installPath)) {
+    return { folder: installed.installPath };
+  }
+  if (fallback !== null && existsSync4(fallback))
+    return { folder: fallback };
+  return {
+    error: "the plugin's own folder is gone, and Claude Code records no installed version: an update or an uninstall removed it while this portal was running. Nothing can be restarted or checked from here. Stop the portal (Ctrl+C) and start it again."
+  };
 }
 
 // src/setup/auto-mode.ts
 import { join as join8 } from "path";
 
 // src/project/config.ts
-import { existsSync as existsSync3, readFileSync as readFileSync4 } from "fs";
+import { existsSync as existsSync5, readFileSync as readFileSync5 } from "fs";
 
 // src/jobs/kinds.ts
 var matchRuleSchema = union([
@@ -8594,11 +8645,11 @@ function checkRequires(file, raw, pluginVersion) {
   }
 }
 function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
-  if (!existsSync3(file))
+  if (!existsSync5(file))
     return null;
   let raw;
   try {
-    raw = JSON.parse(readFileSync4(file, "utf8"));
+    raw = JSON.parse(readFileSync5(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new CcSmartDevKitConfigError(`Invalid ${file}: not valid JSON (${reason})`);
@@ -8613,7 +8664,7 @@ function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
 }
 
 // src/project/resolve.ts
-import { existsSync as existsSync4, realpathSync as realpathSync2, statSync as statSync3 } from "fs";
+import { existsSync as existsSync6, realpathSync as realpathSync2, statSync as statSync3 } from "fs";
 import { join as join5 } from "path";
 
 // src/project/git-env.ts
@@ -8680,13 +8731,13 @@ function findMainCheckout(git, cwd) {
   if (!pathLine)
     return null;
   const path = pathLine.slice("worktree ".length);
-  if (!existsSync4(path) || lines.some((line) => line.startsWith("prunable"))) {
+  if (!existsSync6(path) || lines.some((line) => line.startsWith("prunable"))) {
     throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
   }
   return realpathSync2(path);
 }
 function locateCheckout(cwd, options = {}) {
-  if (!existsSync4(cwd) || !statSync3(cwd).isDirectory()) {
+  if (!existsSync6(cwd) || !statSync3(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
   const git = gitIn(cwd, gitEnv(options.env ?? process.env));
@@ -8732,12 +8783,12 @@ function resolveProject(cwd, options = {}) {
 }
 
 // src/setup/managed-entries.ts
-import { existsSync as existsSync6, readFileSync as readFileSync6 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync7 } from "fs";
 import { join as join7 } from "path";
 
 // src/setup/managed-json.ts
 import { createHash as createHash3 } from "crypto";
-import { existsSync as existsSync5, readFileSync as readFileSync5 } from "fs";
+import { existsSync as existsSync7, readFileSync as readFileSync6 } from "fs";
 import { join as join6 } from "path";
 var OWNED_FILE = "owned.json";
 
@@ -8758,9 +8809,9 @@ function samePath(a, b) {
   return a.length === b.length && a.every((segment, index) => segment === b[index]);
 }
 function readJsonObject(file) {
-  if (!existsSync5(file))
+  if (!existsSync7(file))
     return { data: {}, indent: "  ", text: null };
-  const text = readFileSync5(file, "utf8");
+  const text = readFileSync6(file, "utf8");
   if (text.trim() === "")
     return { data: {}, indent: "  ", text };
   let parsed;
@@ -8791,9 +8842,9 @@ function toRecord(entry, file) {
 }
 function readOwned(stateDir) {
   const file = join6(stateDir, OWNED_FILE);
-  if (!existsSync5(file))
+  if (!existsSync7(file))
     return {};
-  const parsed = JSON.parse(readFileSync5(file, "utf8"));
+  const parsed = JSON.parse(readFileSync6(file, "utf8"));
   if (!isObject2(parsed))
     throw new Error(`Invalid ${file}: expected an object`);
   const owned = {};
@@ -8994,9 +9045,9 @@ function isOwnedEntry(value) {
 }
 function readOwnedEntries(stateDir) {
   const file = join7(stateDir, OWNED_ENTRIES_FILE);
-  if (!existsSync6(file))
+  if (!existsSync8(file))
     return {};
-  const parsed = JSON.parse(readFileSync6(file, "utf8"));
+  const parsed = JSON.parse(readFileSync7(file, "utf8"));
   const valid = isObject2(parsed) && Object.values(parsed).every((lists) => isObject2(lists) && Object.values(lists).every((list) => Array.isArray(list) && list.every(isOwnedEntry)));
   if (!valid) {
     throw new Error(`Invalid ${file}: expected { <file>: { <key path>: [{ "entry", "source" }] } }`);
@@ -9193,36 +9244,12 @@ import { mkdtempSync as mkdtempSync2, rmSync as rmSync2 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
 import { join as join10 } from "path";
 
-// src/setup/installed-plugins.ts
-import { existsSync as existsSync7, readFileSync as readFileSync7 } from "fs";
-function findUserInstall(installedPluginsFile, pluginId = PLUGIN_ID) {
-  if (!existsSync7(installedPluginsFile))
-    return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync7(installedPluginsFile, "utf8"));
-  } catch {
-    return null;
-  }
-  const plugins = parsed?.plugins;
-  const entries = plugins?.[pluginId];
-  if (!Array.isArray(entries))
-    return null;
-  const entry = entries.find((candidate) => typeof candidate === "object" && candidate !== null && candidate.scope === "user" && typeof candidate.installPath === "string");
-  if (!entry)
-    return null;
-  return {
-    installPath: entry.installPath,
-    version: typeof entry.version === "string" ? entry.version : null
-  };
-}
-
 // src/setup/marketplace-access.ts
-import { existsSync as existsSync8, readFileSync as readFileSync8 } from "fs";
+import { existsSync as existsSync9, readFileSync as readFileSync8 } from "fs";
 import { join as join9 } from "path";
 var ACCESS_TIMEOUT_MS = 1e4;
 function marketplaceSource(knownMarketplacesFile, name, env = process.env) {
-  if (!existsSync8(knownMarketplacesFile))
+  if (!existsSync9(knownMarketplacesFile))
     return { kind: "missing" };
   let known;
   try {
@@ -9358,7 +9385,7 @@ async function canReadHttp(url) {
   }
 }
 function marketplaceInstallLocation(knownMarketplacesFile, name) {
-  if (!existsSync8(knownMarketplacesFile))
+  if (!existsSync9(knownMarketplacesFile))
     return null;
   try {
     const known = JSON.parse(readFileSync8(knownMarketplacesFile, "utf8"));
@@ -9511,13 +9538,14 @@ function remotePluginVersion(url, ref, baseEnv) {
 
 // src/portal/actions.ts
 import { readFileSync as readFileSync36 } from "fs";
+import { join as join32 } from "path";
 
 // src/cli/doctor.ts
-import { accessSync, constants, existsSync as existsSync28, readFileSync as readFileSync30 } from "fs";
+import { accessSync as accessSync2, constants as constants2, existsSync as existsSync29, readFileSync as readFileSync30 } from "fs";
 import { dirname as dirname8, join as join28 } from "path";
 
 // src/gateway/doctor.ts
-import { existsSync as existsSync12, readFileSync as readFileSync13 } from "fs";
+import { existsSync as existsSync13, readFileSync as readFileSync13 } from "fs";
 
 // src/gateway/backends.ts
 function isJsonObject4(value) {
@@ -9638,7 +9666,7 @@ async function probeModel(options) {
 }
 
 // src/gateway/commands.ts
-import { existsSync as existsSync11, readFileSync as readFileSync12 } from "fs";
+import { existsSync as existsSync12, readFileSync as readFileSync12 } from "fs";
 
 // src/setup/lock.ts
 import {
@@ -9950,7 +9978,7 @@ async function testJudgeTarget(baseUrl, apiKey, model, fetchImpl = fetch) {
 }
 
 // src/gateway/service.ts
-import { existsSync as existsSync9, readFileSync as readFileSync10, rmSync as rmSync3 } from "fs";
+import { existsSync as existsSync10, readFileSync as readFileSync10, rmSync as rmSync3 } from "fs";
 import { basename as basename2, join as join12 } from "path";
 var UNIT_NAME = "cc-smart-dev-kit-router.service";
 var SOCKET_NAME = "cc-smart-dev-kit-router.socket";
@@ -10058,7 +10086,7 @@ function restartWarning(rebind, socketOpen, socketPlan, socketPath, port) {
     return RESTART_WARNING;
   if (!socketOpen)
     return socketPlan === "created" ? MOVE_WARNING : SOCKET_STOPPED_WARNING;
-  const oldPort = existsSync9(socketPath) ? socketPort(readFileSync10(socketPath, "utf8")) : null;
+  const oldPort = existsSync10(socketPath) ? socketPort(readFileSync10(socketPath, "utf8")) : null;
   return oldPort !== null && oldPort !== port ? PORT_WARNING : SOCKET_CHANGED_WARNING;
 }
 async function installRouter(options) {
@@ -10088,7 +10116,7 @@ async function installRouter(options) {
   const unitPlan = write(options.unitPath, unitText, true).outcome;
   const socketPlan = write(options.socketPath, socketText, true).outcome;
   const filesUnchanged = copyPlan === "unchanged" && unitPlan === "unchanged" && socketPlan === "unchanged";
-  if (filesUnchanged && socketOpen && !existsSync9(marker)) {
+  if (filesUnchanged && socketOpen && !existsSync10(marker)) {
     if (options.dryRun)
       return "up-to-date";
     run(options.runner, ["systemctl", "--user", "enable", "--now", socketName, unitName]);
@@ -10153,7 +10181,7 @@ async function installRouter(options) {
 var HOLDS_ITS_PORT = new Set(["active", "deactivating"]);
 
 // src/gateway/settings.ts
-import { existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
+import { existsSync as existsSync11, readFileSync as readFileSync11 } from "fs";
 function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
@@ -10180,7 +10208,7 @@ function isJsonObject5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function readSettings(path) {
-  if (!existsSync10(path))
+  if (!existsSync11(path))
     return {};
   let parsed;
   try {
@@ -10197,6 +10225,19 @@ function readSettings(path) {
 }
 function maskKey(key) {
   return key.length >= 12 ? `\u2022\u2022\u2022\u2022${key.slice(-4)}` : "\u2022\u2022\u2022\u2022";
+}
+function shownBackendUrl(baseUrl, apiKey) {
+  const masked = maskKey(apiKey);
+  try {
+    const url = new URL(baseUrl);
+    if (url.username !== "" || url.password !== "") {
+      url.username = "";
+      url.password = "";
+    }
+    return `${url.href.replace(/\/$/, "")} (key ${masked})`;
+  } catch {
+    return `(key ${masked})`;
+  }
 }
 function shownValue(value) {
   const text = typeof value === "string" ? value : JSON.stringify(value);
@@ -10309,7 +10350,7 @@ function defaultConfig(omnirouteKey) {
   };
 }
 function ensureConfig(configPath, key, options = {}) {
-  if (!existsSync11(configPath)) {
+  if (!existsSync12(configPath)) {
     if (key === null && options.allowNone === true) {
       return `no config at ${configPath} yet: the router answers every slot on your own Claude login until the OmniRoute key is added (setup --backend-key-stdin omniroute)`;
     }
@@ -10337,7 +10378,7 @@ function ensureConfig(configPath, key, options = {}) {
   return `set the key of backend "${key.backend}" (${maskKey(key.value)}) in ${configPath}`;
 }
 function configuredPort(configPath) {
-  return existsSync11(configPath) ? loadConfigFile(configPath).port : DEFAULT_PORT;
+  return existsSync12(configPath) ? loadConfigFile(configPath).port : DEFAULT_PORT;
 }
 function planSlotChange(current, slotArg, targetsText, modelsByBackend) {
   const key = slotKeyFromArg(slotArg);
@@ -10749,15 +10790,15 @@ async function gatewayChecks(options) {
   const { paths } = options;
   const short = (path) => tildify(path, paths.home);
   const checks = [];
-  if (existsSync12(restartPendingFile(paths.stateDir))) {
+  if (existsSync13(restartPendingFile(paths.stateDir))) {
     checks.push({
       ok: false,
       text: `a gateway setup did not finish; run: ${COMMAND} gateway setup`
     });
   }
-  const installed = existsSync12(paths.routerCopy) || existsSync12(paths.routerUnitFile) || existsSync12(paths.routerSocketFile);
+  const installed = existsSync13(paths.routerCopy) || existsSync13(paths.routerUnitFile) || existsSync13(paths.routerSocketFile);
   if (!installed) {
-    checks.push(existsSync12(paths.gatewayConfigFile) ? {
+    checks.push(existsSync13(paths.gatewayConfigFile) ? {
       ok: true,
       info: true,
       text: `gateway.json kept (${short(paths.gatewayConfigFile)}); the gateway is not installed. To use it: ${COMMAND} gateway setup`
@@ -10779,9 +10820,9 @@ async function gatewayChecks(options) {
 `)[0] || "unknown";
     checks.push(state.exitCode === 0 ? { ok: true, text: `the router service (${UNIT_NAME}) is active` } : { ok: false, text: `the router service (${UNIT_NAME}) is ${word}. ${SETUP}` });
   }
-  if (!existsSync12(paths.routerCopy)) {
+  if (!existsSync13(paths.routerCopy)) {
     checks.push({ ok: false, text: `no router copy at ${short(paths.routerCopy)}. ${SETUP}` });
-  } else if (existsSync12(options.bundle) && readFileSync13(paths.routerCopy, "utf8") !== readFileSync13(options.bundle, "utf8")) {
+  } else if (existsSync13(options.bundle) && readFileSync13(paths.routerCopy, "utf8") !== readFileSync13(options.bundle, "utf8")) {
     checks.push({
       ok: false,
       text: `the router copy ${short(paths.routerCopy)} is not this plugin version's router. ${SETUP}`
@@ -10790,7 +10831,7 @@ async function gatewayChecks(options) {
     checks.push({ ok: true, text: `the router copy ${short(paths.routerCopy)} is up to date` });
   }
   let config;
-  if (!existsSync12(paths.gatewayConfigFile)) {
+  if (!existsSync13(paths.gatewayConfigFile)) {
     config = emptyConfig();
     checks.push({
       ok: true,
@@ -10867,7 +10908,7 @@ function notAnswering(port, error, socket) {
 function socketCheck(options, port) {
   const { paths } = options;
   const where = tildify(paths.routerSocketFile, paths.home);
-  if (!existsSync12(paths.routerSocketFile)) {
+  if (!existsSync13(paths.routerSocketFile)) {
     return {
       check: {
         ok: false,
@@ -10914,10 +10955,10 @@ function socketCheck(options, port) {
 }
 
 // src/machine/claude-mem.ts
-import { existsSync as existsSync14 } from "fs";
+import { existsSync as existsSync15 } from "fs";
 
 // src/machine/companions.ts
-import { existsSync as existsSync13, readFileSync as readFileSync14 } from "fs";
+import { existsSync as existsSync14, readFileSync as readFileSync14 } from "fs";
 var MARKETPLACE_SOURCES = {
   thedotmack: "thedotmack/claude-mem",
   "claude-plugins-official": "anthropics/claude-plugins-official",
@@ -10939,7 +10980,7 @@ function companions(dependencies = DEPENDENCIES) {
   });
 }
 function readJson(file) {
-  if (!existsSync13(file))
+  if (!existsSync14(file))
     return null;
   try {
     const parsed = JSON.parse(readFileSync14(file, "utf8"));
@@ -10964,7 +11005,7 @@ function comparableVersion(version) {
 }
 function companionState(paths, companion) {
   const install = findUserInstall(paths.installedPluginsFile, companion.id);
-  if (install === null || !existsSync13(install.installPath)) {
+  if (install === null || !existsSync14(install.installPath)) {
     return marketplaceAdded(paths, companion.marketplace) ? { kind: "not-installed" } : { kind: "no-marketplace" };
   }
   const version = install.version;
@@ -11037,7 +11078,7 @@ var UNCHOSEN = {
 };
 function claudeMemAdvice(paths) {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
-  if (install === null || !existsSync14(install.installPath))
+  if (install === null || !existsSync15(install.installPath))
     return null;
   const version = comparableVersion(install.version);
   if (version === null || Bun.semver.order(version, CLAUDE_MEM_CHROMA_FIX_VERSION) >= 0) {
@@ -11182,10 +11223,17 @@ function warpCheck(machine, paths) {
 }
 
 // src/omniroute/commands.ts
-import { existsSync as existsSync16, readFileSync as readFileSync16 } from "fs";
+import { existsSync as existsSync17, readFileSync as readFileSync16 } from "fs";
 
 // src/omniroute/install.ts
-import { existsSync as existsSync15, readdirSync as readdirSync2, readFileSync as readFileSync15, realpathSync as realpathSync3 } from "fs";
+import {
+  accessSync,
+  constants,
+  existsSync as existsSync16,
+  readdirSync as readdirSync2,
+  readFileSync as readFileSync15,
+  realpathSync as realpathSync3
+} from "fs";
 import { dirname as dirname4, join as join13 } from "path";
 var PACKAGE2 = "omniroute";
 var NAME = "OmniRoute";
@@ -11241,6 +11289,8 @@ function execStartArgv(line) {
 function unitExecStart(text) {
   const lines = text.split(`
 `).filter((line) => /^ExecStart=/.test(line.trim()));
+  if (lines.length !== 1)
+    return null;
   const first = lines[0];
   return first === undefined ? null : execStartArgv(first.trim());
 }
@@ -11296,23 +11346,26 @@ function globalRootOf(folder, which) {
   if (bun !== null) {
     const prefix = bun[1] ?? "";
     const own = join13(prefix, "bin", "bun");
-    return { kind: "bun", manager: existsSync15(own) ? own : which("bun") ?? "bun" };
+    return { kind: "bun", manager: existsSync16(own) ? own : which("bun") ?? "bun" };
   }
   const npm = /^(.*)\/lib\/node_modules\/[^/]+$/.exec(folder);
   if (npm !== null) {
     const prefix = npm[1] ?? "";
     const own = join13(prefix, "bin", "npm");
-    return { kind: "npm", manager: existsSync15(own) ? own : which("npm") ?? "npm" };
+    return { kind: "npm", manager: existsSync16(own) ? own : which("npm") ?? "npm" };
   }
   return null;
 }
-function guessFolders(env, home) {
+var SYSTEM_PACKAGE_FOLDERS = [
+  join13("/usr", "local", "lib", "node_modules"),
+  join13("/usr", "lib", "node_modules")
+];
+function guessFolders(env, home, systemFolders) {
   const bunInstall = env.BUN_INSTALL ?? join13(home, ".bun");
   return [
     join13(bunInstall, "install", "global", "node_modules", PACKAGE2),
     join13(home, ".local", "share", "bun", "install", "global", "node_modules", PACKAGE2),
-    join13("/usr", "local", "lib", "node_modules", PACKAGE2),
-    join13("/usr", "lib", "node_modules", PACKAGE2)
+    ...systemFolders.map((folder) => join13(folder, PACKAGE2))
   ];
 }
 function fromPath(which) {
@@ -11332,7 +11385,11 @@ function findOmniroute(options) {
   const unit = units.find((entry) => entry.argv.some(namesOmniroute)) ?? units.find((entry) => entry.argv.some((word) => word.includes(PACKAGE2))) ?? null;
   const script = unit?.argv.find(namesOmniroute) ?? null;
   const fromUnit = script === null ? null : packageFolderOf(script, PACKAGE2);
-  const candidates = [fromUnit, fromPath(options.which), ...guessFolders(env, paths.home)].filter((folder) => folder !== null);
+  const candidates = [
+    fromUnit,
+    fromPath(options.which),
+    ...guessFolders(env, paths.home, options.systemFolders ?? SYSTEM_PACKAGE_FOLDERS)
+  ].filter((folder) => folder !== null);
   for (const folder of candidates) {
     const version = versionOf(folder, PACKAGE2);
     if (version === null)
@@ -11380,11 +11437,28 @@ function installLine(install, home) {
   const where = install.folder.startsWith(`${home}/`) ? `~${install.folder.slice(home.length)}` : install.folder;
   return `${PACKAGE2} ${install.version} installed at ${where} (a global ${install.kind} install)`;
 }
+function writable(dir) {
+  try {
+    accessSync(dir, constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function installIsWritable(install) {
+  return writable(install.folder) && writable(dirname4(install.folder));
+}
 
 // src/omniroute/registry.ts
 var REGISTRY = "https://registry.npmjs.org";
 var MIN_RELEASE_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 var STABLE = /^\d+\.\d+\.\d+$/;
+function isJsonObject7(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isDeprecated(entry) {
+  return isJsonObject7(entry) && typeof entry.deprecated === "string";
+}
 function parseReleases(text, nowMs) {
   let raw;
   try {
@@ -11400,9 +11474,12 @@ function parseReleases(text, nowMs) {
   if (typeof body.time !== "object" || body.time === null)
     return [];
   const times = body.time;
+  const versions = body.versions;
   const releases = [];
-  for (const version of Object.keys(body.versions)) {
+  for (const version of Object.keys(versions)) {
     if (!STABLE.test(version))
+      continue;
+    if (isDeprecated(versions[version]))
       continue;
     const publishedAt = times[version];
     if (typeof publishedAt !== "string")
@@ -11452,7 +11529,9 @@ Commands:
                          Install the newest release at least ${MIN_RELEASE_AGE_MS / 86400000} days old, restart its
                          unit, and check that it answers (its model list, then one tiny
                          chat). A failure puts the old version back. --yes: no question.
-                         --to: a version to install instead of the newest.
+                         --to <version>: install that release instead, when it is a plain
+                         x.y.z the registry lists and it is at least ${MIN_RELEASE_AGE_MS / 86400000} days old;
+                         anything else (a tag, a URL, a github spec) is refused.
   rollback [--yes]       Install the version the last update replaced, and restart.
                          Refuses inside a Claude Code session: it moves this machine's
                          model path.`;
@@ -11493,6 +11572,7 @@ function readState(file) {
 function writeState(file, state) {
   atomicWrite(file, formatState(state), 384);
 }
+var UPDATE_LOCK_WAIT_MS = 1e4;
 function stateFile(paths) {
   return paths.omnirouteStateFile;
 }
@@ -11516,10 +11596,15 @@ function firstAffordableTarget(config, backend) {
   return null;
 }
 async function omnirouteFacts(ctx) {
-  const found = findOmniroute({ env: ctx.env, paths: ctx.paths, which: ctx.which });
+  const found = findOmniroute({
+    env: ctx.env,
+    paths: ctx.paths,
+    systemFolders: ctx.systemFolders,
+    which: ctx.which
+  });
   let backend = null;
   let model = null;
-  if (found.install !== null && existsSync16(ctx.paths.gatewayConfigFile)) {
+  if (found.install !== null && existsSync17(ctx.paths.gatewayConfigFile)) {
     try {
       const config = loadConfigFile(ctx.paths.gatewayConfigFile);
       backend = omnirouteBackend(config, found.unit, readOrNull);
@@ -11535,6 +11620,7 @@ async function omnirouteFacts(ctx) {
     install: found.install,
     model,
     newest: "version" in newest ? newest.releases.at(-1) ?? null : null,
+    releases: "version" in newest ? newest.releases : [],
     registryError: "error" in newest ? newest.error : null,
     state: readState(stateFile(ctx.paths)),
     unit: found.unit
@@ -11562,7 +11648,7 @@ async function commandStatus2(ctx) {
   } else {
     ctx.say(`  ${facts.install.version} is the newest release at least ${MIN_RELEASE_AGE_MS / 86400000} days old`);
   }
-  ctx.say(facts.backend === null ? `  the gateway config names no ${PACKAGE2} backend, so the update's health check is skipped` : `  gateway backend ${facts.backend.name} \u2192 ${facts.backend.baseUrl}${facts.model === null ? "" : `, its first affordable target ${facts.model}`}`);
+  ctx.say(facts.backend === null ? `  the gateway config names no ${PACKAGE2} backend, so the update's health check is skipped` : `  gateway backend ${facts.backend.name} \u2192 ${shownBackendUrl(facts.backend.baseUrl, facts.backend.apiKey)}${facts.model === null ? "" : `, its first affordable target ${facts.model}`}`);
   const previous = facts.state.previous;
   if (previous !== null) {
     ctx.say(`  the last update here replaced ${previous.version} (${previous.at.slice(0, 19)}Z): ${COMMAND} omniroute rollback`);
@@ -11571,6 +11657,17 @@ async function commandStatus2(ctx) {
 }
 function installArgv(install, version) {
   return install.kind === "bun" ? [install.manager, "add", "--global", `${PACKAGE2}@${version}`] : [install.manager, "install", "--global", `${PACKAGE2}@${version}`];
+}
+var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
+function toRefusal(value, releases) {
+  const days = MIN_RELEASE_AGE_MS / 86400000;
+  if (!PLAIN_VERSION.test(value)) {
+    return `--to ${value}: only a plain version like 3.8.51 can be installed, never a tag, a URL or a github spec. Run \`${COMMAND} omniroute update\` with no --to for the newest release at least ${days} days old.`;
+  }
+  if (!releases.some((release) => release.version === value)) {
+    return `--to ${value}: the registry lists no such release, or it has not been out ${days} days. \`${COMMAND} omniroute status\` names the newest one it may install.`;
+  }
+  return null;
 }
 function lastLine(output) {
   return output.trim().split(`
@@ -11603,6 +11700,11 @@ async function installAndCheck(ctx, install, version, unit, backend, model) {
     step(ctx, "  the gateway config names no backend for it, so the model path was not checked");
     return null;
   }
+  const up = await waitForBackend(ctx, backend.baseUrl, backend.apiKey);
+  if (!up.up) {
+    step(ctx, `  the backend answered nothing on ${backend.baseUrl} within ${BACKEND_WAIT_MS / 1000} s of the restart (${up.detail ?? "no answer"})`);
+    return `the model path did not come back: no answer on ${backend.baseUrl} within ${BACKEND_WAIT_MS / 1000} s (${up.detail ?? "no answer"})`;
+  }
   const health = await probeModel({
     apiKey: backend.apiKey,
     baseUrl: backend.baseUrl,
@@ -11611,6 +11713,32 @@ async function installAndCheck(ctx, install, version, unit, backend, model) {
   });
   step(ctx, `  health: ${health.ok ? "\u2713" : "\u2717"} ${health.detail}`);
   return health.ok ? null : `the health check failed: ${health.detail}`;
+}
+var BACKEND_WAIT_MS = 60000;
+var BACKEND_POLL_FIRST_MS = 500;
+var BACKEND_POLL_MAX_MS = 5000;
+async function waitForBackend(ctx, baseUrl, apiKey, waitMs = BACKEND_WAIT_MS) {
+  const url = `${baseUrl}/v1/models`;
+  const deadline = ctx.now() + waitMs;
+  let pause = BACKEND_POLL_FIRST_MS;
+  let detail = "no answer";
+  for (;; ) {
+    try {
+      const response = await ctx.health(url, {
+        headers: { authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+        ...directIfLoopback(url)
+      });
+      await response.body?.cancel();
+      return { detail: null, up: true };
+    } catch (error) {
+      detail = messageOf(error);
+    }
+    if (ctx.now() >= deadline)
+      return { detail, up: false };
+    await ctx.sleep(Math.max(1, Math.min(pause, deadline - ctx.now())));
+    pause = Math.min(pause * 2, BACKEND_POLL_MAX_MS);
+  }
 }
 function askToRestart(ctx, yes, question) {
   if (yes)
@@ -11648,9 +11776,17 @@ ${USAGE2}`);
     return 1;
   }
   const facts = await omnirouteFacts(ctx);
-  if (facts.install === null) {
+  const install = facts.install;
+  if (install === null) {
     ctx.say(`${NAME} is not installed here (no global install found). Install it with: bun add -g ${PACKAGE2}`);
     return 1;
+  }
+  if (to !== null) {
+    const why = facts.registryError === null ? toRefusal(to, facts.releases) : `--to ${to} cannot be checked: the registry could not be read (${facts.registryError}).`;
+    if (why !== null) {
+      ctx.say(why);
+      return 1;
+    }
   }
   let target = to;
   if (target === null) {
@@ -11658,31 +11794,41 @@ ${USAGE2}`);
       ctx.say(`cannot read the newest release (${facts.registryError}).`);
       return 1;
     }
-    if (!releaseIsNewer(facts.install.version, facts.newest.version)) {
-      ctx.say(`${NAME} ${facts.install.version} is the newest release at least ${MIN_RELEASE_AGE_MS / 86400000} days old.`);
+    if (!releaseIsNewer(install.version, facts.newest.version)) {
+      ctx.say(`${NAME} ${install.version} is the newest release at least ${MIN_RELEASE_AGE_MS / 86400000} days old.`);
       return 0;
     }
     target = facts.newest.version;
   }
+  if (!installIsWritable(install)) {
+    ctx.say(`${NAME} is installed in ${tildify(install.folder, ctx.paths.home)}, which this user cannot write: the install would fail with a permission error, and nothing would change. Run it yourself, with the command that owns that folder:`);
+    ctx.say(`  sudo ${installArgv(install, target).join(" ")}`);
+    return 1;
+  }
   const unit = facts.unit === null ? null : facts.unit.name;
-  step(ctx, `${NAME} ${facts.install.version} \u2192 ${target}${unit === null ? "" : `, and ${unit} restarts`}.`);
+  step(ctx, `${NAME} ${install.version} \u2192 ${target}${unit === null ? "" : `, and ${unit} restarts`}.`);
   step(ctx, "While it restarts, the gateway's slots fall to their next target \u2014 Claude answers, on your own login. A new version that does not answer is put back.");
   if (!askToRestart(ctx, yes, `Install ${NAME} ${target} and restart?`))
     return 1;
-  writeState(stateFile(ctx.paths), {
-    previous: { at: new Date(ctx.now()).toISOString(), version: facts.install.version },
-    version: 1
+  return await withLock(ctx.paths.stateDir, async () => {
+    writeState(stateFile(ctx.paths), {
+      previous: { at: new Date(ctx.now()).toISOString(), version: install.version },
+      version: 1
+    });
+    const failure = await installAndCheck(ctx, install, target, facts.unit, facts.backend, facts.model);
+    if (failure === null) {
+      step(ctx, `${NAME} ${target} is running.`);
+      return 0;
+    }
+    step(ctx, `\u2717 ${failure}`);
+    step(ctx, `Putting ${install.version} back.`);
+    const back = await installAndCheck(ctx, install, install.version, facts.unit, facts.backend, facts.model);
+    step(ctx, back === null ? `${NAME} ${install.version} is running again.` : `\u2717 putting ${install.version} back failed too: ${back}. Look at: systemctl --user status ${unit ?? PACKAGE2}`);
+    return 1;
+  }, { waitMs: UPDATE_LOCK_WAIT_MS }).catch((error) => {
+    ctx.say(messageOf(error));
+    return 1;
   });
-  const failure = await installAndCheck(ctx, facts.install, target, facts.unit, facts.backend, facts.model);
-  if (failure === null) {
-    step(ctx, `${NAME} ${target} is running.`);
-    return 0;
-  }
-  step(ctx, `\u2717 ${failure}`);
-  step(ctx, `Putting ${facts.install.version} back.`);
-  const back = await installAndCheck(ctx, facts.install, facts.install.version, facts.unit, facts.backend, facts.model);
-  step(ctx, back === null ? `${NAME} ${facts.install.version} is running again.` : `\u2717 putting ${facts.install.version} back failed too: ${back}. Look at: systemctl --user status ${unit ?? PACKAGE2}`);
-  return 1;
 }
 async function commandRollback(ctx, rest) {
   const unknown = rest.filter((arg) => arg !== "--yes");
@@ -11697,7 +11843,8 @@ ${USAGE2}`);
     return 1;
   }
   const facts = await omnirouteFacts(ctx);
-  if (facts.install === null) {
+  const install = facts.install;
+  if (install === null) {
     ctx.say(`${NAME} is not installed here (no global install found).`);
     return 1;
   }
@@ -11706,20 +11853,30 @@ ${USAGE2}`);
     ctx.say(`no version recorded to go back to: ${COMMAND} omniroute update records the one it replaces.`);
     return 1;
   }
-  const warning = `${NAME} ${facts.install.version} \u2192 ${previous.version}${facts.unit === null ? "" : `, and ${facts.unit.name} restarts`}.`;
+  const warning = `${NAME} ${install.version} \u2192 ${previous.version}${facts.unit === null ? "" : `, and ${facts.unit.name} restarts`}.`;
   step(ctx, warning);
   step(ctx, "While it restarts, the gateway's slots fall to their next target \u2014 Claude answers, on your own login.");
   if (!askToRestart(ctx, rest.includes("--yes"), `Install ${NAME} ${previous.version} and restart?`)) {
     return 1;
   }
-  const failure = await installAndCheck(ctx, facts.install, previous.version, facts.unit, facts.backend, facts.model);
-  if (failure !== null) {
-    step(ctx, `\u2717 ${failure}`);
-    step(ctx, `The record of ${previous.version} is kept: fix the cause and run ${COMMAND} omniroute rollback again.`);
+  if (!installIsWritable(install)) {
+    ctx.say(`${NAME} is installed in ${tildify(install.folder, ctx.paths.home)}, which this user cannot write: the install would fail with a permission error, and nothing would change. Run it yourself, with the command that owns that folder:`);
+    ctx.say(`  sudo ${installArgv(install, previous.version).join(" ")}`);
     return 1;
   }
-  step(ctx, `${NAME} ${previous.version} is running. The record of it is kept, so this is now a no-op.`);
-  return 0;
+  return await withLock(ctx.paths.stateDir, async () => {
+    const failure = await installAndCheck(ctx, install, previous.version, facts.unit, facts.backend, facts.model);
+    if (failure !== null) {
+      step(ctx, `\u2717 ${failure}`);
+      step(ctx, `The record of ${previous.version} is kept: fix the cause and run ${COMMAND} omniroute rollback again.`);
+      return 1;
+    }
+    step(ctx, `${NAME} ${previous.version} is running. The record of it is kept, so this is now a no-op.`);
+    return 0;
+  }, { waitMs: UPDATE_LOCK_WAIT_MS }).catch((error) => {
+    ctx.say(messageOf(error));
+    return 1;
+  });
 }
 async function runOmniroute(args, ctx) {
   const [command, ...rest] = args;
@@ -11754,7 +11911,12 @@ ${USAGE2}`);
   return 2;
 }
 async function omnirouteDoctorLine(ctx) {
-  const found = findOmniroute({ env: ctx.env, paths: ctx.paths, which: ctx.which });
+  const found = findOmniroute({
+    env: ctx.env,
+    paths: ctx.paths,
+    systemFolders: ctx.systemFolders,
+    which: ctx.which
+  });
   if (found.install === null)
     return null;
   const newest = await newestRelease(PACKAGE2, ctx.now(), ctx.registry);
@@ -11769,7 +11931,7 @@ async function omnirouteDoctorLine(ctx) {
 }
 
 // src/setup/instructions.ts
-import { existsSync as existsSync17, readdirSync as readdirSync3, readFileSync as readFileSync17, rmSync as rmSync4 } from "fs";
+import { existsSync as existsSync18, readdirSync as readdirSync3, readFileSync as readFileSync17, rmSync as rmSync4 } from "fs";
 import { join as join14, relative, sep } from "path";
 var ALWAYS_ON_FILE = "core.md";
 function optOutFile(stateDir) {
@@ -11779,11 +11941,11 @@ function versionStampFile(stateDir) {
   return join14(stateDir, "instructions-version");
 }
 function instructionsOptedOut(stateDir) {
-  return existsSync17(optOutFile(stateDir));
+  return existsSync18(optOutFile(stateDir));
 }
 function readVersionStamp(stateDir) {
   const file = versionStampFile(stateDir);
-  if (!existsSync17(file))
+  if (!existsSync18(file))
     return null;
   const version = readFileSync17(file, "utf8").trim();
   return version === "" ? null : version;
@@ -11800,7 +11962,7 @@ function instructionsPaths(paths, source) {
 }
 function instructionsFolder(bundleDir) {
   const beside = join14(bundleDir, "..", "instructions");
-  return existsSync17(beside) ? beside : join14(bundleDir, "..", "..", "plugin", "instructions");
+  return existsSync18(beside) ? beside : join14(bundleDir, "..", "..", "plugin", "instructions");
 }
 function instructionsBlockBody(importPath) {
   return [
@@ -11810,7 +11972,7 @@ function instructionsBlockBody(importPath) {
 `);
 }
 function listInstructionFiles(source) {
-  if (!existsSync17(source)) {
+  if (!existsSync18(source)) {
     throw new Error(`The plugin's instructions folder is missing: ${source}. Reinstall the plugin.`);
   }
   const files = readdirSync3(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative(source, join14(entry.parentPath, entry.name)).split(sep).join("/")).sort();
@@ -11838,7 +12000,7 @@ function copyDifferences(paths) {
   const out = [];
   for (const name of files) {
     const copy = join14(paths.target, name);
-    if (!existsSync17(copy))
+    if (!existsSync18(copy))
       out.push(`${name} is missing`);
     else if (readFileSync17(copy, "utf8") !== readFileSync17(join14(paths.source, name), "utf8")) {
       out.push(`${name} differs`);
@@ -11847,7 +12009,7 @@ function copyDifferences(paths) {
   const root = `${realTarget(paths.target)}/`;
   const wanted = new Set(files.map((name) => realTarget(join14(paths.target, name))));
   for (const file of trackedCopies(paths.target, paths.stateDir)) {
-    if (!wanted.has(file) && existsSync17(file)) {
+    if (!wanted.has(file) && existsSync18(file)) {
       out.push(`${file.slice(root.length)} is not shipped any more`);
     }
   }
@@ -11953,7 +12115,7 @@ function updateOptOuts(env, fromSettings) {
 // src/update/state.ts
 import {
   appendFileSync,
-  existsSync as existsSync18,
+  existsSync as existsSync19,
   mkdirSync as mkdirSync5,
   readdirSync as readdirSync4,
   readFileSync as readFileSync19,
@@ -12022,7 +12184,7 @@ function writeLastCheck(files, check) {
 `, 384);
 }
 function isHeld(files) {
-  return existsSync18(files.hold);
+  return existsSync19(files.hold);
 }
 function heldSince(files) {
   try {
@@ -12079,7 +12241,7 @@ function runningSessions(files) {
 
 // src/cli/live-check.ts
 import {
-  existsSync as existsSync25,
+  existsSync as existsSync26,
   mkdirSync as mkdirSync9,
   mkdtempSync as mkdtempSync3,
   readFileSync as readFileSync27,
@@ -12091,7 +12253,7 @@ import { tmpdir as tmpdir5 } from "os";
 import { dirname as dirname7, join as join25 } from "path";
 
 // src/hooks/specs.ts
-import { existsSync as existsSync24 } from "fs";
+import { existsSync as existsSync25 } from "fs";
 
 // src/shell/command.ts
 var MAX_NESTING = 3;
@@ -12584,7 +12746,7 @@ function toolCallOfArgv(argv) {
 
 // src/hooks/after-merge.ts
 import { createHash as createHash4 } from "crypto";
-import { existsSync as existsSync19, mkdirSync as mkdirSync6, writeFileSync as writeFileSync3 } from "fs";
+import { existsSync as existsSync20, mkdirSync as mkdirSync6, writeFileSync as writeFileSync3 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
 import { join as join17 } from "path";
 
@@ -13305,7 +13467,7 @@ function afterMerge(context) {
   const origin = runGit(repo, ["remote", "get-url", "origin"], env);
   const record = pr === null ? null : announcedFile(repo, pr.number, env);
   const outcome = mergeOutcome({
-    announced: record !== null && existsSync19(record),
+    announced: record !== null && existsSync20(record),
     base,
     failed: event === "PostToolUseFailure",
     now: Date.now(),
@@ -13354,7 +13516,7 @@ function appendAgentLaunch(file, launch) {
 `);
   } catch {}
 }
-function isJsonObject7(value) {
+function isJsonObject8(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function parseAgentLaunch(line) {
@@ -13364,7 +13526,7 @@ function parseAgentLaunch(line) {
   } catch {
     return null;
   }
-  if (!isJsonObject7(value))
+  if (!isJsonObject8(value))
     return null;
   const { at, family, model, project, reason, subagentType } = value;
   if (typeof at !== "number" || family !== "opus" && family !== "fable" || typeof model !== "string" || typeof reason !== "string") {
@@ -13385,7 +13547,7 @@ function parseAgentLaunch(line) {
 // src/hooks/transcript.ts
 import { closeSync as closeSync3, fstatSync, openSync as openSync3, readSync } from "fs";
 var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
-function isJsonObject8(value) {
+function isJsonObject9(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function tailLines(transcriptPath) {
@@ -13418,7 +13580,7 @@ function* entriesFromEnd(lines) {
     } catch {
       continue;
     }
-    if (isJsonObject8(entry))
+    if (isJsonObject9(entry))
       yield entry;
   }
 }
@@ -13429,7 +13591,7 @@ function lastClaudeModel(transcriptPath) {
   for (const entry of entriesFromEnd(lines)) {
     if (entry.isSidechain === true)
       continue;
-    if (entry.type !== "assistant" || !isJsonObject8(entry.message))
+    if (entry.type !== "assistant" || !isJsonObject9(entry.message))
       continue;
     const model = entry.message.model;
     if (typeof model === "string" && model.startsWith("claude-"))
@@ -14467,7 +14629,7 @@ function mainFolderGuard(context) {
 }
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync20, readdirSync as readdirSync5, readFileSync as readFileSync21, statSync as statSync6 } from "fs";
+import { existsSync as existsSync21, readdirSync as readdirSync5, readFileSync as readFileSync21, statSync as statSync6 } from "fs";
 import { uptime } from "os";
 import { join as join19 } from "path";
 function parseSessionRecord(json) {
@@ -14495,7 +14657,7 @@ function isRunning2(pid) {
 }
 function liveSessions(claudeConfigDir) {
   const dir = join19(claudeConfigDir, "sessions");
-  if (!existsSync20(dir))
+  if (!existsSync21(dir))
     return [];
   const bootedAt = Date.now() - uptime() * 1000;
   const live = [];
@@ -14554,7 +14716,7 @@ function messageGuard(context) {
 }
 
 // src/hooks/session-name.ts
-import { existsSync as existsSync21, mkdirSync as mkdirSync7, readFileSync as readFileSync22, renameSync as renameSync2, writeFileSync as writeFileSync4 } from "fs";
+import { existsSync as existsSync22, mkdirSync as mkdirSync7, readFileSync as readFileSync22, renameSync as renameSync2, writeFileSync as writeFileSync4 } from "fs";
 import { tmpdir as tmpdir4 } from "os";
 import { join as join20 } from "path";
 var MAX_SESSION_NAME = 60;
@@ -14573,7 +14735,7 @@ function namesDir(env) {
 }
 function readName(file) {
   try {
-    return existsSync21(file) ? cleanSessionName(readFileSync22(file, "utf8")) : null;
+    return existsSync22(file) ? cleanSessionName(readFileSync22(file, "utf8")) : null;
   } catch {
     return null;
   }
@@ -14623,7 +14785,7 @@ function sessionName(context) {
 // src/hooks/worktree-create.ts
 import {
   copyFileSync,
-  existsSync as existsSync22,
+  existsSync as existsSync23,
   mkdirSync as mkdirSync8,
   readdirSync as readdirSync6,
   readFileSync as readFileSync24,
@@ -14733,7 +14895,7 @@ function isSubagentName(name) {
 }
 function readBaseRef(files) {
   for (const file of files) {
-    if (!existsSync22(file))
+    if (!existsSync23(file))
       continue;
     try {
       const parsed = JSON.parse(readFileSync24(file, "utf8"));
@@ -14830,7 +14992,7 @@ function subagentBase(repo, commonDir, askingCheckout, baseRef, env) {
 }
 function copyWorktreeInclude(source, target, env) {
   const includeFile = join22(source, ".worktreeinclude");
-  if (!existsSync22(includeFile))
+  if (!existsSync23(includeFile))
     return [];
   const listed = runGit(source, ["ls-files", "-z", "--others", "--ignored", `--exclude-from=${includeFile}`], env, 60000);
   if (!listed.ok || listed.out === "")
@@ -14846,7 +15008,7 @@ function copyWorktreeInclude(source, target, env) {
   });
   const copied = [];
   for (const path of ignored.stdout.toString().split("\x00")) {
-    if (path === "" || existsSync22(join22(target, path)))
+    if (path === "" || existsSync23(join22(target, path)))
       continue;
     mkdirSync8(dirname6(join22(target, path)), { recursive: true });
     copyFileSync(join22(source, path), join22(target, path));
@@ -14947,7 +15109,7 @@ function createConfigured(context, name, worktrees) {
       folder,
       sessions,
       askingSession: session,
-      folderExists: existsSync22
+      folderExists: existsSync23
     });
     if (decision.kind === "refuse")
       throw new Refusal(decision.why);
@@ -14955,7 +15117,7 @@ function createConfigured(context, name, worktrees) {
     if (decision.kind === "reuse") {
       target = decision.folder;
     } else {
-      if (existsSync22(folder))
+      if (existsSync23(folder))
         throw new Refusal(`${folder} exists and is not a worktree of this repo`);
       const fetched = runGit(main, ["fetch", "--quiet", "origin", worktrees.base], noPromptEnv(env), BASE_FETCH_TIMEOUT_MS);
       if (hasRef(main, `refs/heads/${branch}`, env)) {
@@ -14979,7 +15141,7 @@ function createConfigured(context, name, worktrees) {
       copyWorktreeInclude(main, folder, env);
     }
     const marker = setupMarker(target, env);
-    if (worktrees.setup !== undefined && !existsSync22(marker)) {
+    if (worktrees.setup !== undefined && !existsSync23(marker)) {
       runSetup(target, worktrees.setup, env);
       writeFileSync5(marker, "");
     }
@@ -14994,7 +15156,7 @@ function createForSubagent(context, name) {
   const session = typeof input.session_id === "string" ? input.session_id : null;
   return withCreateLock(project.commonDir, branch, session, () => {
     const listed = listWorktrees(repo, env);
-    if (existsSync22(folder)) {
+    if (existsSync23(folder)) {
       if (listed.some((worktree) => samePath2(worktree.path, folder)))
         return folder;
       throw new Refusal(`${folder} exists and is not a worktree of this repo`);
@@ -15177,7 +15339,7 @@ function worktreeLeftovers(context) {
 }
 
 // src/hooks/worktree-remove.ts
-import { existsSync as existsSync23 } from "fs";
+import { existsSync as existsSync24 } from "fs";
 function deleteBranchIfCopied(repo, branch, env) {
   const own = ownCommits(repo, branch, env);
   if (own === null)
@@ -15244,12 +15406,12 @@ function worktreeRemove(context) {
   }
   const found = others.find((worktree) => samePath2(worktree.path, path));
   if (found === undefined) {
-    if (existsSync23(path)) {
+    if (existsSync24(path)) {
       return { exitCode: 1, stderr: `worktree kept: ${path} is not a worktree of this repo` };
     }
     return SILENT;
   }
-  if (found.prunable || !existsSync23(found.path)) {
+  if (found.prunable || !existsSync24(found.path)) {
     runGit(repo, ["worktree", "prune"], env);
     const said = found.branch === null ? "" : `; ${deleteBranchIfCopied(repo, found.branch, env)}`;
     return { stderr: `forgot ${found.path}: its folder was gone${said}` };
@@ -15307,7 +15469,7 @@ var worktreeRemoveHook = {
   onConfigProblem: (message) => ({ exitCode: 1, stderr: `worktree kept: ${message}` }),
   outsideGit: (input, _event, why) => {
     const path = stringField(input.worktree_path);
-    return path !== null && !existsSync24(path) ? SILENT : { exitCode: 1, stderr: `worktree kept: ${why}` };
+    return path !== null && !existsSync25(path) ? SILENT : { exitCode: 1, stderr: `worktree kept: ${why}` };
   },
   run: worktreeRemove,
   crashExitCode: 1
@@ -15484,7 +15646,7 @@ function parseClaudeVersion(output) {
 }
 var LIVE_PROMPT = `Call the EnterWorktree tool with name "${LIVE_NAME}". Then run the Bash command ` + '`git status`. Then call the ExitWorktree tool with action "remove" and discard_changes ' + "true. Then reply with the single word done. Do nothing else.";
 function readLog(file) {
-  if (!existsSync25(file))
+  if (!existsSync26(file))
     return [];
   return readFileSync27(file, "utf8").split(`
 `).filter((line) => line.trim() !== "").flatMap((line) => {
@@ -15555,7 +15717,7 @@ function proveIn(label, repo, expected, deps, env) {
       text: `${label}: ${created === undefined ? "" : "a WorktreeCreate hook ran; "}the git guard ran in ${where}; expected Claude Code's own ${expected.folder}`
     });
   }
-  const gone = !existsSync25(expected.folder) && branchLeft.exitCode !== 0;
+  const gone = !existsSync26(expected.folder) && branchLeft.exitCode !== 0;
   const remover = expected.maker === "engine" ? "WorktreeRemove" : "ExitWorktree";
   const removerOk = expected.maker === "engine" ? removed?.exitCode === 0 : guardedThere;
   lines.push(gone && removerOk ? {
@@ -15563,7 +15725,7 @@ function proveIn(label, repo, expected, deps, env) {
     text: `${label}: ${remover} removed the folder and the branch ${expected.branch}`
   } : {
     ok: false,
-    text: `${label}: after ${remover}${expected.maker === "engine" ? ` (${removed === undefined ? "did not run" : `exit ${removed.exitCode}`})` : guardedThere ? "" : " (the session never worked in it)"} ${existsSync25(expected.folder) ? "the folder is still there" : "the folder is gone"}, ${branchLeft.exitCode === 0 ? `the branch ${expected.branch} is still there` : "the branch is gone"}`
+    text: `${label}: after ${remover}${expected.maker === "engine" ? ` (${removed === undefined ? "did not run" : `exit ${removed.exitCode}`})` : guardedThere ? "" : " (the session never worked in it)"} ${existsSync26(expected.folder) ? "the folder is still there" : "the folder is gone"}, ${branchLeft.exitCode === 0 ? `the branch ${expected.branch} is still there` : "the branch is gone"}`
   });
   return lines;
 }
@@ -15633,11 +15795,11 @@ function runLiveCheck(paths, env, deps) {
 }
 
 // src/cli/project-checks.ts
-import { existsSync as existsSync27, readFileSync as readFileSync29 } from "fs";
+import { existsSync as existsSync28, readFileSync as readFileSync29 } from "fs";
 import { join as join27 } from "path";
 
 // src/hooks/settings-hooks.ts
-import { existsSync as existsSync26, readFileSync as readFileSync28 } from "fs";
+import { existsSync as existsSync27, readFileSync as readFileSync28 } from "fs";
 import { join as join26 } from "path";
 function matcherSelects(matcher, subject) {
   if (matcher === undefined || matcher === null || matcher === "" || matcher === "*")
@@ -15656,7 +15818,7 @@ function matcherSelects(matcher, subject) {
   }
 }
 function hooksOf(file) {
-  if (!existsSync26(file))
+  if (!existsSync27(file))
     return null;
   try {
     const parsed = JSON.parse(readFileSync28(file, "utf8"));
@@ -15719,7 +15881,7 @@ function renamedCommand(command) {
 function oldNameLines(projectDir, sources, home) {
   const lines = [];
   const config = join27(projectDir, ".claude", `${OLD_NAME}.json`);
-  if (existsSync27(config)) {
+  if (existsSync28(config)) {
     lines.push({
       ok: true,
       warn: true,
@@ -15727,7 +15889,7 @@ function oldNameLines(projectDir, sources, home) {
     });
   }
   const addons = join27(projectDir, ".claude", OLD_NAME);
-  if (existsSync27(addons)) {
+  if (existsSync28(addons)) {
     lines.push({
       ok: true,
       warn: true,
@@ -15847,7 +16009,7 @@ function projectChecks(cwd, env, paths, pluginHooksFile) {
   }
   let checkout;
   try {
-    checkout = existsSync27(cwd) ? locateCheckout(cwd, { env }) : null;
+    checkout = existsSync28(cwd) ? locateCheckout(cwd, { env }) : null;
   } catch (error) {
     return [{ ok: false, text: `project: ${message(error)}` }];
   }
@@ -15876,7 +16038,7 @@ function projectChecks(cwd, env, paths, pluginHooksFile) {
 // src/cli/doctor.ts
 var MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 function readSettings2(file) {
-  if (!existsSync28(file))
+  if (!existsSync29(file))
     return null;
   try {
     const parsed = JSON.parse(readFileSync30(file, "utf8"));
@@ -15903,7 +16065,7 @@ function checkPlugin(paths) {
     };
   }
   const where = tildify(install.installPath, paths.home);
-  if (!existsSync28(install.installPath)) {
+  if (!existsSync29(install.installPath)) {
     return {
       ok: false,
       text: `the plugin folder is missing: ${where}. Run: ${PLUGIN_INSTALL_COMMAND}`
@@ -15916,7 +16078,7 @@ function checkPlugin(paths) {
 }
 function isExecutable(file) {
   try {
-    accessSync(file, constants.X_OK);
+    accessSync2(file, constants2.X_OK);
     return true;
   } catch {
     return false;
@@ -15925,7 +16087,7 @@ function isExecutable(file) {
 function checkLauncher(paths) {
   const launcher = join28(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
-  if (!existsSync28(launcher))
+  if (!existsSync29(launcher))
     return { ok: false, text: `no launcher at ${where}. Run: cc-smart-dev-kit setup` };
   if (!isExecutable(launcher)) {
     return {
@@ -15960,7 +16122,7 @@ async function checkMarketplaceAccess(paths, env) {
     case "unknown":
       return { ok: false, text: `cannot check the marketplace source (${source.type})` };
     case "local":
-      return existsSync28(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : { ok: false, text: `the marketplace folder is missing: ${source.path}` };
+      return existsSync29(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : { ok: false, text: `the marketplace folder is missing: ${source.path}` };
     case "http": {
       const url = redactUrl(source.url);
       const result = await canReadHttp(source.url);
@@ -16129,17 +16291,17 @@ function checkNameClash(settings) {
 }
 var OLD_PLUGIN_ID = "cc@cc-agentic";
 var OLD_NAME2 = "cc-agentic";
-function isJsonObject9(value) {
+function isJsonObject10(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function hasEntry(data, field, key) {
   const node = field === null ? data : data?.[field];
-  return isJsonObject9(node) && Object.hasOwn(node, key);
+  return isJsonObject10(node) && Object.hasOwn(node, key);
 }
 function checkOldPlugin(settings, paths) {
   const plugins = settings?.enabledPlugins;
-  const enabled = isJsonObject9(plugins) && plugins[OLD_PLUGIN_ID] === true;
-  if (!existsSync28(join28(paths.claudeConfigDir, OLD_NAME2))) {
+  const enabled = isJsonObject10(plugins) && plugins[OLD_PLUGIN_ID] === true;
+  if (!existsSync29(join28(paths.claudeConfigDir, OLD_NAME2))) {
     if (!enabled)
       return null;
     return {
@@ -16152,14 +16314,14 @@ function checkOldPlugin(settings, paths) {
   const left = [
     enabled ? "the plugin enabled" : null,
     hasEntry(readSettings2(paths.installedPluginsFile), "plugins", OLD_PLUGIN_ID) ? "the plugin installed" : null,
-    existsSync28(launcher) ? `its launcher ${short(launcher)}` : null,
+    existsSync29(launcher) ? `its launcher ${short(launcher)}` : null,
     hasEntry(settings, "extraKnownMarketplaces", OLD_NAME2) ? `extraKnownMarketplaces.${OLD_NAME2} in ${short(paths.settingsFile)}` : null,
     hasEntry(readSettings2(paths.knownMarketplacesFile), null, OLD_NAME2) ? `the ${OLD_NAME2} marketplace` : null
   ].filter((thing) => thing !== null);
   if (left.length === 0)
     return null;
   const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME2}\``;
-  const canRun = existsSync28(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
+  const canRun = existsSync29(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
   const steps = canRun ? `Run \`${OLD_NAME2} restore\` first, then \`${then}.` : `Its launcher cannot run, so remove by hand ${short(launcher)} and "${OLD_NAME2}" under extraKnownMarketplaces in ${short(paths.settingsFile)}; then run \`${then}.`;
   return {
     ok: false,
@@ -16193,7 +16355,7 @@ function checkInstructions(paths, source) {
       text: `the instructions copy ${copy} is not this plugin version's (${why.join("; ")}). Run: cc-smart-dev-kit setup`
     };
   }
-  const text = existsSync28(where.claudeMd) ? readFileSync30(where.claudeMd, "utf8") : "";
+  const text = existsSync29(where.claudeMd) ? readFileSync30(where.claudeMd, "utf8") : "";
   if (!text.includes(instructionsBlockBody(where.importPath))) {
     return {
       ok: false,
@@ -16250,7 +16412,7 @@ function checkProjectImports(paths, cwd) {
   for (let dir = cwd;; dir = dirname8(dir)) {
     for (const name of PROJECT_MEMORY_FILES) {
       const from = join28(dir, name);
-      if (from === join28(paths.claudeConfigDir, "CLAUDE.md") || !existsSync28(from))
+      if (from === join28(paths.claudeConfigDir, "CLAUDE.md") || !existsSync29(from))
         continue;
       let text;
       try {
@@ -16268,7 +16430,7 @@ function checkProjectImports(paths, cwd) {
   }
   if (imports.length === 0)
     return null;
-  const missing = imports.filter((entry) => !existsSync28(entry.file));
+  const missing = imports.filter((entry) => !existsSync29(entry.file));
   if (missing.length === 0) {
     const names = imports.map((entry) => entry.path).join(", ");
     return { ok: true, text: `the project's CLAUDE.md imports ${names}, and it is there` };
@@ -16302,6 +16464,8 @@ async function omnirouteCheck(paths, env, gateway) {
     say: () => {
       return;
     },
+    sleep: (ms) => Bun.sleep(ms),
+    systemFolders: gateway.systemFolders,
     systemd: gateway.systemd,
     which: gateway.machine.which
   });
@@ -16371,7 +16535,7 @@ function checkLine(check) {
 }
 
 // src/update/apply.ts
-import { existsSync as existsSync29, readFileSync as readFileSync31 } from "fs";
+import { existsSync as existsSync30, readFileSync as readFileSync31 } from "fs";
 import { join as join29 } from "path";
 var CLAUDE_TIMEOUT_MS = 180000;
 var MARKETPLACE_REFRESH = ["plugin", "marketplace", "update", MARKETPLACE];
@@ -16409,10 +16573,10 @@ function applyUpdate(paths, claude, run, say) {
 }
 function routerNeedsSetup(paths) {
   const install = findUserInstall(paths.installedPluginsFile);
-  if (install === null || !existsSync29(paths.routerCopy))
+  if (install === null || !existsSync30(paths.routerCopy))
     return false;
   const bundle = join29(install.installPath, "dist", "router.js");
-  return existsSync29(bundle) && readFileSync31(bundle, "utf8") !== readFileSync31(paths.routerCopy, "utf8");
+  return existsSync30(bundle) && readFileSync31(bundle, "utf8") !== readFileSync31(paths.routerCopy, "utf8");
 }
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
 function commandContext(env, home) {
@@ -16617,7 +16781,7 @@ function readProcStat(pid) {
 }
 
 // src/jobs/config.ts
-import { existsSync as existsSync30, readFileSync as readFileSync33 } from "fs";
+import { existsSync as existsSync31, readFileSync as readFileSync33 } from "fs";
 import { isAbsolute as isAbsolute4, join as join30 } from "path";
 function jobsPaths(home) {
   return {
@@ -16641,7 +16805,7 @@ class JobsConfigError extends Error {
   name = "JobsConfigError";
 }
 function loadJobsConfig(file) {
-  if (!existsSync30(file))
+  if (!existsSync31(file))
     return {};
   let raw;
   try {
@@ -16663,8 +16827,8 @@ function loadJobsConfig(file) {
 
 // src/jobs/launch.ts
 import { spawn, spawnSync } from "child_process";
-import { existsSync as existsSync31 } from "fs";
-import { constants as constants2 } from "os";
+import { existsSync as existsSync32 } from "fs";
+import { constants as constants3 } from "os";
 
 // src/jobs/memory.ts
 import { readFileSync as readFileSync34 } from "fs";
@@ -16842,7 +17006,7 @@ function exitCodeOf(code, signal) {
     return code;
   if (signal === null)
     return 1;
-  const number = constants2.signals[signal];
+  const number = constants3.signals[signal];
   return 128 + (number ?? 0);
 }
 function memoryEvent(memoryEvents, key) {
@@ -16978,7 +17142,7 @@ function realLaunchFacts(slice, timeoutMs = SYSTEMD_TIMEOUT_MS) {
   const linux = process.platform === "linux";
   return {
     platform: process.platform,
-    hasUserRuntimeDir: uid !== undefined && existsSync31(`/run/user/${String(uid)}`),
+    hasUserRuntimeDir: uid !== undefined && existsSync32(`/run/user/${String(uid)}`),
     hasSystemdRun: linux && canRun("systemd-run", timeoutMs),
     hasChoom: linux && canRun("choom", timeoutMs),
     probeScope: (withOomPolicy) => exitsZero(probeArgv(slice, withOomPolicy), timeoutMs)
@@ -17426,7 +17590,7 @@ async function runJob(request, deps) {
 // src/jobs/store.ts
 import {
   chmodSync as chmodSync2,
-  existsSync as existsSync32,
+  existsSync as existsSync33,
   mkdirSync as mkdirSync10,
   readdirSync as readdirSync8,
   readFileSync as readFileSync35,
@@ -17781,7 +17945,7 @@ function networkFileSystem(dir, facts) {
   return subtype !== null && NETWORK_FUSE.has(subtype) ? `fuse.${subtype}` : null;
 }
 function openSharedStore(dir, options = {}) {
-  if (!existsSync32(dir)) {
+  if (!existsSync33(dir)) {
     return { note: `The shared folder ${dir} is missing: this job runs without its budget.` };
   }
   const network = networkFileSystem(dir, options.facts ?? realSharedFolderFacts);
@@ -18151,6 +18315,24 @@ ${USAGE3}`);
 }
 
 // src/portal/actions.ts
+function portalOmnirouteContext(ctx) {
+  return {
+    confirm: null,
+    env: ctx.env,
+    health: (url, init) => ctx.fetch(url, init),
+    now: ctx.now,
+    paths: ctx.paths,
+    registry: (url, init) => ctx.fetch(url, init),
+    runner: ctx.runner,
+    say: () => {
+      return;
+    },
+    sleep: (ms) => ctx.probe.sleep(ms),
+    systemFolders: ctx.systemFolders,
+    systemd: ctx.systemd,
+    which: ctx.which
+  };
+}
 function memoryFile(paths) {
   return paths.portalStateFile;
 }
@@ -18203,23 +18385,31 @@ function collector() {
 }
 function gatewayContext(action, print) {
   const { portal } = action;
+  const folder = portal.pluginFolder();
+  if ("error" in folder)
+    return folder;
   return {
-    bunPath: process.execPath,
-    bunVersion: portal.bunVersion,
-    bundle: portal.routerBundle,
-    confirm: null,
-    error: print,
-    paths: portal.paths,
-    print,
-    probe: portal.probe,
-    readStdin: () => Promise.resolve(""),
-    runner: portal.runner,
-    systemd: portal.systemd
+    ctx: {
+      bunPath: process.execPath,
+      bunVersion: portal.bunVersion,
+      bundle: join32(folder.folder, "dist", "router.js"),
+      confirm: null,
+      error: print,
+      paths: portal.paths,
+      print,
+      probe: portal.probe,
+      readStdin: () => Promise.resolve(""),
+      runner: portal.runner,
+      systemd: portal.systemd
+    }
   };
 }
 async function gateway(action, args) {
   const { lines, print } = collector();
-  const code = await runGateway(args, gatewayContext(action, print));
+  const context = gatewayContext(action, print);
+  if ("error" in context)
+    return { lines: [context.error], ok: false };
+  const code = await runGateway(args, context.ctx);
   return { lines, ok: code === 0 };
 }
 function slotArg(name) {
@@ -18242,11 +18432,11 @@ async function testTargets(action, body) {
     }
     if (parsed.target.kind === "anthropic") {
       results.push({
-        detail: "on your own Claude login: the portal cannot send a request with it, and never holds one",
+        detail: judge ? "on your own Claude login: the router uses a judge target only after it passed the force-push test, so this one is ignored, exactly as the command line ignores it" : "on your own Claude login: the portal cannot send a request with it, and never holds one",
         target: text,
         verdict: "good"
       });
-      lines.push(`${text}: on your own Claude login`);
+      lines.push(judge ? `${text}: on your own Claude login, so it is never used as a judge (the command line allows it too)` : `${text}: on your own Claude login`);
       continue;
     }
     const backend = config.backends[parsed.target.backend];
@@ -18294,7 +18484,7 @@ async function testTargets(action, body) {
     lines.push(`${text}: ${probe.ok ? "\u2713" : "\u2717"} ${probe.detail}`);
   }
   const ok = results.every((one) => one.verdict !== "bad");
-  lines.push(ok ? judge ? "Every target blocked the test check. You can save this chain." : "Every target answered." : "At least one target did not answer as it should; Save stays off until they all do.");
+  lines.push(ok ? judge ? "Every backend target blocked the test check. You can save this chain." : "Every target answered." : judge ? "At least one backend target did not block the test check: Save stays off until every judge target shows blocked \u2713." : "At least one target did not answer as it should: the command line refuses a chain like this, so fix it before you save.");
   return { lines, ok, results };
 }
 async function saveSlot(action, body) {
@@ -18311,17 +18501,32 @@ function rememberChain(action, slot, targets) {
   if (slot === JUDGE_SLOT)
     action.memory.judge = targets;
   else if (isModelSlot(slot))
-    action.memory.fallback[MODEL_SLOTS[slot] ?? slot] = targets;
+    action.memory.fallback[slot] = targets;
   else
     return;
   writeMemory(action.portal.paths, action.memory);
+}
+function rememberCurrent(action, slot) {
+  const targets = currentChain(action, slot);
+  if (targets.length > 0)
+    rememberChain(action, slot, targets);
+  return targets;
+}
+function currentChain(action, slot) {
+  try {
+    return loadConfigFile(action.portal.paths.gatewayConfigFile).slots[slot] ?? [];
+  } catch {
+    return [];
+  }
 }
 async function switchGateway(action, on) {
   return gateway(action, [on ? "on" : "off"]);
 }
 async function switchJudge(action, on) {
-  if (!on)
+  if (!on) {
+    rememberCurrent(action, JUDGE_SLOT);
     return gateway(action, ["slot", "judge", "off"]);
+  }
   if (action.memory.judge.length === 0) {
     return {
       lines: [
@@ -18334,46 +18539,51 @@ async function switchJudge(action, on) {
   return gateway(action, ["slot", "judge", action.memory.judge.join(",")]);
 }
 async function switchFallback(action, on) {
-  const families = Object.keys(MODEL_SLOTS);
+  const slots = Object.keys(MODEL_SLOTS);
   if (!on) {
     const lines = [];
     let ok = true;
-    for (const family of families) {
-      const result = await gateway(action, ["slot", family, "off"]);
+    for (const slot of slots) {
+      if (rememberCurrent(action, slot).length === 0)
+        continue;
+      const result = await gateway(action, ["slot", slot, "off"]);
       ok = ok && result.ok;
       lines.push(...result.lines);
     }
-    return { lines, ok };
+    return {
+      lines: lines.length === 0 ? ["The opus and fable fallback was already off."] : lines,
+      ok
+    };
   }
   const missing = [];
   const lines = [];
+  let turnedOn = 0;
   let ok = true;
-  for (const family of families) {
-    const targets = action.memory.fallback[family] ?? [];
+  for (const slot of slots) {
+    const targets = action.memory.fallback[slot] ?? [];
     if (targets.length < 2) {
-      missing.push(family);
+      missing.push(slot.replace(/^cc-smart-dev-kit-/, ""));
       continue;
     }
-    const result = await gateway(action, ["slot", family, targets.join(",")]);
+    const result = await gateway(action, ["slot", slot, targets.join(",")]);
+    if (result.ok)
+      turnedOn += 1;
     ok = ok && result.ok;
     lines.push(...result.lines);
   }
   if (missing.length > 0) {
     lines.push(`No saved chain for ${missing.join(" or ")}: go to Slots, pick it, add a model, and Save \u2014 its first target is the Claude model itself.`);
   }
+  if (turnedOn === 0) {
+    lines.push("Nothing was turned on, so the switch is still off.");
+    return { lines, ok: false };
+  }
   return { lines, ok };
 }
 async function switchHold(action, on) {
-  const files = updateFiles(action.portal.paths.stateDir);
-  const lines = [];
-  if (on) {
-    lines.push(hold(files, action.portal.now()) ? "Background updates are on hold: a new Claude session no longer checks for a newer version." : `Background updates were already on hold (since ${heldSince(files)}).`);
-  } else {
-    lines.push(resume(files) ? "Background updates resume: a new Claude session checks for a newer version, at most once an hour." : "Background updates were not on hold.");
-  }
-  if (checkRunning(files))
-    lines.push("A check is running now; it finishes.");
-  return { lines, ok: isHeld(files) === on };
+  const sinks = collector();
+  const code = await runUpdate(action.portal.paths, action.portal.env, [on ? "--hold" : "--resume"], action.portal.now, sinks);
+  return { lines: sinks.lines, ok: code === 0 };
 }
 function stepRunner(action, lines) {
   const context = commandContext(action.portal.env, action.portal.paths.home);
@@ -18410,7 +18620,11 @@ async function updateInstall(action) {
   });
   return { lines: sinks.lines, ok: code === 0 };
 }
-async function runDoctorPass(action, options) {
+async function runDoctorPass(action, source) {
+  const options = source();
+  if ("error" in options) {
+    return { checks: [{ ok: false, text: options.error }], lines: [options.error], ok: false };
+  }
   const checks = await doctorChecks(action.portal.paths, action.portal.env, options);
   return {
     checks,
@@ -18419,8 +18633,12 @@ async function runDoctorPass(action, options) {
   };
 }
 async function companionEnable(action, id) {
-  if (!/^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$/.test(id)) {
-    return { lines: [`"${id}" is not a plugin id (<name>@<marketplace>).`], ok: false };
+  const known = companions().map((companion) => companion.id);
+  if (!known.includes(id)) {
+    return {
+      lines: [`"${id}" is not one of this kit's companions (${known.join(", ")}).`],
+      ok: false
+    };
   }
   const result = action.portal.machine.run(["claude", "plugin", "enable", id]);
   const reason = result.output.trim().split(`
@@ -18492,10 +18710,8 @@ async function runAction(name, body, action) {
       return companionEnable(action, typeof body.id === "string" ? body.id : "");
     case "router.restart":
       return gateway(action, ["setup", "--yes"]);
-    case "omniroute.update": {
-      const to = typeof body.to === "string" ? ["--to", body.to] : [];
-      return omnirouteAction(action, ["update", "--yes", ...to]);
-    }
+    case "omniroute.update":
+      return omnirouteAction(action, ["update", "--yes"]);
     case "omniroute.rollback":
       return omnirouteAction(action, ["rollback", "--yes"]);
     case "automode.apply":
@@ -18677,6 +18893,23 @@ nav.pages a[aria-current="page"] { background: var(--chip-bg); color: var(--acce
   border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text);
   cursor: pointer;
 }
+/* \u2500\u2500 The header on a phone \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+   Every row above is a flex row that wraps, so at 390px the brand, the router chip, the Bun
+   chip, the four links and the theme toggle each took a line (about 280px before the page).
+   Here they become three rows: the brand and the theme toggle, the two chips, then the four
+   links on one row of equal columns \u2014 44px tall each, the touch target size kept. The order
+   is the CSS order property, so the desktop layout (and its own order) never changes. */
+@media (max-width: 640px) {
+  header.top .wrap { gap: 8px 12px; }
+  .brand { order: 1; }
+  .theme { order: 2; margin-left: auto; }
+  .chips { order: 3; width: 100%; }
+  nav.pages {
+    order: 4; width: 100%; margin-left: 0; display: grid; gap: 4px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  nav.pages a { justify-content: center; padding: 0 6px; }
+}
 .privatebar { background: var(--code-bg); color: var(--code-text); }
 .privatebar .wrap {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px 20px;
@@ -18685,7 +18918,9 @@ nav.pages a[aria-current="page"] { background: var(--chip-bg); color: var(--acce
 .privatebar span { display: inline-flex; align-items: center; gap: 6px; }
 
 /* \u2500\u2500 Layout \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
-main { display: flex; flex-direction: column; gap: 28px; padding-top: 32px; padding-bottom: 48px; }
+/* main carries the wrap class too, and that class's padding rule beat the element rule
+   below, so the page head sat right under the privacy strip. Qualified, this one wins. */
+main.wrap { display: flex; flex-direction: column; gap: 28px; padding-top: 32px; padding-bottom: 48px; }
 section { display: flex; flex-direction: column; gap: 12px; }
 .pagehead { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
 .pagehead p { margin-top: 6px; color: var(--muted); }
@@ -18873,6 +19108,8 @@ footer.bottom .wrap {
 .warnrow { display: grid; grid-template-columns: 84px 64px 1fr; gap: 12px; align-items: center; }
 .footnote { padding: 12px 20px; font-size: 14px; }
 `;
+var PORTAL_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="#7fa8f0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"></rect><path d="M7 10l3 2-3 2"></path><path d="M12 15h5"></path></svg>
+`;
 var THEME_JS = `(function () {
   try {
     var want = localStorage.getItem("cc-smart-dev-kit-theme");
@@ -18893,6 +19130,10 @@ var PORTAL_JS = `(function () {
     }).then(function (response) {
       return response.json().catch(function () { return { ok: false, lines: ["The portal answered something it should not have."] }; })
         .then(function (data) { data.status = response.status; return data; });
+    }).catch(function () {
+      // The portal stopped (its 30 minutes ran out, or someone pressed Ctrl+C): every caller
+      // then draws this as a failure, and a button left on "Working\u2026" goes back to its label.
+      return { ok: false, lines: ["The portal is not running. Run cc-smart-dev-kit portal again."], status: 0 };
     });
   }
 
@@ -18913,7 +19154,8 @@ var PORTAL_JS = `(function () {
     node.appendChild(document.createTextNode((list && list[0]) || (ok ? "Done." : "It did not work.")));
     if (list && list.length > 1) {
       var more = document.createElement("div");
-      more.appendChild(lines(list.slice(1)));
+      var rest = lines(list.slice(1));
+      for (var i = 0; i < rest.length; i += 1) more.appendChild(rest[i]);
       node.appendChild(more);
     }
   }
@@ -19000,7 +19242,18 @@ var PORTAL_JS = `(function () {
   var live = document.querySelector("[data-live]");
   if (live) {
     var paused = false;
-    var timer = setInterval(function () { if (!paused) location.reload(); }, 5000);
+    // The auto=1 query marks this reload as the page's own, not the person asking: the
+    // portal serves the page and does NOT count it as activity, so a Health tab left open
+    // cannot hold the portal (and its 30-minute idle clock) open forever. A hidden tab is not
+    // reloaded at all; it looks once more when it comes back.
+    var again = function () {
+      if (paused || document.hidden) return;
+      location.replace(location.pathname + "?auto=1");
+    };
+    var timer = setInterval(again, 5000);
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) again();
+    });
     var pause = document.querySelector("[data-pause]");
     if (pause) {
       pause.addEventListener("click", function () {
@@ -19008,6 +19261,7 @@ var PORTAL_JS = `(function () {
         pause.textContent = paused ? "Resume" : "Pause";
       });
     }
+
     var only = document.querySelector("[data-only-warn]");
     if (only) {
       var apply = function () {
@@ -19060,7 +19314,14 @@ var PORTAL_JS = `(function () {
         var state = tested[slot + "\\u0000" + target];
         var mark = document.createElement("span");
         if (state === "good") { mark.className = "ok"; mark.textContent = "\\u2713 tested, it answered"; }
-        else if (state === "bad") { mark.className = "badmark"; mark.textContent = "\\u2717 it did not answer as it should \\u2014 Save is off until every target passes"; }
+        else if (state === "bad") {
+          mark.className = "badmark";
+          // The same rule as the note and as the command line: Save is held off for the judge
+          // slot alone; another slot's chain with a failing target is refused by the CLI.
+          mark.textContent = slot === "judge"
+            ? "\\u2717 it did not block the test \\u2014 Save is off until every judge target shows blocked \\u2713"
+            : "\\u2717 it did not answer as it should \\u2014 the command line refuses a chain like this";
+        }
         else if (state === "blocked") { mark.className = "ok"; mark.textContent = "\\u2713 blocked"; }
         else { mark.className = "muted"; mark.textContent = "Not tested yet."; }
         what.appendChild(mark);
@@ -19100,9 +19361,14 @@ var PORTAL_JS = `(function () {
       return "answers if the one above fails or rests";
     };
 
+    // The command line's own judge rule: a claude-... target in the judge slot is allowed and
+    // never used (the router uses a judge target only after the force-push test, and a Claude
+    // target cannot be tested from here), so Save waits only on the backend targets.
     var untestedJudge = function (chain) {
       if (slot !== "judge") return false;
-      return chain.some(function (target) { return tested[slot + "\\u0000" + target] !== "blocked"; });
+      return chain.some(function (target) {
+        return target.indexOf("claude-") !== 0 && tested[slot + "\\u0000" + target] !== "blocked";
+      });
     };
 
     Array.prototype.forEach.call(slotsRoot.querySelectorAll("[data-pick]"), function (button) {
@@ -19198,11 +19464,11 @@ async function shellFacts(ctx, portalPort) {
   const health = await routerHealth(port, ctx.probe.fetch);
   return { portalPort, router: { port, up: !("error" in health) }, version: VERSION };
 }
-function isJsonObject10(value) {
+function isJsonObject11(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function entriesOf(value) {
-  if (!isJsonObject10(value))
+  if (!isJsonObject11(value))
     return [];
   return Object.entries(value).filter((entry) => typeof entry[1] === "number").sort(([a], [b]) => a < b ? -1 : 1);
 }
@@ -19220,7 +19486,7 @@ async function routerFacts(ctx, port) {
       why: health.error
     };
   }
-  const body = isJsonObject10(health.body) ? health.body : {};
+  const body = isJsonObject11(health.body) ? health.body : {};
   const number = (key) => typeof body[key] === "number" ? body[key] : 0;
   return {
     cooling: entriesOf(body.cooling),
@@ -19251,7 +19517,7 @@ function parseJournalLine(text, nowMs) {
     } catch {
       return null;
     }
-    if (!isJsonObject10(raw))
+    if (!isJsonObject11(raw))
       return null;
     const message = typeof raw.MESSAGE === "string" ? raw.MESSAGE : null;
     if (message === null)
@@ -19319,12 +19585,12 @@ var SLOT_META = {
     kind: "model"
   },
   scout: {
-    info: "Cheap. File search, greps, reading and summaries.",
-    kind: "cheap"
+    info: "Affordable. File search, greps, reading and summaries.",
+    kind: "affordable"
   },
   worker: {
-    info: "Cheap. Building, doc updates, tests and mechanical runs.",
-    kind: "cheap"
+    info: "Affordable. Building, doc updates, tests and mechanical runs.",
+    kind: "affordable"
   }
 };
 function slotName(key) {
@@ -19429,19 +19695,6 @@ async function backendRows(ctx, config) {
   }
   return rows;
 }
-function shownBackendUrl(baseUrl, apiKey) {
-  const masked = maskKey(apiKey);
-  try {
-    const url = new URL(baseUrl);
-    if (url.username !== "" || url.password !== "") {
-      url.username = "";
-      url.password = "";
-    }
-    return `${url.href.replace(/\/$/, "")} (key ${masked})`;
-  } catch {
-    return `(key ${masked})`;
-  }
-}
 function modelSlotsOn(config) {
   return Object.values(config.modelSlots ?? {}).filter((slot) => Object.hasOwn(config.slots, slot));
 }
@@ -19519,13 +19772,23 @@ function companionRows(ctx) {
     };
   });
 }
+function warpRow(ctx) {
+  const system = detectSystem(ctx.machine);
+  return {
+    detail: warpCheck(ctx.machine, ctx.paths).text,
+    installed: detectWarpApp(ctx.machine, system).installed
+  };
+}
 async function omnirouteRow(omnirouteCtx, installedIsOlder) {
   const facts = await omnirouteFacts(omnirouteCtx);
   const newest = facts.newest;
+  const backend = facts.backend;
   return {
-    backend: facts.backend === null ? null : `${facts.backend.name} \u2192 ${facts.backend.baseUrl}`,
-    facts,
+    backend: backend === null ? null : `${backend.name} \u2192 ${shownBackendUrl(backend.baseUrl, backend.apiKey)}`,
+    install: facts.install,
     newestVersion: newest?.version ?? null,
+    previous: facts.state.previous,
+    registryError: facts.registryError,
     state: facts.install === null || newest === null ? "unknown" : installedIsOlder(facts.install.version, newest.version) ? "behind" : "ok",
     unit: facts.unit?.name ?? null
   };
@@ -19585,7 +19848,10 @@ function cookieValue(header, name) {
 function sessionCookie(name, value) {
   return `${name}=${value}; HttpOnly; SameSite=Strict; Path=/`;
 }
-var COOKIE_NAME = "ccsdk_portal";
+function cookieName(port) {
+  return `${COOKIE_BASE}_${port}`;
+}
+var COOKIE_BASE = "ccsdk_portal";
 var CSRF_HEADER = "x-ccsdk-csrf";
 function networkAllowed(host, origin, port) {
   if (!hostAllowed(host, port))
@@ -19655,9 +19921,9 @@ function header(shell, active) {
   return `<header class="top">
 <div class="wrap">
 <div class="brand">${MARK}<span class="name">cc-smart-dev-kit</span><span class="ver">${escapeHtml(shell.facts.version)}</span></div>
-<div class="row">${state}<span class="pill plain">Bun ${escapeHtml(shell.bun)}</span></div>
+<div class="row chips">${state}<span class="pill plain">Bun ${escapeHtml(shell.bun)}</span></div>
 <nav class="pages" aria-label="Portal">${nav}</nav>
-<div class="row"><button type="button" class="themebtn" data-theme-toggle>Dark</button></div>
+<div class="row theme"><button type="button" class="themebtn" data-theme-toggle>Dark</button></div>
 </div>
 </header>
 <div class="privatebar">
@@ -19686,6 +19952,7 @@ function layout(options) {
 <meta name="ccsdk-csrf" content="${escapeHtml(options.shell.csrf)}">
 <meta name="referrer" content="no-referrer">
 <title>cc-smart-dev-kit \u2014 ${escapeHtml(options.title)}</title>
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
 <script src="/assets/theme.js"></script>
 <link rel="stylesheet" href="/assets/portal.css">
 <script src="/assets/portal.js" defer></script>
@@ -19708,6 +19975,7 @@ function barePage(options) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>cc-smart-dev-kit \u2014 ${escapeHtml(options.title)}</title>
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
 <script src="/assets/theme.js"></script>
 <link rel="stylesheet" href="/assets/portal.css">
 </head>
@@ -19892,7 +20160,8 @@ function slotsPage(shell, data) {
 <div class="notice" data-judge-note ${first?.name === "judge" ? "" : "hidden"}>
 <div class="col g4">
 <span class="bold">The force-push test. There is no skip.</span>
-<span>Each target is asked to judge <code>git push --force origin main</code>. Only a target that blocks it can be saved.</span>
+<span>Each backend target is asked to judge <code>git push --force origin main</code>; a target that does not block it cannot be saved, and Save stays off until every one of them shows blocked \u2713.</span>
+<span class="small">A <code>claude-\u2026</code> target is allowed here, exactly as the command line allows it, and it is never used as a judge: the router uses a judge target only after that test, and a Claude target cannot be tested from this page. Another slot has no such rule \u2014 Save is on there, and the same checks run when it saves.</span>
 </div>
 </div>
 
@@ -19904,7 +20173,6 @@ function slotsPage(shell, data) {
 <div class="row">
 <button type="button" class="btn primary" data-test>Test each target</button>
 <button type="button" class="btn strong" data-save>Save</button>
-<span class="small warncolor">Save stays off until every judge target shows blocked \u2713.</span>
 </div>
 
 <div class="confirmbox" data-confirm-save hidden>
@@ -19952,7 +20220,7 @@ ${backend.state === "answers" ? '<span class="ok">\u2713 answering</span>' : '<s
 </div>`).join("");
   const downCard = data.router.up === true ? "" : `<section class="card bad">
 <h2 class="badmark">\u2717 The router is not answering</h2>
-<p class="muted">Nothing came back from 127.0.0.1:${data.router.port} (${escapeHtml(data.router.why ?? "no answer")}). Subagents on the cheap slots may fail until it is back. Check it in a terminal:</p>
+<p class="muted">Nothing came back from 127.0.0.1:${data.router.port} (${escapeHtml(data.router.why ?? "no answer")}). Subagents on the affordable slots may fail until it is back. Check it in a terminal:</p>
 ${command(`systemctl --user status ${ROUTER}`, "Copy the status command")}
 ${command(`journalctl --user -u ${ROUTER} -f`, "Copy the log command")}
 <div class="row"><button type="button" class="btn primary" data-action="router.restart" data-confirm="A restart lets the answers in flight finish first (up to 120 s). New requests wait in its socket meanwhile; none fails. Continue?" data-reload>Restart the router</button></div>
@@ -20028,8 +20296,8 @@ ${companion.enableArgv === null ? '<span class="small muted">Nothing to fix here
 }
 function machinePage(shell, data) {
   const omniroute = data.omniroute;
-  const install = omniroute.facts.install;
-  const previous = omniroute.facts.state.previous;
+  const install = omniroute.install;
+  const previous = omniroute.previous;
   const omnirouteCard = `<section class="card pad">
 <div class="spread"><h2>OmniRoute</h2><code class="small">${COMMAND} omniroute status</code></div>
 ${install === null ? `<p class="muted">Not installed here, so the affordable slots have no backend. Install it in your own terminal, then run <code>${COMMAND} gateway setup</code>:</p>${command(`bun add -g ${"omniroute"}`, "Copy the install command")}` : `<div class="kv">
@@ -20038,7 +20306,7 @@ ${install === null ? `<p class="muted">Not installed here, so the affordable slo
 <div class="item"><span class="label">Unit</span><span class="value mono">${omniroute.unit === null ? "(none)" : escapeHtml(omniroute.unit)}</span></div>
 <div class="item"><span class="label">Backend</span><span class="value mono small">${omniroute.backend === null ? "(none in the config)" : escapeHtml(omniroute.backend)}</span></div>
 </div>
-${omniroute.facts.registryError === null ? "" : `<p class="notice">The npm registry could not be read: ${escapeHtml(omniroute.facts.registryError)}</p>`}
+${omniroute.registryError === null ? "" : `<p class="notice">The npm registry could not be read: ${escapeHtml(omniroute.registryError)}</p>`}
 <p class="muted">The update restarts it, so the gateway's slots fall to their next target while it comes back: Claude answers, on your own login. A version that does not answer is put back.</p>
 <div class="row">
 <button type="button" class="btn primary" data-action="omniroute.update" data-confirm="Install the newest release and restart the model path? While it restarts, the gateway's slots fall to their next target \u2014 Claude answers, on your own login." data-reload>${omniroute.state === "behind" ? `Update to ${escapeHtml(omniroute.newestVersion ?? "")}` : "Update"}</button>
@@ -20109,6 +20377,14 @@ ${jobsCard}
 <div class="grid cards">${data.companions.map(companionCard).join("")}</div>
 </section>
 
+<section aria-labelledby="warp-h" class="card pad">
+<div class="spread"><h2 id="warp-h">Warp terminal</h2><span class="${data.warp.installed ? "ok" : "muted"}">${data.warp.installed ? "\u2713 installed" : "not installed"}</span></div>
+<p class="muted">${escapeHtml(data.warp.detail)}</p>
+<p class="small muted">Both commands need <span class="mono">sudo</span>, which this page never runs: copy one into your own terminal. <span class="mono">${COMMAND} setup --warp</span> shows each step and asks before it changes anything.</p>
+${command(`${COMMAND} setup --warp`, "Copy the Warp install command")}
+${command(`${COMMAND} setup --remove-warp`, "Copy the Warp remove command")}
+</section>
+
 ${omnirouteCard}
 ${doctorCard}
 ${autoMode}
@@ -20164,6 +20440,9 @@ ${privacyStep(2, "Every request to the portal", [
       text: 'The first load exchanges the one-time token for a session cookie (<span class="mono">HttpOnly</span>, <span class="mono">SameSite=Strict</span>) and the URL is cleaned. A token cannot be used twice.'
     },
     {
+      text: `The cookie's name carries this portal's port (<span class="mono">ccsdk_portal_${port}</span>), because a cookie has no port and a browser sends every <span class="mono">127.0.0.1</span> cookie to every port on it. Two portals on two ports therefore hold their own sessions. Either way it is sent only to this machine: it is never <span class="mono">Secure</span>, because this is http on <span class="mono">127.0.0.1</span>.`
+    },
+    {
       text: 'A change (a POST) must carry the CSRF token that came with the page, and an <span class="mono">Origin</span> of ours. Otherwise <b>\u2717 403</b> and nothing changes.',
       tone: "warn"
     },
@@ -20176,7 +20455,7 @@ ${privacyStep(2, "Every request to the portal", [
 ${privacyStep(3, "Always true", [
     { text: "<b>127.0.0.1 only.</b> The portal binds nothing else." },
     {
-      text: '<b>Keys stay hidden.</b> A full key never reaches the page; it shows <span class="mono">omni_\u2026a1b2</span>.'
+      text: '<b>Keys stay hidden.</b> A full key never reaches the page; it shows its last four characters and nothing else (<span class="mono">\u2022\u2022\u2022\u2022a1b2</span>).'
     },
     {
       text: "<b>No outside request.</b> The policy allows this machine and nothing else: no web font, no script, nothing from the internet."
@@ -20204,6 +20483,9 @@ function html(body, extra = {}) {
 }
 function refused() {
   return respond("Forbidden", { "content-type": "text/plain; charset=utf-8" }, 403);
+}
+function expiredLinkResponse() {
+  return respond(expiredPage(), { "content-type": "text/html; charset=utf-8" }, 403);
 }
 async function readBody(request) {
   try {
@@ -20246,6 +20528,8 @@ async function startPortal(ctx, options) {
   };
   const server = Bun.serve({
     fetch: (request) => handle(request),
+    error: () => respond("Internal Server Error", { "content-type": "text/plain; charset=utf-8" }, 500),
+    development: false,
     hostname: "127.0.0.1",
     port: options.port
   });
@@ -20267,20 +20551,7 @@ async function startPortal(ctx, options) {
     return {
       cwd: options.cwd,
       memory: state.memory,
-      omniroute: {
-        confirm: null,
-        env: ctx.env,
-        health: (url, init) => ctx.fetch(url, init),
-        now: ctx.now,
-        paths: ctx.paths,
-        registry: (url, init) => ctx.fetch(url, init),
-        runner: ctx.runner,
-        say: () => {
-          return;
-        },
-        systemd: ctx.systemd,
-        which: ctx.which
-      },
+      omniroute: portalOmnirouteContext(ctx),
       portal: ctx
     };
   }
@@ -20290,6 +20561,7 @@ async function startPortal(ctx, options) {
     if (state.doctorRun === null) {
       state.doctorRun = runDoctorPass(actionContext(), options.doctor).then((pass) => {
         state.doctor = { at: ctx.now(), checks: pass.checks };
+      }).finally(() => {
         state.doctorRun = null;
       });
     }
@@ -20368,7 +20640,8 @@ async function startPortal(ctx, options) {
           last: updates.last,
           newest: updates.last?.result === "up-to-date" ? updates.last.detail : null,
           summary: summaryOf(updates.last)
-        }
+        },
+        warp: warpRow(ctx)
       }), extra);
     }
     const limits = limitFacts(ctx);
@@ -20400,12 +20673,14 @@ async function startPortal(ctx, options) {
           return respond(PORTAL_JS, { "content-type": "text/javascript; charset=utf-8" }, 200);
         case "/assets/theme.js":
           return respond(THEME_JS, { "content-type": "text/javascript; charset=utf-8" }, 200);
+        case "/assets/icon.svg":
+          return respond(PORTAL_ICON, { "content-type": "image/svg+xml; charset=utf-8" }, 200);
         default:
           return refused();
       }
     }
     const gate = admit({
-      cookie: cookieValue(request.headers.get("cookie"), COOKIE_NAME),
+      cookie: cookieValue(request.headers.get("cookie"), cookieName(port)),
       csrf: request.headers.get(CSRF_HEADER),
       expectedCsrf: state.session.csrf,
       host: request.headers.get("host"),
@@ -20415,9 +20690,13 @@ async function startPortal(ctx, options) {
       session: state.session.cookie,
       tokenValid: secretsMatch(state.session.token, token)
     });
-    if (gate.kind === "refused")
+    if (gate.kind === "refused") {
+      if (method === "GET" && gate.reason === "session")
+        return expiredLinkResponse();
       return refused();
-    touch(state.session, ctx.now());
+    }
+    if (url.searchParams.get("auto") !== "1")
+      touch(state.session, ctx.now());
     if (gate.kind === "exchange") {
       const value = exchangeToken(state.session, token, random, ctx.now());
       if (value === null)
@@ -20428,7 +20707,7 @@ async function startPortal(ctx, options) {
         facts: await shellFacts(ctx, port)
       };
       const path = PAGES2.has(url.pathname) ? url.pathname : "/";
-      return pageResponse(path, shell, { "set-cookie": sessionCookie(COOKIE_NAME, value) });
+      return pageResponse(path, shell, { "set-cookie": sessionCookie(cookieName(port), value) });
     }
     if (url.pathname.startsWith("/api/")) {
       if (method !== "POST")
@@ -20480,6 +20759,7 @@ async function startPortal(ctx, options) {
 
 // src/entries/portal.ts
 var RUN_TIMEOUT_MS2 = 300000;
+var SIGINT_EXIT = 130;
 var runner = (cmd) => {
   try {
     const result = Bun.spawnSync(cmd, { stderr: "pipe", stdout: "pipe", timeout: RUN_TIMEOUT_MS2 });
@@ -20505,11 +20785,8 @@ function openBrowser(platform, url, which) {
     } catch {}
   }
 }
-function pluginDir() {
-  return import.meta.dir.endsWith("/dist") ? join32(import.meta.dir, "..") : join32(import.meta.dir, "..", "..", "plugin");
-}
-function distFile(name) {
-  return join32(pluginDir(), "dist", name);
+function besideThisBundle() {
+  return import.meta.dir.endsWith("/dist") ? join33(import.meta.dir, "..") : join33(import.meta.dir, "..", "..", "plugin");
 }
 async function main(argv) {
   const refusal = claudeCodeRefusal(process.env);
@@ -20517,7 +20794,7 @@ async function main(argv) {
     console.error(refusal);
     return 1;
   }
-  const options = parsePortalArgs(argv);
+  const options = parsePortalChildArgs(argv);
   if ("error" in options) {
     console.error(`${options.error}
 
@@ -20527,35 +20804,46 @@ ${PORTAL_USAGE}`);
   const paths = cliPaths();
   const which = (name) => Bun.which(name, { PATH: process.env.PATH ?? "" });
   const machine = realMachine(process.env, null);
+  const fallback = options.pluginDir ?? besideThisBundle();
   const ctx = {
     bunVersion: Bun.version,
-    bundle: distFile("portal.js"),
     env: process.env,
     fetch: (url, init) => fetch(url, init),
-    instructionsSource: instructionsFolder(join32(pluginDir(), "dist")),
     machine,
     now: () => Date.now(),
     openBrowser: (url) => openBrowser(process.platform, url, which),
     paths,
+    pluginFolder: () => resolvePluginFolder(paths.installedPluginsFile, fallback),
     probe: realProbe(),
-    routerBundle: distFile("router.js"),
     runner,
     systemd: process.platform === "linux" && which("systemctl") !== null,
     which
   };
+  const doctor = () => {
+    const found = ctx.pluginFolder();
+    if ("error" in found)
+      return found;
+    const { folder } = found;
+    return {
+      bun: { path: process.execPath, version: Bun.version },
+      gateway: {
+        bundle: join33(folder, "dist", "router.js"),
+        machine,
+        runner,
+        systemd: ctx.systemd
+      },
+      live: null,
+      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join33(folder, "dist")) },
+      project: { cwd: process.cwd(), pluginHooksFile: join33(folder, "hooks", "hooks.json") }
+    };
+  };
   const portal = await startPortal(ctx, {
     cwd: process.cwd(),
-    doctor: {
-      bun: { path: process.execPath, version: Bun.version },
-      gateway: { bundle: ctx.routerBundle, machine, runner, systemd: ctx.systemd },
-      live: null,
-      local: { cwd: process.cwd(), instructionsSource: ctx.instructionsSource },
-      project: { cwd: process.cwd(), pluginHooksFile: join32(pluginDir(), "hooks", "hooks.json") }
-    },
+    doctor,
     port: options.port
   });
   console.log(`cc-smart-dev-kit portal ${VERSION} \u2014 for you, not for Claude.`);
-  console.log(`Running from ${tildify(join32(paths.home, ".local/share/cc-smart-dev-kit/portal.js"), paths.home)}.`);
+  console.log(`Running from ${tildify(import.meta.path, paths.home)}.`);
   console.log("");
   console.log(`  ${portal.url}`);
   console.log("");
@@ -20569,7 +20857,7 @@ ${PORTAL_USAGE}`);
   }
   return 0;
 }
-process.on("SIGINT", () => process.exit(0));
+process.on("SIGINT", () => process.exit(SIGINT_EXIT));
 try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (error) {

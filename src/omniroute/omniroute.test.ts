@@ -10,8 +10,10 @@ import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { probeModel } from "../gateway/backends";
 import { loadConfigFile, saveConfig } from "../gateway/config";
+import { lockIsHeld, withLock } from "../setup/lock";
 import { tempDir } from "../testing/temp";
 import {
+  BACKEND_WAIT_MS,
   emptyState,
   firstAffordableTarget,
   formatState,
@@ -127,6 +129,19 @@ describe("the systemd unit and the install", () => {
     expect(unitExecStart("[Unit]\nDescription=x\n")).toBe(null);
   });
 
+  test("two ExecStart lines are ambiguous: the unit is left alone, never guessed at", () => {
+    const two =
+      "[Service]\nExecStart=/usr/bin/node /opt/a/main.mjs\nExecStart=/usr/bin/node /opt/b/main.mjs\n";
+    expect(unitExecStart(two)).toBe(null);
+    // And an ambiguous unit is skipped like one without an ExecStart: `status` then says that
+    // no unit runs OmniRoute, rather than picking one of the two command lines.
+    const home = tempDir("ambiguous");
+    const dir = join(home, ".config", "systemd", "user");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "omniroute.service"), two);
+    expect(userUnits(dir)).toEqual([]);
+  });
+
   test("every user unit in a folder is read; one without ExecStart is left out", () => {
     const home = tempDir("units");
     const dir = join(home, ".config", "systemd", "user");
@@ -231,6 +246,20 @@ describe("the newest release old enough to install", () => {
       "3.9.0",
     ]);
     expect(MIN_RELEASE_AGE_MS).toBe(3 * DAY);
+  });
+
+  test("a version npm marks deprecated is never a release to move a machine to", () => {
+    // npm's own `deprecated` note is what every install prints as a warning: the package's
+    // author said this version should not be used. 3.8.50 is older than 3.9.0, so without
+    // this it would come back as a version to install.
+    const body = JSON.stringify({
+      time: {
+        "3.8.50": new Date(now - 30 * DAY).toISOString(),
+        "3.9.0": new Date(now - 4 * DAY).toISOString(),
+      },
+      versions: { "3.8.50": { deprecated: "broken: use 3.9.0" }, "3.9.0": {} },
+    });
+    expect(parseReleases(body, now).map((release) => release.version)).toEqual(["3.9.0"]);
   });
 
   test("a version with no time in the registry is left out, and a broken answer is empty", () => {
@@ -399,16 +428,28 @@ function machine(options: { behind?: boolean } = {}) {
   const ran: string[] = [];
   /** The version the fake manager "installed", so the health check can refuse it. */
   let fails = false;
+  /**
+   * The clock, and how many times the backend refused a connection before it answered. Both
+   * are the test's own: the wait after a restart is driven by `sleep` moving the clock, so no
+   * test ever waits a real minute, and the fake backend can be slow to come up on purpose.
+   */
+  const clock = { now };
+  let refusedFor = 0;
   const ctx: OmnirouteContext = {
     confirm: null,
     env: { HOME: home },
-    health: async (url: string) =>
-      url.endsWith("/v1/models")
+    health: async (url: string) => {
+      if (refusedFor > 0) {
+        refusedFor -= 1;
+        throw Object.assign(new Error("Unable to connect."), { code: "ConnectionRefused" });
+      }
+      return url.endsWith("/v1/models")
         ? Response.json({ data: [{ id: "glm-5.3-flash" }] })
         : fails
           ? new Response("model gone", { status: 404 })
-          : Response.json({ choices: [{ message: { content: "ready" } }] }),
-    now: () => now,
+          : Response.json({ choices: [{ message: { content: "ready" } }] });
+    },
+    now: () => clock.now,
     paths,
     registry: registryFetch(registryBody()).fetch,
     runner: (cmd) => {
@@ -416,17 +457,27 @@ function machine(options: { behind?: boolean } = {}) {
       return { exitCode: 0, output: `ran ${cmd.join(" ")}` };
     },
     say: (line) => said.push(line),
+    sleep: async (ms) => {
+      clock.now += ms;
+    },
+    // No system folders of the host: a real `/usr/lib/node_modules/omniroute` is not this test.
+    systemFolders: [],
     systemd: true,
     which: (command) => (command === "bun" ? join(home, ".bun", "bin", "bun") : null),
   };
   return {
+    clock,
     ctx,
+    folder,
     home,
     paths,
     ran,
     said,
     setFailing: (value: boolean) => {
       fails = value;
+    },
+    setRefused: (times: number) => {
+      refusedFor = times;
     },
   };
 }
@@ -442,7 +493,9 @@ describe("cc-smart-dev-kit omniroute", () => {
     expect(text).toContain("newest release at least 3 days old: 3.9.0");
     expect(text).toContain("gateway backend omniroute → http://127.0.0.1:20128");
     expect(text).toContain("first affordable target glm-5.3-flash");
-    // No key ever reaches a line.
+    // The address is shown with its key masked (`shownBackendUrl`), never raw: a URL can carry
+    // a credential in its userinfo, and a whole key in a line is a whole key in a log.
+    expect(text).toContain("(key ••••a1b2)");
     expect(text).not.toContain("omni_key_a1b2");
   });
 
@@ -592,6 +645,153 @@ describe("cc-smart-dev-kit omniroute", () => {
     expect(line?.text).toContain("cc-smart-dev-kit omniroute update");
     const current = machine();
     expect(await omnirouteDoctorLine(current.ctx)).toBe(null);
+  });
+
+  // ── `--to`, the wait after a restart, the lock, and a folder that is not ours ────
+
+  test("--to refuses a version published today, a canary, a URL and a github spec", async () => {
+    const cases: [string, string][] = [
+      // One day old: the three-day rule is not suspended for a version a person names.
+      ["3.8.70", "--to 3.8.70: the registry lists no such release, or it has not been out 3 days"],
+      ["3.9.1-canary.1", "--to 3.9.1-canary.1: only a plain version like 3.8.51"],
+      ["https://example.com/omniroute-3.9.0.tgz", "only a plain version like 3.8.51"],
+      ["github:someone/omniroute", "only a plain version like 3.8.51"],
+      ["9.9.9", "the registry lists no such release"],
+    ];
+    for (const [value, words] of cases) {
+      const world = machine({ behind: true });
+      expect(await runOmniroute(["update", "--yes", "--to", value], world.ctx)).toBe(1);
+      const text = world.said.join("\n");
+      expect(text).toContain(words);
+      // Nothing ran at all: no `bun add`, no restart, no health check, and nothing recorded.
+      expect(world.ran).toEqual([]);
+      expect(readState(stateFile(world.paths)).previous).toBe(null);
+    }
+  });
+
+  test("--to installs a release the registry lists and that is old enough", async () => {
+    const world = machine({ behind: true });
+    expect(await runOmniroute(["update", "--yes", "--to", "3.8.50"], world.ctx)).toBe(0);
+    expect(world.ran).toContain(
+      `${join(world.home, ".bun", "bin", "bun")} add --global omniroute@3.8.50`,
+    );
+    expect(readState(stateFile(world.paths)).previous?.version).toBe("3.8.51");
+  });
+
+  test("a restarted OmniRoute that is slow to listen is waited for, not rolled back", async () => {
+    const world = machine({ behind: true });
+    // The first tries are refused: systemd said active, the process is not listening yet.
+    world.setRefused(5);
+    expect(await runOmniroute(["update", "--yes"], world.ctx)).toBe(0);
+    const text = world.said.join("\n");
+    expect(text).toContain("OmniRoute 3.9.0 is running.");
+    // It waited by its own clock, and nothing was put back for being slow.
+    expect(world.clock.now).toBeGreaterThan(now);
+    expect(world.ran.filter((line) => line.includes("add --global"))).toEqual([
+      `${join(world.home, ".bun", "bin", "bun")} add --global omniroute@3.9.0`,
+    ]);
+    expect(text).not.toContain("Putting 3.8.51 back.");
+  });
+
+  test("a model path that never comes back gives up after about a minute, and puts the old back", async () => {
+    const world = machine({ behind: true });
+    world.setRefused(100_000);
+    expect(await runOmniroute(["update", "--yes"], world.ctx)).toBe(1);
+    const text = world.said.join("\n");
+    expect(text).toContain("the backend answered nothing on http://127.0.0.1:20128 within 60 s");
+    expect(text).toContain("✗ the model path did not come back");
+    expect(text).toContain("Putting 3.8.51 back.");
+    // The put-back waits the same way, so the second install was checked too.
+    expect(world.ran.filter((line) => line.includes("add --global"))).toEqual([
+      `${join(world.home, ".bun", "bin", "bun")} add --global omniroute@3.9.0`,
+      `${join(world.home, ".bun", "bin", "bun")} add --global omniroute@3.8.51`,
+    ]);
+    expect(text).toContain("✗ putting 3.8.51 back failed too");
+    // Both waits ran to their deadline, by the test's clock: never a real minute.
+    expect(world.clock.now - now).toBeGreaterThanOrEqual(2 * BACKEND_WAIT_MS);
+  });
+
+  test("the install, the restart and the check run while the state lock is held", async () => {
+    const world = machine({ behind: true });
+    const inner = world.ctx.runner;
+    const held: boolean[] = [];
+    const ctx: OmnirouteContext = {
+      ...world.ctx,
+      runner: (cmd) => {
+        held.push(lockIsHeld(world.paths.stateDir));
+        return inner(cmd);
+      },
+    };
+    expect(await runOmniroute(["update", "--yes"], ctx)).toBe(0);
+    // Every systemctl call of the update ran under the lock: the record, the install, the
+    // restart and the check are one change to this machine's model path.
+    expect(held.length).toBeGreaterThan(0);
+    expect(held).toEqual(held.map(() => true));
+    // And it is released when the command is done, so the next command is not locked out.
+    expect(lockIsHeld(world.paths.stateDir)).toBe(false);
+  });
+
+  test("a second update waits for the lock instead of installing on top of the first", async () => {
+    const world = machine({ behind: true });
+    let released = false;
+    const holding = withLock(world.paths.stateDir, async () => {
+      await Bun.sleep(150);
+      released = true;
+    });
+    const inner = world.ctx.runner;
+    const seen: boolean[] = [];
+    const ctx: OmnirouteContext = {
+      ...world.ctx,
+      runner: (cmd) => {
+        seen.push(released);
+        return inner(cmd);
+      },
+    };
+    expect(await runOmniroute(["update", "--yes"], ctx)).toBe(0);
+    await holding;
+    // Nothing ran while the other run held the lock.
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen).toEqual(seen.map(() => true));
+  });
+
+  test("an install folder this user cannot write is refused before anything runs", async () => {
+    const world = machine({ behind: true });
+    chmodSync(world.folder, 0o555);
+    try {
+      expect(await runOmniroute(["update", "--yes"], world.ctx)).toBe(1);
+      const text = world.said.join("\n");
+      expect(text).toContain("which this user cannot write");
+      // The command to copy, never run: it needs sudo, and the plugin never runs that.
+      expect(text).toContain(
+        `sudo ${join(world.home, ".bun", "bin", "bun")} add --global omniroute@3.9.0`,
+      );
+      expect(world.ran).toEqual([]);
+      expect(readState(stateFile(world.paths)).previous).toBe(null);
+    } finally {
+      chmodSync(world.folder, 0o755);
+    }
+  });
+
+  test("rollback refuses that folder too, with its own command to copy", async () => {
+    const world = machine();
+    writeState(stateFile(world.paths), {
+      previous: { at: "2026-10-15T00:00:00.000Z", version: "3.8.51" },
+      version: 1,
+    });
+    chmodSync(world.folder, 0o555);
+    try {
+      expect(await runOmniroute(["rollback", "--yes"], world.ctx)).toBe(1);
+      const text = world.said.join("\n");
+      expect(text).toContain("which this user cannot write");
+      expect(text).toContain(
+        `sudo ${join(world.home, ".bun", "bin", "bun")} add --global omniroute@3.8.51`,
+      );
+      expect(world.ran).toEqual([]);
+      // The record stays: it is what the next rollback goes back to.
+      expect(readState(stateFile(world.paths)).previous?.version).toBe("3.8.51");
+    } finally {
+      chmodSync(world.folder, 0o755);
+    }
   });
 });
 

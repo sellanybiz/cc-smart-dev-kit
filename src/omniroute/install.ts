@@ -11,7 +11,14 @@
  * Read only. Nothing here writes, restarts or installs anything.
  */
 
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import type { CliPaths } from "../cli/paths";
 
@@ -101,9 +108,15 @@ export function execStartArgv(line: string): string[] {
   return tokenize(stripped);
 }
 
-/** The `ExecStart=` words of a unit file, or null when it has none (or more than one). */
+/**
+ * The `ExecStart=` words of a unit file, or null when it has none **or more than one**. Two
+ * `ExecStart=` lines make the command line ambiguous (systemd runs both, and which one is
+ * the program is not ours to guess), so the unit is left alone: `userUnits` skips it, and
+ * `status` then says no unit runs OmniRoute instead of picking one at random.
+ */
 export function unitExecStart(text: string): string[] | null {
   const lines = text.split("\n").filter((line) => /^ExecStart=/.test(line.trim()));
+  if (lines.length !== 1) return null;
   const first = lines[0];
   return first === undefined ? null : execStartArgv(first.trim());
 }
@@ -192,14 +205,23 @@ export function globalRootOf(
   return null;
 }
 
+/** The folders outside the home a global install may sit in, without the package's own folder. */
+export const SYSTEM_PACKAGE_FOLDERS: readonly string[] = [
+  join("/usr", "local", "lib", "node_modules"),
+  join("/usr", "lib", "node_modules"),
+];
+
 /** The folders a global install of `name` may be in when no unit says where it is. */
-function guessFolders(env: Record<string, string | undefined>, home: string): string[] {
+function guessFolders(
+  env: Record<string, string | undefined>,
+  home: string,
+  systemFolders: readonly string[],
+): string[] {
   const bunInstall = env.BUN_INSTALL ?? join(home, ".bun");
   return [
     join(bunInstall, "install", "global", "node_modules", PACKAGE),
     join(home, ".local", "share", "bun", "install", "global", "node_modules", PACKAGE),
-    join("/usr", "local", "lib", "node_modules", PACKAGE),
-    join("/usr", "lib", "node_modules", PACKAGE),
+    ...systemFolders.map((folder) => join(folder, PACKAGE)),
   ];
 }
 
@@ -223,6 +245,12 @@ export function findOmniroute(options: {
   paths: CliPaths;
   env: Record<string, string | undefined>;
   which: (command: string) => null | string;
+  /**
+   * The folders outside the home a global install may sit in (`SYSTEM_PACKAGE_FOLDERS` by
+   * default). A test passes none, so it never reads the machine's own `/usr` folders and
+   * finds an OmniRoute that has nothing to do with it.
+   */
+  systemFolders?: readonly string[] | undefined;
 }): OmnirouteLookup {
   const { paths, env } = options;
   const units = userUnits(dirname(paths.routerUnitFile));
@@ -233,9 +261,11 @@ export function findOmniroute(options: {
 
   const script = unit?.argv.find(namesOmniroute) ?? null;
   const fromUnit = script === null ? null : packageFolderOf(script, PACKAGE);
-  const candidates = [fromUnit, fromPath(options.which), ...guessFolders(env, paths.home)].filter(
-    (folder): folder is string => folder !== null,
-  );
+  const candidates = [
+    fromUnit,
+    fromPath(options.which),
+    ...guessFolders(env, paths.home, options.systemFolders ?? SYSTEM_PACKAGE_FOLDERS),
+  ].filter((folder): folder is string => folder !== null);
 
   for (const folder of candidates) {
     const version = versionOf(folder, PACKAGE);
@@ -298,4 +328,26 @@ export function installLine(install: GlobalInstall, home: string): string {
     ? `~${install.folder.slice(home.length)}`
     : install.folder;
   return `${PACKAGE} ${install.version} installed at ${where} (a global ${install.kind} install)`;
+}
+
+/** True when this user may write in `dir`. */
+function writable(dir: string): boolean {
+  try {
+    accessSync(dir, constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when this user can really replace the package in that folder. Checked **before** a
+ * version is recorded or installed: a global install under a root-owned prefix (`npm i -g`
+ * as root, a package under `/usr/lib/node_modules`) fails with EACCES halfway through, and
+ * the put-back of a "failed" update fails the same way, which reads as a broken update
+ * though nothing ever changed. The folder and the one holding it both have to be writable:
+ * the manager writes the package's files and replaces the folder itself.
+ */
+export function installIsWritable(install: GlobalInstall): boolean {
+  return writable(install.folder) && writable(dirname(install.folder));
 }

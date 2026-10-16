@@ -36,10 +36,12 @@ import {
   parseLimitState,
 } from "../gateway/limit-state";
 import { UNIT_NAME } from "../gateway/service";
-import { maskKey, settingsReport } from "../gateway/settings";
+import { settingsReport, shownBackendUrl } from "../gateway/settings";
 import { isModelSlot, JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";
 import { companionChecks, companionState, companions } from "../machine/companions";
-import { type OmnirouteContext, type OmnirouteFacts, omnirouteFacts } from "../omniroute/commands";
+import { detectSystem, detectWarpApp, warpCheck } from "../machine/warp";
+import { type OmnirouteContext, omnirouteFacts } from "../omniroute/commands";
+import type { GlobalInstall } from "../omniroute/install";
 import type { PortalContext } from "./context";
 
 /** What every page's header and footer show. */
@@ -274,12 +276,12 @@ const SLOT_META: Readonly<Record<string, { info: string; kind: string }>> = {
     kind: "model",
   },
   scout: {
-    info: "Cheap. File search, greps, reading and summaries.",
-    kind: "cheap",
+    info: "Affordable. File search, greps, reading and summaries.",
+    kind: "affordable",
   },
   worker: {
-    info: "Cheap. Building, doc updates, tests and mechanical runs.",
-    kind: "cheap",
+    info: "Affordable. Building, doc updates, tests and mechanical runs.",
+    kind: "affordable",
   },
 };
 
@@ -437,21 +439,6 @@ export async function backendRows(
   return rows;
 }
 
-/** A backend's address as a page shows it: nothing that looks like a credential. */
-export function shownBackendUrl(baseUrl: string, apiKey: string): string {
-  const masked = maskKey(apiKey);
-  try {
-    const url = new URL(baseUrl);
-    if (url.username !== "" || url.password !== "") {
-      url.username = "";
-      url.password = "";
-    }
-    return `${url.href.replace(/\/$/, "")} (key ${masked})`;
-  } catch {
-    return `(key ${masked})`;
-  }
-}
-
 // ── Switches ────────────────────────────────────────────────────────────────────
 
 export interface SwitchFacts {
@@ -598,15 +585,43 @@ export function companionRows(ctx: PortalContext): CompanionRow[] {
   });
 }
 
-/** What the Machine page's OmniRoute card shows. */
+/**
+ * What the Machine page's OmniRoute card shows. It is built from `OmnirouteFacts`, never the
+ * facts object itself: that one holds the backend's **key**, and nothing that reaches a page
+ * — not a view, not a line, not a JSON answer — may hold one.
+ */
 export interface OmnirouteRow {
+  /** The backend as a line: its name, then its address with the key masked. */
   backend: null | string;
-  facts: OmnirouteFacts;
+  install: GlobalInstall | null;
+  /** The newest release's version, when the registry could be read. */
+  newestVersion: null | string;
+  /** The version the last update replaced, for the card's own line. */
+  previous: null | { at: string; version: string };
+  /** Why the registry could not be read, in words. */
+  registryError: null | string;
   /** The word for the state: `ok`, `behind`, `unknown`. */
   state: "behind" | "ok" | "unknown";
-  /** The newest release's age in days, when known. */
-  newestVersion: null | string;
   unit: null | string;
+}
+
+/**
+ * What the Machine page's Warp card shows. Warp is optional, and installing or removing it
+ * needs `sudo`: the card shows the two commands to copy, and the page never runs them.
+ */
+export interface WarpRow {
+  /** Doctor's own line for it: what is installed, and which command to run. */
+  detail: string;
+  /** True when the Warp app is here. */
+  installed: boolean;
+}
+
+export function warpRow(ctx: PortalContext): WarpRow {
+  const system = detectSystem(ctx.machine);
+  return {
+    detail: warpCheck(ctx.machine, ctx.paths).text,
+    installed: detectWarpApp(ctx.machine, system).installed,
+  };
 }
 
 export async function omnirouteRow(
@@ -615,10 +630,17 @@ export async function omnirouteRow(
 ): Promise<OmnirouteRow> {
   const facts = await omnirouteFacts(omnirouteCtx);
   const newest = facts.newest;
+  const backend = facts.backend;
   return {
-    backend: facts.backend === null ? null : `${facts.backend.name} → ${facts.backend.baseUrl}`,
-    facts,
+    // `shownBackendUrl`, like every other address on a page: it masks the key.
+    backend:
+      backend === null
+        ? null
+        : `${backend.name} → ${shownBackendUrl(backend.baseUrl, backend.apiKey)}`,
+    install: facts.install,
     newestVersion: newest?.version ?? null,
+    previous: facts.state.previous,
+    registryError: facts.registryError,
     state:
       facts.install === null || newest === null
         ? "unknown"

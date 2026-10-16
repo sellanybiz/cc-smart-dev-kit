@@ -94,6 +94,25 @@ export function maskKey(key: string): string {
   return key.length >= 12 ? `••••${key.slice(-4)}` : "••••";
 }
 
+/**
+ * A backend's address as a person reads it: the URL without any credentials in it, then its
+ * key in the masked form. One home, because two callers show it — `omniroute status` and the
+ * portal's pages — and neither may print a whole key.
+ */
+export function shownBackendUrl(baseUrl: string, apiKey: string): string {
+  const masked = maskKey(apiKey);
+  try {
+    const url = new URL(baseUrl);
+    if (url.username !== "" || url.password !== "") {
+      url.username = "";
+      url.password = "";
+    }
+    return `${url.href.replace(/\/$/, "")} (key ${masked})`;
+  } catch {
+    return `(key ${masked})`;
+  }
+}
+
 /** A settings value as output may show it: anything that looks like a key or a credential is masked. */
 export function shownValue(value: unknown): string {
   const text = typeof value === "string" ? value : JSON.stringify(value);

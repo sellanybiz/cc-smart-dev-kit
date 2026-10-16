@@ -1,7 +1,7 @@
 // @bun
 // src/entries/cli.ts
 import { existsSync as existsSync43, statSync as statSync13 } from "fs";
-import { basename as basename7, dirname as dirname12, join as join37, resolve as resolve7 } from "path";
+import { basename as basename7, dirname as dirname12, join as join38, resolve as resolve7 } from "path";
 
 // src/build-info/names.ts
 var MARKETPLACE = "cc-smart-dev-kit";
@@ -57,7 +57,7 @@ function oldBunRefusal(command, version, path) {
 }
 
 // src/cli/doctor.ts
-import { accessSync, constants, existsSync as existsSync31, readFileSync as readFileSync33 } from "fs";
+import { accessSync as accessSync2, constants as constants2, existsSync as existsSync31, readFileSync as readFileSync33 } from "fs";
 import { dirname as dirname9, join as join29 } from "path";
 
 // src/gateway/doctor.ts
@@ -9316,6 +9316,19 @@ function readSettings(path) {
 function maskKey(key) {
   return key.length >= 12 ? `\u2022\u2022\u2022\u2022${key.slice(-4)}` : "\u2022\u2022\u2022\u2022";
 }
+function shownBackendUrl(baseUrl, apiKey) {
+  const masked = maskKey(apiKey);
+  try {
+    const url = new URL(baseUrl);
+    if (url.username !== "" || url.password !== "") {
+      url.username = "";
+      url.password = "";
+    }
+    return `${url.href.replace(/\/$/, "")} (key ${masked})`;
+  } catch {
+    return `(key ${masked})`;
+  }
+}
 function shownValue(value) {
   const text = typeof value === "string" ? value : JSON.stringify(value);
   if (/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(text))
@@ -10983,7 +10996,14 @@ function clearWarpStage(paths) {
 import { existsSync as existsSync13, readFileSync as readFileSync14 } from "fs";
 
 // src/omniroute/install.ts
-import { existsSync as existsSync12, readdirSync as readdirSync2, readFileSync as readFileSync13, realpathSync as realpathSync2 } from "fs";
+import {
+  accessSync,
+  constants,
+  existsSync as existsSync12,
+  readdirSync as readdirSync2,
+  readFileSync as readFileSync13,
+  realpathSync as realpathSync2
+} from "fs";
 import { dirname as dirname4, join as join10 } from "path";
 var PACKAGE2 = "omniroute";
 var NAME = "OmniRoute";
@@ -11039,6 +11059,8 @@ function execStartArgv(line) {
 function unitExecStart(text) {
   const lines = text.split(`
 `).filter((line) => /^ExecStart=/.test(line.trim()));
+  if (lines.length !== 1)
+    return null;
   const first = lines[0];
   return first === undefined ? null : execStartArgv(first.trim());
 }
@@ -11104,13 +11126,16 @@ function globalRootOf(folder, which) {
   }
   return null;
 }
-function guessFolders(env, home) {
+var SYSTEM_PACKAGE_FOLDERS = [
+  join10("/usr", "local", "lib", "node_modules"),
+  join10("/usr", "lib", "node_modules")
+];
+function guessFolders(env, home, systemFolders) {
   const bunInstall = env.BUN_INSTALL ?? join10(home, ".bun");
   return [
     join10(bunInstall, "install", "global", "node_modules", PACKAGE2),
     join10(home, ".local", "share", "bun", "install", "global", "node_modules", PACKAGE2),
-    join10("/usr", "local", "lib", "node_modules", PACKAGE2),
-    join10("/usr", "lib", "node_modules", PACKAGE2)
+    ...systemFolders.map((folder) => join10(folder, PACKAGE2))
   ];
 }
 function fromPath(which) {
@@ -11130,7 +11155,11 @@ function findOmniroute(options) {
   const unit = units.find((entry) => entry.argv.some(namesOmniroute)) ?? units.find((entry) => entry.argv.some((word) => word.includes(PACKAGE2))) ?? null;
   const script = unit?.argv.find(namesOmniroute) ?? null;
   const fromUnit = script === null ? null : packageFolderOf(script, PACKAGE2);
-  const candidates = [fromUnit, fromPath(options.which), ...guessFolders(env, paths.home)].filter((folder) => folder !== null);
+  const candidates = [
+    fromUnit,
+    fromPath(options.which),
+    ...guessFolders(env, paths.home, options.systemFolders ?? SYSTEM_PACKAGE_FOLDERS)
+  ].filter((folder) => folder !== null);
   for (const folder of candidates) {
     const version = versionOf(folder, PACKAGE2);
     if (version === null)
@@ -11178,11 +11207,28 @@ function installLine(install, home) {
   const where = install.folder.startsWith(`${home}/`) ? `~${install.folder.slice(home.length)}` : install.folder;
   return `${PACKAGE2} ${install.version} installed at ${where} (a global ${install.kind} install)`;
 }
+function writable(dir) {
+  try {
+    accessSync(dir, constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function installIsWritable(install) {
+  return writable(install.folder) && writable(dirname4(install.folder));
+}
 
 // src/omniroute/registry.ts
 var REGISTRY = "https://registry.npmjs.org";
 var MIN_RELEASE_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 var STABLE = /^\d+\.\d+\.\d+$/;
+function isJsonObject7(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isDeprecated(entry) {
+  return isJsonObject7(entry) && typeof entry.deprecated === "string";
+}
 function parseReleases(text, nowMs) {
   let raw;
   try {
@@ -11198,9 +11244,12 @@ function parseReleases(text, nowMs) {
   if (typeof body.time !== "object" || body.time === null)
     return [];
   const times = body.time;
+  const versions = body.versions;
   const releases = [];
-  for (const version of Object.keys(body.versions)) {
+  for (const version of Object.keys(versions)) {
     if (!STABLE.test(version))
+      continue;
+    if (isDeprecated(versions[version]))
       continue;
     const publishedAt = times[version];
     if (typeof publishedAt !== "string")
@@ -11250,7 +11299,9 @@ Commands:
                          Install the newest release at least ${MIN_RELEASE_AGE_MS / 86400000} days old, restart its
                          unit, and check that it answers (its model list, then one tiny
                          chat). A failure puts the old version back. --yes: no question.
-                         --to: a version to install instead of the newest.
+                         --to <version>: install that release instead, when it is a plain
+                         x.y.z the registry lists and it is at least ${MIN_RELEASE_AGE_MS / 86400000} days old;
+                         anything else (a tag, a URL, a github spec) is refused.
   rollback [--yes]       Install the version the last update replaced, and restart.
                          Refuses inside a Claude Code session: it moves this machine's
                          model path.`;
@@ -11291,6 +11342,7 @@ function readState(file) {
 function writeState(file, state) {
   atomicWrite(file, formatState(state), 384);
 }
+var UPDATE_LOCK_WAIT_MS = 1e4;
 function stateFile(paths) {
   return paths.omnirouteStateFile;
 }
@@ -11314,7 +11366,12 @@ function firstAffordableTarget(config, backend) {
   return null;
 }
 async function omnirouteFacts(ctx) {
-  const found = findOmniroute({ env: ctx.env, paths: ctx.paths, which: ctx.which });
+  const found = findOmniroute({
+    env: ctx.env,
+    paths: ctx.paths,
+    systemFolders: ctx.systemFolders,
+    which: ctx.which
+  });
   let backend = null;
   let model = null;
   if (found.install !== null && existsSync13(ctx.paths.gatewayConfigFile)) {
@@ -11333,6 +11390,7 @@ async function omnirouteFacts(ctx) {
     install: found.install,
     model,
     newest: "version" in newest ? newest.releases.at(-1) ?? null : null,
+    releases: "version" in newest ? newest.releases : [],
     registryError: "error" in newest ? newest.error : null,
     state: readState(stateFile(ctx.paths)),
     unit: found.unit
@@ -11360,7 +11418,7 @@ async function commandStatus2(ctx) {
   } else {
     ctx.say(`  ${facts.install.version} is the newest release at least ${MIN_RELEASE_AGE_MS / 86400000} days old`);
   }
-  ctx.say(facts.backend === null ? `  the gateway config names no ${PACKAGE2} backend, so the update's health check is skipped` : `  gateway backend ${facts.backend.name} \u2192 ${facts.backend.baseUrl}${facts.model === null ? "" : `, its first affordable target ${facts.model}`}`);
+  ctx.say(facts.backend === null ? `  the gateway config names no ${PACKAGE2} backend, so the update's health check is skipped` : `  gateway backend ${facts.backend.name} \u2192 ${shownBackendUrl(facts.backend.baseUrl, facts.backend.apiKey)}${facts.model === null ? "" : `, its first affordable target ${facts.model}`}`);
   const previous = facts.state.previous;
   if (previous !== null) {
     ctx.say(`  the last update here replaced ${previous.version} (${previous.at.slice(0, 19)}Z): ${COMMAND} omniroute rollback`);
@@ -11369,6 +11427,17 @@ async function commandStatus2(ctx) {
 }
 function installArgv(install, version) {
   return install.kind === "bun" ? [install.manager, "add", "--global", `${PACKAGE2}@${version}`] : [install.manager, "install", "--global", `${PACKAGE2}@${version}`];
+}
+var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
+function toRefusal(value, releases) {
+  const days = MIN_RELEASE_AGE_MS / 86400000;
+  if (!PLAIN_VERSION.test(value)) {
+    return `--to ${value}: only a plain version like 3.8.51 can be installed, never a tag, a URL or a github spec. Run \`${COMMAND} omniroute update\` with no --to for the newest release at least ${days} days old.`;
+  }
+  if (!releases.some((release) => release.version === value)) {
+    return `--to ${value}: the registry lists no such release, or it has not been out ${days} days. \`${COMMAND} omniroute status\` names the newest one it may install.`;
+  }
+  return null;
 }
 function lastLine(output) {
   return output.trim().split(`
@@ -11401,6 +11470,11 @@ async function installAndCheck(ctx, install, version, unit, backend, model) {
     step(ctx, "  the gateway config names no backend for it, so the model path was not checked");
     return null;
   }
+  const up = await waitForBackend(ctx, backend.baseUrl, backend.apiKey);
+  if (!up.up) {
+    step(ctx, `  the backend answered nothing on ${backend.baseUrl} within ${BACKEND_WAIT_MS / 1000} s of the restart (${up.detail ?? "no answer"})`);
+    return `the model path did not come back: no answer on ${backend.baseUrl} within ${BACKEND_WAIT_MS / 1000} s (${up.detail ?? "no answer"})`;
+  }
   const health = await probeModel({
     apiKey: backend.apiKey,
     baseUrl: backend.baseUrl,
@@ -11409,6 +11483,32 @@ async function installAndCheck(ctx, install, version, unit, backend, model) {
   });
   step(ctx, `  health: ${health.ok ? "\u2713" : "\u2717"} ${health.detail}`);
   return health.ok ? null : `the health check failed: ${health.detail}`;
+}
+var BACKEND_WAIT_MS = 60000;
+var BACKEND_POLL_FIRST_MS = 500;
+var BACKEND_POLL_MAX_MS = 5000;
+async function waitForBackend(ctx, baseUrl, apiKey, waitMs = BACKEND_WAIT_MS) {
+  const url = `${baseUrl}/v1/models`;
+  const deadline = ctx.now() + waitMs;
+  let pause = BACKEND_POLL_FIRST_MS;
+  let detail = "no answer";
+  for (;; ) {
+    try {
+      const response = await ctx.health(url, {
+        headers: { authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+        ...directIfLoopback(url)
+      });
+      await response.body?.cancel();
+      return { detail: null, up: true };
+    } catch (error) {
+      detail = messageOf(error);
+    }
+    if (ctx.now() >= deadline)
+      return { detail, up: false };
+    await ctx.sleep(Math.max(1, Math.min(pause, deadline - ctx.now())));
+    pause = Math.min(pause * 2, BACKEND_POLL_MAX_MS);
+  }
 }
 function askToRestart(ctx, yes, question) {
   if (yes)
@@ -11446,9 +11546,17 @@ ${USAGE2}`);
     return 1;
   }
   const facts = await omnirouteFacts(ctx);
-  if (facts.install === null) {
+  const install = facts.install;
+  if (install === null) {
     ctx.say(`${NAME} is not installed here (no global install found). Install it with: bun add -g ${PACKAGE2}`);
     return 1;
+  }
+  if (to !== null) {
+    const why = facts.registryError === null ? toRefusal(to, facts.releases) : `--to ${to} cannot be checked: the registry could not be read (${facts.registryError}).`;
+    if (why !== null) {
+      ctx.say(why);
+      return 1;
+    }
   }
   let target = to;
   if (target === null) {
@@ -11456,31 +11564,41 @@ ${USAGE2}`);
       ctx.say(`cannot read the newest release (${facts.registryError}).`);
       return 1;
     }
-    if (!releaseIsNewer(facts.install.version, facts.newest.version)) {
-      ctx.say(`${NAME} ${facts.install.version} is the newest release at least ${MIN_RELEASE_AGE_MS / 86400000} days old.`);
+    if (!releaseIsNewer(install.version, facts.newest.version)) {
+      ctx.say(`${NAME} ${install.version} is the newest release at least ${MIN_RELEASE_AGE_MS / 86400000} days old.`);
       return 0;
     }
     target = facts.newest.version;
   }
+  if (!installIsWritable(install)) {
+    ctx.say(`${NAME} is installed in ${tildify(install.folder, ctx.paths.home)}, which this user cannot write: the install would fail with a permission error, and nothing would change. Run it yourself, with the command that owns that folder:`);
+    ctx.say(`  sudo ${installArgv(install, target).join(" ")}`);
+    return 1;
+  }
   const unit = facts.unit === null ? null : facts.unit.name;
-  step(ctx, `${NAME} ${facts.install.version} \u2192 ${target}${unit === null ? "" : `, and ${unit} restarts`}.`);
+  step(ctx, `${NAME} ${install.version} \u2192 ${target}${unit === null ? "" : `, and ${unit} restarts`}.`);
   step(ctx, "While it restarts, the gateway's slots fall to their next target \u2014 Claude answers, on your own login. A new version that does not answer is put back.");
   if (!askToRestart(ctx, yes, `Install ${NAME} ${target} and restart?`))
     return 1;
-  writeState(stateFile(ctx.paths), {
-    previous: { at: new Date(ctx.now()).toISOString(), version: facts.install.version },
-    version: 1
+  return await withLock(ctx.paths.stateDir, async () => {
+    writeState(stateFile(ctx.paths), {
+      previous: { at: new Date(ctx.now()).toISOString(), version: install.version },
+      version: 1
+    });
+    const failure = await installAndCheck(ctx, install, target, facts.unit, facts.backend, facts.model);
+    if (failure === null) {
+      step(ctx, `${NAME} ${target} is running.`);
+      return 0;
+    }
+    step(ctx, `\u2717 ${failure}`);
+    step(ctx, `Putting ${install.version} back.`);
+    const back = await installAndCheck(ctx, install, install.version, facts.unit, facts.backend, facts.model);
+    step(ctx, back === null ? `${NAME} ${install.version} is running again.` : `\u2717 putting ${install.version} back failed too: ${back}. Look at: systemctl --user status ${unit ?? PACKAGE2}`);
+    return 1;
+  }, { waitMs: UPDATE_LOCK_WAIT_MS }).catch((error) => {
+    ctx.say(messageOf(error));
+    return 1;
   });
-  const failure = await installAndCheck(ctx, facts.install, target, facts.unit, facts.backend, facts.model);
-  if (failure === null) {
-    step(ctx, `${NAME} ${target} is running.`);
-    return 0;
-  }
-  step(ctx, `\u2717 ${failure}`);
-  step(ctx, `Putting ${facts.install.version} back.`);
-  const back = await installAndCheck(ctx, facts.install, facts.install.version, facts.unit, facts.backend, facts.model);
-  step(ctx, back === null ? `${NAME} ${facts.install.version} is running again.` : `\u2717 putting ${facts.install.version} back failed too: ${back}. Look at: systemctl --user status ${unit ?? PACKAGE2}`);
-  return 1;
 }
 async function commandRollback(ctx, rest) {
   const unknown = rest.filter((arg) => arg !== "--yes");
@@ -11495,7 +11613,8 @@ ${USAGE2}`);
     return 1;
   }
   const facts = await omnirouteFacts(ctx);
-  if (facts.install === null) {
+  const install = facts.install;
+  if (install === null) {
     ctx.say(`${NAME} is not installed here (no global install found).`);
     return 1;
   }
@@ -11504,20 +11623,30 @@ ${USAGE2}`);
     ctx.say(`no version recorded to go back to: ${COMMAND} omniroute update records the one it replaces.`);
     return 1;
   }
-  const warning = `${NAME} ${facts.install.version} \u2192 ${previous.version}${facts.unit === null ? "" : `, and ${facts.unit.name} restarts`}.`;
+  const warning = `${NAME} ${install.version} \u2192 ${previous.version}${facts.unit === null ? "" : `, and ${facts.unit.name} restarts`}.`;
   step(ctx, warning);
   step(ctx, "While it restarts, the gateway's slots fall to their next target \u2014 Claude answers, on your own login.");
   if (!askToRestart(ctx, rest.includes("--yes"), `Install ${NAME} ${previous.version} and restart?`)) {
     return 1;
   }
-  const failure = await installAndCheck(ctx, facts.install, previous.version, facts.unit, facts.backend, facts.model);
-  if (failure !== null) {
-    step(ctx, `\u2717 ${failure}`);
-    step(ctx, `The record of ${previous.version} is kept: fix the cause and run ${COMMAND} omniroute rollback again.`);
+  if (!installIsWritable(install)) {
+    ctx.say(`${NAME} is installed in ${tildify(install.folder, ctx.paths.home)}, which this user cannot write: the install would fail with a permission error, and nothing would change. Run it yourself, with the command that owns that folder:`);
+    ctx.say(`  sudo ${installArgv(install, previous.version).join(" ")}`);
     return 1;
   }
-  step(ctx, `${NAME} ${previous.version} is running. The record of it is kept, so this is now a no-op.`);
-  return 0;
+  return await withLock(ctx.paths.stateDir, async () => {
+    const failure = await installAndCheck(ctx, install, previous.version, facts.unit, facts.backend, facts.model);
+    if (failure !== null) {
+      step(ctx, `\u2717 ${failure}`);
+      step(ctx, `The record of ${previous.version} is kept: fix the cause and run ${COMMAND} omniroute rollback again.`);
+      return 1;
+    }
+    step(ctx, `${NAME} ${previous.version} is running. The record of it is kept, so this is now a no-op.`);
+    return 0;
+  }, { waitMs: UPDATE_LOCK_WAIT_MS }).catch((error) => {
+    ctx.say(messageOf(error));
+    return 1;
+  });
 }
 async function runOmniroute(args, ctx) {
   const [command, ...rest] = args;
@@ -11552,7 +11681,12 @@ ${USAGE2}`);
   return 2;
 }
 async function omnirouteDoctorLine(ctx) {
-  const found = findOmniroute({ env: ctx.env, paths: ctx.paths, which: ctx.which });
+  const found = findOmniroute({
+    env: ctx.env,
+    paths: ctx.paths,
+    systemFolders: ctx.systemFolders,
+    which: ctx.which
+  });
   if (found.install === null)
     return null;
   const newest = await newestRelease(PACKAGE2, ctx.now(), ctx.registry);
@@ -14022,7 +14156,7 @@ function appendAgentLaunch(file, launch) {
 `);
   } catch {}
 }
-function isJsonObject7(value) {
+function isJsonObject8(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function parseAgentLaunch(line) {
@@ -14032,7 +14166,7 @@ function parseAgentLaunch(line) {
   } catch {
     return null;
   }
-  if (!isJsonObject7(value))
+  if (!isJsonObject8(value))
     return null;
   const { at, family, model, project, reason, subagentType } = value;
   if (typeof at !== "number" || family !== "opus" && family !== "fable" || typeof model !== "string" || typeof reason !== "string") {
@@ -14081,7 +14215,7 @@ function formatAgentLaunches(launches) {
 // src/hooks/transcript.ts
 import { closeSync as closeSync3, fstatSync, openSync as openSync3, readSync } from "fs";
 var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
-function isJsonObject8(value) {
+function isJsonObject9(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function tailLines(transcriptPath) {
@@ -14114,7 +14248,7 @@ function* entriesFromEnd(lines) {
     } catch {
       continue;
     }
-    if (isJsonObject8(entry))
+    if (isJsonObject9(entry))
       yield entry;
   }
 }
@@ -14125,7 +14259,7 @@ function lastClaudeModel(transcriptPath) {
   for (const entry of entriesFromEnd(lines)) {
     if (entry.isSidechain === true)
       continue;
-    if (entry.type !== "assistant" || !isJsonObject8(entry.message))
+    if (entry.type !== "assistant" || !isJsonObject9(entry.message))
       continue;
     const model = entry.message.model;
     if (typeof model === "string" && model.startsWith("claude-"))
@@ -16902,7 +17036,7 @@ function checkPlugin(paths) {
 }
 function isExecutable(file) {
   try {
-    accessSync(file, constants.X_OK);
+    accessSync2(file, constants2.X_OK);
     return true;
   } catch {
     return false;
@@ -17115,16 +17249,16 @@ function checkNameClash(settings) {
 }
 var OLD_PLUGIN_ID = "cc@cc-agentic";
 var OLD_NAME2 = "cc-agentic";
-function isJsonObject9(value) {
+function isJsonObject10(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function hasEntry(data, field, key) {
   const node = field === null ? data : data?.[field];
-  return isJsonObject9(node) && Object.hasOwn(node, key);
+  return isJsonObject10(node) && Object.hasOwn(node, key);
 }
 function checkOldPlugin(settings, paths) {
   const plugins = settings?.enabledPlugins;
-  const enabled = isJsonObject9(plugins) && plugins[OLD_PLUGIN_ID] === true;
+  const enabled = isJsonObject10(plugins) && plugins[OLD_PLUGIN_ID] === true;
   if (!existsSync31(join29(paths.claudeConfigDir, OLD_NAME2))) {
     if (!enabled)
       return null;
@@ -17288,6 +17422,8 @@ async function omnirouteCheck(paths, env, gateway) {
     say: () => {
       return;
     },
+    sleep: (ms) => Bun.sleep(ms),
+    systemFolders: gateway.systemFolders,
     systemd: gateway.systemd,
     which: gateway.machine.which
   });
@@ -18748,15 +18884,15 @@ function printReport(report, nothing) {
 // src/cli/statusline.ts
 import { readFileSync as readFileSync36 } from "fs";
 var WARN_PERCENT = 85;
-function isJsonObject10(value) {
+function isJsonObject11(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function window(input, name) {
   const limits = input.rate_limits;
-  if (!isJsonObject10(limits))
+  if (!isJsonObject11(limits))
     return null;
   const entry = limits[name];
-  if (!isJsonObject10(entry) || typeof entry.used_percentage !== "number")
+  if (!isJsonObject11(entry) || typeof entry.used_percentage !== "number")
     return null;
   return {
     percent: entry.used_percentage,
@@ -18765,8 +18901,8 @@ function window(input, name) {
 }
 function statuslineText(input, state, nowMs, timeZone) {
   const parts = [];
-  const data = isJsonObject10(input) ? input : {};
-  const model = isJsonObject10(data.model) ? data.model.display_name : undefined;
+  const data = isJsonObject11(input) ? input : {};
+  const model = isJsonObject11(data.model) ? data.model.display_name : undefined;
   if (typeof model === "string" && model !== "")
     parts.push(model);
   const until = (resetsAt) => resetsAt === null ? "" : ` until ${formatClock(resetsAt, nowMs, timeZone)}`;
@@ -19014,7 +19150,7 @@ ${UPDATE_USAGE}`);
 // src/cli/usage.ts
 import { existsSync as existsSync36, readdirSync as readdirSync10, readFileSync as readFileSync38, statSync as statSync10 } from "fs";
 import { basename as basename6, join as join34, resolve as resolve6 } from "path";
-function isJsonObject11(value) {
+function isJsonObject12(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function entries(path) {
@@ -19063,11 +19199,11 @@ function readTranscript(path, sinceMs, sidechains) {
     } catch {
       continue;
     }
-    if (!isJsonObject11(entry))
+    if (!isJsonObject12(entry))
       continue;
     if (cwd === null && typeof entry.cwd === "string")
       cwd = entry.cwd;
-    if (entry.type !== "assistant" || !isJsonObject11(entry.message))
+    if (entry.type !== "assistant" || !isJsonObject12(entry.message))
       continue;
     if (!sidechains && entry.isSidechain === true)
       continue;
@@ -19126,7 +19262,7 @@ function collectUsage(projectsDir, options) {
         const meta = readJson2(join34(subagents, name));
         usage.cwd ??= cwd;
         usage.subagents += 1;
-        const launched = isJsonObject11(meta) && typeof meta.model === "string" ? meta.model : "inherited";
+        const launched = isJsonObject12(meta) && typeof meta.model === "string" ? meta.model : "inherited";
         usage.launched[launched] = (usage.launched[launched] ?? 0) + 1;
         count(usage.replies, replies);
       }
@@ -19236,7 +19372,7 @@ Usage: cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>]`);
 // src/hooks/stop-failure.ts
 var STATE_FRESH_MS = 2 * 60000;
 var ALERT_WORKER_COMMAND = "alert-worker";
-function isJsonObject12(value) {
+function isJsonObject13(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 var spawnRunner = ({ argv, timeoutMs }) => {
@@ -19259,13 +19395,13 @@ function parseAlert(text) {
   } catch {
     return null;
   }
-  if (!isJsonObject12(raw) || typeof raw.title !== "string" || typeof raw.body !== "string") {
+  if (!isJsonObject13(raw) || typeof raw.title !== "string" || typeof raw.body !== "string") {
     return null;
   }
   const action = raw.action;
   if (action === null)
     return { action: null, body: raw.body, title: raw.title };
-  if (!isJsonObject12(action) || typeof action.label !== "string" || !Array.isArray(action.args) || !action.args.every((arg) => typeof arg === "string")) {
+  if (!isJsonObject13(action) || typeof action.label !== "string" || !Array.isArray(action.args) || !action.args.every((arg) => typeof arg === "string")) {
     return null;
   }
   return {
@@ -19433,7 +19569,7 @@ function loadJobsConfig(file) {
 // src/jobs/launch.ts
 import { spawn, spawnSync } from "child_process";
 import { existsSync as existsSync38 } from "fs";
-import { constants as constants2 } from "os";
+import { constants as constants3 } from "os";
 
 // src/jobs/memory.ts
 import { readFileSync as readFileSync41 } from "fs";
@@ -19611,7 +19747,7 @@ function exitCodeOf(code, signal) {
     return code;
   if (signal === null)
     return 1;
-  const number = constants2.signals[signal];
+  const number = constants3.signals[signal];
   return 128 + (number ?? 0);
 }
 function memoryEvent(memoryEvents, key) {
@@ -21002,6 +21138,7 @@ function realMachine(env, confirm2) {
 
 // src/portal/command.ts
 import { existsSync as existsSync41, readFileSync as readFileSync44 } from "fs";
+import { join as join37 } from "path";
 var DEFAULT_PORTAL_PORT = 20150;
 var PORTAL_USAGE = `Usage: ${COMMAND} portal [--port <port>] [--no-open]
 
@@ -21014,14 +21151,22 @@ the updates, the heavy-job queue and the companions. It binds 127.0.0.1 only.
 It prints a link with a one-time token, and stops after 30 minutes with no request. It
 refuses to run inside a Claude Code session: run it in your own terminal, and never open it
 in the browser Claude drives.`;
-function parsePortalArgs(args) {
+function parseArgs(args, allowPluginDir) {
   let noOpen = false;
+  let pluginDir = null;
   let port = DEFAULT_PORTAL_PORT;
   for (let index = 0;index < args.length; index += 1) {
     const arg = args[index] ?? "";
     if (arg === "--no-open")
       noOpen = true;
-    else if (arg === "--port") {
+    else if (arg === "--plugin-dir" && allowPluginDir) {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        return { error: "--plugin-dir needs a folder" };
+      }
+      pluginDir = value;
+      index += 1;
+    } else if (arg === "--port") {
       const value = args[index + 1];
       if (value === undefined || value.startsWith("--"))
         return { error: "--port needs a port" };
@@ -21033,7 +21178,11 @@ function parsePortalArgs(args) {
     } else
       return { error: `Unknown option: ${arg}` };
   }
-  return { noOpen, port };
+  return { noOpen, pluginDir, port };
+}
+function parsePortalArgs(args) {
+  const parsed = parseArgs(args, false);
+  return "error" in parsed ? parsed : { noOpen: parsed.noOpen, port: parsed.port };
 }
 function portalCopy(paths) {
   return paths.portalCopy;
@@ -21054,16 +21203,17 @@ function runPortal(ctx, args) {
 ${PORTAL_USAGE}`);
     return 2;
   }
-  if (!existsSync41(ctx.bundle)) {
-    ctx.error(`the portal bundle is missing (${ctx.bundle}). This install is incomplete: run ${COMMAND} doctor, then reinstall the plugin.`);
+  const bundle = join37(ctx.pluginDir, "dist", "portal.js");
+  if (!existsSync41(bundle)) {
+    ctx.error(`the portal bundle is missing (${bundle}). This install is incomplete: run ${COMMAND} doctor, then reinstall the plugin.`);
     return 1;
   }
   const copy = portalCopy(ctx.paths);
-  writeManagedFile(copy, readFileSync44(ctx.bundle, "utf8"), {
+  writeManagedFile(copy, readFileSync44(bundle, "utf8"), {
     kind: "whole-file",
     stateDir: ctx.paths.stateDir
   });
-  const argv = [ctx.bunPath, copy, "--port", String(options.port)];
+  const argv = [ctx.bunPath, copy, "--plugin-dir", ctx.pluginDir, "--port", String(options.port)];
   if (options.noOpen)
     argv.push("--no-open");
   return ctx.runChild(argv, { cwd: process.cwd(), env: ctx.env });
@@ -21075,14 +21225,14 @@ import { existsSync as existsSync42 } from "fs";
 // src/search/client.ts
 var REQUEST_TIMEOUT_MS = 30000;
 var ERROR_CHARS = 300;
-function isJsonObject13(value) {
+function isJsonObject14(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function textOf(value) {
   return typeof value === "string" ? value : "";
 }
 function numberIn(holder, key) {
-  if (!isJsonObject13(holder))
+  if (!isJsonObject14(holder))
     return null;
   const value = holder[key];
   return typeof value === "number" ? value : null;
@@ -21100,9 +21250,9 @@ function reasonOf(text, backend) {
   let reason = text;
   try {
     const body = JSON.parse(text);
-    if (isJsonObject13(body)) {
+    if (isJsonObject14(body)) {
       const error = body.error;
-      if (isJsonObject13(error) && typeof error.message === "string")
+      if (isJsonObject14(error) && typeof error.message === "string")
         reason = error.message;
       else if (typeof error === "string")
         reason = error;
@@ -21159,11 +21309,11 @@ async function post(backend, path, body, timeoutMs) {
   }
 }
 function parseSearchAnswer(body) {
-  if (!isJsonObject13(body) || !Array.isArray(body.results))
+  if (!isJsonObject14(body) || !Array.isArray(body.results))
     return null;
   const results = [];
   for (const entry of body.results) {
-    if (!isJsonObject13(entry) || typeof entry.url !== "string")
+    if (!isJsonObject14(entry) || typeof entry.url !== "string")
       continue;
     results.push({ snippet: textOf(entry.snippet), title: textOf(entry.title), url: entry.url });
   }
@@ -21178,13 +21328,13 @@ function parseSearchAnswer(body) {
   };
 }
 function parseFetchedPage(body, requested) {
-  if (!isJsonObject13(body) || typeof body.content !== "string")
+  if (!isJsonObject14(body) || typeof body.content !== "string")
     return null;
   const metadata = body.metadata;
   const url = textOf(body.url);
   return {
     content: body.content,
-    title: isJsonObject13(metadata) ? textOf(metadata.title) : "",
+    title: isJsonObject14(metadata) ? textOf(metadata.title) : "",
     url: url === "" ? requested : url
   };
 }
@@ -21194,7 +21344,7 @@ async function searchWeb(options) {
     return sent;
   const answer = parseSearchAnswer(sent.raw);
   if (answer === null) {
-    const listed = isJsonObject13(sent.raw) && Array.isArray(sent.raw.results);
+    const listed = isJsonObject14(sent.raw) && Array.isArray(sent.raw.results);
     return {
       error: listed ? "OmniRoute's results have no url this version can read; they are not a shape this version knows" : "OmniRoute's answer has no results list; it is not a shape this version knows"
     };
@@ -21513,11 +21663,11 @@ The worktree engine is opt-in per project. To turn it on in a project, give its
 
 ${projectHookSettingsText()}`;
 function routerBundle() {
-  const beside = join37(import.meta.dir, "router.js");
-  return existsSync43(beside) ? beside : join37(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
+  const beside = join38(import.meta.dir, "router.js");
+  return existsSync43(beside) ? beside : join38(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
 }
 function pluginDir() {
-  return basename7(import.meta.dir) === "dist" ? dirname12(import.meta.dir) : join37(import.meta.dir, "..", "..", "plugin");
+  return basename7(import.meta.dir) === "dist" ? dirname12(import.meta.dir) : join38(import.meta.dir, "..", "..", "plugin");
 }
 var liveRunner = (argv, { cwd, env, timeoutMs }) => {
   try {
@@ -21571,6 +21721,7 @@ function omnirouteContext(paths) {
     registry: (url, init) => fetch(url, init),
     runner,
     say: (line) => console.log(line),
+    sleep: (ms) => Bun.sleep(ms),
     systemd,
     which: (command) => Bun.which(command, { PATH: process.env.PATH ?? "" })
   };
@@ -21658,7 +21809,7 @@ ${HELP}`);
         console.error(`Usage: cc-smart-dev-kit ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
         return 2;
       }
-      const launcher = join37(paths.binDir, LAUNCHER_NAME);
+      const launcher = join38(paths.binDir, LAUNCHER_NAME);
       if (runAlert(alert, process.platform, launcher, spawnRunner) === "no notifier") {
         console.error(`cc-smart-dev-kit: ${alert.title}. ${alert.body}`);
       }
@@ -21681,7 +21832,7 @@ ${HELP}`);
           machine: realMachine(process.env, null)
         },
         local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
-        project: { cwd: process.cwd(), pluginHooksFile: join37(pluginDir(), "hooks", "hooks.json") },
+        project: { cwd: process.cwd(), pluginHooksFile: join38(pluginDir(), "hooks", "hooks.json") },
         live: rest.includes("--live") ? {
           pluginDir: pluginDir(),
           hookCommand: liveHookCommand(pluginDir(), process.execPath),
@@ -21764,10 +21915,10 @@ ${HELP}`);
     case "portal":
       return runPortal({
         bunPath: process.execPath,
-        bundle: join37(pluginDir(), "dist", "portal.js"),
         env: process.env,
         error: (line) => console.error(line),
         paths,
+        pluginDir: pluginDir(),
         runChild: (argv, options) => {
           try {
             return Bun.spawnSync(argv, {

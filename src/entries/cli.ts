@@ -229,6 +229,7 @@ function omnirouteContext(paths: ReturnType<typeof cliPaths>) {
     registry: (url: string, init: RequestInit) => fetch(url, init),
     runner,
     say: (line: string) => console.log(line),
+    sleep: (ms: number) => Bun.sleep(ms),
     systemd,
     which: (command: string) => Bun.which(command, { PATH: process.env.PATH ?? "" }),
   };
@@ -420,13 +421,16 @@ async function main(argv: string[]): Promise<number> {
       return runPortal(
         {
           bunPath: process.execPath,
-          bundle: join(pluginDir(), "dist", "portal.js"),
           env: process.env,
           error: (line) => console.error(line),
           paths,
+          // The child runs from a copy, where none of the plugin's other files are: it is told
+          // this folder (`--plugin-dir`), and resolves each file from the installed version.
+          pluginDir: pluginDir(),
           runChild: (argv, options) => {
             // The child owns the terminal while it runs: the link is printed where the person
-            // is looking, and Ctrl+C reaches both through the same process group.
+            // is looking, and Ctrl+C reaches both through the same process group. Its exit
+            // code is this command's — 130 when Ctrl+C ended it.
             try {
               return (
                 Bun.spawnSync(argv, {

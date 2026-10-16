@@ -5,7 +5,9 @@
  *
  * It builds the real context, starts the server, prints the one-time link, opens the person's
  * own browser (unless `--no-open`), and waits: the idle clock (`session.ts`) or Ctrl+C ends
- * it. Ctrl+C reaches this process with its parent, so the parent's exit code is this one's.
+ * it. Ctrl+C reaches this process with its parent (one process group), and the parent returns
+ * this process's exit code (`runChild` gives back what the child exited with) — 130, the code
+ * for "ended by SIGINT", never 0.
  *
  * The only command that may run this is `cc-smart-dev-kit portal`, which refuses inside a
  * Claude Code session. The refusal is repeated here, because a copy can be run by hand: the
@@ -17,18 +19,23 @@
 
 import { join } from "node:path";
 import { VERSION } from "../build-info";
+import type { DoctorOptions } from "../cli/doctor";
 import { cliPaths, tildify } from "../cli/paths";
 import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
 import { realMachine } from "../machine/machine";
-import { claudeCodeRefusal, PORTAL_USAGE, parsePortalArgs } from "../portal/command";
+import { claudeCodeRefusal, PORTAL_USAGE, parsePortalChildArgs } from "../portal/command";
 import type { PortalContext } from "../portal/context";
+import { resolvePluginFolder } from "../portal/plugin-folder";
 import { startPortal } from "../portal/server";
 import { IDLE_MS } from "../portal/session";
 import { instructionsFolder } from "../setup/instructions";
 
 /** How long a command may take; `claude plugin` alone may clone for a while. */
 const RUN_TIMEOUT_MS = 300_000;
+
+/** Ctrl+C: 130, the shell's own code for "ended by SIGINT" (128 + 2). Not 0: the run did not finish. */
+const SIGINT_EXIT = 130;
 
 const runner: Runner = (cmd) => {
   try {
@@ -66,15 +73,11 @@ function openBrowser(
   }
 }
 
-/** The plugin's own folder: `plugin/`, beside `dist/`, or the repo's when run from source. */
-function pluginDir(): string {
+/** The plugin's own folder beside this bundle: `plugin/`, beside `dist/`, or the repo's when run from source. */
+function besideThisBundle(): string {
   return import.meta.dir.endsWith("/dist")
     ? join(import.meta.dir, "..")
     : join(import.meta.dir, "..", "..", "plugin");
-}
-
-function distFile(name: string): string {
-  return join(pluginDir(), "dist", name);
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -83,7 +86,7 @@ async function main(argv: string[]): Promise<number> {
     console.error(refusal);
     return 1;
   }
-  const options = parsePortalArgs(argv);
+  const options = parsePortalChildArgs(argv);
   if ("error" in options) {
     console.error(`${options.error}\n\n${PORTAL_USAGE}`);
     return 2;
@@ -91,39 +94,53 @@ async function main(argv: string[]): Promise<number> {
   const paths = cliPaths();
   const which = (name: string): null | string => Bun.which(name, { PATH: process.env.PATH ?? "" });
   const machine = realMachine(process.env, null);
+  /** Where the plugin's files are now: the installed version, else the folder the parent passed. */
+  const fallback = options.pluginDir ?? besideThisBundle();
   const ctx: PortalContext = {
     bunVersion: Bun.version,
-    bundle: distFile("portal.js"),
     env: process.env,
     fetch: (url, init) => fetch(url, init),
-    instructionsSource: instructionsFolder(join(pluginDir(), "dist")),
     machine,
     now: () => Date.now(),
     openBrowser: (url) => openBrowser(process.platform, url, which),
     paths,
+    pluginFolder: () => resolvePluginFolder(paths.installedPluginsFile, fallback),
     probe: realProbe(),
-    routerBundle: distFile("router.js"),
     runner,
     systemd: process.platform === "linux" && which("systemctl") !== null,
     which,
   };
+  /**
+   * The doctor pass, built from the plugin's folder as it is **now**: this process runs from a
+   * copy in `~/.local/share/`, so a path made here at startup points into a version folder Claude
+   * Code may delete during the run. `{ error }` in words when there is no folder left at all.
+   */
+  const doctor = (): DoctorOptions | { error: string } => {
+    const found = ctx.pluginFolder();
+    if ("error" in found) return found;
+    const { folder } = found;
+    return {
+      bun: { path: process.execPath, version: Bun.version },
+      gateway: {
+        bundle: join(folder, "dist", "router.js"),
+        machine,
+        runner,
+        systemd: ctx.systemd,
+      },
+      live: null,
+      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join(folder, "dist")) },
+      project: { cwd: process.cwd(), pluginHooksFile: join(folder, "hooks", "hooks.json") },
+    };
+  };
 
   const portal = await startPortal(ctx, {
     cwd: process.cwd(),
-    doctor: {
-      bun: { path: process.execPath, version: Bun.version },
-      gateway: { bundle: ctx.routerBundle, machine, runner, systemd: ctx.systemd },
-      live: null,
-      local: { cwd: process.cwd(), instructionsSource: ctx.instructionsSource },
-      project: { cwd: process.cwd(), pluginHooksFile: join(pluginDir(), "hooks", "hooks.json") },
-    },
+    doctor,
     port: options.port,
   });
 
   console.log(`cc-smart-dev-kit portal ${VERSION} — for you, not for Claude.`);
-  console.log(
-    `Running from ${tildify(join(paths.home, ".local/share/cc-smart-dev-kit/portal.js"), paths.home)}.`,
-  );
+  console.log(`Running from ${tildify(import.meta.path, paths.home)}.`);
   console.log("");
   console.log(`  ${portal.url}`);
   console.log("");
@@ -142,7 +159,7 @@ async function main(argv: string[]): Promise<number> {
   return 0;
 }
 
-process.on("SIGINT", () => process.exit(0));
+process.on("SIGINT", () => process.exit(SIGINT_EXIT));
 
 try {
   process.exitCode = await main(process.argv.slice(2));

@@ -13,6 +13,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { COMMAND } from "../build-info";
 import type { CliPaths } from "../cli/paths";
 import { writeManagedFile } from "../setup/write";
@@ -32,16 +33,37 @@ It prints a link with a one-time token, and stops after 30 minutes with no reque
 refuses to run inside a Claude Code session: run it in your own terminal, and never open it
 in the browser Claude drives.`;
 
-/** Parses the command's own options; the wrong one in words, so the line can name it. */
-export function parsePortalArgs(
+/** What the portal's own options are, parsed: `pluginDir` only for the child (below). */
+interface PortalArgs {
+  noOpen: boolean;
+  /** The plugin folder the parent passed; null when a person ran the copy by hand. */
+  pluginDir: null | string;
+  port: number;
+}
+
+/**
+ * Parses the options, one loop for the parent and the child. `--plugin-dir` is the parent's own:
+ * a person typing it at `cc-smart-dev-kit portal` gets "Unknown option", because pointing the
+ * portal at another folder would let it install that folder's router bundle.
+ */
+function parseArgs(
   args: readonly string[],
-): { noOpen: boolean; port: number } | { error: string } {
+  allowPluginDir: boolean,
+): PortalArgs | { error: string } {
   let noOpen = false;
+  let pluginDir: null | string = null;
   let port = DEFAULT_PORTAL_PORT;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? "";
     if (arg === "--no-open") noOpen = true;
-    else if (arg === "--port") {
+    else if (arg === "--plugin-dir" && allowPluginDir) {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        return { error: "--plugin-dir needs a folder" };
+      }
+      pluginDir = value;
+      index += 1;
+    } else if (arg === "--port") {
       const value = args[index + 1];
       if (value === undefined || value.startsWith("--")) return { error: "--port needs a port" };
       if (!/^\d{1,5}$/.test(value) || Number(value) > 65_535) {
@@ -51,7 +73,26 @@ export function parsePortalArgs(
       index += 1;
     } else return { error: `Unknown option: ${arg}` };
   }
-  return { noOpen, port };
+  return { noOpen, pluginDir, port };
+}
+
+/** Parses the command's own options; the wrong one in words, so the line can name it. */
+export function parsePortalArgs(
+  args: readonly string[],
+): { noOpen: boolean; port: number } | { error: string } {
+  const parsed = parseArgs(args, false);
+  return "error" in parsed ? parsed : { noOpen: parsed.noOpen, port: parsed.port };
+}
+
+/**
+ * Parses the child's options: the person's own, plus `--plugin-dir <folder>`, which the parent
+ * passes so the child can resolve the plugin's files (it runs from a copy, where none of them
+ * are). Run by hand with no `--plugin-dir`, the child falls back to the folder it sits in.
+ */
+export function parsePortalChildArgs(
+  args: readonly string[],
+): { noOpen: boolean; pluginDir: null | string; port: number } | { error: string } {
+  return parseArgs(args, true);
 }
 
 /** The copy the portal runs from: the plugin deletes the version folder it was built in. */
@@ -71,8 +112,8 @@ export function claudeCodeRefusal(env: Record<string, string | undefined>): null
 
 /** What `runPortal` needs from outside; a test passes its own. */
 export interface PortalCommandContext {
-  /** The plugin's own `dist/portal.js`: the copy is made from it. */
-  bundle: string;
+  /** The plugin's own folder: `plugin/` beside `dist/`, or the repo's when run from source. */
+  pluginDir: string;
   env: Record<string, string | undefined>;
   /** Where a refusal goes: `console.error` in use, a collector in a test. */
   error: (line: string) => void;
@@ -89,6 +130,10 @@ export interface PortalCommandContext {
 /**
  * `cc-smart-dev-kit portal [--port] [--no-open]`; the exit code. It copies the portal bundle,
  * starts it in a child, and waits — the child owns the terminal while it runs.
+ *
+ * The child runs from `~/.local/share/cc-smart-dev-kit/portal.js`, where none of the plugin's
+ * other files are, so it is told this command's own plugin folder (`--plugin-dir`): the child
+ * resolves each file from the *current* installed version and falls back to that folder.
  */
 export function runPortal(ctx: PortalCommandContext, args: readonly string[]): number {
   const refusal = claudeCodeRefusal(ctx.env);
@@ -101,21 +146,22 @@ export function runPortal(ctx: PortalCommandContext, args: readonly string[]): n
     ctx.error(`${options.error}\n\n${PORTAL_USAGE}`);
     return 2;
   }
-  if (!existsSync(ctx.bundle)) {
+  const bundle = join(ctx.pluginDir, "dist", "portal.js");
+  if (!existsSync(bundle)) {
     ctx.error(
-      `the portal bundle is missing (${ctx.bundle}). This install is incomplete: run ${COMMAND} doctor, then reinstall the plugin.`,
+      `the portal bundle is missing (${bundle}). This install is incomplete: run ${COMMAND} doctor, then reinstall the plugin.`,
     );
     return 1;
   }
   // The copy goes through `src/setup/`, so `restore` removes it like the router's own copy.
   // It is written only when it differs, so a second start writes nothing.
   const copy = portalCopy(ctx.paths);
-  writeManagedFile(copy, readFileSync(ctx.bundle, "utf8"), {
+  writeManagedFile(copy, readFileSync(bundle, "utf8"), {
     kind: "whole-file",
     stateDir: ctx.paths.stateDir,
   });
   // The child holds this terminal's environment, so it reads the same paths this command did.
-  const argv = [ctx.bunPath, copy, "--port", String(options.port)];
+  const argv = [ctx.bunPath, copy, "--plugin-dir", ctx.pluginDir, "--port", String(options.port)];
   if (options.noOpen) argv.push("--no-open");
   return ctx.runChild(argv, { cwd: process.cwd(), env: ctx.env });
 }

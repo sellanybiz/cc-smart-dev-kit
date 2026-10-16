@@ -404,10 +404,17 @@ cc-smart-dev-kit omniroute rollback   # put back what the last update replaced
 
 - **Three days.** `status` and `update` read the npm registry
   (`https://registry.npmjs.org/omniroute`) and take the newest plain `x.y.z` release
-  published at least three days ago. A canary, a version published this morning, or a
-  version the registry has no time for, is never installed. A release that reaches a machine
-  the hour it is published reaches it before anyone else has run it — and OmniRoute is the
-  model path of every affordable slot here ([docs/design.md](docs/design.md) § OmniRoute).
+  published at least three days ago. A canary, a version published this morning, a version
+  the registry has no time for, and a version npm marks deprecated, are never installed. A
+  release that reaches a machine the hour it is published reaches it before anyone else has
+  run it — and OmniRoute is the model path of every affordable slot here
+  ([docs/design.md](docs/design.md) § OmniRoute).
+- **`--to <version>` follows the same rule.** It installs one release instead of the newest,
+  and only when it is a plain `x.y.z` the registry lists and that is at least three days old.
+  A version published this morning, a canary tag, a `https://…` tarball and a `github:…` spec
+  are all refused in words, and nothing is installed: `bun add --global omniroute@<spec>`
+  would otherwise take whatever npm resolved the spec to. The portal never passes `--to` at
+  all — its card offers the newest release alone.
 - **Nothing about one machine is written into the plugin.** The user unit that runs it is
   found by looking for the one whose `ExecStart` runs it, and the install is found from that
   command line (walking up to the package's own manifest); with no unit, the global install
@@ -417,18 +424,27 @@ cc-smart-dev-kit omniroute rollback   # put back what the last update replaced
 - **The update restarts it.** The confirmation says what that costs: while the unit comes
   back, the gateway's slots fall to their next target, and the last target of both shipped
   slots is Claude — so work goes on, on your own Claude login, and not on an affordable model.
-- **A version that does not answer is put back**, and the failure is said: the health check
-  reads `/v1/models` with the backend's key (a 401 there is named as the key, not the
-  version) and then sends one tiny chat to the first affordable target of the scout slot. The
-  prompt is a fixed word of the plugin's own; nothing from a conversation, this machine or
-  you is sent. When the check fails, the old version is installed again and the unit
-  restarted, then the reason is printed.
+- **A version that does not answer is put back**, and the failure is said: after the restart
+  the check waits up to a minute — with a growing pause between tries — for `/v1/models` to
+  answer at all, because `systemctl --user restart` returns before OmniRoute listens and a
+  good release must not be rolled back for being slow. Then it reads `/v1/models` with the
+  backend's key (a 401 there is named as the key, not the version) and sends one tiny chat to
+  the first affordable target of the scout slot. The prompt is a fixed word of the plugin's
+  own; nothing from a conversation, this machine or you is sent. When the check fails, the old
+  version is installed again, restarted, and waited for the same way, then the reason is
+  printed.
 - **`rollback`** installs the version the last update replaced, recorded in
   `~/.claude/cc-smart-dev-kit/omniroute.json` before the install. It keeps that record, so a
   second rollback is a no-op rather than a bounce.
 - **Never in the background, and never inside a Claude Code session.** It restarts a service
   that answers real requests, so a person runs it, watches it and reads what failed; and a
-  session must not move its own model path mid-turn.
+  session must not move its own model path mid-turn. `update` and `rollback` hold the same
+  lock the rest of the kit uses, around the record, the install, the restart and the health
+  check: a second run waits for the first, and says who holds it when the wait runs out.
+- **A folder this user cannot write is refused before anything runs.** A global install under
+  a root-owned prefix (`npm i -g` as root, a package in `/usr/lib/node_modules`) would fail
+  with a permission error halfway through, and the put-back would "fail" the same way though
+  nothing had changed. The command to copy is printed instead; `sudo` is never run.
 - **`doctor`** shows one `·` line when a newer release has been out for three days. Never a
   failure: when to update is your choice.
 
@@ -480,30 +496,42 @@ Five screens, each following the design the owner approved (2026-10-16):
 | Screen | What it shows |
 |---|---|
 | **Overview** | The plan limits the router saw and the slots answering from a fallback; every slot's chain; the three switches (the gateway, your own judge, the opus and fable fallback); the latest warnings. |
-| **Slots** | A chain per slot, built from the backends' live model lists. **Test each target** — one tiny chat to each affordable model, and the force-push test for a judge — then **Save**, after a confirmation that every running Claude session uses it from its next request. |
-| **Health** | The router's counters, each backend and whether it answers, the targets resting, and its journal. Looks again every five seconds (Pause stops that). |
-| **Machine** | Updates (installed, newest, last check, on hold, check now, install), the heavy-job queue, the companion plugins, the OmniRoute card, `doctor` (run again), and the project's auto-mode rules. |
+| **Slots** | A chain per slot, built from the backends' live model lists. **Test each target** — one tiny chat to each affordable model, and the force-push test for a judge — then **Save**, after a confirmation that every running Claude session uses it from its next request. Save is held off for the **judge** slot until every backend target has blocked the force-push test; the command line's own rule, said in the judge note. |
+| **Health** | The router's counters, each backend and whether it answers, the targets resting, and its journal. Looks again every five seconds (Pause stops that, and a hidden tab is not reloaded at all); a look of its own does not count as activity, so an open Health tab cannot hold the portal up. |
+| **Machine** | Updates (installed, newest, last check, on hold, check now, install), the heavy-job queue, the companion plugins, the OmniRoute card, `doctor` (run again), the project's auto-mode rules, and the **Warp card**, which shows the install and remove commands to copy. |
 | **How this page stays private** | The security design in plain words, linked from the footer. |
 
 **Everything it does is real**, and every action runs the same function the command line
 runs — the same checks, the same lock, the same words (`docs/design.md` § The portal). What
-needs `sudo` is not run: installing or removing the Warp app is shown as a command to copy.
+needs `sudo` is not run: the Machine page's Warp card shows `cc-smart-dev-kit setup --warp`
+and `--remove-warp` as commands to copy, and never runs them.
 Writing the auto-mode trust rules needs an explicit confirmation on the page, which stands in
 for the terminal question the command line asks.
 
 **How it stays private.** It binds `127.0.0.1` and nothing else; the `Host` header must be
 exactly `127.0.0.1:<port>` or `localhost:<port>` (that is where a DNS-rebinding page stops);
 a foreign `Origin` is refused; the one-time token in the link is exchanged on the first load
-for an `HttpOnly`, `SameSite=Strict` session cookie, and the URL is cleaned; a change (a
-POST) must carry an `Origin` of ours **and** the CSRF token that came with the page. A strict
+for an `HttpOnly`, `SameSite=Strict` session cookie whose name carries the portal's own port
+(`ccsdk_portal_<port>` — a cookie has no port, and a browser sends every `127.0.0.1` cookie to
+every port on it, so two portals on two ports hold their own sessions), and the URL is cleaned;
+a change (a POST) must carry an `Origin` of ours **and** the CSRF token that came with the
+page. A GET that is the person's own but holds no session (a link already used, a cookie from
+a portal that stopped) gets the page that says so, in 403, and it holds no fact about the
+machine; a `Host` or `Origin` that is not ours stays the one word, "Forbidden". A strict
 `Content-Security-Policy` allows no inline script and nothing from the internet — no web
-font, no CDN. A backend key never reaches the page: it shows as `omni_…a1b2`. And the portal
+font, no CDN. A backend key never reaches the page: it shows as `••••a1b2`, its last four
+characters and nothing else (`maskKey`). And the portal
 stops itself after 30 minutes with no request, so a page left open on an unlocked screen does
 not stay a way in.
 
 It runs from a copy in `~/.local/share/cc-smart-dev-kit/portal.js`, never from the plugin's
 version folder: Claude Code deletes an old version folder some time after an update, even
 under a running process. The copy is a managed file, so `cc-smart-dev-kit restore` removes it.
+Because the copy sits outside the plugin, the parent tells it where the plugin is
+(`--plugin-dir`), and every file it needs — the router bundle a restart installs, the
+instructions, `hooks/hooks.json` — is resolved from the version Claude Code records as
+installed **at the moment it is needed**; a folder a later update deleted is named in words
+instead of failing, and a version folder that vanished during a long run is not used again.
 
 ## Instructions, skills and agents
 

@@ -31,6 +31,7 @@ import type {
   RouterFacts,
   SlotRow,
   SwitchFacts,
+  WarpRow,
 } from "./facts";
 import { barePage, command, escapeHtml, layout, type Shell, switchButton } from "./page";
 
@@ -273,7 +274,8 @@ export function slotsPage(shell: Shell, data: SlotsData): string {
 <div class="notice" data-judge-note ${first?.name === "judge" ? "" : "hidden"}>
 <div class="col g4">
 <span class="bold">The force-push test. There is no skip.</span>
-<span>Each target is asked to judge <code>git push --force origin main</code>. Only a target that blocks it can be saved.</span>
+<span>Each backend target is asked to judge <code>git push --force origin main</code>; a target that does not block it cannot be saved, and Save stays off until every one of them shows blocked ✓.</span>
+<span class="small">A <code>claude-…</code> target is allowed here, exactly as the command line allows it, and it is never used as a judge: the router uses a judge target only after that test, and a Claude target cannot be tested from this page. Another slot has no such rule — Save is on there, and the same checks run when it saves.</span>
 </div>
 </div>
 
@@ -285,7 +287,6 @@ export function slotsPage(shell: Shell, data: SlotsData): string {
 <div class="row">
 <button type="button" class="btn primary" data-test>Test each target</button>
 <button type="button" class="btn strong" data-save>Save</button>
-<span class="small warncolor">Save stays off until every judge target shows blocked ✓.</span>
 </div>
 
 <div class="confirmbox" data-confirm-save hidden>
@@ -362,7 +363,7 @@ ${backend.state === "answers" ? '<span class="ok">✓ answering</span>' : '<span
       ? ""
       : `<section class="card bad">
 <h2 class="badmark">✗ The router is not answering</h2>
-<p class="muted">Nothing came back from 127.0.0.1:${data.router.port} (${escapeHtml(data.router.why ?? "no answer")}). Subagents on the cheap slots may fail until it is back. Check it in a terminal:</p>
+<p class="muted">Nothing came back from 127.0.0.1:${data.router.port} (${escapeHtml(data.router.why ?? "no answer")}). Subagents on the affordable slots may fail until it is back. Check it in a terminal:</p>
 ${command(`systemctl --user status ${ROUTER}`, "Copy the status command")}
 ${command(`journalctl --user -u ${ROUTER} -f`, "Copy the log command")}
 <div class="row"><button type="button" class="btn primary" data-action="router.restart" data-confirm="A restart lets the answers in flight finish first (up to 120 s). New requests wait in its socket meanwhile; none fails. Continue?" data-reload>Restart the router</button></div>
@@ -433,6 +434,7 @@ export interface MachineData {
   jobs: null | { error: string; lines: string[] };
   omniroute: OmnirouteRow;
   updates: UpdateFacts;
+  warp: WarpRow;
 }
 
 function clockFrom(ms: number): string {
@@ -469,8 +471,8 @@ ${
 
 export function machinePage(shell: Shell, data: MachineData): string {
   const omniroute = data.omniroute;
-  const install = omniroute.facts.install;
-  const previous = omniroute.facts.state.previous;
+  const install = omniroute.install;
+  const previous = omniroute.previous;
   const omnirouteCard = `<section class="card pad">
 <div class="spread"><h2>OmniRoute</h2><code class="small">${COMMAND} omniroute status</code></div>
 ${
@@ -482,7 +484,7 @@ ${
 <div class="item"><span class="label">Unit</span><span class="value mono">${omniroute.unit === null ? "(none)" : escapeHtml(omniroute.unit)}</span></div>
 <div class="item"><span class="label">Backend</span><span class="value mono small">${omniroute.backend === null ? "(none in the config)" : escapeHtml(omniroute.backend)}</span></div>
 </div>
-${omniroute.facts.registryError === null ? "" : `<p class="notice">The npm registry could not be read: ${escapeHtml(omniroute.facts.registryError)}</p>`}
+${omniroute.registryError === null ? "" : `<p class="notice">The npm registry could not be read: ${escapeHtml(omniroute.registryError)}</p>`}
 <p class="muted">The update restarts it, so the gateway's slots fall to their next target while it comes back: Claude answers, on your own login. A version that does not answer is put back.</p>
 <div class="row">
 <button type="button" class="btn primary" data-action="omniroute.update" data-confirm="Install the newest release and restart the model path? While it restarts, the gateway's slots fall to their next target — Claude answers, on your own login." data-reload>${omniroute.state === "behind" ? `Update to ${escapeHtml(omniroute.newestVersion ?? "")}` : "Update"}</button>
@@ -574,6 +576,14 @@ ${jobsCard}
 <div class="grid cards">${data.companions.map(companionCard).join("")}</div>
 </section>
 
+<section aria-labelledby="warp-h" class="card pad">
+<div class="spread"><h2 id="warp-h">Warp terminal</h2><span class="${data.warp.installed ? "ok" : "muted"}">${data.warp.installed ? "✓ installed" : "not installed"}</span></div>
+<p class="muted">${escapeHtml(data.warp.detail)}</p>
+<p class="small muted">Both commands need <span class="mono">sudo</span>, which this page never runs: copy one into your own terminal. <span class="mono">${COMMAND} setup --warp</span> shows each step and asks before it changes anything.</p>
+${command(`${COMMAND} setup --warp`, "Copy the Warp install command")}
+${command(`${COMMAND} setup --remove-warp`, "Copy the Warp remove command")}
+</section>
+
 ${omnirouteCard}
 ${doctorCard}
 ${autoMode}
@@ -644,6 +654,9 @@ ${privacyStep(2, "Every request to the portal", [
     text: 'The first load exchanges the one-time token for a session cookie (<span class="mono">HttpOnly</span>, <span class="mono">SameSite=Strict</span>) and the URL is cleaned. A token cannot be used twice.',
   },
   {
+    text: `The cookie's name carries this portal's port (<span class="mono">ccsdk_portal_${port}</span>), because a cookie has no port and a browser sends every <span class="mono">127.0.0.1</span> cookie to every port on it. Two portals on two ports therefore hold their own sessions. Either way it is sent only to this machine: it is never <span class="mono">Secure</span>, because this is http on <span class="mono">127.0.0.1</span>.`,
+  },
+  {
     text: 'A change (a POST) must carry the CSRF token that came with the page, and an <span class="mono">Origin</span> of ours. Otherwise <b>✗ 403</b> and nothing changes.',
     tone: "warn",
   },
@@ -656,7 +669,7 @@ ${privacyStep(2, "Every request to the portal", [
 ${privacyStep(3, "Always true", [
   { text: "<b>127.0.0.1 only.</b> The portal binds nothing else." },
   {
-    text: '<b>Keys stay hidden.</b> A full key never reaches the page; it shows <span class="mono">omni_…a1b2</span>.',
+    text: '<b>Keys stay hidden.</b> A full key never reaches the page; it shows its last four characters and nothing else (<span class="mono">••••a1b2</span>).',
   },
   {
     text: "<b>No outside request.</b> The policy allows this machine and nothing else: no web font, no script, nothing from the internet.",

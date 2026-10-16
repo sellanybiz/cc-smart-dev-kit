@@ -22,11 +22,15 @@ in this turn.
 - **A foreign `Origin` is 403**, on any method; **a POST without one is 403 too** (a browser
   always sends one for a POST).
 - **The one-time token works once**, on a GET, and becomes the session cookie. Nothing else
-  hands out a session.
+  hands out a session. A GET that passes the `Host` and `Origin` checks but holds no session
+  gets `expiredPage()` (403, and it holds no machine fact); a `Host` or `Origin` refusal stays
+  the plain `Forbidden`.
 - **A POST carries the CSRF token** that came with a page of ours, compared in constant time
   (`secretsMatch`). The cookie alone never changes anything.
-- **The cookie** stays `HttpOnly; SameSite=Strict; Path=/`. Never `Secure`: this is http on
-  127.0.0.1, and a `Secure` cookie would never be stored.
+- **The cookie** stays `HttpOnly; SameSite=Strict; Path=/`, and its name carries the port
+  (`ccsdk_portal_<port>`): a cookie has no port, and the browser sends every `127.0.0.1`
+  cookie to every port on it. Never `Secure`: this is http on 127.0.0.1, and a `Secure` cookie
+  would never be stored.
 - **The policy stays strict**: `script-src 'self'` with no `unsafe-inline`, `style-src 'self'`,
   and `default-src 'none'`. So:
   - **no inline script, and no `on*=` attribute** — every handler is a `data-*` and an
@@ -41,7 +45,9 @@ in this turn.
   `src/portal/server.test.ts` › "a key is never sent to a page" runs every page with a
   planted key; add a new page to it.
 - **It stops after 30 minutes with no request**, and the process exits. A portal that stays up
-  is a way into every session on the machine.
+  is a way into every session on the machine. A page's own reload is not the person asking:
+  the Health page asks with `?auto=1`, and the server serves it without touching the idle
+  clock. Anything else that reloads itself must not touch the clock either.
 
 ## The portal runs the command line's own code
 
@@ -74,21 +80,35 @@ in this turn.
   `writeManagedFile` (so `restore` removes it), never from the plugin's version folder:
   Claude Code deletes an old one after an update, even under a running process. It is a child
   with this terminal's stdio, so the link is printed where the person is looking.
+- **The copy is told where the plugin is** (`--plugin-dir`; refused as a person's own option).
+  Every plugin file — the router bundle, `instructions/`, `hooks/hooks.json` — is resolved
+  **when it is needed** from the version Claude Code records as installed, falling back to
+  `--plugin-dir` while it exists (`src/portal/plugin-folder.ts`), and the action says so in
+  words when neither is there. A path made at startup goes stale: the run outlives the version
+  folder, and a path beside the copy resolves `~/.local/plugin`, where nothing is.
 
 ## OmniRoute
 
 - **Three days, always.** The newest plain `x.y.z` published at least `MIN_RELEASE_AGE_MS`
-  ago. Never a canary, never one from today. A release that reaches a machine the hour it is
-  published reaches it before anyone else has run it, and OmniRoute is the model path of every
-  affordable slot here.
+  ago. Never a canary, never one from today, never one npm marks deprecated. A release that
+  reaches a machine the hour it is published reaches it before anyone else has run it, and
+  OmniRoute is the model path of every affordable slot here. **`--to <version>` bends nothing**:
+  a plain `x.y.z` the registry lists and that is old enough, or a refusal in words with nothing
+  run. The portal never passes `--to`.
 - **Nothing about one machine is written into the plugin.** The unit comes from systemd's own
   `ExecStart` lines, the install from that command line's package folder, the backend from the
   gateway config. Never hard-code a unit name, a port or a path.
 - **Never in the background, and never inside a Claude Code session.** It restarts a service
   that answers real requests.
-- **A failure is put back**: install the recorded version, restart, check again, then say what
-  failed. The confirmation says what the restart costs (the slots fall to their next target,
-  which is Claude).
+- **A failure is put back**: install the recorded version, restart, wait and check again, then
+  say what failed. The confirmation says what the restart costs (the slots fall to their next
+  target, which is Claude).
+- **The restart is waited for, never a rollback for being slow.** `systemctl --user restart`
+  returns before OmniRoute listens, so the check polls `/v1/models` with a growing pause for up
+  to a minute (`waitForBackend`, with the clock and `sleep` from outside), and only then sends
+  the one tiny chat. The put-back waits the same way. Record, install, restart and check are
+  one change under setup's lock (`withLock`); an install folder this user cannot write is
+  refused before anything is recorded or run, with the command to copy — never `sudo`.
 - **The health check sends one fixed prompt of our own** (`PROBE_PROMPT`) and nothing else:
   never a conversation, a path, a host name or a person's words. It uses the backend's key,
   so a `fetch` that carries it spreads `directIfLoopback` (`.claude/rules/gateway.md` §

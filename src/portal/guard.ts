@@ -95,8 +95,18 @@ export function sessionCookie(name: string, value: string): string {
   return `${name}=${value}; HttpOnly; SameSite=Strict; Path=/`;
 }
 
-/** The name of the cookie, and of the header a POST carries its token in. */
-export const COOKIE_NAME = "ccsdk_portal";
+/**
+ * The cookie this portal's session lives in, for one port: `ccsdk_portal_20150`. The port is
+ * in the name because a cookie carries no port: the browser sends every `127.0.0.1` cookie to
+ * every port on `127.0.0.1`. Without it, a second portal on another port overwrote the first
+ * one's session (and its own), and neither page could hold a session while the other ran.
+ */
+export function cookieName(port: number): string {
+  return `${COOKIE_BASE}_${port}`;
+}
+
+/** The base of the session cookie's name (`cookieName` adds the port). */
+export const COOKIE_BASE = "ccsdk_portal";
 export const CSRF_HEADER = "x-ccsdk-csrf";
 
 /** Why a request was refused, in one word. */

@@ -31,10 +31,20 @@ export interface Release {
 /** A version number with no pre-release tag: `3.8.51`, not `3.9.0-canary.1`. */
 const STABLE = /^\d+\.\d+\.\d+$/;
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** True when npm's own entry for a version carries a deprecation note (`npm deprecate`). */
+function isDeprecated(entry: unknown): boolean {
+  return isJsonObject(entry) && typeof entry.deprecated === "string";
+}
+
 /**
  * Every stable release at least `MIN_RELEASE_AGE_MS` old, oldest first. A version with no
- * time in the registry, a pre-release, and a version that is not a plain `x.y.z` are left
- * out: none of them is a release to move a machine to.
+ * time in the registry, a pre-release, a version that is not a plain `x.y.z`, and a version
+ * the package's own author deprecated (npm's `deprecated` note, which every install prints
+ * as a warning) are left out: none of them is a release to move a machine to.
  */
 export function parseReleases(text: string, nowMs: number): Release[] {
   let raw: unknown;
@@ -48,9 +58,11 @@ export function parseReleases(text: string, nowMs: number): Release[] {
   if (typeof body.versions !== "object" || body.versions === null) return [];
   if (typeof body.time !== "object" || body.time === null) return [];
   const times = body.time as Record<string, unknown>;
+  const versions = body.versions as Record<string, unknown>;
   const releases: Release[] = [];
-  for (const version of Object.keys(body.versions as Record<string, unknown>)) {
+  for (const version of Object.keys(versions)) {
     if (!STABLE.test(version)) continue;
+    if (isDeprecated(versions[version])) continue;
     const publishedAt = times[version];
     if (typeof publishedAt !== "string") continue;
     const at = Date.parse(publishedAt);

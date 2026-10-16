@@ -260,7 +260,11 @@ on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
   `claude plugin` commands. It writes no user file and restarts nothing.
 - **A manual run** (`cc-smart-dev-kit setup`, `cc-smart-dev-kit gateway setup`, `restore`) is the
   only thing that restarts or stops a service or changes a permission. It shows the change
-  first, and asks before it cuts the answers in flight.
+  first, and asks before it cuts the answers in flight. Two more restart a service, and both
+  are a person's own run too: the **portal's** "Restart the router" (the same `gateway setup
+  --yes` the terminal runs, after a confirmation on the page) and **`omniroute update` /
+  `rollback`** (which restart the unit the affordable slots answer through). Neither is ever
+  started by a hook, a session or the background self-update.
 
 So an automatic update can never restart something or widen a permission without the
 user seeing it: a new router version runs only after `gateway setup`, which asks.
@@ -285,7 +289,10 @@ each one follows them.
   The auto-mode trust rules need an explicit confirmation on the page, which stands in for
   the terminal question `setup` asks.
 - **What needs `sudo` is not run.** Installing or removing the Warp app shows the exact
-  command to copy.
+  command to copy (the Machine page's Warp card, next to `doctor`'s own line for it).
+- **A bug in a page is never shown.** `Bun.serve` has an `error` handler (`development:
+  false`) that answers the one line `Internal Server Error` with the usual security headers: a
+  stack names the source file and the line, and holds this machine's paths.
 - **It refuses inside a Claude Code session** (`CLAUDECODE`), in the command and again in the
   bundle the child runs: the portal changes this machine's model path and the safety judge,
   and a session must never do that for itself.
@@ -306,10 +313,20 @@ each one follows them.
    in constant time. The cookie alone never changes anything.
 
 The cookie is `HttpOnly; SameSite=Strict; Path=/` and **not** `Secure` (this is http on
-`127.0.0.1`, and a `Secure` cookie would never be stored). The token works once: a link
-already used, or a portal already stopped, gets 403; the page then offers `cc-smart-dev-kit
-portal` again. `history.replaceState` cleans the token out of the URL on the first load, so it
-does not sit in the address bar or in the back button.
+`127.0.0.1`, and a `Secure` cookie would never be stored). **Its name carries the portal's own
+port**: `ccsdk_portal_<port>` (`cookieName`). A cookie has no port, and a browser sends every
+`127.0.0.1` cookie to every port on `127.0.0.1`, so without the port the second portal would
+overwrite the first one's session (and its own), and neither page could hold one while the
+other ran.
+
+The token works once. A GET that passes the `Host` and `Origin` checks but holds **no valid
+session** — a link already used, or a cookie from a portal that stopped — gets the page that
+says so (`expiredPage`) with **403**, and that page holds no fact about the machine: no
+version, no port, no token. Running `cc-smart-dev-kit portal` again is what it offers. A
+`Host` or `Origin` refusal, and every refused POST, stay the plain one word, `Forbidden`: that
+request is not the person's browser. (A portal that has **stopped** is a connection error, not
+a 403: nothing listens on the port any more.) `history.replaceState` cleans the token out of
+the URL on the first load, so it does not sit in the address bar or in the back button.
 
 Every answer carries a strict `Content-Security-Policy`: `default-src 'none'`, `script-src
 'self'` with no `unsafe-inline`, `style-src 'self'`, `connect-src 'self'`, `form-action
@@ -321,12 +338,19 @@ says `display: flex`), and nothing comes from the internet: no web font, no CDN,
 stack. The stylesheet and the two scripts are served by the portal itself and need no session
 (a page cannot draw without them); everything else does.
 
-**Keys never reach the page.** Every backend's key goes through `maskKey` (`omni_…a1b2`), and
+**Keys never reach the page.** Every backend's key goes through `maskKey`, which shows its last
+four characters and nothing else (`••••a1b2`; a key shorter than 12 characters shows `••••`), and
 a whole key is never in a page, a JSON answer or a log line.
 
 **It stops after 30 minutes with no request** (`session.ts`): the link and the cookie are
 dead, and the process exits. A portal left open on an unlocked screen is a way into every
 Claude session on the machine, so it does not stay open by itself.
+
+**A page's own reload is not a request of the person's.** The Health page asks for itself
+every five seconds with `?auto=1`; the server serves the page and does **not** touch the idle
+clock for it, so an open Health tab cannot hold the portal (and its door) open for ever. The
+page's script also stops reloading while the tab is hidden (`document.hidden`,
+`visibilitychange`) and looks once more when it comes back.
 
 ### What it runs from
 
@@ -334,9 +358,24 @@ A copy in `~/.local/share/cc-smart-dev-kit/portal.js`, never the plugin's versio
 Claude Code deletes an old version folder some time after an update, even under a running
 process. `cc-smart-dev-kit portal` writes the copy through `writeManagedFile` (so `restore`
 removes it) and starts it as a **child with this terminal's own stdio** — the link is printed
-where the person is looking, and Ctrl+C reaches both through the same process group. It is a
-bundle of its own (`src/entries/portal.ts` → `plugin/dist/portal.js`), so nothing about it
-changes `router.js` (a changed router bundle restarts every machine's router).
+where the person is looking, and Ctrl+C reaches both through the same process group (the
+child exits **130** on Ctrl+C, the code for "ended by SIGINT", and the parent returns it). It
+is a bundle of its own (`src/entries/portal.ts` → `plugin/dist/portal.js`), so nothing about
+it changes `router.js` (a changed router bundle restarts every machine's router).
+
+**The copy sits outside the plugin, so it is told where the plugin is.** The parent passes its
+own folder (`--plugin-dir`, and `portal --plugin-dir` is refused as an unknown option: a
+person must not point the portal at another folder, which would let it install that folder's
+router bundle). Each file the portal needs — the router bundle a restart installs
+(`dist/router.js`), the instructions, `hooks/hooks.json` — is then resolved from the version
+Claude Code records as installed **at the moment it is needed** (`resolvePluginFolder`,
+`src/portal/plugin-folder.ts`), falling back to `--plugin-dir` while that still exists. Two
+reasons, both found live: a path made from the copy's own folder resolves
+`~/.local/plugin`, where none of those files are (the restart threw ENOENT, and the Machine
+page's doctor skipped its router-copy check without saying so); and a 30-minute run can
+outlive the version folder it started in, so a path made at startup goes stale. With neither
+folder there, the action says so in words and stops — the doctor pass reports it as one failed
+check — rather than reading a path that is gone.
 
 ### What a page cannot know
 
@@ -371,12 +410,30 @@ days to prove itself. `doctor` says, as information, when one is waiting.
   OmniRoute is the model path of every affordable slot here.
 - **The update.** Record the version it replaces in `<stateDir>/omniroute.json`; install
   through the manager that owns the install (`bun add --global omniroute@<v>`, or
-  `npm install --global`); `systemctl --user restart <unit>`; then check the model path
-  (`probeModel`, `src/gateway/backends.ts`): `GET /v1/models` with the backend's key — a 401
-  is named as the key, not the version — and one tiny chat to the first affordable target of
-  the scout slot (`PROBE_PROMPT`, a fixed word of the plugin's own; nothing from a
-  conversation, the machine or the person is sent). On any failure: install the old version
-  again, restart, check again, and print what failed.
+  `npm install --global`); `systemctl --user restart <unit>`; wait until the backend answers
+  `GET /v1/models` at all — up to a minute, with a growing pause between tries (`waitForBackend`,
+  refused connections are "not listening yet"; an HTTP answer, 401 included, ends the wait);
+  then check the model path (`probeModel`, `src/gateway/backends.ts`): `GET /v1/models` with
+  the backend's key — a 401 is named as the key, not the version — and one tiny chat to the
+  first affordable target of the scout slot (`PROBE_PROMPT`, a fixed word of the plugin's own;
+  nothing from a conversation, the machine or the person is sent). On any failure: install the
+  old version again, restart, wait and check the same way, and print what failed. The wait is
+  why a good release is not rolled back for being slow to listen: `systemctl --user restart`
+  returns before OmniRoute binds its port.
+- **Record, install, restart and check are one change, under setup's lock** (`withLock`): a
+  second `update` or `rollback` — a terminal and the portal, or two terminals — waits for the
+  first, and says who holds it when the wait runs out. `rollback` takes the same lock.
+- **A folder this user cannot write is refused before anything is recorded or run**
+  (`installIsWritable`: the package's folder and the one holding it). A global install under a
+  root-owned prefix fails with EACCES halfway through, and the put-back then "fails" the same
+  way though nothing changed; the command to copy (`sudo <manager> …`) is printed instead, and
+  `sudo` is never run.
+- **`--to <version>` follows the three-day rule** (`toRefusal`). It must be a plain `x.y.z`
+  that the registry lists and that is at least three days old; a version published this
+  morning, a canary, a `https://…` tarball and a `github:…` spec are refused in words and
+  nothing runs — `bun add --global omniroute@<spec>` would otherwise install whatever npm
+  resolved the spec to. A version npm marks deprecated is not offered by `newestRelease`
+  either, and can never be named by `--to`.
 - **Never in the background, and never inside a Claude Code session.** It restarts a service
   that answers real requests, so a person runs it, sees each step and reads what failed; and a
   session must not move its own model path mid-turn. The confirmation says what the restart

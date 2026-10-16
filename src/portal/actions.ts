@@ -17,6 +17,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { type Check, checkLine, type DoctorOptions, doctorChecks } from "../cli/doctor";
 import type { CliPaths } from "../cli/paths";
 import { runUpdate } from "../cli/update";
@@ -27,6 +28,7 @@ import { testJudgeTarget } from "../gateway/judge-test";
 import { isModelSlot, JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";
 import { runJobCommand } from "../jobs/commands";
 import { realMemoryFacts } from "../jobs/memory";
+import { companions } from "../machine/companions";
 import { type OmnirouteContext, runOmniroute } from "../omniroute/commands";
 import { applyAutoMode, autoModeSource } from "../setup/auto-mode";
 import { findUserInstall } from "../setup/installed-plugins";
@@ -34,17 +36,31 @@ import { withLock } from "../setup/lock";
 import type { ManagedEntriesResult } from "../setup/managed-entries";
 import { atomicWrite } from "../setup/write";
 import { CLAUDE_TIMEOUT_MS, commandContext } from "../update/apply";
-import {
-  checkRunning,
-  heldSince,
-  hold,
-  isHeld,
-  type LastCheck,
-  readLastCheck,
-  resume,
-  updateFiles,
-} from "../update/state";
+import { heldSince, type LastCheck, readLastCheck, updateFiles } from "../update/state";
 import type { PortalContext } from "./context";
+
+/**
+ * The OmniRoute context every portal action uses: the portal's own network, clock and runner,
+ * and no terminal question (`confirm: null` — the page asks instead, and passes `--yes`). The
+ * wait after a restart is the probe's own sleep, so a test drives it like the rest of the
+ * clock. One home, so a test can build the same context the server builds.
+ */
+export function portalOmnirouteContext(ctx: PortalContext): OmnirouteContext {
+  return {
+    confirm: null,
+    env: ctx.env,
+    health: (url, init) => ctx.fetch(url, init),
+    now: ctx.now,
+    paths: ctx.paths,
+    registry: (url, init) => ctx.fetch(url, init),
+    runner: ctx.runner,
+    say: () => undefined,
+    sleep: (ms) => ctx.probe.sleep(ms),
+    systemFolders: ctx.systemFolders,
+    systemd: ctx.systemd,
+    which: ctx.which,
+  };
+}
 
 /** What one action found, in lines the page shows. */
 export interface ActionResult {
@@ -66,7 +82,8 @@ export interface ActionContext {
 
 /** The portal's own small state, in the plugin's state folder. */
 export interface PortalMemory {
-  /** The opus and fable fallback chains, by family: what the switch turns on again. */
+  /** The opus and fable fallback chains, by slot key (`cc-smart-dev-kit-opus`): what the
+   * switch turns on again. The slot key, never the family name: the switch reads the same key. */
   fallback: Record<string, string[]>;
   /** The judge chain when it was last saved: what the judge switch turns on again. */
   judge: string[];
@@ -132,28 +149,45 @@ function collector(): {
   return { error: push, lines, print: push };
 }
 
-/** The gateway commands' context, with `print` collecting instead of the terminal. */
-function gatewayContext(action: ActionContext, print: (line: string) => void): GatewayContext {
+/**
+ * The gateway commands' context, with `print` collecting instead of the terminal. The router
+ * bundle is resolved now, not at startup: the folder this portal started in can be gone (an
+ * update) — `{ error }` in words is then the action's whole answer.
+ */
+function gatewayContext(
+  action: ActionContext,
+  print: (line: string) => void,
+): { ctx: GatewayContext } | { error: string } {
   const { portal } = action;
+  const folder = portal.pluginFolder();
+  if ("error" in folder) return folder;
   return {
-    bunPath: process.execPath,
-    bunVersion: portal.bunVersion,
-    bundle: portal.routerBundle,
-    confirm: null,
-    error: print,
-    paths: portal.paths,
-    print,
-    probe: portal.probe,
-    readStdin: () => Promise.resolve(""),
-    runner: portal.runner,
-    systemd: portal.systemd,
+    ctx: {
+      bunPath: process.execPath,
+      bunVersion: portal.bunVersion,
+      bundle: join(folder.folder, "dist", "router.js"),
+      confirm: null,
+      error: print,
+      paths: portal.paths,
+      print,
+      probe: portal.probe,
+      readStdin: () => Promise.resolve(""),
+      runner: portal.runner,
+      systemd: portal.systemd,
+    },
   };
 }
 
-/** Runs a gateway command with the person's yes already given. */
+/**
+ * Runs a gateway command with the person's yes already given. The plugin's folder is resolved
+ * here, at the moment of the action: `gateway setup` reads the router bundle from it, and a
+ * folder that is gone is the whole answer, in words.
+ */
 async function gateway(action: ActionContext, args: string[]): Promise<ActionResult> {
   const { lines, print } = collector();
-  const code = await runGateway(args, gatewayContext(action, print));
+  const context = gatewayContext(action, print);
+  if ("error" in context) return { lines: [context.error], ok: false };
+  const code = await runGateway(args, context.ctx);
   return { lines, ok: code === 0 };
 }
 
@@ -169,7 +203,9 @@ export function slotArg(name: string): string {
  * affordable model — a model list says a model is there, not that it answers.
  *
  *   - a judge target: the force-push test (`gateway slot judge` runs it, and refuses a
- *     target that does not block). Verdict `blocked` or `bad`.
+ *     target that does not block). Verdict `blocked` or `bad`. A `claude-…` target is the
+ *     one exception, exactly as it is for the command line: it cannot be tested from here and
+ *     the router never uses it, so it counts as allowed.
  *   - an affordable `<backend>:<model>`: its backend's list must name the model, then one
  *     tiny chat. Verdict `good` or `bad`.
  *   - `claude-…`: no request is possible — the portal has no Claude login, and none may be
@@ -197,12 +233,17 @@ async function testTargets(
     }
     if (parsed.target.kind === "anthropic") {
       results.push({
-        detail:
-          "on your own Claude login: the portal cannot send a request with it, and never holds one",
+        detail: judge
+          ? "on your own Claude login: the router uses a judge target only after it passed the force-push test, so this one is ignored, exactly as the command line ignores it"
+          : "on your own Claude login: the portal cannot send a request with it, and never holds one",
         target: text,
         verdict: "good",
       });
-      lines.push(`${text}: on your own Claude login`);
+      lines.push(
+        judge
+          ? `${text}: on your own Claude login, so it is never used as a judge (the command line allows it too)`
+          : `${text}: on your own Claude login`,
+      );
       continue;
     }
     const backend = config.backends[parsed.target.backend];
@@ -254,12 +295,17 @@ async function testTargets(
     lines.push(`${text}: ${probe.ok ? "✓" : "✗"} ${probe.detail}`);
   }
   const ok = results.every((one) => one.verdict !== "bad");
+  // One rule, said exactly: Save is held off for the judge slot alone, because a judge is set
+  // only with a chain that passed the force-push test. Another slot's chain is refused by
+  // `gateway slot` itself when a target fails, so the page does not claim Save is off there.
   lines.push(
     ok
       ? judge
-        ? "Every target blocked the test check. You can save this chain."
+        ? "Every backend target blocked the test check. You can save this chain."
         : "Every target answered."
-      : "At least one target did not answer as it should; Save stays off until they all do.",
+      : judge
+        ? "At least one backend target did not block the test check: Save stays off until every judge target shows blocked ✓."
+        : "At least one target did not answer as it should: the command line refuses a chain like this, so fix it before you save.",
   );
   return { lines, ok, results };
 }
@@ -280,12 +326,40 @@ async function saveSlot(
   return result;
 }
 
-/** A saved chain the switches can turn on again. Only the three that can be off. */
+/**
+ * A saved chain the switches can turn on again. Only the three that can be off, and always
+ * under the **slot key** (`cc-smart-dev-kit-opus`) — the same key `switchFallback` reads and
+ * the same key the config uses. Storing it under the family (`opus`) instead was the bug: the
+ * switch then found nothing and turned nothing on.
+ */
 function rememberChain(action: ActionContext, slot: string, targets: string[]): void {
   if (slot === JUDGE_SLOT) action.memory.judge = targets;
-  else if (isModelSlot(slot)) action.memory.fallback[MODEL_SLOTS[slot] ?? slot] = targets;
+  else if (isModelSlot(slot)) action.memory.fallback[slot] = targets;
   else return;
   writeMemory(action.portal.paths, action.memory);
+}
+
+/**
+ * Remembers the chain the config holds right now for a slot, before a switch turns it off.
+ * Without this, a chain set from the command line is lost by one Off: the switch has nothing
+ * to turn back on. Read in one go, just before the `off` runs — the `off` itself takes setup's
+ * lock (`gateway slot`), so this must not take it again: two locks on one folder wait for each
+ * other until the wait runs out.
+ */
+function rememberCurrent(action: ActionContext, slot: string): string[] {
+  const targets = currentChain(action, slot);
+  if (targets.length > 0) rememberChain(action, slot, targets);
+  return targets;
+}
+
+/** The chain the config holds for a slot right now; none when there is none, or no config. */
+function currentChain(action: ActionContext, slot: string): string[] {
+  try {
+    return loadConfigFile(action.portal.paths.gatewayConfigFile).slots[slot] ?? [];
+  } catch {
+    // No config, or one that cannot be read: there is nothing there.
+    return [];
+  }
 }
 
 // ── Switches ────────────────────────────────────────────────────────────────────
@@ -300,7 +374,10 @@ async function switchGateway(action: ActionContext, on: boolean): Promise<Action
  * that test). With nothing remembered, the page is told how to make one.
  */
 async function switchJudge(action: ActionContext, on: boolean): Promise<ActionResult> {
-  if (!on) return gateway(action, ["slot", "judge", "off"]);
+  if (!on) {
+    rememberCurrent(action, JUDGE_SLOT);
+    return gateway(action, ["slot", "judge", "off"]);
+  }
   if (action.memory.judge.length === 0) {
     return {
       lines: [
@@ -319,29 +396,38 @@ async function switchJudge(action: ActionContext, on: boolean): Promise<ActionRe
  * Claude model itself). A family with nothing remembered is named, not invented.
  */
 async function switchFallback(action: ActionContext, on: boolean): Promise<ActionResult> {
-  const families = Object.keys(MODEL_SLOTS);
+  const slots = Object.keys(MODEL_SLOTS);
   if (!on) {
     // One at a time: each takes setup's state lock, and a second call waiting on it would
-    // only make the first wait for the second.
+    // only make the first wait for the second. The chain each slot holds is remembered first,
+    // so On can put it back.
     const lines: string[] = [];
     let ok = true;
-    for (const family of families) {
-      const result = await gateway(action, ["slot", family, "off"]);
+    for (const slot of slots) {
+      // A slot that is already off is skipped: `gateway slot <key> off` refuses it as an error
+      // ("already off"), and the portal only ever asks for what the command line would do.
+      if (rememberCurrent(action, slot).length === 0) continue;
+      const result = await gateway(action, ["slot", slot, "off"]);
       ok = ok && result.ok;
       lines.push(...result.lines);
     }
-    return { lines, ok };
+    return {
+      lines: lines.length === 0 ? ["The opus and fable fallback was already off."] : lines,
+      ok,
+    };
   }
   const missing: string[] = [];
   const lines: string[] = [];
+  let turnedOn = 0;
   let ok = true;
-  for (const family of families) {
-    const targets = action.memory.fallback[family] ?? [];
+  for (const slot of slots) {
+    const targets = action.memory.fallback[slot] ?? [];
     if (targets.length < 2) {
-      missing.push(family);
+      missing.push(slot.replace(/^cc-smart-dev-kit-/, ""));
       continue;
     }
-    const result = await gateway(action, ["slot", family, targets.join(",")]);
+    const result = await gateway(action, ["slot", slot, targets.join(",")]);
+    if (result.ok) turnedOn += 1;
     ok = ok && result.ok;
     lines.push(...result.lines);
   }
@@ -350,29 +436,32 @@ async function switchFallback(action: ActionContext, on: boolean): Promise<Actio
       `No saved chain for ${missing.join(" or ")}: go to Slots, pick it, add a model, and Save — its first target is the Claude model itself.`,
     );
   }
+  if (turnedOn === 0) {
+    // Nothing was turned on, so the switch must not read as a success: the page shows these
+    // lines in its failure colour, and the switch's own state stays off.
+    lines.push("Nothing was turned on, so the switch is still off.");
+    return { lines, ok: false };
+  }
   return { lines, ok };
 }
 
 // ── The rest ────────────────────────────────────────────────────────────────────
 
+/**
+ * The hold switch: `cc-smart-dev-kit update --hold` / `--resume`, with their output collected —
+ * the CLI's own function, its own words, its own files. A second copy of the hold logic here
+ * could only drift from it.
+ */
 async function switchHold(action: ActionContext, on: boolean): Promise<ActionResult> {
-  const files = updateFiles(action.portal.paths.stateDir);
-  const lines: string[] = [];
-  if (on) {
-    lines.push(
-      hold(files, action.portal.now())
-        ? "Background updates are on hold: a new Claude session no longer checks for a newer version."
-        : `Background updates were already on hold (since ${heldSince(files)}).`,
-    );
-  } else {
-    lines.push(
-      resume(files)
-        ? "Background updates resume: a new Claude session checks for a newer version, at most once an hour."
-        : "Background updates were not on hold.",
-    );
-  }
-  if (checkRunning(files)) lines.push("A check is running now; it finishes.");
-  return { lines, ok: isHeld(files) === on };
+  const sinks = collector();
+  const code = await runUpdate(
+    action.portal.paths,
+    action.portal.env,
+    [on ? "--hold" : "--resume"],
+    action.portal.now,
+    sinks,
+  );
+  return { lines: sinks.lines, ok: code === 0 };
 }
 
 /**
@@ -422,11 +511,24 @@ async function updateInstall(action: ActionContext): Promise<ActionResult> {
   return { lines: sinks.lines, ok: code === 0 };
 }
 
+/**
+ * What one doctor pass runs: the options, built for the plugin's folder **as it is now**, or
+ * why it cannot run (the folder is gone — an update during a long run). Building them per pass
+ * is the point: the portal runs from a copy, and a path made at startup points at the version
+ * folder the update deleted.
+ */
+export type DoctorSource = () => DoctorOptions | { error: string };
+
 /** Runs the doctor pass, and hands the checks back so the page can store and show them. */
 export async function runDoctorPass(
   action: ActionContext,
-  options: DoctorOptions,
+  source: DoctorSource,
 ): Promise<{ checks: Check[]; lines: string[]; ok: boolean }> {
+  const options = source();
+  if ("error" in options) {
+    // One failed check, in the page's own shape: what happened, and what to do about it.
+    return { checks: [{ ok: false, text: options.error }], lines: [options.error], ok: false };
+  }
   const checks = await doctorChecks(action.portal.paths, action.portal.env, options);
   return {
     checks,
@@ -436,8 +538,14 @@ export async function runDoctorPass(
 }
 
 async function companionEnable(action: ActionContext, id: string): Promise<ActionResult> {
-  if (!/^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$/.test(id)) {
-    return { lines: [`"${id}" is not a plugin id (<name>@<marketplace>).`], ok: false };
+  // The list of the kit's own companions, never any id that merely looks like one: the page
+  // sends a JSON body, and a hand-made POST must not be able to enable an arbitrary plugin.
+  const known = companions().map((companion) => companion.id);
+  if (!known.includes(id)) {
+    return {
+      lines: [`"${id}" is not one of this kit's companions (${known.join(", ")}).`],
+      ok: false,
+    };
   }
   const result = action.portal.machine.run(["claude", "plugin", "enable", id]);
   const reason = result.output.trim().split("\n").at(-1) ?? "";
@@ -539,10 +647,10 @@ export async function runAction(
       return companionEnable(action, typeof body.id === "string" ? body.id : "");
     case "router.restart":
       return gateway(action, ["setup", "--yes"]);
-    case "omniroute.update": {
-      const to = typeof body.to === "string" ? ["--to", body.to] : [];
-      return omnirouteAction(action, ["update", "--yes", ...to]);
-    }
+    case "omniroute.update":
+      // No `--to`, ever: the page offers the newest release the registry allows, and a value
+      // out of a JSON body must never reach `bun add --global omniroute@<spec>`.
+      return omnirouteAction(action, ["update", "--yes"]);
     case "omniroute.rollback":
       return omnirouteAction(action, ["rollback", "--yes"]);
     case "automode.apply":

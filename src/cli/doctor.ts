@@ -621,6 +621,10 @@ async function omnirouteCheck(paths: CliPaths, env: Env, gateway: DoctorGateway)
     registry: gateway.fetch ?? ((url, init) => fetch(url, init)),
     runner: gateway.runner,
     say: () => undefined,
+    sleep: (ms) => Bun.sleep(ms),
+    // A test passes its own folders: the host's `/usr/lib/node_modules` may hold an OmniRoute
+    // that has nothing to do with the test, which would then read the real registry.
+    systemFolders: gateway.systemFolders,
     systemd: gateway.systemd,
     which: gateway.machine.which,
   });
@@ -667,6 +671,12 @@ export interface DoctorGateway {
    * test passes a fake, so it never reaches the network.
    */
   fetch?: RegistryFetch;
+  /**
+   * The folders outside the home a global OmniRoute may sit in. The machine's own by default
+   * (`SYSTEM_PACKAGE_FOLDERS`); a test passes none, so a real `/usr/lib/node_modules/omniroute`
+   * cannot make its run read the real registry or report a machine that is not its own.
+   */
+  systemFolders?: readonly string[] | undefined;
 }
 
 /** The Bun running doctor (through the launcher, the bun baked into it). */

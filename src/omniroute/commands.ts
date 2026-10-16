@@ -27,13 +27,17 @@
 import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
-import { type ProbeFetch, probeModel } from "../gateway/backends";
-import { loadConfigFile } from "../gateway/config";
+import { PROBE_TIMEOUT_MS, type ProbeFetch, probeModel } from "../gateway/backends";
+import { loadConfigFile, messageOf } from "../gateway/config";
+import { directIfLoopback } from "../gateway/hosts";
 import type { Runner } from "../gateway/service";
+import { shownBackendUrl } from "../gateway/settings";
+import { withLock } from "../setup/lock";
 import { atomicWrite } from "../setup/write";
 import {
   findOmniroute,
   type GlobalInstall,
+  installIsWritable,
   installLine,
   NAME,
   omnirouteBackend,
@@ -59,7 +63,9 @@ Commands:
                          Install the newest release at least ${MIN_RELEASE_AGE_MS / 86_400_000} days old, restart its
                          unit, and check that it answers (its model list, then one tiny
                          chat). A failure puts the old version back. --yes: no question.
-                         --to: a version to install instead of the newest.
+                         --to <version>: install that release instead, when it is a plain
+                         x.y.z the registry lists and it is at least ${MIN_RELEASE_AGE_MS / 86_400_000} days old;
+                         anything else (a tag, a URL, a github spec) is refused.
   rollback [--yes]       Install the version the last update replaced, and restart.
                          Refuses inside a Claude Code session: it moves this machine's
                          model path.`;
@@ -128,12 +134,28 @@ export interface OmnirouteContext {
   /** Asks the person; null when there is no terminal. */
   confirm: ((question: string) => boolean) | null;
   now: () => number;
+  /**
+   * Waits between the tries of `waitForBackend`, while a restarted OmniRoute starts listening.
+   * From outside like the clock: a test's own `sleep` moves that clock instead of waiting.
+   */
+  sleep: (ms: number) => Promise<void>;
   /** False where there is no systemd (macOS, Windows). */
   systemd: boolean;
   which: (command: string) => null | string;
   /** Where each line goes: `console.log` in use. */
   say: (line: string) => void;
+  /**
+   * The folders outside the home a global install may sit in (`SYSTEM_PACKAGE_FOLDERS` by
+   * default). A test passes none, so it never finds the machine's own OmniRoute.
+   */
+  systemFolders?: readonly string[] | undefined;
 }
+
+/**
+ * How long `update` and `rollback` wait for another run to finish before refusing. Short: the
+ * person is watching, and a second install must never start on top of the first.
+ */
+export const UPDATE_LOCK_WAIT_MS = 10_000;
 
 /** The facts `status` and the portal both read. */
 export interface OmnirouteFacts {
@@ -146,6 +168,8 @@ export interface OmnirouteFacts {
   model: null | string;
   /** The newest release old enough to install; null when the registry could not be read. */
   newest: null | Release;
+  /** Every release a machine may install, oldest first: what `--to` is checked against. */
+  releases: Release[];
   /** Why the registry could not be read, when it could not. */
   registryError: null | string;
   /** What the last update replaced. */
@@ -187,7 +211,12 @@ export function firstAffordableTarget(
 
 /** Everything `status` prints and the portal shows. Reads the registry, changes nothing. */
 export async function omnirouteFacts(ctx: OmnirouteContext): Promise<OmnirouteFacts> {
-  const found = findOmniroute({ env: ctx.env, paths: ctx.paths, which: ctx.which });
+  const found = findOmniroute({
+    env: ctx.env,
+    paths: ctx.paths,
+    systemFolders: ctx.systemFolders,
+    which: ctx.which,
+  });
   let backend: OmnirouteFacts["backend"] = null;
   let model: null | string = null;
   if (found.install !== null && existsSync(ctx.paths.gatewayConfigFile)) {
@@ -206,6 +235,7 @@ export async function omnirouteFacts(ctx: OmnirouteContext): Promise<OmnirouteFa
     install: found.install,
     model,
     newest: "version" in newest ? (newest.releases.at(-1) ?? null) : null,
+    releases: "version" in newest ? newest.releases : [],
     registryError: "error" in newest ? newest.error : null,
     state: readState(stateFile(ctx.paths)),
     unit: found.unit,
@@ -245,7 +275,7 @@ async function commandStatus(ctx: OmnirouteContext): Promise<number> {
   ctx.say(
     facts.backend === null
       ? `  the gateway config names no ${PACKAGE} backend, so the update's health check is skipped`
-      : `  gateway backend ${facts.backend.name} → ${facts.backend.baseUrl}${facts.model === null ? "" : `, its first affordable target ${facts.model}`}`,
+      : `  gateway backend ${facts.backend.name} → ${shownBackendUrl(facts.backend.baseUrl, facts.backend.apiKey)}${facts.model === null ? "" : `, its first affordable target ${facts.model}`}`,
   );
   const previous = facts.state.previous;
   if (previous !== null) {
@@ -261,6 +291,27 @@ export function installArgv(install: GlobalInstall, version: string): string[] {
   return install.kind === "bun"
     ? [install.manager, "add", "--global", `${PACKAGE}@${version}`]
     : [install.manager, "install", "--global", `${PACKAGE}@${version}`];
+}
+
+/** A version number with no pre-release tag: `3.8.51`, not `3.9.0-canary.1`. */
+const PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
+
+/**
+ * Why `--to <value>` cannot be installed, or null when it can. The three-day rule is not
+ * suspended for a version a person names: `3.8.70` published this morning is refused exactly
+ * as `update` refuses it, and so are the things that are not versions at all — a canary, a
+ * `https://…` tarball, a `github:…` spec — which would otherwise reach
+ * `bun add --global omniroute@<spec>` and install whatever it resolved to.
+ */
+export function toRefusal(value: string, releases: readonly Release[]): null | string {
+  const days = MIN_RELEASE_AGE_MS / 86_400_000;
+  if (!PLAIN_VERSION.test(value)) {
+    return `--to ${value}: only a plain version like 3.8.51 can be installed, never a tag, a URL or a github spec. Run \`${COMMAND} omniroute update\` with no --to for the newest release at least ${days} days old.`;
+  }
+  if (!releases.some((release) => release.version === value)) {
+    return `--to ${value}: the registry lists no such release, or it has not been out ${days} days. \`${COMMAND} omniroute status\` names the newest one it may install.`;
+  }
+  return null;
 }
 
 /** The last line of a command's output, which is the part worth printing. */
@@ -308,6 +359,16 @@ async function installAndCheck(
     step(ctx, "  the gateway config names no backend for it, so the model path was not checked");
     return null;
   }
+  // The restart returns before OmniRoute listens. Without this wait, a good update is rolled
+  // back for being slow to come up.
+  const up = await waitForBackend(ctx, backend.baseUrl, backend.apiKey);
+  if (!up.up) {
+    step(
+      ctx,
+      `  the backend answered nothing on ${backend.baseUrl} within ${BACKEND_WAIT_MS / 1_000} s of the restart (${up.detail ?? "no answer"})`,
+    );
+    return `the model path did not come back: no answer on ${backend.baseUrl} within ${BACKEND_WAIT_MS / 1_000} s (${up.detail ?? "no answer"})`;
+  }
   const health = await probeModel({
     apiKey: backend.apiKey,
     baseUrl: backend.baseUrl,
@@ -316,6 +377,49 @@ async function installAndCheck(
   });
   step(ctx, `  health: ${health.ok ? "✓" : "✗"} ${health.detail}`);
   return health.ok ? null : `the health check failed: ${health.detail}`;
+}
+
+/** How long after a restart the model path may take to listen again. */
+export const BACKEND_WAIT_MS = 60_000;
+
+/** The first pause between the tries, doubling up to `BACKEND_POLL_MAX_MS`. */
+const BACKEND_POLL_FIRST_MS = 500;
+const BACKEND_POLL_MAX_MS = 5_000;
+
+/**
+ * Waits until the backend answers its model list **at all**, up to `waitMs` (about a minute),
+ * with a growing pause between tries. A connection that is refused — or any other network
+ * error — is "not listening yet", and the wait goes on; any HTTP answer ends it, 401 included,
+ * because the model path check is what reads that answer and names a wrong key as a wrong key.
+ * `sleep` and `now` come from the context, so a test drives the whole wait without waiting.
+ */
+export async function waitForBackend(
+  ctx: OmnirouteContext,
+  baseUrl: string,
+  apiKey: string,
+  waitMs = BACKEND_WAIT_MS,
+): Promise<{ detail: null | string; up: boolean }> {
+  const url = `${baseUrl}/v1/models`;
+  const deadline = ctx.now() + waitMs;
+  let pause = BACKEND_POLL_FIRST_MS;
+  let detail = "no answer";
+  for (;;) {
+    try {
+      const response = await ctx.health(url, {
+        headers: { authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+        // The key goes straight to a backend on this machine, never through a proxy.
+        ...directIfLoopback(url),
+      });
+      await response.body?.cancel();
+      return { detail: null, up: true };
+    } catch (error) {
+      detail = messageOf(error);
+    }
+    if (ctx.now() >= deadline) return { detail, up: false };
+    await ctx.sleep(Math.max(1, Math.min(pause, deadline - ctx.now())));
+    pause = Math.min(pause * 2, BACKEND_POLL_MAX_MS);
+  }
 }
 
 /** Asks before a step that restarts the model path; false when the person said no. */
@@ -353,11 +457,22 @@ async function commandUpdate(ctx: OmnirouteContext, rest: string[]): Promise<num
     return 1;
   }
   const facts = await omnirouteFacts(ctx);
-  if (facts.install === null) {
+  const install = facts.install;
+  if (install === null) {
     ctx.say(
       `${NAME} is not installed here (no global install found). Install it with: bun add -g ${PACKAGE}`,
     );
     return 1;
+  }
+  if (to !== null) {
+    const why =
+      facts.registryError === null
+        ? toRefusal(to, facts.releases)
+        : `--to ${to} cannot be checked: the registry could not be read (${facts.registryError}).`;
+    if (why !== null) {
+      ctx.say(why);
+      return 1;
+    }
   }
   let target = to;
   if (target === null) {
@@ -365,18 +480,25 @@ async function commandUpdate(ctx: OmnirouteContext, rest: string[]): Promise<num
       ctx.say(`cannot read the newest release (${facts.registryError}).`);
       return 1;
     }
-    if (!releaseIsNewer(facts.install.version, facts.newest.version)) {
+    if (!releaseIsNewer(install.version, facts.newest.version)) {
       ctx.say(
-        `${NAME} ${facts.install.version} is the newest release at least ${MIN_RELEASE_AGE_MS / 86_400_000} days old.`,
+        `${NAME} ${install.version} is the newest release at least ${MIN_RELEASE_AGE_MS / 86_400_000} days old.`,
       );
       return 0;
     }
     target = facts.newest.version;
   }
+  if (!installIsWritable(install)) {
+    ctx.say(
+      `${NAME} is installed in ${tildify(install.folder, ctx.paths.home)}, which this user cannot write: the install would fail with a permission error, and nothing would change. Run it yourself, with the command that owns that folder:`,
+    );
+    ctx.say(`  sudo ${installArgv(install, target).join(" ")}`);
+    return 1;
+  }
   const unit = facts.unit === null ? null : facts.unit.name;
   step(
     ctx,
-    `${NAME} ${facts.install.version} → ${target}${unit === null ? "" : `, and ${unit} restarts`}.`,
+    `${NAME} ${install.version} → ${target}${unit === null ? "" : `, and ${unit} restarts`}.`,
   );
   step(
     ctx,
@@ -384,39 +506,52 @@ async function commandUpdate(ctx: OmnirouteContext, rest: string[]): Promise<num
   );
   if (!askToRestart(ctx, yes, `Install ${NAME} ${target} and restart?`)) return 1;
 
-  writeState(stateFile(ctx.paths), {
-    previous: { at: new Date(ctx.now()).toISOString(), version: facts.install.version },
-    version: 1,
+  // Everything from here is one change to this machine's model path: the record, the install,
+  // the restart and the health check run under setup's lock, so two updates (a terminal and
+  // the portal, or two terminals) can never interleave — the second one waits, and says who
+  // holds it when the wait runs out.
+  return await withLock(
+    ctx.paths.stateDir,
+    async () => {
+      writeState(stateFile(ctx.paths), {
+        previous: { at: new Date(ctx.now()).toISOString(), version: install.version },
+        version: 1,
+      });
+      const failure = await installAndCheck(
+        ctx,
+        install,
+        target,
+        facts.unit,
+        facts.backend,
+        facts.model,
+      );
+      if (failure === null) {
+        step(ctx, `${NAME} ${target} is running.`);
+        return 0;
+      }
+      step(ctx, `✗ ${failure}`);
+      step(ctx, `Putting ${install.version} back.`);
+      const back = await installAndCheck(
+        ctx,
+        install,
+        install.version,
+        facts.unit,
+        facts.backend,
+        facts.model,
+      );
+      step(
+        ctx,
+        back === null
+          ? `${NAME} ${install.version} is running again.`
+          : `✗ putting ${install.version} back failed too: ${back}. Look at: systemctl --user status ${unit ?? PACKAGE}`,
+      );
+      return 1;
+    },
+    { waitMs: UPDATE_LOCK_WAIT_MS },
+  ).catch((error: unknown) => {
+    ctx.say(messageOf(error));
+    return 1;
   });
-  const failure = await installAndCheck(
-    ctx,
-    facts.install,
-    target,
-    facts.unit,
-    facts.backend,
-    facts.model,
-  );
-  if (failure === null) {
-    step(ctx, `${NAME} ${target} is running.`);
-    return 0;
-  }
-  step(ctx, `✗ ${failure}`);
-  step(ctx, `Putting ${facts.install.version} back.`);
-  const back = await installAndCheck(
-    ctx,
-    facts.install,
-    facts.install.version,
-    facts.unit,
-    facts.backend,
-    facts.model,
-  );
-  step(
-    ctx,
-    back === null
-      ? `${NAME} ${facts.install.version} is running again.`
-      : `✗ putting ${facts.install.version} back failed too: ${back}. Look at: systemctl --user status ${unit ?? PACKAGE}`,
-  );
-  return 1;
 }
 
 /** `omniroute rollback`; the exit code. */
@@ -431,7 +566,8 @@ async function commandRollback(ctx: OmnirouteContext, rest: string[]): Promise<n
     return 1;
   }
   const facts = await omnirouteFacts(ctx);
-  if (facts.install === null) {
+  const install = facts.install;
+  if (install === null) {
     ctx.say(`${NAME} is not installed here (no global install found).`);
     return 1;
   }
@@ -442,7 +578,7 @@ async function commandRollback(ctx: OmnirouteContext, rest: string[]): Promise<n
     );
     return 1;
   }
-  const warning = `${NAME} ${facts.install.version} → ${previous.version}${facts.unit === null ? "" : `, and ${facts.unit.name} restarts`}.`;
+  const warning = `${NAME} ${install.version} → ${previous.version}${facts.unit === null ? "" : `, and ${facts.unit.name} restarts`}.`;
   step(ctx, warning);
   step(
     ctx,
@@ -453,27 +589,44 @@ async function commandRollback(ctx: OmnirouteContext, rest: string[]): Promise<n
   ) {
     return 1;
   }
-  const failure = await installAndCheck(
-    ctx,
-    facts.install,
-    previous.version,
-    facts.unit,
-    facts.backend,
-    facts.model,
-  );
-  if (failure !== null) {
-    step(ctx, `✗ ${failure}`);
-    step(
-      ctx,
-      `The record of ${previous.version} is kept: fix the cause and run ${COMMAND} omniroute rollback again.`,
+  if (!installIsWritable(install)) {
+    ctx.say(
+      `${NAME} is installed in ${tildify(install.folder, ctx.paths.home)}, which this user cannot write: the install would fail with a permission error, and nothing would change. Run it yourself, with the command that owns that folder:`,
     );
+    ctx.say(`  sudo ${installArgv(install, previous.version).join(" ")}`);
     return 1;
   }
-  step(
-    ctx,
-    `${NAME} ${previous.version} is running. The record of it is kept, so this is now a no-op.`,
-  );
-  return 0;
+  // The same lock as `update`: a rollback is one change to this machine's model path too.
+  return await withLock(
+    ctx.paths.stateDir,
+    async () => {
+      const failure = await installAndCheck(
+        ctx,
+        install,
+        previous.version,
+        facts.unit,
+        facts.backend,
+        facts.model,
+      );
+      if (failure !== null) {
+        step(ctx, `✗ ${failure}`);
+        step(
+          ctx,
+          `The record of ${previous.version} is kept: fix the cause and run ${COMMAND} omniroute rollback again.`,
+        );
+        return 1;
+      }
+      step(
+        ctx,
+        `${NAME} ${previous.version} is running. The record of it is kept, so this is now a no-op.`,
+      );
+      return 0;
+    },
+    { waitMs: UPDATE_LOCK_WAIT_MS },
+  ).catch((error: unknown) => {
+    ctx.say(messageOf(error));
+    return 1;
+  });
 }
 
 /** `cc-smart-dev-kit omniroute <command>`; the exit code. */
@@ -511,7 +664,12 @@ function wrongOptions(ctx: OmnirouteContext, rest: string[]): number {
 
 /** `doctor`'s one line: only when an update is waiting, and never a failure. */
 export async function omnirouteDoctorLine(ctx: OmnirouteContext): Promise<null | { text: string }> {
-  const found = findOmniroute({ env: ctx.env, paths: ctx.paths, which: ctx.which });
+  const found = findOmniroute({
+    env: ctx.env,
+    paths: ctx.paths,
+    systemFolders: ctx.systemFolders,
+    which: ctx.which,
+  });
   if (found.install === null) return null;
   const newest = await newestRelease(PACKAGE, ctx.now(), ctx.registry);
   if ("error" in newest) return null;

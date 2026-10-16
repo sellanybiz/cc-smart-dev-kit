@@ -11,21 +11,18 @@ import type { CliPaths } from "../cli/paths";
 import type { HealthFetch, HealthProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
 import type { Machine } from "../machine/machine";
+import type { PluginFolder } from "./plugin-folder";
 
 /** The registry and health `fetch`: the real `fetch` in use, a fake in a test. */
 export type PortalFetch = HealthFetch;
 
 export interface PortalContext {
-  /** The plugin's own `dist/portal.js`: the copy the portal runs from is compared with it. */
-  bundle: string;
   /** `Bun.version`, for the header. */
   bunVersion: string;
   /** This process's environment. `CLAUDECODE` refuses the command, not the server. */
   env: Record<string, string | undefined>;
   /** The real network, for the registry and the backend checks. */
   fetch: PortalFetch;
-  /** The plugin's `instructions` folder, beside `dist/`. */
-  instructionsSource: string;
   /** The system, through `src/machine/` (commands, the platform, the Warp app). */
   machine: Machine;
   /** Milliseconds since the epoch. */
@@ -33,12 +30,23 @@ export interface PortalContext {
   /** Opens a URL in the person's own browser; a test passes a recorder. */
   openBrowser: (url: string) => void;
   paths: CliPaths;
+  /**
+   * The plugin's own folder **as it is now**: Claude Code's installed version, else the folder
+   * the parent passed on `--plugin-dir` (`plugin-folder.ts`). Every plugin file — the router
+   * bundle, the instructions, `hooks.json` — is read from it at the moment it is needed, never
+   * from a path made at startup: the portal runs from a copy, and the version folder it started
+   * in can change or vanish during a 30-minute run.
+   */
+  pluginFolder: () => PluginFolder;
   /** Asks the router's health page: `realProbe()` in use, a fake in a test. */
   probe: HealthProbe;
   /** Runs `systemctl` and the plugin's commands. */
   runner: Runner;
-  /** The plugin's own `dist/router.js`: `gateway setup` installs this one. */
-  routerBundle: string;
+  /**
+   * The folders outside the home a global OmniRoute may sit in (`SYSTEM_PACKAGE_FOLDERS` by
+   * default). A test passes none, so it never finds the machine's own OmniRoute.
+   */
+  systemFolders?: readonly string[] | undefined;
   /** False where there is no systemd (macOS, Windows). */
   systemd: boolean;
   /** The full path of a command on PATH, or null. */

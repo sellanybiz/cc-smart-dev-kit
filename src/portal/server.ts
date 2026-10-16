@@ -15,20 +15,22 @@
  * is ever logged.
  */
 
-import type { Check, DoctorOptions } from "../cli/doctor";
+import type { Check } from "../cli/doctor";
 import { autoModeSource } from "../setup/auto-mode";
 import { isOlder } from "../update/check";
 import {
   type ActionContext,
   type ActionResult,
+  type DoctorSource,
   jobLines,
   type PortalMemory,
+  portalOmnirouteContext,
   readMemory,
   runAction,
   runDoctorPass,
   updateState,
 } from "./actions";
-import { PORTAL_CSS, PORTAL_JS, THEME_JS } from "./assets";
+import { PORTAL_CSS, PORTAL_ICON, PORTAL_JS, THEME_JS } from "./assets";
 import type { PortalContext } from "./context";
 import {
   backendRows,
@@ -43,11 +45,12 @@ import {
   shellFacts,
   slotRows,
   switchFacts,
+  warpRow,
 } from "./facts";
 import {
   admit,
-  COOKIE_NAME,
   CSRF_HEADER,
+  cookieName,
   cookieValue,
   networkAllowed,
   secretsMatch,
@@ -86,8 +89,11 @@ export function idleCheckMs(idleMs: number): number {
 export interface PortalOptions {
   /** The folder the portal was started in: the project its auto-mode rules come from. */
   cwd: string;
-  /** Everything the doctor pass needs; the Machine page runs it. */
-  doctor: DoctorOptions;
+  /**
+   * Everything the doctor pass needs; the Machine page runs it. Built per pass (`DoctorSource`),
+   * so the plugin's own files are read from the folder that is installed *now*.
+   */
+  doctor: DoctorSource;
   /** Thirty minutes in use; a test passes something short. */
   idleMs?: number;
   /** The port to bind; 0 takes a free one (what a test does). */
@@ -132,6 +138,15 @@ function html(body: string, extra: Record<string, string> = {}): Response {
 /** The one-word body of a refusal: nothing for a stranger to read, and no page. */
 function refused(): Response {
   return respond("Forbidden", { "content-type": "text/plain; charset=utf-8" }, 403);
+}
+
+/**
+ * The page for a request of the person's own that holds no session: a link already used, or a
+ * cookie from a portal that stopped. It says what to run for a new one, and holds no fact
+ * about this machine — no version, no port, no token — so it is safe without a session.
+ */
+function expiredLinkResponse(): Response {
+  return respond(expiredPage(), { "content-type": "text/html; charset=utf-8" }, 403);
 }
 
 /** The action's body, parsed; `{}` when it is not JSON, so the action refuses its own inputs. */
@@ -188,6 +203,14 @@ export async function startPortal(
   };
   const server = Bun.serve({
     fetch: (request) => handle(request),
+    /**
+     * A bug that throws inside a page (a page must never show a stack, and a machine's own
+     * paths are in one), and `development: false` with it: the default error page names the
+     * source file and the line. The one word goes out with the same headers as everything else.
+     */
+    error: () =>
+      respond("Internal Server Error", { "content-type": "text/plain; charset=utf-8" }, 500),
+    development: false,
     hostname: "127.0.0.1",
     port: options.port,
   });
@@ -208,30 +231,26 @@ export async function startPortal(
     return {
       cwd: options.cwd,
       memory: state.memory,
-      omniroute: {
-        confirm: null,
-        env: ctx.env,
-        health: (url, init) => ctx.fetch(url, init),
-        now: ctx.now,
-        paths: ctx.paths,
-        registry: (url, init) => ctx.fetch(url, init),
-        runner: ctx.runner,
-        say: () => undefined,
-        systemd: ctx.systemd,
-        which: ctx.which,
-      },
+      omniroute: portalOmnirouteContext(ctx),
       portal: ctx,
     };
   }
 
-  /** One doctor pass, kept. Two requests at once wait for the same one. */
+  /**
+   * One doctor pass, kept. Two requests at once wait for the same one. A pass that throws
+   * clears the in-flight marker, so the next load tries again instead of waiting forever on a
+   * rejected promise.
+   */
   async function doctorOnce(): Promise<void> {
     if (state.doctor !== null) return;
     if (state.doctorRun === null) {
-      state.doctorRun = runDoctorPass(actionContext(), options.doctor).then((pass) => {
-        state.doctor = { at: ctx.now(), checks: pass.checks };
-        state.doctorRun = null;
-      });
+      state.doctorRun = runDoctorPass(actionContext(), options.doctor)
+        .then((pass) => {
+          state.doctor = { at: ctx.now(), checks: pass.checks };
+        })
+        .finally(() => {
+          state.doctorRun = null;
+        });
     }
     await state.doctorRun;
   }
@@ -331,6 +350,7 @@ export async function startPortal(
             newest: updates.last?.result === "up-to-date" ? updates.last.detail : null,
             summary: summaryOf(updates.last),
           },
+          warp: warpRow(ctx),
         }),
         extra,
       );
@@ -376,13 +396,17 @@ export async function startPortal(
           return respond(PORTAL_JS, { "content-type": "text/javascript; charset=utf-8" }, 200);
         case "/assets/theme.js":
           return respond(THEME_JS, { "content-type": "text/javascript; charset=utf-8" }, 200);
+        // The page's own icon: the browser asks for it in the same breath as the page, and it
+        // is what stops a request for `/favicon.ico`, which the portal does not answer.
+        case "/assets/icon.svg":
+          return respond(PORTAL_ICON, { "content-type": "image/svg+xml; charset=utf-8" }, 200);
         default:
           return refused();
       }
     }
 
     const gate = admit({
-      cookie: cookieValue(request.headers.get("cookie"), COOKIE_NAME),
+      cookie: cookieValue(request.headers.get("cookie"), cookieName(port)),
       csrf: request.headers.get(CSRF_HEADER),
       expectedCsrf: state.session.csrf,
       host: request.headers.get("host"),
@@ -393,9 +417,18 @@ export async function startPortal(
       // Compared without leaking where they differ, like the session and the CSRF token.
       tokenValid: secretsMatch(state.session.token, token),
     });
-    if (gate.kind === "refused") return refused();
+    if (gate.kind === "refused") {
+      // A GET that passed the Host and Origin checks but holds no session is the person's own
+      // browser with a dead link or an old cookie: it gets the page that says so. A Host or
+      // Origin refusal stays the one word for a stranger, and so does a refused POST.
+      if (method === "GET" && gate.reason === "session") return expiredLinkResponse();
+      return refused();
+    }
 
-    touch(state.session, ctx.now());
+    // The Health page's five-second reload asks with `?auto=1`: it draws the page again and
+    // is not the person doing anything, so it must not hold the idle clock open — a tab left
+    // open would otherwise keep this portal alive forever.
+    if (url.searchParams.get("auto") !== "1") touch(state.session, ctx.now());
 
     if (gate.kind === "exchange") {
       // The first load: the one-time token becomes the session cookie, and the page is
@@ -408,7 +441,7 @@ export async function startPortal(
         facts: await shellFacts(ctx, port),
       };
       const path = PAGES.has(url.pathname) ? url.pathname : "/";
-      return pageResponse(path, shell, { "set-cookie": sessionCookie(COOKIE_NAME, value) });
+      return pageResponse(path, shell, { "set-cookie": sessionCookie(cookieName(port), value) });
     }
 
     if (url.pathname.startsWith("/api/")) {

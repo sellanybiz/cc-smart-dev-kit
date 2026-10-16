@@ -53,9 +53,9 @@ function header(shell: Shell, active: PageId): string {
   return `<header class="top">
 <div class="wrap">
 <div class="brand">${MARK}<span class="name">cc-smart-dev-kit</span><span class="ver">${escapeHtml(shell.facts.version)}</span></div>
-<div class="row">${state}<span class="pill plain">Bun ${escapeHtml(shell.bun)}</span></div>
+<div class="row chips">${state}<span class="pill plain">Bun ${escapeHtml(shell.bun)}</span></div>
 <nav class="pages" aria-label="Portal">${nav}</nav>
-<div class="row"><button type="button" class="themebtn" data-theme-toggle>Dark</button></div>
+<div class="row theme"><button type="button" class="themebtn" data-theme-toggle>Dark</button></div>
 </div>
 </header>
 <div class="privatebar">
@@ -92,6 +92,7 @@ export function layout(options: {
 <meta name="ccsdk-csrf" content="${escapeHtml(options.shell.csrf)}">
 <meta name="referrer" content="no-referrer">
 <title>cc-smart-dev-kit — ${escapeHtml(options.title)}</title>
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
 <script src="/assets/theme.js"></script>
 <link rel="stylesheet" href="/assets/portal.css">
 <script src="/assets/portal.js" defer></script>
@@ -116,6 +117,7 @@ export function barePage(options: { body: string; title: string }): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>cc-smart-dev-kit — ${escapeHtml(options.title)}</title>
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
 <script src="/assets/theme.js"></script>
 <link rel="stylesheet" href="/assets/portal.css">
 </head>
