@@ -77,7 +77,7 @@ After that, use `cc-smart-dev-kit setup` to set up again (for example after an u
 | `cc-smart-dev-kit setup --remove-warp` | Removes the Warp terminal, its package source and key, your Warp shortcuts and its Claude plugin. Shown and asked first. |
 | `cc-smart-dev-kit setup --statusline` | Also sets Claude Code's status line to `cc-smart-dev-kit statusline`, as a key cc-smart-dev-kit owns, without asking (also after an earlier "no"). It never replaces a status line you set: one you set yourself, also after setup had set it, stops setup before it writes anything, and `restore` leaves it. |
 | `cc-smart-dev-kit statusline` | The status line itself: plan usage, a warning from 85 %, and any gateway fallback in use. Reads the JSON Claude Code passes on stdin. |
-| `cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>]` | Which models answered on this machine, per session, from Claude Code's transcripts: the main session's replies by model, and apart, its subagents (how each was launched, the model of each reply, the share on Opus). Default: the last 6 hours. Read only; no message text. |
+| `cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>]` | Which models answered on this machine, per session, from Claude Code's transcripts: the main session's replies by model, and apart, its subagents (how each was launched, the model of each reply, the share on Opus). Default: the last 6 hours. It also shows auto mode's safety checks, which the gateway's router counted, by day, with the tokens each answer reported (below). Read only; no message text. |
 | `cc-smart-dev-kit doctor [--live]` | Checks the install, the cc-smart-dev-kit files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below). Prints ✓ or ✗ for each check, `·` for information and `!` for a warning (neither is a failure), and exits with 1 when a check fails. `--live` also proves the hooks and the worktree engine on the Claude Code installed here (below); it never runs without the flag. |
 | `cc-smart-dev-kit hook <worktree-create\|worktree-remove\|subagent-stop>` | The worktree engine, for a project that wires it in its own `.claude/settings.json` (§ Worktrees). It reads the hook's input on stdin and answers as Claude Code expects. With no name, it prints the lines to paste. |
 | `cc-smart-dev-kit session-name <session id> <name>` | Names a Claude session after its task. A session runs it itself when the project turns on `sessionNames` (below). |
@@ -544,6 +544,24 @@ cc-smart-dev-kit omniroute rollback   # put back what the last update replaced
   model wrote each reply, and the share on Opus. It also lists the Opus and Fable launches
   the `agent-guard` hook allowed, with the reason each one gave (review, or its
   `Opus reason:` / `Fable reason:` word) — an Opus or Fable agent spends your own plan usage.
+- **Auto mode's safety checks**, in the same report when the gateway is set up. In auto mode
+  Claude Code sends one extra request for every shell command or network action it judges
+  ([The auto-mode block](#the-auto-mode-block)). Those requests are not a session's replies —
+  they are Claude Code's own, so the transcripts this command reads do not show them. The
+  router counts them — how many went through each day, how many Anthropic answered and how
+  many the judge, and the input, output and cache tokens each answer reported — and keeps
+  the newest 30 days in
+  `~/.local/state/cc-smart-dev-kit/safety-checks.json`. `cc-smart-dev-kit usage` shows today
+  and the seven days before it, one line a day. The counting never changes an answer: the
+  bytes reach Claude Code exactly as they came, and they are read after the client has them.
+  **What this cannot tell you:** whether those tokens count against a **Pro, Max or Team**
+  plan's limit. Anthropic's docs say they count on **Enterprise and API** accounts; for the
+  others it is not confirmed, so the report says so under the numbers. Treat them as what was
+  spent, not as what will be billed. With no gateway set up there is no router to count, and
+  the report says "none".
+  **After updating to this version, run `cc-smart-dev-kit gateway setup` on each machine**: the
+  router gained this counting, and the copy a machine runs is replaced by that command (it
+  asks before it restarts the router, which cuts the answers in flight).
 
 ## The portal
 

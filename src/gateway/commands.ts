@@ -701,7 +701,7 @@ export async function runGateway(args: string[], ctx: GatewayContext): Promise<n
       return noArgs(() => commandOff(ctx));
     case "serve":
       return noArgs(async () => {
-        await startRouter(ctx.paths.gatewayConfigFile, ctx.paths.gatewayStateFile);
+        await startRouter(ctx.paths);
         return 0;
       });
     case undefined:

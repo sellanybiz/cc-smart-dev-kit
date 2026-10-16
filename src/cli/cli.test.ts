@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { MARKETPLACE_SOURCE, VERSION } from "../build-info";
+import { localDay } from "../gateway/safety-checks";
 import { type Machine, TEST_HOST_VAR } from "../machine/machine";
 import { MCP_VERSIONS } from "../mcp/versions";
 import { versionStampFile } from "../setup/instructions";
@@ -2262,12 +2263,49 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
         "Main sessions: 0 sessions; replies by model: none",
         "Subagents: 1 in 1 session; replies by model: glm-5.3-flash 1; on Opus: 0 of 1 replies (0%)",
         "",
+        "Auto mode's safety checks the router counted on this machine:",
+        "  none in the last 8 days (the gateway must be set up, and a session must have run with auto mode on)",
+        "",
       ].join("\n"),
     );
     expect(result.stdout).not.toContain("secret words");
     const wrong = run(["usage", "--days", "1"]);
     expect(wrong.exitCode).toBe(2);
     expect(wrong.stderr).toStartWith("Unknown option: --days");
+  });
+
+  test("usage shows the safety checks the router counted, today first", () => {
+    const { home, run } = setup();
+    // The router's file, as it writes it. Its days are the machine's own calendar days
+    // (proved in `src/gateway/safety-checks.test.ts`), so today's key comes from the clock.
+    const file = join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json");
+    mkdirSync(dirname(file), { recursive: true });
+    const today = localDay(Date.now());
+    writeFileSync(
+      file,
+      `${JSON.stringify(
+        {
+          days: {
+            [today]: {
+              anthropic: { cacheRead: 500, cacheWrite: 0, checks: 2, input: 1234, output: 7 },
+              checks: 3,
+              fallback: { cacheRead: 0, cacheWrite: 0, checks: 1, input: 11, output: 3 },
+            },
+          },
+          version: 1,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const result = run(["usage", "--hours", "1"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.split("\n").slice(-4)).toEqual([
+      "Auto mode's safety checks the router counted on this machine:",
+      `  today (${today}): 3 checks — Anthropic 2 (1234 in, 7 out, 500 cache read, 0 cache write); a fallback 1 (11 in, 3 out, 0 cache read, 0 cache write)`,
+      "  The tokens are what each answer's `usage` reported; whether they count against a Pro, Max or Team plan's limit is not confirmed (Anthropic's docs say they do on Enterprise and API accounts).",
+      "",
+    ]);
   });
 });
 

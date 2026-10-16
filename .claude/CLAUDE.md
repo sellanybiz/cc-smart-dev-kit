@@ -75,7 +75,7 @@ the first time you use it.
 | `src/shell/` | The shell lexer: reads a Bash line as the commands it runs (quotes, here-docs, `bash -c`). |
 | `src/testing/` | Test helpers: temp folders, a clean git environment, a fake machine for setup, the guard that fails any test reaching the live router's port 20100. |
 | `plugin/` | What users get: `dist/` (built, committed), `bin/` (`cc-smart-dev-kit`, and `cc-smart-dev-kit-bun`, which the hooks run through), `hooks/hooks.json`, `instructions/` (`setup` copies and imports them), `skills/`, `agents/`, `output-styles/`, the manifest. |
-| `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check), `check-duplicates.ts` (one home per rule in `plugin/`) and `check-version-bump.ts` (CI: a `plugin/` change raises the version). |
+| `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check), `check-duplicates.ts` (one home per rule in `plugin/`), `check-core-lines.ts` (the general instructions' line budget) and `check-version-bump.ts` (CI: a `plugin/` change raises the version). |
 | `docs/` | How the plugin is designed, the phases ahead, and the Claude Code behaviour it relies on. |
 
 Tests sit beside the code as `*.test.ts`.
@@ -89,6 +89,7 @@ Tests sit beside the code as `*.test.ts`.
 | `bun run lint` | Biome: lint and format check. `bun run format` fixes formatting. |
 | `bun run check:neutral` | Fails when a file names the publisher. |
 | `bun run check:duplicates` | Fails when a sentence of 12+ words repeats across the plugin's instructions, skills, agents and output styles. |
+| `bun run check:core-lines` | Fails when `plugin/instructions/core.md` passes 200 lines, and warns above 190: every session on every machine loads that file. |
 | `bun test` | The tests. |
 | `bun run build` / `build:check` | Rebuild `plugin/dist`, or fail when it is stale. |
 | `claude plugin validate plugin --strict` | Checks the plugin manifest. |
