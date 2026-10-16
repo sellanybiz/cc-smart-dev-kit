@@ -289,7 +289,10 @@ function Test-OldPluginInstalled {
 # in place now. `<installLocation>/plugin` is the plugin's folder inside this repository
 # (marketplace.json's `source`), so the manifest sits there.
 function Get-MarketplaceVersion {
-  $location = Get-JsonField $KnownMarketplaces "$Marketplace.installLocation"
+  # `${Marketplace}` and not `$Marketplace`: inside a double-quoted string PowerShell reads a
+  # variable followed by `.` as MEMBER ACCESS, so `"$Marketplace.installLocation"` was the
+  # marketplace's name alone, with the property missing (the same trap as `$Repo:`).
+  $location = Get-JsonField $KnownMarketplaces "${Marketplace}.installLocation"
   if ([string]::IsNullOrEmpty($location)) { return "" }
   return Get-JsonField (Join-Path $location "plugin\.claude-plugin\plugin.json") "version"
 }
@@ -435,9 +438,9 @@ function Test-GitCanRead {
   try {
     $env:GIT_TERMINAL_PROMPT = "0"
     $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=8"
-    & git ls-remote "git@github.com:$Repo.git" 2>$null | Out-Null
+    & git ls-remote "git@github.com:${Repo}.git" 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) { return $true }
-    & git ls-remote "https://github.com/$Repo.git" 2>$null | Out-Null
+    & git ls-remote "https://github.com/${Repo}.git" 2>$null | Out-Null
     return $LASTEXITCODE -eq 0
   } finally {
     if ($hadPrompt) { $env:GIT_TERMINAL_PROMPT = $savedPrompt } else { Remove-Item env:GIT_TERMINAL_PROMPT -ErrorAction SilentlyContinue }
@@ -494,7 +497,7 @@ if ([string]::IsNullOrEmpty($Bun)) {
   if ($DryRun) {
     Write-Skip "3/8 Bun $BunVersion is older than ${MinBun}: the plan asks to upgrade it (bun upgrade)"
   } else {
-    Read-Yes "3/8 Bun $BunVersion is older than $MinBun. Upgrade it now with bun upgrade?"
+    Read-Yes "3/8 Bun $BunVersion is older than ${MinBun}. Upgrade it now with bun upgrade?"
     if ($script:Answer -eq "no") {
       Stop-Refused "Bun is still ${BunVersion}: cc-smart-dev-kit needs Bun $MinBun or newer" @("$Bun upgrade")
     }

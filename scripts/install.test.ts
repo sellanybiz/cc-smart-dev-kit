@@ -1002,6 +1002,34 @@ describe("the PowerShell files: the patterns the Windows run taught us", () => {
       expect(/\$[A-Za-z_][A-Za-z0-9_]* \+= /.test(code)).toBe(false);
     }
   });
+
+  // `"$Marketplace.installLocation"` is MEMBER ACCESS inside a double-quoted string:
+  // PowerShell reads `$Marketplace`, then `.installLocation`, and a string has no such
+  // property -- so the path was the marketplace's name alone and the field came back empty
+  // (0.4.2's fourth Windows run printed "the plugin is updated" on a machine that was already
+  // up to date). `"$Repo:"` is the same trap with a colon, and `$Repo.git` in the two git
+  // URLs was a third. `"${…}"` ends the variable name and is the fix.
+  test("no variable inside a string is followed by a member-access character", () => {
+    // The scope and drive names are not variables to end with braces: `"$env:NAME"` is the
+    // way to read an environment variable, and `"$script:Answer"` a scope.
+    const allowed = new Set(["env", "global", "local", "private", "script", "using", "variable"]);
+    for (const file of [INSTALL_PS1, SMOKE_PS1]) {
+      const text = readFileSync(file, "utf8");
+      const offenders: string[] = [];
+      for (const line of text.split("\n")) {
+        if (/^\s*#/.test(line)) continue;
+        for (const quoted of line.matchAll(/"([^"]*)"/g)) {
+          const span = quoted[1] ?? "";
+          if (span.includes("$(") || span.includes("${")) continue;
+          // A member access needs a name after the dot (`$x.y`); `$x. text` is plain text.
+          for (const found of span.matchAll(/\$([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z_]|\[|:)/g)) {
+            if (!allowed.has(found[1] ?? "")) offenders.push(`$ ${found[0]}`);
+          }
+        }
+      }
+      expect(offenders).toEqual([]);
+    }
+  });
 });
 
 describe("install.sh and install.ps1: the shared rules", () => {
@@ -1027,11 +1055,14 @@ describe("install.sh and install.ps1: the shared rules", () => {
   // Read as text on purpose: PowerShell cannot run on Linux, and this is a parse error the
   // Windows job hit (`"... $Repo: ..."` reads as a drive-qualified variable). A variable
   // followed by `:` must be written `${Name}:`, unless the colon is a scope (`$env:`, …).
+  // Comment lines are skipped: a comment is never parsed as code, and these files explain
+  // the trap by naming it.
   test("no PowerShell variable runs into a colon (`$Repo:` is a parse error; braces fix it)", () => {
     const scopes = /^(env|script|global|local|private|using|function|variable)$/i;
     for (const file of [INSTALL_PS1, SMOKE_PS1]) {
       const bad = readFileSync(file, "utf8")
         .split("\n")
+        .filter((line) => !/^\s*#/.test(line))
         .flatMap((line, index) =>
           [...line.matchAll(/(?<!\$\{)\$([A-Za-z_][A-Za-z0-9_]*):(?!:)/g)]
             .filter((match) => !scopes.test(match[1] ?? ""))
