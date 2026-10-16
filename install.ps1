@@ -242,7 +242,9 @@ function Test-JsonKey([string]$File, [string]$Key) {
 function Get-InstalledPath {
   if (-not (Test-Path $InstalledPlugins)) { return "" }
   try { $data = Get-Content -Raw -Path $InstalledPlugins | ConvertFrom-Json } catch { return "" }
-  $entries = $data.plugins.PSObject.Properties["$Plugin"]
+  $plugins = $data.plugins
+  if ($null -eq $plugins) { return "" }
+  $entries = $plugins.PSObject.Properties["$Plugin"]
   if ($null -eq $entries) { return "" }
   foreach ($entry in @($entries.Value)) {
     if ($entry.scope -eq "user") { return [string]$entry.installPath }
@@ -253,7 +255,9 @@ function Get-InstalledPath {
 function Get-InstalledVersion {
   if (-not (Test-Path $InstalledPlugins)) { return "" }
   try { $data = Get-Content -Raw -Path $InstalledPlugins | ConvertFrom-Json } catch { return "" }
-  $entries = $data.plugins.PSObject.Properties["$Plugin"]
+  $plugins = $data.plugins
+  if ($null -eq $plugins) { return "" }
+  $entries = $plugins.PSObject.Properties["$Plugin"]
   if ($null -eq $entries) { return "" }
   foreach ($entry in @($entries.Value)) {
     if ($entry.scope -eq "user") { return [string]$entry.version }
@@ -265,7 +269,9 @@ function Get-InstalledVersion {
 function Test-PluginEnabled {
   if (-not (Test-Path $SettingsFile)) { return $false }
   try { $data = Get-Content -Raw -Path $SettingsFile | ConvertFrom-Json } catch { return $false }
-  $enabled = $data.enabledPlugins.PSObject.Properties["$Plugin"]
+  $enabledPlugins = $data.enabledPlugins
+  if ($null -eq $enabledPlugins) { return $false }
+  $enabled = $enabledPlugins.PSObject.Properties["$Plugin"]
   return $null -ne $enabled -and $enabled.Value -eq $true
 }
 
@@ -274,7 +280,9 @@ function Test-PluginEnabled {
 function Test-OldPluginInstalled {
   if (-not (Test-Path $InstalledPlugins)) { return $false }
   try { $data = Get-Content -Raw -Path $InstalledPlugins | ConvertFrom-Json } catch { return $false }
-  return $null -ne $data.plugins.PSObject.Properties["$OldPlugin"]
+  $plugins = $data.plugins
+  if ($null -eq $plugins) { return $false }
+  return $null -ne $plugins.PSObject.Properties["$OldPlugin"]
 }
 
 # The version the marketplace's own copy declares: what `claude plugin install` would put
@@ -341,6 +349,19 @@ function Invoke-Cli([string[]]$CliArgs) {
 # answer meant for a question.
 function Invoke-CliQuiet([string[]]$CliArgs) {
   $null | Invoke-Cli $CliArgs
+}
+
+# A native command's output and its stderr, as one string. Windows PowerShell turns a native
+# command's stderr into error records whose own rendering prefixes and WRAPS every line, so
+# each record is taken as its message: the text stays what the command wrote, and a long
+# doctor line is still one line.
+function Get-CommandText([scriptblock]$Command) {
+  $lines = @(
+    & $Command 2>&1 | ForEach-Object {
+      if ($_ -is [System.Management.Automation.ErrorRecord]) { "$($_.Exception.Message)" } else { [string]$_ }
+    }
+  )
+  return ($lines -join "`n")
 }
 
 # The line that retries one of the plugin's own commands, once it is installed: the launcher
@@ -620,10 +641,25 @@ if ($DryRun) {
     if ($LASTEXITCODE -ne 0) { Stop-Failed "browser setup failed" @((Get-PluginCommand @("browser", "setup"))) }
     Read-Yes "7/8 Paste the extension's token now (the extension's status page shows it)?"
     if ($script:Answer -eq "yes") {
-      # The prompt, the invisible typing and the token's shape check are the command's own.
-      Invoke-Cli @("browser", "token")
-      if ($LASTEXITCODE -ne 0) { Stop-Failed "the token was not saved" @((Get-PluginCommand @("browser", "token"))) }
-      Write-Step "7/8 the browser's token is saved"
+      # The paste is read here, with no echo, and reaches the command on stdin -- never as an
+      # argument. (install.sh hands the command its terminal instead: a PowerShell child
+      # cannot be given the console's input stream, only the console.)
+      Read-Secret "7/8 Paste the token from the extension's status page (it is not shown):"
+      $BrowserToken = $script:Answer
+      $script:Answer = ""
+      $saved = $false
+      if (-not [string]::IsNullOrEmpty($BrowserToken)) {
+        $BrowserToken | Invoke-Cli @("browser", "token")
+        $BrowserToken = ""
+        if ($LASTEXITCODE -ne 0) { Stop-Failed "the token was not saved" @((Get-PluginCommand @("browser", "token"))) }
+        $saved = $true
+      }
+      if ($saved) {
+        Write-Step "7/8 the browser's token is saved"
+      } else {
+        Write-Skip "7/8 the browser's token was skipped: run ``$(Get-PluginCommand @("browser", "token"))`` when you have it"
+        $Left.Add("the browser's token: $(Get-PluginCommand @("browser", "token"))")
+      }
     } else {
       Write-Skip "7/8 the browser's token was skipped: run ``$(Get-PluginCommand @("browser", "token"))`` when you have it"
       $Left.Add("the browser's token: $(Get-PluginCommand @("browser", "token"))")
@@ -713,9 +749,9 @@ if ($DryRun) {
 }
 
 if (Test-Path $Launcher) {
-  $doctorOut = & $Launcher doctor 2>&1 | Out-String
+  $doctorOut = Get-CommandText { & $Launcher doctor }
 } else {
-  $doctorOut = Invoke-CliQuiet @("doctor") 2>&1 | Out-String
+  $doctorOut = Get-CommandText { Invoke-CliQuiet @("doctor") }
 }
 $doctorCode = $LASTEXITCODE
 Write-Output $doctorOut.TrimEnd()

@@ -156,7 +156,15 @@ function Invoke-Install($World, [string[]]$Arguments, [hashtable]$Extra = @{}) {
     [Environment]::SetEnvironmentVariable($key, [string]$Extra[$key], "Process")
   }
   try {
-    $out = & $shell -NoProfile -ExecutionPolicy Bypass -File $install @Arguments 2>&1 | Out-String
+    # The child's stdout and stderr, as text. Windows PowerShell turns a native command's
+    # stderr into error records whose rendering wraps and prefixes every line, so they are
+    # taken as their message -- and nothing goes through Out-String, which wraps long lines.
+    $lines = @(
+      & $shell -NoProfile -ExecutionPolicy Bypass -File $install @Arguments 2>&1 | ForEach-Object {
+        if ($_ -is [System.Management.Automation.ErrorRecord]) { "$($_.Exception.Message)" } else { [string]$_ }
+      }
+    )
+    $out = $lines -join "`n"
     $code = $LASTEXITCODE
   } finally {
     foreach ($key in $applied.Keys) { [Environment]::SetEnvironmentVariable($key, $applied[$key], "Process") }
@@ -172,6 +180,14 @@ function Assert-Contains([string]$What, [string]$Text, [string]$Expected) {
   if (-not $Text.Contains($Expected)) {
     Stop-Smoke "$What`: expected to find `"$Expected`" in:`n$Text"
   }
+}
+
+# True when the world's log holds a command whose line ENDS with this tail. The tail has no
+# path separator in it on purpose: install.ps1 builds a Windows path (`...\dist\cli.js`), and
+# an assertion written with `/` never matches it -- which is exactly how this test failed on
+# its first Windows run.
+function Test-Called($World, [string]$Tail) {
+  return [bool]@(Get-Calls $World | Where-Object { $_.EndsWith($Tail) })
 }
 
 function Assert-Code([string]$What, $Result, [int]$Expected, $World = $null) {
@@ -204,10 +220,10 @@ try {
   foreach ($call in @("claude plugin marketplace add $repo", "claude plugin marketplace add thedotmack/claude-mem", "claude plugin marketplace add anthropics/claude-plugins-official", "claude plugin install cc-smart-dev-kit@cc-smart-dev-kit --scope user")) {
     if ($calls -notcontains $call) { Stop-Smoke "a fresh machine: `"$call`" was not called; the log is:`n$($calls -join "`n")" }
   }
-  if (-not ($calls | Where-Object { $_ -like "bun --no-env-file --config=*dist/cli.js migrate" })) {
+  if (-not (Test-Called $world "cli.js migrate")) {
     Stop-Smoke "a fresh machine: migrate was not run through the plugin's own bundle; the log is:`n$($calls -join "`n")"
   }
-  if (-not ($calls | Where-Object { $_ -like "bun --no-env-file --config=*dist/cli.js setup" })) {
+  if (-not (Test-Called $world "cli.js setup")) {
     Stop-Smoke "a fresh machine: setup was not run through the plugin's own bundle"
   }
   if ($calls -notcontains "launcher doctor") { Stop-Smoke "a fresh machine: doctor did not run through the launcher" }
@@ -239,7 +255,7 @@ try {
   $names.Add("the exit code 3")
 
   # 4. An old-anymodel machine: migrate, then setup -- and the old plugin is asked about.
-  $old = New-World "old" @{ Answers = @("y", "y", ("A" * 43), "n", "n", "n"); OldMarketplace = $true; InstalledVersion = $marketplaceVersion; OldPlugin = $true }
+  $old = New-World "old" @{ Answers = @("y", "y", "y", ("A" * 43), "n", "n"); OldMarketplace = $true; InstalledVersion = $marketplaceVersion; OldPlugin = $true }
   $result = Invoke-Install $old @($repo)
   Assert-Code "an old anymodel machine" $result 0 $old
   Assert-Contains "an old anymodel machine" $result.out "[ok] 6/8 migrate finished"
@@ -253,7 +269,7 @@ try {
   $names.Add("an old anymodel machine")
 
   # 5. The old plugin left in place: one line, and it is in what is left.
-  $kept = New-World "kept" @{ Answers = @("y", "y", ("A" * 43), "n", "n", "n"); InstalledVersion = $marketplaceVersion; OldPlugin = $true }
+  $kept = New-World "kept" @{ Answers = @("n", "y", "y", ("A" * 43), "n", "n"); InstalledVersion = $marketplaceVersion; OldPlugin = $true }
   $result = Invoke-Install $kept @($repo)
   Assert-Code "the old plugin left" $result 0 $kept
   Assert-Contains "the old plugin left" $result.out "the old anymodel plugin was left in place"
@@ -276,7 +292,7 @@ try {
   $result = Invoke-Install $router @($repo)
   Assert-Code "the router restart" $result 0 $router
   Assert-Contains "the router restart" $result.out "A router is already installed here: setup restarts it"
-  if (-not ((Get-Calls $router) | Where-Object { $_ -like "*gateway setup --backend-key-stdin omniroute --yes" })) {
+  if (-not (Test-Called $router "gateway setup --backend-key-stdin omniroute --yes")) {
     Stop-Smoke "the router restart: --yes did not reach gateway setup; the log is:`n$((Get-Calls $router) -join "`n")"
   }
   $passed++
@@ -316,7 +332,7 @@ try {
   Assert-Contains "-DryRun" $result.out "cc-smart-dev-kit installer: dry run, the plan for this machine. Nothing is changed."
   Assert-Contains "-DryRun" $result.out "Dry run: nothing was written, nothing ran, and no network was reached."
   $calls = Get-Calls $dry
-  if ($calls | Where-Object { $_ -like "claude *" -or $_ -like "git *" -or $_ -like "*dist/cli.js*" }) {
+  if ($calls | Where-Object { $_ -like "claude *" -or $_ -like "git *" -or $_ -like "*cli.js*" }) {
     Stop-Smoke "-DryRun ran something:`n$($calls -join "`n")"
   }
   if (Test-Path (Join-Path $dry.env.CLAUDE_CONFIG_DIR "plugins\known_marketplaces.json")) {
@@ -335,7 +351,7 @@ try {
   if (($calls | Where-Object { $_ -eq "stdin-nonempty" }).Count -ne 2) {
     Stop-Smoke "the secrets: a key did not reach its command on stdin:`n$($calls -join "`n")"
   }
-  if (-not ($calls | Where-Object { $_ -like "stdin-43-chars" })) {
+  if (-not ($calls | Where-Object { $_ -eq "stdin-43-chars" })) {
     Stop-Smoke "the secrets: the token did not reach `browser token` on stdin"
   }
   foreach ($secret in @("omniroute-key-abc123", "tvly-key-abc123", ("A" * 43))) {
