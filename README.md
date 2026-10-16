@@ -73,6 +73,8 @@ After that, use `cc-smart-dev-kit setup` to set up again (for example after an u
 | `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
 | `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version. `--check` only says whether a newer version exists (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
 | `cc-smart-dev-kit gateway <command>` | The optional AI gateway (below). |
+| `cc-smart-dev-kit omniroute <status\|update\|rollback>` | The OmniRoute behind the gateway's affordable slots (below): what is installed, the newest npm release at least three days old, the user unit that runs it, and the backend that talks to it. `update` installs the newest such release, restarts its unit, checks the model path, and puts the old version back when the new one does not answer. `rollback` installs the version the last update replaced. `update` and `rollback` refuse to run inside a Claude Code session, and are never in the background. |
+| `cc-smart-dev-kit portal [--port <port>] [--no-open]` | The local portal (below): a page on this machine to see and change the gateway's settings, the updates, the heavy-job queue, the companions and the OmniRoute. It binds `127.0.0.1` only, prints a link with a one-time token, and stops after 30 minutes with no request. It refuses to run inside a Claude Code session: the portal is for you, not for Claude. |
 | `cc-smart-dev-kit search "<query>" [--max <n>] [--json]`<br>`cc-smart-dev-kit search --fetch <url> [--json]` | Searches the web through the gateway's OmniRoute backend (Ollama's web search among its providers), or reads one page's text with `--fetch`. Prints each result's title, its URL and a short snippet. `--max` asks for 1 to 50 results. The query, or the URL, goes to that search or fetch provider on the internet; `--fetch` refuses a local or private address. Needs the gateway set up (below). |
 | `cc-smart-dev-kit job <command>` | The machine-wide queue for heavy jobs (below). |
 | `cc-smart-dev-kit migrate [--dry-run] [--yes]` | Moves a machine that still has the plugin's old `anymodel` names ([Moving from anymodel](#moving-from-anymodel)). `--dry-run` prints every step and writes, runs and stops nothing. `--yes` answers the router question without asking; the old plugin is uninstalled only after a yes on a terminal. Refuses to run inside a Claude Code session: it replaces the router that session's own model traffic goes through. |
@@ -159,6 +161,9 @@ it works when Claude Code was started with a PATH that has no bun.
 - Warp: the app and its version, and its Claude plugin. Not installed, or installed
   without its plugin (or with it turned off), is information (`·`): Warp is optional.
   ✗ only for the plugin without the app;
+- OmniRoute, when it is installed here: a `·` line when a newer release has been out for
+  three days (with `cc-smart-dev-kit omniroute update`), and nothing when it is the newest or
+  the registry cannot be read. Never a failure (§ OmniRoute updates);
 - tmux, when it is on your PATH: whether `~/.tmux.conf` has the line that lets an alert out
   of a pane (§ Notifications), and, inside a tmux session, whether the running server passes
   alerts through. Both are information (`·`) with the fix (`cc-smart-dev-kit setup`, or
@@ -333,8 +338,49 @@ the query (or the URL) goes on to the search or fetch provider on the internet, 
 put a key, a private host name or private data in it. The details, the measured numbers
 and the limits: [docs/search.md](docs/search.md).
 
-### The usage limit: the alert, the status line, and `usage`
+### OmniRoute updates
 
+The affordable slots answer through OmniRoute, a program a person installs themselves (a
+global Bun or npm install) and runs as a user service. cc-smart-dev-kit keeps it on a
+version that has had a few days to prove itself:
+
+```sh
+cc-smart-dev-kit omniroute status     # what is installed, and what is newer
+cc-smart-dev-kit omniroute update     # install the newest safe release, restart, check
+cc-smart-dev-kit omniroute rollback   # put back what the last update replaced
+```
+
+- **Three days.** `status` and `update` read the npm registry
+  (`https://registry.npmjs.org/omniroute`) and take the newest plain `x.y.z` release
+  published at least three days ago. A canary, a version published this morning, or a
+  version the registry has no time for, is never installed. A release that reaches a machine
+  the hour it is published reaches it before anyone else has run it — and OmniRoute is the
+  model path of every affordable slot here ([docs/design.md](docs/design.md) § OmniRoute).
+- **Nothing about one machine is written into the plugin.** The user unit that runs it is
+  found by looking for the one whose `ExecStart` runs it, and the install is found from that
+  command line (walking up to the package's own manifest); with no unit, the global install
+  folders of Bun and npm and the `omniroute` on PATH are looked in. The backend that talks to
+  it is the one named `omniroute` in `gateway.json`, else one on this machine whose port the
+  unit names. `status` says which it found.
+- **The update restarts it.** The confirmation says what that costs: while the unit comes
+  back, the gateway's slots fall to their next target, and the last target of both shipped
+  slots is Claude — so work goes on, on your own Claude login, and not on an affordable model.
+- **A version that does not answer is put back**, and the failure is said: the health check
+  reads `/v1/models` with the backend's key (a 401 there is named as the key, not the
+  version) and then sends one tiny chat to the first affordable target of the scout slot. The
+  prompt is a fixed word of the plugin's own; nothing from a conversation, this machine or
+  you is sent. When the check fails, the old version is installed again and the unit
+  restarted, then the reason is printed.
+- **`rollback`** installs the version the last update replaced, recorded in
+  `~/.claude/cc-smart-dev-kit/omniroute.json` before the install. It keeps that record, so a
+  second rollback is a no-op rather than a bounce.
+- **Never in the background, and never inside a Claude Code session.** It restarts a service
+  that answers real requests, so a person runs it, watches it and reads what failed; and a
+  session must not move its own model path mid-turn.
+- **`doctor`** shows one `·` line when a newer release has been out for three days. Never a
+  failure: when to update is your choice.
+
+### The usage limit: the alert, the status line, and `usage`
 - **The alert.** When a turn stops at your plan's usage limit, the plugin's StopFailure
   hook shows a desktop notification about your session's model (only once the gateway is
   set up). On Linux it offers "Use <target> until it resets", which runs the `slot opus`
@@ -349,6 +395,60 @@ and the limits: [docs/search.md](docs/search.md).
   model wrote each reply, and the share on Opus. It also lists the Opus and Fable launches
   the `agent-guard` hook allowed, with the reason each one gave (review, or its
   `Opus reason:` / `Fable reason:` word) — an Opus or Fable agent spends your own plan usage.
+
+## The portal
+
+`cc-smart-dev-kit portal` starts a small web page on this machine: the same facts as the
+commands above, and the same actions, with a form instead of a command line.
+
+```
+$ cc-smart-dev-kit portal
+cc-smart-dev-kit portal 0.3.0 — for you, not for Claude.
+Running from ~/.local/share/cc-smart-dev-kit/portal.js.
+
+  http://127.0.0.1:20150/?t=…
+
+It binds 127.0.0.1:20150 only, and stops after 30 minutes with no request.
+Stop it now with Ctrl+C here.
+```
+
+Your default browser opens that link. `--port <n>` changes the port (0 takes a free one);
+`--no-open` only prints it.
+
+**It refuses to run inside a Claude Code session** (`CLAUDECODE`): "the portal is for you,
+not for Claude". The portal changes this machine's model path and the safety judge, and a
+session must never do that for itself. Run it in your own terminal — and never open the page
+in the browser Claude drives.
+
+Five screens, each following the design the owner approved (2026-10-16):
+
+| Screen | What it shows |
+|---|---|
+| **Overview** | The plan limits the router saw and the slots answering from a fallback; every slot's chain; the three switches (the gateway, your own judge, the opus and fable fallback); the latest warnings. |
+| **Slots** | A chain per slot, built from the backends' live model lists. **Test each target** — one tiny chat to each affordable model, and the force-push test for a judge — then **Save**, after a confirmation that every running Claude session uses it from its next request. |
+| **Health** | The router's counters, each backend and whether it answers, the targets resting, and its journal. Looks again every five seconds (Pause stops that). |
+| **Machine** | Updates (installed, newest, last check, on hold, check now, install), the heavy-job queue, the companion plugins, the OmniRoute card, `doctor` (run again), and the project's auto-mode rules. |
+| **How this page stays private** | The security design in plain words, linked from the footer. |
+
+**Everything it does is real**, and every action runs the same function the command line
+runs — the same checks, the same lock, the same words (`docs/design.md` § The portal). What
+needs `sudo` is not run: installing or removing the Warp app is shown as a command to copy.
+Writing the auto-mode trust rules needs an explicit confirmation on the page, which stands in
+for the terminal question the command line asks.
+
+**How it stays private.** It binds `127.0.0.1` and nothing else; the `Host` header must be
+exactly `127.0.0.1:<port>` or `localhost:<port>` (that is where a DNS-rebinding page stops);
+a foreign `Origin` is refused; the one-time token in the link is exchanged on the first load
+for an `HttpOnly`, `SameSite=Strict` session cookie, and the URL is cleaned; a change (a
+POST) must carry an `Origin` of ours **and** the CSRF token that came with the page. A strict
+`Content-Security-Policy` allows no inline script and nothing from the internet — no web
+font, no CDN. A backend key never reaches the page: it shows as `omni_…a1b2`. And the portal
+stops itself after 30 minutes with no request, so a page left open on an unlocked screen does
+not stay a way in.
+
+It runs from a copy in `~/.local/share/cc-smart-dev-kit/portal.js`, never from the plugin's
+version folder: Claude Code deletes an old version folder some time after an update, even
+under a running process. The copy is a managed file, so `cc-smart-dev-kit restore` removes it.
 
 ## Instructions, skills and agents
 
@@ -818,8 +918,7 @@ See `.claude/CLAUDE.md`. In short: `bun install`, change `src/`, `bun run build`
 
 - [Design](docs/design.md): how the parts fit, and why.
 - [The AI gateway](docs/gateway.md): the router, its slots, and the judge.
-- [Web search](docs/search.md): `cc-smart-dev-kit search`, its cost and its limits.
-- [Roadmap](docs/roadmap.md): the phases, done and ahead.
+- [Web search](docs/search.md): `cc-smart-dev-kit search`, its cost and its limits.- [Roadmap](docs/roadmap.md): the phases, done and ahead.
 - [Heavy jobs](docs/jobs.md): the machine-wide queue, its kinds, config and limits.
 - [Claude Code contract](docs/claude-code-contract.md): the Claude Code behaviour the
   plugin relies on, and the version it was last proved on.

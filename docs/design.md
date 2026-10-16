@@ -265,7 +265,164 @@ on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
 So an automatic update can never restart something or widen a permission without the
 user seeing it: a new router version runs only after `gateway setup`, which asks.
 
-### Moving a machine from the old names (0.3.0)
+## The portal
+
+`cc-smart-dev-kit portal` (`src/portal/`) starts a page on this machine, on `127.0.0.1` only,
+to see and change the gateway's settings, the updates, the heavy-job queue, the companions
+and OmniRoute. The screens the owner approved (2026-10-16) are `views.ts`, and the copy on
+each one follows them.
+
+### What it is, and what it is not
+
+- **Everything it does is real**, and goes through the command line's own code. A slot, the
+  gateway switch, the judge, the fallback, the router restart and the OmniRoute update run
+  `runGateway` / `runOmniroute` — the same functions, the same checks, the same lock, the
+  same lines, with `print` collecting them instead of the terminal (`src/gateway/commands.ts`,
+  `src/cli/update.ts` and `src/cli/doctor.ts` each take their output from the caller for
+  this). A page can therefore never do something the command line would refuse.
+- **The person's own yes.** A browser cannot be asked a terminal question, so each page asks
+  before it sends the POST (`data-confirm`) and the action passes the command line its `--yes`.
+  The auto-mode trust rules need an explicit confirmation on the page, which stands in for
+  the terminal question `setup` asks.
+- **What needs `sudo` is not run.** Installing or removing the Warp app shows the exact
+  command to copy.
+- **It refuses inside a Claude Code session** (`CLAUDECODE`), in the command and again in the
+  bundle the child runs: the portal changes this machine's model path and the safety judge,
+  and a session must never do that for itself.
+
+### The door
+
+`src/portal/guard.ts` is the whole door, pure and tested on its own. Every request, in order:
+
+1. **`Host` exactly ours**: `127.0.0.1:<port>` or `localhost:<port>`, or 403. A page at
+   `evil.example` whose DNS points here reaches the portal and gets 403 — that is where DNS
+   rebinding stops.
+2. **`Origin`, when present, ours**: `http://127.0.0.1:<port>` or `http://localhost:<port>`.
+   On a POST it must be present at all: a browser sends `Origin` on every POST, so one
+   without it did not come from a page of this portal.
+3. **A session, or the one-time token**: `GET /?t=<token>` with the token made at start
+   exchanges it for the cookie; every other request needs the cookie.
+4. **A POST carries the CSRF token** that came with a page of ours (`x-ccsdk-csrf`), compared
+   in constant time. The cookie alone never changes anything.
+
+The cookie is `HttpOnly; SameSite=Strict; Path=/` and **not** `Secure` (this is http on
+`127.0.0.1`, and a `Secure` cookie would never be stored). The token works once: a link
+already used, or a portal already stopped, gets 403; the page then offers `cc-smart-dev-kit
+portal` again. `history.replaceState` cleans the token out of the URL on the first load, so it
+does not sit in the address bar or in the back button.
+
+Every answer carries a strict `Content-Security-Policy`: `default-src 'none'`, `script-src
+'self'` with no `unsafe-inline`, `style-src 'self'`, `connect-src 'self'`, `form-action
+'self'`, `frame-ancestors 'none'`, `img-src 'self' data:`. So no script may be inline, every
+handler is `data-*` and an `addEventListener`, no markup carries a `style` attribute (the one
+number that must be a value — a meter's width — travels as `data-percent` and the browser
+script applies it; `[hidden] { display: none !important }` keeps that working where a class
+says `display: flex`), and nothing comes from the internet: no web font, no CDN, a local font
+stack. The stylesheet and the two scripts are served by the portal itself and need no session
+(a page cannot draw without them); everything else does.
+
+**Keys never reach the page.** Every backend's key goes through `maskKey` (`omni_…a1b2`), and
+a whole key is never in a page, a JSON answer or a log line.
+
+**It stops after 30 minutes with no request** (`session.ts`): the link and the cookie are
+dead, and the process exits. A portal left open on an unlocked screen is a way into every
+Claude session on the machine, so it does not stay open by itself.
+
+### What it runs from
+
+A copy in `~/.local/share/cc-smart-dev-kit/portal.js`, never the plugin's version folder:
+Claude Code deletes an old version folder some time after an update, even under a running
+process. `cc-smart-dev-kit portal` writes the copy through `writeManagedFile` (so `restore`
+removes it) and starts it as a **child with this terminal's own stdio** — the link is printed
+where the person is looking, and Ctrl+C reaches both through the same process group. It is a
+bundle of its own (`src/entries/portal.ts` → `plugin/dist/portal.js`), so nothing about it
+changes `router.js` (a changed router bundle restarts every machine's router).
+
+### What a page cannot know
+
+Two numbers the design's mockups show are not invented, and the pages say so instead:
+
+- **Claude Code's plan-usage percentages.** Claude Code computes them from the headers of its
+  own answers and hands them to the status line on stdin (`src/cli/statusline.ts`); nothing
+  writes them down. The router records only the limits it saw — which model, which window,
+  when it resets — and that is what the Overview shows, with a line naming where the
+  percentages live.
+- **OmniRoute's prices and image support.** They are in OmniRoute's own catalog, which the
+  gateway never reads: `/v1/models` carries an id and a context length, and that is all the
+  model table shows.
+
+## OmniRoute
+
+The affordable slots answer through OmniRoute, a program a person installs themselves (a
+global Bun or npm install) and runs as a user service (`src/omniroute/`).
+`cc-smart-dev-kit omniroute status|update|rollback` keeps it on a version that has had a few
+days to prove itself. `doctor` says, as information, when one is waiting.
+
+- **Nothing about one machine is written into the plugin.** The unit is found by reading
+  `~/.config/systemd/user/*.service` and taking the one whose `ExecStart` runs OmniRoute; the
+  install is found from that command line by walking up to the package's own manifest. With
+  no unit, Bun's and npm's global folders and the `omniroute` on PATH are looked in. The
+  backend that talks to it is the one named `omniroute` in `gateway.json`, else one on this
+  machine whose port the unit's `Environment=` or `EnvironmentFile=` names.
+- **Three days.** `newestRelease` reads `https://registry.npmjs.org/omniroute` and takes the
+  newest plain `x.y.z` with a published time at least three days old. A canary, a version
+  published today and a version the registry has no time for are all left out. A release that
+  reaches a machine the hour it is published reaches it before anyone else has run it, and
+  OmniRoute is the model path of every affordable slot here.
+- **The update.** Record the version it replaces in `<stateDir>/omniroute.json`; install
+  through the manager that owns the install (`bun add --global omniroute@<v>`, or
+  `npm install --global`); `systemctl --user restart <unit>`; then check the model path
+  (`probeModel`, `src/gateway/backends.ts`): `GET /v1/models` with the backend's key — a 401
+  is named as the key, not the version — and one tiny chat to the first affordable target of
+  the scout slot (`PROBE_PROMPT`, a fixed word of the plugin's own; nothing from a
+  conversation, the machine or the person is sent). On any failure: install the old version
+  again, restart, check again, and print what failed.
+- **Never in the background, and never inside a Claude Code session.** It restarts a service
+  that answers real requests, so a person runs it, sees each step and reads what failed; and a
+  session must not move its own model path mid-turn. The confirmation says what the restart
+  costs: while the unit comes back, the slots fall to their next target, and the last target
+  of both shipped slots is Claude.
+- **`rollback`** installs the recorded version and keeps the record, so a second rollback is a
+  no-op rather than a bounce.
+- **Every effect goes through an injected `runner`, `registry` and `fetch`**, so a test uses a
+  fake bun, a fake systemctl, a fake registry and a fake backend, and never reaches the real
+  OmniRoute, the real registry or systemd (`src/omniroute/omniroute.test.ts`).
+
+
+
+Before 0.3.0 the plugin's own names — the plugin and marketplace, the command, the
+folders, the gateway's slots and the router units — said `anymodel`.
+`cc-smart-dev-kit migrate` (`src/cli/migrate.ts`) moves such a machine, and that file is
+the only code that still names them (with its test, and `README.md` § Moving from
+anymodel). It:
+
+- moves the folders (`~/.config`, the state folder, `~/.local/share`, `~/.local/state`)
+  and the launcher file, and rewrites the state folder's records and backups — the file
+  paths in `owned.json`, `owned-entries.json` and `changed.json`, each entry's
+  `baseline`, and each backup's folder and file name — so `restore` still finds what the
+  old setup changed and can still undo it;
+- gives the settings keys the old setup owned (and that still hold its value, the
+  remembered-value rule) this version's value: the slots' names and the words of their
+  descriptions;
+- rewrites the instructions block's markers and import path, then refreshes the copy
+  through `installInstructions`, the one path `setup` uses;
+- renames the gateway config's slots and adds an alias for each old name, so a Claude
+  session that is still running (its settings name the old slots) keeps working until it
+  restarts;
+- replaces the `anymodel-router` units through the gateway's own install path
+  (`installRouter`), after stopping and disabling the old ones with `--no-block`, as
+  `restore` does;
+- says to uninstall the old plugin, and does it after a yes on a terminal.
+
+It refuses to run inside a Claude Code session: it replaces the router that session's own
+model traffic goes through. It also stops before writing anything when a target folder is
+already there — two folders are never merged by themselves. Every step prints one line,
+each changed file gets a backup first, and `--dry-run` writes, runs and stops nothing. A
+second run says "Nothing to move.". One thing does not carry over: a judge target's test
+proof (the proof's own text changed with the name), so a fallback judge needs its test
+again.
+
+## Moving a machine from the old names (0.3.0)
 
 Before 0.3.0 the plugin's own names — the plugin and marketplace, the command, the
 folders, the gateway's slots and the router units — said `anymodel`.

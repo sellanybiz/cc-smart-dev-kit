@@ -13,6 +13,16 @@ export interface CliPaths extends RouterPaths {
   stateDir: string;
   /** The router's long-running copy: `~/.local/share/cc-smart-dev-kit/router.js`. */
   routerCopy: string;
+  /**
+   * The portal's own copy: `~/.local/share/cc-smart-dev-kit/portal.js`. The portal runs from
+   * it, never from the plugin's version folder (Claude Code deletes an old one after an
+   * update), and `restore` removes it like the router's copy.
+   */
+  portalCopy: string;
+  /** What the portal remembers between pages: `<stateDir>/portal.json`. */
+  portalStateFile: string;
+  /** What the last OmniRoute update replaced: `<stateDir>/omniroute.json`. */
+  omnirouteStateFile: string;
   /** The router's systemd user unit: `~/.config/systemd/user/cc-smart-dev-kit-router.service`. */
   routerUnitFile: string;
   /** claude-mem's settings: `$CLAUDE_MEM_DATA_DIR/settings.json`, else `~/.claude-mem/settings.json`. */
@@ -42,6 +52,9 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     binDir: join(router.home, ".local", "bin"),
     stateDir: join(claudeConfigDir, "cc-smart-dev-kit"),
     routerCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    portalCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
+    portalStateFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
+    omnirouteStateFile: join(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
     routerUnitFile: join(
       router.home,
       ".config",

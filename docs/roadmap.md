@@ -13,7 +13,7 @@ parts fit: `design.md`.
 | 6 | Notifications, claude-mem settings, the auto-mode block | Done (0.3.0) |
 | 7 | Opus and Fable slots, the usage-limit alert | Done (0.3.0) |
 | 8 | Web search | Done (0.3.0) |
-| 9 | The local portal | Planned |
+| 9 | The local portal | Done (0.3.0) |
 | 10 | Rollout to machines | Planned |
 | 12 | The heavy-job queue | Done (0.3.0) |
 
@@ -99,11 +99,16 @@ a judge target is used only after it passed the judge test.
 
 `cc-smart-dev-kit search "<query>"` asks the local OmniRoute gateway for web results (Ollama's web search, included with the Ollama account: $0 per search, about 0.9 s, cached for 5 minutes). `--fetch <url>` needs a fetch provider's key inside OmniRoute. How it works and its limits: [search.md](search.md).
 
-## 9 — The local portal
+## 9 — The local portal (done, 0.3.0)
 
-A local web page for the setup. Only the user may reach it: it needs a token, it
-checks for CSRF (a request a different website sends through the user's browser), and
-it checks the `Host` and `Origin` headers of every request.
+A local web page for the setup, on `127.0.0.1` only, and the OmniRoute updates it needed.
+Only the person may reach it: a one-time link token exchanged for a session cookie, the
+`Host` and `Origin` headers checked, a CSRF token on every change, the keys masked, and the
+whole thing stopping after 30 minutes with no request. Every action runs the same function
+the command line runs. `cc-smart-dev-kit portal` refuses inside a Claude Code session. The
+design, screen by screen, and why: [design.md](design.md) § The portal. The OmniRoute side,
+its three-day rule and the health check that puts a bad release back:
+[design.md](design.md) § OmniRoute.
 
 ## 10 — Rollout
 

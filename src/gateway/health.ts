@@ -10,8 +10,12 @@
 import { messageOf } from "./config";
 import { HEALTH_PATH } from "./router";
 
-/** The part of `fetch` the health checks use. */
-export type HealthFetch = (url: string, init: { signal: AbortSignal }) => Promise<Response>;
+/**
+ * The part of `fetch` every injectable check takes — the health page, a backend's model list,
+ * the model probe, the npm registry and the portal. One type, so a test hands the same fake to
+ * all of them, and none of them can reach the network behind its back.
+ */
+export type HealthFetch = (url: string, init: RequestInit) => Promise<Response>;
 
 /** What `gateway setup` needs to ask the port and wait for the router; a test passes fakes. */
 export interface HealthProbe {

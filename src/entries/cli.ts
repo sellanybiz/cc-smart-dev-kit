@@ -22,6 +22,8 @@ import { ALERT_WORKER_COMMAND, parseAlert, runAlert, spawnRunner } from "../hook
 import { runJobCommand } from "../jobs/commands";
 import { realMemoryFacts } from "../jobs/memory";
 import { realMachine } from "../machine/machine";
+import { runOmniroute } from "../omniroute/commands";
+import { runPortal } from "../portal/command";
 import { runSearch } from "../search/command";
 import { instructionsFolder } from "../setup/instructions";
 import { LAUNCHER_NAME } from "../setup/launcher";
@@ -94,6 +96,15 @@ Commands:
                      it again. Nothing restarts: restart the sessions to load it.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      cc-smart-dev-kit gateway --help lists them.
+  omniroute <command>
+                     The OmniRoute behind the affordable slots: status, update, rollback.
+                     cc-smart-dev-kit omniroute --help lists them. An update restarts it.
+  portal [--port <port>] [--no-open]
+                     The local portal: a page on this machine to see and change the
+                     gateway's slots and switches, the updates, the heavy-job queue, the
+                     companions and the OmniRoute. It binds 127.0.0.1 only, prints a link
+                     with a one-time token, and stops after 30 minutes with no request. It
+                     refuses inside a Claude Code session: run it in your own terminal.
   job <command>      The queue for heavy jobs (type checks, test runs, builds):
                      run, status, kinds. cc-smart-dev-kit job --help lists them.
   search "<query>" [--max <n>] [--json]
@@ -195,6 +206,24 @@ function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
     confirm: ask,
     systemd,
     probe: realProbe(),
+    print: (line) => console.log(line),
+    error: (line) => console.error(line),
+  };
+}
+
+/** What `omniroute status`, `update` and `rollback` need: systemd, the registry, a question. */
+function omnirouteContext(paths: ReturnType<typeof cliPaths>) {
+  return {
+    confirm: ask,
+    env: process.env,
+    health: (url: string, init: RequestInit) => fetch(url, init),
+    now: () => Date.now(),
+    paths,
+    registry: (url: string, init: RequestInit) => fetch(url, init),
+    runner,
+    say: (line: string) => console.log(line),
+    systemd,
+    which: (command: string) => Bun.which(command, { PATH: process.env.PATH ?? "" }),
   };
 }
 
@@ -378,6 +407,39 @@ async function main(argv: string[]): Promise<number> {
       return runUpdate(paths, process.env, rest);
     case "gateway":
       return runGateway(rest, gatewayContext(paths));
+    case "omniroute":
+      return runOmniroute(rest, omnirouteContext(paths));
+    case "portal":
+      return runPortal(
+        {
+          bunPath: process.execPath,
+          bundle: join(pluginDir(), "dist", "portal.js"),
+          env: process.env,
+          error: (line) => console.error(line),
+          paths,
+          runChild: (argv, options) => {
+            // The child owns the terminal while it runs: the link is printed where the person
+            // is looking, and Ctrl+C reaches both through the same process group.
+            try {
+              return (
+                Bun.spawnSync(argv, {
+                  cwd: options.cwd,
+                  env: options.env,
+                  stderr: "inherit",
+                  stdin: "inherit",
+                  stdout: "inherit",
+                }).exitCode ?? 1
+              );
+            } catch (error) {
+              console.error(
+                `cc-smart-dev-kit portal: ${error instanceof Error ? error.message : String(error)}`,
+              );
+              return 1;
+            }
+          },
+        },
+        rest,
+      );
     case "search":
       return runSearch(rest, { paths });
     case "job":

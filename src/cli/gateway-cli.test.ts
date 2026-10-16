@@ -257,6 +257,9 @@ function machine(options: { systemctl?: boolean } = {}) {
               confirm: null,
               systemd: options.systemctl !== false,
               probe,
+              // Where a command's own lines go: `out` and `err` are what the tests assert on.
+              print: (line: string) => out.push(`${line}\n`),
+              error: (line: string) => err.push(`${line}\n`),
             });
     } catch (thrown) {
       // What the CLI's own catch prints (src/entries/cli.ts).
