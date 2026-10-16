@@ -1,9 +1,9 @@
 /**
- * `plugin/bin/cc-smart-dev-kit-bun`: how the plugin's hooks find bun where PATH has none. It looks
- * where the launcher does: the bun baked into `~/.local/bin/cc-smart-dev-kit`, then
- * `$BUN_INSTALL/bin/bun`, then `~/.bun/bin/bun`, then PATH. Each test runs the real shim
- * with a temp HOME and a PATH of its own; each fake bun is a script that says which one
- * ran, with its arguments.
+ * `plugin/bin/cc-smart-dev-kit-bun.sh`: how the plugin's hooks find bun where PATH has none. It
+ * looks where the launcher does: the bun baked into `~/.local/bin/cc-smart-dev-kit`, then
+ * `$BUN_INSTALL/bin/bun` (and `bun.exe` beside it, for Windows), then `~/.bun/bin/bun`, then
+ * PATH. Each test runs the real shim with a temp HOME and a PATH of its own; each fake bun is
+ * a script that says which one ran, with its arguments.
  */
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -13,7 +13,7 @@ import { tempDir } from "../testing/temp";
 import { launcherScript } from "./launcher";
 
 const PLUGIN = join(import.meta.dir, "..", "..", "plugin");
-const SHIM = join(PLUGIN, "bin", "cc-smart-dev-kit-bun");
+const SHIM = join(PLUGIN, "bin", "cc-smart-dev-kit-bun.sh");
 /** The two flags the shim gives every bun it starts, with the config path as the shim spells it. */
 const FLAGS = `--no-env-file --config=${join(PLUGIN, "bin")}/../bunfig.toml`;
 /** sh and the tools a shell script needs, without any bun. */
@@ -141,13 +141,15 @@ describe("the hooks' bun shim", () => {
     expect(result.exitCode).toBe(0);
   });
 
-  test("hooks.json runs every hook through the shim, in exec form, each with its missing-bun mode", () => {
+  test("hooks.json runs every hook through the shim, in shell form, each with its missing-bun mode", () => {
+    // The form itself — shell form, quoting, the `.sh` first token — is `src/hooks/entries.test.ts`;
+    // this checks the shim's own part: every hook names THIS file, with a mode and a bundle.
     const hooks = JSON.parse(readFileSync(join(PLUGIN, "hooks", "hooks.json"), "utf8")) as {
-      hooks: Record<string, { hooks: { args: string[]; command: string; type: string }[] }[]>;
+      hooks: Record<string, { hooks: { args?: string[]; command: string; type: string }[] }[]>;
     };
-    // What Claude Code does with the variable, in `command` and `args` alike.
-    const expand = (text: string | undefined) =>
-      (text ?? "").replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, PLUGIN);
+    // What the shell does with the variable: Claude Code exports the plugin folder, and the
+    // shell expands `${CLAUDE_PLUGIN_ROOT}` inside the command.
+    const expand = (text: string) => text.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, PLUGIN);
     const entries = Object.entries(hooks.hooks).flatMap(([event, groups]) =>
       groups.flatMap((group) => group.hooks.map((hook) => ({ event, hook }))),
     );
@@ -156,14 +158,15 @@ describe("the hooks' bun shim", () => {
     for (const { event, hook } of entries) {
       events.add(event);
       expect(hook.type).toBe("command");
-      expect(expand(hook.command)).toBe(SHIM);
+      expect(hook.args).toBeUndefined();
+      const command = expand(hook.command);
+      expect(command).toStartWith(`"${SHIM}" `);
       // A guard fails closed: with no bun it asks. Every other hook is quiet — the notifier
       // is wired on PreToolUse too, and is not a guard.
-      const bundle = (hook.args[1] ?? "").replace(/^.*\/dist\/|\.js$/g, "");
-      expect(hook.args[0]).toBe(
-        event === "PreToolUse" && GUARD_BUNDLES.has(bundle) ? "--missing=ask" : "--missing=quiet",
+      const bundle = (command.match(/\/dist\/([a-z-]+)\.js"$/) ?? [])[1] ?? "";
+      expect(command).toBe(
+        `"${SHIM}" ${event === "PreToolUse" && GUARD_BUNDLES.has(bundle) ? "--missing=ask" : "--missing=quiet"} "${join(PLUGIN, "dist", `${bundle}.js`)}"`,
       );
-      expect(expand(hook.args[1])).toStartWith(`${join(PLUGIN, "dist")}/`);
     }
     // Every event the plugin wires, and only those.
     expect(events).toEqual(

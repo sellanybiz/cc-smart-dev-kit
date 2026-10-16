@@ -33,28 +33,40 @@ live). So a plugin WorktreeCreate cannot step aside for a project that did not o
 hook-made worktree loses Claude Code's lock, its cleanup marker, `-w "#123"` and its Git LFS
 handling. `entries.test.ts` fails on a worktree event in `hooks.json`.
 
-## The plugin's hooks: exec form, through the bun shim
+## The plugin's hooks: shell form, through the bun shim
 
-Every entry in `plugin/hooks/hooks.json` uses the exec form, never a shell string:
+Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec form:
 
 ```json
-{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun", "args": ["${CLAUDE_PLUGIN_ROOT}/dist/<name>.js"], "timeout": 10 }
+{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/<name>.js\"", "timeout": 10 }
 ```
 
+- **Why not exec form:** on Windows exec form needs a `command` that is a real executable,
+  and a shell script is not one — such a hook never starts there, and a guard that cannot
+  start lets the call through. In shell form Claude Code gives the string to a shell: `sh -c`
+  on macOS and Linux, Git Bash on Windows, where a first token ending in `.sh` is run as
+  `bash <command>`, so the shim needs no execute bit. `docs/windows-hooks.md`, and
+  `docs/claude-code-contract.md` § Windows for what that rests on and what is still owed a
+  real Windows run.
+- **The quotes are load-bearing:** in shell form Claude Code exports `${CLAUDE_PLUGIN_ROOT}`
+  rather than substituting it, so the shell expands it — only the quotes keep a plugin folder
+  with a space in it one word.
 - **Never `"command": "bun"`.** Claude Code started from a desktop launcher or a service
-  may have no bun on PATH, and then the hook never runs (seen live). `plugin/bin/cc-smart-dev-kit-bun`
+  may have no bun on PATH, and then the hook never runs (seen live). `plugin/bin/cc-smart-dev-kit-bun.sh`
   finds bun where the launcher does (the bun baked into `~/.local/bin/cc-smart-dev-kit`,
-  `$BUN_INSTALL/bin/bun`, `~/.bun/bin/bun`, then PATH); it uses only shell built-ins, so it
-  works with an empty PATH too. **It starts bun with `--no-env-file` and a `--config=` flag
+  `$BUN_INSTALL/bin/bun`, `~/.bun/bin/bun`, then PATH — each also as `bun.exe`, which is
+  what Windows has); it uses only shell built-ins, so it works with an empty PATH too.
+  **It starts bun with `--no-env-file` and a `--config=` flag
   pointing at the plugin's own empty `bunfig.toml`** (`plugin/bunfig.toml`), like the launcher and
   `bin/cc-smart-dev-kit`: bun would otherwise add the working folder's `.env` files to the
   hook and run its `bunfig.toml`, and a hook must see the environment Claude Code gave it.
   `src/hooks/bun-shim.test.ts` and `src/setup/bun-shim.test.ts`
-  check the order, both flags and both modes. **A Bun older than `MIN_BUN` fails closed
+  check the order, both names, both flags and both modes. **A Bun older than `MIN_BUN` fails closed
   here**, the same way as a missing one, with its own message: an older Bun drops
   `--no-env-file` without a word, so the hook would run on guarantees the plugin does not
   have. The shim asks `bun --version` only when the bun is not the one setup baked into the
   launcher — that one setup already proved, so an ordinary hook pays nothing for the check.
+  On Windows the same checks read the `bun.exe` it found, through the same MSYS path rules.
 - **The shim's first argument says what to do when no bun is found**, and is never passed
   to bun: `--missing=ask` prints one PreToolUse answer on stdout, asking the person, and
   exits 0; `--missing=quiet` writes one line on stderr and exits 0. A hook never stops a
@@ -65,7 +77,9 @@ Every entry in `plugin/hooks/hooks.json` uses the exec form, never a shell strin
 - `<name>` is a bundle built from `src/entries/<name>.ts` (`bundles-and-releases.md`).
   The hook's logic lives in `src/hooks/`, where it can be tested; the entry is two lines:
   `runHookEntry(<its spec>)` from `src/hooks/run.ts`, with the spec from `specs.ts`.
-- No shell string: no quoting bugs, the same on every system.
+- The command string is fixed: the quoted shim, the mode, the quoted bundle, nothing else.
+  `entries.test.ts` asserts the whole string, so a stray quote or a bare path fails a test
+  rather than a person's session.
 - A new plugin hook: its logic in `src/hooks/`, its spec in `specs.ts` (and in `HOOKS`), its
   entry, its `hooks.json` entry, and a row in `src/hooks/matrix.test.ts`. `entries.test.ts`
   fails when the four do not match.
@@ -76,6 +90,11 @@ Every entry in `plugin/hooks/hooks.json` uses the exec form, never a shell strin
   `"$HOME/.local/bin/cc-smart-dev-kit" hook <name>`. The shell fills in `$HOME`, so it works
   whatever PATH Claude Code has; the launcher runs its baked bun. The bare name `cc-smart-dev-kit`
   would need `~/.local/bin` on that PATH.
+- **The same line works on Windows**, where the shell is Git Bash: no `args`, so Claude Code
+  passes the string to a shell; Git Bash sets `$HOME`; and it runs the extensionless
+  `#!/bin/sh` launcher on the strength of its `#!` first two characters, since Windows has no
+  execute bit (`docs/windows-hooks.md`). The Windows CI job runs this exact line
+  (`scripts/windows-hook-smoke.sh`).
 - `src/entries/cli.ts` runs the spec through `runHookEntry`, the same frame and the same
   answers as a plugin hook's entry.
 - A new project hook: its logic in `src/hooks/`, its spec in `specs.ts` (and in

@@ -1,0 +1,55 @@
+name: Windows
+
+# The plugin's hooks on native Windows. Claude Code gives a shell-form hook to Git Bash there
+# (it cannot spawn a script itself), and Git Bash is a POSIX shell, so the hooks must be
+# shaped for it: docs/windows-hooks.md says how, and docs/claude-code-contract.md says which
+# of it is proved here and which still needs one run on a person's Windows PC.
+#
+# This job is deliberately small: the tests that are cross-platform today, and the smoke test
+# that runs a real hook bundle through the real shim in Git Bash. Everything else in the
+# suite is Linux-only for now — it spawns `/bin/sh`, reads `/proc`, fakes `notify-send`, or
+# fakes a bun with a shell script (Windows cannot run one as bun.exe) — and runs in the Linux
+# job. As each part of the plugin becomes Windows-shaped, add its tests here; nothing is
+# skipped silently.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hooks:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          # MIN_BUN in src/build-info/bun.ts: the oldest Bun cc-smart-dev-kit runs on. A test keeps them equal.
+          bun-version: 1.4.3
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: The hooks' own tests
+        # `shell: bash` on purpose: Git Bash is where the plugin's hooks run on Windows, and
+        # this is the shell the tests must be started from. The file checks hooks.json's form
+        # and quoting, and runs every hook bundle as Claude Code runs it.
+        shell: bash
+        run: bun test src/hooks/entries.test.ts
+
+      - name: A hook bundle runs through the shim in Git Bash
+        # The whole hook path on Windows, with no person: Git Bash runs the shim, the shim
+        # finds bun.exe, the bundle answers the hook input, and — with bun taken away — the
+        # guard still fails closed. The last case runs the exact line `cc-smart-dev-kit hook`
+        # prints for a project.
+        shell: bash
+        run: bash scripts/windows-hook-smoke.sh

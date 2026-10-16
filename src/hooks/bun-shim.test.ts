@@ -13,7 +13,7 @@ import { tempDir } from "../testing/temp";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const PLUGIN = join(ROOT, "plugin");
-const SHIM = join(PLUGIN, "bin", "cc-smart-dev-kit-bun");
+const SHIM = join(PLUGIN, "bin", "cc-smart-dev-kit-bun.sh");
 
 /** The two flags the shim gives every bun it starts, with the config path as the shim spells it. */
 const FLAGS = `--no-env-file --config=${join(PLUGIN, "bin")}/../bunfig.toml`;
@@ -72,6 +72,35 @@ describe("cc-smart-dev-kit-bun finds bun without PATH", () => {
     });
     rmSync(baked);
     expect(runShim(env).stdout).toBe(`bun-install ${FLAGS} a b c\n`);
+    rmSync(installed);
+    expect(runShim(env).stdout).toBe(`home-bun ${FLAGS} a b c\n`);
+    rmSync(homeBun);
+    expect(runShim(env).stdout).toBe(`path-bun ${FLAGS} a b c\n`);
+  });
+
+  test("a Windows layout: the same folders hold bun.exe, and PATH is asked for bun.exe too", () => {
+    // Bun's Windows installer writes bun.exe, never a file called bun, so those are the names
+    // the shim looks for in Git Bash. Here a file called bun.exe is only a name — this is the
+    // candidate list, not Windows itself; the shim running on real Windows is the smoke test
+    // of `scripts/windows-hook-smoke.sh`.
+    const home = tempDir("shim-home");
+    const emptyPath = tempDir("empty-path");
+    const pathDir = tempDir("path-bun");
+    const installed = fakeBun(join(tempDir("bun-install"), "bin", "bun.exe"), "bun-install");
+    const homeBun = fakeBun(join(home, ".bun", "bin", "bun.exe"), "home-bun");
+    fakeBun(join(pathDir, "bun.exe"), "path-bun");
+    const env = {
+      HOME: home,
+      BUN_INSTALL: join(installed, "..", ".."),
+      PATH: `${emptyPath}:${pathDir}`,
+    };
+
+    // The flags the shim gives every bun it starts ride along, as they do for the plain names.
+    expect(runShim(env)).toEqual({
+      exitCode: 0,
+      stdout: `bun-install ${FLAGS} a b c\n`,
+      stderr: "",
+    });
     rmSync(installed);
     expect(runShim(env).stdout).toBe(`home-bun ${FLAGS} a b c\n`);
     rmSync(homeBun);

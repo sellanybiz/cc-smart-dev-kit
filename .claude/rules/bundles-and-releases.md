@@ -54,8 +54,9 @@ the others, `router.js` included.
 - **A new bundle is a new file in `src/entries/`.** A test file there is skipped.
 - `plugin/bin/cc-smart-dev-kit` is written by hand. It finds `dist/cli.js` from its own
   location (`dirname "$0"`), because `CLAUDE_PLUGIN_ROOT` is not set in the Bash tool.
-- `plugin/bin/cc-smart-dev-kit-bun` is written by hand too: the plugin's hooks run through it, so
-  they find bun without PATH (`.claude/rules/hooks.md`). It reads the launcher's
+- `plugin/bin/cc-smart-dev-kit-bun.sh` is written by hand too (the `.sh` is what makes Claude
+  Code run it through bash on Windows, `docs/windows-hooks.md`): the plugin's hooks run
+  through it, so they find bun without PATH (`.claude/rules/hooks.md`). It reads the launcher's
   `baked_bun='…'` line, so a change to that line in `src/setup/launcher.ts` changes it too.
   Both shim tests run the real launcher script (`src/hooks/bun-shim.test.ts`,
   `src/setup/bun-shim.test.ts`).

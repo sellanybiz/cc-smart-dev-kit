@@ -8,6 +8,14 @@
  * puts the launcher in `~/.local/bin`, and the launcher runs the bun setup baked into it, so
  * this works for every person who ran setup, whatever their PATH. The shell expands `$HOME`.
  *
+ * The form holds on Windows too, where the shell is Git Bash (`docs/windows-hooks.md`): no
+ * `args`, so Claude Code passes the string to a shell, and Git Bash sets `$HOME` itself. The
+ * launcher is a `#!/bin/sh` script with no extension; Windows has no execute bit for `setup`
+ * to set, so what runs it there is Git Bash's own rule — MSYS2 marks a file whose first two
+ * characters are `#!` executable (`docs/claude-code-contract.md` § Windows). The quoting
+ * wraps the whole path, so a home folder with a space stays one word. The Windows CI job's
+ * smoke test runs this exact line (`scripts/windows-hook-smoke.sh`).
+ *
  * The README's § Worktrees shows exactly `projectHookSettingsText()`; a test keeps the two
  * the same.
  */

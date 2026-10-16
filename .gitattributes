@@ -1,0 +1,8 @@
+# Every text file keeps LF in the working tree, on every system.
+#
+# A Windows checkout (Git for Windows defaults to core.autocrlf=true) would otherwise write
+# CRLF. That breaks shell scripts, and the plugin's hooks are shell scripts: the shebang's
+# interpreter path ends up as `/bin/sh\r`, which Git Bash cannot run, and a value read out of
+# a file (the shim reads the launcher's baked bun path) keeps a trailing \r and stops
+# matching. Git Bash and sh need the LF form of plugin/bin/*, and of everything else they read.
+* text=auto eol=lf
