@@ -19,6 +19,11 @@ name on it.
 - **The second opinion:** once per change set (§ Second opinion).
 - **On request:** "review this", "audit that feature".
 
+**The project's workflow says how strictly this holds.** `cc-smart-dev-kit workflow show` prints
+`reviewBeforePush`, and with it on — the default — the second opinion is due before the first
+push, and recorded (§ Second opinion). With it off, this skill is still worth running, and the
+merge guard asks the person about a merge whose head commit has no record.
+
 **A small fix** skips the second opinion: a typo, wording, a comment, docs only (not
 instruction files: rules, skills, agents, settings, hooks), or a one-line fix inside a
 pattern already in use. This is the one definition; other skills point here. Say the
@@ -133,6 +138,11 @@ fix, start **one** `cc-smart-dev-kit:reviewer` agent (model and effort: the core
   reached", read yourself, or write it down as not verified in the pull request.
 - When it returns, run `git status --short` and revert anything it changed (a stand-in can
   edit), and say so.
+- **Record it, once the fixes are committed:** `cc-smart-dev-kit workflow review-done` (a commit
+  with `--sha <commit>`). It writes the head commit into the repository's review record, and
+  the merge guard reads that record — for the pull request's head commit — before a merge it
+  would make with no person watching. Commit the review's fixes first: a record of an older
+  commit does not cover the newer one.
 
 ## Then
 

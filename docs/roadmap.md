@@ -47,11 +47,21 @@ Done in this release:
 - **`worktrees.engine`** (`"plugin"` or `"own"`): a project that already runs its own
   worktree engine says so, and `doctor` expects no cc-smart-dev-kit hook lines there (a `·`
   line, never ✗), while warning about the double worktree when they are wired anyway.
+- **The merge guard** (`design.md` § The workflow): the `merge-guard` hook asks the person
+  before a `gh pr merge` its policy does not allow, and lets one through with no question only
+  when `autoMerge` allows it, every required check is green, and the head commit's review is
+  recorded. **The review record**: `cc-smart-dev-kit workflow review-done` writes it, and
+  `workflow show` says whether the commit here has one.
+- **The alert settings** (`alerts.events`, `alerts.sound`, `alerts.usagePercent`): the two
+  alert hooks and the status line read them — which moments alert, a sound where the platform
+  has one, and the plan share the status line warns from.
+- **The skills follow the workflow**: the commit, pull-request, review and worktree skills,
+  and the general instructions, read `cc-smart-dev-kit workflow show`, so one policy — not an
+  older hard-coded default — says when a step goes by itself.
 
 Coming in 0.4.0 from other builders: the **Settings page** and the **Project card** in the
-portal (both call this release's functions), the **merge guard hook** (which decides a merge
-with `autoMergeAllowed`), the **alert settings** (which read `alerts`), and the **auto-mode
-safety checks** that run at the plan's usage.
+portal (both call this release's functions), and the **auto-mode safety checks** that run at
+the plan's usage.
 
 ## 1 — Foundation (done)
 

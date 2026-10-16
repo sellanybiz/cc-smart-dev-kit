@@ -15,8 +15,12 @@
  *   - a plan limit the router saw, with no fallback (`⛔ claude-opus-5-5 at its plan limit
  *     until 13:00`): a refused request brings Claude Code no new numbers, so only the
  *     router's state file (`limit-state.ts`) knows it;
- *   - `5h 23% · 7d 41%`, and from 85 % a warning with the reset time.
- * It reads two small files and prints; no network.
+ *   - `5h 23% · 7d 41%`, and from the warning share a warning with the reset time.
+ *
+ * It reads two small files and prints; no network. **The warning share is a setting**
+ * (`alerts.usagePercent`, 85 by default): the entry reads it once, at the folder the session
+ * is in, with the same reader the alert hooks use (`alertsAt`), so the number lives in one
+ * place (`src/workflow/schema.ts`).
  */
 
 import { readFileSync } from "node:fs";
@@ -28,10 +32,10 @@ import {
   parseLimitState,
 } from "../gateway/limit-state";
 import { JUDGE_SLOT } from "../gateway/targets";
+import type { AlertsHere } from "../workflow/alerts";
+import { defaultAlerts } from "../workflow/resolve";
+import { workflowDefaults } from "../workflow/schema";
 import type { CliPaths } from "./paths";
-
-/** From this share of a plan window, the status line warns. */
-export const WARN_PERCENT = 85;
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -58,6 +62,8 @@ export function statuslineText(
   state: LimitState | null,
   nowMs: number,
   timeZone?: string,
+  /** From this share of a plan window, the line warns (`alerts.usagePercent`). */
+  warnPercent: number = workflowDefaults.alerts.usagePercent,
 ): string {
   const parts: string[] = [];
   const data = isJsonObject(input) ? input : {};
@@ -90,7 +96,7 @@ export function statuslineText(
     if (numbers === null) continue;
     const percent = Math.round(numbers.percent);
     parts.push(
-      percent >= WARN_PERCENT
+      percent >= warnPercent
         ? `⚠ ${label} ${percent}%${numbers.resetsAt === null ? "" : ` (resets ${formatClock(numbers.resetsAt, nowMs, timeZone)})`}`
         : `${label} ${percent}%`,
     );
@@ -98,12 +104,18 @@ export function statuslineText(
   return parts.join(" · ");
 }
 
-/** Runs the command: stdin from Claude Code, the router's state file; prints one line. */
+/**
+ * Runs the command: stdin from Claude Code, the router's state file; prints one line.
+ * `alerts` is what the entry read once (`alertsAt`); one line on stderr says so when a
+ * settings file could not be read and the defaults decided.
+ */
 export async function runStatusline(
   paths: CliPaths,
   readStdin: () => Promise<string>,
   nowMs: number,
+  alerts: AlertsHere = { alerts: defaultAlerts(), problem: null },
 ): Promise<number> {
+  if (alerts.problem !== null) console.error(alerts.problem);
   let input: unknown = null;
   try {
     input = JSON.parse(await readStdin());
@@ -118,6 +130,6 @@ export async function runStatusline(
     // No router state yet.
     state = null;
   }
-  console.log(statuslineText(input, state, nowMs));
+  console.log(statuslineText(input, state, nowMs, undefined, alerts.alerts.usagePercent.value));
   return 0;
 }

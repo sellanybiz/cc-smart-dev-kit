@@ -45,6 +45,7 @@ import {
 } from "../gateway/limit-state";
 import { settingsReport } from "../gateway/settings";
 import { MODEL_SLOTS, parseTarget, withoutContextSuffix } from "../gateway/targets";
+import { alertsAt, type ResolvedAlerts } from "../workflow/alerts";
 import type { Env } from "./run";
 import { lastClaudeModel } from "./transcript";
 import { TOAST_SHELL, windowsToastArgvFor } from "./windows-toast";
@@ -77,6 +78,10 @@ export interface Alert {
 
 /** What the hook reads besides its input; a test passes its own. */
 export interface AlertContext {
+  /** The alerts settings (`src/workflow/alerts.ts`): `failed` decides whether it alerts at all. */
+  alerts: ResolvedAlerts;
+  /** One stderr line when the alert settings could not be read; null when all read. */
+  alertsProblem: null | string;
   /** The gateway config; null when there is none, or it cannot be read. */
   config: GatewayConfig | null;
   /** True when `gateway.json` exists, readable or not: the person set the gateway up. */
@@ -136,6 +141,10 @@ function shortName(target: string): string {
  * rate limit, or a person who never set the gateway up.
  */
 export function planAlert(input: unknown, ctx: AlertContext): Alert | null {
+  // `alerts.events` decides which moments alert at all: this hook's alert is the "failed"
+  // one (a turn died), and with it left out the person asked for no alert here. The notifier
+  // reads the same setting for its own StopFailure alert, so one stop gives none, not two.
+  if (!ctx.alerts.events.value.includes("failed")) return null;
   if (!isJsonObject(input) || input.error !== "rate_limit") return null;
   const text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
   // Claude Code says so in words for a short rate limit: those words win over the state.
@@ -203,8 +212,20 @@ export function planAlert(input: unknown, ctx: AlertContext): Alert | null {
   };
 }
 
-/** What the hook reads from this machine for `planAlert`; never throws. */
-export function readAlertContext(paths: CliPaths, nowMs: number, input: unknown): AlertContext {
+/**
+ * What the hook reads from this machine for `planAlert`; never throws. The alert settings
+ * come from the folder the session is in (`alertsAt`, once per run), so a project's
+ * `workflow.alerts` counts here like everywhere else.
+ */
+export function readAlertContext(
+  paths: CliPaths,
+  nowMs: number,
+  input: unknown,
+  env: Env = process.env,
+): AlertContext {
+  const cwd =
+    isJsonObject(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
+  const here = alertsAt(paths, cwd, env);
   const gatewaySetUp = existsSync(paths.gatewayConfigFile);
   let config: GatewayConfig | null = null;
   if (gatewaySetUp) {
@@ -231,7 +252,16 @@ export function readAlertContext(paths: CliPaths, nowMs: number, input: unknown)
   const transcript =
     isJsonObject(input) && typeof input.transcript_path === "string" ? input.transcript_path : null;
   const sessionModel = transcript === null ? null : lastClaudeModel(transcript);
-  return { config, gatewayOn, gatewaySetUp, nowMs, sessionModel, state };
+  return {
+    alerts: here.alerts,
+    alertsProblem: here.problem,
+    config,
+    gatewayOn,
+    gatewaySetUp,
+    nowMs,
+    sessionModel,
+    state,
+  };
 }
 
 /** What the notifier asks about this stop: the machine both hooks run on. */
@@ -270,7 +300,7 @@ export function limitAlertDesktop(
  */
 export function stopFailureWillAlert(input: unknown, deps: LimitAlertDeps): boolean {
   if (!limitAlertDesktop(deps.platform, deps.env, deps.which)) return false;
-  return planAlert(input, readAlertContext(deps.paths, deps.nowMs, input)) !== null;
+  return planAlert(input, readAlertContext(deps.paths, deps.nowMs, input, deps.env)) !== null;
 }
 
 /** One program run: its argv and how long it may take. */

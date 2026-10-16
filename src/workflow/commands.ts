@@ -1,20 +1,26 @@
 /**
- * `cc-smart-dev-kit workflow [show] | set <setting> <value> [--project] | unset <setting> [--project]`.
+ * `cc-smart-dev-kit workflow [show] | set <setting> <value> [--project] | unset <setting> [--project]
+ * | review-done [--sha <commit>]`.
  *
  * `show` prints every value with where it came from, so a person can see whether it is the
  * project's policy, their own, or the built-in default — and, for a switch, that it is the
- * value of the setting it maps onto right now (`resolve.ts`). `set` and `unset` write one
- * value where it really lives (`write.ts`): without `--project`, the person's own defaults;
- * with it, the project's committed `.claude/cc-smart-dev-kit.json`.
+ * value of the setting it maps onto right now (`resolve.ts`). It also prints whether the
+ * commit this checkout is on has a recorded review. `set` and `unset` write one value where
+ * it really lives (`write.ts`): without `--project`, the person's own defaults; with it, the
+ * project's committed `.claude/cc-smart-dev-kit.json`. `review-done` records one commit in the
+ * review record (`reviews.ts`) — default HEAD — which is what the merge guard reads before a
+ * merge it would make without a person.
  *
  * Exit codes, the same as the rest of the command: 0 done, 1 a file that cannot be read or
  * written, 2 a setting or a value that is not one of the settings there are.
  */
 import { COMMAND } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
+import { runGit } from "../hooks/git";
 import type { CcSmartDevKitConfig } from "../project/config";
-import { loadProjectConfig, locateCheckout } from "../project/resolve";
+import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { type ResolvedValue, type ResolvedWorkflow, resolveWorkflow } from "./resolve";
+import { hasReview, type RecordedReview, recordReview, reviewsFile } from "./reviews";
 import type { WorkflowKey } from "./schema";
 import { parseWorkflowValue, WORKFLOW_KEYS } from "./schema";
 import { writePersonalSetting, writeProjectSetting } from "./write";
@@ -29,15 +35,19 @@ export interface WorkflowContext {
   error: (line: string) => void;
 }
 
-export const WORKFLOW_USAGE = `Usage: ${COMMAND} workflow [show] | set <setting> <value> [--project] | unset <setting> [--project]
+export const WORKFLOW_USAGE = `Usage: ${COMMAND} workflow [show] | set <setting> <value> [--project] | unset <setting> [--project] | review-done [--sha <commit>]
 
 The settings are: ${WORKFLOW_KEYS.join(", ")}
 show (the default) prints each value and where it came from: the project's
 .claude/cc-smart-dev-kit.json, your own ~/.config/cc-smart-dev-kit/workflow.json, or the
-built-in default. set and unset write one value: your own file, or the project's with
---project. A switch (switches.*) is not stored: it reads and writes the setting it maps
-onto, so switches.sessionNames and switches.jobRoute need --project, and
-switches.statusLine and switches.updateHold refuse it.`;
+built-in default, and whether the commit this checkout is on has a recorded review. set
+and unset write one value: your own file, or the project's with --project. A switch
+(switches.*) is not stored: it reads and writes the setting it maps onto, so
+switches.sessionNames and switches.jobRoute need --project, and switches.statusLine and
+switches.updateHold refuse it.
+review-done records that the change set up to a commit (default: HEAD, or --sha <commit>)
+had its one premium review and its fixes. The merge guard reads it before a merge it
+would make by itself, while reviewBeforePush is on.`;
 
 /** One line of `show`: the setting, its value now, and where that value came from. */
 const ROWS: ReadonlyArray<
@@ -65,21 +75,55 @@ function shown(value: unknown): string {
   return Array.isArray(value) ? value.join(", ") : String(value);
 }
 
-/** The project of `cwd`, and why it has none (for the line `show` prints). */
+/** One git call a `workflow` run makes (a `rev-parse`): milliseconds, never a hang. */
+const WORKFLOW_GIT_TIMEOUT_MS = 5_000;
+
+/** The checkout of `cwd`, its project's settings, and why there are none. */
 function project(
   cwd: string,
   env: Env,
-): { config: CcSmartDevKitConfig | null; why: string | null } {
+): { checkout: Checkout | null; config: CcSmartDevKitConfig | null; why: string | null } {
   try {
     const checkout = locateCheckout(cwd, { env });
-    if (checkout === null) return { config: null, why: "this folder is not in a git project" };
+    if (checkout === null) {
+      return { checkout: null, config: null, why: "this folder is not in a git project" };
+    }
     const loaded = loadProjectConfig(checkout);
     return loaded.config === null
-      ? { config: null, why: `${loaded.root} has no .claude/cc-smart-dev-kit.json` }
-      : { config: loaded.config, why: null };
+      ? { checkout, config: null, why: `${loaded.root} has no .claude/cc-smart-dev-kit.json` }
+      : { checkout, config: loaded.config, why: null };
   } catch (error) {
-    return { config: null, why: error instanceof Error ? error.message : String(error) };
+    return {
+      checkout: null,
+      config: null,
+      why: error instanceof Error ? error.message : String(error),
+    };
   }
+}
+
+/** The commit `rev` names in `folder`: the full sha, or null when git cannot name one. */
+function commitOf(folder: string, rev: string, env: Env): string | null {
+  const run = runGit(
+    folder,
+    ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`],
+    env,
+    WORKFLOW_GIT_TIMEOUT_MS,
+  );
+  return run.ok && /^[0-9a-f]{40,64}$/.test(run.out) ? run.out : null;
+}
+
+/** The repository a checkout belongs to: the main checkout of every worktree of it. */
+function repoOf(checkout: Checkout): string {
+  return checkout.mainCheckout ?? checkout.root;
+}
+
+/** The line `show` prints: whether the commit this checkout is on has a recorded review. */
+function reviewLine(paths: CliPaths, checkout: Checkout | null, env: Env): string {
+  if (checkout === null) return "review-done = no (this folder is not in a git project)";
+  const head = commitOf(checkout.root, "HEAD", env);
+  if (head === null) return "review-done = no (this checkout has no commit yet)";
+  const recorded = hasReview(reviewsFile(paths.stateDir, repoOf(checkout)), head);
+  return `review-done = ${recorded ? "yes" : "no"} (HEAD ${head.slice(0, 7)})`;
 }
 
 function show(context: WorkflowContext): number {
@@ -99,7 +143,58 @@ function show(context: WorkflowContext): number {
     const { value, source } = of(resolved);
     print(`${key} = ${shown(value)} (${source})`);
   }
+  print(reviewLine(paths, here.checkout, env));
   if (here.why !== null) print(`no project settings here: ${here.why}`);
+  return 0;
+}
+
+/**
+ * `workflow review-done [--sha <commit>]`: one commit into the review record of this
+ * repository. The command records; it never reviews anything itself.
+ */
+function reviewDone(context: WorkflowContext, argv: string[]): number {
+  let rev = "HEAD";
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index] ?? "";
+    const value = argv[index + 1];
+    if (arg !== "--sha") {
+      context.error(`Unknown option: ${arg}\n\n${WORKFLOW_USAGE}`);
+      return 2;
+    }
+    if (value === undefined || value.startsWith("--")) {
+      context.error(`--sha needs a commit\n\n${WORKFLOW_USAGE}`);
+      return 2;
+    }
+    rev = value;
+    index += 1;
+  }
+  const here = project(context.cwd, context.env);
+  if (here.checkout === null) {
+    context.error(`${COMMAND} workflow review-done: ${here.why}`);
+    return 1;
+  }
+  const commit = commitOf(here.checkout.root, rev, context.env);
+  if (commit === null) {
+    context.error(
+      `${COMMAND} workflow review-done: ${rev} is not a commit in this repository\n\n${WORKFLOW_USAGE}`,
+    );
+    return 1;
+  }
+  const file = reviewsFile(context.paths.stateDir, repoOf(here.checkout));
+  let recorded: RecordedReview;
+  try {
+    recorded = recordReview(file, commit, Date.now());
+  } catch (error) {
+    context.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+  const where = tildify(file, context.paths.home);
+  const short = commit.slice(0, 7);
+  context.print(
+    recorded.added
+      ? `+ ${where}: the review of ${short} is recorded`
+      : `= ${where}: the review of ${short} was already recorded (${recorded.at})`,
+  );
   return 0;
 }
 
@@ -158,6 +253,7 @@ export function runWorkflow(argv: string[], context: WorkflowContext): number {
   const [sub, ...rest] = argv;
   if (sub === undefined || sub === "show") return show(context);
   if (sub === "set" || sub === "unset") return setOrUnset(context, sub, rest);
+  if (sub === "review-done") return reviewDone(context, rest);
   context.error(`Unknown workflow command: ${sub}\n\n${WORKFLOW_USAGE}`);
   return 2;
 }

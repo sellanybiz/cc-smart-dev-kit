@@ -12,6 +12,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { soundArgv } from "../hooks/alert-sound";
 import { startDetached } from "../hooks/detached";
 import {
   ALERT_WORKER_COMMAND,
@@ -39,8 +40,19 @@ async function hook(): Promise<void> {
     return;
   }
   const paths = cliPaths();
-  const alert = planAlert(input, readAlertContext(paths, Date.now(), input));
+  const ctx = readAlertContext(paths, Date.now(), input, process.env);
+  const alert = planAlert(input, ctx);
   if (alert === null) return;
+  // The alert settings could not be read: one line, and the alert goes on as it always did.
+  if (ctx.alertsProblem !== null) console.error(ctx.alertsProblem);
+  // The sound the alert asks for (`alerts.sound`), where this platform has one: started now,
+  // so it lands with the notification the worker shows — that worker may wait half an hour.
+  if (ctx.alerts.sound.value) {
+    const argv = soundArgv("dialog-warning", process.platform, (command) =>
+      Bun.which(command, { PATH: process.env.PATH ?? "" }),
+    );
+    if (argv !== null) detached(argv);
+  }
   const launcher = join(paths.binDir, LAUNCHER_NAME);
   if (usesAlertWorker(process.platform, existsSync(launcher))) {
     detached([launcher, ALERT_WORKER_COMMAND, JSON.stringify(alert)]);

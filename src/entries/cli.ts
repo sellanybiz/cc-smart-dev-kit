@@ -38,6 +38,7 @@ import { runSessions } from "../sessions/command";
 import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
 import { LAUNCHER_NAME } from "../setup/launcher";
+import { alertsAt } from "../workflow/alerts";
 import { runWorkflow } from "../workflow/commands";
 import { runWorktrees } from "../worktrees/command";
 
@@ -83,12 +84,16 @@ Commands:
                      writes nothing unless --yes is given. It never commits.
                      cc-smart-dev-kit project init --help lists the flags.
   workflow [show] | set <setting> <value> [--project] | unset <setting> [--project]
+           | review-done [--sha <commit>]
                      What cc-smart-dev-kit may do by itself here (commit, push, open a pull
                      request, merge) and the switches that map onto settings which already
                      exist. show (the default) prints each value with where it came from:
                      the project's .claude/cc-smart-dev-kit.json, your own
-                     ~/.config/cc-smart-dev-kit/workflow.json, or the built-in default.
-                     set and unset write one value; --project writes the project's file.
+                     ~/.config/cc-smart-dev-kit/workflow.json, or the built-in default, and
+                     whether the commit here has a recorded review. set and unset write one
+                     value; --project writes the project's file. review-done records that a
+                     commit (default HEAD, or --sha <commit>) had its one premium review;
+                     the merge guard reads that record.
   hook <worktree-create|worktree-remove|subagent-stop>
                      The worktree engine, for a project that wires it in its own
                      .claude/settings.json: reads the hook's input on stdin and answers
@@ -363,10 +368,12 @@ async function main(argv: string[]): Promise<number> {
     }
     case "statusline":
       // Claude Code pipes its JSON in; run by hand in a terminal, there is none to wait for.
+      // The warning share comes from the workflow settings of the folder the session is in.
       return runStatusline(
         paths,
         () => (process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text()),
         Date.now(),
+        alertsAt(paths, process.cwd(), process.env),
       );
     case "usage":
       return runUsage(paths, rest, Date.now());

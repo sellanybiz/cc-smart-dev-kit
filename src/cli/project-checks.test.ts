@@ -203,6 +203,7 @@ describe("a project that used the old anymodel name", () => {
     expect(check(repo)).toEqual([
       "✓ project: the worktree engine is wired (WorktreeCreate, WorktreeRemove, SubagentStop)",
       "! project: the plugin's git-guard and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of git-guard, list \"git-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
+      "! project: the plugin's merge-guard and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of merge-guard, list \"merge-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
       "! project: the plugin's job-route and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of job-route, list \"job-route\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
     ]);
   });
@@ -234,6 +235,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     wireOnly(repo, [], OTHERS);
     expect(check(repo)).toEqual([
       both("git-guard", "./guard.sh", "PreToolUse (Bash)"),
+      both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
       both("job-route", "./guard.sh", "PreToolUse (Bash)"),
       // serena-root also runs at a session start (it forgets or distrusts its record there).
       both("serena-root", "./hello.sh", "SessionStart (startup)"),
@@ -252,6 +254,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     expect(check(repo)).toEqual([
       "· project: the plugin's git-guard is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
       "· project: the plugin's session-name is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
+      both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
       both("job-route", "./guard.sh", "PreToolUse (Bash)"),
       both("serena-root", "./hello.sh", "SessionStart (startup)"),
       both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),

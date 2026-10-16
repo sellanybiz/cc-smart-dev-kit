@@ -9,6 +9,11 @@ description: Before every `gh pr create`, and before merging or reviewing someon
 it differs, the add-on wins (`core.md`, top). A project with its own required headings or
 release process names them there.
 
+**Whether one is opened, and how, comes from the workflow.** `cc-smart-dev-kit workflow show`
+prints `openPr`: `"off"` means open one only when the person asks, `"draft"` opens it as a
+draft, `"ready"` opens it ready for review. The body below is the same in every case, and one
+skill owns the rest of that policy (`/cc-smart-dev-kit:commit` § what happens by itself).
+
 ## Three readers
 
 1. Whoever decides to **merge** it.

@@ -94,4 +94,14 @@ describe("statusline", () => {
       "Opus 5.5 · ⛔ claude-opus-5-5 at its plan limit until 13:00 · ⚠ 5h 100% (resets 13:00)",
     );
   });
+
+  it("the warning share is a setting (`alerts.usagePercent`), not a fixed 85", () => {
+    // With nothing set the built-in 85 holds (`src/workflow/schema.ts`)...
+    expect(statuslineText(input(70, 41.2), EMPTY, NOW, "UTC")).toBe("Opus 5.5 · 5h 70% · 7d 41%");
+    // ...and a project or a person may warn earlier, or later.
+    expect(statuslineText(input(70, 41.2), EMPTY, NOW, "UTC", 70)).toBe(
+      "Opus 5.5 · ⚠ 5h 70% (resets 13:00) · 7d 41%",
+    );
+    expect(statuslineText(input(85, 90), EMPTY, NOW, "UTC", 95)).toBe("Opus 5.5 · 5h 85% · 7d 90%");
+  });
 });

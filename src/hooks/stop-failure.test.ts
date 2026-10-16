@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import type { GatewayConfig } from "../gateway/config";
 import type { LimitState } from "../gateway/limit-state";
@@ -83,8 +83,20 @@ function state(model: string, seenAgoMs: number): LimitState {
   };
 }
 
+/** The alerts settings at their defaults: every moment alerts, and no sound (`workflow`). */
+function alerts(extra: Partial<AlertContext["alerts"]> = {}): AlertContext["alerts"] {
+  return {
+    events: { source: "default", value: ["needs-you", "question", "finished", "failed"] },
+    sound: { source: "default", value: false },
+    usagePercent: { source: "default", value: 85 },
+    ...extra,
+  };
+}
+
 function ctx(extra: Partial<AlertContext> = {}): AlertContext {
   return {
+    alerts: alerts(),
+    alertsProblem: null,
     config: config(),
     gatewayOn: true,
     gatewaySetUp: true,
@@ -247,6 +259,8 @@ describe("which stops get an alert", () => {
     );
     const read = readAlertContext(paths, NOW, { ...AT_LIMIT, transcript_path: transcript });
     expect(read).toEqual({
+      alerts: alerts(),
+      alertsProblem: null,
       config: null,
       gatewayOn: false,
       gatewaySetUp: true,
@@ -254,6 +268,46 @@ describe("which stops get an alert", () => {
       sessionModel: "claude-fable-5-1",
       state: null,
     });
+  });
+
+  it("readAlertContext: the alert settings come from the folder the session is in", () => {
+    const home = tempDir("alert-context");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
+    writeFileSync(
+      paths.workflowConfigFile,
+      `${JSON.stringify({ alerts: { events: ["needs-you"], sound: true } }, null, 2)}\n`,
+    );
+    const read = readAlertContext(paths, NOW, { ...AT_LIMIT, cwd: home });
+    expect(read.alerts.events).toEqual({ source: "personal", value: ["needs-you"] });
+    expect(read.alerts.sound.value).toBe(true);
+    expect(read.alertsProblem).toBeNull();
+  });
+
+  it("a `failed` moment left out of alerts.events: no alert at all", () => {
+    expect(
+      planAlert(
+        AT_LIMIT,
+        ctx({ alerts: alerts({ events: { source: "project", value: ["finished"] } }) }),
+      ),
+    ).toBeNull();
+    expect(planAlert(AT_LIMIT, ctx())).not.toBeNull();
+  });
+
+  it("a broken workflow file: the alert goes on, with the line about the fallback", () => {
+    const home = tempDir("alert-context");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
+    writeFileSync(paths.workflowConfigFile, "{ not json");
+    const read = readAlertContext(paths, NOW, { ...AT_LIMIT, cwd: home });
+    expect(read.alerts.events.source).toBe("default");
+    expect(read.alertsProblem).toStartWith(
+      "cc-smart-dev-kit: the alerts fall back to the built-in defaults (Invalid ",
+    );
+    // The alert itself is unchanged: the settings only fell back, they did not break it.
+    expect(
+      planAlert(AT_LIMIT, ctx({ alerts: read.alerts, alertsProblem: read.alertsProblem })),
+    ).not.toBeNull();
   });
 });
 
@@ -464,7 +518,16 @@ describe("the hook as Claude Code runs it", () => {
         stderr: "pipe",
         stdout: "pipe",
       });
-    return { log, run };
+    return { bin, home, log, run };
+  }
+
+  /** A file a detached child writes: waits for it to hold something. */
+  async function waitNonEmpty(path: string): Promise<string> {
+    for (let tries = 0; tries < 100; tries += 1) {
+      if (existsSync(path) && readFileSync(path, "utf8") !== "") return readFileSync(path, "utf8");
+      await Bun.sleep(50);
+    }
+    throw new Error(`${path} stayed empty for 5 s`);
   }
 
   async function waitFor(path: string): Promise<string> {
@@ -489,6 +552,40 @@ describe("the hook as Claude Code runs it", () => {
       "--action=wait=Wait",
       "Claude usage limit reached",
     ]);
+  });
+
+  it("alerts.sound on: the sound starts beside the alert, from the session's own settings", async () => {
+    const m = machine("ok");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(m.home, ".claude"), HOME: m.home });
+    mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
+    writeFileSync(paths.workflowConfigFile, `${JSON.stringify({ alerts: { sound: true } })}\n`);
+    const sound = join(m.home, "sound.log");
+    writeFileSync(join(m.bin, "paplay"), `#!/bin/sh\necho "$*" >> '${sound}'\n`);
+    chmodSync(join(m.bin, "paplay"), 0o755);
+    expect(m.run(AT_LIMIT).exitCode).toBe(0);
+    expect(await waitNonEmpty(sound)).toBe(
+      "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga\n",
+    );
+    // The alert itself is unchanged: the action and the wait are the worker's, as always.
+    const lines = (await waitFor(m.log)).split("\n");
+    expect(lines[1]).toBe("--action=use=Use glm-5.3-flash until it resets");
+  });
+
+  it("alerts.events without `failed`: the limit stop gives no alert at all", async () => {
+    const m = machine("ok");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(m.home, ".claude"), HOME: m.home });
+    mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
+    writeFileSync(
+      paths.workflowConfigFile,
+      `${JSON.stringify({ alerts: { events: ["needs-you", "question", "finished"] } })}\n`,
+    );
+    expect(m.run(AT_LIMIT).exitCode).toBe(0);
+    // Nothing may appear. The entry starts its alert detached, so this waits a moment: a
+    // check that ran only once would pass whether or not a worker was on its way.
+    for (let tries = 0; tries < 20; tries += 1) {
+      expect(existsSync(m.log)).toBe(false);
+      await Bun.sleep(50);
+    }
   });
 
   it("no launcher: a plain notification, with no action and no long wait", async () => {
