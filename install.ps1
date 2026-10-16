@@ -397,6 +397,28 @@ function Get-CommandText([scriptblock]$Command) {
   return ($lines -join "`n")
 }
 
+# Hands a SECRET to the plugin's own CLI on stdin, encoded UTF-8 WITHOUT a BOM. Windows
+# PowerShell 5.1 encodes what it pipes with $OutputEncoding, which is ASCII by default there: a
+# key with any non-ASCII character would reach the command as "?". The previous value is put
+# back afterwards, so the rest of the run is untouched.
+function Send-SecretToCli([string]$Secret, [string[]]$CliArgs) {
+  $previousEncoding = $OutputEncoding
+  try {
+    $OutputEncoding = New-Object System.Text.UTF8Encoding $false
+    $Secret | & $Bun @cliArgv @CliArgs
+  } finally {
+    $OutputEncoding = $previousEncoding
+  }
+}
+
+# A native command's STDOUT as one string, and nothing of its stderr: a command whose stdout is
+# JSON must not have a warning line glued to it. (Windows PowerShell renders a native command's
+# stderr as error records; this takes only the plain strings.)
+function Get-CommandStdout([scriptblock]$Command) {
+  $lines = @(& $Command 2>$null | ForEach-Object { [string]$_ })
+  return ($lines -join "`n")
+}
+
 # The line that retries one of the plugin's own commands, once it is installed: the launcher
 # when setup has put it in place, else the exact `bun --no-env-file ...` form. Every hint and
 # retry line uses this, so a machine whose launcher is not there yet reads a line that works.
@@ -410,6 +432,49 @@ function Get-PluginCommand([string[]]$CliArgs) {
 # is no console to ask on.
 function Get-ReadmeLine {
   return "powershell -File install.ps1 $Repo"
+}
+
+# One pass over the plugin's servers registered by something else: show what runs instead, and
+# ask. A name is asked about ONCE per run ($script:McpAsked), so the second pass -- after the
+# Tavily key, whose arrival changes what the plugin registers -- brings up only what is new. A
+# yes removes the server and runs `setup` again, so the plugin registers its own WITH its
+# record (that record is what lets `restore` take it back later).
+$script:McpAsked = ""
+function Invoke-ForeignMcpPass([string]$Label) {
+  # The command's STDOUT only: a stderr line (a warning, say) must not reach ConvertFrom-Json.
+  $statusText = Get-CommandStdout { Invoke-CliQuiet @("mcp", "status", "--json") }
+  $servers = @()
+  try {
+    $servers = @((ConvertFrom-Json -InputObject $statusText).servers)
+  } catch {
+    # Not JSON (the command failed, or answered nothing): nothing is foreign, so nothing is
+    # asked. A machine this cannot read is one where setup's own lines say what is wrong.
+    $servers = @()
+  }
+  $replaced = $false
+  foreach ($server in @($servers | Where-Object { $_.state -eq "foreign" })) {
+    $name = [string]$server.name
+    if ($script:McpAsked.Contains(" $name ")) { continue }
+    $script:McpAsked = "$script:McpAsked $name "
+    Read-Yes "$Label The `"$name`" server is registered by something else ($($server.runsWhat)). Replace it with cc-smart-dev-kit's?"
+    if ($script:Answer -eq "yes") {
+      & $ClaudeBin mcp remove $name --scope user
+      if ($LASTEXITCODE -ne 0) {
+        Stop-Failed "removing the old `"$name`" server failed" @("claude mcp remove $name --scope user")
+      }
+      $replaced = $true
+    } else {
+      Write-Skip "$Label the `"$name`" server was left as it is: run ``claude mcp remove $name --scope user``, then ``$(Get-PluginCommand @("setup"))``"
+      $Left.Add("the `"$name`" MCP server (registered by something else): claude mcp remove $name --scope user ; $(Get-PluginCommand @("setup"))")
+    }
+  }
+  if ($replaced) {
+    Invoke-Cli @("setup")
+    if ($LASTEXITCODE -ne 0) {
+      Stop-Failed "setup failed" @((Get-PluginCommand @("setup")))
+    }
+    Write-Step "$Label setup ran again: cc-smart-dev-kit's own MCP servers are registered"
+  }
 }
 
 # --- the run ---------------------------------------------------------------------------
@@ -670,45 +735,10 @@ if ($DryRun) {
   }
   Write-Step "6/8 setup finished"
 
-  # The plugin's own MCP servers, when something else registered them first: setup leaves a
-  # person's own server alone (the rule), so the installer asks -- showing what runs instead,
-  # and never a key (the JSON carries the command and its arguments only). Live, 2026-10-17: a
-  # project's own script had registered `playwright` (and the other three) first, setup left
-  # them alone, its `!` line was never seen among the installer's output, and the old browser
-  # kept starting.
-  $mcpReplaced = $false
-  $mcpStatusText = Get-CommandText { Invoke-CliQuiet @("mcp", "status", "--json") }
-  $mcpServers = @()
-  try {
-    $mcpServers = @((ConvertFrom-Json -InputObject $mcpStatusText).servers)
-  } catch {
-    # Not JSON (the command failed, or answered nothing): nothing is foreign, so nothing is
-    # asked. A machine this cannot read is one where setup's own lines say what is wrong.
-    $mcpServers = @()
-  }
-  foreach ($server in @($mcpServers | Where-Object { $_.state -eq "foreign" })) {
-    $mcpName = [string]$server.name
-    Read-Yes "6/8 The `"$mcpName`" server is registered by something else ($($server.runsWhat)). Replace it with cc-smart-dev-kit's?"
-    if ($script:Answer -eq "yes") {
-      & $ClaudeBin mcp remove $mcpName --scope user
-      if ($LASTEXITCODE -ne 0) {
-        Stop-Failed "removing the old `"$mcpName`" server failed" @("claude mcp remove $mcpName --scope user")
-      }
-      $mcpReplaced = $true
-    } else {
-      Write-Skip "6/8 the `"$mcpName`" server was left as it is: run ``claude mcp remove $mcpName --scope user``, then ``$(Get-PluginCommand @("setup"))``"
-      $Left.Add("the `"$mcpName`" MCP server (registered by something else): claude mcp remove $mcpName --scope user ; $(Get-PluginCommand @("setup"))")
-    }
-  }
-  if ($mcpReplaced) {
-    # `setup` again, so the plugin registers its own servers WITH their records: the record is
-    # what lets `restore` take them back later.
-    Invoke-Cli @("setup")
-    if ($LASTEXITCODE -ne 0) {
-      Stop-Failed "setup failed" @((Get-PluginCommand @("setup")))
-    }
-    Write-Step "6/8 setup ran again: cc-smart-dev-kit's own MCP servers are registered"
-  }
+  # The plugin's own MCP servers, when something else registered them first (live, 2026-10-17:
+  # a project's own script had registered all four, setup left them alone as it must, and its
+  # `!` line was never seen among the installer's output).
+  Invoke-ForeignMcpPass "6/8"
 
   # The old plugin: `migrate` asks to remove it, but only when it is still installed and
   # only on a console. If it is still there, ask here -- the two commands go last in the
@@ -759,7 +789,7 @@ if ($DryRun) {
     $script:Answer = ""
     $saved = $false
     if (-not [string]::IsNullOrEmpty($BrowserToken)) {
-      $BrowserToken | & $Bun @cliArgv browser token
+      Send-SecretToCli $BrowserToken @("browser", "token")
       $BrowserToken = ""
       if ($LASTEXITCODE -ne 0) { Stop-Failed "the token was not saved" @((Get-PluginCommand @("browser", "token"))) }
       $saved = $true
@@ -831,9 +861,9 @@ if ($DryRun) {
             if ([string]::IsNullOrEmpty($GatewayKey)) { break }
             # The secret goes in on stdin, never as an argument.
             if ($GatewayCheckCode -eq 1) {
-              $GatewayKey | & $Bun @cliArgv gateway setup --omniroute-password-stdin --save-unchecked @RestartFlag
+              Send-SecretToCli $GatewayKey (@("gateway", "setup", "--omniroute-password-stdin", "--save-unchecked") + $RestartFlag)
             } else {
-              $GatewayKey | & $Bun @cliArgv gateway setup --backend-key-stdin omniroute @RestartFlag
+              Send-SecretToCli $GatewayKey (@("gateway", "setup", "--backend-key-stdin", "omniroute") + $RestartFlag)
             }
             $gatewayCode = $LASTEXITCODE
             $GatewayKey = ""
@@ -891,7 +921,7 @@ if ($DryRun) {
       $TavilyKey = $script:Answer
       $script:Answer = ""
       if (-not [string]::IsNullOrEmpty($TavilyKey)) {
-        $TavilyKey | & $Bun @cliArgv setup --tavily-key-stdin
+        Send-SecretToCli $TavilyKey @("setup", "--tavily-key-stdin")
         $TavilyKey = ""
         if ($LASTEXITCODE -ne 0) {
           Stop-Failed "saving the Tavily key failed" @((Get-PluginCommand @("setup", "--tavily-key-stdin")))
@@ -906,6 +936,11 @@ if ($DryRun) {
       $Left.Add("the Tavily key: README, section MCP servers says where it goes, then $(Get-PluginCommand @("setup"))")
     }
   }
+
+  # Again, now that a Tavily key may have arrived: what the plugin registers changed, and a
+  # `tavily-websearch` of someone else's must not go on shadowing it. A name already asked
+  # about in step 6 is not asked again (Invoke-ForeignMcpPass).
+  Invoke-ForeignMcpPass "7/8"
 }
 
 # --- 8. doctor, what is left, and the two closing lines --------------------------------

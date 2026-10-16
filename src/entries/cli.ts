@@ -5,13 +5,7 @@ import { browserCheckCommand, runBrowserCheck } from "../browser/check";
 import { realBrowserDoctorDeps } from "../browser/doctor";
 import { runBrowserMcp } from "../browser/launcher";
 import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
-import {
-  clearBrowserToken,
-  parseBrowserToken,
-  readTokenFromStdin,
-  tokenSavedLine,
-  writeBrowserToken,
-} from "../browser/token";
+import { clearBrowserToken, savePastedToken } from "../browser/token";
 import { COMMAND, VERSION } from "../build-info";
 import { oldBunRefusal } from "../cli/bun-check";
 import { runDoctor } from "../cli/doctor";
@@ -26,6 +20,7 @@ import { runStatusline } from "../cli/statusline";
 import { runUpdate } from "../cli/update";
 import { runUsage } from "../cli/usage";
 import { type GatewayContext, runGateway } from "../gateway/commands";
+import { gatewayContext as buildGatewayContext } from "../gateway/context";
 import { realProbe } from "../gateway/health";
 import { type Runner, routerServiceKind } from "../gateway/service";
 import { windowsAccount } from "../gateway/service-windows";
@@ -294,25 +289,22 @@ const account = windowsAccount(process.env);
 /** Asks on the terminal; null when stdin is not one (a pipe, a script, a test). */
 const ask = process.stdin.isTTY ? (question: string) => confirm(question) : null;
 
+/**
+ * The gateway commands' context. `src/gateway/context.ts` owns it — including the one decision
+ * `--omniroute-password` needs (`readSecret` on a terminal whose echo can be switched off, and
+ * nothing on a pipe), which this entry used to leave out.
+ */
 function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
-  return {
-    paths,
-    bunPath: process.execPath,
-    bunVersion: Bun.version,
-    bundle: routerBundle(),
-    runner,
-    // A secret on stdin is cleaned first: a terminal that keeps bracketed paste on hands a
-    // paste to a pipe as `ESC[200~<key>ESC[201~` (`src/cli/secret-line.ts`).
-    readStdin: async () => cleanSecretLine(await Bun.stdin.text()),
-    confirm: ask,
-    service,
+  return buildGatewayContext({
     account,
+    bundle: routerBundle(),
+    confirm: ask,
+    paths,
     platform: process.platform,
-    probe: realProbe(),
-    apiFetch: (url, init) => fetch(url, init),
-    print: (line) => console.log(line),
-    error: (line) => console.error(line),
-  };
+    runner,
+    service,
+    terminal: process.stdin,
+  });
 }
 
 /** What `omniroute status`, `update` and `rollback` need: systemd, the registry, a question. */
@@ -617,7 +609,7 @@ async function main(argv: string[]): Promise<number> {
         console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
         return 2;
       }
-      const servers = mcpServerStatus(paths, process.env);
+      const servers = mcpServerStatus(paths);
       if (mcpRest.includes("--json")) {
         console.log(JSON.stringify({ servers, userConfigFile: paths.userConfigFile }, null, 2));
       } else {
@@ -705,33 +697,18 @@ async function main(argv: string[]): Promise<number> {
           return 0;
         }
         const hide = canHideInput(process.stdin);
-        const pasted = await readTokenFromStdin(
+        // The four outcomes (0 saved, 130 Ctrl+C, 1 a wrong shape, 1 a read that failed) are
+        // decided in one place, `savePastedToken`, so each is tested there.
+        return await savePastedToken(
+          paths,
           {
             isTTY: hide,
             readAll: () => Bun.stdin.text(),
             ...(hide ? { readSecret: () => readSecretLine(process.stdin) } : {}),
           },
           (line) => console.log(line),
-        ).catch((error: unknown) => {
-          console.error(
-            `${error instanceof Error ? error.message : String(error)}. Save the token to a file and pipe it in (\`${COMMAND} browser token < token.txt\`), or paste it in the portal's Browser card (\`${COMMAND} portal\`).`,
-          );
-          return null;
-        });
-        if (pasted === null) {
-          console.error("Nothing was saved (Ctrl+C).");
-          return 130;
-        }
-        const parsed = parseBrowserToken(pasted);
-        if (!parsed.ok) {
-          console.error(`The token was not saved: ${parsed.why}.`);
-          return 1;
-        }
-        writeBrowserToken(paths, parsed.token);
-        // The token itself is never printed, only the file it went to.
-        console.log(tokenSavedLine(paths.browserTokenFile));
-        console.log("Start a new Claude session (or restart the running one) to use it.");
-        return 0;
+          (line) => console.error(line),
+        );
       }
       if (sub === "check") {
         if (extra.length > 0) {

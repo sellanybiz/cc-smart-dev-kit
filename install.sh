@@ -353,8 +353,8 @@ cli_version() {
   esac
 }
 
-# The plugin's own MCP servers that are registered by SOMETHING ELSE on this machine, one per
-# line as `<name><TAB><what runs instead>`. `mcp status --json` answers it read-only, and the
+# The plugin's own MCP servers that are registered by SOMETHING ELSE, one per line as
+# `<name><TAB><what runs instead>`. `mcp status --json` answers it read-only, and the
 # rule for "ours" lives in the plugin (src/mcp/status.ts, one home with setup's own decision).
 # Nothing when every one is the plugin's own, or when the check cannot read the file.
 #
@@ -368,13 +368,47 @@ foreign_mcp_servers() {
 try{for(const s of (JSON.parse(t).servers||[])) if(s.state==="foreign") console.log(s.name+"\t"+(s.runsWhat||""))}catch{}'       2>/dev/null || true
 }
 
+# One pass over those servers: show what runs instead, and ask. A name is asked about ONCE per
+# run (`mcp_asked`), so the second pass — after the Tavily key, whose arrival can change what
+# the plugin registers — brings up only what is new. A yes removes the server and runs `setup`
+# again, so the plugin registers its own WITH its record (that record is what lets `restore`
+# take it back later).
+mcp_foreign_pass() { # <step label>
+  local label="$1" name runs replaced="no"
+  while IFS="$(printf '\t')" read -r name runs; do
+    [ -n "$name" ] || continue
+    case " $mcp_asked " in
+    *" $name "*) continue ;;
+    esac
+    mcp_asked="$mcp_asked $name"
+    ask_yes "$label The \"$name\" server is registered by something else ($runs). Replace it with cc-smart-dev-kit's?"
+    if [ "$answer" = "yes" ]; then
+      if ! "$CLAUDE_BIN" mcp remove "$name" --scope user </dev/null; then
+        failed "removing the old \"$name\" server failed" "claude mcp remove $name --scope user"
+      fi
+      replaced="yes"
+    else
+      skip "$label the \"$name\" server was left as it is: run \`claude mcp remove $name --scope user\`, then \`$(plugin_command setup)\`"
+      LEFT+=("the \"$name\" MCP server (registered by something else): claude mcp remove $name --scope user && $(plugin_command setup)")
+    fi
+  done <<EOF
+$(foreign_mcp_servers)
+EOF
+  if [ "$replaced" = "yes" ]; then
+    if ! run_cli_on_terminal setup; then
+      failed "setup failed" "$(plugin_command setup)"
+    fi
+    step "$label setup ran again: cc-smart-dev-kit's own MCP servers are registered"
+  fi
+}
+
 # ─── the run ───────────────────────────────────────────────────────────────────────────
 main() {
   local DRY_RUN="no" REPO="" arg
   local added="" pair name source
   local have_version want_version restart_flag gateway_go
   local cli_have gateway_check_out gateway_check_code gateway_saved gateway_tries gateway_code
-  local mcp_name mcp_runs mcp_replaced
+  local mcp_asked=""
   local BROWSER_TOKEN GATEWAY_KEY TAVILY_KEY
   local doctor_out doctor_code doctor_left line
 
@@ -647,30 +681,7 @@ main() {
     # The plugin's own MCP servers, when something else registered them first: setup leaves a
     # person's own server alone (the rule), so the installer asks — showing what runs instead,
     # and never a key (the line carries the command and its arguments only).
-    mcp_replaced="no"
-    while IFS="$(printf '\t')" read -r mcp_name mcp_runs; do
-      [ -n "$mcp_name" ] || continue
-      ask_yes "6/8 The \"$mcp_name\" server is registered by something else ($mcp_runs). Replace it with cc-smart-dev-kit's?"
-      if [ "$answer" = "yes" ]; then
-        if ! "$CLAUDE_BIN" mcp remove "$mcp_name" --scope user </dev/null; then
-          failed "removing the old \"$mcp_name\" server failed" "claude mcp remove $mcp_name --scope user"
-        fi
-        mcp_replaced="yes"
-      else
-        skip "6/8 the \"$mcp_name\" server was left as it is: run \`claude mcp remove $mcp_name --scope user\`, then \`$(plugin_command setup)\`"
-        LEFT+=("the \"$mcp_name\" MCP server (registered by something else): claude mcp remove $mcp_name --scope user && $(plugin_command setup)")
-      fi
-    done <<EOF
-$(foreign_mcp_servers)
-EOF
-    if [ "$mcp_replaced" = "yes" ]; then
-      # `setup` again, so the plugin registers its own servers WITH their records: the record is
-      # what lets `restore` take them back later.
-      if ! run_cli_on_terminal setup; then
-        failed "setup failed" "$(plugin_command setup)"
-      fi
-      step "6/8 setup ran again: cc-smart-dev-kit's own MCP servers are registered"
-    fi
+    mcp_foreign_pass "6/8"
 
     # The old plugin: `migrate` asks to remove it, but only when it is still installed and
     # only on a terminal. If it is still there, ask here — the two commands go last in the
@@ -877,6 +888,11 @@ EOF
         LEFT+=("the Tavily key: README § MCP servers says where it goes, then $(plugin_command setup)")
       fi
     fi
+
+    # Again, now that a Tavily key may have arrived: what the plugin registers changed, and a
+    # `tavily-websearch` of someone else's must not go on shadowing it. A name already asked
+    # about in step 6 is not asked again (mcp_foreign_pass).
+    mcp_foreign_pass "7/8"
   fi
 
   # ─── 8. doctor, what is left, and the two closing lines ──────────────────────────────

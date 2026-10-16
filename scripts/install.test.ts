@@ -115,6 +115,16 @@ interface WorldOptions {
   tavilyInSettings?: boolean;
   /** The plugin's MCP servers that are registered by something else on this machine. */
   mcpForeign?: { name: string; runsWhat: string }[];
+  /** The same, for the SECOND `mcp status` call (after the Tavily step). */
+  mcpForeignAgain?: { name: string; runsWhat: string }[];
+}
+
+/** One `mcp status --json` answer, as the real command writes it. */
+function mcpStatusJson(foreign: { name: string; runsWhat: string }[], configDir: string): string {
+  return JSON.stringify({
+    servers: foreign.map((one) => ({ name: one.name, runsWhat: one.runsWhat, state: "foreign" })),
+    userConfigFile: join(configDir, ".claude.json"),
+  });
 }
 
 interface World {
@@ -177,7 +187,16 @@ esac
 case "$*" in
 *dist/cli.js\\ mcp\\ status*)
   # Which of the plugin's MCP servers are registered by something else, as JSON: this world's.
-  printf '%s\\n' "$FAKE_MCP_STATUS"
+  # The SECOND call answers FAKE_MCP_STATUS_AGAIN: a server that only appears once a Tavily
+  # key exists is what the installer's second pass is for.
+  count=""
+  [ -f "$FAKE_MCP_COUNT" ] && count="$(cat "$FAKE_MCP_COUNT")"
+  printf '%s' "$((count + 1))" > "$FAKE_MCP_COUNT" 2>/dev/null || true
+  if [ -n "$count" ] && [ -n "$FAKE_MCP_STATUS_AGAIN" ]; then
+    printf '%s\\n' "$FAKE_MCP_STATUS_AGAIN"
+  else
+    printf '%s\\n' "$FAKE_MCP_STATUS"
+  fi
   exit 0
   ;;
 esac
@@ -511,15 +530,14 @@ function world(options: WorldOptions = {}): World {
     FAKE_OMNIROUTE_PASSWORD_REFUSED: options.omniRoutePasswordRefused === true ? "yes" : "no",
     // A person's own Tavily key, in the three places setup reads one from.
     TAVILY_API_KEY: options.tavilyInEnv ?? "",
-    // The MCP servers `mcp status --json` reports as registered by something else.
-    FAKE_MCP_STATUS: JSON.stringify({
-      servers: (options.mcpForeign ?? []).map((one) => ({
-        name: one.name,
-        runsWhat: one.runsWhat,
-        state: "foreign",
-      })),
-      userConfigFile: join(configDir, ".claude.json"),
-    }),
+    // The MCP servers `mcp status --json` reports as registered by something else. `_AGAIN` is
+    // the answer from the SECOND call (the installer's pass after the Tavily step).
+    FAKE_MCP_STATUS: mcpStatusJson(options.mcpForeign ?? [], configDir),
+    FAKE_MCP_STATUS_AGAIN:
+      options.mcpForeignAgain === undefined
+        ? ""
+        : mcpStatusJson(options.mcpForeignAgain, configDir),
+    FAKE_MCP_COUNT: join(home, "mcp-status-count"),
   };
 
   const spawn = (args: string[], env: Record<string, string>, input?: string) => {
@@ -1264,6 +1282,29 @@ describe("install.sh: what only the person has", () => {
     expect(w.calls()).toContain(`bun ${w.cli} mcp status --json`);
   });
 
+  test("a server that only appears after the Tavily step is asked about too", () => {
+    // M3 (premium review, 2026-10-17): the installer's foreign check runs again after step 7,
+    // because the Tavily key arriving there changes what the plugin registers — and a
+    // `tavily-websearch` of someone else's must not go on shadowing the plugin's own.
+    const w = world({
+      // Browser yes, the token, the gateway skipped, the Tavily key, then a yes to the second
+      // pass's question.
+      answers: [...browserAnswers("n", "y", TAVILY_KEY), "y"],
+      mcpForeign: [],
+      mcpForeignAgain: [
+        { name: "tavily-websearch", runsWhat: "npx mcp-remote https://mcp.tavily.com/mcp/?***" },
+      ],
+    });
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    expect(out).toContain("7/8 the Tavily key is saved");
+    expect(out).toContain(
+      '7/8 The "tavily-websearch" server is registered by something else (npx mcp-remote https://mcp.tavily.com/mcp/?***). Replace it with cc-smart-dev-kit\'s?',
+    );
+    expect(w.callsOf("claude")).toContain("mcp remove tavily-websearch --scope user");
+    expect(w.callsOf("bun").filter((call) => call === `${w.cli} mcp status --json`).length).toBe(2);
+  });
+
   test("a step that fails stops the run, names the command, and exits 1", () => {
     // The plugin install fails: exit 1, and the exact command that retries it is printed.
     const w = world();
@@ -1554,6 +1595,44 @@ describe("install.sh and install.ps1: the shared rules", () => {
     expect(/^\$InstallerVersion = "([^"]+)"/m.exec(readFileSync(INSTALL_PS1, "utf8"))?.[1]).toBe(
       INSTALLER_VERSION,
     );
+  });
+
+  test("a secret piped to the CLI is sent as UTF-8, without a BOM (Windows PowerShell 5.1)", () => {
+    // 5.1 encodes what it pipes with $OutputEncoding — ASCII by default there — so a key with
+    // any non-ASCII character reached the plugin's command as "?". Every secret goes through
+    // the one helper that sets UTF-8 (no BOM) and puts the previous value back.
+    const ps1 = readFileSync(INSTALL_PS1, "utf8");
+    const code = ps1
+      .split("\n")
+      .filter((line) => !/^\s*#/.test(line))
+      .join("\n");
+    expect(code).toContain("$OutputEncoding = New-Object System.Text.UTF8Encoding $false");
+    expect(code).toContain("function Send-SecretToCli");
+    // The only variable piped into the CLI is the helper's own parameter: no call site pipes a
+    // secret itself.
+    // (`Invoke-CliQuiet` pipes `$null`, which is not a secret.)
+    const pipes = [...code.matchAll(/^\s*\$([A-Za-z_][A-Za-z0-9_]*) \| & \$Bun @cliArgv/gm)]
+      .map((match) => match[1] ?? "")
+      .filter((name) => name !== "null");
+    expect(pipes).toEqual(["Secret"]);
+    // And each secret reaches the CLI through it.
+    expect([...code.matchAll(/Send-SecretToCli \$/g)]).toHaveLength(4);
+  });
+
+  test("the `mcp status --json` answer is captured WITHOUT stderr (a warning cannot break the JSON)", () => {
+    // `Get-CommandText` merges a native command's stderr into its text — right for a doctor
+    // line, wrong for a JSON answer, where one warning line would make ConvertFrom-Json throw
+    // and the installer would silently ask about nothing.
+    const ps1 = readFileSync(INSTALL_PS1, "utf8");
+    const code = ps1
+      .split("\n")
+      .filter((line) => !/^\s*#/.test(line))
+      .join("\n");
+    expect(code).toContain("function Get-CommandStdout");
+    expect(code).toContain(
+      '$statusText = Get-CommandStdout { Invoke-CliQuiet @("mcp", "status", "--json") }',
+    );
+    expect(code).not.toContain("$mcpStatusText = Get-CommandText");
   });
 
   test("the PowerShell files are pure ASCII, so any Windows code page reads them", () => {

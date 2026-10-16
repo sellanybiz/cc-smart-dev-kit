@@ -133,6 +133,8 @@ function machine(
     silent?: boolean;
     /** `/api/keys` answers 201 with no key in it. */
     noCreatedKey?: boolean;
+    /** `DELETE /api/keys/<id>` answers this instead of 200. */
+    deleteStatus?: number;
   } = {},
 ) {
   const home = tempDir("gateway-cli");
@@ -323,6 +325,13 @@ function machine(
       );
     }
     if (url.includes("/api/keys")) {
+      // `DELETE /api/keys/<id>`: OmniRoute removes a key again. A setup that made one and did
+      // NOT save it calls this, so the person's dashboard keeps no unused key.
+      if ((init.method ?? "GET") === "DELETE") {
+        return options.deleteStatus === undefined
+          ? new Response("", { status: 200 })
+          : new Response("no", { status: options.deleteStatus });
+      }
       if (options.noCreatedKey === true) return Response.json({ id: "key-1" }, { status: 201 });
       return Response.json(
         { id: "key-1", key: "omni-key-made-here", name: "cc-smart-dev-kit-router-test" },
@@ -386,7 +395,11 @@ function machine(
    * frees its port, which a fake server in this process cannot do for a subprocess).
    * Output as the CLI prints it.
    */
-  const runHere = async (args: string[], input?: string) => {
+  const runHere = async (
+    args: string[],
+    input?: string,
+    how: { readSecret?: () => Promise<null | string> } = {},
+  ) => {
     if (args[0] !== "gateway" && args[0] !== "restore") {
       throw new Error("runHere runs `gateway …` and `restore …` commands only");
     }
@@ -425,6 +438,10 @@ function machine(
               bundle: BUILT_ROUTER,
               runner: options.windows === true ? windowsRunner : runner,
               readStdin: () => Promise.resolve(input ?? ""),
+              // A terminal that can hide what is typed, when a test says so: the real entry
+              // builds this with `gatewayContext` (`src/gateway/context.ts`), whose own test
+              // proves a terminal-shaped stdin gets it.
+              ...(how.readSecret === undefined ? {} : { readSecret: how.readSecret }),
               confirm: null,
               service:
                 options.windows === true
@@ -825,6 +842,111 @@ describe("cc-smart-dev-kit gateway setup: OmniRoute's dashboard password", () =>
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("the answer to creating the key held no key");
     expect(existsSync(m.paths.config)).toBe(false);
+  });
+
+  test("--omniroute-password asks on the terminal, with no echo, and saves the key it makes", async () => {
+    // The command path the README, the installer and the gateway skill all send people to.
+    const m = machine();
+    let asked = 0;
+    const result = await m.runHere(["gateway", "setup", "--omniroute-password"], undefined, {
+      readSecret: () => {
+        asked += 1;
+        return Promise.resolve("the-dashboard-password");
+      },
+    });
+    expect(asked).toBe(1);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('made the key "cc-smart-dev-kit-router-');
+    expect(
+      (
+        JSON.parse(readFileSync(m.paths.config, "utf8")) as {
+          backends: { omniroute: { apiKey: string } };
+        }
+      ).backends.omniroute.apiKey,
+    ).toBe("omni-key-made-here");
+    // The password itself was read from the terminal, never printed and never stored.
+    expect(`${result.stdout}${result.stderr}`).not.toContain("the-dashboard-password");
+    expect(m.apiCalls[0]?.body).toEqual({ password: "the-dashboard-password" });
+  });
+
+  test("--omniroute-password with a terminal that cannot hide it: the line says to use stdin", async () => {
+    const m = machine();
+    // No `readSecret` in the context: what a pipe, or a terminal without `setRawMode`, gives.
+    const result = await m.runHere(["gateway", "setup", "--omniroute-password"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("this terminal cannot hide what you type");
+    expect(result.stderr).toContain("gateway setup --omniroute-password-stdin < password-file");
+    expect(existsSync(m.paths.config)).toBe(false);
+  });
+
+  test("--omniroute-password, Ctrl+C at the prompt: refused, and nothing was made", async () => {
+    const m = machine();
+    const result = await m.runHere(["gateway", "setup", "--omniroute-password"], undefined, {
+      readSecret: () => Promise.resolve(null),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("nothing was read (Ctrl+C)");
+    expect(m.apiCalls).toEqual([]);
+  });
+
+  test("a key setup made and did not save is DELETED again in OmniRoute", async () => {
+    // Live-shaped: the dashboard password makes a key, the backend then refuses it, and the run
+    // saves nothing — the key must not be left behind (premium review, 2026-10-17).
+    const m = machine({ modelsStatus: 401 });
+    const result = await m.runHere(["gateway", "setup", "--omniroute-password"], undefined, {
+      readSecret: () => Promise.resolve("the-dashboard-password"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("answered HTTP 401 for this key");
+    const removed = m.apiCalls.filter((call) => call.method === "DELETE");
+    expect(removed).toHaveLength(1);
+    expect(new URL(removed[0]?.url ?? "").pathname).toBe("/api/keys/key-1");
+    expect(removed[0]?.cookie).toBe("auth_token=session-abc");
+    expect(removed[0]?.origin).toBeNull();
+    expect(existsSync(m.paths.config)).toBe(false);
+  });
+
+  test("a key that could not be deleted: the error names it, with its id, for the dashboard", async () => {
+    const m = machine({ deleteStatus: 500, modelsStatus: 401 });
+    const result = await m.runHere(["gateway", "setup", "--omniroute-password"], undefined, {
+      readSecret: () => Promise.resolve("the-dashboard-password"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("answered HTTP 401 for this key");
+    expect(result.stderr).toContain(
+      "WARN the key this run made in OmniRoute could not be removed (cc-smart-dev-kit-router-",
+    );
+    expect(result.stderr).toContain("id key-1");
+    expect(result.stderr).toContain("remove it in OmniRoute's dashboard by hand");
+  });
+
+  test("an unchecked save without --save-unchecked: the key goes too", async () => {
+    // The other "made but not saved" path: the backend answers 503, so the key cannot be
+    // judged, and without `--save-unchecked` nothing is written.
+    const m = machine({ modelsStatus: 503 });
+    const result = await m.runHere(["gateway", "setup", "--omniroute-password"], undefined, {
+      readSecret: () => Promise.resolve("the-dashboard-password"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("could not ask omniroute");
+    expect(m.apiCalls.filter((call) => call.method === "DELETE")).toHaveLength(1);
+    expect(existsSync(m.paths.config)).toBe(false);
+  });
+
+  test("a key that IS saved is not deleted", async () => {
+    const m = machine();
+    const result = await m.runHere(["gateway", "setup", "--omniroute-password"], undefined, {
+      readSecret: () => Promise.resolve("the-dashboard-password"),
+    });
+    expect(result.exitCode).toBe(0);
+    expect(m.apiCalls.filter((call) => call.method === "DELETE")).toEqual([]);
+    expect(
+      (
+        JSON.parse(readFileSync(m.paths.config, "utf8")) as {
+          backends: { omniroute: { apiKey: string } };
+        }
+      ).backends.omniroute.apiKey,
+    ).toBe("omni-key-made-here");
   });
 
   test("the password flag and a key on stdin together, or with --no-backend-key: wrong options", async () => {

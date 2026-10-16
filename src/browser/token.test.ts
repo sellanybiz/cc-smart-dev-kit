@@ -6,7 +6,7 @@
  * made-up ones.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { canHideInput, PASTE_END, PASTE_START, readSecretLine } from "../cli/secret-line";
@@ -18,6 +18,7 @@ import {
   parseBrowserToken,
   readBrowserToken,
   readTokenFromStdin,
+  savePastedToken,
   tokenProtection,
   tokenSavedLine,
   writeBrowserToken,
@@ -300,5 +301,100 @@ describe("how the token file is kept to its owner, in words", () => {
       "+ C:\\Users\\u\\t.token: the browser token is set (your user profile's permissions keep it yours)",
     );
     expect(windows).not.toContain("mode 600");
+  });
+});
+
+describe("savePastedToken: the four outcomes, and a read that fails", () => {
+  // Low, premium review 2026-10-17: the CLI mapped EVERY failure of the read to
+  // "Nothing was saved (Ctrl+C)" with exit 130 — a lie about a broken pipe or a terminal that
+  // cannot hide what is typed, and a script could not tell it from a person pressing Ctrl+C.
+  const TOKEN = `${"A".repeat(41)}_-`;
+
+  function lines(): { error: string[]; said: string[] } {
+    return { error: [], said: [] };
+  }
+
+  test("a good token on stdin: saved, 0600, and never printed", async () => {
+    const home = tempDir("token-save");
+    const paths_ = paths(home);
+    const out = lines();
+    const code = await savePastedToken(
+      paths_,
+      { isTTY: false, readAll: () => Promise.resolve(`${TOKEN}\n`) },
+      (line) => out.said.push(line),
+      (line) => out.error.push(line),
+    );
+    expect(code).toBe(0);
+    expect(out.error).toEqual([]);
+    expect(out.said[0]).toContain("the browser token is set");
+    expect(readFileSync(paths_.browserTokenFile, "utf8")).toBe(`${TOKEN}\n`);
+    expect(out.said.join("\n")).not.toContain(TOKEN);
+  });
+
+  test("a shape that is not the token: exit 1, its own reason, nothing written", async () => {
+    const home = tempDir("token-shape");
+    const paths_ = paths(home);
+    const out = lines();
+    const code = await savePastedToken(
+      paths_,
+      { isTTY: false, readAll: () => Promise.resolve("hello world\n") },
+      (line) => out.said.push(line),
+      (line) => out.error.push(line),
+    );
+    expect(code).toBe(1);
+    expect(out.error[0]).toContain("The token was not saved");
+    expect(out.error[0]).toContain("11 characters");
+    expect(existsSync(paths_.browserTokenFile)).toBe(false);
+  });
+
+  test("Ctrl+C: exit 130, and nothing was written", async () => {
+    const home = tempDir("token-ctrlc");
+    const paths_ = paths(home);
+    const out = lines();
+    const code = await savePastedToken(
+      paths_,
+      { isTTY: true, readAll: () => Promise.resolve(""), readSecret: () => Promise.resolve(null) },
+      (line) => out.said.push(line),
+      (line) => out.error.push(line),
+    );
+    expect(code).toBe(130);
+    expect(out.error).toEqual(["Nothing was saved (Ctrl+C)."]);
+    expect(existsSync(paths_.browserTokenFile)).toBe(false);
+  });
+
+  test("a read that FAILS: exit 1, its own reason and the two ways in — never Ctrl+C", async () => {
+    const home = tempDir("token-read-fail");
+    const paths_ = paths(home);
+    const out = lines();
+    const code = await savePastedToken(
+      paths_,
+      {
+        isTTY: false,
+        readAll: () => Promise.reject(new Error("stdin closed badly")),
+      },
+      (line) => out.said.push(line),
+      (line) => out.error.push(line),
+    );
+    expect(code).toBe(1);
+    expect(out.error[0]).toContain("stdin closed badly");
+    expect(out.error[0]).toContain("browser token < token.txt");
+    expect(out.error[0]).toContain("cc-smart-dev-kit portal");
+    expect(out.error.join("\n")).not.toContain("Ctrl+C");
+    expect(existsSync(paths_.browserTokenFile)).toBe(false);
+  });
+
+  test("a terminal that cannot hide what is typed: the reason the read gave, exit 1", async () => {
+    const home = tempDir("token-no-hide");
+    const paths_ = paths(home);
+    const out = lines();
+    const code = await savePastedToken(
+      paths_,
+      { isTTY: true, readAll: () => Promise.resolve("") },
+      (line) => out.said.push(line),
+      (line) => out.error.push(line),
+    );
+    expect(code).toBe(1);
+    expect(out.error[0]).toContain("this terminal cannot hide what you type");
+    expect(out.error.join("\n")).not.toContain("Ctrl+C");
   });
 });

@@ -17,6 +17,7 @@ import {
   extensionVersion,
   findChrome,
   findClaudeCodeProfile,
+  installedExtensionVersion,
   isExtensionInstalledInProfile,
   otherExtensions,
   PLAYWRIGHT_EXTENSION_ID,
@@ -158,8 +159,10 @@ describe("the extension in a profile", () => {
   test("every other extension is named, and the Playwright one is not", () => {
     const dir = tempDir("chrome");
     mkdirSync(join(dir, "Extensions", PLAYWRIGHT_EXTENSION_ID), { recursive: true });
-    writeExtension(dir, { id: "aaaaother", name: "Some Page Helper" });
-    expect(otherExtensions(dir)).toEqual([{ id: "aaaaother", name: "Some Page Helper" }]);
+    writeExtension(dir, { id: "aaaaaaaabbbbbbbbccccccccdddddddd", name: "Some Page Helper" });
+    expect(otherExtensions(dir)).toEqual([
+      { id: "aaaaaaaabbbbbbbbccccccccdddddddd", name: "Some Page Helper" },
+    ]);
   });
 });
 
@@ -188,8 +191,26 @@ describe("otherExtensions: Chrome's own record decides, never the folders", () =
 
   test("a folder without a manifest, whatever its name, is not an extension", () => {
     const dir = tempDir("chrome");
-    mkdirSync(join(dir, "Extensions", "aaaaother", "1.0.0"), { recursive: true });
+    mkdirSync(join(dir, "Extensions", "aaaaaaaabbbbbbbbccccccccdddddddd", "1.0.0"), {
+      recursive: true,
+    });
     expect(otherExtensions(dir)).toEqual([]);
+  });
+
+  test("a folder whose name is not an id is not an extension, manifest or not", () => {
+    // Chrome's own working folders under `Extensions/`: `Temp` while an install runs, and
+    // `scoped_dir…` (premium review, 2026-10-17: `Temp` was named as another extension).
+    for (const name of ["Temp", "scoped_dir1234_5678"]) {
+      const dir = tempDir("chrome");
+      const version = join(dir, "Extensions", name, "1.0.0");
+      mkdirSync(version, { recursive: true });
+      writeFileSync(
+        join(version, "manifest.json"),
+        JSON.stringify({ manifest_version: 3, name: "Half an install", version: "1.0.0" }),
+      );
+      expect(otherExtensions(dir)).toEqual([]);
+      expect(installedExtensionVersion(dir, name)).toBeNull();
+    }
   });
 
   test("Chrome's own: a component (5), an external component (10), and installed by default", () => {
@@ -200,10 +221,10 @@ describe("otherExtensions: Chrome's own record decides, never the folders", () =
       { installed_by_default: true, location: 1, was_installed_by_default: true },
     ]) {
       const dir = tempDir("chrome");
-      writeExtension(dir, { id: "aaaaother", name: "Chrome's own" });
+      writeExtension(dir, { id: "aaaaaaaabbbbbbbbccccccccdddddddd", name: "Chrome's own" });
       writeFileSync(
         join(dir, "Preferences"),
-        JSON.stringify({ extensions: { settings: { aaaaother: record } } }),
+        JSON.stringify({ extensions: { settings: { aaaaaaaabbbbbbbbccccccccdddddddd: record } } }),
       );
       expect(otherExtensions(dir)).toEqual([]);
     }
@@ -213,7 +234,9 @@ describe("otherExtensions: Chrome's own record decides, never the folders", () =
     const dir = tempDir("chrome");
     writeFileSync(
       join(dir, "Preferences"),
-      JSON.stringify({ extensions: { settings: { aaaaother: { location: 1 } } } }),
+      JSON.stringify({
+        extensions: { settings: { aaaaaaaabbbbbbbbccccccccdddddddd: { location: 1 } } },
+      }),
     );
     expect(otherExtensions(dir)).toEqual([]);
   });
@@ -222,7 +245,7 @@ describe("otherExtensions: Chrome's own record decides, never the folders", () =
     const dir = tempDir("chrome");
     // A Web Store install: a folder, a manifest whose name is a message, the message file, and
     // the record Chrome writes for an install a person made (`location: 1`).
-    const version = join(dir, "Extensions", "aaaaother", "1.2.3");
+    const version = join(dir, "Extensions", "aaaaaaaabbbbbbbbccccccccdddddddd", "1.2.3");
     mkdirSync(join(version, "_locales", "en"), { recursive: true });
     writeFileSync(
       join(version, "manifest.json"),
@@ -234,15 +257,21 @@ describe("otherExtensions: Chrome's own record decides, never the folders", () =
     );
     writeFileSync(
       join(dir, "Preferences"),
-      JSON.stringify({ extensions: { settings: { aaaaother: { location: 1 } } } }),
+      JSON.stringify({
+        extensions: { settings: { aaaaaaaabbbbbbbbccccccccdddddddd: { location: 1 } } },
+      }),
     );
-    expect(otherExtensions(dir)).toEqual([{ id: "aaaaother", name: "Some Page Helper" }]);
+    expect(otherExtensions(dir)).toEqual([
+      { id: "aaaaaaaabbbbbbbbccccccccdddddddd", name: "Some Page Helper" },
+    ]);
   });
 
   test("a manifest name that cannot be resolved falls back to the id, never to a placeholder", () => {
     const dir = tempDir("chrome");
-    writeExtension(dir, { id: "aaaaother", name: "__MSG_missing__" });
-    expect(otherExtensions(dir)).toEqual([{ id: "aaaaother", name: "aaaaother" }]);
+    writeExtension(dir, { id: "aaaaaaaabbbbbbbbccccccccdddddddd", name: "__MSG_missing__" });
+    expect(otherExtensions(dir)).toEqual([
+      { id: "aaaaaaaabbbbbbbbccccccccdddddddd", name: "aaaaaaaabbbbbbbbccccccccdddddddd" },
+    ]);
   });
 });
 

@@ -190,9 +190,14 @@ describe("browser setup", () => {
 
   test("another extension in that profile is a note naming the open upstream bug", () => {
     const world = chromeWorld();
-    world.withProfile({ fileUrls: true, others: [{ id: "aaaaother", name: "Some Page Helper" }] });
+    world.withProfile({
+      fileUrls: true,
+      others: [{ id: "aaaaaaaabbbbbbbbccccccccdddddddd", name: "Some Page Helper" }],
+    });
     const result = browserSetup(world.paths, world.deps, { apply: false });
-    expect(result.notes.join("\n")).toContain("Some Page Helper [aaaaother]");
+    expect(result.notes.join("\n")).toContain(
+      "Some Page Helper [aaaaaaaabbbbbbbbccccccccdddddddd]",
+    );
     expect(result.notes.join("\n")).toContain("playwright#43230");
   });
 });

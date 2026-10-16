@@ -182,7 +182,16 @@ interface Managed {
   /** Install Serena's context beside the plugin's data (the file its registration names). */
   serena: boolean;
   /** The Tavily key to write into the settings as an owned secret, or null. */
-  tavilyKey: null | string;
+  /**
+   * What the settings' own `env.TAVILY_API_KEY` gets — the ONE decision, from where the key
+   * was found (`readTavilyKey`):
+   *   - `write`: a key file (or `--tavily-key-stdin`) has it: setup owns the settings copy.
+   *   - `keep`: the settings already hold it (the person set it there, or setup wrote it on an
+   *     earlier run): nothing to write, and nothing to remove — it is the key Claude Code
+   *     expands `Bearer ${TAVILY_API_KEY}` from.
+   *   - `remove`: no key anywhere but a copy setup wrote earlier: take that copy out.
+   */
+  tavilyKeyPlan: { kind: "keep" } | { kind: "remove" } | { kind: "write"; value: string };
   /** The Tavily key that arrived on stdin, to write to the key file first, or null. */
   tavilyKeyFile: null | string;
   /** Add tmux's passthrough line (`tmux` is installed, so the person uses tmux). */
@@ -248,13 +257,16 @@ function applySetup(
 
   const set: (readonly [KeyPath, unknown])[] = [[AUTO_UPDATE_KEY, true]];
   if (managed.statusline) set.push([STATUSLINE_KEY, statuslineSetting(paths)]);
-  if (managed.tavilyKey !== null) set.push([TAVILY_KEY_PATH, managed.tavilyKey]);
+  if (managed.tavilyKeyPlan.kind === "write") {
+    set.push([TAVILY_KEY_PATH, managed.tavilyKeyPlan.value]);
+  }
   // The key's source moved: the environment has it now (or there is no key at all), so the
   // key cc-smart-dev-kit wrote into the settings goes — the person's environment must not be
   // shadowed by a stale copy. Only while the key still holds what cc-smart-dev-kit wrote:
-  // one the person changed is theirs (`applyManagedJson`).
+  // one the person changed is theirs (`applyManagedJson`). A key the settings themselves
+  // hold (`keep`) is left exactly as it is.
   const tavilyOwned =
-    managed.tavilyKey === null &&
+    managed.tavilyKeyPlan.kind === "remove" &&
     ownedKeys(paths.stateDir, realTarget(paths.settingsFile)).some(
       (path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH),
     );
@@ -658,10 +670,10 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       `  tmux is running: run \`${TMUX_NOW_COMMAND}\` to apply the line now (a restart works too)`,
     );
   }
-  // The Tavily key: from the environment (nothing to write), from `--tavily-key-stdin` or
-  // from the key file (an owned secret key in the settings, so Claude Code's
-  // "${TAVILY_API_KEY}" gets it), or missing (the server is skipped, with the plan's note).
-  // A key is never printed.
+  // The Tavily key: from the environment or the settings' own `env` (nothing to write), from
+  // `--tavily-key-stdin` or from the key file (an owned secret key in the settings, so Claude
+  // Code's "${TAVILY_API_KEY}" gets it), or missing (the server is skipped, with the plan's
+  // note). A key is never printed.
   const tavily =
     options.tavilyKeyStdin === null
       ? readTavilyKey(paths, options.env)
@@ -676,7 +688,12 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     },
     serena: existsSync(serenaSource),
     statusline: options.statusline,
-    tavilyKey: tavily.source === "file" ? tavily.value : null,
+    tavilyKeyPlan:
+      tavily.source === "file"
+        ? { kind: "write", value: tavily.value }
+        : tavily.source === "settings"
+          ? { kind: "keep" }
+          : { kind: "remove" },
     // A key from stdin is written to the key file first: the one home of that key.
     tavilyKeyFile: options.tavilyKeyStdin,
     tmuxLine,

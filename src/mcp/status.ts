@@ -15,19 +15,47 @@
  * (`sameConfig`, the same call `planMcpServers` and `removeMcpServers` make). This module reads
  * the same two files and answers with the same rule; it writes nothing.
  */
+import { basename } from "node:path";
 import { COMMAND } from "../build-info";
 import type { CliPaths } from "../cli/paths";
 import { oneLine } from "../gateway/plain-text";
+import { redactUrl } from "../setup/marketplace-access";
 import { readMcpRecords } from "./records";
 import { readUserServers, sameConfig } from "./register";
 import { SERVER_NAMES, type ServerName } from "./servers";
-import { readTavilyKey } from "./tavily";
+
+/** A flag whose NEXT argument is a secret: `--api-key X`, `--token`, `-password`. */
+const KEY_FLAG = /^--?[A-Za-z0-9-]*(key|token|secret|password|auth)[A-Za-z0-9-]*$/i;
+
+/** A name that looks like a key, wherever it is: `tavilyApiKey=…`, `--token=…`. */
+const KEY_WORD = /(key|token|secret|password|auth)/i;
+
+/**
+ * One argument as it is safe to print: a value that follows a key-like flag (`--api-key X`) and
+ * the value of a `name=value` whose name looks like one (`--token=X`, `tavilyApiKey=X`) become
+ * `•••`. The flag or the name stays, so the line still says what the server is.
+ */
+function safeArg(args: readonly string[], index: number): string {
+  const arg = args[index] ?? "";
+  const previous = index === 0 ? "" : (args[index - 1] ?? "");
+  if (KEY_FLAG.test(previous)) return "•••";
+  // An argument that is itself a URL (`npx mcp-remote <url>`) goes through the URL's one home.
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(arg)) return oneLine(redactUrl(arg), 200);
+  const equals = arg.indexOf("=");
+  if (equals > 0 && KEY_WORD.test(arg.slice(0, equals))) {
+    return `${arg.slice(0, equals)}=•••`;
+  }
+  return oneLine(arg, 200);
+}
 
 /**
  * What a registered server runs, as one line: its command and its arguments, or the URL of a
  * remote server. NEVER its `env` or `headers`: a server config can hold a key there (the
  * Tavily registration carries `${TAVILY_API_KEY}`, and a person's own server may carry the key
- * itself), and this line is printed.
+ * itself), and this line is printed. A key can also sit in a URL's query, fragment or userinfo,
+ * or in an argument — `npx mcp-remote https://host/mcp?key=…`, `--api-key X`, `--token=X` — so
+ * a URL goes through `redactUrl` (the one home for a URL safe to print) and such an argument's
+ * VALUE becomes `•••`.
  */
 export function describeServerConfig(value: unknown): string {
   const record =
@@ -35,13 +63,18 @@ export function describeServerConfig(value: unknown): string {
       ? (value as Record<string, unknown>)
       : {};
   const url = typeof record.url === "string" ? record.url : "";
-  if (url !== "") return oneLine(url, 200);
+  if (url !== "") return oneLine(redactUrl(url), 200);
   const command = typeof record.command === "string" ? record.command : "";
   const args = Array.isArray(record.args)
     ? record.args.filter((arg): arg is string => typeof arg === "string")
     : [];
   if (command === "" && args.length === 0) return "an unknown command";
-  return oneLine([command, ...args].join(" "), 200);
+  // The command's own name only: a key never sits in a long path, and the path is noise.
+  const named = command === "" ? "" : basename(command);
+  const shown = [named, ...args.map((_arg, index) => safeArg(args, index))].filter(
+    (one) => one !== "",
+  );
+  return oneLine(shown.join(" "), 200);
 }
 
 /** Where one of the plugin's servers stands. */
@@ -53,7 +86,14 @@ export type McpServerState =
   /** Not registered at all. */
   | "missing"
   /** Claude Code's own config cannot be read: nothing can be said. */
-  | "unreadable";
+  | "unreadable"
+  /**
+   * Registered, but what setup registered cannot be read back (`mcp-servers.json` is there and
+   * unreadable). NEVER "foreign": the installer offers to replace a foreign server, and a
+   * server that is probably the plugin's own must not be offered for replacement because of a
+   * read error (premium review, 2026-10-17). It is listed with the reason instead.
+   */
+  | "unknown";
 
 export interface McpServerStatus {
   name: ServerName;
@@ -80,45 +120,45 @@ export function mcpServerStatusLine(status: McpServerStatus): string {
       return `· ${status.name}: not registered. To add it: ${COMMAND} setup`;
     case "unreadable":
       return `✗ ${status.name}: Claude Code's own config could not be read, so nothing can be said about it`;
+    case "unknown":
+      return (
+        `! ${status.name} is registered, but what cc-smart-dev-kit registered cannot be read back: ` +
+        `check it by hand (claude mcp get ${status.name}), then run ${COMMAND} setup`
+      );
   }
-}
-
-/** True when the plugin wants this server on this machine (Tavily needs a key). */
-function wanted(
-  name: ServerName,
-  paths: CliPaths,
-  env: Record<string, string | undefined>,
-): boolean {
-  return name !== "tavily-websearch" || readTavilyKey(paths, env).source !== "none";
 }
 
 /**
- * The state of each of the plugin's servers. Reads Claude Code's own config and the plugin's
- * records; writes nothing. The Tavily server is left out ("skipped") when the machine has no
- * key for it — there is nothing of ours to take over there.
+ * The state of each of the plugin's servers — ALL FOUR, whatever this machine has a key for.
+ * Reads Claude Code's own config and the plugin's records; writes nothing.
+ *
+ * Tavily is reported even with no key (`readTavilyKey` source "none"): a person's own
+ * `tavily-websearch` is registered by SOMETHING ELSE, and that is exactly when the installer
+ * must offer to replace it. Leaving it out — the first cut of this module did — meant a server
+ * a project's own script had registered was never mentioned on a machine whose Tavily key
+ * arrived later in the installer's step 7, and it went on shadowing the plugin's own (premium
+ * review, 2026-10-17; the live scenario is tested in `mcp.test.ts`).
  */
 export function mcpServerStatus(
   paths: CliPaths,
-  env: Record<string, string | undefined> = {},
   stateDir: string = paths.stateDir,
 ): McpServerStatus[] {
   const servers = readUserServers(paths.userConfigFile);
-  const names = SERVER_NAMES.filter((name) => wanted(name, paths, env));
+  const names: ServerName[] = [...SERVER_NAMES];
   if (servers === null) {
     return names.map((name) => ({ name, runsWhat: null, state: "unreadable" }));
   }
-  let records: Record<string, { json: string }> = {};
+  /** What setup registered, or null when that record file cannot be read (state "unknown"). */
+  let records: null | Record<string, { json: string }> = null;
   try {
     records = readMcpRecords(stateDir);
   } catch {
-    // A record file that cannot be read says nothing about what is registered: every server
-    // then reads as "foreign", which is what the installer would ask about. Nothing of ours is
-    // taken over by this module either way.
-    records = {};
+    records = null;
   }
   return names.map((name) => {
     const current = servers[name];
     if (current === undefined) return { name, runsWhat: null, state: "missing" };
+    if (records === null) return { name, runsWhat: null, state: "unknown" };
     const record = records[name];
     return record !== undefined && sameConfig(record.json, current)
       ? { name, runsWhat: null, state: "ours" }

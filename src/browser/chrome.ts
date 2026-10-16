@@ -315,6 +315,14 @@ export interface OtherExtension {
 const EXTENSIONS_METADATA = "_metadata";
 
 /**
+ * An extension id: 32 characters, `a`–`p` (a 128-bit value written in base 16 with `a`–`p` as
+ * the digits). Chrome's own folders under `Extensions/` are not ids — `Temp` while an install
+ * runs, and `scoped_dir…` — so a folder whose name is not this shape is never an extension,
+ * whatever it holds. (Live, 2026-10-17: `Temp` was named as "another extension".)
+ */
+const EXTENSION_ID = /^[a-p]{32}$/;
+
+/**
  * Chrome's own extensions, by the record it keeps: `location` is `ManifestLocation` and
  * `was_installed_by_default` marks one that came with the browser or the system.
  *
@@ -348,6 +356,7 @@ export function installedExtensionVersion(
   id: string,
   deps: ChromeDeps = {},
 ): null | string {
+  if (!EXTENSION_ID.test(id)) return null;
   const read = readFileIn(deps);
   const versions = readdirIn(deps)(join(profileDir, "Extensions", id))
     .filter((name) => name !== EXTENSIONS_METADATA)
@@ -422,7 +431,7 @@ export function extensionName(
 export function otherExtensions(profileDir: string, deps: ChromeDeps = {}): OtherExtension[] {
   const found: OtherExtension[] = [];
   for (const id of extensionIds(profileDir, deps)) {
-    if (id === PLAYWRIGHT_EXTENSION_ID || id === EXTENSIONS_METADATA) continue;
+    if (id === PLAYWRIGHT_EXTENSION_ID || !EXTENSION_ID.test(id)) continue;
     const version = installedExtensionVersion(profileDir, id, deps);
     if (version === null) continue;
     const record = extensionRecord(profileDir, id, deps);

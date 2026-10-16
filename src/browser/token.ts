@@ -231,3 +231,48 @@ export async function readTokenFromStdin(
   }
   return await input.readAll();
 }
+
+/**
+ * Reads a pasted token and saves it — the ONE place the four outcomes of `browser token` are
+ * decided, so each of them is testable (the CLI entry just calls this):
+ *
+ *   - **0, saved**: the token's own file, mode 0600, and the line that says so — never the token.
+ *   - **130**: Ctrl+C at the prompt (the read answered null), and nothing was written.
+ *   - **1**: a shape that is not the extension's token (the reason names the shape and the
+ *     characters that were left), and nothing was written.
+ *   - **1**: the read itself FAILED (a broken pipe, a terminal that cannot hide what is typed).
+ *     Its own reason is printed with the two ways in (`< token.txt`, or the portal's Browser
+ *     card) — never "Nothing was saved (Ctrl+C)", which would be a lie about a read error
+ *     (premium review, 2026-10-17).
+ */
+export async function savePastedToken(
+  paths: CliPaths,
+  input: TokenInput,
+  say: (line: string) => void,
+  error: (line: string) => void,
+): Promise<number> {
+  let pasted: null | string;
+  try {
+    pasted = await readTokenFromStdin(input, say);
+  } catch (cause) {
+    const why = cause instanceof Error ? cause.message : String(cause);
+    error(
+      `${why}. Save the token to a file and pipe it in (\`${COMMAND} browser token < token.txt\`), or paste it in the portal's Browser card (\`${COMMAND} portal\`).`,
+    );
+    return 1;
+  }
+  if (pasted === null) {
+    error("Nothing was saved (Ctrl+C).");
+    return 130;
+  }
+  const parsed = parseBrowserToken(pasted);
+  if (!parsed.ok) {
+    error(`The token was not saved: ${parsed.why}.`);
+    return 1;
+  }
+  writeBrowserToken(paths, parsed.token);
+  // The token itself is never printed, only the file it went to.
+  say(tokenSavedLine(paths.browserTokenFile));
+  say("Start a new Claude session (or restart the running one) to use it.");
+  return 0;
+}

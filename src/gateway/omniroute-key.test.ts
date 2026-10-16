@@ -45,6 +45,8 @@ function fakeOmniRoute(
     login?: { body: unknown; status: number };
     /** Leave the `set-cookie` out of a successful login. */
     noCookie?: boolean;
+    /** What `DELETE /api/keys/<id>` answers instead of 200. */
+    deleteStatus?: number;
   } = {},
 ) {
   const seen: Seen[] = [];
@@ -91,6 +93,17 @@ function fakeOmniRoute(
           { status: 201 },
         );
       }
+      // `DELETE /api/keys/<id>`: OmniRoute's own removal, the one its dashboard uses. The cookie
+      // is required, as for every other dashboard call.
+      if (url.pathname.startsWith("/api/keys/") && req.method === "DELETE") {
+        if (!(req.headers.get("cookie") ?? "").includes("auth_token=session-abc")) {
+          return Response.json({ error: "unauthorized" }, { status: 401 });
+        }
+        if (options.deleteStatus !== undefined) {
+          return Response.json({ error: "no" }, { status: options.deleteStatus });
+        }
+        return Response.json({ ok: true });
+      }
       if (url.pathname === "/v1/models") return Response.json({ data: [{ id: "m1" }] });
       return new Response("not found", { status: 404 });
     },
@@ -114,8 +127,11 @@ describe("createOmnirouteKey", () => {
       baseUrl: omni.baseUrl,
       password: "the-dashboard-password",
     });
-    // The name is written here from node's own `hostname()`, never computed by the module.
+    // The name is written here from node's own `hostname()`, never computed by the module, and
+    // the id and the `discard` come with the key (the caller deletes a key it does not save).
     expect(made).toEqual({
+      discard: expect.any(Function),
+      id: "key-1",
       key: "omni-key-made-by-fake",
       kind: "created",
       name: `cc-smart-dev-kit-router-${hostname()}`,
@@ -205,6 +221,47 @@ describe("createOmnirouteKey", () => {
         "the OmniRoute login answered HTTP 403: Password login is disabled when OIDC is active. Please sign in with OIDC.",
       );
     }
+  });
+
+  test("a key that is not saved is deleted again, with the session cookie", async () => {
+    // A run that saved nothing must not leave an unused key in the person's OmniRoute
+    // (premium review, 2026-10-17).
+    const omni = fakeOmniRoute();
+    const made = await createOmnirouteKey({
+      baseUrl: omni.baseUrl,
+      password: "the-dashboard-password",
+    });
+    if (made.kind !== "created") throw new Error("the key was not made");
+    expect(await made.discard()).toEqual({ detail: "", ok: true });
+    const removed = omni.seen.at(-1);
+    expect(removed?.method).toBe("DELETE");
+    expect(removed?.path).toBe("/api/keys/key-1");
+    expect(removed?.cookie).toBe("auth_token=session-abc");
+    expect(removed?.origin).toBeNull();
+
+    // A delete OmniRoute refuses: the reason comes back, so the caller can name the key.
+    const refusing = fakeOmniRoute({ deleteStatus: 500 });
+    const second = await createOmnirouteKey({
+      baseUrl: refusing.baseUrl,
+      password: "the-dashboard-password",
+    });
+    if (second.kind !== "created") throw new Error("the key was not made");
+    const refused = await second.discard();
+    expect(refused.ok).toBe(false);
+    expect(refused.detail).toContain("HTTP 500");
+  });
+
+  test("an answer with no id: nothing can be deleted, and the caller is told", async () => {
+    const omni = fakeOmniRoute({ keys: { body: { key: "omni-key-no-id" }, status: 201 } });
+    const made = await createOmnirouteKey({
+      baseUrl: omni.baseUrl,
+      password: "the-dashboard-password",
+    });
+    if (made.kind !== "created") throw new Error("the key was not made");
+    expect(made.id).toBeNull();
+    const gone = await made.discard();
+    expect(gone.ok).toBe(false);
+    expect(gone.detail).toContain("no id");
   });
 
   test("sessionCookieFrom: the cookie out of a set-cookie header, and nothing else", () => {

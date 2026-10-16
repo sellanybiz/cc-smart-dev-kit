@@ -106,7 +106,7 @@ function readMcpRecords(stateDir, file = mcpRecordsFile(stateDir)) {
 }
 
 // src/mcp/register.ts
-import { readFileSync as readFileSync2 } from "fs";
+import { existsSync as existsSync2, readFileSync as readFileSync2 } from "fs";
 
 // src/build-info/names.ts
 var MARKETPLACE = "cc-smart-dev-kit";

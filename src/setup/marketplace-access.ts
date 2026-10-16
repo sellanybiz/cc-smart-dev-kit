@@ -77,10 +77,11 @@ export const BATCH_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=8";
 const TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
 /**
- * A URL that is safe to print: no password or token, no query string.
+ * A URL that is safe to print: no password or token, no query string, no fragment.
  * - `https://user:pass@host/x` and `https://token@host/x` → `https://***@host/x`
  * - `ssh://git:pass@host/x` → `ssh://git:***@host/x` (an ssh user name alone is kept)
  * - `…?token=abc` → `…?***`
+ * - `…/mcp#token=abc` → `…/mcp` (a fragment is dropped: a token put there is worth hiding too)
  * An scp-like address (`git@host:org/repo.git`) has a user name only, and is kept.
  */
 export function redactUrl(url: string): string {
@@ -101,6 +102,8 @@ export function redactUrl(url: string): string {
       result = `${scheme}://${safeUser}@${host}${rest}`;
     }
   }
+  const hash = result.indexOf("#");
+  if (hash >= 0) result = result.slice(0, hash);
   const query = result.indexOf("?");
   return query >= 0 ? `${result.slice(0, query)}?***` : result;
 }

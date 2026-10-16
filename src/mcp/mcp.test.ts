@@ -10,10 +10,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { tempDir } from "../testing/temp";
+import { mcpChecks } from "./doctor";
 import { markMcpServerPending, readMcpRecords, recordMcpServer } from "./records";
 import {
   applyMcpServers,
   type ClaudeRun,
+  overridingServer,
   planMcpServers,
   readUserServers,
   recordApplied,
@@ -694,7 +696,7 @@ describe("the Tavily key", () => {
     const missing = readTavilyKey(paths_, {});
     expect(missing.source).toBe("none");
     expect(missing.source === "none" ? missing.reason : "").toContain(
-      "no TAVILY_API_KEY in the environment, and no key file",
+      "no TAVILY_API_KEY in the environment, in the settings, or in a key file",
     );
     // No `chmod 600` on Windows: there is no such thing there, and the profile's ACL is what
     // keeps the key file to its owner.
@@ -814,14 +816,16 @@ describe("mcp status: what is registered by something else", () => {
     });
   });
 
-  test("no key for Tavily, and a config that cannot be read: nothing is guessed", () => {
+  test("ALL FOUR are reported, Tavily included (M3: a key may not exist yet)", () => {
     const home = tempDir("mcp-status-none");
     const paths_ = paths(home);
-    // Tavily without a key: the plugin wants none, so nothing is said about it.
+    // Tavily with no key is still one of the plugin's names: a server registered under it by
+    // something else must be offered for replacement, whatever this machine has a key for.
     expect(mcpServerStatus(paths_).map((one) => one.name)).toEqual([
       "playwright",
       "serena",
       "sequential-thinking",
+      "tavily-websearch",
     ]);
     expect(mcpServerStatus(paths_).every((one) => one.state === "missing")).toBe(true);
     // A user config that cannot be read: `unreadable`, never "missing" (the installer must not
@@ -867,6 +871,290 @@ describe("mcp status: what is registered by something else", () => {
     );
     expect(mcpServerStatusLine({ name: "serena", runsWhat: null, state: "ours" })).toBe(
       "✓ serena: registered by cc-smart-dev-kit",
+    );
+  });
+});
+
+describe("what runs instead never carries a key", () => {
+  // M1 (premium review, 2026-10-17): the line, the `--json` output and `doctor` all print what
+  // a foreign server runs — and a key can sit in a URL's query or in an argument, not only in
+  // `env`/`headers`. The plugin redacts; the installer prints what the JSON carries, verbatim.
+  const PLANTED = "sk-planted-SECRET-0123456789abcdef";
+
+  test("a URL: no query, no fragment, no userinfo — and the rest stays", () => {
+    expect(
+      describeServerConfig({ url: `https://mcp.example.com/mcp?tavilyApiKey=${PLANTED}` }),
+    ).toBe("https://mcp.example.com/mcp?***");
+    expect(describeServerConfig({ url: `https://mcp.example.com/mcp#token=${PLANTED}` })).toBe(
+      "https://mcp.example.com/mcp",
+    );
+    expect(describeServerConfig({ url: `https://user:${PLANTED}@mcp.example.com/mcp` })).toBe(
+      "https://***@mcp.example.com/mcp",
+    );
+  });
+
+  test("an argument: the value after a key-like flag, and a key=value, become •••", () => {
+    expect(
+      describeServerConfig({
+        args: ["/usr/local/bin/mcp-remote", "--api-key", PLANTED],
+        command: "node",
+      }),
+    ).toBe("node /usr/local/bin/mcp-remote --api-key •••");
+    expect(describeServerConfig({ args: [`--token=${PLANTED}`], command: "npx" })).toBe(
+      "npx --token=•••",
+    );
+    expect(
+      describeServerConfig({
+        args: ["-password", PLANTED, "--port", "8080"],
+        command: "/opt/bin/server",
+      }),
+    ).toBe("server -password ••• --port 8080");
+  });
+
+  test("npx mcp-remote with the key in the URL: nothing of the value is left", () => {
+    const shown = describeServerConfig({
+      args: ["-y", "mcp-remote", `https://mcp.tavily.com/mcp/?tavilyApiKey=${PLANTED}`],
+      command: "npx",
+    });
+    expect(shown).toBe("npx -y mcp-remote https://mcp.tavily.com/mcp/?***");
+    expect(shown).not.toContain(PLANTED);
+  });
+
+  test("the status line, its --json shape and doctor's line hold no value either", () => {
+    const home = tempDir("mcp-status-secret");
+    const paths_ = paths(home);
+    const servers = mcpServers(context(home));
+    const name = servers[0]?.name ?? "playwright";
+    // A server of the person's own, registered under one of our names, with the key in a URL
+    // and in an argument.
+    mkdirSync(dirname(paths_.userConfigFile), { recursive: true });
+    writeFileSync(
+      paths_.userConfigFile,
+      JSON.stringify({
+        mcpServers: {
+          [name]: {
+            args: [
+              "mcp-remote",
+              `https://mcp.example.com/mcp?key=${PLANTED}`,
+              "--api-key",
+              PLANTED,
+            ],
+            command: "npx",
+          },
+        },
+      }),
+    );
+    const status = mcpServerStatus(paths_);
+    const foreign = status.find((one) => one.name === name);
+    expect(foreign?.state).toBe("foreign");
+    expect(foreign?.runsWhat).toBe("npx mcp-remote https://mcp.example.com/mcp?*** --api-key •••");
+    // The JSON is what the installer reads, so the value must be gone there too.
+    expect(JSON.stringify(status)).not.toContain(PLANTED);
+    expect(
+      mcpServerStatusLine(foreign ?? { name, runsWhat: null, state: "missing" }),
+    ).not.toContain(PLANTED);
+  });
+});
+
+describe("mcp status: a records file that cannot be read", () => {
+  test("every server is UNKNOWN, never foreign: the installer must not offer to replace one", () => {
+    // M-low (premium review): reading an unreadable record file as "nothing is ours" made every
+    // server read as foreign, and the installer would have offered to REPLACE a server that may
+    // well be the plugin's own. `unknown` says: I could not tell.
+    const home = tempDir("mcp-status-broken");
+    const paths_ = paths(home);
+    const servers = mcpServers(context(home));
+    const name = servers[0]?.name ?? "playwright";
+    mkdirSync(dirname(paths_.userConfigFile), { recursive: true });
+    writeFileSync(
+      paths_.userConfigFile,
+      JSON.stringify({ mcpServers: { [name]: { args: [], command: "node" } } }),
+    );
+    mkdirSync(paths_.stateDir, { recursive: true });
+    writeFileSync(join(paths_.stateDir, "mcp-servers.json"), "{not json");
+    const status = mcpServerStatus(paths_);
+    expect(status.find((one) => one.name === name)).toEqual({
+      name,
+      runsWhat: null,
+      state: "unknown",
+    });
+    expect(mcpServerStatusLine({ name, runsWhat: null, state: "unknown" })).toBe(
+      `! ${name} is registered, but what cc-smart-dev-kit registered cannot be read back: check it by hand (claude mcp get ${name}), then run cc-smart-dev-kit setup`,
+    );
+  });
+});
+
+describe("a Tavily key the settings hold, and nowhere else", () => {
+  // M2 (premium review, 2026-10-17): the installer stopped asking when `env.TAVILY_API_KEY` was
+  // in the settings, but `readTavilyKey` did not read settings — so setup registered NO Tavily
+  // server on such a machine, while setup's own design writes the key there BECAUSE Claude Code
+  // expands `${TAVILY_API_KEY}` from the settings' `env` as well as the process environment
+  // (`userSettings`/`flagSettings`/`policySettings` `.env`, read in the installed 2.1.302).
+  test("readTavilyKey: environment first, then the settings, then the key file", () => {
+    const home = tempDir("mcp-tavily-settings");
+    const paths_ = paths(home);
+    mkdirSync(dirname(paths_.settingsFile), { recursive: true });
+    writeFileSync(
+      paths_.settingsFile,
+      JSON.stringify({ env: { TAVILY_API_KEY: "tvly-in-settings" } }),
+    );
+    expect(readTavilyKey(paths_, {})).toEqual({ source: "settings" });
+    // The environment wins (the person's own, live value).
+    expect(readTavilyKey(paths_, { TAVILY_API_KEY: "tvly-in-env" })).toEqual({
+      source: "environment",
+    });
+    // An empty value in the settings is not a key: the key file is read next.
+    writeFileSync(paths_.settingsFile, JSON.stringify({ env: { TAVILY_API_KEY: "  " } }));
+    mkdirSync(dirname(paths_.tavilyKeyFile), { recursive: true });
+    writeFileSync(paths_.tavilyKeyFile, "tvly-in-file\n", { mode: 0o600 });
+    expect(readTavilyKey(paths_, {})).toEqual({ source: "file", value: "tvly-in-file" });
+    // A settings file that cannot be read is not a key either, and never an error.
+    writeFileSync(paths_.settingsFile, "{not json");
+    expect(readTavilyKey(paths_, {}).source).toBe("file");
+  });
+
+  test("setup registers the server, and leaves the key where it is", () => {
+    const home = tempDir("mcp-tavily-setup");
+    const paths_ = paths(home);
+    mkdirSync(dirname(paths_.settingsFile), { recursive: true });
+    writeFileSync(
+      paths_.settingsFile,
+      `${JSON.stringify({ env: { TAVILY_API_KEY: "tvly-in-settings" } }, null, 2)}\n`,
+    );
+    const context_ = {
+      ...context(home),
+      tavily: { key: true } as const,
+    };
+    const plan = planMcpServers(mcpServers(context_), {}, {});
+    expect(plan.find((one) => one.name === "tavily-websearch")?.action).toBe("add");
+    expect(
+      mcpServers(context_).find((one) => one.name === "tavily-websearch")?.skipped,
+    ).toBeUndefined();
+  });
+});
+
+describe("M3: the live scenario — all four registered by a project's script", () => {
+  // Live, 2026-10-17: a project's own script had registered all four names at user scope, and
+  // the Tavily one carried the key in ITS OWN `env` — the machine had no `TAVILY_API_KEY`
+  // anywhere the plugin looked. `mcpServerStatus` used to leave Tavily out then, so the
+  // installer never offered to replace it, and that server went on shadowing the plugin's own.
+  test("Tavily is foreign on such a machine, with what runs instead", () => {
+    const home = tempDir("mcp-status-project-script");
+    const paths_ = paths(home);
+    const servers = mcpServers(context(home));
+    // Every one of the four, as a project's script would leave them, the Tavily one with a key
+    // in its own env.
+    const registered: Record<string, unknown> = {};
+    for (const server of servers) {
+      registered[server.name] = {
+        args: ["/opt/tools/server.js", "--port", "8080"],
+        command: "node",
+        ...(server.name === "tavily-websearch"
+          ? { env: { TAVILY_API_KEY: "tvly-project-copy" } }
+          : {}),
+      };
+    }
+    mkdirSync(dirname(paths_.userConfigFile), { recursive: true });
+    writeFileSync(paths_.userConfigFile, JSON.stringify({ mcpServers: registered }));
+    const status = mcpServerStatus(paths_);
+    expect(status.map((one) => `${one.name}:${one.state}`)).toEqual([
+      "playwright:foreign",
+      "serena:foreign",
+      "sequential-thinking:foreign",
+      "tavily-websearch:foreign",
+    ]);
+    // What runs instead: the command and its arguments, and never that server's key.
+    const tavily = status.find((one) => one.name === "tavily-websearch");
+    expect(tavily?.runsWhat).toBe("node /opt/tools/server.js --port 8080");
+    expect(JSON.stringify(status)).not.toContain("tvly-project-copy");
+  });
+});
+
+describe("a same-name server one scope down wins over the user scope", () => {
+  // Low, premium review 2026-10-17: doctor reported the user-scope server as fine while a copy
+  // at LOCAL scope or in a project's `.mcp.json` was the one Claude Code really starts.
+  test("the local scope wins: `projects[<cwd>].mcpServers` in Claude Code's own file", () => {
+    const home = tempDir("mcp-override-local");
+    const paths_ = paths(home);
+    const cwd = join(home, "project");
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(dirname(paths_.userConfigFile), { recursive: true });
+    writeFileSync(
+      paths_.userConfigFile,
+      JSON.stringify({
+        mcpServers: {},
+        projects: { [cwd]: { mcpServers: { playwright: { args: [], command: "node" } } } },
+      }),
+    );
+    expect(overridingServer(paths_.userConfigFile, cwd, "playwright")).toEqual({
+      config: { args: [], command: "node" },
+      file: paths_.userConfigFile,
+    });
+    // Another folder's local entry is not this folder's.
+    expect(
+      overridingServer(paths_.userConfigFile, join(home, "elsewhere"), "playwright"),
+    ).toBeNull();
+  });
+
+  test("a project `.mcp.json` wins, nearest file first, and never a key in the line", () => {
+    const home = tempDir("mcp-override-project");
+    const paths_ = paths(home);
+    const project = join(home, "repo");
+    const sub = join(project, "app");
+    mkdirSync(sub, { recursive: true });
+    mkdirSync(join(project, ".git"), { recursive: true });
+    const planted = "sk-planted-SECRET";
+    writeFileSync(
+      join(project, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: { playwright: { args: ["--api-key", planted], command: "/opt/bin/other" } },
+      }),
+    );
+    const found = overridingServer(paths_.userConfigFile, sub, "playwright");
+    expect(found?.file).toBe(join(project, ".mcp.json"));
+    expect(describeServerConfig(found?.config)).toBe("other --api-key •••");
+    expect(describeServerConfig(found?.config)).not.toContain(planted);
+    // Nothing of the plugin's: null, so doctor says nothing.
+    expect(overridingServer(paths_.userConfigFile, sub, "serena")).toBeNull();
+  });
+
+  test("doctor's line names the file and what runs instead", () => {
+    const home = tempDir("mcp-doctor-override");
+    const paths_ = paths(home);
+    const project = join(home, "repo");
+    mkdirSync(join(project, ".git"), { recursive: true });
+    writeFileSync(
+      join(project, ".mcp.json"),
+      JSON.stringify({ mcpServers: { playwright: { args: [], command: "/opt/bin/other" } } }),
+    );
+    // A user-scope server that IS ours: the record holds exactly the JSON Claude Code has.
+    const servers = mcpServers(context(home));
+    const ours = servers.find((one) => one.name === "playwright");
+    if (ours === undefined) throw new Error("the servers table moved");
+    mkdirSync(dirname(paths_.userConfigFile), { recursive: true });
+    writeFileSync(
+      paths_.userConfigFile,
+      JSON.stringify({ mcpServers: { playwright: JSON.parse(ours.json) } }),
+    );
+    recordMcpServer(paths_.stateDir, ours.name, ours.json, "2026-10-17T00:00:00Z");
+    const checks = mcpChecks(
+      paths_,
+      {
+        run: () => ({ ok: true, output: "Scope: User config\nStatus: ✓ Connected" }),
+        which: () => "/usr/bin/claude",
+      },
+      {},
+      project,
+    );
+    const line = checks.find((one) => one.text.includes("wins over yours"));
+    expect(line?.warn).toBe(true);
+    expect(line?.ok).toBe(true);
+    // The command's own name, and the file tildified: what a person reads.
+    expect(line?.text).toBe(
+      'the "playwright" MCP server has a copy that wins over yours (other in ~/repo/.mcp.json): ' +
+        "a project's .mcp.json, or the local scope, takes precedence over the user-scope server, so " +
+        "cc-smart-dev-kit's is not the one starting. Remove it from that file (or merge the base " +
+        "branch when it came from one), then run: cc-smart-dev-kit doctor",
     );
   });
 });

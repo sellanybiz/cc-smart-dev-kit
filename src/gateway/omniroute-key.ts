@@ -63,8 +63,20 @@ export function omnirouteKeyName(host: string = hostname()): string {
 }
 
 export type OmnirouteKeyResult =
-  /** A key was made. It is the caller's to test, save and never print. */
-  | { key: string; kind: "created"; name: string }
+  /**
+   * A key was made. It is the caller's to test, save and never print. `discard` deletes it
+   * again in OmniRoute, with the session cookie this call still holds — the caller calls it
+   * when the key is NOT saved (a key the backend refuses, an unchecked save without
+   * `--save-unchecked`, or any later failure), so a run that saved nothing leaves no unused key
+   * behind in the person's dashboard (premium review, 2026-10-17).
+   */
+  | {
+      discard: () => Promise<{ detail: string; ok: boolean }>;
+      id: null | string;
+      key: string;
+      kind: "created";
+      name: string;
+    }
   /** OmniRoute did not answer at all (it is not installed, or not running). */
   | { detail: string; kind: "no-answer" }
   /** It answered and did not take the password. */
@@ -194,17 +206,44 @@ export async function createOmnirouteKey(options: {
       kind: "failed",
     };
   }
-  let key: unknown;
+  let body: { id?: unknown; key?: unknown } | null;
   try {
-    key = ((await created.json()) as { key?: unknown } | null)?.key;
+    body = (await created.json()) as { id?: unknown; key?: unknown } | null;
   } catch (error) {
     return {
       detail: `the answer to creating the key was not JSON (${messageOf(error)})`,
       kind: "failed",
     };
   }
+  const key = body?.key;
   if (typeof key !== "string" || key.trim() === "") {
     return { detail: "the answer to creating the key held no key", kind: "failed" };
   }
-  return { key: key.trim(), kind: "created", name };
+  const id = typeof body?.id === "string" && body.id !== "" ? body.id : null;
+
+  /**
+   * Deletes that key again with the session cookie this call holds. `DELETE /api/keys/<id>` is
+   * OmniRoute's own removal (the same route its dashboard uses). A key with no id in the answer
+   * cannot be named, so nothing is deleted and the caller is told.
+   */
+  const discard = async (): Promise<{ detail: string; ok: boolean }> => {
+    if (id === null) {
+      return { detail: `OmniRoute's answer held no id for it`, ok: false };
+    }
+    const url = `${base}${KEYS_PATH}/${id}`;
+    try {
+      const removed = await doFetch(url, {
+        headers: { cookie: `${SESSION_COOKIE}=${session}` },
+        method: "DELETE",
+        signal: AbortSignal.timeout(timeoutMs),
+        ...directIfLoopback(url),
+      });
+      await removed.body?.cancel();
+      if (removed.ok) return { detail: "", ok: true };
+      return { detail: `OmniRoute answered HTTP ${removed.status}`, ok: false };
+    } catch (error) {
+      return { detail: messageOf(error), ok: false };
+    }
+  };
+  return { discard, id, key: key.trim(), kind: "created", name };
 }

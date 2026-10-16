@@ -81,6 +81,13 @@ folder with the script in it, `powershell -NoProfile -ExecutionPolicy Bypass -Fi
 - **The Tavily key is not asked for when you have one**: `TAVILY_API_KEY` in your environment,
   the key file setup reads, or the key already in your settings — one line says which it is
   using, and nothing is written.
+- **It needs GitHub.** Before it compares any version it refreshes
+  Claude Code's own copy of the marketplace (`claude plugin marketplace update`), which fetches
+  from the repository — without that, "is the plugin up to date?" compares two stale numbers.
+  Offline, that step fails: the installer **stops** with the line `✗ refreshing the
+  cc-smart-dev-kit marketplace failed` and the exact command that retries it, and running it
+  again goes on from there once the network is back. (The Bun step's `curl`, the
+  `claude plugin …` steps and `git` all need the network too.)
 - `--dry-run` (`-DryRun` on Windows) prints the plan for this machine and changes nothing —
   no command that writes, no network.
 - It never writes a secret file and never puts a secret on a command line: each key goes to
@@ -236,6 +243,28 @@ left behind on that machine.
   `UserPromptSubmit`.
 - **The portal's log is newest first** ([The portal](#the-portal)): the Health page's Log and the
   Overview's "Latest warnings" both show the newest line at the top, with the times as they are.
+- **`gateway setup --omniroute-password` works on a real terminal** ([First
+  setup](#first-setup)): the flag asks for the dashboard password with no echo, and the context it
+  reads from never carried the reader — every run answered "this terminal cannot hide what you
+  type", even on a terminal. It reads the line now, and a key it makes but does not save (a key
+  the backend refuses, an unchecked save without `--save-unchecked`) is **deleted again** in
+  OmniRoute, so the dashboard keeps no unused key; a delete that fails names the key and its id.
+- **Nothing that names a server can print a key** ([MCP servers](#mcp-servers)): a URL's query,
+  fragment and userinfo are hidden, an argument after a key-like flag (`--api-key X`) and a
+  `name=value` whose name looks like a key (`--token=X`) show `•••`, and the command is shown by
+  its own name — in `mcp status`, its `--json`, the installer's question and `doctor`'s line.
+- **A Tavily key that lives only in your `settings.json` is a key setup uses** ([MCP
+  servers](#mcp-servers)): Claude Code fills `Bearer ${TAVILY_API_KEY}` from the settings' `env`
+  as well as from your environment, so setup now reads that copy too — it registers the server
+  instead of saying there is no key, while the installer had already stopped asking for one.
+- **`tavily-websearch` is offered for replacement like the other three** ([MCP
+  servers](#mcp-servers)): the check used to leave it out when the machine had no Tavily key, so
+  a server a project's own script had registered under that name was never mentioned. And the
+  installer asks again after the Tavily step, when the key has arrived.
+- **`doctor` names a same-name server that wins over the plugin's**
+  ([MCP servers](#mcp-servers)): a copy at the local scope (`~/.claude.json`,
+  `projects[<folder>].mcpServers`) or in a project's `.mcp.json` takes precedence over the
+  user-scope one, so that copy is the one Claude Code starts.
 
 ## What's new in 0.4.2
 

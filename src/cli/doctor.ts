@@ -890,7 +890,7 @@ export async function doctorChecks(
     checkOldPlugin(settings, paths),
     ...companionChecks(paths),
     claudeMemCheck(paths),
-    ...(mcpDeps === null ? [] : mcpChecks(paths, mcpDeps, env)),
+    ...(mcpDeps === null ? [] : mcpChecks(paths, mcpDeps, env, local.cwd)),
     ...(browser == null ? [] : browserChecks(paths, browser)),
     warpCheck(gateway.machine, paths),
     ...checkTmux(paths, env, gateway.machine),

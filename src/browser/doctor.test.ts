@@ -57,7 +57,9 @@ describe("browserChecks", () => {
     const world = chromeWorld();
     world.withProfile({
       fileUrls: true,
-      others: [{ id: "aaaaother", messageKey: "extName", name: "Some Page Helper" }],
+      others: [
+        { id: "aaaaaaaabbbbbbbbccccccccdddddddd", messageKey: "extName", name: "Some Page Helper" },
+      ],
     });
     const checks = browserChecks(world.paths, world.deps);
     const line = checks.find((check) => check.text.includes("other extension"));
@@ -66,7 +68,7 @@ describe("browserChecks", () => {
     // Named by its manifest name, with the id beside it — a `__MSG_…__` name is resolved from
     // the extension's own `_locales` (live, 2026-10-17: the person could not find what doctor
     // named in `chrome://extensions`).
-    expect(line?.text).toContain("Some Page Helper [aaaaother]");
+    expect(line?.text).toContain("Some Page Helper [aaaaaaaabbbbbbbbccccccccdddddddd]");
     expect(line?.text).toContain("playwright#43230");
   });
 

@@ -302,6 +302,17 @@ An optional local router between Claude Code and the model providers
   OmniRoute's call log, so no prompt text of the person's lands there). The key that comes back
   goes through the same test and save as one given by hand. The OmniRoute facts and their source
   (the installed OmniRoute 3.8.51, read 2026-10-17): `src/gateway/omniroute-key.ts`.
+- **The context is built in one place** (`src/gateway/context.ts`): the runner, the service, the
+  machine's facts, and — the part that broke — the terminal `--omniroute-password` reads from.
+  `readSecret` is set only when that stream is a terminal whose echo can be switched off
+  (`canHideInput`); on a pipe it is left out and the flag says to use stdin. It used to be built
+  inside the CLI entry, which never set the field, so every run of that flag answered "this
+  terminal cannot hide what you type" on a real terminal too (premium review, 2026-10-17); the
+  factory is a module so a test can prove both cases (`context.test.ts`).
+- **A key setup made and did not save is deleted again** (`createOmnirouteKey`'s `discard`):
+  `DELETE /api/keys/<id>` with the session cookie it still holds. A refused key, an unchecked
+  save without `--save-unchecked`, any later failure — the run leaves no unused key in the
+  person's dashboard, and a delete that fails names the key's name and id in the error.
 - **`gateway check`** answers one read-only question for scripts — the installer's own use: does
   the gateway have an OmniRoute key the backend accepts? Exit 0 works, 1 no key yet (OmniRoute
   answers, so one can be made), 3 could not be judged, 4 the key is refused. It asks the backend
@@ -1613,6 +1624,12 @@ filter that made each session's windows its own.
   running). The registration is unchanged — `{"command": <launcher>, "args": ["browser","mcp"]}`
   — because the mode is the launcher's own business and every setting reaches the MCP through
   its environment or `argv`.
+- **Every outcome of `browser token` is decided in one place** (`savePastedToken`,
+  `src/browser/token.ts`): saved (0), Ctrl+C (130), a shape that is not the token (1), and a read
+  that FAILED (1, with its own reason and the two ways in). The CLI used to map every failure to
+  "Nothing was saved (Ctrl+C)" with 130 — a lie about a broken pipe or a terminal that cannot
+  hide what is typed, and a script could not tell it from a person pressing Ctrl+C (premium
+  review, 2026-10-17).
 - **The token is required, and there is no approval mode.** Without a token the extension asks a
   person to approve every connection, in a page, and waits without a deadline; the owner's rule
   is that the plugin never runs that way, so `browser mcp` exits non-zero with one stderr line
@@ -1651,7 +1668,9 @@ filter that made each session's windows its own.
   `location` 5 (`kComponent`) or 10 (`kExternalComponent`), or `was_installed_by_default: true`
   (the values are Chromium's `ManifestLocation`, `extensions/common/mojom/manifest.mojom`, read
   2026-10-17). An entry with no folder is left out too: Chrome keeps the record after an
-  extension is gone.
+  extension is gone, and a folder whose name is not an id at all (32 characters, `a`–`p`) is not
+  an extension whatever it holds — Chrome's own `Temp` and `scoped_dir…` folders sit under
+  `Extensions/` while an install runs (premium review, 2026-10-17).
 - **The profile is the person's.** `browser setup` finds Chrome per OS (`chrome.ts`), makes the
   `claude-code` profile by opening the extension's Web Store page in it, and pre-registers the
   extension for that user on macOS and Windows (the per-user External Extensions JSON, the HKCU
@@ -1765,6 +1784,14 @@ which every session that works in a worktree does. Registered for the user, the 
   version folder is deleted by an update. It is Serena's own `claude-code` context with
   `single_project: false`: with the default, `activate_project` is hidden and Serena could
   never follow a session into its worktree.
+- - **The settings' own `env` counts as a key** (`readTavilyKey`): `TAVILY_API_KEY` in the process
+  environment, then the `env` of the settings files (the map Claude Code expands an MCP server's
+  `${VAR}` from — `userSettings`/`flagSettings`/`policySettings` `.env`, read in the installed
+  2.1.302), then the key file setup owns. A key that lives only in the settings is a key Claude
+  Code really uses, so setup registers the server instead of reporting no key — while the
+  installer, which already read the settings, had stopped asking for one (premium review,
+  2026-10-17). `TAVILY_API_KEY` in the settings is *kept* then (`tavilyKeyPlan: keep`): it is not
+  the person's environment shadowing a stale copy, so nothing is written or removed.
 - **The Tavily key is never written into a registration or printed.** The header carries
   `Bearer ${TAVILY_API_KEY}`, which Claude Code fills in at connect time; the key itself comes
   from the environment or from a 0600 key file, which setup copies into the `env` of the
@@ -1801,8 +1828,21 @@ which every session that works in a worktree does. Registered for the user, the 
   "which of these are the plugin's?": the same rule as setup's own (`sameConfig` against the
   record — one home), a line each, and `--json` for a script. Exit 1 means Claude Code's own
   config could not be read, so "nothing is foreign" and "could not check" are never confused.
+  **All four names are reported, Tavily included with no key** (premium review, 2026-10-17: it
+  used to be left out then, so a `tavily-websearch` a project's script had registered was never
+  offered for replacement on a machine whose key arrived later in the installer's step 7), and a
+  record file that cannot be read gives `unknown` — never `foreign`, or the installer would
+  offer to replace a server that is probably the plugin's own.
   The line shows the server's **command and arguments** (or a remote server's URL) and never an
-  `env` or a `headers` — a person's own server may hold a key there, and this line is printed.
+  `env` or a `headers`. A key can also sit in a URL's query, fragment or userinfo, or in an
+  argument (`npx mcp-remote <url>` with a key in the query, `--api-key X`, `--token=X`): a URL
+  goes through `redactUrl` (its one home: query, fragment and userinfo all hidden) and such an
+  argument's value becomes `•••`, and the command is shown by its own name (`basename`).
+- **A same-name server one scope down wins over the plugin's** (`overridingServer`): the local
+  scope (Claude Code's own file, `projects[<cwd>].mcpServers`) or a project's `.mcp.json` at the
+  folder doctor runs in (or a parent, up to the one holding `.git`) takes precedence over the
+  user-scope registration, so `doctor` warns with what runs instead — the same
+  `describeServerConfig` line, never a key (premium review, 2026-10-17).
   **The installer asks with it** (live, 2026-10-17: all four names were registered by a
   project's own script, setup's `!` line was lost among the installer's output, and the plugin's
   browser never took over): per foreign server, "Replace it with cc-smart-dev-kit's?"; a yes
