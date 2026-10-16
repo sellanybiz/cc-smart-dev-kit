@@ -25,8 +25,11 @@ import { ALERT_WORKER_COMMAND, parseAlert, runAlert, spawnRunner } from "../hook
 import { runJobCommand } from "../jobs/commands";
 import { realMemoryFacts } from "../jobs/memory";
 import { realMachine } from "../machine/machine";
+import { realMcpDoctorDeps } from "../mcp/doctor";
 import { serenaFolder } from "../mcp/serena-context";
 import { MCP_VERSIONS } from "../mcp/versions";
+import { runOmniroute } from "../omniroute/commands";
+import { runPortal } from "../portal/command";
 import { runSearch } from "../search/command";
 import { runSessions } from "../sessions/command";
 import { instructionsFolder } from "../setup/instructions";
@@ -125,6 +128,15 @@ Commands:
                      running session, no program or Docker container using it). --clean
                      removes the finished ones with their branches; --remove <path> removes
                      one now, without the one-hour wait. Both run in the main checkout only.
+  omniroute <command>
+                     The OmniRoute behind the affordable slots: status, update, rollback.
+                     cc-smart-dev-kit omniroute --help lists them. An update restarts it.
+  portal [--port <port>] [--no-open]
+                     The local portal: a page on this machine to see and change the
+                     gateway's slots and switches, the updates, the heavy-job queue, the
+                     companions and the OmniRoute. It binds 127.0.0.1 only, prints a link
+                     with a one-time token, and stops after 30 minutes with no request. It
+                     refuses inside a Claude Code session: run it in your own terminal.
   job <command>      The queue for heavy jobs (type checks, test runs, builds):
                      run, status, kinds. cc-smart-dev-kit job --help lists them.
   search "<query>" [--max <n>] [--json]
@@ -229,6 +241,25 @@ function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
     confirm: ask,
     systemd,
     probe: realProbe(),
+    print: (line) => console.log(line),
+    error: (line) => console.error(line),
+  };
+}
+
+/** What `omniroute status`, `update` and `rollback` need: systemd, the registry, a question. */
+function omnirouteContext(paths: ReturnType<typeof cliPaths>) {
+  return {
+    confirm: ask,
+    env: process.env,
+    health: (url: string, init: RequestInit) => fetch(url, init),
+    now: () => Date.now(),
+    paths,
+    registry: (url: string, init: RequestInit) => fetch(url, init),
+    runner,
+    say: (line: string) => console.log(line),
+    sleep: (ms: number) => Bun.sleep(ms),
+    systemd,
+    which: (command: string) => Bun.which(command, { PATH: process.env.PATH ?? "" }),
   };
 }
 
@@ -341,28 +372,7 @@ async function main(argv: string[]): Promise<number> {
           machine: realMachine(process.env, null),
         },
         local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
-        mcp: {
-          run: (argv, extraEnv) => {
-            try {
-              const result = Bun.spawnSync(argv, {
-                env: { ...process.env, ...extraEnv },
-                stdin: "ignore",
-                stdout: "pipe",
-                stderr: "pipe",
-              });
-              return {
-                ok: result.exitCode === 0,
-                output: `${result.stdout.toString()}${result.stderr.toString()}`,
-              };
-            } catch (error) {
-              return {
-                ok: false,
-                output: error instanceof Error ? error.message : String(error),
-              };
-            }
-          },
-          which: (command) => Bun.which(command),
-        },
+        mcp: realMcpDoctorDeps(),
         project: { cwd: process.cwd(), pluginHooksFile: join(pluginDir(), "hooks", "hooks.json") },
         live: rest.includes("--live")
           ? {
@@ -542,6 +552,42 @@ async function main(argv: string[]): Promise<number> {
     }
     case "gateway":
       return runGateway(rest, gatewayContext(paths));
+    case "omniroute":
+      return runOmniroute(rest, omnirouteContext(paths));
+    case "portal":
+      return runPortal(
+        {
+          bunPath: process.execPath,
+          env: process.env,
+          error: (line) => console.error(line),
+          paths,
+          // The child runs from a copy, where none of the plugin's other files are: it is told
+          // this folder (`--plugin-dir`), and resolves each file from the installed version.
+          pluginDir: pluginDir(),
+          runChild: (argv, options) => {
+            // The child owns the terminal while it runs: the link is printed where the person
+            // is looking, and Ctrl+C reaches both through the same process group. Its exit
+            // code is this command's — 130 when Ctrl+C ended it.
+            try {
+              return (
+                Bun.spawnSync(argv, {
+                  cwd: options.cwd,
+                  env: options.env,
+                  stderr: "inherit",
+                  stdin: "inherit",
+                  stdout: "inherit",
+                }).exitCode ?? 1
+              );
+            } catch (error) {
+              console.error(
+                `cc-smart-dev-kit portal: ${error instanceof Error ? error.message : String(error)}`,
+              );
+              return 1;
+            }
+          },
+        },
+        rest,
+      );
     case "search":
       return runSearch(rest, { paths });
     case "job":

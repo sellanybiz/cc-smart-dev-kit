@@ -88,6 +88,10 @@ export interface GatewayContext {
   confirm: ((question: string) => boolean) | null;
   /** False where there is no systemd (macOS, Windows). */
   systemd: boolean;
+  /** Where a command's own lines go: `console.log` in use, a collector from the portal. */
+  print: (line: string) => void;
+  /** Where a refusal or a usage line goes: `console.error` in use. */
+  error: (line: string) => void;
   /**
    * Asks the router's health page and waits for it: `realProbe()` in use. A test passes
    * fakes, so it never reaches a port where a real router may run.
@@ -300,10 +304,10 @@ export function planSlotChange(
   return { config: checked.config, key, next, old: config.slots[key] ?? [] };
 }
 
-function printSlots(config: GatewayConfig): void {
-  console.log("\nSlots (first that answers wins):");
+function printSlots(config: GatewayConfig, print: (line: string) => void): void {
+  print("\nSlots (first that answers wins):");
   const keys = Object.keys(config.slots).sort();
-  if (keys.length === 0) console.log("  (none)");
+  if (keys.length === 0) print("  (none)");
   for (const key of keys) {
     const untested = (config.slots[key] ?? []).filter(
       (target) => !judgeTargetTested(config, target),
@@ -316,22 +320,22 @@ function printSlots(config: GatewayConfig): void {
         : isModelSlot(key)
           ? "  (the rest only at the plan's usage limit)"
           : "";
-    console.log(`  ${key.padEnd(16)} ${(config.slots[key] ?? []).join(" → ")}${note}`);
+    print(`  ${key.padEnd(16)} ${(config.slots[key] ?? []).join(" → ")}${note}`);
   }
   if (!Object.hasOwn(config.slots, JUDGE_SLOT)) {
-    console.log(
+    print(
       `  ${JUDGE_SLOT.padEnd(16)} off: auto mode's safety checks go to Claude, and to no one else`,
     );
   }
   for (const [slot, family] of Object.entries(MODEL_SLOTS).sort(([a], [b]) => (a < b ? -1 : 1))) {
     if (!Object.values(config.modelSlots ?? {}).includes(slot)) {
-      console.log(`  ${slot.padEnd(16)} off: ${family} goes to Anthropic unchanged`);
+      print(`  ${slot.padEnd(16)} off: ${family} goes to Anthropic unchanged`);
     }
   }
   const aliases = Object.entries(config.aliases).sort(([a], [b]) => (a < b ? -1 : 1));
   if (aliases.length > 0) {
-    console.log("\nAliases (an old name, and what it means now):");
-    for (const [name, to] of aliases) console.log(`  ${name.padEnd(16)} → ${to}`);
+    print("\nAliases (an old name, and what it means now):");
+    for (const [name, to] of aliases) print(`  ${name.padEnd(16)} → ${to}`);
   }
 }
 
@@ -340,22 +344,22 @@ function printSlots(config: GatewayConfig): void {
 async function commandModels(ctx: GatewayContext): Promise<number> {
   const config = loadConfigFile(ctx.paths.gatewayConfigFile);
   for (const [name, backend] of Object.entries(config.backends)) {
-    console.log(`\n${name}  ${shownValue(backend.baseUrl)}  (key ${maskKey(backend.apiKey)})`);
+    ctx.print(`\n${name}  ${shownValue(backend.baseUrl)}  (key ${maskKey(backend.apiKey)})`);
     const listed = await listModels(backend.baseUrl, backend.apiKey);
-    if ("error" in listed) console.log(`  unreachable: ${listed.error}`);
-    else if (listed.status !== 200) console.log(`  /v1/models answered HTTP ${listed.status}`);
+    if ("error" in listed) ctx.print(`  unreachable: ${listed.error}`);
+    else if (listed.status !== 200) ctx.print(`  /v1/models answered HTTP ${listed.status}`);
     else {
       for (const model of [...listed.models].sort((a, b) => a.id.localeCompare(b.id))) {
         const context =
           model.contextLength === null
             ? ""
             : `  ${model.contextLength.toLocaleString("en-US")} tokens`;
-        console.log(`  ${name}:${model.id}${context}`);
+        ctx.print(`  ${name}:${model.id}${context}`);
       }
     }
   }
-  printSlots(config);
-  console.log(
+  printSlots(config, ctx.print);
+  ctx.print(
     "\nAny claude-<id> target (e.g. claude-sonnet-5-5) goes to Anthropic on your own Claude login.",
   );
   return 0;
@@ -396,7 +400,7 @@ function dropFallbackRecord(statePath: string, slot: string): void {
 async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number> {
   const [slotArg, targets, ...extra] = args;
   if (slotArg === undefined || targets === undefined || extra.length > 0) {
-    console.error(USAGE);
+    ctx.error(USAGE);
     return 2;
   }
   const configPath = ctx.paths.gatewayConfigFile;
@@ -431,7 +435,7 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
         );
       }
       passed[text] = backend.baseUrl;
-      console.log(`judge test: ${text} blocked "${JUDGE_TEST_ACTION}"`);
+      ctx.print(`judge test: ${text} blocked "${JUDGE_TEST_ACTION}"`);
     }
   }
   // Read again and save inside the lock: another command may have changed the file since
@@ -456,19 +460,22 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
       : plan.key === JUDGE_SLOT
         ? "off (auto mode's safety check on Claude, and on no one else)"
         : `off (${MODEL_SLOTS[plan.key] ?? plan.key} goes to Anthropic unchanged)`;
-  console.log(`${plan.key}: ${plan.old.join(" → ") || "(new)"}\n  now: ${now}`);
-  console.log("The router uses it from its next request.");
+  ctx.print(`${plan.key}: ${plan.old.join(" → ") || "(new)"}\n  now: ${now}`);
+  ctx.print("The router uses it from its next request.");
   return 0;
 }
 
-function printOverrides(report: ReturnType<typeof settingsReport>): void {
+function printOverrides(
+  report: ReturnType<typeof settingsReport>,
+  print: (line: string) => void,
+): void {
   if (report.subagentOverrides.length > 0) {
-    console.log(
+    print(
       `  WARN ${report.subagentOverrides.join(", ")} set: every agent launched without a model runs on it, with the gateway possibly an affordable slot. Remove it by hand unless you want that.`,
     );
   }
   if (report.loginOverrides.length > 0) {
-    console.log(
+    print(
       `  WARN ${report.loginOverrides.join(", ")} set: that replaces your own Claude login. Remove it for the gateway.`,
     );
   }
@@ -479,25 +486,25 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
   try {
     config = loadConfigFile(ctx.paths.gatewayConfigFile);
   } catch (error) {
-    console.log(`config: ${messageOf(error)}`);
+    ctx.print(`config: ${messageOf(error)}`);
   }
   // Without a good config the router runs on the default port.
   const port = config?.port ?? DEFAULT_PORT;
   const health = await routerHealth(port, ctx.probe.fetch);
-  if ("error" in health) console.log(`router: DOWN on 127.0.0.1:${port} (${health.error})`);
+  if ("error" in health) ctx.print(`router: DOWN on 127.0.0.1:${port} (${health.error})`);
   else {
     const body = isJsonObject(health.body) ? health.body : {};
-    console.log(
+    ctx.print(
       `router: up on 127.0.0.1:${String(body.port)} for ${String(body.uptimeSec)} s, ${String(body.requests)} requests, ${String(body.fallbacks)} fallbacks`,
     );
     if (body.port !== port)
-      console.log(`  WARN the config says port ${port}; restart the router to move it`);
+      ctx.print(`  WARN the config says port ${port}; restart the router to move it`);
     const cooling = isJsonObject(body.cooling) ? Object.entries(body.cooling) : [];
     for (const [target, seconds] of cooling)
-      console.log(`  resting: ${target} for ${String(seconds)} s more`);
+      ctx.print(`  resting: ${target} for ${String(seconds)} s more`);
     const limited = isJsonObject(body.limited) ? Object.entries(body.limited) : [];
     for (const [model, seconds] of limited) {
-      console.log(
+      ctx.print(
         `  at its plan usage limit: ${model}; its model slot answers from a fallback, and asks it again in ${String(seconds)} s`,
       );
     }
@@ -506,17 +513,17 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
     for (const [name, backend] of Object.entries(config.backends)) {
       const listed = await listModels(backend.baseUrl, backend.apiKey);
       const state = "error" in listed ? `unreachable (${listed.error})` : `HTTP ${listed.status}`;
-      console.log(
+      ctx.print(
         `backend ${name}: ${shownValue(backend.baseUrl)} key ${maskKey(backend.apiKey)} → ${state}`,
       );
     }
-    printSlots(config);
+    printSlots(config, ctx.print);
   }
   const report = settingsReport(ctx.paths.settingsFile);
-  console.log(
+  ctx.print(
     `\nClaude Code (${tildify(ctx.paths.settingsFile, ctx.paths.home)}): ${report.baseUrl === null ? "gateway OFF (no ANTHROPIC_BASE_URL)" : `gateway ON → ${report.baseUrl}`}`,
   );
-  printOverrides(report);
+  printOverrides(report, ctx.print);
   return 0;
 }
 
@@ -545,11 +552,11 @@ function setupOptions(
 async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number> {
   const options = setupOptions(args);
   if (options === null) {
-    console.error(USAGE);
+    ctx.error(USAGE);
     return 2;
   }
   if (!ctx.systemd) {
-    console.error(NEEDS_SYSTEMD);
+    ctx.error(NEEDS_SYSTEMD);
     return 1;
   }
   const { paths } = ctx;
@@ -572,7 +579,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
     port: configuredPort(configPath),
     probe: ctx.probe,
     runner: ctx.runner,
-    say: (line) => console.log(line),
+    say: ctx.print,
     yes: options.yes,
     confirm: ctx.confirm,
     ...overrides,
@@ -585,19 +592,19 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
     paths.stateDir,
     async () => {
       const said = ensureConfig(configPath, key, { allowNone: options.noKey });
-      console.log(said.replaceAll(configPath, tildify(configPath, paths.home)));
+      ctx.print(said.replaceAll(configPath, tildify(configPath, paths.home)));
       // The question was answered above: the warning is not repeated, and nothing asks again.
       await installRouter(
         install({
           yes: true,
           confirm: null,
           say: (line) => {
-            if (!INSTALL_WARNINGS.includes(line)) console.log(line);
+            if (!INSTALL_WARNINGS.includes(line)) ctx.print(line);
           },
         }),
       );
       if (settingsReport(paths.settingsFile).baseUrl === null) {
-        console.log(
+        ctx.print(
           `Claude Code does not use the gateway yet. Check it: ${COMMAND} gateway status. Then: ${COMMAND} gateway on.`,
         );
       }
@@ -632,17 +639,17 @@ async function commandOn(ctx: GatewayContext): Promise<number> {
   turnOn({ ...options, dryRun: true });
   const result = await withLock(paths.stateDir, () => turnOn(options), { waitMs: 10_000 });
   if (result.changes.length === 0) {
-    console.log("Nothing to change: the gateway is already on.");
+    ctx.print("Nothing to change: the gateway is already on.");
   } else {
-    console.log(changeLines(result, paths.home).join("\n"));
-    console.log(
+    ctx.print(changeLines(result, paths.home).join("\n"));
+    ctx.print(
       `Done. The changed file has a backup in ${tildify(paths.stateDir, paths.home)}/backups/.`,
     );
-    console.log(
+    ctx.print(
       "Every Claude Code session on this machine, in every folder, uses the gateway from now on: its haiku / sonnet work (background titles and summaries too) goes to the affordable slots.",
     );
   }
-  printOverrides(settingsReport(paths.settingsFile));
+  printOverrides(settingsReport(paths.settingsFile), ctx.print);
   return 0;
 }
 
@@ -654,15 +661,15 @@ async function commandOff(ctx: GatewayContext): Promise<number> {
     { waitMs: 10_000 },
   );
   if (result.changes.length === 0) {
-    console.log(
+    ctx.print(
       `Nothing to remove: ${COMMAND} set no gateway key in ${tildify(paths.settingsFile, paths.home)}.`,
     );
   } else {
-    console.log(changeLines(result, paths.home).join("\n"));
-    console.log("Restart each Claude session: removing a setting needs a restart.");
+    ctx.print(changeLines(result, paths.home).join("\n"));
+    ctx.print("Restart each Claude session: removing a setting needs a restart.");
   }
   for (const key of foreign) {
-    console.log(
+    ctx.print(
       `  env.${key} stays: ${COMMAND} did not set it. Remove it by hand to turn the gateway off.`,
     );
   }
@@ -674,7 +681,7 @@ export async function runGateway(args: string[], ctx: GatewayContext): Promise<n
   const [command, ...rest] = args;
   const noArgs = (run: () => Promise<number>): Promise<number> => {
     if (rest.length > 0) {
-      console.error(USAGE);
+      ctx.error(USAGE);
       return Promise.resolve(2);
     }
     return run();
@@ -701,10 +708,10 @@ export async function runGateway(args: string[], ctx: GatewayContext): Promise<n
     case "help":
     case "--help":
     case "-h":
-      console.log(USAGE);
+      ctx.print(USAGE);
       return 0;
     default:
-      console.error(`Unknown gateway command: ${command}\n\n${USAGE}`);
+      ctx.error(`Unknown gateway command: ${command}\n\n${USAGE}`);
       return 2;
   }
 }

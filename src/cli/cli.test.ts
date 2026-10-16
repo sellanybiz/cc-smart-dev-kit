@@ -888,6 +888,15 @@ describe("cc-smart-dev-kit doctor", () => {
       { mode: 0o600 },
     );
     const ran: string[][] = [];
+    const registryAsked: string[] = [];
+    // An OmniRoute of this test's own, so `doctor`'s own OmniRoute check has something to find.
+    const omniroute = join(home, ".bun", "install", "global", "node_modules", "omniroute");
+    mkdirSync(join(omniroute, "bin"), { recursive: true });
+    writeFileSync(
+      join(omniroute, "package.json"),
+      `${JSON.stringify({ bin: { omniroute: "bin/omniroute.mjs" }, name: "omniroute", version: "3.8.51" })}\n`,
+    );
+    writeFileSync(join(omniroute, "bin", "omniroute.mjs"), "// the program\n");
     // doctor's Warp check reads nothing of the host this test runs on.
     const fakeMachine = noHostMachine(home, null);
     const out: string[] = [];
@@ -903,10 +912,19 @@ describe("cc-smart-dev-kit doctor", () => {
           bun: { path: "/opt/bun/bin/bun", version: "1.4.2" },
           gateway: {
             bundle: join(home, "router.js"),
+            // The OmniRoute check asks the npm registry, and looks in the machine's own
+            // `/usr/.../node_modules` for a global install. This test has an OmniRoute of its
+            // own in the temp home, so that check really runs — through the fake registry and
+            // with no system folders, never the host's.
+            fetch: async (url) => {
+              registryAsked.push(String(url));
+              return Response.json({ time: {}, versions: {} });
+            },
             runner: (cmd) => {
               ran.push(cmd);
               return { exitCode: 0, output: "" };
             },
+            systemFolders: [],
             systemd: true,
             machine: fakeMachine,
           },
@@ -938,6 +956,8 @@ describe("cc-smart-dev-kit doctor", () => {
     expect(exitCode).toBe(1);
     expect(seen).toEqual([]);
     expect(ran).toEqual([]);
+    // The registry was asked through the test's own `fetch`, never the real one.
+    expect(registryAsked).toEqual(["https://registry.npmjs.org/omniroute"]);
   });
 
   test("the host is the test's: a macOS with the Warp app (given, not read) is information, and setup leaves Warp alone", () => {

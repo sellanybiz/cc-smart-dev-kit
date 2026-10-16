@@ -19,6 +19,8 @@ import { companionChecks } from "../machine/companions";
 import type { Machine } from "../machine/machine";
 import { warpCheck } from "../machine/warp";
 import { type McpDoctorDeps, mcpChecks } from "../mcp/doctor";
+import { omnirouteDoctorLine } from "../omniroute/commands";
+import type { RegistryFetch } from "../omniroute/registry";
 import { findUserInstall } from "../setup/installed-plugins";
 import {
   copyDifferences,
@@ -58,7 +60,8 @@ import { type LiveDeps, parseClaudeVersion, readLiveRecord, runLiveCheck } from 
 import { type CliPaths, tildify } from "./paths";
 import { projectChecks } from "./project-checks";
 
-interface Check {
+/** One line of the report. What `doctor` prints, and what the portal's Machine page shows. */
+export interface Check {
   ok: boolean;
   /** Information only: printed with `·`, never a failure. */
   info?: boolean;
@@ -605,6 +608,31 @@ function claudeMemCheck(paths: CliPaths): Check | null {
 }
 
 /**
+ * OmniRoute: one `·` line, and only when a newer release has been out for three days. Never
+ * a failure — when to update is the person's choice, and the update restarts the model path.
+ * Nothing when it is not installed, or when the registry cannot be read.
+ */
+async function omnirouteCheck(paths: CliPaths, env: Env, gateway: DoctorGateway): Promise<Check[]> {
+  const line = await omnirouteDoctorLine({
+    confirm: null,
+    env,
+    health: (url, init) => fetch(url, init),
+    now: () => Date.now(),
+    paths,
+    registry: gateway.fetch ?? ((url, init) => fetch(url, init)),
+    runner: gateway.runner,
+    say: () => undefined,
+    sleep: (ms) => Bun.sleep(ms),
+    // A test passes its own folders: the host's `/usr/lib/node_modules` may hold an OmniRoute
+    // that has nothing to do with the test, which would then read the real registry.
+    systemFolders: gateway.systemFolders,
+    systemd: gateway.systemd,
+    which: gateway.machine.which,
+  });
+  return line === null ? [] : [{ info: true, ok: true, text: line.text }];
+}
+
+/**
  * tmux: an alert from a pane reaches the terminal the person is looking at only with tmux
  * 3.3 or newer and its passthrough allowed (`all`, so a window the person is not looking at
  * works too), which is why `cc-smart-dev-kit setup` writes one managed line into `~/.tmux.conf` and
@@ -639,6 +667,17 @@ export interface DoctorGateway {
   systemd: boolean;
   /** Asks the system about Warp (its package manager); a test passes fakes. */
   machine: Machine;
+  /**
+   * Asks the npm registry whether a newer OmniRoute is out. The real `fetch` by default; a
+   * test passes a fake, so it never reaches the network.
+   */
+  fetch?: RegistryFetch;
+  /**
+   * The folders outside the home a global OmniRoute may sit in. The machine's own by default
+   * (`SYSTEM_PACKAGE_FOLDERS`); a test passes none, so a real `/usr/lib/node_modules/omniroute`
+   * cannot make its run read the real registry or report a machine that is not its own.
+   */
+  systemFolders?: readonly string[] | undefined;
 }
 
 /** The Bun running doctor (through the launcher, the bun baked into it). */
@@ -679,17 +718,17 @@ export interface DoctorOptions {
 }
 
 /**
- * Prints one ✓ or ✗ line per check, `·` for information (the gateway, when it was never
- * set up, is optional) and `!` for a warning. Exit code 1 when any check fails.
+ * Every check, in order, and nothing printed. `runDoctor` prints them; the portal's Machine
+ * page shows the same list, so the two can never disagree about a machine.
  *
  * On a Bun older than `MIN_BUN` the gateway checks are skipped: they send the backend key,
  * and that Bun would send it through a proxy from the environment.
  */
-export async function runDoctor(
+export async function doctorChecks(
   paths: CliPaths,
   env: Env,
   { bun, gateway, local, mcp, project, live }: DoctorOptions,
-): Promise<number> {
+): Promise<Check[]> {
   const settings = readSettings(paths.settingsFile);
   const runtime = checkBun(bun, paths);
   const mcpDeps = mcp ?? null;
@@ -718,11 +757,28 @@ export async function runDoctor(
     ...checkTmux(paths, env, gateway.machine),
     ...(project === null ? [] : projectChecks(project.cwd, env, paths, project.pluginHooksFile)),
     ...(runtime.ok ? await gatewayChecks({ paths, ...gateway }) : [skipped]),
+    ...(await omnirouteCheck(paths, env, gateway)),
     live === null ? checkLiveRecord(paths) : null,
     ...(live === null ? [] : runLiveCheck(paths, env, live)),
   ].filter((check): check is Check => check !== null);
-  for (const check of checks) {
-    console.log(`${check.warn ? "!" : check.info ? "·" : check.ok ? "✓" : "✗"} ${check.text}`);
-  }
+  return checks;
+}
+
+/** One check's line, as `doctor` prints it and the portal's page shows its mark. */
+export function checkLine(check: Check): string {
+  return `${check.warn === true ? "!" : check.info === true ? "·" : check.ok ? "✓" : "✗"} ${check.text}`;
+}
+
+/**
+ * Prints one ✓ or ✗ line per check, `·` for information (the gateway, when it was never
+ * set up, is optional) and `!` for a warning. Exit code 1 when any check fails.
+ */
+export async function runDoctor(
+  paths: CliPaths,
+  env: Env,
+  options: DoctorOptions,
+): Promise<number> {
+  const checks = await doctorChecks(paths, env, options);
+  for (const check of checks) console.log(checkLine(check));
   return checks.every((check) => check.ok) ? 0 : 1;
 }

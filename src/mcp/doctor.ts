@@ -42,6 +42,32 @@ export interface McpDoctorDeps {
   which: (command: string) => null | string;
 }
 
+/**
+ * The machine's own `McpDoctorDeps`: `claude mcp get` run for real. One home for both
+ * `cc-smart-dev-kit doctor` and the portal's Machine page, so the two judge a machine alike.
+ */
+export function realMcpDoctorDeps(): McpDoctorDeps {
+  return {
+    run: (argv, extraEnv) => {
+      try {
+        const result = Bun.spawnSync(argv, {
+          env: { ...process.env, ...extraEnv },
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        return {
+          ok: result.exitCode === 0,
+          output: `${result.stdout.toString()}${result.stderr.toString()}`,
+        };
+      } catch (error) {
+        return { ok: false, output: error instanceof Error ? error.message : String(error) };
+      }
+    },
+    which: (command) => Bun.which(command),
+  };
+}
+
 /** One labelled line of `claude mcp get`. Its other lines can hold a command line someone
  *  pasted a key into, so nothing else of that output is printed. */
 function field(report: string, label: string): string {

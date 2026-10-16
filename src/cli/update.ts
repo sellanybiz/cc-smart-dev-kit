@@ -69,17 +69,17 @@ const terminalRunner = (env: Env, home: string): CommandRunner => {
   };
 };
 
-/** Says why there is nothing to update here; the exit code. */
-function cannotUpdate(status: UpdateStatus): null | number {
+/** Says why there is nothing to update here; the exit code. A failure goes to the error sink. */
+function cannotUpdate(status: UpdateStatus, error: (line: string) => void): null | number {
   switch (status.kind) {
     case "not-installed":
-      console.error(`${PLUGIN_ID} is not installed for this user. Run: ${PLUGIN_INSTALL_COMMAND}`);
+      error(`${PLUGIN_ID} is not installed for this user. Run: ${PLUGIN_INSTALL_COMMAND}`);
       return 1;
     case "no-marketplace":
-      console.error(`${status.detail}. Run: ${MARKETPLACE_ADD_COMMAND}`);
+      error(`${status.detail}. Run: ${MARKETPLACE_ADD_COMMAND}`);
       return 1;
     case "unreachable":
-      console.error(
+      error(
         `cannot read the marketplace (${status.detail}). Check your git access: an SSH key, or a git credential helper.`,
       );
       return 1;
@@ -88,12 +88,13 @@ function cannotUpdate(status: UpdateStatus): null | number {
   }
 }
 
-async function check(paths: CliPaths, env: Env): Promise<number> {
+async function check(paths: CliPaths, env: Env, sinks: Sinks): Promise<number> {
+  const { error, print } = sinks;
   const status = checkForUpdate(paths, env);
-  const stop = cannotUpdate(status);
+  const stop = cannotUpdate(status, error);
   if (stop !== null) return stop;
   if (status.kind === "up-to-date") {
-    console.log(`${PLUGIN} ${status.installed} is the newest version.`);
+    print(`${PLUGIN} ${status.installed} is the newest version.`);
     return 0;
   }
   if (status.kind !== "behind") return 1;
@@ -102,7 +103,7 @@ async function check(paths: CliPaths, env: Env): Promise<number> {
   if (status.catalogBehind && status.remote !== null) {
     const remote = remotePluginVersion(status.remote.url, status.remote.ref, env);
     if (!remote.ok) {
-      console.log(
+      print(
         `The marketplace has commits this machine has not fetched (${redactUrl(status.remote.url)}); their version could not be read (${remote.detail}). Run: ${COMMAND} update`,
       );
       return 0;
@@ -110,18 +111,22 @@ async function check(paths: CliPaths, env: Env): Promise<number> {
     available = remote.version;
   }
   if (isOlder(status.installed, available)) {
-    console.log(
-      `${PLUGIN} ${available} is available (installed: ${installed}). Run: ${COMMAND} update`,
-    );
+    print(`${PLUGIN} ${available} is available (installed: ${installed}). Run: ${COMMAND} update`);
   } else {
-    console.log(
+    print(
       `${PLUGIN} ${installed} is the newest version${status.catalogBehind ? " (the marketplace has newer commits, with no new version)" : ""}.`,
     );
   }
   return 0;
 }
 
-async function updateNow(paths: CliPaths, env: Env, now: () => number): Promise<number> {
+async function updateNow(
+  paths: CliPaths,
+  env: Env,
+  now: () => number,
+  sinks: Sinks,
+): Promise<number> {
+  const { error, print } = sinks;
   const files = updateFiles(paths.stateDir);
   return withLock(
     files.lockDir,
@@ -131,7 +136,7 @@ async function updateNow(paths: CliPaths, env: Env, now: () => number): Promise<
       const record = (result: CheckResult, detail: string) =>
         writeLastCheck(files, { at, detail, result });
       const status = checkForUpdate(paths, env);
-      const stop = cannotUpdate(status);
+      const stop = cannotUpdate(status, error);
       if (stop !== null) {
         if (status.kind === "unreachable") {
           // The same rule as the background check: a failure only after 24 h in a row.
@@ -143,22 +148,25 @@ async function updateNow(paths: CliPaths, env: Env, now: () => number): Promise<
       }
       let code = 0;
       if (status.kind === "up-to-date") {
-        console.log(`${PLUGIN} ${status.installed} is up to date.`);
+        print(`${PLUGIN} ${status.installed} is up to date.`);
         record("up-to-date", status.installed);
       } else {
         const claude = Bun.which("claude", { PATH: env.PATH ?? "" });
-        const result = applyUpdate(paths, claude, terminalRunner(env, paths.home), (line) =>
-          console.log(`$ ${line}`),
+        const result = applyUpdate(
+          paths,
+          claude,
+          sinks.run ?? terminalRunner(env, paths.home),
+          (line) => print(`$ ${line}`),
         );
         if (!result.ok) {
-          console.error(result.detail);
+          error(result.detail);
           record(result.busy === true ? "skipped" : "failed", result.detail);
           code = 1;
         } else if (result.after === result.before) {
-          console.log(`${PLUGIN} ${result.after ?? "(no version)"} is the newest version.`);
+          print(`${PLUGIN} ${result.after ?? "(no version)"} is the newest version.`);
           record("up-to-date", result.after ?? "(no version)");
         } else {
-          console.log(
+          print(
             `${PLUGIN} ${result.after ?? "(no version)"} installed (was ${result.before ?? "none"}). Restart Claude sessions to load it.`,
           );
           const routerChanged = routerNeedsSetup(paths);
@@ -167,14 +175,14 @@ async function updateNow(paths: CliPaths, env: Env, now: () => number): Promise<
             `${result.after ?? "(no version)"} (was ${result.before ?? "none"})${routerChanged ? `; ${ROUTER_SETUP_HINT}` : ""}`,
           );
           if (routerChanged) {
-            console.log(
+            print(
               `Its router changed too. To run it: ${COMMAND} gateway setup (it asks before the restart).`,
             );
           }
         }
       }
       if (isHeld(files)) {
-        console.log(
+        print(
           `Background updates stay on hold (since ${heldSince(files)}). To resume them: ${COMMAND} update --resume`,
         );
       }
@@ -184,44 +192,69 @@ async function updateNow(paths: CliPaths, env: Env, now: () => number): Promise<
   );
 }
 
+/**
+ * Where the command's lines go, and how its `claude plugin` steps run. The CLI's own
+ * `console.log` / `console.error` and a runner that inherits the terminal; the portal passes
+ * a collector and a runner that captures each command's output, because the terminal is not
+ * where the person is looking.
+ *
+ * A failure goes to `error`, so a script (or the page) can read it apart from the rest.
+ */
+export interface UpdateSinks {
+  print: (line: string) => void;
+  error: (line: string) => void;
+  /** Runs one `claude plugin …` step. Absent: `terminalRunner`, which inherits the terminal. */
+  run?: CommandRunner;
+}
+
+type Sinks = UpdateSinks;
+
+const CONSOLE_SINKS: UpdateSinks = {
+  error: (line) => console.error(line),
+  print: (line) => console.log(line),
+};
+
 /** `cc-smart-dev-kit update [--check | --hold | --resume]`; the exit code. */
 export async function runUpdate(
   paths: CliPaths,
   env: Env,
   args: string[],
   now: () => number = () => Date.now(),
+  /** Where every line goes: `console.log` and `console.error` in use, a collector in the portal. */
+  sinks: UpdateSinks = CONSOLE_SINKS,
 ): Promise<number> {
+  const { error, print } = sinks;
   const files = updateFiles(paths.stateDir);
   if (args.length > 1) {
-    console.error(UPDATE_USAGE);
+    error(UPDATE_USAGE);
     return 2;
   }
   switch (args[0]) {
     case undefined:
-      return updateNow(paths, env, now);
+      return updateNow(paths, env, now, sinks);
     case "--check":
-      return check(paths, env);
+      return check(paths, env, sinks);
     // No lock: one atomic write (or removal). A check that runs now is not waited for.
     case "--hold":
       if (!hold(files, now())) {
-        console.log(`Background updates were already on hold (since ${heldSince(files)}).`);
+        print(`Background updates were already on hold (since ${heldSince(files)}).`);
       } else {
-        console.log(
+        print(
           `Background updates are on hold: a new Claude session no longer checks for a newer ${PLUGIN}. To resume: ${COMMAND} update --resume`,
         );
       }
-      if (checkRunning(files)) console.log(CHECK_RUNNING);
+      if (checkRunning(files)) print(CHECK_RUNNING);
       return 0;
     case "--resume":
-      console.log(
+      print(
         resume(files)
           ? `Background updates resume: a new Claude session checks for a newer ${PLUGIN}, at most once an hour (${tildify(files.log, paths.home)}).`
           : "Background updates were not on hold.",
       );
-      if (checkRunning(files)) console.log(CHECK_RUNNING);
+      if (checkRunning(files)) print(CHECK_RUNNING);
       return 0;
     default:
-      console.error(`Unknown option: ${args[0]}\n\n${UPDATE_USAGE}`);
+      error(`Unknown option: ${args[0]}\n\n${UPDATE_USAGE}`);
       return 2;
   }
 }

@@ -1,0 +1,59 @@
+/**
+ * What the portal needs from outside itself, in one place.
+ *
+ * Every part of it — the pages, the actions, the server — takes this, so a test builds one
+ * with fakes and drives the whole portal on a free port of its own, with temp paths and a
+ * fake `systemctl`. Nothing else in `src/portal/` reads `process.env`, `homedir()` or a
+ * global `fetch`: it can only reach the machine through here.
+ */
+
+import type { CliPaths } from "../cli/paths";
+import type { HealthFetch, HealthProbe } from "../gateway/health";
+import type { Runner } from "../gateway/service";
+import type { Machine } from "../machine/machine";
+import type { PluginFolder } from "./plugin-folder";
+
+/** The registry and health `fetch`: the real `fetch` in use, a fake in a test. */
+export type PortalFetch = HealthFetch;
+
+export interface PortalContext {
+  /** `Bun.version`, for the header. */
+  bunVersion: string;
+  /** This process's environment. `CLAUDECODE` refuses the command, not the server. */
+  env: Record<string, string | undefined>;
+  /** The real network, for the registry and the backend checks. */
+  fetch: PortalFetch;
+  /** The system, through `src/machine/` (commands, the platform, the Warp app). */
+  machine: Machine;
+  /** Milliseconds since the epoch. */
+  now: () => number;
+  /** Opens a URL in the person's own browser; a test passes a recorder. */
+  openBrowser: (url: string) => void;
+  paths: CliPaths;
+  /**
+   * The plugin's own folder **as it is now**: Claude Code's installed version, else the folder
+   * the parent passed on `--plugin-dir` (`plugin-folder.ts`). Every plugin file — the router
+   * bundle, the instructions, `hooks.json` — is read from it at the moment it is needed, never
+   * from a path made at startup: the portal runs from a copy, and the version folder it started
+   * in can change or vanish during a 30-minute run.
+   */
+  pluginFolder: () => PluginFolder;
+  /** Asks the router's health page: `realProbe()` in use, a fake in a test. */
+  probe: HealthProbe;
+  /** Runs `systemctl` and the plugin's commands. */
+  runner: Runner;
+  /**
+   * The folders outside the home a global OmniRoute may sit in (`SYSTEM_PACKAGE_FOLDERS` by
+   * default). A test passes none, so it never finds the machine's own OmniRoute.
+   */
+  systemFolders?: readonly string[] | undefined;
+  /** False where there is no systemd (macOS, Windows). */
+  systemd: boolean;
+  /** The full path of a command on PATH, or null. */
+  which: (command: string) => null | string;
+}
+
+/** The `HealthFetch` a `PortalContext` gives a caller that wants one (`checkOmniroute`). */
+export function healthFetch(ctx: PortalContext): HealthFetch {
+  return (url, init) => ctx.fetch(url, init as RequestInit & { signal: AbortSignal });
+}
