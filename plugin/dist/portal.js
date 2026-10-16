@@ -10875,7 +10875,7 @@ function browserGuide(state) {
       {
         detail: PLAYWRIGHT_EXTENSION_SETTINGS_URL,
         done: state.fileUrls === true,
-        text: `Paste that into that window's address bar, then switch on "Allow access to file URLs".`
+        text: `Paste the address below into that window's address bar, then switch on "Allow access to file URLs".`
       },
       {
         done: null,
@@ -10888,7 +10888,7 @@ function browserGuide(state) {
       {
         detail: `${COMMAND} browser token`,
         done: state.tokenSet,
-        text: `Save it: run this, paste the line, then press Enter \u2014 or paste it into the Browser card of the portal (${COMMAND} portal).`
+        text: `Save it: run the command below, paste the line, then press Enter \u2014 or paste it into the Browser card of the portal (${COMMAND} portal).`
       }
     ]
   };
@@ -23082,8 +23082,11 @@ footer.bottom .wrap {
   display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px;
   padding: 6px 6px 6px 14px; background: var(--surface-2); border-bottom: 1px solid var(--line-soft);
 }
-/* A box with no file name of its own: the Copy button is the whole head. */
-.codehead.end { justify-content: flex-end; padding-left: 6px; }
+/* A box with no file name of its own is one row: the code, then its Copy button on the code's
+   own background, not a head of its own with nothing in it but the button. */
+.codebox.oneline { display: flex; align-items: center; background: var(--code-bg); }
+.codebox.oneline pre { flex: 1 1 auto; min-width: 0; }
+.codebox.oneline .codehead { order: 2; flex: none; padding: 0 6px; background: transparent; border-bottom: 0; }
 .codehead code { font-size: 13px; }
 
 /* \u2500\u2500 The Browser card's five steps \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -24331,8 +24334,8 @@ function guardRow(options) {
 }
 function codeBox(options) {
   const head = options.label === undefined ? "" : `<code>${escapeHtml(options.label)}</code>`;
-  return `<div class="codebox">
-<div class="codehead${options.label === undefined ? " end" : ""}">${head}<button type="button" class="btn" data-copy-node="[${options.attribute}]" aria-label="${escapeHtml(options.copyLabel)}">${COPY_ICON}Copy</button></div>
+  return `<div class="codebox${options.label === undefined ? " oneline" : ""}">
+<div class="codehead">${head}<button type="button" class="btn" data-copy-node="[${options.attribute}]" aria-label="${escapeHtml(options.copyLabel)}">${COPY_ICON}Copy</button></div>
 <pre ${options.attribute}>${escapeHtml(options.text)}</pre>
 </div>`;
 }

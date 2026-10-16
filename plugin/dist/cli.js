@@ -1656,7 +1656,7 @@ function browserGuide(state) {
       {
         detail: PLAYWRIGHT_EXTENSION_SETTINGS_URL,
         done: state.fileUrls === true,
-        text: `Paste that into that window's address bar, then switch on "Allow access to file URLs".`
+        text: `Paste the address below into that window's address bar, then switch on "Allow access to file URLs".`
       },
       {
         done: null,
@@ -1669,7 +1669,7 @@ function browserGuide(state) {
       {
         detail: `${COMMAND} browser token`,
         done: state.tokenSet,
-        text: `Save it: run this, paste the line, then press Enter \u2014 or paste it into the Browser card of the portal (${COMMAND} portal).`
+        text: `Save it: run the command below, paste the line, then press Enter \u2014 or paste it into the Browser card of the portal (${COMMAND} portal).`
       }
     ]
   };

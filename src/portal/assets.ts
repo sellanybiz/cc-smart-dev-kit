@@ -467,8 +467,11 @@ footer.bottom .wrap {
   display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px;
   padding: 6px 6px 6px 14px; background: var(--surface-2); border-bottom: 1px solid var(--line-soft);
 }
-/* A box with no file name of its own: the Copy button is the whole head. */
-.codehead.end { justify-content: flex-end; padding-left: 6px; }
+/* A box with no file name of its own is one row: the code, then its Copy button on the code's
+   own background, not a head of its own with nothing in it but the button. */
+.codebox.oneline { display: flex; align-items: center; background: var(--code-bg); }
+.codebox.oneline pre { flex: 1 1 auto; min-width: 0; }
+.codebox.oneline .codehead { order: 2; flex: none; padding: 0 6px; background: transparent; border-bottom: 0; }
 .codehead code { font-size: 13px; }
 
 /* ── The Browser card's five steps ────────────────────────────────────────

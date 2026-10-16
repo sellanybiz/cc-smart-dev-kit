@@ -658,8 +658,8 @@ function codeBox(options: {
   text: string;
 }): string {
   const head = options.label === undefined ? "" : `<code>${escapeHtml(options.label)}</code>`;
-  return `<div class="codebox">
-<div class="codehead${options.label === undefined ? " end" : ""}">${head}<button type="button" class="btn" data-copy-node="[${options.attribute}]" aria-label="${escapeHtml(options.copyLabel)}">${COPY_ICON}Copy</button></div>
+  return `<div class="codebox${options.label === undefined ? " oneline" : ""}">
+<div class="codehead">${head}<button type="button" class="btn" data-copy-node="[${options.attribute}]" aria-label="${escapeHtml(options.copyLabel)}">${COPY_ICON}Copy</button></div>
 <pre ${options.attribute}>${escapeHtml(options.text)}</pre>
 </div>`;
 }
