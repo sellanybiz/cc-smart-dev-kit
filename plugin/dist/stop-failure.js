@@ -107,8 +107,42 @@ function soundArgv(moment, platform, which) {
 
 // src/hooks/detached.ts
 import { spawn } from "child_process";
-function detachedArgv(platform, argv) {
-  return platform === "win32" ? ["cmd", "/c", "start", "", "/b", ...argv] : argv;
+var CMD = "cmd";
+var CMD_ARGUMENTS = ["/d", "/s", "/v:off", "/c"];
+function unableInCmd(argument) {
+  if (argument.includes('"'))
+    return 'a " would end the quoted argument';
+  if (argument.includes("%"))
+    return "a % is read as a variable name, inside double quotes too";
+  if (/[\r\n]/.test(argument))
+    return "a line break ends the command line";
+  if (argument.includes("\x00"))
+    return "a NUL ends the command line";
+  return null;
+}
+function cmdArgument(argument) {
+  const reason = unableInCmd(argument);
+  if (reason !== null)
+    return { ok: false, reason };
+  const trailing = /\\+$/.exec(argument)?.[0] ?? "";
+  const kept = argument.slice(0, argument.length - trailing.length);
+  return { ok: true, text: `"${kept}${trailing}${trailing}"` };
+}
+function windowsStart(argv) {
+  if (argv[0] === undefined) {
+    return { argument: "", ok: false, reason: "there is no program to start" };
+  }
+  const quoted = [];
+  for (const argument of argv) {
+    const one = cmdArgument(argument);
+    if (!one.ok)
+      return { argument, ok: false, reason: one.reason };
+    quoted.push(one.text);
+  }
+  return { argv: [CMD, ...CMD_ARGUMENTS, `"start "" /b ${quoted.join(" ")}"`], ok: true };
+}
+function forMessage(argument) {
+  return argument.replace(/[\r\n]/g, " ").replaceAll("\x00", " ");
 }
 function startDetached(platform, argv, options) {
   const [file, ...args] = argv;
@@ -120,16 +154,22 @@ function startDetached(platform, argv, options) {
   };
   try {
     if (platform === "win32") {
-      const result = Bun.spawnSync(detachedArgv(platform, argv), {
+      const start = windowsStart(argv);
+      if (!start.ok) {
+        options.onError(`cannot run "${forMessage(start.argument)}" through cmd.exe: ${start.reason}; nothing was started`);
+        return;
+      }
+      const result = Bun.spawnSync(start.argv, {
         ...where,
         stdin: "ignore",
         stdout: "ignore",
         stderr: "ignore",
-        windowsHide: true
+        windowsHide: true,
+        windowsVerbatimArguments: true
       });
       const exitCode = result.exitCode ?? 1;
       if (exitCode !== 0)
-        options.onError(`cmd /c start failed (exit ${exitCode})`);
+        options.onError(`cmd /d /s /c start failed (exit ${exitCode})`);
       return;
     }
     const child = spawn(file, args, { ...where, detached: true, stdio: "ignore" });
@@ -5992,6 +6032,11 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
+// src/setup/file-mode.ts
+function isOwnerOnly(mode, platform = hostPlatform()) {
+  return platform === "win32" || (mode & 63) === 0;
+}
+
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 var SLOT_KEY = /^cc-smart-dev-kit-[a-z0-9][a-z0-9-]*$/;
@@ -6149,14 +6194,14 @@ function parseConfig(raw) {
   const result = gatewayConfigSchema.safeParse(raw);
   return result.success ? { config: result.data } : { error: prettifyError(result.error) };
 }
-function loadConfigFile(path) {
+function loadConfigFile(path, platform = hostPlatform()) {
   let mode;
   try {
     mode = statSync(path).mode;
   } catch (error) {
     throw new ConfigError(`cannot read ${path}: ${messageOf(error)}`, { cause: error });
   }
-  if ((mode & 63) !== 0) {
+  if (!isOwnerOnly(mode, platform)) {
     throw new ConfigError(`${path} can be read by other users (mode ${(mode & 511).toString(8)}); it holds API keys. Run: chmod 600 ${path}`);
   }
   let raw;
@@ -6635,6 +6680,9 @@ var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
 var PLAYWRIGHT_EXTENSION_URL = `https://chromewebstore.google.com/detail/playwright-extension/${PLAYWRIGHT_EXTENSION_ID}`;
 var PLAYWRIGHT_EXTENSION_SETTINGS_URL = `chrome://extensions/?id=${PLAYWRIGHT_EXTENSION_ID}`;
 
+// src/browser/legacy.ts
+var WINDOWS_LIST = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object CommandLine | " + 'ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }';
+
 // src/browser/token.ts
 var BROWSER_TOKEN_ENV = "PLAYWRIGHT_MCP_EXTENSION_TOKEN";
 var TOKEN_LINE_PREFIX = `${BROWSER_TOKEN_ENV}=`;
@@ -6787,18 +6835,30 @@ function alertsAt(paths, cwd, env) {
   }
 }
 
+// src/shell/powershell.ts
+var SINGLE_QUOTES = /['\u2018\u2019\u201A\u201B]/g;
+function powershellLiteral(value) {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(`cannot put ${JSON.stringify(value)} in a PowerShell command`);
+  }
+  return `'${value.replace(SINGLE_QUOTES, (quote) => quote + quote)}'`;
+}
+
 // src/hooks/windows-toast.ts
 var TOAST_SHELL = "powershell";
 var TOAST_APP_ID = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe";
-function powershellLiteral(text) {
-  return `'${text.replaceAll("'", "''")}'`;
+function base64Literal(text) {
+  return `'${Buffer.from(text, "utf8").toString("base64")}'`;
+}
+function decodedText(text) {
+  return `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(${base64Literal(text)}))`;
 }
 function windowsToastScript(title, body, critical) {
   const scenario = critical ? ' scenario="reminder"' : "";
   return [
     "$ErrorActionPreference = 'Stop'",
-    `$title = ${powershellLiteral(title)}`,
-    `$body = ${powershellLiteral(body)}`,
+    `$title = ${decodedText(title)}`,
+    `$body = ${decodedText(body)}`,
     `$appId = ${powershellLiteral(TOAST_APP_ID)}`,
     "try {",
     "  $xml = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]::New()",
