@@ -72,10 +72,15 @@ export interface FakeWorkflowCalls {
   applyProjectInit: { options: { dryRun?: boolean; stateDir: string }; plan: ProjectInitPlan }[];
   autoMergeAllowed: { defaultBranch: string; prBase: string }[];
   planProjectInit: ProjectInitInput[];
-  projectInitDefaults: { existing: null | string; root: string }[];
+  projectInitDefaults: { root: string }[];
   resolveWorkflow: { projectConfig: CcSmartDevKitConfig | null }[];
   writePersonalSetting: { key: string; value: unknown }[];
-  writeProjectSetting: { cwd: string; key: string; value: unknown }[];
+  writeProjectSetting: {
+    cwd: string;
+    env: Record<string, string | undefined>;
+    key: string;
+    value: unknown;
+  }[];
 }
 
 export interface FakeWorkflow extends WorkflowAdapter {
@@ -173,7 +178,7 @@ export function fakeWorkflow(options: FakeWorkflowOptions = {}): FakeWorkflow {
       return options.unwired === true ? unwired() : fakePlan(input);
     },
     projectInitDefaults(input): ProjectInitDefaults {
-      calls.projectInitDefaults.push({ existing: input.existing, root: input.root });
+      calls.projectInitDefaults.push({ root: input.root });
       if (options.unwired === true) unwired();
       return {
         answers: { ...defaults.answers, ...options.defaults?.answers },
@@ -198,8 +203,8 @@ export function fakeWorkflow(options: FakeWorkflowOptions = {}): FakeWorkflow {
       }
       return `~ your own defaults: ${key} = ${String(value)}`;
     },
-    writeProjectSetting(cwd, key, value): string {
-      calls.writeProjectSetting.push({ cwd, key, value });
+    writeProjectSetting(cwd, key, value, env = {}): string {
+      calls.writeProjectSetting.push({ cwd, env, key, value });
       if (options.unwired === true) unwired();
       if (key === "switches.statusLine" || key === "switches.updateHold") {
         throw new Error(`${key} is your own setting, not the project's`);

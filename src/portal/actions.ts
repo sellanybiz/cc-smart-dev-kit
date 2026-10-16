@@ -666,9 +666,11 @@ async function setWorkflowSetting(
     }
   }
   try {
+    // The project's writer runs git with the portal's own environment, never `process.env`:
+    // the portal reaches this machine only through its context (`context.ts`).
     const line =
       spec.where === "project"
-        ? action.workflow.writeProjectSetting(action.cwd, spec.key, parsed.value)
+        ? action.workflow.writeProjectSetting(action.cwd, spec.key, parsed.value, action.portal.env)
         : action.workflow.writePersonalSetting(action.portal.paths, spec.key, parsed.value);
     return { lines: [line], ok: true };
   } catch (error) {
@@ -790,11 +792,7 @@ function projectAnswers(
   if (!form.ok) return form;
   const texts = projectFileTexts(project.root);
   try {
-    const defaults = action.projectDefaults({
-      env: action.portal.env,
-      existing: texts.existing,
-      root: project.root,
-    });
+    const defaults = action.projectDefaults({ env: action.portal.env, root: project.root });
     return {
       ok: true,
       answers: { ...defaults.answers, ...form.value },

@@ -24,7 +24,7 @@ import { omnirouteRow } from "./facts";
 import type { PluginFolder } from "./plugin-folder";
 import { startPortal } from "./server";
 import { IDLE_MS } from "./session";
-import type { ProjectInitAnswers, WorkflowAdapter } from "./workflow-adapter";
+import { type ProjectInitAnswers, type WorkflowAdapter, workflowAdapter } from "./workflow-adapter";
 
 /** The key planted in the config: no page may ever hold it. */
 const KEY = "omni_PLANTED_SECRET_a1b2";
@@ -1722,8 +1722,10 @@ describe("the settings page", () => {
         csrf,
       );
       expect(JSON.parse(yes.body).ok).toBe(true);
+      // The project's own writer, with the folder the portal runs in and the portal's own
+      // environment: git inside it never reads `process.env`.
       expect(workflow.calls.writeProjectSetting).toEqual([
-        { cwd: world.cwd, key: "switches.jobRoute", value: true },
+        { cwd: world.cwd, env: world.ctx.env, key: "switches.jobRoute", value: true },
       ]);
       expect(workflow.calls.writePersonalSetting).toEqual([]);
     } finally {
@@ -1898,7 +1900,7 @@ describe("the project card", () => {
       // are the ones the module's own detection gave, never a word this page made up.
       expect(page.body).toContain("data-project-form hidden");
       expect(page.body).toContain('value="integration"');
-      expect(workflow.calls.projectInitDefaults).toEqual([{ existing: null, root: world.cwd }]);
+      expect(workflow.calls.projectInitDefaults).toEqual([{ root: world.cwd }]);
       // The plan is drawn from the answers, and nothing is written to make a preview.
       expect(workflow.calls.planProjectInit.length).toBe(1);
       expect(workflow.calls.applyProjectInit).toEqual([]);
@@ -1939,10 +1941,8 @@ describe("the project card", () => {
       expect(page.body).toContain(
         "This writes two files in the repo. Commit them like any change: the team shares one setup.",
       );
-      // The card read the project through the module, with the file's own text.
-      expect(workflow.calls.projectInitDefaults).toEqual([
-        { existing: PROJECT_CONFIG, root: world.cwd },
-      ]);
+      // The card read the project through the module, in the project's own folder.
+      expect(workflow.calls.projectInitDefaults).toEqual([{ root: world.cwd }]);
       expect(workflow.calls.resolveWorkflow).toEqual([]);
     } finally {
       world.portal.stop();
@@ -2136,6 +2136,78 @@ describe("the project card", () => {
       expect(workflow.calls.writeProjectSetting).toEqual([]);
       expect(workflow.calls.planProjectInit).toEqual([]);
       expect(workflow.calls.applyProjectInit).toEqual([]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+});
+
+// ── The real workflow module ────────────────────────────────────────────────────
+
+/** A project's file with everything the 0.4.0 core reads: the policy, the bases, the engine. */
+const FULL_PROJECT_CONFIG = `${JSON.stringify(
+  {
+    requires: ">=0.3",
+    worktrees: {
+      base: "integration",
+      prefix: "app-wt-",
+      setup: ["bun", "install"],
+      bases: { "release/": "main" },
+      engine: "own",
+    },
+    protectedBranches: ["main", "integration"],
+    sessionNames: true,
+    jobs: { route: true },
+    workflow: { autoCommit: true, openPr: "draft", alerts: { sound: true } },
+  },
+  null,
+  2,
+)}\n`;
+
+describe("the real workflow module", () => {
+  test("a project file with a workflow policy, bases and an engine", async () => {
+    // No fake here: `workflowAdapter` is the real module, so this one test proves the portal
+    // reads a 0.4.0 project's file — `workflow`, `worktrees.bases` and `worktrees.engine` —
+    // through the CLI's own code. It runs git in the temp repo, and never `gh`: the test's
+    // environment has no PATH for it.
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({
+      backendPort: backend.port,
+      projectFiles: { config: FULL_PROJECT_CONFIG },
+      workflow: workflowAdapter,
+    });
+    try {
+      await world.enter();
+      const settings = await world.call("/settings");
+      expect(settings.status).toBe(200);
+      // The project's file parsed, so there is no "no project's own values" line.
+      expect(settings.body).not.toContain("No project&#39;s own values here");
+      // Every row the file sets is the project's, read-only here, with the file's own value:
+      // `autoCommit: true`, `openPr: "draft"`, `alerts.sound: true`, `sessionNames: true` and
+      // `jobs.route: true`.
+      expect(settings.body).toContain('<span class="src project">this project</span>');
+      for (const row of ["set-commit", "set-names", "set-jobs", "set-sound"]) {
+        expect(settings.body).toContain(
+          `role="switch" aria-checked="true" aria-labelledby="${row}" class="switch" disabled`,
+        );
+      }
+      expect(settings.body).toContain(
+        '<button type="button" aria-pressed="true" disabled>Draft</button>',
+      );
+
+      // The card's form starts from the project's own file: its base row, and its engine.
+      const machine = await world.call("/machine");
+      expect(machine.status).toBe(200);
+      expect(machine.body).toContain('data-base-prefix value="release/"');
+      expect(machine.body).toContain('data-base-value value="main"');
+      expect(machine.body).toContain('aria-pressed="true" data-engine-value="own"');
+      // The preview is the CLI's own plan with the file's fields in it: the policy it keeps,
+      // the bases, and the engine of the project's own (so no line is added to the settings).
+      expect(machine.body).toContain("&quot;workflow&quot;: {");
+      expect(machine.body).toContain("&quot;release/&quot;: &quot;main&quot;");
+      expect(machine.body).toContain("&quot;engine&quot;: &quot;own&quot;");
+      expect(machine.body).toContain("No line is added to .claude/settings.json.");
     } finally {
       world.portal.stop();
       backend.stop();

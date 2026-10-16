@@ -42,6 +42,7 @@ import {
   type ModelRow,
   omnirouteRow,
   projectCardData,
+  projectFileTexts,
   readConfig,
   routerFacts,
   routerLog,
@@ -83,6 +84,7 @@ import {
   slotsPage,
 } from "./views";
 import {
+  type Env,
   type ProjectInitDefaults,
   type WorkflowAdapter,
   workflowAdapter,
@@ -252,12 +254,8 @@ export async function startPortal(
    * network read. The key is the file's text — the moment it changes, the next reader is fresh.
    */
   let remembered: { defaults: ProjectInitDefaults; key: string } | null = null;
-  function projectDefaults(input: {
-    env: Record<string, string | undefined>;
-    existing: null | string;
-    root: string;
-  }): ProjectInitDefaults {
-    const key = `${input.root}\u0000${input.existing ?? ""}`;
+  function projectDefaults(input: { env: Env; root: string }): ProjectInitDefaults {
+    const key = `${input.root}\u0000${projectFileTexts(input.root).existing ?? ""}`;
     if (remembered === null || remembered.key !== key) {
       remembered = { defaults: workflow.projectInitDefaults(input), key };
     }

@@ -48,6 +48,7 @@ import { resolveProject } from "../project/resolve";
 import type { PortalContext } from "./context";
 import { type SettingsRow, settingsRows } from "./settings";
 import type {
+  Env,
   ProjectInitAnswers,
   ProjectInitDefaults,
   ProjectInitPlan,
@@ -774,11 +775,7 @@ export interface ProjectCardData {
  * and, when `gh` is on PATH, GitHub itself, so the server hands in the remembered reader
  * (`server.ts`) instead of calling the module for every form change.
  */
-export type ProjectDefaultsReader = (input: {
-  env: Record<string, string | undefined>;
-  existing: null | string;
-  root: string;
-}) => ProjectInitDefaults;
+export type ProjectDefaultsReader = (input: { env: Env; root: string }) => ProjectInitDefaults;
 
 /**
  * The card's facts, read through the workflow adapter: the CLI's own detection for the form's
@@ -812,11 +809,9 @@ export function projectCardData(
     set: project.config !== null,
   };
   try {
-    const defaults = readDefaults({
-      env: ctx.env,
-      existing: texts.existing,
-      root: project.root,
-    });
+    // The defaults are the CLI's own detection over the project's file; the plan is then made
+    // against the same file text this page read, so the preview and the answers agree.
+    const defaults = readDefaults({ env: ctx.env, root: project.root });
     return {
       ...head,
       answers: defaults.answers,

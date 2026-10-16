@@ -532,8 +532,12 @@ function readText(file: string): string | null {
   return existsSync(file) ? readFileSync(file, "utf8") : null;
 }
 
-/** The parsed project's file, or null when it is not there (a broken one is the plan's error). */
-function readExisting(file: string): Record<string, unknown> | null {
+/**
+ * The parsed project's file, or null when it is not there (a broken one is the plan's error).
+ * Exported for the portal's Project card, which builds its answers the way `project init`
+ * does and must treat a file it cannot parse the same way: as no file at all.
+ */
+export function readExisting(file: string): Record<string, unknown> | null {
   const text = readText(file);
   if (text === null) return null;
   try {
