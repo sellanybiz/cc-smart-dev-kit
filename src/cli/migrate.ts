@@ -62,6 +62,7 @@ import {
   installRouter,
   type Runner,
   stopUnits,
+  systemdService,
   type UnitStop,
   unitActive,
 } from "../gateway/service";
@@ -1350,14 +1351,15 @@ export async function runMigrate(paths: CliPaths, options: MigrateOptions): Prom
         bunVersion: options.bunVersion,
         bundle: options.bundle,
         copyPath: paths.routerCopy,
-        unitPath: old.unitFile,
-        socketPath: old.socketFile,
         home: paths.home,
         stateDir: paths.stateDir,
         port: plan.port,
         probe: options.probe,
         runner: options.runner,
         say: (line) => console.log(`  ${line}`),
+        // Always systemd: this path replaces a running 0.2.x machine's units, which only
+        // exist on Linux (on Windows the step above says to remove them by hand).
+        service: systemdService({ socketPath: old.socketFile, unitPath: old.unitFile }),
         yes: true,
         confirm: null,
       });

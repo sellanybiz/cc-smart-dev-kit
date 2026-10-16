@@ -13,7 +13,7 @@ import {
   VERSION,
 } from "../build-info";
 import { gatewayChecks } from "../gateway/doctor";
-import type { Runner } from "../gateway/service";
+import type { RouterServiceKind, Runner } from "../gateway/service";
 import { claudeMemAdvice } from "../machine/claude-mem";
 import { companionChecks } from "../machine/companions";
 import type { Machine } from "../machine/machine";
@@ -695,7 +695,7 @@ async function omnirouteCheck(paths: CliPaths, env: Env, gateway: DoctorGateway)
     // A test passes its own folders: the host's `/usr/lib/node_modules` may hold an OmniRoute
     // that has nothing to do with the test, which would then read the real registry.
     systemFolders: gateway.systemFolders,
-    systemd: gateway.systemd,
+    systemd: gateway.service === "systemd",
     which: gateway.machine.which,
   });
   return line === null ? [] : [{ info: true, ok: true, text: line.text }];
@@ -740,11 +740,12 @@ function checkTmux(paths: CliPaths, env: Env, machine: Machine): Check[] {
   return checks;
 }
 
-/** What the gateway checks need: the plugin's router bundle, a command runner, systemd or not. */
+/** What the gateway checks need: the plugin's router bundle, a runner, and this machine's service. */
 export interface DoctorGateway {
   bundle: string;
   runner: Runner;
-  systemd: boolean;
+  /** The service this machine can run the router under (`routerServiceKind`). */
+  service: RouterServiceKind;
   /** Asks the system about Warp (its package manager); a test passes fakes. */
   machine: Machine;
   /**

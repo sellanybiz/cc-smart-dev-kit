@@ -29,9 +29,10 @@ The rules for changing it: `.claude/rules/gateway.md`.
 - **No prompt text is ever changed.** An affordable backend gets two named format translations
   and nothing else (§ What an affordable backend sees).
 - Only this machine can reach the router (§ Local only).
-- It runs as a systemd user unit from a copy in `~/.local/share/cc-smart-dev-kit/`, behind a
-  socket unit that holds its port, so a restart makes new requests wait instead of
-  fail (§ The service). **Linux only for now.**
+- It runs from a copy in `~/.local/share/cc-smart-dev-kit/`: as a systemd user unit behind
+  a socket unit that holds its port on Linux, so a restart makes new requests wait instead
+  of fail (§ The service), and as a per-user Scheduled Task on Windows, where a restart
+  refuses requests for a moment (`docs/windows-gateway.md`).
 
 ## The request path
 
@@ -779,7 +780,10 @@ stop the router only after every session restarted.
 ## Known limits
 
 - Anthropic does not support non-Claude models behind a gateway (not banned, no help).
-- **Linux only** for now: systemd user units and file modes.
+- **Windows has no socket activation and no file modes**: a restart refuses requests for a
+  moment (Claude Code retries them), a stop cuts the answers in flight, and the router's log
+  goes nowhere (a task has no console). `docs/windows-gateway.md` says exactly what Windows
+  loses, and what is still owed a live test there.
 - When Claude Code changes the safety check's prompt, the router stops recognising it,
   and the check goes by its model name. The log shows it: the lines lose their
   `(safety check)` mark. So "Claude first, the judge only as a fallback" holds only while

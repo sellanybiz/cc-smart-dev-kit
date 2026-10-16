@@ -7,10 +7,18 @@ import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { listModels } from "./backends";
-import { NEEDS_SYSTEMD } from "./commands";
+import { NEEDS_SYSTEMD, routerService } from "./commands";
 import { emptyConfig, judgeTargetTested, loadConfigFile, messageOf } from "./config";
 import { type HealthFetch, routerHealth } from "./health";
-import { type Runner, renderSocket, restartPendingFile, SOCKET_NAME, UNIT_NAME } from "./service";
+import {
+  type RouterService,
+  type RouterServiceKind,
+  type Runner,
+  renderSocket,
+  restartPendingFile,
+  SOCKET_NAME,
+} from "./service";
+import { TASK_LABEL, taskFacts, taskRunsCopy } from "./service-windows";
 import { shownValue } from "./settings";
 import { isModelSlot, JUDGE_SLOT, parseTarget } from "./targets";
 
@@ -37,13 +45,22 @@ export async function gatewayChecks(options: {
   /** The plugin's own `dist/router.js`: the copy must match it. */
   bundle: string;
   runner: Runner;
-  systemd: boolean;
+  /** The service this machine can run the router under (`routerServiceKind`). */
+  service: RouterServiceKind;
   /** Asks the router's health page; a test passes a fake. The real `fetch` by default. */
   fetch?: HealthFetch;
 }): Promise<DoctorCheck[]> {
   const { paths } = options;
   const short = (path: string) => tildify(path, paths.home);
   const checks: DoctorCheck[] = [];
+  const service = routerService({
+    // doctor reads the service, it never writes its definition: the account a Windows
+    // task would run as is not needed here (`installRouter` asks for it).
+    account: null,
+    paths,
+    runner: options.runner,
+    service: options.service,
+  });
 
   // A setup that stopped between its first write and a router that answers: whatever
   // else is there, the gateway may be half installed.
@@ -54,12 +71,13 @@ export async function gatewayChecks(options: {
     });
   }
 
-  // Installed means the router copy or its unit is there. `gateway.json` alone is kept on
-  // purpose (by restore, say): it holds the person's key.
+  // Installed means the router copy or the service's own definition is there.
+  // `gateway.json` alone is kept on purpose (by restore, say): it holds the person's key.
   const installed =
     existsSync(paths.routerCopy) ||
     existsSync(paths.routerUnitFile) ||
-    existsSync(paths.routerSocketFile);
+    existsSync(paths.routerSocketFile) ||
+    existsSync(paths.routerTaskFile);
   if (!installed) {
     checks.push(
       existsSync(paths.gatewayConfigFile)
@@ -77,18 +95,17 @@ export async function gatewayChecks(options: {
     return checks;
   }
 
-  if (!options.systemd) {
+  if (options.service === "none") {
     checks.push({
       ok: false,
       text: `gateway: ${NEEDS_SYSTEMD}`,
     });
   } else {
-    const state = options.runner(["systemctl", "--user", "is-active", UNIT_NAME]);
-    const word = state.output.trim().split("\n")[0] || "unknown";
+    const state = service.state(options.runner);
     checks.push(
-      state.exitCode === 0
-        ? { ok: true, text: `the router service (${UNIT_NAME}) is active` }
-        : { ok: false, text: `the router service (${UNIT_NAME}) is ${word}. ${SETUP}` },
+      service.running(options.runner)
+        ? { ok: true, text: `the router service (${service.name}) is active` }
+        : { ok: false, text: `the router service (${service.name}) is ${state}. ${SETUP}` },
     );
   }
 
@@ -125,13 +142,16 @@ export async function gatewayChecks(options: {
     }
   }
 
-  const socket = socketCheck(options, config.port);
-  checks.push(socket.check);
+  const holder = portHolderCheck(options, config.port);
+  checks.push(holder.check);
 
   const health = await routerHealth(config.port, options.fetch);
   checks.push(
     "error" in health
-      ? { ok: false, text: notAnswering(config.port, health.error, socket.state) }
+      ? {
+          ok: false,
+          text: notAnswering(options, service, config.port, health.error, holder.state),
+        }
       : { ok: true, text: `the router answers on 127.0.0.1:${config.port}` },
   );
 
@@ -193,28 +213,92 @@ export async function gatewayChecks(options: {
   return checks;
 }
 
-/** Where to look when the router does not start. */
-const ROUTER_LOG = `journalctl --user -u ${UNIT_NAME.replace(/\.service$/, "")} -n 30`;
-
 /**
- * The socket's state, as far as the router's health check needs it:
- *   - `open`: the socket is active (it holds the port);
- *   - `start-limit`: systemd closed it because the router failed to start too often
- *     (its result `service-start-limit-hit`);
- *   - `other`: anything else, or not asked (no systemd, no socket unit).
+ * The service's own listener, as far as the router's health check needs it:
+ *   - `open`: its router should be serving on the port (systemd's socket is active, or the
+ *     Windows task runs): a request that gets no answer waits on a router that is not serving;
+ *   - `start-limit`: systemd closed the socket because the router failed to start too often;
+ *   - `other`: anything else, or not asked.
  */
 type SocketState = "open" | "start-limit" | "other";
 
-/** The ✗ text of a router that does not answer, from what its socket says. */
-function notAnswering(port: number, error: string, socket: SocketState): string {
-  switch (socket) {
+/** The ✗ text of a router that does not answer, from what the service's listener says. */
+function notAnswering(
+  options: { service: RouterServiceKind },
+  service: RouterService,
+  port: number,
+  error: string,
+  holder: SocketState,
+): string {
+  if (options.service === "scheduled-task") {
+    return holder === "open"
+      ? `${TASK_LABEL} runs, but the router does not answer on 127.0.0.1:${port} (${error}): every request is refused. See why: ${service.logHint}. Then: ${COMMAND} gateway setup`
+      : `the router does not answer on 127.0.0.1:${port} (${error}). See why: ${service.logHint}. Then: ${COMMAND} gateway setup`;
+  }
+  switch (holder) {
     case "open":
-      return `the socket holds 127.0.0.1:${port}, but the router does not answer (${error}): every request waits in the socket and gets no answer. See why: ${ROUTER_LOG}. Then: ${COMMAND} gateway setup`;
+      return `the socket holds 127.0.0.1:${port}, but the router does not answer (${error}): every request waits in the socket and gets no answer. See why: ${service.logHint}. Then: ${COMMAND} gateway setup`;
     case "start-limit":
-      return `the router failed to start again and again, so systemd closed its socket: every request to 127.0.0.1:${port} is refused (${error}). See why: ${ROUTER_LOG}. Then: ${COMMAND} gateway setup`;
+      return `the router failed to start again and again, so systemd closed its socket: every request to 127.0.0.1:${port} is refused (${error}). See why: ${service.logHint}. Then: ${COMMAND} gateway setup`;
     case "other":
       return `the router does not answer on 127.0.0.1:${port} (${error})`;
   }
+}
+
+/**
+ * The definition that keeps the router running: systemd's socket unit (which holds the
+ * port across restarts), or the Windows task (which holds the port itself while its
+ * router runs).
+ */
+function portHolderCheck(
+  options: { paths: CliPaths; runner: Runner; service: RouterServiceKind },
+  port: number,
+): { check: DoctorCheck; state: SocketState } {
+  return options.service === "scheduled-task"
+    ? taskDefinitionCheck(options)
+    : socketCheck(options, port);
+}
+
+/**
+ * The Windows task's definition file, and whether the task Windows really holds runs the
+ * router's copy: a task someone re-pointed by hand is the one failure the file alone
+ * cannot show.
+ */
+function taskDefinitionCheck(options: { paths: CliPaths; runner: Runner }): {
+  check: DoctorCheck;
+  state: SocketState;
+} {
+  const { paths } = options;
+  const where = tildify(paths.routerTaskFile, paths.home);
+  if (!existsSync(paths.routerTaskFile)) {
+    return {
+      check: { ok: false, text: `no task definition at ${where}. ${SETUP}` },
+      state: "other",
+    };
+  }
+  const facts = taskFacts(options.runner);
+  if (!facts.registered) {
+    return {
+      check: {
+        ok: false,
+        text: `the task definition ${where} is not registered as ${TASK_LABEL}. ${SETUP}`,
+      },
+      state: "other",
+    };
+  }
+  if (!taskRunsCopy(facts, paths.routerCopy)) {
+    return {
+      check: {
+        ok: false,
+        text: `${TASK_LABEL} does not run ${tildify(paths.routerCopy, paths.home)}. ${SETUP}`,
+      },
+      state: "other",
+    };
+  }
+  return {
+    check: { ok: true, text: `the task definition ${where} is up to date` },
+    state: facts.state === "Running" ? "open" : "other",
+  };
 }
 
 /**
@@ -223,7 +307,7 @@ function notAnswering(port: number, error: string, socket: SocketState): string 
  * while the old router drains.
  */
 function socketCheck(
-  options: { paths: CliPaths; runner: Runner; systemd: boolean },
+  options: { paths: CliPaths; runner: Runner; service: RouterServiceKind },
   port: number,
 ): { check: DoctorCheck; state: SocketState } {
   const { paths } = options;
@@ -246,7 +330,7 @@ function socketCheck(
       state: "other",
     };
   }
-  if (!options.systemd) {
+  if (options.service !== "systemd") {
     return { check: { ok: true, text: `the socket unit ${where} is up to date` }, state: "other" };
   }
   const active = options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);

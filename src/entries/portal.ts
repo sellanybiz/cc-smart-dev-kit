@@ -115,7 +115,7 @@ async function main(argv: string[]): Promise<number> {
         bundle: join(folder, "dist", "router.js"),
         machine,
         runner,
-        systemd: ctx.systemd,
+        service: ctx.systemd ? "systemd" : "none",
       },
       live: null,
       local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join(folder, "dist")) },

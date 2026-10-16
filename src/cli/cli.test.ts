@@ -942,7 +942,7 @@ describe("cc-smart-dev-kit doctor", () => {
               return { exitCode: 0, output: "" };
             },
             systemFolders: [],
-            systemd: true,
+            service: "systemd",
             machine: fakeMachine,
           },
           local: { instructionsSource: join(home, "no-instructions-source"), cwd: home },

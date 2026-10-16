@@ -457,7 +457,7 @@ function machine(fixture: FixtureOptions = {}) {
       now: false,
       cliBundle: join(import.meta.dir, "..", "..", "plugin", "dist", "cli.js"),
       runner,
-      systemd: true,
+      service: "systemd",
       confirm: null,
       probe,
       ...overrides,
