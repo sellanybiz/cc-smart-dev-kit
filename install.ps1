@@ -79,13 +79,21 @@ $Plugin = "cc-smart-dev-kit@cc-smart-dev-kit"
 $OldPlugin = "anymodel@anymodel"
 $OldMarketplace = "anymodel"
 
-# The two companion marketplaces (README, section Companion plugins): the plugin's
-# dependencies come from them, and Claude Code installs a dependency only from a marketplace
-# that is added. Each pair is the marketplace's own name (the key known_marketplaces.json
-# uses) and the source `claude plugin marketplace add` takes.
-$CompanionMarketplaces = @(
-  @("thedotmack", "thedotmack/claude-mem"),
-  @("claude-plugins-official", "anthropics/claude-plugins-official")
+# The marketplaces to add, in order: this repository's, then the two companions (README,
+# section Companion plugins -- the plugin's dependencies come from them, and Claude Code
+# installs a dependency only from a marketplace that is added). Each entry is a hashtable
+# with the marketplace's own name (the key known_marketplaces.json uses) and the source
+# `claude plugin marketplace add` takes.
+#
+# A hashtable per entry, never an array of pairs: `@(@($a, $b)) + $list` DOES NOT keep the
+# pair together -- PowerShell enumerates that inner array into the pipeline, the loop then
+# walks two strings followed by the pairs, and `$pair[0]` on a string is its first
+# CHARACTER. That is the bug the first Windows CI run printed as
+# "marketplaces added: c, x, thedotmack/claude-mem, ..." (0.4.2 review, 2026-10-16).
+$MarketplacesToAdd = @(
+  @{ Name = $Marketplace; Source = $Repo },
+  @{ Name = "thedotmack"; Source = "thedotmack/claude-mem" },
+  @{ Name = "claude-plugins-official"; Source = "anthropics/claude-plugins-official" }
 )
 
 function Write-Usage {
@@ -116,8 +124,9 @@ function Write-Step([string]$Line) { Write-Output "[ok] $Line" }
 function Write-Skip([string]$Line) { Write-Output "- $Line" }
 
 # What is left when the run ends: one line an item, each with the exact command that
-# finishes it. Filled in by the steps that skip something.
-$Left = @()
+# finishes it. Filled in by the steps that skip something. A List, not `@()`: it never
+# collapses to a single value, so its count and its join always mean the list.
+$Left = [System.Collections.Generic.List[string]]::new()
 
 # A step that failed: what failed, and the command that retries just that step.
 function Stop-Failed([string]$What, [string[]]$Retry) {
@@ -485,10 +494,10 @@ if ([string]::IsNullOrEmpty($Bun)) {
 }
 
 # --- 4. marketplaces -------------------------------------------------------------------
-$Added = @()
-foreach ($pair in @(@($Marketplace, $Repo)) + $CompanionMarketplaces) {
-  $name = $pair[0]
-  $source = $pair[1]
+$Added = [System.Collections.Generic.List[string]]::new()
+foreach ($marketplace in $MarketplacesToAdd) {
+  $name = $marketplace.Name
+  $source = $marketplace.Source
   if (Test-MarketplaceAdded $name) { continue }
   if (-not $DryRun) {
     & $ClaudeBin plugin marketplace add $source
@@ -496,7 +505,7 @@ foreach ($pair in @(@($Marketplace, $Repo)) + $CompanionMarketplaces) {
       Stop-Failed "adding the marketplace $source failed" @("claude plugin marketplace add $source")
     }
   }
-  $Added += $source
+  $Added.Add($source)
 }
 if ($Added.Count -gt 0) {
   if ($DryRun) {
@@ -589,7 +598,7 @@ if ($DryRun) {
       Write-Step "6/8 the old anymodel plugin and marketplace are removed"
     } else {
       Write-Skip "6/8 the old anymodel plugin was left in place: run ``claude plugin uninstall $OldPlugin``, then ``claude plugin marketplace remove $OldMarketplace``"
-      $Left += "the old anymodel plugin: claude plugin uninstall $OldPlugin ; claude plugin marketplace remove $OldMarketplace"
+      $Left.Add("the old anymodel plugin: claude plugin uninstall $OldPlugin ; claude plugin marketplace remove $OldMarketplace")
     }
   }
 }
@@ -617,23 +626,23 @@ if ($DryRun) {
       Write-Step "7/8 the browser's token is saved"
     } else {
       Write-Skip "7/8 the browser's token was skipped: run ``$(Get-PluginCommand @("browser", "token"))`` when you have it"
-      $Left += "the browser's token: $(Get-PluginCommand @("browser", "token"))"
+      $Left.Add("the browser's token: $(Get-PluginCommand @("browser", "token"))")
     }
   } else {
     Write-Skip "7/8 the browser was skipped: run ``$(Get-PluginCommand @("browser", "setup"))`` later"
-    $Left += "the browser: $(Get-PluginCommand @("browser", "setup")), then $(Get-PluginCommand @("browser", "token"))"
+    $Left.Add("the browser: $(Get-PluginCommand @("browser", "setup")), then $(Get-PluginCommand @("browser", "token"))")
   }
 
   # The gateway (optional): its router answers the affordable model slots, under a per-user
   # Scheduled Task here. Where that cannot run, the question is skipped with the reason.
   if (-not (Test-GatewayServicePossible)) {
     Write-Skip "7/8 the gateway was skipped: its router runs as a per-user Scheduled Task, which needs PowerShell on this machine"
-    $Left += "the gateway: README, section The AI gateway (its router needs PowerShell here)"
+    $Left.Add("the gateway: README, section The AI gateway (its router needs PowerShell here)")
   } else {
     Read-Yes "7/8 Set up the AI gateway now (affordable models for the haiku and sonnet subagents)?"
     if ($script:Answer -ne "yes") {
       Write-Skip "7/8 the gateway was skipped: README, section The AI gateway has its steps"
-      $Left += "the gateway: $(Get-PluginCommand @("gateway", "setup", "--backend-key-stdin", "omniroute")), then $(Get-PluginCommand @("gateway", "on"))"
+      $Left.Add("the gateway: $(Get-PluginCommand @("gateway", "setup", "--backend-key-stdin", "omniroute")), then $(Get-PluginCommand @("gateway", "on"))")
     } else {
       # A router already installed here may be running: `gateway setup` restarts it, and a
       # restart cuts every answer in flight. The command asks that question itself only on a
@@ -647,7 +656,7 @@ if ($DryRun) {
       }
       if (-not $gatewayGo) {
         Write-Skip "7/8 the gateway was left as it is: run ``$(Get-PluginCommand @("gateway", "setup", "--yes"))`` when you are ready"
-        $Left += "the gateway (its router was not restarted): $(Get-PluginCommand @("gateway", "setup", "--yes"))"
+        $Left.Add("the gateway (its router was not restarted): $(Get-PluginCommand @("gateway", "setup", "--yes"))")
       } else {
         Read-Secret "7/8 Paste the OmniRoute API key (Enter to skip: every slot then answers on Claude):"
         $GatewayKey = $script:Answer
@@ -687,11 +696,11 @@ if ($DryRun) {
       Write-Step "7/8 the Tavily key is saved"
     } else {
       Write-Skip "7/8 the Tavily key was skipped: write it to the key file, then run ``$(Get-PluginCommand @("setup"))``"
-      $Left += "the Tavily key: README, section MCP servers says where it goes, then $(Get-PluginCommand @("setup"))"
+      $Left.Add("the Tavily key: README, section MCP servers says where it goes, then $(Get-PluginCommand @("setup"))")
     }
   } else {
     Write-Skip "7/8 the Tavily key was skipped: README, section MCP servers says where it goes"
-    $Left += "the Tavily key: README, section MCP servers says where it goes, then $(Get-PluginCommand @("setup"))"
+    $Left.Add("the Tavily key: README, section MCP servers says where it goes, then $(Get-PluginCommand @("setup"))")
   }
 }
 
@@ -722,7 +731,8 @@ Write-Output "``cc-smart-dev-kit portal`` opens the portal in your own terminal 
 
 # What is left: the items this run skipped, then doctor's own [x] lines (each names what to
 # run where the plugin has a hint for it).
-$doctorLeft = @($doctorOut -split "`r?`n" | Where-Object { $_ -like "[x] *" })
+$crossMark = [string][char]0x2717
+$doctorLeft = @($doctorOut -split "`r?`n" | Where-Object { $_.StartsWith($crossMark) })
 if ($Left.Count -gt 0 -or $doctorLeft.Count -gt 0) {
   Write-Output ""
   Write-Output "What is left:"

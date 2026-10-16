@@ -27,6 +27,14 @@ import {
 import { dirname, join } from "node:path";
 import { MIN_BUN } from "../src/build-info/bun";
 import { tempDir } from "../src/testing/temp";
+import {
+  answer as bun,
+  doctorTokenMissingLine as bunDoctorLine,
+  tokenFile,
+} from "./install-windows-fakes/bun";
+import { answer as claude } from "./install-windows-fakes/claude";
+import { answer as gh } from "./install-windows-fakes/gh";
+import { answer as git } from "./install-windows-fakes/git";
 
 const REPO = "example-org/cc-smart-dev-kit";
 const INSTALL_SH = join(import.meta.dir, "..", "install.sh");
@@ -836,6 +844,173 @@ describe("install.sh: what only the person has", () => {
       "  Retry just that step with:\n    claude plugin install cc-smart-dev-kit@cc-smart-dev-kit --scope user\n",
     );
     expect(out).toContain("  Then run this installer again: it goes on from there.\n");
+  });
+});
+
+describe("the Windows fakes: the same logic the Windows run uses, on Linux", () => {
+  // scripts/install-windows-fakes/*.ts are what the `.cmd` wrappers in the Windows smoke
+  // test run (through the real bun.exe). Their logic is exercised HERE, on Linux, so a typo
+  // is caught before a Windows runner -- the first Windows run of 0.4.2 proved how slow that
+  // loop is.
+  const fakeWorld = () => {
+    const root = tempDir("fakes");
+    const configDir = join(root, ".claude");
+    const log = join(root, "calls.log");
+    writeFileSync(log, "");
+    return {
+      root,
+      configDir,
+      log,
+      calls: () =>
+        readFileSync(log, "utf8")
+          .split("\n")
+          .filter((line) => line !== ""),
+    };
+  };
+
+  test("the fake claude writes the records the installer reads back", () => {
+    const w = fakeWorld();
+    const context = { configDir: w.configDir, log: w.log, version: MARKETPLACE_VERSION };
+    for (const source of [REPO, "thedotmack/claude-mem", "anthropics/claude-plugins-official"]) {
+      claude(["plugin", "marketplace", "add", source], context);
+    }
+    claude(["plugin", "install", "cc-smart-dev-kit@cc-smart-dev-kit", "--scope", "user"], context);
+    expect(w.calls()).toEqual([
+      `claude plugin marketplace add ${REPO}`,
+      "claude plugin marketplace add thedotmack/claude-mem",
+      "claude plugin marketplace add anthropics/claude-plugins-official",
+      "claude plugin install cc-smart-dev-kit@cc-smart-dev-kit --scope user",
+    ]);
+    // The three keys known_marketplaces.json is read by, and the repo's own marketplace
+    // carries the version the installer compares against.
+    const known = JSON.parse(
+      readFileSync(join(w.configDir, "plugins/known_marketplaces.json"), "utf8"),
+    );
+    expect(Object.keys(known).sort()).toEqual([
+      "cc-smart-dev-kit",
+      "claude-plugins-official",
+      "thedotmack",
+    ]);
+    expect(known["cc-smart-dev-kit"].source.repo).toBe(REPO);
+    expect(
+      JSON.parse(
+        readFileSync(
+          join(known["cc-smart-dev-kit"].installLocation, "plugin/.claude-plugin/plugin.json"),
+          "utf8",
+        ),
+      ).version,
+    ).toBe(MARKETPLACE_VERSION);
+    const installed = JSON.parse(
+      readFileSync(join(w.configDir, "plugins/installed_plugins.json"), "utf8"),
+    );
+    expect(installed.plugins["cc-smart-dev-kit@cc-smart-dev-kit"][0].version).toBe(
+      MARKETPLACE_VERSION,
+    );
+    expect(
+      JSON.parse(readFileSync(join(w.configDir, "settings.json"), "utf8")).enabledPlugins[
+        "cc-smart-dev-kit@cc-smart-dev-kit"
+      ],
+    ).toBe(true);
+    // The two commands a move runs last, after the person says yes.
+    claude(["plugin", "uninstall", "anymodel@anymodel", "--scope", "user"], context);
+    claude(["plugin", "marketplace", "remove", "anymodel"], context);
+    expect(
+      JSON.parse(readFileSync(join(w.configDir, "plugins/installed_plugins.json"), "utf8")).plugins[
+        "anymodel@anymodel"
+      ],
+    ).toBeUndefined();
+    expect(
+      JSON.parse(readFileSync(join(w.configDir, "plugins/known_marketplaces.json"), "utf8"))
+        .anymodel,
+    ).toBeUndefined();
+  });
+
+  test("the fake bun answers --version, upgrade, doctor and the launcher", async () => {
+    const w = fakeWorld();
+    const launcher = join(w.root, "launcher.cmd");
+    writeFileSync(launcher, "@echo off\nexit /b 0\n");
+    const context = {
+      bunUpgradeTo: MIN_BUN,
+      bunUpgraded: join(w.root, "bun-upgraded"),
+      bunVersion: "1.2.0",
+      home: w.root,
+      launcher,
+      log: w.log,
+    };
+    const said: string[] = [];
+    const io = { say: (line: string) => said.push(line) };
+    expect(await bun(["--version"], context, io)).toBe(0);
+    expect(said.splice(0)).toEqual(["1.2.0"]);
+    expect(await bun(["upgrade"], context, io)).toBe(0);
+    expect(await bun(["--version"], context, io)).toBe(0);
+    expect(said.splice(0)).toEqual([MIN_BUN]);
+    // setup writes the launcher, the way the real one does (the template's own copy).
+    expect(
+      await bun(["--no-env-file", "--config=x", join(w.root, "dist/cli.js"), "setup"], context, io),
+    ).toBe(0);
+    expect(existsSync(join(w.root, ".local/bin/cc-smart-dev-kit.cmd"))).toBe(true);
+    // doctor: the real ✗ line while the browser's token is missing, then the ✓ line.
+    expect(
+      await bun(
+        ["--no-env-file", "--config=x", join(w.root, "dist/cli.js"), "doctor"],
+        context,
+        io,
+      ),
+    ).toBe(1);
+    expect(said.splice(0)).toEqual([bunDoctorLine(w.root)]);
+    mkdirSync(dirname(tokenFile(w.root)), { recursive: true });
+    writeFileSync(tokenFile(w.root), "A\n", { mode: 0o600 });
+    expect(
+      await bun(
+        ["--no-env-file", "--config=x", join(w.root, "dist/cli.js"), "doctor"],
+        context,
+        io,
+      ),
+    ).toBe(0);
+    expect(said.splice(0)).toEqual([`✓ the browser token is set (${tokenFile(w.root)})`]);
+  });
+
+  test("the fake git fails on purpose, and the fake gh always succeeds", () => {
+    const w = fakeWorld();
+    expect(
+      git(["ls-remote", "git@github.com:example-org/cc-smart-dev-kit.git"], {
+        gitFails: false,
+        log: w.log,
+      }),
+    ).toBe(0);
+    expect(
+      git(["ls-remote", "https://github.com/example-org/cc-smart-dev-kit.git"], {
+        gitFails: true,
+        log: w.log,
+      }),
+    ).toBe(128);
+    expect(gh(["auth", "login"], { log: w.log })).toBe(0);
+    expect(w.calls()).toEqual([
+      "git ls-remote git@github.com:example-org/cc-smart-dev-kit.git",
+      "git ls-remote https://github.com/example-org/cc-smart-dev-kit.git",
+      "gh auth login",
+    ]);
+  });
+});
+
+describe("the PowerShell files: the patterns the Windows run taught us", () => {
+  // 0.4.2's first Windows run printed "marketplaces added: c, x, ..." for the repository:
+  // `@(@($a, $b)) + $list` does NOT keep the pair together -- PowerShell enumerates that
+  // inner array, the loop then walks two STRINGS before the pairs, and `$pair[0]` on a
+  // string is its first character. A digit index on a variable is that pattern; the fix is
+  // hashtables (`$marketplace.Name`), which cannot collapse.
+  test("no PowerShell file indexes a value that may be a string", () => {
+    for (const file of [INSTALL_PS1, SMOKE_PS1]) {
+      // Comments cannot break PowerShell, and the comment above names the pattern.
+      const code = readFileSync(file, "utf8")
+        .split("\n")
+        .filter((line) => !/^\s*#/.test(line))
+        .join("\n");
+      const indexed = [...code.matchAll(/\$[A-Za-z_][A-Za-z0-9_]*\s*\[\d\]/g)].map((m) => m[0]);
+      expect(indexed).toEqual([]);
+      // And a list is grown with .Add (a List), never with `+=` on an array.
+      expect(/\$[A-Za-z_][A-Za-z0-9_]* \+= /.test(code)).toBe(false);
+    }
   });
 });
 

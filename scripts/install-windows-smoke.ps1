@@ -38,6 +38,12 @@ $shell = (Get-Process -Id $PID).Path
 if ([string]::IsNullOrEmpty($shell)) { Stop-Smoke "cannot find the PowerShell running this test" }
 $repo = "example-org/cc-smart-dev-kit"
 $marketplaceVersion = "0.4.2"
+# The fakes are `.cmd` wrappers around the real bun.exe running this folder's JavaScript:
+# found before any world prepends itself to PATH, so the wrapper never calls itself.
+$script:RealBun = (Get-Command bun -ErrorAction SilentlyContinue).Source
+if ([string]::IsNullOrEmpty($script:RealBun)) { Stop-Smoke "bun is not on PATH (the fakes run on it)" }
+$script:FakesDir = Join-Path $PSScriptRoot "install-windows-fakes"
+if (-not (Test-Path $script:FakesDir)) { Stop-Smoke "scripts/install-windows-fakes is not there" }
 
 # The minimum Bun the script checks, read from the script itself: this test never keeps a
 # second copy of that number (src/build-info/bun.ts is its one home, and
@@ -46,138 +52,27 @@ $minBun = [regex]::Match((Get-Content -Raw $install), '(?m)^\$MinBun = "([^"]+)"
 if ([string]::IsNullOrEmpty($minBun)) { Stop-Smoke "install.ps1 has no `$MinBun line" }
 
 # --- the fakes -------------------------------------------------------------------------
-# One .cmd per program. Each logs its arguments; the ones the plugin reads a secret from read
-# their own stdin (and log only its shape). The JSON work is done by a `powershell -Command`
-# child that takes its values from the environment, so no quoting can go wrong and no child
-# touches the installer's stdin.
-function Write-Fakes([string]$Dir, [string]$Log) {
-  $json = 'powershell -NoProfile -Command'
-
-  $claude = @"
-@echo off
-setlocal enabledelayedexpansion
-echo claude %*>> "$Log"
-if "%1"=="plugin" if "%2"=="marketplace" if "%3"=="add" (
-  set "name=cc-smart-dev-kit"
-  echo %4| findstr /C:"claude-mem" >nul && set "name=thedotmack"
-  echo %4| findstr /C:"claude-plugins-official" >nul && set "name=claude-plugins-official"
-  set "FAKE_NAME=!name!"
-  set "FAKE_SOURCE=%4"
-  set "FAKE_DIR=%CLAUDE_CONFIG_DIR%\plugins\marketplaces\!name!"
-  mkdir "!FAKE_DIR!\plugin\.claude-plugin" 2>nul
-  if "!name!"=="cc-smart-dev-kit" >"!FAKE_DIR!\plugin\.claude-plugin\plugin.json" echo {"name":"cc-smart-dev-kit","version":"$marketplaceVersion"}
-  $json "`$f=Join-Path `$env:CLAUDE_CONFIG_DIR 'plugins\known_marketplaces.json'; `$d=@{}; if (Test-Path `$f) { foreach (`$p in (Get-Content -Raw `$f | ConvertFrom-Json).PSObject.Properties) { `$d[`$p.Name]=`$p.Value } }; `$d[`$env:FAKE_NAME]=@{source=@{source='github';repo=`$env:FAKE_SOURCE};installLocation=`$env:FAKE_DIR}; New-Item -ItemType Directory -Force -Path (Split-Path -Path `$f) | Out-Null; (`$d | ConvertTo-Json -Depth 6) | Set-Content -Path `$f"
-  endlocal
-  exit /b 0
-)
-if "%1"=="plugin" if "%2"=="marketplace" if "%3"=="remove" (
-  set "FAKE_NAME=%4"
-  $json "`$f=Join-Path `$env:CLAUDE_CONFIG_DIR 'plugins\known_marketplaces.json'; `$d=@{}; if (Test-Path `$f) { foreach (`$p in (Get-Content -Raw `$f | ConvertFrom-Json).PSObject.Properties) { `$d[`$p.Name]=`$p.Value } }; `$d.Remove(`$env:FAKE_NAME); (`$d | ConvertTo-Json -Depth 6) | Set-Content -Path `$f"
-  exit /b 0
-)
-if "%1"=="plugin" if "%2"=="install" goto :install
-if "%1"=="plugin" if "%2"=="update" goto :install
-if "%1"=="plugin" if "%2"=="uninstall" (
-  set "FAKE_ID=%3"
-  $json "`$f=Join-Path `$env:CLAUDE_CONFIG_DIR 'plugins\installed_plugins.json'; `$d=@{version=2;plugins=@{}}; if (Test-Path `$f) { `$e=Get-Content -Raw `$f | ConvertFrom-Json; foreach (`$p in `$e.plugins.PSObject.Properties) { `$d.plugins[`$p.Name]=`$p.Value } }; `$d.plugins.Remove(`$env:FAKE_ID); (`$d | ConvertTo-Json -Depth 8) | Set-Content -Path `$f"
-  exit /b 0
-)
-exit /b 0
-
-:install
-set "FAKE_DIR=%CLAUDE_CONFIG_DIR%\plugins\cache\cc-smart-dev-kit\cc-smart-dev-kit\$marketplaceVersion"
-mkdir "%FAKE_DIR%\dist" 2>nul
->"%FAKE_DIR%\dist\cli.js" echo await import("the plugin");
->"%FAKE_DIR%\bunfig.toml" echo {}
-$json "`$f=Join-Path `$env:CLAUDE_CONFIG_DIR 'plugins\installed_plugins.json'; `$d=@{version=2;plugins=@{}}; if (Test-Path `$f) { `$e=Get-Content -Raw `$f | ConvertFrom-Json; foreach (`$p in `$e.plugins.PSObject.Properties) { `$d.plugins[`$p.Name]=`$p.Value } }; `$d.plugins['cc-smart-dev-kit@cc-smart-dev-kit']=@(@{scope='user';installPath=`$env:FAKE_DIR;version=`$env:FAKE_MARKETPLACE_VERSION}); New-Item -ItemType Directory -Force -Path (Split-Path -Path `$f) | Out-Null; (`$d | ConvertTo-Json -Depth 8) | Set-Content -Path `$f"
-$json "`$f=Join-Path `$env:CLAUDE_CONFIG_DIR 'settings.json'; `$d=@{}; if (Test-Path `$f) { `$d=Get-Content -Raw `$f | ConvertFrom-Json }; `$d | Add-Member -Force -NotePropertyName enabledPlugins -NotePropertyValue @{'cc-smart-dev-kit@cc-smart-dev-kit'=`$true}; (`$d | ConvertTo-Json -Depth 8) | Set-Content -Path `$f"
-exit /b 0
-"@
-
-  $bun = @"
-@echo off
-setlocal enabledelayedexpansion
-echo bun %*>> "$Log"
-if "%1"=="--version" (
-  if exist "$Log.upgraded" (type "$Log.upgraded") else (echo %FAKE_BUN_VERSION%)
-  exit /b 0
-)
-if "%1"=="upgrade" (
-  >"$Log.upgraded" echo %FAKE_BUN_UPGRADE_TO%
-  exit /b 0
-)
-set "FAKE_ALL=%*"
-echo !FAKE_ALL! | findstr /C:"browser token" >nul
-if not errorlevel 1 (
-  set "secret="
-  set /p secret=
-  call :length "!secret!" len
-  >>"$Log" echo stdin-!len!-chars
-  if not exist "%USERPROFILE%\.config\cc-smart-dev-kit" mkdir "%USERPROFILE%\.config\cc-smart-dev-kit"
-  >"%USERPROFILE%\.config\cc-smart-dev-kit\playwright-extension.token" echo !secret!
-)
-echo !FAKE_ALL! | findstr /C:"--backend-key-stdin" >nul
-if not errorlevel 1 (
-  call :readall
-  exit /b 0
-)
-echo !FAKE_ALL! | findstr /C:"--tavily-key-stdin" >nul
-if not errorlevel 1 (
-  call :readall
-  exit /b 0
-)
-echo !FAKE_ALL! | findstr /C:"dist/cli.js setup" >nul
-if not errorlevel 1 (
-  rem The real setup writes the launcher; this one copies the template the test made. It
-  rem does what the real launcher does: it runs the plugin's own CLI.
-  mkdir "%USERPROFILE%\.local\bin" 2>nul
-  copy /y "%FAKE_LAUNCHER%" "%USERPROFILE%\.local\bin\cc-smart-dev-kit.cmd" >nul
-)
-echo !FAKE_ALL! | findstr /C:"dist/cli.js doctor" >nul
-if not errorlevel 1 (
-  if exist "%USERPROFILE%\.config\cc-smart-dev-kit\playwright-extension.token" (
-    echo [ok] the browser token is set
-    exit /b 0
+# One `.cmd` per program, and each is a single line that hands its arguments to the real
+# `bun.exe` running the fake's JavaScript in scripts/install-windows-fakes/. Nothing is
+# parsed in batch: the first Windows run of 0.4.2 died inside a batch fake's own parsing, and
+# in JavaScript the fakes' own logic is exercised on Linux too (scripts/install.test.ts runs
+# every one of them with fake arguments and a fake world).
+#
+# The environment the fakes read is in New-World below (FAKE_LOG, FAKE_BUN_VERSION, ...).
+function Write-Fakes([string]$Dir, [string]$RealBun, [string]$FakesDir) {
+  $wrappers = @(
+    @{ Name = "claude"; Script = "claude.ts" },
+    @{ Name = "bun"; Script = "bun.ts" },
+    @{ Name = "git"; Script = "git.ts" },
+    @{ Name = "gh"; Script = "gh.ts" }
   )
-  echo [x] the browser token is not set, so the browser cannot connect (no token file): run: cc-smart-dev-kit browser setup, then cc-smart-dev-kit browser token
-  exit /b 1
-)
-exit /b 0
-
-:readall
-rem Every line of stdin, counted, never printed: the key is a secret.
-set "count=0"
-for /f "delims=" %%L in ('findstr "^"') do set /a count+=1
-if !count! gtr 0 (>>"$Log" echo stdin-nonempty) else (>>"$Log" echo stdin-empty)
-exit /b 0
-
-:length
-set "text=%~1"
-set "len=0"
-:lengthloop
-if not "!text!"=="" (
-  set "text=!text:~1!"
-  set /a len+=1
-  goto :lengthloop
-)
-exit /b 0
-"@
-
-  $git = @"
-@echo off
-echo git %*>> "$Log"
-if "%FAKE_GIT_FAILS%"=="yes" exit /b 128
-exit /b 0
-"@
-
-  $gh = @"
-@echo off
-echo gh %*>> "$Log"
-exit /b 0
-"@
-
-  foreach ($pair in @(@("claude", $claude), @("bun", $bun), @("git", $git), @("gh", $gh))) {
-    Set-Content -Path (Join-Path $Dir ($pair[0] + ".cmd")) -Value $pair[1]
+  foreach ($wrapper in $wrappers) {
+    $text = @(
+      "@echo off",
+      "`"$RealBun`" `"$FakesDir\$($wrapper.Script)`" %*",
+      "exit /b %errorlevel%"
+    ) -join "`r`n"
+    Set-Content -Path (Join-Path $Dir ($wrapper.Name + ".cmd")) -Value $text
   }
 }
 
@@ -189,7 +84,7 @@ function New-World([string]$Name, [hashtable]$Options = @{}) {
   $log = Join-Path $worldHome "calls.log"
   New-Item -ItemType Directory -Force -Path $bin | Out-Null
   Set-Content -Path $log -Value ""
-  Write-Fakes -Dir $bin -Log $log
+  Write-Fakes -Dir $bin -RealBun $script:RealBun -FakesDir $script:FakesDir
   $configDir = Join-Path $worldHome ".claude"
   if ($Options.ContainsKey("InstalledVersion")) {
     $pluginDir = Join-Path $configDir ("plugins\cache\cc-smart-dev-kit\cc-smart-dev-kit\" + $Options["InstalledVersion"])
@@ -279,20 +174,24 @@ function Assert-Contains([string]$What, [string]$Text, [string]$Expected) {
   }
 }
 
-function Assert-Code([string]$What, $Result, [int]$Expected) {
+function Assert-Code([string]$What, $Result, [int]$Expected, $World = $null) {
   if ($Result.code -ne $Expected) {
-    Stop-Smoke "$What`: expected exit $Expected, got $($Result.code):`n$($Result.out)"
+    $calls = if ($null -eq $World) { "" } else { "`nthe calls log:`n" + ((Get-Calls $World) -join "`n") }
+    Stop-Smoke "$What`: expected exit $Expected, got $($Result.code):`n$($Result.out)$calls"
   }
 }
 
 $passed = 0
-$names = @()
+# The case names, for the closing summary. A List, not `@()`: it never collapses to a
+# single value, so its count and its contents always mean the list (the same rule the
+# installer's own lists follow).
+$names = [System.Collections.Generic.List[string]]::new()
 try {
   # 1. A fresh machine, the browser done: the marketplaces, the plugin, migrate, setup,
   #    doctor, exit 0.
   $world = New-World "fresh" @{ Answers = @("y", "y", ("A" * 43), "n", "n") }
   $result = Invoke-Install $world @($repo)
-  Assert-Code "a fresh machine" $result 0
+  Assert-Code "a fresh machine" $result 0 $world
   Assert-Contains "a fresh machine" $result.out "[ok] 1/8 not inside a Claude Code session"
   Assert-Contains "a fresh machine" $result.out "[ok] 3/8 Bun $minBun is new enough (the plugin needs $minBun or newer)"
   Assert-Contains "a fresh machine" $result.out "[ok] 4/8 marketplaces added: $repo, thedotmack/claude-mem, anthropics/claude-plugins-official"
@@ -313,12 +212,12 @@ try {
   }
   if ($calls -notcontains "launcher doctor") { Stop-Smoke "a fresh machine: doctor did not run through the launcher" }
   $passed++
-  $names += "a fresh machine"
+  $names.Add("a fresh machine")
 
   # 2. A second run does only what is missing.
   $before = (Get-Calls $world).Count
   $again = Invoke-Install $world @($repo)
-  Assert-Code "a second run" $again 0
+  Assert-Code "a second run" $again 0 $world
   Assert-Contains "a second run" $again.out "[ok] 4/8 all three marketplaces are already added"
   Assert-Contains "a second run" $again.out "[ok] 5/8 the plugin is installed, at the marketplace's version ($marketplaceVersion)"
   $second = @(Get-Calls $world | Select-Object -Skip $before)
@@ -326,23 +225,23 @@ try {
     Stop-Smoke "a second run added a marketplace or reinstalled the plugin:`n$($second -join "`n")"
   }
   $passed++
-  $names += "a second run"
+  $names.Add("a second run")
 
   # 3. The browser skipped: doctor's [x] is what is left, and the exit code is 3.
   $skipped = New-World "skipped" @{ Answers = @("n", "n", "n") }
   $result = Invoke-Install $skipped @($repo)
-  Assert-Code "the browser skipped" $result 3
+  Assert-Code "the browser skipped" $result 3 $skipped
   Assert-Contains "the browser skipped" $result.out "[x] 8/8 doctor found what is left"
   Assert-Contains "the browser skipped" $result.out "the browser token is not set, so the browser cannot connect"
   Assert-Contains "the browser skipped" $result.out "What is left:"
   Assert-Contains "the browser skipped" $result.out "the browser: "
   $passed++
-  $names += "the exit code 3"
+  $names.Add("the exit code 3")
 
   # 4. An old-anymodel machine: migrate, then setup -- and the old plugin is asked about.
   $old = New-World "old" @{ Answers = @("y", "y", ("A" * 43), "n", "n", "n"); OldMarketplace = $true; InstalledVersion = $marketplaceVersion; OldPlugin = $true }
   $result = Invoke-Install $old @($repo)
-  Assert-Code "an old anymodel machine" $result 0
+  Assert-Code "an old anymodel machine" $result 0 $old
   Assert-Contains "an old anymodel machine" $result.out "[ok] 6/8 migrate finished"
   Assert-Contains "an old anymodel machine" $result.out "[ok] 6/8 setup finished"
   Assert-Contains "an old anymodel machine" $result.out "The old anymodel plugin is still installed. Remove it, and the old anymodel marketplace with it?"
@@ -351,69 +250,69 @@ try {
   if ($calls -notmatch "claude plugin uninstall anymodel@anymodel --scope user") { Stop-Smoke "an old anymodel machine: the old plugin was not uninstalled" }
   if ($calls -notmatch "claude plugin marketplace remove anymodel") { Stop-Smoke "an old anymodel machine: the old marketplace was not removed" }
   $passed++
-  $names += "an old anymodel machine"
+  $names.Add("an old anymodel machine")
 
   # 5. The old plugin left in place: one line, and it is in what is left.
   $kept = New-World "kept" @{ Answers = @("y", "y", ("A" * 43), "n", "n", "n"); InstalledVersion = $marketplaceVersion; OldPlugin = $true }
   $result = Invoke-Install $kept @($repo)
-  Assert-Code "the old plugin left" $result 0
+  Assert-Code "the old plugin left" $result 0 $kept
   Assert-Contains "the old plugin left" $result.out "the old anymodel plugin was left in place"
   Assert-Contains "the old plugin left" $result.out "- the old anymodel plugin: claude plugin uninstall anymodel@anymodel"
   if ((Get-Calls $kept) -match "plugin uninstall") { Stop-Smoke "the old plugin left: it was uninstalled anyway" }
   $passed++
-  $names += "the old plugin left in place"
+  $names.Add("the old plugin left in place")
 
   # 6. A half-moved machine: its progress file makes migrate run again, then setup.
   $half = New-World "half" @{ Answers = @("y", "y", ("A" * 43), "n", "n"); ProgressFile = $true }
   $result = Invoke-Install $half @($repo)
-  Assert-Code "a half-moved machine" $result 0
+  Assert-Code "a half-moved machine" $result 0 $half
   Assert-Contains "a half-moved machine" $result.out "[ok] 6/8 migrate finished"
   Assert-Contains "a half-moved machine" $result.out "[ok] 6/8 setup finished"
   $passed++
-  $names += "a half-moved machine"
+  $names.Add("a half-moved machine")
 
   # 7. The gateway's restart: a router is on disk, and the person says yes.
   $router = New-World "router" @{ Answers = @("y", "y", ("A" * 43), "y", "y", "omniroute-key-abc123", "n"); RouterCopy = $true }
   $result = Invoke-Install $router @($repo)
-  Assert-Code "the router restart" $result 0
+  Assert-Code "the router restart" $result 0 $router
   Assert-Contains "the router restart" $result.out "A router is already installed here: setup restarts it"
   if (-not ((Get-Calls $router) | Where-Object { $_ -like "*gateway setup --backend-key-stdin omniroute --yes" })) {
     Stop-Smoke "the router restart: --yes did not reach gateway setup; the log is:`n$((Get-Calls $router) -join "`n")"
   }
   $passed++
-  $names += "the gateway's restart"
+  $names.Add("the gateway's restart")
 
   # 8. Inside a Claude Code session: refused, exit 2, nothing runs.
   $inside = New-World "inside" @{ Answers = @("n") }
   $result = Invoke-Install $inside @($repo) @{ CLAUDECODE = "1" }
-  Assert-Code "inside a Claude Code session" $result 2
+  Assert-Code "inside a Claude Code session" $result 2 $inside
   Assert-Contains "inside a Claude Code session" $result.out "cannot run inside a Claude Code session"
   if ((Get-Calls $inside).Count -ne 0) { Stop-Smoke "inside a Claude Code session something ran: $((Get-Calls $inside) -join ", ")" }
   $passed++
-  $names += "inside a Claude Code session"
+  $names.Add("inside a Claude Code session")
 
   # 9. An old Bun, and the person says no: stopped, exit 2.
   $oldBun = New-World "old-bun" @{ BunVersion = "1.2.0"; Answers = @("n") }
   $result = Invoke-Install $oldBun @($repo)
-  Assert-Code "an old Bun, no" $result 2
+  Assert-Code "an old Bun, no" $result 2 $oldBun
   Assert-Contains "an old Bun, no" $result.out "[x] Bun is still 1.2.0: cc-smart-dev-kit needs Bun $minBun or newer"
   if ((Get-Calls $oldBun) -contains "bun upgrade") { Stop-Smoke "an old Bun, no: bun upgrade ran anyway" }
   $passed++
-  $names += "an old Bun answered no"
+  $names.Add("an old Bun answered no")
 
   # 10. No repository argument: one usage line, exit 2.
   $empty = New-World "usage"
   $result = Invoke-Install $empty @() @{ CC_SMART_DEV_KIT_REPO = "" }
-  Assert-Code "no repository argument" $result 2
+  Assert-Code "no repository argument" $result 2 $empty
   Assert-Contains "no repository argument" $result.out "usage: powershell -File install.ps1 <owner>/<repo>"
   if ((Get-Calls $empty).Count -ne 0) { Stop-Smoke "no repository argument: something ran" }
   $passed++
-  $names += "no repository argument"
+  $names.Add("no repository argument")
 
   # 11. -DryRun prints the plan and changes nothing.
   $dry = New-World "dry"
   $result = Invoke-Install $dry @("-DryRun", $repo)
-  Assert-Code "-DryRun" $result 0
+  Assert-Code "-DryRun" $result 0 $dry
   Assert-Contains "-DryRun" $result.out "cc-smart-dev-kit installer: dry run, the plan for this machine. Nothing is changed."
   Assert-Contains "-DryRun" $result.out "Dry run: nothing was written, nothing ran, and no network was reached."
   $calls = Get-Calls $dry
@@ -424,12 +323,12 @@ try {
     Stop-Smoke "-DryRun wrote a marketplace record"
   }
   $passed++
-  $names += "-DryRun"
+  $names.Add("-DryRun")
 
   # 12. The two keys the person has: on stdin, never in an argument, never printed.
   $secrets = New-World "secrets" @{ Answers = @("y", "y", ("A" * 43), "y", "omniroute-key-abc123", "y", "tvly-key-abc123") }
   $result = Invoke-Install $secrets @($repo)
-  Assert-Code "the secrets" $result 0
+  Assert-Code "the secrets" $result 0 $secrets
   Assert-Contains "the secrets" $result.out "[ok] 7/8 the gateway is set up"
   Assert-Contains "the secrets" $result.out "[ok] 7/8 the Tavily key is saved"
   $calls = Get-Calls $secrets
@@ -444,7 +343,7 @@ try {
     if ($result.out.Contains($secret)) { Stop-Smoke "a secret was printed: $secret" }
   }
   $passed++
-  $names += "the secrets"
+  $names.Add("the secrets")
 } finally {
   Get-ChildItem -Path ([System.IO.Path]::GetTempPath()) -Filter "cc-smart-dev-kit-install-*" -Directory -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue

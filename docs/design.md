@@ -202,8 +202,11 @@ The two scripts are proved by `scripts/install.test.ts` (bash, in a fake world: 
 and fakes for `claude`, `bun`, `git`, `gh`, `curl` and `uname` on PATH — the fake `doctor`
 fails while the browser's token is missing, the way the real one does, which is what the
 exit-3 path is proved against) and `scripts/install-windows-smoke.ps1` (on the Windows CI
-runner, under pwsh AND under Windows PowerShell 5.1, with `.cmd` fakes and nothing else, so a
-fake that reads a secret reads the very stdin the installer piped to it).
+runner, under pwsh AND under Windows PowerShell 5.1). The Windows fakes are one-line `.cmd`
+wrappers around the real `bun.exe` running `scripts/install-windows-fakes/*.ts`, so a fake
+that reads a secret reads the very stdin the installer piped to it — and, because the fakes'
+logic is TypeScript and not batch, `scripts/install.test.ts` runs every one of them on Linux
+(0.4.2's first Windows run died inside a batch fake's own argument parsing).
 
 ## The AI gateway
 
