@@ -19,9 +19,9 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { VERSION } from "../build-info";
-import { withProjectHooks } from "../hooks/project-wiring";
+import { withoutProjectHooks, withProjectHooks } from "../hooks/project-wiring";
 import { detectIndent, isObject } from "../setup/managed-json";
-import { atomicWrite, backupFile, fileMode } from "../setup/write";
+import { atomicWrite, backupFile, fileMode, realTarget } from "../setup/write";
 import type { Workflow } from "../workflow/schema";
 
 /** One question's answer, as the flags and the terminal gave it. */
@@ -71,10 +71,16 @@ export interface ProjectInitPlan {
   settingsFile: string;
   /** What the settings file will hold (the engine's lines merged in). */
   settingsText: string;
-  /** True when a hook line is added. */
+  /** True when a line is added to the settings file, or taken out of it. */
   settingsChanged: boolean;
   /** The lines added, as the person reads them. Empty for an engine of the project's own. */
   hookLines: string[];
+  /**
+   * The lines taken out, as the person reads them. Empty for the plugin's own engine; for
+   * `"own"` it is the plugin's hook lines an earlier `project init` left behind, which would
+   * answer every worktree request beside the project's own engine.
+   */
+  removedLines: string[];
   /** What to know, printed with the plan. */
   notes: string[];
 }
@@ -221,21 +227,27 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   const text = `${JSON.stringify(after, null, detectIndent(existing ?? ""))}\n`;
 
   const settingsNow = parseObject(existingSettings, settingsFile);
+  // The plugin's engine wires its three hook lines; an engine of the project's own takes
+  // exactly those back out, so the two can never answer the same request (`doctor` flags that
+  // as two engines on one request).
   const merged =
     answers.engine === "plugin"
-      ? withProjectHooks(settingsNow)
-      : { settings: settingsNow, added: [] as string[] };
-  // Nothing added: the file's own text, so `settingsText` is what the file would hold (a
+      ? { ...withProjectHooks(settingsNow), removed: [] as string[] }
+      : { ...withoutProjectHooks(settingsNow), added: [] as string[] };
+  const settingsChanges = merged.added.length > 0 || merged.removed.length > 0;
+  // Nothing changed: the file's own text, so `settingsText` is what the file would hold (a
   // caller that writes it anyway writes what is already there).
   const settingsText =
-    merged.added.length === 0 && existingSettings !== null
+    !settingsChanges && existingSettings !== null
       ? existingSettings
       : `${JSON.stringify(merged.settings, null, detectIndent(existingSettings ?? ""))}\n`;
 
   const notes: string[] = [];
   if (answers.engine === "own") {
     notes.push(
-      'engine "own": no cc-smart-dev-kit hook lines are added to .claude/settings.json — your own engine makes this project\'s worktrees; `cc-smart-dev-kit doctor` expects none',
+      merged.removed.length > 0
+        ? 'engine "own": the cc-smart-dev-kit hook lines are taken out of .claude/settings.json — your own engine makes this project\'s worktrees, and with both wired two engines answer each worktree request'
+        : 'engine "own": no cc-smart-dev-kit hook lines are added to .claude/settings.json — your own engine makes this project\'s worktrees; `cc-smart-dev-kit doctor` expects none',
     );
   }
   if (answers.setup === null) {
@@ -248,9 +260,10 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
     diff: diffOf(before, after),
     settingsFile,
     settingsText,
-    settingsChanged: merged.added.length > 0,
+    settingsChanged: settingsChanges,
     hookLines: merged.added,
     notes,
+    removedLines: merged.removed,
   };
 }
 
@@ -279,7 +292,10 @@ export function applyProjectInit(
     const created = !existsSync(file);
     if (options.dryRun === true) return { file, created, backup: null };
     const backup = backupFile(options.stateDir, file);
-    atomicWrite(file, text, fileMode(file) ?? 0o644);
+    // `realTarget`: a `.claude/settings.json` linked into a dotfiles repo stays a link, and
+    // its target gets the change — an atomic write straight at the link would replace it with
+    // a plain file.
+    atomicWrite(realTarget(file), text, fileMode(file) ?? 0o644);
     return { file, created, backup };
   });
 }

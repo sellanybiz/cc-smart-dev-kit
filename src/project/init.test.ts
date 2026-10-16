@@ -1,6 +1,13 @@
 /** `project init`: the plan it makes, and the two files `applyProjectInit` writes. */
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { VERSION } from "../build-info";
 import { tempDir } from "../testing/temp";
@@ -244,6 +251,54 @@ describe("planProjectInit", () => {
     );
   });
 
+  test("plugin, then an engine of the project's own: the plugin's lines are taken back out", () => {
+    const root = tempDir("project-init");
+    const settingsFile = join(root, ".claude", "settings.json");
+    // What an earlier `project init` left behind: the engine's three lines, beside a hook the
+    // project wired itself.
+    const first = planProjectInit(input({ root }));
+    const afterFirst = planProjectInit(
+      input({ root, existingSettings: first.settingsText }),
+    ).settingsText;
+    const withTheirOwn = `${JSON.stringify(
+      { ...JSON.parse(afterFirst), theirHook: { kept: true } },
+      null,
+      2,
+    )}\n`;
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    writeFileSync(settingsFile, withTheirOwn);
+
+    // The person switches to an engine of the project's own.
+    const own = planProjectInit(
+      input({ root, existingSettings: withTheirOwn, answers: { ...ANSWERS, engine: "own" } }),
+    );
+    // The command exactly as the file wires it, timeout and all: the same shape the added
+    // lines are reported in.
+    expect(own.removedLines).toEqual([
+      'WorktreeCreate: "$HOME/.local/bin/cc-smart-dev-kit" hook worktree-create (timeout 600 s)',
+      'WorktreeRemove: "$HOME/.local/bin/cc-smart-dev-kit" hook worktree-remove (timeout 60 s)',
+      'SubagentStop: "$HOME/.local/bin/cc-smart-dev-kit" hook subagent-stop (timeout 60 s)',
+    ]);
+    expect(own.hookLines).toEqual([]);
+    expect(own.settingsChanged).toBe(true);
+    // Their own key, and every hook the project wired for itself, are left exactly as they
+    // were: only a group that is entirely ours goes.
+    const written = JSON.parse(own.settingsText) as Record<string, unknown>;
+    expect(written.theirHook).toEqual({ kept: true });
+    expect(own.settingsText).not.toContain("cc-smart-dev-kit hook");
+    expect(own.notes[0]).toContain("two engines answer each worktree request");
+
+    // And back to the plugin's engine: the three lines are added again, in full.
+    const back = planProjectInit(
+      input({ root, existingSettings: own.settingsText, answers: { ...ANSWERS } }),
+    );
+    expect(back.hookLines.length).toBe(3);
+    expect(back.removedLines).toEqual([]);
+    expect(back.settingsChanged).toBe(true);
+    expect(back.settingsText).toContain("hook worktree-create");
+    expect(back.settingsText).toContain('"theirHook"');
+  });
+
   test("a project's own hooks in the settings file stay, and ours is added after them", () => {
     const root = tempDir("project-init");
     const settings = `${JSON.stringify(
@@ -322,6 +377,26 @@ describe("applyProjectInit", () => {
       }),
     );
     expect(applyProjectInit(again, { stateDir })).toEqual([]);
+  });
+
+  test("a symlinked project file keeps its link: the target gets the change", () => {
+    // A `.claude/settings.json` linked into a dotfiles repo is a person's own file: an atomic
+    // write straight at the link would replace it with a plain file, and the link would be
+    // gone (the managed writers follow the link; these two did not).
+    const root = tempDir("project-init");
+    const target = join(tempDir("dotfiles"), "settings.json");
+    writeFileSync(target, "{}\n");
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    const settingsFile = join(root, ".claude", "settings.json");
+    symlinkSync(target, settingsFile);
+
+    const plan = planProjectInit(input({ root, existingSettings: "{}\n" }));
+    expect(plan.settingsChanged).toBe(true);
+    const writes = applyProjectInit(plan, { stateDir: tempDir("project-init-state") });
+    expect(writes.some((write) => write.file === settingsFile)).toBe(true);
+
+    expect(lstatSync(settingsFile).isSymbolicLink()).toBe(true);
+    expect(readFileSync(target, "utf8")).toBe(plan.settingsText);
   });
 
   test("a dry run writes nothing", () => {

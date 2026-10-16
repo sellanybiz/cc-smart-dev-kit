@@ -19,7 +19,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
-import { parseBrowserToken, writeBrowserToken } from "../browser/token";
+import { parseBrowserToken, readBrowserToken, writeBrowserToken } from "../browser/token";
 import { type Check, checkLine, type DoctorOptions, doctorChecks } from "../cli/doctor";
 import type { CliPaths } from "../cli/paths";
 import { runUpdate } from "../cli/update";
@@ -43,6 +43,7 @@ import { heldSince, type LastCheck, readLastCheck, updateFiles } from "../update
 import type { PortalContext } from "./context";
 import {
   type ProjectDefaultsReader,
+  projectFilesHash,
   projectFileTexts,
   readProject,
   settingsLineNote,
@@ -78,10 +79,22 @@ export interface ActionResult {
   ok: boolean;
   lines: string[];
   /**
+   * How the page shows the lines. `"info"`: a fact, not a failure — the token field's
+   * "nothing was pasted, so the saved token is unchanged" is the one case. Left out, a
+   * refusal is an alarm, as every other one is.
+   */
+  tone?: "info";
+  /**
    * `project.preview` only: the plan the Project card's boxes draw — the same pure
    * `planProjectInit` the write runs, so what the page shows is exactly what will be written.
    */
   preview?: ProjectInitPlan;
+  /**
+   * `project.preview` only: `projectFilesHash` of the two texts that plan was made against.
+   * The page sends it back with the write, which refuses to run on a plan that no longer
+   * matches the files on disk.
+   */
+  filesHash?: string;
   /** `slot.test` only: one result per target, for the chain's own marks. */
   results?: { detail: string; target: string; verdict: "bad" | "blocked" | "good" }[];
 }
@@ -822,7 +835,15 @@ async function projectPreview(
     });
     // The line under the settings box travels with the plan: the page draws the same sentence
     // from the same helper, so the two can never describe different plans.
-    return { lines: [settingsLineNote(plan.hookLines.length)], ok: true, preview: plan };
+    return {
+      filesHash: projectFilesHash({
+        existing: built.existing,
+        existingSettings: built.existingSettings,
+      }),
+      lines: [settingsLineNote(plan.hookLines.length, plan.removedLines.length)],
+      ok: true,
+      preview: plan,
+    };
   } catch (error) {
     return { lines: [messageOf(error)], ok: false };
   }
@@ -831,8 +852,14 @@ async function projectPreview(
 /**
  * Writes the project's two files, through `applyProjectInit` — a backup first, an atomic
  * write, and **never a commit**: both files belong to the project, and the person commits
- * them. The plan is made again, from the files as they are right now, so a change made since
- * the preview is written, not overwritten blindly.
+ * them.
+ *
+ * **The plan is made again, and only while the two files are still the ones the page planned
+ * against.** The form holds the whole file it would write — the protected branches, the
+ * bases, the guards — so a field filled in from a plan made before someone else edited the
+ * project's file would quietly write their change away. The page sends back the hash its
+ * preview carried (`projectFilesHash`); a text that differs now is refused, and the person
+ * previews again.
  */
 async function projectWrite(
   action: ActionContext,
@@ -843,6 +870,12 @@ async function projectWrite(
   }
   const built = projectAnswers(action, body);
   if (!built.ok) return { lines: [built.why], ok: false };
+  if (body.previewHash !== projectFilesHash(built)) {
+    return {
+      lines: ["The project's files changed since the preview — preview again."],
+      ok: false,
+    };
+  }
   try {
     const plan = action.workflow.planProjectInit({
       answers: built.answers,
@@ -871,8 +904,13 @@ async function projectWrite(
 /**
  * The Browser card's setup button: the same steps `cc-smart-dev-kit browser setup` runs, through
  * the same module — Chrome is opened on the extension's Web Store page in the `claude-code`
- * profile, and anything that is left for the person is printed. The portal never installs an
- * extension and never writes inside Chrome's own folder by itself.
+ * profile, and anything that is left for the person is printed. It never installs or removes an
+ * extension, and it never deletes a Chrome profile. What it does write is exactly what that
+ * command writes by itself, and every one of them is reported in the answer's lines: the
+ * profile's display name in Chrome's own `Local State`, and only while no Chrome runs on that
+ * user data folder (through the managed-file helpers, so `restore` puts it back), and, on
+ * Windows, the per-user HKCU key that offers the extension in that profile. The person still
+ * clicks Enable.
  */
 async function browserSetupAction(action: ActionContext): Promise<ActionResult> {
   try {
@@ -898,17 +936,33 @@ async function browserSetupAction(action: ActionContext): Promise<ActionResult> 
 /**
  * The Browser card's token field: the same writer `cc-smart-dev-kit browser token` uses
  * (`writeBrowserToken`), so a token saved here and one saved in a terminal are the same file,
- * mode 600. The value is checked first (the extension's own shape), and **never printed back**:
- * the answer says the token is set, and nothing of it reaches the page, a line or a log.
+ * and the same protection. The value is checked first (the extension's own shape), and **never
+ * printed back**: the answer says the token is set, and nothing of it reaches the page, a line
+ * or a log.
  */
 function browserTokenAction(action: ActionContext, body: Record<string, unknown>): ActionResult {
   const pasted = typeof body.token === "string" ? body.token : "";
   const parsed = parseBrowserToken(pasted);
-  if (!parsed.ok) return { lines: [`The token was not saved: ${parsed.why}.`], ok: false };
+  if (!parsed.ok) {
+    // An empty field with a token already saved is not a failure: nothing was lost, and there
+    // is nothing to fix. "The token was not saved" would read as though it had gone, so the
+    // page is told the fact, in its own quieter tone. With no token saved it stays a refusal:
+    // the browser does not work until one is pasted.
+    if (pasted.trim() === "" && readBrowserToken(action.portal.paths).source === "file") {
+      return {
+        lines: ["Nothing was pasted, so the saved token is unchanged."],
+        ok: false,
+        tone: "info",
+      };
+    }
+    return { lines: [`The token was not saved: ${parsed.why}.`], ok: false };
+  }
   try {
     writeBrowserToken(action.portal.paths, parsed.token);
     return {
       lines: [
+        // The command line's own line, word for word (`src/entries/cli.ts`): the portal
+        // shows what `browser token` prints, never a second wording of it.
         `+ ${action.portal.paths.browserTokenFile}: the browser token is set (mode 600)`,
         "Start a new Claude session (or restart the running one) to use it.",
       ],

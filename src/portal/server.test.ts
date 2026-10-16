@@ -11,6 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { CLAUDE_CODE_PROFILE, PLAYWRIGHT_EXTENSION_ID } from "../browser/chrome";
 import { realBrowserDoctorDeps } from "../browser/doctor";
 import { cliPaths } from "../cli/paths";
 import { saveConfig } from "../gateway/config";
@@ -113,6 +114,16 @@ async function open(options: {
    * pages need.
    */
   projectFiles?: { config?: string; settings?: string };
+  /**
+   * The platform the portal believes it runs on (`machine.platform`): the Browser card's token
+   * paragraph says something different on Windows, where a file has no mode.
+   */
+  platform?: NodeJS.Platform;
+  /**
+   * True: a machine with no git on its PATH at all (a Windows box without Git for Windows, a
+   * container). The project's own values cannot be read there, and the page says why in words.
+   */
+  noGit?: boolean;
   /** True where the test's machine has systemd (the router restart needs it). */
   systemd?: boolean;
   /** The workflow module behind the adapter; a fake by default, never a real file or repo. */
@@ -178,7 +189,7 @@ async function open(options: {
     fetchText: async () => "",
     macApp: "/Applications/Warp.app",
     osRelease: () => 'NAME="Ubuntu"\n',
-    platform: "linux",
+    platform: options.platform ?? "linux",
     run: (argv) => ({ exitCode: 0, output: `ran ${argv.join(" ")}` }),
     runOnTerminal: () => 0,
     spawnDetached: () => undefined,
@@ -186,7 +197,9 @@ async function open(options: {
   };
   const ctx: PortalContext = {
     bunVersion: "1.4.3",
-    env: { HOME: home },
+    // A PATH that is not there, so `git` really cannot be found: without a PATH at all the
+    // spawner falls back to its own and finds it.
+    env: { HOME: home, ...(options.noGit === true ? { PATH: "/nonexistent" } : {}) },
     fetch: async (url, init) => {
       if (String(url).includes("registry.npmjs.org")) return registry();
       // The fake backend on a free port of this test; never the live router's port.
@@ -1643,6 +1656,7 @@ describe("the settings page", () => {
       expect(page.body).toContain('aria-labelledby="set-del" class="switch" disabled');
       expect(page.body).toContain("change it in the project");
       expect(page.body).toContain('href="/machine#project"');
+      expect(page.body).toContain('class="small bold projectlink"');
       // No action anywhere carries a project row's key: the page cannot send one.
       expect(page.body).not.toContain("&quot;key&quot;:&quot;deleteBranch&quot;");
       // A row nobody sets stays changeable, right beside it.
@@ -1860,6 +1874,81 @@ describe("the settings page", () => {
   });
 });
 
+// ── The shape of the pages ──────────────────────────────────────────────────────
+
+describe("the shape of the pages", () => {
+  test("every page is drawn by the one header, with one theme toggle in it", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      await world.enter();
+      for (const route of ["/", "/slots", "/health", "/machine", "/settings", "/privacy"]) {
+        const page = await world.call(route);
+        expect(page.status).toBe(200);
+        expect((page.body.match(/<header class="top">/g) ?? []).length).toBe(1);
+        expect((page.body.match(/data-theme-toggle/g) ?? []).length).toBe(1);
+        for (const href of ["/", "/slots", "/health", "/machine", "/settings"]) {
+          expect(page.body).toContain(`href="${href}"`);
+        }
+      }
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the stylesheet carries the fixes the measurements asked for", () => {
+    // Each line here is one defect the owner saw in a screenshot, and each is a rule a browser
+    // reads — there is no DOM in this test to lay a page out in, so the rule itself is what is
+    // checked, with the measurement that asked for it.
+    //
+    // 1. The theme toggle wrapped onto a second line at 1440 (040-settings-1440-dark.png): the
+    //    header is a grid at desktop widths, and the links take the free column, so the toggle
+    //    cannot be pushed out of the row.
+    expect(PORTAL_CSS).toContain("grid-template-columns: auto auto minmax(0, 1fr) auto");
+    expect(PORTAL_CSS).toContain("justify-content: flex-end; }\n}");
+    // 2. An empty answer box left a band at the bottom of every Settings card: it is not there
+    //    at all until the script fills it, and the row above keeps no separator.
+    expect(PORTAL_CSS).toContain("[data-out-for]:empty, [data-out]:empty { display: none; }");
+    expect(PORTAL_CSS).toContain(".card.list > *:has(+ .foot:empty) { border-bottom: 0; }");
+    // 3. Two touch targets were under 44px: the protected branch's ✕ (36 wide) and the link
+    //    under a row the project sets (about 20 tall).
+    expect(PORTAL_CSS).not.toContain("min-width: 36px");
+    expect(PORTAL_CSS).toContain(".btn.icon { min-width: 44px;");
+    expect(PORTAL_CSS).toContain(
+      ".setrow .projectlink { display: inline-flex; align-items: center; min-height: 44px; }",
+    );
+    // 4. The doctor's checks stay a grid, but a long path wraps inside its own column instead
+    //    of widening it: the mark's column is fixed and the text column may shrink to nothing.
+    expect(PORTAL_CSS).toContain("grid-template-columns: 16px minmax(0, 1fr)");
+    // 5. The guide is one column, numbered, with the address in a box of its own.
+    expect(PORTAL_CSS).toContain("ol.guide");
+    expect(PORTAL_CSS).toContain(".codehead.end");
+  });
+
+  test("a machine with no git says the fact in words, not the spawner's own", async () => {
+    // The Settings page showed "Executable not found in $PATH: \"git\"" — a raw runtime error
+    // standing in for "this project's own values cannot be read". The fact stays; the words are
+    // a person's.
+    const world = await open({ backendPort: 0, withConfig: false, noGit: true });
+    try {
+      await world.enter();
+      const settings = await world.call("/settings");
+      expect(settings.status).toBe(200);
+      expect(settings.body).toContain(
+        "git was not found, so this project&#39;s own values cannot be read",
+      );
+      expect(settings.body).not.toContain("Executable not found");
+      const machine = await world.call("/machine");
+      expect(machine.body).toContain("The project cannot be read:");
+      expect(machine.body).toContain("git was not found");
+      expect(machine.body).not.toContain("Executable not found");
+    } finally {
+      world.portal.stop();
+    }
+  });
+});
+
 // ── The Project card on Machine ─────────────────────────────────────────────────
 
 /** The form's answers, as the page's own script collects them. */
@@ -2034,6 +2123,7 @@ describe("the project card", () => {
         file: join(world.cwd, ".claude", "cc-smart-dev-kit.json"),
         hookLines: [],
         notes: [],
+        removedLines: [],
         settingsChanged: false,
         settingsFile: join(world.cwd, ".claude", "settings.json"),
         settingsText: "\n",
@@ -2058,10 +2148,18 @@ describe("the project card", () => {
       const no = await world.post("project.write", { answers: formAnswers() }, csrf);
       expect(JSON.parse(no.body).ok).toBe(false);
       expect(workflow.calls.applyProjectInit).toEqual([]);
-      // With it: one call, the same plan, under the one state folder backups go in.
+      // With it: one call, the same plan, under the one state folder backups go in. The hash
+      // is the one the page planned against (`project.preview`'s answer, or the form).
+      const onPage =
+        /data-files-hash="([^"]+)"/.exec((await world.call("/machine")).body)?.[1] ?? "";
+      expect(onPage).not.toBe("");
+      const hash = JSON.parse(
+        (await world.post("project.preview", { answers: formAnswers() }, csrf)).body,
+      ).filesHash;
+      expect(hash).toBe(onPage);
       const yes = await world.post(
         "project.write",
-        { answers: formAnswers(), confirm: true },
+        { answers: formAnswers(), confirm: true, previewHash: hash },
         csrf,
       );
       expect(yes.status).toBe(200);
@@ -2081,6 +2179,130 @@ describe("the project card", () => {
       world.portal.stop();
       backend.stop();
     }
+  });
+
+  test("a write on a stale preview is refused, and nothing is written", async () => {
+    // The form holds the whole file it would write — the protected branches, the bases, the
+    // guards — so a field filled in from a plan made before someone else edited the project's
+    // file would write their change away, silently. The page sends back the hash its preview
+    // carried, and a file that changed since is refused.
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const workflow = fakeWorkflow();
+    const world = await open({
+      backendPort: backend.port,
+      projectFiles: { config: PROJECT_CONFIG },
+      workflow,
+    });
+    const configFile = join(world.cwd, ".claude", "cc-smart-dev-kit.json");
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      const preview = JSON.parse(
+        (await world.post("project.preview", { answers: formAnswers() }, csrf)).body,
+      ) as { filesHash: string };
+      expect(typeof preview.filesHash).toBe("string");
+
+      // Someone else (or another session) edits the project's file.
+      writeFileSync(configFile, `${PROJECT_CONFIG.trimEnd()}\n\n`);
+      const refused = await world.post(
+        "project.write",
+        { answers: formAnswers(), confirm: true, previewHash: preview.filesHash },
+        csrf,
+      );
+      expect(refused.status).toBe(400);
+      expect(JSON.parse(refused.body).lines).toEqual([
+        "The project's files changed since the preview — preview again.",
+      ]);
+      expect(workflow.calls.applyProjectInit).toEqual([]);
+      // Nothing was written: the file is the one the other person left.
+      expect(readFileSync(configFile, "utf8")).toBe(`${PROJECT_CONFIG.trimEnd()}\n\n`);
+
+      // A fresh preview matches again, and the write goes through.
+      const again = JSON.parse(
+        (await world.post("project.preview", { answers: formAnswers() }, csrf)).body,
+      ) as { filesHash: string };
+      expect(again.filesHash).not.toBe(preview.filesHash);
+      const written = await world.post(
+        "project.write",
+        { answers: formAnswers(), confirm: true, previewHash: again.filesHash },
+        csrf,
+      );
+      expect(JSON.parse(written.body).ok).toBe(true);
+      expect(workflow.calls.applyProjectInit.length).toBe(1);
+
+      // And a write that carries no hash at all — a hand-made POST — is refused the same way.
+      const bare = await world.post(
+        "project.write",
+        { answers: formAnswers(), confirm: true },
+        csrf,
+      );
+      expect(JSON.parse(bare.body).lines[0]).toContain("changed since the preview");
+      expect(workflow.calls.applyProjectInit.length).toBe(1);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("an engine of the project's own shows the settings lines it takes back out", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    // The project's own file says `"own"`: that is the form's first answer, and the plan the
+    // page draws from it is the one that takes the plugin's lines back out.
+    const workflow = fakeWorkflow({
+      defaults: { answers: { ...fakeDefaults().answers, engine: "own" } },
+    });
+    const world = await open({
+      backendPort: backend.port,
+      projectFiles: {
+        config: PROJECT_CONFIG,
+        settings:
+          '{\n  "hooks": {\n    "WorktreeCreate": [{ "hooks": [{ "type": "command", "command": "$HOME/.local/bin/cc-smart-dev-kit hook worktree-create", "timeout": 600 }] }]\n  }\n}\n',
+      },
+      workflow,
+    });
+    try {
+      await world.enter();
+      const page = await world.call("/machine");
+      // The preview box shows what the file loses, a "-" line the way a diff reads, and the
+      // note under it counts the removal — the same sentence the preview's answer carries.
+      expect(page.body).toContain(
+        "- WorktreeCreate: cc-smart-dev-kit hook worktree-create (timeout 600 s)",
+      );
+      expect(page.body).toContain(
+        "1 line removed, the plugin&#39;s own hooks. Nothing else there changes.",
+      );
+      // The plugin's added lines are not shown for this engine: they are what goes out.
+      expect(page.body).not.toContain("WorktreeCreate: $HOME/.local/bin");
+      expect(workflow.calls.planProjectInit[0]?.answers.engine).toBe("own");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the preview follows the typing, and a preview that works clears the last refusal", () => {
+    // The text boxes asked only on `change` (a box losing the focus), so the plan sat still
+    // while the words changed. A pause in the typing (300 ms) now asks the same server route;
+    // the server stays the only builder of the plan.
+    expect(PORTAL_JS).toContain("var PREVIEW_TYPING_MS = 300;");
+    expect(PORTAL_JS).toContain('form.addEventListener("input"');
+    expect(PORTAL_JS).toContain('node.type !== "text"');
+    expect(PORTAL_JS).toContain(
+      "typing = setTimeout(function () { typing = null; ask(); }, PREVIEW_TYPING_MS);",
+    );
+    expect(PORTAL_JS).toContain('post("/api/project.preview"');
+    // A finished edit cancels a pause still waiting, so one edit is one answer.
+    expect(PORTAL_JS).toContain("var settled = function () {");
+    expect(PORTAL_JS).toContain(
+      'form.addEventListener("change", function () { settled(); ask(); });',
+    );
+    // And the form's own status box is cleared by a preview that worked: a refusal from an
+    // earlier edit must not sit under a plan that is fine now.
+    expect(PORTAL_JS).toContain('writeOut.textContent = "";');
+    expect(PORTAL_JS).toContain('writeOut.className = "";');
+    // The write takes the hash with it, and the form carries the first one.
+    expect(PORTAL_JS).toContain("body.previewHash = filesHash;");
+    expect(PORTAL_JS).toContain('form.getAttribute("data-files-hash")');
   });
 
   test("a folder that is not a git project says so, and offers no form", async () => {
@@ -2317,6 +2539,163 @@ describe("the browser card", () => {
       expect(lines).toContain("--new-window");
       expect(lines).toContain("Allow access to file URLs");
       expect(lines).toContain("browser token");
+    } finally {
+      world.portal.stop();
+    }
+  });
+
+  test("the five steps are one numbered list, each address in a copy box of its own", async () => {
+    const world = await open({ backendPort: 0, withConfig: false });
+    try {
+      await world.enter();
+      const page = await world.call("/machine");
+      // One column, numbered: never the doctor's two-column `.checks` grid, which read the
+      // steps left, right, left, right, numbered none of them, and squeezed the last one
+      // ("Save it.", "✓ done") into a sliver of a column (the owner's screenshots,
+      // 040-browser-1440-light.png and 040-browser-390-light.png).
+      expect(page.body).toContain('<ol class="guide">');
+      const guide = /<ol class="guide">([\s\S]*?)<\/ol>/.exec(page.body)?.[1] ?? "";
+      expect(guide).not.toBe("");
+      expect(guide).not.toContain('class="checks"');
+      // Five steps, each one an item of its own, in the guide's own order.
+      const steps = [...guide.matchAll(/<li>([\s\S]*?)<\/li>/g)].map((match) => match[1] ?? "");
+      expect(steps.length).toBe(5);
+      expect(steps[0]).toContain("Add to Chrome");
+      expect(steps[1]).toContain("Allow access to file URLs");
+      expect(steps[4]).toContain("Save it.");
+      // The address the person has to paste is on a line of its own, in a code box with a Copy
+      // button — not inline in a sentence, where the narrow column broke it mid-word.
+      expect(guide).toContain(
+        "<pre data-guide-2>chrome://extensions/?id=mmlmfjhmonkocbjadbfplnigmagldckm</pre>",
+      );
+      expect(guide).toContain('data-copy-node="[data-guide-2]"');
+      // The last step's command is in a box of the same kind.
+      expect(guide).toContain("<pre data-guide-5>");
+      // The old shape — an inline code element under a `<br>`, inside the doctor's grid — is
+      // gone from the whole page.
+      expect(page.body).not.toContain('<ol class="checks">');
+      expect(page.body).not.toContain('class="mono wrap-any">chrome://');
+    } finally {
+      world.portal.stop();
+    }
+  });
+
+  test("a step this machine can check says so, after its sentence", async () => {
+    const world = await open({ backendPort: 0, withConfig: false });
+    try {
+      await world.enter();
+      // The profile with the extension in it, file URLs on, and a token saved: the three steps
+      // the machine can answer for are done, and the guide says so where the step is read.
+      const profile = join(world.home, ".config", "google-chrome", CLAUDE_CODE_PROFILE);
+      mkdirSync(join(profile, "Extensions", PLAYWRIGHT_EXTENSION_ID, "1.0"), { recursive: true });
+      writeFileSync(
+        join(profile, "Preferences"),
+        JSON.stringify({
+          extensions: { settings: { [PLAYWRIGHT_EXTENSION_ID]: { newAllowFileAccess: true } } },
+        }),
+      );
+      mkdirSync(dirname(world.paths.browserTokenFile), { recursive: true });
+      writeFileSync(world.paths.browserTokenFile, `${"A".repeat(43)}\n`, { mode: 0o600 });
+
+      const page = await world.call("/machine");
+      const guide = /<ol class="guide">([\s\S]*?)<\/ol>/.exec(page.body)?.[1] ?? "";
+      const steps = [...guide.matchAll(/<li>([\s\S]*?)<\/li>/g)].map((match) => match[1] ?? "");
+      // The sentence first, then its own ✓ done, and never the other way round.
+      expect(steps[0]).toContain("Add to Chrome");
+      expect(steps[0]).toContain('<span class="ok">✓ done</span>');
+      expect(steps[0]?.indexOf("Add to Chrome")).toBeLessThan(steps[0]?.indexOf("✓ done") ?? -1);
+      expect(steps[1]).toContain("✓ done");
+      expect(steps[4]).toContain("✓ done");
+      // The two steps a person does by hand carry no mark: nothing checks the pinning.
+      expect(steps[2]).not.toContain("✓ done");
+      expect(steps[3]).not.toContain("✓ done");
+      expect(page.body).toContain("It is set up.");
+    } finally {
+      world.portal.stop();
+    }
+  });
+
+  test("every Copy button reaches its own box: the selector is an attribute, not a tag name", async () => {
+    // Written for a bug: the button carried `data-copy-node="data-preview-file"`, and
+    // `querySelector("data-preview-file")` looks for an element whose TAG is that name. It
+    // matched nothing, so the button returned before copying and did nothing at all — on the
+    // Project card's two previews, and on every step of the guide.
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({
+      backendPort: backend.port,
+      projectFiles: { config: PROJECT_CONFIG },
+    });
+    try {
+      await world.enter();
+      const pages = await Promise.all([world.call("/machine"), world.call("/settings")]);
+      let copies = 0;
+      for (const page of pages) {
+        for (const [, selector] of page.body.matchAll(/data-copy-node="([^"]+)"/g)) {
+          copies += 1;
+          const attribute = selector ?? "";
+          expect(attribute.startsWith("[data-")).toBe(true);
+          expect(attribute.endsWith("]")).toBe(true);
+          // And the box it names is on the same page.
+          expect(page.body).toContain(`${attribute.slice(1, -1)}>`);
+        }
+      }
+      // The guide's two addresses and commands, and the Project card's two previews.
+      expect(copies).toBeGreaterThanOrEqual(4);
+      expect(PORTAL_JS).toContain('document.querySelector(button.getAttribute("data-copy-node"))');
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the token file's protection is said in words true on this platform", async () => {
+    const linux = await open({ backendPort: 0, withConfig: false });
+    try {
+      await linux.enter();
+      const page = await linux.call("/machine");
+      expect(page.body).toContain("mode 600: readable only by you");
+    } finally {
+      linux.portal.stop();
+    }
+    // Windows has no `chmod`: what keeps that file to one person is the ACL of the profile
+    // folder it sits in, and the same paragraph must not claim a mode there.
+    const windows = await open({ backendPort: 0, withConfig: false, platform: "win32" });
+    try {
+      await windows.enter();
+      const page = await windows.call("/machine");
+      expect(page.body).toContain("in your own user profile, where only you can read it");
+      expect(page.body).not.toContain("(mode 600)");
+    } finally {
+      windows.portal.stop();
+    }
+  });
+
+  test("an empty paste with a token saved is not an alarm: the token is unchanged", async () => {
+    const world = await open({ backendPort: 0, withConfig: false });
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      // No token yet: nothing was saved and the browser does not work, so it stays a refusal.
+      const none = await world.post("browser.token", { token: "" }, csrf);
+      const noneBody = JSON.parse(none.body) as { lines: string[]; tone?: string };
+      expect(noneBody.tone).toBeUndefined();
+      expect(noneBody.lines[0]).toContain("The token was not saved");
+
+      const token = "B".repeat(43);
+      expect((await world.post("browser.token", { token }, csrf)).status).toBe(200);
+      const empty = await world.post("browser.token", { token: "   " }, csrf);
+      // The fact, not an alarm: "the token was not saved" would read as though the saved one
+      // had gone, when nothing happened at all.
+      expect(JSON.parse(empty.body)).toEqual({
+        lines: ["Nothing was pasted, so the saved token is unchanged."],
+        ok: false,
+        tone: "info",
+      });
+      expect(empty.body).not.toContain(token);
+      expect(readFileSync(world.paths.browserTokenFile, "utf8")).toBe(`${token}\n`);
+      // And the page draws that tone in its own class, never the failure one.
+      expect(PORTAL_JS).toContain('tone === "info" ? "status-info" : "status-bad"');
+      expect(PORTAL_CSS).toContain(".status-info");
     } finally {
       world.portal.stop();
     }

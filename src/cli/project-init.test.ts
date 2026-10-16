@@ -1,19 +1,21 @@
 /** `cc-smart-dev-kit project init`: the flags, the defaults from the repo, and the run. */
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hookEnv, makeRepo } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
-import { tempDir } from "../testing/temp";
+import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import {
   askedAnswers,
   defaultAnswers,
+  defaultBranchOf,
   detectFacts,
   type ProjectInitContext,
   type ProjectInitRunner,
   type ProjectInitTerminal,
   parseFlags,
   protectedFromGithub,
+  realRunner,
   runProjectInit,
   setupFromLockfile,
   shownBases,
@@ -136,11 +138,56 @@ describe("the flags", () => {
 });
 
 describe("the defaults from the repo", () => {
-  test("the default branch comes from origin/HEAD, else main", () => {
+  test("the default branch comes from origin/HEAD; a git that cannot answer leaves main", () => {
     const root = tempDir("project-init");
     const known = runner({ "symbolic-ref --quiet --short refs/remotes/origin/HEAD": "origin/dev" });
     expect(detectFacts(known, root).defaultBranch).toBe("dev");
     expect(detectFacts(runner({}), root).defaultBranch).toBe("main");
+  });
+
+  describe("the base branch is one the repo really has", () => {
+    /** A real repo with these local branches, the first one checked out. */
+    function repoWith(branches: string[], originHead?: string): string {
+      const repo = join(tempDir("project-init-repo"), "repo");
+      mkdirSync(repo);
+      git(repo, "init", "-q", "-b", branches[0] ?? "main");
+      writeFileSync(join(repo, "README.md"), "hello\n");
+      git(repo, "add", "README.md");
+      git(repo, "commit", "-q", "-m", "first");
+      for (const branch of branches.slice(1)) git(repo, "branch", branch);
+      if (originHead !== undefined) {
+        git(repo, "update-ref", `refs/remotes/origin/${originHead}`, "HEAD");
+        git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", `refs/remotes/origin/${originHead}`);
+      }
+      return repo;
+    }
+
+    test("origin/HEAD wins; otherwise the branches the repo has", () => {
+      // The bug this was written for: a repo whose only branch is `dev` was offered `main`, a
+      // branch that is not in it, and the form and the plan then named it. Real repos and real
+      // git: the fake runner cannot answer a question about what a repo holds.
+      const gitRunner = () => realRunner(cleanGitEnv());
+      expect(defaultBranchOf(gitRunner(), repoWith(["main", "dev"], "dev"))).toBe("dev");
+
+      // One local branch: that one, whatever it is called.
+      expect(defaultBranchOf(gitRunner(), repoWith(["dev"]))).toBe("dev");
+      expect(defaultBranchOf(gitRunner(), repoWith(["trunk"]))).toBe("trunk");
+
+      // Several, no origin/HEAD: `main`, then `master`, then the branch that is checked out.
+      expect(defaultBranchOf(gitRunner(), repoWith(["dev", "main"]))).toBe("main");
+      expect(defaultBranchOf(gitRunner(), repoWith(["dev", "master"]))).toBe("master");
+      expect(defaultBranchOf(gitRunner(), repoWith(["dev", "work"]))).toBe("dev");
+    });
+
+    test("a repo with one branch is set up around that branch", () => {
+      // The other end of the same bug: `project init`'s own answers name the base and the
+      // protected branches, so a wrong base put a branch that is not in the repo into both.
+      const only = repoWith(["dev"]);
+      const facts = detectFacts(realRunner(cleanGitEnv()), only);
+      const answers = defaultAnswers(null, facts, { dryRun: false, yes: false }, only);
+      expect(answers.base).toBe("dev");
+      expect(answers.protectedBranches).toEqual(["dev"]);
+    });
   });
 
   test("the setup command comes from the lockfile", () => {

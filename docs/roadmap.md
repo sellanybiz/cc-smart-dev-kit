@@ -28,8 +28,8 @@ Done in this release:
 
 - **`cc-smart-dev-kit project init`** (`README.md` § `project init`): the two files a project
   opts in with, asked question by question with the defaults read from the repo (the base
-  from `origin/HEAD`, the setup command from the lockfile, the protected branches from git
-  and `gh`), a flag for every question, the diff shown before anything is written, a backup
+  from `origin/HEAD`, else the repo's only branch, else `main`, else `master`; the setup
+  command from the lockfile; the protected branches from git and `gh`), a flag for every question, the diff shown before anything is written, a backup
   first, and a line saying to commit them. The worktree engine's three hook lines come from
   the one home that owns them (`src/hooks/project-wiring.ts`).
 - **The workflow** (`design.md` § The workflow): what cc-smart-dev-kit may do by itself —

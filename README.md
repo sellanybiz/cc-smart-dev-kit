@@ -676,13 +676,19 @@ It binds 127.0.0.1:20150 only, and stops after 30 minutes with no request.
 Stop it now with Ctrl+C here.
 ```
 
-Your default browser opens that link. `--port <n>` changes the port (0 takes a free one);
+Your default browser opens that link — unless Chrome's `claude-code` profile is on this
+machine, the one Claude drives: then nothing is opened for you, and the line under the link
+says where to open it instead (below). `--port <n>` changes the port (0 takes a free one);
 `--no-open` only prints it.
 
 **It refuses to run inside a Claude Code session** (`CLAUDECODE`): "the portal is for you,
 not for Claude". The portal changes this machine's model path and the safety judge, and a
-session must never do that for itself. Run it in your own terminal — and never open the page
-in the browser Claude drives.
+session must never do that for itself. Run it in your own terminal — and open the link in a
+browser window that is not Chrome's `claude-code` profile, the one Claude drives: it would put
+the portal's session cookie inside that profile, where Claude could reach the page's buttons.
+(When that profile is on this machine, `portal` opens no browser by itself for exactly that
+reason: it prints the link and says where to open it. Without that profile it opens your
+default browser, as always.)
 
 Six screens, each following the design the owner approved (2026-10-16):
 
@@ -691,7 +697,7 @@ Six screens, each following the design the owner approved (2026-10-16):
 | **Overview** | The plan limits the router saw and the slots answering from a fallback; every slot's chain; the three switches (the gateway, your own judge, the opus and fable fallback); the latest warnings. |
 | **Slots** | A chain per slot, built from the backends' live model lists. **Test each target** — one tiny chat to each affordable model, and the force-push test for a judge — then **Save**, after a confirmation that every running Claude session uses it from its next request. Save is held off for the **judge** slot until every backend target has blocked the force-push test; the command line's own rule, said in the judge note. |
 | **Health** | The router's counters, each backend and whether it answers, the targets resting, and its journal. Looks again every five seconds (Pause stops that, and a hidden tab is not reloaded at all); a look of its own does not count as activity, so an open Health tab cannot hold the portal up. |
-| **Machine** | Updates (installed, newest, last check, on hold, check now, install), the heavy-job queue, the companion plugins, the OmniRoute card, the **Browser card** (the browser's own `doctor` lines, the five steps, a button that runs `browser setup` — it opens the extension's page in your `claude-code` profile — and a masked field that saves the token: the stored value is never on the page), `doctor` (run again, without the browser's lines, which are on that card), the project's auto-mode rules, the **Project card** (below), and the **Warp card**, which shows the install and remove commands to copy. |
+| **Machine** | Updates (installed, newest, last check, on hold, check now, install), the heavy-job queue, the companion plugins, the OmniRoute card, the **Browser card** (the browser's own `doctor` lines, the five steps as one numbered list — each step's sentence, then the address or command it needs in a box of its own with a Copy button — a button that runs `browser setup`, which opens the extension's page in your `claude-code` profile and names that profile in Chrome's own settings file while Chrome is closed, and a masked field that saves the token: the stored value is never on the page), `doctor` (run again, without the browser's lines, which are on that card), the project's auto-mode rules, the **Project card** (below), and the **Warp card**, which shows the install and remove commands to copy. |
 | **Settings** | Every workflow setting, one row each: what Claude does after a finished step (auto commit, auto push, the pull request, the auto-merge rule, the merge method, the branch and the worktree), the alerts (which events, the sound, the usage-limit percentage), and the switches (the status line, the session names, the heavy-job queue, the update hold). Each row says where its value comes from — `yours`, `this project` or `default` — and a row the project sets is read-only here, with a link to the Project card. |
 | **How this page stays private** | The security design in plain words, linked from the footer. |
 
@@ -709,12 +715,16 @@ not 1–100) is refused in words, and nothing is written.
 line and **Set up this project**, which opens the form — the base branch, the worktree folder
 prefix, the setup command, the branches that start from another base, the protected branches,
 the three guards and the worktree engine. Its first values are what
-`cc-smart-dev-kit project init` would offer for this repo (its default branch, its lockfile's
-command, the branches GitHub protects), never a value this page made up. The preview is that
-command's own plan, made on the server and sent to the page, so what the boxes show is
-exactly what will be written — the browser never builds the file. **Write the files** asks
-first, writes both files through the same `applyProjectInit` (a backup, then an atomic
-write), and **never commits**: commit them with the project.
+`cc-smart-dev-kit project init` would offer for this repo (its default branch — the remote's
+`origin/HEAD`, else the repo's only branch, else `main`, else `master`, else the branch you
+are on — its lockfile's command, the branches GitHub protects), never a value this page made
+up. The preview is that command's own plan, made on the server and sent to the page: a box
+asks again once the typing pauses (300 ms, and at once when an edit is finished), so the boxes
+follow the words, and the browser never builds the file. Each answer carries the hash of the
+two files it was planned from, and **Write the files** sends it back: a project file someone
+changed in between makes the write refuse ("preview again") rather than quietly write their
+change away. The write itself goes through the same `applyProjectInit` (a backup, then an
+atomic write), asks first, and **never commits**: commit them with the project.
 
 **Without a gateway config** (never set up, or one that cannot be read): Overview, Slots and
 Health show "The gateway is not set up", with the command that sets it up and a button to
@@ -1470,17 +1480,21 @@ copy them from this page:
 
 - `.claude/cc-smart-dev-kit.json` — the project's settings (below);
 - `.claude/settings.json` — the worktree engine's three hook lines (§ Worktrees), merged
-  with whatever that file already wires, and **not** written when the project runs an
-  engine of its own (`"worktrees.engine": "own"`).
+  with whatever that file already wires. A project that runs an engine of its own
+  (`"worktrees.engine": "own"`) gets none added, and the cc-smart-dev-kit lines an earlier
+  run left there are **taken back out**: with both wired, two engines answer each worktree
+  request (`doctor` flags exactly that).
 
 It asks first and shows every default, which it reads from the repo: the base branch from
-`git symbolic-ref refs/remotes/origin/HEAD`, the setup command from the lockfile
+`origin/HEAD` — else the repo's only branch when it has one (a repo whose only branch is `dev`
+works from `dev`, never from a `main` it does not have), else `main`, else `master`, else the
+branch HEAD is on — the setup command from the lockfile
 (`bun install`, `npm ci`, `pnpm install`, `yarn`), the worktree folder prefix from the
 repo's name, the bases offered for `hotfix/` and `release/` from the default branch, and the
 protected branches from the default branch and the base plus, when `gh` is installed and
 answers, the branches GitHub protects (a read-only `gh api`; anything missing is skipped
-quietly). Then it prints the file it will write with the changes line by line, the three
-lines it will add to `.claude/settings.json`, and writes both — a backup first, in
+quietly). Then it prints the file it will write with the changes line by line, the lines it
+adds to (or takes out of) `.claude/settings.json`, and writes both — a backup first, in
 `~/.claude/cc-smart-dev-kit/backups/`. **Nothing is committed:** commit the two files with the
 project.
 

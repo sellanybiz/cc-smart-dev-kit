@@ -348,10 +348,16 @@ refused in words. The Project card on Machine is about the repo the portal was s
 state A (no `.claude/cc-smart-dev-kit.json`) or the form, whose first values are the command
 line's own detection (`detectFacts` + `defaultAnswers` — the default branch, the lockfile's
 command, GitHub's protected branches). Its **preview is the server's own `planProjectInit`**,
-the same pure function the write runs, so the browser never builds the file: every form
-change is a `project.preview` POST and the boxes are drawn from the answer. `Write the files`
-asks first and runs `applyProjectInit` — a backup, an atomic write, two files, and never a
-commit.
+the same pure function the write runs, so the browser never builds the file: a form change is
+a `project.preview` POST — at once for a finished edit, 300 ms after the typing pauses in a
+text box — and the boxes are drawn from the answer. The answer carries
+`projectFilesHash` of the two texts it planned from, the page keeps it, and `project.write`
+sends it back: a project file that changed since the preview is refused ("preview again")
+rather than written over field by field. `Write the files` asks first and runs
+`applyProjectInit` — a backup, an atomic write, two files, and never a commit. An engine of
+the project's own (`"worktrees.engine": "own"`) has `withoutProjectHooks` take the
+cc-smart-dev-kit hook lines back out of `.claude/settings.json` (only groups that are
+entirely ours), so two engines never answer one worktree request.
 
 **The workflow module is behind one seam** (`src/portal/workflow-adapter.ts`). The values,
 the writes, the auto-merge rule and the project's two files all come from `src/workflow/`
@@ -1395,7 +1401,8 @@ filter that made each session's windows its own.
   server's registration and start stay `mcpChecks`' own lines (`mcp/doctor.ts`) — one home for
   that fact. These are file checks — the same ones Playwright
   makes before it connects — so neither ever starts Chrome. The portal draws them on a Browser card
-  (with the guide, a setup button and a masked token field) and leaves them out of the Doctor
+  (the guide as one numbered list, each step's address or command in a `codeBox` of its own with
+  a Copy button, a setup button and a masked token field) and leaves them out of the Doctor
   card's list, so no line appears twice on one page.
 - **Nothing in `src/browser/` reads the environment.** The home folder, the platform and every
   file call are arguments (`ChromeDeps`), so a test points them at a temp world

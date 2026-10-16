@@ -13,21 +13,32 @@
  * Claude Code session. The refusal is repeated here, because a copy can be run by hand: the
  * portal changes this machine's model path and the safety judge.
  *
- * **It never opens the browser Claude drives.** It opens the person's default browser, in
- * their own desktop session; the page says so too.
+ * **It never opens the browser Claude drives.** When Chrome's `claude-code` profile — the
+ * one Claude Code drives — is on this machine, it opens no browser at all: Chrome opens an
+ * outside link in the window it last used, and that window may be Claude's own profile, where
+ * the session cookie would put the portal's buttons within Claude's reach. It prints the link
+ * and says which window to open it in (`mayAutoOpen`, `openYourselfLine`). Without that
+ * profile it opens the person's default browser, in their own desktop session.
  */
 
 import { join } from "node:path";
+import { chromeUserDataDir, findClaudeCodeProfile } from "../browser/chrome";
 import { realBrowserDoctorDeps } from "../browser/doctor";
 import { VERSION } from "../build-info";
 import type { DoctorOptions } from "../cli/doctor";
 import { cliPaths, tildify } from "../cli/paths";
 import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
-import { realMachine } from "../machine/machine";
+import { type Machine, realMachine } from "../machine/machine";
 import { openUrlOnDesktop } from "../machine/open-url";
 import { realMcpDoctorDeps } from "../mcp/doctor";
-import { claudeCodeRefusal, PORTAL_USAGE, parsePortalChildArgs } from "../portal/command";
+import {
+  claudeCodeRefusal,
+  mayAutoOpen,
+  openYourselfLine,
+  PORTAL_USAGE,
+  parsePortalChildArgs,
+} from "../portal/command";
 import type { PortalContext } from "../portal/context";
 import { resolvePluginFolder } from "../portal/plugin-folder";
 import { startPortal } from "../portal/server";
@@ -52,6 +63,18 @@ const runner: Runner = (cmd) => {
     return { exitCode: 127, output: error instanceof Error ? error.message : String(error) };
   }
 };
+
+/**
+ * True when Chrome's `claude-code` profile — the one Claude Code drives — is on this machine.
+ * A read of the profile folders only (`chrome.ts`): nothing is started, and a machine whose
+ * Chrome folder cannot be read answers "not here", which is the safe answer for opening a
+ * browser (that machine has no profile for Claude to drive).
+ */
+function claudeCodeProfileHere(machine: Machine, home: string): boolean {
+  const userDataDir = chromeUserDataDir(machine.platform, home);
+  if (userDataDir === null) return false;
+  return findClaudeCodeProfile(userDataDir, realBrowserDoctorDeps(machine, home)) !== null;
+}
 
 /**
  * Opens a URL in the person's own browser. Never waits, and never fails the portal.
@@ -141,7 +164,13 @@ async function main(argv: string[]): Promise<number> {
     `It binds 127.0.0.1:${portal.port} only, and stops after ${IDLE_MS / 60_000} minutes with no request.`,
   );
   console.log("Stop it now with Ctrl+C here.");
-  if (!options.noOpen) ctx.openBrowser(portal.url);
+  const profileHere = claudeCodeProfileHere(machine, paths.home);
+  if (mayAutoOpen({ claudeCodeProfile: profileHere, noOpen: options.noOpen })) {
+    ctx.openBrowser(portal.url);
+  } else if (!options.noOpen) {
+    console.log("");
+    console.log(openYourselfLine());
+  }
 
   const how = await portal.finished;
   if (how === "idle") {

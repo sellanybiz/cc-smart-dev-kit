@@ -119,13 +119,23 @@ function fakePlan(input: ProjectInitInput): ProjectInitPlan {
           "}",
         ]
       : [];
+  // An engine of the project's own takes the plugin's lines back out, the way the real plan
+  // does when an earlier `project init` left them in the file.
+  const removedLines =
+    input.answers.engine === "own" &&
+    (input.existingSettings ?? "").includes("cc-smart-dev-kit hook")
+      ? ["WorktreeCreate: cc-smart-dev-kit hook worktree-create (timeout 600 s)"]
+      : [];
   return {
     changed: text !== input.existing,
     diff: [`+ worktrees.base: ${JSON.stringify(input.answers.base)}`],
     file,
     hookLines,
     notes: [],
-    settingsChanged: hookLines.length > 0 && input.existingSettings !== `${hookLines.join("\n")}\n`,
+    removedLines,
+    settingsChanged:
+      (hookLines.length > 0 && input.existingSettings !== `${hookLines.join("\n")}\n`) ||
+      removedLines.length > 0,
     settingsFile,
     settingsText: `${hookLines.join("\n")}\n`,
     text,

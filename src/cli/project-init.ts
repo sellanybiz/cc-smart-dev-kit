@@ -2,8 +2,8 @@
  * `cc-smart-dev-kit project init [--dry-run] [--yes] [flags]`: the questions behind
  * `planProjectInit` (`src/project/init.ts`), the plan on screen, and the write.
  *
- * **The defaults come from the repo, then the flags win:** the base from `git symbolic-ref
- * refs/remotes/origin/HEAD`, the worktree folder prefix from the repo's name, the setup
+ * **The defaults come from the repo, then the flags win:** the base from `origin/HEAD`, else
+ * the repo's own branches (`defaultBranchOf`), the worktree folder prefix from the repo's name, the setup
  * command from the lockfile (`bun install`, `npm ci`, `pnpm install`, `yarn`), the bases for
  * `hotfix/` and `release/` from the default branch, and the protected branches from the
  * default branch and the base plus, when `gh` is installed and answers, the branches GitHub
@@ -98,7 +98,36 @@ export function realRunner(env: Env): ProjectInitRunner {
   };
 }
 
-/** The repository's default branch: `origin/HEAD`, else `main`. */
+/** The branch HEAD is on; null when it is detached, or git cannot say. */
+function currentBranchOf(runner: ProjectInitRunner, root: string): null | string {
+  const head = runner.git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  const branch = head.ok ? head.out.trim() : "";
+  return branch === "" ? null : branch;
+}
+
+/** Every local branch name; empty when git cannot say (no git, not a repo). */
+function localBranchesOf(runner: ProjectInitRunner, root: string): string[] {
+  const listed = runner.git(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+  if (!listed.ok) return [];
+  return listed.out
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((name) => name !== "");
+}
+
+/**
+ * The branch a new worktree starts from, in this order:
+ *
+ *   1. what `origin/HEAD` points at — the remote's own default branch;
+ *   2. the repo's only local branch, when it has exactly one: a repo whose only branch is
+ *      `dev` works from `dev`, and offering `main` there names a branch that is not in it;
+ *   3. `main`, when that branch is there;
+ *   4. `master`, when that one is;
+ *   5. the current branch — a detached HEAD, or a repo whose branches are all named something
+ *      else, still has one branch that works.
+ *
+ * A git that cannot answer at all (no git, not a repo) leaves `main`, as it always did.
+ */
 export function defaultBranchOf(runner: ProjectInitRunner, root: string): string {
   const known = runner.git(root, [
     "symbolic-ref",
@@ -110,7 +139,12 @@ export function defaultBranchOf(runner: ProjectInitRunner, root: string): string
     const branch = known.out.trim().replace(/^origin\//, "");
     if (branch !== "") return branch;
   }
-  return "main";
+  const locals = localBranchesOf(runner, root);
+  const only = locals.length === 1 ? locals[0] : undefined;
+  if (only !== undefined) return only;
+  if (locals.includes("main")) return "main";
+  if (locals.includes("master")) return "master";
+  return currentBranchOf(runner, root) ?? "main";
 }
 
 /** The setup command the repo's lockfile asks for; null when there is no lockfile. */
@@ -520,8 +554,9 @@ function printPlan(plan: ProjectInitPlan, context: ProjectInitContext): void {
   if (plan.diff.length === 0) context.print("  (no change)");
   for (const line of plan.diff) context.print(`  ${line}`);
   if (plan.settingsChanged) {
-    context.print(`${plan.settingsFile} also gets, merged with what it has:`);
+    context.print(`${plan.settingsFile} also changes, merged with what it has:`);
     for (const line of plan.hookLines) context.print(`  + ${line}`);
+    for (const line of plan.removedLines) context.print(`  - ${line}`);
   }
   if (!plan.changed && !plan.settingsChanged) context.print("Nothing to change.");
   for (const note of plan.notes) context.print(`! ${note}`);
@@ -555,7 +590,8 @@ its own, the worktree engine's three lines in .claude/settings.json. It asks fir
 the defaults; every question has a flag, so a run with no terminal writes nothing unless
 --yes is given. Nothing is committed: commit both files with the project.
 
-  --base <branch>        the branch a new worktree starts from (default: origin/HEAD)
+  --base <branch>        the branch a new worktree starts from (default: origin/HEAD, else the
+                         repo's only branch, else main, else master, else the current branch)
   --prefix <prefix>      the folder-name prefix beside the repo (default: <repo>-wt-)
   --setup "<words>"      the command run inside a new worktree (default: the lockfile's)
   --no-setup             write no setup command

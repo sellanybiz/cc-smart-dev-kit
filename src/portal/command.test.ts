@@ -11,6 +11,9 @@ import { tempDir } from "../testing/temp";
 import {
   claudeCodeRefusal,
   DEFAULT_PORTAL_PORT,
+  mayAutoOpen,
+  openYourselfLine,
+  PORTAL_USAGE,
   parsePortalArgs,
   portalCopy,
   runPortal,
@@ -163,6 +166,50 @@ describe("the portal command", () => {
     expect(source).not.toContain(".local/share/cc-smart-dev-kit/portal.js");
     expect(source).toContain("const SIGINT_EXIT = 130;");
     expect(source).toContain('process.on("SIGINT", () => process.exit(SIGINT_EXIT));');
+  });
+
+  test("the portal opens a browser only when Chrome's claude-code profile is not there", () => {
+    // Claude Code drives Chrome's `claude-code` profile, and Chrome opens an outside link in
+    // the window it last used — which may be that very profile, where the session cookie would
+    // put the portal's buttons within Claude's reach. So with that profile on the machine the
+    // portal opens nothing and says where to open the link itself; without it, it opens.
+    expect(mayAutoOpen({ claudeCodeProfile: false, noOpen: false })).toBe(true);
+    expect(mayAutoOpen({ claudeCodeProfile: true, noOpen: false })).toBe(false);
+    // `--no-open` refuses it in every case.
+    expect(mayAutoOpen({ claudeCodeProfile: false, noOpen: true })).toBe(false);
+    expect(mayAutoOpen({ claudeCodeProfile: true, noOpen: true })).toBe(false);
+    // The line it prints instead names the profile, and says what to do.
+    expect(openYourselfLine()).toContain('"claude-code"');
+    expect(openYourselfLine()).toContain("Claude Code drives it");
+    expect(openYourselfLine()).toContain("NOT that profile");
+  });
+
+  test("the child asks that decision, with the profile it really has, before opening", () => {
+    // The entry (`src/entries/portal.ts`) starts a server and waits, so it cannot be imported
+    // here: this reads it, for the three pieces the decision is made of — the profile read
+    // (`chrome.ts`, read-only), the decision itself, and the line printed instead.
+    const source = readFileSync(join(import.meta.dir, "..", "entries", "portal.ts"), "utf8");
+    expect(source).toContain("claudeCodeProfileHere(machine, paths.home)");
+    expect(source).toContain("findClaudeCodeProfile(userDataDir,");
+    expect(source).toContain(
+      "mayAutoOpen({ claudeCodeProfile: profileHere, noOpen: options.noOpen })",
+    );
+    expect(source).toContain("console.log(openYourselfLine());");
+    // And the old promise — an unconditional open — is gone.
+    expect(source).not.toContain("if (!options.noOpen) ctx.openBrowser(portal.url);");
+  });
+
+  test("every word about it says which profile, and what the portal itself does", () => {
+    // The portal cannot stop a person from pasting the link into the window Claude drives, so
+    // the wording tells them which window to use instead of promising something it cannot
+    // control. The pages that show these lines are checked in `server.test.ts`.
+    const views = readFileSync(join(import.meta.dir, "views.ts"), "utf8");
+    const page = readFileSync(join(import.meta.dir, "page.ts"), "utf8");
+    expect(views).toContain("never open the portal in the Chrome profile Claude drives");
+    expect(views).toContain("Claude could then reach its buttons");
+    expect(page).toContain("never open this page in the Chrome profile Claude drives");
+    expect(claudeCodeRefusal({ CLAUDECODE: "1" })).toContain(`Chrome's "claude-code" profile`);
+    expect(PORTAL_USAGE).toContain("it does not open a\nbrowser by itself");
   });
 
   test("a missing bundle stops with a clear line, and starts nothing", () => {

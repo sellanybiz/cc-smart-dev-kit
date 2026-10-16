@@ -122,28 +122,44 @@ p { margin: 0; }
 /* ── Header ─────────────────────────────────────────────────────────────── */
 header.top { background: var(--surface); border-bottom: 1px solid var(--line); }
 header.top .wrap {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 24px; padding-top: 10px; padding-bottom: 10px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding-top: 10px; padding-bottom: 10px;
 }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand .name { font-family: "JetBrains Mono", ui-monospace, monospace; font-weight: 600; font-size: 16px; }
 .brand .ver { color: var(--muted); font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; }
-nav.pages { display: flex; flex-wrap: wrap; gap: 4px; margin-left: auto; }
+nav.pages { display: flex; flex-wrap: wrap; gap: 2px; margin-left: auto; }
 nav.pages a {
-  display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px;
+  display: inline-flex; align-items: center; min-height: 44px; padding: 0 10px;
   border-radius: 8px; color: var(--text); text-decoration: none;
 }
 nav.pages a[aria-current="page"] { background: var(--chip-bg); color: var(--accent-strong); font-weight: 600; }
 .pill {
-  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px;
   font-size: 13px;
 }
 .pill.ok { background: var(--chip-bg); color: var(--accent); font-weight: 500; }
 .pill.plain { background: var(--line-soft); color: var(--muted-2); font-family: "JetBrains Mono", ui-monospace, monospace; }
 .pill.bad { background: var(--warn-soft); color: var(--warn-text); font-weight: 600; }
 .themebtn {
-  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px;
+  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 10px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text);
   cursor: pointer;
+}
+/* ── The header at a desktop width ────────────────────────────────────────
+   Brand, the two chips, the page links and the theme toggle sit on ONE row, at every width
+   this block covers. They are a grid, and the links take the free column, so the toggle can
+   never be pushed onto a line of its own — which is what a wrapping flex row did once the nav
+   grew its sixth item: measured at 1440, the four groups and their three gaps came to about
+   1206px in a 1152px wrap, and the toggle went alone to the next line (the owner's screenshot,
+   040-settings-1440-dark.png). The links' padding and the columns' gap are a little tighter
+   for the same reason; the 44px touch target is the links' height, and it does not change.
+   Narrower than this the links wrap inside their own column, and the toggle stays in the row. */
+@media (min-width: 641px) {
+  header.top .wrap {
+    display: grid; align-items: center; column-gap: 16px;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+  }
+  nav.pages { margin-left: 0; justify-content: flex-end; }
 }
 /* ── The header on a phone ────────────────────────────────────────────────
    Every row above is a flex row that wraps, so at 390px the brand, the router chip, the Bun
@@ -255,6 +271,14 @@ section { display: flex; flex-direction: column; gap: 12px; }
 }
 .status-ok { border-radius: 10px; background: var(--chip-bg); color: var(--accent-strong); padding: 12px 16px; font-weight: 500; }
 .status-bad { border-radius: 10px; background: var(--warn-soft); color: var(--warn-text); padding: 12px 16px; font-weight: 500; }
+/* A fact, not an alarm: the token field's "nothing was pasted" answer, and the like. */
+.status-info { border-radius: 10px; background: var(--surface-2); color: var(--muted-2); padding: 12px 16px; font-weight: 500; }
+/* An answer box with nothing in it is not there at all: no padding of its own, and no gap in
+   a card's column either. Every card carried an empty band (and a card list an empty row)
+   until the script filled one. */
+[data-out-for]:empty, [data-out]:empty { display: none; }
+/* The box gone, the row above it is the card's last one: no separator at the card's edge. */
+.card.list > *:has(+ .foot:empty) { border-bottom: 0; }
 
 /* ── Code and commands ──────────────────────────────────────────────────── */
 .cmd {
@@ -314,7 +338,10 @@ section { display: flex; flex-direction: column; gap: 12px; }
 
 /* ── Lists ──────────────────────────────────────────────────────────────── */
 .checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px 24px; grid-template-columns: repeat(auto-fit, minmax(min(460px, 100%), 1fr)); }
-.checks li { display: flex; gap: 10px; padding: 6px 0; }
+/* The mark's own column, and a text column that may shrink to nothing: a long path (a Chrome
+   profile folder, a backend URL) wraps inside its box and can never widen the box past its
+   column, or overlap the column beside it. */
+.checks li { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 0 10px; align-items: start; padding: 6px 0; }
 .checks li.fail { padding: 6px 10px; margin: 0 -10px; border-radius: 8px; background: var(--warn-soft); color: var(--warn-text); }
 .checks .mark { width: 16px; font-weight: 700; }
 .kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 12px; }
@@ -367,6 +394,9 @@ footer.bottom .wrap {
    from. The three tag words are the design's own: yours, this project, default. */
 .setrow { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; }
 .src { flex: none; padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 500; }
+/* The link to the Project card, under a row the project sets: a touch target of its own, not
+   a 20px line of text under a switch. */
+.setrow .projectlink { display: inline-flex; align-items: center; min-height: 44px; }
 .src.personal { background: var(--chip-bg); color: var(--accent); }
 .src.project { background: var(--warn-soft); color: var(--warn-text); }
 .src.default { background: var(--line-soft); color: var(--muted-2); }
@@ -426,14 +456,32 @@ footer.bottom .wrap {
 .chipinput { width: 150px; }
 .lockchip { gap: 6px; min-height: 44px; padding: 0 4px 0 10px; }
 .lockchip .chipinput { width: 120px; border: 0; background: transparent; padding: 0 4px; }
-.lockchip .btn.icon { min-width: 36px; border: 0; background: transparent; }
+/* 44 x 44 like every other icon button (the .btn.icon rule): the protected branch's ✕
+   was 36 wide. */
+.lockchip .btn.icon { border: 0; background: transparent; }
 .btn.dashed { border-style: dashed; border-color: var(--dashed); color: var(--muted-2); font-weight: 500; }
-.codebox { border: 1px solid var(--line-soft); border-radius: 10px; overflow: hidden; }
+/* min-width: 0: the box sits in a column, and its pre scrolls on its own line rather than
+   widening the column it is in. */
+.codebox { border: 1px solid var(--line-soft); border-radius: 10px; overflow: hidden; min-width: 0; }
 .codehead {
   display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px;
   padding: 6px 6px 6px 14px; background: var(--surface-2); border-bottom: 1px solid var(--line-soft);
 }
+/* A box with no file name of its own: the Copy button is the whole head. */
+.codehead.end { justify-content: flex-end; padding-left: 6px; }
 .codehead code { font-size: 13px; }
+
+/* ── The Browser card's five steps ────────────────────────────────────────
+   A real ordered list: one column, numbered, each step's sentence first and then the address
+   or command it needs, in a code box of its own. Never the doctor's own .checks grid: read as
+   columns the steps went left, right, left, right, they carried no numbers, and the narrow
+   column squeezed the last one ("Save it.", "✓ done") into a sliver. The long address stays
+   one line and scrolls inside its box instead of breaking in the middle of a word. */
+ol.guide { margin: 0; padding-left: 26px; }
+ol.guide > li { padding-left: 2px; }
+ol.guide > li + li { margin-top: 14px; }
+ol.guide > li > span { display: block; }
+ol.guide .codebox { margin-top: 8px; }
 .codehead .btn { min-height: 44px; padding: 0 12px; font-weight: 500; }
 .codebox pre {
   margin: 0; padding: 14px 16px; background: var(--code-bg); color: var(--code-text);
@@ -470,6 +518,9 @@ export const THEME_JS = `(function () {
  */
 export const PORTAL_JS = `(function () {
   "use strict";
+
+  /** How long typing pauses before the Project card asks the server for the plan again. */
+  var PREVIEW_TYPING_MS = 300;
   var meta = document.querySelector('meta[name="ccsdk-csrf"]');
   var csrf = meta ? meta.getAttribute("content") : "";
 
@@ -497,11 +548,15 @@ export const PORTAL_JS = `(function () {
     });
   }
 
-  function say(node, ok, list) {
+  // The tone is the answer's own, when it has one: "info" is a fact, not a failure (the token
+  // field's "nothing was pasted, so the saved token is unchanged" is the case it exists for).
+  function say(node, ok, list, tone) {
     if (!node) return;
     node.textContent = "";
-    node.className = ok ? "status-ok" : "status-bad";
-    node.appendChild(document.createTextNode(ok ? "\\u2713 " : "\\u2717 "));
+    node.className = ok ? "status-ok" : tone === "info" ? "status-info" : "status-bad";
+    node.appendChild(
+      document.createTextNode(ok ? "\\u2713 " : tone === "info" ? "\\u00b7 " : "\\u2717 ")
+    );
     node.appendChild(document.createTextNode((list && list[0]) || (ok ? "Done." : "It did not work.")));
     if (list && list.length > 1) {
       var more = document.createElement("div");
@@ -585,7 +640,7 @@ export const PORTAL_JS = `(function () {
     busy(button, true);
     post("/api/" + name, body).then(function (data) {
       busy(button, false);
-      say(out, !!data.ok, data.lines);
+      say(out, !!data.ok, data.lines, data.tone);
       if (data.ok && button.hasAttribute("data-reload")) setTimeout(function () { location.reload(); }, 700);
       if (data.ok && button.hasAttribute("data-toggle")) {
         var on = button.getAttribute("aria-checked") !== "true";
@@ -646,7 +701,7 @@ export const PORTAL_JS = `(function () {
   var setSetting = function (node, key, value, putBack) {
     var out = outFor(node, "workflow.set");
     post("/api/workflow.set", { key: key, value: value }).then(function (data) {
-      say(out, !!data.ok, data.lines);
+      say(out, !!data.ok, data.lines, data.tone);
       if (data.ok) setTimeout(function () { location.reload(); }, 700);
       else if (putBack) putBack();
     });
@@ -709,6 +764,9 @@ export const PORTAL_JS = `(function () {
     // Every answer carries the number of the question it answers: a slower, older answer
     // never overwrites a newer one on screen.
     var asked = 0;
+    // The hash of the two files the plan on screen was made from. It travels with the write,
+    // and the server refuses a write whose plan no longer matches the files on disk.
+    var filesHash = form.getAttribute("data-files-hash") || "";
 
     var answerOf = function (name) {
       var node = form.querySelector("[data-answer='" + name + "']");
@@ -750,8 +808,14 @@ export const PORTAL_JS = `(function () {
     };
 
     var drawPlan = function (data, preview) {
+      // What the settings file changes: the lines the engine adds, and the ones an engine of
+      // the project's own takes back out — a line beginning with "-", the way a diff reads.
+      var settingsLines = (preview.hookLines || []).concat(
+        (preview.removedLines || []).map(function (line) { return "- " + line; })
+      );
       filePre.textContent = preview.text;
-      settingsPre.textContent = (preview.hookLines || []).join("\\n");
+      settingsPre.textContent = settingsLines.join("\\n");
+      if (typeof data.filesHash === "string") filesHash = data.filesHash;
       // The note under the settings box comes from the server, like the boxes: one home for
       // the sentence, and it can never describe a different plan than the one drawn.
       if (data.lines && data.lines[0]) noteLine.textContent = data.lines[0];
@@ -768,14 +832,30 @@ export const PORTAL_JS = `(function () {
       var mine = (asked += 1);
       post("/api/project.preview", answers()).then(function (data) {
         if (mine !== asked) return;
-        if (!data.ok || !data.preview) { say(writeOut, false, data.lines); return; }
+        if (!data.ok || !data.preview) { say(writeOut, false, data.lines, data.tone); return; }
+        // A preview that worked replaces whatever the last answer said: a refusal from an
+        // earlier edit must not sit under a plan that is fine now.
+        writeOut.textContent = "";
+        writeOut.className = "";
         drawPlan(data, data.preview);
       });
     };
 
-    // A change is one finished edit (a box left, a box ticked, a row added or removed): the
-    // same answer is not asked again for every keystroke.
-    form.addEventListener("change", ask);
+    // A finished edit (a box left, a box ticked, a row added or removed) asks at once. A text
+    // box asks while it is being typed in — once the typing pauses, so the preview follows the
+    // words instead of waiting for the box to lose the focus, and one plan is asked for and
+    // not one per keystroke. The server stays the only builder of the plan.
+    var typing = null;
+    var settled = function () {
+      if (typing !== null) { clearTimeout(typing); typing = null; }
+    };
+    form.addEventListener("input", function (event) {
+      var node = event.target;
+      if (!node || node.tagName !== "INPUT" || node.type !== "text") return;
+      settled();
+      typing = setTimeout(function () { typing = null; ask(); }, PREVIEW_TYPING_MS);
+    });
+    form.addEventListener("change", function () { settled(); ask(); });
 
     var flip = function (button) {
       var on = button.getAttribute("aria-checked") === "true";
@@ -845,10 +925,11 @@ export const PORTAL_JS = `(function () {
         if (write.getAttribute("data-confirm") && !window.confirm(write.getAttribute("data-confirm"))) return;
         var body = answers();
         body.confirm = true;
+        body.previewHash = filesHash;
         busy(write, true);
         post("/api/project.write", body).then(function (data) {
           busy(write, false);
-          say(writeOut, !!data.ok, data.lines);
+          say(writeOut, !!data.ok, data.lines, data.tone);
           if (data.ok) setTimeout(function () { location.reload(); }, 700);
         });
       });
@@ -870,7 +951,7 @@ export const PORTAL_JS = `(function () {
       busy(tokenSave, true);
       post("/api/browser.token", { token: value }).then(function (data) {
         busy(tokenSave, false);
-        say(out, !!data.ok, data.lines);
+        say(out, !!data.ok, data.lines, data.tone);
         if (input) input.value = "";
         if (data.ok) setTimeout(function () { location.reload(); }, 900);
       });
@@ -1010,7 +1091,7 @@ export const PORTAL_JS = `(function () {
             tested[slot + "\\u0000" + one.target] = one.verdict;
           });
           draw();
-          say(out, !!data.ok, data.lines);
+          say(out, !!data.ok, data.lines, data.tone);
         });
       });
     }
@@ -1019,7 +1100,7 @@ export const PORTAL_JS = `(function () {
       saveBtn.addEventListener("click", function () {
         if (confirmBox) { confirmBox.hidden = false; return; }
         post("/api/slot.save", { slot: slot, targets: chainOf() }).then(function (data) {
-          say(out, !!data.ok, data.lines);
+          say(out, !!data.ok, data.lines, data.tone);
           if (data.ok) setTimeout(function () { location.reload(); }, 700);
         });
       });
@@ -1028,7 +1109,7 @@ export const PORTAL_JS = `(function () {
     if (yes) {
       yes.addEventListener("click", function () {
         post("/api/slot.save", { slot: slot, targets: chainOf() }).then(function (data) {
-          say(out, !!data.ok, data.lines);
+          say(out, !!data.ok, data.lines, data.tone);
           if (data.ok) setTimeout(function () { location.reload(); }, 700);
         });
       });
