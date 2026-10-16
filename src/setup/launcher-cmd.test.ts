@@ -23,6 +23,45 @@ function lookupJs(script: string): string {
   return match[1];
 }
 
+/**
+ * Every variable of the script that holds a path. cmd substitutes a variable's value and
+ * then reads the line again, so a `&` (or a space, a `^`, a `%`) in a path that is **not**
+ * inside double quotes splits the line — the reviewer's finding. `%ERRORLEVEL%` (a number)
+ * and `%*` (the caller's own command line) are deliberately not here.
+ */
+const PATH_VARIABLES = [
+  "answer",
+  "answer_dir",
+  "baked_bun",
+  "BUN_INSTALL",
+  "bun",
+  "CLAUDE_CONFIG_DIR",
+  "config_dir",
+  "install_path",
+  "installed",
+  "TEMP",
+  "USERPROFILE",
+];
+
+/** The uses of a path variable that are outside double quotes, as `name in: <line>`. */
+function usesOutsideQuotes(script: string): string[] {
+  const found: string[] = [];
+  for (const line of script.split("\n")) {
+    let quoted = false;
+    for (let at = 0; at < line.length; at += 1) {
+      if (line[at] === '"') {
+        quoted = !quoted;
+        continue;
+      }
+      if (quoted) continue;
+      for (const name of PATH_VARIABLES) {
+        if (line.startsWith(`%${name}%`, at)) found.push(`${name} in: ${line.trim()}`);
+      }
+    }
+  }
+  return found;
+}
+
 /** A fake config folder whose installed_plugins.json holds `entries`. */
 function installed(entries: unknown[]): string {
   const dir = tempDir("launcher-cmd");
@@ -53,7 +92,7 @@ describe("the Windows launcher script", () => {
     expect(script).toContain('if exist "%USERPROFILE%\\.bun\\bin\\bun.exe"');
     expect(script).toContain('for %%I in (bun.exe) do set "bun=%%~$PATH:I"');
     expect(script).toContain(
-      "cc-smart-dev-kit: bun not found (not at %baked_bun%, not on PATH). Install bun, then run: cc-smart-dev-kit setup",
+      'cc-smart-dev-kit: bun not found (not at "%baked_bun%", not on PATH). Install bun, then run: cc-smart-dev-kit setup',
     );
   });
 
@@ -61,7 +100,10 @@ describe("the Windows launcher script", () => {
     expect(script).toContain(
       'rem --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.\n',
     );
-    expect(script).toContain('"%bun%" --no-env-file %config% "%install_path%\\dist\\cli.js" %*');
+    expect(script).toContain(
+      '"%bun%" --no-env-file "--config=%install_path%\\bunfig.toml" "%install_path%\\dist\\cli.js" %*',
+    );
+    expect(script).toContain('"%bun%" --no-env-file "%install_path%\\dist\\cli.js" %*');
     expect(script).toContain("exit /b %ERRORLEVEL%");
   });
 
@@ -69,11 +111,12 @@ describe("the Windows launcher script", () => {
     // The flag every other bun run of the plugin gets (`bun-config.ts`): bun would otherwise
     // read the working folder's `bunfig.toml`, and a project's `preload` would run its own
     // code inside the command. The config sits beside the CLI, in the version folder the
-    // lookup just found; a version folder without one (an older installed version) gets no
-    // flag at all, because bun refuses a config path that does not exist.
-    expect(script).toContain(
-      'if exist "%install_path%\\bunfig.toml" set "config=--config="%install_path%\\bunfig.toml""',
-    );
+    // lookup just found; a version folder without one (an older installed version) runs the
+    // plain line, because bun refuses a config path that does not exist. The flag and its
+    // path are one quoted argument — never a variable holding quotes, which would come back
+    // outside the run line's own quotes, where cmd reads them a second time.
+    expect(script).toContain('if not exist "%install_path%\\bunfig.toml" goto no_config');
+    expect(script).not.toContain('--config="%install_path%');
   });
 
   test("Claude Code's config folder, CLAUDE_CONFIG_DIR first, as the sh launcher does", () => {
@@ -87,8 +130,24 @@ describe("the Windows launcher script", () => {
       "cc-smart-dev-kit: the cc-smart-dev-kit plugin is not installed. Run: claude plugin install cc-smart-dev-kit@cc-smart-dev-kit",
     );
     expect(script).toContain(
-      "cc-smart-dev-kit: the cc-smart-dev-kit plugin folder is missing: %install_path%. Run: claude plugin install cc-smart-dev-kit@cc-smart-dev-kit",
+      'cc-smart-dev-kit: the cc-smart-dev-kit plugin folder is missing: "%install_path%". Run: claude plugin install cc-smart-dev-kit@cc-smart-dev-kit',
     );
+  });
+
+  test("every path is used inside quotes, and no path is a literal with a lone %", () => {
+    // The reviewer's case: a profile folder with a `&` (or a space, a `^`, a `%`, a `!`) in
+    // it. cmd reads each of those as its own unless the path is inside quotes, and a path
+    // baked into the script's own text is a different thing again: cmd expands `%` there
+    // even inside quotes (ss64, "Escape Percents").
+    const odd = "C:\\Users\\O'Brien & Co\\100%\\bun!.exe";
+    const oddScript = launcherCmdScript(odd);
+    expect(usesOutsideQuotes(oddScript)).toEqual([]);
+    // The baked line is quoted, and its `%` is doubled — one literal `%` in a batch file.
+    expect(oddScript).toContain('set "baked_bun=C:\\Users\\O\'Brien & Co\\100%%\\bun!.exe"');
+    expect(cmdBakedBunPath(oddScript)).toBe(odd);
+    // `!` needs one more thing: delayed expansion off, or cmd would eat `!…!` in a path.
+    expect(oddScript).toContain("setlocal DisableDelayedExpansion");
+    expect(usesOutsideQuotes(script)).toEqual([]);
   });
 
   test("the lookup one-liner carries no double quote: it is one cmd argument", () => {
@@ -124,7 +183,10 @@ describe("reading the baked bun back", () => {
     ["C:\\Users\\me\\.bun\\bin\\bun.exe"],
     ["C:\\Program Files\\bun\\bun.exe"],
     ["/usr/local/bin/bun"],
-    ["C:\\Users\\me\\.bun\\bin\\bun.exe"],
+    // The characters cmd reads as its own: a doubled `%` and a `!` (with delayed expansion
+    // off) are the path again, and the quotes keep the `&` and the space.
+    ["C:\\Users\\O'Brien & Co\\100%\\bun!.exe"],
+    ["C:\\a^b\\bun.exe"],
   ])("round-trips: %s", (bun) => {
     expect(cmdBakedBunPath(launcherCmdScript(bun))).toBe(bun);
   });

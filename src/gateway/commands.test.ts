@@ -1468,8 +1468,7 @@ describe("the router as a Windows Scheduled Task", () => {
    * Scheduler, no PowerShell, no network: the probe answers while the task runs, and nothing
    * listens while it does not.
    */
-  function taskMachine() {
-    const home = tempDir("gateway-task");
+  function taskMachine(home = tempDir("gateway-task")) {
     const bundle = join(home, "plugin", "dist", "router.js");
     mkdirSync(join(home, "plugin", "dist"), { recursive: true });
     writeFileSync(bundle, "// router v1\n");
@@ -1632,6 +1631,23 @@ describe("the router as a Windows Scheduled Task", () => {
       `http://127.0.0.1:${FAKE_PORT}/__cc-smart-dev-kit/health`,
       `http://127.0.0.1:${FAKE_PORT}/__cc-smart-dev-kit/health`,
     ]);
+  });
+
+  it("a profile folder with a smart quote in it: the task path stays one PowerShell string", async () => {
+    // The task path is under `%USERPROFILE%`, and PowerShell's tokenizer reads U+2018/2019/
+    // 201A/201B as single quotes too (`about_Quoting_Rules`): with only `'` doubled, a folder
+    // like `C:\Users\O’Brien` ended the string early and `gateway setup` failed.
+    const home = join(tempDir("gateway-task-odd"), "O’Brien");
+    mkdirSync(home, { recursive: true });
+    const m = taskMachine(home);
+    expect(await m.install({})).toBe("installed");
+    // Written out by hand: the smart quote doubled with itself, and nothing else changed —
+    // the path this Linux test joins with `/` (Windows joins with `\`).
+    const taskPath = `${home}/.local/share/cc-smart-dev-kit/router-task.xml`;
+    expect(m.scripts[2]).toBe(
+      `Register-ScheduledTask -TaskName 'cc-smart-dev-kit-router' -Xml (Get-Content -Raw -Encoding UTF8 -LiteralPath '${taskPath.replace("’", "’’")}') -Force | Out-Null`,
+    );
+    expect(m.scripts[2]).not.toContain("O’Brien'");
   });
 
   it("nothing changed: the task is left alone, and the router is not restarted", async () => {

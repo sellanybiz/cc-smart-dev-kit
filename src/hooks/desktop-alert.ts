@@ -267,9 +267,23 @@ export function busCallArgv(gdbus: string, method: string, args: string[]): stri
   ];
 }
 
-/** GVariant text for a string argument: single-quoted, with a `'` inside doubled. */
+/**
+ * GVariant text for a string argument: single-quoted, with `\` and `'` escaped the C way
+ * (`\\`, `\'`). Those are the only two characters GLib's parser reads specially inside a
+ * string — any other character following `\` is copied literally, and every character that
+ * is not a backslash is text ("GVariant Text Format" § Strings, from GLib's own
+ * documentation: "you should only use this feature when necessary for escaping backslashes
+ * or quotes").
+ *
+ * The doubled quote this used to do is **not** an escape in this format: `''` is a closing
+ * and an opening quote, and GLib refuses the whole value. So `Claude's turn` broke the call
+ * ("expected end of input"), `C:\new` arrived with a line break where the `\n` was, and a
+ * trailing `\` escaped the closing quote and left the string unterminated. A control
+ * character needs nothing: GLib's parser copies it as it is (proved against GLib 2.88 —
+ * `'a\nb'`, `'a\tb'`, `'a\x01b'` and `'a\x0bb'` read back unchanged).
+ */
 export function gvariantString(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
+  return `'${value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
 }
 
 /**

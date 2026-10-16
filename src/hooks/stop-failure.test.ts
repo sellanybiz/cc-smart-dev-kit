@@ -23,6 +23,7 @@ import {
   runAlert,
   usesAlertWorker,
 } from "./stop-failure";
+import { decodedToastText } from "./windows-toast";
 
 const NOW = Date.UTC(2026, 9, 15, 10, 0, 0);
 const RESET = NOW / 1000 + 3 * 3600;
@@ -416,8 +417,8 @@ describe("the worker shows it", () => {
       "-EncodedCommand",
     ]);
     const script = Buffer.from(win.runs[0]?.argv[4] ?? "", "base64").toString("utf16le");
-    expect(script).toContain("$title = 'Claude usage limit reached'\n");
-    expect(script).toContain("$body = 'body text'\n");
+    expect(decodedToastText(script, "title")).toBe("Claude usage limit reached");
+    expect(decodedToastText(script, "body")).toBe("body text");
     const none = fakeRunner([]);
     expect(runAlert(ALERT, "freebsd", LAUNCHER, none.run)).toBe("no notifier");
     expect(none.runs).toEqual([]);

@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { decodedToastText } from "../hooks/windows-toast";
 import {
   installInstructions,
   instructionsPaths,
@@ -884,9 +885,11 @@ describe("the notification", () => {
       "-NonInteractive",
       "-EncodedCommand",
     ]);
+    // The words are base64 of UTF-8 inside the script, which decodes them itself: no
+    // character of the alert is part of the script's own source (`decodedToastText`).
     const script = Buffer.from(toast?.[4] ?? "", "base64").toString("utf16le");
-    expect(script).toContain("$title = 'cc-smart-dev-kit'\n");
-    expect(script).toContain(`$body = '${text}'\n`);
+    expect(decodedToastText(script, "title")).toBe("cc-smart-dev-kit");
+    expect(decodedToastText(script, "body")).toBe(text);
   });
 
   test("a version that is not plain text never reaches the notifier", () => {
@@ -912,6 +915,12 @@ describe("the background check's argv", () => {
     // A detached child dies with its hook on Windows (oven-sh/bun#31603): the trampoline
     // starts the check outside that job object (`src/hooks/detached.ts`). The flags keep
     // the home folder's `.env` and `bunfig.toml` out of the child on every system.
+    //
+    // The trampoline hands cmd.exe **one line**, and cmd.exe reads it: `start "" /b` with
+    // every argument in double quotes (`&`, `^`, `%`, a space: cmd's own characters), the
+    // whole line in one pair of quotes that `/s` strips, and `/d` and `/v:off` so no AutoRun
+    // command and no `!` expansion can touch it. None of these arguments ends in a `\`, so
+    // none needs the doubled backslashes a path ending in one gets. Written out by hand:
     expect(
       backgroundCheckArgv(
         "win32",
@@ -921,15 +930,11 @@ describe("the background check's argv", () => {
       ),
     ).toEqual([
       "cmd",
+      "/d",
+      "/s",
+      "/v:off",
       "/c",
-      "start",
-      "",
-      "/b",
-      ...backgroundCommand(
-        "C:\\Users\\u\\.bun\\bin\\bun.exe",
-        "C:\\p\\dist\\update-check.js",
-        "C:\\p",
-      ),
+      String.raw`"start "" /b "C:\Users\u\.bun\bin\bun.exe" "--no-env-file" "--config=C:\p/bunfig.toml" "C:\p\dist\update-check.js" "--background""`,
     ]);
     for (const platform of ["linux", "darwin"] as const) {
       const argv = backgroundCheckArgv(platform, "/usr/bin/bun", "/p/dist/update-check.js", "/p");

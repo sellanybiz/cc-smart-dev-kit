@@ -42,6 +42,7 @@
  */
 
 import { COMMAND } from "../build-info";
+import { powershellLiteral } from "../shell/powershell";
 import { waitWhileRouterAnswers } from "./health";
 import { oneLine } from "./plain-text";
 import {
@@ -76,18 +77,6 @@ export const TASK_STOP_WAIT_MS = 5_000;
 const POWERSHELL = "powershell";
 const PS_FLAGS = ["-NoProfile", "-NonInteractive", "-Command"];
 
-/**
- * A value inside a PowerShell single-quoted string: `'` is written `''`, and nothing else
- * needs anything. PowerShell takes no escape inside those, so a newline in a path cannot be
- * quoted at all: refused instead.
- */
-function psQuote(value: string): string {
-  if (/[\r\n]/.test(value)) {
-    throw new Error(`cannot put ${JSON.stringify(value)} in a PowerShell command`);
-  }
-  return `'${value.replaceAll("'", "''")}'`;
-}
-
 /** The Task Scheduler's answer about the task: its state, its last result, and its action. */
 export interface TaskFacts {
   registered: boolean;
@@ -106,7 +95,7 @@ export interface TaskFacts {
  */
 function taskQuery(): string {
   return [
-    `$n=${psQuote(TASK_NAME)}`,
+    `$n=${powershellLiteral(TASK_NAME)}`,
     "$t=Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue",
     `if($null -eq $t){'registered=false'}else{$a=@($t.Actions)[0];'registered=true'`,
     `'state='+$t.State`,
@@ -177,23 +166,31 @@ function runTask(runner: Runner, script: string, what: string): void {
 function registerTask(runner: Runner, taskPath: string): void {
   runTask(
     runner,
-    `Register-ScheduledTask -TaskName ${psQuote(TASK_NAME)} -Xml (Get-Content -Raw -Encoding UTF8 -LiteralPath ${psQuote(taskPath)}) -Force | Out-Null`,
+    `Register-ScheduledTask -TaskName ${powershellLiteral(TASK_NAME)} -Xml (Get-Content -Raw -Encoding UTF8 -LiteralPath ${powershellLiteral(taskPath)}) -Force | Out-Null`,
     `registering ${TASK_LABEL}`,
   );
 }
 
 function startTask(runner: Runner): void {
-  runTask(runner, `Start-ScheduledTask -TaskName ${psQuote(TASK_NAME)}`, `starting ${TASK_LABEL}`);
+  runTask(
+    runner,
+    `Start-ScheduledTask -TaskName ${powershellLiteral(TASK_NAME)}`,
+    `starting ${TASK_LABEL}`,
+  );
 }
 
 function stopTask(runner: Runner): void {
-  runTask(runner, `Stop-ScheduledTask -TaskName ${psQuote(TASK_NAME)}`, `stopping ${TASK_LABEL}`);
+  runTask(
+    runner,
+    `Stop-ScheduledTask -TaskName ${powershellLiteral(TASK_NAME)}`,
+    `stopping ${TASK_LABEL}`,
+  );
 }
 
 function unregisterTask(runner: Runner): void {
   runTask(
     runner,
-    `Unregister-ScheduledTask -TaskName ${psQuote(TASK_NAME)} -Confirm:$false`,
+    `Unregister-ScheduledTask -TaskName ${powershellLiteral(TASK_NAME)} -Confirm:$false`,
     `removing ${TASK_LABEL}`,
   );
 }

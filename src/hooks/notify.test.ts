@@ -29,6 +29,7 @@ import {
   warpPluginOn,
   warpShowsIt,
 } from "./notify";
+import { decodedToastText } from "./windows-toast";
 
 const ENTRY = join(import.meta.dir, "..", "entries", "notify.ts");
 const ROOT = join(import.meta.dir, "..", "..");
@@ -252,8 +253,8 @@ describe("what is notified, and with which words", () => {
       "-EncodedCommand",
     ]);
     const script = Buffer.from(runs[0]?.[4] ?? "", "base64").toString("utf16le");
-    expect(script).toContain("$title = 'Claude needs you · rel-ssh'\n");
-    expect(script).toContain("$body = 'Claude needs your permission to use Bash'\n");
+    expect(decodedToastText(script, "title")).toBe("Claude needs you · rel-ssh");
+    expect(decodedToastText(script, "body")).toBe("Claude needs your permission to use Bash");
     expect(script).toContain('<toast scenario="reminder">');
   });
 
