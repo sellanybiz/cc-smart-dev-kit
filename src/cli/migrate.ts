@@ -67,6 +67,8 @@ import {
   unitActive,
 } from "../gateway/service";
 import { gatewayEnv } from "../gateway/settings";
+import { hostPlatform } from "../machine/host";
+import { isOwnerOnly } from "../setup/file-mode";
 import { findUserInstall, type PluginInstall } from "../setup/installed-plugins";
 import {
   copyInstalled,
@@ -718,11 +720,16 @@ export function settingsChanges(
  * The gateway config's text as an object. Its own reader, not `loadConfigFile`: the old
  * config's slot keys fail this version's schema, which is exactly what migrate is here to
  * change. It keeps that reader's rules: a file others can read is refused, and a parse
- * error never quotes the text (it holds API keys).
+ * error never quotes the text (it holds API keys). "Others can read" is `isOwnerOnly`'s
+ * answer, so on Windows — where the mode says nothing and the profile's ACL protects the
+ * file — nothing is refused.
  */
-export function readOldConfig(file: string): Record<string, unknown> {
+export function readOldConfig(
+  file: string,
+  platform: NodeJS.Platform = hostPlatform(),
+): Record<string, unknown> {
   const mode = statSync(file).mode;
-  if ((mode & 0o077) !== 0) {
+  if (!isOwnerOnly(mode, platform)) {
     throw new ConfigError(
       `${file} can be read by other users (mode ${(mode & 0o777).toString(8)}); it holds API keys. Run: chmod 600 ${file}`,
     );

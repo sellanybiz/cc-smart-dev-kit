@@ -122,6 +122,12 @@ Each of them:
   the same one under `%USERPROFILE%` — `docs/windows-setup.md` says why.
 - **A mode call goes through `setFileMode()`** (`file-mode.ts`): on Windows a mode is not
   protection (the profile's ACL is) and a failing `chmod`/`fchmod` must never end a run.
+- **A check that reads a mode goes through `isOwnerOnly()`** in the same module: every
+  reader that refuses a file "the group or others can read" (the gateway's config, the
+  browser's token, the Tavily key file, the browser's output folder) asks it. Off Windows
+  the bits decide; on Windows every file counts as the owner's alone, because
+  `statSync().mode` there is made up (`0666` for a writable file) and a refusal over it
+  would refuse **every** file the plugin owns.
 - **One launcher, many config folders.** The launcher `~/.local/bin/cc-smart-dev-kit` is
   shared by every config folder; the state (lock, records, backups) is per config folder.
   So a `restore` under one `CLAUDE_CONFIG_DIR` can remove a launcher another one relies

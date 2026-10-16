@@ -19,6 +19,9 @@
  *   in `/proc`), never `~/.claude.json`, and is never printed by any command, error or log: the
  *   messages name the file, never the value.
  *
+ *   On Windows the mode protects nothing (the numbers are synthetic there) and the profile's ACL
+ *   is what keeps the token to its owner: `isOwnerOnly` is why a file there is never refused.
+ *
  * THE SHAPE
  *   The extension makes 32 random bytes, base64-encodes them and makes that URL-safe
  *   (`packages/extension/src/ui/authToken.tsx`): 43 characters of `A-Z a-z 0-9 - _`. A token that
@@ -30,6 +33,8 @@ import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:
 import { dirname } from "node:path";
 import { COMMAND } from "../build-info";
 import type { CliPaths } from "../cli/paths";
+import { hostPlatform } from "../machine/host";
+import { isOwnerOnly } from "../setup/file-mode";
 import { atomicWrite } from "../setup/write";
 
 /** The environment variable the Playwright MCP reads the token from. */
@@ -87,16 +92,19 @@ export function parseBrowserToken(
   return { ok: true, token: text };
 }
 
-/** A file only its owner (and root) may read: every bit for group and other is clear. */
-function isPrivate(mode: number): boolean {
-  return (mode & 0o077) === 0;
-}
-
 /**
  * The token, from its file. Never prints a value: a refusal names the file and what to do.
  * A missing file is the ordinary case on a machine that has not run `browser token` yet.
+ *
+ * A file the group or others can read is refused on Linux and macOS, where the mode says so;
+ * on Windows the profile's ACL is what protects it, and no file is refused over its bits
+ * (`isOwnerOnly`).
  */
-export function readBrowserToken(paths: CliPaths, deps: TokenDeps = {}): BrowserToken {
+export function readBrowserToken(
+  paths: CliPaths,
+  deps: TokenDeps = {},
+  platform: NodeJS.Platform = hostPlatform(),
+): BrowserToken {
   const exists = deps.exists ?? existsSync;
   const read =
     deps.read ??
@@ -128,7 +136,7 @@ export function readBrowserToken(paths: CliPaths, deps: TokenDeps = {}): Browser
       reason: `${paths.browserTokenFile} cannot be read; run \`${COMMAND} browser token\` again`,
     };
   }
-  if (!isPrivate(file.mode)) {
+  if (!isOwnerOnly(file.mode, platform)) {
     return {
       source: "none",
       reason:

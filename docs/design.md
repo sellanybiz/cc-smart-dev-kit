@@ -1459,9 +1459,11 @@ which every session that works in a worktree does. Registered for the user, the 
   settings as an owned **secret** key (masked in output, a hash in `owned.json`, the file left
   at mode 600 — the machinery `src/setup/managed-json.ts` already had for claude-mem's key).
   A key file others can read is refused with the command that fixes it, never with the key in
-  it; without a key the server is skipped with a note — and a recorded Tavily server of ours
-  is taken back, and the owned `env` key removed (only while it still holds what setup wrote),
-  so a key that moved to the environment (or went away) does not leave a stale copy behind.
+  it — off Windows: there a mode says nothing and the profile's ACL protects the file, so no key
+  file is refused (`isOwnerOnly`). Without a key the server is skipped with a note — and a
+  recorded Tavily server of ours is taken back, and the owned `env` key removed (only while it
+  still holds what setup wrote), so a key that moved to the environment (or went away) does not
+  leave a stale copy behind.
 - **What setup registered is recorded** (`<stateDir>/mcp-servers.json`: the name, the exact
   JSON, when, and whether an update is in flight), so `restore` removes exactly that: each
   server that still holds what setup wrote (`claude mcp remove <name> --scope user`), then the

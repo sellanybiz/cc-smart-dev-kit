@@ -43,6 +43,7 @@ import {
   OLD,
   oldGatewayEnv,
   progressFile,
+  readOldConfig,
   runMigrate,
 } from "./migrate";
 import { cliPaths } from "./paths";
@@ -1143,3 +1144,42 @@ function systemdDir(home: string): string {
 function changedFilesOf(m: ReturnType<typeof machine>): Record<string, unknown> {
   return readJson(join(m.new.stateDir, "changed.json")).files;
 }
+
+/**
+ * The gateway config the migration reads before anything moves: `readOldConfig` keeps
+ * `loadConfigFile`'s "a file others can read is refused" rule, and `isOwnerOnly` is what decides
+ * it. On Windows the mode says nothing (a writable file reports 0o100666 there whatever its ACL
+ * says), so a refusal over those bits would stop every Windows run over a config the profile's
+ * ACL already protects.
+ *
+ * This file's end-to-end runs need a fake `systemctl` (a shell script), so they stay in the Linux
+ * job; the reader's own rule is checked here, where both platforms can be asked for.
+ */
+describe("readOldConfig — the mode rule", () => {
+  const config = { backends: { omniroute: { apiKey: "omni-key-123456" } }, slots: {}, version: 1 };
+
+  function configFile(): string {
+    const file = join(tempDir("migrate-old-config"), "gateway.json");
+    writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+    return file;
+  }
+
+  test("a file the group or others can read is refused off Windows", () => {
+    const file = configFile();
+    chmodSync(file, 0o644);
+    expect(() => readOldConfig(file, "linux")).toThrow("can be read by other users (mode 644)");
+    expect(() => readOldConfig(file, "darwin")).toThrow("Run: chmod 600");
+  });
+
+  test("on Windows the same file is read: the mode there says nothing", () => {
+    const file = configFile();
+    chmodSync(file, 0o666);
+    expect(readOldConfig(file, "win32")).toEqual(config);
+  });
+
+  test("its own file: read on both", () => {
+    const file = configFile();
+    expect(readOldConfig(file, "linux")).toEqual(config);
+    expect(readOldConfig(file, "win32")).toEqual(config);
+  });
+});

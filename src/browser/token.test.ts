@@ -24,6 +24,9 @@ import {
 /** 43 URL-safe characters: the extension's own shape (32 random bytes, base64, made URL-safe). */
 const TOKEN = `${"A".repeat(40)}_-b`;
 
+/** Windows makes the modes up (`statSync().mode` is 0666 for a writable file): POSIX assertions. */
+const NO_POSIX_MODES = process.platform === "win32";
+
 function paths(home: string) {
   return cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
 }
@@ -60,14 +63,20 @@ describe("parseBrowserToken", () => {
 });
 
 describe("the token file", () => {
-  test("written 0600 in a folder only its owner can read, and read back", () => {
+  test("written and read back: the file holds the token, never a newline's worth more", () => {
     const home = tempDir("token");
     const paths_ = paths(home);
     writeBrowserToken(paths_, TOKEN);
     expect(readFileSync(paths_.browserTokenFile, "utf8")).toBe(`${TOKEN}\n`);
+    expect(readBrowserToken(paths_)).toEqual({ source: "file", value: TOKEN });
+  });
+
+  test.skipIf(NO_POSIX_MODES)("written 0600 in a folder only its owner can read", () => {
+    const home = tempDir("token");
+    const paths_ = paths(home);
+    writeBrowserToken(paths_, TOKEN);
     expect(statSync(paths_.browserTokenFile).mode & 0o777).toBe(0o600);
     expect(statSync(join(home, ".config", "cc-smart-dev-kit")).mode & 0o777).toBe(0o700);
-    expect(readBrowserToken(paths_)).toEqual({ source: "file", value: TOKEN });
   });
 
   test("a missing file says where it would be, never a token", () => {
@@ -78,18 +87,34 @@ describe("the token file", () => {
       expect(read.reason).toBe(`no token file at ${paths_.browserTokenFile}`);
   });
 
-  test("a file others can read is refused, with the command that fixes it", () => {
+  test.skipIf(NO_POSIX_MODES)(
+    "a file others can read is refused, with the command that fixes it",
+    () => {
+      const home = tempDir("token");
+      const paths_ = paths(home);
+      writeBrowserToken(paths_, TOKEN);
+      chmodSync(paths_.browserTokenFile, 0o644);
+      const read = readBrowserToken(paths_);
+      expect(read.source).toBe("none");
+      if (read.source === "none") {
+        expect(read.reason).toContain("readable by others");
+        expect(read.reason).toContain(`chmod 600 ${paths_.browserTokenFile}`);
+        expect(read.reason).not.toContain(TOKEN);
+      }
+    },
+  );
+
+  test("the same shared-looking file: refused off Windows, read on Windows", () => {
+    // Windows reports 0o100666 for a writable file whatever its ACL says, so the bits cannot
+    // decide there: the profile's ACL protects the token file, and refusing every file would
+    // leave `browser mcp` saying "readable by others (mode 666)" on every Windows machine.
     const home = tempDir("token");
     const paths_ = paths(home);
     writeBrowserToken(paths_, TOKEN);
-    chmodSync(paths_.browserTokenFile, 0o644);
-    const read = readBrowserToken(paths_);
-    expect(read.source).toBe("none");
-    if (read.source === "none") {
-      expect(read.reason).toContain("readable by others");
-      expect(read.reason).toContain(`chmod 600 ${paths_.browserTokenFile}`);
-      expect(read.reason).not.toContain(TOKEN);
-    }
+    chmodSync(paths_.browserTokenFile, 0o666);
+    expect(readBrowserToken(paths_, {}, "linux").source).toBe("none");
+    expect(readBrowserToken(paths_, {}, "darwin").source).toBe("none");
+    expect(readBrowserToken(paths_, {}, "win32")).toEqual({ source: "file", value: TOKEN });
   });
 
   test("an empty or wrong-shaped file is refused, and the reason never holds a value", () => {

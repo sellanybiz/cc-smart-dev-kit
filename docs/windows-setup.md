@@ -33,7 +33,7 @@ Windows yet.
 | The launcher | `%USERPROFILE%\.local\bin\cc-smart-dev-kit` and `…\.cmd` |
 | State (lock, records, backups) | `%USERPROFILE%\.claude\cc-smart-dev-kit` |
 | Data (router copy, portal copy, the browser's output) | `%USERPROFILE%\.local\share\cc-smart-dev-kit` |
-| The extension's token | `%USERPROFILE%\.config\cc-smart-dev-kit\playwright-extension.token` (mode 600) |
+| The extension's token | `%USERPROFILE%\.config\cc-smart-dev-kit\playwright-extension.token` (the profile's ACL protects it: a mode there says nothing) |
 | The gateway's config | `%USERPROFILE%\.config\cc-smart-dev-kit\gateway.json` |
 
 Why, and what it costs:
@@ -99,6 +99,20 @@ So `src/setup/file-mode.ts` is the one home for the rule: off Windows a mode tha
 set is thrown (the file would be readable by others); on Windows the call is still made
 (harmless) and a failure is not fatal, because the content is written and correct and the
 profile's ACL is doing the protecting. Nothing may crash a run over a mode there.
+
+**The same rule reads backwards, and that is what would break Windows worst.** The plugin also
+*reads* a mode to decide whether a file is safe: the gateway's config (its keys), the
+extension's token, the Tavily key file, the browser's output folder. Off Windows a file whose
+group or other bits are set is refused, with a message saying to run `chmod 600`. On Windows
+those numbers are made up — `statSync().mode` reports `0666` for a writable file and `0444` for
+a read-only one, whatever the ACL says — so that check would refuse **every** file the plugin
+owns: the router would run on its fallback config, `browser mcp` would find no token, and the
+Tavily key file would be ignored. So `isOwnerOnly(mode, platform)` in the same module answers
+what all of those ask: off Windows the bits, and on Windows "yes, the owner's alone" — the ACL
+is the protection there, and no file is refused over its bits. No `chmod 600` message is
+printed on Windows either. Its tests (and theirs) run in the Windows CI job
+(`.github/workflows/windows.yml`), and the Linux job keeps proving the refusal still works
+there.
 
 ## Git Bash: what needs it, and what doctor says
 
@@ -177,7 +191,11 @@ Nothing below has been run on Windows yet. Each one is a live check, not a unit 
 6. **`sessions --open`** in Windows Terminal: `wt.exe -d <folder> cmd /k …` opens one window per
    session, and the `--open` marker file stops a second run from opening a second copy.
 7. **File modes**: `setup` completes on Windows with a lock and a state folder; nothing crashes
-   over `chmod`/`fchmod`, and the state folder's ACL keeps other accounts out.
+   over `chmod`/`fchmod`, and the state folder's ACL keeps other accounts out. Then the readers
+   side, by hand: `gateway status` reads the config (no "can be read by other users" line),
+   `browser mcp` finds the token, and `doctor` reads the Tavily key file — none of them refused
+   over a mode, and no message saying `chmod 600`. (The readers' own tests run in the Windows CI
+   job; this is the live run.)
 8. **The paths**: `doctor` prints the `~`-shortened paths and they point under `%USERPROFILE%`;
    Git Bash, PowerShell and `cmd` all reach the same `installed_plugins.json`.
 9. **Git Bash absent** (deliberately): `doctor` says `✗ Git Bash was not found`, and in a

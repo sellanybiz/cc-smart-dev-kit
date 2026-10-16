@@ -1272,9 +1272,11 @@ folders. Registered for the user, the names stay and the servers stay.
   copies into the `env` of your `settings.json` as a secret key cc-smart-dev-kit owns (masked in
   output, kept as a hash in `owned.json`, and the settings file left at mode 600). Without a
   key the server is skipped, and setup says so. A key file others can read, or an empty one,
-  is refused with the command that fixes it — never with the key in it. When the key moves to
-  your environment (or goes away), the copy setup wrote is removed with it, and a Tavily server
-  setup had registered is taken back — never a stale registration left behind.
+  is refused with the command that fixes it — never with the key in it. On Windows a mode says
+  nothing (the profile's ACL protects the file), so a key file there is read whatever its bits
+  say. When the key moves to your environment (or goes away), the copy setup wrote is removed
+  with it, and a Tavily server setup had registered is taken back — never a stale registration
+  left behind.
 - Versions are **pinned** (`src/mcp/versions.ts`): a server started as `@latest` asks the
   registry on every session start and installs whatever was published a minute ago, and
   re-resolving a dependency tree makes the start slow enough to fail inside Claude Code's
