@@ -96,11 +96,23 @@ Each of them:
 
 ## State, lock and paths
 
-- **The browser's one write inside Chrome's own folder** is the `claude-code` profile's display
-  name in `Local State`, through `applyManagedJson` (`json-keys`), and only while no Chrome runs
-  on that user data folder — Chrome rewrites that file from memory. `restore` puts it back like
+- **The browser's writes inside Chrome's own folder** are the `claude-code` profile's display
+  name in `Local State` (`profile.info_cache.<dir>.name`) AND in the profile's own `Preferences`
+  (`profile.name`), through `applyManagedJson` (`json-keys`), and only while no Chrome runs on
+  that user data folder — Chrome rewrites both files from memory. `restore` puts them back like
   any other key; nothing else of Chrome's is written, and no command deletes a profile or an
   extension (`.claude/rules/browser.md`).
+- **`gateway.json` backs itself up, in the state folder, beside the other backups.** A key that
+  really replaces one already there makes `backupFile(stateDir, gatewayConfigFile)` run first —
+  the one backup helper, `<stateDir>/backups/<the path, encoded>/`, never a copy beside a file
+  that holds keys. It is NOT a managed change (`changed.json` does not track it): `restore`
+  leaves `gateway.json` alone on purpose, because it holds the person's key. The setup line says
+  which folder the backup is in; copying a file back is the person's own step.
+- **`cc-smart-dev-kit mcp status [--json]`** (`src/mcp/status.ts`) is read-only and answers which
+  of the plugin's four MCP servers are its own and which are registered by something else, on the
+  same rule as setup (`sameConfig` against the record). Its line shows a server's command and
+  arguments — never an `env` or a `headers`, which can hold a key. The installer asks with it
+  (`install.sh`, `install.ps1`); `doctor` warns from the same facts.
 - **State (`<stateDir>`):** `$CLAUDE_CONFIG_DIR/cc-smart-dev-kit/` (by default
   `~/.claude/cc-smart-dev-kit/`): `owned.json`, `owned-entries.json`, `changed.json`, the `lock`, and `backups/`
   (mode 0700). Beside them, the instructions' two state files: `no-instructions` (a stored

@@ -161,6 +161,7 @@ esac
     // SubagentStop entry here is checked to be `review-record` and nothing else.
     expect(Object.keys(hooksJson.hooks).sort()).toEqual([
       "Notification",
+      "PostModelSwitch",
       "PostToolUse",
       "PostToolUseFailure",
       "PreToolUse",

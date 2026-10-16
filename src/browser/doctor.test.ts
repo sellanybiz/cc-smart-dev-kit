@@ -53,15 +53,47 @@ describe("browserChecks", () => {
     expect(line?.text).toContain(PLAYWRIGHT_EXTENSION_URL);
   });
 
-  test("another extension in the profile: a warning naming the open upstream bug", () => {
+  test("another extension in the profile: a warning naming it, and the open upstream bug", () => {
     const world = chromeWorld();
-    world.withProfile({ fileUrls: true, others: ["aaaaother"] });
+    world.withProfile({
+      fileUrls: true,
+      others: [
+        { id: "aaaaaaaabbbbbbbbccccccccdddddddd", messageKey: "extName", name: "Some Page Helper" },
+      ],
+    });
     const checks = browserChecks(world.paths, world.deps);
     const line = checks.find((check) => check.text.includes("other extension"));
     expect(line?.warn).toBe(true);
     expect(line?.ok).toBe(true);
-    expect(line?.text).toContain("aaaaother");
+    // Named by its manifest name, with the id beside it — a `__MSG_…__` name is resolved from
+    // the extension's own `_locales` (live, 2026-10-17: the person could not find what doctor
+    // named in `chrome://extensions`).
+    expect(line?.text).toContain("Some Page Helper [aaaaaaaabbbbbbbbccccccccdddddddd]");
     expect(line?.text).toContain("playwright#43230");
+  });
+
+  test("what Chrome itself keeps there is not another extension: no line at all", () => {
+    // The false alarm of 2026-10-17, all three parts of it at once: Chrome's `Temp` folder
+    // (no manifest), a component extension (`location: 5`), the external-component one with
+    // `was_installed_by_default: true` (`location: 10`, the Web Store Payments extension), and
+    // a record with no folder at all (left after an extension was removed).
+    const world = chromeWorld();
+    world.withProfile({
+      fileUrls: true,
+      others: [
+        { id: "nmmhkkegccagdldgiimedpiccmgmieda", installedByDefault: true, location: 10 },
+        { id: "ghbmnnjooekpmoecnnnilnnbdlolhkhi", folder: false, location: 1 },
+        { id: "abcdefghijklmnopabcdefghijklmnop", location: 5 },
+      ],
+      tempFolder: true,
+    });
+    const checks = browserChecks(world.paths, world.deps);
+    expect(checks.find((check) => check.text.includes("other extension"))?.text).toBe(
+      "no other extension is in that profile",
+    );
+    const all = checks.map((check) => check.text).join("\n");
+    expect(all).not.toContain("Temp");
+    expect(all).not.toContain("nmmhkkegccagdldgiimedpiccmgmieda");
   });
 
   test("the file-URL switch: off fails with the address, on passes, unreadable says so", () => {

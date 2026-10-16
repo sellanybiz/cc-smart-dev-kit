@@ -37,7 +37,7 @@ import {
   findChrome,
   findClaudeCodeProfile,
   isExtensionInstalledInProfile,
-  otherExtensionIds,
+  otherExtensions,
   PLAYWRIGHT_EXTENSION_SETTINGS_URL,
   PLAYWRIGHT_EXTENSION_URL,
 } from "./chrome";
@@ -182,7 +182,12 @@ function prerequisiteChecks(paths: CliPaths, deps: BrowserDoctorDeps): BrowserCh
         }),
   );
 
-  const others = otherExtensionIds(profile.dir, deps);
+  // Judged by Chrome's own record, not by the folders on disk: a folder without a manifest
+  // (Chrome's `Temp`) and an entry without a folder are not extensions, and Chrome's own
+  // components are hidden from `chrome://extensions` and cannot be removed there (live,
+  // 2026-10-17: this line named `Temp` and Chrome Web Store Payments, and the person found
+  // neither). The line names each one by its manifest name, so it is recognisable.
+  const others = otherExtensions(profile.dir, deps);
   checks.push(
     others.length === 0
       ? line({ ok: true, text: "no other extension is in that profile" })
@@ -191,9 +196,9 @@ function prerequisiteChecks(paths: CliPaths, deps: BrowserDoctorDeps): BrowserCh
           warn: true,
           text:
             `${String(others.length)} other extension${others.length === 1 ? "" : "s"} in the ` +
-            `"${CLAUDE_CODE_PROFILE}" profile (${others.join(", ")}): one that injects into pages ` +
-            `breaks a browser session (microsoft/playwright#43230, open). Remove it from that ` +
-            `profile: chrome://extensions`,
+            `"${CLAUDE_CODE_PROFILE}" profile (${others.map((one) => `${one.name} [${one.id}]`).join(", ")}): ` +
+            `one that injects into pages breaks a browser session (microsoft/playwright#43230, ` +
+            `open). Remove it from that profile: chrome://extensions`,
         }),
   );
 

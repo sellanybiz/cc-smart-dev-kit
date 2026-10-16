@@ -67,6 +67,14 @@ set -u
 # (scripts/install.test.ts).
 MIN_BUN="1.4.3"
 
+# The version this installer ships with: `version` in plugin/.claude-plugin/plugin.json of the
+# repository this script was downloaded from. A test keeps the two equal
+# (scripts/install.test.ts). It is read back off the installed CLI after the install or update
+# (step 5): a CLI older than this script would refuse the options this script passes it, and
+# that is exactly what happened on the first real run (2026-10-17: the installed CLI was 0.4.1,
+# it had no `--tavily-key-stdin`, and the run died at the Tavily step).
+INSTALLER_VERSION="0.4.3"
+
 # The names this repository declares: the marketplace in .claude-plugin/marketplace.json
 # and the plugin id in plugin/.claude-plugin/plugin.json. `claude plugin install` needs
 # both halves of the id. The old names are what a 0.2.x machine still carries
@@ -97,6 +105,9 @@ LAUNCHER="$BIN_DIR/cc-smart-dev-kit"
 # The router's own copy: `gateway setup` writes it, so its presence means a router was set
 # up here before — and may be running, which is what the restart question is about.
 ROUTER_COPY="$HOME/.local/share/cc-smart-dev-kit/router.js"
+# The Tavily key file setup reads a key from: a person who already has one there is not asked
+# for a key again (the same rule `readTavilyKey` follows: environment first, then this file).
+TAVILY_KEY_FILE="$CLAUDE_DIR/cc-smart-dev-kit/tavily.key"
 
 # ─── output ────────────────────────────────────────────────────────────────────────────
 step() { printf '✓ %s\n' "$1"; }
@@ -160,13 +171,35 @@ ask_line() { # <prompt>
 }
 
 # A secret from the terminal: not echoed, never printed, never in a command line, and never
-# in a child's environment. The caller clears `answer` the moment it has copied it.
+# in a child's environment. The caller clears `answer` the moment it has copied it. The line
+# is cleaned first (see `clean_secret`).
 ask_secret() { # <prompt>
   printf '%s ' "$1"
   answer=""
   read -r -s -u 3 answer || answer=""
+  clean_secret
   printf '\n'
   export -n answer 2>/dev/null || true
+}
+
+# The line a secret read just gave, cleaned. Many terminals (Warp among them) wrap a PASTE in
+# the bracketed-paste markers ESC[200~ … ESC[201~, and a raw or silent read keeps every
+# character — so a pasted token or key reached the plugin's own command with those markers in
+# it and was refused as the wrong shape (live, 2026-10-17). The two markers go first (as
+# SEQUENCES: dropping the ESC first would leave `[200~` behind), then every other control
+# character, then the ends trimmed. Printable characters stay, a non-ASCII password included.
+# The plugin cleans the same way (src/cli/secret-line.ts, `cleanSecretLine`): keep the two in
+# step, and install.ps1's `Clear-Secret` with them.
+clean_secret() {
+  local start end
+  start=$'\033[200~'
+  end=$'\033[201~'
+  answer="${answer//"$start"/}"
+  answer="${answer//"$end"/}"
+  answer="${answer//[$'\001'-$'\037'$'\177']/}"
+  # Leading and trailing white space: `read` already dropped the line's end, a paste may add more.
+  while [ "${answer# }" != "$answer" ]; do answer="${answer# }"; done
+  while [ "${answer% }" != "$answer" ]; do answer="${answer% }"; done
 }
 
 # A yes/no question; `answer` is "no" unless the person writes yes.
@@ -307,12 +340,76 @@ plugin_command() { # <command…>
     "$(shell_word "$PLUGIN_DIR/bunfig.toml")" "$(shell_word "$PLUGIN_DIR")" "$*"
 }
 
+# The version the plugin's own CLI answers: `cli.js version` prints "cc-smart-dev-kit <version>",
+# and the last word of it is the version. Empty when nothing answered. Nothing else runs and
+# nothing is printed: the caller decides what to say. Read through the CLI's own command rather
+# than the folder's name, because that is what the next steps really call.
+cli_version() {
+  local out
+  out="$(run_cli_quiet version 2>/dev/null || true)"
+  case "$out" in
+  *" "*) printf '%s' "${out##* }" ;;
+  *) printf '%s' "${out%$'\n'}" ;;
+  esac
+}
+
+# The plugin's own MCP servers that are registered by SOMETHING ELSE, one per line as
+# `<name><TAB><what runs instead>`. `mcp status --json` answers it read-only, and the
+# rule for "ours" lives in the plugin (src/mcp/status.ts, one home with setup's own decision).
+# Nothing when every one is the plugin's own, or when the check cannot read the file.
+#
+# Why the installer asks: a project's own script had registered `playwright` (and the other
+# three) before cc-smart-dev-kit was installed, setup left them alone as it must, and its `!`
+# line was never seen among the installer's output — so the old browser kept starting and the
+# plugin's own never took over (live, 2026-10-17).
+foreign_mcp_servers() {
+  run_cli_quiet mcp status --json 2>/dev/null |
+    "$BUN" -e 'let t="";for await(const c of Bun.stdin.stream()) t+=new TextDecoder().decode(c);
+try{for(const s of (JSON.parse(t).servers||[])) if(s.state==="foreign") console.log(s.name+"\t"+(s.runsWhat||""))}catch{}'       2>/dev/null || true
+}
+
+# One pass over those servers: show what runs instead, and ask. A name is asked about ONCE per
+# run (`mcp_asked`), so the second pass — after the Tavily key, whose arrival can change what
+# the plugin registers — brings up only what is new. A yes removes the server and runs `setup`
+# again, so the plugin registers its own WITH its record (that record is what lets `restore`
+# take it back later).
+mcp_foreign_pass() { # <step label>
+  local label="$1" name runs replaced="no"
+  while IFS="$(printf '\t')" read -r name runs; do
+    [ -n "$name" ] || continue
+    case " $mcp_asked " in
+    *" $name "*) continue ;;
+    esac
+    mcp_asked="$mcp_asked $name"
+    ask_yes "$label The \"$name\" server is registered by something else ($runs). Replace it with cc-smart-dev-kit's?"
+    if [ "$answer" = "yes" ]; then
+      if ! "$CLAUDE_BIN" mcp remove "$name" --scope user </dev/null; then
+        failed "removing the old \"$name\" server failed" "claude mcp remove $name --scope user"
+      fi
+      replaced="yes"
+    else
+      skip "$label the \"$name\" server was left as it is: run \`claude mcp remove $name --scope user\`, then \`$(plugin_command setup)\`"
+      LEFT+=("the \"$name\" MCP server (registered by something else): claude mcp remove $name --scope user && $(plugin_command setup)")
+    fi
+  done <<EOF
+$(foreign_mcp_servers)
+EOF
+  if [ "$replaced" = "yes" ]; then
+    if ! run_cli_on_terminal setup; then
+      failed "setup failed" "$(plugin_command setup)"
+    fi
+    step "$label setup ran again: cc-smart-dev-kit's own MCP servers are registered"
+  fi
+}
+
 # ─── the run ───────────────────────────────────────────────────────────────────────────
 main() {
   local DRY_RUN="no" REPO="" arg
   local added="" pair name source
   local have_version want_version restart_flag gateway_go
-  local GATEWAY_KEY TAVILY_KEY
+  local cli_have gateway_check_out gateway_check_code gateway_saved gateway_tries gateway_code
+  local mcp_asked=""
+  local BROWSER_TOKEN GATEWAY_KEY TAVILY_KEY
   local doctor_out doctor_code doctor_left line
 
   for arg in "$@"; do
@@ -489,6 +586,21 @@ main() {
   # The install line names the marketplace: `claude plugin install cc-smart-dev-kit` without
   # `@cc-smart-dev-kit` can take the copy of the OLD marketplace, the one the move removes
   # last (README § Moving from anymodel).
+  #
+  # The marketplace's own copy is REFRESHED FIRST, before any version is compared. "Already
+  # installed, at the marketplace's version" is only true of a copy that is up to date: the
+  # first real run (2026-10-17) had the marketplace added hours earlier at 0.4.1, the installer
+  # compared the installed 0.4.1 with that stale clone's 0.4.1, saw them equal, updated
+  # nothing — and then called a flag the installed 0.4.1 CLI did not have. `src/update/` runs
+  # the same two steps in the same order (`plugin marketplace update`, then `plugin update`);
+  # a shell script cannot import that code, so this is its own copy of the order, and
+  # `scripts/install.test.ts` proves it.
+  if [ "$DRY_RUN" = "no" ] && marketplace_added "$MARKETPLACE"; then
+    if ! "$CLAUDE_BIN" plugin marketplace update "$MARKETPLACE" </dev/null; then
+      failed "refreshing the $MARKETPLACE marketplace failed" \
+        "claude plugin marketplace update $MARKETPLACE"
+    fi
+  fi
   PLUGIN_DIR="$(installed_path)"
   have_version="$(installed_version)"
   want_version="$(marketplace_version)"
@@ -525,6 +637,25 @@ main() {
     step "5/8 the plugin is enabled"
   fi
 
+  # The CLI that is really installed now, asked its own version. A CLI older than this script
+  # does not have the options the later steps pass it (`--tavily-key-stdin`, `gateway check`),
+  # and the first real run died exactly there: the marketplace's clone had been stale, so the
+  # update never ran and a 0.4.1 CLI was called with a 0.4.2 flag. Stop with the two commands
+  # that fix it instead of calling one. A version that cannot be read stops it too: this
+  # script cannot promise an option a CLI it cannot see understands.
+  if [ "$DRY_RUN" = "no" ] && [ -n "$PLUGIN_DIR" ]; then
+    cli_have="$(cli_version)"
+    if [ -z "$cli_have" ]; then
+      failed "the installed cc-smart-dev-kit CLI's version could not be read: this installer cannot tell whether it has the options the later steps need" \
+        "claude plugin marketplace update $MARKETPLACE" \
+        "claude plugin update $PLUGIN --scope user"
+    elif ! version_at_least "$cli_have" "$INSTALLER_VERSION"; then
+      failed "the installed cc-smart-dev-kit CLI is $cli_have, older than this installer's $INSTALLER_VERSION: this installer would call options that version does not have" \
+        "claude plugin marketplace update $MARKETPLACE" \
+        "claude plugin update $PLUGIN --scope user"
+    fi
+  fi
+
   # ─── 6. migrate, then setup ──────────────────────────────────────────────────────────
   if [ -z "$PLUGIN_DIR" ] && [ "$DRY_RUN" = "no" ]; then
     failed "the plugin's own folder is not in $INSTALLED_PLUGINS" \
@@ -546,6 +677,11 @@ main() {
       failed "setup failed" "$(plugin_command setup)"
     fi
     step "6/8 setup finished"
+
+    # The plugin's own MCP servers, when something else registered them first: setup leaves a
+    # person's own server alone (the rule), so the installer asks — showing what runs instead,
+    # and never a key (the line carries the command and its arguments only).
+    mcp_foreign_pass "6/8"
 
     # The old plugin: `migrate` asks to remove it, but only when it is still installed and
     # only on a terminal. If it is still there, ask here — the two commands go last in the
@@ -578,17 +714,27 @@ main() {
     skip "7/8 the dry run asks nothing: the browser's token, the gateway's key and the Tavily key are asked in a real run"
   else
     # The browser: `browser setup` finds Chrome, opens the Playwright extension's page in
-    # the `claude-code` profile and prints the steps left for the person; `browser token`
-    # then saves the token that page shows.
+    # the `claude-code` profile and prints the steps left for the person; the token is then
+    # read HERE, with no echo, and reaches the command on stdin — never as an argument, and
+    # never through a question that could swallow the paste. (A person pasted a token as the
+    # answer to a yes/no question once, the run walked on with no token file, and the browser
+    # never started: live, 2026-10-17.)
     ask_yes "7/8 Set up the browser (Playwright on your own Chrome)?"
     if [ "$answer" = "yes" ]; then
       run_cli_on_terminal browser setup || failed "browser setup failed" "$(plugin_command browser setup)"
-      ask_yes "7/8 Paste the extension's token now (the extension's status page shows it)?"
-      if [ "$answer" = "yes" ]; then
-        # The prompt, the invisible typing and the token's shape check are the command's own.
-        run_cli_on_terminal browser token || failed "the token was not saved" "$(plugin_command browser token)"
+      ask_secret "7/8 Paste the token from the extension's status page (it is not shown). Enter to skip:"
+      BROWSER_TOKEN="$answer"
+      unset answer
+      export -n BROWSER_TOKEN
+      if [ -n "$BROWSER_TOKEN" ]; then
+        if ! printf '%s\n' "$BROWSER_TOKEN" | run_cli browser token; then
+          unset BROWSER_TOKEN
+          failed "the token was not saved" "$(plugin_command browser token)"
+        fi
+        unset BROWSER_TOKEN
         step "7/8 the browser's token is saved"
       else
+        unset BROWSER_TOKEN
         skip "7/8 the browser's token was skipped: run \`$(plugin_command browser token)\` when you have it"
         LEFT+=("the browser's token: $(plugin_command browser token)")
       fi
@@ -623,50 +769,130 @@ main() {
           LEFT+=("the gateway (its router was not restarted): $(plugin_command gateway setup --yes)")
         else
           [ -f "$ROUTER_COPY" ] && restart_flag="--yes"
-          ask_secret "7/8 Paste the OmniRoute API key (Enter to skip: every slot then answers on Claude):"
-          GATEWAY_KEY="$answer"
-          unset answer
-          export -n GATEWAY_KEY
-          if [ -n "$GATEWAY_KEY" ]; then
-            # The key goes in on stdin, never as an argument.
-            if ! printf '%s\n' "$GATEWAY_KEY" | run_cli gateway setup --backend-key-stdin omniroute $restart_flag; then
+          # Is the gateway working ALREADY? The plugin's own read-only check answers it, and
+          # that is what decides whether anybody is asked for a key at all:
+          #   0 it works (the backend accepts the key in gateway.json)
+          #   1 there is no OmniRoute key yet, and an OmniRoute answers: setup can MAKE one
+          #     from the dashboard password
+          #   4 the key there is one OmniRoute refuses: a new API key is what fixes it
+          #   3 it could not be judged (no OmniRoute answers, or the config cannot be read)
+          # The first real run asked for a key anyway on a machine whose gateway worked
+          # (2026-10-17), a provider key was pasted over the router's own, and every
+          # affordable subagent fell back to Claude. That is why this check comes first.
+          gateway_check_out="$(run_cli_quiet gateway check 2>&1)"
+          gateway_check_code=$?
+          gateway_saved="no"
+          if [ "$gateway_check_code" = "0" ]; then
+            skip "7/8 the gateway already works, so no key is asked: $gateway_check_out"
+          elif [ "$gateway_check_code" = "1" ] || [ "$gateway_check_code" = "4" ]; then
+            # The key question, asked at most twice: a key the backend refuses is refused by
+            # `gateway setup` itself (it tests the key before it saves it, and keeps the old
+            # one), and its own line on the terminal says why. Enter skips it.
+            gateway_tries=0
+            while [ "$gateway_tries" -lt 2 ]; do
+              if [ "$gateway_check_code" = "1" ]; then
+                ask_secret "7/8 Paste your OmniRoute dashboard password, and setup makes the router's key itself (it is never stored, and never shown). Enter to skip:"
+                GATEWAY_KEY="$answer"
+                unset answer
+                export -n GATEWAY_KEY
+                if [ -z "$GATEWAY_KEY" ]; then
+                  unset GATEWAY_KEY
+                  break
+                fi
+                printf '%s\n' "$GATEWAY_KEY" | run_cli gateway setup --omniroute-password-stdin --save-unchecked $restart_flag
+                gateway_code=$?
+              else
+                ask_secret "7/8 Paste the OmniRoute API key the router uses (OmniRoute's dashboard → API keys; not your Ollama key). Enter to skip:"
+                GATEWAY_KEY="$answer"
+                unset answer
+                export -n GATEWAY_KEY
+                if [ -z "$GATEWAY_KEY" ]; then
+                  unset GATEWAY_KEY
+                  break
+                fi
+                printf '%s\n' "$GATEWAY_KEY" | run_cli gateway setup --backend-key-stdin omniroute $restart_flag
+                gateway_code=$?
+              fi
               unset GATEWAY_KEY
-              failed "gateway setup failed" "$(plugin_command gateway setup --backend-key-stdin omniroute)"
+              if [ "$gateway_code" -eq 0 ]; then
+                gateway_saved="yes"
+                break
+              fi
+              gateway_tries=$((gateway_tries + 1))
+              if [ "$gateway_tries" -lt 2 ]; then
+                printf '  That was not saved: the line above says why, and the gateway keeps the key it had. README § The AI gateway says which key OmniRoute wants. One more try.\n' >&2
+              fi
+            done
+            if [ "$gateway_saved" = "no" ]; then
+              skip "7/8 the gateway keeps the key it had: give it a new one with \`$(plugin_command gateway setup --backend-key-stdin omniroute)\`, or let setup make one with \`$(plugin_command gateway setup --omniroute-password)\`"
+              LEFT+=("the gateway's key: README § The AI gateway says which key OmniRoute wants, then $(plugin_command gateway setup --backend-key-stdin omniroute)")
             fi
-          elif ! run_cli_quiet gateway setup --no-backend-key $restart_flag; then
-            failed "gateway setup failed" "$(plugin_command gateway setup --no-backend-key)"
+          else
+            # 3, or anything this script does not know: ask nothing, and say what the check
+            # said. A machine with no OmniRoute at all cannot use the gateway yet, so the item
+            # goes to the list at the end (live, 2026-10-17).
+            skip "7/8 the gateway is left as it is: $gateway_check_out"
+            LEFT+=("the gateway: README § The AI gateway says how to install and run OmniRoute, then $(plugin_command gateway setup --omniroute-password)")
           fi
-          unset GATEWAY_KEY
-          step "7/8 the gateway is set up: turn it on with \`$(plugin_command gateway on)\` when you want it"
+          # The router's copy and its service are refreshed whenever no key was saved: a
+          # machine that has a key keeps it (`--no-backend-key` changes no key).
+          if [ "$gateway_saved" = "yes" ]; then
+            step "7/8 the gateway is set up: turn it on with \`$(plugin_command gateway on)\` when you want it"
+          else
+            if ! run_cli_quiet gateway setup --no-backend-key $restart_flag; then
+              failed "gateway setup failed" "$(plugin_command gateway setup --no-backend-key)"
+            fi
+            if [ "$gateway_check_code" = "0" ]; then
+              step "7/8 the gateway is up to date: turn it on with \`$(plugin_command gateway on)\` when you want it"
+            else
+              skip "7/8 the router's copy and service are refreshed, and the gateway's key is untouched"
+            fi
+          fi
         fi
       fi
     fi
 
     # The Tavily key (optional): setup takes it on stdin, saves it as a file only this
     # account can read and copies it into your settings — the plugin's own command owns
-    # every secret file, and this script writes none.
-    ask_yes "7/8 Add your Tavily key now (the tavily-websearch MCP server)?"
-    if [ "$answer" = "yes" ]; then
-      ask_secret "7/8 Paste the Tavily API key (Enter to skip):"
-      TAVILY_KEY="$answer"
-      unset answer
-      export -n TAVILY_KEY
-      if [ -n "$TAVILY_KEY" ]; then
-        if ! printf '%s\n' "$TAVILY_KEY" | run_cli setup --tavily-key-stdin; then
+    # every secret file, and this script writes none. NOT asked when a key is already there
+    # for setup to read: the variable in this environment, the key file, or the settings. A
+    # person whose project already uses a Tavily MCP server must not be asked for a key they
+    # have (live, 2026-10-17).
+    if [ -n "${TAVILY_API_KEY:-}" ]; then
+      skip "7/8 Tavily: using TAVILY_API_KEY from your environment (nothing is asked, nothing is written)"
+    elif [ -s "$TAVILY_KEY_FILE" ]; then
+      skip "7/8 Tavily: using the key already in $(shell_word "$TAVILY_KEY_FILE") (nothing is asked)"
+    elif [ "$(json_out "$SETTINGS_FILE" "(((d.env||{})['TAVILY_API_KEY'])||'')!==''")" = "true" ]; then
+      skip "7/8 Tavily: using the TAVILY_API_KEY already in $(shell_word "$SETTINGS_FILE") (nothing is asked)"
+    else
+      ask_yes "7/8 Add your Tavily key now (the tavily-websearch MCP server)?"
+      if [ "$answer" = "yes" ]; then
+        ask_secret "7/8 Paste the Tavily API key (Enter to skip):"
+        TAVILY_KEY="$answer"
+        unset answer
+        export -n TAVILY_KEY
+        if [ -n "$TAVILY_KEY" ]; then
+          if ! printf '%s\n' "$TAVILY_KEY" | run_cli setup --tavily-key-stdin; then
+            unset TAVILY_KEY
+            failed "saving the Tavily key failed" "$(plugin_command setup --tavily-key-stdin)"
+          fi
           unset TAVILY_KEY
-          failed "saving the Tavily key failed" "$(plugin_command setup --tavily-key-stdin)"
+          step "7/8 the Tavily key is saved"
+        else
+          unset TAVILY_KEY
+          skip "7/8 the Tavily key was skipped: write it to the key file, then run \`$(plugin_command setup)\`"
+          LEFT+=("the Tavily key: README § MCP servers says where it goes, then $(plugin_command setup)")
         fi
-        unset TAVILY_KEY
-        step "7/8 the Tavily key is saved"
       else
-        unset TAVILY_KEY
-        skip "7/8 the Tavily key was skipped: write it to the key file, then run \`$(plugin_command setup)\`"
+        skip "7/8 the Tavily key was skipped: README § MCP servers says where it goes"
         LEFT+=("the Tavily key: README § MCP servers says where it goes, then $(plugin_command setup)")
       fi
-    else
-      skip "7/8 the Tavily key was skipped: README § MCP servers says where it goes"
-      LEFT+=("the Tavily key: README § MCP servers says where it goes, then $(plugin_command setup)")
     fi
+
+    # Again, now that a Tavily key may have arrived: what the plugin registers changed, and a
+    # `tavily-websearch` of someone else's must not go on shadowing it. A name already asked
+    # about in step 6 is not asked again (mcp_foreign_pass).
+    mcp_foreign_pass "7/8"
   fi
 
   # ─── 8. doctor, what is left, and the two closing lines ──────────────────────────────

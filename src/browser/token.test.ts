@@ -1,23 +1,24 @@
 /**
  * The extension's token: its shape (the extension's own 43 URL-safe characters, and the
- * `PLAYWRIGHT_MCP_EXTENSION_TOKEN=` line its Copy button puts on the clipboard), the 0600 file it
- * lives in, and the no-echo read from a terminal. No token value is ever printed by the code under
- * test; the fixtures here are made-up ones.
+ * `PLAYWRIGHT_MCP_EXTENSION_TOKEN=` line its Copy button puts on the clipboard), the bracketed
+ * paste a terminal wraps a paste in, the 0600 file it lives in, and the no-echo read from a
+ * terminal. No token value is ever printed by the code under test; the fixtures here are
+ * made-up ones.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { canHideInput, PASTE_END, PASTE_START, readSecretLine } from "../cli/secret-line";
 import { tempDir } from "../testing/temp";
 import {
   BROWSER_TOKEN_ENV,
-  canHideInput,
   clearBrowserToken,
   isBrowserToken,
   parseBrowserToken,
   readBrowserToken,
-  readSecretLine,
   readTokenFromStdin,
+  savePastedToken,
   tokenProtection,
   tokenSavedLine,
   writeBrowserToken,
@@ -61,6 +62,49 @@ describe("parseBrowserToken", () => {
       why: "nothing was pasted. Copy the token from the extension's status page",
     });
     expect(parseBrowserToken(`${BROWSER_TOKEN_ENV}=`).ok).toBe(false);
+  });
+
+  // Live, 2026-10-17: a person pasted a good token and it was never saved. Warp — and other
+  // terminals — wrap a PASTE in the bracketed-paste markers, the terminal keeps that mode on
+  // after the shell turns it on, and a read that echoes nothing (or a pipe) keeps every
+  // character: the token arrived as ESC[200~<token>ESC[201~, the shape check refused it, and
+  // the person read "the token was not saved" about a token they had just copied.
+  test("a token wrapped in the bracketed-paste markers is accepted", () => {
+    expect(parseBrowserToken(`${PASTE_START}${TOKEN}${PASTE_END}`)).toEqual({
+      ok: true,
+      token: TOKEN,
+    });
+    expect(parseBrowserToken(`${PASTE_START}${BROWSER_TOKEN_ENV}=${TOKEN}${PASTE_END}\n`)).toEqual({
+      ok: true,
+      token: TOKEN,
+    });
+    // Two pastes, or a marker left over in the middle: both markers go, the token stays.
+    expect(
+      parseBrowserToken(`${PASTE_START}${TOKEN}${PASTE_END}${PASTE_START}${PASTE_END}`),
+    ).toEqual({ ok: true, token: TOKEN });
+  });
+
+  test("a token with a trailing carriage return is accepted", () => {
+    // A paste from a Windows terminal, or a file written with CRLF: the CR is not part of it.
+    expect(parseBrowserToken(`${TOKEN}\r\n`)).toEqual({ ok: true, token: TOKEN });
+    expect(parseBrowserToken(`${PASTE_START}${TOKEN}\r${PASTE_END}\n`)).toEqual({
+      ok: true,
+      token: TOKEN,
+    });
+  });
+
+  test("anything else is still refused, and says how many characters were left", () => {
+    // `hello world` is 11 printable characters: the count the person reads is the text that
+    // was left AFTER the markers and every control character went, which is what makes the
+    // message useful ("43 expected, 11 counted").
+    const refused = parseBrowserToken(`${PASTE_START}hello\u0007 world${PASTE_END}`);
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) {
+      expect(refused.why).toContain("11 characters");
+      expect(refused.why).not.toContain("hello");
+    }
+    // A paste of an escape sequence that is not the marker leaves its tail: still refused.
+    expect(parseBrowserToken(`${TOKEN.slice(0, 30)}\u001b[9~`).ok).toBe(false);
   });
 });
 
@@ -193,6 +237,19 @@ describe("reading the token from a terminal", () => {
     expect(modes).toEqual([true, false]);
   });
 
+  test("a paste arrives with the bracketed-paste markers in it, and the read hands them back clean", async () => {
+    // The terminal wraps a paste while bracketed paste is on, and a raw-mode read keeps every
+    // character: the line this returns must be the token itself.
+    const { terminal } = fakeTerminal([`${PASTE_START}${TOKEN}${PASTE_END}\r`]);
+    expect(await readSecretLine(terminal)).toBe(TOKEN);
+  });
+
+  test("a paste wrapped over two chunks is still one clean line", async () => {
+    // A paste can arrive in pieces: the markers may sit in either chunk.
+    const { terminal } = fakeTerminal([PASTE_START, TOKEN, `${PASTE_END}\r`]);
+    expect(await readSecretLine(terminal)).toBe(TOKEN);
+  });
+
   test("a terminal whose echo cannot be switched off is refused, never read", async () => {
     // `readAll` on a terminal would wait for Ctrl+D and show the token: the one thing this must
     // not do, so it throws and the caller says to pipe the token in instead.
@@ -244,5 +301,100 @@ describe("how the token file is kept to its owner, in words", () => {
       "+ C:\\Users\\u\\t.token: the browser token is set (your user profile's permissions keep it yours)",
     );
     expect(windows).not.toContain("mode 600");
+  });
+});
+
+describe("savePastedToken: the four outcomes, and a read that fails", () => {
+  // Low, premium review 2026-10-17: the CLI mapped EVERY failure of the read to
+  // "Nothing was saved (Ctrl+C)" with exit 130 — a lie about a broken pipe or a terminal that
+  // cannot hide what is typed, and a script could not tell it from a person pressing Ctrl+C.
+  const TOKEN = `${"A".repeat(41)}_-`;
+
+  function lines(): { error: string[]; said: string[] } {
+    return { error: [], said: [] };
+  }
+
+  test("a good token on stdin: saved, 0600, and never printed", async () => {
+    const home = tempDir("token-save");
+    const paths_ = paths(home);
+    const out = lines();
+    const code = await savePastedToken(
+      paths_,
+      { isTTY: false, readAll: () => Promise.resolve(`${TOKEN}\n`) },
+      (line) => out.said.push(line),
+      (line) => out.error.push(line),
+    );
+    expect(code).toBe(0);
+    expect(out.error).toEqual([]);
+    expect(out.said[0]).toContain("the browser token is set");
+    expect(readFileSync(paths_.browserTokenFile, "utf8")).toBe(`${TOKEN}\n`);
+    expect(out.said.join("\n")).not.toContain(TOKEN);
+  });
+
+  test("a shape that is not the token: exit 1, its own reason, nothing written", async () => {
+    const home = tempDir("token-shape");
+    const paths_ = paths(home);
+    const out = lines();
+    const code = await savePastedToken(
+      paths_,
+      { isTTY: false, readAll: () => Promise.resolve("hello world\n") },
+      (line) => out.said.push(line),
+      (line) => out.error.push(line),
+    );
+    expect(code).toBe(1);
+    expect(out.error[0]).toContain("The token was not saved");
+    expect(out.error[0]).toContain("11 characters");
+    expect(existsSync(paths_.browserTokenFile)).toBe(false);
+  });
+
+  test("Ctrl+C: exit 130, and nothing was written", async () => {
+    const home = tempDir("token-ctrlc");
+    const paths_ = paths(home);
+    const out = lines();
+    const code = await savePastedToken(
+      paths_,
+      { isTTY: true, readAll: () => Promise.resolve(""), readSecret: () => Promise.resolve(null) },
+      (line) => out.said.push(line),
+      (line) => out.error.push(line),
+    );
+    expect(code).toBe(130);
+    expect(out.error).toEqual(["Nothing was saved (Ctrl+C)."]);
+    expect(existsSync(paths_.browserTokenFile)).toBe(false);
+  });
+
+  test("a read that FAILS: exit 1, its own reason and the two ways in — never Ctrl+C", async () => {
+    const home = tempDir("token-read-fail");
+    const paths_ = paths(home);
+    const out = lines();
+    const code = await savePastedToken(
+      paths_,
+      {
+        isTTY: false,
+        readAll: () => Promise.reject(new Error("stdin closed badly")),
+      },
+      (line) => out.said.push(line),
+      (line) => out.error.push(line),
+    );
+    expect(code).toBe(1);
+    expect(out.error[0]).toContain("stdin closed badly");
+    expect(out.error[0]).toContain("browser token < token.txt");
+    expect(out.error[0]).toContain("cc-smart-dev-kit portal");
+    expect(out.error.join("\n")).not.toContain("Ctrl+C");
+    expect(existsSync(paths_.browserTokenFile)).toBe(false);
+  });
+
+  test("a terminal that cannot hide what is typed: the reason the read gave, exit 1", async () => {
+    const home = tempDir("token-no-hide");
+    const paths_ = paths(home);
+    const out = lines();
+    const code = await savePastedToken(
+      paths_,
+      { isTTY: true, readAll: () => Promise.resolve("") },
+      (line) => out.said.push(line),
+      (line) => out.error.push(line),
+    );
+    expect(code).toBe(1);
+    expect(out.error[0]).toContain("this terminal cannot hide what you type");
+    expect(out.error.join("\n")).not.toContain("Ctrl+C");
   });
 });

@@ -70,6 +70,14 @@ param(
 # (scripts/install.test.ts).
 $MinBun = "1.4.3"
 
+# The version this installer ships with: `version` in plugin/.claude-plugin/plugin.json of the
+# repository this script was downloaded from. A test keeps the two equal
+# (scripts/install.test.ts). It is read back off the installed CLI after the install or update
+# (step 5): a CLI older than this script would refuse the options this script passes it, and
+# that is exactly what happened on the first real run (2026-10-17: the installed CLI was 0.4.1,
+# it had no `--tavily-key-stdin`, and the run died at the Tavily step).
+$InstallerVersion = "0.4.3"
+
 # The names this repository declares: the marketplace in .claude-plugin/marketplace.json
 # and the plugin id in plugin/.claude-plugin/plugin.json. `claude plugin install` needs
 # both halves of the id. The old names are what a 0.2.x machine still carries
@@ -118,6 +126,9 @@ $Launcher = Join-Path $BinDir "cc-smart-dev-kit.cmd"
 # The router's own copy: `gateway setup` writes it, so its presence means a router was set
 # up here before -- and may be running, which is what the restart question is about.
 $RouterCopy = Join-Path $HomeDir ".local\share\cc-smart-dev-kit\router.js"
+# The Tavily key file setup reads a key from: a person who already has one there is not asked
+# for a key again (the same rule `readTavilyKey` follows: environment first, then this file).
+$TavilyKeyFile = Join-Path $ClaudeDir "cc-smart-dev-kit\tavily.key"
 
 # --- output ----------------------------------------------------------------------------
 function Write-Step([string]$Line) { Write-Output "[ok] $Line" }
@@ -202,17 +213,33 @@ function Read-Yes([string]$Question) {
 
 # A secret: never echoed, never printed, never on a command line, and never in a child's
 # environment (PowerShell keeps variables and the environment apart). The caller clears
-# $script:Answer the moment it has copied it.
+# $script:Answer the moment it has copied it. The line is cleaned first (Clear-Secret).
 function Read-Secret([string]$Prompt) {
   if ($null -ne $script:Answers) {
     Write-Output "$Prompt "
     Read-OneLine
-    return
+  } else {
+    $secure = Read-Host -Prompt $Prompt -AsSecureString
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try { $script:Answer = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
   }
-  $secure = Read-Host -Prompt $Prompt -AsSecureString
-  $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-  try { $script:Answer = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
-  finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+  Clear-Secret
+}
+
+# The line a secret read just gave, cleaned. Many terminals wrap a PASTE in the bracketed-paste
+# markers ESC[200~ ... ESC[201~, and a read that echoes nothing keeps every character -- so a
+# pasted token or key reached the plugin's own command with those markers in it and was refused
+# as the wrong shape (live, 2026-10-17). The two markers go first (as SEQUENCES: dropping every
+# control character first would leave "[200~" behind), then every other control character, then
+# the ends trimmed. Printable characters stay, a non-ASCII password included.
+# install.sh's clean_secret and the plugin's own cleanSecretLine (src/cli/secret-line.ts) do
+# exactly the same: keep the three in step.
+function Clear-Secret {
+  $escape = [char]27
+  $script:Answer = $script:Answer -replace ([regex]::Escape("${escape}[200~")), ""
+  $script:Answer = $script:Answer -replace ([regex]::Escape("${escape}[201~")), ""
+  $script:Answer = ($script:Answer -replace "[\x00-\x1F\x7F]", "").Trim()
 }
 
 # --- reading this machine's state ------------------------------------------------------
@@ -370,6 +397,28 @@ function Get-CommandText([scriptblock]$Command) {
   return ($lines -join "`n")
 }
 
+# Hands a SECRET to the plugin's own CLI on stdin, encoded UTF-8 WITHOUT a BOM. Windows
+# PowerShell 5.1 encodes what it pipes with $OutputEncoding, which is ASCII by default there: a
+# key with any non-ASCII character would reach the command as "?". The previous value is put
+# back afterwards, so the rest of the run is untouched.
+function Send-SecretToCli([string]$Secret, [string[]]$CliArgs) {
+  $previousEncoding = $OutputEncoding
+  try {
+    $OutputEncoding = New-Object System.Text.UTF8Encoding $false
+    $Secret | & $Bun @cliArgv @CliArgs
+  } finally {
+    $OutputEncoding = $previousEncoding
+  }
+}
+
+# A native command's STDOUT as one string, and nothing of its stderr: a command whose stdout is
+# JSON must not have a warning line glued to it. (Windows PowerShell renders a native command's
+# stderr as error records; this takes only the plain strings.)
+function Get-CommandStdout([scriptblock]$Command) {
+  $lines = @(& $Command 2>$null | ForEach-Object { [string]$_ })
+  return ($lines -join "`n")
+}
+
 # The line that retries one of the plugin's own commands, once it is installed: the launcher
 # when setup has put it in place, else the exact `bun --no-env-file ...` form. Every hint and
 # retry line uses this, so a machine whose launcher is not there yet reads a line that works.
@@ -383,6 +432,49 @@ function Get-PluginCommand([string[]]$CliArgs) {
 # is no console to ask on.
 function Get-ReadmeLine {
   return "powershell -File install.ps1 $Repo"
+}
+
+# One pass over the plugin's servers registered by something else: show what runs instead, and
+# ask. A name is asked about ONCE per run ($script:McpAsked), so the second pass -- after the
+# Tavily key, whose arrival changes what the plugin registers -- brings up only what is new. A
+# yes removes the server and runs `setup` again, so the plugin registers its own WITH its
+# record (that record is what lets `restore` take it back later).
+$script:McpAsked = ""
+function Invoke-ForeignMcpPass([string]$Label) {
+  # The command's STDOUT only: a stderr line (a warning, say) must not reach ConvertFrom-Json.
+  $statusText = Get-CommandStdout { Invoke-CliQuiet @("mcp", "status", "--json") }
+  $servers = @()
+  try {
+    $servers = @((ConvertFrom-Json -InputObject $statusText).servers)
+  } catch {
+    # Not JSON (the command failed, or answered nothing): nothing is foreign, so nothing is
+    # asked. A machine this cannot read is one where setup's own lines say what is wrong.
+    $servers = @()
+  }
+  $replaced = $false
+  foreach ($server in @($servers | Where-Object { $_.state -eq "foreign" })) {
+    $name = [string]$server.name
+    if ($script:McpAsked.Contains(" $name ")) { continue }
+    $script:McpAsked = "$script:McpAsked $name "
+    Read-Yes "$Label The `"$name`" server is registered by something else ($($server.runsWhat)). Replace it with cc-smart-dev-kit's?"
+    if ($script:Answer -eq "yes") {
+      & $ClaudeBin mcp remove $name --scope user
+      if ($LASTEXITCODE -ne 0) {
+        Stop-Failed "removing the old `"$name`" server failed" @("claude mcp remove $name --scope user")
+      }
+      $replaced = $true
+    } else {
+      Write-Skip "$Label the `"$name`" server was left as it is: run ``claude mcp remove $name --scope user``, then ``$(Get-PluginCommand @("setup"))``"
+      $Left.Add("the `"$name`" MCP server (registered by something else): claude mcp remove $name --scope user ; $(Get-PluginCommand @("setup"))")
+    }
+  }
+  if ($replaced) {
+    Invoke-Cli @("setup")
+    if ($LASTEXITCODE -ne 0) {
+      Stop-Failed "setup failed" @((Get-PluginCommand @("setup")))
+    }
+    Write-Step "$Label setup ran again: cc-smart-dev-kit's own MCP servers are registered"
+  }
 }
 
 # --- the run ---------------------------------------------------------------------------
@@ -552,6 +644,20 @@ if ($Added.Count -gt 0) {
 # The install line names the marketplace: `claude plugin install cc-smart-dev-kit` without
 # `@cc-smart-dev-kit` can take the copy of the OLD marketplace, the one the move removes last
 # (README, section Moving from anymodel).
+#
+# The marketplace's own copy is REFRESHED FIRST, before any version is compared. "Already
+# installed, at the marketplace's version" is only true of a copy that is up to date: the first
+# real run (2026-10-17) had the marketplace added hours earlier at 0.4.1, the installer compared
+# the installed 0.4.1 with that stale clone's 0.4.1, saw them equal, updated nothing -- and then
+# called a flag the installed 0.4.1 CLI did not have. `src/update/` runs the same two steps in
+# the same order (`plugin marketplace update`, then `plugin update`); a PowerShell script cannot
+# import that code, so this is its own copy of the order, and scripts/install.test.ts proves it.
+if (-not $DryRun -and (Test-MarketplaceAdded $Marketplace)) {
+  & $ClaudeBin plugin marketplace update $Marketplace
+  if ($LASTEXITCODE -ne 0) {
+    Stop-Failed "refreshing the $Marketplace marketplace failed" @("claude plugin marketplace update $Marketplace")
+  }
+}
 $PluginDir = Get-InstalledPath
 $HaveVersion = Get-InstalledVersion
 $WantVersion = Get-MarketplaceVersion
@@ -592,11 +698,29 @@ if (-not $DryRun -and -not [string]::IsNullOrEmpty($PluginDir) -and -not (Test-P
   Write-Step "5/8 the plugin is enabled"
 }
 
+# The plugin's own CLI, as every later call runs it. Set before the version check below, which is
+# its first caller: set after it (as it once was), `Invoke-CliQuiet` ran a bare `bun version`.
+$cliArgv = @("--no-env-file", "--config=$PluginDir\bunfig.toml", "$PluginDir\dist\cli.js")
+
+# The CLI that is really installed now, asked its own version. A CLI older than this script does
+# not have the options the later steps pass it (`--tavily-key-stdin`, `gateway check`), and the
+# first real run died exactly there: the marketplace's clone had been stale, so the update never
+# ran and a 0.4.1 CLI was called with a 0.4.2 flag. Stop with the two commands that fix it
+# instead of calling one. A version that cannot be read stops it too: this script cannot promise
+# an option a CLI it cannot see understands.
+if (-not $DryRun -and -not [string]::IsNullOrEmpty($PluginDir)) {
+  $CliVersion = ((Get-CommandText { Invoke-CliQuiet @("version") }).Trim() -split "\s+" | Select-Object -Last 1)
+  if ([string]::IsNullOrEmpty($CliVersion)) {
+    Stop-Failed "the installed cc-smart-dev-kit CLI's version could not be read: this installer cannot tell whether it has the options the later steps need" @("claude plugin marketplace update $Marketplace", "claude plugin update $Plugin --scope user")
+  } elseif (-not (Test-VersionAtLeast $CliVersion $InstallerVersion)) {
+    Stop-Failed "the installed cc-smart-dev-kit CLI is $CliVersion, older than this installer's ${InstallerVersion}: this installer would call options that version does not have" @("claude plugin marketplace update $Marketplace", "claude plugin update $Plugin --scope user")
+  }
+}
+
 # --- 6. migrate, then setup ------------------------------------------------------------
 if ([string]::IsNullOrEmpty($PluginDir) -and -not $DryRun) {
   Stop-Failed "the plugin's own folder is not in $InstalledPlugins" @("claude plugin install $Plugin --scope user")
 }
-$cliArgv = @("--no-env-file", "--config=$PluginDir\bunfig.toml", "$PluginDir\dist\cli.js")
 if ($DryRun) {
   Write-Skip "6/8 migrate runs (it moves a machine with the old anymodel names, and says `"Nothing to move.`" on one without them), then setup; both ask their own questions on the console"
 } else {
@@ -613,6 +737,11 @@ if ($DryRun) {
     Stop-Failed "setup failed" @((Get-PluginCommand @("setup")))
   }
   Write-Step "6/8 setup finished"
+
+  # The plugin's own MCP servers, when something else registered them first (live, 2026-10-17:
+  # a project's own script had registered all four, setup left them alone as it must, and its
+  # `!` line was never seen among the installer's output).
+  Invoke-ForeignMcpPass "6/8"
 
   # The old plugin: `migrate` asks to remove it, but only when it is still installed and
   # only on a console. If it is still there, ask here -- the two commands go last in the
@@ -647,33 +776,29 @@ if ($DryRun) {
   Write-Skip "7/8 the dry run asks nothing: the browser's token, the gateway's key and the Tavily key are asked in a real run"
 } else {
   # The browser: `browser setup` finds Chrome, opens the Playwright extension's page in the
-  # `claude-code` profile and prints the steps left for the person; `browser token` then
-  # saves the token that page shows.
+  # `claude-code` profile and prints the steps left for the person; the token is then read HERE,
+  # with no echo, and reaches the command on stdin -- never as an argument, and never through a
+  # question that could swallow the paste. (A person pasted a token as the answer to a yes/no
+  # question once, the run walked on with no token file, and the browser never started: live,
+  # 2026-10-17.)
   Read-Yes "7/8 Set up the browser (Playwright on your own Chrome)?"
   if ($script:Answer -eq "yes") {
     Invoke-Cli @("browser", "setup")
     if ($LASTEXITCODE -ne 0) { Stop-Failed "browser setup failed" @((Get-PluginCommand @("browser", "setup"))) }
-    Read-Yes "7/8 Paste the extension's token now (the extension's status page shows it)?"
-    if ($script:Answer -eq "yes") {
-      # The paste is read here, with no echo, and reaches the command on stdin -- never as an
-      # argument. (install.sh hands the command its terminal instead: a PowerShell child
-      # cannot be given the console's input stream, only the console.)
-      Read-Secret "7/8 Paste the token from the extension's status page (it is not shown):"
-      $BrowserToken = $script:Answer
-      $script:Answer = ""
-      $saved = $false
-      if (-not [string]::IsNullOrEmpty($BrowserToken)) {
-        $BrowserToken | & $Bun @cliArgv browser token
-        $BrowserToken = ""
-        if ($LASTEXITCODE -ne 0) { Stop-Failed "the token was not saved" @((Get-PluginCommand @("browser", "token"))) }
-        $saved = $true
-      }
-      if ($saved) {
-        Write-Step "7/8 the browser's token is saved"
-      } else {
-        Write-Skip "7/8 the browser's token was skipped: run ``$(Get-PluginCommand @("browser", "token"))`` when you have it"
-        $Left.Add("the browser's token: $(Get-PluginCommand @("browser", "token"))")
-      }
+    # (install.sh reads it the same way now: a PowerShell child cannot be given the console's
+    # input stream, only the console, so the pipe is the way in on both.)
+    Read-Secret "7/8 Paste the token from the extension's status page (it is not shown). Enter to skip:"
+    $BrowserToken = $script:Answer
+    $script:Answer = ""
+    $saved = $false
+    if (-not [string]::IsNullOrEmpty($BrowserToken)) {
+      Send-SecretToCli $BrowserToken @("browser", "token")
+      $BrowserToken = ""
+      if ($LASTEXITCODE -ne 0) { Stop-Failed "the token was not saved" @((Get-PluginCommand @("browser", "token"))) }
+      $saved = $true
+    }
+    if ($saved) {
+      Write-Step "7/8 the browser's token is saved"
     } else {
       Write-Skip "7/8 the browser's token was skipped: run ``$(Get-PluginCommand @("browser", "token"))`` when you have it"
       $Left.Add("the browser's token: $(Get-PluginCommand @("browser", "token"))")
@@ -708,50 +833,117 @@ if ($DryRun) {
         Write-Skip "7/8 the gateway was left as it is: run ``$(Get-PluginCommand @("gateway", "setup", "--yes"))`` when you are ready"
         $Left.Add("the gateway (its router was not restarted): $(Get-PluginCommand @("gateway", "setup", "--yes"))")
       } else {
-        Read-Secret "7/8 Paste the OmniRoute API key (Enter to skip: every slot then answers on Claude):"
-        $GatewayKey = $script:Answer
-        $script:Answer = ""
-        if (-not [string]::IsNullOrEmpty($GatewayKey)) {
-          # The key goes in on stdin, never as an argument.
-          $GatewayKey | & $Bun @cliArgv gateway setup --backend-key-stdin omniroute @RestartFlag
-          $GatewayKey = ""
-          if ($LASTEXITCODE -ne 0) {
-            Stop-Failed "gateway setup failed" @((Get-PluginCommand @("gateway", "setup", "--backend-key-stdin", "omniroute")))
+        # Is the gateway working ALREADY? The plugin's own read-only check answers it, and that
+        # is what decides whether anybody is asked for a key at all:
+        #   0 it works (the backend accepts the key in gateway.json)
+        #   1 there is no OmniRoute key yet, and an OmniRoute answers: setup can MAKE one from
+        #     the dashboard password
+        #   4 the key there is one OmniRoute refuses: a new API key is what fixes it
+        #   3 it could not be judged (no OmniRoute answers, or the config cannot be read)
+        # The first real run asked for a key anyway on a machine whose gateway worked
+        # (2026-10-17), a provider key was pasted over the router's own, and every affordable
+        # subagent fell back to Claude. That is why this check comes first.
+        $GatewayCheckOut = Get-CommandText { Invoke-CliQuiet @("gateway", "check") }
+        $GatewayCheckCode = $LASTEXITCODE
+        $gatewaySaved = $false
+        if ($GatewayCheckCode -eq 0) {
+          Write-Skip "7/8 the gateway already works, so no key is asked: $GatewayCheckOut"
+        } elseif ($GatewayCheckCode -eq 1 -or $GatewayCheckCode -eq 4) {
+          # The key question, asked at most twice: a key the backend refuses is refused by
+          # `gateway setup` itself (it tests the key before it saves it, and keeps the old one),
+          # and its own line on the console says why. Enter skips it.
+          $gatewayTries = 0
+          while ($gatewayTries -lt 2) {
+            if ($GatewayCheckCode -eq 1) {
+              Read-Secret "7/8 Paste your OmniRoute dashboard password, and setup makes the router's key itself (it is never stored, and never shown). Enter to skip:"
+            } else {
+              Read-Secret "7/8 Paste the OmniRoute API key the router uses (OmniRoute's dashboard, its API keys page; not your Ollama key). Enter to skip:"
+            }
+            $GatewayKey = $script:Answer
+            $script:Answer = ""
+            if ([string]::IsNullOrEmpty($GatewayKey)) { break }
+            # The secret goes in on stdin, never as an argument.
+            if ($GatewayCheckCode -eq 1) {
+              Send-SecretToCli $GatewayKey (@("gateway", "setup", "--omniroute-password-stdin", "--save-unchecked") + $RestartFlag)
+            } else {
+              Send-SecretToCli $GatewayKey (@("gateway", "setup", "--backend-key-stdin", "omniroute") + $RestartFlag)
+            }
+            $gatewayCode = $LASTEXITCODE
+            $GatewayKey = ""
+            if ($gatewayCode -eq 0) { $gatewaySaved = $true; break }
+            $gatewayTries = $gatewayTries + 1
+            if ($gatewayTries -lt 2) {
+              [Console]::Error.WriteLine("  That was not saved: the line above says why, and the gateway keeps the key it had. README, section The AI gateway, says which key OmniRoute wants. One more try.")
+            }
           }
+          if (-not $gatewaySaved) {
+            Write-Skip "7/8 the gateway keeps the key it had: give it a new one with ``$(Get-PluginCommand @("gateway", "setup", "--backend-key-stdin", "omniroute"))``, or let setup make one with ``$(Get-PluginCommand @("gateway", "setup", "--omniroute-password"))``"
+            $Left.Add("the gateway's key: README, section The AI gateway, says which key OmniRoute wants, then $(Get-PluginCommand @("gateway", "setup", "--backend-key-stdin", "omniroute"))")
+          }
+        } else {
+          # 3, or anything this script does not know: ask nothing, and say what the check said.
+          # A machine with no OmniRoute at all cannot use the gateway yet, so the item goes to
+          # the list at the end (live, 2026-10-17).
+          Write-Skip "7/8 the gateway is left as it is: $GatewayCheckOut"
+          $Left.Add("the gateway: README, section The AI gateway, says how to install and run OmniRoute, then $(Get-PluginCommand @("gateway", "setup", "--omniroute-password"))")
+        }
+        # The router's copy and its service are refreshed whenever no key was saved: a machine
+        # that has a key keeps it (`--no-backend-key` changes no key).
+        if ($gatewaySaved) {
+          Write-Step "7/8 the gateway is set up: turn it on with ``$(Get-PluginCommand @("gateway", "on"))`` when you want it"
         } else {
           Invoke-CliQuiet (@("gateway", "setup", "--no-backend-key") + $RestartFlag)
           if ($LASTEXITCODE -ne 0) {
             Stop-Failed "gateway setup failed" @((Get-PluginCommand @("gateway", "setup", "--no-backend-key")))
           }
+          if ($GatewayCheckCode -eq 0) {
+            Write-Step "7/8 the gateway is up to date: turn it on with ``$(Get-PluginCommand @("gateway", "on"))`` when you want it"
+          } else {
+            Write-Skip "7/8 the router's copy and service are refreshed, and the gateway's key is untouched"
+          }
         }
-        Write-Step "7/8 the gateway is set up: turn it on with ``$(Get-PluginCommand @("gateway", "on"))`` when you want it"
       }
     }
   }
 
-  # The Tavily key (optional): setup takes it on stdin, saves it as a file only this account
-  # can read and copies it into your settings -- the plugin's own command owns every secret
-  # file, and this script writes none.
-  Read-Yes "7/8 Add your Tavily key now (the tavily-websearch MCP server)?"
-  if ($script:Answer -eq "yes") {
-    Read-Secret "7/8 Paste the Tavily API key (Enter to skip):"
-    $TavilyKey = $script:Answer
-    $script:Answer = ""
-    if (-not [string]::IsNullOrEmpty($TavilyKey)) {
-      $TavilyKey | & $Bun @cliArgv setup --tavily-key-stdin
-      $TavilyKey = ""
-      if ($LASTEXITCODE -ne 0) {
-        Stop-Failed "saving the Tavily key failed" @((Get-PluginCommand @("setup", "--tavily-key-stdin")))
+  # The Tavily key (optional): setup takes it on stdin, saves it as a file only this account can
+  # read and copies it into your settings -- the plugin's own command owns every secret file, and
+  # this script writes none. NOT asked when a key is already there for setup to read: the
+  # variable in this environment, the key file, or the settings. A person whose project already
+  # uses a Tavily MCP server must not be asked for a key they have (live, 2026-10-17).
+  if (-not [string]::IsNullOrEmpty($env:TAVILY_API_KEY)) {
+    Write-Skip "7/8 Tavily: using TAVILY_API_KEY from your environment (nothing is asked, nothing is written)"
+  } elseif ((Test-Path $TavilyKeyFile) -and (Get-Item -Path $TavilyKeyFile).Length -gt 0) {
+    Write-Skip "7/8 Tavily: using the key already in ``$TavilyKeyFile`` (nothing is asked)"
+  } elseif (-not [string]::IsNullOrEmpty((Get-JsonField $SettingsFile "env.TAVILY_API_KEY"))) {
+    Write-Skip "7/8 Tavily: using the TAVILY_API_KEY already in ``$SettingsFile`` (nothing is asked)"
+  } else {
+    Read-Yes "7/8 Add your Tavily key now (the tavily-websearch MCP server)?"
+    if ($script:Answer -eq "yes") {
+      Read-Secret "7/8 Paste the Tavily API key (Enter to skip):"
+      $TavilyKey = $script:Answer
+      $script:Answer = ""
+      if (-not [string]::IsNullOrEmpty($TavilyKey)) {
+        Send-SecretToCli $TavilyKey @("setup", "--tavily-key-stdin")
+        $TavilyKey = ""
+        if ($LASTEXITCODE -ne 0) {
+          Stop-Failed "saving the Tavily key failed" @((Get-PluginCommand @("setup", "--tavily-key-stdin")))
+        }
+        Write-Step "7/8 the Tavily key is saved"
+      } else {
+        Write-Skip "7/8 the Tavily key was skipped: write it to the key file, then run ``$(Get-PluginCommand @("setup"))``"
+        $Left.Add("the Tavily key: README, section MCP servers says where it goes, then $(Get-PluginCommand @("setup"))")
       }
-      Write-Step "7/8 the Tavily key is saved"
     } else {
-      Write-Skip "7/8 the Tavily key was skipped: write it to the key file, then run ``$(Get-PluginCommand @("setup"))``"
+      Write-Skip "7/8 the Tavily key was skipped: README, section MCP servers says where it goes"
       $Left.Add("the Tavily key: README, section MCP servers says where it goes, then $(Get-PluginCommand @("setup"))")
     }
-  } else {
-    Write-Skip "7/8 the Tavily key was skipped: README, section MCP servers says where it goes"
-    $Left.Add("the Tavily key: README, section MCP servers says where it goes, then $(Get-PluginCommand @("setup"))")
   }
+
+  # Again, now that a Tavily key may have arrived: what the plugin registers changed, and a
+  # `tavily-websearch` of someone else's must not go on shadowing it. A name already asked
+  # about in step 6 is not asked again (Invoke-ForeignMcpPass).
+  Invoke-ForeignMcpPass "7/8"
 }
 
 # --- 8. doctor, what is left, and the two closing lines --------------------------------

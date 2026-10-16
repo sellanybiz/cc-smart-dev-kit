@@ -25,6 +25,8 @@ describe("redactUrl", () => {
     ["https://u:p@example.com/m.json?sig=1", "https://***@example.com/m.json?***"],
     ["ssh://git:secret@git.example.com/org/repo.git", "ssh://git:***@git.example.com/org/repo.git"],
     ["ssh://git@git.example.com:2222/org/repo.git", "ssh://git@git.example.com:2222/org/repo.git"],
+    ["https://example.com/mcp#access_token=abc", "https://example.com/mcp"],
+    ["https://example.com/mcp?key=abc#token=def", "https://example.com/mcp?***"],
     [
       "git@github.com:example-org/cc-smart-dev-kit.git",
       "git@github.com:example-org/cc-smart-dev-kit.git",

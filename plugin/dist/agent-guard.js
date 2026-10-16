@@ -5924,7 +5924,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.4.2",
+  version: "0.4.3",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -9530,7 +9530,13 @@ function fableSession(input, env, paths) {
   const mark = fableSessionMark(env, sessionId);
   if (existsSync7(mark))
     return SILENT;
-  const model = event === "SessionStart" ? stringField(input.model) : sessionModelOf(input, env);
+  let model;
+  if (event === "SessionStart")
+    model = stringField(input.model);
+  else if (event === "PostModelSwitch")
+    model = stringField(input.to_model);
+  else
+    model = sessionModelOf(input, env);
   if (model === null || !couldBeFable(model, env))
     return SILENT;
   const real = resolveLaunchModel(model, gatewayConfigOf(paths), env);
@@ -11013,7 +11019,7 @@ var agentGuardHook = {
 };
 var fableSessionHook = {
   name: "fable-session",
-  events: ["SessionStart", "UserPromptSubmit"],
+  events: ["SessionStart", "PostModelSwitch", "Stop"],
   wiring: "plugin",
   onConfigProblem: (_message, input, _event, _checkout, context) => fableSession(input, context.env, context.paths),
   outsideGit: (input, _event, _why, context) => fableSession(input, context.env, context.paths),

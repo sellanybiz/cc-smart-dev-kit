@@ -112,6 +112,25 @@ person chose and that passed the test; otherwise by the person, because Claude C
 - Text from outside (an upstream's answer, a fetch error, web text) is printed or logged
   only through `src/gateway/plain-text.ts` (`oneLine`, `plainText`, `printableJson`;
   `maskedLine` for an error): never a second copy of that logic.
+- **A key is tested before it is saved** (`checkBackendKey`, `src/gateway/backends.ts`): one
+  cheap authenticated request (`GET /v1/models`, `KEY_CHECK_TIMEOUT_MS`) with the key. 401/403
+  refuses it — nothing written, the key in the file kept, the message naming the key that
+  backend wants. Anything else (unreachable, a 5xx) is not a silent save either: only with
+  `--save-unchecked`, with a WARN line. A key that really changes is backed up first
+  (`backupFile`, the state folder's `backups/`). Live, 2026-10-17: a pasted provider key
+  overwrote the router's working key, OmniRoute answered 401 to everything, and every affordable
+  subagent fell back to Claude.
+- **OmniRoute's dashboard password makes a key, and is never stored** (`createOmnirouteKey`,
+  `src/gateway/omniroute-key.ts`, `--omniroute-password[-stdin]`): `POST /api/auth/login` with
+  **no `Origin` header** (OmniRoute skips its CSRF check without one; with one it must be its own
+  origin or the CSRF token), then `POST /api/keys` with the `auth_token` cookie, named
+  `cc-smart-dev-kit-router-<hostname>`, `noLog: true`. The key it answers with goes through the
+  same test-and-save as one given by hand. The facts are the installed OmniRoute 3.8.51's own
+  source (read 2026-10-17) — the module's header says which files.
+- **`gateway check`** is read-only and answers with an exit code (0 works, 1 no key yet and
+  OmniRoute answers, 3 could not be judged, 4 the key is refused). It asks the BACKEND only,
+  never the router's port: a machine's sessions may be using the router, and a test's default
+  port may belong to a real one.
 - A backend key comes on stdin, never argv. `gateway.json` is mode 600, and a file
   others can read is refused — off Windows, where the bits decide: on Windows the mode
   says nothing and the profile's ACL protects the file, so `isOwnerOnly`

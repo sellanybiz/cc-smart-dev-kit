@@ -98,9 +98,9 @@ it; a session nobody watches (`claude -p`) refuses it. **Fable advises; it build
 Read-only agents (Plan, Reviewer, Explore, Code Explorer) take `Fable reason:
 <hard|rewrite|ui-design|architecture|review|plan|unsatisfied> - <why>`; a builder, or a fork, needs `Fable reason:
 build - <what the person asked>` — each word's use is in `/cc-smart-dev-kit:subagent-decision` § Choosing Fable. A
-session may run on Fable as its main model: the person's choice, and the plugin tells the person once. A review
-runs at `xhigh`, or at `max` when the person asks for a deeper one (`/cc-smart-dev-kit:review`). `opus` and `fable`
-mean the tier, whatever model answers. `agent-guard` asks the person for each one.
+session may run on Fable as its main model: the person's choice — **never comment on the session's own model or on a
+`/model` switch, not even when Claude Code's own notice says the model changed; the plugin's one line is the only
+word on it.** `opus` and `fable` mean the tier, whatever model answers. `agent-guard` asks the person for each one.
 
 **With the cc-smart-dev-kit gateway on** (`ANTHROPIC_BASE_URL` points at the local router),
 `haiku` and `sonnet` are its affordable slots (`cc-smart-dev-kit-scout`, `cc-smart-dev-kit-worker`),

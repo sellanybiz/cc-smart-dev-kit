@@ -126,6 +126,11 @@ async function open(options: {
   noGit?: boolean;
   /** True where the test's machine has systemd (the router restart needs it). */
   systemd?: boolean;
+  /**
+   * The router's journal lines this machine's `journalctl --user -u cc-smart-dev-kit-router -o
+   * json` answers, OLDEST FIRST as the real one prints them. One minute apart, from 09:00 UTC.
+   */
+  journal?: { level: "ERROR" | "INFO" | "WARN"; text: string }[];
   /** The workflow module behind the adapter; a fake by default, never a real file or repo. */
   workflow?: WorkflowAdapter;
   withConfig?: boolean;
@@ -233,10 +238,24 @@ async function open(options: {
     },
     // A machine with systemd: the fake systemctl answers. Without it, every command is
     // refuted, as it is on a machine that has no such program.
-    runner: (cmd) =>
-      options.systemd === true && cmd[0] === "systemctl"
-        ? { exitCode: 0, output: "" }
-        : { exitCode: 1, output: `no ${cmd[0]} here` },
+    runner: (cmd) => {
+      if (options.systemd !== true) return { exitCode: 1, output: `no ${cmd[0]} here` };
+      if (cmd[0] === "systemctl") return { exitCode: 0, output: "" };
+      // The router's journal, as `journalctl -o json` prints it: one JSON object per line, in
+      // the journal's own order (oldest first). `__REALTIME_TIMESTAMP` is microseconds.
+      if (cmd[0] === "journalctl") {
+        const at = Date.UTC(2026, 9, 17, 9, 0, 0);
+        const lines = (options.journal ?? []).map((one, index) =>
+          JSON.stringify({
+            __REALTIME_TIMESTAMP: String((at + index * 60_000) * 1000),
+            MESSAGE: `${one.level} ${one.text}`,
+            PRIORITY: one.level === "ERROR" ? "3" : one.level === "WARN" ? "4" : "6",
+          }),
+        );
+        return { exitCode: 0, output: lines.join("\n") };
+      }
+      return { exitCode: 1, output: `no ${cmd[0]} here` };
+    },
     // No system folders of the host: a real `/usr/lib/node_modules/omniroute` is not this test.
     systemFolders: [],
     systemd: options.systemd === true,
@@ -691,6 +710,59 @@ describe("every answer", () => {
         expect(page.body).toContain(`Bun 1.4.3`);
       }
       expect((await world.call("/")).body).toContain("Router running");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the log is NEWEST FIRST on both pages, with the times as they are", async () => {
+    // Live, 2026-10-17 (the owner): the log read top down as the journal prints it — oldest
+    // first — so the newest line, the one a person opens the page for, sat at the bottom.
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({
+      backendPort: backend.port,
+      journal: [
+        { level: "INFO", text: "the oldest line" },
+        { level: "INFO", text: "a middle line" },
+        { level: "WARN", text: "a warning in the middle" },
+        { level: "ERROR", text: "the newest line" },
+      ],
+      systemd: true,
+    });
+    try {
+      await world.enter();
+      const health = await world.call("/health");
+      expect(health.status).toBe(200);
+      const log = health.body.slice(health.body.indexOf('id="log-h"'));
+      const order = [
+        log.indexOf("the oldest line"),
+        log.indexOf("a middle line"),
+        log.indexOf("a warning in the middle"),
+        log.indexOf("the newest line"),
+      ];
+      expect(order.every((at) => at >= 0)).toBe(true);
+      expect(order).toEqual([...order].sort((a, b) => b - a));
+      // The times are the journal's own (one minute apart, from 09:00), shown as they are —
+      // `13:52:07`, or the date and the time when the line is not today — and they run the
+      // same way as the lines: newest first.
+      const times = [...log.matchAll(/<span class="muted">([^<]+)<\/span>/g)].map(
+        (match) => match[1] ?? "",
+      );
+      expect(times).toHaveLength(4);
+      expect(times.map((time) => time.slice(-5))).toEqual(["09:03", "09:02", "09:01", "09:00"]);
+
+      // The Overview's "Latest warnings": the newest of them first, and only the newest three.
+      const overview = await world.call("/");
+      const warnings = overview.body.slice(overview.body.indexOf('id="warn-h"'));
+      const warnOrder = [
+        warnings.indexOf("a warning in the middle"),
+        warnings.indexOf("the newest line"),
+      ];
+      expect(warnOrder.every((at) => at >= 0)).toBe(true);
+      const [firstWarn = -1, secondWarn = -1] = warnOrder;
+      expect(firstWarn).toBeGreaterThan(secondWarn);
+      expect(warnings).not.toContain("the oldest line");
     } finally {
       world.portal.stop();
       backend.stop();

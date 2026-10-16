@@ -16,6 +16,13 @@ export interface HookInput {
   source?: unknown;
   /** SessionStart: the model this session runs on, when Claude Code names it. */
   model?: unknown;
+  /**
+   * PostModelSwitch: the resolved model the session ran BEFORE the switch, and the one it runs
+   * AFTER it. Claude Code 2.1.302's own input schema (`from_model`, `to_model`), read from the
+   * installed binary: `docs/claude-code-contract.md` § Instructions, skills and agents.
+   */
+  from_model?: unknown;
+  to_model?: unknown;
   /** WorktreeCreate. */
   name?: unknown;
   /** WorktreeRemove. */

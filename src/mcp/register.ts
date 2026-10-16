@@ -32,7 +32,8 @@
  *   <name> --scope user`. Then the record goes. A server the person re-pointed stays. When
  *   the user config cannot be read, every record stays and one line says so.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { tildify } from "../cli/paths";
 import { shellQuote } from "../setup/launcher";
@@ -433,4 +434,71 @@ export function removeMcpServers(
     }
   }
   return result;
+}
+
+/**
+ * A server of one of the plugin's names registered somewhere that WINS OVER the user scope:
+ * the LOCAL scope (Claude Code's own file, `projects[<cwd>].mcpServers`) or a project's
+ * `.mcp.json` in the folder the command runs in (or in a parent, up to the folder holding
+ * `.git`). A copy there takes precedence over the user-scope one, so the plugin's own server is
+ * not the one starting — the same shape as the user-scope case, one scope down (premium review,
+ * 2026-10-17). Returns what runs instead and the file it is in, or null.
+ */
+export function overridingServer(
+  userConfigFile: string,
+  cwd: string,
+  name: string,
+): null | { config: unknown; file: string } {
+  const fromLocal = localServers(userConfigFile, cwd)[name];
+  if (fromLocal !== undefined) return { config: fromLocal, file: userConfigFile };
+  for (const file of projectMcpFiles(cwd)) {
+    const fromProject = readProjectServers(file)[name];
+    if (fromProject !== undefined) return { config: fromProject, file };
+  }
+  return null;
+}
+
+/** The local-scope servers for `cwd`: `projects[<cwd>].mcpServers` in Claude Code's own file. */
+function localServers(userConfigFile: string, cwd: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(userConfigFile, "utf8"));
+    const projects = (parsed as { projects?: unknown } | null)?.projects;
+    if (typeof projects !== "object" || projects === null) return {};
+    const entry = (projects as Record<string, { mcpServers?: unknown }>)[cwd];
+    const servers = entry?.mcpServers;
+    return typeof servers === "object" && servers !== null && !Array.isArray(servers)
+      ? (servers as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The `mcpServers` of one `.mcp.json` (a project's own file). `{}` when it is not readable. */
+function readProjectServers(file: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    const servers = (parsed as { mcpServers?: unknown } | null)?.mcpServers;
+    return typeof servers === "object" && servers !== null && !Array.isArray(servers)
+      ? (servers as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The `.mcp.json` files that could speak for this folder, nearest first: the folder itself, then
+ * each parent up to (and including) the one holding `.git`. Beyond that is not this project.
+ */
+function projectMcpFiles(cwd: string): string[] {
+  const files: string[] = [];
+  let folder = resolve(cwd);
+  for (let depth = 0; depth < 40; depth += 1) {
+    files.push(join(folder, ".mcp.json"));
+    const parent = dirname(folder);
+    if (parent === folder || existsSync(join(folder, ".git"))) break;
+    folder = parent;
+  }
+  return files;
 }

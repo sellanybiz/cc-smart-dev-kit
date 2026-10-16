@@ -5,15 +5,7 @@ import { browserCheckCommand, runBrowserCheck } from "../browser/check";
 import { realBrowserDoctorDeps } from "../browser/doctor";
 import { runBrowserMcp } from "../browser/launcher";
 import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
-import {
-  canHideInput,
-  clearBrowserToken,
-  parseBrowserToken,
-  readSecretLine,
-  readTokenFromStdin,
-  tokenSavedLine,
-  writeBrowserToken,
-} from "../browser/token";
+import { clearBrowserToken, savePastedToken } from "../browser/token";
 import { COMMAND, VERSION } from "../build-info";
 import { oldBunRefusal } from "../cli/bun-check";
 import { runDoctor } from "../cli/doctor";
@@ -22,11 +14,13 @@ import { runMigrate } from "../cli/migrate";
 import { cliPaths } from "../cli/paths";
 import { runProjectInit } from "../cli/project-init";
 import { runRestore } from "../cli/restore";
+import { canHideInput, cleanSecretLine, readSecretLine } from "../cli/secret-line";
 import { runSetup } from "../cli/setup";
 import { runStatusline } from "../cli/statusline";
 import { runUpdate } from "../cli/update";
 import { runUsage } from "../cli/usage";
 import { type GatewayContext, runGateway } from "../gateway/commands";
+import { gatewayContext as buildGatewayContext } from "../gateway/context";
 import { realProbe } from "../gateway/health";
 import { type Runner, routerServiceKind } from "../gateway/service";
 import { windowsAccount } from "../gateway/service-windows";
@@ -47,6 +41,7 @@ import { realMemoryFacts } from "../jobs/memory";
 import { realMachine } from "../machine/machine";
 import { realMcpDoctorDeps } from "../mcp/doctor";
 import { serenaFolder } from "../mcp/serena-context";
+import { mcpServerStatus, mcpServerStatusLine } from "../mcp/status";
 import { runOmniroute } from "../omniroute/commands";
 import { runPortal } from "../portal/command";
 import { locateCheckout } from "../project/resolve";
@@ -169,6 +164,11 @@ Commands:
                      the extension would ask you to approve every connection. browser check
                      proves a real connection, a file:// page, screenshots, an upload and a
                      download end to end (it opens that Chrome window once).
+  mcp status [--json]
+                     The four MCP servers cc-smart-dev-kit registers for your user, and which
+                     of them are registered by something else instead (a project's own script,
+                     say): one line each, --json for a machine. Read-only. The installer uses
+                     it to ASK before it replaces one of yours.
   sessions [--open] [--dry-run]
                      This project's Claude Code sessions of the last two days, by name and
                      worktree, with the command that resumes each. --open reopens every
@@ -289,22 +289,22 @@ const account = windowsAccount(process.env);
 /** Asks on the terminal; null when stdin is not one (a pipe, a script, a test). */
 const ask = process.stdin.isTTY ? (question: string) => confirm(question) : null;
 
+/**
+ * The gateway commands' context. `src/gateway/context.ts` owns it — including the one decision
+ * `--omniroute-password` needs (`readSecret` on a terminal whose echo can be switched off, and
+ * nothing on a pipe), which this entry used to leave out.
+ */
 function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
-  return {
-    paths,
-    bunPath: process.execPath,
-    bunVersion: Bun.version,
-    bundle: routerBundle(),
-    runner,
-    readStdin: () => Bun.stdin.text(),
-    confirm: ask,
-    service,
+  return buildGatewayContext({
     account,
+    bundle: routerBundle(),
+    confirm: ask,
+    paths,
     platform: process.platform,
-    probe: realProbe(),
-    print: (line) => console.log(line),
-    error: (line) => console.error(line),
-  };
+    runner,
+    service,
+    terminal: process.stdin,
+  });
 }
 
 /** What `omniroute status`, `update` and `rollback` need: systemd, the registry, a question. */
@@ -406,10 +406,11 @@ async function main(argv: string[]): Promise<number> {
       }
       // The Tavily key on stdin, never an argument (a command line is readable in `/proc`
       // and lands in the shell's history). Read before anything else is planned, so the
-      // plan and a real run say the same thing.
+      // plan and a real run say the same thing. Cleaned: a paste may arrive wrapped in the
+      // bracketed-paste markers (`src/cli/secret-line.ts`).
       let tavilyKeyStdin: null | string = null;
       if (rest.includes("--tavily-key-stdin")) {
-        const value = (await Bun.stdin.text()).trim();
+        const value = cleanSecretLine(await Bun.stdin.text());
         if (value === "") throw new Error("no key on stdin");
         tavilyKeyStdin = value;
       }
@@ -597,6 +598,29 @@ async function main(argv: string[]): Promise<number> {
         which: (command) => Bun.which(command),
       });
     }
+    case "mcp": {
+      const [sub, ...mcpRest] = rest;
+      if (sub !== "status") {
+        console.error(`Usage: ${COMMAND} mcp status [--json]\n\n${HELP}`);
+        return 2;
+      }
+      const unknown = mcpRest.filter((arg) => arg !== "--json");
+      if (unknown.length > 0) {
+        console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+        return 2;
+      }
+      const servers = mcpServerStatus(paths);
+      if (mcpRest.includes("--json")) {
+        console.log(JSON.stringify({ servers, userConfigFile: paths.userConfigFile }, null, 2));
+      } else {
+        for (const server of servers) {
+          console.log(mcpServerStatusLine(server));
+        }
+      }
+      // 1: Claude Code's own config could not be read, so nothing here can be trusted — the
+      // difference between "nothing is foreign" and "could not check" matters to the installer.
+      return servers.some((server) => server.state === "unreadable") ? 1 : 0;
+    }
     case "migrate": {
       const unknown = rest.filter((arg) => arg !== "--dry-run" && arg !== "--yes");
       if (unknown.length > 0) {
@@ -673,33 +697,18 @@ async function main(argv: string[]): Promise<number> {
           return 0;
         }
         const hide = canHideInput(process.stdin);
-        const pasted = await readTokenFromStdin(
+        // The four outcomes (0 saved, 130 Ctrl+C, 1 a wrong shape, 1 a read that failed) are
+        // decided in one place, `savePastedToken`, so each is tested there.
+        return await savePastedToken(
+          paths,
           {
             isTTY: hide,
             readAll: () => Bun.stdin.text(),
             ...(hide ? { readSecret: () => readSecretLine(process.stdin) } : {}),
           },
           (line) => console.log(line),
-        ).catch((error: unknown) => {
-          console.error(
-            `${error instanceof Error ? error.message : String(error)}. Save the token to a file and pipe it in (\`${COMMAND} browser token < token.txt\`), or paste it in the portal's Browser card (\`${COMMAND} portal\`).`,
-          );
-          return null;
-        });
-        if (pasted === null) {
-          console.error("Nothing was saved (Ctrl+C).");
-          return 130;
-        }
-        const parsed = parseBrowserToken(pasted);
-        if (!parsed.ok) {
-          console.error(`The token was not saved: ${parsed.why}.`);
-          return 1;
-        }
-        writeBrowserToken(paths, parsed.token);
-        // The token itself is never printed, only the file it went to.
-        console.log(tokenSavedLine(paths.browserTokenFile));
-        console.log("Start a new Claude session (or restart the running one) to use it.");
-        return 0;
+          (line) => console.error(line),
+        );
       }
       if (sub === "check") {
         if (extra.length > 0) {

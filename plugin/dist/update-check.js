@@ -7,7 +7,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.4.2",
+  version: "0.4.3",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -1684,6 +1684,9 @@ function redactUrl(url) {
       result = `${scheme}://${safeUser}@${host}${rest}`;
     }
   }
+  const hash = result.indexOf("#");
+  if (hash >= 0)
+    result = result.slice(0, hash);
   const query = result.indexOf("?");
   return query >= 0 ? `${result.slice(0, query)}?***` : result;
 }

@@ -6283,7 +6283,7 @@ import { existsSync, readFileSync as readFileSync2 } from "fs";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.4.2",
+  version: "0.4.3",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {

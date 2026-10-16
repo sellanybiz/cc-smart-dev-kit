@@ -15,9 +15,11 @@
  *     never read into a message.
  */
 import { COMMAND } from "../build-info";
-import type { CliPaths } from "../cli/paths";
-import { readUserServers } from "./register";
+import { type CliPaths, tildify } from "../cli/paths";
+import { readMcpRecords } from "./records";
+import { overridingServer, readUserServers, sameConfig } from "./register";
 import { SERVER_NAMES } from "./servers";
+import { describeServerConfig } from "./status";
 import { readTavilyKey } from "./tavily";
 
 export interface McpCheck {
@@ -80,12 +82,22 @@ export function mcpChecks(
   paths: CliPaths,
   deps: McpDoctorDeps,
   env: Record<string, string | undefined>,
+  /** The folder doctor runs in: where a project's `.mcp.json` and the local scope are looked
+   *  for. A copy there wins over the user-scope server. */
+  cwd: string = process.cwd(),
 ): McpCheck[] {
   const names = SERVER_NAMES.filter(
     (name) => name !== "tavily-websearch" || readTavilyKey(paths, env).source !== "none",
   );
   const checks: McpCheck[] = [];
   const servers = readUserServers(paths.userConfigFile);
+  /** What setup registered. A record file that cannot be read: nothing is judged as ours. */
+  let records: null | Record<string, { json: string }> = null;
+  try {
+    records = readMcpRecords(paths.stateDir);
+  } catch {
+    records = null;
+  }
   for (const name of names) {
     if (servers === null) {
       checks.push({
@@ -98,6 +110,39 @@ export function mcpChecks(
       checks.push({
         ok: false,
         text: `the "${name}" MCP server is not registered for your user. Run: ${COMMAND} setup`,
+      });
+      continue;
+    }
+    // Registered, but not with what cc-smart-dev-kit recorded: someone else's server under our
+    // name — a project's own script, say. That is why the plugin's browser is not the one
+    // starting (live, 2026-10-17), so it is named here, with what runs instead. `!`, not a
+    // failure: setup is told to leave a person's own server alone, and this line says how to
+    // hand the name over. (The record file that cannot be read means "not ours" here, which is
+    // the truth: nothing of ours is being managed.)
+    const record = records?.[name];
+    if (record === undefined || !sameConfig(record.json, servers[name])) {
+      checks.push({
+        ok: true,
+        warn: true,
+        text:
+          `the "${name}" MCP server is registered by something else (${describeServerConfig(servers[name])}), ` +
+          `not by cc-smart-dev-kit. To let setup manage it: claude mcp remove ${name} --scope user, then ${COMMAND} setup`,
+      });
+      continue;
+    }
+    // Ours at user scope, but a copy one scope down WINS OVER it — the local scope
+    // (`projects[<cwd>]` in Claude Code's own file) or a project's `.mcp.json` — so the
+    // plugin's server is not the one starting. `!`, never a failure, and never a key: what
+    // runs instead goes through the same redacting line as above.
+    const overriding = overridingServer(paths.userConfigFile, cwd, name);
+    if (overriding !== null) {
+      checks.push({
+        ok: true,
+        warn: true,
+        text:
+          `the "${name}" MCP server has a copy that wins over yours (${describeServerConfig(overriding.config)} in ${tildify(overriding.file, paths.home)}): ` +
+          `a project's .mcp.json, or the local scope, takes precedence over the user-scope server, so cc-smart-dev-kit's is not the one starting. ` +
+          `Remove it from that file (or merge the base branch when it came from one), then run: ${COMMAND} doctor`,
       });
       continue;
     }

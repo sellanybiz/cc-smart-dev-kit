@@ -46,10 +46,11 @@ import {
   findChrome,
   findClaudeCodeProfile,
   isExtensionInstalledInProfile,
-  otherExtensionIds,
+  otherExtensions,
   PLAYWRIGHT_EXTENSION_ID,
   PLAYWRIGHT_EXTENSION_SETTINGS_URL,
   PLAYWRIGHT_EXTENSION_URL,
+  profileNameIn,
 } from "./chrome";
 import { legacyBrowserFacts, type ProcessReader } from "./legacy";
 import { clearBrowserToken, readBrowserToken, type TokenDeps } from "./token";
@@ -244,9 +245,10 @@ export function windowsQueryArgv(): string[] {
  *
  * **It never touches the Chrome profile or the extension.** The profile folder, its cookies, its
  * logins and the installed extension are the person's browser data, not cc-smart-dev-kit's, and no
- * command deletes them. The one exception is the profile's display name in `Local State`: that is
- * a managed change like any other, so the general restore puts it back — and every other byte of
- * that file is left as it is.
+ * command deletes them. The exception is the profile's display name, in the two places Chrome
+ * reads it (`Local State`'s `profile.info_cache.<dir>.name`, and the profile's own `Preferences`
+ * → `profile.name`): those are managed changes like any other, so the general restore puts them
+ * back — and every other byte of both files is left as it is.
  */
 export function browserRestoreLines(
   paths: CliPaths,
@@ -403,23 +405,37 @@ export function browserSetup(
   const extensionInstalled = profile !== null && isExtensionInstalledInProfile(profile.dir, deps);
   const dirName = profile?.dirName ?? CLAUDE_CODE_PROFILE;
 
-  // The profile's display name: written only while no Chrome runs on this user data folder
-  // (Chrome rewrites `Local State` from memory), and through the managed helpers.
-  if (profile !== null && profile.displayName !== CLAUDE_CODE_PROFILE) {
+  // The profile's display name, in BOTH places Chrome reads it: `Local State` (what the profile
+  // menu shows) and the profile's own `Preferences` (`profile.name`, what the picker and a new
+  // window fall back to). Written only while no Chrome runs on this user data folder — Chrome
+  // rewrites both files from memory while it runs — and through the managed helpers, so
+  // `restore` puts back whatever was there.
+  if (profile !== null) {
     const localState = join(userDataDir, "Local State");
-    if (chromeMayBeRunning(userDataDir, deps.platform, deps)) {
+    const preferences = join(profile.dir, "Preferences");
+    const wanted = [
+      { file: localState, path: ["profile", "info_cache", dirName, "name"] },
+      { file: preferences, path: ["profile", "name"] },
+    ].filter(({ file }) => {
+      const current = file === localState ? profile.displayName : profileNameIn(profile.dir, deps);
+      return current !== CLAUDE_CODE_PROFILE;
+    });
+    const chromeRunning = wanted.length > 0 && chromeMayBeRunning(userDataDir, deps.platform, deps);
+    if (chromeRunning) {
       info.push(
-        `  Chrome is running, so the "${dirName}" profile's name was left as it is (Chrome rewrites ${localState}): rename it in Chrome (profile menu, Customize profile), or close Chrome and run this again`,
+        `  Chrome is running, so the "${dirName}" profile's name was left as it is (Chrome rewrites ${localState}, and its own Preferences, from memory): close Chrome, then run \`${COMMAND} browser setup\` again, or rename it in Chrome (profile menu, Customize profile)`,
       );
-    } else if (!options.apply) {
-      changes.push(
-        `~ ${localState}: profile.info_cache.${dirName}.name = "${CLAUDE_CODE_PROFILE}"`,
-      );
-    } else {
+    }
+    for (const { file, path } of wanted) {
+      if (chromeRunning) break;
+      if (!options.apply) {
+        changes.push(`~ ${file}: ${path.join(".")} = "${CLAUDE_CODE_PROFILE}"`);
+        continue;
+      }
       try {
         const written = applyManagedJson({
-          file: localState,
-          set: [[["profile", "info_cache", dirName, "name"], CLAUDE_CODE_PROFILE]],
+          file,
+          set: [[path, CLAUDE_CODE_PROFILE]],
           stateDir: paths.stateDir,
           // Chrome names a profile it just made itself ("Person 1"), and a plugin cannot tell that
           // from a name a person typed. The profile is this plugin's own, and labelling it is the
@@ -429,13 +445,13 @@ export function browserSetup(
         changes.push(
           ...written.changes.map(
             (change) =>
-              `${written.written ? "~" : "  "} ${localState}: ${change.path.join(".")} = ${JSON.stringify(change.after)}`,
+              `${written.written ? "~" : "  "} ${file}: ${change.path.join(".")} = ${JSON.stringify(change.after)}`,
           ),
         );
       } catch (error) {
         // A name that cannot be written is cosmetic: the directory name is what the MCP needs.
         notes.push(
-          `! the profile could not be named "${CLAUDE_CODE_PROFILE}" in ${localState} (${error instanceof Error ? error.message : String(error)}); rename it in Chrome instead`,
+          `! the profile could not be named "${CLAUDE_CODE_PROFILE}" in ${file} (${error instanceof Error ? error.message : String(error)}); rename it in Chrome instead`,
         );
       }
     }
@@ -462,16 +478,19 @@ export function browserSetup(
     }
     if (profile === null) {
       info.push(
-        `  Chrome makes the "${dirName}" profile on this launch and names it itself: close Chrome and run this again to label it "${CLAUDE_CODE_PROFILE}", or rename it in Chrome`,
+        `  Chrome makes the "${dirName}" profile on this launch and names it itself; close Chrome and run \`${COMMAND} browser setup\` again to label it "${CLAUDE_CODE_PROFILE}" in both of Chrome's own files, or rename it in Chrome`,
       );
     }
   }
 
   const found = findClaudeCodeProfile(userDataDir, deps);
-  const others = found === null ? [] : otherExtensionIds(found.dir, deps);
+  // Chrome's own record decides (see `otherExtensions`): Chrome's `Temp` folder, a record left
+  // after an extension is gone, and Chrome's own components are not extensions a person can see
+  // or remove in `chrome://extensions`.
+  const others = found === null ? [] : otherExtensions(found.dir, deps);
   if (others.length > 0) {
     notes.push(
-      `! ${String(others.length)} other extension${others.length === 1 ? "" : "s"} in the "${dirName}" profile (${others.join(", ")}): remove it there, or the browser session breaks (microsoft/playwright#43230, open)`,
+      `! ${String(others.length)} other extension${others.length === 1 ? "" : "s"} in the "${dirName}" profile (${others.map((one) => `${one.name} [${one.id}]`).join(", ")}): remove it there, or the browser session breaks (microsoft/playwright#43230, open)`,
     );
   }
   const state = browserState(paths, deps);

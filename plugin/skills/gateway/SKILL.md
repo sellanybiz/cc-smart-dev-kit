@@ -31,17 +31,32 @@ repository (the installed plugin does not carry the docs).
 
 ## Set it up
 
-1. A backend first, for example OmniRoute with an Ollama Cloud connection, and an API key
-   for the router. Setup writes `http://127.0.0.1:20128` as the `omniroute` backend's
-   address; OmniRoute elsewhere: change `backends.omniroute.baseUrl` in
-   `~/.config/cc-smart-dev-kit/gateway.json` after setup. The first key is the `omniroute`
-   backend's. It goes **on stdin, from a file, never on the command line**:
-   `cc-smart-dev-kit gateway setup --backend-key-stdin omniroute < key-file` (typed, it shows on
-   the screen and needs Ctrl-D).
+1. A backend first, for example OmniRoute with an Ollama Cloud connection. Setup writes
+   `http://127.0.0.1:20128` as the `omniroute` backend's address; OmniRoute elsewhere: change
+   `backends.omniroute.baseUrl` in `~/.config/cc-smart-dev-kit/gateway.json` after setup. The
+   first key is the `omniroute` backend's. **Two ways to give it**, and neither puts a secret on
+   the command line:
+   - let setup make one: `cc-smart-dev-kit gateway setup --omniroute-password` — it asks for
+     OmniRoute's own dashboard password with no echo (or takes it on stdin with
+     `--omniroute-password-stdin < password-file`), logs in to the local OmniRoute, makes a key
+     named `cc-smart-dev-kit-router-<machine>` and saves it. The password is never stored;
+   - a key you already have: on **stdin, from a file** —
+     `cc-smart-dev-kit gateway setup --backend-key-stdin omniroute < key-file` (typed, it shows
+     on the screen and needs Ctrl-D). OmniRoute wants an **OmniRoute API key** (its own
+     dashboard, the API keys page), not a provider key such as an Ollama Cloud one.
+   Either way the key is **tested before it is saved**: a 401/403 refuses it and keeps the key
+   already in the file, saying which key that backend wants. A backend that cannot be asked
+   (down, a 5xx) saves nothing either unless you add `--save-unchecked`, which saves it with a
+   WARN line. The file as it was is kept in the state folder's `backups/` whenever a key really
+   changes.
    No key yet: `cc-smart-dev-kit gateway setup --no-backend-key` (every slot answers on Claude).
    Setup stops, writing nothing, when another program holds the router's port (an older
    router, say): stop that program first.
 2. `cc-smart-dev-kit gateway status`: the router is up, the backend answers, the slots look right.
+   `cc-smart-dev-kit gateway check` answers the one question a script asks — does the gateway
+   have an OmniRoute key the backend accepts? — with an exit code (0 works, 1 no key yet and
+   OmniRoute answers, 3 could not be judged, 4 the key is refused); read-only, and it never asks
+   the router's port.
 3. `cc-smart-dev-kit gateway on`. **Every running Claude session on the machine switches on
    save.** Pick the moment with the person, and let the person run it when this session's
    own requests would switch (§ A change to your own model path).

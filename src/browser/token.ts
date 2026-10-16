@@ -33,6 +33,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:
 import { dirname } from "node:path";
 import { COMMAND } from "../build-info";
 import type { CliPaths } from "../cli/paths";
+import { cleanSecretLine } from "../cli/secret-line";
 import { hostPlatform } from "../machine/host";
 import { isOwnerOnly } from "../setup/file-mode";
 import { atomicWrite } from "../setup/write";
@@ -65,14 +66,17 @@ export function isBrowserToken(token: string): boolean {
 }
 
 /**
- * One pasted line as a token: surrounding whitespace and the `PLAYWRIGHT_MCP_EXTENSION_TOKEN=`
- * prefix the Copy button includes are dropped, then the shape is checked. The message a person
- * reads names the shape and the one place to copy the token from, never a value.
+ * One pasted line as a token: the bracketed-paste markers and every other control character a
+ * paste carries are dropped first (`cleanSecretLine` — a terminal that keeps bracketed paste on
+ * hands a raw-mode read `ESC[200~<token>ESC[201~`, which this used to refuse), then surrounding
+ * whitespace and the `PLAYWRIGHT_MCP_EXTENSION_TOKEN=` prefix the Copy button includes, then the
+ * shape is checked. The message a person reads names the shape, the count of characters that were
+ * left, and the one place to copy the token from — never a value.
  */
 export function parseBrowserToken(
   pasted: string,
 ): { ok: true; token: string } | { ok: false; why: string } {
-  let text = pasted.trim();
+  let text = cleanSecretLine(pasted);
   if (text.startsWith(TOKEN_LINE_PREFIX)) text = text.slice(TOKEN_LINE_PREFIX.length).trim();
   if (text === "") {
     return {
@@ -191,64 +195,16 @@ export function clearBrowserToken(paths: CliPaths): null | string {
   return paths.browserTokenFile;
 }
 
-/** A terminal's raw input, as `readSecretLine` needs it. */
-export interface RawTerminal {
-  on: (event: "data", listener: (chunk: Buffer) => void) => void;
-  off: (event: "data", listener: (chunk: Buffer) => void) => void;
-  setRawMode?: (on: boolean) => void;
-}
-
-/**
- * One line from a terminal, with NO echo: the token must not be shown while it is typed (a
- * terminal echoes what it receives, so raw mode is switched on for the read and off after it).
- * Enter ends the line; Backspace deletes; Ctrl+C gives up and answers null. Nothing is printed.
- */
-export function readSecretLine(terminal: RawTerminal): Promise<null | string> {
-  return new Promise((done) => {
-    let text = "";
-    const listener = (chunk: Buffer) => {
-      for (const character of chunk.toString("utf8")) {
-        if (character === "\r" || character === "\n") {
-          terminal.off("data", listener);
-          terminal.setRawMode?.(false);
-          done(text);
-          return;
-        }
-        if (character === "\u0003") {
-          // Ctrl+C: give the terminal back as it was, and answer nothing.
-          terminal.off("data", listener);
-          terminal.setRawMode?.(false);
-          done(null);
-          return;
-        }
-        if (character === "\u007f" || character === "\b") {
-          text = text.slice(0, -1);
-          continue;
-        }
-        text += character;
-      }
-    };
-    terminal.setRawMode?.(true);
-    terminal.on("data", listener);
-  });
-}
-
 /** Where the pasted token is read from: a pipe or a file, or a terminal with no echo. */
 export interface TokenInput {
   isTTY: boolean;
   /** Everything on stdin, up to its end (a pipe, or `< token.txt`). */
   readAll: () => Promise<string>;
-  /** A terminal's own line read (`readSecretLine`); left out when there is none. */
+  /**
+   * A terminal's own line read, with no echo and cleaned (`readSecretLine`, `src/cli/secret-line.ts`);
+   * left out when there is none.
+   */
   readSecret?: () => Promise<null | string>;
-}
-
-/**
- * Can this stdin be read as a secret: a terminal that can switch its own echo off? A terminal
- * without `setRawMode` would show the token on screen while it is typed, so that one is refused
- * (the pipe path is the way in then).
- */
-export function canHideInput(stdin: { isTTY?: boolean; setRawMode?: unknown }): boolean {
-  return stdin.isTTY === true && typeof stdin.setRawMode === "function";
 }
 
 /**
@@ -274,4 +230,49 @@ export async function readTokenFromStdin(
     return await input.readSecret();
   }
   return await input.readAll();
+}
+
+/**
+ * Reads a pasted token and saves it — the ONE place the four outcomes of `browser token` are
+ * decided, so each of them is testable (the CLI entry just calls this):
+ *
+ *   - **0, saved**: the token's own file, mode 0600, and the line that says so — never the token.
+ *   - **130**: Ctrl+C at the prompt (the read answered null), and nothing was written.
+ *   - **1**: a shape that is not the extension's token (the reason names the shape and the
+ *     characters that were left), and nothing was written.
+ *   - **1**: the read itself FAILED (a broken pipe, a terminal that cannot hide what is typed).
+ *     Its own reason is printed with the two ways in (`< token.txt`, or the portal's Browser
+ *     card) — never "Nothing was saved (Ctrl+C)", which would be a lie about a read error
+ *     (premium review, 2026-10-17).
+ */
+export async function savePastedToken(
+  paths: CliPaths,
+  input: TokenInput,
+  say: (line: string) => void,
+  error: (line: string) => void,
+): Promise<number> {
+  let pasted: null | string;
+  try {
+    pasted = await readTokenFromStdin(input, say);
+  } catch (cause) {
+    const why = cause instanceof Error ? cause.message : String(cause);
+    error(
+      `${why}. Save the token to a file and pipe it in (\`${COMMAND} browser token < token.txt\`), or paste it in the portal's Browser card (\`${COMMAND} portal\`).`,
+    );
+    return 1;
+  }
+  if (pasted === null) {
+    error("Nothing was saved (Ctrl+C).");
+    return 130;
+  }
+  const parsed = parseBrowserToken(pasted);
+  if (!parsed.ok) {
+    error(`The token was not saved: ${parsed.why}.`);
+    return 1;
+  }
+  writeBrowserToken(paths, parsed.token);
+  // The token itself is never printed, only the file it went to.
+  say(tokenSavedLine(paths.browserTokenFile));
+  say("Start a new Claude session (or restart the running one) to use it.");
+  return 0;
 }

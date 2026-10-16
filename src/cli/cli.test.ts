@@ -434,7 +434,7 @@ const MCP_REGISTERED = [
 const SERENA_CONTEXT =
   "+ ~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml: Serena's context (project switching on)";
 const TAVILY_SKIPPED =
-  "! tavily-websearch: skipped — no TAVILY_API_KEY in the environment, and no key file: put the key there (chmod 600) or set the variable, then run setup again";
+  "! tavily-websearch: skipped — no TAVILY_API_KEY in the environment, in the settings, or in a key file: put the key there (chmod 600), or set the variable, then run setup again";
 
 /**
  * The `claude mcp add-json` lines a dry run prints, written by hand from `home`. These
@@ -461,7 +461,7 @@ function mcpDryRunLines(home: string): string[] {
 
 /** doctor's information line for the Tavily server on a machine with no key. */
 const tavilyDoctorSkipped = (home: string): string =>
-  `· the Tavily MCP server is skipped: no TAVILY_API_KEY in the environment, and no key file: put the key there (chmod 600) or set the variable, then run setup again (key file: ${join(home, ".claude", "cc-smart-dev-kit", "tavily.key")})`;
+  `· the Tavily MCP server is skipped: no TAVILY_API_KEY in the environment, in the settings, or in a key file: put the key there (chmod 600), or set the variable, then run setup again (key file: ${join(home, ".claude", "cc-smart-dev-kit", "tavily.key")})`;
 
 /** doctor's lines for the MCP servers, after a setup registered them. */
 const MCP_DOCTOR_OK = [
@@ -2210,6 +2210,58 @@ describe("cc-smart-dev-kit version and help", () => {
   });
 });
 
+describe("cc-smart-dev-kit browser token: every path that saves nothing is a failure", () => {
+  // The installer reads this command's exit code: a path that saved nothing and exited 0 would
+  // let it walk on with no token file, which is how a live machine ended up with a browser that
+  // never started (2026-10-17).
+  const TOKEN = `${"A".repeat(41)}_-`;
+  const tokenFile = (home: string) =>
+    join(home, ".config", "cc-smart-dev-kit", "playwright-extension.token");
+
+  test("a token on stdin is saved, 0600, and never printed", () => {
+    const world = setup();
+    const result = world.run(["browser", "token"], {}, world.home, `${TOKEN}\n`);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("the browser token is set");
+    expect(readFileSync(tokenFile(world.home), "utf8")).toBe(`${TOKEN}\n`);
+    expect(`${result.stdout}${result.stderr}`).not.toContain(TOKEN);
+  });
+
+  test("a token wrapped in the bracketed-paste markers is saved", () => {
+    const world = setup();
+    const result = world.run(
+      ["browser", "token"],
+      {},
+      world.home,
+      `\u001b[200~${TOKEN}\u001b[201~\r\n`,
+    );
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(tokenFile(world.home), "utf8")).toBe(`${TOKEN}\n`);
+  });
+
+  test("an empty stdin, an empty line, and a wrong shape: each exits 1 and writes nothing", () => {
+    // `browser: false`: this world has no token file yet, so "written nothing" is provable.
+    const empty = setup({ browser: false });
+    const nothing = empty.run(["browser", "token"], {}, empty.home, "");
+    expect(nothing.exitCode).toBe(1);
+    expect(nothing.stderr).toContain("The token was not saved: nothing was pasted");
+    expect(existsSync(tokenFile(empty.home))).toBe(false);
+
+    const blank = setup({ browser: false });
+    const emptyLine = blank.run(["browser", "token"], {}, blank.home, "\n");
+    expect(emptyLine.exitCode).toBe(1);
+    expect(emptyLine.stderr).toContain("nothing was pasted");
+    expect(existsSync(tokenFile(blank.home))).toBe(false);
+
+    const wrong = setup({ browser: false });
+    const garbage = wrong.run(["browser", "token"], {}, wrong.home, "hello world\n");
+    expect(garbage.exitCode).toBe(1);
+    expect(garbage.stderr).toContain("The token was not saved");
+    expect(garbage.stderr).toContain("11 characters");
+    expect(existsSync(tokenFile(wrong.home))).toBe(false);
+  });
+});
+
 describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
   test("--statusline sets the status line as an owned key; restore removes it", () => {
     const { settingsFile, run } = setup();
@@ -2559,6 +2611,30 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     expect(readJson(join(home, ".claude", "settings.json")).env).toBeUndefined();
   });
 
+  test("a Tavily key that lives only in the settings stays there (M2, premium review)", () => {
+    // Claude Code expands `Bearer ${TAVILY_API_KEY}` from the settings' `env` as well as from
+    // the environment, so a key that is only there is a working Tavily. The risky shape is one
+    // SETUP wrote (an owned secret) whose key file is then gone: reading it as "no key" removed
+    // the settings copy and unregistered the server, while the person's Claude Code still had a
+    // working Tavily. It is kept now, and nothing about it is printed.
+    const { configDir, home, run } = setup();
+    const settingsFile = join(home, ".claude", "settings.json");
+    const keyFile = join(configDir, "cc-smart-dev-kit", "tavily.key");
+    expect(run(["setup", "--tavily-key-stdin"], {}, home, "tvly-from-file\n").exitCode).toBe(0);
+    expect(readJson(settingsFile).env.TAVILY_API_KEY).toBe("tvly-from-file");
+    expect(readJson(join(configDir, ".claude.json")).mcpServers["tavily-websearch"]).toBeDefined();
+
+    // The key file goes: the only copy left is the one in the settings.
+    rmSync(keyFile);
+    const result = run(["setup"]);
+    expect(result.exitCode).toBe(0);
+    expect(readJson(settingsFile).env.TAVILY_API_KEY).toBe("tvly-from-file");
+    expect(`${result.stdout}${result.stderr}`).not.toContain("tvly-from-file");
+    expect(result.stdout).not.toContain("env.TAVILY_API_KEY");
+    // And the server stays registered: the plugin still has a key for it.
+    expect(readJson(join(configDir, ".claude.json")).mcpServers["tavily-websearch"]).toBeDefined();
+  });
+
   test("a Tavily key on stdin: the key file 0600, an owned secret, never printed", () => {
     const { configDir, home, run } = setup();
     const keyFile = join(configDir, "cc-smart-dev-kit", "tavily.key");
@@ -2637,9 +2713,15 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     expect(run(["setup"]).exitCode).toBe(0);
     expect(readJson(join(configDir, ".claude.json")).mcpServers["tavily-websearch"]).toBeDefined();
 
-    // The key file goes, and the environment has none: the server goes back, and so does the
-    // copy of the key in the settings.
+    // The key file goes, and neither the environment nor the settings have one any more
+    // (setup's own settings copy is removed by hand here, which is what "no key at all"
+    // means: the settings' `env` is a place Claude Code really reads the key from): the
+    // server goes back, and so does the copy of the key in the settings.
     rmSync(keyFile);
+    const settingsFile = join(home, ".claude", "settings.json");
+    const settings = readJson(settingsFile) as { env?: Record<string, unknown> };
+    if (settings.env !== undefined) delete settings.env.TAVILY_API_KEY;
+    writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
     const again = run(["setup"]);
     expect(again.exitCode).toBe(0);
     expect(again.stdout).toContain("- MCP server tavily-websearch removed from your user config\n");

@@ -158,9 +158,20 @@ function usageCards(data: OverviewData): string {
 <p class="small muted">Claude Code shows the plan's percentages in its status line; the router records only the limits it saw, which is what these cards show.</p>`;
 }
 
+/**
+ * The log lines NEWEST FIRST, for a page. `routerLog` (facts.ts) hands them oldest first — the
+ * order `journalctl` prints, and the order its other caller keeps — and every page here shows
+ * the newest at the top (the owner, 2026-10-17). One place, so a page cannot show them the
+ * other way round by accident.
+ */
+export function newestFirst<T>(lines: readonly T[]): T[] {
+  return [...lines].reverse();
+}
+
 export function overviewPage(shell: Shell, data: OverviewData): string {
-  const warnLines = data.warnings
-    .slice(-3)
+  // The three newest, newest first.
+  const warnLines = newestFirst(data.warnings)
+    .slice(0, 3)
     .map(
       (line) => `<div class="logline warnrow" data-log-line data-level="${line.level}">
 <span class="muted">${escapeHtml(line.time)}</span><span class="${line.level === "WARN" ? "warnmark" : "badmark"}">${escapeHtml(line.level)}</span><span class="wrap-any">${escapeHtml(line.text)}</span>
@@ -347,8 +358,9 @@ ${backend.state === "answers" ? '<span class="ok">✓ answering</span>' : '<span
 </div>`,
     )
     .join("");
-  const logLines = data.log.lines
-    .slice(-120)
+  // The newest 120, newest first.
+  const logLines = newestFirst(data.log.lines)
+    .slice(0, 120)
     .map(
       (
         line,

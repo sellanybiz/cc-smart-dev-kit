@@ -28,6 +28,17 @@ export interface Context {
   bunUpgradeTo: string;
   bunUpgraded: string;
   bunVersion: string;
+  /** What the plugin's own CLI answers for `version` (the installer checks it). */
+  cliVersion: string;
+  /** What `gateway check` exits with, and the line it prints. */
+  gatewayCheckCode: number;
+  gatewayCheckLine: string;
+  /** Every `--backend-key-stdin` run is refused, as a key the backend does not accept. */
+  gatewayKeyRefused: boolean;
+  /** The JSON `mcp status --json` answers: which servers are registered by something else. */
+  mcpStatus: string;
+  /** Every `--omniroute-password-stdin` run is refused, as a wrong dashboard password. */
+  omniRoutePasswordRefused: boolean;
   home: string;
   launcher: string;
   log: string;
@@ -38,6 +49,12 @@ export function contextFromEnv(): Context {
     bunUpgradeTo: process.env.FAKE_BUN_UPGRADE_TO ?? "",
     bunUpgraded: process.env.FAKE_BUN_UPGRADED ?? "",
     bunVersion: process.env.FAKE_BUN_VERSION ?? "",
+    cliVersion: process.env.FAKE_CLI_VERSION ?? "",
+    gatewayCheckCode: Number(process.env.FAKE_GATEWAY_CHECK_CODE ?? "0"),
+    gatewayCheckLine: process.env.FAKE_GATEWAY_CHECK_LINE ?? "",
+    gatewayKeyRefused: process.env.FAKE_GATEWAY_KEY_REFUSED === "yes",
+    mcpStatus: process.env.FAKE_MCP_STATUS ?? '{"servers":[]}',
+    omniRoutePasswordRefused: process.env.FAKE_OMNIROUTE_PASSWORD_REFUSED === "yes",
     home: process.env.HOME ?? process.env.USERPROFILE ?? "",
     launcher: process.env.FAKE_LAUNCHER ?? "",
     log: process.env.FAKE_LOG ?? "",
@@ -78,9 +95,11 @@ export function doctorTokenMissingLine(home: string): string {
 export async function answer(
   argv: string[],
   context: Context,
-  io: { say?: (line: string) => void } = {},
+  io: { error?: (line: string) => void; say?: (line: string) => void } = {},
 ): Promise<number> {
   const say = io.say ?? ((line: string) => process.stdout.write(`${line}\n`));
+  // A refusal goes where the real command's does: stderr.
+  const sayError = io.error ?? ((line: string) => process.stderr.write(`${line}\n`));
   // The arguments as ONE string for matching, with every separator as "/": on Windows the
   // installer builds `C:\…\dist\cli.js`, and a matcher written with "/" never sees it (this
   // is the bug that made the fake skip writing the launcher on the first green-ish run).
@@ -99,6 +118,22 @@ export async function answer(
     if (context.bunUpgraded !== "") writeFileSync(context.bunUpgraded, `${context.bunUpgradeTo}\n`);
     return 0;
   }
+  // The plugin's own CLI, asked its version: the installer refuses to go on when the CLI that
+  // answers is older than the release it ships with.
+  if (joined.includes("dist/cli.js version")) {
+    say(`cc-smart-dev-kit ${context.cliVersion}`);
+    return 0;
+  }
+  // The read-only question the installer asks before it asks a person for a key.
+  if (joined.includes("dist/cli.js gateway check")) {
+    say(context.gatewayCheckLine);
+    return context.gatewayCheckCode;
+  }
+  // Which of the plugin's MCP servers are registered by something else, as JSON.
+  if (joined.includes("dist/cli.js mcp status")) {
+    say(context.mcpStatus);
+    return 0;
+  }
   if (joined.includes("browser token")) {
     const secret = await readOneLine();
     record(context, `stdin-${secret.length}-chars`);
@@ -108,9 +143,35 @@ export async function answer(
     chmodSync(file, 0o600);
     return 0;
   }
-  if (joined.includes("--backend-key-stdin") || joined.includes("--tavily-key-stdin")) {
+  if (
+    joined.includes("--backend-key-stdin") ||
+    joined.includes("--tavily-key-stdin") ||
+    joined.includes("--omniroute-password-stdin")
+  ) {
     const secret = await readAllStdin();
+    // The number of characters that arrived, and never the value: a test proves the installer's
+    // cleaning with it (a paste wrapped in the bracketed-paste markers must reach the command as
+    // the key itself, not 12 characters longer).
     record(context, secret.trim() === "" ? "stdin-empty" : "stdin-nonempty");
+    record(context, `key-${secret.trim().length}-chars`);
+    // A key or a password the backend refuses: the real command saves NOTHING, keeps the key in
+    // the file, and says why on stderr.
+    if (joined.includes("--backend-key-stdin") && context.gatewayKeyRefused) {
+      sayError(
+        "cc-smart-dev-kit: omniroute answered HTTP 401 for this key: it does not accept it.\n" +
+          "Nothing was saved, and the key in the config is kept as it was.",
+      );
+      return 1;
+    }
+    if (joined.includes("--omniroute-password-stdin")) {
+      if (context.omniRoutePasswordRefused) {
+        sayError(
+          "cc-smart-dev-kit: OmniRoute rejected that dashboard password. Nothing was saved, and the key in the config is kept as it was.",
+        );
+        return 1;
+      }
+      say('made the key "cc-smart-dev-kit-router-test" in OmniRoute (••••cdef)');
+    }
     return 0;
   }
   if (joined.includes("dist/cli.js setup")) {
