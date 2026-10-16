@@ -81,18 +81,21 @@ Write the plan for a team. What stays with you is the core instructions' "do it 
 list.
 
 - **Each phase has one owner** — a subagent, with its type, model and effort — or you.
-- **Each phase names its files.** Phases that run at the same time own different files; two
-  that must change one file run in turn.
+- **Each phase names its files.** Two phases that might change one file are split instead of
+  run in turn: each takes its own part of it, or both run and you merge the small conflict.
 - **Each phase names what it waits for** — any contract it builds on (a type, an API shape, a
-  shared constant) and any code it calls. Contracts go first, alone; every phase that waits
-  for nothing starts at once, in one message.
+  shared constant) and any code it calls. Contracts go first, alone.
+- **The plan lists its phases in waves** — a wave is the group that starts together: wave 1
+  holds every phase that waits for nothing, and it starts at once, in one message. On each
+  hand-back, check the phases still waiting and start, in that turn, what it unblocked. A
+  phase never waits for a merge or a review it does not use.
 - **Each phase has a done-check** — the targeted tests that prove it.
 - **Shared files stay with you, the integrator:** the plan file, the lockfile and new
   dependencies, the project's version number, shared index files (a docs index, a barrel, a
   changelog), environment variables, a schema migration, starting the dev server, full
   coverage or end-to-end runs. Parallel builders never bump the version or edit a shared
   index: you do it once, after their work lands, one merge at a time, rebasing and
-  rebuilding as you go.
+  rebuilding as you go. None of it holds a phase back: it is your work, done after.
 
 Brief each owner with its phase, its files, the patterns, its done-check and its limits
 (`/cc-smart-dev-kit:subagent-decision` § How to brief). Check each hand-back yourself: read
