@@ -112,13 +112,17 @@ function New-World([string]$Name, [hashtable]$Options = @{}) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $copy) | Out-Null
     Set-Content -Path $copy -Value "// the router"
   }
-  # The launcher the fake setup copies into place: the same thing the real one does, run the
-  # plugin's own CLI with the arguments it was given.
+  # The launcher the fake setup copies into place. It does what the real one does -- runs the
+  # plugin's own CLI (bun, the two flags README, section Install uses, the installed bundle)
+  # with the arguments it was given -- so `doctor` reaches the fake with its real argv. A
+  # template that ran a bare `bun %*` is how this test's `doctor` quietly passed once: the
+  # fake saw "doctor" alone, matched nothing, and exited 0.
+  $pluginDir = Join-Path $configDir ("plugins\cache\cc-smart-dev-kit\cc-smart-dev-kit\" + $marketplaceVersion)
   $template = Join-Path $dir "launcher.cmd"
   Set-Content -Path $template -Value (@(
       "@echo off",
       "echo launcher %*>> `"$log`"",
-      "call bun %*",
+      "call bun --no-env-file --config=`"$pluginDir\bunfig.toml`" `"$pluginDir\dist\cli.js`" %*",
       "exit /b %errorlevel%"
     ))
   $answers = Join-Path $worldHome "answers"
