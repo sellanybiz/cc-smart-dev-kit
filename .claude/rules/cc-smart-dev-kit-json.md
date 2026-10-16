@@ -35,6 +35,9 @@ a clear error that says what is wrong.
 | `worktrees.prefix` | string | The folder-name prefix of a worktree beside the repo. No `/` or `\` (the hook refuses one). |
 | `worktrees.setup` | string array (argv) | A command run inside a new worktree, e.g. `["bun", "install"]`. |
 | `worktrees.guardMainFolder` | boolean | Refuse edits in the main checkout itself (the main-folder guard). Off when left out. |
+| `worktrees.bases` | object: a branch-name prefix (ending in `/`) to a base branch | The base a new worktree for such a branch starts from (`{"hotfix/": "main", "release/": "main"}`), over `worktrees.base`; the longest prefix that matches wins. The after-merge note names those prefixes (`src/hooks/after-merge.ts`). |
+| `worktrees.engine` | `"plugin"` (the default) or `"own"` | Who makes this project's worktrees. `"own"`: the project runs an engine of its own, so `doctor` does not expect the plugin's hooks (a `·` line, never ✗) and warns when they are wired anyway (`src/cli/project-checks.ts`). |
+| `workflow` | object (`src/workflow/schema.ts`) | What cc-smart-dev-kit may do by itself here (commit, push, open a pull request, merge), over the person's own `~/.config/cc-smart-dev-kit/workflow.json`. Each field is optional, and the project's value wins field by field (`src/workflow/resolve.ts`). |
 | `protectedBranches` | string array | The branches the git guard asks about before a push. Default `["main"]`. |
 | `sessionNames` | boolean | Each session names itself after its task (the session-name hook). Off when left out. |
 | `ownHooks` | array of plugin hook names | The plugin hooks this project still runs as its own copy (`["git-guard"]`): exactly those stay silent here, so two copies never both answer. Emptied once the project removed its copies (`docs/design.md` § The safe switch). A name that is not a plugin hook is refused by the strict parse (`PLUGIN_HOOK_NAMES` in `src/project/config.ts`). |
@@ -46,8 +49,10 @@ a clear error that says what is wrong.
 The schema is `ccSmartDevKitConfigSchema` in `src/project/config.ts` (zod). The README shows an
 example; keep it in step.
 
-`worktrees.guardMainFolder`, `protectedBranches`, `sessionNames` and `ownHooks` came with the
-hooks: a project that uses one raises its `requires` to the release that ships them. A hook
+`worktrees.bases`, `worktrees.engine` and `workflow` came with 0.4.0: a project that uses one
+raises `requires` to `>=0.4`. `worktrees.guardMainFolder`, `protectedBranches`,
+`sessionNames` and `ownHooks` came with the hooks: a project that uses one raises its
+`requires` to the release that ships them. A hook
 that cannot read the file (too new, or broken) fails closed (`.claude/rules/hooks.md`) —
 except `ownHooks`, which is read on its own (`readOwnHooks`), so a listed hook stays silent
 even then.

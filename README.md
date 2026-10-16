@@ -70,6 +70,8 @@ After that, use `cc-smart-dev-kit setup` to set up again (for example after an u
 | `cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>]` | Which models answered on this machine, per session, from Claude Code's transcripts: the main session's replies by model, and apart, its subagents (how each was launched, the model of each reply, the share on Opus). Default: the last 6 hours. Read only; no message text. |
 | `cc-smart-dev-kit doctor [--live]` | Checks the install, the cc-smart-dev-kit files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below). Prints ✓ or ✗ for each check, `·` for information and `!` for a warning (neither is a failure), and exits with 1 when a check fails. `--live` also proves the hooks and the worktree engine on the Claude Code installed here (below); it never runs without the flag. |
 | `cc-smart-dev-kit hook <worktree-create\|worktree-remove\|subagent-stop>` | The worktree engine, for a project that wires it in its own `.claude/settings.json` (§ Worktrees). It reads the hook's input on stdin and answers as Claude Code expects. With no name, it prints the lines to paste. |
+| `cc-smart-dev-kit project init [--dry-run] [--yes] [flags]` | Sets a project up ([`project init`](#project-init)): it writes the project's `.claude/cc-smart-dev-kit.json` (the worktrees, the protected branches, the guards, and optionally the [workflow](#the-workflow) policy) and, unless the project runs an engine of its own, the worktree engine's three lines in `.claude/settings.json`. It asks first, showing each default, which comes from the repo (the base from `origin/HEAD`, the setup command from the lockfile, the protected branches from git and, when `gh` is installed and answers, GitHub); every question has a flag, so a run with no terminal writes nothing unless `--yes` is given. It never commits. `cc-smart-dev-kit project init --help` lists the flags. |
+| `cc-smart-dev-kit workflow [show] \| set <setting> <value> [--project] \| unset <setting> [--project]` | What cc-smart-dev-kit may do by itself here — commit, push, open a pull request, merge — and the switches that map onto settings which already exist ([The workflow](#the-workflow)). `show` (the default) prints each value and where it came from: the project's file, your own defaults, or the built-in default. `set` and `unset` write one value; `--project` writes the project's committed file. |
 | `cc-smart-dev-kit session-name <session id> <name>` | Names a Claude session after its task. A session runs it itself when the project turns on `sessionNames` (below). |
 | `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing. |
 | `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version. `--check` only says whether a newer version exists (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
@@ -1114,6 +1116,24 @@ Wired without `worktrees` in `cc-smart-dev-kit.json`, or with a `cc-smart-dev-ki
 plugin or is broken, each of the three fails closed: no worktree is made or removed, and
 the message says why. `cc-smart-dev-kit doctor`, run in the project, checks the wiring.
 
+**A branch that belongs to another line of work starts from another base.** `worktrees.bases`
+maps a branch-name prefix to the base a new worktree for such a branch starts from:
+`{"hotfix/": "main", "release/": "main"}` makes every `release/…` branch start from the
+freshly fetched `origin/main`, while a `fix/…` branch keeps starting from `worktrees.base`
+(the integration base). The longest prefix that matches wins. So a released line of work
+never inherits unreleased work from the integration base. The after-merge note names those
+prefixes too: a session on such a branch is told **not** to merge the integration base in,
+because that would ship unreleased work.
+
+**A project that already runs its own worktree engine** sets `worktrees.engine` to `"own"`.
+It then wires no `cc-smart-dev-kit hook` lines at all, and `cc-smart-dev-kit doctor` expects none
+(one `·` line) instead of reporting ✗; it warns (`!`) when the plugin's engine hooks are
+wired anyway next to another WorktreeCreate hook, because two hooks make two worktrees for
+each request. Use it when the project has an engine of its own (its own script, or another
+plugin) that makes its worktrees: cc-smart-dev-kit's after-merge and leftovers notes, the
+`worktrees` command and the stash question all keep working, because they read
+`worktrees.base` and never make a worktree.
+
 **Moving from a project's own worktree hook:** replace its WorktreeCreate, WorktreeRemove
 and SubagentStop lines with these, in one commit. Two WorktreeCreate hooks make two
 worktrees for each request; `cc-smart-dev-kit doctor` reports a second one.
@@ -1161,7 +1181,126 @@ A session's own worktree is normally cleared by the session: the after-merge not
 merge, and the SessionStart note when finished worktrees are left behind, both point at
 `cc-smart-dev-kit worktrees --clean`.
 
+## `project init`
+
+`cc-smart-dev-kit project init` writes the two files a project opts in with, so nobody has to
+copy them from this page:
+
+- `.claude/cc-smart-dev-kit.json` — the project's settings (below);
+- `.claude/settings.json` — the worktree engine's three hook lines (§ Worktrees), merged
+  with whatever that file already wires, and **not** written when the project runs an
+  engine of its own (`"worktrees.engine": "own"`).
+
+It asks first and shows every default, which it reads from the repo: the base branch from
+`git symbolic-ref refs/remotes/origin/HEAD`, the setup command from the lockfile
+(`bun install`, `npm ci`, `pnpm install`, `yarn`), the worktree folder prefix from the
+repo's name, the bases offered for `hotfix/` and `release/` from the default branch, and the
+protected branches from the default branch and the base plus, when `gh` is installed and
+answers, the branches GitHub protects (a read-only `gh api`; anything missing is skipped
+quietly). Then it prints the file it will write with the changes line by line, the three
+lines it will add to `.claude/settings.json`, and writes both — a backup first, in
+`~/.claude/cc-smart-dev-kit/backups/`. **Nothing is committed:** commit the two files with the
+project.
+
+Every question has a flag, so it also runs without a terminal:
+
+```sh
+cc-smart-dev-kit project init --base dev --prefix my-app-wt- --setup "bun install" \
+  --bases "hotfix/=main,release/=main" --protected "main,dev" \
+  --guard-main-folder --session-names --engine plugin --workflow "openPr=draft"
+```
+
+`cc-smart-dev-kit project init --help` lists them all. With no terminal it writes nothing unless
+`--yes` is given: it prints the plan and the line to run instead. `--dry-run` prints the plan
+and writes nothing at all. Run it again on a project that has a file: it shows the diff and
+asks, and `--yes` keeps every field the flags do not set. A `requires` the file already has
+is never lowered (a project needing a newer plugin keeps its range); an older one is raised
+to the plugin that wrote the file.
+
+## The workflow
+
+The workflow is what cc-smart-dev-kit may do **by itself** after a step is finished — commit
+it, push the branch, open a pull request, merge it — and how. Two files hold the policy, and
+the project's wins field by field:
+
+1. **the project's** `workflow` object in `.claude/cc-smart-dev-kit.json`, committed with the
+   code, so a team shares one policy;
+2. **yours** in `~/.config/cc-smart-dev-kit/workflow.json` (mode 0600), this machine's defaults;
+3. **the built-in default** under both — the safe one: nothing is committed, pushed or
+   merged without you, and every alert is on.
+
+`cc-smart-dev-kit workflow show` prints every value and where it came from:
+
+```
+your own defaults: ~/.config/cc-smart-dev-kit/workflow.json; a project's .claude/cc-smart-dev-kit.json wins field by field
+autoCommit = false (default)
+openPr = draft (project)
+alerts.events = needs-you, question, finished, failed (default)
+alerts.usagePercent = 85 (default)
+switches.sessionNames = true (project)
+```
+
+| Setting | Default | What it means |
+|---|---|---|
+| `autoCommit` | `false` | Commit each finished, reviewed step without asking. |
+| `autoPush` | `false` | Push the session's own branch. Never a protected branch: the git guard still asks there. |
+| `openPr` | `"off"` | Open a pull request for the branch: `"off"`, `"draft"` or `"ready"`. |
+| `autoMerge` | `false` | Merge into the project's integration base, after CI is green and the review is done. |
+| `mergeMethod` | `"merge"` | `"merge"`, `"squash"` or `"rebase"`. |
+| `deleteBranch` | `false` | Delete the branch after its merge. |
+| `reviewBeforePush` | `true` | Run the review before a push. |
+| `clearWorktreeAfterMerge` | `false` | Clear the worktree once its pull request merged. |
+| `alerts.events` | all four | Which moments alert: `needs-you`, `question`, `finished`, `failed`. |
+| `alerts.sound` | `false` | A sound with the alert. |
+| `alerts.usagePercent` | `85` | The plan usage, in percent, a warning starts at (1–100). |
+
+**Auto-merge is the strictest one.** Even with `autoMerge` on, cc-smart-dev-kit merges by
+itself only when the pull request's base **is** the project's integration base
+(`worktrees.base`), and that base is a plain one:
+
+- never when it is the repository's default branch (`main`): merging there is a release,
+  and that is your decision;
+- never when it is a target of `worktrees.bases` (a `release/` family feeding it): then it
+  is not a plain integration base;
+- the integration base may itself be listed in `protectedBranches` — it is the one branch
+  this may write to, and the git guard still asks about a push of it by hand. Every other
+  protected branch is never a target here: the pull request's base must be the integration
+  base, so those keep asking you.
+
+`autoMerge` says only that a merge **may** happen by itself once the branches are right. That
+CI is green and the review is done is the caller's check (the merge guard hook), and
+`mergeMethod` and `deleteBranch` say how the merge is made, not that it skips a question.
+
+**The switches** (`switches.*`) are not stored anywhere: each one reads and writes the
+setting that already exists, so there is only one truth for it.
+
+| Switch | The setting behind it |
+|---|---|
+| `switches.statusLine` | Claude Code's own `statusLine` key, the one `setup --statusline` writes. A status line someone else set is never overwritten, and reads as off. |
+| `switches.sessionNames` | The project's `sessionNames` field. |
+| `switches.jobRoute` | The project's `jobs.route` field. |
+| `switches.updateHold` | The hold file behind `cc-smart-dev-kit update --hold`. |
+
+`set` and `unset` write one value, and say where:
+
+```sh
+cc-smart-dev-kit workflow set autoCommit true                 # your own defaults
+cc-smart-dev-kit workflow set openPr draft --project          # the project's committed file
+cc-smart-dev-kit workflow unset alerts.sound                  # back to the default
+cc-smart-dev-kit workflow set switches.sessionNames true --project
+cc-smart-dev-kit workflow set switches.updateHold true
+```
+
+A switch is written where it really lives, so `switches.sessionNames` and
+`switches.jobRoute` need `--project`, and `switches.statusLine` and `switches.updateHold`
+refuse it (they are yours, per machine). A value of the wrong kind, or a setting that is not
+one of the settings there are, is refused before anything is written; a file that is not
+valid JSON is named, never rewritten.
+
 ## A project's `.claude/cc-smart-dev-kit.json`
+
+`cc-smart-dev-kit project init` (§ [`project init`](#project-init)) writes this file and asks
+every question it holds.
 
 ```json
 {
@@ -1170,14 +1309,17 @@ merge, and the SessionStart note when finished worktrees are left behind, both p
     "base": "main",
     "prefix": "app-wt-",
     "setup": ["bun", "install"],
-    "guardMainFolder": true
+    "guardMainFolder": true,
+    "bases": { "hotfix/": "main", "release/": "main" },
+    "engine": "plugin"
   },
   "protectedBranches": ["main"],
   "sessionNames": true,
   "ownHooks": ["git-guard"],
   "instructions": true,
   "autoMode": ["In my-app: never touch production."],
-  "jobs": { "kinds": { "e2e": { "gb": 4, "match": [{ "script": "test:e2e" }] } }, "route": true }
+  "jobs": { "kinds": { "e2e": { "gb": 4, "match": [{ "script": "test:e2e" }] } }, "route": true },
+  "workflow": { "openPr": "draft", "autoMerge": true }
 }
 ```
 
@@ -1189,6 +1331,8 @@ merge, and the SessionStart note when finished worktrees are left behind, both p
 | `worktrees.prefix` | The folder-name prefix of a worktree beside the repo (no `/`). |
 | `worktrees.setup` | A command run inside a new worktree, as a list of words (`["bun", "install"]`). Its output goes to the hook's log, not to Claude. When it fails, the worktree stays and the next request for it runs the setup again. |
 | `worktrees.guardMainFolder` | `true`: refuse edits in the main checkout itself. Off when left out. |
+| `worktrees.bases` | A branch-name prefix (ending in `/`) to the base a new worktree for such a branch starts from (`{"hotfix/": "main", "release/": "main"}`). The longest prefix that matches wins; every other branch starts from `base` (§ Worktrees). |
+| `worktrees.engine` | `"plugin"` (the default): the project wires cc-smart-dev-kit's worktree engine. `"own"`: it runs an engine of its own, so `doctor` expects no cc-smart-dev-kit hook lines (§ Worktrees). |
 | `protectedBranches` | The branches the git guard asks about before a push. Default `["main"]`. |
 | `sessionNames` | `true`: each session names itself after its task. Off when left out. |
 | `ownHooks` | The plugin hooks this project still runs as its own copy (in its own settings): exactly those stay silent here, so nothing runs twice. `["git-guard"]` while the project still has its own git guard; empty it once that copy is gone (§ The hooks). |
@@ -1196,6 +1340,7 @@ merge, and the SessionStart note when finished worktrees are left behind, both p
 | `autoMode` | Used now: `setup` copies it into your settings ([The auto-mode block](#the-auto-mode-block)). |
 | `jobs.kinds` | Used now: the project's own heavy-job kinds over the defaults ([docs/jobs.md](docs/jobs.md) § Kinds). |
 | `jobs.route` | `true`: the `job-route` hook sends a heavy Bash command through `cc-smart-dev-kit job run` instead of running it raw (§ The hooks). Off when left out. |
+| `workflow` | This project's [workflow](#the-workflow) policy, over your own defaults: what cc-smart-dev-kit may do by itself here. Each field is optional, and the project's value wins field by field. |
 
 `requires` is a version range (npm syntax). When the installed plugin is outside it, the
 plugin says so and asks you to run `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit`. A project that

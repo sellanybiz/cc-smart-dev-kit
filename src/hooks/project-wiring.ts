@@ -12,6 +12,7 @@
  * the same.
  */
 import { LAUNCHER_NAME } from "../setup/launcher";
+import { isObject, type JsonObject } from "../setup/managed-json";
 import { PROJECT_HOOKS } from "./specs";
 
 /** The launcher, as the shell finds it from a project hook: by its path under `$HOME`. */
@@ -53,6 +54,43 @@ export function projectHookSettings(commandFor: (name: string) => string = proje
 /** The block as the README shows it. */
 export function projectHookSettingsText(): string {
   return JSON.stringify(projectHookSettings(), null, 2);
+}
+
+/** True when one settings group already wires a command of ours for `name`. */
+function groupRuns(group: unknown, name: string): boolean {
+  if (!isObject(group) || !Array.isArray(group.hooks)) return false;
+  return group.hooks.some(
+    (handler) =>
+      isObject(handler) &&
+      typeof handler.command === "string" &&
+      runsProjectHook(handler.command, name),
+  );
+}
+
+/**
+ * A project's `.claude/settings.json` with the engine's hooks added: for each event the
+ * engine needs, one handler of ours at the end of that event's list. Every group the project
+ * already has stays, in its order, and an event that already runs that hook is left alone —
+ * this is the merge `project init` offers, and the one place that knows the lines
+ * (`projectHookSettings`). Returns the settings to write and the commands it added.
+ */
+export function withProjectHooks(settings: JsonObject): { settings: JsonObject; added: string[] } {
+  const wanted = projectHookSettings().hooks;
+  const hooks: JsonObject = isObject(settings.hooks) ? { ...settings.hooks } : {};
+  const added: string[] = [];
+  for (const spec of PROJECT_HOOKS) {
+    for (const event of spec.events) {
+      const handler = wanted[event]?.[0]?.hooks[0];
+      if (handler === undefined) continue;
+      const groups = Array.isArray(hooks[event]) ? [...hooks[event]] : [];
+      if (!groups.some((group) => groupRuns(group, spec.name))) {
+        groups.push({ hooks: [{ ...handler }] });
+        added.push(`${event}: ${handler.command} (timeout ${String(handler.timeout)} s)`);
+      }
+      hooks[event] = groups;
+    }
+  }
+  return { settings: { ...settings, hooks }, added };
 }
 
 /**

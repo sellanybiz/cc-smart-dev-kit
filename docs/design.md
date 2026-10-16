@@ -630,7 +630,14 @@ and gives its own details, with `.claude/cc-smart-dev-kit.json`:
 The hooks use `worktrees`, `protectedBranches` and `sessionNames` (§ The hooks). The plugin
 accepts `instructions` and `autoMode` now: `setup` uses `autoMode` (§ Auto mode reads only
 user settings), and the opt-in instructions load through the project's own import line
-(§ Instructions, skills and agents), so `instructions` does not load them yet.
+(§ Instructions, skills and agents), so `instructions` does not load them yet. `workflow`
+holds the project's policy for what cc-smart-dev-kit may do by itself (§ The workflow).
+
+Three fields came with 0.4.0: `worktrees.bases` (a branch-name prefix to the base a worktree
+of such a branch starts from, § The worktree engine), `worktrees.engine` (`"plugin"` or
+`"own"`: who makes this project's worktrees) and `workflow` (§ The workflow). All three are
+optional and nothing else about the file changed, so a project that writes one raises its
+`requires` to the release that brought it — which is what `project init` writes.
 
 - A hook finds the project from its input's `cwd`, which follows the session into a
   worktree. A worktree's own `cc-smart-dev-kit.json` wins; else the main checkout's is used. A moved
@@ -812,6 +819,19 @@ Then, in that project:
   branch** (`git worktree add` gets 500 s, the setup 540 s of the hook's 600 s). Then the project's `setup` runs inside (argv, at most 9 minutes, its
   output on stderr). A setup that fails leaves the worktree and exits 1; entering it again
   runs setup again (a marker in the worktree's git folder records a finished setup).
+- **The base is per branch family** (`worktrees.bases`, `baseForBranch`): a branch whose
+  name starts with one of those prefixes ends in `/` (a `hotfix/…`, a `release/…`) starts
+  from that prefix's base — the longest prefix that matches wins — and every other branch
+  from `worktrees.base`. The same base is what `git fetch origin <base>` fetches, so a
+  released line of work never inherits the integration base's unreleased work. The
+  after-merge note says so too: a session on such a branch is told not to merge the
+  integration base in.
+- **A project may run an engine of its own** (`worktrees.engine: "own"`): then it wires no
+  `cc-smart-dev-kit hook` lines, and `doctor` expects none (`·`, never ✗) and warns (`!`) when
+  the plugin's engine hooks are wired anyway next to another WorktreeCreate hook, because two
+  hooks make two worktrees for each request. Everything that only *reads* the repo keeps
+  working there: the after-merge and worktree-leftovers notes, the stash question, and
+  `cc-smart-dev-kit worktrees`, which all read `worktrees.base` and never make a worktree.
 - **A subagent's worktree (`agent-<hex>`):** what Claude Code would make for it,
   `<main checkout>/.claude/worktrees/<name>` on the branch `worktree-<name>`. The base
   follows Claude Code's `worktree.baseRef` setting: `"fresh"` (the default) is the remote's
@@ -1032,6 +1052,57 @@ the engine, its WorktreeCreate made the configured folder, the session worked th
 WorktreeRemove removed the folder and the branch. When all pass it records the Claude Code
 version in the state folder (`live-check.json`); plain `doctor` shows that line, and says
 to run it again when the installed Claude Code is another version.
+
+## The workflow
+
+The workflow is the policy for what cc-smart-dev-kit may do **by itself**: commit a finished
+step, push the branch, open a pull request, merge it, and how. It is one module
+(`src/workflow/`) of small pieces, and none of them runs a git command: they decide, and
+whatever runs a command asks them first.
+
+**Resolution, field by field** (`resolve.ts`), the project over the person over the built-in
+default:
+
+| Where | What holds it |
+|---|---|
+| `"project"` | the `workflow` object in the project's `.claude/cc-smart-dev-kit.json`, committed with the code |
+| `"personal"` | `~/.config/cc-smart-dev-kit/workflow.json` (folder 0700, file 0600, atomic writes like the other config files) |
+| `"default"` | `workflowDefaults` in `schema.ts`: the safe ones — nothing is committed, pushed or merged without the person, and every alert is on |
+
+`resolveWorkflow(paths, projectConfig)` returns every value with the source it came from, so
+`cc-smart-dev-kit workflow show` (and the portal's settings page) can say *why* a value is what
+it is. The one schema is reused by `src/project/config.ts` for the project's `workflow`
+object, so a field can never mean two things in the two files. A broken personal file throws
+`WorkflowConfigError`, which names the file and the field: the person must hear it. A field
+with a wrong kind can never be written (`write.ts` validates the whole file before the
+write), and a file it may not change is left alone rather than half-written.
+
+**The switches are the exception, on purpose.** `switches.statusLine`, `switches.sessionNames`,
+`switches.jobRoute` and `switches.updateHold` are not stored in either workflow file: each
+names a setting that already exists (Claude Code's `statusLine`, the project's
+`sessionNames`, its `jobs.route`, the `update-hold` file), and the resolver reports that
+setting's value *now*, with the place it lives as its source. A `workflow set` writes that
+setting — Claude Code's own key through `applyManagedJson`, so a status line someone else
+set is never overwritten — which is why a switch cannot be stored and why the schema refuses
+a `switches` object written into a file by hand. One truth per switch.
+
+**The auto-merge rule** (`auto-merge.ts`, `autoMergeAllowed`) is a pure function with its own
+tests, because it decides whether a command may run without a person:
+
+```
+autoMergeAllowed(resolved, projectConfig, prBase, defaultBranch)
+```
+
+True only when `autoMerge` is on **and** the project names an integration base
+(`worktrees.base`) **and** the pull request's base is exactly that base **and** that base is
+not the repository's default branch (a merge there is a release, never a hook's decision)
+**and** it is not a target of `worktrees.bases` (then another family of branches feeds it,
+so it is not a plain integration base). The integration base may itself be in
+`protectedBranches`: it is the one branch this may write to, and the git guard still asks
+about a push of it by hand. Every other protected branch is never a target, because the
+pull request's base must be the integration base — so those keep asking the person, which is
+the whole point of protecting them. CI green and the review done are the caller's checks
+(the merge guard hook), not this one's: this function answers about branches only.
 
 ## The safe switch
 

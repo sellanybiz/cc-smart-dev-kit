@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import { PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
 import { kindsSchema } from "../jobs/kinds";
+import { workflowSchema } from "../workflow/schema";
 import { isValidRange, satisfiesRange } from "./version-range";
 
 /**
@@ -43,6 +44,32 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
        * a worktree): there, every change goes in a worktree. Off when left out.
        */
       guardMainFolder: z.boolean().optional(),
+      /**
+       * A branch-name prefix (ending in "/") to the base a new worktree for such a branch
+       * starts from: `{"hotfix/": "main", "release/": "main"}`. Every other branch starts
+       * from `base`. The longest prefix that matches wins.
+       */
+      bases: z
+        .record(z.string(), z.string().min(1))
+        .refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
+          // The key is the branch-name prefix, so the message says which one is wrong: a
+          // `z.record` key schema's own message never reaches the person ("Invalid key in record").
+          error: (issue) => {
+            const given = issue.input;
+            const wrong =
+              typeof given === "object" && given !== null
+                ? Object.keys(given).find((prefix) => !prefix.endsWith("/"))
+                : undefined;
+            return `"${wrong ?? "a prefix"}" must end with "/" (a branch-name prefix, like "release/")`;
+          },
+        })
+        .optional(),
+      /**
+       * Who makes this project's worktrees. `"plugin"` (the default) wires cc-smart-dev-kit's
+       * engine hooks (`worktree-create`, `worktree-remove`, `subagent-stop`); `"own"` means
+       * the project runs an engine of its own, so `doctor` does not expect the plugin's.
+       */
+      engine: z.enum(["plugin", "own"]).optional(),
     })
     .optional(),
   /**
@@ -62,6 +89,12 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
    * `cc-smart-dev-kit job run` instead of running raw.
    */
   jobs: z.strictObject({ kinds: kindsSchema.optional(), route: z.boolean().optional() }).optional(),
+  /**
+   * What cc-smart-dev-kit may do by itself in this project, over the person's own defaults
+   * (`~/.config/cc-smart-dev-kit/workflow.json`): the project's value wins field by field
+   * (`src/workflow/`).
+   */
+  workflow: workflowSchema.optional(),
   /**
    * The plugin hooks this project still runs as its own copy (["git-guard"]): exactly
    * those stay silent here, so the two copies never both answer. Emptied once the project

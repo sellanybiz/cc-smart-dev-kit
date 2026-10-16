@@ -8,7 +8,10 @@
  *   branch the pull request was, the note gives the steps that clear it.
  * - **The other sessions now work on an old base.** When the pull request went into
  *   `worktrees.base`, in this repo's own remote, in the last 15 minutes, and was not announced
- *   before, the note gives the exact message to send each other session of this repo.
+ *   before, the note gives the exact message to send each other session of this repo. The
+ *   message also names the prefixes of `worktrees.bases` whose own base is another one
+ *   (`otherBaseCaution`): a session on such a branch must not merge the integration base in,
+ *   because that would ship unreleased work.
  *
  * It looks the pull request up once with `gh pr view` (10 s at most). A `gh pr merge` that
  * only arms a merge (`--auto`) or disarms one is no merge, and neither are the words
@@ -205,10 +208,33 @@ export function clearWorktreeNote(path: string, branch: string): string {
   ].join("\n");
 }
 
-export function tellSessionsNote(pr: PullRequestView, base: string): string {
+/**
+ * A session on a branch whose pull request goes into ANOTHER base must not merge the
+ * integration base in: that base holds work its own base has not released yet, so the merge
+ * would ship it early. Named as the prefixes of `worktrees.bases` (`hotfix/`, `release/`),
+ * and only those whose base is not `base` itself.
+ */
+export function otherBaseCaution(bases: Record<string, string>, base: string): string | null {
+  const elsewhere = Object.entries(bases)
+    .filter(([, target]) => target !== base)
+    .map(([prefix]) => prefix);
+  if (elsewhere.length === 0) return null;
+  return (
+    `One exception: a branch whose pull request goes into another base (${elsewhere.join(", ")}) must NOT merge ${base} in, ` +
+    `because that would ship unreleased work. A branch there stays as it is.`
+  );
+}
+
+export function tellSessionsNote(
+  pr: PullRequestView,
+  base: string,
+  bases: Record<string, string> = {},
+): string {
+  const caution = otherBaseCaution(bases, base);
   const message =
     `${base} now has #${pr.number} (${quotableTitle(pr.title)}). At your next stop, once your current work is committed: ` +
-    `git fetch origin ${base}, then git merge origin/${base}, and fix any conflict. No reply needed.`;
+    `git fetch origin ${base}, then git merge origin/${base}, and fix any conflict. ` +
+    `${caution === null ? "" : `${caution} `}No reply needed.`;
   return [
     `That merged #${pr.number} into ${base}.`,
     "Tell the other sessions of this repo, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo (not this session, not a subagent, not another project) with exactly this text:",
@@ -290,7 +316,7 @@ export function afterMerge(context: HookContext): HookResult {
   if (outcome.clear !== null)
     notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
   if (outcome.announce !== null && record !== null) {
-    notes.push(tellSessionsNote(outcome.announce, base));
+    notes.push(tellSessionsNote(outcome.announce, base, project.config?.worktrees?.bases ?? {}));
     mkdirSync(join(record, ".."), { recursive: true });
     writeFileSync(record, "");
   }

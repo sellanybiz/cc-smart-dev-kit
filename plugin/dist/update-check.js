@@ -7,7 +7,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.3.0",
+  version: "0.4.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -76,6 +76,7 @@ function cliPaths(env = process.env) {
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
     routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
     notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
+    workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf"),
     tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
   };
@@ -675,6 +676,9 @@ function isObject(value) {
 function samePath(a, b) {
   return a.length === b.length && a.every((segment, index) => segment === b[index]);
 }
+function detectIndent(text) {
+  return /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
+}
 function readJsonObject(file) {
   if (!existsSync3(file))
     return { data: {}, indent: "  ", text: null };
@@ -690,8 +694,7 @@ function readJsonObject(file) {
   }
   if (!isObject(parsed))
     throw new Error(`${file} must hold a JSON object.`);
-  const indent = /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
-  return { data: parsed, indent, text };
+  return { data: parsed, indent: detectIndent(text), text };
 }
 function toRecord(entry, file) {
   if (Array.isArray(entry) && entry.every((segment) => typeof segment === "string")) {

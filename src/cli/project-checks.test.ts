@@ -103,6 +103,56 @@ describe("the worktree engine's wiring", () => {
     ]);
   });
 
+  test('engine "own", the plugin hooks not wired: one · line, never a ✗', () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", prefix: "app-wt-", engine: "own" },
+    });
+    expect(check(repo)).toEqual([
+      '· project: "worktrees.engine" is "own" in .claude/cc-smart-dev-kit.json, so this project runs its own worktree engine and the cc-smart-dev-kit engine hooks are not wired here',
+    ]);
+  });
+
+  test('engine "own" with the project\'s own worktree hook: still one · line', () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", prefix: "app-wt-", engine: "own" },
+    });
+    writeClaudeFile(repo, "settings.json", {
+      hooks: { WorktreeCreate: [{ hooks: [{ type: "command", command: "./make-worktree.sh" }] }] },
+    });
+    expect(check(repo)).toEqual([
+      '· project: "worktrees.engine" is "own" in .claude/cc-smart-dev-kit.json, so this project runs its own worktree engine and the cc-smart-dev-kit engine hooks are not wired here',
+    ]);
+  });
+
+  test('engine "own" but the plugin\'s engine wired anyway: a ! line, two engines', () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", prefix: "app-wt-", engine: "own" },
+    });
+    writeClaudeFile(repo, "settings.json", projectHookSettings());
+    expect(check(repo)).toEqual([
+      '! project: "worktrees.engine" is "own", so this project runs its own worktree engine, but its settings also wire WorktreeCreate, WorktreeRemove, SubagentStop to cc-smart-dev-kit hook: two engines answer each worktree request. Take the cc-smart-dev-kit hook lines out',
+    ]);
+  });
+
+  test('engine "own", the plugin wired next to another WorktreeCreate hook: a ! for each', () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", prefix: "app-wt-", engine: "own" },
+    });
+    const settings = projectHookSettings();
+    settings.hooks.WorktreeCreate?.push({
+      hooks: [{ type: "command", command: "./make-worktree.sh", timeout: 60 }],
+    });
+    writeClaudeFile(repo, "settings.json", settings);
+    expect(check(repo)).toEqual([
+      '! project: "worktrees.engine" is "own", so this project runs its own worktree engine, but its settings also wire WorktreeCreate, WorktreeRemove, SubagentStop to cc-smart-dev-kit hook: two engines answer each worktree request. Take the cc-smart-dev-kit hook lines out',
+      "! project: another WorktreeCreate hook runs too: ./make-worktree.sh (.claude/settings.json). Claude Code runs both and makes two worktrees for each request; remove one",
+    ]);
+  });
+
   test("a broken cc-smart-dev-kit.json: ✗ naming the file and field", () => {
     const repo = makeRepo();
     const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktree: {} });
