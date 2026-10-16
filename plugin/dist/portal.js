@@ -2,44 +2,6 @@
 // src/entries/portal.ts
 import { join as join44 } from "path";
 
-// src/browser/doctor.ts
-import { readdirSync as readdirSync4, readFileSync as readFileSync5 } from "fs";
-
-// src/build-info/names.ts
-var MARKETPLACE = "cc-smart-dev-kit";
-var PLUGIN = "cc-smart-dev-kit";
-var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-var COMMAND = "cc-smart-dev-kit";
-
-// src/build-info/bun.ts
-var MIN_BUN = "1.4.3";
-function bunTooOld(version, path) {
-  return Bun.semver.order(version, MIN_BUN) < 0 ? `cc-smart-dev-kit needs Bun \u2265 ${MIN_BUN}; this is ${version} (${path}).` : null;
-}
-
-// src/build-info/index.ts
-var info = {
-  version: "0.4.0",
-  repo: "sellanybiz/cc-smart-dev-kit",
-  dependencies: [
-    {
-      name: "claude-mem",
-      marketplace: "thedotmack",
-      version: ">=13.29.0"
-    },
-    {
-      name: "frontend-design",
-      marketplace: "claude-plugins-official"
-    }
-  ]
-};
-var VERSION = info.version;
-var MARKETPLACE_SOURCE = info.repo;
-var DEPENDENCIES = info.dependencies;
-var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
-var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
-var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
-
 // src/browser/chrome.ts
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readlinkSync } from "fs";
 import { hostname } from "os";
@@ -251,6 +213,44 @@ function chromeMayBeRunning(userDataDir, platform, deps = {}) {
   const here = host === (deps.hostname ?? hostname)();
   return !(here && !alive);
 }
+
+// src/browser/doctor.ts
+import { readdirSync as readdirSync4, readFileSync as readFileSync5 } from "fs";
+
+// src/build-info/names.ts
+var MARKETPLACE = "cc-smart-dev-kit";
+var PLUGIN = "cc-smart-dev-kit";
+var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
+var COMMAND = "cc-smart-dev-kit";
+
+// src/build-info/bun.ts
+var MIN_BUN = "1.4.3";
+function bunTooOld(version, path) {
+  return Bun.semver.order(version, MIN_BUN) < 0 ? `cc-smart-dev-kit needs Bun \u2265 ${MIN_BUN}; this is ${version} (${path}).` : null;
+}
+
+// src/build-info/index.ts
+var info = {
+  version: "0.4.0",
+  repo: "sellanybiz/cc-smart-dev-kit",
+  dependencies: [
+    {
+      name: "claude-mem",
+      marketplace: "thedotmack",
+      version: ">=13.29.0"
+    },
+    {
+      name: "frontend-design",
+      marketplace: "claude-plugins-official"
+    }
+  ]
+};
+var VERSION = info.version;
+var MARKETPLACE_SOURCE = info.repo;
+var DEPENDENCIES = info.dependencies;
+var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
+var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
+var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/browser/legacy.ts
 import { existsSync as existsSync2, readdirSync as readdirSync2, readFileSync as readFileSync2 } from "fs";
@@ -9462,8 +9462,9 @@ the updates, the heavy-job queue and the companions. It binds 127.0.0.1 only.
   --no-open       do not open your browser; print the link instead
 
 It prints a link with a one-time token, and stops after 30 minutes with no request. It
-refuses to run inside a Claude Code session: run it in your own terminal, and never open it
-in the browser Claude drives.`;
+refuses to run inside a Claude Code session: run it in your own terminal. When Chrome's
+"claude-code" profile is on this machine \u2014 the one Claude Code drives \u2014 it does not open a
+browser by itself: open the link in a window that is NOT that profile.`;
 function parseArgs(args, allowPluginDir) {
   let noOpen = false;
   let pluginDir = null;
@@ -9496,8 +9497,14 @@ function parseArgs(args, allowPluginDir) {
 function parsePortalChildArgs(args) {
   return parseArgs(args, true);
 }
+function mayAutoOpen(options) {
+  return !options.noOpen && !options.claudeCodeProfile;
+}
+function openYourselfLine() {
+  return `Chrome's "${CLAUDE_CODE_PROFILE}" profile is on this machine, and Claude Code drives it: no browser was opened for you. Open the link above in a browser window that is NOT that profile \u2014 another Chrome profile, or another browser \u2014 and never in the window Claude works in.`;
+}
 function claudeCodeRefusal(env) {
-  return env.CLAUDECODE === undefined ? null : `${COMMAND} portal cannot run inside a Claude Code session: the portal is for you, not for Claude. It changes this machine's model path and the safety judge, and a session must never do that for itself. Run it in your own terminal \u2014 and never open the page in the browser Claude drives.`;
+  return env.CLAUDECODE === undefined ? null : `${COMMAND} portal cannot run inside a Claude Code session: the portal is for you, not for Claude. It changes this machine's model path and the safety judge, and a session must never do that for itself. Run it in your own terminal, and open the link in a browser window that is not Chrome's "${CLAUDE_CODE_PROFILE}" profile (the one Claude Code drives).`;
 }
 
 // src/portal/plugin-folder.ts
@@ -9923,21 +9930,27 @@ function gitEnv(base) {
 // src/project/resolve.ts
 var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
+var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
 function gitIn(cwd, env) {
   return (args) => {
-    const result = Bun.spawnSync(["git", ...args], {
-      cwd,
-      env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: RESOLVE_GIT_TIMEOUT_MS
-    });
-    return {
-      ok: result.exitCode === 0,
-      stdout: result.stdout.toString(),
-      stderr: result.stderr.toString()
-    };
+    try {
+      const result = Bun.spawnSync(["git", ...args], {
+        cwd,
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: RESOLVE_GIT_TIMEOUT_MS
+      });
+      return {
+        ok: result.exitCode === 0,
+        stdout: result.stdout.toString(),
+        stderr: result.stderr.toString()
+      };
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      throw /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+    }
   };
 }
 function requireGitVersion(git) {
@@ -18308,6 +18321,51 @@ function withProjectHooks(settings) {
   }
   return { settings: { ...settings, hooks }, added };
 }
+function groupCommand(group) {
+  if (!isObject2(group) || !Array.isArray(group.hooks))
+    return null;
+  const words = group.hooks.map((handler) => {
+    if (!isObject2(handler) || typeof handler.command !== "string")
+      return null;
+    return typeof handler.timeout === "number" ? `${handler.command} (timeout ${String(handler.timeout)} s)` : handler.command;
+  }).filter((word) => word !== null);
+  return words.length === 0 ? null : words.join("; ");
+}
+function withoutProjectHooks(settings) {
+  if (!isObject2(settings.hooks))
+    return { removed: [], settings };
+  const removed = [];
+  const hooks = {};
+  for (const [event, groups] of Object.entries(settings.hooks)) {
+    if (!Array.isArray(groups)) {
+      hooks[event] = groups;
+      continue;
+    }
+    const ours = PROJECT_HOOKS.filter((spec) => spec.events.includes(event));
+    const kept = groups.filter((group) => {
+      const name = ours.find((spec) => isOursAlone(group, spec.name))?.name;
+      if (name === undefined)
+        return true;
+      removed.push(`${event}: ${groupCommand(group) ?? `cc-smart-dev-kit hook ${name}`}`);
+      return false;
+    });
+    if (kept.length > 0)
+      hooks[event] = kept;
+  }
+  const next = {};
+  for (const [key, value] of Object.entries(settings)) {
+    if (key !== "hooks")
+      next[key] = value;
+    else if (Object.keys(hooks).length > 0)
+      next.hooks = hooks;
+  }
+  return { removed, settings: next };
+}
+function isOursAlone(group, name) {
+  if (!isObject2(group) || !Array.isArray(group.hooks) || group.hooks.length === 0)
+    return false;
+  return group.hooks.every((handler) => isObject2(handler) && typeof handler.command === "string" && runsProjectHook(handler.command, name));
+}
 function runsProjectHook(command, name) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(String.raw`(^|[\s/"'])${LAUNCHER_NAME}["']?\s+hook\s+["']?${escaped}["']?(\s|;|$)`).test(command);
@@ -21134,6 +21192,7 @@ ${USAGE3}`);
 }
 
 // src/portal/facts.ts
+import { createHash as createHash7 } from "crypto";
 import { readFileSync as readFileSync47 } from "fs";
 import { basename as basename6, join as join39 } from "path";
 
@@ -21411,11 +21470,12 @@ function configExists(ctx) {
   }
 }
 async function shellFacts(ctx, portalPort, found) {
+  const platform = ctx.machine.platform;
   if ("error" in found)
-    return { portalPort, router: null, version: VERSION };
+    return { platform, portalPort, router: null, version: VERSION };
   const port = found.config.port;
   const health = await routerHealth(port, ctx.probe.fetch);
-  return { portalPort, router: { port, up: !("error" in health) }, version: VERSION };
+  return { platform, portalPort, router: { port, up: !("error" in health) }, version: VERSION };
 }
 function isJsonObject12(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -21788,15 +21848,26 @@ function projectFileTexts(root) {
     existingSettings: readTextFile(files.settings)
   };
 }
-function settingsLineNote(hookLines) {
-  if (hookLines === 0)
+function settingsLineNote(added, removed) {
+  const parts = [];
+  if (added > 0) {
+    parts.push(`${added} line${added === 1 ? "" : "s"}, added inside the existing file`);
+  }
+  if (removed > 0) {
+    parts.push(`${removed} line${removed === 1 ? "" : "s"} removed, the plugin's own hooks`);
+  }
+  if (parts.length === 0)
     return "No line is added to .claude/settings.json.";
-  return `${hookLines} line${hookLines === 1 ? "" : "s"}, added inside the existing file. Nothing else there changes.`;
+  return `${parts.join(", and ")}. Nothing else there changes.`;
+}
+function projectFilesHash(texts) {
+  return createHash7("sha256").update(texts.existing ?? "\x00").update("\x00").update(texts.existingSettings ?? "\x00").digest("hex").slice(0, 32);
 }
 function projectCardData(ctx, cwd, readDefaults, workflow) {
   const base = {
     answers: null,
     error: null,
+    filesHash: null,
     name: null,
     plan: null,
     planError: null,
@@ -21818,6 +21889,7 @@ function projectCardData(ctx, cwd, readDefaults, workflow) {
     return {
       ...head,
       answers: defaults.answers,
+      filesHash: projectFilesHash(texts),
       plan: workflow.planProjectInit({
         answers: defaults.answers,
         existing: texts.existing,
@@ -22364,7 +22436,15 @@ async function projectPreview(action, body) {
       existingSettings: built.existingSettings,
       root: built.root
     });
-    return { lines: [settingsLineNote(plan.hookLines.length)], ok: true, preview: plan };
+    return {
+      filesHash: projectFilesHash({
+        existing: built.existing,
+        existingSettings: built.existingSettings
+      }),
+      lines: [settingsLineNote(plan.hookLines.length, plan.removedLines.length)],
+      ok: true,
+      preview: plan
+    };
   } catch (error) {
     return { lines: [messageOf(error)], ok: false };
   }
@@ -22376,6 +22456,12 @@ async function projectWrite(action, body) {
   const built = projectAnswers(action, body);
   if (!built.ok)
     return { lines: [built.why], ok: false };
+  if (body.previewHash !== projectFilesHash(built)) {
+    return {
+      lines: ["The project's files changed since the preview \u2014 preview again."],
+      ok: false
+    };
+  }
   try {
     const plan = action.workflow.planProjectInit({
       answers: built.answers,
@@ -22419,8 +22505,16 @@ async function browserSetupAction(action) {
 function browserTokenAction(action, body) {
   const pasted = typeof body.token === "string" ? body.token : "";
   const parsed = parseBrowserToken(pasted);
-  if (!parsed.ok)
+  if (!parsed.ok) {
+    if (pasted.trim() === "" && readBrowserToken(action.portal.paths).source === "file") {
+      return {
+        lines: ["Nothing was pasted, so the saved token is unchanged."],
+        ok: false,
+        tone: "info"
+      };
+    }
     return { lines: [`The token was not saved: ${parsed.why}.`], ok: false };
+  }
   try {
     writeBrowserToken(action.portal.paths, parsed.token);
     return {
@@ -22634,28 +22728,44 @@ p { margin: 0; }
 /* \u2500\u2500 Header \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 header.top { background: var(--surface); border-bottom: 1px solid var(--line); }
 header.top .wrap {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 24px; padding-top: 10px; padding-bottom: 10px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding-top: 10px; padding-bottom: 10px;
 }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand .name { font-family: "JetBrains Mono", ui-monospace, monospace; font-weight: 600; font-size: 16px; }
 .brand .ver { color: var(--muted); font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; }
-nav.pages { display: flex; flex-wrap: wrap; gap: 4px; margin-left: auto; }
+nav.pages { display: flex; flex-wrap: wrap; gap: 2px; margin-left: auto; }
 nav.pages a {
-  display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px;
+  display: inline-flex; align-items: center; min-height: 44px; padding: 0 10px;
   border-radius: 8px; color: var(--text); text-decoration: none;
 }
 nav.pages a[aria-current="page"] { background: var(--chip-bg); color: var(--accent-strong); font-weight: 600; }
 .pill {
-  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px;
   font-size: 13px;
 }
 .pill.ok { background: var(--chip-bg); color: var(--accent); font-weight: 500; }
 .pill.plain { background: var(--line-soft); color: var(--muted-2); font-family: "JetBrains Mono", ui-monospace, monospace; }
 .pill.bad { background: var(--warn-soft); color: var(--warn-text); font-weight: 600; }
 .themebtn {
-  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px;
+  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 10px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text);
   cursor: pointer;
+}
+/* \u2500\u2500 The header at a desktop width \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+   Brand, the two chips, the page links and the theme toggle sit on ONE row, at every width
+   this block covers. They are a grid, and the links take the free column, so the toggle can
+   never be pushed onto a line of its own \u2014 which is what a wrapping flex row did once the nav
+   grew its sixth item: measured at 1440, the four groups and their three gaps came to about
+   1206px in a 1152px wrap, and the toggle went alone to the next line (the owner's screenshot,
+   040-settings-1440-dark.png). The links' padding and the columns' gap are a little tighter
+   for the same reason; the 44px touch target is the links' height, and it does not change.
+   Narrower than this the links wrap inside their own column, and the toggle stays in the row. */
+@media (min-width: 641px) {
+  header.top .wrap {
+    display: grid; align-items: center; column-gap: 16px;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+  }
+  nav.pages { margin-left: 0; justify-content: flex-end; }
 }
 /* \u2500\u2500 The header on a phone \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
    Every row above is a flex row that wraps, so at 390px the brand, the router chip, the Bun
@@ -22767,6 +22877,14 @@ section { display: flex; flex-direction: column; gap: 12px; }
 }
 .status-ok { border-radius: 10px; background: var(--chip-bg); color: var(--accent-strong); padding: 12px 16px; font-weight: 500; }
 .status-bad { border-radius: 10px; background: var(--warn-soft); color: var(--warn-text); padding: 12px 16px; font-weight: 500; }
+/* A fact, not an alarm: the token field's "nothing was pasted" answer, and the like. */
+.status-info { border-radius: 10px; background: var(--surface-2); color: var(--muted-2); padding: 12px 16px; font-weight: 500; }
+/* An answer box with nothing in it is not there at all: no padding of its own, and no gap in
+   a card's column either. Every card carried an empty band (and a card list an empty row)
+   until the script filled one. */
+[data-out-for]:empty, [data-out]:empty { display: none; }
+/* The box gone, the row above it is the card's last one: no separator at the card's edge. */
+.card.list > *:has(+ .foot:empty) { border-bottom: 0; }
 
 /* \u2500\u2500 Code and commands \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 .cmd {
@@ -22826,7 +22944,10 @@ section { display: flex; flex-direction: column; gap: 12px; }
 
 /* \u2500\u2500 Lists \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 .checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px 24px; grid-template-columns: repeat(auto-fit, minmax(min(460px, 100%), 1fr)); }
-.checks li { display: flex; gap: 10px; padding: 6px 0; }
+/* The mark's own column, and a text column that may shrink to nothing: a long path (a Chrome
+   profile folder, a backend URL) wraps inside its box and can never widen the box past its
+   column, or overlap the column beside it. */
+.checks li { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 0 10px; align-items: start; padding: 6px 0; }
 .checks li.fail { padding: 6px 10px; margin: 0 -10px; border-radius: 8px; background: var(--warn-soft); color: var(--warn-text); }
 .checks .mark { width: 16px; font-weight: 700; }
 .kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 12px; }
@@ -22879,6 +23000,9 @@ footer.bottom .wrap {
    from. The three tag words are the design's own: yours, this project, default. */
 .setrow { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; }
 .src { flex: none; padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 500; }
+/* The link to the Project card, under a row the project sets: a touch target of its own, not
+   a 20px line of text under a switch. */
+.setrow .projectlink { display: inline-flex; align-items: center; min-height: 44px; }
 .src.personal { background: var(--chip-bg); color: var(--accent); }
 .src.project { background: var(--warn-soft); color: var(--warn-text); }
 .src.default { background: var(--line-soft); color: var(--muted-2); }
@@ -22938,14 +23062,32 @@ footer.bottom .wrap {
 .chipinput { width: 150px; }
 .lockchip { gap: 6px; min-height: 44px; padding: 0 4px 0 10px; }
 .lockchip .chipinput { width: 120px; border: 0; background: transparent; padding: 0 4px; }
-.lockchip .btn.icon { min-width: 36px; border: 0; background: transparent; }
+/* 44 x 44 like every other icon button (the .btn.icon rule): the protected branch's \u2715
+   was 36 wide. */
+.lockchip .btn.icon { border: 0; background: transparent; }
 .btn.dashed { border-style: dashed; border-color: var(--dashed); color: var(--muted-2); font-weight: 500; }
-.codebox { border: 1px solid var(--line-soft); border-radius: 10px; overflow: hidden; }
+/* min-width: 0: the box sits in a column, and its pre scrolls on its own line rather than
+   widening the column it is in. */
+.codebox { border: 1px solid var(--line-soft); border-radius: 10px; overflow: hidden; min-width: 0; }
 .codehead {
   display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px;
   padding: 6px 6px 6px 14px; background: var(--surface-2); border-bottom: 1px solid var(--line-soft);
 }
+/* A box with no file name of its own: the Copy button is the whole head. */
+.codehead.end { justify-content: flex-end; padding-left: 6px; }
 .codehead code { font-size: 13px; }
+
+/* \u2500\u2500 The Browser card's five steps \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+   A real ordered list: one column, numbered, each step's sentence first and then the address
+   or command it needs, in a code box of its own. Never the doctor's own .checks grid: read as
+   columns the steps went left, right, left, right, they carried no numbers, and the narrow
+   column squeezed the last one ("Save it.", "\u2713 done") into a sliver. The long address stays
+   one line and scrolls inside its box instead of breaking in the middle of a word. */
+ol.guide { margin: 0; padding-left: 26px; }
+ol.guide > li { padding-left: 2px; }
+ol.guide > li + li { margin-top: 14px; }
+ol.guide > li > span { display: block; }
+ol.guide .codebox { margin-top: 8px; }
 .codehead .btn { min-height: 44px; padding: 0 12px; font-weight: 500; }
 .codebox pre {
   margin: 0; padding: 14px 16px; background: var(--code-bg); color: var(--code-text);
@@ -22964,6 +23106,9 @@ var THEME_JS = `(function () {
 `;
 var PORTAL_JS = `(function () {
   "use strict";
+
+  /** How long typing pauses before the Project card asks the server for the plan again. */
+  var PREVIEW_TYPING_MS = 300;
   var meta = document.querySelector('meta[name="ccsdk-csrf"]');
   var csrf = meta ? meta.getAttribute("content") : "";
 
@@ -22991,11 +23136,15 @@ var PORTAL_JS = `(function () {
     });
   }
 
-  function say(node, ok, list) {
+  // The tone is the answer's own, when it has one: "info" is a fact, not a failure (the token
+  // field's "nothing was pasted, so the saved token is unchanged" is the case it exists for).
+  function say(node, ok, list, tone) {
     if (!node) return;
     node.textContent = "";
-    node.className = ok ? "status-ok" : "status-bad";
-    node.appendChild(document.createTextNode(ok ? "\\u2713 " : "\\u2717 "));
+    node.className = ok ? "status-ok" : tone === "info" ? "status-info" : "status-bad";
+    node.appendChild(
+      document.createTextNode(ok ? "\\u2713 " : tone === "info" ? "\\u00b7 " : "\\u2717 ")
+    );
     node.appendChild(document.createTextNode((list && list[0]) || (ok ? "Done." : "It did not work.")));
     if (list && list.length > 1) {
       var more = document.createElement("div");
@@ -23079,7 +23228,7 @@ var PORTAL_JS = `(function () {
     busy(button, true);
     post("/api/" + name, body).then(function (data) {
       busy(button, false);
-      say(out, !!data.ok, data.lines);
+      say(out, !!data.ok, data.lines, data.tone);
       if (data.ok && button.hasAttribute("data-reload")) setTimeout(function () { location.reload(); }, 700);
       if (data.ok && button.hasAttribute("data-toggle")) {
         var on = button.getAttribute("aria-checked") !== "true";
@@ -23140,7 +23289,7 @@ var PORTAL_JS = `(function () {
   var setSetting = function (node, key, value, putBack) {
     var out = outFor(node, "workflow.set");
     post("/api/workflow.set", { key: key, value: value }).then(function (data) {
-      say(out, !!data.ok, data.lines);
+      say(out, !!data.ok, data.lines, data.tone);
       if (data.ok) setTimeout(function () { location.reload(); }, 700);
       else if (putBack) putBack();
     });
@@ -23203,6 +23352,9 @@ var PORTAL_JS = `(function () {
     // Every answer carries the number of the question it answers: a slower, older answer
     // never overwrites a newer one on screen.
     var asked = 0;
+    // The hash of the two files the plan on screen was made from. It travels with the write,
+    // and the server refuses a write whose plan no longer matches the files on disk.
+    var filesHash = form.getAttribute("data-files-hash") || "";
 
     var answerOf = function (name) {
       var node = form.querySelector("[data-answer='" + name + "']");
@@ -23244,8 +23396,14 @@ var PORTAL_JS = `(function () {
     };
 
     var drawPlan = function (data, preview) {
+      // What the settings file changes: the lines the engine adds, and the ones an engine of
+      // the project's own takes back out \u2014 a line beginning with "-", the way a diff reads.
+      var settingsLines = (preview.hookLines || []).concat(
+        (preview.removedLines || []).map(function (line) { return "- " + line; })
+      );
       filePre.textContent = preview.text;
-      settingsPre.textContent = (preview.hookLines || []).join("\\n");
+      settingsPre.textContent = settingsLines.join("\\n");
+      if (typeof data.filesHash === "string") filesHash = data.filesHash;
       // The note under the settings box comes from the server, like the boxes: one home for
       // the sentence, and it can never describe a different plan than the one drawn.
       if (data.lines && data.lines[0]) noteLine.textContent = data.lines[0];
@@ -23262,14 +23420,30 @@ var PORTAL_JS = `(function () {
       var mine = (asked += 1);
       post("/api/project.preview", answers()).then(function (data) {
         if (mine !== asked) return;
-        if (!data.ok || !data.preview) { say(writeOut, false, data.lines); return; }
+        if (!data.ok || !data.preview) { say(writeOut, false, data.lines, data.tone); return; }
+        // A preview that worked replaces whatever the last answer said: a refusal from an
+        // earlier edit must not sit under a plan that is fine now.
+        writeOut.textContent = "";
+        writeOut.className = "";
         drawPlan(data, data.preview);
       });
     };
 
-    // A change is one finished edit (a box left, a box ticked, a row added or removed): the
-    // same answer is not asked again for every keystroke.
-    form.addEventListener("change", ask);
+    // A finished edit (a box left, a box ticked, a row added or removed) asks at once. A text
+    // box asks while it is being typed in \u2014 once the typing pauses, so the preview follows the
+    // words instead of waiting for the box to lose the focus, and one plan is asked for and
+    // not one per keystroke. The server stays the only builder of the plan.
+    var typing = null;
+    var settled = function () {
+      if (typing !== null) { clearTimeout(typing); typing = null; }
+    };
+    form.addEventListener("input", function (event) {
+      var node = event.target;
+      if (!node || node.tagName !== "INPUT" || node.type !== "text") return;
+      settled();
+      typing = setTimeout(function () { typing = null; ask(); }, PREVIEW_TYPING_MS);
+    });
+    form.addEventListener("change", function () { settled(); ask(); });
 
     var flip = function (button) {
       var on = button.getAttribute("aria-checked") === "true";
@@ -23339,10 +23513,11 @@ var PORTAL_JS = `(function () {
         if (write.getAttribute("data-confirm") && !window.confirm(write.getAttribute("data-confirm"))) return;
         var body = answers();
         body.confirm = true;
+        body.previewHash = filesHash;
         busy(write, true);
         post("/api/project.write", body).then(function (data) {
           busy(write, false);
-          say(writeOut, !!data.ok, data.lines);
+          say(writeOut, !!data.ok, data.lines, data.tone);
           if (data.ok) setTimeout(function () { location.reload(); }, 700);
         });
       });
@@ -23364,7 +23539,7 @@ var PORTAL_JS = `(function () {
       busy(tokenSave, true);
       post("/api/browser.token", { token: value }).then(function (data) {
         busy(tokenSave, false);
-        say(out, !!data.ok, data.lines);
+        say(out, !!data.ok, data.lines, data.tone);
         if (input) input.value = "";
         if (data.ok) setTimeout(function () { location.reload(); }, 900);
       });
@@ -23504,7 +23679,7 @@ var PORTAL_JS = `(function () {
             tested[slot + "\\u0000" + one.target] = one.verdict;
           });
           draw();
-          say(out, !!data.ok, data.lines);
+          say(out, !!data.ok, data.lines, data.tone);
         });
       });
     }
@@ -23513,7 +23688,7 @@ var PORTAL_JS = `(function () {
       saveBtn.addEventListener("click", function () {
         if (confirmBox) { confirmBox.hidden = false; return; }
         post("/api/slot.save", { slot: slot, targets: chainOf() }).then(function (data) {
-          say(out, !!data.ok, data.lines);
+          say(out, !!data.ok, data.lines, data.tone);
           if (data.ok) setTimeout(function () { location.reload(); }, 700);
         });
       });
@@ -23522,7 +23697,7 @@ var PORTAL_JS = `(function () {
     if (yes) {
       yes.addEventListener("click", function () {
         post("/api/slot.save", { slot: slot, targets: chainOf() }).then(function (data) {
-          say(out, !!data.ok, data.lines);
+          say(out, !!data.ok, data.lines, data.tone);
           if (data.ok) setTimeout(function () { location.reload(); }, 700);
         });
       });
@@ -23685,7 +23860,7 @@ function header(shell, active) {
 <div class="privatebar">
 <div class="wrap">
 <span>${LOCK_ICON}Private session on this computer only. It ends when the portal stops.</span>
-<span>For you, not for Claude: never open this page in the browser Claude drives.</span>
+<span>For you, not for Claude: never open this page in the Chrome profile Claude drives (its own, <span class="mono">claude-code</span>).</span>
 </div>
 </div>`;
 }
@@ -23784,7 +23959,7 @@ function expiredPage() {
 <h1 class="h1sm">This link has expired.</h1>
 <p class="muted">It was already used, or the portal stopped. Each link works once. Run this in your own terminal for a new one:</p>
 ${command(`${COMMAND} portal`, "Copy the portal command")}
-<p class="small muted">Not inside Claude Code: there the command refuses to print a link. Never open the portal in the browser Claude drives.</p>
+<p class="small muted">Not inside Claude Code: there the command refuses to print a link. Never open the portal in the Chrome profile Claude drives: its own, named <span class="mono">claude-code</span>.</p>
 </section>
 </div>`;
   return barePage({ body, title: "Link expired" });
@@ -24036,7 +24211,7 @@ var SOURCE_WORDS = {
   project: "this project"
 };
 var PROJECT_SETTING_CONFIRM = "Write this into the project's .claude/cc-smart-dev-kit.json? It is a file the team shares: commit it like any change.";
-var CHANGE_IN_PROJECT = `<a class="small bold" href="/machine#project">change it in the project</a>`;
+var CHANGE_IN_PROJECT = `<a class="small bold projectlink" href="/machine#project">change it in the project</a>`;
 function settingControl(row, disabled) {
   switch (row.kind) {
     case "boolean":
@@ -24145,18 +24320,31 @@ function guardRow(options) {
 <button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${options.id}" class="switch" data-form-switch="${options.name}"><span class="track" aria-hidden="true"><span class="knob"></span></span><span data-switch-label>${options.on ? "On" : "Off"}</span></button>
 </div>`;
 }
-function previewBox(options) {
+function codeBox(options) {
+  const head = options.label === undefined ? "" : `<code>${escapeHtml(options.label)}</code>`;
   return `<div class="codebox">
-<div class="codehead"><code>${escapeHtml(options.name)}</code><button type="button" class="btn" data-copy-node="${options.attribute}" aria-label="${escapeHtml(options.copyLabel)}">${COPY_ICON}Copy</button></div>
+<div class="codehead${options.label === undefined ? " end" : ""}">${head}<button type="button" class="btn" data-copy-node="[${options.attribute}]" aria-label="${escapeHtml(options.copyLabel)}">${COPY_ICON}Copy</button></div>
 <pre ${options.attribute}>${escapeHtml(options.text)}</pre>
 </div>`;
+}
+function guideSteps(guide) {
+  return `<ol class="guide">${guide.steps.map((step, index) => {
+    const done = step.done === true ? ' <span class="ok">\u2713 done</span>' : "";
+    const box = step.detail === undefined ? "" : codeBox({
+      attribute: `data-guide-${index + 1}`,
+      copyLabel: `Copy step ${index + 1}'s command or address`,
+      text: step.detail
+    });
+    return `<li><span class="wrap-any">${escapeHtml(step.text)}${done}</span>${box}</li>`;
+  }).join("")}</ol>`;
 }
 function projectForm(data, answers, plan) {
   const setup = answers.setup === null ? "" : answers.setup.join(" ");
   const baseHelp = `The folder that stays on the latest ${answers.base} is never edited or committed in.`;
-  const hookLines = plan.hookLines;
-  const settingsNote = settingsLineNote(hookLines.length);
-  return `<div class="col g8" data-project-form${data.set ? "" : " hidden"}>
+  const settingsLines = [...plan.hookLines, ...plan.removedLines.map((line) => `- ${line}`)];
+  const settingsNote = settingsLineNote(plan.hookLines.length, plan.removedLines.length);
+  const hash = data.filesHash === null ? "" : ` data-files-hash="${escapeHtml(data.filesHash)}"`;
+  return `<div class="col g8" data-project-form${data.set ? "" : " hidden"}${hash}>
 
 <div class="fields">
 <div class="field"><label for="f-base">Base branch</label><input id="f-base" type="text" value="${escapeHtml(answers.base)}" data-answer="base"></div>
@@ -24200,8 +24388,8 @@ ${guardRow({ help: "The type check, the build, the tests and the coverage run he
 <div class="col g8">
 <h3>Preview</h3>
 <p class="small muted">Exactly what will be written.</p>
-${previewBox({ attribute: "data-preview-file", copyLabel: "Copy the contents of .claude/cc-smart-dev-kit.json", name: ".claude/cc-smart-dev-kit.json", text: plan.text })}
-${previewBox({ attribute: "data-preview-settings", copyLabel: "Copy the lines added to .claude/settings.json", name: ".claude/settings.json", text: hookLines.join(`
+${codeBox({ attribute: "data-preview-file", copyLabel: "Copy the contents of .claude/cc-smart-dev-kit.json", label: ".claude/cc-smart-dev-kit.json", text: plan.text })}
+${codeBox({ attribute: "data-preview-settings", copyLabel: "Copy the lines .claude/settings.json changes by", label: ".claude/settings.json", text: settingsLines.join(`
 `) })}
 <p class="small muted" data-preview-note>${escapeHtml(settingsNote)}</p>
 <div class="col g2" data-preview-notes>${plan.notes.map((note) => `<p class="small muted">${escapeHtml(note)}</p>`).join("")}</div>
@@ -24254,11 +24442,10 @@ ${companion.enableArgv === null ? '<span class="small muted">Nothing to fix here
 function checkItem(check) {
   return `<li class="${check.ok ? "" : "fail"}"><span class="mark ${check.ok ? "ok" : "badmark"}" aria-hidden="true">${check.warn === true ? "!" : check.info === true ? "\xB7" : check.ok ? "\u2713" : "\u2717"}</span><span class="wrap-any">${escapeHtml(check.text)}</span></li>`;
 }
-function browserCard(data, checks) {
+function browserCard(data, checks, platform) {
   const state = data.state;
   const ready = state.extensionInstalled && state.fileUrls === true && state.tokenSet;
   const lines = checks.length === 0 ? '<p class="muted">Open this page again to see the checks.</p>' : `<ul class="checks">${checks.map(checkItem).join("")}</ul>`;
-  const steps = `<ol class="checks">${data.guide.steps.map((step) => `<li class="small wrap-any">${escapeHtml(step.text)}${step.done ? ' <span class="ok">\u2713 done</span>' : ""}${step.detail === undefined ? "" : `<br><code class="mono wrap-any">${escapeHtml(step.detail)}</code>`}</li>`).join("")}</ol>`;
   const notes = [...data.guide.notes, ...data.notes.map((note) => note.replace(/^!\s*/, ""))];
   return `<section class="card pad" id="browser">
 <div class="spread">
@@ -24266,12 +24453,12 @@ function browserCard(data, checks) {
 <h2>Browser</h2>
 <p class="small muted">The Playwright MCP server drives YOUR Chrome, through the Playwright extension, in a profile of its own named <span class="mono">${escapeHtml(state.profileDirName)}</span>. ${ready ? "It is set up." : "It is NOT ready yet."} The same lines as <code>${COMMAND} doctor</code>.</p>
 </div>
-<button type="button" class="btn primary" data-action="browser.setup" data-confirm="Open the Playwright extension's page in the ${escapeHtml(state.profileDirName)} Chrome profile? Chrome comes to the front; nothing is installed without your click." data-reload>Set up the browser</button>
+<button type="button" class="btn primary" data-action="browser.setup" data-confirm="Open the Playwright extension's page in the ${escapeHtml(state.profileDirName)} Chrome profile? The same command as ${COMMAND} browser setup runs: Chrome comes to the front, nothing is installed without your click, and the profile is named in Chrome's own settings file while Chrome is closed." data-reload>Set up the browser</button>
 </div>
 <div data-out-for="browser.setup" role="status"></div>
 ${lines}
 <p class="small muted">${escapeHtml(data.guide.intro)}</p>
-${steps}
+${guideSteps(data.guide)}
 ${notes.map((note) => `<p class="small muted wrap-any">${escapeHtml(note)}</p>`).join("")}
 <div class="fields">
 <div class="field">
@@ -24282,9 +24469,12 @@ ${notes.map((note) => `<p class="small muted wrap-any">${escapeHtml(note)}</p>`)
 <div class="row">
 <button type="button" class="btn strong" data-token-save>Save the token</button>
 </div>
-<p class="small muted">It is written to the same file <code>${COMMAND} browser token</code> writes (mode 600), and it is never shown again, printed, or logged anywhere. Without it the extension would ask you to approve every connection, so the plugin refuses to start.</p>
+<p class="small muted">It is written to the same file <code>${COMMAND} browser token</code> writes, ${tokenFileWords(platform)}, and it is never shown again, printed, or logged anywhere. Without it the extension would ask you to approve every connection, so the plugin refuses to start.</p>
 <div data-out-for="browser.token" role="status"></div>
 </section>`;
+}
+function tokenFileWords(platform) {
+  return platform === "win32" ? "in your own user profile, where only you can read it" : "mode 600: readable only by you";
 }
 function machinePage(shell, data) {
   const omniroute = data.omniroute;
@@ -24383,7 +24573,7 @@ ${command(`${COMMAND} setup --remove-warp`, "Copy the Warp remove command")}
 </section>
 
 ${omnirouteCard}
-${browserCard(data.browser, browserChecks)}
+${browserCard(data.browser, browserChecks, shell.facts.platform)}
 ${doctorCard}
 ${autoMode}
 ${gatewayCard(shell, data.configError)}`;
@@ -24436,7 +24626,7 @@ ${privacyStep(1, "Starting the portal: for the person, not for Claude", [
       text: `It prints a one-time link <span class="mono">127.0.0.1:${port}/?t=\u2026</span>, and your default browser opens it.`
     },
     {
-      text: "The portal changes the session's own model path and the safety judge. Claude must never do that for itself, and you should never open the portal in the browser Claude drives.",
+      text: `The portal changes the session's own model path and the safety judge. Claude must never do that for itself, and you should never open the portal in the Chrome profile Claude drives (its own, <span class="mono">claude-code</span>): Claude could then reach its buttons.`,
       tone: "warn"
     }
   ])}
@@ -24632,12 +24822,13 @@ function planProjectInit(input) {
   const text = `${JSON.stringify(after, null, detectIndent(existing ?? ""))}
 `;
   const settingsNow = parseObject(existingSettings, settingsFile);
-  const merged = answers.engine === "plugin" ? withProjectHooks(settingsNow) : { settings: settingsNow, added: [] };
-  const settingsText = merged.added.length === 0 && existingSettings !== null ? existingSettings : `${JSON.stringify(merged.settings, null, detectIndent(existingSettings ?? ""))}
+  const merged = answers.engine === "plugin" ? { ...withProjectHooks(settingsNow), removed: [] } : { ...withoutProjectHooks(settingsNow), added: [] };
+  const settingsChanges = merged.added.length > 0 || merged.removed.length > 0;
+  const settingsText = !settingsChanges && existingSettings !== null ? existingSettings : `${JSON.stringify(merged.settings, null, detectIndent(existingSettings ?? ""))}
 `;
   const notes = [];
   if (answers.engine === "own") {
-    notes.push('engine "own": no cc-smart-dev-kit hook lines are added to .claude/settings.json \u2014 your own engine makes this project\'s worktrees; `cc-smart-dev-kit doctor` expects none');
+    notes.push(merged.removed.length > 0 ? `engine "own": the cc-smart-dev-kit hook lines are taken out of .claude/settings.json \u2014 your own engine makes this project's worktrees, and with both wired two engines answer each worktree request` : 'engine "own": no cc-smart-dev-kit hook lines are added to .claude/settings.json \u2014 your own engine makes this project\'s worktrees; `cc-smart-dev-kit doctor` expects none');
   }
   if (answers.setup === null) {
     notes.push("no setup command: a new worktree gets no dependencies installed");
@@ -24649,9 +24840,10 @@ function planProjectInit(input) {
     diff: diffOf(before, after),
     settingsFile,
     settingsText,
-    settingsChanged: merged.added.length > 0,
+    settingsChanged: settingsChanges,
     hookLines: merged.added,
-    notes
+    notes,
+    removedLines: merged.removed
   };
 }
 function applyProjectInit(plan, options) {
@@ -24665,7 +24857,7 @@ function applyProjectInit(plan, options) {
     if (options.dryRun === true)
       return { file, created, backup: null };
     const backup = backupFile(options.stateDir, file);
-    atomicWrite(file, text, fileMode(file) ?? 420);
+    atomicWrite(realTarget(file), text, fileMode(file) ?? 420);
     return { file, created, backup };
   });
 }
@@ -24696,6 +24888,18 @@ function realRunner(env) {
     }
   };
 }
+function currentBranchOf(runner, root) {
+  const head = runner.git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  const branch = head.ok ? head.out.trim() : "";
+  return branch === "" ? null : branch;
+}
+function localBranchesOf(runner, root) {
+  const listed = runner.git(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+  if (!listed.ok)
+    return [];
+  return listed.out.split(`
+`).map((line) => line.trim()).filter((name) => name !== "");
+}
 function defaultBranchOf2(runner, root) {
   const known = runner.git(root, [
     "symbolic-ref",
@@ -24708,7 +24912,15 @@ function defaultBranchOf2(runner, root) {
     if (branch !== "")
       return branch;
   }
-  return "main";
+  const locals = localBranchesOf(runner, root);
+  const only = locals.length === 1 ? locals[0] : undefined;
+  if (only !== undefined)
+    return only;
+  if (locals.includes("main"))
+    return "main";
+  if (locals.includes("master"))
+    return "master";
+  return currentBranchOf(runner, root) ?? "main";
 }
 function setupFromLockfile(root) {
   if (existsSync41(join42(root, "bun.lock")) || existsSync41(join42(root, "bun.lockb"))) {
@@ -24839,7 +25051,8 @@ its own, the worktree engine's three lines in .claude/settings.json. It asks fir
 the defaults; every question has a flag, so a run with no terminal writes nothing unless
 --yes is given. Nothing is committed: commit both files with the project.
 
-  --base <branch>        the branch a new worktree starts from (default: origin/HEAD)
+  --base <branch>        the branch a new worktree starts from (default: origin/HEAD, else the
+                         repo's only branch, else main, else master, else the current branch)
   --prefix <prefix>      the folder-name prefix beside the repo (default: <repo>-wt-)
   --setup "<words>"      the command run inside a new worktree (default: the lockfile's)
   --no-setup             write no setup command
@@ -24977,7 +25190,7 @@ function writeProjectFile(cwd, path, key, value, env) {
   if (Bun.deepEquals(before, data, true))
     return shownNothing(file, key, value);
   backupFile(cliPaths(env).stateDir, file);
-  atomicWrite(file, `${JSON.stringify(data, null, indent)}
+  atomicWrite(realTarget(file), `${JSON.stringify(data, null, indent)}
 `, 420);
   return shownWrite(file, key, value, text === null);
 }
@@ -25379,6 +25592,12 @@ var runner = (cmd) => {
     return { exitCode: 127, output: error instanceof Error ? error.message : String(error) };
   }
 };
+function claudeCodeProfileHere(machine, home) {
+  const userDataDir = chromeUserDataDir(machine.platform, home);
+  if (userDataDir === null)
+    return false;
+  return findClaudeCodeProfile(userDataDir, realBrowserDoctorDeps(machine, home)) !== null;
+}
 function openBrowser(platform, url, which) {
   openUrlOnDesktop(platform, url, {
     which,
@@ -25450,8 +25669,13 @@ ${PORTAL_USAGE}`);
   console.log("");
   console.log(`It binds 127.0.0.1:${portal.port} only, and stops after ${IDLE_MS / 60000} minutes with no request.`);
   console.log("Stop it now with Ctrl+C here.");
-  if (!options.noOpen)
+  const profileHere = claudeCodeProfileHere(machine, paths.home);
+  if (mayAutoOpen({ claudeCodeProfile: profileHere, noOpen: options.noOpen })) {
     ctx.openBrowser(portal.url);
+  } else if (!options.noOpen) {
+    console.log("");
+    console.log(openYourselfLine());
+  }
   const how = await portal.finished;
   if (how === "idle") {
     console.log(`The portal stopped: nothing asked it anything for ${IDLE_MS / 60000} minutes. The link and the cookie are dead. Run it again for a new one.`);

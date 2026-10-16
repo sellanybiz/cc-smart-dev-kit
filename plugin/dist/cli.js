@@ -18830,21 +18830,27 @@ import { existsSync as existsSync32, realpathSync as realpathSync4, statSync as 
 import { join as join30 } from "path";
 var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
+var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
 function gitIn(cwd, env) {
   return (args) => {
-    const result = Bun.spawnSync(["git", ...args], {
-      cwd,
-      env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: RESOLVE_GIT_TIMEOUT_MS
-    });
-    return {
-      ok: result.exitCode === 0,
-      stdout: result.stdout.toString(),
-      stderr: result.stderr.toString()
-    };
+    try {
+      const result = Bun.spawnSync(["git", ...args], {
+        cwd,
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: RESOLVE_GIT_TIMEOUT_MS
+      });
+      return {
+        ok: result.exitCode === 0,
+        stdout: result.stdout.toString(),
+        stderr: result.stderr.toString()
+      };
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      throw /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+    }
   };
 }
 function requireGitVersion(git) {
@@ -20815,6 +20821,51 @@ function withProjectHooks(settings) {
     }
   }
   return { settings: { ...settings, hooks }, added };
+}
+function groupCommand(group) {
+  if (!isObject(group) || !Array.isArray(group.hooks))
+    return null;
+  const words = group.hooks.map((handler) => {
+    if (!isObject(handler) || typeof handler.command !== "string")
+      return null;
+    return typeof handler.timeout === "number" ? `${handler.command} (timeout ${String(handler.timeout)} s)` : handler.command;
+  }).filter((word) => word !== null);
+  return words.length === 0 ? null : words.join("; ");
+}
+function withoutProjectHooks(settings) {
+  if (!isObject(settings.hooks))
+    return { removed: [], settings };
+  const removed = [];
+  const hooks = {};
+  for (const [event, groups] of Object.entries(settings.hooks)) {
+    if (!Array.isArray(groups)) {
+      hooks[event] = groups;
+      continue;
+    }
+    const ours = PROJECT_HOOKS.filter((spec) => spec.events.includes(event));
+    const kept = groups.filter((group) => {
+      const name = ours.find((spec) => isOursAlone(group, spec.name))?.name;
+      if (name === undefined)
+        return true;
+      removed.push(`${event}: ${groupCommand(group) ?? `cc-smart-dev-kit hook ${name}`}`);
+      return false;
+    });
+    if (kept.length > 0)
+      hooks[event] = kept;
+  }
+  const next = {};
+  for (const [key, value] of Object.entries(settings)) {
+    if (key !== "hooks")
+      next[key] = value;
+    else if (Object.keys(hooks).length > 0)
+      next.hooks = hooks;
+  }
+  return { removed, settings: next };
+}
+function isOursAlone(group, name) {
+  if (!isObject(group) || !Array.isArray(group.hooks) || group.hooks.length === 0)
+    return false;
+  return group.hooks.every((handler) => isObject(handler) && typeof handler.command === "string" && runsProjectHook(handler.command, name));
 }
 function runsProjectHook(command, name) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -22917,12 +22968,13 @@ function planProjectInit(input) {
   const text = `${JSON.stringify(after, null, detectIndent(existing ?? ""))}
 `;
   const settingsNow = parseObject(existingSettings, settingsFile);
-  const merged = answers.engine === "plugin" ? withProjectHooks(settingsNow) : { settings: settingsNow, added: [] };
-  const settingsText = merged.added.length === 0 && existingSettings !== null ? existingSettings : `${JSON.stringify(merged.settings, null, detectIndent(existingSettings ?? ""))}
+  const merged = answers.engine === "plugin" ? { ...withProjectHooks(settingsNow), removed: [] } : { ...withoutProjectHooks(settingsNow), added: [] };
+  const settingsChanges = merged.added.length > 0 || merged.removed.length > 0;
+  const settingsText = !settingsChanges && existingSettings !== null ? existingSettings : `${JSON.stringify(merged.settings, null, detectIndent(existingSettings ?? ""))}
 `;
   const notes = [];
   if (answers.engine === "own") {
-    notes.push('engine "own": no cc-smart-dev-kit hook lines are added to .claude/settings.json \u2014 your own engine makes this project\'s worktrees; `cc-smart-dev-kit doctor` expects none');
+    notes.push(merged.removed.length > 0 ? `engine "own": the cc-smart-dev-kit hook lines are taken out of .claude/settings.json \u2014 your own engine makes this project's worktrees, and with both wired two engines answer each worktree request` : 'engine "own": no cc-smart-dev-kit hook lines are added to .claude/settings.json \u2014 your own engine makes this project\'s worktrees; `cc-smart-dev-kit doctor` expects none');
   }
   if (answers.setup === null) {
     notes.push("no setup command: a new worktree gets no dependencies installed");
@@ -22934,9 +22986,10 @@ function planProjectInit(input) {
     diff: diffOf(before, after),
     settingsFile,
     settingsText,
-    settingsChanged: merged.added.length > 0,
+    settingsChanged: settingsChanges,
     hookLines: merged.added,
-    notes
+    notes,
+    removedLines: merged.removed
   };
 }
 function applyProjectInit(plan, options) {
@@ -22950,7 +23003,7 @@ function applyProjectInit(plan, options) {
     if (options.dryRun === true)
       return { file, created, backup: null };
     const backup = backupFile(options.stateDir, file);
-    atomicWrite(file, text, fileMode(file) ?? 420);
+    atomicWrite(realTarget(file), text, fileMode(file) ?? 420);
     return { file, created, backup };
   });
 }
@@ -22981,6 +23034,18 @@ function realRunner(env) {
     }
   };
 }
+function currentBranchOf(runner, root) {
+  const head = runner.git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  const branch = head.ok ? head.out.trim() : "";
+  return branch === "" ? null : branch;
+}
+function localBranchesOf(runner, root) {
+  const listed = runner.git(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+  if (!listed.ok)
+    return [];
+  return listed.out.split(`
+`).map((line) => line.trim()).filter((name) => name !== "");
+}
 function defaultBranchOf2(runner, root) {
   const known = runner.git(root, [
     "symbolic-ref",
@@ -22993,7 +23058,15 @@ function defaultBranchOf2(runner, root) {
     if (branch !== "")
       return branch;
   }
-  return "main";
+  const locals = localBranchesOf(runner, root);
+  const only = locals.length === 1 ? locals[0] : undefined;
+  if (only !== undefined)
+    return only;
+  if (locals.includes("main"))
+    return "main";
+  if (locals.includes("master"))
+    return "master";
+  return currentBranchOf(runner, root) ?? "main";
 }
 function setupFromLockfile(root) {
   if (existsSync46(join46(root, "bun.lock")) || existsSync46(join46(root, "bun.lockb"))) {
@@ -23257,9 +23330,11 @@ function printPlan(plan, context) {
   for (const line of plan.diff)
     context.print(`  ${line}`);
   if (plan.settingsChanged) {
-    context.print(`${plan.settingsFile} also gets, merged with what it has:`);
+    context.print(`${plan.settingsFile} also changes, merged with what it has:`);
     for (const line of plan.hookLines)
       context.print(`  + ${line}`);
+    for (const line of plan.removedLines)
+      context.print(`  - ${line}`);
   }
   if (!plan.changed && !plan.settingsChanged)
     context.print("Nothing to change.");
@@ -23287,7 +23362,8 @@ its own, the worktree engine's three lines in .claude/settings.json. It asks fir
 the defaults; every question has a flag, so a run with no terminal writes nothing unless
 --yes is given. Nothing is committed: commit both files with the project.
 
-  --base <branch>        the branch a new worktree starts from (default: origin/HEAD)
+  --base <branch>        the branch a new worktree starts from (default: origin/HEAD, else the
+                         repo's only branch, else main, else master, else the current branch)
   --prefix <prefix>      the folder-name prefix beside the repo (default: <repo>-wt-)
   --setup "<words>"      the command run inside a new worktree (default: the lockfile's)
   --no-setup             write no setup command
@@ -25924,8 +26000,9 @@ the updates, the heavy-job queue and the companions. It binds 127.0.0.1 only.
   --no-open       do not open your browser; print the link instead
 
 It prints a link with a one-time token, and stops after 30 minutes with no request. It
-refuses to run inside a Claude Code session: run it in your own terminal, and never open it
-in the browser Claude drives.`;
+refuses to run inside a Claude Code session: run it in your own terminal. When Chrome's
+"claude-code" profile is on this machine \u2014 the one Claude Code drives \u2014 it does not open a
+browser by itself: open the link in a window that is NOT that profile.`;
 function parseArgs(args, allowPluginDir) {
   let noOpen = false;
   let pluginDir = null;
@@ -25963,7 +26040,7 @@ function portalCopy(paths) {
   return paths.portalCopy;
 }
 function claudeCodeRefusal(env) {
-  return env.CLAUDECODE === undefined ? null : `${COMMAND} portal cannot run inside a Claude Code session: the portal is for you, not for Claude. It changes this machine's model path and the safety judge, and a session must never do that for itself. Run it in your own terminal \u2014 and never open the page in the browser Claude drives.`;
+  return env.CLAUDECODE === undefined ? null : `${COMMAND} portal cannot run inside a Claude Code session: the portal is for you, not for Claude. It changes this machine's model path and the safety judge, and a session must never do that for itself. Run it in your own terminal, and open the link in a browser window that is not Chrome's "${CLAUDE_CODE_PROFILE}" profile (the one Claude Code drives).`;
 }
 function runPortal(ctx, args) {
   const refusal = claudeCodeRefusal(ctx.env);
@@ -26893,7 +26970,7 @@ function writeProjectFile(cwd, path, key, value, env) {
   if (Bun.deepEquals(before, data, true))
     return shownNothing(file, key, value);
   backupFile(cliPaths(env).stateDir, file);
-  atomicWrite(file, `${JSON.stringify(data, null, indent)}
+  atomicWrite(realTarget(file), `${JSON.stringify(data, null, indent)}
 `, 420);
   return shownWrite(file, key, value, text === null);
 }
