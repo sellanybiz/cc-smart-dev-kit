@@ -14,6 +14,7 @@
  * meter's width) travels as a `data-` attribute and the browser script applies it.
  */
 
+import type { BrowserGuide } from "../browser/setup";
 import { COMMAND } from "../build-info";
 import { PLUGIN } from "../build-info/names";
 import type { Check as DoctorCheck } from "../cli/doctor";
@@ -81,7 +82,7 @@ export function expiredPage(): string {
 <h1 class="h1sm">This link has expired.</h1>
 <p class="muted">It was already used, or the portal stopped. Each link works once. Run this in your own terminal for a new one:</p>
 ${command(`${COMMAND} portal`, "Copy the portal command")}
-<p class="small muted">Not inside Claude Code: there the command refuses to print a link. Never open the portal in the browser Claude drives.</p>
+<p class="small muted">Not inside Claude Code: there the command refuses to print a link. Never open the portal in the Chrome profile Claude drives: its own, named <span class="mono">claude-code</span>.</p>
 </section>
 </div>`;
   return barePage({ body, title: "Link expired" });
@@ -435,7 +436,7 @@ const PROJECT_SETTING_CONFIRM =
   "Write this into the project's .claude/cc-smart-dev-kit.json? It is a file the team shares: commit it like any change.";
 
 /** The one line a row the project sets shows, with the link to where it is changed. */
-const CHANGE_IN_PROJECT = `<a class="small bold" href="/machine#project">change it in the project</a>`;
+const CHANGE_IN_PROJECT = `<a class="small bold projectlink" href="/machine#project">change it in the project</a>`;
 
 function settingControl(row: SettingsRow, disabled: boolean): string {
   switch (row.kind) {
@@ -641,17 +642,51 @@ function guardRow(options: {
 </div>`;
 }
 
-/** One preview box: the file's name, a Copy button, and the text itself. */
-function previewBox(options: {
-  copyLabel: string;
-  name: string;
+/**
+ * One code box: the Copy button — and the box's own short label, when it has one — on a head,
+ * then the text itself on its own line. One component, so the Project card's two previews and
+ * the Browser card's steps can never draw two different Copy buttons.
+ *
+ * `attribute` is the `data-…` attribute the text carries. The button holds it as the attribute
+ * selector `[data-…]`: a bare `data-preview-file` is a TAG name to `querySelector`, matches
+ * nothing, and the button then copies nothing at all.
+ */
+function codeBox(options: {
   attribute: string;
+  copyLabel: string;
+  label?: string;
   text: string;
 }): string {
+  const head = options.label === undefined ? "" : `<code>${escapeHtml(options.label)}</code>`;
   return `<div class="codebox">
-<div class="codehead"><code>${escapeHtml(options.name)}</code><button type="button" class="btn" data-copy-node="${options.attribute}" aria-label="${escapeHtml(options.copyLabel)}">${COPY_ICON}Copy</button></div>
+<div class="codehead${options.label === undefined ? " end" : ""}">${head}<button type="button" class="btn" data-copy-node="[${options.attribute}]" aria-label="${escapeHtml(options.copyLabel)}">${COPY_ICON}Copy</button></div>
 <pre ${options.attribute}>${escapeHtml(options.text)}</pre>
 </div>`;
+}
+
+/**
+ * The Browser card's five steps: a real ordered list — one column, numbered — never the
+ * doctor's grid. Each step's sentence comes first (with its own `✓ done` when this machine
+ * can tell), then the address or command it needs, in a code box of its own.
+ *
+ * As a grid the steps read left, right, left, right, they carry no numbers, and the narrow
+ * column squeezes the last one ("Save it.", "✓ done") into a sliver.
+ */
+function guideSteps(guide: BrowserGuide): string {
+  return `<ol class="guide">${guide.steps
+    .map((step, index) => {
+      const done = step.done === true ? ' <span class="ok">✓ done</span>' : "";
+      const box =
+        step.detail === undefined
+          ? ""
+          : codeBox({
+              attribute: `data-guide-${index + 1}`,
+              copyLabel: `Copy step ${index + 1}'s command or address`,
+              text: step.detail,
+            });
+      return `<li><span class="wrap-any">${escapeHtml(step.text)}${done}</span>${box}</li>`;
+    })
+    .join("")}</ol>`;
 }
 
 function projectForm(
@@ -661,9 +696,14 @@ function projectForm(
 ): string {
   const setup = answers.setup === null ? "" : answers.setup.join(" ");
   const baseHelp = `The folder that stays on the latest ${answers.base} is never edited or committed in.`;
-  const hookLines = plan.hookLines;
-  const settingsNote = settingsLineNote(hookLines.length);
-  return `<div class="col g8" data-project-form${data.set ? "" : " hidden"}>
+  // What the settings file changes: the lines the engine adds, and the ones an engine of the
+  // project's own takes back out (a `-` line, the way a diff reads).
+  const settingsLines = [...plan.hookLines, ...plan.removedLines.map((line) => `- ${line}`)];
+  const settingsNote = settingsLineNote(plan.hookLines.length, plan.removedLines.length);
+  // The hash of the two files the plan was made against: the write sends it back, and the
+  // server refuses a write whose preview no longer matches the files on disk.
+  const hash = data.filesHash === null ? "" : ` data-files-hash="${escapeHtml(data.filesHash)}"`;
+  return `<div class="col g8" data-project-form${data.set ? "" : " hidden"}${hash}>
 
 <div class="fields">
 <div class="field"><label for="f-base">Base branch</label><input id="f-base" type="text" value="${escapeHtml(answers.base)}" data-answer="base"></div>
@@ -711,8 +751,8 @@ ${guardRow({ help: "The type check, the build, the tests and the coverage run he
 <div class="col g8">
 <h3>Preview</h3>
 <p class="small muted">Exactly what will be written.</p>
-${previewBox({ attribute: "data-preview-file", copyLabel: "Copy the contents of .claude/cc-smart-dev-kit.json", name: ".claude/cc-smart-dev-kit.json", text: plan.text })}
-${previewBox({ attribute: "data-preview-settings", copyLabel: "Copy the lines added to .claude/settings.json", name: ".claude/settings.json", text: hookLines.join("\n") })}
+${codeBox({ attribute: "data-preview-file", copyLabel: "Copy the contents of .claude/cc-smart-dev-kit.json", label: ".claude/cc-smart-dev-kit.json", text: plan.text })}
+${codeBox({ attribute: "data-preview-settings", copyLabel: "Copy the lines .claude/settings.json changes by", label: ".claude/settings.json", text: settingsLines.join("\n") })}
 <p class="small muted" data-preview-note>${escapeHtml(settingsNote)}</p>
 <div class="col g2" data-preview-notes>${plan.notes
     .map((note) => `<p class="small muted">${escapeHtml(note)}</p>`)
@@ -793,27 +833,22 @@ function checkItem(check: DoctorCheck): string {
 
 /**
  * The Browser card on Machine: doctor's browser lines, the steps a person follows, a button that
- * runs `browser setup` (it opens the Web Store page in the `claude-code` profile), and the token
- * field. **The stored token is never on the page**: the field starts empty, a save answers "the
- * token is set", and no answer ever echoes the value.
+ * runs `browser setup` (it opens the Web Store page in the `claude-code` profile, and names that
+ * profile in `Local State` while Chrome is closed), and the token field. **The stored token is
+ * never on the page**: the field starts empty, a save answers "the token is set", and no answer
+ * ever echoes the value.
  */
-function browserCard(data: BrowserCardData, checks: DoctorCheck[]): string {
+function browserCard(
+  data: BrowserCardData,
+  checks: DoctorCheck[],
+  platform: NodeJS.Platform,
+): string {
   const state = data.state;
   const ready = state.extensionInstalled && state.fileUrls === true && state.tokenSet;
   const lines =
     checks.length === 0
       ? '<p class="muted">Open this page again to see the checks.</p>'
       : `<ul class="checks">${checks.map(checkItem).join("")}</ul>`;
-  const steps = `<ol class="checks">${data.guide.steps
-    .map(
-      (step) =>
-        `<li class="small wrap-any">${escapeHtml(step.text)}${step.done ? ' <span class="ok">✓ done</span>' : ""}${
-          step.detail === undefined
-            ? ""
-            : `<br><code class="mono wrap-any">${escapeHtml(step.detail)}</code>`
-        }</li>`,
-    )
-    .join("")}</ol>`;
   const notes = [...data.guide.notes, ...data.notes.map((note) => note.replace(/^!\s*/, ""))];
   return `<section class="card pad" id="browser">
 <div class="spread">
@@ -821,12 +856,12 @@ function browserCard(data: BrowserCardData, checks: DoctorCheck[]): string {
 <h2>Browser</h2>
 <p class="small muted">The Playwright MCP server drives YOUR Chrome, through the Playwright extension, in a profile of its own named <span class="mono">${escapeHtml(state.profileDirName)}</span>. ${ready ? "It is set up." : "It is NOT ready yet."} The same lines as <code>${COMMAND} doctor</code>.</p>
 </div>
-<button type="button" class="btn primary" data-action="browser.setup" data-confirm="Open the Playwright extension's page in the ${escapeHtml(state.profileDirName)} Chrome profile? Chrome comes to the front; nothing is installed without your click." data-reload>Set up the browser</button>
+<button type="button" class="btn primary" data-action="browser.setup" data-confirm="Open the Playwright extension's page in the ${escapeHtml(state.profileDirName)} Chrome profile? The same command as ${COMMAND} browser setup runs: Chrome comes to the front, nothing is installed without your click, and the profile is named in Chrome's own settings file while Chrome is closed." data-reload>Set up the browser</button>
 </div>
 <div data-out-for="browser.setup" role="status"></div>
 ${lines}
 <p class="small muted">${escapeHtml(data.guide.intro)}</p>
-${steps}
+${guideSteps(data.guide)}
 ${notes.map((note) => `<p class="small muted wrap-any">${escapeHtml(note)}</p>`).join("")}
 <div class="fields">
 <div class="field">
@@ -837,9 +872,20 @@ ${notes.map((note) => `<p class="small muted wrap-any">${escapeHtml(note)}</p>`)
 <div class="row">
 <button type="button" class="btn strong" data-token-save>Save the token</button>
 </div>
-<p class="small muted">It is written to the same file <code>${COMMAND} browser token</code> writes (mode 600), and it is never shown again, printed, or logged anywhere. Without it the extension would ask you to approve every connection, so the plugin refuses to start.</p>
+<p class="small muted">It is written to the same file <code>${COMMAND} browser token</code> writes, ${tokenFileWords(platform)}, and it is never shown again, printed, or logged anywhere. Without it the extension would ask you to approve every connection, so the plugin refuses to start.</p>
 <div data-out-for="browser.token" role="status"></div>
 </section>`;
+}
+
+/**
+ * How the token file is protected, in the only words that are true on this machine. The mode
+ * is a POSIX idea: Windows has no `chmod`, and what keeps the file to one person there is the
+ * ACL of the user profile it sits in.
+ */
+function tokenFileWords(platform: NodeJS.Platform): string {
+  return platform === "win32"
+    ? "in your own user profile, where only you can read it"
+    : "mode 600: readable only by you";
 }
 
 export function machinePage(shell: Shell, data: MachineData): string {
@@ -969,7 +1015,7 @@ ${command(`${COMMAND} setup --remove-warp`, "Copy the Warp remove command")}
 </section>
 
 ${omnirouteCard}
-${browserCard(data.browser, browserChecks)}
+${browserCard(data.browser, browserChecks, shell.facts.platform)}
 ${doctorCard}
 ${autoMode}
 ${gatewayCard(shell, data.configError)}`;
@@ -1046,7 +1092,7 @@ ${privacyStep(1, "Starting the portal: for the person, not for Claude", [
     text: `It prints a one-time link <span class="mono">127.0.0.1:${port}/?t=…</span>, and your default browser opens it.`,
   },
   {
-    text: "The portal changes the session's own model path and the safety judge. Claude must never do that for itself, and you should never open the portal in the browser Claude drives.",
+    text: 'The portal changes the session\'s own model path and the safety judge. Claude must never do that for itself, and you should never open the portal in the Chrome profile Claude drives (its own, <span class="mono">claude-code</span>): Claude could then reach its buttons.',
     tone: "warn",
   },
 ])}

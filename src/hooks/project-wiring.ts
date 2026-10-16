@@ -102,6 +102,77 @@ export function withProjectHooks(settings: JsonObject): { settings: JsonObject; 
 }
 
 /**
+ * One handler group's own command, in the words `withProjectHooks` reports it in: the command,
+ * and the timeout after it. Null when the group holds no command at all.
+ */
+function groupCommand(group: unknown): null | string {
+  if (!isObject(group) || !Array.isArray(group.hooks)) return null;
+  const words = group.hooks
+    .map((handler) => {
+      if (!isObject(handler) || typeof handler.command !== "string") return null;
+      return typeof handler.timeout === "number"
+        ? `${handler.command} (timeout ${String(handler.timeout)} s)`
+        : handler.command;
+    })
+    .filter((word): word is string => word !== null);
+  return words.length === 0 ? null : words.join("; ");
+}
+
+/**
+ * A project's `.claude/settings.json` with the engine's hooks taken back out — the inverse of
+ * `withProjectHooks`, for a project that runs an engine of its own (`"worktrees.engine":
+ * "own"`). An earlier `project init` left the plugin's handlers in the file, and with both
+ * wired two engines answer each worktree request (`doctor` says exactly that).
+ *
+ * Only a group that is **exactly ours** goes: every handler in it runs one of our hooks for
+ * that event. A group a person merged their own command into stays, and so does every other
+ * key in the file — nothing else is touched. Returns the settings to write and the commands
+ * it removed, in the same words `withProjectHooks` adds them.
+ */
+export function withoutProjectHooks(settings: JsonObject): {
+  removed: string[];
+  settings: JsonObject;
+} {
+  if (!isObject(settings.hooks)) return { removed: [], settings };
+  const removed: string[] = [];
+  const hooks: JsonObject = {};
+  for (const [event, groups] of Object.entries(settings.hooks)) {
+    if (!Array.isArray(groups)) {
+      hooks[event] = groups;
+      continue;
+    }
+    const ours = PROJECT_HOOKS.filter((spec) => spec.events.includes(event));
+    const kept = groups.filter((group) => {
+      const name = ours.find((spec) => isOursAlone(group, spec.name))?.name;
+      if (name === undefined) return true;
+      removed.push(`${event}: ${groupCommand(group) ?? `cc-smart-dev-kit hook ${name}`}`);
+      return false;
+    });
+    // An event with nothing left in it takes its key with it, rather than an empty list.
+    if (kept.length > 0) hooks[event] = kept;
+  }
+  // The file's own keys in their own order, with `hooks` where it was; left out when nothing
+  // of it is left.
+  const next: JsonObject = {};
+  for (const [key, value] of Object.entries(settings)) {
+    if (key !== "hooks") next[key] = value;
+    else if (Object.keys(hooks).length > 0) next.hooks = hooks;
+  }
+  return { removed, settings: next };
+}
+
+/** True when every handler in one group runs one of our hooks for `name`. */
+function isOursAlone(group: unknown, name: string): boolean {
+  if (!isObject(group) || !Array.isArray(group.hooks) || group.hooks.length === 0) return false;
+  return group.hooks.every(
+    (handler) =>
+      isObject(handler) &&
+      typeof handler.command === "string" &&
+      runsProjectHook(handler.command, name),
+  );
+}
+
+/**
  * True when a wired command runs `cc-smart-dev-kit hook <name>`: by the bare name, a path to the
  * launcher, or the plugin's own `bin/cc-smart-dev-kit`.
  */

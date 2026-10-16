@@ -16,6 +16,7 @@
  *     never reads: `/v1/models` carries an id and a context length, and that is all.
  */
 
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import {
@@ -65,6 +66,12 @@ import type {
 
 /** What every page's header and footer show. */
 export interface PortalFacts {
+  /**
+   * The platform this portal runs on (`machine.platform`). It is for the words only — the
+   * token file's "mode 600" is a POSIX idea, and Windows protects it with the profile's ACL
+   * instead — and no page ever branches on anything else.
+   */
+  platform: NodeJS.Platform;
   /** The port the portal itself listens on. */
   portalPort: number;
   /**
@@ -120,11 +127,12 @@ export async function shellFacts(
   portalPort: number,
   found: ConfigRead,
 ): Promise<PortalFacts> {
+  const platform = ctx.machine.platform;
   // No config to read: no port names a router, so no page claims one (and nothing is probed).
-  if ("error" in found) return { portalPort, router: null, version: VERSION };
+  if ("error" in found) return { platform, portalPort, router: null, version: VERSION };
   const port = found.config.port;
   const health = await routerHealth(port, ctx.probe.fetch);
-  return { portalPort, router: { port, up: !("error" in health) }, version: VERSION };
+  return { platform, portalPort, router: { port, up: !("error" in health) }, version: VERSION };
 }
 
 // ── The router's health page ────────────────────────────────────────────────────
@@ -773,13 +781,39 @@ export function projectFileTexts(root: string): {
 }
 
 /**
- * The line under the Project card's settings preview: what the engine's lines do to the file.
+ * The line under the Project card's settings preview: what the plan does to the settings file.
  * One home — the page draws it and the preview's answer carries it (`project.preview`), so
- * the sentence can never describe a different plan than the boxes beside it.
+ * the sentence can never describe a different plan than the boxes beside it. Both engines go
+ * through here: the plugin's adds its hook lines, and an engine of the project's own takes
+ * exactly those lines back out.
  */
-export function settingsLineNote(hookLines: number): string {
-  if (hookLines === 0) return "No line is added to .claude/settings.json.";
-  return `${hookLines} line${hookLines === 1 ? "" : "s"}, added inside the existing file. Nothing else there changes.`;
+export function settingsLineNote(added: number, removed: number): string {
+  const parts: string[] = [];
+  if (added > 0) {
+    parts.push(`${added} line${added === 1 ? "" : "s"}, added inside the existing file`);
+  }
+  if (removed > 0) {
+    parts.push(`${removed} line${removed === 1 ? "" : "s"} removed, the plugin's own hooks`);
+  }
+  if (parts.length === 0) return "No line is added to .claude/settings.json.";
+  return `${parts.join(", and ")}. Nothing else there changes.`;
+}
+
+/**
+ * A short hash of the two files a plan was made against. The preview sends it, the write sends
+ * it back, and the server matches the two: a plan made before someone else changed the file
+ * is refused instead of quietly overwriting them.
+ */
+export function projectFilesHash(texts: {
+  existing: null | string;
+  existingSettings: null | string;
+}): string {
+  return createHash("sha256")
+    .update(texts.existing ?? "\u0000")
+    .update("\u0000")
+    .update(texts.existingSettings ?? "\u0000")
+    .digest("hex")
+    .slice(0, 32);
 }
 
 /** The Project card's own data: the form's answers, and the plan they would write. */
@@ -794,6 +828,11 @@ export interface ProjectCardData {
   plan: ProjectInitPlan | null;
   /** Why the preview cannot be built; null when it can. */
   planError: null | string;
+  /**
+   * `projectFilesHash` of the two files the plan was made against; null when there is no plan.
+   * It travels to the page and comes back with the write.
+   */
+  filesHash: null | string;
   /** The repo root the two files go in; null when the folder is not in a git project. */
   root: null | string;
   /** True: `.claude/cc-smart-dev-kit.json` is there. */
@@ -821,6 +860,7 @@ export function projectCardData(
   const base: ProjectCardData = {
     answers: null,
     error: null,
+    filesHash: null,
     name: null,
     plan: null,
     planError: null,
@@ -845,6 +885,9 @@ export function projectCardData(
     return {
       ...head,
       answers: defaults.answers,
+      // The hash is of the same two texts the plan is made from, so the page's first preview
+      // and a write with nothing changed in between carry the same one.
+      filesHash: projectFilesHash(texts),
       plan: workflow.planProjectInit({
         answers: defaults.answers,
         existing: texts.existing,

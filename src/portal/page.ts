@@ -67,7 +67,7 @@ function header(shell: Shell, active: PageId): string {
 <div class="privatebar">
 <div class="wrap">
 <span>${LOCK_ICON}Private session on this computer only. It ends when the portal stops.</span>
-<span>For you, not for Claude: never open this page in the browser Claude drives.</span>
+<span>For you, not for Claude: never open this page in the Chrome profile Claude drives (its own, <span class="mono">claude-code</span>).</span>
 </div>
 </div>`;
 }

@@ -26,7 +26,7 @@ import { STATUSLINE_KEY, statuslineSetting } from "../cli/setup";
 import { CcSmartDevKitConfigError, ccSmartDevKitConfigSchema } from "../project/config";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { applyManagedJson, isObject, readJsonObject } from "../setup/managed-json";
-import { atomicWrite, backupFile } from "../setup/write";
+import { atomicWrite, backupFile, realTarget } from "../setup/write";
 import { heldSince, hold, resume, updateFiles } from "../update/state";
 import { personalWorkflowFile, WorkflowConfigError } from "./resolve";
 import {
@@ -192,7 +192,9 @@ function writeProjectFile(
   // A backup first, in the state folder: `restore` does not undo a project's file (it is the
   // project's, committed to git), so the backup is only there to look at.
   backupFile(cliPaths(env).stateDir, file);
-  atomicWrite(file, `${JSON.stringify(data, null, indent)}\n`, 0o644);
+  // `realTarget`: a file linked into a dotfiles repo stays a link, and its target gets the
+  // change — an atomic write straight at the link would replace it with a plain file.
+  atomicWrite(realTarget(file), `${JSON.stringify(data, null, indent)}\n`, 0o644);
   return shownWrite(file, key, value, text === null);
 }
 
