@@ -45,7 +45,8 @@ private). On an older Bun only `doctor`, `restore`, `version` and `--help` run.
    ```
 
    Setup installs the launcher `~/.local/bin/cc-smart-dev-kit`, turns on auto-update for the
-   plugin, installs the plugin's general instructions for Claude (§ Instructions, skills
+   plugin, registers the MCP servers for your user ([MCP servers](#mcp-servers)), installs
+   the plugin's general instructions for Claude (§ Instructions, skills
    and agents), and adds any companion marketplace that is missing. Add `--dry-run` to see
    the changes first; it writes and runs nothing at all. Add `--no-instructions` to leave
    the instructions out (setup remembers that choice).
@@ -73,6 +74,10 @@ After that, use `cc-smart-dev-kit setup` to set up again (for example after an u
 | `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing. |
 | `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version. `--check` only says whether a newer version exists (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
 | `cc-smart-dev-kit gateway <command>` | The optional AI gateway (below). |
+| `cc-smart-dev-kit browser mcp` | Starts the Playwright MCP server on the ONE Google Chrome every session shares, through a filter that shows this session only its own windows ([The shared browser](#the-shared-browser)). `setup` registers it as the `playwright` MCP server; you do not run it by hand. |
+| `cc-smart-dev-kit browser check [--headless] [--idle]` | Proves the shared browser end to end: two real sessions, each with a real Playwright, on one throwaway Chrome (a sign-in, tabs, popups, a screenshot, an upload, a download, `browser_close`). Exit 0 when every check passed. `--headless` opens no window; `--idle` adds a 150-second wait, to show a quiet session keeps its tabs. |
+| `cc-smart-dev-kit sessions [--open] [--dry-run]` | This project's Claude Code sessions of the last two days, by name and worktree, with the command that resumes each ([Sessions](#sessions)). With Warp installed it also saves a Warp tab for each. `--open` reopens every session that was open when the machine went down or its window closed (Warp tabs, or XFCE Terminal windows on Linux); `--dry-run` says what it would open and opens nothing. |
+| `cc-smart-dev-kit worktrees [--clean] [--remove <path>] [--no-fetch]` | Every worktree of this repo: who works in it, and which are finished ([Worktrees](#worktrees)). `--clean` removes the finished ones with their branches; `--remove <path>` removes one now, for the session that has just finished in it, so without the one-hour wait; `--no-fetch` judges against `origin/<base>` as it is. `--clean` and `--remove` run in the main checkout only, one at a time. |
 | `cc-smart-dev-kit search "<query>" [--max <n>] [--json]`<br>`cc-smart-dev-kit search --fetch <url> [--json]` | Searches the web through the gateway's OmniRoute backend (Ollama's web search among its providers), or reads one page's text with `--fetch`. Prints each result's title, its URL and a short snippet. `--max` asks for 1 to 50 results. The query, or the URL, goes to that search or fetch provider on the internet; `--fetch` refuses a local or private address. Needs the gateway set up (below). |
 | `cc-smart-dev-kit job <command>` | The machine-wide queue for heavy jobs (below). |
 | `cc-smart-dev-kit migrate [--dry-run] [--yes]` | Moves a machine that still has the plugin's old `anymodel` names ([Moving from anymodel](#moving-from-anymodel)). It reads and checks everything, asks every question, and writes nothing before they are answered: a "no" leaves the machine as it was. Then it prints its steps and walks them; a step that fails keeps what the steps before it did, and the next run goes on from there. `--dry-run` prints that plan and writes, runs and stops nothing. `--yes` answers the router question without asking; the old plugin is uninstalled only after a yes on a terminal, and only when it is still installed. Refuses to run inside a Claude Code session: it replaces the router that session's own model traffic goes through. On a 0.2.x machine the command does not exist yet: run the plugin's `dist/cli.js` with bun (the section above has the line). |
@@ -162,6 +167,12 @@ it works when Claude Code was started with a PATH that has no bun.
 - Warp: the app and its version, and its Claude plugin. Not installed, or installed
   without its plugin (or with it turned off), is information (`·`): Warp is optional.
   ✗ only for the plugin without the app;
+- the MCP servers setup registers (the `playwright` shared browser, `serena`,
+  `sequential-thinking`, `tavily-websearch`): each is registered at user scope and starts
+  (`claude mcp get`, which starts it once). ✗ when one is missing ("Run: cc-smart-dev-kit setup")
+  or when another copy of it wins — a project's `.mcp.json`, or the local scope — naming
+  what to remove. Without a Tavily key its server is skipped, as a `·` line that names the
+  key file: a person who never wanted web search loses nothing. A key is never printed;
 - tmux, when it is on your PATH: whether `~/.tmux.conf` has the line that lets an alert out
   of a pane (§ Notifications), and, inside a tmux session, whether the running server passes
   alerts through. Both are information (`·`) with the fix (`cc-smart-dev-kit setup`, or
@@ -662,8 +673,8 @@ and optional shared folders for containers or users on one host, in
 ## The hooks
 
 The plugin's hooks run in every project. Most stay silent in a **project without
-`.claude/cc-smart-dev-kit.json`**; the two that are about your machine, not a project — `agent-guard`
-and `notify` — run there too (§ Notifications below). The plugin ships no worktree hook:
+`.claude/cc-smart-dev-kit.json`**; the three that are about your machine, not a project —
+`agent-guard`, `notify` and `playwright-output` — run there too (§ Notifications below). The plugin ships no worktree hook:
 Claude Code makes its own worktrees, unless a project turns on the worktree engine
 (§ Worktrees). Each hook runs through `bin/cc-smart-dev-kit-bun`, which finds bun even when your
 PATH has none: the bun `cc-smart-dev-kit setup` saved in the launcher first, then
@@ -675,7 +686,9 @@ closed), and every other hook writes one line on stderr and the session goes on
 | Hook | When | What it does |
 |---|---|---|
 | `git-guard` | before a Bash or PowerShell command | Asks you before a force-push, a push to a protected branch (`protectedBranches`), `push --all` / `--mirror`, a branch deleted on the remote (`git push origin :x`, `--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that throws changes away, `branch -D`, `stash clear` and an unnamed `stash drop` (they throw work away), and (with `worktrees`) a bare `git stash` or `stash pop`: every worktree shares one stash. Text in quotes, here-docs and comments is not a command; a shell keyword, a wrapper (`timeout 60 git push -f`, `sudo -u me …`), a here-doc fed to `sh`, and the text piped into `sh` are read through. Git's own abbreviations count (`--forc` is `--force`). Not read: a git alias (`-c alias.x=…`, or one of your own), `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file, and a branch it cannot name. |
-| `main-folder-guard` | before Edit, Write, NotebookEdit | With `worktrees.guardMainFolder`: refuses an edit of a file in the main checkout itself, and says how to get into a worktree. |
+| `main-folder-guard` | before Edit, Write, NotebookEdit, and Serena's edit tools | With `worktrees.guardMainFolder`: refuses an edit of a file in the main checkout itself, and says how to get into a worktree. A Serena edit is placed by the folder Serena has active, which `serena-root` records for the session; a folder it cannot work out, it asks about rather than letting the edit through. |
+| `serena-root` | `mcp__serena__activate_project` (before and after the call), and a session start | Records which folder Serena edits for this session (`worktrees.guardMainFolder`), so the guard above can place a Serena edit: from the moment an activation is allowed the record says "unknown" until Serena's own answer names the folder, so the guard asks rather than trusting a folder Serena may not be on. It refuses an activation that names a project by name, or a folder outside this repo and its worktrees. At a session start it forgets the record (`startup`) or distrusts it (`resume`, `clear`, `fork`). |
+| `playwright-output` | before every `mcp__playwright__*` call | Puts a screenshot or snapshot the caller names by a relative `filename` into the shared browser's output folder instead of the folder the session runs in (`@playwright/mcp` resolves a caller-named file against the process's own folder). |
 | `message-guard` | before SendMessage | Refuses a message to a session that works outside this repo (ListAgents lists every session on the machine). |
 | `agent-guard` | before an Agent launch | **Machine-wide** (it runs with or without `.claude/cc-smart-dev-kit.json`): it resolves the model the launch really runs on and holds the model rules. A launch with no `model` or no `effort` is refused (it would inherit the session's, which nobody chose); an affordable gateway slot needs `effort: "max"`, and only a slot key or a `<backend>:<model>` target counts as affordable — a name no rule knows (`best`, `opusplan`, `default`, …) is judged like Opus; Claude Opus is allowed for a review agent, and any other Opus launch needs an `Opus reason: <word>` line and asks you to approve it (in `claude -p`, with nobody to answer, it is refused; a review is not); Claude Fable only for a read-only agent with a `Fable reason: <word> - <why>` line, and Claude Code then asks you to approve each one. A fork runs on the session's model and needs no `model`; an unknown session model counts as Opus. A **Workflow** call is judged the same way, from the `agent(...)` options in its script — a launch whose `model` is built at run time is refused, never guessed, and a script that hands `agent` around (`const run = agent; run(…)`, `agent?.(…)`) or builds a call's options at run time (a `...spread`, a computed key) is refused whole — because (proved live) a workflow's agents run inside the tool and pass no hook of their own. Every Opus or Fable launch is recorded, and `cc-smart-dev-kit usage` lists them with why. |
 | `job-route` | before a Bash command | With `"jobs": { "route": true }`: a heavy command (the project's own [kinds](docs/jobs.md#kinds)) is sent through the machine's queue — rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>`, byte for byte the same command. A command already inside `cc-smart-dev-kit job run` is left as it is. |
@@ -761,6 +774,147 @@ to apply it now (a restart works too) and never changes the running server itsel
 running server does not pass alerts through. Without it, an alert still arrives in a
 terminal that is not tmux, and a session in tmux gets none.
 
+## The shared browser
+
+Every Claude session drives the **same Google Chrome**, on one profile folder,
+`~/.local/share/cc-smart-dev-kit/playwright`. Sign in there once and every session — now and
+after a restart — is signed in. Each session works in windows of its own and never sees
+another session's.
+
+Why one browser and not one per session: Chrome lets exactly one process open a profile
+folder, and a login copied into a second browser does not survive (a site that refreshes its
+token logs an old copy out everywhere). One browser has one cookie jar, so the token is
+refreshed once, for everyone.
+
+**One OS user per machine.** The profile and the output folder are made readable by their
+owner only (0700), and an older folder others could read is tightened the next time the
+browser starts. That keeps other OS users out of the signed-in cookies — but two doors
+stay open, because the shared browser is machine-wide by design: Chrome's own debug port
+speaks over 127.0.0.1 with no authentication and hands its WebSocket URL to any local
+process of any user (`/json/version`), so anyone who can run a program on this machine can
+drive the shared browser; and the start-lock port is shared the same way, so another user's
+program holding it stops the launcher with a clear message. A second person needs their own
+account on their own machine.
+
+- The first session that needs the browser starts it, detached, so it outlives that session;
+  every later session finds it. Two sessions starting at the same moment cannot start two
+  Chromes: the starter holds a port as a lock, and the other waits for the browser it brings
+  up. The system frees that port however the starter ends, so the lock can never go stale.
+- The launcher (`cc-smart-dev-kit browser mcp`, registered as the `playwright` MCP server)
+  opens a **tab filter** on a free local port and points the Playwright MCP at it
+  (`PLAYWRIGHT_MCP_CDP_ENDPOINT`, in the MCP's environment). Stock Playwright, attached to a
+  running Chrome, adopts EVERY tab in it (microsoft/playwright#42961, no fix upstream) — the
+  filter is what makes a session see only the pages it opened and the popups those opened. It
+  also turns downloads on in the shared browser, which Playwright does not do over CDP, and
+  refuses the browser-wide commands that would reach every session (`Browser.crash`,
+  `Network.clearBrowserCookies`, a cookie clear, `Fetch.enable` on the browser's own session).
+  It never raises a window on your desktop. The filter's endpoint carries a **random token**,
+  and any connection to another path — a web page's, a port scan's — is refused; the token
+  travels in an environment variable, never in a command line, which every user on the machine
+  can read (`/proc`). It stops anything that does not know the token; it does not stop a
+  process of your own user, which can read that environment.
+- When the MCP lets go — `browser_close`, ten idle minutes with no browser call, or the
+  session ending — the filter closes **this session's** windows. The shared Chrome and its
+  logins stay.
+- Everything the browser saves (screenshots, page snapshots, console and network logs,
+  downloads) goes to one folder, `~/.local/share/cc-smart-dev-kit/playwright-output/`, kept
+  under 200 MB by the MCP itself. A file a session NAMES (`filename: "home-dark.png"`) too:
+  the MCP would put that one beside the project's files — it resolves a caller-named path
+  against the folder it runs in — so the `playwright-output` hook rewrites it into that
+  folder first. A path a session gives in full is left as it is: a caller who named a place
+  meant it. A relative name with `..` in it is refused: the launcher passes
+  `--allow-unrestricted-file-access` (a session's files live in its worktree, outside the
+  folder the server was started in), so nothing else would stop it. The hook acts only while
+  the live `playwright` server is the one setup registered — a `playwright` of your own keeps
+  its own output folder and this hook keeps out of it.
+- **A person's click opens the file picker.** While Claude is acting, the MCP holds the
+  picker and waits for `browser_file_upload`; the rest of the time (and two seconds after a
+  call) the interception is off, so a click in that window opens the normal picker. The file
+  that does it is written beside the profile and passed as `--init-page`; it reads one
+  private field of the playwright-core inside the pinned `@playwright/mcp`, and without it
+  every picker stays held for Claude (it says so once in the MCP log).
+- The tool names stay `mcp__playwright__*`: the server is registered for your user, not
+  served from the plugin (a plugin-served server would rename every tool).
+
+`cc-smart-dev-kit browser check` proves all of it end to end with two real sessions on one
+throwaway Chrome. Run it after moving the pinned `@playwright/mcp`, or when the browser
+misbehaves; the profile you signed in to is never touched.
+
+## MCP servers
+
+`cc-smart-dev-kit setup` registers the general MCP servers at **user scope** with Claude Code's own
+`claude mcp add-json --scope user`. A server served from a plugin gets a new tool-name prefix,
+which would break every permission rule, hook matcher and agent tool list that names
+`mcp__<server>__*`; a server from a project file or the "local" scope is stopped by Claude
+Code as soon as the session's folder changes, and a session that works in a worktree moves
+folders. Registered for the user, the names stay and the servers stay.
+
+| Server | What it is |
+|---|---|
+| `playwright` | The shared browser ([The shared browser](#the-shared-browser)): the launcher, `browser mcp`. |
+| `serena` | [Serena](https://github.com/oraios/serena) code intelligence, at a pinned commit, started with the plugin's own context (installed as `~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml`): Serena's `claude-code` context with project switching on, so `activate_project` is listed and a session can point Serena at its worktree. |
+| `sequential-thinking` | `@modelcontextprotocol/server-sequential-thinking`, at a pinned version, through `bunx`. |
+| `tavily-websearch` | [Tavily](https://tavily.com)'s remote web-search server (`https://mcp.tavily.com/mcp/`). Its key is **never** written into a registration or printed: the header carries `Bearer ${TAVILY_API_KEY}`, which Claude Code fills in from its own environment at connect time. |
+
+- **The Tavily key**, in order: `TAVILY_API_KEY` in your environment (nothing for setup to
+  do), else the key file `~/.claude/cc-smart-dev-kit/tavily.key` — **mode 600**, which setup
+  copies into the `env` of your `settings.json` as a secret key cc-smart-dev-kit owns (masked in
+  output, kept as a hash in `owned.json`, and the settings file left at mode 600). Without a
+  key the server is skipped, and setup says so. A key file others can read, or an empty one,
+  is refused with the command that fixes it — never with the key in it. When the key moves to
+  your environment (or goes away), the copy setup wrote is removed with it, and a Tavily server
+  setup had registered is taken back — never a stale registration left behind.
+- Versions are **pinned** (`src/mcp/versions.ts`): a server started as `@latest` asks the
+  registry on every session start and installs whatever was published a minute ago, and
+  re-resolving a dependency tree makes the start slow enough to fail inside Claude Code's
+  start limit. Moving a pin: change it here, run `cc-smart-dev-kit setup` again, restart Claude
+  Code, and check `cc-smart-dev-kit doctor`.
+- **A server of your own is never taken over.** One registered under one of these names that
+  cc-smart-dev-kit did not write is left alone, with a note saying how to hand it back
+  (`claude mcp remove <name> --scope user`, then setup). One setup wrote and you re-pointed
+  since is yours too, and `restore` leaves it.
+- **`restore` takes exactly those back**: each server that still holds what setup registered
+  is removed (`claude mcp remove <name> --scope user`), the record goes
+  (`~/.claude/cc-smart-dev-kit/mcp-servers.json`), and so do Serena's context file and the
+  Tavily `env` key. A server you re-pointed — or removed yourself — stays, and setup says so
+  with the exact command that adds it back (a server you removed is never registered again).
+- `doctor` checks each one: registered at user scope, and it starts (`claude mcp get`, which
+  starts it once). A server registered somewhere else — a project's `.mcp.json`, or the local
+  scope — is a ✗ naming what wins over yours. No Tavily key is a `·` line, never a failure.
+- **A project's own servers are the project's.** The plugin never knows them: they belong in
+  that project's own configuration, where the project can keep them true.
+
+## Sessions
+
+A power cut or a closed terminal window loses the tabs and the running programs, never the
+sessions: Claude Code writes every session to disk as it goes
+(`~/.claude/projects/<folder>/<session id>.jsonl`), and `claude --resume <id>` brings one back
+with its history. `cc-smart-dev-kit sessions` lists this project's sessions of the last two
+days by name and worktree, with the command that resumes each, and saves one Warp tab per
+session (Warp's "+" menu → `Claude · <name>`).
+
+`cc-smart-dev-kit sessions --open` brings back the sessions that were **open when the machine
+last went down, or when their window closed**, and that nobody has resumed since:
+
+- a **power cut or a crash** kills a session: its file never gets Claude Code's end marker
+  (`cost-state`). Such a session, last written shortly before the machine started, is
+  reopened.
+- a **clean shutdown** closes a session the same way `/exit` does, so the marker alone cannot
+  tell. The time can: several sessions that closed in the same moment before the machine
+  started were closed by the shutdown. One session alone looks exactly like `/exit`, and is
+  left alone.
+- a **closed window** closes its sessions the same way; there the sign is several sessions
+  that closed together since the machine started.
+
+On Linux without Warp, `--open` opens each session in an XFCE Terminal window of its own
+(through `systemd-run --user` where there is one, so the window takes the desktop session's
+environment and opens over SSH too). A session already running is never opened again
+(`~/.claude/sessions/<pid>.json` is how that is known), and one `--open` has just opened is
+left alone for the next few minutes too (a marker in `~/.claude/cc-smart-dev-kit/` — a resumed
+session takes a moment to write to its file, and a quick second run must not open a second
+copy of it). With neither terminal it prints the resume command for each. `--dry-run` says
+what it would open and opens nothing.
+
 ## Worktrees
 
 A WorktreeCreate hook **replaces** Claude Code's own worktree creation, for sessions and
@@ -841,6 +995,43 @@ gets 500 s, the `setup` inside 540 s (the hook's own timeout is 600 s), and
 `git worktree remove` 50 s (that hook's is 60 s). On a timeout the message names the folder
 and how to finish by hand (`git worktree remove --force <folder>`, after checking that it
 holds nothing you need).
+
+### Clearing the finished ones: `cc-smart-dev-kit worktrees`
+
+`cc-smart-dev-kit worktrees` lists every worktree of the repo after fetching
+`origin/<base>`, with what is left on each and which are finished. A worktree is **finished**
+when removing it can lose nothing and disturb no one:
+
+- no running Claude session works in it (`~/.claude/sessions/<pid>.json`);
+- no program runs from inside it, and none works in it — a dev server started there is one;
+- no Docker container, running or stopped, mounts files from inside it;
+- every commit on it is on `origin/<base>`;
+- git has not touched it for an hour (a worktree made a minute ago is not finished: its
+  session has not moved into it yet);
+- nothing in it is changed or untracked, and it holds no ignored file that cannot come back
+  (an edited `.env.local`, a notes file, a key). Dependency folders, build output, caches and
+  a file the main checkout still holds byte for byte do not block.
+
+`--clean` removes the finished ones, with their branches (a branch goes only when every one
+of its commits is on the base). `--remove <path>` removes one now — for a session that has
+just finished in it, so without the one-hour wait. Both run in the main checkout only (a
+session working in a worktree leaves it first) and one at a time; a second run says so and
+does nothing. A worktree whose folder is gone is named, and `git worktree prune` forgets it.
+
+**A worktree on a removable disk (a USB drive, a network share): lock it** —
+`git worktree lock <folder>`. A LOCKED worktree is never taken, so a folder that is simply
+not connected costs nothing. An UNLOCKED one whose folder is missing reads as gone, and
+`--clean` prunes it (`git worktree prune` forgets it for good: when the disk comes back, git
+sees an ordinary folder) and deletes its branch when the base holds every commit on it. Its
+`forgot …` line says to lock it next time.
+
+The base branch comes from the project's `cc-smart-dev-kit.json` `worktrees.base`; without that
+file (or without the field) the remote's default branch (`origin/HEAD`), else `main`, with
+one line saying which was used.
+
+A session's own worktree is normally cleared by the session: the after-merge note after a
+merge, and the SessionStart note when finished worktrees are left behind, both point at
+`cc-smart-dev-kit worktrees --clean`.
 
 ## A project's `.claude/cc-smart-dev-kit.json`
 

@@ -29,6 +29,18 @@ import {
   warpPluginSteps,
   warpRemoveCommands,
 } from "../machine/warp";
+import { type McpRecord, markMcpServerPending, readMcpRecords } from "../mcp/records";
+import {
+  applyMcpServers,
+  type ClaudeRun,
+  planMcpServers,
+  readUserServers,
+  recordApplied,
+  unreadableUserConfigNote,
+} from "../mcp/register";
+import { installSerenaContext, serenaContextSource } from "../mcp/serena-context";
+import { mcpServers } from "../mcp/servers";
+import { readTavilyKey, TAVILY_ENV_KEY } from "../mcp/tavily";
 import {
   AUTO_MODE_PATH,
   type AutoModeSource,
@@ -45,9 +57,9 @@ import {
 } from "../setup/instructions";
 import { installLauncher, LAUNCHER_NAME } from "../setup/launcher";
 import { withLock } from "../setup/lock";
-import { applyManagedJson, formatKeyPath, type KeyPath } from "../setup/managed-json";
+import { applyManagedJson, formatKeyPath, type KeyPath, ownedKeys } from "../setup/managed-json";
 import { applyTmuxLine, TMUX_LINE, TMUX_NOW_COMMAND, tmuxServerRunning } from "../setup/tmux";
-import { atomicWrite } from "../setup/write";
+import { atomicWrite, realTarget } from "../setup/write";
 import { type CliPaths, tildify } from "./paths";
 
 /** The key that turns on auto-update for the cc-smart-dev-kit marketplace. Claude Code's install leaves it out. */
@@ -76,12 +88,28 @@ export interface SetupOptions {
   instructions: boolean | null;
   /** The plugin's `instructions` folder, beside `dist/`. */
   instructionsSource: string;
+  /** The plugin's `serena` folder, beside `dist/`: the context Serena is registered with. */
+  serenaSource: string;
   /** `--statusline`: set the status line without asking. */
   statusline: boolean;
+  /** The environment: the Tavily key may come from it (`TAVILY_API_KEY`). */
+  env: Record<string, string | undefined>;
 }
 
 function show(value: unknown): string {
   return value === undefined ? "(none)" : JSON.stringify(value);
+}
+
+/** The settings key setup may write the Tavily key into (an owned secret key). */
+export const TAVILY_KEY_PATH: KeyPath = ["env", TAVILY_ENV_KEY];
+
+/**
+ * A value as setup prints it: the Tavily key is never shown, only that it is one (and
+ * `(none)` when it is gone).
+ */
+function shownValue(path: KeyPath, value: unknown): string {
+  if (formatKeyPath(path) !== formatKeyPath(TAVILY_KEY_PATH)) return show(value);
+  return value === undefined ? "(none)" : "(a secret)";
 }
 
 /** True when settings.json knows the cc-smart-dev-kit marketplace (written by `claude plugin install`). */
@@ -136,6 +164,10 @@ interface Managed {
   instructions: { where: InstructionsPaths; choice: boolean | null };
   /** Set the status line (`--statusline`, or a "yes" to the question). */
   statusline: boolean;
+  /** Install Serena's context beside the plugin's data (the file its registration names). */
+  serena: boolean;
+  /** The Tavily key to write into the settings as an owned secret, or null. */
+  tavilyKey: null | string;
   /** Add tmux's passthrough line (`tmux` is installed, so the person uses tmux). */
   tmuxLine: boolean;
 }
@@ -155,6 +187,7 @@ function applySetup(
   paths: CliPaths,
   managed: Managed,
   dryRun: boolean,
+  serenaSource: string,
 ): { changes: string[]; info: string[]; notes: string[] } {
   const short = (path: string) => tildify(path, paths.home);
   const changes: string[] = [];
@@ -169,24 +202,56 @@ function applySetup(
     changes.push(`${mark} ${short(launcher.path)}: launcher ${launcher.outcome}`);
   }
 
+  const set: (readonly [KeyPath, unknown])[] = [[AUTO_UPDATE_KEY, true]];
+  if (managed.statusline) set.push([STATUSLINE_KEY, statuslineSetting(paths)]);
+  if (managed.tavilyKey !== null) set.push([TAVILY_KEY_PATH, managed.tavilyKey]);
+  // The key's source moved: the environment has it now (or there is no key at all), so the
+  // key cc-smart-dev-kit wrote into the settings goes — the person's environment must not be
+  // shadowed by a stale copy. Only while the key still holds what cc-smart-dev-kit wrote:
+  // one the person changed is theirs (`applyManagedJson`).
+  const tavilyOwned =
+    managed.tavilyKey === null &&
+    ownedKeys(paths.stateDir, realTarget(paths.settingsFile)).some(
+      (path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH),
+    );
   const settings = applyManagedJson({
     file: paths.settingsFile,
     stateDir: paths.stateDir,
-    set: managed.statusline
-      ? [
-          [AUTO_UPDATE_KEY, true],
-          [STATUSLINE_KEY, statuslineSetting(paths)],
-        ]
-      : [[AUTO_UPDATE_KEY, true]],
+    // The Tavily key is a secret: errors say "a secret", owned.json keeps only its SHA-256,
+    // and the settings file is left at mode 600.
+    secret: (path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH),
+    set,
+    ...(tavilyOwned ? { remove: [TAVILY_KEY_PATH] } : {}),
     dryRun,
   });
   for (const change of settings.changes) {
     changes.push(
-      `~ ${short(settings.file)}: ${formatKeyPath(change.path)}: ${show(change.before)} -> ${show(change.after)}`,
+      `~ ${short(settings.file)}: ${formatKeyPath(change.path)}: ${shownValue(change.path, change.before)} -> ${shownValue(change.path, change.after)}`,
     );
   }
   for (const skip of settings.skipped) {
     info.push(`  ${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
+  }
+
+  const serenaLines: { mark: "+" | "~" | "!"; text: string }[] = [];
+  if (managed.serena) {
+    const serena = installSerenaContext(
+      serenaSource,
+      paths.serenaContextFile,
+      paths.stateDir,
+      dryRun,
+    );
+    if (serena.outcome === "missing") {
+      serenaLines.push({
+        mark: "!",
+        text: `Serena's context file is missing from the plugin (${serenaSource}): Serena was not registered. Reinstall the plugin.`,
+      });
+    } else if (serena.outcome !== "unchanged") {
+      serenaLines.push({
+        mark: serena.outcome === "created" ? "+" : "~",
+        text: `${short(serena.file)}: Serena's context (project switching on)`,
+      });
+    }
   }
 
   if (managed.autoMode !== null) {
@@ -230,6 +295,9 @@ function applySetup(
     ...(optOut ? removeInstructions(where, dryRun) : installInstructions(where, dryRun, VERSION)),
   ];
   const notes: string[] = [];
+  for (const line of serenaLines) {
+    (line.mark === "!" ? notes : changes).push(`${line.mark} ${line.text}`);
+  }
   for (const line of instructions) {
     (line.mark === "!" ? notes : changes).push(`${line.mark} ${short(line.file)}: ${line.what}`);
   }
@@ -544,6 +612,11 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       `  tmux is running: run \`${TMUX_NOW_COMMAND}\` to apply the line now (a restart works too)`,
     );
   }
+  // The Tavily key: from the environment (nothing to write), from the key file (an owned
+  // secret key in the settings, so Claude Code's "${TAVILY_API_KEY}" gets it), or missing
+  // (the server is skipped, with the plan's note). A key is never printed.
+  const tavily = readTavilyKey(paths, options.env);
+  const serenaSource = serenaContextSource(options.serenaSource);
   const managed: Managed = {
     claudeMem: claudeMem === "not-installed" ? null : claudeMem,
     autoMode: autoMode?.wanted ?? null,
@@ -551,19 +624,67 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       where: instructionsPaths(paths, options.instructionsSource),
       choice: options.instructions,
     },
+    serena: existsSync(serenaSource),
     statusline: options.statusline,
+    tavilyKey: tavily.source === "file" ? tavily.value : null,
     tmuxLine,
+  };
+
+  // The MCP servers: what setup registered last time, what Claude Code holds now, and what to
+  // do about each. A server of the person's own is never taken over (`register.ts`); when
+  // Claude Code's own config cannot be read, nothing is touched at all.
+  let records: Record<string, McpRecord> = {};
+  try {
+    records = readMcpRecords(paths.stateDir);
+  } catch (error) {
+    report.notes.push(
+      `! the MCP servers cc-smart-dev-kit registered cannot be read back (${messageOf(error)}): they are registered again`,
+    );
+  }
+  const liveServers = readUserServers(paths.userConfigFile);
+  const mcpPlan = planMcpServers(
+    mcpServers({
+      bunx: machine.which("bunx") ?? "bunx",
+      launcher: join(paths.binDir, LAUNCHER_NAME),
+      serenaContextFile: paths.serenaContextFile,
+      tavily: tavily.source === "none" ? { key: false, reason: tavily.reason } : { key: true },
+    }),
+    records,
+    liveServers,
+  ).map((entry) =>
+    // A registration that names a context file which is not in place would replace a Serena
+    // that starts with one that does not: the existing registration is left as it is.
+    entry.name === "serena" && !managed.serena
+      ? {
+          ...entry,
+          action: "skip" as const,
+          json: "",
+          note: "! serena: the plugin's context file is missing, so your existing registration is left as it is",
+        }
+      : entry,
+  );
+  // One line, not one per server: nothing was added, removed, updated or forgotten.
+  if (liveServers === null) {
+    report.notes.push(
+      unreadableUserConfigNote(short(paths.userConfigFile), Object.keys(records).sort()),
+    );
+  }
+  const claudeRun: ClaudeRun = (argv) => {
+    const result = machine.run(argv);
+    return { ok: result.exitCode === 0, out: result.output };
   };
 
   // A read-only pass: a key the user set (autoUpdate: false) throws ForeignKeyError here,
   // before anything is asked, written or run, the launcher and the state folder included.
-  const planned = applySetup(paths, managed, true);
+  const planned = applySetup(paths, managed, true, serenaSource);
 
   if (options.dryRun) {
+    const wouldRegister = applyMcpServers(mcpPlan, claudeRun, machine.which, true, () => {});
     const changes = [
       ...warp.commands.map((command) => `$ ${showCommand(command)}`),
       ...claudeSteps.map((step) => step.line),
       ...(warp.removeShortcuts ? removeWarpDesktopEntries(paths, true) : []),
+      ...wouldRegister.wouldRun,
       ...planned.changes,
     ];
     // The entries above are left out in a run with no terminal, whatever the flags: the
@@ -576,7 +697,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       {
         changes,
         info: [...warp.info, ...planned.info, ...report.info],
-        notes: [...report.notes, ...planned.notes],
+        notes: [...report.notes, ...wouldRegister.notes, ...planned.notes],
       },
       "Nothing to change.",
     );
@@ -624,6 +745,16 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   for (const line of steps.lines) (line.startsWith("!") ? report.notes : report.changes).push(line);
   if (!steps.ok) ok = false;
 
+  // The MCP servers, at user scope, through Claude Code's own `claude mcp` commands. An
+  // update marks its record before its own `remove` runs, so a crash in between is known
+  // the next time (`markMcpServerPending`).
+  const applied = applyMcpServers(mcpPlan, claudeRun, machine.which, false, (name) => {
+    markMcpServerPending(paths.stateDir, name);
+  });
+  report.changes.push(...applied.changes);
+  report.notes.push(...applied.notes);
+  if (!applied.ok) ok = false;
+
   // The first run: claude-mem came with a companion step just now, so plan it again.
   if (claudeMem === "not-installed" && claudeSteps.length > 0) {
     const again = await decideClaudeMem(paths, false, report);
@@ -635,7 +766,10 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     () => {
       const shortcuts =
         warp.removeShortcuts && warpDone ? removeWarpDesktopEntries(paths, false) : [];
-      const files = applySetup(paths, managed, false);
+      const files = applySetup(paths, managed, false, serenaSource);
+      // Which servers setup registered: cc-smart-dev-kit's own state, like the lock — not a
+      // user file, so no backup (restore reads it to take exactly those back).
+      recordApplied(paths.stateDir, applied, new Date().toISOString());
       // cc-smart-dev-kit's own state, like the lock: not a user file, so no backup.
       if (declined) atomicWrite(statuslineDeclinedFile(paths.stateDir), "no\n", 0o600);
       return { changes: [...shortcuts, ...files.changes], info: files.info, notes: files.notes };

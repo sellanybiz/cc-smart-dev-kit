@@ -634,7 +634,9 @@ worktrees).
 | Hook | Event (matcher) | On when | What it does |
 |---|---|---|---|
 | `git-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks before a force-push (git's abbreviations included: `--forc`), a push to a protected branch (`protectedBranches`, default `main`), `push --all`/`--mirror`, a branch deleted on the remote (`git push origin :x`, `-d`/`--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that discards changes, `branch -D`, `stash clear` and an unnamed `stash drop`, and (with `worktrees`) a bare `git stash` / `stash pop`. One shell lexer (`shell-command.ts`) reads each command of a line; quoted text, here-docs and comments are data, and shell keywords, wrappers (`timeout 60 git push -f`, `env -i sudo -u me …`, `xargs …`), the here-doc a shell reads as its script, and the text piped into one are read through. Known limits: a git alias, `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file. "Ask", never "deny": the person may mean it. |
-| `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit) | `worktrees.guardMainFolder` | Denies an edit of a file in the main checkout itself, with the way into a worktree. |
+| `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit, Serena's edit tools) | `worktrees.guardMainFolder` | Denies an edit of a file in the main checkout itself, with the way into a worktree. A Serena edit names its file relative to the folder Serena has ACTIVE, so it is placed by `serena-root`'s record (else by `CLAUDE_PROJECT_DIR`, the folder the session started in); a file it cannot place is an `ask`, never a pass. |
+| `serena-root` | PreToolUse, PostToolUse (`mcp__serena__activate_project`), SessionStart | `worktrees.guardMainFolder` | Records which folder Serena edits for this session (`<stateDir>/serena-root/<session id>.txt`): "unknown" from the moment an activation is allowed until Serena's own answer names the folder, so the record is only ever a folder Serena confirmed — and the guard ASKS while it is unknown. It refuses an activation that names a project by NAME or a folder outside this repo and its worktrees. On a broken cc-smart-dev-kit.json it records nothing and says so. |
+| `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the shared browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
 | `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists | Denies a message to a session that works outside this repo (from Claude Code's session records). |
 | `agent-guard` | PreToolUse (Agent, Task) | **machine-wide** | The model a launch really runs on, and the owner's model rules (2026-10-16): no `model`/no `effort` → deny; an affordable slot needs `effort: "max"`; Opus only for a review or with an `Opus reason:` word; Fable only read-only, with a `Fable reason:` word, as an **ask** (never build). Every Opus/Fable launch is recorded with its reason. § The Agent guard. |
 | `job-route` | PreToolUse (Bash) | `jobs.route` | A heavy command is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301). § The job route. |
@@ -784,9 +786,10 @@ why it is opt-in per project.
 on one package manager, the local database wipe guard, the heavy-job guard, a pull request
 into a release branch, the main checkout following the base branch after each merge
 (installs and migrations), the notes about one project's dev notes, migrations and env
-files, and the claude-mem start-folder note. **Waiting for Phase 4:** the Serena root
-record (Serena's edits in the main-folder guard) and the Playwright output folder, both tied
-to MCP servers the plugin registers in Phase 4. **Not ported:** the Windows helper that
+files, and the claude-mem start-folder note. **Ported in Phase 4, with the MCP servers the
+plugin registers:** the Serena root record (Serena's edits in the main-folder guard — the
+`serena-root` hook, above) and the Playwright output folder (the `playwright-output` hook).
+**Not ported:** the Windows helper that
 removes a worktree after the session lets go of it (the plugin is macOS and Linux for now);
 and, from the older notification script, the click on a notification raising the terminal
 window and picking its tab (xdotool, AT-SPI and a per-session DBus helper — one desktop's
@@ -848,12 +851,143 @@ The worktree engine is not part of the switch, because the project wires it itse
 with its own worktree hooks moves by replacing those lines with the engine's, in one commit
 (README § Worktrees). `cc-smart-dev-kit doctor` reports a second WorktreeCreate left behind.
 
+## The shared browser
+
+One Google Chrome for the whole machine (`src/browser/`, rules in `.claude/rules/browser.md`):
+
+- **One profile**, `~/.local/share/cc-smart-dev-kit/playwright`, in the plugin's data folder:
+  the folder that outlives a plugin version. Sign in there once and every session — now, and
+  after an update — is signed in. A login copied into a second browser does not survive
+  (a site that rotates its refresh token logs an old copy out everywhere), which is why the
+  plugin never gives a session a profile of its own.
+- **One OS user per machine, and that is by design** (`shared-browser.ts`,
+  `cdp-tab-filter-server.ts`; README § The shared browser says the same in plain words). The
+  profile and the output folder are made 0700, and an existing looser one is tightened (with
+  one line saying so), which keeps other OS users out of the signed-in cookies. Two doors
+  stay open: Chrome's debug port answers on 127.0.0.1 with no authentication and
+  `/json/version` hands its WebSocket URL to any local process of any user, and the start-lock
+  port is shared the same way. A second person needs their own account on their own machine.
+  The tab filter's port is the one door that closes: its endpoint carries a random token,
+  every other path and every connection with an `Origin` is refused, and the token reaches the
+  MCP in an environment variable — never in `argv`, which every user can read from `/proc`.
+  It stops a web page and a blind scan; it cannot stop a process of the same user, which can
+  read that environment.
+- **The launcher** (`cc-smart-dev-kit browser mcp`, registered as the `playwright` MCP server)
+  starts the pinned `@playwright/mcp` with `PLAYWRIGHT_MCP_CDP_ENDPOINT` pointing at a **tab
+  filter** it opens on a free local port. Stock Playwright, attached to a running Chrome,
+  adopts every page in it (microsoft/playwright#42961, no fix upstream); the filter decides
+  what one session sees, and is also what closes that session's windows when its client goes.
+- **The filter is a pure module** (`cdp-tab-filter.ts`) with a socket layer over it
+  (`cdp-tab-filter-server.ts`): one instance per connection, so command ids and session ids
+  pass through unchanged. Its rules, and why each exists, are in the file's header; the
+  refusals (browser-wide commands, a cookie clear, raising a window) name why in words a
+  person reads. Downloads are turned on in the shared context, which Playwright does not do
+  over CDP.
+- **The socket layer runs on Bun's own WebSocket**, server and client. A message limit can be
+  set on the server side only, and the client side carried a 30 MB message in a live
+  measurement (`claude-code-contract.md` § Bun) — so no WebSocket package is needed and the
+  plugin keeps its one runtime dependency.
+- **Where a named file goes.** `@playwright/mcp` resolves a file the CALLER names
+  (`filename: "home-dark.png"`) against the folder the MCP process was started in — proved
+  live on 0.0.83 — so a named screenshot would land beside the project's files. The
+  `playwright-output` hook (PreToolUse on `mcp__playwright__.*`) rewrites a relative name
+  into `browserOutputDir` first, with `updatedInput`, and REFUSES a relative name with a `..`
+  segment (the launcher's `--allow-unrestricted-file-access` means the server itself no longer
+  stops one, and that switch is what lets the server take an absolute path from any worktree);
+  an absolute path is left as the caller wrote it. The hook answers only while the live
+  `playwright` registration is the one setup recorded — a `playwright` of the person's own has
+  its own output folder, and a hook that rewrote its files would be the bug.
+- **The file picker** (`picker.ts`): the MCP loads it for every tab (`--init-page`), and it
+  holds the picker for Claude only while a browser call is running (plus two seconds), so a
+  person's click opens the normal picker. It reads one private field of playwright-core, says
+  so once and changes nothing when that field is gone, and never throws into the MCP. It is
+  built as its own bundle (`src/entries/browser-picker.ts`) and written beside the profile:
+  a path inside the plugin's version folder is deleted by an update while a session's MCP is
+  still running, and the MCP loads that file again for every tab.
+- **Nothing here reads the environment.** The profile, the output folder and the lock port are
+  arguments, so a test points them at a temp folder; `browser check` passes a throwaway
+  profile and its own free lock port, so the profile a person signed in to is never touched.
+- **`browser check`** is the end-to-end proof: two real launchers, each with a real Playwright
+  MCP, on one throwaway Chrome — a sign-in in one session counting in the other, tabs at the
+  same moment, popups, a full-page screenshot, an upload through the held picker, a download,
+  `browser_close` closing only that session's windows, and the Chrome outliving both. It runs
+  after a pin move, and before a release that touches `src/browser/`; the unit tests keep the
+  filter's rules, and only this checks them against the real pair.
+
+## Sessions and worktrees
+
+Two commands that read what Claude Code and git already keep, and change only what a person
+asked for (`src/sessions/`, `src/worktrees/`):
+
+- **`cc-smart-dev-kit sessions`** reads Claude Code's own session files
+  (`<config folder>/projects/<project folder>/*.jsonl`): the name is the last `agent-name` or
+  `ai-title` entry, the folder and worktree come from the last `cwd`, `relocated` or
+  `worktree-state` entry, and a session that ended cleanly ends with `cost-state`. Nothing is
+  tracked on the side, so a crash cannot leave half a record — except `--open`'s own marker:
+  one small file per session it just opened (a few minutes, in the state folder), because a
+  resumed session takes a moment to write to its file and a quick second run would otherwise
+  open a second copy. `--open` reopens what was open
+  when the machine last went down or a window closed; the whole rule, and why one session
+  alone cannot be told from `/exit`, is in the file's header. Which terminal does the opening
+  is picked from the machine (Warp wins where it is; XFCE Terminal is Linux's fallback), and
+  a session already running is never opened twice.
+- **`cc-smart-dev-kit worktrees`** judges every worktree of the repo against
+  `origin/<base>`: the verdict is a pure function of the facts (`verdict.ts`), so every reason
+  to keep a worktree is one testable rule, and the facts themselves (git's list, the running
+  sessions, Docker's mounts, the programs using it) come from `machine-facts.ts` and
+  `scan.ts`. `--clean` and `--remove` hold a port as a lock (`ports.ts`), move a worktree
+  aside before deleting it, and delete a branch only when the base holds every commit on it.
+  The plugin's own leftovers hook uses the same verdict; the dev-server probe the project
+  this came from had (one project's `.dev-server.json` and ports) is **not** ported — the
+  general rule is a program running from the worktree, or working in it.
+
 ## MCP servers at user scope
 
-`setup` registers MCP servers (later: the shared browser, Serena) at user scope. The
-plugin does not serve them. A server served from a plugin gets a new tool-name prefix,
-which would break every permission rule, hook matcher and agent tool list that names
-`mcp__<server>__*`. Registered by `setup`, the names stay as they are.
+`setup` registers MCP servers at user scope, through Claude Code's own
+`claude mcp add-json --scope user` (`src/mcp/`). The plugin does not serve them: a server
+served from a plugin gets a new tool-name prefix, which would break every permission rule,
+hook matcher and agent tool list that names `mcp__<server>__*`; and a server from a project
+file or the "local" scope is stopped by Claude Code as soon as the session's folder changes,
+which every session that works in a worktree does. Registered for the user, the names stay.
+
+- **Four servers**: `playwright` (the shared browser above), `serena` (with the plugin's own
+  context, so a session can point Serena at its worktree), `sequential-thinking`, and
+  `tavily-websearch`. Each version is pinned in `src/mcp/versions.ts`; the file's header says
+  why, and how to move one. A project's own servers stay in that project.
+- **Serena's context** is a whole file cc-smart-dev-kit owns, installed in the data folder
+  (`<dataDir>/serena/contexts/worktree.yml`), because the registration names its path and a
+  version folder is deleted by an update. It is Serena's own `claude-code` context with
+  `single_project: false`: with the default, `activate_project` is hidden and Serena could
+  never follow a session into its worktree.
+- **The Tavily key is never written into a registration or printed.** The header carries
+  `Bearer ${TAVILY_API_KEY}`, which Claude Code fills in at connect time; the key itself comes
+  from the environment or from a 0600 key file, which setup copies into the `env` of the
+  settings as an owned **secret** key (masked in output, a hash in `owned.json`, the file left
+  at mode 600 — the machinery `src/setup/managed-json.ts` already had for claude-mem's key).
+  A key file others can read is refused with the command that fixes it, never with the key in
+  it; without a key the server is skipped with a note — and a recorded Tavily server of ours
+  is taken back, and the owned `env` key removed (only while it still holds what setup wrote),
+  so a key that moved to the environment (or went away) does not leave a stale copy behind.
+- **What setup registered is recorded** (`<stateDir>/mcp-servers.json`: the name, the exact
+  JSON, when, and whether an update is in flight), so `restore` removes exactly that: each
+  server that still holds what setup wrote (`claude mcp remove <name> --scope user`), then the
+  record, Serena's context file and the Tavily `env` key. A server the person re-pointed — or
+  removed — is theirs and stays: the record is forgotten, and a later restore does not try it
+  again (a `·` line says the exact command that adds it back). A server of the person's own
+  under one of these names is never taken over; setup says how to hand it back.
+- **An update is marked while it runs.** A pin move is `claude mcp remove` then `add-json`:
+  the record is marked `pending` before the remove and cleared only after the add succeeds, so
+  a server that is registered no more WHILE the mark is set is setup's own half-finished work
+  and is registered again — never mistaken for a server the person took away. Reading "not
+  registered" out of a config that did not read is impossible: when
+  `<config dir>/.claude.json` cannot be read, setup and restore touch nothing at all and keep
+  every record, with one line saying `cannot read <file>: nothing changed`.
+- **`doctor` checks each one**: registered at user scope (read from Claude Code's own config,
+  never written by hand), and it starts (`claude mcp get`, which starts it once), with the
+  scope checked too — a project `.mcp.json` or a local copy wins over the user's, and a
+  session that moves into a worktree would lose it. No Tavily key is a `·` line, never a
+  failure.
+
 
 ## Auto mode reads only user settings
 

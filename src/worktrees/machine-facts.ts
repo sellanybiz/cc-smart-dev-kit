@@ -1,0 +1,319 @@
+/**
+ * The facts about the machine that `worktrees --clean` judges: which Docker containers use a
+ * worktree's files, and which programs run from inside it.
+ *
+ * WHY A PROCESS MATTERS
+ *   Removing a worktree a program is using loses that program's files under it — a dev server
+ *   started there, an editor, a background command — and on Windows the removal stops half
+ *   way and leaves a folder nobody tracks (measured in the project this was ported from,
+ *   2026-10-05: a git hook was running `lefthook.exe` from inside the worktree being removed).
+ *   So the command asks, and keeps the worktree while something uses it.
+ *
+ *   Two probes, because they see different things:
+ *   - the COMMAND LINES of the running processes (`ps -ww -o pid=,args=` on macOS and Linux,
+ *     `Get-CimInstance Win32_Process` on Windows): a program STARTED FROM a file inside the
+ *     worktree names that file;
+ *   - the WORKING FOLDER of each process (Linux only, `/proc/<pid>/cwd`): a dev server started
+ *     with `cd <worktree> && …` names the worktree nowhere in its command line.
+ *
+ *   The tools this scan runs itself are left out (`git`, `docker`, `ps`, `powershell`): they
+ *   are short-lived children of this command, and a `git status` in a worktree would
+ *   otherwise keep it forever.
+ *
+ * Windows has no `ps` and no `/proc`: there the command lines alone are read, as the project
+ * this came from did — and a folder a program still uses cannot be renamed there anyway, so
+ * the move that starts a removal fails and nothing is touched.
+ */
+import { readdirSync, readlinkSync } from "node:fs";
+import { platform } from "node:os";
+import { IGNORE_CASE, isInside, realPath } from "../hooks/git";
+
+/** How long one docker command may take. Docker Desktop that is still starting can hang. */
+const DOCKER_TIMEOUT_MS = 5000;
+
+/** How long listing the running programs may take. */
+const PROGRAMS_TIMEOUT_MS = 15_000;
+
+/** A program running on this machine, and how it is known: its command line, or its folder. */
+export interface RunningProgram {
+  /** The file it was started from, when the command line says (null: only its folder is known). */
+  path: null | string;
+  pid: number;
+  /** The folder it works in, when that could be read (Linux only); absent when unknown. */
+  cwd?: string;
+}
+
+/**
+ * What `docker inspect --format` is asked for: each container's name and mounts, one JSON
+ * object a line. Only these two — a container's full record also carries its environment,
+ * which holds keys.
+ */
+export const CONTAINER_FORMAT = '{"name":{{json .Name}},"mounts":{{json .Mounts}}}';
+
+/** A Docker container, running or stopped, and the sources of its bind mounts. */
+export interface ContainerMounts {
+  /** Without the `/` Docker puts in front. */
+  name: string;
+  /** Each bind mount's source, in the form Docker reports it. */
+  sources: string[];
+}
+
+/**
+ * Reads the answer to `docker inspect --format CONTAINER_FORMAT`. Only bind mounts count: a
+ * named volume lives in Docker's own storage, never in a worktree. Null when a line does not
+ * read — then nobody can say which files the containers use.
+ */
+export function parseContainerMounts(output: string): ContainerMounts[] | null {
+  const containers: ContainerMounts[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    if (line.trim() === "") continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      return null;
+    }
+    if (typeof value !== "object" || value === null) return null;
+    const { mounts, name } = value as Record<string, unknown>;
+    if (typeof name !== "string") return null;
+    if (mounts !== null && !Array.isArray(mounts)) return null;
+    const listed: unknown[] = mounts ?? [];
+    const sources: string[] = [];
+    for (const mount of listed) {
+      if (typeof mount !== "object" || mount === null) return null;
+      const { Source, Type } = mount as Record<string, unknown>;
+      if (Type === "bind" && typeof Source === "string") sources.push(Source);
+    }
+    containers.push({ name: name.replace(/^\//, ""), sources });
+  }
+  return containers;
+}
+
+/**
+ * A bind mount's source as a path on this machine. Docker keeps the form it was given
+ * (docker/for-win#13432). On Windows that is mostly `D:\a\b`, but a drive can also come as
+ * `/d/a/b` (Git Bash), `/mnt/d/a/b` (WSL), or `/run/desktop/mnt/host/d/a/b` and
+ * `/host_mnt/d/a/b` (Docker Desktop's own view of the drive). Elsewhere the source is the path.
+ */
+export function hostPath(source: string, windows: boolean): string {
+  if (!windows) return source;
+  const drive = /^\/(?:run\/desktop\/mnt\/host\/|host_mnt\/|mnt\/)?([a-zA-Z])(\/.*)?$/.exec(source);
+  if (drive?.[1] === undefined) return source;
+  return `${drive[1].toUpperCase()}:${drive[2] ?? "/"}`;
+}
+
+/**
+ * The containers that mount the worktree or something inside it, by name. Removing the folder
+ * takes their files away, and Docker cannot start them again. A container that mounts a
+ * folder ABOVE the worktree does not count: its mount survives, and counting it would keep
+ * every worktree under that folder for good.
+ *
+ * Both sides are compared as REAL paths: a worktree may be reached through a symlink — `git
+ * worktree list` prints the path it was made with — while Docker reports the physical one,
+ * and the comparison must see them as one place.
+ */
+export function containersUsing(
+  worktree: string,
+  containers: ContainerMounts[],
+  ignoreCase = IGNORE_CASE,
+): string[] {
+  const real = realPath(worktree);
+  return containers
+    .filter((container) =>
+      container.sources.some((source) =>
+        isInside(realPath(hostPath(source, ignoreCase)), real, ignoreCase),
+      ),
+    )
+    .map((container) => container.name);
+}
+
+/** `<pid><tab><file>` lines, the shape `ps` and PowerShell are asked for. Others are skipped. */
+export function parsePrograms(lines: string): RunningProgram[] {
+  const programs: RunningProgram[] = [];
+  for (const line of lines.split(/\r?\n/)) {
+    const tab = line.indexOf("\t");
+    if (tab === -1) continue;
+    const pid = Number(line.slice(0, tab).trim());
+    const path = line.slice(tab + 1).trim();
+    if (Number.isInteger(pid) && pid > 0 && path !== "") programs.push({ path, pid });
+  }
+  return programs;
+}
+
+/** `<pid><space><the whole command line>` lines, the shape `ps -ww -o pid=,args=` prints. */
+export function parseCommandLines(lines: string): RunningProgram[] {
+  const programs: RunningProgram[] = [];
+  for (const line of lines.split(/\r?\n/)) {
+    const text = line.trim();
+    if (text === "") continue;
+    const space = text.indexOf(" ");
+    if (space === -1) continue;
+    const pid = Number(text.slice(0, space));
+    const path = text.slice(space + 1).trim();
+    // `ps` prints our own `ps` too; it names no worktree folder, so it falls out anyway.
+    if (Number.isInteger(pid) && pid > 0 && path !== "") programs.push({ path, pid });
+  }
+  return programs;
+}
+
+/**
+ * Does a command line name `folder` — the folder itself, or a path inside it? A command line
+ * is not a path, so the folder has to appear with a boundary after it: `/work/app-wt-x` in
+ * `/work/app-wt-x/server.ts` counts, and the same text in `/work/app-wt-xyz` does not.
+ */
+export function mentions(line: string, folder: string): boolean {
+  const form = (text: string) => text.replace(/\\/g, "/");
+  const inFolder = form(line);
+  const at = form(folder).replace(/\/+$/, "").toLowerCase();
+  const lower = inFolder.toLowerCase();
+  for (let index = lower.indexOf(at); index !== -1; index = lower.indexOf(at, index + 1)) {
+    const after = inFolder[index + at.length];
+    if (after === undefined || after === "/" || after === " " || after === "'" || after === '"') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The programs that use `worktree`: one started from a file inside it (its command line names
+ * it), or one whose working folder is inside it (Linux), each once, sorted by name. The tools
+ * this scan runs itself are left out.
+ *
+ * A worktree can be reached through a symlink: `git worktree list` prints the path it was made
+ * with, while `/proc/<pid>/cwd` — and a command line written from it — holds the physical one.
+ * So the working folder is compared as a real path on both sides, and a command line is
+ * matched against BOTH forms of the worktree.
+ */
+export function programsInside(
+  programs: RunningProgram[],
+  worktree: string,
+  ignoreCase = IGNORE_CASE,
+): string[] {
+  const ours = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
+  const real = realPath(worktree);
+  const forms = real === worktree ? [worktree] : [worktree, real];
+  const names = new Set<string>();
+  for (const program of programs) {
+    const named = program.path !== null && forms.some((form) => mentions(program.path ?? "", form));
+    const working = program.cwd !== undefined && isInside(realPath(program.cwd), real, ignoreCase);
+    if (!named && !working) continue;
+    const file = (program.path ?? "").split(/[\s"'`]/)[0] ?? "";
+    const base = file.replace(/^.*[\\/]/, "");
+    if (ours.has(base)) continue;
+    names.add(base === "" ? `pid ${String(program.pid)}` : base);
+  }
+  return [...names].sort();
+}
+
+/** Runs docker. Null when Docker is not installed; not ok when it fails or takes too long. */
+function docker(args: string[]): null | { err: string; ok: boolean; out: string } {
+  try {
+    const run = Bun.spawnSync(["docker", ...args], {
+      stderr: "pipe",
+      stdout: "pipe",
+      timeout: DOCKER_TIMEOUT_MS,
+    });
+    return {
+      err: run.stderr.toString().trim(),
+      ok: run.exitCode === 0,
+      out: run.stdout.toString().trim(),
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    return { err: String(error), ok: false, out: "" };
+  }
+}
+
+/**
+ * Every Docker container, running or stopped, with the sources of its bind mounts. A stopped
+ * one counts: Docker starts it again by itself, and a source that is gone by then breaks it
+ * (a local database stack once lost the files it mounts that way, after the worktree it had
+ * been started from was removed).
+ *
+ * None when Docker is not installed. "unknown" when it is installed but does not answer in
+ * time — Docker Desktop not started yet — and then nothing may be removed.
+ */
+export function dockerMounts(): "unknown" | ContainerMounts[] {
+  const listed = docker(["ps", "--all", "--quiet", "--no-trunc"]);
+  if (listed === null) return [];
+  if (!listed.ok) return "unknown";
+  const ids = listed.out.split(/\s+/).filter((id) => id !== "");
+  if (ids.length === 0) return [];
+  // A container removed between the two calls fails this one: the next run asks again.
+  const inspected = docker(["inspect", "--format", CONTAINER_FORMAT, ...ids]);
+  if (inspected === null || !inspected.ok) return "unknown";
+  return parseContainerMounts(inspected.out) ?? "unknown";
+}
+
+/** Prints `<pid><tab><file>` for every running program started from a file, in UTF-8. */
+const LIST_PROGRAMS =
+  "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " +
+  "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " +
+  'ForEach-Object { "$($_.ProcessId)`t$($_.ExecutablePath)" }';
+
+/** Every running process's working folder, from `/proc` (Linux), by pid. */
+function cwdOf(pid: number): string | undefined {
+  try {
+    return readlinkSync(`/proc/${String(pid)}/cwd`);
+  } catch {
+    // Another user's process, or one that ended: nothing to see.
+    return undefined;
+  }
+}
+
+/** The pids under `/proc`, as numbers. */
+function procPids(): number[] {
+  try {
+    return readdirSync("/proc")
+      .filter((name) => /^\d+$/.test(name))
+      .map(Number);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Every running program that could use a worktree, with what is known about each. "unknown"
+ * when they cannot be listed: then nothing may be removed.
+ *
+ * Linux reads both the command lines and each process's working folder; macOS reads the
+ * command lines (no `/proc`); Windows reads the executable paths through PowerShell, since a
+ * folder a program's file is in cannot be renamed there.
+ */
+export function runningPrograms(on: NodeJS.Platform = platform()): "unknown" | RunningProgram[] {
+  if (on === "win32") {
+    try {
+      const run = Bun.spawnSync(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", LIST_PROGRAMS],
+        { stderr: "pipe", stdout: "pipe", timeout: PROGRAMS_TIMEOUT_MS },
+      );
+      return run.exitCode === 0 ? parsePrograms(run.stdout.toString()) : "unknown";
+    } catch {
+      // PowerShell missing or not starting: the safe answer keeps every worktree.
+      return "unknown";
+    }
+  }
+  let lines: string;
+  try {
+    const run = Bun.spawnSync(["ps", "-ww", "-o", "pid=,args="], {
+      stderr: "pipe",
+      stdout: "pipe",
+      timeout: PROGRAMS_TIMEOUT_MS,
+    });
+    if (run.exitCode !== 0) return "unknown";
+    lines = run.stdout.toString();
+  } catch {
+    return "unknown";
+  }
+  const programs = parseCommandLines(lines);
+  if (on !== "linux") return programs;
+  for (const pid of procPids()) {
+    const cwd = cwdOf(pid);
+    if (cwd === undefined) continue;
+    const known = programs.find((program) => program.pid === pid);
+    if (known === undefined) programs.push({ cwd, path: null, pid });
+    else known.cwd = cwd;
+  }
+  return programs;
+}

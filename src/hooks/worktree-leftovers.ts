@@ -14,6 +14,17 @@
  * folder is gone is named too (`git worktree prune` forgets it). Nothing is removed here:
  * the note names them, and the person or the session removes them.
  *
+ * WHY NOT `verdict()` (`src/worktrees/verdict.ts`)
+ *   The command's verdict also checks the MACHINE's facts — the Docker containers mounting the
+ *   worktree, and the programs running from it (`machine-facts.ts`) — and this one does not: a
+ *   SessionStart hook must stay quick (the rules: no fetch, no probe that can wait seconds),
+ *   and listing containers and processes can take 5 s and 15 s when Docker is starting or `ps`
+ *   is slow. The two agree on everything else. The difference is safe because the note removes
+ *   NOTHING: it sends the person to `cc-smart-dev-kit worktrees --clean`, whose own judgment
+ *   (`scan.ts` → `verdict.ts`) asks the machine's facts again before anything goes. Keep them
+ *   in step: a new reason to keep a worktree belongs in `verdict.ts`, and in `judgeWorktree`
+ *   only when it can be worked out without a probe.
+ *
  * No fetch: a session start must stay quick, so `origin/<base>` is read as it is.
  */
 import { readFileSync, statSync } from "node:fs";
@@ -54,7 +65,14 @@ export function idleMinutes(worktree: string, now: number): number {
 
 export type Verdict = "finished" | "gone" | "kept";
 
-/** Whether one linked worktree can go. The slow `git status` is asked last. */
+/**
+ * Whether one linked worktree can go. The slow `git status` is asked last.
+ *
+ * The command's own judgment is `verdict()` (`src/worktrees/verdict.ts`), which also weighs
+ * the machine's facts (Docker containers, running programs). This one deliberately does not:
+ * a SessionStart hook must stay quick, and the note it builds removes nothing (the header
+ * above has the whole reason, and `verdict.ts` names this file back).
+ */
 export function judgeWorktree(
   repo: string,
   listed: ListedWorktree,
@@ -97,7 +115,7 @@ export function leftoversNote(
         : `${finished.length} finished worktrees are`;
     parts.push(
       `${count} left in this repo: ${names}. Each has every commit on origin/${base}, nothing uncommitted, no running session, and no git use for an hour. ` +
-        "Tell the user, and when they agree, remove each in the main checkout: `git worktree remove <folder>`, then `git branch -d <branch>`.",
+        "Tell the user, and when they agree, clear them in the main checkout with `cc-smart-dev-kit worktrees --clean` — it judges each one again, Docker containers and running programs included, before it removes anything.",
     );
   }
   if (gone.length > 0) {

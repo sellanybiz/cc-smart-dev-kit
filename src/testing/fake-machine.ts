@@ -41,6 +41,9 @@ export function showKeysOutput(...fingerprints: string[]): string {
 /** The plugin's real instructions folder: setup installs them as it does for a person. */
 const PLUGIN_INSTRUCTIONS = join(import.meta.dir, "..", "..", "plugin", "instructions");
 
+/** The plugin's real `serena` folder: setup installs its context as it does for a person. */
+const PLUGIN_SERENA = join(import.meta.dir, "..", "..", "plugin", "serena");
+
 /** Everything the test printed with console.log and console.error (`ERR ` first). */
 export const printed: string[] = [];
 
@@ -209,14 +212,22 @@ export function world(options: WorldOptions = {}) {
       machine,
       instructions: null,
       instructionsSource: PLUGIN_INSTRUCTIONS,
+      serenaSource: PLUGIN_SERENA,
       statusline: false,
+      // No environment of its own: a test that wants a key sets one through `extra`.
+      env: {},
       ...extra,
     });
-  /** Every call but the read-only questions about what is installed. */
+  /**
+   * Every call but the read-only questions about what is installed, and the MCP
+   * registrations (`claude mcp …`): a test about Warp or setup's files should not have to
+   * carry those lines. The MCP registrations are asserted in `src/mcp/register.test.ts` and
+   * `src/mcp/mcp.test.ts`.
+   */
   const calls = () =>
     (existsSync(log) ? readFileSync(log, "utf8") : "")
       .split("\n")
-      .filter((line) => !/^(dpkg-query --status|rpm -q |brew list )/.test(line))
+      .filter((line) => !/^(dpkg-query --status|rpm -q |brew list |claude mcp )/.test(line))
       .join("\n");
   return { home, paths, bin, staged, machine, questions, setup, calls };
 }

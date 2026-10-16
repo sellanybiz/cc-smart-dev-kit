@@ -1,5 +1,8 @@
 import { existsSync, statSync } from "node:fs";
+import { uptime } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { runBrowserCheck } from "../browser/check";
+import { installPicker, runBrowserMcp } from "../browser/launcher";
 import { COMMAND, VERSION } from "../build-info";
 import { oldBunRefusal } from "../cli/bun-check";
 import { runDoctor } from "../cli/doctor";
@@ -22,9 +25,13 @@ import { ALERT_WORKER_COMMAND, parseAlert, runAlert, spawnRunner } from "../hook
 import { runJobCommand } from "../jobs/commands";
 import { realMemoryFacts } from "../jobs/memory";
 import { realMachine } from "../machine/machine";
+import { serenaFolder } from "../mcp/serena-context";
+import { MCP_VERSIONS } from "../mcp/versions";
 import { runSearch } from "../search/command";
+import { runSessions } from "../sessions/command";
 import { instructionsFolder } from "../setup/instructions";
 import { LAUNCHER_NAME } from "../setup/launcher";
+import { runWorktrees } from "../worktrees/command";
 
 const HELP = `cc-smart-dev-kit ${VERSION} - set up and check the cc-smart-dev-kit plugin for Claude Code
 
@@ -101,6 +108,23 @@ Commands:
                      it again. Nothing restarts: restart the sessions to load it.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      cc-smart-dev-kit gateway --help lists them.
+  browser <command>  The shared browser. cc-smart-dev-kit browser mcp starts the Playwright
+                     MCP server on the ONE Chrome every session shares, through a filter that
+                     shows this session only its own windows (setup registers it as the
+                     "playwright" MCP server). browser check runs two real sessions on one
+                     throwaway Chrome and proves it end to end (--headless: no window).
+  sessions [--open] [--dry-run]
+                     This project's Claude Code sessions of the last two days, by name and
+                     worktree, with the command that resumes each. --open reopens every
+                     session that was open when the machine went down or its window closed
+                     (Warp tabs, or XFCE Terminal windows on Linux); --dry-run says what it
+                     would open and opens nothing.
+  worktrees [--clean] [--remove <path>] [--no-fetch]
+                     Every worktree of this repo: who works in it, and which are finished
+                     (every commit on origin/<base>, nothing uncommitted, no local files, no
+                     running session, no program or Docker container using it). --clean
+                     removes the finished ones with their branches; --remove <path> removes
+                     one now, without the one-hour wait. Both run in the main checkout only.
   job <command>      The queue for heavy jobs (type checks, test runs, builds):
                      run, status, kinds. cc-smart-dev-kit job --help lists them.
   search "<query>" [--max <n>] [--json]
@@ -131,14 +155,17 @@ The worktree engine is opt-in per project. To turn it on in a project, give its
 ${projectHookSettingsText()}`;
 
 /**
- * The router bundle beside this file (plugin/dist/router.js). Run from the source
- * (src/entries/cli.ts, in tests and development), the built plugin/dist/router.js.
+ * The plugin's other bundles beside this one (plugin/dist/<name>.js): the router, and the
+ * Playwright MCP's init page. Run from the source (src/entries/cli.ts, in tests and
+ * development), the repo's plugin/dist.
  */
+function distBundle(name: string): string {
+  const beside = join(import.meta.dir, name);
+  return existsSync(beside) ? beside : join(import.meta.dir, "..", "..", "plugin", "dist", name);
+}
+
 function routerBundle(): string {
-  const beside = join(import.meta.dir, "router.js");
-  return existsSync(beside)
-    ? beside
-    : join(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
+  return distBundle("router.js");
 }
 
 /**
@@ -261,6 +288,7 @@ async function main(argv: string[]): Promise<number> {
       }
       return runSetup(paths, {
         dryRun: rest.includes("--dry-run"),
+        env: process.env,
         yes: rest.includes("--yes"),
         warp: rest.includes("--warp"),
         removeWarp: rest.includes("--remove-warp"),
@@ -268,6 +296,7 @@ async function main(argv: string[]): Promise<number> {
         machine: realMachine(process.env, ask),
         instructions: off ? false : on ? true : null,
         instructionsSource: instructionsFolder(import.meta.dir),
+        serenaSource: serenaFolder(import.meta.dir),
         statusline: rest.includes("--statusline"),
       });
     }
@@ -312,6 +341,28 @@ async function main(argv: string[]): Promise<number> {
           machine: realMachine(process.env, null),
         },
         local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
+        mcp: {
+          run: (argv, extraEnv) => {
+            try {
+              const result = Bun.spawnSync(argv, {
+                env: { ...process.env, ...extraEnv },
+                stdin: "ignore",
+                stdout: "pipe",
+                stderr: "pipe",
+              });
+              return {
+                ok: result.exitCode === 0,
+                output: `${result.stdout.toString()}${result.stderr.toString()}`,
+              };
+            } catch (error) {
+              return {
+                ok: false,
+                output: error instanceof Error ? error.message : String(error),
+              };
+            }
+          },
+          which: (command) => Bun.which(command),
+        },
         project: { cwd: process.cwd(), pluginHooksFile: join(pluginDir(), "hooks", "hooks.json") },
         live: rest.includes("--live")
           ? {
@@ -353,12 +404,20 @@ async function main(argv: string[]): Promise<number> {
         return 2;
       }
       return runRestore(paths, {
+        claude: (argv) => {
+          const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
+          return {
+            ok: result.exitCode === 0,
+            out: `${result.stdout.toString()}\n${result.stderr.toString()}`,
+          };
+        },
         yes: rest.includes("--yes"),
         now: rest.includes("--now"),
         runner,
         systemd,
         confirm: ask,
         probe: realProbe(),
+        which: (command) => Bun.which(command),
       });
     }
     case "migrate": {
@@ -383,6 +442,104 @@ async function main(argv: string[]): Promise<number> {
     }
     case "update":
       return runUpdate(paths, process.env, rest);
+    case "browser": {
+      const [sub, ...extra] = rest;
+      if (sub === "mcp") {
+        // Runs until the MCP exits. Nothing here may write to stdout: it IS the MCP stream.
+        return await runBrowserMcp(paths, extra, {
+          installPicker,
+          log: (line) => console.error(`[cc-smart-dev-kit-browser] ${line}`),
+          package: `@playwright/mcp@${MCP_VERSIONS.playwright}`,
+          pickerBundle: distBundle("browser-picker.js"),
+          spawn: (argv, options) => {
+            // The launcher's own variables (the tab filter's endpoint) go on top of this
+            // process's environment: the MCP must find bun and everything else as usual.
+            const child = Bun.spawn(argv, {
+              env: { ...process.env, ...options.env },
+              stdio: [options.stdio, options.stdio, options.stdio],
+            });
+            return { exited: child.exited, kill: (signal) => child.kill(signal) };
+          },
+          which: (command) => Bun.which(command),
+        });
+      }
+      if (sub === "check") {
+        const unknown = extra.filter((arg) => arg !== "--headless" && arg !== "--idle");
+        if (unknown.length > 0) {
+          console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+          return 2;
+        }
+        // Two real launchers (this CLI), each with a real Playwright MCP, on one Chrome.
+        const result = await runBrowserCheck(extra, {
+          check: (name, ok, why) =>
+            console.log(
+              `${ok ? "✓" : "✗"} ${name}${ok || why === undefined ? "" : ` — ${why.slice(0, 400)}`}`,
+            ),
+          cli: [process.execPath, process.argv[1] ?? ""],
+          log: (line) => console.error(line),
+        });
+        console.log(
+          result.failed === 0
+            ? `\nAll ${String(result.total)} checks passed.`
+            : `\n${String(result.failed)} of ${String(result.total)} checks failed.`,
+        );
+        return result.failed === 0 ? 0 : 1;
+      }
+      console.error(`Usage: ${COMMAND} browser <mcp|check> [options]\n\n${HELP}`);
+      return 2;
+    }
+    case "sessions": {
+      const unknown = rest.filter((arg) => arg !== "--open" && arg !== "--dry-run");
+      if (unknown.length > 0) {
+        console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+        return 2;
+      }
+      return await runSessions(
+        paths,
+        { dryRun: rest.includes("--dry-run"), open: rest.includes("--open") },
+        {
+          command: COMMAND,
+          now: Date.now(),
+          platform: process.platform,
+          sleep: (ms) => Bun.sleep(ms),
+          spawnDetached: (argv) => {
+            const child = Bun.spawn(argv, {
+              detached: true,
+              stdio: ["ignore", "ignore", "ignore"],
+            });
+            child.unref();
+            return { exited: child.exited };
+          },
+          uptimeSeconds: uptime(),
+          which: (command) => Bun.which(command),
+        },
+      );
+    }
+    case "worktrees": {
+      const removeAt = rest.indexOf("--remove");
+      const removeTarget = removeAt === -1 ? null : (rest[removeAt + 1] ?? "");
+      if (removeAt !== -1 && removeTarget === "") {
+        console.error(`Say which worktree: ${COMMAND} worktrees --remove <path>\n\n${HELP}`);
+        return 2;
+      }
+      const unknown = rest.filter(
+        (arg, index) =>
+          arg !== "--clean" && arg !== "--no-fetch" && arg !== "--remove" && index !== removeAt + 1,
+      );
+      if (unknown.length > 0) {
+        console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+        return 2;
+      }
+      return await runWorktrees(
+        paths,
+        {
+          clean: rest.includes("--clean"),
+          noFetch: rest.includes("--no-fetch"),
+          remove: removeTarget,
+        },
+        process.env,
+      );
+    }
     case "gateway":
       return runGateway(rest, gatewayContext(paths));
     case "search":

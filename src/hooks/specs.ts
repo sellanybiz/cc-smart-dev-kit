@@ -8,7 +8,8 @@
  * | Hook | Event (matcher) | Fails closed by |
  * |---|---|---|
  * | git-guard | PreToolUse (Bash, PowerShell) | asking before every command that runs git |
- * | main-folder-guard | PreToolUse (Edit, Write, NotebookEdit) | asking before every edit in the repo |
+ * | main-folder-guard | PreToolUse (Edit, Write, NotebookEdit, Serena's edit tools) | asking before every edit in the repo |
+ * | serena-root | PreToolUse, PostToolUse, PostToolUseFailure (activate_project), SessionStart | silent; the guard asks without a record |
  * | message-guard | PreToolUse (SendMessage) | asking before every message |
  * | agent-guard | PreToolUse (Agent, Task, Workflow) | machine-wide: it judges the same way without cc-smart-dev-kit.json (`agent-guard.ts`) |
  * | job-route | PreToolUse (Bash) | asking about a heavy command, classified with the default kinds |
@@ -19,7 +20,9 @@
  * Three more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they are about
  * the person, not a project, so they never enter the frame and read no `cc-smart-dev-kit.json` —
  * `stop-failure` (the usage-limit alert), `update-check` (the background self-update and the
- * instructions copy) and `notify` (the alerts: desktop, SSH terminal, Warp; `notify.ts`).
+ * instructions copy), `notify` (the alerts: desktop, SSH terminal, Warp; `notify.ts`) and
+ * `playwright-output` (a caller-named screenshot goes into the shared browser's output
+ * folder, `playwright-output.ts`).
  * A project wires these itself, as `cc-smart-dev-kit hook <name>` (`PROJECT_HOOKS`): the worktree
  * engine. A plugin WorktreeCreate would replace Claude Code's own worktrees in every
  * project, so the engine is opt-in (`docs/design.md` § The worktree engine). Each needs
@@ -50,9 +53,10 @@ import {
   toolInput,
 } from "./io";
 import { jobRoute, routeFacts } from "./job-route";
-import { editedFile, mainFolderGuard } from "./main-folder-guard";
+import { editedFile, mainFolderGuard, serenaEditedFile } from "./main-folder-guard";
 import { messageGuard } from "./message-guard";
 import type { HookSpec } from "./run";
+import { readSerenaRoot, serenaRoot } from "./serena-root";
 import { sessionName } from "./session-name";
 import { programsOf } from "./shell-command";
 import { worktreeCreate } from "./worktree-create";
@@ -152,14 +156,35 @@ export const mainFolderGuardHook: HookSpec = {
   name: "main-folder-guard",
   events: ["PreToolUse"],
   wiring: "plugin",
-  onConfigProblem: (message, input, _event, checkout) => {
+  onConfigProblem: (message, input, _event, checkout, context) => {
     const file = typeof input.cwd === "string" ? editedFile(input, input.cwd) : null;
     const repo = checkout.mainCheckout ?? checkout.root;
-    return file !== null && isInside(file, repo)
-      ? toolDecision("ask", cannotCheck("whether this edit belongs in a worktree", message))
-      : SILENT;
+    if (file !== null && isInside(file, repo)) {
+      return toolDecision("ask", cannotCheck("whether this edit belongs in a worktree", message));
+    }
+    // A Serena edit names its file relative to the project Serena has active, which cannot be
+    // read from a broken cc-smart-dev-kit.json: ask about it rather than let it through.
+    return serenaEditedFile(input, readSerenaRoot(context.paths, input.session_id), null) === null
+      ? SILENT
+      : toolDecision("ask", cannotCheck("whether this Serena edit belongs in a worktree", message));
   },
   run: mainFolderGuard,
+};
+
+/**
+ * The Serena root keeper: which folder Serena edits for this session, so the main-folder
+ * guard can place a Serena edit (`serena-root.ts`). Opt-in with the guard it serves
+ * (`worktrees.guardMainFolder`), and it polices an `activate_project` call too: an absolute
+ * path to this repo or one of its worktrees, never a project name. A broken or too new
+ * cc-smart-dev-kit.json stops the recording (one line says why) — the guard then ASKS about a
+ * Serena edit, so a missing record never lets one through.
+ */
+export const serenaRootHook: HookSpec = {
+  name: "serena-root",
+  events: ["PreToolUse", "PostToolUse", "SessionStart"],
+  wiring: "plugin",
+  onConfigProblem: (message) => ({ stderr: cannotCheck("which folder Serena edits", message) }),
+  run: serenaRoot,
 };
 
 export const messageGuardHook: HookSpec = {
@@ -256,6 +281,7 @@ function cwdOf(input: HookInput): string {
 export const HOOKS: readonly HookSpec[] = [
   gitGuardHook,
   mainFolderGuardHook,
+  serenaRootHook,
   messageGuardHook,
   agentGuardHook,
   jobRouteHook,
@@ -265,12 +291,20 @@ export const HOOKS: readonly HookSpec[] = [
 ];
 
 /**
+ * The PreToolUse hooks that are **not** guards: `playwright-output` only rewrites the name of
+ * a file the browser saves, so a machine with no bun gets no rewrite, never a question.
+ */
+export const NON_GUARD_PRE_TOOL_USE: ReadonlySet<string> = new Set(["playwright-output"]);
+
+/**
  * The bundles whose `hooks.json` entry runs the shim with `--missing=ask`: the guards, which
  * fail closed when no bun is found. Every other hook is quiet (`--missing=quiet`), one line
  * on stderr — the notifier runs on PreToolUse too, and is not a guard.
  */
 export const GUARD_BUNDLES: ReadonlySet<string> = new Set(
-  HOOKS.filter((spec) => spec.events.includes("PreToolUse")).map((spec) => spec.name),
+  HOOKS.filter(
+    (spec) => spec.events.includes("PreToolUse") && !NON_GUARD_PRE_TOOL_USE.has(spec.name),
+  ).map((spec) => spec.name),
 );
 
 /**
@@ -280,7 +314,12 @@ export const GUARD_BUNDLES: ReadonlySet<string> = new Set(
  * `stop-failure` (the usage-limit alert, `src/hooks/stop-failure.ts`), `update-check`
  * (the background self-update, `src/update/`) and `notify` (the alerts, `src/hooks/notify.ts`).
  */
-export const USER_HOOKS: readonly string[] = ["stop-failure", "update-check", "notify"];
+export const USER_HOOKS: readonly string[] = [
+  "stop-failure",
+  "update-check",
+  "notify",
+  "playwright-output",
+];
 
 /**
  * Every hook that answers about the **machine**, not a project: the `USER_HOOKS` bundles

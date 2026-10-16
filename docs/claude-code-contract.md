@@ -104,6 +104,33 @@ StopFailure hook (and a status line that saved its input). No request reached An
 | WorktreeRemove input has `worktree_path`, `cwd` and `session_id`, and **no** field that says to discard changes, also when ExitWorktree passed `discard_changes: true`. Exit 0 counts as removed; exit 1 keeps it: "Exited worktree but could not remove it — kept at <path>". | 2.1.300 | live: Phase 3 (a logging hook; then this plugin's `worktree-remove` exited 1 on a worktree with an untracked file, and Claude Code kept it); `doctor --live` (exit 0, removed) |
 | `ExitWorktree` with `remove` on a hook-made worktree **outside** the repo is refused unless the call passes `discard_changes: true` (Claude Code "couldn't check the worktree for uncommitted changes"); inside `.claude/worktrees/` it is not. With `discard_changes`, the WorktreeRemove hook is the only check. | 2.1.300 | live: Phase 0 spike; Phase 3 (the first `doctor --live` run, without `discard_changes`: refused for the configured shape, removed for the default one); `doctor --live` passes `discard_changes: true` |
 
+## MCP servers
+
+Two rows of this section are still unproved, and are listed under § Relied on, not proved
+yet: a user-scope server keeps the tool-name prefix `mcp__<server>__*` (why `setup`
+registers them itself), and a user-scope server is what a session uses when no project file
+or local copy names the same server.
+
+| Behaviour | Last proved on | How it is proved |
+|---|---|---|
+| `claude mcp add-json --scope user <name> <json>` registers a stdio, http or sse server for the user; it **fails with exit 1** when the name is already registered ("MCP server `<name>` already exists in user config"), so a re-registration is `remove` then `add-json`; and `claude mcp remove <name> --scope user` removes it. | 2.1.301 | live, throwaway `HOME`: `add-json` for a stdio and an http server, a second `add-json` of the same name (exit 1, that message), then `remove`. `src/mcp/mcp.test.ts` runs a fake `claude` that behaves the same way, so setup's and restore's decisions are tested against it. |
+| The user-scope config is **`$CLAUDE_CONFIG_DIR/.claude.json` when `CLAUDE_CONFIG_DIR` is set, else `~/.claude.json`**, with the servers under `mcpServers`; `claude mcp get <name>` prints `Scope: User config (available in all your projects)`, a `Status:` of `✔ Connected` or `✘ Failed to connect` with an `Issue:`, and then `Type:` with `Command:`/`Args:` or `URL:`/`Headers:`. `claude mcp get` **starts the server once** to answer. | 2.1.301 | live, in two throwaway `HOME`s (one with `CLAUDE_CONFIG_DIR`, one without): the file each `add-json` wrote, and both `get` reports (a stdio fake and Tavily's http server). `src/cli/paths.ts` computes the file from that rule; `src/mcp/doctor.ts` reads `Scope` and `Status` out of the report; `src/cli/cli.test.ts` § MCP servers runs a fake `claude` that prints the same shape. |
+| A **`${VAR}` in a registered header** is Claude Code's own placeholder, filled in from its environment when it connects; the value is not written into the config by `add-json`. | 2.1.301 | live, throwaway `HOME`: registering Tavily's header with `Bearer ${TAVILY_API_KEY}` and reading `.claude.json` back — the placeholder is stored as text, and `claude mcp get` reports the server Connected. (That the substitution then reaches the remote server's request was not observed: no key was used.) |
+| `add-json --scope user` stores the given JSON **verbatim** under `mcpServers.<name>`: every value is exactly what was passed, and only the **key order** is normalised (`command` first, then `args`/`timeout`, and so on). So comparing the live config with the given JSON must compare values, not text — `sameConfig` in `src/mcp/register.ts` deep-compares and ignores key order. | 2.1.301 | live (2026-10-16), throwaway `HOME` and `CLAUDE_CONFIG_DIR`: the four server JSONs setup writes were each passed to `claude mcp add-json --scope user` and the stored object read back — deep-equal to the given JSON in all four cases (the four are `mcpServers()`'s own output: playwright, serena, sequential-thinking, tavily-websearch). The stored text differed from the given text for three of them (key order only). `src/mcp/mcp.test.ts` runs a fake `claude` that stores the parsed JSON the same way. |
+
+## The shared browser
+
+| Behaviour | Last proved on | How it is proved |
+|---|---|---|
+| Chrome with `--remote-debugging-port=0` writes `DevToolsActivePort` into its profile folder (line 1 the port, line 2 the WebSocket path) and serves `GET /json/version` there, with the same path in `webSocketDebuggerUrl`. A port that now belongs to another program answers with another path. | Chrome 155 | live: the shared Chrome on this machine's profile; `src/browser/shared-browser.test.ts` runs a fake that does exactly this, and its cases cover a reused browser, a stale lock from a dead Chrome, a live Chrome with no debug port, and a Chrome that exits at once. |
+| Chrome keeps exactly one profile folder open, and a second Chrome on the same folder hands over to the first and exits; a `SingletonLock` symlink whose target is `<hostname>-<pid>` says who holds it (macOS, Linux). | Chrome 155 | live: seen while building the project this was ported from (2026-10-12). `isProfileInUse` and `claimProfile` read that lock, and the tests cover a dead pid, a live one, and a lock from another host. |
+| `@playwright/mcp` (0.0.83) attaches to a running Chrome over CDP with `--cdp-endpoint=ws://…`, adopts **every** page in the browser, and its `page._instrumentation` (a private field) carries `addListener({onApiCallBegin, onApiCallEnd})`; over CDP it does not send `Browser.setDownloadBehavior` and skips `Emulation.setFocusEmulationEnabled`. | 0.0.83 | live: the project this was ported from drove two real sessions on one Chrome (2026-10-12), which is the measurement behind every refusal in `cdp-tab-filter.ts`; `cc-smart-dev-kit browser check` repeats it (two real MCPs, one throwaway Chrome, popups, download, upload, `browser_close`). The filter's own rules are unit-tested message by message (`src/browser/cdp-tab-filter.test.ts`). |
+| `@playwright/mcp` 0.0.83 takes the CDP endpoint from **`PLAYWRIGHT_MCP_CDP_ENDPOINT`** in its environment (its shipped README documents `*env* PLAYWRIGHT_MCP_CDP_ENDPOINT` for `--cdp-endpoint`, and its CLI help does NOT list the env name). The merge order is default config < config file < environment < **CLI arguments**, so the variable applies unless the caller passed `--cdp-endpoint` in `argv`. The launcher therefore passes the endpoint only in the child's environment: the endpoint carries the tab filter's token, and `argv` is world-readable (`/proc`). | 0.0.83 (playwright-core 1.64.0-alpha-1790635538000) | live (2026-10-16): the pinned package downloaded and run from a throwaway `HOME` (`--help`, exit 0, version 0.0.83); the mapping read in the pinned `playwright-core`'s own code — `configFromEnv` (`PLAYWRIGHT_MCP_CDP_ENDPOINT` → `cdpEndpoint`) and `resolveCLIConfigForMCP`'s merge order; and `cc-smart-dev-kit browser check --headless` in a throwaway `HOME`, with the endpoint passed this way only: all 18 checks passed (two real MCPs connected through the filter, one shared Chrome). `src/browser/launcher.test.ts` asserts the environment passed to the child, and that no `cdp-endpoint` reaches `argv`. |
+| Bun's own WebSocket carries a **30 MB message**, client and server (`Bun.serve` with `maxPayloadLength` raised, and `new WebSocket`), so the tab filter needs no WebSocket package. (The project this came from measured the opposite for Bun's `ws` stand-in on Bun 1.4.2 and used the `ws` package for it.) | Bun 1.4.3 | live: a one-file probe on this machine (2026-10-16) — a 30 MB string through a local `Bun.serve` and back; `src/browser/cdp-tab-filter-server.test.ts` drives the same layers with two clients and a fake Chrome. |
+| A WebSocket upgrade request from a web page carries an `Origin` header, and Playwright's does not — so a local port that refuses a connection with an `Origin` cannot be driven by any page the person opens. | Chrome 155, Bun 1.4.3 | live: the socket layer refuses such a connection (test: the same in `cdp-tab-filter-server.test.ts`, over a real WebSocket with `origin` set). |
+| With `--output-dir` set, `@playwright/mcp` 0.0.83 puts a file it names itself (`page-….png`, `page-….yml`) in that folder, but a file the **caller** names (`filename: "x.png"`) in the folder the MCP process was started in — the session's own folder. An absolute `filename` is used as it is. | 0.0.83, Chrome 155 | live (2026-10-16), headless, throwaway profile: `browser_take_screenshot` with `filename: "cc-raw.png"` wrote `<cwd>/cc-raw.png` and left the output folder holding only the server-named page snapshot; the same call with the absolute path inside the output folder wrote it there. (Why the `playwright-output` hook exists; `src/hooks/playwright-output.test.ts` keeps the rewrite, and that the answer is `updatedInput` with no permission decision is the row below.) |
+| Chrome's process-singleton socket lives under `TMPDIR` (`$TMPDIR/com.google.Chrome.<random>/SingletonSocket`), and Chrome **aborts (SIGABRT) when that path is too long**: `FATAL:chrome/browser/process_singleton_posix.cc: Socket path too long`. A machine whose `TMPDIR` is a deep path (a long scratch folder) cannot start the shared browser at all. | Chrome 155 | live (2026-10-16): a headless Chrome with `TMPDIR` set to a 118-character scratch path died with that FATAL line and left no `DevToolsActivePort`; the same Chrome with a short `TMPDIR` started at once. The plugin's own error then reads "Chrome exited (signal SIGABRT) before its debug port was ready". |
+
 ## The plugin on disk
 
 | Behaviour | Last proved on | How it is proved |
@@ -251,8 +278,23 @@ into a table above.
   over HTTPS. `doctor` tries HTTPS first when it is set; only our reader is tested
   (`src/setup/marketplace-access.test.ts` › "github with CLAUDE_CODE_PLUGIN_PREFER_HTTPS:
   HTTPS first"). (Phase 3)
-- **An MCP server served from a plugin gets a new tool-name prefix**, and one
-  registered at user scope keeps `mcp__<server>__*`. (Phase 4)
+- **A PostToolUse hook fires for an MCP tool call, and its input carries the tool's
+  `tool_response`.** `serena-root` reads the folder Serena reports out of
+  `mcp__serena__activate_project`'s answer. The project this was ported from runs its own
+  `serena-root` hook with that wiring in production, and Claude Code's docs list
+  PostToolUse for every tool; nothing here has watched a real MCP tool call reach a hook. The
+  plugin does not depend on it alone: the PreToolUse branch already records the folder the call
+  names, an unreadable answer keeps that record rather than clearing it, and the
+  `PostToolUseFailure` branch writes "unknown" — where the guard then ASKS rather than passes.
+  (Prove it in one session with Serena registered: log a PostToolUse hook's input while an
+  `activate_project` call runs.)
+- **An MCP server served from a plugin gets a new tool-name prefix**, and one registered at
+  user scope keeps `mcp__<server>__*`; a user-scope server is what a session uses, unless a
+  project's `.mcp.json` or a "local" copy names the same server (the docs say a project file
+  wins by name). Phase 4 registers `playwright`, `serena`, `sequential-thinking` and
+  `tavily-websearch` at user scope for exactly that reason, and `doctor` checks each one's
+  scope, so a copy that wins over the user's is visible rather than silent. (Prove both in
+  one session that loads the plugin in a project with an `.mcp.json`, and one without.)
 - **An import in a project's `CLAUDE.md` of a file outside the project** (the opt-in
   instructions, `@~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md`) asks the person once,
   then loads. The docs say so; `claude -p` cannot show the question. The user-level import is

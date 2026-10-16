@@ -13,6 +13,8 @@ import {
   unitActive,
 } from "../gateway/service";
 import { ownedGatewayEnvKeys } from "../gateway/settings";
+import { forgetMcpServer, mcpRecordsFile } from "../mcp/records";
+import { removeMcpServers } from "../mcp/register";
 import { forgetInstructionsState } from "../setup/instructions";
 import { withLock } from "../setup/lock";
 import { type RestoreResult, restore } from "../setup/restore";
@@ -59,6 +61,10 @@ export interface RestoreOptions {
   confirm: ((question: string) => boolean) | null;
   /** Asks the router's port after the stop, until it is closed; a test passes a fake. */
   probe: HealthProbe;
+  /** Runs one `claude` command, for the MCP servers setup registered. */
+  claude?: (argv: string[]) => { ok: boolean; out: string };
+  /** Finds `claude` on PATH; null: the MCP servers are left and said so. */
+  which?: (command: string) => null | string;
 }
 
 /** Asks before something that cuts running sessions; true to go on. Prints why it stops. */
@@ -85,6 +91,37 @@ function print(results: RestoreResult[], short: (path: string) => string): void 
       console.log(`  (its state before this restore: ${short(result.savedAs)})`);
     }
   }
+}
+
+/**
+ * Takes back the MCP servers setup registered, and the record of them. A server the person
+ * re-pointed is theirs and stays; its record goes either way, so a later restore does not try
+ * it again. Returns the lines to print.
+ *
+ * Stage 1 takes these back too: a registered server only affects a session that starts later,
+ * and every session that already started one keeps the server it is running.
+ *
+ * A caller that passes no `claude` runner gets no MCP handling at all — `removeMcpServers`
+ * would only be able to say it cannot run the command. `cc-smart-dev-kit restore` always
+ * passes both (`src/entries/cli.ts`).
+ */
+function removeMcp(
+  paths: CliPaths,
+  options: RestoreOptions,
+  short: (path: string) => string,
+): { lines: string[]; ok: boolean } {
+  if (options.claude === undefined || options.which === undefined) return { lines: [], ok: true };
+  const removal = removeMcpServers(paths, options.claude, options.which, false);
+  for (const name of removal.forgotten) forgetMcpServer(paths.stateDir, name);
+  const lines = [...removal.removed, ...removal.notes];
+  // Nothing left to take back: the record file goes with its last entry.
+  if (removal.kept.length === 0 && existsSync(mcpRecordsFile(paths.stateDir))) {
+    rmSync(mcpRecordsFile(paths.stateDir), { force: true });
+    lines.push(
+      `- ${short(mcpRecordsFile(paths.stateDir))}: removed (the record of the MCP servers)`,
+    );
+  }
+  return { lines, ok: removal.kept.length === 0 };
 }
 
 /**
@@ -141,6 +178,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       () => {
         const results = restore(paths.stateDir, { except: routerFiles });
         print(results, short);
+        for (const line of removeMcp(paths, options, short).lines) console.log(line);
         forgetInstructionChoice(paths.stateDir, short);
         console.log(STAGE_ONE_DONE);
         return results.some((result) => result.action === "no-backup") ? 1 : 0;
@@ -217,6 +255,8 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       }
       const results = restore(paths.stateDir);
       if (unitTracked) options.runner(["systemctl", "--user", "daemon-reload"]);
+      // The MCP servers setup registered, and the record of them.
+      const mcp = removeMcp(paths, options, short);
       // The router is gone: a setup that did not finish has nothing left to finish.
       rmSync(restartPendingFile(paths.stateDir), { force: true });
       // So is its limit state: no status line or alert may read a stale fallback from it.
@@ -226,8 +266,9 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       if (stateGone) {
         console.log(`- ${short(paths.gatewayStateFile)}: removed (the router's limit state)`);
       }
+      for (const line of mcp.lines) console.log(line);
       const forgot = forgetInstructionChoice(paths.stateDir, short);
-      if (results.length === 0 && !stateGone) {
+      if (results.length === 0 && !stateGone && mcp.lines.length === 0) {
         if (!forgot) console.log("Nothing to restore: cc-smart-dev-kit has nothing in any file.");
         return 0;
       }

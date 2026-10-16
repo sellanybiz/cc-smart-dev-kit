@@ -18,6 +18,10 @@ function routerPaths(env = process.env) {
 }
 
 // src/cli/paths.ts
+function userConfigFile(env, home) {
+  const dir = env.CLAUDE_CONFIG_DIR;
+  return dir ? join2(dir, ".claude.json") : join2(home, ".claude.json");
+}
 function cliPaths(env = process.env) {
   const router = routerPaths(env);
   const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join2(router.home, ".claude");
@@ -27,14 +31,21 @@ function cliPaths(env = process.env) {
     settingsFile: join2(claudeConfigDir, "settings.json"),
     installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
     knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
+    userConfigFile: userConfigFile(env, router.home),
     binDir: join2(router.home, ".local", "bin"),
     stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
+    dataDir: join2(router.home, ".local", "share", "cc-smart-dev-kit"),
+    browserProfileDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright"),
+    browserOutputDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
+    browserPickerFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-picker.js"),
+    serenaContextFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "serena", "contexts", "worktree.yml"),
     routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
     routerUnitFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
     routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
     notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
-    tmuxConfFile: join2(router.home, ".tmux.conf")
+    tmuxConfFile: join2(router.home, ".tmux.conf"),
+    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
   };
 }
 function claudeMemDataDir(env, home) {

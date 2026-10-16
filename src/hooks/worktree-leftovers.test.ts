@@ -73,7 +73,7 @@ describe("worktree-leftovers", () => {
         hookSpecificOutput: {
           hookEventName: "SessionStart",
           additionalContext: [
-            "1 finished worktree is left in this repo: app-wt-done. Each has every commit on origin/main, nothing uncommitted, no running session, and no git use for an hour. Tell the user, and when they agree, remove each in the main checkout: `git worktree remove <folder>`, then `git branch -d <branch>`.",
+            "1 finished worktree is left in this repo: app-wt-done. Each has every commit on origin/main, nothing uncommitted, no running session, and no git use for an hour. Tell the user, and when they agree, clear them in the main checkout with `cc-smart-dev-kit worktrees --clean` — it judges each one again, Docker containers and running programs included, before it removes anything.",
             `1 worktree is still listed, but its folder is gone: ${gone}. \`git worktree prune\` in the main checkout forgets it.`,
           ].join("\n"),
         },
