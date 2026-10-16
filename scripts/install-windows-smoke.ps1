@@ -159,10 +159,16 @@ function Invoke-Install($World, [string[]]$Arguments, [hashtable]$Extra = @{}) {
     $applied[$key] = [Environment]::GetEnvironmentVariable($key, "Process")
     [Environment]::SetEnvironmentVariable($key, [string]$Extra[$key], "Process")
   }
+  # "Continue" for this call only: Windows PowerShell 5.1 turns a native command's stderr --
+  # and install.ps1 writes its failures there -- into a TERMINATING error while this script's
+  # ErrorActionPreference is "Stop", which killed the 5.1 run before any assertion. The lines
+  # are the child's, and its exit code is read below either way.
+  $previous = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
   try {
-    # The child's stdout and stderr, as text. Windows PowerShell turns a native command's
-    # stderr into error records whose rendering wraps and prefixes every line, so they are
-    # taken as their message -- and nothing goes through Out-String, which wraps long lines.
+    # The child's stdout and stderr, as text. 5.1 renders a native command's stderr as error
+    # records that wrap and prefix every line, so each is taken as its message -- and nothing
+    # goes through Out-String, which wraps long lines at the console width.
     $lines = @(
       & $shell -NoProfile -ExecutionPolicy Bypass -File $install @Arguments 2>&1 | ForEach-Object {
         if ($_ -is [System.Management.Automation.ErrorRecord]) { "$($_.Exception.Message)" } else { [string]$_ }
@@ -171,6 +177,7 @@ function Invoke-Install($World, [string[]]$Arguments, [hashtable]$Extra = @{}) {
     $out = $lines -join "`n"
     $code = $LASTEXITCODE
   } finally {
+    $ErrorActionPreference = $previous
     foreach ($key in $applied.Keys) { [Environment]::SetEnvironmentVariable($key, $applied[$key], "Process") }
   }
   return @{ code = $code; out = $out }
