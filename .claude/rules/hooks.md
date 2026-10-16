@@ -148,7 +148,9 @@ alert, and whether a sound goes with them — through `src/workflow/alerts.ts`.)
 (`rate_limit` only where the `stop-failure` hook will not show its own alert —
 `stopFailureWillAlert`: no desktop, no gateway set up, or a short rate limit), and clears its mark
 on `PostToolUse`, `PostToolUseFailure` and `UserPromptSubmit`. The route is the desktop
-(`notify-send`, `osascript`, with the freedesktop sound), or — with no desktop route here and
+(`notify-send` — on a Linux desktop with the right tools the detached `alert-worker` in its
+place, which waits for a click and raises the session's window, `src/hooks/desktop-alert.ts`
+— `osascript`, with the freedesktop sound), or — with no desktop route here and
 an SSH session (`SSH_CONNECTION`/`SSH_TTY`) — the terminal as OSC 777; inside Warp whose own
 plugin is on it stays quiet but for the sound and a waiting question; with nowhere to show it,
 nothing. The whole contract, the marks and the two settings: `docs/design.md` § The notifier.

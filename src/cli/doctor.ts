@@ -14,6 +14,7 @@ import {
 } from "../build-info";
 import { gatewayChecks } from "../gateway/doctor";
 import type { RouterServiceKind, Runner } from "../gateway/service";
+import { hasDesktop } from "../hooks/desktop-alert";
 import { claudeMemAdvice } from "../machine/claude-mem";
 import { companionChecks } from "../machine/companions";
 import type { Machine } from "../machine/machine";
@@ -740,6 +741,47 @@ function checkTmux(paths: CliPaths, env: Env, machine: Machine): Check[] {
   return checks;
 }
 
+/**
+ * The Linux desktop extras the notifier can use (`src/hooks/desktop-alert.ts`): a click on
+ * an alert that raises the session's terminal window, the alert's minute on screen, one
+ * alert per session, and the XFCE Do-Not-Disturb check. Each is skipped in silence when
+ * its tool is missing, so doctor names the missing tool — as information (`·`), never a
+ * failure: a desktop without them still shows every alert, exactly as before.
+ *
+ * The Do-Not-Disturb line is for an XFCE session only (`xfconf-query` is XFCE's own
+ * tool, and no other desktop has that setting to miss); everything else is looked up on
+ * any Linux desktop.
+ */
+function checkDesktopExtras(platform: NodeJS.Platform, env: Env, machine: Machine): Check[] {
+  if (platform !== "linux" || !hasDesktop(platform, env)) return [];
+  const checks: Check[] = [];
+  if (machine.which("gdbus") === null) {
+    checks.push({
+      info: true,
+      ok: true,
+      text: "gdbus is not installed (glib's libglib2.0-bin provides it): a desktop alert has no minute on screen, and two alerts of one session can stay there together",
+    });
+  }
+  if (machine.which("xdotool") === null) {
+    checks.push({
+      info: true,
+      ok: true,
+      text: "xdotool is not installed: a click on a desktop alert cannot raise the session's terminal window",
+    });
+  }
+  if (
+    (env.XDG_CURRENT_DESKTOP ?? "").toLowerCase().includes("xfce") &&
+    machine.which("xfconf-query") === null
+  ) {
+    checks.push({
+      info: true,
+      ok: true,
+      text: "xfconf-query is not installed: an alert's sound plays while XFCE's Do Not Disturb is on",
+    });
+  }
+  return checks;
+}
+
 /** What the gateway checks need: the plugin's router bundle, a runner, and this machine's service. */
 export interface DoctorGateway {
   bundle: string;
@@ -838,6 +880,7 @@ export async function doctorChecks(
     ...(mcpDeps === null ? [] : mcpChecks(paths, mcpDeps, env)),
     warpCheck(gateway.machine, paths),
     ...checkTmux(paths, env, gateway.machine),
+    ...checkDesktopExtras(gateway.machine.platform, env, gateway.machine),
     ...(project === null ? [] : projectChecks(project.cwd, env, paths, project.pluginHooksFile)),
     ...(runtime.ok ? await gatewayChecks({ paths, ...gateway }) : [skipped]),
     ...(await omnirouteCheck(paths, env, gateway)),

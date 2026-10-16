@@ -66,6 +66,12 @@ Done in this release:
 - **The alert settings** (`alerts.events`, `alerts.sound`, `alerts.usagePercent`): the two
   alert hooks and the status line read them — which moments alert, a sound where the platform
   has one, and the plan share the status line warns from.
+- **The Linux desktop extras of the alerts** (`design.md` § The notifier): a click on an
+  alert raises the session's terminal window, the alert leaves the screen for the
+  notification centre after a minute, one alert per session is on screen, and XFCE's Do Not
+  Disturb keeps an ordinary alert's sound off — each where its tool is installed (`gdbus`,
+  `xdotool`, `xfconf-query`), in the detached worker, ported from the older notification
+  script so a machine that moves to the plugin loses nothing.
 - **The skills follow the workflow**: the commit, pull-request, review and worktree skills,
   and the general instructions, read `cc-smart-dev-kit workflow show`, so one policy — not an
   older hard-coded default — says when a step goes by itself.

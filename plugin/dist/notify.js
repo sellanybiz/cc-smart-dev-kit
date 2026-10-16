@@ -1,4 +1,8 @@
 // @bun
+// src/entries/notify.ts
+import { existsSync as existsSync6 } from "fs";
+import { join as join7 } from "path";
+
 // src/cli/paths.ts
 import { join as join2 } from "path";
 
@@ -6628,6 +6632,7 @@ gpgkey=${WARP_KEY_URL}
 `;
 
 // src/setup/launcher.ts
+var LAUNCHER_NAME = "cc-smart-dev-kit";
 var FIND_INSTALL_JS = [
   "const f=process.argv[process.argv.length-1];",
   'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
@@ -6766,6 +6771,63 @@ function soundArgv(moment, platform, which) {
     return afplay === null ? null : [afplay, join4("/System/Library/Sounds", `${MACOS_SOUNDS[moment]}.aiff`)];
   }
   return null;
+}
+
+// src/hooks/desktop-alert.ts
+var TOOL_TIMEOUT_MS = 5000;
+function hasDesktop(platform, env) {
+  if (platform !== "linux")
+    return true;
+  return (env.DISPLAY ?? "") !== "" || (env.WAYLAND_DISPLAY ?? "") !== "";
+}
+function desktopTools(which) {
+  return {
+    gdbus: which("gdbus"),
+    notifySend: which("notify-send"),
+    xdotool: which("xdotool"),
+    xfconfQuery: which("xfconf-query")
+  };
+}
+function notifySendCapabilities(help) {
+  return {
+    actions: help.includes("--action"),
+    expire: help.includes("--expire-time"),
+    wait: help.includes("--wait")
+  };
+}
+function canWaitForClick(tools, capture) {
+  if (tools.gdbus !== null)
+    return true;
+  if (tools.notifySend === null)
+    return false;
+  const help = capture({ argv: [tools.notifySend, "--help"], timeoutMs: TOOL_TIMEOUT_MS });
+  const capabilities = notifySendCapabilities(help.stdout);
+  return capabilities.actions && capabilities.wait;
+}
+function dndOn(tools, capture) {
+  if (tools.xfconfQuery === null)
+    return false;
+  const run = capture({
+    argv: [tools.xfconfQuery, "-c", "xfce4-notifyd", "-p", "/do-not-disturb"],
+    timeoutMs: TOOL_TIMEOUT_MS
+  });
+  return run.exitCode === 0 && run.stdout.trim() === "true";
+}
+var NOTIFY_ALERT_KIND = "notify";
+function notifyWorkerAlert(alert, target) {
+  return {
+    body: alert.body,
+    critical: alert.critical,
+    kind: NOTIFY_ALERT_KIND,
+    session: target.session,
+    title: alert.title,
+    window: {
+      folder: target.folder,
+      name: target.name,
+      program: target.program,
+      windowId: target.windowId
+    }
+  };
 }
 
 // src/hooks/detached.ts
@@ -6995,6 +7057,7 @@ var LIMIT_TEXT = /^You've hit your (?:[\w-]+ ){0,3}limit\b/;
 var NOT_LIMIT_TEXT = /\(not your usage limit\)/;
 var STATE_FRESH_MS = 2 * 60000;
 var OTHER_CLAUDE = "claude-sonnet-5-5";
+var ALERT_WORKER_COMMAND = "alert-worker";
 function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -7119,7 +7182,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
 }
 function limitAlertDesktop(platform, env, which) {
   if (platform === "linux")
-    return (env.DISPLAY ?? "") !== "" && which("notify-send") !== null;
+    return hasDesktop(platform, env) && which("notify-send") !== null;
   if (platform === "darwin")
     return which("osascript") !== null;
   if (platform === "win32")
@@ -7131,6 +7194,18 @@ function stopFailureWillAlert(input, deps) {
     return false;
   return planAlert(input, readAlertContext(deps.paths, deps.nowMs, input, deps.env)) !== null;
 }
+var spawnRunner = ({ argv, timeoutMs }) => {
+  try {
+    const result = Bun.spawnSync(argv, { stderr: "ignore", stdout: "pipe", timeout: timeoutMs });
+    return {
+      exitCode: result.exitCode,
+      stdout: result.stdout.toString(),
+      timedOut: result.exitedDueToTimeout === true
+    };
+  } catch {
+    return { exitCode: null, stdout: "", timedOut: false };
+  }
+};
 var ACTION_WAIT_MS = 30 * 60000;
 
 // src/hooks/notify.ts
@@ -7386,14 +7461,35 @@ function spawnNotifyFor(platform) {
     });
   };
 }
-function desktopCommand(alert, deps) {
-  if (deps.platform === "linux" && (deps.env.DISPLAY ?? "") === "")
-    return null;
+function desktopTarget(deps, cwd, label, session) {
+  return {
+    folder: cwd === null ? "" : basename(cwd),
+    name: label ?? "",
+    program: deps.env.TERM_PROGRAM ?? "",
+    session,
+    windowId: deps.env.WINDOWID ?? ""
+  };
+}
+function desktopCommand(alert, deps, target) {
+  if (deps.platform === "linux") {
+    if (!hasDesktop(deps.platform, deps.env))
+      return null;
+    if (deps.launcher !== null && canWaitForClick(desktopTools(deps.which), deps.capture)) {
+      return [
+        deps.launcher,
+        ALERT_WORKER_COMMAND,
+        JSON.stringify(notifyWorkerAlert(alert, target))
+      ];
+    }
+  }
   return notifyCommand(alert.body, deps.platform, deps.which, alert.title, alert.critical);
 }
 function playSound(alert, deps, config, alerts) {
   if (alert.sound === null || !(config.desktopSound || alerts.sound.value))
     return;
+  if (!alert.critical && deps.platform === "linux" && dndOn(desktopTools(deps.which), deps.capture)) {
+    return;
+  }
   const argv = soundArgv(alert.sound, deps.platform, deps.which);
   if (argv !== null)
     deps.run(argv);
@@ -7419,6 +7515,7 @@ function notifyHook(input, event, deps) {
   }
   const transcript = typeof input.transcript_path === "string" ? input.transcript_path : null;
   const cwd = typeof input.cwd === "string" ? input.cwd : null;
+  const label = sessionLabel(transcript, cwd);
   const limitAlertIsStopFailures = event === "StopFailure" && input.error === "rate_limit" ? stopFailureWillAlert(input, {
     env: deps.env,
     nowMs: deps.nowMs,
@@ -7428,7 +7525,7 @@ function notifyHook(input, event, deps) {
   }) : false;
   const alert = alertFor(input, event, {
     failed,
-    label: sessionLabel(transcript, cwd),
+    label,
     limitAlertIsStopFailures,
     mark,
     nowMs: deps.nowMs,
@@ -7444,7 +7541,7 @@ function notifyHook(input, event, deps) {
     return withProblem(SILENT, here.problem);
   }
   const config = readNotifyConfig(deps.paths.notifyConfigFile);
-  const argv = desktopCommand(alert, deps);
+  const argv = desktopCommand(alert, deps, desktopTarget(deps, cwd, label, session));
   if (isWarpTerminal(deps.env) && warpPluginOn(deps.paths.claudeConfigDir)) {
     if (warpShowsIt(event, input)) {
       if (argv !== null)
@@ -7562,11 +7659,15 @@ async function hook() {
   }
   const event = typeof input === "object" && input !== null && !Array.isArray(input) ? input.hook_event_name : undefined;
   const env = process.env;
+  const paths = cliPaths(env);
   const probe = realTerminalProbe(env, process.ppid);
+  const launcher = join7(paths.binDir, LAUNCHER_NAME);
   const result = notifyHook(input, typeof event === "string" ? event : "", {
+    capture: spawnRunner,
     env,
+    launcher: existsSync6(launcher) ? launcher : null,
     nowMs: Date.now(),
-    paths: cliPaths(env),
+    paths,
     platform: process.platform,
     run: spawnNotifyFor(process.platform),
     which: (command) => Bun.which(command, { PATH: env.PATH ?? "" }),

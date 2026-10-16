@@ -3,14 +3,18 @@
 // machine — a notifier on PATH, an SSH session, Warp, whose own plugin notifies — never about
 // a project, so it does not enter the frame. The logic and its tests: src/hooks/notify.ts.
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { notifyHook, spawnNotifyFor } from "../hooks/notify";
+import { spawnRunner } from "../hooks/stop-failure";
 import {
   realTerminalProbe,
   sessionTerminalDevice,
   ttyDevice,
   writeDevice,
 } from "../hooks/terminal";
+import { LAUNCHER_NAME } from "../setup/launcher";
 
 /** Writes one sequence to the session's terminal; false when there is none. */
 function writeTerminal(sequence: string): boolean {
@@ -33,11 +37,18 @@ async function hook(): Promise<void> {
       ? (input as { hook_event_name?: unknown }).hook_event_name
       : undefined;
   const env = process.env;
+  const paths = cliPaths(env);
   const probe = realTerminalProbe(env, process.ppid);
+  // The worker behind a click waits up to a minute: it runs from the installed version
+  // through the launcher, never from this hook's version folder, which an update may delete
+  // while it waits (`src/hooks/stop-failure.ts`).
+  const launcher = join(paths.binDir, LAUNCHER_NAME);
   const result = notifyHook(input, typeof event === "string" ? event : "", {
+    capture: spawnRunner,
     env,
+    launcher: existsSync(launcher) ? launcher : null,
     nowMs: Date.now(),
-    paths: cliPaths(env),
+    paths,
     platform: process.platform,
     run: spawnNotifyFor(process.platform),
     which: (command) => Bun.which(command, { PATH: env.PATH ?? "" }),

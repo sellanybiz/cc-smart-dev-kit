@@ -371,3 +371,19 @@ The two rows that were here for Phase 3 are now in the Worktrees table, both pro
 "The default worktree" was **wrong** as written: Claude Code starts a new worktree from the
 remote's default branch, not from `HEAD` (unless `worktree.baseRef` is `"head"`), and turns
 a `/` in the name into `+`. The engine's subagent worktrees follow what was seen.
+
+## Not Claude Code, relied on the same way: the Linux desktop
+
+The notifier's Linux desktop extras (`docs/design.md` § The notifier,
+`src/hooks/desktop-alert.ts`) rest on the desktop, not on Claude Code. Each runs only where
+its tool is installed, and **each is owed one live look on a real desktop session** (the
+dev machine's XFCE, never a server). The unit tests drive the worker on fake
+`gdbus`/`xdotool`/`notify-send` answers (`src/hooks/desktop-alert.test.ts`), which shows the
+calls we make, not that the desktop does what we expect.
+
+| Behaviour | Last proved on | How it is proved |
+|---|---|---|
+| A click on an alert raises the session's terminal window (the terminal's `WINDOWID`, or a VS Code or Warp window found by `xdotool` class and title), and the server reports a click anywhere on the popup as `NotificationClosed` reason 2 — the older notification script's own finding for xfce4-notifyd, while the buttons arrive as `ActionInvoked`. | not yet — owed a live desktop run | unit: `src/hooks/desktop-alert.test.ts` (the whole wait on fake answers). Live: on a desktop with `xdotool` and `gdbus`, end a turn, click the alert, and watch the session's window come to the front — an XFCE Terminal via `WINDOWID`, and a VS Code window by class and title; then click the alert's `Open` button, and its `Dismiss` one (that one must not raise). |
+| The alert leaves the screen for the notification centre after a minute, and one alert per session is on screen at a time: the worker closes the notification itself (`CloseNotification`) — xfce4-notifyd never expires an urgent one — and closes the previous alert when a new one arrives. | not yet — owed a live desktop run | unit: `src/hooks/desktop-alert.test.ts` › "the minute: the alert is closed by a call" and › "one alert per session". Live: two alerts of one session inside a minute (the first leaves), then one alert and a minute's wait: it leaves the screen and sits in the notification centre (its log — `xfce4-notifyd`'s notification log, or the panel's bell). |
+| XFCE's Do Not Disturb silences an ordinary alert's sound (`xfconf-query -c xfce4-notifyd -p /do-not-disturb` reads `true`), while the server keeps the popup off the screen and the centre keeps the notification; an urgent alert (a question, a permission prompt, a stopped turn) sounds and shows anyway. | not yet — owed a live desktop run | unit: `src/hooks/notify.test.ts` › "Do Not Disturb: an ordinary alert's sound stays off" and `src/hooks/desktop-alert.test.ts` › "the Do-Not-Disturb check". Live: turn Do Not Disturb on, end a turn well (no sound, no popup, still in the centre), then let a turn die on an error (sound and popup). |
+| `notify-send`'s `--action` support cannot be trusted from its `--help`: on the setup this was ported from, 0.8.8 lists the flags and answers "Actions are not supported" at run time, so a failed run falls back to the plain notification. The bus route (`gdbus`) is preferred wherever it is installed, and its `Notify`/`CloseNotification` calls and `monitor` lines are parsed as text (`(uint32 42,)`). | not yet — owed a live desktop run without `gdbus` | unit: `src/hooks/desktop-alert.test.ts` (the fallback when the run fails, and the text parsing). Live: on a desktop where `gdbus` is not installed, an alert with a working `notify-send --action`, and one whose `notify-send` refuses actions (the plain alert must still show). |

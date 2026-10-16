@@ -863,6 +863,38 @@ describe("cc-smart-dev-kit doctor", () => {
     ]);
   });
 
+  test("the Linux desktop extras: a missing tool is named as information, and no desktop means no line", () => {
+    const { fakeBin, run } = setup();
+    run(["setup"]);
+    // No DISPLAY: an SSH session or a headless machine — nothing about the desktop at all.
+    expect(run(["doctor"]).stdout).not.toContain("xdotool");
+    // A desktop with none of the extras' tools: one line each, information, never a failure.
+    const desktop = run(["doctor"], { DISPLAY: ":0", XDG_CURRENT_DESKTOP: "XFCE" });
+    expect(desktop.exitCode).toBe(0);
+    expect(desktop.stdout).toContain(
+      "· gdbus is not installed (glib's libglib2.0-bin provides it): a desktop alert has no minute on screen, and two alerts of one session can stay there together\n",
+    );
+    expect(desktop.stdout).toContain(
+      "· xdotool is not installed: a click on a desktop alert cannot raise the session's terminal window\n",
+    );
+    expect(desktop.stdout).toContain(
+      "· xfconf-query is not installed: an alert's sound plays while XFCE's Do Not Disturb is on\n",
+    );
+    // Another desktop (or none named): the XFCE setting is not this machine's to miss.
+    expect(run(["doctor"], { DISPLAY: ":0", XDG_CURRENT_DESKTOP: "GNOME" }).stdout).not.toContain(
+      "xfconf-query",
+    );
+    // The tools installed: nothing about them.
+    for (const tool of ["gdbus", "xdotool", "xfconf-query"]) {
+      writeFileSync(join(fakeBin, tool), "#!/bin/sh\nexit 0\n");
+      chmodSync(join(fakeBin, tool), 0o755);
+    }
+    const complete = run(["doctor"], { DISPLAY: ":0", XDG_CURRENT_DESKTOP: "XFCE" });
+    expect(complete.stdout).not.toContain("gdbus");
+    expect(complete.stdout).not.toContain("xdotool");
+    expect(complete.stdout).not.toContain("xfconf-query");
+  });
+
   test("on a Bun older than 1.4.3: ✗ first, and the gateway checks, which send the key, are skipped", async () => {
     // In this process, to give doctor an older Bun: a local marketplace, so no git runs, and
     // no `setup`, so no launcher: doctor would run it with this process's real HOME.

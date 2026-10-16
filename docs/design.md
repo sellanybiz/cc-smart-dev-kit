@@ -1069,7 +1069,8 @@ that ends well); a `stop_hook_active` Stop (a hook made Claude continue). One al
 session per event, never two.
 
 **The routes**, chosen per alert: **the desktop** — `notify-send` on Linux, and only with a
-`DISPLAY` (a session over SSH with no desktop has no bus to show anything on), `osascript` on
+desktop (`DISPLAY` or `WAYLAND_DISPLAY`: a session over SSH with no desktop has no bus to
+show anything on), `osascript` on
 macOS, a PowerShell toast on Windows (`src/hooks/windows-toast.ts`, `docs/windows-notify.md`),
 plus the freedesktop sound through `paplay`; **the SSH terminal** — with no desktop
 route and `SSH_CONNECTION` or `SSH_TTY` set, the same title and body as OSC 777
@@ -1091,6 +1092,27 @@ error. In Warp ours plays only the sound, and shows a question (`elicitation_*`)
 agent itself: those may sit in a tab the person is not looking at (owner, 2026-10-11). A
 session that is none of those — no desktop, no SSH, no Warp — gets nothing, and that is not a
 failure: an alert on every turn would be noise.
+
+**The Linux desktop gives the alert more, where its tools are there**
+(`src/hooks/desktop-alert.ts`): a click raises the session's terminal window, the alert
+leaves the screen for the notification centre after a minute (`ALERT_SCREEN_MS`), only one
+alert per session is on screen at a time, and XFCE's Do Not Disturb keeps an ordinary
+alert's sound off (an urgent one sounds anyway, as XFCE shows those under Do Not Disturb
+too). These are the desktop behaviours of the older notification script this replaces,
+ported so a machine that moves to the plugin loses nothing.
+
+Everything that waits runs in a detached worker — the `alert-worker` the usage-limit alert
+already uses, through the launcher, never in the hook — and each extra runs only where its
+tool is on PATH: `xdotool` to raise a window (the terminal's `WINDOWID`, or a VS Code or
+Warp window found by its class and title); `gdbus`, the notification server itself, for the
+notification's id — the minute and the one-per-session rule need it, and `notify-send`
+never says which id it got — or a `notify-send` whose `--help` lists `--action` and
+`--wait`, where the server has actions; `xfconf-query` for XFCE's Do Not Disturb setting.
+Without them the hook keeps today's plain `notify-send`, and `doctor` names a missing tool
+as information. One thing the older script did is **not** ported: picking the session's tab
+inside XFCE Terminal (its accessibility service, AT-SPI, reached through Python bindings
+this plugin does not carry) — the window is raised, and the tab stays where it is. macOS,
+Windows and the SSH terminal are unchanged.
 
 **The title** is `<kind> · <session>`: the session's newest `customTitle` from the
 transcript's tail (`cleanSessionName`), else the folder of the hook's `cwd`. **The settings**
@@ -1136,12 +1158,12 @@ removes a worktree after the session lets go of it — the plugin removes one wh
 asks (the WorktreeRemove hook) or by `cc-smart-dev-kit worktrees --clean`, and it moves the
 folder before it deletes it, so a program still using it makes the removal fail and touch
 nothing (`docs/windows-setup.md`);
-and, from the older notification script, the click on a notification raising the terminal
-window and picking its tab (xdotool, AT-SPI and a per-session DBus helper — one desktop's
-tools, not general), its 60-second auto-close (that notification server's own behaviour) and
-its XFCE Do-Not-Disturb check (`xfconf-query`). The alerts, the waits they skip, the titles
-and the sounds are the same as that script's — they are the `notify` hook's contract
-(§ The notifier).
+and, from the older notification script, the tab pick inside XFCE Terminal (AT-SPI reached
+through Python bindings, which this plugin does not carry — the window raise itself came
+over, § The notifier). The alerts, the waits they skip, the titles, the sounds, the click
+that raises the window, the minute on screen, the one-alert-per-session rule and the XFCE
+Do-Not-Disturb check are the same as that script's — they are the `notify` hook's contract
+(§ The notifier, `src/hooks/desktop-alert.ts`).
 
 ### `doctor --live`
 
