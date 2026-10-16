@@ -36,6 +36,7 @@ import {
   unitName,
 } from "./launch";
 import { type JobDeps, type JobRequest, runJob } from "./run";
+import type { WindowsFacts } from "./windows";
 
 const SLICE = "cc-smart-dev-kit-heavy.slice";
 
@@ -438,6 +439,71 @@ function isRunning(pid: number): boolean {
     return false;
   }
 }
+
+/**
+ * Windows: no signals and no process groups to signal, so a stop ends the job's tree with
+ * `taskkill` (`windows.ts`). That is what makes a Ctrl+C at `job run` end the job too: the
+ * job is in a process group of its own and never sees the terminal's own Ctrl+C.
+ */
+describe("spawnAndWait on Windows", () => {
+  /** A fake Windows whose `taskkill` ends the job's tree the way `taskkill /T /F` does. */
+  function windows() {
+    const killed: number[] = [];
+    const facts: WindowsFacts = {
+      powershell: () => null,
+      taskkill: (pid) => {
+        killed.push(pid);
+        process.kill(-pid, "SIGKILL"); // the job's process group: its first process, its workers
+        return 0;
+      },
+    };
+    return { killed, facts };
+  }
+
+  test("SIGINT, SIGTERM and SIGHUP all end the job's tree, and job run ends with it", async () => {
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+      const dir = tempDir("windows-job");
+      const pidFile = join(dir, "pid");
+      const signals = new EventEmitter();
+      const { killed, facts } = windows();
+      const running = spawnAndWait(
+        ["sh", "-c", `echo $$ > "${pidFile}"; sleep 30`],
+        signals,
+        () => undefined,
+        { platform: "win32", windows: facts, leftoverGraceMs: 100, killWaitMs: 2_000 },
+      );
+      const pid = await waitForPid(pidFile);
+      signals.emit(signal);
+      // 137: the job ended by SIGKILL, which is what every Windows stop is (128 + 9).
+      expect(await running).toBe(137);
+      expect(killed).toEqual([pid]);
+    }
+  });
+
+  test("the job is empty once its first process is gone, even with a worker left behind", async () => {
+    const dir = tempDir("windows-job");
+    const pidFile = join(dir, "worker");
+    const said: string[] = [];
+    const { killed, facts } = windows();
+    // The first process ends at once; its worker would run on for 30 s. On Windows
+    // `job run` watches the job's first process: the worker is not seen (docs/windows-jobs.md).
+    const code = await spawnAndWait(
+      ["sh", "-c", `sleep 30 & echo $! > "${pidFile}"`],
+      new EventEmitter(),
+      (line) => said.push(line),
+      { platform: "win32", windows: facts, leftoverGraceMs: 100, killWaitMs: 2_000 },
+    );
+    const worker = Number(readFileSync(pidFile, "utf8"));
+    try {
+      expect(code).toBe(0);
+      expect(said).toEqual([]);
+      expect(killed).toEqual([]);
+      expect(isRunning(worker)).toBe(true);
+    } finally {
+      process.kill(worker, "SIGKILL");
+    }
+  });
+});
 
 describe("systemd probes never hang", () => {
   /** A fake `systemctl` and `systemd-run` that never answer, first on PATH. */

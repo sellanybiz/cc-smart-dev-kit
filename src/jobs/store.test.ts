@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { processStartTime } from "../setup/lock";
+import { processStartTime, type StartTimeReader } from "../setup/lock";
 import { tempDir } from "../testing/temp";
 import { acquireFrom, holderText, type Reservation } from "./queue";
 import {
@@ -29,6 +29,7 @@ import {
   type SharedFolderFacts,
   UNSEEN_STALE_MS,
 } from "./store";
+import { startTimeReader } from "./windows";
 
 function record(person: string, gb: number, pid = process.pid): string {
   return holderText({
@@ -64,14 +65,20 @@ function leaseFiles(dir: string): string[] {
   return existsSync(folder) ? readdirSync(folder).filter((name) => name.endsWith(".json")) : [];
 }
 
-function store(dir: string, capacity = 10, self?: FileHolder) {
+function store(dir: string, capacity = 10, self?: FileHolder, startTimeOf?: StartTimeReader) {
   return leaseStore({
     dir,
     label: "this machine",
     shared: false,
     capacityGb: () => capacity,
     ...(self !== undefined && { self }),
+    ...(startTimeOf !== undefined && { startTimeOf }),
   });
+}
+
+/** The reader a Windows machine's store uses, with a fake PowerShell: it answers `ticks`. */
+function windowsReader(ticks: string | null): StartTimeReader {
+  return startTimeReader("win32", { powershell: () => ticks, taskkill: () => 0 });
 }
 
 describe("leaseStore: taking memory", () => {
@@ -159,6 +166,47 @@ describe("leaseStore: stale holders are cleaned up", () => {
     expect(await store(dir).held()).toEqual([]);
     expect(existsSync(newer)).toBe(true);
     expect(existsSync(broken)).toBe(false);
+  });
+});
+
+// Windows reads a start time with PowerShell (`windows.ts`): no `/proc`, one call a check.
+describe("leaseStore: a Windows holder", () => {
+  test("a lease whose pid was reused (another start time) is removed", async () => {
+    const dir = tempDir("store");
+    const file = plantLease(dir, { ...currentFileHolder(), startTime: "win:1000" }, 8);
+    const machine = store(dir, 10, undefined, windowsReader("2000"));
+    expect(await machine.held()).toEqual([]);
+    expect(existsSync(file)).toBe(false);
+    // And its memory is free again: all 10 GB can be taken.
+    expect((await machine.tryTake(10, record("host-a", 10)))?.gb).toBe(10);
+  });
+
+  test("a lease of a live process stays, however old its file is", async () => {
+    const dir = tempDir("store");
+    const file = plantLease(
+      dir,
+      { ...currentFileHolder(), startTime: "win:1000" },
+      8,
+      10 * UNSEEN_STALE_MS,
+    );
+    const machine = store(dir, 10, undefined, windowsReader("1000"));
+    expect((await machine.held()).map((unit) => unit.gb)).toEqual([8]);
+    expect(existsSync(file)).toBe(true);
+  });
+
+  // The fail-safe (`windows.ts`): a holder PowerShell cannot judge counts as ALIVE, so a
+  // job waits instead of running on top of memory someone may still hold.
+  test("a holder PowerShell cannot answer for stays: the lease is not freed", async () => {
+    const dir = tempDir("store");
+    const file = plantLease(
+      dir,
+      { ...currentFileHolder(), startTime: "win:1000" },
+      8,
+      10 * UNSEEN_STALE_MS,
+    );
+    const machine = store(dir, 10, undefined, windowsReader(null));
+    expect((await machine.held()).map((unit) => unit.gb)).toEqual([8]);
+    expect(existsSync(file)).toBe(true);
   });
 });
 

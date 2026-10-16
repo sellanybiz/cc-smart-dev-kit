@@ -11,7 +11,9 @@
  * or alive with another start time (the pid was reused). The judge is the plugin's one
  * lock judge, `holderIsGone` in `src/setup/lock.ts`. A stale file counts for nothing, and
  * the next reader removes it. So a job killed with SIGKILL frees its memory at the next
- * look, with no clean-up step.
+ * look, with no clean-up step. Windows reads a process's start time with PowerShell
+ * (`windows.ts`), and a holder it cannot judge counts as alive: a job waits, never runs
+ * on top.
  *
  * A file from a process this machine cannot see (another pid namespace: a container on
  * this host sharing the folder) cannot be judged by its pid. Its writer touches it every
@@ -46,11 +48,9 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import {
-  currentHolder,
   holderIsGone,
   LockBusyError,
   type ProcessHolder,
-  processStartTime,
   type StartTimeReader,
   withLock,
 } from "../setup/lock";
@@ -62,6 +62,7 @@ import type {
   StoreTicket,
   StoreUnits,
 } from "./queue";
+import { leaseHolder, startTimeReader } from "./windows";
 
 /**
  * How often a holder touches its files, so a reader that cannot see its pid knows it lives.
@@ -103,9 +104,9 @@ interface StoreFile {
   record: string;
 }
 
-/** This process, as the writer of a file. */
+/** This process, as the writer of a file. Windows' start time comes from PowerShell. */
 export function currentFileHolder(): FileHolder {
-  return currentHolder();
+  return leaseHolder(process.platform);
 }
 
 function parseStoreFile(text: string): StoreFile | null {
@@ -192,7 +193,7 @@ export interface LeaseStoreOptions {
    * `startTimeOf` reads a pid's start time, cached for one look.
    */
   isGone?: (holder: FileHolder | null, lastSeenMs: number, startTimeOf: StartTimeReader) => boolean;
-  /** Reads a pid's start time. Default: `processStartTime` (on macOS, one `ps` per call). */
+  /** Reads a pid's start time. Default: this platform's reader (`/proc`, `ps`, PowerShell). */
   startTimeOf?: StartTimeReader;
   heartbeatMs?: number;
 }
@@ -218,7 +219,7 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
       const visible = holder !== null && holder.host === me.host && holder.pidns === me.pidns;
       return holderIsGone(visible ? holder : null, lastSeenMs, UNSEEN_STALE_MS, startTimeOf);
     });
-  const readStartTime = options.startTimeOf ?? processStartTime;
+  const readStartTime = options.startTimeOf ?? startTimeReader(process.platform);
   const leases = join(options.dir, "leases");
   const tickets = join(options.dir, "tickets");
   /** The files this process wrote and still holds: the heartbeat touches them. */

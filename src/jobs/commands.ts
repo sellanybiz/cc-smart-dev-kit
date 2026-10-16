@@ -374,6 +374,13 @@ async function storeLines(store: LeaseStore, title: string, now: number): Promis
   return lines;
 }
 
+/**
+ * What `job status` says where no memory group can be made (Windows): a job there runs
+ * as a plain child, and the queue is the only thing keeping heavy jobs apart.
+ */
+const WINDOWS_NO_CEILING =
+  "No memory ceiling on this system: Windows has no memory group, so a heavy job runs as a plain child, and the queue is what keeps heavy jobs apart.";
+
 /** `job status`. */
 async function jobStatus(ctx: JobContext): Promise<number> {
   const config = loadJobsConfig(jobsPaths(ctx.paths.home).configFile);
@@ -391,6 +398,7 @@ async function jobStatus(ctx: JobContext): Promise<number> {
       : ` (a memory limit of its group: ${tildify(memory.limit.dir, home)})`;
   ctx.print(`Memory: ${oneDecimal(memory.totalBytes / GIB)} GB${limit}, ${free}.`);
   ctx.print(`Budget for heavy jobs here: ${opened.budget.gb} GB (${opened.budget.why}).`);
+  if (ctx.memory.platform === "win32") ctx.print(WINDOWS_NO_CEILING);
   for (const line of await storeLines(
     opened.machine,
     `This machine (${tildify(opened.machine.dir, home)})`,
