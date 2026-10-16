@@ -257,7 +257,7 @@ import { existsSync as existsSync2, readdirSync as readdirSync2, readFileSync as
 import { join as join4 } from "path";
 
 // src/cli/paths.ts
-import { join as join3 } from "path";
+import { join as join3, sep } from "path";
 
 // src/gateway/paths.ts
 import { homedir } from "os";
@@ -335,7 +335,8 @@ function claudeMemDataDir(env, home) {
   return dir.startsWith("~/") ? join3(home, dir.slice(2)) : dir;
 }
 function tildify(path, home) {
-  return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+  const rest = path.slice(home.length);
+  return path === home || path.startsWith(home) && (rest.startsWith("/") || rest.startsWith(sep)) ? `~${rest}` : path;
 }
 
 // src/browser/legacy.ts
@@ -13984,7 +13985,7 @@ async function omnirouteDoctorLine(ctx) {
 
 // src/setup/instructions.ts
 import { existsSync as existsSync24, readdirSync as readdirSync7, readFileSync as readFileSync26, rmSync as rmSync4 } from "fs";
-import { join as join19, relative, sep } from "path";
+import { join as join19, relative, sep as sep2 } from "path";
 var ALWAYS_ON_FILE = "core.md";
 function optOutFile(stateDir) {
   return join19(stateDir, "no-instructions");
@@ -14027,7 +14028,7 @@ function listInstructionFiles(source) {
   if (!existsSync24(source)) {
     throw new Error(`The plugin's instructions folder is missing: ${source}. Reinstall the plugin.`);
   }
-  const files = readdirSync7(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative(source, join19(entry.parentPath, entry.name)).split(sep).join("/")).sort();
+  const files = readdirSync7(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative(source, join19(entry.parentPath, entry.name)).split(sep2).join("/")).sort();
   if (!files.includes(ALWAYS_ON_FILE)) {
     throw new Error(`The plugin's instructions folder has no ${ALWAYS_ON_FILE}: ${source}. Reinstall the plugin.`);
   }

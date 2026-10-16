@@ -4,7 +4,7 @@ import { existsSync as existsSync6 } from "fs";
 import { join as join5 } from "path";
 
 // src/cli/paths.ts
-import { join as join2 } from "path";
+import { join as join2, sep } from "path";
 
 // src/gateway/paths.ts
 import { homedir } from "os";

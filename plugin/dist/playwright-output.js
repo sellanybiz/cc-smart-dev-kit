@@ -1,9 +1,9 @@
 // @bun
 // src/hooks/playwright-output.ts
-import { isAbsolute, resolve, sep } from "path";
+import { isAbsolute, resolve, sep as sep2 } from "path";
 
 // src/cli/paths.ts
-import { join as join2 } from "path";
+import { join as join2, sep } from "path";
 
 // src/gateway/paths.ts
 import { homedir } from "os";
@@ -220,7 +220,7 @@ function outputFilename(fields, outputDir) {
     return null;
   const name = filename.replace(/^(?:\.[\\/])+/, "");
   const target = resolve(outputDir, name);
-  if (!target.startsWith(outputDir + sep))
+  if (!target.startsWith(outputDir + sep2))
     return null;
   return target;
 }

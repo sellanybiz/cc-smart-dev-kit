@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { type RouterPaths, routerPaths } from "../gateway/paths";
 
 export interface CliPaths extends RouterPaths {
@@ -153,7 +153,13 @@ function claudeMemDataDir(env: Record<string, string | undefined>, home: string)
   return dir.startsWith("~/") ? join(home, dir.slice(2)) : dir;
 }
 
-/** Shows a path with `~` for the home folder, to keep the output short. */
+/**
+ * Shows a path with `~` for the home folder, to keep the output short. The rest keeps its own
+ * separators: on Windows a path under the home folder goes on with `\` (`~\.claude\x`).
+ */
 export function tildify(path: string, home: string): string {
-  return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+  const rest = path.slice(home.length);
+  return path === home || (path.startsWith(home) && (rest.startsWith("/") || rest.startsWith(sep)))
+    ? `~${rest}`
+    : path;
 }

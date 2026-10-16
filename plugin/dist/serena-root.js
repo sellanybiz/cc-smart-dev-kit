@@ -3,7 +3,7 @@
 import { appendFileSync } from "fs";
 
 // src/cli/paths.ts
-import { join as join2 } from "path";
+import { join as join2, sep } from "path";
 
 // src/gateway/paths.ts
 import { homedir } from "os";

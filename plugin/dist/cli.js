@@ -943,7 +943,7 @@ import { existsSync as existsSync5, readdirSync as readdirSync4, readFileSync as
 import { join as join7 } from "path";
 
 // src/cli/paths.ts
-import { join as join6 } from "path";
+import { join as join6, sep } from "path";
 
 // src/gateway/paths.ts
 import { homedir } from "os";
@@ -1009,7 +1009,8 @@ function claudeMemDataDir(env, home) {
   return dir.startsWith("~/") ? join6(home, dir.slice(2)) : dir;
 }
 function tildify(path, home) {
-  return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+  const rest = path.slice(home.length);
+  return path === home || path.startsWith(home) && (rest.startsWith("/") || rest.startsWith(sep)) ? `~${rest}` : path;
 }
 
 // src/browser/legacy.ts
@@ -14837,7 +14838,7 @@ async function omnirouteDoctorLine(ctx) {
 
 // src/setup/instructions.ts
 import { existsSync as existsSync27, readdirSync as readdirSync9, readFileSync as readFileSync30, rmSync as rmSync7 } from "fs";
-import { join as join22, relative, sep } from "path";
+import { join as join22, relative, sep as sep2 } from "path";
 
 // src/setup/managed-markdown.ts
 import { existsSync as existsSync23, readFileSync as readFileSync26 } from "fs";
@@ -15297,7 +15298,7 @@ function listInstructionFiles(source) {
   if (!existsSync27(source)) {
     throw new Error(`The plugin's instructions folder is missing: ${source}. Reinstall the plugin.`);
   }
-  const files = readdirSync9(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative(source, join22(entry.parentPath, entry.name)).split(sep).join("/")).sort();
+  const files = readdirSync9(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative(source, join22(entry.parentPath, entry.name)).split(sep2).join("/")).sort();
   if (!files.includes(ALWAYS_ON_FILE)) {
     throw new Error(`The plugin's instructions folder has no ${ALWAYS_ON_FILE}: ${source}. Reinstall the plugin.`);
   }

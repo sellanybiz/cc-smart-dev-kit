@@ -634,8 +634,9 @@ describe("restore: exactly what setup registered", () => {
       "serena",
       "tavily-websearch",
     ]);
+    // `~` and then the platform's own separators: `~\.claude\.claude.json` on Windows.
     expect(removal.notes).toEqual([
-      "! cannot read ~/.claude/.claude.json: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: playwright, sequential-thinking, serena, tavily-websearch",
+      `! cannot read ${join("~", ".claude", ".claude.json")}: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: playwright, sequential-thinking, serena, tavily-websearch`,
     ]);
     expect(fake.calls).toHaveLength(callsBefore);
     expect(Object.keys(readMcpRecords(fake.paths.stateDir))).toHaveLength(4);
