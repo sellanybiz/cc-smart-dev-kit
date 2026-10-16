@@ -47,6 +47,7 @@ import { platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { liveSessions } from "../hooks/sessions";
+import { openUrlCandidates } from "../machine/open-url";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { atomicWrite } from "../setup/write";
 import {
@@ -63,6 +64,7 @@ import {
   TAB_CONFIG_MARK,
   tabConfigName,
   warpTabConfig,
+  windowsTerminalCommand,
   xfceTerminalCommand,
 } from "./saved-sessions";
 
@@ -382,6 +384,8 @@ export async function runSessions(
     );
   } else if (reopenIn === "xfce-terminal") {
     console.log("--open reopens the stopped ones, each in an XFCE Terminal window of its own.\n");
+  } else if (reopenIn === "windows-terminal") {
+    console.log("--open reopens the stopped ones, each in a Windows Terminal window of its own.\n");
   } else {
     console.log("Warp is not installed here, so no tabs were saved — use the commands above.\n");
   }
@@ -418,12 +422,9 @@ export async function runSessions(
     let opened: boolean;
     if (reopenIn === "warp") {
       const link = `warp://tab_config/${tabConfigName(session)}`;
-      const opener =
-        deps.platform === "win32"
-          ? ["cmd", "/c", "start", "", link]
-          : deps.platform === "darwin"
-            ? ["open", link]
-            : ["xdg-open", link];
+      // Which program opens a link, per platform: `open-url.ts` (the portal uses the same
+      // one). The first candidate is this platform's opener for a desktop link.
+      const opener = openUrlCandidates(deps.platform, link)[0];
       opened = await openOnDesktop(opener, { outlivesCommand: true }, deps);
       // Warp takes one link at a time; two in the same instant open one tab. The first link
       // may have to start Warp itself, so the wait after it is the longer one.
@@ -435,7 +436,10 @@ export async function runSessions(
         );
       }
     } else {
-      const argv = xfceTerminalCommand(session, mainCheckout);
+      const argv =
+        reopenIn === "windows-terminal"
+          ? windowsTerminalCommand(session, mainCheckout)
+          : xfceTerminalCommand(session, mainCheckout);
       opened = argv !== null && (await openOnDesktop(argv, { outlivesCommand: false }, deps));
     }
     failed ||= !opened;

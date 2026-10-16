@@ -14,9 +14,9 @@
  * `command.ts` does the reading, the writing and the opening.
  *
  * NOT PORTED from the project this came from: its Windows shutdown log (`wevtutil qe System`,
- * which told a clean shutdown from a power cut). The plugin is macOS and Linux for now, and
- * on those the sign is the one that needs no log: several sessions that closed in the same
- * moment before the machine started were closed by the shutdown.
+ * which told a clean shutdown from a power cut). Everywhere, including Windows, the sign is
+ * the one that needs no log: several sessions that closed in the same moment before the
+ * machine started were closed by the shutdown (`docs/windows-setup.md` says what that costs).
  */
 
 /** One saved session, as far as its file tells. */
@@ -197,13 +197,30 @@ export function xfceTerminalCommand(session: SavedSession, mainCheckout: string)
   ];
 }
 
-/** Where `--open` brings sessions back: Warp tabs, XFCE Terminal windows, or nowhere. */
-export type ReopenIn = "nowhere" | "warp" | "xfce-terminal";
+/**
+ * The command that opens one session in a Windows Terminal window of its own — the Windows
+ * counterpart of its Warp tab and of the XFCE Terminal window: in the main checkout,
+ * resuming it. `wt.exe` makes a window when the person has none open and a tab in the
+ * window they have, which is what a person asking for their sessions back wants. `cmd /k`
+ * keeps the window open after Claude exits, as a Warp tab does. Null for an id that is not a
+ * session's — it goes into a command line.
+ */
+export function windowsTerminalCommand(
+  session: SavedSession,
+  mainCheckout: string,
+): null | string[] {
+  if (!isSessionId(session.id)) return null;
+  return ["wt.exe", "-d", mainCheckout, "cmd", "/k", `claude --resume ${session.id}`];
+}
+
+/** Where `--open` brings sessions back: Warp tabs, XFCE Terminal or Windows Terminal windows, or nowhere. */
+export type ReopenIn = "nowhere" | "warp" | "windows-terminal" | "xfce-terminal";
 
 /**
  * Picks the terminal from what this machine has. Warp wins wherever it is: its data folder
  * shows it on Windows and macOS, but on Linux that folder does not exist until Warp has run,
- * so there the installed `warp-terminal` counts too. XFCE Terminal is Linux's fallback.
+ * so there the installed `warp-terminal` counts too. XFCE Terminal is Linux's fallback,
+ * Windows Terminal's (`wt.exe`) is Windows's (`docs/windows-setup.md`).
  */
 export function pickReopenTerminal(machine: {
   hasProgram: (name: string) => boolean;
@@ -211,8 +228,10 @@ export function pickReopenTerminal(machine: {
   warpDataFolder: boolean;
 }): ReopenIn {
   const linux = machine.platform === "linux";
+  const windows = machine.platform === "win32";
   if (machine.warpDataFolder || (linux && machine.hasProgram("warp-terminal"))) return "warp";
   if (linux && machine.hasProgram("xfce4-terminal")) return "xfce-terminal";
+  if (windows && machine.hasProgram("wt.exe")) return "windows-terminal";
   return "nowhere";
 }
 

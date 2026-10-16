@@ -56,6 +56,7 @@ import {
   setInstructionsOptOut,
 } from "../setup/instructions";
 import { installLauncher, LAUNCHER_NAME } from "../setup/launcher";
+import { installLauncherCmd } from "../setup/launcher-cmd";
 import { withLock } from "../setup/lock";
 import {
   applyManagedJson,
@@ -194,6 +195,7 @@ function applySetup(
   managed: Managed,
   dryRun: boolean,
   serenaSource: string,
+  platform: NodeJS.Platform,
 ): { changes: string[]; info: string[]; notes: string[] } {
   const short = (path: string) => tildify(path, paths.home);
   const changes: string[] = [];
@@ -206,6 +208,19 @@ function applySetup(
   if (launcher.outcome !== "unchanged") {
     const mark = launcher.outcome === "created" ? "+" : "~";
     changes.push(`${mark} ${short(launcher.path)}: launcher ${launcher.outcome}`);
+  }
+  // Windows gets the `.cmd` twin beside the sh launcher: cmd and PowerShell cannot run the
+  // sh one, and Git Bash can — both do the same thing. `restore` removes whichever is there.
+  if (platform === "win32") {
+    const cmd = installLauncherCmd(paths.binDir, {
+      stateDir: paths.stateDir,
+      bunPath: process.execPath,
+      dryRun,
+    });
+    if (cmd.outcome !== "unchanged") {
+      const mark = cmd.outcome === "created" ? "+" : "~";
+      changes.push(`${mark} ${short(cmd.path)}: launcher ${cmd.outcome}`);
+    }
   }
 
   const set: (readonly [KeyPath, unknown])[] = [[AUTO_UPDATE_KEY, true]];
@@ -684,7 +699,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
 
   // A read-only pass: a key the user set (autoUpdate: false) throws ForeignKeyError here,
   // before anything is asked, written or run, the launcher and the state folder included.
-  const planned = applySetup(paths, managed, true, serenaSource);
+  const planned = applySetup(paths, managed, true, serenaSource, machine.platform);
 
   if (options.dryRun) {
     const wouldRegister = applyMcpServers(mcpPlan, claudeRun, machine.which, true, () => {});
@@ -774,7 +789,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     () => {
       const shortcuts =
         warp.removeShortcuts && warpDone ? removeWarpDesktopEntries(paths, false) : [];
-      const files = applySetup(paths, managed, false, serenaSource);
+      const files = applySetup(paths, managed, false, serenaSource, machine.platform);
       // Which servers setup registered: cc-smart-dev-kit's own state, like the lock — not a
       // user file, so no backup (restore reads it to take exactly those back).
       recordApplied(paths.stateDir, applied, new Date().toISOString());
@@ -795,8 +810,14 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
 
   const pathDirs = (process.env.PATH ?? "").split(delimiter);
   if (!pathDirs.includes(paths.binDir)) {
+    // On Windows the launchers live in `%USERPROFILE%\.local\bin`, which is not on PATH on
+    // a fresh machine: the note names the folder as a Windows path and where to add it,
+    // because `~` means nothing in the Environment Variables window
+    // (`docs/windows-setup.md`).
     console.log(
-      `Note: ${short(paths.binDir)} is not on your PATH. Add it, so the cc-smart-dev-kit command works.`,
+      machine.platform === "win32"
+        ? `Note: ${paths.binDir} is not on your PATH. Add it there (Windows Settings → System → About → Advanced system settings → Environment Variables → Path for your account), then open a new terminal, so the cc-smart-dev-kit command works.`
+        : `Note: ${short(paths.binDir)} is not on your PATH. Add it, so the cc-smart-dev-kit command works.`,
     );
   }
   return ok ? 0 : 1;

@@ -12,10 +12,24 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { hostPlatform } from "../machine/host";
 
-/** The home folder: `$HOME` when set, else the OS's. */
+/**
+ * The home folder: `$HOME` when set, else the OS's.
+ *
+ * On Windows `HOME` is undefined (Bun and Node: `USERPROFILE` holds it), so `USERPROFILE`
+ * answers there. Under Git Bash `HOME` *is* set — Git Bash exports it — so Git Bash, the
+ * command line and this module agree on one folder, which is why the plugin keeps the
+ * POSIX layout (`~/.local/bin`, `~/.local/share`, `~/.config`) on Windows too:
+ * `%USERPROFILE%\.local\bin` and so on (`docs/windows-setup.md`).
+ *
+ * `USERPROFILE` is read only on Windows: a Linux or macOS run whose environment happens to
+ * carry it keeps the same folder as before.
+ */
 function homeDir(env: Record<string, string | undefined> = process.env): string {
-  return env.HOME || homedir();
+  if (env.HOME) return env.HOME;
+  if (hostPlatform(env) === "win32" && env.USERPROFILE) return env.USERPROFILE;
+  return homedir();
 }
 
 /** The paths the router reads; `src/cli/paths.ts` adds the command's own. */

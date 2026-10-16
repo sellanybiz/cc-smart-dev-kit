@@ -43,8 +43,24 @@ import { join as join2 } from "path";
 // src/gateway/paths.ts
 import { homedir } from "os";
 import { join } from "path";
+
+// src/machine/host.ts
+var TEST_HOST_VAR = "CC_SMART_DEV_KIT_TEST_HOST";
+function hostPlatform(env = process.env) {
+  const text = env[TEST_HOST_VAR];
+  if (!text)
+    return process.platform;
+  const given = JSON.parse(text);
+  return given.platform ?? process.platform;
+}
+
+// src/gateway/paths.ts
 function homeDir(env = process.env) {
-  return env.HOME || homedir();
+  if (env.HOME)
+    return env.HOME;
+  if (hostPlatform(env) === "win32" && env.USERPROFILE)
+    return env.USERPROFILE;
+  return homedir();
 }
 function routerPaths(env = process.env) {
   const home = homeDir(env);
@@ -5949,7 +5965,6 @@ function superRefine(fn, params) {
 }
 // src/setup/write.ts
 import {
-  chmodSync,
   closeSync,
   existsSync,
   fsyncSync,
@@ -5966,6 +5981,25 @@ import {
   writeFileSync
 } from "fs";
 import { basename, dirname, join as join3, resolve } from "path";
+
+// src/setup/file-mode.ts
+import { chmodSync, fchmodSync } from "fs";
+function failureIsFatal(platform) {
+  return platform !== "win32";
+}
+function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
+  try {
+    if (typeof fileOrFd === "number")
+      fchmodSync(fileOrFd, mode);
+    else
+      chmodSync(fileOrFd, mode);
+  } catch (error) {
+    if (failureIsFatal(platform))
+      throw error;
+  }
+}
+
+// src/setup/write.ts
 var BACKUPS_DIR = "backups";
 var BACKUP_INFIX = ".bak-cc-smart-dev-kit-";
 var ABSENT_SUFFIX = ".absent";
@@ -6013,7 +6047,7 @@ function writeTemp(file, content, mode) {
     } finally {
       closeSync(fd);
     }
-    chmodSync(temp, mode);
+    setFileMode(temp, mode);
   } catch (error) {
     if (existsSync(temp))
       unlinkSync(temp);
@@ -6052,7 +6086,7 @@ function backupDir(stateDir, file) {
 }
 function makePrivateDir(dir) {
   mkdirSync(dir, { recursive: true, mode: 448 });
-  chmodSync(dir, 448);
+  setFileMode(dir, 448);
 }
 function listBackups(stateDir, file) {
   const dir = backupDir(stateDir, file);
@@ -6068,7 +6102,7 @@ function copyNotExecutable(file, target) {
   const mode = fileMode(file) ?? 384;
   const safeMode = mode & ~73;
   writeFileSync(target, readFileSync(file), { flag: "wx", mode: safeMode });
-  chmodSync(target, safeMode);
+  setFileMode(target, safeMode);
   return mode;
 }
 function backupFile(stateDir, file) {
@@ -8550,10 +8584,9 @@ async function waitForRouter(port, probe, waitMs = 5000) {
 // src/machine/machine.ts
 import { existsSync as existsSync2, readFileSync as readFileSync4 } from "fs";
 var RUN_TIMEOUT_MS = 300000;
-var TEST_HOST_VAR = "CC_SMART_DEV_KIT_TEST_HOST";
 function hostFacts(env) {
   const real = {
-    platform: process.platform,
+    platform: hostPlatform(env),
     arch: process.arch,
     osRelease: () => existsSync2("/etc/os-release") ? readFileSync4("/etc/os-release", "utf8") : null,
     macApp: "/Applications/Warp.app"
@@ -8626,6 +8659,30 @@ function realMachine(env, confirm) {
       throw new Error(`${url} redirected more than 5 times`);
     }
   };
+}
+
+// src/machine/open-url.ts
+function openUrlCandidates(on, url) {
+  if (on === "win32")
+    return [["cmd.exe", "/c", "start", "", url]];
+  if (on === "darwin")
+    return [["open", url]];
+  return [
+    ["xdg-open", url],
+    ["gio", "open", url]
+  ];
+}
+function openUrlOnDesktop(on, url, deps) {
+  for (const argv of openUrlCandidates(on, url)) {
+    const program = argv[0];
+    if (deps.which(program) === null)
+      continue;
+    try {
+      deps.spawn(argv);
+      return program;
+    } catch {}
+  }
+  return null;
 }
 
 // src/mcp/register.ts
@@ -10241,7 +10298,6 @@ import { existsSync as existsSync13, readFileSync as readFileSync15 } from "fs";
 // src/setup/lock.ts
 import {
   closeSync as closeSync2,
-  fchmodSync,
   mkdirSync as mkdirSync4,
   openSync as openSync2,
   readFileSync as readFileSync12,
@@ -10388,7 +10444,7 @@ function tryCreate(file, info, mode) {
     throw error;
   }
   try {
-    fchmodSync(fd, mode);
+    setFileMode(fd, mode);
     writeSync(fd, JSON.stringify(info));
   } finally {
     closeSync2(fd);
@@ -12587,6 +12643,72 @@ function copyDifferences(paths) {
   return out;
 }
 
+// src/setup/launcher-cmd.ts
+var LAUNCHER_CMD_NAME = "cc-smart-dev-kit.cmd";
+var FIND_INSTALL_JS2 = [
+  "const f=process.argv[process.argv.length-1];",
+  "const j=JSON.parse(require('fs').readFileSync(f,'utf8'));",
+  `const e=((j&&j.plugins&&j.plugins['${PLUGIN_ID}'])||[]).find(function(x){`,
+  "return x&&x.scope==='user'&&typeof x.installPath==='string';});",
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
+var BAKED_LINE = /^set "baked_bun=(.*)"$/m;
+function cmdBakedBunPath(script) {
+  const match = BAKED_LINE.exec(script);
+  return match?.[1]?.replace(/"$/, "") ?? null;
+}
+function cmdQuote(value) {
+  return value.replaceAll('"', "");
+}
+function launcherCmdScript(bunPath) {
+  return `@echo off
+rem cc-smart-dev-kit launcher for Windows, for cmd and PowerShell. Written by "cc-smart-dev-kit setup"; setup rewrites it, so do not edit it.
+rem It runs the cc-smart-dev-kit command from the installed version of the cc-smart-dev-kit plugin.
+rem Under Git Bash run the "cc-smart-dev-kit" file beside this one instead: Git Bash runs that one, not this.
+setlocal
+set "baked_bun=${cmdQuote(bunPath)}"
+set "bun="
+if exist "%baked_bun%" set "bun=%baked_bun%"
+if not defined bun if exist "%USERPROFILE%\\.bun\\bin\\bun.exe" set "bun=%USERPROFILE%\\.bun\\bin\\bun.exe"
+if not defined bun if defined BUN_INSTALL if exist "%BUN_INSTALL%\\bin\\bun.exe" set "bun=%BUN_INSTALL%\\bin\\bun.exe"
+if not defined bun for %%I in (bun.exe) do set "bun=%%~$PATH:I"
+if defined bun goto found_bun
+echo cc-smart-dev-kit: bun not found (not at %baked_bun%, not on PATH). Install bun, then run: cc-smart-dev-kit setup 1>&2
+exit /b 1
+:found_bun
+set "config_dir=%CLAUDE_CONFIG_DIR%"
+if not defined config_dir set "config_dir=%USERPROFILE%\\.claude"
+set "installed=%config_dir%\\plugins\\installed_plugins.json"
+if not exist "%installed%" goto not_installed
+set "answer_dir=%TEMP%"
+if not defined answer_dir set "answer_dir=%config_dir%"
+set "answer=%answer_dir%\\cc-smart-dev-kit-lookup-%RANDOM%%RANDOM%.txt"
+"%bun%" -e "${FIND_INSTALL_JS2}" -- "%installed%" > "%answer%" 2>nul
+if not errorlevel 1 goto looked_up
+if exist "%answer%" del "%answer%" >nul 2>&1
+goto not_installed
+:looked_up
+set "install_path="
+set /p install_path=<"%answer%"
+del "%answer%" >nul 2>&1
+if not defined install_path goto not_installed
+if not exist "%install_path%\\dist\\cli.js" goto missing_folder
+rem --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.
+"%bun%" --no-env-file "%install_path%\\dist\\cli.js" %*
+exit /b %ERRORLEVEL%
+:missing_folder
+echo cc-smart-dev-kit: the cc-smart-dev-kit plugin folder is missing: %install_path%. Run: claude plugin install ${PLUGIN_ID} 1>&2
+exit /b 1
+:not_installed
+echo cc-smart-dev-kit: the cc-smart-dev-kit plugin is not installed. Run: claude plugin install ${PLUGIN_ID} 1>&2
+exit /b 1
+`;
+}
+function launcherCmdArgv(cmdPath, args) {
+  return ["cmd.exe", "/c", cmdPath, ...args];
+}
+
 // src/setup/tmux.ts
 import { readFileSync as readFileSync21 } from "fs";
 var TMUX_LINE = "set -g allow-passthrough all";
@@ -12762,6 +12884,57 @@ function runningSessions(files) {
     return [];
   }
   return names.filter((name) => SESSION_FILE.test(name)).map((name) => readSession(join16(files.sessions, name))).filter((session) => session !== null && isRunning(session));
+}
+
+// src/cli/git-bash.ts
+import { win32 } from "path";
+var GIT_BASH_VAR = "CLAUDE_CODE_GIT_BASH_PATH";
+var ACCEPTED_NAMES = ["bash.exe", "sh.exe", "bash", "sh"];
+var GIT_BASH_INSTALLS = [
+  "C:\\Program Files\\Git\\bin\\bash.exe",
+  "C:\\Program Files (x86)\\Git\\bin\\bash.exe"
+];
+function baseName(path) {
+  return path.split(/[\\/]/).findLast((part) => part !== "") ?? path;
+}
+function variableIsUsable(value, facts) {
+  return ACCEPTED_NAMES.includes(baseName(value)) && facts.exists(value);
+}
+function findGitBash(env, facts) {
+  const given = env[GIT_BASH_VAR] ?? "";
+  if (given !== "" && variableIsUsable(given, facts)) {
+    return { ignoredVariable: null, path: given };
+  }
+  const ignoredVariable = given === "" ? null : given;
+  for (const install of GIT_BASH_INSTALLS) {
+    if (facts.exists(install))
+      return { ignoredVariable, path: install };
+  }
+  const git = facts.which("git");
+  if (git !== null) {
+    const beside = win32.join(win32.dirname(git), "..", "bin", "bash.exe");
+    if (facts.exists(beside))
+      return { ignoredVariable, path: beside };
+  }
+  return { ignoredVariable, path: null };
+}
+function checkGitBash(platform, env, facts) {
+  if (platform !== "win32")
+    return null;
+  const { ignoredVariable, path } = findGitBash(env, facts);
+  const ignored = ignoredVariable === null ? null : `${GIT_BASH_VAR} is set to ${ignoredVariable}, which Claude Code ignores (it must name bash.exe, sh.exe, bash or sh, and the file must exist)`;
+  if (path !== null) {
+    return ignored === null ? { ok: true, text: `Git Bash is at ${path}, which the hooks and the Bash tool run through` } : {
+      ok: true,
+      warn: true,
+      text: `Git Bash is at ${path}, which the hooks and the Bash tool run through \u2014 but ${ignored}. Remove it or point it at bash.exe.`
+    };
+  }
+  const found = ignored === null ? "" : ` (${ignored})`;
+  return {
+    ok: false,
+    text: `Git Bash was not found${found}, and on Windows the plugin's hooks run through it: without it Claude Code uses PowerShell and a hook that needs bash errors instead of running. ` + "Install Git for Windows (https://git-scm.com/download/win), or set CLAUDE_CODE_GIT_BASH_PATH to bash.exe, then run: cc-smart-dev-kit doctor"
+  };
 }
 
 // src/cli/live-check.ts
@@ -16801,32 +16974,75 @@ function isExecutable(file) {
     return false;
   }
 }
-function checkLauncher(paths) {
+function isUsableBun(bun, platform) {
+  return platform === "win32" ? existsSync30(bun) : isExecutable(bun);
+}
+function checkLauncher(paths, platform) {
+  const win = platform === "win32";
   const launcher = join30(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
   if (!existsSync30(launcher))
-    return { ok: false, text: `no launcher at ${where}. Run: cc-smart-dev-kit setup` };
-  if (!isExecutable(launcher)) {
-    return {
-      ok: false,
-      text: `the launcher ${where} is not executable. Run: cc-smart-dev-kit setup`
-    };
+    return [{ ok: false, text: `no launcher at ${where}. Run: cc-smart-dev-kit setup` }];
+  if (!win && !isExecutable(launcher)) {
+    return [
+      {
+        ok: false,
+        text: `the launcher ${where} is not executable. Run: cc-smart-dev-kit setup`
+      }
+    ];
   }
   const script = readFileSync34(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
-    return { ok: false, text: `the launcher ${where} is out of date. Run: cc-smart-dev-kit setup` };
+    return [
+      { ok: false, text: `the launcher ${where} is out of date. Run: cc-smart-dev-kit setup` }
+    ];
   }
-  if (!isExecutable(bun)) {
-    return {
-      ok: false,
-      text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-smart-dev-kit setup`
-    };
+  if (!isUsableBun(bun, platform)) {
+    return [
+      {
+        ok: false,
+        text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-smart-dev-kit setup`
+      }
+    ];
   }
+  if (win)
+    return [
+      checkLauncherCmd(paths, where),
+      { ok: true, text: `the launcher ${where} is in place (Git Bash runs it)` }
+    ];
   const result = run2([launcher, "version"]);
   if (!result.ok)
-    return { ok: false, text: `the launcher ${where} does not run: ${result.output}` };
-  return { ok: true, text: `the launcher ${where} runs ${result.output}` };
+    return [{ ok: false, text: `the launcher ${where} does not run: ${result.output}` }];
+  return [{ ok: true, text: `the launcher ${where} runs ${result.output}` }];
+}
+function checkLauncherCmd(paths, shLauncher) {
+  const cmd = join30(paths.binDir, LAUNCHER_CMD_NAME);
+  const where = tildify(cmd, paths.home);
+  if (!existsSync30(cmd)) {
+    return {
+      ok: false,
+      text: `no Windows launcher at ${where}, so cmd and PowerShell cannot run cc-smart-dev-kit (Git Bash runs ${shLauncher}). Run: cc-smart-dev-kit setup`
+    };
+  }
+  const script = readFileSync34(cmd, "utf8");
+  const bun = cmdBakedBunPath(script);
+  if (bun === null || script !== launcherCmdScript(bun)) {
+    return {
+      ok: false,
+      text: `the Windows launcher ${where} is out of date. Run: cc-smart-dev-kit setup`
+    };
+  }
+  if (!isUsableBun(bun, "win32")) {
+    return {
+      ok: false,
+      text: `the Windows launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-smart-dev-kit setup`
+    };
+  }
+  const result = run2(launcherCmdArgv(cmd, ["version"]));
+  if (!result.ok)
+    return { ok: false, text: `the Windows launcher ${where} does not run: ${result.output}` };
+  return { ok: true, text: `the Windows launcher ${where} runs ${result.output}` };
 }
 async function checkMarketplaceAccess(paths, env) {
   const source = marketplaceSource(paths.knownMarketplacesFile, MARKETPLACE, env);
@@ -17189,6 +17405,15 @@ async function omnirouteCheck(paths, env, gateway) {
   return line === null ? [] : [{ info: true, ok: true, text: line.text }];
 }
 function checkTmux(paths, env, machine) {
+  if (machine.platform === "win32") {
+    return [
+      {
+        info: true,
+        ok: true,
+        text: "tmux: not on Windows, so no passthrough line is managed there"
+      }
+    ];
+  }
   if (machine.which("tmux") === null)
     return [];
   const checks = [];
@@ -17223,11 +17448,13 @@ async function doctorChecks(paths, env, { bun, gateway, local, mcp, project, liv
     info: true,
     text: "gateway: not checked on this Bun (its checks send the backend key)"
   };
+  const gitBash = checkGitBash(gateway.machine.platform, env, gateway.machine);
   const checks = [
     runtime,
     checkPlugin(paths),
     checkInstalledVersion(paths),
-    checkLauncher(paths),
+    ...checkLauncher(paths, gateway.machine.platform),
+    gitBash,
     checkInstructions(paths, local.instructionsSource),
     checkProjectImports(paths, local.cwd),
     await checkMarketplaceAccess(paths, env),
@@ -21610,18 +21837,12 @@ var runner = (cmd) => {
   }
 };
 function openBrowser(platform, url, which) {
-  const candidates = platform === "darwin" ? [["open", url]] : [
-    ["xdg-open", url],
-    ["gio", "open", url]
-  ];
-  for (const argv of candidates) {
-    if (which(argv[0] ?? "") === null)
-      continue;
-    try {
+  openUrlOnDesktop(platform, url, {
+    which,
+    spawn: (argv) => {
       Bun.spawn(argv, { stderr: "ignore", stdin: "ignore", stdout: "ignore" });
-      return;
-    } catch {}
-  }
+    }
+  });
 }
 async function main(argv) {
   const refusal = claudeCodeRefusal(process.env);

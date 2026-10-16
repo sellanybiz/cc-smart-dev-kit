@@ -1,5 +1,4 @@
 import {
-  chmodSync,
   closeSync,
   existsSync,
   fsyncSync,
@@ -16,6 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { setFileMode } from "./file-mode";
 
 /**
  * Backups live in the state folder, never beside the file: a settings file linked from a
@@ -92,7 +92,7 @@ function writeTemp(file: string, content: string, mode: number): string {
       closeSync(fd);
     }
     // openSync's mode passes through the umask; set the bits we were asked for.
-    chmodSync(temp, mode);
+    setFileMode(temp, mode);
   } catch (error) {
     if (existsSync(temp)) unlinkSync(temp);
     throw error;
@@ -164,7 +164,7 @@ export function backupDir(stateDir: string, file: string): string {
 /** Makes a folder only its owner can read (0700), whatever the umask. */
 function makePrivateDir(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  chmodSync(dir, 0o700);
+  setFileMode(dir, 0o700);
 }
 
 /** Every backup of `file`, oldest first. */
@@ -190,7 +190,7 @@ export function copyNotExecutable(file: string, target: string): number {
   const mode = fileMode(file) ?? 0o600;
   const safeMode = mode & ~0o111;
   writeFileSync(target, readFileSync(file), { flag: "wx", mode: safeMode });
-  chmodSync(target, safeMode); // the umask may have changed the bits
+  setFileMode(target, safeMode); // the umask may have changed the bits
   return mode;
 }
 

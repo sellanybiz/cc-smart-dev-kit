@@ -33,6 +33,12 @@ import {
 } from "../setup/instructions";
 import { bakedBunPath, LAUNCHER_NAME, launcherScript } from "../setup/launcher";
 import {
+  cmdBakedBunPath,
+  LAUNCHER_CMD_NAME,
+  launcherCmdArgv,
+  launcherCmdScript,
+} from "../setup/launcher-cmd";
+import {
   canReadGitRemote,
   canReadHttp,
   marketplaceCopyVersion,
@@ -56,6 +62,7 @@ import {
   UNREACHABLE_FAILS_AFTER_HOURS,
   updateFiles,
 } from "../update/state";
+import { checkGitBash } from "./git-bash";
 import { type LiveDeps, parseClaudeVersion, readLiveRecord, runLiveCheck } from "./live-check";
 import { type CliPaths, tildify } from "./paths";
 import { projectChecks } from "./project-checks";
@@ -128,35 +135,97 @@ function isExecutable(file: string): boolean {
 }
 
 /**
+ * Is this bun there? On Windows there is no execute bit to check: a `.exe` runs by being
+ * there, so existence is the whole question (and `accessSync(X_OK)` does not answer it the
+ * same way everywhere).
+ */
+function isUsableBun(bun: string, platform: NodeJS.Platform): boolean {
+  return platform === "win32" ? existsSync(bun) : isExecutable(bun);
+}
+
+/**
  * The launcher is compared with the script for the bun baked into it, not with the bun
  * running doctor: another bun on PATH is no reason to rewrite it.
+ *
+ * Windows has two launchers that run the same thing: the `sh` script, which Git Bash and the
+ * project-wired hooks run, and its `.cmd` twin, which cmd and PowerShell run
+ * (`launcher-cmd.ts`). Both carry the same baked bun, and each is compared with its own
+ * script. The `sh` one cannot be started on Windows (no shell will run it there), so its
+ * "does it run" question is answered by the `.cmd`; the mode and the execute bit mean nothing
+ * on Windows either.
  */
-function checkLauncher(paths: CliPaths): Check {
+function checkLauncher(paths: CliPaths, platform: NodeJS.Platform): Check[] {
+  const win = platform === "win32";
   const launcher = join(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
   if (!existsSync(launcher))
-    return { ok: false, text: `no launcher at ${where}. Run: cc-smart-dev-kit setup` };
-  if (!isExecutable(launcher)) {
-    return {
-      ok: false,
-      text: `the launcher ${where} is not executable. Run: cc-smart-dev-kit setup`,
-    };
+    return [{ ok: false, text: `no launcher at ${where}. Run: cc-smart-dev-kit setup` }];
+  if (!win && !isExecutable(launcher)) {
+    return [
+      {
+        ok: false,
+        text: `the launcher ${where} is not executable. Run: cc-smart-dev-kit setup`,
+      },
+    ];
   }
   const script = readFileSync(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
-    return { ok: false, text: `the launcher ${where} is out of date. Run: cc-smart-dev-kit setup` };
+    return [
+      { ok: false, text: `the launcher ${where} is out of date. Run: cc-smart-dev-kit setup` },
+    ];
   }
-  if (!isExecutable(bun)) {
-    return {
-      ok: false,
-      text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-smart-dev-kit setup`,
-    };
+  if (!isUsableBun(bun, platform)) {
+    return [
+      {
+        ok: false,
+        text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-smart-dev-kit setup`,
+      },
+    ];
   }
+  if (win)
+    return [
+      checkLauncherCmd(paths, where),
+      { ok: true, text: `the launcher ${where} is in place (Git Bash runs it)` },
+    ];
   const result = run([launcher, "version"]);
   if (!result.ok)
-    return { ok: false, text: `the launcher ${where} does not run: ${result.output}` };
-  return { ok: true, text: `the launcher ${where} runs ${result.output}` };
+    return [{ ok: false, text: `the launcher ${where} does not run: ${result.output}` }];
+  return [{ ok: true, text: `the launcher ${where} runs ${result.output}` }];
+}
+
+/**
+ * The Windows launcher's own check: the `.cmd` is there, is this version's, and runs. It is
+ * started through `cmd.exe` — a `.cmd` is not an executable, so `Bun.spawn` cannot start one
+ * (`launcherCmdArgv`).
+ */
+function checkLauncherCmd(paths: CliPaths, shLauncher: string): Check {
+  const cmd = join(paths.binDir, LAUNCHER_CMD_NAME);
+  const where = tildify(cmd, paths.home);
+  if (!existsSync(cmd)) {
+    return {
+      ok: false,
+      text: `no Windows launcher at ${where}, so cmd and PowerShell cannot run cc-smart-dev-kit (Git Bash runs ${shLauncher}). Run: cc-smart-dev-kit setup`,
+    };
+  }
+  const script = readFileSync(cmd, "utf8");
+  const bun = cmdBakedBunPath(script);
+  if (bun === null || script !== launcherCmdScript(bun)) {
+    return {
+      ok: false,
+      text: `the Windows launcher ${where} is out of date. Run: cc-smart-dev-kit setup`,
+    };
+  }
+  if (!isUsableBun(bun, "win32")) {
+    return {
+      ok: false,
+      text: `the Windows launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-smart-dev-kit setup`,
+    };
+  }
+  const result = run(launcherCmdArgv(cmd, ["version"]));
+  if (!result.ok)
+    return { ok: false, text: `the Windows launcher ${where} does not run: ${result.output}` };
+  return { ok: true, text: `the Windows launcher ${where} runs ${result.output}` };
 }
 
 /**
@@ -640,6 +709,17 @@ async function omnirouteCheck(paths: CliPaths, env: Env, gateway: DoctorGateway)
  * optional, and so is this.
  */
 function checkTmux(paths: CliPaths, env: Env, machine: Machine): Check[] {
+  // Windows has no tmux, and setup manages `~/.tmux.conf` only where it is installed:
+  // information, never a failure (`docs/windows-setup.md`).
+  if (machine.platform === "win32") {
+    return [
+      {
+        info: true,
+        ok: true,
+        text: "tmux: not on Windows, so no passthrough line is managed there",
+      },
+    ];
+  }
   if (machine.which("tmux") === null) return [];
   const checks: Check[] = [];
   const conf = tildify(paths.tmuxConfFile, paths.home);
@@ -737,11 +817,13 @@ export async function doctorChecks(
     info: true,
     text: "gateway: not checked on this Bun (its checks send the backend key)",
   };
+  const gitBash = checkGitBash(gateway.machine.platform, env, gateway.machine);
   const checks = [
     runtime,
     checkPlugin(paths),
     checkInstalledVersion(paths),
-    checkLauncher(paths),
+    ...checkLauncher(paths, gateway.machine.platform),
+    gitBash,
     checkInstructions(paths, local.instructionsSource),
     checkProjectImports(paths, local.cwd),
     await checkMarketplaceAccess(paths, env),

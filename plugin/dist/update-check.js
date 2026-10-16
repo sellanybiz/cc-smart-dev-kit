@@ -34,8 +34,24 @@ import { join as join2 } from "path";
 // src/gateway/paths.ts
 import { homedir } from "os";
 import { join } from "path";
+
+// src/machine/host.ts
+var TEST_HOST_VAR = "CC_SMART_DEV_KIT_TEST_HOST";
+function hostPlatform(env = process.env) {
+  const text = env[TEST_HOST_VAR];
+  if (!text)
+    return process.platform;
+  const given = JSON.parse(text);
+  return given.platform ?? process.platform;
+}
+
+// src/gateway/paths.ts
 function homeDir(env = process.env) {
-  return env.HOME || homedir();
+  if (env.HOME)
+    return env.HOME;
+  if (hostPlatform(env) === "win32" && env.USERPROFILE)
+    return env.USERPROFILE;
+  return homedir();
 }
 function routerPaths(env = process.env) {
   const home = homeDir(env);
@@ -148,7 +164,6 @@ import { join as join8, relative, sep } from "path";
 // src/setup/lock.ts
 import {
   closeSync,
-  fchmodSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -159,6 +174,25 @@ import {
 } from "fs";
 import { hostname } from "os";
 import { join as join4 } from "path";
+
+// src/setup/file-mode.ts
+import { chmodSync, fchmodSync } from "fs";
+function failureIsFatal(platform) {
+  return platform !== "win32";
+}
+function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
+  try {
+    if (typeof fileOrFd === "number")
+      fchmodSync(fileOrFd, mode);
+    else
+      chmodSync(fileOrFd, mode);
+  } catch (error) {
+    if (failureIsFatal(platform))
+      throw error;
+  }
+}
+
+// src/setup/lock.ts
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
 var LOCK_FILE = "lock";
 var TAKEOVER_SUFFIX = ".takeover";
@@ -295,7 +329,7 @@ function tryCreate(file, info, mode) {
     throw error;
   }
   try {
-    fchmodSync(fd, mode);
+    setFileMode(fd, mode);
     writeSync(fd, JSON.stringify(info));
   } finally {
     closeSync(fd);
@@ -371,7 +405,6 @@ import { existsSync as existsSync2, readFileSync as readFileSync3 } from "fs";
 
 // src/setup/write.ts
 import {
-  chmodSync,
   closeSync as closeSync2,
   existsSync,
   fsyncSync,
@@ -435,7 +468,7 @@ function writeTemp(file, content, mode) {
     } finally {
       closeSync2(fd);
     }
-    chmodSync(temp, mode);
+    setFileMode(temp, mode);
   } catch (error) {
     if (existsSync(temp))
       unlinkSync2(temp);
@@ -474,7 +507,7 @@ function backupDir(stateDir, file) {
 }
 function makePrivateDir(dir) {
   mkdirSync2(dir, { recursive: true, mode: 448 });
-  chmodSync(dir, 448);
+  setFileMode(dir, 448);
 }
 function listBackups(stateDir, file) {
   const dir = backupDir(stateDir, file);
@@ -490,7 +523,7 @@ function copyNotExecutable(file, target) {
   const mode = fileMode(file) ?? 384;
   const safeMode = mode & ~73;
   writeFileSync(target, readFileSync2(file), { flag: "wx", mode: safeMode });
-  chmodSync(target, safeMode);
+  setFileMode(target, safeMode);
   return mode;
 }
 function backupFile(stateDir, file) {

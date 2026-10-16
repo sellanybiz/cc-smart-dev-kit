@@ -1,5 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { Runner } from "../gateway/service";
+import { hostPlatform, TEST_HOST_VAR } from "./host";
+
+export { TEST_HOST_VAR };
 
 /**
  * What machine setup needs from the system, in one place, so a test can hand in fakes:
@@ -41,9 +44,8 @@ const RUN_TIMEOUT_MS = 300_000;
  * Tests only: a JSON object in this variable stands in for the host's facts
  * (`platform`, `arch`, `osRelease`, `macApp`), so a test that runs the CLI as its own
  * process never reads the machine it runs on. Unset, the real values are used.
+ * (`TEST_HOST_VAR` itself lives in `host.ts`, so the platform has one home.)
  */
-export const TEST_HOST_VAR = "CC_SMART_DEV_KIT_TEST_HOST";
-
 interface HostFacts {
   platform: NodeJS.Platform;
   arch: string;
@@ -53,7 +55,7 @@ interface HostFacts {
 
 function hostFacts(env: Record<string, string | undefined>): HostFacts {
   const real: HostFacts = {
-    platform: process.platform,
+    platform: hostPlatform(env),
     arch: process.arch,
     osRelease: () =>
       existsSync("/etc/os-release") ? readFileSync("/etc/os-release", "utf8") : null,

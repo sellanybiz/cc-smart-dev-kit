@@ -70,6 +70,16 @@ function userConfigFile(env: Record<string, string | undefined>, home: string): 
  * Every path the CLI touches, from HOME, CLAUDE_CONFIG_DIR and CLAUDE_MEM_DATA_DIR, so tests
  * can point it anywhere. The router's two paths come from `src/gateway/paths.ts`: the router
  * bundle reads that module, and no CLI path may reach it.
+ *
+ * **Windows keeps this same layout, under `%USERPROFILE%`** (`homeDir()` in
+ * `src/gateway/paths.ts`): Claude Code's own folder is `%USERPROFILE%\.claude`, the
+ * launcher is `%USERPROFILE%\.local\bin\cc-smart-dev-kit` (and its `.cmd` twin beside it),
+ * the state is `%USERPROFILE%\.claude\cc-smart-dev-kit`, the data
+ * `%USERPROFILE%\.local\share\cc-smart-dev-kit`, the gateway's config
+ * `%USERPROFILE%\.config\cc-smart-dev-kit\gateway.json`. Deliberately not `%APPDATA%` or
+ * `%LOCALAPPDATA%`: Git Bash's `$HOME`, PowerShell and this module then name one folder,
+ * and `tildify` keeps working. The reasoning and what it costs:
+ * `docs/windows-setup.md`.
  */
 export function cliPaths(env: Record<string, string | undefined> = process.env): CliPaths {
   const router = routerPaths(env);

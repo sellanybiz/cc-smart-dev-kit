@@ -5,8 +5,24 @@ import { join as join2 } from "path";
 // src/gateway/paths.ts
 import { homedir } from "os";
 import { join } from "path";
+
+// src/machine/host.ts
+var TEST_HOST_VAR = "CC_SMART_DEV_KIT_TEST_HOST";
+function hostPlatform(env = process.env) {
+  const text = env[TEST_HOST_VAR];
+  if (!text)
+    return process.platform;
+  const given = JSON.parse(text);
+  return given.platform ?? process.platform;
+}
+
+// src/gateway/paths.ts
 function homeDir(env = process.env) {
-  return env.HOME || homedir();
+  if (env.HOME)
+    return env.HOME;
+  if (hostPlatform(env) === "win32" && env.USERPROFILE)
+    return env.USERPROFILE;
+  return homedir();
 }
 function routerPaths(env = process.env) {
   const home = homeDir(env);
