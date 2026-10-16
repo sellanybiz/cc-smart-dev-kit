@@ -1,7 +1,7 @@
 /**
  * Reading the alert settings where a hook runs: once, cheaply, and never a failure. A file
- * the reader cannot use falls back to the built-in defaults — today's behaviour — with one
- * line for stderr.
+ * the reader cannot use is dropped — every value that can still be read stays (the project's
+ * over the person's over the built-in default) — with one line for stderr.
  */
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -83,7 +83,7 @@ describe("a folder that is no project: no line at all", () => {
   });
 });
 
-describe("a file it cannot use: the defaults, and one line", () => {
+describe("a file it cannot use: what can be read, and one line", () => {
   test("a broken project file: the defaults, and the line names the file", () => {
     const env = hookEnv();
     const repo = makeRepo();
@@ -93,7 +93,7 @@ describe("a file it cannot use: the defaults, and one line", () => {
     expect(here.alerts.sound.value).toBe(false);
     expect(here.problem).toContain("cc-smart-dev-kit.json: worktree: unknown field");
     expect(here.problem).toStartWith(
-      "cc-smart-dev-kit: the alerts fall back to the built-in defaults (",
+      "cc-smart-dev-kit: the alerts use the settings that can be read (",
     );
   });
 
@@ -105,6 +105,26 @@ describe("a file it cannot use: the defaults, and one line", () => {
     const here = alertsAt(cliPaths(env), tempDir("not-git"), env);
     expect(here.alerts.usagePercent.value).toBe(85);
     expect(here.problem).toContain(`Invalid ${file}: not valid JSON`);
+  });
+
+  test("a broken personal file keeps the PROJECT's alerts: only the person's values are lost", () => {
+    // The project's `workflow.alerts` is the team's decision, so a broken personal file
+    // drops the person's values and never the project's (`resolve.ts`: a hook keeps the
+    // project's). Only the value the personal file alone held falls to the built-in default.
+    const env = hookEnv();
+    const repo = makeRepo();
+    const file = personalWorkflowFile(cliPaths(env));
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "{ not json");
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      requires: ">=0.4",
+      workflow: { alerts: { events: ["needs-you"], usagePercent: 90 } },
+    });
+    const here = alertsAt(cliPaths(env), repo, env);
+    expect(here.problem).toContain(`Invalid ${file}: not valid JSON`);
+    expect(here.alerts.events).toEqual({ value: ["needs-you"], source: "project" });
+    expect(here.alerts.usagePercent).toEqual({ value: 90, source: "project" });
+    expect(here.alerts.sound).toEqual({ value: false, source: "default" });
   });
 
   test("a project file that needs a newer plugin: the defaults, and the line says so", () => {

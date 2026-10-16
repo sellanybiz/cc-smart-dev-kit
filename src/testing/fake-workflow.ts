@@ -41,6 +41,7 @@ export function defaultResolved(): ResolvedWorkflow {
     mergeMethod: at("merge"),
     openPr: at("off"),
     reviewBeforePush: at(true),
+    reviewAgents: at(["cc-smart-dev-kit:reviewer"]),
     switches: {
       jobRoute: at(false),
       sessionNames: at(false),

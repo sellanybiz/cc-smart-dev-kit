@@ -302,7 +302,7 @@ describe("which stops get an alert", () => {
     const read = readAlertContext(paths, NOW, { ...AT_LIMIT, cwd: home });
     expect(read.alerts.events.source).toBe("default");
     expect(read.alertsProblem).toStartWith(
-      "cc-smart-dev-kit: the alerts fall back to the built-in defaults (Invalid ",
+      "cc-smart-dev-kit: the alerts use the settings that can be read (Invalid ",
     );
     // The alert itself is unchanged: the settings only fell back, they did not break it.
     expect(

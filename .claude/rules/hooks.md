@@ -26,12 +26,20 @@ Each spec in `src/hooks/specs.ts` says who wires it (`wiring`):
   README the same). Today: the worktree engine (WorktreeCreate, WorktreeRemove,
   SubagentStop). No `ownHooks` step: the wiring is the project's opt-in.
 
-**Never wire WorktreeCreate, WorktreeRemove or SubagentStop in `hooks.json`.** A
-WorktreeCreate hook replaces Claude Code's own creation in every project where it is wired,
-for sessions and subagents, and one that prints no folder makes the creation fail (proved
-live). So a plugin WorktreeCreate cannot step aside for a project that did not opt in, and a
-hook-made worktree loses Claude Code's lock, its cleanup marker, `-w "#123"` and its Git LFS
-handling. `entries.test.ts` fails on a worktree event in `hooks.json`.
+**Never wire WorktreeCreate or WorktreeRemove in `hooks.json`, and never the engine's
+`subagent-stop`.** A WorktreeCreate hook replaces Claude Code's own creation in every project
+where it is wired, for sessions and subagents, and one that prints no folder makes the
+creation fail (proved live). So a plugin WorktreeCreate cannot step aside for a project that
+did not opt in, and a hook-made worktree loses Claude Code's lock, its cleanup marker,
+`-w "#123"` and its Git LFS handling. `subagent-stop` is on that list for the same reason:
+it removes the worktree of the subagent that stopped, and which worktrees a project keeps is
+the project's decision, so it stays wired by the project.
+
+**A plugin SubagentStop hook that touches no worktree is fine** (today: `review-record`
+only). It can be silent for a project that never opted in, it removes nothing, and no other
+SubagentStop hook competes with it. `entries.test.ts` fails when `hooks.json` wires
+WorktreeCreate, WorktreeRemove, or a SubagentStop entry that runs anything but
+`review-record` — so `subagent-stop` can never creep in.
 
 ## The plugin's hooks: shell form, through the bun shim
 
@@ -259,8 +267,12 @@ PreToolUse decision is JSON, and SessionStart's text goes into the session's con
   `git worktree add` 500 s, `git worktree remove` 50 s).
 - PreToolUse runs before every matching tool call: keep it fast. No network, except where
   the guard's question *is* about the network — the merge guard's read-only `gh` calls (10 s
-  each, against its own 30 s, and only for a command that really asks for a merge). Every git
-  call in a guard takes `GUARD_GIT_TIMEOUT_MS` (5 s) or less, against the hook's own 10 s.
+  each, and only for a command that really asks for a merge). **The merge guard also gives
+  itself one deadline** (`GUARD_BUDGET_MS`, 25 s of its 30 s): each call gets the smaller of
+  its own limit and the time left, and when too little is left for the next call the guard
+  asks instead of overrunning — a PreToolUse hook Claude Code has to kill blocks nothing, so
+  an overrun would be fail-open. Every git call in a guard takes `GUARD_GIT_TIMEOUT_MS` (5 s)
+  or less, against the hook's own 10 s.
 - A long job (installing packages in a new worktree) gets the long timeout; a guard
   gets a short one.
 - A timeout that can leave something half done (a worktree) has to say how to finish by

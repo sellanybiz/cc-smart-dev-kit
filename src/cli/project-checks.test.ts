@@ -311,10 +311,38 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     wireOnly(repo, [], {
       PostToolUse: [{ matcher: "*", hooks: [{ type: "command", command: "./log.sh" }] }],
     });
+    // review-record runs on SubagentStop, not PostToolUse, so a PostToolUse "*" never meets it.
     expect(check(repo)).toEqual([
       both("after-merge", "./log.sh", "PostToolUse (Bash, PowerShell)"),
       both("serena-root", "./log.sh", "PostToolUse (mcp__serena__activate_project)"),
     ]);
+  });
+
+  test("a project hook on SubagentStop is the engine's own line: no 'second copy' warning", () => {
+    // Every project that wires the worktree engine has a SubagentStop line, and the plugin's
+    // review-record shares that event: they are different pieces, so pairing them would warn
+    // on every healthy project. The engine's own check is what judges those lines.
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", prefix: "app-wt-" },
+    });
+    writeClaudeFile(repo, "settings.json", {
+      hooks: {
+        SubagentStop: [
+          {
+            hooks: [
+              {
+                type: "command",
+                command: '"$HOME/.local/bin/cc-smart-dev-kit" hook subagent-stop',
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const lines = check(repo);
+    expect(lines.some((line) => line.includes("review-record"))).toBe(false);
+    expect(lines.some((line) => line.includes("both may answer"))).toBe(false);
   });
 
   test("no cc-smart-dev-kit.json: the plugin hooks are silent, so nothing can answer twice", () => {

@@ -278,6 +278,10 @@ function ownCopyLines(
     if (MACHINE_WIDE_HOOKS.includes(hook.name)) continue;
     for (const subject of hook.subjects) {
       for (const handler of sources.flatMap((file) => wiredHandlers(file, hook.event, subject))) {
+        // The engine's own lines (`cc-smart-dev-kit hook subagent-stop`) are the plugin's
+        // project-wired hooks, never a copy of this one: `SubagentStop` carries both, and the
+        // engine's own check above judges them. Only a different command may be a copy.
+        if (PROJECT_HOOKS.some((spec) => runsProjectHook(handler.command, spec.name))) continue;
         const key = JSON.stringify([hook.name, hook.event, handler.file, handler.command]);
         const entry = found.get(key) ?? { hook, handler, subjects: [] };
         if (subject !== null) entry.subjects.push(subject);

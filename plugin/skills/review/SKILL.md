@@ -130,6 +130,14 @@ fix, start **one** `cc-smart-dev-kit:reviewer` agent (model and effort: the core
 - **The brief:** the diff (or how to get it: base and branch), what the change is meant to
   do, your own edge-case list, and whether the session pointed a language-server tool at this
   checkout.
+- **Commit before you start it, and do not commit while it runs.** With `reviewBeforePush`
+  on, the record of the review is written by the plugin's `review-record` hook: Claude Code
+  tells it when a subagent finishes, and when that agent is one the workflow's `reviewAgents`
+  lists (the plugin's own reviewer by default) it records the commit the working folder is on
+  at that moment. The merge guard reads that record — for the pull request's head commit —
+  before a merge it would make with no person watching. So the reviewer must read the commit
+  the record will name: commit your own fixes first, and commit nothing until it has
+  finished.
 - **Not in your agent list** (the plugin is off, or the session started before it
   existed)? Use `general-purpose`, paste the reviewer agent's instructions (the cc-smart-dev-kit
   plugin's `agents/reviewer.md`) into the brief, and say so.
@@ -138,11 +146,9 @@ fix, start **one** `cc-smart-dev-kit:reviewer` agent (model and effort: the core
   reached", read yourself, or write it down as not verified in the pull request.
 - When it returns, run `git status --short` and revert anything it changed (a stand-in can
   edit), and say so.
-- **Record it, once the fixes are committed:** `cc-smart-dev-kit workflow review-done` (a commit
-  with `--sha <commit>`). It writes the head commit into the repository's review record, and
-  the merge guard reads that record — for the pull request's head commit — before a merge it
-  would make with no person watching. Commit the review's fixes first: a record of an older
-  commit does not cover the newer one.
+- **Never record it yourself.** `cc-smart-dev-kit workflow review-done` refuses inside Claude Code:
+  a record a session writes is the session's own word, which is what the hook above exists to
+  replace. The command is for the person's own terminal, to record one by hand.
 
 ## Then
 
