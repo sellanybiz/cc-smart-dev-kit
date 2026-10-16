@@ -10,14 +10,67 @@ from), named `cc-smart-dev-kit`.
 
 ## Install
 
-You need macOS, Linux or Windows (native Windows; the parts that are `sh` scripts run
-through Git Bash there — [Windows](#windows)),
-[Claude Code](https://code.claude.com), [Bun](https://bun.sh) 1.4.3 or later (an older
-Bun would send a backend's key through a proxy and would ignore the flags that keep a
-project's `.env` files and `bunfig.toml` out of the plugin; `bun --version` shows yours),
-and read access to this repo with git (an SSH key, or a git credential helper when the repo
-is private). On an older Bun only `doctor`, `restore`, `version` and `--help` run, and the
-hooks do not run at all: the hook shim stops before starting one.
+**One command installs the plugin.** It checks the machine, installs or upgrades
+[Bun](https://bun.sh) when it is missing or older than 1.4.3, adds the three marketplaces,
+installs the plugin, runs its first setup (or the move from `anymodel`, on a machine that
+still has the old names), asks for the three things only you have — the browser's token,
+the gateway's key, the Tavily key — and ends with `doctor`. It asks before it installs or
+upgrades anything, it prints the exact command that retries a step that failed, and running
+it again goes on from there.
+
+`<owner>/cc-smart-dev-kit` is the repository, and it is the script's argument (the script
+names no owner: the `repository` field of `plugin/.claude-plugin/plugin.json` is where the
+plugin reads its own). This repo is private, so start it with `gh`, which sends the script's
+own bytes down the pipe:
+
+```sh
+gh api repos/<owner>/cc-smart-dev-kit/contents/install.sh -H "Accept: application/vnd.github.raw" | bash -s -- <owner>/cc-smart-dev-kit
+```
+
+A public fork can be installed from the raw URL instead:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/<owner>/cc-smart-dev-kit/main/install.sh | bash -s -- <owner>/cc-smart-dev-kit
+```
+
+On native Windows the same installer is `install.ps1`, for PowerShell 5.1 and `pwsh` — the
+same steps and the same words:
+
+```powershell
+& ([scriptblock]::Create((gh api repos/<owner>/cc-smart-dev-kit/contents/install.ps1 -H "Accept: application/vnd.github.raw" | Out-String))) <owner>/cc-smart-dev-kit
+```
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/<owner>/cc-smart-dev-kit/main/install.ps1))) <owner>/cc-smart-dev-kit
+```
+
+Started that way the script runs inside your PowerShell session, so a refusal (exit 2) ends
+that window: its last lines say why. `pwsh -File install.ps1 <owner>/cc-smart-dev-kit`, from
+a copy of the file, gives you the exit code instead and leaves your session alone.
+
+- **Run it in your own terminal.** Every question reads the terminal, never the pipe the
+  script arrived on, and the installer refuses to run inside a Claude Code session: it may
+  replace the router that session's own model traffic goes through.
+- `--dry-run` (`-DryRun` on Windows) prints the plan for this machine and changes nothing —
+  no command that writes, no network.
+- It never writes a secret file and never puts a secret on a command line: each key goes to
+  the plugin's own command on stdin, and that command owns the file.
+- Exit codes: 0 done, 1 a step failed (the line names the command that retries it), 2
+  refused (inside a Claude Code session, a question answered no, or no terminal).
+
+What you need first: macOS, Linux or Windows (native Windows; the parts that are `sh`
+scripts run through Git Bash there — [Windows](#windows)),
+[Claude Code](https://code.claude.com) on your PATH, and read access to this repo with git
+(an SSH key, or a git credential helper when the repo is private — `gh auth login`, then
+`gh auth setup-git`). The installer checks all three and says how to fix what is missing.
+On a Bun older than 1.4.3 only `doctor`, `restore`, `version` and `--help` run, and the
+hooks do not run at all: the hook shim stops before starting one (an older Bun would also
+send a backend's key through a proxy, and would ignore the flags that keep a project's
+`.env` files and `bunfig.toml` out of the plugin).
+
+### By hand
+
+The same install, step by step, for a machine where you would rather run it yourself.
 
 1. Add the marketplace. `<owner>/cc-smart-dev-kit` is where this repo lives: the `repository`
    field of `plugin/.claude-plugin/plugin.json`. Add the marketplaces of the two
@@ -68,6 +121,27 @@ hooks do not run at all: the hook shim stops before starting one.
    ([The browser](#the-browser)); without the token, the browser tools do not work.
 
 After that, use `cc-smart-dev-kit setup` to set up again (for example after an update).
+
+## What's new in 0.4.2
+
+- **One command installs the plugin** ([Install](#install)): `install.sh` for macOS and
+  Linux, `install.ps1` for native Windows, the same steps and the same words. Each step
+  prints one line and is skipped when it is already done, so a second run only fixes what is
+  missing. It asks before it installs or upgrades Bun, asks for the browser's token, the
+  gateway's key and the Tavily key (each skippable, never echoed, never printed), and ends
+  with `doctor`. `--dry-run` prints the plan for this machine and changes nothing. A step
+  that fails stops with the exact command that retries it; running the installer again goes
+  on from there. It refuses inside a Claude Code session, and it never writes a secret file
+  or passes a secret on a command line: each key reaches the plugin's own command on stdin.
+- **`cc-smart-dev-kit setup --tavily-key-stdin`** ([MCP servers](#mcp-servers)): the Tavily
+  key on stdin, never an argument. setup writes it to the key file it reads a key from
+  (`~/.claude/cc-smart-dev-kit/tavily.key`, mode 600, through the same atomic writer as the
+  browser's token) and then treats it as a key from that file, so a later setup keeps it.
+- **Adding the new marketplace does not reuse the old one** ([Moving from
+  anymodel](#moving-from-anymodel)): proved live on a machine that still had the `anymodel`
+  marketplace — adding this repo's source made a SECOND marketplace, named
+  `cc-smart-dev-kit`. The installer and the move both rely on it, so "already added" is a
+  marketplace's own name, never its source.
 
 ## What's new in 0.4.1
 
@@ -176,6 +250,7 @@ differs:
 | Part | On Windows |
 |---|---|
 | The `sh` parts | Need **Git Bash** (Git for Windows): Claude Code runs a shell-form hook and the Bash tool through it, and the plugin's own hooks are `sh` scripts. `doctor` finds it, or says `✗ Git Bash was not found`. |
+| The installer | [`install.ps1`](#install) for PowerShell 5.1 and `pwsh`: the same steps and the same words as `install.sh`, with `-DryRun` in place of `--dry-run`. What it installs needs Git Bash (the row above). |
 | The launcher | `~/.local/bin/cc-smart-dev-kit` for Git Bash, and `cc-smart-dev-kit.cmd` beside it for `cmd` and PowerShell. `setup` writes both. |
 | Every path | The same layout as Linux and macOS, under `%USERPROFILE%` (`%USERPROFILE%\.claude`, `…\.local\share\cc-smart-dev-kit`, `…\.config\cc-smart-dev-kit`). |
 | The gateway | A per-user **Scheduled Task** instead of the systemd units. A restart refuses requests for a moment (Claude Code retries them), and a stop cuts the answers in flight. |
@@ -211,6 +286,7 @@ Five pages say how, and what still has to be tested there:
 | `cc-smart-dev-kit setup --project <dir>` | Reads the auto-mode entries from the project in `<dir>`, not from the folder you are in. |
 | `cc-smart-dev-kit setup --warp` | Also installs the Warp terminal, then its Claude plugin. The commands are shown first and asked; `sudo` asks for your password. |
 | `cc-smart-dev-kit setup --remove-warp` | Removes the Warp terminal, its package source and key, your Warp shortcuts and its Claude plugin. Shown and asked first. |
+| `cc-smart-dev-kit setup --tavily-key-stdin` | Takes the Tavily key on **stdin** (never an argument: a command line is readable in `/proc` and lands in the shell's history), writes it to the key file `~/.claude/cc-smart-dev-kit/tavily.key` (mode 600, atomically) and then treats it as a key from that file, so a later setup keeps it. An empty stdin is refused. This is the [installer](#install)'s way in for the key. |
 | `cc-smart-dev-kit setup --statusline` | Also sets Claude Code's status line to `cc-smart-dev-kit statusline`, as a key cc-smart-dev-kit owns, without asking (also after an earlier "no"). It never replaces a status line you set: one you set yourself, also after setup had set it, stops setup before it writes anything, and `restore` leaves it. |
 | `cc-smart-dev-kit statusline` | The status line itself: plan usage, a warning from 85 %, and any gateway fallback in use. Reads the JSON Claude Code passes on stdin. |
 | `cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>]` | Which models answered on this machine, per session, from Claude Code's transcripts: the main session's replies by model, and apart, its subagents (how each was launched, the model of each reply, the share on Opus). Default: the last 6 hours. It also shows auto mode's safety checks, which the gateway's router counted, by day, with the tokens each answer reported (below). Read only; no message text. |
@@ -433,13 +509,19 @@ that version's names: its folders (`~/.config/anymodel`, `~/.claude/anymodel`,
 (`~/.local/bin/anymodel`), its router units (`anymodel-router`), the slots in
 `gateway.json`, and the old names in `settings.json` and `~/.claude/CLAUDE.md`.
 
-Install this version first, and **name the marketplace in the install line**. While the old
-`anymodel` marketplace is added, a bare `claude plugin install cc-smart-dev-kit` installs
-the copy that comes from `anymodel` (`cc-smart-dev-kit@anymodel`), and removing that
-marketplace later takes its copy with it: `cc-smart-dev-kit@cc-smart-dev-kit` is the one to
-install.
+**The [one command](#install) does the move.** It sees a machine that still has the old
+names, adds the marketplaces, installs this version, and runs `migrate` instead of `setup` —
+then asks for the same three things only you have. Run it in your own terminal: `migrate`
+refuses inside a Claude Code session, because it replaces the router that session's own model
+traffic goes through, and it says to restart your sessions afterwards.
 
-The `cc-smart-dev-kit` command does not exist on your machine yet — the old launcher
+**Name the marketplace in the install line** either way. While the old `anymodel` marketplace
+is added, a bare `claude plugin install cc-smart-dev-kit` installs the copy that comes from
+`anymodel` (`cc-smart-dev-kit@anymodel`), and removing that marketplace later takes its copy
+with it: `cc-smart-dev-kit@cc-smart-dev-kit` is the one to install. The one command does that
+itself.
+
+By hand: the `cc-smart-dev-kit` command does not exist on your machine yet — the old launcher
 `~/.local/bin/anymodel` is the only one there — so run `migrate` from the plugin folder,
 exactly as step 3 of [Install](#install) runs `setup`. Put the installed version in place of
 `<version>`: the install prints no version, so read it with
@@ -452,10 +534,18 @@ claude plugin install cc-smart-dev-kit@cc-smart-dev-kit
 bun --no-env-file --config="$plugin/bunfig.toml" "$plugin/dist/cli.js" migrate
 ```
 
-Add the marketplace by its **new** name, as the first line does. The old source is already
-added, and Claude Code reuses a marketplace already added from that source rather than making
-a second one (its own documentation; the move has not been proved live on a 0.2.x machine, so
-treat it as likely, not certain).
+Add the marketplace by its **new** name, as the first line does. Adding it makes a SECOND
+marketplace: it does **not** reuse the one already added from the same source. **Proved live**
+(Claude Code 2.1.301, 2026-10-16) on a machine that had the old marketplace added — the source
+`<owner>/anymodel` — where `claude plugin marketplace add <owner>/cc-smart-dev-kit` cloned the
+repo and added a marketplace named `cc-smart-dev-kit` (`✔ Successfully added marketplace:
+cc-smart-dev-kit (declared in user settings)`), and `claude plugin marketplace list` then
+showed both. So "a marketplace is already added" means a marketplace with that **name**, which
+is the key `known_marketplaces.json` uses — and the old `anymodel` marketplace stays added,
+with its plugins, until the end of the move: `migrate`'s last step uninstalls the old plugin
+and removes the old marketplace (it asks first), and the two commands near the end of this
+section are the by-hand way. Removing a marketplace also uninstalls the plugins installed from
+it (`docs/claude-code-contract.md` § Install and update), which is why the old one goes last.
 
 The new plugin shows `✘ failed to load` too, until its two companions' marketplaces are
 added: `claude plugin marketplace add thedotmack/claude-mem` and
@@ -1356,7 +1446,9 @@ folders. Registered for the user, the names stay and the servers stay.
   key the server is skipped, and setup says so. A key file others can read, or an empty one,
   is refused with the command that fixes it — never with the key in it. On Windows a mode says
   nothing (the profile's ACL protects the file), so a key file there is read whatever its bits
-  say. When the key moves to your environment (or goes away), the copy setup wrote is removed
+  say. `cc-smart-dev-kit setup --tavily-key-stdin` takes the key on stdin and writes that key
+  file for you (the [installer](#install) uses it); the key never reaches a command line, and
+  `restore` leaves the file — it is your key, not a settings key setup owns. When the key moves to your environment (or goes away), the copy setup wrote is removed
   with it, and a Tavily server setup had registered is taken back — never a stale registration
   left behind.
 - Versions are **pinned** (`src/mcp/versions.ts`): a server started as `@latest` asks the

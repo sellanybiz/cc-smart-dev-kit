@@ -245,7 +245,12 @@ function setup(options: SetupOptions = {}) {
   };
   // The CLI runs in the temp HOME, never in this repo: doctor reads the CLAUDE.md files of
   // the current folder and the folders above it.
-  const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) => {
+  const run = (
+    args: string[],
+    extraEnv: Record<string, string> = {},
+    cwd = home,
+    input?: string,
+  ) => {
     // The live-router guard runs in the CLI too: no test may reach port 20100.
     const guard = subprocessGuard();
     const result = Bun.spawnSync([process.execPath, ...guard.args, CLI, ...args], {
@@ -253,6 +258,9 @@ function setup(options: SetupOptions = {}) {
       // runs in, and a test that wants one passes its own `cwd`.
       cwd,
       env: { ...env, ...extraEnv, ...guard.env },
+      // `input`: what the command reads on stdin (a key for `--tavily-key-stdin`); the
+      // terminal is inherited otherwise.
+      ...(input === undefined ? {} : { stdin: new Blob([input]) }),
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -402,6 +410,7 @@ function setupOptions(
     statusline: false,
     // No environment of its own: a test that wants a key sets one through `extra`.
     env: {},
+    tavilyKeyStdin: null,
     ...extra,
   };
 }
@@ -2544,6 +2553,38 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     // with the key: this settings file had none of its own.
     expect(restored.stdout).toContain("env.TAVILY_API_KEY, env; everything else kept");
     expect(readJson(join(home, ".claude", "settings.json")).env).toBeUndefined();
+  });
+
+  test("a Tavily key on stdin: the key file 0600, an owned secret, never printed", () => {
+    const { configDir, home, run } = setup();
+    const keyFile = join(configDir, "cc-smart-dev-kit", "tavily.key");
+    // The key arrives on stdin (the installer's way in): `--tavily-key-stdin`, never an
+    // argument, which the process list and the shell's history would show.
+    const result = run(["setup", "--tavily-key-stdin"], {}, home, "tvly-stdin-secret\n");
+    expect(result.exitCode).toBe(0);
+    // It is written to the key file a person may write by hand — the one home of that key —
+    // mode 600, and the settings get the owned secret as they do for a key file.
+    expect(readFileSync(keyFile, "utf8")).toBe("tvly-stdin-secret\n");
+    expect(statSync(keyFile).mode & 0o777).toBe(0o600);
+    expect(readJson(join(home, ".claude", "settings.json")).env.TAVILY_API_KEY).toBe(
+      "tvly-stdin-secret",
+    );
+    // The line names the file, never the value.
+    expect(result.stdout).toContain(
+      "+ ~/.claude/cc-smart-dev-kit/tavily.key: the Tavily key (a secret, mode 600)",
+    );
+    expect(`${result.stdout}${result.stderr}`).not.toContain("tvly-stdin-secret");
+    // A later plain setup keeps it: the key file is where the key comes from now.
+    const again = run(["setup"]);
+    expect(again.exitCode).toBe(0);
+    expect(readJson(join(home, ".claude", "settings.json")).env.TAVILY_API_KEY).toBe(
+      "tvly-stdin-secret",
+    );
+    expect(`${again.stdout}${again.stderr}`).not.toContain("tvly-stdin-secret");
+    // An empty stdin is refused, and nothing is written.
+    const empty = run(["setup", "--tavily-key-stdin"], {}, home, "");
+    expect(empty.exitCode).toBe(1);
+    expect(empty.stderr).toContain("no key on stdin");
   });
 
   test("a Tavily key the environment already has: nothing is written for it", () => {

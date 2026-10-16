@@ -5924,7 +5924,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.4.1",
+  version: "0.4.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -10125,7 +10125,7 @@ function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
 import { existsSync as existsSync9, readFileSync as readFileSync9 } from "fs";
 
 // src/cli/setup.ts
-import { delimiter, join as join11 } from "path";
+import { delimiter, dirname as dirname4, join as join11 } from "path";
 
 // src/browser/chrome.ts
 var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
@@ -10316,7 +10316,7 @@ function resolveWorkflow(paths, projectConfig) {
 // src/workflow/reviews.ts
 import { createHash as createHash2 } from "crypto";
 import { mkdirSync as mkdirSync7, readFileSync as readFileSync10 } from "fs";
-import { dirname as dirname4, join as join13 } from "path";
+import { dirname as dirname5, join as join13 } from "path";
 var REVIEWS_KEPT = 50;
 var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
 function repoKey(repo) {
@@ -10354,7 +10354,7 @@ function recordReview(file, sha, atMs) {
   for (const [commit, time] of Object.entries(record).sort(([, a], [, b]) => b.localeCompare(a)).slice(0, REVIEWS_KEPT)) {
     kept[commit] = time;
   }
-  mkdirSync7(dirname4(file), { mode: 448, recursive: true });
+  mkdirSync7(dirname5(file), { mode: 448, recursive: true });
   atomicWrite(file, `${JSON.stringify(kept, null, 2)}
 `, 384);
   return { added: true, at };

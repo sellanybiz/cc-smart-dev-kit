@@ -231,7 +231,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "0.4.1",
+  version: "0.4.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -11099,7 +11099,7 @@ function legacyBrowserInfo(paths, deps) {
 
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync37, readFileSync as readFileSync42 } from "fs";
-import { dirname as dirname12, join as join37 } from "path";
+import { dirname as dirname13, join as join37 } from "path";
 
 // src/gateway/doctor.ts
 import { existsSync as existsSync18, readFileSync as readFileSync21 } from "fs";
@@ -14387,7 +14387,7 @@ import {
   writeFileSync as writeFileSync7
 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
-import { dirname as dirname11, join as join34 } from "path";
+import { dirname as dirname12, join as join34 } from "path";
 
 // src/hooks/specs.ts
 import { existsSync as existsSync33 } from "fs";
@@ -17769,7 +17769,7 @@ function autoMergeAllowed(resolved, projectConfig, prBase, defaultBranch) {
 import { existsSync as existsSync29, readFileSync as readFileSync32 } from "fs";
 
 // src/cli/setup.ts
-import { delimiter, join as join27 } from "path";
+import { delimiter, dirname as dirname9, join as join27 } from "path";
 var STATUSLINE_KEY = ["statusLine"];
 function shellWord2(path) {
   return /^[\w./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`;
@@ -17878,7 +17878,7 @@ function resolveWorkflow(paths, projectConfig) {
 // src/workflow/reviews.ts
 import { createHash as createHash5 } from "crypto";
 import { mkdirSync as mkdirSync11, readFileSync as readFileSync33 } from "fs";
-import { dirname as dirname9, join as join28 } from "path";
+import { dirname as dirname10, join as join28 } from "path";
 var REVIEWS_KEPT = 50;
 var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
 function repoKey(repo) {
@@ -17916,7 +17916,7 @@ function recordReview(file, sha, atMs) {
   for (const [commit, time] of Object.entries(record).sort(([, a], [, b]) => b.localeCompare(a)).slice(0, REVIEWS_KEPT)) {
     kept[commit] = time;
   }
-  mkdirSync11(dirname9(file), { mode: 448, recursive: true });
+  mkdirSync11(dirname10(file), { mode: 448, recursive: true });
   atomicWrite(file, `${JSON.stringify(kept, null, 2)}
 `, 384);
   return { added: true, at };
@@ -18477,7 +18477,7 @@ import {
   statSync as statSync10,
   writeFileSync as writeFileSync6
 } from "fs";
-import { dirname as dirname10, join as join32 } from "path";
+import { dirname as dirname11, join as join32 } from "path";
 
 // src/hooks/create-lock.ts
 import { createHash as createHash6 } from "crypto";
@@ -18607,7 +18607,7 @@ function badPrefix(prefix) {
   return /[\\/]/.test(prefix) || prefix === "." || prefix === ".." ? `worktrees.prefix "${prefix}" must be part of a folder name, with no "/" or "\\"` : null;
 }
 function configuredFolder(mainCheckout, prefix, name) {
-  return join32(dirname10(mainCheckout), `${prefix}${name.replace(/[\\/]/g, "-")}`);
+  return join32(dirname11(mainCheckout), `${prefix}${name.replace(/[\\/]/g, "-")}`);
 }
 function baseForBranch(worktrees, branch) {
   const bases = worktrees.bases ?? {};
@@ -18700,7 +18700,7 @@ function copyWorktreeInclude(source, target, env) {
   for (const path of ignored.stdout.toString().split("\x00")) {
     if (path === "" || existsSync32(join32(target, path)))
       continue;
-    mkdirSync12(dirname10(join32(target, path)), { recursive: true });
+    mkdirSync12(dirname11(join32(target, path)), { recursive: true });
     copyFileSync(join32(source, path), join32(target, path));
     copied.push(path);
   }
@@ -19309,7 +19309,7 @@ var GIT_ID = {
   GIT_COMMITTER_EMAIL: "live-check@example.com"
 };
 function proveIn(label, repo, expected, deps, env) {
-  const log = join34(dirname11(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
+  const log = join34(dirname12(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
   const session = deps.run([
     "claude",
     "-p",
@@ -20111,7 +20111,7 @@ function ccSmartDevKitImports(text) {
 function checkProjectImports(paths, cwd) {
   const short = (path) => tildify(path, paths.home);
   const imports = [];
-  for (let dir = cwd;; dir = dirname12(dir)) {
+  for (let dir = cwd;; dir = dirname13(dir)) {
     for (const name of PROJECT_MEMORY_FILES) {
       const from = join37(dir, name);
       if (from === join37(paths.claudeConfigDir, "CLAUDE.md") || !existsSync37(from))
@@ -20127,7 +20127,7 @@ function checkProjectImports(paths, cwd) {
         imports.push({ from, path, file });
       }
     }
-    if (dirname12(dir) === dir)
+    if (dirname13(dir) === dir)
       break;
   }
   if (imports.length === 0)
@@ -25980,7 +25980,7 @@ The workflow settings are: ${WORKFLOW_KEYS.join(", ")}`;
 
 // src/workflow/write.ts
 import { mkdirSync as mkdirSync16 } from "fs";
-import { dirname as dirname13 } from "path";
+import { dirname as dirname14 } from "path";
 function unknownKey(key) {
   return new Error(`Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS.join(", ")}`);
 }
@@ -26062,7 +26062,7 @@ function writePersonalSetting(paths, key, value) {
   const shown = tildify(file, paths.home);
   if (Bun.deepEquals(before, data, true))
     return shownNothing(shown, wanted, value);
-  mkdirSync16(dirname13(file), { mode: 448, recursive: true });
+  mkdirSync16(dirname14(file), { mode: 448, recursive: true });
   atomicWrite(file, `${JSON.stringify(data, null, indent)}
 `, 384);
   return shownWrite(shown, wanted, value, text === null);

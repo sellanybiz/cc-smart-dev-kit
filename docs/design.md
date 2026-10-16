@@ -124,6 +124,54 @@ plugin runs needs anything a bunfig would give it, and `src/hooks/bun-shim.test.
 `src/setup/bun-shim.test.ts` run the real bundles with it, in a folder whose own
 `bunfig.toml` preload would print a line.
 
+## The installer
+
+`install.sh` (macOS and Linux) and `install.ps1` (native Windows) are **the one command**
+that takes a machine from nothing to a working plugin: the marketplaces, the plugin
+install, the first `setup` (or `migrate`, when the old `anymodel` names are still there),
+the three secrets only a person has, and `doctor` at the end. Each step prints one line and
+is skipped when it is already done, so a second run only fixes what is missing. A step that
+fails stops with the exact command that retries it, and the run goes on from there next
+time. Exit codes: 0 done, 1 failed, 2 refused.
+
+Four decisions are worth naming:
+
+- **The repository is an argument, and the script names no owner.** The plugin's own rule is
+  that no company or owner name lives in the repo (`neutrality.md`), so the script cannot
+  carry one. `<owner>/<name>` arrives as the argument the README's line passes
+  (`bash -s -- <owner>/<name>`; for PowerShell, `& ([scriptblock]::Create(…)) <owner>/<name>`),
+  or from `CC_SMART_DEV_KIT_REPO`; with neither it prints one usage line and exits 2. It is
+  the same source `claude plugin marketplace add` takes.
+- **Every question reads the terminal, never stdin.** The script arrives on a pipe
+  (`gh api … | bash`, `irm … | iex`), so its stdin is the script itself: a question read
+  from stdin would eat the script. `install.sh` opens the terminal once on fd 3 — the
+  commands it runs get that fd as their stdin, so `setup`, `migrate`, `browser token` and
+  the gateway ask their own questions on the terminal too — and `install.ps1` asks through
+  `Read-Host`, which reads the console. `CC_SMART_DEV_KIT_INSTALL_TTY` points the questions
+  at a file of answers instead: it is how the tests run the installers, not a thing for
+  people.
+- **It never writes a secret file, and never puts a secret on a command line.** A command
+  line is readable in `/proc` and lands in the shell's history, so each key reaches the
+  plugin's own command on stdin and that command owns the file: the browser's token through
+  `browser token`, the gateway's key through `gateway setup --backend-key-stdin`, the Tavily
+  key through `setup --tavily-key-stdin` (which writes the key file a person may write by
+  hand, mode 600, through the same atomic writer as the token). A secret is read with no
+  echo, printed by nothing, and logged by nothing.
+- **It refuses inside a Claude Code session** (`CLAUDECODE`, the same test `migrate` uses):
+  the run may replace the router that session's own model traffic goes through. `--dry-run`
+  prints the plan for the machine and changes nothing — no `claude` command, no setup, no
+  network; it still reads the machine's local facts, so the plan is about *this* machine.
+
+What the installers do **not** own: the plugin's version (it comes from
+`plugin/.claude-plugin/plugin.json`), the marketplace's name (from
+`.claude-plugin/marketplace.json`), and the minimum Bun (`MIN_BUN` in
+`src/build-info/bun.ts` — `scripts/install.test.ts` keeps the copy in each script equal to
+it, the way CI's setup-bun comment says a test keeps its number equal).
+
+The two scripts are proved by `scripts/install.test.ts` (bash, in a fake world: a temp HOME
+and fakes for `claude`, `bun`, `git`, `gh` and `curl` on PATH) and
+`scripts/install-windows-smoke.ps1` (pwsh, on the Windows CI runner, the same shape).
+
 ## The AI gateway
 
 An optional local router between Claude Code and the model providers

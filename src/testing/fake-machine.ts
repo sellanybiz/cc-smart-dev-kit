@@ -222,6 +222,7 @@ export function world(options: WorldOptions = {}) {
       statusline: false,
       // No environment of its own: a test that wants a key sets one through `extra`.
       env: {},
+      tavilyKeyStdin: null,
       ...extra,
     });
   /**
