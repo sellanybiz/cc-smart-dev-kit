@@ -11,8 +11,11 @@
  *     plan. Claude Code raises no `Notification` at that moment, so this covers it.
  *   - `PostToolUse` and `PostToolUseFailure` on the same tools, and `UserPromptSubmit` —
  *     that wait is over: the mark goes, nothing is shown.
- *   - `StopFailure` — the turn died on an error. `rate_limit` is left to the StopFailure
- *     hook (the usage-limit alert): never two alerts for one stop.
+ *   - `StopFailure` — the turn died on an error. A `rate_limit` stop is left to the StopFailure
+ *     hook (the usage-limit alert) only when that hook will show one — a desktop, the gateway
+ *     set up, a plan limit (`stopFailureWillAlert`); otherwise this hook alerts the way it does
+ *     for any other error, on its own routes (the SSH terminal included). Never two alerts
+ *     for one stop, and never none.
  *
  * One wait, one alert: while a question or plan waits, the permission prompt Claude Code may
  * raise about six seconds later is the same wait, not a new one, so a mark file holds from
@@ -27,8 +30,12 @@
  *   - **the SSH terminal**: with no desktop route here but a session over SSH
  *     (`SSH_CONNECTION` or `SSH_TTY`), the same alert goes to the terminal the person is
  *     looking at as OSC 777: through the hook's `terminalSequence` output field, which Claude
- *     Code writes out (and wraps for tmux itself), or straight to `/dev/tty` where a Claude
- *     Code without that field needs it, wrapped for tmux here (`terminalRoute`, `forTty`).
+ *     Code writes out (and wraps for tmux itself) for the events whose answer it reads; for
+ *     an event whose answer it does not read (`StopFailure`), or a Claude Code too old for
+ *     the field, straight to a terminal device — `/dev/tty` first, and, where the hook has no
+ *     controlling terminal at all (2.1.301: it fails with ENXIO), **the session's own
+ *     device**, the pty Claude Code is attached to, found from its pid (`terminal.ts`). Both
+ *     are wrapped for tmux here (`forTty`), and only one of them is ever written to.
  *   - **nothing**: no desktop route and not over SSH: silence, not a failure — a line on
  *     every turn would be noise.
  *
@@ -52,6 +59,7 @@ import { notifyCommand } from "../update/apply";
 import { type HookResult, SILENT } from "./io";
 import type { Env } from "./run";
 import { cleanSessionName } from "./session-name";
+import { stopFailureWillAlert } from "./stop-failure";
 import { lastAssistantText, lastCustomTitle, startedByPeer } from "./transcript";
 
 /** The notification types that mean "Claude needs you", the ones `hooks.json` matches. */
@@ -115,8 +123,9 @@ export const TERMINAL_SEQUENCE_MIN_VERSION = "2.1.141";
 
 /**
  * The events whose hook output Claude Code reads, so `terminalSequence` reaches the terminal
- * there; every other event's answer is ignored and the hook writes `/dev/tty` instead
- * (docs/claude-code-contract.md, proved live on 2.1.301).
+ * there; every other event's answer is ignored and the hook writes a terminal device instead
+ * (`/dev/tty`, then the session's own device: `terminalRoute`; docs/claude-code-contract.md,
+ * proved live on 2.1.301).
  */
 export const TERMINAL_SEQUENCE_EVENTS: readonly string[] = ["Notification", "PreToolUse", "Stop"];
 
@@ -255,6 +264,11 @@ export interface AlertContext {
   nowMs: number;
   /** The session's transcript, when the input names one. */
   transcript: null | string;
+  /**
+   * True when this stop's usage-limit alert is the StopFailure hook's own
+   * (`stopFailureWillAlert`): where it is, this hook stays quiet for a `rate_limit` stop.
+   */
+  limitAlertIsStopFailures: boolean;
 }
 
 /** Writes the mark for a question or a plan, and says what to show. */
@@ -297,9 +311,11 @@ export function alertFor(
   switch (event) {
     case "StopFailure": {
       forget(ctx.mark);
-      // The plan's usage limit is the StopFailure hook's alert (the one that offers a model
-      // slot): never two alerts for one stop.
-      if (input.error === "rate_limit") return null;
+      // The plan's usage limit is the StopFailure hook's alert where that hook will show one
+      // (a desktop, the gateway set up, a plan limit — `stopFailureWillAlert`): never two
+      // alerts for one stop. Where it has no route or no gateway, this hook alerts instead,
+      // on its own routes. A short rate limit is no plan limit, so it is ours too.
+      if (input.error === "rate_limit" && ctx.limitAlertIsStopFailures) return null;
       const key = typeof input.error === "string" ? input.error : "unknown";
       if (readFailed(ctx.failed) === key) return null;
       writeFailed(ctx.failed, key);
@@ -392,7 +408,8 @@ export type TerminalRoute = "field" | "field-if-no-tty" | "tty";
  *     hook that has no terminal at all. Proved live: on 2.1.301 `/dev/tty` fails with ENXIO
  *     (Claude Code gives a hook no controlling terminal), so the field carries the alert.
  *   - `tty`: this event's answer is not read, or the version is known to be too old for the
- *     field: only `/dev/tty` may carry it. With no terminal, nothing is sent.
+ *     field: `/dev/tty` first, and the session's own terminal device when the hook has no
+ *     controlling terminal (`writeSessionTerminal`; only one of the two is ever written to).
  */
 export function terminalRoute(event: string, env: Env): TerminalRoute {
   if (!TERMINAL_SEQUENCE_EVENTS.includes(event)) return "tty";
@@ -510,6 +527,13 @@ export interface NotifyDeps {
   nowMs: number;
   /** Writes one sequence to the session's terminal (`/dev/tty`); false when there is none. */
   writeTerminal: (sequence: string) => boolean;
+  /**
+   * Writes one sequence to the session's **own** terminal device (the pty Claude Code is
+   * attached to, `sessionTerminalDevice`); false when there is none, or it is not this
+   * user's. This is the route for an event whose answer Claude Code does not read, on a
+   * Claude Code whose hook has no controlling terminal (`/dev/tty` fails with ENXIO there).
+   */
+  writeSessionTerminal: (sequence: string) => boolean;
 }
 
 /** The desktop's own notifier command, or null: no desktop route on this machine. */
@@ -557,9 +581,22 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
 
   const transcript = typeof input.transcript_path === "string" ? input.transcript_path : null;
   const cwd = typeof input.cwd === "string" ? input.cwd : null;
+  // Asked only for a limit stop: the StopFailure hook shows that alert itself where it can,
+  // and this hook must not be the second one (or, where it cannot, the missing one).
+  const limitAlertIsStopFailures =
+    event === "StopFailure" && input.error === "rate_limit"
+      ? stopFailureWillAlert(input, {
+          env: deps.env,
+          nowMs: deps.nowMs,
+          paths: deps.paths,
+          platform: deps.platform,
+          which: deps.which,
+        })
+      : false;
   const alert = alertFor(input, event, {
     failed,
     label: sessionLabel(transcript, cwd),
+    limitAlertIsStopFailures,
     mark,
     nowMs: deps.nowMs,
     transcript,
@@ -595,7 +632,13 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
   if (route === "field") return fieldAnswer(sequence);
   const onTty = forTty(sequence, deps.env);
   if (route === "tty") {
-    deps.writeTerminal(onTty);
+    // This event's answer is not read (StopFailure), or the Claude Code is too old for the
+    // field: `/dev/tty` first — the route an older Claude Code needs, wrapped for tmux here
+    // — and, when the hook has no controlling terminal (2.1.301: ENXIO), the session's own
+    // terminal device, which is the pty Claude Code runs on (`writeSessionTerminal`).
+    // Never both: one alert.
+    if (deps.writeTerminal(onTty)) return SILENT;
+    deps.writeSessionTerminal(onTty);
     return SILENT;
   }
   // The version is not known: /dev/tty, or the field when the hook has no terminal at all.

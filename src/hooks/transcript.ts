@@ -65,12 +65,15 @@ function* entriesFromEnd(lines: string[]): Generator<Record<string, unknown>> {
  * The last Claude model that answered in this transcript (`message.model` of its last
  * `assistant` line that names a `claude-…` model): the session's own model. A fallback's
  * answer names the backend's model and Claude Code's own error lines name none, so both are
- * passed over. Only the file's last 512 KB is read. Null when there is none, or no file.
+ * passed over; so is a sidechain line (`isSidechain`), which is a subagent's own
+ * conversation — the model it ran on says nothing about the session's. Only the file's last
+ * 512 KB is read. Null when there is none, or no file.
  */
 export function lastClaudeModel(transcriptPath: string): null | string {
   const lines = tailLines(transcriptPath);
   if (lines === null) return null;
   for (const entry of entriesFromEnd(lines)) {
+    if (entry.isSidechain === true) continue;
     if (entry.type !== "assistant" || !isJsonObject(entry.message)) continue;
     const model = entry.message.model;
     if (typeof model === "string" && model.startsWith("claude-")) return model;
