@@ -172,6 +172,11 @@ one. A duplicate in the files your task changes: unify it now. Promote code to a
 only when a second caller actually appears. Keep the project's structure and boundaries as
 you found them, or cleaner; a needed structural change is asked first.
 
+**Dynamic, not hard-coded.** Read each value from its one source of truth: names, paths, ports,
+URLs, versions, model ids, branches and lists come from the config, the environment or the code
+that owns them; a list on a page, in a doc or in a test is built from its data; facts (the
+default branch, a tool, the platform) are looked up. Configurable where people or projects differ.
+
 **The ownership test:** would I defend this in a senior review? Could I debug it in six months
 with no context? Does it leave the code better than I found it? Any "no" — fix it first.
 
