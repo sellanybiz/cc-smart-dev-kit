@@ -4,6 +4,7 @@
  * here makes the budget and the live check wrong on every job.
  */
 import { describe, expect, test } from "bun:test";
+import { freemem, totalmem } from "node:os";
 import {
   cgroupLimit,
   GIB,
@@ -12,14 +13,24 @@ import {
   machineMemory,
   meminfoBytes,
   ownCgroup,
+  realMemoryFacts,
   sliceBytes,
   userSliceCgroup,
 } from "./memory";
 
 const KB = 1024;
 
-function facts(files: Record<string, string>, platform: NodeJS.Platform = "linux"): MemoryFacts {
-  return { platform, read: (path) => files[path] ?? null, totalmem: () => 999 * GIB };
+function facts(
+  files: Record<string, string>,
+  platform: NodeJS.Platform = "linux",
+  freememBytes = 0,
+): MemoryFacts {
+  return {
+    platform,
+    read: (path) => files[path] ?? null,
+    totalmem: () => 999 * GIB,
+    freemem: () => freememBytes,
+  };
 }
 
 const meminfo = (totalGb: number, availableGb: number) =>
@@ -160,11 +171,39 @@ describe("machineMemory", () => {
   });
 
   test("macOS and others: os.totalmem(), and no free-memory reading", () => {
-    expect(machineMemory(facts({ "/proc/meminfo": meminfo(1, 1) }, "darwin"))).toEqual({
+    expect(machineMemory(facts({ "/proc/meminfo": meminfo(1, 1) }, "darwin", 3 * GIB))).toEqual({
       totalBytes: 999 * GIB,
       availableBytes: null,
       limit: null,
     });
+  });
+
+  test("Windows: os.totalmem() and os.freemem(), and no cgroup file is read", () => {
+    const asked: string[] = [];
+    const windows: MemoryFacts = {
+      platform: "win32",
+      read: (path) => {
+        asked.push(path);
+        return null;
+      },
+      totalmem: () => 32 * GIB,
+      freemem: () => 11 * GIB,
+    };
+    expect(machineMemory(windows)).toEqual({
+      totalBytes: 32 * GIB,
+      availableBytes: 11 * GIB,
+      limit: null,
+    });
+    expect(asked).toEqual([]);
+  });
+});
+
+describe("the machine's own readings", () => {
+  test("the real facts are os.totalmem() and os.freemem()", () => {
+    const real = realMemoryFacts();
+    expect(real.platform).toBe(process.platform);
+    expect(real.totalmem).toBe(totalmem);
+    expect(real.freemem).toBe(freemem);
   });
 });
 

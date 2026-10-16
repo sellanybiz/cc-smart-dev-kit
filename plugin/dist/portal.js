@@ -17545,13 +17545,13 @@ function loadJobsConfig(file) {
 }
 
 // src/jobs/launch.ts
-import { spawn, spawnSync } from "child_process";
+import { spawn, spawnSync as spawnSync2 } from "child_process";
 import { existsSync as existsSync33 } from "fs";
 import { constants as constants3 } from "os";
 
 // src/jobs/memory.ts
 import { readFileSync as readFileSync38 } from "fs";
-import { totalmem } from "os";
+import { freemem, totalmem } from "os";
 var GIB = 1024 ** 3;
 var realReadText = (path) => {
   try {
@@ -17561,7 +17561,7 @@ var realReadText = (path) => {
   }
 };
 function realMemoryFacts() {
-  return { platform: process.platform, read: realReadText, totalmem };
+  return { platform: process.platform, read: realReadText, totalmem, freemem };
 }
 function meminfoBytes(meminfo, field) {
   const match = new RegExp(`^${field}:\\s+(\\d+)\\s*kB\\s*$`, "m").exec(meminfo);
@@ -17624,6 +17624,9 @@ function cgroupLimit(read) {
   return best;
 }
 function machineMemory(facts) {
+  if (facts.platform === "win32") {
+    return { totalBytes: facts.totalmem(), availableBytes: facts.freemem(), limit: null };
+  }
   if (facts.platform !== "linux") {
     return { totalBytes: facts.totalmem(), availableBytes: null, limit: null };
   }
@@ -17652,6 +17655,73 @@ function userSliceCgroup(uid, slice) {
 }
 function sliceBytes(read, uid, slice) {
   return cgroupNumber(read(`/sys/fs/cgroup${userSliceCgroup(uid, slice)}/memory.current`));
+}
+
+// src/jobs/windows.ts
+import { spawnSync } from "child_process";
+var WINDOWS_CALL_TIMEOUT_MS = 1e4;
+var WINDOWS_START_PREFIX = "win:";
+function exitCode(argv) {
+  const [program, ...args] = argv;
+  try {
+    const run = spawnSync(program, args, {
+      stdio: "ignore",
+      timeout: WINDOWS_CALL_TIMEOUT_MS
+    });
+    return run.status ?? -1;
+  } catch {
+    return -1;
+  }
+}
+var realWindowsFacts = {
+  powershell: (script) => {
+    const run = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: WINDOWS_CALL_TIMEOUT_MS
+    });
+    return run.status === 0 ? run.stdout.toString() : null;
+  },
+  taskkill: (pid) => exitCode(["taskkill", "/PID", String(pid), "/T", "/F"])
+};
+function startTimeScript(pid) {
+  return `(Get-Process -Id ${String(pid)} -ErrorAction Stop).StartTime.ToFileTimeUtc()`;
+}
+function windowsStartTicks(pid, facts) {
+  const ticks = facts.powershell(startTimeScript(pid))?.trim() ?? "";
+  return /^\d+$/.test(ticks) ? ticks : null;
+}
+function windowsStartTime(pid, like, facts = realWindowsFacts) {
+  if (like !== undefined && !like.startsWith(WINDOWS_START_PREFIX))
+    return like;
+  const ticks = windowsStartTicks(pid, facts);
+  return ticks === null ? like ?? null : `${WINDOWS_START_PREFIX}${ticks}`;
+}
+function startTimeReader(platform, facts = realWindowsFacts) {
+  if (platform !== "win32")
+    return processStartTime;
+  return (pid, like) => windowsStartTime(pid, like, facts);
+}
+function leaseHolder(platform, facts = realWindowsFacts) {
+  const holder = currentHolder();
+  if (platform !== "win32")
+    return holder;
+  return { ...holder, startTime: windowsStartTime(holder.pid, undefined, facts) };
+}
+function endJobTree(pid, facts = realWindowsFacts) {
+  const code = facts.taskkill(pid);
+  if (code === 0 || code === 128)
+    return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {}
+}
+function processIsGone(pid) {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return error.code !== "EPERM";
+  }
 }
 
 // src/jobs/launch.ts
@@ -17798,15 +17868,21 @@ function spawnAndWait(argv, signals = process, say = () => {
   const [program, ...args] = argv;
   const scope = options.scope ?? null;
   const pollMs = options.pollMs ?? GROUP_POLL_MS;
+  const windows = (options.platform ?? process.platform) === "win32";
+  const windowsFacts = options.windows ?? realWindowsFacts;
   return new Promise((resolve) => {
     const child = spawn(program, args, { stdio: "inherit", detached: true });
     const pgid = child.pid;
     const sendAll = (signal) => {
-      if (pgid !== undefined)
-        signalGroup(pgid, signal);
+      if (pgid !== undefined) {
+        if (windows)
+          endJobTree(pgid, windowsFacts);
+        else
+          signalGroup(pgid, signal);
+      }
       scope?.kill(signal);
     };
-    const isEmpty = () => (pgid === undefined || groupIsEmpty(pgid)) && (scope?.isEmpty() ?? true);
+    const isEmpty = () => (pgid === undefined || (windows ? processIsGone(pgid) : groupIsEmpty(pgid))) && (scope?.isEmpty() ?? true);
     const emptyWithin = async (ms) => {
       const end = Date.now() + ms;
       for (;; ) {
@@ -17851,10 +17927,10 @@ function spawnAndWait(argv, signals = process, say = () => {
 }
 function exitsZero(argv, timeoutMs) {
   const [program, ...args] = argv;
-  return spawnSync(program, args, { stdio: "ignore", timeout: timeoutMs }).status === 0;
+  return spawnSync2(program, args, { stdio: "ignore", timeout: timeoutMs }).status === 0;
 }
 function canRun(program, timeoutMs) {
-  return spawnSync(program, ["--version"], { stdio: "ignore", timeout: timeoutMs }).error === undefined;
+  return spawnSync2(program, ["--version"], { stdio: "ignore", timeout: timeoutMs }).error === undefined;
 }
 function realLaunchFacts(slice, timeoutMs = SYSTEMD_TIMEOUT_MS) {
   const uid = process.getuid?.();
@@ -17888,7 +17964,7 @@ function realScope(slice, unit, read, timeoutMs = SYSTEMD_TIMEOUT_MS) {
   return {
     kill: (signal) => {
       const [program, ...args] = scopeKillArgv(unit, signal);
-      spawnSync(program, args, { stdio: "ignore", timeout: timeoutMs });
+      spawnSync2(program, args, { stdio: "ignore", timeout: timeoutMs });
     },
     isEmpty: () => {
       const text = read(events);
@@ -18330,7 +18406,7 @@ var LOCK_MODE = 436;
 var FILE_MODE = 420;
 var LEFTOVER_MS = 60000;
 function currentFileHolder() {
-  return currentHolder();
+  return leaseHolder(process.platform);
 }
 function parseStoreFile(text) {
   try {
@@ -18381,7 +18457,7 @@ function leaseStore(options) {
     const visible = holder !== null && holder.host === me.host && holder.pidns === me.pidns;
     return holderIsGone(visible ? holder : null, lastSeenMs, UNSEEN_STALE_MS, startTimeOf);
   });
-  const readStartTime = options.startTimeOf ?? processStartTime;
+  const readStartTime = options.startTimeOf ?? startTimeReader(process.platform);
   const leases = join33(options.dir, "leases");
   const tickets = join33(options.dir, "tickets");
   const mine = new Map;
@@ -18968,6 +19044,7 @@ async function storeLines(store, title, now) {
     lines.push("  nothing held, nobody waits");
   return lines;
 }
+var WINDOWS_NO_CEILING = "No memory ceiling on this system: Windows has no memory group, so a heavy job runs as a plain child, and the queue is what keeps heavy jobs apart.";
 async function jobStatus(ctx) {
   const config = loadJobsConfig(jobsPaths(ctx.paths.home).configFile);
   const opened = openStores(ctx, config, ctx.print);
@@ -18978,6 +19055,8 @@ async function jobStatus(ctx) {
   const limit = memory.limit === null ? "" : ` (a memory limit of its group: ${tildify(memory.limit.dir, home)})`;
   ctx.print(`Memory: ${oneDecimal(memory.totalBytes / GIB)} GB${limit}, ${free}.`);
   ctx.print(`Budget for heavy jobs here: ${opened.budget.gb} GB (${opened.budget.why}).`);
+  if (ctx.memory.platform === "win32")
+    ctx.print(WINDOWS_NO_CEILING);
   for (const line of await storeLines(opened.machine, `This machine (${tildify(opened.machine.dir, home)})`, now)) {
     ctx.print(line);
   }

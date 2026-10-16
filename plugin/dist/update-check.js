@@ -93,19 +93,6 @@ function tildify(path, home) {
   return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
 }
 
-// src/setup/bun-config.ts
-import { basename, join as join3 } from "path";
-var BUN_CONFIG_NAME = "bunfig.toml";
-function bunConfigPath(pluginDir) {
-  return join3(pluginDir, BUN_CONFIG_NAME);
-}
-function bunConfigArg(pluginDir) {
-  return `--config=${bunConfigPath(pluginDir)}`;
-}
-function pluginFolderBeside(importDir) {
-  return basename(importDir) === "dist" ? join3(importDir, "..") : join3(importDir, "..", "..", "plugin");
-}
-
 // src/hooks/detached.ts
 import { spawn } from "child_process";
 function detachedArgv(platform, argv) {
@@ -139,6 +126,19 @@ function startDetached(platform, argv, options) {
   } catch (error) {
     options.onError(error instanceof Error ? error.message : String(error));
   }
+}
+
+// src/setup/bun-config.ts
+import { basename, join as join3 } from "path";
+var BUN_CONFIG_NAME = "bunfig.toml";
+function bunConfigPath(pluginDir) {
+  return join3(pluginDir, BUN_CONFIG_NAME);
+}
+function bunConfigArg(pluginDir) {
+  return `--config=${bunConfigPath(pluginDir)}`;
+}
+function pluginFolderBeside(importDir) {
+  return basename(importDir) === "dist" ? join3(importDir, "..") : join3(importDir, "..", "..", "plugin");
 }
 
 // src/setup/instructions.ts
