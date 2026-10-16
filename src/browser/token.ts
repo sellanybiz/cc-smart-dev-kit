@@ -163,6 +163,19 @@ export function readBrowserToken(
 }
 
 /**
+ * How the token file is kept to its owner, in words: its mode on Linux and macOS; on Windows a
+ * mode says nothing, and the user profile's own permissions are what keep it (`isOwnerOnly`).
+ */
+export function tokenProtection(platform: NodeJS.Platform = hostPlatform()): string {
+  return platform === "win32" ? "your user profile's permissions keep it yours" : "mode 600";
+}
+
+/** The line `browser token` prints after a save: the command line's and the portal's one wording. */
+export function tokenSavedLine(file: string, platform: NodeJS.Platform = hostPlatform()): string {
+  return `+ ${file}: the browser token is set (${tokenProtection(platform)})`;
+}
+
+/**
  * Writes the token: the file, mode 0600, in a folder only its owner can read. The token is never
  * printed, returned or logged; the caller prints the path.
  */

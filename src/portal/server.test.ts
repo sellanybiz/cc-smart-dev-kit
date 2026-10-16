@@ -2562,15 +2562,16 @@ describe("the browser card", () => {
       expect(steps.length).toBe(5);
       expect(steps[0]).toContain("Add to Chrome");
       expect(steps[1]).toContain("Allow access to file URLs");
-      expect(steps[4]).toContain("Save it.");
+      expect(steps[4]).toContain("Save it:");
       // The address the person has to paste is on a line of its own, in a code box with a Copy
       // button — not inline in a sentence, where the narrow column broke it mid-word.
       expect(guide).toContain(
         "<pre data-guide-2>chrome://extensions/?id=mmlmfjhmonkocbjadbfplnigmagldckm</pre>",
       );
       expect(guide).toContain('data-copy-node="[data-guide-2]"');
-      // The last step's command is in a box of the same kind.
-      expect(guide).toContain("<pre data-guide-5>");
+      // The last step's command is in a box of the same kind, and the box holds the command
+      // alone, so its Copy button copies something a terminal can run.
+      expect(guide).toContain("<pre data-guide-5>cc-smart-dev-kit browser token</pre>");
       // The old shape — an inline code element under a `<br>`, inside the doctor's grid — is
       // gone from the whole page.
       expect(page.body).not.toContain('<ol class="checks">');

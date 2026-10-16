@@ -42,7 +42,7 @@ import {
   PLAYWRIGHT_EXTENSION_URL,
 } from "./chrome";
 import { legacyBrowserFacts, type ProcessReader } from "./legacy";
-import { readBrowserToken, type TokenDeps } from "./token";
+import { readBrowserToken, type TokenDeps, tokenProtection } from "./token";
 
 export interface BrowserCheck {
   ok: boolean;
@@ -221,10 +221,13 @@ function prerequisiteChecks(paths: CliPaths, deps: BrowserDoctorDeps): BrowserCh
     );
   }
 
-  const token = readBrowserToken(paths, deps);
+  const token = readBrowserToken(paths, deps, deps.platform);
   checks.push(
     token.source === "file"
-      ? line({ ok: true, text: `the browser token is set (${paths.browserTokenFile}, mode 600)` })
+      ? line({
+          ok: true,
+          text: `the browser token is set (${paths.browserTokenFile}, ${tokenProtection(deps.platform)})`,
+        })
       : line({
           ok: false,
           text:

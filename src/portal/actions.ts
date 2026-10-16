@@ -19,7 +19,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
-import { parseBrowserToken, readBrowserToken, writeBrowserToken } from "../browser/token";
+import {
+  parseBrowserToken,
+  readBrowserToken,
+  tokenSavedLine,
+  writeBrowserToken,
+} from "../browser/token";
 import { type Check, checkLine, type DoctorOptions, doctorChecks } from "../cli/doctor";
 import type { CliPaths } from "../cli/paths";
 import { runUpdate } from "../cli/update";
@@ -963,7 +968,7 @@ function browserTokenAction(action: ActionContext, body: Record<string, unknown>
       lines: [
         // The command line's own line, word for word (`src/entries/cli.ts`): the portal
         // shows what `browser token` prints, never a second wording of it.
-        `+ ${action.portal.paths.browserTokenFile}: the browser token is set (mode 600)`,
+        tokenSavedLine(action.portal.paths.browserTokenFile),
         "Start a new Claude session (or restart the running one) to use it.",
       ],
       ok: true,

@@ -190,9 +190,9 @@ export function browserGuide(state: BrowserSetupState): BrowserGuide {
         text: "Press Copy next to PLAYWRIGHT_MCP_EXTENSION_TOKEN=<token> — it copies the whole line.",
       },
       {
-        detail: `${COMMAND} browser token   (paste, then Enter) — or the Browser card in the portal: ${COMMAND} portal`,
+        detail: `${COMMAND} browser token`,
         done: state.tokenSet,
-        text: "Save it.",
+        text: `Save it: run this, paste the line, then press Enter — or paste it into the Browser card of the portal (${COMMAND} portal).`,
       },
     ],
   };

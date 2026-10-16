@@ -11,6 +11,7 @@ import {
   parseBrowserToken,
   readSecretLine,
   readTokenFromStdin,
+  tokenSavedLine,
   writeBrowserToken,
 } from "../browser/token";
 import { COMMAND, VERSION } from "../build-info";
@@ -680,7 +681,7 @@ async function main(argv: string[]): Promise<number> {
         }
         writeBrowserToken(paths, parsed.token);
         // The token itself is never printed, only the file it went to.
-        console.log(`+ ${paths.browserTokenFile}: the browser token is set (mode 600)`);
+        console.log(tokenSavedLine(paths.browserTokenFile));
         console.log("Start a new Claude session (or restart the running one) to use it.");
         return 0;
       }

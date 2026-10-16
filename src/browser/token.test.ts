@@ -18,6 +18,8 @@ import {
   readBrowserToken,
   readSecretLine,
   readTokenFromStdin,
+  tokenProtection,
+  tokenSavedLine,
   writeBrowserToken,
 } from "./token";
 
@@ -223,5 +225,24 @@ describe("reading the token from a terminal", () => {
     expect(fromPipe).toBe("from-the-pipe\n");
     // No prompt when there is nothing to hide from: a pipe already echoes nothing.
     expect(said).toHaveLength(1);
+  });
+});
+
+describe("how the token file is kept to its owner, in words", () => {
+  test("Linux and macOS name the mode; Windows names the profile's permissions", () => {
+    expect(tokenProtection("linux")).toBe("mode 600");
+    expect(tokenProtection("darwin")).toBe("mode 600");
+    expect(tokenProtection("win32")).toBe("your user profile's permissions keep it yours");
+  });
+
+  test("the saved line names the file and never says mode 600 on Windows", () => {
+    expect(tokenSavedLine("/h/.config/t.token", "linux")).toBe(
+      "+ /h/.config/t.token: the browser token is set (mode 600)",
+    );
+    const windows = tokenSavedLine("C:\\Users\\u\\t.token", "win32");
+    expect(windows).toBe(
+      "+ C:\\Users\\u\\t.token: the browser token is set (your user profile's permissions keep it yours)",
+    );
+    expect(windows).not.toContain("mode 600");
   });
 });

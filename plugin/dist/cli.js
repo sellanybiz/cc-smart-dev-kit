@@ -645,6 +645,12 @@ function readBrowserToken(paths, deps = {}, platform = hostPlatform()) {
   }
   return { source: "file", value };
 }
+function tokenProtection(platform = hostPlatform()) {
+  return platform === "win32" ? "your user profile's permissions keep it yours" : "mode 600";
+}
+function tokenSavedLine(file, platform = hostPlatform()) {
+  return `+ ${file}: the browser token is set (${tokenProtection(platform)})`;
+}
 function writeBrowserToken(paths, token) {
   mkdirSync2(dirname2(paths.browserTokenFile), { mode: 448, recursive: true });
   atomicWrite(paths.browserTokenFile, `${token}
@@ -1215,8 +1221,11 @@ function prerequisiteChecks(paths, deps) {
       text: `cannot read the profile's Preferences to check the file:// setting: open ` + `${PLAYWRIGHT_EXTENSION_SETTINGS_URL} in that profile and make sure "Allow access ` + `to file URLs" is on`
     }));
   }
-  const token = readBrowserToken(paths, deps);
-  checks.push(token.source === "file" ? line({ ok: true, text: `the browser token is set (${paths.browserTokenFile}, mode 600)` }) : line({
+  const token = readBrowserToken(paths, deps, deps.platform);
+  checks.push(token.source === "file" ? line({
+    ok: true,
+    text: `the browser token is set (${paths.browserTokenFile}, ${tokenProtection(deps.platform)})`
+  }) : line({
     ok: false,
     text: `the browser token is not set, so the browser cannot connect (${token.reason}): ` + `run: ${SETUP_COMMAND}, then ${TOKEN_COMMAND}`
   }));
@@ -1658,9 +1667,9 @@ function browserGuide(state) {
         text: "Press Copy next to PLAYWRIGHT_MCP_EXTENSION_TOKEN=<token> \u2014 it copies the whole line."
       },
       {
-        detail: `${COMMAND} browser token   (paste, then Enter) \u2014 or the Browser card in the portal: ${COMMAND} portal`,
+        detail: `${COMMAND} browser token`,
         done: state.tokenSet,
-        text: "Save it."
+        text: `Save it: run this, paste the line, then press Enter \u2014 or paste it into the Browser card of the portal (${COMMAND} portal).`
       }
     ]
   };
@@ -28336,7 +28345,7 @@ ${HELP}`);
           return 1;
         }
         writeBrowserToken(paths, parsed.token);
-        console.log(`+ ${paths.browserTokenFile}: the browser token is set (mode 600)`);
+        console.log(tokenSavedLine(paths.browserTokenFile));
         console.log("Start a new Claude session (or restart the running one) to use it.");
         return 0;
       }
