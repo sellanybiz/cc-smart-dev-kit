@@ -485,7 +485,11 @@ ${
 <div class="item"><span class="label">Backend</span><span class="value mono small">${omniroute.backend === null ? "(none in the config)" : escapeHtml(omniroute.backend)}</span></div>
 </div>
 ${omniroute.registryError === null ? "" : `<p class="notice">The npm registry could not be read: ${escapeHtml(omniroute.registryError)}</p>`}
-<p class="muted">The update restarts it, so the gateway's slots fall to their next target while it comes back: Claude answers, on your own login. A version that does not answer is put back.</p>
+${
+  omniroute.unit === null
+    ? `<p class="notice">No user unit runs OmniRoute here, so an update installs the new version but cannot restart it or check it: restart OmniRoute the way this machine runs it, then run <code>${COMMAND} omniroute status</code>.</p>`
+    : `<p class="muted">The update restarts ${escapeHtml(omniroute.unit)}, so the gateway's slots fall to their next target while it comes back: Claude answers, on your own login. A version that does not answer is put back.</p>`
+}
 <div class="row">
 <button type="button" class="btn primary" data-action="omniroute.update" data-confirm="Install the newest release and restart the model path? While it restarts, the gateway's slots fall to their next target — Claude answers, on your own login." data-reload>${omniroute.state === "behind" ? `Update to ${escapeHtml(omniroute.newestVersion ?? "")}` : "Update"}</button>
 <button type="button" class="btn" data-action="omniroute.rollback" data-confirm="Put the version the last update replaced back, and restart the model path?" data-reload>Roll back</button>

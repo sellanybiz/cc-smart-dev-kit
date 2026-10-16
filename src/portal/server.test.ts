@@ -10,7 +10,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { saveConfig } from "../gateway/config";
 import type { Machine } from "../machine/machine";
@@ -97,6 +97,8 @@ async function open(options: {
   doctor?: DoctorSource;
   idleMs?: number;
   omniroute?: string;
+  /** True: a systemd user unit runs that OmniRoute, the way the gateway's setup leaves one. */
+  omnirouteUnit?: boolean;
   /** A plugin folder of this test's own, for the "the folder is gone" case. */
   pluginFolder?: () => PluginFolder;
   /** True where the test's machine has systemd (the router restart needs it). */
@@ -117,6 +119,14 @@ async function open(options: {
       `${JSON.stringify({ bin: { omniroute: "bin/omniroute.mjs" }, name: "omniroute", version: options.omniroute })}\n`,
     );
     writeFileSync(join(folder, "bin", "omniroute.mjs"), "// the program\n");
+    if (options.omnirouteUnit === true) {
+      const units = dirname(paths.routerUnitFile);
+      mkdirSync(units, { recursive: true });
+      writeFileSync(
+        join(units, "omniroute.service"),
+        `[Service]\nExecStart=/usr/bin/env bun ${join(folder, "bin", "omniroute.mjs")}\n`,
+      );
+    }
   }
   if (options.withConfig !== false) {
     saveConfig(paths.gatewayConfigFile, {
@@ -1093,6 +1103,27 @@ describe("the actions", () => {
       expect(page.body).toContain("3.9.0");
       expect(page.body).toContain("Update to 3.9.0");
       expect(page.body).toContain("Claude answers, on your own login");
+      // No unit runs it here: the card must not promise a restart and a check it cannot do.
+      expect(page.body).toContain("No user unit runs OmniRoute here");
+      expect(page.body).not.toContain("The update restarts");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("with a user unit running OmniRoute, the card names the unit the update restarts", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({
+      backendPort: backend.port,
+      omniroute: "3.8.51",
+      omnirouteUnit: true,
+    });
+    try {
+      await world.enter();
+      const page = await world.call("/machine");
+      expect(page.body).toContain("The update restarts omniroute.service");
+      expect(page.body).not.toContain("No user unit runs OmniRoute here");
     } finally {
       world.portal.stop();
       backend.stop();
