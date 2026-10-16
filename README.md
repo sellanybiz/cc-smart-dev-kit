@@ -589,26 +589,49 @@ not for Claude". The portal changes this machine's model path and the safety jud
 session must never do that for itself. Run it in your own terminal — and never open the page
 in the browser Claude drives.
 
-Five screens, each following the design the owner approved (2026-10-16):
+Six screens, each following the design the owner approved (2026-10-16):
 
 | Screen | What it shows |
 |---|---|
 | **Overview** | The plan limits the router saw and the slots answering from a fallback; every slot's chain; the three switches (the gateway, your own judge, the opus and fable fallback); the latest warnings. |
 | **Slots** | A chain per slot, built from the backends' live model lists. **Test each target** — one tiny chat to each affordable model, and the force-push test for a judge — then **Save**, after a confirmation that every running Claude session uses it from its next request. Save is held off for the **judge** slot until every backend target has blocked the force-push test; the command line's own rule, said in the judge note. |
 | **Health** | The router's counters, each backend and whether it answers, the targets resting, and its journal. Looks again every five seconds (Pause stops that, and a hidden tab is not reloaded at all); a look of its own does not count as activity, so an open Health tab cannot hold the portal up. |
-| **Machine** | Updates (installed, newest, last check, on hold, check now, install), the heavy-job queue, the companion plugins, the OmniRoute card, `doctor` (run again), the project's auto-mode rules, and the **Warp card**, which shows the install and remove commands to copy. |
+| **Machine** | Updates (installed, newest, last check, on hold, check now, install), the heavy-job queue, the companion plugins, the OmniRoute card, `doctor` (run again), the project's auto-mode rules, the **Project card** (below), and the **Warp card**, which shows the install and remove commands to copy. |
+| **Settings** | Every workflow setting, one row each: what Claude does after a finished step (auto commit, auto push, the pull request, the auto-merge rule, the merge method, the branch and the worktree), the alerts (which events, the sound, the usage-limit percentage), and the switches (the status line, the session names, the heavy-job queue, the update hold). Each row says where its value comes from — `yours`, `this project` or `default` — and a row the project sets is read-only here, with a link to the Project card. |
 | **How this page stays private** | The security design in plain words, linked from the footer. |
+
+**The Settings page writes one value at a time**, through the same functions the command
+line's `workflow set` uses, so the page and `cc-smart-dev-kit workflow show` can never
+disagree about this machine: your own choices go to
+`~/.config/cc-smart-dev-kit/workflow.json`, and the two switches the project owns
+(`switches.sessionNames`, `switches.jobRoute`) are written into the project's committed
+`.claude/cc-smart-dev-kit.json` after a confirmation that says so. A row the project sets is
+read-only here — the project's choice wins — and says where to change it. A value outside a
+row's own set (a merge method that is not `merge`, `squash` or `rebase`; a percentage that is
+not 1–100) is refused in words, and nothing is written.
+
+**The Project card** is about the repo the portal was started in. Nothing set up yet: the
+line and **Set up this project**, which opens the form — the base branch, the worktree folder
+prefix, the setup command, the branches that start from another base, the protected branches,
+the three guards and the worktree engine. Its first values are what
+`cc-smart-dev-kit project init` would offer for this repo (its default branch, its lockfile's
+command, the branches GitHub protects), never a value this page made up. The preview is that
+command's own plan, made on the server and sent to the page, so what the boxes show is
+exactly what will be written — the browser never builds the file. **Write the files** asks
+first, writes both files through the same `applyProjectInit` (a backup, then an atomic
+write), and **never commits**: commit them with the project.
 
 **Without a gateway config** (never set up, or one that cannot be read): Overview, Slots and
 Health show "The gateway is not set up", with the command that sets it up and a button to
-Machine. **Machine and the privacy page still work**, because neither needs the gateway:
-the updates, the heavy-job queue, the companions, `doctor` and the Warp card are all real
-there — `doctor` matters most on a machine that has no gateway, and its gateway line is
-information (`·`), never a failure. What does need the config says so in a short line
-instead of showing a made-up value: the header pill reads "Gateway not set up", the
-OmniRoute card's Backend line says "the gateway is not set up", a last card on Machine names
-the setup command, and the privacy page says that no router answers here rather than naming
-a port. A config that is there but broken is named as such, with its own error.
+Machine. **Machine, Settings, the Project card and the privacy page still work**, because
+none of them needs the gateway: the updates, the heavy-job queue, the companions, `doctor`,
+the workflow settings and the Warp card are all real there — `doctor` matters most on a
+machine that has no gateway, and its gateway line is information (`·`), never a failure.
+What does need the config says so in a short line instead of showing a made-up value: the
+header pill reads "Gateway not set up", the OmniRoute card's Backend line says "the gateway
+is not set up", a last card on Machine names the setup command, and the privacy page says
+that no router answers here rather than naming a port. A config that is there but broken is
+named as such, with its own error.
 
 **Everything it does is real**, and every action runs the same function the command line
 runs — the same checks, the same lock, the same words (`docs/design.md` § The portal). What

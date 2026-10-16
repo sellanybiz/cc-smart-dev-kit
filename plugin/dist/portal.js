@@ -1,6 +1,6 @@
 // @bun
 // src/entries/portal.ts
-import { join as join35 } from "path";
+import { join as join36 } from "path";
 
 // src/build-info/names.ts
 var MARKETPLACE = "cc-smart-dev-kit";
@@ -10238,8 +10238,8 @@ function remotePluginVersion(url, ref, baseEnv) {
 }
 
 // src/portal/actions.ts
-import { readFileSync as readFileSync40 } from "fs";
-import { join as join34 } from "path";
+import { readFileSync as readFileSync41 } from "fs";
+import { join as join35 } from "path";
 
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync30, readFileSync as readFileSync34 } from "fs";
@@ -19867,6 +19867,737 @@ ${USAGE3}`);
   }
 }
 
+// src/portal/facts.ts
+import { readFileSync as readFileSync40 } from "fs";
+import { basename as basename6, join as join34 } from "path";
+
+// src/portal/settings.ts
+var SETTINGS = [
+  {
+    card: "flow",
+    help: "Commit each finished, reviewed step without asking.",
+    id: "set-commit",
+    key: "autoCommit",
+    kind: "boolean",
+    label: "Auto commit",
+    where: "personal"
+  },
+  {
+    card: "flow",
+    help: "Push your own branch. Never main, dev or a protected branch: the git guard still asks there.",
+    id: "set-push",
+    key: "autoPush",
+    kind: "boolean",
+    label: "Auto push",
+    where: "personal"
+  },
+  {
+    card: "flow",
+    choices: [
+      { label: "Off", value: "off" },
+      { label: "Draft", value: "draft" },
+      { label: "Ready", value: "ready" }
+    ],
+    help: "Off: never. Draft: open it as a draft the team can look at. Ready: open it ready for review.",
+    id: "set-pr",
+    key: "openPr",
+    kind: "segment",
+    label: "Open a pull request",
+    where: "personal"
+  },
+  {
+    card: "flow",
+    help: "Merge your pull request yourself once CI has passed and the review is done.",
+    id: "set-merge",
+    key: "autoMerge",
+    kind: "boolean",
+    label: "Auto merge",
+    where: "personal"
+  },
+  {
+    card: "flow",
+    choices: [
+      { label: "Merge", value: "merge" },
+      { label: "Squash", value: "squash" },
+      { label: "Rebase", value: "rebase" }
+    ],
+    help: "How a merged pull request lands on the branch it goes into.",
+    id: "set-method",
+    key: "mergeMethod",
+    kind: "segment",
+    label: "Merge method",
+    where: "personal"
+  },
+  {
+    card: "flow",
+    help: "Remove the branch on GitHub once the pull request is merged. The worktree here stays until you clear it.",
+    id: "set-del",
+    key: "deleteBranch",
+    kind: "boolean",
+    label: "Delete the branch after merge",
+    where: "personal"
+  },
+  {
+    card: "flow",
+    help: "A second read of the whole change before it leaves this computer: one premium second opinion.",
+    id: "set-review",
+    key: "reviewBeforePush",
+    kind: "boolean",
+    label: "Review before the first push",
+    where: "personal"
+  },
+  {
+    card: "flow",
+    help: "Delete the worktree and its branch folder once the pull request is merged and nothing is left in it.",
+    id: "set-wt",
+    key: "clearWorktreeAfterMerge",
+    kind: "boolean",
+    label: "Clear the worktree after merge",
+    where: "personal"
+  },
+  {
+    card: "alerts",
+    choices: [
+      { label: "Needs you", value: "needs-you" },
+      { label: "A question", value: "question" },
+      { label: "Finished", value: "finished" },
+      { label: "Failed", value: "failed" }
+    ],
+    help: "Which events alert you.",
+    id: "set-events",
+    key: "alerts.events",
+    kind: "events",
+    label: "Alert me about",
+    where: "personal"
+  },
+  {
+    card: "alerts",
+    help: "A short sound with the alert, so you hear it while you work somewhere else.",
+    id: "set-sound",
+    key: "alerts.sound",
+    kind: "boolean",
+    label: "Sound",
+    where: "personal"
+  },
+  {
+    card: "alerts",
+    help: "Warn me when a usage window reaches this share of its limit.",
+    id: "set-limit",
+    key: "alerts.usagePercent",
+    kind: "number",
+    label: "Usage-limit alert at",
+    where: "personal"
+  },
+  {
+    card: "switches",
+    help: "Show the slot and the model answering in Claude Code's status line.",
+    id: "set-status",
+    key: "switches.statusLine",
+    kind: "boolean",
+    label: "Status line",
+    where: "personal"
+  },
+  {
+    card: "switches",
+    help: "Name each Claude session after the branch it works on, so a window is easy to find.",
+    id: "set-names",
+    key: "switches.sessionNames",
+    kind: "boolean",
+    label: "Session names",
+    where: "project"
+  },
+  {
+    card: "switches",
+    help: "The type check, the build, the tests and the coverage run go through the queue, one at a time, by memory.",
+    id: "set-jobs",
+    key: "switches.jobRoute",
+    kind: "boolean",
+    label: "Heavy jobs through the queue",
+    where: "project"
+  },
+  {
+    card: "switches",
+    help: "No new kit version installs until you turn this off again.",
+    id: "set-upd",
+    key: "switches.updateHold",
+    kind: "boolean",
+    label: "Hold self-updates",
+    where: "personal"
+  }
+];
+var SETTINGS_CARDS = [
+  { card: "flow", title: "Work flow" },
+  { card: "alerts", title: "Alerts" },
+  { card: "switches", title: "Switches" }
+];
+function resolvedValue(resolved, key) {
+  switch (key) {
+    case "autoCommit":
+      return resolved.autoCommit;
+    case "autoPush":
+      return resolved.autoPush;
+    case "openPr":
+      return resolved.openPr;
+    case "autoMerge":
+      return resolved.autoMerge;
+    case "mergeMethod":
+      return resolved.mergeMethod;
+    case "deleteBranch":
+      return resolved.deleteBranch;
+    case "reviewBeforePush":
+      return resolved.reviewBeforePush;
+    case "clearWorktreeAfterMerge":
+      return resolved.clearWorktreeAfterMerge;
+    case "alerts.events":
+      return resolved.alerts.events;
+    case "alerts.sound":
+      return resolved.alerts.sound;
+    case "alerts.usagePercent":
+      return resolved.alerts.usagePercent;
+    case "switches.statusLine":
+      return resolved.switches.statusLine;
+    case "switches.sessionNames":
+      return resolved.switches.sessionNames;
+    case "switches.jobRoute":
+      return resolved.switches.jobRoute;
+    case "switches.updateHold":
+      return resolved.switches.updateHold;
+  }
+}
+function settingsRows(resolved, options) {
+  return SETTINGS.map((spec) => {
+    const { source, value } = resolvedValue(resolved, spec.key);
+    if (source === "project") {
+      return { ...spec, readOnly: true, source, value, why: "this project sets it" };
+    }
+    if (spec.where === "project" && !options.projectFile) {
+      return {
+        ...spec,
+        readOnly: true,
+        source,
+        value,
+        why: "this project has no .claude/cc-smart-dev-kit.json yet"
+      };
+    }
+    return { ...spec, readOnly: false, source, value, why: null };
+  });
+}
+function settingSpec(key) {
+  return typeof key === "string" ? SETTINGS.find((one) => one.key === key) : undefined;
+}
+var ALERT_EVENTS2 = ["needs-you", "question", "finished", "failed"];
+function isAlertEvent(value) {
+  return ALERT_EVENTS2.some((event) => event === value);
+}
+function parseSettingValue(spec, value) {
+  const key = spec.key;
+  switch (spec.kind) {
+    case "boolean":
+      return typeof value === "boolean" ? { ok: true, value } : { ok: false, why: `${key} is true or false` };
+    case "segment": {
+      const words = (spec.choices ?? []).map((choice) => choice.value);
+      return typeof value === "string" && words.includes(value) ? { ok: true, value } : { ok: false, why: `${key} is one of ${words.join(", ")}` };
+    }
+    case "number": {
+      if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 100) {
+        return { ok: false, why: `${key} is a whole number 1-100` };
+      }
+      return { ok: true, value };
+    }
+    case "events": {
+      if (!Array.isArray(value) || value.length === 0) {
+        return { ok: false, why: `${key} is a list of ${ALERT_EVENTS2.join(", ")}` };
+      }
+      const named = value.filter((one) => typeof one === "string");
+      if (named.length !== value.length) {
+        return { ok: false, why: `${key} is a list of ${ALERT_EVENTS2.join(", ")}` };
+      }
+      const unknown = named.filter((one) => !isAlertEvent(one));
+      if (unknown.length > 0) {
+        return {
+          ok: false,
+          why: `${key}: unknown ${unknown.join(", ")} (one of ${ALERT_EVENTS2.join(", ")})`
+        };
+      }
+      const events = named.filter(isAlertEvent);
+      if (new Set(events).size !== events.length) {
+        return { ok: false, why: `${key}: an event is listed twice` };
+      }
+      return { ok: true, value: events };
+    }
+  }
+}
+
+// src/portal/facts.ts
+function readConfig(ctx) {
+  try {
+    return { config: loadConfigFile(ctx.paths.gatewayConfigFile) };
+  } catch (error) {
+    return { error: messageOf(error) };
+  }
+}
+function configExists(ctx) {
+  try {
+    readFileSync40(ctx.paths.gatewayConfigFile);
+    return true;
+  } catch (error) {
+    return error.code !== "ENOENT";
+  }
+}
+async function shellFacts(ctx, portalPort, found) {
+  if ("error" in found)
+    return { portalPort, router: null, version: VERSION };
+  const port = found.config.port;
+  const health = await routerHealth(port, ctx.probe.fetch);
+  return { portalPort, router: { port, up: !("error" in health) }, version: VERSION };
+}
+function isJsonObject12(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function entriesOf(value) {
+  if (!isJsonObject12(value))
+    return [];
+  return Object.entries(value).filter((entry) => typeof entry[1] === "number").sort(([a], [b]) => a < b ? -1 : 1);
+}
+async function routerFacts(ctx, port) {
+  const health = await routerHealth(port, ctx.probe.fetch);
+  if ("error" in health) {
+    return {
+      cooling: [],
+      fallbacks: 0,
+      limited: [],
+      port,
+      requests: 0,
+      up: false,
+      uptimeSec: 0,
+      why: health.error
+    };
+  }
+  const body = isJsonObject12(health.body) ? health.body : {};
+  const number = (key) => typeof body[key] === "number" ? body[key] : 0;
+  return {
+    cooling: entriesOf(body.cooling),
+    fallbacks: number("fallbacks"),
+    limited: entriesOf(body.limited),
+    port: typeof body.port === "number" ? body.port : port,
+    requests: number("requests"),
+    up: true,
+    uptimeSec: number("uptimeSec"),
+    why: null
+  };
+}
+function levelOf(line) {
+  if (line.startsWith("WARN "))
+    return "WARN";
+  if (line.startsWith("ERROR "))
+    return "ERROR";
+  return "INFO";
+}
+function parseJournalLine(text, nowMs) {
+  const trimmed = text.trim();
+  if (trimmed === "")
+    return null;
+  if (trimmed.startsWith("{")) {
+    let raw;
+    try {
+      raw = JSON.parse(trimmed);
+    } catch {
+      return null;
+    }
+    if (!isJsonObject12(raw))
+      return null;
+    const message = typeof raw.MESSAGE === "string" ? raw.MESSAGE : null;
+    if (message === null)
+      return null;
+    const micros = typeof raw.__REALTIME_TIMESTAMP === "string" ? Number(raw.__REALTIME_TIMESTAMP) : NaN;
+    const at = Number.isFinite(micros) ? micros / 1000 : nowMs;
+    return { level: levelOf(message), text: leadingTimeOff(message), time: clockOf(at, nowMs) };
+  }
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\s+(.*)$/.exec(trimmed);
+  if (match === null)
+    return null;
+  const rest = match[2] ?? "";
+  const message = rest.slice(rest.indexOf(": ") + 2);
+  const at = Date.parse(rest);
+  return {
+    level: levelOf(message),
+    text: leadingTimeOff(message),
+    time: clockOf(Number.isNaN(at) ? nowMs : at, nowMs)
+  };
+}
+function leadingTimeOff(message) {
+  return message.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\s+/, "");
+}
+function clockOf(ms, nowMs) {
+  return formatClock(Math.floor(ms / 1000), nowMs);
+}
+function routerLog(ctx, count) {
+  if (!ctx.systemd)
+    return { lines: [], note: "no systemd here, so there is no journal to read" };
+  const result = ctx.runner([
+    "journalctl",
+    "--user",
+    "-u",
+    UNIT_NAME,
+    "-n",
+    String(count),
+    "--no-pager",
+    "-o",
+    "json"
+  ]);
+  if (result.exitCode !== 0) {
+    const why = (result.output.trim().split(`
+`).at(-1) ?? "").trim();
+    return {
+      lines: [],
+      note: `the journal could not be read${why === "" ? "" : ` (${why})`}. In a terminal: journalctl --user -u ${UNIT_NAME.replace(/\.service$/, "")} -f`
+    };
+  }
+  const nowMs = ctx.now();
+  const lines = result.output.split(`
+`).map((line) => parseJournalLine(line, nowMs)).filter((line) => line !== null);
+  return { lines, note: null };
+}
+var SLOT_META = {
+  fable: {
+    info: "claude-fable-5-1 answers first. The next target answers only when Anthropic refuses at the plan limit, until the reset.",
+    kind: "model"
+  },
+  judge: {
+    info: "Claude judges auto mode's safety check whenever Claude can answer. This chain answers only at the plan limit or with no Claude login, and only while the judge switch is on.",
+    kind: "off by default"
+  },
+  opus: {
+    info: "claude-opus-5-5 answers first. The next target answers only when Anthropic refuses at the plan limit, until the reset.",
+    kind: "model"
+  },
+  scout: {
+    info: "Affordable. File search, greps, reading and summaries.",
+    kind: "affordable"
+  },
+  worker: {
+    info: "Affordable. Building, doc updates, tests and mechanical runs.",
+    kind: "affordable"
+  }
+};
+function slotName(key) {
+  return key.replace(/^cc-smart-dev-kit-/, "");
+}
+var SLOT_ORDER = ["scout", "worker", JUDGE_SLOT, ...Object.keys(MODEL_SLOTS)];
+function slotRows(config, router) {
+  const resting = new Map(router.cooling);
+  const keys = [
+    ...["scout", "worker", JUDGE_SLOT, ...Object.keys(MODEL_SLOTS)].map((name) => `cc-smart-dev-kit-${slotName(name)}`),
+    ...Object.keys(config.slots).filter((key) => !SLOT_ORDER.some((name) => key === `cc-smart-dev-kit-${slotName(name)}`))
+  ];
+  const rows = [];
+  for (const key of [...new Set(keys)]) {
+    const name = slotName(key);
+    const meta = SLOT_META[name] ?? { info: "A slot of this machine's own.", kind: "other" };
+    const targets = config.slots[key];
+    const on = targets !== undefined && (!isModelSlot(key) || Object.values(config.modelSlots ?? {}).includes(key));
+    rows.push({
+      info: meta.info,
+      key,
+      kind: on ? meta.kind : "off",
+      name,
+      note: slotNote(config, key, on),
+      targets: (targets ?? []).map((target) => {
+        const parsed = parseTarget(target);
+        const known = "target" in parsed ? parsed.target : null;
+        return {
+          from: known === null ? "?" : known.kind === "anthropic" ? "Claude login" : known.backend,
+          restingFor: resting.get(target) ?? null,
+          target,
+          tested: key === JUDGE_SLOT && judgeTargetTested(config, target)
+        };
+      })
+    });
+  }
+  return rows;
+}
+function slotNote(config, key, on) {
+  if (!on) {
+    return isModelSlot(key) ? `off: ${MODEL_SLOTS[key] ?? key} goes to Anthropic unchanged` : "off: auto mode's safety checks go to Claude, and to no one else";
+  }
+  if (key === JUDGE_SLOT) {
+    const untested = (config.slots[key] ?? []).filter((target) => !judgeTargetTested(config, target));
+    return untested.length > 0 ? `NOT TESTED, so ignored: ${untested.join(", ")}` : "only when Claude cannot answer a check";
+  }
+  if (isModelSlot(key))
+    return "the rest only at the plan's usage limit";
+  return "";
+}
+function contextText(length) {
+  if (length === null)
+    return "\u2014";
+  return length >= 1000 ? `${Math.round(length / 1000)}K` : String(length);
+}
+function claudeModels(config) {
+  const found = new Set(Object.keys(config.modelSlots ?? {}));
+  for (const targets of Object.values(config.slots)) {
+    for (const target of targets) {
+      const parsed = parseTarget(target);
+      if ("target" in parsed && parsed.target.kind === "anthropic")
+        found.add(parsed.target.model);
+    }
+  }
+  return [...found].sort();
+}
+async function backendRows(ctx, config) {
+  const rows = [];
+  for (const [name, backend] of Object.entries(config.backends).sort(([a], [b]) => a < b ? -1 : 1)) {
+    const started = ctx.now();
+    const listed = await listModels(backend.baseUrl, backend.apiKey, 8000);
+    const ms = ctx.now() - started;
+    const url = shownBackendUrl(backend.baseUrl, backend.apiKey);
+    if ("error" in listed) {
+      rows.push({ models: [], ms: null, name, state: "failed", url, why: listed.error });
+      continue;
+    }
+    if (listed.status !== 200) {
+      rows.push({
+        models: [],
+        ms: null,
+        name,
+        state: "failed",
+        url,
+        why: `HTTP ${listed.status}`
+      });
+      continue;
+    }
+    rows.push({
+      models: listed.models.map((model) => ({
+        backend: name,
+        context: contextText(model.contextLength),
+        id: `${name}:${model.id}`,
+        plan: false
+      })).sort((a, b) => a.id.localeCompare(b.id)),
+      ms,
+      name,
+      state: "answers",
+      url,
+      why: null
+    });
+  }
+  return rows;
+}
+function modelSlotsOn(config) {
+  return Object.values(config.modelSlots ?? {}).filter((slot) => Object.hasOwn(config.slots, slot));
+}
+function switchFacts(ctx, config) {
+  const report = settingsReport(ctx.paths.settingsFile);
+  const warnings = [];
+  if (report.subagentOverrides.length > 0) {
+    warnings.push(`${report.subagentOverrides.join(", ")} set: every agent launched without a model runs on it, with the gateway possibly an affordable slot. Remove it by hand unless you want that.`);
+  }
+  if (report.loginOverrides.length > 0) {
+    warnings.push(`${report.loginOverrides.join(", ")} set: that replaces your own Claude login. Remove it for the gateway.`);
+  }
+  const judgeTargets = config.slots[JUDGE_SLOT] ?? [];
+  return {
+    fallback: modelSlotsOn(config).length > 0,
+    gateway: report.baseUrl !== null,
+    judge: judgeTargets.length > 0 && judgeTargets.every((target) => judgeTargetTested(config, target)),
+    judgeUntested: judgeTargets.some((target) => !judgeTargetTested(config, target)),
+    settingsBaseUrl: report.baseUrl,
+    warnings
+  };
+}
+function claimText(claim) {
+  switch (claim) {
+    case "five_hour":
+      return "the 5-hour window";
+    case "seven_day":
+      return "the 7-day window";
+    case "seven_day_opus":
+      return "the 7-day Opus window";
+    case "seven_day_sonnet":
+      return "the 7-day Sonnet window";
+    default:
+      return claim ?? "its window";
+  }
+}
+function limitFacts(ctx) {
+  let text = null;
+  try {
+    text = readFileSync40(ctx.paths.gatewayStateFile, "utf8");
+  } catch {
+    text = null;
+  }
+  const state = text === null ? null : parseLimitState(text);
+  if (state === null)
+    return { fallbacks: [], limits: [], read: false };
+  const nowMs = ctx.now();
+  return {
+    fallbacks: currentFallbacks(state, nowMs).map(([slot, record]) => ({
+      model: record.model,
+      since: formatClock(Math.floor(record.since / 1000), nowMs),
+      slot,
+      target: record.target
+    })),
+    limits: currentLimits(state, nowMs).map(([model, record]) => ({
+      claim: claimText(record.claim),
+      model,
+      resets: record.resetsAt === null ? null : formatClock(record.resetsAt, nowMs)
+    })),
+    read: true
+  };
+}
+function companionRows(ctx) {
+  return companions().map((companion) => {
+    const check = companionChecks(ctx.paths, [companion])[0];
+    const state = companionState(ctx.paths, companion);
+    const enableArgv = state.kind === "off" ? ["claude", "plugin", "enable", companion.id] : null;
+    return {
+      command: enableArgv === null ? null : enableArgv.join(" "),
+      detail: check?.text ?? `${companion.id} ${state.kind}`,
+      enableArgv,
+      id: companion.id,
+      state: state.kind,
+      title: companion.name
+    };
+  });
+}
+function warpRow(ctx) {
+  const system = detectSystem(ctx.machine);
+  return {
+    detail: warpCheck(ctx.machine, ctx.paths).text,
+    installed: detectWarpApp(ctx.machine, system).installed
+  };
+}
+function readProject(ctx, cwd) {
+  try {
+    const project = resolveProject(cwd, { env: ctx.env });
+    if (project === null) {
+      return {
+        config: null,
+        configFile: null,
+        root: null,
+        why: "this folder is not inside a git project"
+      };
+    }
+    return {
+      config: project.config,
+      configFile: project.configFile,
+      root: project.root,
+      why: project.config === null ? "this project has no .claude/cc-smart-dev-kit.json yet" : null
+    };
+  } catch (error) {
+    return {
+      config: null,
+      configFile: null,
+      root: null,
+      why: messageOf(error)
+    };
+  }
+}
+function projectName(root) {
+  return basename6(root);
+}
+function readTextFile(file) {
+  try {
+    return readFileSync40(file, "utf8");
+  } catch {
+    return null;
+  }
+}
+function projectFiles(root) {
+  return {
+    config: join34(root, ".claude", "cc-smart-dev-kit.json"),
+    settings: join34(root, ".claude", "settings.json")
+  };
+}
+function projectFileTexts(root) {
+  const files = projectFiles(root);
+  return {
+    existing: readTextFile(files.config),
+    existingSettings: readTextFile(files.settings)
+  };
+}
+function settingsLineNote(hookLines) {
+  if (hookLines === 0)
+    return "No line is added to .claude/settings.json.";
+  return `${hookLines} line${hookLines === 1 ? "" : "s"}, added inside the existing file. Nothing else there changes.`;
+}
+function projectCardData(ctx, cwd, readDefaults, workflow) {
+  const base = {
+    answers: null,
+    error: null,
+    name: null,
+    plan: null,
+    planError: null,
+    root: null,
+    set: false
+  };
+  const project = readProject(ctx, cwd);
+  if (project.root === null)
+    return { ...base, error: project.why };
+  const texts = projectFileTexts(project.root);
+  const head = {
+    ...base,
+    name: projectName(project.root),
+    root: project.root,
+    set: project.config !== null
+  };
+  try {
+    const defaults = readDefaults({
+      env: ctx.env,
+      existing: texts.existing,
+      root: project.root
+    });
+    return {
+      ...head,
+      answers: defaults.answers,
+      plan: workflow.planProjectInit({
+        answers: defaults.answers,
+        existing: texts.existing,
+        existingSettings: texts.existingSettings,
+        root: project.root
+      })
+    };
+  } catch (error) {
+    return { ...head, planError: messageOf(error) };
+  }
+}
+function settingsData(ctx, cwd, workflow) {
+  const empty = (why) => ({
+    autoMerge: null,
+    error: why,
+    projectNote: null,
+    rows: []
+  });
+  const project = readProject(ctx, cwd);
+  const projectNote = project.why === null ? null : `No project's own values here: ${project.why}.`;
+  let resolved;
+  try {
+    resolved = workflow.resolveWorkflow(ctx.paths, project.config);
+  } catch (error) {
+    return { ...empty(messageOf(error)), projectNote };
+  }
+  const rows = settingsRows(resolved, { projectFile: project.configFile !== null });
+  const base = project.config?.worktrees?.base ?? null;
+  const autoMerge = resolved.autoMerge.value ? {
+    allowed: base !== null && project.root !== null && workflow.autoMergeAllowed(resolved, project.config, base, workflow.repositoryDefaultBranch(project.root, ctx.env)),
+    base
+  } : null;
+  return { autoMerge, error: null, projectNote, rows };
+}
+async function omnirouteRow(omnirouteCtx, installedIsOlder) {
+  const facts = await omnirouteFacts(omnirouteCtx);
+  const newest = facts.newest;
+  const backend = facts.backend;
+  return {
+    backend: backend === null ? null : `${backend.name} \u2192 ${shownBackendUrl(backend.baseUrl, backend.apiKey)}`,
+    install: facts.install,
+    newestVersion: newest?.version ?? null,
+    previous: facts.state.previous,
+    registryError: facts.registryError,
+    state: facts.install === null || newest === null ? "unknown" : installedIsOlder(facts.install.version, newest.version) ? "behind" : "ok",
+    unit: facts.unit?.name ?? null
+  };
+}
+
 // src/portal/actions.ts
 function portalOmnirouteContext(ctx) {
   return {
@@ -19917,7 +20648,7 @@ function parseMemory(text) {
 }
 function readMemory(paths) {
   try {
-    return parseMemory(readFileSync40(memoryFile(paths), "utf8"));
+    return parseMemory(readFileSync41(memoryFile(paths), "utf8"));
   } catch {
     return emptyMemory();
   }
@@ -19945,7 +20676,7 @@ function gatewayContext(action, print) {
     ctx: {
       bunPath: process.execPath,
       bunVersion: portal.bunVersion,
-      bundle: join34(folder.folder, "dist", "router.js"),
+      bundle: join35(folder.folder, "dist", "router.js"),
       confirm: null,
       error: print,
       paths: portal.paths,
@@ -20235,6 +20966,175 @@ async function omnirouteAction(action, args) {
   const code = await runOmniroute(args, { ...action.omniroute, say: print });
   return { lines, ok: code === 0 };
 }
+async function setWorkflowSetting(action, body) {
+  const spec = settingSpec(body.key);
+  if (spec === undefined) {
+    return { lines: [`"${String(body.key)}" is not a setting this page shows.`], ok: false };
+  }
+  const parsed = parseSettingValue(spec, body.value);
+  if (!parsed.ok)
+    return { lines: [parsed.why], ok: false };
+  if (spec.where === "project") {
+    if (body.confirm !== true) {
+      return {
+        lines: ["The project's own setting was not confirmed, so nothing was written."],
+        ok: false
+      };
+    }
+    if (readProject(action.portal, action.cwd).configFile === null) {
+      return {
+        lines: [
+          `${spec.key} is this project's own setting, and this project has no .claude/cc-smart-dev-kit.json yet: set it up on Machine first.`
+        ],
+        ok: false
+      };
+    }
+  }
+  try {
+    const line = spec.where === "project" ? action.workflow.writeProjectSetting(action.cwd, spec.key, parsed.value) : action.workflow.writePersonalSetting(action.portal.paths, spec.key, parsed.value);
+    return { lines: [line], ok: true };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+function parseProjectForm(value) {
+  if (!isObject2(value))
+    return { ok: false, why: "The form's answers did not arrive." };
+  const base = typeof value.base === "string" ? value.base.trim() : "";
+  if (base === "") {
+    return {
+      ok: false,
+      why: "The base branch is needed: it is the branch a new worktree starts from."
+    };
+  }
+  const prefix = typeof value.prefix === "string" ? value.prefix.trim() : "";
+  if (prefix === "") {
+    return {
+      ok: false,
+      why: "The worktree folder prefix is needed: it names the folder beside the repo."
+    };
+  }
+  if (prefix.includes("/") || prefix.includes("\\")) {
+    return {
+      ok: false,
+      why: "The worktree folder prefix cannot hold / or \\: it is a folder name."
+    };
+  }
+  let setup = null;
+  if (value.setup !== null && value.setup !== undefined) {
+    if (!Array.isArray(value.setup) || value.setup.length === 0 || !value.setup.every((word) => typeof word === "string" && word !== "")) {
+      return { ok: false, why: 'The setup command must be words, like "bun install".' };
+    }
+    setup = value.setup;
+  }
+  if (!isObject2(value.bases))
+    return { ok: false, why: "The bases must be prefix \u2192 base pairs." };
+  const bases = {};
+  for (const [from, to] of Object.entries(value.bases)) {
+    if (!from.endsWith("/") || typeof to !== "string" || to === "") {
+      return { ok: false, why: `"${from}" is not prefix=base: the prefix ends with "/".` };
+    }
+    bases[from] = to;
+  }
+  if (!Array.isArray(value.protectedBranches)) {
+    return { ok: false, why: "The protected branches must be a list of branch names." };
+  }
+  const protectedBranches = [];
+  for (const name of value.protectedBranches) {
+    if (typeof name !== "string" || name === "") {
+      return { ok: false, why: "The protected branches must be a list of branch names." };
+    }
+    protectedBranches.push(name);
+  }
+  if (!isObject2(value.guards))
+    return { ok: false, why: "guards must say true or false for each guard." };
+  const guards = { guardMainFolder: false, jobRoute: false, sessionNames: false };
+  for (const name of ["guardMainFolder", "sessionNames", "jobRoute"]) {
+    const on = value.guards[name];
+    if (typeof on !== "boolean")
+      return { ok: false, why: `guards.${name} is true or false.` };
+    guards[name] = on;
+  }
+  if (value.engine !== "plugin" && value.engine !== "own") {
+    return { ok: false, why: 'The worktree engine is "plugin" or "own".' };
+  }
+  return {
+    ok: true,
+    value: { base, bases, engine: value.engine, guards, prefix, protectedBranches, setup }
+  };
+}
+function projectAnswers(action, body) {
+  const project = readProject(action.portal, action.cwd);
+  if (project.root === null) {
+    return { ok: false, why: project.why ?? "there is no project folder here" };
+  }
+  const form = parseProjectForm(body.answers);
+  if (!form.ok)
+    return form;
+  const texts = projectFileTexts(project.root);
+  try {
+    const defaults = action.projectDefaults({
+      env: action.portal.env,
+      existing: texts.existing,
+      root: project.root
+    });
+    return {
+      ok: true,
+      answers: { ...defaults.answers, ...form.value },
+      ...texts,
+      root: project.root
+    };
+  } catch (error) {
+    return { ok: false, why: messageOf(error) };
+  }
+}
+async function projectPreview(action, body) {
+  const built = projectAnswers(action, body);
+  if (!built.ok)
+    return { lines: [built.why], ok: false };
+  try {
+    const plan = action.workflow.planProjectInit({
+      answers: built.answers,
+      existing: built.existing,
+      existingSettings: built.existingSettings,
+      root: built.root
+    });
+    return { lines: [settingsLineNote(plan.hookLines.length)], ok: true, preview: plan };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+async function projectWrite(action, body) {
+  if (body.confirm !== true) {
+    return { lines: ["The write was not confirmed, so nothing was written."], ok: false };
+  }
+  const built = projectAnswers(action, body);
+  if (!built.ok)
+    return { lines: [built.why], ok: false };
+  try {
+    const plan = action.workflow.planProjectInit({
+      answers: built.answers,
+      existing: built.existing,
+      existingSettings: built.existingSettings,
+      root: built.root
+    });
+    const writes = action.workflow.applyProjectInit(plan, {
+      stateDir: action.portal.paths.stateDir
+    });
+    if (writes.length === 0) {
+      return { lines: ["Nothing to change: both files already say this."], ok: true };
+    }
+    return {
+      lines: [
+        ...writes.map((write) => `${write.created ? "+" : "~"} ${write.file}`),
+        "Commit both files with the project: the team shares one setup."
+      ],
+      ok: true
+    };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
 async function runAction(name, body, action) {
   switch (name) {
     case "slot.test":
@@ -20271,6 +21171,12 @@ async function runAction(name, body, action) {
       return omnirouteAction(action, ["rollback", "--yes"]);
     case "automode.apply":
       return applyAutoModeAction(action, body);
+    case "workflow.set":
+      return setWorkflowSetting(action, body);
+    case "project.preview":
+      return projectPreview(action, body);
+    case "project.write":
+      return projectWrite(action, body);
     default:
       return { lines: [`"${name}" is not an action.`], ok: false };
   }
@@ -20450,10 +21356,10 @@ nav.pages a[aria-current="page"] { background: var(--chip-bg); color: var(--acce
 }
 /* \u2500\u2500 The header on a phone \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
    Every row above is a flex row that wraps, so at 390px the brand, the router chip, the Bun
-   chip, the four links and the theme toggle each took a line (about 280px before the page).
-   Here they become three rows: the brand and the theme toggle, the two chips, then the four
-   links on one row of equal columns \u2014 44px tall each, the touch target size kept. The order
-   is the CSS order property, so the desktop layout (and its own order) never changes. */
+   chip, the links and the theme toggle each took a line (about 280px before the page). Here
+   they become three rows: the brand and the theme toggle, the two chips, then the five links
+   in equal columns \u2014 44px tall each, the touch target size kept. The order is the CSS order
+   property, so the desktop layout (and its own order) never changes. */
 @media (max-width: 640px) {
   header.top .wrap { gap: 8px 12px; }
   .brand { order: 1; }
@@ -20461,7 +21367,9 @@ nav.pages a[aria-current="page"] { background: var(--chip-bg); color: var(--acce
   .chips { order: 3; width: 100%; }
   nav.pages {
     order: 4; width: 100%; margin-left: 0; display: grid; gap: 4px;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    /* As many columns as the width allows, 96px each: five links (Settings included) fit
+       two rows on a phone, and every one keeps its 44px touch target. */
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
   }
   nav.pages a { justify-content: center; padding: 0 6px; }
 }
@@ -20662,6 +21570,85 @@ footer.bottom .wrap {
 .tap { min-height: 44px; }
 .warnrow { display: grid; grid-template-columns: 84px 64px 1fr; gap: 12px; align-items: center; }
 .footnote { padding: 12px 20px; font-size: 14px; }
+
+/* \u2500\u2500 The Settings page, and the Project card \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+   One row per setting: the words, the control, and the tag saying where the value comes
+   from. The three tag words are the design's own: yours, this project, default. */
+.setrow { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; }
+.src { flex: none; padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 500; }
+.src.personal { background: var(--chip-bg); color: var(--accent); }
+.src.project { background: var(--warn-soft); color: var(--warn-text); }
+.src.default { background: var(--line-soft); color: var(--muted-2); }
+.rulebox {
+  display: flex; align-items: flex-start; gap: 10px; flex-basis: 100%;
+  padding: 10px 12px; border: 1px solid var(--warn-line); border-radius: 8px;
+  background: var(--warn-bg); color: var(--warn-text); font-size: 14px;
+}
+.ruleicon { display: inline-flex; flex: none; margin-top: 2px; }
+/* The module's own answer for this project, on its own line under the rule. */
+.rulemore { display: block; margin-top: 4px; }
+.segment {
+  display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 4px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2);
+}
+.segment button {
+  display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px;
+  border: 1px solid transparent; border-radius: 8px; background: transparent;
+  color: var(--muted-2); font-weight: 500; cursor: pointer;
+}
+.segment button[aria-pressed="true"] {
+  border-color: var(--accent); background: var(--chip-bg); color: var(--accent-strong); font-weight: 600;
+}
+.segment button[disabled] { color: var(--disabled-text); cursor: not-allowed; }
+.segment button[aria-pressed="true"][disabled] {
+  border-color: var(--dashed); background: var(--disabled-bg); color: var(--muted-2);
+}
+.events label { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; font-size: 14px; }
+.events input { width: 18px; height: 18px; accent-color: var(--accent); }
+.numrow { gap: 8px; }
+.numinput {
+  min-height: 44px; width: 96px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); color: var(--text);
+  font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 14px; text-align: right;
+}
+.switch[disabled] {
+  border-color: var(--disabled-line); background: var(--disabled-bg); color: var(--disabled-text);
+  cursor: not-allowed;
+}
+.switch[disabled] .track { background: var(--disabled-text); }
+.note {
+  padding: 12px 16px; border: 1px solid var(--line-soft); border-radius: 10px;
+  background: var(--surface-2); font-size: 14px; color: var(--muted-2);
+}
+
+/* \u2500\u2500 The Project card's form \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+.fields { display: flex; flex-wrap: wrap; gap: 16px; }
+.field { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.field label { font-size: 13px; font-weight: 500; }
+.field input, .chipinput {
+  min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); color: var(--text);
+  font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px;
+}
+.field input { width: 100%; font-size: 14px; }
+.baserow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
+.chipinput { width: 150px; }
+.lockchip { gap: 6px; min-height: 44px; padding: 0 4px 0 10px; }
+.lockchip .chipinput { width: 120px; border: 0; background: transparent; padding: 0 4px; }
+.lockchip .btn.icon { min-width: 36px; border: 0; background: transparent; }
+.btn.dashed { border-style: dashed; border-color: var(--dashed); color: var(--muted-2); font-weight: 500; }
+.codebox { border: 1px solid var(--line-soft); border-radius: 10px; overflow: hidden; }
+.codehead {
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 6px 6px 6px 14px; background: var(--surface-2); border-bottom: 1px solid var(--line-soft);
+}
+.codehead code { font-size: 13px; }
+.codehead .btn { min-height: 44px; padding: 0 12px; font-weight: 500; }
+.codebox pre {
+  margin: 0; padding: 14px 16px; background: var(--code-bg); color: var(--code-text);
+  font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; line-height: 1.6;
+  overflow-x: auto;
+}
 `;
 var PORTAL_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="#7fa8f0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"></rect><path d="M7 10l3 2-3 2"></path><path d="M12 15h5"></path></svg>
 `;
@@ -20758,9 +21745,13 @@ var PORTAL_JS = `(function () {
 
   // \u2500\u2500 Copy buttons \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   document.addEventListener("click", function (event) {
-    var button = event.target.closest("[data-copy]");
+    var button = event.target.closest("[data-copy], [data-copy-node]");
     if (!button) return;
-    var text = button.getAttribute("data-copy");
+    var node = button.hasAttribute("data-copy-node")
+      ? document.querySelector(button.getAttribute("data-copy-node"))
+      : null;
+    if (button.hasAttribute("data-copy-node") && !node) return;
+    var text = node ? node.textContent || "" : button.getAttribute("data-copy");
     var done = function () {
       var was = button.textContent;
       button.textContent = "Copied";
@@ -20778,7 +21769,10 @@ var PORTAL_JS = `(function () {
     var body = {};
     try { body = JSON.parse(button.getAttribute("data-body") || "{}"); } catch (error) { body = {}; }
     if (button.getAttribute("data-confirm") && !window.confirm(button.getAttribute("data-confirm"))) return;
-    var out = document.querySelector("[data-out-for='" + name + "']");
+    // The message goes to the nearest box for this action (data-scope: a card, or a form
+    // with more than one of them), so two cards never show each other's lines.
+    var scope = button.closest("[data-scope]") || document;
+    var out = scope.querySelector("[data-out-for='" + name + "']");
     busy(button, true);
     post("/api/" + name, body).then(function (data) {
       busy(button, false);
@@ -20829,6 +21823,230 @@ var PORTAL_JS = `(function () {
       apply();
     }
     window.addEventListener("beforeunload", function () { clearInterval(timer); });
+  }
+
+  // \u2500\u2500 The Settings page \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  // A row is a POST and a reload, like every switch here; the two controls a plain button
+  // cannot carry (the event checkboxes and the percentage box) get their own small handlers.
+  // A refused change puts the control back the way the server still sees it.
+  var outFor = function (node, name) {
+    var scope = node.closest("[data-scope]") || document;
+    return scope.querySelector("[data-out-for='" + name + "']");
+  };
+
+  var setSetting = function (node, key, value, putBack) {
+    var out = outFor(node, "workflow.set");
+    post("/api/workflow.set", { key: key, value: value }).then(function (data) {
+      say(out, !!data.ok, data.lines);
+      if (data.ok) setTimeout(function () { location.reload(); }, 700);
+      else if (putBack) putBack();
+    });
+  };
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-events]"), function (group) {
+    var key = group.getAttribute("data-events");
+    var boxes = group.querySelectorAll("input[type=checkbox]");
+    var picked = function () {
+      var chosen = [];
+      Array.prototype.forEach.call(boxes, function (box) { if (box.checked) chosen.push(box.value); });
+      return chosen;
+    };
+    var lastGood = picked();
+    group.addEventListener("change", function () {
+      var before = lastGood;
+      var chosen = picked();
+      lastGood = chosen;
+      setSetting(group, key, chosen, function () {
+        Array.prototype.forEach.call(boxes, function (box) {
+          box.checked = before.indexOf(box.value) !== -1;
+        });
+      });
+    });
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-setting]"), function (input) {
+    var key = input.getAttribute("data-setting");
+    var lastGood = input.value;
+    input.addEventListener("change", function () {
+      var before = lastGood;
+      lastGood = input.value;
+      setSetting(input, key, Number(input.value), function () {
+        input.value = before;
+      });
+    });
+  });
+
+  // \u2500\u2500 The Project card on Machine \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  // The form is a plan, never a file: every change asks the server, which runs the same pure
+  // planProjectInit the write runs, so the boxes show exactly what will be written.
+  var projectRoot = document.querySelector("[data-project]");
+  // No form means the plan cannot be built at all (the card says why), so only the button
+  // that would reveal it is wired: nothing else on the card is there to reach for.
+  var projectForm = projectRoot ? projectRoot.querySelector("[data-project-form]") : null;
+  var reveal = projectRoot ? projectRoot.querySelector("[data-setup-show]") : null;
+  if (reveal) {
+    reveal.addEventListener("click", function () {
+      if (projectForm) projectForm.hidden = false;
+      reveal.hidden = true;
+    });
+  }
+  if (projectRoot && projectForm) {
+    var form = projectForm;
+    var writeOut = projectRoot.querySelector("[data-out-for='project.write']");
+    var filePre = projectRoot.querySelector("[data-preview-file]");
+    var settingsPre = projectRoot.querySelector("[data-preview-settings]");
+    var noteLine = projectRoot.querySelector("[data-preview-note]");
+    var notesBox = projectRoot.querySelector("[data-preview-notes]");
+    // Every answer carries the number of the question it answers: a slower, older answer
+    // never overwrites a newer one on screen.
+    var asked = 0;
+
+    var answerOf = function (name) {
+      var node = form.querySelector("[data-answer='" + name + "']");
+      return node ? node.value.trim() : "";
+    };
+    var guardOn = function (name) {
+      var node = form.querySelector("[data-form-switch='" + name + "']");
+      return !!node && node.getAttribute("aria-checked") === "true";
+    };
+    var answers = function () {
+      var bases = {};
+      Array.prototype.forEach.call(form.querySelectorAll("[data-base-row]"), function (row) {
+        var prefix = row.querySelector("[data-base-prefix]").value.trim();
+        var base = row.querySelector("[data-base-value]").value.trim();
+        if (prefix !== "" && base !== "") bases[prefix] = base;
+      });
+      var protectedNames = [];
+      Array.prototype.forEach.call(form.querySelectorAll("[data-protected-name]"), function (node) {
+        var name = node.value.trim();
+        if (name !== "") protectedNames.push(name);
+      });
+      var setupText = answerOf("setup");
+      var engine = form.querySelector("[data-engine] button[aria-pressed='true']");
+      return {
+        answers: {
+          base: answerOf("base"),
+          prefix: answerOf("prefix"),
+          setup: setupText === "" ? null : setupText.split(/\\s+/),
+          bases: bases,
+          protectedBranches: protectedNames,
+          guards: {
+            guardMainFolder: guardOn("guardMainFolder"),
+            sessionNames: guardOn("sessionNames"),
+            jobRoute: guardOn("jobRoute")
+          },
+          engine: engine ? engine.getAttribute("data-engine-value") : "plugin"
+        }
+      };
+    };
+
+    var drawPlan = function (data, preview) {
+      filePre.textContent = preview.text;
+      settingsPre.textContent = (preview.hookLines || []).join("\\n");
+      // The note under the settings box comes from the server, like the boxes: one home for
+      // the sentence, and it can never describe a different plan than the one drawn.
+      if (data.lines && data.lines[0]) noteLine.textContent = data.lines[0];
+      notesBox.textContent = "";
+      (preview.notes || []).forEach(function (note) {
+        var p = document.createElement("p");
+        p.className = "small muted";
+        p.textContent = note;
+        notesBox.appendChild(p);
+      });
+    };
+
+    var ask = function () {
+      var mine = (asked += 1);
+      post("/api/project.preview", answers()).then(function (data) {
+        if (mine !== asked) return;
+        if (!data.ok || !data.preview) { say(writeOut, false, data.lines); return; }
+        drawPlan(data, data.preview);
+      });
+    };
+
+    // A change is one finished edit (a box left, a box ticked, a row added or removed): the
+    // same answer is not asked again for every keystroke.
+    form.addEventListener("change", ask);
+
+    var flip = function (button) {
+      var on = button.getAttribute("aria-checked") === "true";
+      button.setAttribute("aria-checked", on ? "false" : "true");
+      var label = button.querySelector("[data-switch-label]");
+      if (label) label.textContent = on ? "Off" : "On";
+      ask();
+    };
+    Array.prototype.forEach.call(form.querySelectorAll("[data-form-switch]"), function (button) {
+      button.addEventListener("click", function () { flip(button); });
+    });
+
+    Array.prototype.forEach.call(form.querySelectorAll("[data-engine] button"), function (button) {
+      button.addEventListener("click", function () {
+        Array.prototype.forEach.call(form.querySelectorAll("[data-engine] button"), function (other) {
+          other.setAttribute("aria-pressed", other === button ? "true" : "false");
+        });
+        ask();
+      });
+    });
+
+    // An added row is the page's own markup, taken from the template beside the list: the
+    // form has one home for what a row looks like, and this script adds no markup of its own.
+    var added = function (templateName) {
+      var template = projectRoot.querySelector("template[" + templateName + "]");
+      if (!template) return null;
+      return template.content.firstElementChild
+        ? template.content.firstElementChild.cloneNode(true)
+        : null;
+    };
+
+    var addBase = projectRoot.querySelector("[data-add-base]");
+    if (addBase) {
+      addBase.addEventListener("click", function () {
+        var row = added("data-base-template");
+        if (!row) return;
+        projectRoot.querySelector("[data-bases]").appendChild(row);
+        var first = row.querySelector("input");
+        if (first) first.focus();
+      });
+    }
+
+    var addProtected = projectRoot.querySelector("[data-add-protected]");
+    if (addProtected) {
+      addProtected.addEventListener("click", function () {
+        var chip = added("data-chip-template");
+        if (!chip) return;
+        projectRoot.querySelector("[data-protected]").insertBefore(chip, addProtected);
+        var input = chip.querySelector("input");
+        if (input) input.focus();
+      });
+    }
+
+    form.addEventListener("click", function (event) {
+      var row = event.target.closest("[data-base-row]");
+      if (row) {
+        if (event.target.closest("[data-remove-row]")) { row.remove(); ask(); }
+        return;
+      }
+      var chip = event.target.closest("[data-chip]");
+      if (chip && event.target.closest("[data-remove-chip]")) { chip.remove(); ask(); }
+    });
+
+    var write = projectRoot.querySelector("[data-write]");
+    if (write) {
+      write.addEventListener("click", function () {
+        if (write.getAttribute("data-confirm") && !window.confirm(write.getAttribute("data-confirm"))) return;
+        var body = answers();
+        body.confirm = true;
+        busy(write, true);
+        post("/api/project.write", body).then(function (data) {
+          busy(write, false);
+          say(writeOut, !!data.ok, data.lines);
+          if (data.ok) setTimeout(function () { location.reload(); }, 700);
+        });
+      });
+    }
+
+    var cancel = projectRoot.querySelector("[data-cancel]");
+    if (cancel) cancel.addEventListener("click", function () { location.reload(); });
   }
 
   // \u2500\u2500 The Slots page \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -21004,360 +22222,6 @@ var PORTAL_JS = `(function () {
 })();
 `;
 
-// src/portal/facts.ts
-import { readFileSync as readFileSync41 } from "fs";
-function readConfig(ctx) {
-  try {
-    return { config: loadConfigFile(ctx.paths.gatewayConfigFile) };
-  } catch (error) {
-    return { error: messageOf(error) };
-  }
-}
-function configExists(ctx) {
-  try {
-    readFileSync41(ctx.paths.gatewayConfigFile);
-    return true;
-  } catch (error) {
-    return error.code !== "ENOENT";
-  }
-}
-async function shellFacts(ctx, portalPort, found) {
-  if ("error" in found)
-    return { portalPort, router: null, version: VERSION };
-  const port = found.config.port;
-  const health = await routerHealth(port, ctx.probe.fetch);
-  return { portalPort, router: { port, up: !("error" in health) }, version: VERSION };
-}
-function isJsonObject12(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function entriesOf(value) {
-  if (!isJsonObject12(value))
-    return [];
-  return Object.entries(value).filter((entry) => typeof entry[1] === "number").sort(([a], [b]) => a < b ? -1 : 1);
-}
-async function routerFacts(ctx, port) {
-  const health = await routerHealth(port, ctx.probe.fetch);
-  if ("error" in health) {
-    return {
-      cooling: [],
-      fallbacks: 0,
-      limited: [],
-      port,
-      requests: 0,
-      up: false,
-      uptimeSec: 0,
-      why: health.error
-    };
-  }
-  const body = isJsonObject12(health.body) ? health.body : {};
-  const number = (key) => typeof body[key] === "number" ? body[key] : 0;
-  return {
-    cooling: entriesOf(body.cooling),
-    fallbacks: number("fallbacks"),
-    limited: entriesOf(body.limited),
-    port: typeof body.port === "number" ? body.port : port,
-    requests: number("requests"),
-    up: true,
-    uptimeSec: number("uptimeSec"),
-    why: null
-  };
-}
-function levelOf(line) {
-  if (line.startsWith("WARN "))
-    return "WARN";
-  if (line.startsWith("ERROR "))
-    return "ERROR";
-  return "INFO";
-}
-function parseJournalLine(text, nowMs) {
-  const trimmed = text.trim();
-  if (trimmed === "")
-    return null;
-  if (trimmed.startsWith("{")) {
-    let raw;
-    try {
-      raw = JSON.parse(trimmed);
-    } catch {
-      return null;
-    }
-    if (!isJsonObject12(raw))
-      return null;
-    const message = typeof raw.MESSAGE === "string" ? raw.MESSAGE : null;
-    if (message === null)
-      return null;
-    const micros = typeof raw.__REALTIME_TIMESTAMP === "string" ? Number(raw.__REALTIME_TIMESTAMP) : NaN;
-    const at = Number.isFinite(micros) ? micros / 1000 : nowMs;
-    return { level: levelOf(message), text: leadingTimeOff(message), time: clockOf(at, nowMs) };
-  }
-  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\s+(.*)$/.exec(trimmed);
-  if (match === null)
-    return null;
-  const rest = match[2] ?? "";
-  const message = rest.slice(rest.indexOf(": ") + 2);
-  const at = Date.parse(rest);
-  return {
-    level: levelOf(message),
-    text: leadingTimeOff(message),
-    time: clockOf(Number.isNaN(at) ? nowMs : at, nowMs)
-  };
-}
-function leadingTimeOff(message) {
-  return message.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\s+/, "");
-}
-function clockOf(ms, nowMs) {
-  return formatClock(Math.floor(ms / 1000), nowMs);
-}
-function routerLog(ctx, count) {
-  if (!ctx.systemd)
-    return { lines: [], note: "no systemd here, so there is no journal to read" };
-  const result = ctx.runner([
-    "journalctl",
-    "--user",
-    "-u",
-    UNIT_NAME,
-    "-n",
-    String(count),
-    "--no-pager",
-    "-o",
-    "json"
-  ]);
-  if (result.exitCode !== 0) {
-    const why = (result.output.trim().split(`
-`).at(-1) ?? "").trim();
-    return {
-      lines: [],
-      note: `the journal could not be read${why === "" ? "" : ` (${why})`}. In a terminal: journalctl --user -u ${UNIT_NAME.replace(/\.service$/, "")} -f`
-    };
-  }
-  const nowMs = ctx.now();
-  const lines = result.output.split(`
-`).map((line) => parseJournalLine(line, nowMs)).filter((line) => line !== null);
-  return { lines, note: null };
-}
-var SLOT_META = {
-  fable: {
-    info: "claude-fable-5-1 answers first. The next target answers only when Anthropic refuses at the plan limit, until the reset.",
-    kind: "model"
-  },
-  judge: {
-    info: "Claude judges auto mode's safety check whenever Claude can answer. This chain answers only at the plan limit or with no Claude login, and only while the judge switch is on.",
-    kind: "off by default"
-  },
-  opus: {
-    info: "claude-opus-5-5 answers first. The next target answers only when Anthropic refuses at the plan limit, until the reset.",
-    kind: "model"
-  },
-  scout: {
-    info: "Affordable. File search, greps, reading and summaries.",
-    kind: "affordable"
-  },
-  worker: {
-    info: "Affordable. Building, doc updates, tests and mechanical runs.",
-    kind: "affordable"
-  }
-};
-function slotName(key) {
-  return key.replace(/^cc-smart-dev-kit-/, "");
-}
-var SLOT_ORDER = ["scout", "worker", JUDGE_SLOT, ...Object.keys(MODEL_SLOTS)];
-function slotRows(config, router) {
-  const resting = new Map(router.cooling);
-  const keys = [
-    ...["scout", "worker", JUDGE_SLOT, ...Object.keys(MODEL_SLOTS)].map((name) => `cc-smart-dev-kit-${slotName(name)}`),
-    ...Object.keys(config.slots).filter((key) => !SLOT_ORDER.some((name) => key === `cc-smart-dev-kit-${slotName(name)}`))
-  ];
-  const rows = [];
-  for (const key of [...new Set(keys)]) {
-    const name = slotName(key);
-    const meta = SLOT_META[name] ?? { info: "A slot of this machine's own.", kind: "other" };
-    const targets = config.slots[key];
-    const on = targets !== undefined && (!isModelSlot(key) || Object.values(config.modelSlots ?? {}).includes(key));
-    rows.push({
-      info: meta.info,
-      key,
-      kind: on ? meta.kind : "off",
-      name,
-      note: slotNote(config, key, on),
-      targets: (targets ?? []).map((target) => {
-        const parsed = parseTarget(target);
-        const known = "target" in parsed ? parsed.target : null;
-        return {
-          from: known === null ? "?" : known.kind === "anthropic" ? "Claude login" : known.backend,
-          restingFor: resting.get(target) ?? null,
-          target,
-          tested: key === JUDGE_SLOT && judgeTargetTested(config, target)
-        };
-      })
-    });
-  }
-  return rows;
-}
-function slotNote(config, key, on) {
-  if (!on) {
-    return isModelSlot(key) ? `off: ${MODEL_SLOTS[key] ?? key} goes to Anthropic unchanged` : "off: auto mode's safety checks go to Claude, and to no one else";
-  }
-  if (key === JUDGE_SLOT) {
-    const untested = (config.slots[key] ?? []).filter((target) => !judgeTargetTested(config, target));
-    return untested.length > 0 ? `NOT TESTED, so ignored: ${untested.join(", ")}` : "only when Claude cannot answer a check";
-  }
-  if (isModelSlot(key))
-    return "the rest only at the plan's usage limit";
-  return "";
-}
-function contextText(length) {
-  if (length === null)
-    return "\u2014";
-  return length >= 1000 ? `${Math.round(length / 1000)}K` : String(length);
-}
-function claudeModels(config) {
-  const found = new Set(Object.keys(config.modelSlots ?? {}));
-  for (const targets of Object.values(config.slots)) {
-    for (const target of targets) {
-      const parsed = parseTarget(target);
-      if ("target" in parsed && parsed.target.kind === "anthropic")
-        found.add(parsed.target.model);
-    }
-  }
-  return [...found].sort();
-}
-async function backendRows(ctx, config) {
-  const rows = [];
-  for (const [name, backend] of Object.entries(config.backends).sort(([a], [b]) => a < b ? -1 : 1)) {
-    const started = ctx.now();
-    const listed = await listModels(backend.baseUrl, backend.apiKey, 8000);
-    const ms = ctx.now() - started;
-    const url = shownBackendUrl(backend.baseUrl, backend.apiKey);
-    if ("error" in listed) {
-      rows.push({ models: [], ms: null, name, state: "failed", url, why: listed.error });
-      continue;
-    }
-    if (listed.status !== 200) {
-      rows.push({
-        models: [],
-        ms: null,
-        name,
-        state: "failed",
-        url,
-        why: `HTTP ${listed.status}`
-      });
-      continue;
-    }
-    rows.push({
-      models: listed.models.map((model) => ({
-        backend: name,
-        context: contextText(model.contextLength),
-        id: `${name}:${model.id}`,
-        plan: false
-      })).sort((a, b) => a.id.localeCompare(b.id)),
-      ms,
-      name,
-      state: "answers",
-      url,
-      why: null
-    });
-  }
-  return rows;
-}
-function modelSlotsOn(config) {
-  return Object.values(config.modelSlots ?? {}).filter((slot) => Object.hasOwn(config.slots, slot));
-}
-function switchFacts(ctx, config) {
-  const report = settingsReport(ctx.paths.settingsFile);
-  const warnings = [];
-  if (report.subagentOverrides.length > 0) {
-    warnings.push(`${report.subagentOverrides.join(", ")} set: every agent launched without a model runs on it, with the gateway possibly an affordable slot. Remove it by hand unless you want that.`);
-  }
-  if (report.loginOverrides.length > 0) {
-    warnings.push(`${report.loginOverrides.join(", ")} set: that replaces your own Claude login. Remove it for the gateway.`);
-  }
-  const judgeTargets = config.slots[JUDGE_SLOT] ?? [];
-  return {
-    fallback: modelSlotsOn(config).length > 0,
-    gateway: report.baseUrl !== null,
-    judge: judgeTargets.length > 0 && judgeTargets.every((target) => judgeTargetTested(config, target)),
-    judgeUntested: judgeTargets.some((target) => !judgeTargetTested(config, target)),
-    settingsBaseUrl: report.baseUrl,
-    warnings
-  };
-}
-function claimText(claim) {
-  switch (claim) {
-    case "five_hour":
-      return "the 5-hour window";
-    case "seven_day":
-      return "the 7-day window";
-    case "seven_day_opus":
-      return "the 7-day Opus window";
-    case "seven_day_sonnet":
-      return "the 7-day Sonnet window";
-    default:
-      return claim ?? "its window";
-  }
-}
-function limitFacts(ctx) {
-  let text = null;
-  try {
-    text = readFileSync41(ctx.paths.gatewayStateFile, "utf8");
-  } catch {
-    text = null;
-  }
-  const state = text === null ? null : parseLimitState(text);
-  if (state === null)
-    return { fallbacks: [], limits: [], read: false };
-  const nowMs = ctx.now();
-  return {
-    fallbacks: currentFallbacks(state, nowMs).map(([slot, record]) => ({
-      model: record.model,
-      since: formatClock(Math.floor(record.since / 1000), nowMs),
-      slot,
-      target: record.target
-    })),
-    limits: currentLimits(state, nowMs).map(([model, record]) => ({
-      claim: claimText(record.claim),
-      model,
-      resets: record.resetsAt === null ? null : formatClock(record.resetsAt, nowMs)
-    })),
-    read: true
-  };
-}
-function companionRows(ctx) {
-  return companions().map((companion) => {
-    const check = companionChecks(ctx.paths, [companion])[0];
-    const state = companionState(ctx.paths, companion);
-    const enableArgv = state.kind === "off" ? ["claude", "plugin", "enable", companion.id] : null;
-    return {
-      command: enableArgv === null ? null : enableArgv.join(" "),
-      detail: check?.text ?? `${companion.id} ${state.kind}`,
-      enableArgv,
-      id: companion.id,
-      state: state.kind,
-      title: companion.name
-    };
-  });
-}
-function warpRow(ctx) {
-  const system = detectSystem(ctx.machine);
-  return {
-    detail: warpCheck(ctx.machine, ctx.paths).text,
-    installed: detectWarpApp(ctx.machine, system).installed
-  };
-}
-async function omnirouteRow(omnirouteCtx, installedIsOlder) {
-  const facts = await omnirouteFacts(omnirouteCtx);
-  const newest = facts.newest;
-  const backend = facts.backend;
-  return {
-    backend: backend === null ? null : `${backend.name} \u2192 ${shownBackendUrl(backend.baseUrl, backend.apiKey)}`,
-    install: facts.install,
-    newestVersion: newest?.version ?? null,
-    previous: facts.state.previous,
-    registryError: facts.registryError,
-    state: facts.install === null || newest === null ? "unknown" : installedIsOlder(facts.install.version, newest.version) ? "behind" : "ok",
-    unit: facts.unit?.name ?? null
-  };
-}
-
 // src/portal/guard.ts
 import { timingSafeEqual } from "crypto";
 var CSP = [
@@ -21471,12 +22335,13 @@ function escapeHtml(value) {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 var MARK = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"></rect><path d="M7 10l3 2-3 2"></path><path d="M12 15h5"></path></svg>`;
-var LOCK = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path></svg>`;
+var LOCK_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path></svg>`;
 var PAGES = [
   { href: "/", id: "overview", label: "Overview" },
   { href: "/slots", id: "slots", label: "Slots" },
   { href: "/health", id: "health", label: "Health" },
-  { href: "/machine", id: "machine", label: "Machine" }
+  { href: "/machine", id: "machine", label: "Machine" },
+  { href: "/settings", id: "settings", label: "Settings" }
 ];
 function header(shell, active) {
   const { router } = shell.facts;
@@ -21497,7 +22362,7 @@ function header(shell, active) {
 </header>
 <div class="privatebar">
 <div class="wrap">
-<span>${LOCK}Private session on this computer only. It ends when the portal stops.</span>
+<span>${LOCK_ICON}Private session on this computer only. It ends when the portal stops.</span>
 <span>For you, not for Claude: never open this page in the browser Claude drives.</span>
 </div>
 </div>`;
@@ -21563,7 +22428,11 @@ function command(text, label) {
 function switchButton(options) {
   const body = options.body === undefined ? "" : ` data-body="${escapeHtml(JSON.stringify(options.body))}"`;
   const confirm = options.confirm === undefined ? "" : ` data-confirm="${escapeHtml(options.confirm)}"`;
-  return `<button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${options.id}" class="switch" data-action="${options.action}"${body}${confirm}${options.reload === true ? " data-reload" : ""} data-toggle><span class="track" aria-hidden="true"><span class="knob"></span></span><span data-switch-label>${options.on ? "On" : "Off"}</span></button>`;
+  const inside = `<span class="track" aria-hidden="true"><span class="knob"></span></span><span data-switch-label>${options.on ? "On" : "Off"}</span>`;
+  if (options.disabled === true) {
+    return `<button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${options.id}" class="switch" disabled>${inside}</button>`;
+  }
+  return `<button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${options.id}" class="switch" data-action="${options.action}"${body}${confirm}${options.reload === true ? " data-reload" : ""} data-toggle>${inside}</button>`;
 }
 
 // src/portal/views.ts
@@ -21839,6 +22708,83 @@ ${data.log.note === null ? "" : `<p class="small muted">${escapeHtml(data.log.no
 ${downCard}`;
   return layout({ active: "health", body, shell, title: "Health" });
 }
+var SOURCE_WORDS = {
+  default: "default",
+  personal: "yours",
+  project: "this project"
+};
+var PROJECT_SETTING_CONFIRM = "Write this into the project's .claude/cc-smart-dev-kit.json? It is a file the team shares: commit it like any change.";
+var CHANGE_IN_PROJECT = `<a class="small bold" href="/machine#project">change it in the project</a>`;
+function settingControl(row, disabled) {
+  switch (row.kind) {
+    case "boolean":
+      return switchButton({
+        action: "workflow.set",
+        body: row.where === "project" ? { confirm: true, key: row.key, value: row.value !== true } : { key: row.key, value: row.value !== true },
+        ...row.where === "project" ? { confirm: PROJECT_SETTING_CONFIRM } : {},
+        disabled,
+        id: row.id,
+        label: row.label,
+        on: row.value === true,
+        reload: true
+      });
+    case "segment":
+      return `<div role="group" aria-labelledby="${row.id}" class="segment">${(row.choices ?? []).map((choice) => {
+        const pressed = row.value === choice.value;
+        const action = disabled ? " disabled" : ` data-action="workflow.set" data-body="${escapeHtml(JSON.stringify({ key: row.key, value: choice.value }))}" data-reload`;
+        return `<button type="button" aria-pressed="${pressed}"${action}>${escapeHtml(choice.label)}</button>`;
+      }).join("")}</div>`;
+    case "events": {
+      const chosen = Array.isArray(row.value) ? row.value.filter((one) => typeof one === "string") : [];
+      return `<div role="group" aria-labelledby="${row.id}" class="row events"${disabled ? "" : ` data-events="${row.key}"`}>${(row.choices ?? []).map((choice) => `<label class="row tap"><input type="checkbox" value="${escapeHtml(choice.value)}"${chosen.includes(choice.value) ? " checked" : ""}${disabled ? " disabled" : ""}>${escapeHtml(choice.label)}</label>`).join("")}</div>`;
+    }
+    case "number":
+      return `<div class="row numrow"><input type="number" min="1" max="100" value="${escapeHtml(String(row.value))}" aria-labelledby="${row.id}" class="numinput"${disabled ? " disabled" : ` data-setting="${row.key}"`}><span class="small">%</span></div>`;
+  }
+}
+function settingRow(row, extra = "") {
+  const disabled = row.readOnly;
+  const control = settingControl(row, disabled);
+  return `<div class="setrow">
+<div class="col g2 fill1"><span id="${row.id}" class="bold">${escapeHtml(row.label)}</span><span class="small muted">${escapeHtml(row.help)}</span></div>
+${disabled ? `<div class="col end g4">${control}${CHANGE_IN_PROJECT}</div>` : control}
+<span class="src ${row.source}">${escapeHtml(SOURCE_WORDS[row.source])}</span>
+${extra}
+</div>`;
+}
+function autoMergeBox(data) {
+  const base = data.autoMerge?.base;
+  const inside = base === null || base === undefined ? "" : ` (${escapeHtml(base)} here)`;
+  const decided = data.autoMerge === null ? "" : `<span class="small rulemore">${data.autoMerge.allowed ? `On this project, a pull request into ${escapeHtml(base ?? "")} may be merged by itself, once CI is green and the review is done.` : "On this project it will not merge by itself: only a plain integration branch is ever merged into without asking you."}</span>`;
+  return `<div class="rulebox">
+<span class="ruleicon" aria-hidden="true">${SHIELD_ICON}</span>
+<span>Only into the project's integration branch${inside}, after CI is green and the review is done. Never main, a release branch or production: those always ask you.${decided}</span>
+</div>`;
+}
+var SHIELD_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6z"></path><path d="M12 9v4"></path><path d="M12 16h.01"></path></svg>`;
+function settingsPage(shell, data) {
+  const cards = SETTINGS_CARDS.map(({ card, title }) => {
+    const rows = data.rows.filter((row) => row.card === card);
+    return `<section aria-labelledby="${card}-h">
+<h2 id="${card}-h">${escapeHtml(title)}</h2>
+<div class="card list" data-scope>
+${rows.map((row) => settingRow(row, row.key === "autoMerge" ? autoMergeBox(data) : "")).join("")}
+<div class="foot" data-out-for="workflow.set" role="status"></div>
+</div>
+</section>`;
+  }).join("");
+  const body = `<div class="pagehead">
+<div>
+<h1>Settings</h1>
+<p>What Claude does after it finishes a step, what alerts you, and the switches for this computer. Each row says where its value comes from.</p>
+</div>
+</div>
+${data.error === null ? "" : `<div class="notice">The workflow settings cannot be read: <span class="mono wrap-any">${escapeHtml(data.error)}</span>. Nothing here can change until it is fixed.</div>`}
+${data.projectNote === null ? "" : `<p class="muted">${escapeHtml(data.projectNote)}</p>`}
+${cards}
+<p class="note" id="proj-wins">Your choices are saved on this computer for every project. A project can set its own in <code>.claude/cc-smart-dev-kit.json</code>; there, the project's choice wins.</p>`;
+  return layout({ active: "settings", body, shell, title: "Settings" });
+}
 function clockFrom(ms) {
   return new Intl.DateTimeFormat("en-GB", {
     hour: "2-digit",
@@ -21853,6 +22799,126 @@ var COMPANION_WORDS = {
   "outside-range": "outside the version range",
   "unknown-version": "version unknown"
 };
+var X_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12"></path><path d="M18 6L6 18"></path></svg>`;
+var COPY_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V5a1 1 0 0 1 1-1h10"></path></svg>`;
+function removeButton(attribute, label) {
+  return `<button type="button" class="btn icon" ${attribute} aria-label="${escapeHtml(label)}">${X_ICON}</button>`;
+}
+function baseRow(prefix, base) {
+  const remove = prefix === "" ? "Remove this rule" : `Remove the ${prefix} rule`;
+  return `<div class="baserow" data-base-row>
+<input class="chipinput mono" data-base-prefix value="${escapeHtml(prefix)}" aria-label="The branch-name prefix" placeholder="hotfix/">
+<span aria-hidden="true" class="muted">\u2192</span>
+<input class="chipinput mono" data-base-value value="${escapeHtml(base)}" aria-label="The base a branch with that prefix starts from" placeholder="main">
+${removeButton("data-remove-row", remove)}
+</div>`;
+}
+function protectedChip(name) {
+  const remove = name === "" ? "Remove this branch" : `Remove ${name} from the protected branches`;
+  return `<span class="chip lockchip" data-chip>${LOCK_ICON}<input class="chipinput mono" data-protected-name value="${escapeHtml(name)}" aria-label="A protected branch" placeholder="main">${removeButton("data-remove-chip", remove)}</span>`;
+}
+function guardRow(options) {
+  return `<div class="setrow">
+<div class="col g2 fill1"><span id="${options.id}" class="bold">${escapeHtml(options.label)}</span><span class="small muted">${escapeHtml(options.help)}</span></div>
+<button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${options.id}" class="switch" data-form-switch="${options.name}"><span class="track" aria-hidden="true"><span class="knob"></span></span><span data-switch-label>${options.on ? "On" : "Off"}</span></button>
+</div>`;
+}
+function previewBox(options) {
+  return `<div class="codebox">
+<div class="codehead"><code>${escapeHtml(options.name)}</code><button type="button" class="btn" data-copy-node="${options.attribute}" aria-label="${escapeHtml(options.copyLabel)}">${COPY_ICON}Copy</button></div>
+<pre ${options.attribute}>${escapeHtml(options.text)}</pre>
+</div>`;
+}
+function projectForm(data, answers, plan) {
+  const setup = answers.setup === null ? "" : answers.setup.join(" ");
+  const baseHelp = `The folder that stays on the latest ${answers.base} is never edited or committed in.`;
+  const hookLines = plan.hookLines;
+  const settingsNote = settingsLineNote(hookLines.length);
+  return `<div class="col g8" data-project-form${data.set ? "" : " hidden"}>
+
+<div class="fields">
+<div class="field"><label for="f-base">Base branch</label><input id="f-base" type="text" value="${escapeHtml(answers.base)}" data-answer="base"></div>
+<div class="field"><label for="f-prefix">Worktree folder prefix</label><input id="f-prefix" type="text" value="${escapeHtml(answers.prefix)}" data-answer="prefix"></div>
+<div class="field"><label for="f-setup">Setup command</label><input id="f-setup" type="text" value="${escapeHtml(setup)}" data-answer="setup"></div>
+</div>
+
+<div class="col g8">
+<h3>Branches that start from another base</h3>
+<p class="small muted">A branch whose name starts with the first box starts from the second one instead of the base branch.</p>
+<div class="col g8" data-bases>${Object.entries(answers.bases).map(([prefix, base]) => baseRow(prefix, base)).join("")}</div>
+<div class="row"><button type="button" class="btn dashed" data-add-base>+ add</button></div>
+<template data-base-template>${baseRow("", "")}</template>
+</div>
+
+<div class="col g8">
+<h3>Protected branches</h3>
+<div class="row" data-protected>${answers.protectedBranches.map(protectedChip).join("")}<button type="button" class="btn dashed" data-add-protected>+ add</button></div>
+<template data-chip-template>${protectedChip("")}</template>
+<p class="small muted">The git guard still asks you before a push or a force push to any of these.</p>
+</div>
+
+<div class="col g8">
+<h3>Guards</h3>
+<div class="card list">
+${guardRow({ help: baseHelp, id: "g-main", label: "Refuse edits in the main folder", name: "guardMainFolder", on: answers.guards.guardMainFolder })}
+${guardRow({ help: "Every session is named after the branch it works on.", id: "g-name", label: "Name each session", name: "sessionNames", on: answers.guards.sessionNames })}
+${guardRow({ help: "The type check, the build, the tests and the coverage run here go through the queue.", id: "g-jobs", label: "Heavy jobs through the queue", name: "jobRoute", on: answers.guards.jobRoute })}
+</div>
+</div>
+
+<div class="col g8">
+<h3>Worktree engine</h3>
+<p class="small muted">The plugin's engine makes the worktree and runs the setup command. The project's own runs your script instead.</p>
+<div role="group" aria-label="Worktree engine" class="segment" data-engine>
+<button type="button" aria-pressed="${answers.engine === "plugin"}" data-engine-value="plugin">The plugin's</button>
+<button type="button" aria-pressed="${answers.engine === "own"}" data-engine-value="own">The project's own</button>
+</div>
+</div>
+
+<div class="col g8">
+<h3>Preview</h3>
+<p class="small muted">Exactly what will be written.</p>
+${previewBox({ attribute: "data-preview-file", copyLabel: "Copy the contents of .claude/cc-smart-dev-kit.json", name: ".claude/cc-smart-dev-kit.json", text: plan.text })}
+${previewBox({ attribute: "data-preview-settings", copyLabel: "Copy the lines added to .claude/settings.json", name: ".claude/settings.json", text: hookLines.join(`
+`) })}
+<p class="small muted" data-preview-note>${escapeHtml(settingsNote)}</p>
+<div class="col g2" data-preview-notes>${plan.notes.map((note) => `<p class="small muted">${escapeHtml(note)}</p>`).join("")}</div>
+</div>
+
+<div class="row">
+<button type="button" class="btn strong" data-write data-confirm="Write these two files into the repo? Nothing is committed: the change is yours to review and commit.">Write the files</button>
+<button type="button" class="btn" data-cancel>Cancel</button>
+</div>
+<div data-out-for="project.write" role="status"></div>
+
+<p>This writes two files in the repo. Commit them like any change: the team shares one setup.</p>
+</div>`;
+}
+function projectCard(data) {
+  if (data.root === null) {
+    return `<section class="card pad" id="project">
+<div class="spread"><h2>Project</h2><span class="warnmark">cannot be read</span></div>
+<div class="notice">The project cannot be read: <span class="mono wrap-any">${escapeHtml(data.error ?? "there is no project here")}</span>.</div>
+<p class="muted">Machine, doctor and the Settings page still work. A project is set up in its own folder, in a terminal: <code>${COMMAND} project init</code>.</p>
+</section>`;
+  }
+  const name = data.name ?? "";
+  const head = `<div class="spread">
+<h2>Project</h2>
+${data.set ? `<span class="mono small muted">${escapeHtml(name)}</span>` : '<span class="muted bold">not set up</span>'}
+</div>`;
+  const stateA = data.set ? "" : `<p>Project: <span class="mono bold">${escapeHtml(name)}</span> <span class="muted">(the repo the portal was started in)</span></p>
+<p class="muted">No <code>.claude/cc-smart-dev-kit.json</code>: the project's guards and worktree hooks are off here.</p>
+<div class="row"><button type="button" class="btn strong" data-setup-show><span aria-hidden="true">+</span>Set up this project</button></div>`;
+  const answers = data.answers;
+  const plan = data.plan;
+  const form = answers === null || plan === null ? `<div class="notice">The plan cannot be built: <span class="mono wrap-any">${escapeHtml(data.planError ?? "no answers")}</span>.</div>` : projectForm(data, answers, plan);
+  return `<section class="card pad" id="project" data-project>
+${head}
+${stateA}
+${form}
+</section>`;
+}
 function companionCard(companion) {
   const tone = companion.state === "ok" ? "" : " warn";
   return `<div class="card pad${tone}">
@@ -21917,6 +22983,8 @@ ${doctor === null ? '<p class="muted">Open this page again once it has run.</p>'
 <p>Updates, heavy jobs and the programs this kit needs, on this computer.</p>
 </div>
 </div>
+
+${projectCard(data.project)}
 
 <div class="grid two">
 <section class="card pad">
@@ -22055,8 +23123,24 @@ ${privacyStep(3, "Always true", [
   return layout({ active: null, body, shell, title: "How the portal stays private" });
 }
 
+// src/portal/workflow-adapter.ts
+var NOT_WIRED = "The workflow module is not wired into this build of the portal (src/portal/workflow-adapter.ts).";
+function notWired() {
+  throw new Error(NOT_WIRED);
+}
+var workflowAdapter = {
+  applyProjectInit: notWired,
+  autoMergeAllowed: notWired,
+  planProjectInit: notWired,
+  projectInitDefaults: notWired,
+  repositoryDefaultBranch: notWired,
+  resolveWorkflow: notWired,
+  writePersonalSetting: notWired,
+  writeProjectSetting: notWired
+};
+
 // src/portal/server.ts
-var PAGES2 = new Set(["/", "/health", "/machine", "/slots"]);
+var PAGES2 = new Set(["/", "/health", "/machine", "/settings", "/slots"]);
 function idleCheckMs(idleMs) {
   return Math.max(50, Math.min(5000, Math.floor(idleMs / 4)));
 }
@@ -22108,6 +23192,7 @@ function summaryOf(last) {
 async function startPortal(ctx, options) {
   const random = options.random ?? ((bytes) => Buffer.from(crypto.getRandomValues(new Uint8Array(bytes))));
   const idleMs = options.idleMs ?? IDLE_MS;
+  const workflow = options.workflow ?? workflowAdapter;
   const state = {
     doctor: null,
     doctorRun: null,
@@ -22135,12 +23220,22 @@ async function startPortal(ctx, options) {
     server.stop(true);
     settle("idle");
   }, idleCheckMs(idleMs));
+  let remembered = null;
+  function projectDefaults(input) {
+    const key = `${input.root}\x00${input.existing ?? ""}`;
+    if (remembered === null || remembered.key !== key) {
+      remembered = { defaults: workflow.projectInitDefaults(input), key };
+    }
+    return remembered.defaults;
+  }
   function actionContext() {
     return {
       cwd: options.cwd,
       memory: state.memory,
       omniroute: portalOmnirouteContext(ctx),
-      portal: ctx
+      portal: ctx,
+      projectDefaults,
+      workflow
     };
   }
   async function doctorOnce() {
@@ -22178,6 +23273,7 @@ async function startPortal(ctx, options) {
       doctor: state.doctor,
       jobs: await jobLines(actionContext()),
       omniroute: await omnirouteRow(actionContext().omniroute, isOlder),
+      project: projectCardData(ctx, options.cwd, projectDefaults, workflow),
       updates: {
         heldSince: updates.heldSince,
         installed: updates.installed,
@@ -22193,6 +23289,9 @@ async function startPortal(ctx, options) {
       const error = configExists(ctx) ? { configError: found.error } : {};
       if (path === "/machine") {
         return html(machinePage(shell, { ...await machineData(), ...error }), extra);
+      }
+      if (path === "/settings") {
+        return html(settingsPage(shell, settingsData(ctx, options.cwd, workflow)), extra);
       }
       return html(notSetUpPage(shell, { backends: [], ...error }), extra);
     }
@@ -22237,6 +23336,9 @@ async function startPortal(ctx, options) {
     }
     if (path === "/machine")
       return html(machinePage(shell, await machineData()), extra);
+    if (path === "/settings") {
+      return html(settingsPage(shell, settingsData(ctx, options.cwd, workflow)), extra);
+    }
     const limits = limitFacts(ctx);
     const dashboard = config.backends.omniroute?.baseUrl ?? null;
     return html(overviewPage(shell, {
@@ -22413,15 +23515,15 @@ ${PORTAL_USAGE}`);
     return {
       bun: { path: process.execPath, version: Bun.version },
       gateway: {
-        bundle: join35(folder, "dist", "router.js"),
+        bundle: join36(folder, "dist", "router.js"),
         machine,
         runner,
         service: ctx.systemd ? "systemd" : "none"
       },
       live: null,
-      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join35(folder, "dist")) },
+      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join36(folder, "dist")) },
       mcp: realMcpDoctorDeps(),
-      project: { cwd: process.cwd(), pluginHooksFile: join35(folder, "hooks", "hooks.json") }
+      project: { cwd: process.cwd(), pluginHooksFile: join36(folder, "hooks", "hooks.json") }
     };
   };
   const portal = await startPortal(ctx, {

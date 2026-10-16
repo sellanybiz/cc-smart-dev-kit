@@ -20,20 +20,25 @@ import type { Check as DoctorCheck } from "../cli/doctor";
 import { UNIT_NAME } from "../gateway/service";
 import { JUDGE_SLOT } from "../gateway/targets";
 import type { LastCheck } from "../update/state";
-import type {
-  BackendRow,
-  CompanionRow,
-  FallbackRow,
-  LimitRow,
-  LogLine,
-  ModelRow,
-  OmnirouteRow,
-  RouterFacts,
-  SlotRow,
-  SwitchFacts,
-  WarpRow,
+import {
+  type BackendRow,
+  type CompanionRow,
+  type FallbackRow,
+  type LimitRow,
+  type LogLine,
+  type ModelRow,
+  type OmnirouteRow,
+  type ProjectCardData,
+  type RouterFacts,
+  type SettingsData,
+  type SlotRow,
+  type SwitchFacts,
+  settingsLineNote,
+  type WarpRow,
 } from "./facts";
-import { barePage, command, escapeHtml, layout, type Shell, switchButton } from "./page";
+import { barePage, command, escapeHtml, LOCK_ICON, layout, type Shell, switchButton } from "./page";
+import { SETTINGS_CARDS, type SettingChoice, type SettingsRow } from "./settings";
+import type { ProjectInitAnswers, ProjectInitPlan, WorkflowSource } from "./workflow-adapter";
 
 /** A switch's own confirmation: every one of them changes running sessions. */
 const SWITCH_CONFIRM =
@@ -415,6 +420,136 @@ ${downCard}`;
   return layout({ active: "health", body, shell, title: "Health" });
 }
 
+// ── Settings ────────────────────────────────────────────────────────────────────
+
+/** The words a row's source tag shows, the design's own. */
+const SOURCE_WORDS: Readonly<Record<WorkflowSource, string>> = {
+  default: "default",
+  personal: "yours",
+  project: "this project",
+};
+
+/** Where a write into the project's committed file asks first. */
+const PROJECT_SETTING_CONFIRM =
+  "Write this into the project's .claude/cc-smart-dev-kit.json? It is a file the team shares: commit it like any change.";
+
+/** The one line a row the project sets shows, with the link to where it is changed. */
+const CHANGE_IN_PROJECT = `<a class="small bold" href="/machine#project">change it in the project</a>`;
+
+function settingControl(row: SettingsRow, disabled: boolean): string {
+  switch (row.kind) {
+    case "boolean":
+      return switchButton({
+        action: "workflow.set",
+        body:
+          row.where === "project"
+            ? { confirm: true, key: row.key, value: row.value !== true }
+            : { key: row.key, value: row.value !== true },
+        ...(row.where === "project" ? { confirm: PROJECT_SETTING_CONFIRM } : {}),
+        disabled,
+        id: row.id,
+        label: row.label,
+        on: row.value === true,
+        reload: true,
+      });
+    case "segment":
+      return `<div role="group" aria-labelledby="${row.id}" class="segment">${(row.choices ?? [])
+        .map((choice: SettingChoice) => {
+          const pressed = row.value === choice.value;
+          const action = disabled
+            ? " disabled"
+            : ` data-action="workflow.set" data-body="${escapeHtml(JSON.stringify({ key: row.key, value: choice.value }))}" data-reload`;
+          return `<button type="button" aria-pressed="${pressed}"${action}>${escapeHtml(choice.label)}</button>`;
+        })
+        .join("")}</div>`;
+    case "events": {
+      // The resolver's value, taken as the list of names it is: anything else is no name.
+      const chosen = Array.isArray(row.value)
+        ? row.value.filter((one): one is string => typeof one === "string")
+        : [];
+      return `<div role="group" aria-labelledby="${row.id}" class="row events"${disabled ? "" : ` data-events="${row.key}"`}>${(
+        row.choices ?? []
+      )
+        .map(
+          (choice) =>
+            `<label class="row tap"><input type="checkbox" value="${escapeHtml(choice.value)}"${chosen.includes(choice.value) ? " checked" : ""}${disabled ? " disabled" : ""}>${escapeHtml(choice.label)}</label>`,
+        )
+        .join("")}</div>`;
+    }
+    case "number":
+      return `<div class="row numrow"><input type="number" min="1" max="100" value="${escapeHtml(String(row.value))}" aria-labelledby="${row.id}" class="numinput"${disabled ? " disabled" : ` data-setting="${row.key}"`}><span class="small">%</span></div>`;
+  }
+}
+
+/** One row: its words, its control, where the value comes from, and a box under it if it has one. */
+function settingRow(row: SettingsRow, extra = ""): string {
+  const disabled = row.readOnly;
+  const control = settingControl(row, disabled);
+  return `<div class="setrow">
+<div class="col g2 fill1"><span id="${row.id}" class="bold">${escapeHtml(row.label)}</span><span class="small muted">${escapeHtml(row.help)}</span></div>
+${disabled ? `<div class="col end g4">${control}${CHANGE_IN_PROJECT}</div>` : control}
+<span class="src ${row.source}">${escapeHtml(SOURCE_WORDS[row.source])}</span>
+${extra}
+</div>`;
+}
+
+/** The auto-merge row's own rule box: the design's words, with the project's base named. */
+function autoMergeBox(data: SettingsData): string {
+  const base = data.autoMerge?.base;
+  const inside = base === null || base === undefined ? "" : ` (${escapeHtml(base)} here)`;
+  // The rule is the design's sentence, word for word; the line under it is what the module's
+  // own `autoMergeAllowed` answers for this project right now, on its own line.
+  const decided =
+    data.autoMerge === null
+      ? ""
+      : `<span class="small rulemore">${
+          data.autoMerge.allowed
+            ? `On this project, a pull request into ${escapeHtml(base ?? "")} may be merged by itself, once CI is green and the review is done.`
+            : "On this project it will not merge by itself: only a plain integration branch is ever merged into without asking you."
+        }</span>`;
+  return `<div class="rulebox">
+<span class="ruleicon" aria-hidden="true">${SHIELD_ICON}</span>
+<span>Only into the project's integration branch${inside}, after CI is green and the review is done. Never main, a release branch or production: those always ask you.${decided}</span>
+</div>`;
+}
+
+const SHIELD_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6z"></path><path d="M12 9v4"></path><path d="M12 16h.01"></path></svg>`;
+
+/**
+ * The Settings page: what Claude does after a step, what alerts the person, and the switches
+ * for this computer — each row with the value now and where it came from (`yours`,
+ * `this project`, `default`). A row the project sets is read-only here and says where to
+ * change it; the footer says the rule once (the project's choice wins).
+ */
+export function settingsPage(shell: Shell, data: SettingsData): string {
+  const cards = SETTINGS_CARDS.map(({ card, title }) => {
+    const rows = data.rows.filter((row) => row.card === card);
+    return `<section aria-labelledby="${card}-h">
+<h2 id="${card}-h">${escapeHtml(title)}</h2>
+<div class="card list" data-scope>
+${rows.map((row) => settingRow(row, row.key === "autoMerge" ? autoMergeBox(data) : "")).join("")}
+<div class="foot" data-out-for="workflow.set" role="status"></div>
+</div>
+</section>`;
+  }).join("");
+
+  const body = `<div class="pagehead">
+<div>
+<h1>Settings</h1>
+<p>What Claude does after it finishes a step, what alerts you, and the switches for this computer. Each row says where its value comes from.</p>
+</div>
+</div>
+${
+  data.error === null
+    ? ""
+    : `<div class="notice">The workflow settings cannot be read: <span class="mono wrap-any">${escapeHtml(data.error)}</span>. Nothing here can change until it is fixed.</div>`
+}
+${data.projectNote === null ? "" : `<p class="muted">${escapeHtml(data.projectNote)}</p>`}
+${cards}
+<p class="note" id="proj-wins">Your choices are saved on this computer for every project. A project can set its own in <code>.claude/cc-smart-dev-kit.json</code>; there, the project's choice wins.</p>`;
+  return layout({ active: "settings", body, shell, title: "Settings" });
+}
+
 // ── Machine ─────────────────────────────────────────────────────────────────────
 
 /** What the Machine page shows about the self-update. */
@@ -435,6 +570,8 @@ export interface MachineData {
   doctor: { at: number; checks: DoctorCheck[] } | null;
   jobs: null | { error: string; lines: string[] };
   omniroute: OmnirouteRow;
+  /** The card about the repo the portal was started in, and the form that sets it up. */
+  project: ProjectCardData;
   updates: UpdateFacts;
   warp: WarpRow;
 }
@@ -455,6 +592,178 @@ const COMPANION_WORDS: Readonly<Record<string, string>> = {
   "outside-range": "outside the version range",
   "unknown-version": "version unknown",
 };
+
+/** A remove button: the design's ✕, 44px, and its own label for a reader of the markup. */
+const X_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12"></path><path d="M18 6L6 18"></path></svg>`;
+
+/** The copy glyph, beside the design's Copy label. */
+const COPY_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V5a1 1 0 0 1 1-1h10"></path></svg>`;
+
+function removeButton(attribute: string, label: string): string {
+  return `<button type="button" class="btn icon" ${attribute} aria-label="${escapeHtml(label)}">${X_ICON}</button>`;
+}
+
+/**
+ * One `prefix → base` row of the form. Its two values are boxes, so a detected default can be
+ * fixed rather than only removed. Empty is the template the page's script clones for `+ add`,
+ * which is why the remove button's own label says "this rule" then.
+ */
+function baseRow(prefix: string, base: string): string {
+  const remove = prefix === "" ? "Remove this rule" : `Remove the ${prefix} rule`;
+  return `<div class="baserow" data-base-row>
+<input class="chipinput mono" data-base-prefix value="${escapeHtml(prefix)}" aria-label="The branch-name prefix" placeholder="hotfix/">
+<span aria-hidden="true" class="muted">→</span>
+<input class="chipinput mono" data-base-value value="${escapeHtml(base)}" aria-label="The base a branch with that prefix starts from" placeholder="main">
+${removeButton("data-remove-row", remove)}
+</div>`;
+}
+
+/** One protected branch: a chip with the lock, its name in a box, and its remove button. */
+function protectedChip(name: string): string {
+  const remove = name === "" ? "Remove this branch" : `Remove ${name} from the protected branches`;
+  return `<span class="chip lockchip" data-chip>${LOCK_ICON}<input class="chipinput mono" data-protected-name value="${escapeHtml(name)}" aria-label="A protected branch" placeholder="main">${removeButton("data-remove-chip", remove)}</span>`;
+}
+
+/** One guard row: a switch the form flips, with no action behind it (`data-form-switch`). */
+function guardRow(options: {
+  help: string;
+  id: string;
+  label: string;
+  name: string;
+  on: boolean;
+}): string {
+  return `<div class="setrow">
+<div class="col g2 fill1"><span id="${options.id}" class="bold">${escapeHtml(options.label)}</span><span class="small muted">${escapeHtml(options.help)}</span></div>
+<button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${options.id}" class="switch" data-form-switch="${options.name}"><span class="track" aria-hidden="true"><span class="knob"></span></span><span data-switch-label>${options.on ? "On" : "Off"}</span></button>
+</div>`;
+}
+
+/** One preview box: the file's name, a Copy button, and the text itself. */
+function previewBox(options: {
+  copyLabel: string;
+  name: string;
+  attribute: string;
+  text: string;
+}): string {
+  return `<div class="codebox">
+<div class="codehead"><code>${escapeHtml(options.name)}</code><button type="button" class="btn" data-copy-node="${options.attribute}" aria-label="${escapeHtml(options.copyLabel)}">${COPY_ICON}Copy</button></div>
+<pre ${options.attribute}>${escapeHtml(options.text)}</pre>
+</div>`;
+}
+
+function projectForm(
+  data: ProjectCardData,
+  answers: ProjectInitAnswers,
+  plan: ProjectInitPlan,
+): string {
+  const setup = answers.setup === null ? "" : answers.setup.join(" ");
+  const baseHelp = `The folder that stays on the latest ${answers.base} is never edited or committed in.`;
+  const hookLines = plan.hookLines;
+  const settingsNote = settingsLineNote(hookLines.length);
+  return `<div class="col g8" data-project-form${data.set ? "" : " hidden"}>
+
+<div class="fields">
+<div class="field"><label for="f-base">Base branch</label><input id="f-base" type="text" value="${escapeHtml(answers.base)}" data-answer="base"></div>
+<div class="field"><label for="f-prefix">Worktree folder prefix</label><input id="f-prefix" type="text" value="${escapeHtml(answers.prefix)}" data-answer="prefix"></div>
+<div class="field"><label for="f-setup">Setup command</label><input id="f-setup" type="text" value="${escapeHtml(setup)}" data-answer="setup"></div>
+</div>
+
+<div class="col g8">
+<h3>Branches that start from another base</h3>
+<p class="small muted">A branch whose name starts with the first box starts from the second one instead of the base branch.</p>
+<div class="col g8" data-bases>${Object.entries(answers.bases)
+    .map(([prefix, base]) => baseRow(prefix, base))
+    .join("")}</div>
+<div class="row"><button type="button" class="btn dashed" data-add-base>+ add</button></div>
+<template data-base-template>${baseRow("", "")}</template>
+</div>
+
+<div class="col g8">
+<h3>Protected branches</h3>
+<div class="row" data-protected>${answers.protectedBranches
+    .map(protectedChip)
+    .join("")}<button type="button" class="btn dashed" data-add-protected>+ add</button></div>
+<template data-chip-template>${protectedChip("")}</template>
+<p class="small muted">The git guard still asks you before a push or a force push to any of these.</p>
+</div>
+
+<div class="col g8">
+<h3>Guards</h3>
+<div class="card list">
+${guardRow({ help: baseHelp, id: "g-main", label: "Refuse edits in the main folder", name: "guardMainFolder", on: answers.guards.guardMainFolder })}
+${guardRow({ help: "Every session is named after the branch it works on.", id: "g-name", label: "Name each session", name: "sessionNames", on: answers.guards.sessionNames })}
+${guardRow({ help: "The type check, the build, the tests and the coverage run here go through the queue.", id: "g-jobs", label: "Heavy jobs through the queue", name: "jobRoute", on: answers.guards.jobRoute })}
+</div>
+</div>
+
+<div class="col g8">
+<h3>Worktree engine</h3>
+<p class="small muted">The plugin's engine makes the worktree and runs the setup command. The project's own runs your script instead.</p>
+<div role="group" aria-label="Worktree engine" class="segment" data-engine>
+<button type="button" aria-pressed="${answers.engine === "plugin"}" data-engine-value="plugin">The plugin's</button>
+<button type="button" aria-pressed="${answers.engine === "own"}" data-engine-value="own">The project's own</button>
+</div>
+</div>
+
+<div class="col g8">
+<h3>Preview</h3>
+<p class="small muted">Exactly what will be written.</p>
+${previewBox({ attribute: "data-preview-file", copyLabel: "Copy the contents of .claude/cc-smart-dev-kit.json", name: ".claude/cc-smart-dev-kit.json", text: plan.text })}
+${previewBox({ attribute: "data-preview-settings", copyLabel: "Copy the lines added to .claude/settings.json", name: ".claude/settings.json", text: hookLines.join("\n") })}
+<p class="small muted" data-preview-note>${escapeHtml(settingsNote)}</p>
+<div class="col g2" data-preview-notes>${plan.notes
+    .map((note) => `<p class="small muted">${escapeHtml(note)}</p>`)
+    .join("")}</div>
+</div>
+
+<div class="row">
+<button type="button" class="btn strong" data-write data-confirm="Write these two files into the repo? Nothing is committed: the change is yours to review and commit.">Write the files</button>
+<button type="button" class="btn" data-cancel>Cancel</button>
+</div>
+<div data-out-for="project.write" role="status"></div>
+
+<p>This writes two files in the repo. Commit them like any change: the team shares one setup.</p>
+</div>`;
+}
+
+/**
+ * The Project card on Machine: the repo the portal was started in. Two states, the design's
+ * own — nothing set up yet (the line, and the button), and the form itself. A project that
+ * cannot be read (no git, a file that will not parse) is one line in words, and no form.
+ * Nothing here is invented: the values are the project's own file, or the same defaults
+ * `cc-smart-dev-kit project init` would offer, and the preview is the same pure plan the
+ * write makes (the browser never builds the file).
+ */
+export function projectCard(data: ProjectCardData): string {
+  if (data.root === null) {
+    return `<section class="card pad" id="project">
+<div class="spread"><h2>Project</h2><span class="warnmark">cannot be read</span></div>
+<div class="notice">The project cannot be read: <span class="mono wrap-any">${escapeHtml(data.error ?? "there is no project here")}</span>.</div>
+<p class="muted">Machine, doctor and the Settings page still work. A project is set up in its own folder, in a terminal: <code>${COMMAND} project init</code>.</p>
+</section>`;
+  }
+  const name = data.name ?? "";
+  const head = `<div class="spread">
+<h2>Project</h2>
+${data.set ? `<span class="mono small muted">${escapeHtml(name)}</span>` : '<span class="muted bold">not set up</span>'}
+</div>`;
+  const stateA = data.set
+    ? ""
+    : `<p>Project: <span class="mono bold">${escapeHtml(name)}</span> <span class="muted">(the repo the portal was started in)</span></p>
+<p class="muted">No <code>.claude/cc-smart-dev-kit.json</code>: the project's guards and worktree hooks are off here.</p>
+<div class="row"><button type="button" class="btn strong" data-setup-show><span aria-hidden="true">+</span>Set up this project</button></div>`;
+  const answers = data.answers;
+  const plan = data.plan;
+  const form =
+    answers === null || plan === null
+      ? `<div class="notice">The plan cannot be built: <span class="mono wrap-any">${escapeHtml(data.planError ?? "no answers")}</span>.</div>`
+      : projectForm(data, answers, plan);
+  return `<section class="card pad" id="project" data-project>
+${head}
+${stateA}
+${form}
+</section>`;
+}
 
 function companionCard(companion: CompanionRow): string {
   const tone = companion.state === "ok" ? "" : " warn";
@@ -556,6 +865,8 @@ ${
 <p>Updates, heavy jobs and the programs this kit needs, on this computer.</p>
 </div>
 </div>
+
+${projectCard(data.project)}
 
 <div class="grid two">
 <section class="card pad">
