@@ -1,22 +1,22 @@
 /**
  * The extension's token: its shape (the extension's own 43 URL-safe characters, and the
- * `PLAYWRIGHT_MCP_EXTENSION_TOKEN=` line its Copy button puts on the clipboard), the 0600 file it
- * lives in, and the no-echo read from a terminal. No token value is ever printed by the code under
- * test; the fixtures here are made-up ones.
+ * `PLAYWRIGHT_MCP_EXTENSION_TOKEN=` line its Copy button puts on the clipboard), the bracketed
+ * paste a terminal wraps a paste in, the 0600 file it lives in, and the no-echo read from a
+ * terminal. No token value is ever printed by the code under test; the fixtures here are
+ * made-up ones.
  */
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { canHideInput, PASTE_END, PASTE_START, readSecretLine } from "../cli/secret-line";
 import { tempDir } from "../testing/temp";
 import {
   BROWSER_TOKEN_ENV,
-  canHideInput,
   clearBrowserToken,
   isBrowserToken,
   parseBrowserToken,
   readBrowserToken,
-  readSecretLine,
   readTokenFromStdin,
   tokenProtection,
   tokenSavedLine,
@@ -61,6 +61,49 @@ describe("parseBrowserToken", () => {
       why: "nothing was pasted. Copy the token from the extension's status page",
     });
     expect(parseBrowserToken(`${BROWSER_TOKEN_ENV}=`).ok).toBe(false);
+  });
+
+  // Live, 2026-10-17: a person pasted a good token and it was never saved. Warp — and other
+  // terminals — wrap a PASTE in the bracketed-paste markers, the terminal keeps that mode on
+  // after the shell turns it on, and a read that echoes nothing (or a pipe) keeps every
+  // character: the token arrived as ESC[200~<token>ESC[201~, the shape check refused it, and
+  // the person read "the token was not saved" about a token they had just copied.
+  test("a token wrapped in the bracketed-paste markers is accepted", () => {
+    expect(parseBrowserToken(`${PASTE_START}${TOKEN}${PASTE_END}`)).toEqual({
+      ok: true,
+      token: TOKEN,
+    });
+    expect(parseBrowserToken(`${PASTE_START}${BROWSER_TOKEN_ENV}=${TOKEN}${PASTE_END}\n`)).toEqual({
+      ok: true,
+      token: TOKEN,
+    });
+    // Two pastes, or a marker left over in the middle: both markers go, the token stays.
+    expect(
+      parseBrowserToken(`${PASTE_START}${TOKEN}${PASTE_END}${PASTE_START}${PASTE_END}`),
+    ).toEqual({ ok: true, token: TOKEN });
+  });
+
+  test("a token with a trailing carriage return is accepted", () => {
+    // A paste from a Windows terminal, or a file written with CRLF: the CR is not part of it.
+    expect(parseBrowserToken(`${TOKEN}\r\n`)).toEqual({ ok: true, token: TOKEN });
+    expect(parseBrowserToken(`${PASTE_START}${TOKEN}\r${PASTE_END}\n`)).toEqual({
+      ok: true,
+      token: TOKEN,
+    });
+  });
+
+  test("anything else is still refused, and says how many characters were left", () => {
+    // `hello world` is 11 printable characters: the count the person reads is the text that
+    // was left AFTER the markers and every control character went, which is what makes the
+    // message useful ("43 expected, 11 counted").
+    const refused = parseBrowserToken(`${PASTE_START}hello\u0007 world${PASTE_END}`);
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) {
+      expect(refused.why).toContain("11 characters");
+      expect(refused.why).not.toContain("hello");
+    }
+    // A paste of an escape sequence that is not the marker leaves its tail: still refused.
+    expect(parseBrowserToken(`${TOKEN.slice(0, 30)}\u001b[9~`).ok).toBe(false);
   });
 });
 
@@ -191,6 +234,19 @@ describe("reading the token from a terminal", () => {
     const { modes, terminal } = fakeTerminal(["\u0003"]);
     expect(await readSecretLine(terminal)).toBeNull();
     expect(modes).toEqual([true, false]);
+  });
+
+  test("a paste arrives with the bracketed-paste markers in it, and the read hands them back clean", async () => {
+    // The terminal wraps a paste while bracketed paste is on, and a raw-mode read keeps every
+    // character: the line this returns must be the token itself.
+    const { terminal } = fakeTerminal([`${PASTE_START}${TOKEN}${PASTE_END}\r`]);
+    expect(await readSecretLine(terminal)).toBe(TOKEN);
+  });
+
+  test("a paste wrapped over two chunks is still one clean line", async () => {
+    // A paste can arrive in pieces: the markers may sit in either chunk.
+    const { terminal } = fakeTerminal([PASTE_START, TOKEN, `${PASTE_END}\r`]);
+    expect(await readSecretLine(terminal)).toBe(TOKEN);
   });
 
   test("a terminal whose echo cannot be switched off is refused, never read", async () => {

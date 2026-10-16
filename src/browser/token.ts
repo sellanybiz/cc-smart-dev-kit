@@ -33,6 +33,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:
 import { dirname } from "node:path";
 import { COMMAND } from "../build-info";
 import type { CliPaths } from "../cli/paths";
+import { cleanSecretLine } from "../cli/secret-line";
 import { hostPlatform } from "../machine/host";
 import { isOwnerOnly } from "../setup/file-mode";
 import { atomicWrite } from "../setup/write";
@@ -65,14 +66,17 @@ export function isBrowserToken(token: string): boolean {
 }
 
 /**
- * One pasted line as a token: surrounding whitespace and the `PLAYWRIGHT_MCP_EXTENSION_TOKEN=`
- * prefix the Copy button includes are dropped, then the shape is checked. The message a person
- * reads names the shape and the one place to copy the token from, never a value.
+ * One pasted line as a token: the bracketed-paste markers and every other control character a
+ * paste carries are dropped first (`cleanSecretLine` — a terminal that keeps bracketed paste on
+ * hands a raw-mode read `ESC[200~<token>ESC[201~`, which this used to refuse), then surrounding
+ * whitespace and the `PLAYWRIGHT_MCP_EXTENSION_TOKEN=` prefix the Copy button includes, then the
+ * shape is checked. The message a person reads names the shape, the count of characters that were
+ * left, and the one place to copy the token from — never a value.
  */
 export function parseBrowserToken(
   pasted: string,
 ): { ok: true; token: string } | { ok: false; why: string } {
-  let text = pasted.trim();
+  let text = cleanSecretLine(pasted);
   if (text.startsWith(TOKEN_LINE_PREFIX)) text = text.slice(TOKEN_LINE_PREFIX.length).trim();
   if (text === "") {
     return {
@@ -191,64 +195,16 @@ export function clearBrowserToken(paths: CliPaths): null | string {
   return paths.browserTokenFile;
 }
 
-/** A terminal's raw input, as `readSecretLine` needs it. */
-export interface RawTerminal {
-  on: (event: "data", listener: (chunk: Buffer) => void) => void;
-  off: (event: "data", listener: (chunk: Buffer) => void) => void;
-  setRawMode?: (on: boolean) => void;
-}
-
-/**
- * One line from a terminal, with NO echo: the token must not be shown while it is typed (a
- * terminal echoes what it receives, so raw mode is switched on for the read and off after it).
- * Enter ends the line; Backspace deletes; Ctrl+C gives up and answers null. Nothing is printed.
- */
-export function readSecretLine(terminal: RawTerminal): Promise<null | string> {
-  return new Promise((done) => {
-    let text = "";
-    const listener = (chunk: Buffer) => {
-      for (const character of chunk.toString("utf8")) {
-        if (character === "\r" || character === "\n") {
-          terminal.off("data", listener);
-          terminal.setRawMode?.(false);
-          done(text);
-          return;
-        }
-        if (character === "\u0003") {
-          // Ctrl+C: give the terminal back as it was, and answer nothing.
-          terminal.off("data", listener);
-          terminal.setRawMode?.(false);
-          done(null);
-          return;
-        }
-        if (character === "\u007f" || character === "\b") {
-          text = text.slice(0, -1);
-          continue;
-        }
-        text += character;
-      }
-    };
-    terminal.setRawMode?.(true);
-    terminal.on("data", listener);
-  });
-}
-
 /** Where the pasted token is read from: a pipe or a file, or a terminal with no echo. */
 export interface TokenInput {
   isTTY: boolean;
   /** Everything on stdin, up to its end (a pipe, or `< token.txt`). */
   readAll: () => Promise<string>;
-  /** A terminal's own line read (`readSecretLine`); left out when there is none. */
+  /**
+   * A terminal's own line read, with no echo and cleaned (`readSecretLine`, `src/cli/secret-line.ts`);
+   * left out when there is none.
+   */
   readSecret?: () => Promise<null | string>;
-}
-
-/**
- * Can this stdin be read as a secret: a terminal that can switch its own echo off? A terminal
- * without `setRawMode` would show the token on screen while it is typed, so that one is refused
- * (the pipe path is the way in then).
- */
-export function canHideInput(stdin: { isTTY?: boolean; setRawMode?: unknown }): boolean {
-  return stdin.isTTY === true && typeof stdin.setRawMode === "function";
 }
 
 /**

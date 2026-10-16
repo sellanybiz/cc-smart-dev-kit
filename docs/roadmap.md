@@ -104,11 +104,13 @@ The owner's decisions, all about which model runs what, in one patch release:
   never affordable and never forced to `max`.
 - **`fable-session`**, a new machine-wide hook (`design.md` § The Fable-session note): one
   `systemMessage` to the person, once a session, when the session's own model is the `fable`
-  tier — nothing to Claude, never an error. The model is read the guard's way: a start judges
-  only the `model` it names, and at a prompt the transcript's last answer, else
-  `ANTHROPIC_MODEL` — a `/model` switch to Fable is caught once Fable has answered. That the
-  line reaches the person is owed a live run (`claude-code-contract.md` § Relied on, not proved
-  yet).
+  tier — nothing to Claude, never an error. The model is read the guard's way. **Changed in
+  0.4.3**: it ran at `UserPromptSubmit`, where the model read is the PREVIOUS answer's — so it
+  missed the switch to Fable and warned after a switch back (live, 2026-10-17). It now runs at
+  `SessionStart` (the `model` the start names), `PostModelSwitch` (`to_model`, from Claude
+  Code's own input schema) and `Stop` (the answer that just finished, else `ANTHROPIC_MODEL`).
+  That the line reaches the person on those events is owed a live run
+  (`claude-code-contract.md` § Relied on, not proved yet).
 
 The general instructions (`plugin/instructions/core.md`), the `subagent-decision` and `review`
 skills and the two reference pages carry the same words; core.md stays at its 190 lines.

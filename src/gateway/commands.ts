@@ -14,13 +14,13 @@
  * API keys are masked in every output. The design: docs/gateway.md.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { withLock } from "../setup/lock";
 import { formatKeyPath, type ManagedJsonResult } from "../setup/managed-json";
-import { atomicWrite } from "../setup/write";
-import { listModels } from "./backends";
+import { atomicWrite, backupDir, backupFile } from "../setup/write";
+import { checkBackendKey, listModels } from "./backends";
 import {
   ConfigError,
   DEFAULT_ANTHROPIC_BASE_URL,
@@ -34,9 +34,10 @@ import {
   parseConfig,
   saveConfig,
 } from "./config";
-import { type HealthProbe, routerHealth } from "./health";
+import { type HealthFetch, type HealthProbe, routerHealth } from "./health";
 import { JUDGE_TEST_ACTION, testJudgeTarget } from "./judge-test";
 import { formatLimitState, parseLimitState } from "./limit-state";
+import { createOmnirouteKey, probeOmniroute } from "./omniroute-key";
 import { startRouter } from "./router";
 import {
   type InstallOptions,
@@ -60,6 +61,9 @@ import {
 export const USAGE = `Usage: ${COMMAND} gateway <command>
 
 Commands:
+  check                  One read-only question: does the gateway have an OmniRoute key the
+                         backend accepts? 0 yes, 1 no key yet (OmniRoute answers, so one can
+                         be made), 3 the backend could not be judged, 4 the key is refused.
   status                 Router health, backends, slots, and the Claude Code settings.
   models                 Every model each backend offers, and the slots.
   slot <slot> <targets>  Set a slot's targets, in order. <slot>: scout, worker, judge,
@@ -73,11 +77,19 @@ Commands:
                          check (a force push to main), or it is not set.
   slot <judge|opus|fable> off
                          Turn that fallback off.
-  setup [--yes] [--backend-key-stdin <backend> | --no-backend-key]
+  setup [--yes] [--backend-key-stdin <backend> | --omniroute-password-stdin
+        | --omniroute-password | --no-backend-key] [--save-unchecked]
                          Make the config (the key on stdin), install the router copy and
                          the service that runs it (a systemd user unit on Linux, a
                          per-user Scheduled Task on Windows), and start it. --yes:
                          restart a running router without asking.
+                         A key given on stdin is TESTED against its backend before it is
+                         saved: a 401 or 403 refuses it and keeps the key in place.
+                         --omniroute-password-stdin: OmniRoute's dashboard password on
+                         stdin; setup makes the router's OmniRoute key itself.
+                         --omniroute-password: ask for it on the terminal, with no echo.
+                         --save-unchecked: save a key the backend could not be asked about
+                         (it is down, or answers something else).
   on                     Point Claude Code at the router (every session on this machine).
   off                    Remove what "on" set. Restart the sessions afterwards.
   serve                  Run the router in this terminal.`;
@@ -92,9 +104,22 @@ export interface GatewayContext {
   /** The plugin's own `dist/router.js`. */
   bundle: string;
   runner: Runner;
+  /** Every secret that arrives on stdin (`--backend-key-stdin`, `--omniroute-password-stdin`). */
   readStdin: () => Promise<string>;
+  /**
+   * Asks for a secret on the terminal, with no echo; left out when stdin is not a terminal that
+   * can hide it. `readSecretLine` in use, so nothing typed or pasted is shown on screen.
+   */
+  readSecret?: () => Promise<null | string>;
   /** Asks the person; null when there is no terminal. */
   confirm: ((question: string) => boolean) | null;
+  /**
+   * The fetch every extra network call of a command uses — the key check (`checkBackendKey`),
+   * OmniRoute's dashboard (`createOmnirouteKey`) and the OmniRoute liveness probe
+   * (`probeOmniroute`). The real `fetch` in use; a test passes a fake, so no test reaches a real
+   * backend.
+   */
+  apiFetch?: HealthFetch;
   /** The service this machine can run the router under (`routerServiceKind`). */
   service: RouterServiceKind;
   /** Windows: the account the Scheduled Task runs as (`MACHINE\user`). */
@@ -196,12 +221,18 @@ export function defaultConfig(omnirouteKey: string): GatewayConfig {
  * `emptyConfig()` (every slot on Claude) until the key creates the default config.
  * Writing a Claude-only file instead would keep Claude-only slots after the key came.
  *
+ * `stateDir`: when a key REPLACES one that is already there, the file is backed up first
+ * (`backupFile`, the one backup helper: `<stateDir>/backups/`, never beside the file — the
+ * config holds API keys). The caller says where that backup is. A key that does not change
+ * gets no backup: nothing is being replaced. `setup` refuses a key its backend rejects before
+ * this is ever called, so a backup here is a key that was checked (or saved unchecked).
+ *
  * `dryRun`: checks everything and writes nothing.
  */
 export function ensureConfig(
   configPath: string,
   key: null | { backend: string; value: string },
-  options: { allowNone?: boolean; dryRun?: boolean } = {},
+  options: { allowNone?: boolean; dryRun?: boolean; stateDir?: string } = {},
 ): string {
   if (!existsSync(configPath)) {
     if (key === null && options.allowNone === true) {
@@ -227,6 +258,11 @@ export function ensureConfig(
     );
   }
   if (options.dryRun !== true) {
+    if (existing !== undefined && existing.apiKey !== key.value && options.stateDir !== undefined) {
+      // A key that is there and changes: keep the whole file as it was, so the key it held can
+      // be read back (the person may only notice a wrong key days later, when the slots fail).
+      backupFile(options.stateDir, configPath);
+    }
     saveConfig(configPath, {
       ...config,
       backends: { ...config.backends, [key.backend]: { apiKey: key.value, baseUrl } },
@@ -242,6 +278,66 @@ export function ensureConfig(
  */
 export function configuredPort(configPath: string): number {
   return existsSync(configPath) ? loadConfigFile(configPath).port : DEFAULT_PORT;
+}
+
+/**
+ * The base URL a key for `backend` would be saved under: the one the config already has for
+ * that backend, else the address `setup` knows (`KNOWN_BACKENDS`). Null when there is neither —
+ * `ensureConfig` refuses such a backend in the same words.
+ */
+export function backendBaseUrl(configPath: string, backend: string): null | string {
+  if (existsSync(configPath)) {
+    const config = loadConfigFile(configPath);
+    const existing = Object.hasOwn(config.backends, backend) ? config.backends[backend] : undefined;
+    if (existing !== undefined) return existing.baseUrl;
+  }
+  return KNOWN_BACKENDS[backend] ?? null;
+}
+
+/**
+ * Which key a backend wants, in words, for a refusal. Not a guess: OmniRoute's own dashboard
+ * key and a provider's key are different credentials, and pasting a provider key where the
+ * router's own was asked for is exactly what broke a machine live (2026-10-17) — every
+ * affordable subagent answered on Claude until the right key was read back out of OmniRoute.
+ */
+export function wantedKeyWords(backend: string): string {
+  if (backend === "omniroute") {
+    return `"${backend}" wants an OmniRoute API key: the key the router itself uses, made in OmniRoute's own dashboard (its API keys page). A provider key — an Ollama Cloud key, say — is a different credential and OmniRoute refuses it`;
+  }
+  if (backend === "ollama") {
+    return `"${backend}" wants an Ollama API key, from ollama.com (your account's API keys)`;
+  }
+  return `"${backend}" wants a key made by that backend itself`;
+}
+
+/** The refusal when the backend says the key that was just given is not one of its own. */
+export function keyRefusedMessage(options: {
+  backend: string;
+  baseUrl: string;
+  configPath: string;
+  detail: string;
+  status: number;
+}): string {
+  return [
+    `${options.backend} answered HTTP ${String(options.status)} for this key (${options.detail}, ${shownValue(options.baseUrl)}): it does not accept it.`,
+    `Nothing was saved, and the key in ${options.configPath} is kept as it was.`,
+    wantedKeyWords(options.backend),
+    `Find or make it there, then run again: ${COMMAND} gateway setup --backend-key-stdin ${options.backend} < key-file`,
+  ].join("\n");
+}
+
+/** The refusal when the backend could not be asked at all and `--save-unchecked` was not given. */
+export function keyUncheckedMessage(options: {
+  backend: string;
+  baseUrl: string;
+  configPath: string;
+  detail: string;
+}): string {
+  return [
+    `could not ask ${options.backend} at ${shownValue(options.baseUrl)} whether it accepts this key (${options.detail}).`,
+    `Nothing was saved, and the key in ${options.configPath} is kept as it was.`,
+    `Start ${options.backend} and run again, or save the key without checking it: ${COMMAND} gateway setup --backend-key-stdin ${options.backend} --save-unchecked < key-file`,
+  ].join("\n");
 }
 
 /**
@@ -565,16 +661,27 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
 }
 
 /** Parses `setup`'s options; null on a wrong option. */
-function setupOptions(
-  args: string[],
-): { yes: boolean; keyBackend: null | string; noKey: boolean } | null {
+function setupOptions(args: string[]): {
+  yes: boolean;
+  keyBackend: null | string;
+  noKey: boolean;
+  omniroutePassword: boolean;
+  omniroutePasswordStdin: boolean;
+  saveUnchecked: boolean;
+} | null {
   let yes = false;
   let keyBackend: null | string = null;
   let noKey = false;
+  let omniroutePassword = false;
+  let omniroutePasswordStdin = false;
+  let saveUnchecked = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--yes") yes = true;
     else if (arg === "--no-backend-key") noKey = true;
+    else if (arg === "--save-unchecked") saveUnchecked = true;
+    else if (arg === "--omniroute-password") omniroutePassword = true;
+    else if (arg === "--omniroute-password-stdin") omniroutePasswordStdin = true;
     else if (arg === "--backend-key-stdin") {
       const backend = args[index + 1];
       if (backend === undefined || backend.startsWith("--")) return null;
@@ -582,8 +689,44 @@ function setupOptions(
       index += 1;
     } else return null;
   }
-  if (noKey && keyBackend !== null) return null;
-  return { yes, keyBackend, noKey };
+  if (noKey && (keyBackend !== null || omniroutePassword || omniroutePasswordStdin)) return null;
+  if (keyBackend !== null && (omniroutePassword || omniroutePasswordStdin)) return null;
+  if (omniroutePassword && omniroutePasswordStdin) return null;
+  // `--save-unchecked` only says something about a key that is actually given.
+  if (saveUnchecked && keyBackend === null && !omniroutePassword && !omniroutePasswordStdin) {
+    return null;
+  }
+  return {
+    keyBackend,
+    noKey,
+    omniroutePassword,
+    omniroutePasswordStdin,
+    saveUnchecked,
+    yes,
+  };
+}
+
+/**
+ * The OmniRoute dashboard password: from stdin (`--omniroute-password-stdin`, the way the
+ * installer hands it over), or asked on the terminal with no echo (`--omniroute-password`).
+ * Empty means the person gave nothing: setup stops before it writes anything.
+ */
+async function omniroutePassword(ctx: GatewayContext, fromStdin: boolean): Promise<string> {
+  if (fromStdin) {
+    const value = (await ctx.readStdin()).trim();
+    if (value === "") throw new Error("no OmniRoute dashboard password on stdin");
+    return value;
+  }
+  if (ctx.readSecret === undefined) {
+    throw new Error(
+      "this terminal cannot hide what you type, so the password would be shown on screen. Give it on stdin instead: " +
+        `${COMMAND} gateway setup --omniroute-password-stdin < password-file`,
+    );
+  }
+  const value = await ctx.readSecret();
+  if (value === null) throw new Error("nothing was read (Ctrl+C)");
+  if (value === "") throw new Error("no OmniRoute dashboard password was given");
+  return value;
 }
 
 async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number> {
@@ -598,13 +741,17 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
   }
   const { paths } = ctx;
   const service = routerService(ctx);
+  const configPath = paths.gatewayConfigFile;
   let key: null | { backend: string; value: string } = null;
+  let password: null | string = null;
   if (options.keyBackend !== null) {
     const value = (await ctx.readStdin()).trim();
     if (value === "") throw new Error("no key on stdin");
     key = { backend: options.keyBackend, value };
   }
-  const configPath = paths.gatewayConfigFile;
+  if (options.omniroutePassword || options.omniroutePasswordStdin) {
+    password = await omniroutePassword(ctx, options.omniroutePasswordStdin);
+  }
   const install = (overrides: Partial<InstallOptions>): InstallOptions => ({
     bunPath: ctx.bunPath,
     bunVersion: ctx.bunVersion,
@@ -623,14 +770,105 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
     ...overrides,
   });
   // Everything is checked, the port asked and the question answered, before the lock and
-  // before any write.
-  ensureConfig(configPath, key, { allowNone: options.noKey, dryRun: true });
+  // before any write. With a dashboard password the key does not exist yet (it is made below,
+  // once the port is settled): the read-only pass allows a missing config, and the real write
+  // creates it with the key that comes out of OmniRoute.
+  ensureConfig(configPath, key, {
+    allowNone: options.noKey || password !== null,
+    dryRun: true,
+  });
+  // The port question comes before the backend is called at all: a port another program holds
+  // refuses the setup, and no key is made or checked for nothing.
   if ((await installRouter(install({ dryRun: true }))) === "declined") return 1;
+
+  // A key the person gave, or one setup makes in OmniRoute with the dashboard password. Either
+  // way it is TESTED before it is saved: a wrong key must never replace a working one.
+  if (password !== null) {
+    const baseUrl = backendBaseUrl(configPath, "omniroute") ?? KNOWN_BACKENDS.omniroute ?? "";
+    const made = await createOmnirouteKey({
+      baseUrl,
+      ...(ctx.apiFetch === undefined ? {} : { fetch: ctx.apiFetch }),
+      password,
+    });
+    if (made.kind === "no-answer") {
+      throw new Error(
+        `OmniRoute does not answer at ${shownValue(baseUrl)} (${made.detail}). The gateway needs OmniRoute first: install and start it there, then run this again.`,
+      );
+    }
+    if (made.kind === "refused") {
+      throw new Error(
+        [
+          `${made.detail}. Nothing was saved, and the key in ${configPath} is kept as it was.`,
+          `${wantedKeyWords("omniroute")}. If you already have that key, give it instead: ${COMMAND} gateway setup --backend-key-stdin omniroute < key-file`,
+        ].join("\n"),
+      );
+    }
+    if (made.kind === "failed") {
+      throw new Error(
+        `${made.detail}. OmniRoute's dashboard password is the one you log in with; setup does not store it.`,
+      );
+    }
+    key = { backend: "omniroute", value: made.key };
+    ctx.print(`made the key "${made.name}" in OmniRoute (${maskKey(made.key)})`);
+  }
+
+  /** Why a key was saved without its backend accepting it, for the closing line. Empty: checked. */
+  let unchecked = "";
+  if (key !== null) {
+    const baseUrl = backendBaseUrl(configPath, key.backend) ?? KNOWN_BACKENDS[key.backend];
+    if (baseUrl !== undefined) {
+      const check = await checkBackendKey(baseUrl, key.value, {
+        ...(ctx.apiFetch === undefined ? {} : { fetch: ctx.apiFetch }),
+      });
+      if (check.kind === "refused") {
+        throw new Error(
+          keyRefusedMessage({
+            backend: key.backend,
+            baseUrl,
+            configPath,
+            detail: check.detail,
+            status: check.status,
+          }),
+        );
+      }
+      if (check.kind === "unchecked") {
+        if (!options.saveUnchecked) {
+          throw new Error(
+            keyUncheckedMessage({
+              backend: key.backend,
+              baseUrl,
+              configPath,
+              detail: check.detail,
+            }),
+          );
+        }
+        unchecked = check.detail;
+      }
+    }
+  }
+
   return withLock(
     paths.stateDir,
     async () => {
-      const said = ensureConfig(configPath, key, { allowNone: options.noKey });
+      // How many backups the config already has, so the line below is said only when THIS run
+      // made one — `ensureConfig` backs the file up only when the key really changes.
+      const backups = backupDir(paths.stateDir, configPath);
+      const backupsBefore = existsSync(backups) ? readdirSync(backups).length : 0;
+      const said = ensureConfig(configPath, key, {
+        allowNone: options.noKey,
+        stateDir: paths.stateDir,
+      });
       ctx.print(said.replaceAll(configPath, tildify(configPath, paths.home)));
+      if (key !== null && existsSync(backups) && readdirSync(backups).length > backupsBefore) {
+        ctx.print(
+          `  the file as it was before the change is in ${tildify(backups, paths.home)}: copy it back to put the key that was there in place`,
+        );
+      }
+      if (unchecked !== "") {
+        ctx.print(
+          `  WARN the key was saved WITHOUT its backend accepting it (${unchecked}). Check it when the backend answers: ${COMMAND} gateway check`,
+        );
+      }
       // The question was answered above: the warning is not repeated, and nothing asks again.
       await installRouter(
         install({
@@ -654,6 +892,84 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
 
 function show(value: unknown): string {
   return value === undefined ? "(none)" : JSON.stringify(value);
+}
+
+/**
+ * `gateway check`'s exit codes. One read-only question — does the gateway have an OmniRoute key
+ * the backend accepts? — for the installer, which asks for a key only when the answer says the
+ * gateway is not working (`install.sh`, `install.ps1`).
+ *
+ *   0  the key works (or the gateway is not set up and needs no key: a machine with no config
+ *      and no OmniRoute is told that, and nothing is asked)
+ *   1  there is no OmniRoute key yet, and an OmniRoute answers: one can be made (dashboard
+ *      password) or given (an API key)
+ *   3  it could not be judged: no OmniRoute answers, the config cannot be read, or the backend
+ *      did not answer. Never a refusal, and the installer asks for nothing
+ *   4  the key in the config is one OmniRoute refuses (HTTP 401 or 403): a new key is the fix
+ */
+export const CHECK_CODES = { needsKey: 1, refused: 4, unchecked: 3, works: 0 } as const;
+
+/**
+ * The question, answered in one line and an exit code. It asks the backend only — never the
+ * router's port: this runs where a person's sessions may be using the router, and in a test
+ * where the default port may belong to a real one.
+ */
+async function commandCheck(ctx: GatewayContext): Promise<number> {
+  const { paths } = ctx;
+  const configPath = paths.gatewayConfigFile;
+  /** No key anywhere: OmniRoute's own address decides whether one can be made. */
+  const noKeyYet = async (why: string): Promise<number> => {
+    const address = KNOWN_BACKENDS.omniroute ?? "";
+    const probe = await probeOmniroute(address, {
+      ...(ctx.apiFetch === undefined ? {} : { fetch: ctx.apiFetch }),
+    });
+    if (probe.kind === "silent") {
+      ctx.print(
+        `· ${why}, and OmniRoute does not answer at ${address} (${probe.detail}): the gateway needs OmniRoute first`,
+      );
+      return CHECK_CODES.unchecked;
+    }
+    ctx.print(
+      `✗ ${why}, and OmniRoute answers at ${address}: ${COMMAND} gateway setup can make the router's key with OmniRoute's dashboard password`,
+    );
+    return CHECK_CODES.needsKey;
+  };
+
+  if (!existsSync(configPath))
+    return noKeyYet(`the gateway has no config yet (no ${tildify(configPath, paths.home)})`);
+  let config: GatewayConfig;
+  try {
+    config = loadConfigFile(configPath);
+  } catch (error) {
+    ctx.print(`· the gateway could not be checked: ${messageOf(error)}`);
+    return CHECK_CODES.unchecked;
+  }
+  const backend = Object.hasOwn(config.backends, "omniroute")
+    ? config.backends.omniroute
+    : undefined;
+  if (backend === undefined) {
+    return noKeyYet(
+      `the gateway has no OmniRoute key yet (${tildify(configPath, paths.home)} names no omniroute backend)`,
+    );
+  }
+  const check = await checkBackendKey(backend.baseUrl, backend.apiKey, {
+    ...(ctx.apiFetch === undefined ? {} : { fetch: ctx.apiFetch }),
+  });
+  if (check.kind === "accepted") {
+    ctx.print(
+      `✓ the gateway's OmniRoute key is accepted (${shownValue(backend.baseUrl)}, HTTP ${String(check.status)})`,
+    );
+    return CHECK_CODES.works;
+  }
+  if (check.kind === "refused") {
+    // The backend answered, so it is there: the key in the file is what needs replacing.
+    ctx.print(
+      `✗ OmniRoute refused the key in ${tildify(configPath, paths.home)} (HTTP ${String(check.status)}): it is not an OmniRoute API key. Give a new one: ${COMMAND} gateway setup --backend-key-stdin omniroute < key-file (or let setup make one with OmniRoute's dashboard password)`,
+    );
+    return CHECK_CODES.refused;
+  }
+  ctx.print(`· the gateway could not be checked: ${check.detail}`);
+  return CHECK_CODES.unchecked;
 }
 
 function changeLines(result: ManagedJsonResult, home: string): string[] {
@@ -725,6 +1041,8 @@ export async function runGateway(args: string[], ctx: GatewayContext): Promise<n
     return run();
   };
   switch (command) {
+    case "check":
+      return noArgs(() => commandCheck(ctx));
     case "models":
       return noArgs(() => commandModels(ctx));
     case "slot":

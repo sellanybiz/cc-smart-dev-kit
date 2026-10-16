@@ -150,6 +150,56 @@ one question, then `claude plugin uninstall anymodel@anymodel` and `claude plugi
 remove anymodel` — last, because removing a marketplace uninstalls the plugins installed
 from it.
 
+**What the first real run taught it (2026-10-17).** Four steps were added after that run, and
+each one is the fix for something it did:
+
+- **The marketplace's own copy is refreshed first** (`claude plugin marketplace update
+  <marketplace>`, `/dev/null` as its stdin), before any version is compared — the same two steps
+  in the same order `src/update/` runs (`marketplace update`, then `plugin update`). The live
+  machine had the marketplace added hours earlier at 0.4.1: the installer compared the installed
+  0.4.1 with the stale clone's 0.4.1, saw them equal, and updated nothing. A shell script cannot
+  import `src/update/apply.ts`, so each installer keeps its own copy of the order, and
+  `scripts/install.test.ts` proves it runs first.
+- **The installed CLI is asked its own version** (`cli.js version`) after the install or update,
+  and refused when it is older than the release the installer ships with (each script carries
+  that number, and a test keeps it equal to `plugin/.claude-plugin/plugin.json`). The old run
+  called `--tavily-key-stdin` on a 0.4.1 CLI, which has no such option, and died there. The
+  refusal prints the two commands that fix it and exits 1 — and **nothing after it runs**, so no
+  later step can call an option that CLI does not have. A version that cannot be read refuses
+  too: this script cannot promise an option a CLI it cannot see understands.
+- **The gateway is asked about only when it is not working** (`cc-smart-dev-kit gateway check`,
+  a read-only subcommand with an exit code: 0 the key works, 1 no key yet and OmniRoute answers,
+  3 it could not be judged, 4 the key is one OmniRoute refuses). The live run asked for a key on
+  a machine whose gateway worked; a provider key was pasted over the router's own; every
+  affordable subagent fell back to Claude. On 1 the installer asks for OmniRoute's dashboard
+  password (setup makes the key itself), on 4 for an OmniRoute API key named exactly, and after
+  a refusal it asks **once more** with the reason; a second refusal skips the gateway and puts
+  it in "What is left". On 3 (no OmniRoute at all) nothing is asked, the line says the gateway
+  needs OmniRoute first, and the item goes to the list.
+- **An MCP server of the person's is asked about, never taken over** (`cc-smart-dev-kit mcp
+  status --json`, § MCP servers at user scope). The live machine had all four names registered
+  by a project's own script; setup left them alone as it must, and its `!` line was lost in the
+  installer's output, so the plugin's browser never took over. The installer reads the JSON,
+  shows the command that runs instead (never an `env` or a header), and asks per server: a yes
+  runs `claude mcp remove <name> --scope user` and then `setup` again, so the plugin registers
+  its own WITH its record; a no lists the exact command under "What is left".
+
+**Secrets are cleaned where they are read.** Many terminals (Warp among them) wrap a paste in
+the bracketed-paste markers `ESC[200~` … `ESC[201~`, a shell turns that mode on and nothing turns
+it off, and a silent read keeps every character: a pasted token arrived as
+`ESC[200~<token>ESC[201~` and was refused as the wrong shape, so a person who pasted a good token
+saw "the token was not saved" (live, 2026-10-17). The one home for the rule is
+`src/cli/secret-line.ts` (`cleanSecretLine`, and `readSecretLine` which uses it); `install.sh`'s
+`clean_secret` and `install.ps1`'s `Clear-Secret` strip the same two markers the same way, and
+`scripts/install.test.ts` proves the installer's own read. The token step is also ONE question
+now — read with no echo, then piped to `browser token` — so a paste cannot land in a yes/no
+answer instead, which is the other way that live run walked past the browser with no token file.
+
+**Tavily is not asked for when the machine has a key.** `TAVILY_API_KEY` in the installer's own
+environment, the key file `setup` reads, or the key already in the settings: one line says which
+one is in use and nothing is written. The rule is `readTavilyKey`'s (`src/mcp/tavily.ts`), which
+the installer repeats in shell for the two file checks.
+
 Four decisions are worth naming:
 
 - **The repository is an argument, and the script names no owner.** The plugin's own rule is
@@ -235,6 +285,28 @@ An optional local router between Claude Code and the model providers
   moves. The plugin ships none; a project's migration writes them.
 - `gateway on` / `off` change Claude Code's settings only as owned keys through
   `src/setup/`, so `restore` undoes them, and a key someone else set stops it.
+- **A backend key is tested before it is saved** (`checkBackendKey`, `src/gateway/backends.ts`):
+  one cheap authenticated request (`GET /v1/models`, 5 s) with the key. 401/403 refuses it —
+  nothing is written, the key in the file stays, and the message names the key that backend
+  wants (for `omniroute`: an OmniRoute API key, not a provider key). Anything else (unreachable,
+  a 5xx) is not a silent save either: the key is saved only with `--save-unchecked`, with a WARN
+  line. A key that really changes is backed up first (`backupFile`, the one helper: the state
+  folder, never beside a file that holds keys). Live, 2026-10-17: a pasted provider key
+  overwrote the router's working key, OmniRoute answered 401 to everything, and every affordable
+  subagent fell back to Claude.
+- **`gateway setup --omniroute-password[-stdin]` makes the router's key in OmniRoute itself**,
+  with the person's dashboard password (asked with no echo, never stored, never printed):
+  `POST /api/auth/login` (no `Origin` header — OmniRoute skips its CSRF check without one),
+  then `POST /api/keys` with the `auth_token` cookie, named
+  `cc-smart-dev-kit-router-<hostname>`, `noLog: true` (the router's requests stay out of
+  OmniRoute's call log, so no prompt text of the person's lands there). The key that comes back
+  goes through the same test and save as one given by hand. The OmniRoute facts and their source
+  (the installed OmniRoute 3.8.51, read 2026-10-17): `src/gateway/omniroute-key.ts`.
+- **`gateway check`** answers one read-only question for scripts — the installer's own use: does
+  the gateway have an OmniRoute key the backend accepts? Exit 0 works, 1 no key yet (OmniRoute
+  answers, so one can be made), 3 could not be judged, 4 the key is refused. It asks the backend
+  only, never the router's port (a machine's sessions may be using the router; a test may have a
+  real router on that port).
 - Every session on the machine goes through the router, so its restart must not make
   them fail. systemd's `cc-smart-dev-kit-router.socket` holds the port (socket activation) and
   passes it to the router; the router accepts on it with `node:net` (Bun's own server
@@ -537,6 +609,14 @@ every five seconds with `?auto=1`; the server serves the page and does **not** t
 clock for it, so an open Health tab cannot hold the portal (and its door) open for ever. The
 page's script also stops reloading while the tab is hidden (`document.hidden`,
 `visibilitychange`) and looks once more when it comes back.
+
+**The log is newest first, on both pages** (the owner, 2026-10-17: a log read top down the way
+`journalctl` prints it puts the line a person opens the page for at the bottom). `routerLog`
+(`facts.ts`) keeps the journal's own order — oldest first, which the caller of a page shares —
+and the pages reverse it in ONE place: `newestFirst` (`views.ts`), used by the Health page's Log
+(newest 120) and by the Overview's "Latest warnings" (the newest three that are not INFO). The
+times are the journal's own, unchanged. The page is a full reload, never a live insertion, so
+there is nothing else to keep in order.
 
 ### What it runs from
 
@@ -1068,7 +1148,7 @@ worktrees).
 | `merge-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks the person before a command that merges a pull request. Every merge of the line is judged (`gh pr merge`, `gh pr -R owner/repo merge 5`, an alias from `gh alias list`, `--auto` included), and the first the policy does not allow asks, naming that pull request: `autoMerge` on, the base is the integration base (`autoMergeAllowed`), the merge names THIS project's repository (its `origin`), every required check `gh pr checks --required` reports green, and (with `reviewBeforePush`) the head commit's review is recorded. The forms it does not judge ask with the reason — a `gh api` merge, a GraphQL query it cannot read, a shell alias, an extension whose words name a merge — as does a step that moves the merge's folder, branch or repository (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing or does not answer. Read-only `gh`, 10 s a call of the hook's 30 s. § The workflow › The merge guard. |
 | `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists | Denies a message to a session that works outside this repo (from Claude Code's session records). |
 | `agent-guard` | PreToolUse (Agent, Task) | **machine-wide** | The model a launch really runs on, and the owner's model rules (2026-10-16): no `model`/no `effort` → deny; `low`/`medium` effort → deny on every model; an affordable slot needs `effort: "max"`; the **`opus` tier** — whatever answers behind the name — is a review at `high`/`xhigh`, a review at `max` as an **ask**, an unreadable review as an ask, or an `Opus reason:` word; the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. Every allowed or asked premium launch is recorded with its reason. § The Agent guard. |
-| `fable-session` | SessionStart, UserPromptSubmit | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — **that the line reaches the person is not proved live yet**. The model: at a start, only the `model` the input names (no fallback); at a prompt, the one that last answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. § The Fable-session note. |
+| `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
 | `job-route` | PreToolUse (Bash) | `jobs.route` | A heavy command is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301). § The job route. |
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, and the message to send the other sessions when it went into `worktrees.base`. A form that names no pull request gets no note. |
 | `review-record` | SubagentStop | `cc-smart-dev-kit.json` exists | When the agent that stops is a review agent's (`workflow.reviewAgents`), records the commit the working folder is on — the record the merge guard reads. Nothing for an agent that stopped inside its own worktree. § The review record. |
@@ -1165,25 +1245,37 @@ The Fable rules are the owner's of 2026-10-16, and each is the person's call:
 
 ### The Fable-session note
 
-`fable-session` (SessionStart, UserPromptSubmit) is machine-wide like `agent-guard`: the model
-the main session runs on is the person's choice, and Claude never cares — no `additionalContext`,
-no error, no block. The person may not have meant the `fable` tier, though (it spends the plan's
-limits faster than Opus), so they get one `systemMessage` — a line Claude Code shows the person,
-never Claude — once in a session (`fable-session.ts`). **That the line really reaches the person
-is not proved live yet** (`docs/claude-code-contract.md` § Relied on, not proved yet has the
-owed run: it also asks Claude whether it saw any hook message).
+`fable-session` (SessionStart, PostModelSwitch, Stop) is machine-wide like `agent-guard`: the
+model the main session runs on is the person's choice, and Claude never cares — no
+`additionalContext`, no error, no block. The person may not have meant the `fable` tier, though
+(it spends the plan's limits faster than Opus), so they get one `systemMessage` — a line Claude
+Code shows the person, never Claude — once in a session (`fable-session.ts`). **The line was
+seen live on a real session (2026-10-17)** — through `UserPromptSubmit`, the event this hook has
+since left — and that it shows on `PostModelSwitch` and `Stop` is still not proved
+(`docs/claude-code-contract.md` has the rows and the owed run).
 
-Which model: at a **start**, only the `model` the input names — no fallback there (the schema
-Claude Code 2.1.300 carries has `source` and an optional `model`); at a **prompt**, the model
-that last answered in the transcript, then `ANTHROPIC_MODEL` (`sessionModelOf`, one home with
-the guard's fork rule). So a `/model` switch to Fable is caught once Fable has answered, at the
-prompt after that answer — not at the switch itself. The tier is read the guard's way too
-(`resolveLaunchModel`, `ANTHROPIC_DEFAULT_FABLE_MODEL` and the model slots included), so there
-is no second list of what counts as Fable, and a tier a backend answers warns the same, naming
-the model (`the \`fable\` model, openai:gpt-5.5`).
+Which model, per event:
+- a **start**: only the `model` the input names — no fallback there (the schema Claude Code
+  2.1.300 carries has `source` and an optional `model`);
+- a **switch** (`PostModelSwitch`): `to_model` — "the resolved model id the session runs after
+  the switch", from Claude Code's own input schema (2.1.302, read from the shipped binary). So
+  the line appears AT the switch;
+- a **finished answer** (`Stop`): the model that answered, from the transcript's last assistant
+  message, then `ANTHROPIC_MODEL` (`sessionModelOf`, one home with the guard's fork rule). This
+  is the catch-all for a Claude Code that fires no `PostModelSwitch`, and it cannot fire for a
+  model the session has already left.
+
+**`UserPromptSubmit` was the bug** (live, 2026-10-17): the model read there is the transcript's
+last answer — the PREVIOUS turn's — so the hook ran one turn behind. It missed the switch to
+Fable, and then warned while the person was back on Opus. Stop judges the answer that just
+ended, and a switch back is a different answer.
+
+The tier is read the guard's way too (`resolveLaunchModel`, `ANTHROPIC_DEFAULT_FABLE_MODEL` and
+the model slots included), so there is no second list of what counts as Fable, and a tier a
+backend answers warns the same, naming the model (`the \`fable\` model, openai:gpt-5.5`).
 
 What it costs: a session that was told stops at the mark; a session on anything else pays one
-`existsSync` and — at a prompt — the transcript's tail; the gateway config is read only when the
+`existsSync`, and — at a stop — the transcript's tail; the gateway config is read only when the
 model text could be Fable at all (`couldBeFable`), and the settings file never. A session nobody
 watches (`claude -p`) is told nothing and keeps no mark. The mark that keeps it to once a session
 is `<TMPDIR>/cc-smart-dev-kit-session-names/<session id>.fable`, beside the session's own name
@@ -1537,22 +1629,42 @@ filter that made each session's windows its own.
   (README § The browser, owed check 3). The status page's Copy button copies the whole line
   (`PLAYWRIGHT_MCP_EXTENSION_TOKEN=…`), so both the line and the bare token are accepted, and the
   shape (43 URL-safe characters: 32 random bytes, base64, URL-safe) is checked at paste time — a
-  half-copied token is refused at once instead of turning into a 30-second wait later.
+  half-copied token is refused at once instead of turning into a 30-second wait later. A paste
+  arrives with the bracketed-paste markers around it from some terminals (Warp among them), and
+  a read that echoes nothing keeps them: they are stripped before the shape is checked
+  (`cleanSecretLine`, `src/cli/secret-line.ts` — one home for every secret read), or a token a
+  person really pasted is refused as "55 characters" and saved nowhere (live, 2026-10-17).
 - **What the person gains, and what it costs.** They watch the work in a real Chrome window and
   can take the page over; there is no browser of ours to keep alive. The costs are upstream and
   neither is planned to change: every connection brings that window to the front and switches its
   active tab (microsoft/playwright#42343), and a second extension in that profile breaks the
   session (microsoft/playwright#43230, open — `doctor` warns by name). There is no headless mode:
   a machine with no desktop cannot use the browser at all.
+- **What counts as "another extension" is Chrome's own record** (`otherExtensions`,
+  `src/browser/chrome.ts`), never the folders on disk. The folders are wrong in both directions,
+  and both were seen live (2026-10-17): Chrome's `Temp` folder sits under
+  `<profile>/Extensions/` while an install runs and has no manifest, and `chrome://extensions`
+  hides Chrome's own extensions (Web Store Payments is an `kExternalComponent`, `location: 10`,
+  with `was_installed_by_default: true`), so the person could find neither of the two names
+  `doctor` printed. So: a folder with a manifest (a name is read from it, `__MSG_…__` resolved
+  from the extension's own `_locales`, else the id), and a record that is not Chrome's own —
+  `location` 5 (`kComponent`) or 10 (`kExternalComponent`), or `was_installed_by_default: true`
+  (the values are Chromium's `ManifestLocation`, `extensions/common/mojom/manifest.mojom`, read
+  2026-10-17). An entry with no folder is left out too: Chrome keeps the record after an
+  extension is gone.
 - **The profile is the person's.** `browser setup` finds Chrome per OS (`chrome.ts`), makes the
   `claude-code` profile by opening the extension's Web Store page in it, and pre-registers the
   extension for that user on macOS and Windows (the per-user External Extensions JSON, the HKCU
-  `update_url` key) — the person still clicks **Add to Chrome** and **Enable**. The ONE write the
-  plugin makes inside Chrome's own folder is the profile's display name in `Local State`, and only
-  while no Chrome runs on that user data folder (Chrome rewrites that file from memory); it goes
-  through `applyManagedJson`, so a backup is made and `restore` puts it back. Every other byte of
-  Chrome's files is read only, and `restore` never deletes a profile or touches the extension: it
-  removes the token file and the pre-registration, and says so.
+  `update_url` key) — the person still clicks **Add to Chrome** and **Enable**. The writes the
+  plugin makes inside Chrome's own folder are the profile's display name, in **both** places
+  Chrome reads it — `Local State`'s `profile.info_cache.<dir>.name` (the profile menu) and the
+  profile's own `Preferences` → `profile.name` (the picker's fallback) — and only while no Chrome
+  runs on that user data folder (Chrome rewrites both from memory; when it is running, the page
+  says to close Chrome and run `browser setup` again, or to rename the profile in Chrome). Both
+  go through `applyManagedJson`, so a backup is made and `restore` puts them back. Writing only
+  `Local State` left a profile that looked unnamed in Chrome (live, 2026-10-17). Every other byte
+  of Chrome's files is read only, and `restore` never deletes a profile or touches the extension:
+  it removes the token file and the pre-registration, and says so.
 - **The file-URL switch is checked, never set.** A `file://` page needs the profile's "Allow
   access to file URLs" for the extension AND `--allow-unrestricted-file-access` for the MCP (which
   blocks `file://` navigation by default). Chrome keeps the switch per extension as
@@ -1682,7 +1794,21 @@ which every session that works in a worktree does. Registered for the user, the 
   never written by hand), and it starts (`claude mcp get`, which starts it once), with the
   scope checked too — a project `.mcp.json` or a local copy wins over the user's, and a
   session that moves into a worktree would lose it. No Tavily key is a `·` line, never a
-  failure.
+  failure. A server registered at user scope by **something else** under one of these names is
+  a `!` line naming what runs instead — that is why the plugin's browser is not the one
+  starting — with the command that hands the name back.
+- **`cc-smart-dev-kit mcp status [--json]`** (`src/mcp/status.ts`) is the read-only answer to
+  "which of these are the plugin's?": the same rule as setup's own (`sameConfig` against the
+  record — one home), a line each, and `--json` for a script. Exit 1 means Claude Code's own
+  config could not be read, so "nothing is foreign" and "could not check" are never confused.
+  The line shows the server's **command and arguments** (or a remote server's URL) and never an
+  `env` or a `headers` — a person's own server may hold a key there, and this line is printed.
+  **The installer asks with it** (live, 2026-10-17: all four names were registered by a
+  project's own script, setup's `!` line was lost among the installer's output, and the plugin's
+  browser never took over): per foreign server, "Replace it with cc-smart-dev-kit's?"; a yes
+  removes it (`claude mcp remove <name> --scope user`) and runs `setup` again, so the plugin
+  registers its own **with its record** — the record is what lets `restore` take it back later —
+  and a no lists the exact command under "What is left".
 
 
 ## Auto mode reads only user settings

@@ -2210,6 +2210,58 @@ describe("cc-smart-dev-kit version and help", () => {
   });
 });
 
+describe("cc-smart-dev-kit browser token: every path that saves nothing is a failure", () => {
+  // The installer reads this command's exit code: a path that saved nothing and exited 0 would
+  // let it walk on with no token file, which is how a live machine ended up with a browser that
+  // never started (2026-10-17).
+  const TOKEN = `${"A".repeat(41)}_-`;
+  const tokenFile = (home: string) =>
+    join(home, ".config", "cc-smart-dev-kit", "playwright-extension.token");
+
+  test("a token on stdin is saved, 0600, and never printed", () => {
+    const world = setup();
+    const result = world.run(["browser", "token"], {}, world.home, `${TOKEN}\n`);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("the browser token is set");
+    expect(readFileSync(tokenFile(world.home), "utf8")).toBe(`${TOKEN}\n`);
+    expect(`${result.stdout}${result.stderr}`).not.toContain(TOKEN);
+  });
+
+  test("a token wrapped in the bracketed-paste markers is saved", () => {
+    const world = setup();
+    const result = world.run(
+      ["browser", "token"],
+      {},
+      world.home,
+      `\u001b[200~${TOKEN}\u001b[201~\r\n`,
+    );
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(tokenFile(world.home), "utf8")).toBe(`${TOKEN}\n`);
+  });
+
+  test("an empty stdin, an empty line, and a wrong shape: each exits 1 and writes nothing", () => {
+    // `browser: false`: this world has no token file yet, so "written nothing" is provable.
+    const empty = setup({ browser: false });
+    const nothing = empty.run(["browser", "token"], {}, empty.home, "");
+    expect(nothing.exitCode).toBe(1);
+    expect(nothing.stderr).toContain("The token was not saved: nothing was pasted");
+    expect(existsSync(tokenFile(empty.home))).toBe(false);
+
+    const blank = setup({ browser: false });
+    const emptyLine = blank.run(["browser", "token"], {}, blank.home, "\n");
+    expect(emptyLine.exitCode).toBe(1);
+    expect(emptyLine.stderr).toContain("nothing was pasted");
+    expect(existsSync(tokenFile(blank.home))).toBe(false);
+
+    const wrong = setup({ browser: false });
+    const garbage = wrong.run(["browser", "token"], {}, wrong.home, "hello world\n");
+    expect(garbage.exitCode).toBe(1);
+    expect(garbage.stderr).toContain("The token was not saved");
+    expect(garbage.stderr).toContain("11 characters");
+    expect(existsSync(tokenFile(wrong.home))).toBe(false);
+  });
+});
+
 describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
   test("--statusline sets the status line as an owned key; restore removes it", () => {
     const { settingsFile, run } = setup();

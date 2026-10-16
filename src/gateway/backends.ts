@@ -41,10 +41,11 @@ export async function listModels(
   baseUrl: string,
   apiKey: string,
   timeoutMs = 10_000,
+  fetchImpl: HealthFetch = (url, init) => fetch(url, init),
 ): Promise<{ error: string } | { models: ListedModel[]; status: number }> {
   try {
     const url = `${baseUrl}/v1/models`;
-    const response = await fetch(url, {
+    const response = await fetchImpl(url, {
       headers: { authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(timeoutMs),
       // The key goes straight to a backend on this machine, never through a proxy.
@@ -58,6 +59,59 @@ export async function listModels(
   } catch (error) {
     return { error: messageOf(error) };
   }
+}
+
+/** How long one key check may take. Short on purpose: it is a question, not a job. */
+export const KEY_CHECK_TIMEOUT_MS = 5_000;
+
+/**
+ * What one backend key check found:
+ *   - `accepted`: the backend answered 2xx to an authenticated request, so it took the key;
+ *   - `refused`: it answered 401 or 403 — it says the key is not one of its own;
+ *   - `unchecked`: it did not answer at all, or answered something else (a 5xx, a 404 on
+ *     `/v1/models`). Never a refusal: a backend that is down or different says nothing about
+ *     the key, and the caller may save it with an explicit `--save-unchecked`.
+ */
+export type KeyCheck =
+  | { kind: "accepted"; status: number }
+  | { detail: string; kind: "refused"; status: number }
+  | { detail: string; kind: "unchecked" };
+
+/**
+ * Tests one backend key against that backend with ONE cheap authenticated request: `GET
+ * /v1/models`, the same call `gateway models` and `doctor` make. This is what stops a wrong key
+ * from replacing a working one: a person pasted their Ollama Cloud key where the router's
+ * OmniRoute key was asked for, OmniRoute answered 401 to every request after that, and every
+ * affordable subagent fell back to Claude until the key was read back out of OmniRoute's own
+ * database (live, 2026-10-17).
+ *
+ * What it cannot prove: a backend that lists its models without checking the key answers 2xx to
+ * any key, so a wrong one reads as accepted. The check is a cheap gate, not a proof — the
+ * router's own requests are the proof, and `doctor` reports the backend's answer.
+ */
+export async function checkBackendKey(
+  baseUrl: string,
+  apiKey: string,
+  options: { fetch?: HealthFetch; timeoutMs?: number } = {},
+): Promise<KeyCheck> {
+  const listed = await listModels(
+    baseUrl,
+    apiKey,
+    options.timeoutMs ?? KEY_CHECK_TIMEOUT_MS,
+    options.fetch,
+  );
+  if ("error" in listed) return { detail: listed.error, kind: "unchecked" };
+  if (listed.status >= 200 && listed.status < 300) {
+    return { kind: "accepted", status: listed.status };
+  }
+  if (listed.status === 401 || listed.status === 403) {
+    return {
+      detail: `/v1/models answered HTTP ${listed.status}: the backend does not accept this key`,
+      kind: "refused",
+      status: listed.status,
+    };
+  }
+  return { detail: `/v1/models answered HTTP ${listed.status}`, kind: "unchecked" };
 }
 
 /** The part of `fetch` the probe needs: the one injectable type (`./health`). */

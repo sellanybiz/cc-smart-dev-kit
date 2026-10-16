@@ -1,33 +1,44 @@
 /**
- * SessionStart and UserPromptSubmit: one line to the person, once in a session, when that
- * session's own model is the **`fable` tier** (the owner, 2026-10-16).
+ * SessionStart, PostModelSwitch and Stop: one line to the person, once in a session, when that
+ * session's own model is the **`fable` tier** (the owner, 2026-10-16; fixed 2026-10-17).
  *
  * **Claude never cares which model runs the main session.** A session on Fable is the person's
  * choice, and nothing is said to Claude about it — no `additionalContext`, no error, never a
  * block. The person may not have meant it (the tier spends the plan's limits faster than Opus),
  * so they are told once, through the `systemMessage` output field ("Display a message to the
- * user (all hooks)", `src/hooks/io.ts` and `docs/claude-code-contract.md` — **not proved live
- * yet**).
+ * user (all hooks)", `src/hooks/io.ts` and `docs/claude-code-contract.md`).
  *
- * Which model:
- *   - SessionStart: the `model` the input names, and nothing else — no fallback there (the
- *     schema Claude Code 2.1.300 itself carries has `source` and an optional `model`);
- *   - UserPromptSubmit: the model that last answered in the transcript, then `ANTHROPIC_MODEL`
- *     (`sessionModelOf`, the same reading the Agent guard's fork rule uses). So a `/model`
- *     switch to Fable is caught once Fable has answered, at the prompt after that answer.
+ * Which model, at which event:
+ *   - **SessionStart**: the `model` the input names, and nothing else;
+ *   - **PostModelSwitch**: `to_model` — the model the session runs AFTER the switch, in Claude
+ *     Code's own words ("Resolved model id the session runs after the switch"). So a `/model`
+ *     switch to Fable is warned about at the switch itself;
+ *   - **Stop**: the model that last answered in the transcript (`sessionModelOf`, the same
+ *     reading the Agent guard's fork rule uses), then `ANTHROPIC_MODEL`. At Stop the last
+ *     assistant message IS the answer that just finished, so this is the model that really
+ *     answered — the catch-all for a Claude Code that fires no PostModelSwitch.
+ *
+ * **Why not UserPromptSubmit (the bug this fixes, live 2026-10-17).** It read the transcript's
+ * last assistant message at every prompt, which is the PREVIOUS answer's model: the hook ran one
+ * turn behind. It missed the switch to Fable, and it fired after the person had switched back to
+ * Opus — a warning about Fable, said while on Opus. Stop cannot do that: it judges the answer
+ * that just ended, and a switch back is a different answer.
  *
  * The tier is read the Agent guard's way (`resolveLaunchModel`: the family name, a Claude id,
  * a model slot, `ANTHROPIC_DEFAULT_FABLE_MODEL`), so there is no second list of what counts as
  * Fable — and a `fable` tier a backend answers warns the same, naming the model that answers it.
  *
  * **What it costs.** A session that was told stops at the mark. A session on anything else pays
- * one `existsSync` and — at a prompt — the transcript's tail; the gateway config is read only
- * when the model text could be Fable at all (`couldBeFable`), and the settings file never is.
- * A session nobody watches (`claude -p`) is told nothing and keeps no mark.
+ * one `existsSync` and — at Stop — the transcript's tail; the gateway config is read only when
+ * the model text could be Fable at all (`couldBeFable`), and the settings file never is. A
+ * session nobody watches (`claude -p`) is told nothing and keeps no mark.
  *
  * **Once a session**, the mark is `<TMPDIR>/cc-smart-dev-kit-session-names/<session id>.fable`,
  * beside the session's own name files (`namesDir`, one home), so the OS clears it. It is made
  * with `wx`, so two runs that race cannot both speak; EEXIST means this session was told.
+ * (The owner's live report, 2026-10-17: the line WAS seen, so `systemMessage` reaches the person
+ * on UserPromptSubmit at least; that it reaches them on PostModelSwitch and Stop is not proved
+ * live yet — `docs/claude-code-contract.md`.)
  */
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -99,11 +110,15 @@ export function fableSession(input: HookInput, env: Env, paths: CliPaths): HookR
   // Nobody watches a `claude -p` session: no line, and no mark either.
   if ((env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0") return SILENT;
   const mark = fableSessionMark(env, sessionId);
-  // Told already: nothing to read. This hook runs at every prompt.
+  // Told already: nothing to read. This hook runs at a start, a switch and every stop.
   if (existsSync(mark)) return SILENT;
-  // A start names the model it runs on and nothing else; at a prompt, the transcript's last
-  // answer, then `ANTHROPIC_MODEL` — and only then is anything else read.
-  const model = event === "SessionStart" ? stringField(input.model) : sessionModelOf(input, env);
+  // The model that is CURRENT, per event: a start names it, a switch names the model it moved
+  // TO (`to_model`), and a stop is judged by the answer that just finished — the only reading
+  // that cannot fire for a model the session has already left.
+  let model: null | string;
+  if (event === "SessionStart") model = stringField(input.model);
+  else if (event === "PostModelSwitch") model = stringField(input.to_model);
+  else model = sessionModelOf(input, env);
   if (model === null || !couldBeFable(model, env)) return SILENT;
   const real = resolveLaunchModel(model, gatewayConfigOf(paths), env);
   if (real.tier !== "fable") return SILENT;

@@ -6,10 +6,8 @@ import { realBrowserDoctorDeps } from "../browser/doctor";
 import { runBrowserMcp } from "../browser/launcher";
 import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
 import {
-  canHideInput,
   clearBrowserToken,
   parseBrowserToken,
-  readSecretLine,
   readTokenFromStdin,
   tokenSavedLine,
   writeBrowserToken,
@@ -22,6 +20,7 @@ import { runMigrate } from "../cli/migrate";
 import { cliPaths } from "../cli/paths";
 import { runProjectInit } from "../cli/project-init";
 import { runRestore } from "../cli/restore";
+import { canHideInput, cleanSecretLine, readSecretLine } from "../cli/secret-line";
 import { runSetup } from "../cli/setup";
 import { runStatusline } from "../cli/statusline";
 import { runUpdate } from "../cli/update";
@@ -47,6 +46,7 @@ import { realMemoryFacts } from "../jobs/memory";
 import { realMachine } from "../machine/machine";
 import { realMcpDoctorDeps } from "../mcp/doctor";
 import { serenaFolder } from "../mcp/serena-context";
+import { mcpServerStatus, mcpServerStatusLine } from "../mcp/status";
 import { runOmniroute } from "../omniroute/commands";
 import { runPortal } from "../portal/command";
 import { locateCheckout } from "../project/resolve";
@@ -169,6 +169,11 @@ Commands:
                      the extension would ask you to approve every connection. browser check
                      proves a real connection, a file:// page, screenshots, an upload and a
                      download end to end (it opens that Chrome window once).
+  mcp status [--json]
+                     The four MCP servers cc-smart-dev-kit registers for your user, and which
+                     of them are registered by something else instead (a project's own script,
+                     say): one line each, --json for a machine. Read-only. The installer uses
+                     it to ASK before it replaces one of yours.
   sessions [--open] [--dry-run]
                      This project's Claude Code sessions of the last two days, by name and
                      worktree, with the command that resumes each. --open reopens every
@@ -296,12 +301,15 @@ function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
     bunVersion: Bun.version,
     bundle: routerBundle(),
     runner,
-    readStdin: () => Bun.stdin.text(),
+    // A secret on stdin is cleaned first: a terminal that keeps bracketed paste on hands a
+    // paste to a pipe as `ESC[200~<key>ESC[201~` (`src/cli/secret-line.ts`).
+    readStdin: async () => cleanSecretLine(await Bun.stdin.text()),
     confirm: ask,
     service,
     account,
     platform: process.platform,
     probe: realProbe(),
+    apiFetch: (url, init) => fetch(url, init),
     print: (line) => console.log(line),
     error: (line) => console.error(line),
   };
@@ -406,10 +414,11 @@ async function main(argv: string[]): Promise<number> {
       }
       // The Tavily key on stdin, never an argument (a command line is readable in `/proc`
       // and lands in the shell's history). Read before anything else is planned, so the
-      // plan and a real run say the same thing.
+      // plan and a real run say the same thing. Cleaned: a paste may arrive wrapped in the
+      // bracketed-paste markers (`src/cli/secret-line.ts`).
       let tavilyKeyStdin: null | string = null;
       if (rest.includes("--tavily-key-stdin")) {
-        const value = (await Bun.stdin.text()).trim();
+        const value = cleanSecretLine(await Bun.stdin.text());
         if (value === "") throw new Error("no key on stdin");
         tavilyKeyStdin = value;
       }
@@ -596,6 +605,29 @@ async function main(argv: string[]): Promise<number> {
         probe: realProbe(),
         which: (command) => Bun.which(command),
       });
+    }
+    case "mcp": {
+      const [sub, ...mcpRest] = rest;
+      if (sub !== "status") {
+        console.error(`Usage: ${COMMAND} mcp status [--json]\n\n${HELP}`);
+        return 2;
+      }
+      const unknown = mcpRest.filter((arg) => arg !== "--json");
+      if (unknown.length > 0) {
+        console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+        return 2;
+      }
+      const servers = mcpServerStatus(paths, process.env);
+      if (mcpRest.includes("--json")) {
+        console.log(JSON.stringify({ servers, userConfigFile: paths.userConfigFile }, null, 2));
+      } else {
+        for (const server of servers) {
+          console.log(mcpServerStatusLine(server));
+        }
+      }
+      // 1: Claude Code's own config could not be read, so nothing here can be trusted — the
+      // difference between "nothing is foreign" and "could not check" matters to the installer.
+      return servers.some((server) => server.state === "unreadable") ? 1 : 0;
     }
     case "migrate": {
       const unknown = rest.filter((arg) => arg !== "--dry-run" && arg !== "--yes");

@@ -59,6 +59,28 @@ folder with the script in it, `powershell -NoProfile -ExecutionPolicy Bypass -Fi
 - **Run it in your own terminal.** Every question reads the terminal, never the pipe the
   script arrived on, and the installer refuses to run inside a Claude Code session: it may
   replace the router that session's own model traffic goes through.
+- **The gateway.** The installer asks `cc-smart-dev-kit gateway check` first — a read-only
+  question — and asks for a key only when the gateway needs one: no config, no OmniRoute key
+  yet, or a key OmniRoute refuses (HTTP 401/403). Two different secrets can be asked for:
+  - **no key yet**, and OmniRoute answers on this machine: your **OmniRoute dashboard password**
+    (the one you log in with; not stored, never shown). `gateway setup` makes the router's key
+    in OmniRoute itself, tests it and saves it.
+  - **a key OmniRoute refuses** (or one you want to replace): **the OmniRoute API key the router
+    uses — OmniRoute's own dashboard, its API keys page — not your Ollama key.** OmniRoute
+    refuses a provider key with HTTP 401, so a wrong paste is refused, keeps the key already in
+    the file, says why, and the question comes once more.
+  A key that cannot be checked (OmniRoute not running, a 5xx) is saved with a warning, never
+  silently. With no OmniRoute at all, nothing is asked and the gateway goes on the list at the end.
+- **An MCP server of yours.** If one of the plugin's four server names (`playwright`, `serena`,
+  `sequential-thinking`, `tavily-websearch`) is registered at user scope by something else — a
+  project's own script, say — setup leaves it alone, as it must. The installer then shows what
+  runs instead and asks whether to replace it, one server at a time. A yes runs
+  `claude mcp remove <name> --scope user` and then setup again, so the plugin's own server is
+  registered **with its record** (the record is what lets `restore` take it back); a no lists it
+  under "What is left" with the exact command.
+- **The Tavily key is not asked for when you have one**: `TAVILY_API_KEY` in your environment,
+  the key file setup reads, or the key already in your settings — one line says which it is
+  using, and nothing is written.
 - `--dry-run` (`-DryRun` on Windows) prints the plan for this machine and changes nothing —
   no command that writes, no network.
 - It never writes a secret file and never puts a secret on a command line: each key goes to
@@ -142,6 +164,78 @@ step below runs the plugin through it.
    ([The browser](#the-browser)); without the token, the browser tools do not work.
 
 After that, use `cc-smart-dev-kit setup` to set up again (for example after an update).
+
+## What's new in 0.4.3
+
+Every change here comes from the installer's FIRST real run, on 2026-10-17, and from what it
+left behind on that machine.
+
+- **The marketplace is refreshed before any version is compared** ([Install](#install)). The
+  live run had the marketplace added hours earlier at 0.4.1: the installer compared the
+  installed 0.4.1 with that stale clone's 0.4.1, saw them equal, updated nothing — and then
+  called an option the installed 0.4.1 CLI did not have, so the run died at the Tavily step.
+  The installer now runs `claude plugin marketplace update` first (the same order
+  `cc-smart-dev-kit update` uses), and then reads the installed CLI's own version: older than the
+  release the installer ships with means it stops, with the two exact commands and exit 1,
+  instead of calling an option that CLI may not have.
+- **A backend key is tested before it is saved** ([The AI gateway](#the-ai-gateway-optional)).
+  A person pasted their Ollama Cloud key where the router's OmniRoute key was asked for; it was
+  saved unchecked, OmniRoute answered 401 to every request after that, and every affordable
+  subagent fell back to Claude until the key was read back out of OmniRoute's own database. Now
+  `gateway setup --backend-key-stdin` makes one cheap authenticated request first
+  (`GET /v1/models`): a 401 or 403 refuses the key, keeps the one in the file and exits 1, saying
+  which key the backend wants. A backend that cannot be asked (unreachable, or a 5xx) saves
+  nothing either — unless `--save-unchecked` says you know. And the file is backed up before a
+  key that is really changing replaces one.
+- **No key yet? setup can make one.** ([First setup](#first-setup))
+  `cc-smart-dev-kit gateway setup --omniroute-password` (or `--omniroute-password-stdin`) takes
+  your OmniRoute **dashboard** password — asked with no echo, never stored — logs in to the local
+  OmniRoute, makes the router's key named `cc-smart-dev-kit-router-<machine>`, tests it and saves
+  it. No dashboard trip, no copy-paste.
+- **The installer asks before it touches an MCP server of yours** ([MCP
+  servers](#mcp-servers)). A project's own script had registered `playwright`, `serena`,
+  `sequential-thinking` and `tavily-websearch` at user scope first; setup left them alone (the
+  rule) and printed one `!` line nobody saw, so the old browser kept starting and the plugin's
+  own never took over. The installer now runs `cc-smart-dev-kit mcp status --json`, shows what
+  runs instead, and asks per server: "Replace it with cc-smart-dev-kit's?" — a yes removes it and
+  runs setup again (so the plugin registers its own **with its record**), a no lists it under
+  "What is left" with the exact command. `doctor` gained a `!` line for the same case.
+- **The gateway is asked about only when it is not working** ([First
+  setup](#first-setup)). A new read-only `cc-smart-dev-kit gateway check` answers one question
+  with an exit code: 0 the key works, 1 no key yet and OmniRoute answers (setup can make one),
+  3 it could not be judged, 4 the key in the file is one OmniRoute refuses. The installer asks
+  for a key only on 1 and 4 — showing what runs instead and never a key — and asks again **once**
+  after a refusal, keeping the old key.
+- **A pasted secret no longer arrives broken.** Warp and other terminals wrap a paste in the
+  bracketed-paste markers `ESC[200~` … `ESC[201~`, and a read that echoes nothing keeps every
+  character: a token a person pasted was refused as "55 characters" and never saved. Every
+  secret read now strips those markers and any other control character — in the plugin (one
+  home: `src/cli/secret-line.ts`), and in both installers. The token step is also ONE question
+  now (paste it, or Enter to skip): a paste can no longer land in a yes/no answer, and every
+  path of `browser token` that saves nothing exits non-zero.
+- **The `claude-code` profile is named in BOTH of Chrome's files**
+  ([The browser](#the-browser)). Chrome reads the display name from `Local State` and falls back
+  to the profile's own `Preferences` (`profile.name`); only the first was written, and the person
+  saw the profile unnamed. Both are written now, still only while Chrome is closed — while it
+  runs, the page says "close Chrome, then run `cc-smart-dev-kit browser setup` again".
+- **`doctor` no longer invents extensions.** It judged the profile by the folders on disk, and
+  named Chrome's own `Temp` folder and Chrome Web Store Payments — neither of which a person can
+  find in `chrome://extensions`. It reads Chrome's own record now: a folder with a manifest, and
+  a location that is not a component or an install Chrome made for itself. A real extra
+  extension is named by its manifest name (a `__MSG_…__` name resolved from its own locales).
+- **Tavily is never asked for twice** ([MCP servers](#mcp-servers)). The person had
+  `TAVILY_API_KEY` in their environment and a project already running a Tavily MCP server; the
+  installer asked anyway. It says one line instead — "Tavily: using TAVILY_API_KEY from your
+  environment" — and asks only when neither the environment, the key file, nor your settings
+  have one.
+- **The Fable warning is at the switch, or right after Fable's first answer — never after a
+  switch away** ([The hooks](#the-hooks)). `fable-session` read the transcript's last answer at
+  every prompt, which is the PREVIOUS turn's model: it missed the switch to Fable, and then
+  warned while the person was back on Opus. It runs on `PostModelSwitch` (the model the session
+  moved TO), on `Stop` (the answer that just finished) and on `SessionStart`, and no longer on
+  `UserPromptSubmit`.
+- **The portal's log is newest first** ([The portal](#the-portal)): the Health page's Log and the
+  Overview's "Latest warnings" both show the newest line at the top, with the times as they are.
 
 ## What's new in 0.4.2
 
@@ -320,6 +414,7 @@ Five pages say how, and what still has to be tested there:
 | `cc-smart-dev-kit setup --statusline` | Also sets Claude Code's status line to `cc-smart-dev-kit statusline`, as a key cc-smart-dev-kit owns, without asking (also after an earlier "no"). It never replaces a status line you set: one you set yourself, also after setup had set it, stops setup before it writes anything, and `restore` leaves it. |
 | `cc-smart-dev-kit statusline` | The status line itself: plan usage, a warning from 85 %, and any gateway fallback in use. Reads the JSON Claude Code passes on stdin. |
 | `cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>]` | Which models answered on this machine, per session, from Claude Code's transcripts: the main session's replies by model, and apart, its subagents (how each was launched, the model of each reply, the share on Opus). Default: the last 6 hours. It also shows auto mode's safety checks, which the gateway's router counted, by day, with the tokens each answer reported (below). Read only; no message text. |
+| `cc-smart-dev-kit mcp status [--json]` | Read-only: the four MCP servers cc-smart-dev-kit registers for your user, and which of them are registered by something else instead (a project's own script, say). One line each, naming what runs instead (the command and its arguments — never an `env` or a `headers`), or `--json` for a script. Exit 1 means Claude Code's own config could not be read, so "nothing is foreign" and "could not check" are never confused. The [installer](#install) asks with it before it replaces one of yours; `doctor` warns from the same facts. |
 | `cc-smart-dev-kit doctor [--live]` | Checks the install, the cc-smart-dev-kit files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below). Prints ✓ or ✗ for each check, `·` for information and `!` for a warning (neither is a failure), and exits with 1 when a check fails. `--live` also proves the hooks and the worktree engine on the Claude Code installed here (below); it never runs without the flag. |
 | `cc-smart-dev-kit hook <worktree-create\|worktree-remove\|subagent-stop>` | The worktree engine, for a project that wires it in its own `.claude/settings.json` (§ Worktrees). It reads the hook's input on stdin and answers as Claude Code expects. With no name, it prints the lines to paste. |
 | `cc-smart-dev-kit project init [--dry-run] [--yes] [flags]` | Sets a project up ([`project init`](#project-init)): it writes the project's `.claude/cc-smart-dev-kit.json` (the worktrees, the protected branches, the guards, and optionally the [workflow](#the-workflow) policy) and, unless the project runs an engine of its own, the worktree engine's three lines in `.claude/settings.json`. It asks first, showing each default, which comes from the repo (the base from `origin/HEAD`, the setup command from the lockfile, the protected branches from git and, when `gh` is installed and answers, GitHub); every question has a flag, so a run with no terminal writes nothing unless `--yes` is given. It never commits. `cc-smart-dev-kit project init --help` lists the flags. |
@@ -696,7 +791,8 @@ How it works: [docs/gateway.md](docs/gateway.md).
 
 | Command | What it does |
 |---|---|
-| `cc-smart-dev-kit gateway setup [--yes] [--backend-key-stdin <backend> \| --no-backend-key]` | Makes `~/.config/cc-smart-dev-kit/gateway.json` (mode 600; the key on stdin, never argv), copies the router to `~/.local/share/cc-smart-dev-kit/router.js`, writes the systemd user units `cc-smart-dev-kit-router.socket` (it holds the port) and `cc-smart-dev-kit-router.service`, starts them, and waits up to 5 s for the router to answer. First of all it asks the router's port: when another program holds it (an older router, say), it stops and writes nothing. When the router runs and the copy or a unit changed, it says what the restart does and asks; `--yes` skips the question. A restart lets the answers in flight finish (up to 120 s; an answer still running then is cut, and Claude Code retries it), and new requests wait in the socket meanwhile, so none of them fails. A connection that sends nothing is closed half a second after the restart starts, so it cannot hold the restart. The exceptions are the restarts that must open the socket again (the first setup that moves a router from an older version to its socket, a socket that was stopped, a changed socket unit or port): until the old router has finished its answers, new requests fail, and setup's warning names which case it is. When the socket cannot open at all, setup says so and starts the router without it (the router binds the port itself). A router that fails to start 5 times within 60 s is given up: systemd then closes its socket too, so requests are refused at once instead of waiting; `doctor` names it, and `gateway setup` starts both again. A setup that stopped half way is finished by the next one. It never touches Claude Code's settings. |
+| `cc-smart-dev-kit gateway check` | One read-only question, for scripts (the installer asks it): does the gateway have an OmniRoute key the backend accepts? Exit 0 yes, 1 no key yet (OmniRoute answers, so one can be made), 3 it could not be judged (nothing answers, or the config cannot be read), 4 the key is one OmniRoute refuses. It asks the backend only — never the router's port — and prints one line saying what it found. |
+| `cc-smart-dev-kit gateway setup [--yes] [--backend-key-stdin <backend> \| --omniroute-password[-stdin] \| --no-backend-key] [--save-unchecked]` | Makes `~/.config/cc-smart-dev-kit/gateway.json` (mode 600; the key on stdin, never argv), copies the router to `~/.local/share/cc-smart-dev-kit/router.js`, writes the systemd user units `cc-smart-dev-kit-router.socket` (it holds the port) and `cc-smart-dev-kit-router.service`, starts them, and waits up to 5 s for the router to answer. First of all it asks the router's port: when another program holds it (an older router, say), it stops and writes nothing. When the router runs and the copy or a unit changed, it says what the restart does and asks; `--yes` skips the question. A restart lets the answers in flight finish (up to 120 s; an answer still running then is cut, and Claude Code retries it), and new requests wait in the socket meanwhile, so none of them fails. A connection that sends nothing is closed half a second after the restart starts, so it cannot hold the restart. The exceptions are the restarts that must open the socket again (the first setup that moves a router from an older version to its socket, a socket that was stopped, a changed socket unit or port): until the old router has finished its answers, new requests fail, and setup's warning names which case it is. When the socket cannot open at all, setup says so and starts the router without it (the router binds the port itself). A router that fails to start 5 times within 60 s is given up: systemd then closes its socket too, so requests are refused at once instead of waiting; `doctor` names it, and `gateway setup` starts both again. A setup that stopped half way is finished by the next one. It never touches Claude Code's settings. |
 | `cc-smart-dev-kit gateway status` | Router health, each backend, the slots, and whether Claude Code points at the gateway. Keys are masked. |
 | `cc-smart-dev-kit gateway models` | Every model each backend offers, and the slots. |
 | `cc-smart-dev-kit gateway slot <scout\|worker> <target>[,<target>…]` | Sets a slot's targets, checked against the backend's model list. Live, no restart. |
@@ -709,11 +805,21 @@ How it works: [docs/gateway.md](docs/gateway.md).
 ### First setup
 
 1. Run OmniRoute on this machine at `http://127.0.0.1:20128`: setup writes that address
-   for the `omniroute` backend. Give it a connection to a provider (Ollama Cloud, say),
-   and make an API key in it for the router. OmniRoute somewhere else: after setup,
-   change `backends.omniroute.baseUrl` in `~/.config/cc-smart-dev-kit/gateway.json`.
-2. Save that key in a file only you can read, and give it to setup **on stdin**. The
-   first key is always the `omniroute` backend's: the default slots use it.
+   for the `omniroute` backend. Give it a connection to a provider (Ollama Cloud, say).
+   OmniRoute somewhere else: after setup, change `backends.omniroute.baseUrl` in
+   `~/.config/cc-smart-dev-kit/gateway.json`.
+2. **The key: let setup make one, or give it one you have.** `setup` can log in to OmniRoute
+   with your dashboard password and make the router's key itself:
+
+   ```sh
+   cc-smart-dev-kit gateway setup --omniroute-password
+   ```
+
+   It asks for the password with no echo (or takes it with `--omniroute-password-stdin <
+   password-file`), never stores it, and makes a key named
+   `cc-smart-dev-kit-router-<machine>` in OmniRoute's own API keys. To give setup a key you
+   already made, put it in a file only you can read and hand it over **on stdin** — the first
+   key is always the `omniroute` backend's, because the default slots use it:
 
    ```sh
    cc-smart-dev-kit gateway setup --backend-key-stdin omniroute < key-file
@@ -723,7 +829,23 @@ How it works: [docs/gateway.md](docs/gateway.md).
    of the input, so typing it also needs Ctrl-D. A key as an argument would land in the
    shell history and the process list, so setup refuses one there. No key yet:
    `cc-smart-dev-kit gateway setup --no-backend-key` (every slot answers on Claude).
-3. `cc-smart-dev-kit gateway status`, then `cc-smart-dev-kit gateway on`.
+3. **The key is tested before it is saved.** setup makes one cheap authenticated request to the
+   backend (`GET /v1/models`, a 5-second timeout):
+   - **HTTP 401 or 403: refused.** Nothing is saved, the key already in the file stays, and the
+     line says which key that backend wants — for `omniroute`, an **OmniRoute API key** (made in
+     OmniRoute's own dashboard, its API keys page), the one the router itself uses, **not** a
+     provider key such as an Ollama Cloud one.
+   - **Anything else (unreachable, a 5xx): not refused, but not saved silently either.** setup
+     says it could not be checked and saves nothing unless you add `--save-unchecked`, which
+     saves it with a WARN line naming `cc-smart-dev-kit gateway check` for later.
+   - **A key that replaces one in the file is backed up first**: the whole file as it was, in
+     `~/.claude/cc-smart-dev-kit/backups/<the file's path, encoded>/gateway.json.bak-cc-smart-dev-kit-<stamp>`
+     (the state folder, never beside the config — a backup beside it would sit in `~/.config`
+     with a key in it). The line after the change says which folder. This is a plain backup, not
+     a managed change: `restore` leaves `gateway.json` alone on purpose (it holds your key), so
+     copy the file back by hand if you want the old key.
+4. `cc-smart-dev-kit gateway status`, then `cc-smart-dev-kit gateway on`. To check the key alone
+   (read-only, no restart): `cc-smart-dev-kit gateway check`.
 
 Auto mode's safety check is judged by Claude whenever Claude can answer it. The judge
 slot is **off by default**, and even when it is set it is only a fallback: it answers a
@@ -1219,7 +1341,7 @@ guard fails closed), and every other hook writes one line on stderr and the sess
 | `merge-guard` | before a Bash or PowerShell command | Asks you before a command that merges a pull request. The forms it reads: `gh pr merge` (`gh pr -R owner/repo merge 5` included), `--auto` (an armed merge lands once the checks pass, with nobody watching), a `gh alias` that expands to one (read from `gh alias list`), and — asking whatever the policy says — a `gh api` call to the pull-request merge endpoint (`repos/o/r/pulls/5/merge`, any method spelling) or a GraphQL query that names `mergePullRequest` / `enablePullRequestAutoMerge`. **Every merge in the command is judged**: `gh pr merge 5 && gh pr merge 6` checks both, and the first it does not allow asks, naming that pull request. It reads three facts, read-only: the pull request (`gh pr view`), the repository's default branch (`gh repo view`), and its required checks (`gh pr checks --required`; a skipped one counts as passing, GitHub's own rule). It lets a merge through with no question only when `autoMerge` is on, the pull request's base is the project's integration base, every required check passed, and — with `reviewBeforePush` on — the head commit has a [recorded review](#the-workflow). Every other case asks you, with the reason it asks; so does a merge that names a repository other than this project's own (`--repo`/`-R`: the policy covers this repository only), one whose earlier steps change the folder, branch or repository it acts on (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing, fails, or answers something it cannot read. In a project without `.claude/cc-smart-dev-kit.json` it stays silent, like every project hook. |
 | `message-guard` | before SendMessage | Refuses a message to a session that works outside this repo (ListAgents lists every session on the machine). |
 | `agent-guard` | before an Agent launch | **Machine-wide** (it runs with or without `.claude/cc-smart-dev-kit.json`): it resolves the model the launch really runs on and holds the model rules. A launch with no `model` or no `effort` is refused (it would inherit the session's, which nobody chose); `effort` `low` or `medium` is refused on every model, a Claude model and an affordable slot alike (a subagent runs at `high`, `xhigh` or `max` only); an affordable gateway slot needs `effort: "max"`, and only a slot key or a `<backend>:<model>` target counts as affordable — a name no rule knows (`best`, `opusplan`, `default`, …) is judged like Opus; **`opus` and `fable` mean the TIER, whatever model answers behind them** — an override or a model slot that points one at another vendor keeps the tier's rules, is never affordable and never forced to `max`, and the question names both (`` `opus` (answered by openai:gpt-5.5) ``); a review agent whose model the guard reads as Opus is allowed at `high` or `xhigh` — at `max` it asks you (a deeper review is your call, and in `claude -p`, with nobody to answer, it is refused), and a review whose model it cannot read asks about that reading — and any other `opus`-tier launch needs an `Opus reason: <word>` line and asks you to approve it (in `claude -p` that one is refused too); on the `fable` tier a read-only agent (Plan, Reviewer, Explore, Code Explorer) with a `Fable reason: <word> - <why>` line asks you — `build` is the builder's own word, refused there — and an agent that can change files — a builder, or a fork — asks with `Fable reason: build - <what you asked for>`. A fork always runs on the session's model and effort (Claude Code ignores a `model` a fork is given) and needs no `model`; an unknown session model counts as the `opus` tier. A **Workflow** call is judged the same way, from the `agent(...)` options in its script — a launch whose `model` is built at run time is refused, never guessed, and a script that hands `agent` around (`const run = agent; run(…)`, `agent?.(…)`) or builds a call's options at run time (a `...spread`, a computed key) is refused whole — because (proved live) a workflow's agents run inside the tool and pass no hook of their own; a deny refuses the whole call, so none of its launches is recorded, and an ask names every launch that asks. Every premium-tier launch that is allowed or asked is recorded, and `cc-smart-dev-kit usage` lists them with why. |
-| `fable-session` | a session starts; each prompt | **Machine-wide**: when the session's own model is the `fable` tier — Claude Fable, or a model an override points that tier at — it shows *you* one line, once a session: the premium tier uses your plan's limits faster than Opus, so switch with `/model` if you did not mean to. Nothing goes to Claude, never an error and never a block. A session start judges only the `model` the start names, nothing else; at a prompt it is the model that last answered in the transcript, then `ANTHROPIC_MODEL` — so a `/model` switch to Fable is caught once Fable has answered. That the line reaches you is **not yet proved live** (the contract's § Relied on, not proved yet). |
+| `fable-session` | a session starts; a model switch; each answer ends | **Machine-wide**: when the session's own model is the `fable` tier — Claude Fable, or a model an override points that tier at — it shows *you* one line, once a session: the premium tier uses your plan's limits faster than Opus, so switch with `/model` if you did not mean to. Nothing goes to Claude, never an error and never a block. A session start judges only the `model` the start names; a switch judges `to_model` — the model the session moved TO — so the line appears AT the switch; a finished answer is judged by the model that answered it, which is the catch-all for a Claude Code that fires no `PostModelSwitch`, and can never fire for a model the session has already left (the old `UserPromptSubmit` read was one turn behind: it missed the switch to Fable and warned after the switch back). The line was seen live on a real session (2026-10-17); that `systemMessage` shows on `PostModelSwitch` and `Stop` is not proved yet (the contract's § Relied on, not proved yet). |
 | `job-route` | before a Bash command | With `"jobs": { "route": true }`: a heavy command (the project's own [kinds](docs/jobs.md#kinds)) is sent through the machine's queue — rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>`, byte for byte the same command. A command already inside `cc-smart-dev-kit job run` is left as it is. |
 | `after-merge` | after a pull-request merge | With `worktrees`: the steps to clear the worktree that was merged, and, for a merge into `worktrees.base`, the message to send the other sessions of the repo. Noted forms: `gh pr merge`, `gh pr -R owner/repo merge 5`, a `gh api` merge whose path names the pull request, and a `gh` alias that expands to one ([The hooks](#the-hooks) has the guard's row). A form that names no pull request — a shell alias, a GraphQL merge, a runner such as `xargs` — gets no note. |
 | `review-record` | when a subagent finishes | Records the commit the session's working folder is on, when the agent that finished is one `reviewAgents` lists (the plugin's reviewer by default): the record the merge guard reads for a merge it would make with no person watching ([The review record](#the-workflow)). It writes nothing for an agent that stopped inside its own worktree. |
@@ -1341,7 +1463,13 @@ neither planned to change:
   (microsoft/playwright#42343, closed as not planned). Nothing here can stop that.
 - **The `claude-code` profile must hold the Playwright extension and nothing else.** A second
   extension that injects a frame into pages breaks the session (microsoft/playwright#43230, open).
-  `doctor` names any other extension in that profile; `browser setup` says the same.
+  `doctor` names any other extension in that profile; `browser setup` says the same. **What
+  counts as another extension is Chrome's own record, never the folders on disk**: a folder with
+  a manifest, and a location that is not one of Chrome's own (a component, an external
+  component, or an extension Chrome installed for itself) — so Chrome's `Temp` folder while an
+  install runs, a record left behind after an extension is gone, and built-ins like Chrome Web
+  Store Payments (which are hidden from `chrome://extensions` and cannot be removed there) are
+  not named. An extra extension that IS there is named by its manifest name, with its id.
 - **There is no headless mode.** A machine with no desktop cannot use the browser at all.
 
 **The token is required, and there is no approval mode.** The extension normally asks you, in a
@@ -1359,7 +1487,18 @@ nothing outside Chrome can read it — that is why you copy it once, by hand:
 4. Pin the extension, click its icon, and press **Copy** next to `PLAYWRIGHT_MCP_EXTENSION_TOKEN=…`
    — the button copies the whole line.
 5. `cc-smart-dev-kit browser token` — paste it (it is not echoed), or use the portal's Browser card
-   (`cc-smart-dev-kit portal`, § The portal). Then start a new Claude session.
+   (`cc-smart-dev-kit portal`, § The portal). Then start a new Claude session. **Paste the line
+   itself**; the bracketed-paste markers some terminals wrap a paste in
+   (`ESC[200~` … `ESC[201~`, Warp among them) are stripped, as is a stray CR — a token that
+   arrives with them is saved, not refused. Every path that saves nothing (Ctrl+C, an empty
+   line, a shape that is not the token's) exits non-zero and says why, so a script around it
+   cannot walk on with no token file.
+6. The profile's own name: `browser setup` writes it into **both** files Chrome reads it from —
+   `Local State`'s `profile.info_cache.claude-code.name` and the profile's `Preferences`
+   (`profile.name`) — so the profile shows as `claude-code` rather than "Person 1". Chrome
+   rewrites both from memory while it runs, so this happens only with Chrome closed: when it is
+   running, `browser setup` says so and you run it again after closing Chrome (or rename the
+   profile in Chrome's own menu).
 
 `cc-smart-dev-kit setup` prints the same state and the same steps, and never reports the browser
 ready while the token is missing; it is read-only there, so the one command that opens the window
@@ -1491,6 +1630,17 @@ folders. Registered for the user, the names stay and the servers stay.
   cc-smart-dev-kit did not write is left alone, with a note saying how to hand it back
   (`claude mcp remove <name> --scope user`, then setup). One setup wrote and you re-pointed
   since is yours too, and `restore` leaves it.
+- **`cc-smart-dev-kit mcp status [--json]`** answers, read-only, which of the four are the
+  plugin's and which are registered by something else: `! playwright: registered by something
+  else (node /opt/tools/server.js). To let setup manage it: claude mcp remove playwright
+  --scope user, then cc-smart-dev-kit setup`. The command and its arguments are shown; an
+  `env` or a `headers` in that config never is (a person's own server may hold a key there).
+  `--json` prints the same for a script; exit 1 means Claude Code's own config could not be
+  read, so "nothing is foreign" and "could not check" are not confused. **The
+  [installer](#install) asks with it**: per foreign server, "Replace it with
+  cc-smart-dev-kit's?" — a yes removes it and runs setup again (the plugin then registers its
+  own **with its record**, which is what makes `restore` able to take it back), a no lists it
+  under "What is left" with the exact command.
 - **`restore` takes exactly those back**: each server that still holds what setup registered
   is removed (`claude mcp remove <name> --scope user`), the record goes
   (`~/.claude/cc-smart-dev-kit/mcp-servers.json`), and so do Serena's context file and the
@@ -1498,7 +1648,10 @@ folders. Registered for the user, the names stay and the servers stay.
   with the exact command that adds it back (a server you removed is never registered again).
 - `doctor` checks each one: registered at user scope, and it starts (`claude mcp get`, which
   starts it once). A server registered somewhere else — a project's `.mcp.json`, or the local
-  scope — is a ✗ naming what wins over yours. No Tavily key is a `·` line, never a failure.
+  scope — is a ✗ naming what wins over yours. A server registered at user scope by **something
+  else** under one of these names is a `!` line naming what runs instead (that is why the
+  plugin's browser is not the one starting), with the command that hands the name back. No
+  Tavily key is a `·` line, never a failure.
 - **A project's own servers are the project's.** The plugin never knows them: they belong in
   that project's own configuration, where the project can keep them true.
 

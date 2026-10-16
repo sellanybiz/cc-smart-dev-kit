@@ -16,11 +16,13 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { runGateway } from "../gateway/commands";
 import { gatewayChecks } from "../gateway/doctor";
-import type { HealthProbe } from "../gateway/health";
+import type { HealthFetch, HealthProbe } from "../gateway/health";
 import { shellQuote } from "../setup/launcher";
+import { listBackups } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import { cliPaths } from "./paths";
@@ -119,7 +121,20 @@ function otherProgram() {
  * in place of `powershell` (`task`), and no systemd at all. Nothing here reaches the real
  * Task Scheduler, PowerShell or systemctl, or a real gateway.
  */
-function machine(options: { systemctl?: boolean; windows?: boolean } = {}) {
+function machine(
+  options: {
+    systemctl?: boolean;
+    windows?: boolean;
+    /** What `GET /v1/models` answers for a key check: 200 accepts, 401 refuses, 503 cannot judge. */
+    modelsStatus?: number;
+    /** What `POST /api/auth/login` answers: 200 sets the session cookie, 401 refuses the password. */
+    loginStatus?: number;
+    /** Nothing answers at all (a machine with no OmniRoute). */
+    silent?: boolean;
+    /** `/api/keys` answers 201 with no key in it. */
+    noCreatedKey?: boolean;
+  } = {},
+) {
   const home = tempDir("gateway-cli");
   const configDir = join(home, ".claude");
   mkdirSync(configDir, { recursive: true });
@@ -248,8 +263,74 @@ function machine(options: { systemctl?: boolean; windows?: boolean } = {}) {
     unit: join(home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
     socket: join(home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
     settings: join(configDir, "settings.json"),
+    stateDir: join(configDir, "cc-smart-dev-kit"),
   };
   const calls = () => (existsSync(log) ? readFileSync(log, "utf8") : "");
+
+  /**
+   * The fetch every gateway command's OWN extra calls use (`GatewayContext.apiFetch`): the key
+   * check (`GET /v1/models` with the key), OmniRoute's dashboard (`POST /api/auth/login`, then
+   * `POST /api/keys` with the session cookie) and the keyless liveness probe. Every call is
+   * recorded with its method, its cookie and whether an Origin header was sent, so a test can
+   * pin the shape OmniRoute's own rules need. No test reaches 127.0.0.1:20128, where a real
+   * OmniRoute may run on this machine.
+   */
+  const apiCalls: {
+    body: unknown;
+    cookie: null | string;
+    method: string;
+    origin: null | string;
+    url: string;
+  }[] = [];
+  const apiFetch: HealthFetch = async (url, init) => {
+    const headers = (init.headers ?? {}) as Record<string, string>;
+    let body: unknown = null;
+    if (typeof init.body === "string") {
+      try {
+        body = JSON.parse(init.body);
+      } catch {
+        body = init.body;
+      }
+    }
+    apiCalls.push({
+      body,
+      cookie: headers.cookie ?? null,
+      method: init.method ?? "GET",
+      origin: headers.origin ?? null,
+      url,
+    });
+    // Nothing listens: what a machine with no OmniRoute does.
+    if (options.silent === true) {
+      throw Object.assign(
+        new TypeError("Unable to connect. Is the computer able to access the url?"),
+        {
+          code: "ConnectionRefused",
+        },
+      );
+    }
+    if (url.includes("/v1/models")) {
+      const status = options.modelsStatus ?? 200;
+      return status === 200
+        ? Response.json({ data: [{ id: "m1" }] })
+        : new Response("no", { status });
+    }
+    if (url.includes("/api/auth/login")) {
+      const status = options.loginStatus ?? 200;
+      if (status !== 200) return Response.json({ error: "Invalid password" }, { status });
+      return Response.json(
+        { success: true },
+        { headers: { "set-cookie": "auth_token=session-abc; Path=/; HttpOnly; SameSite=Lax" } },
+      );
+    }
+    if (url.includes("/api/keys")) {
+      if (options.noCreatedKey === true) return Response.json({ id: "key-1" }, { status: 201 });
+      return Response.json(
+        { id: "key-1", key: "omni-key-made-here", name: "cc-smart-dev-kit-router-test" },
+        { status: 201 },
+      );
+    }
+    return new Response("not found", { status: 404 });
+  };
 
   /**
    * The router health page, faked for `runHere`: this router answers while the fake unit
@@ -354,6 +435,10 @@ function machine(options: { systemctl?: boolean; windows?: boolean } = {}) {
               account: options.windows === true ? "MACHINE\\user" : null,
               platform: options.windows === true ? "win32" : "linux",
               probe,
+              // Every extra network call a gateway command makes (the key check, OmniRoute's
+              // dashboard, the liveness probe) goes through this fake: no test reaches a real
+              // backend, and 127.0.0.1:20128 may belong to an OmniRoute running here.
+              apiFetch,
               // Where a command's own lines go: `out` and `err` are what the tests assert on.
               print: (line: string) => out.push(`${line}\n`),
               error: (line: string) => err.push(`${line}\n`),
@@ -408,6 +493,8 @@ function machine(options: { systemctl?: boolean; windows?: boolean } = {}) {
     state,
     useServer,
     writeConfig,
+    apiCalls,
+    apiFetch,
   };
 }
 
@@ -548,6 +635,288 @@ describe("cc-smart-dev-kit gateway setup", () => {
     ]);
     expect(argv.exitCode).toBe(2);
     expect(`${argv.stdout}${argv.stderr}`).not.toContain(PLANTED_KEY);
+  });
+});
+
+describe("cc-smart-dev-kit gateway setup: the key is tested before it is saved", () => {
+  // Live, 2026-10-17: a person pasted their Ollama Cloud key where the router's OmniRoute key
+  // was asked for. It was saved without a check, the router's backend answered 401 to every
+  // request after that, and every affordable subagent fell back to Claude.
+  const OLD_KEY = "the-router-key-that-works";
+
+  test("a key the backend refuses: refused, nothing written, the key in the file kept", async () => {
+    const m = machine({ modelsStatus: 401 });
+    const result = await m.runHere(
+      ["gateway", "setup", "--backend-key-stdin", "omniroute"],
+      "an-ollama-cloud-key\n",
+    );
+    expect(result.exitCode).toBe(1);
+    // The refusal says which key OmniRoute wants, and how to give it, and it never prints the
+    // key that was given.
+    expect(result.stderr).toContain("omniroute answered HTTP 401 for this key");
+    expect(result.stderr).toContain(
+      "omniroute\" wants an OmniRoute API key: the key the router itself uses, made in OmniRoute's own dashboard (its API keys page)",
+    );
+    expect(result.stderr).toContain(
+      "cc-smart-dev-kit gateway setup --backend-key-stdin omniroute < key-file",
+    );
+    expect(`${result.stdout}${result.stderr}`).not.toContain("an-ollama-cloud-key");
+    // Nothing was created: no config, no router copy, no unit.
+    expect(existsSync(m.paths.config)).toBe(false);
+    expect(existsSync(join(m.home, ".local"))).toBe(false);
+  });
+
+  test("an existing key that the new one would replace: the file as it was is kept as a backup", async () => {
+    const m = machine();
+    m.writeConfig(20177);
+    const config = JSON.parse(readFileSync(m.paths.config, "utf8")) as {
+      backends: { omniroute: { apiKey: string } };
+    };
+    config.backends.omniroute.apiKey = OLD_KEY;
+    writeFileSync(m.paths.config, JSON.stringify(config, null, 2), { mode: 0o600 });
+    const result = await m.runHere(
+      ["gateway", "setup", "--backend-key-stdin", "omniroute"],
+      "a-new-good-key\n",
+    );
+    expect(result.exitCode).toBe(0);
+    expect(
+      (
+        JSON.parse(readFileSync(m.paths.config, "utf8")) as {
+          backends: { omniroute: { apiKey: string } };
+        }
+      ).backends.omniroute.apiKey,
+    ).toBe("a-new-good-key");
+    // The file as it was BEFORE the change is in the state folder, and the line says where.
+    const backups = listBackups(m.paths.stateDir, m.paths.config);
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(backups[0]?.path ?? "", "utf8")).toContain(OLD_KEY);
+    expect(result.stdout).toContain("the file as it was before the change is in ");
+    expect(`${result.stdout}${result.stderr}`).not.toContain("a-new-good-key");
+  });
+
+  test("the same key again: no backup piles up", async () => {
+    const m = machine();
+    m.writeConfig(20177);
+    const config = JSON.parse(readFileSync(m.paths.config, "utf8")) as {
+      backends: { omniroute: { apiKey: string } };
+    };
+    config.backends.omniroute.apiKey = OLD_KEY;
+    writeFileSync(m.paths.config, JSON.stringify(config, null, 2), { mode: 0o600 });
+    expect(
+      (await m.runHere(["gateway", "setup", "--backend-key-stdin", "omniroute"], `${OLD_KEY}\n`))
+        .exitCode,
+    ).toBe(0);
+    expect(listBackups(m.paths.stateDir, m.paths.config)).toEqual([]);
+  });
+
+  test("a backend that cannot be asked: refused without --save-unchecked, saved with it", async () => {
+    const refused = machine({ modelsStatus: 503 });
+    const result = await refused.runHere(
+      ["gateway", "setup", "--backend-key-stdin", "omniroute"],
+      "some-key\n",
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("could not ask omniroute at http://127.0.0.1:20128");
+    expect(result.stderr).toContain("/v1/models answered HTTP 503");
+    expect(result.stderr).toContain("--save-unchecked");
+    expect(existsSync(refused.paths.config)).toBe(false);
+
+    // With the flag the key is saved, and the line says it was never checked.
+    const unchecked = machine({ modelsStatus: 503 });
+    const saved = await unchecked.runHere(
+      ["gateway", "setup", "--backend-key-stdin", "omniroute", "--save-unchecked"],
+      "some-key\n",
+    );
+    expect(saved.exitCode).toBe(0);
+    expect(saved.stdout).toContain(
+      "WARN the key was saved WITHOUT its backend accepting it (/v1/models answered HTTP 503)",
+    );
+    expect(saved.stdout).toContain(
+      "Check it when the backend answers: cc-smart-dev-kit gateway check",
+    );
+    expect(existsSync(unchecked.paths.config)).toBe(true);
+    expect(`${saved.stdout}${saved.stderr}`).not.toContain("some-key");
+  });
+
+  test("--save-unchecked with no key of any kind is a wrong option", async () => {
+    const m = machine();
+    expect((await m.runHere(["gateway", "setup", "--save-unchecked"])).exitCode).toBe(2);
+    expect(
+      (await m.runHere(["gateway", "setup", "--no-backend-key", "--save-unchecked"])).exitCode,
+    ).toBe(2);
+  });
+});
+
+describe("cc-smart-dev-kit gateway setup: OmniRoute's dashboard password", () => {
+  test("the password makes the router's key: login, create, test, save — and it is never printed", async () => {
+    const m = machine();
+    const result = await m.runHere(
+      ["gateway", "setup", "--omniroute-password-stdin"],
+      "the-dashboard-password\n",
+    );
+    expect(result.exitCode).toBe(0);
+    // The name carries this machine's host name: one key per machine, so a person can tell
+    // them apart in OmniRoute's dashboard. Built here from node's own `hostname()`, never from
+    // the code under test.
+    expect(result.stdout).toContain(
+      `made the key "cc-smart-dev-kit-router-${hostname()}" in OmniRoute (••••here)`,
+    );
+    expect(
+      (
+        JSON.parse(readFileSync(m.paths.config, "utf8")) as {
+          backends: { omniroute: { apiKey: string } };
+        }
+      ).backends.omniroute.apiKey,
+    ).toBe("omni-key-made-here");
+    // The two dashboard calls, in order: the login (no cookie, NO Origin header — OmniRoute
+    // skips its CSRF check for a request without one), then the create with the session cookie.
+    expect(m.apiCalls.map((call) => `${call.method} ${new URL(call.url).pathname}`)).toEqual([
+      "POST /api/auth/login",
+      "POST /api/keys",
+      "GET /v1/models",
+    ]);
+    expect(m.apiCalls[0]?.body).toEqual({ password: "the-dashboard-password" });
+    expect(m.apiCalls[0]?.cookie).toBeNull();
+    expect(m.apiCalls[0]?.origin).toBeNull();
+    expect(m.apiCalls[1]?.cookie).toBe("auth_token=session-abc");
+    expect(m.apiCalls[1]?.origin).toBeNull();
+    expect(m.apiCalls[1]?.body).toEqual({
+      name: expect.stringContaining("cc-smart-dev-kit-router-"),
+      noLog: true,
+    });
+    // The secret is in no line and in no log.
+    expect(`${result.stdout}${result.stderr}`).not.toContain("the-dashboard-password");
+  });
+
+  test("a wrong dashboard password: refused, nothing created, nothing written", async () => {
+    const m = machine({ loginStatus: 401 });
+    const result = await m.runHere(
+      ["gateway", "setup", "--omniroute-password-stdin"],
+      "not-the-password\n",
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("OmniRoute rejected that dashboard password");
+    expect(result.stderr).toContain("Nothing was saved, and the key in ");
+    expect(result.stderr).toContain("gateway setup --backend-key-stdin omniroute < key-file");
+    // It logged in only; no key was made.
+    expect(m.apiCalls.map((call) => new URL(call.url).pathname)).toEqual(["/api/auth/login"]);
+    expect(existsSync(m.paths.config)).toBe(false);
+    expect(`${result.stdout}${result.stderr}`).not.toContain("not-the-password");
+  });
+
+  test("no OmniRoute at all: the line says the gateway needs OmniRoute first", async () => {
+    const m = machine({ silent: true });
+    const result = await m.runHere(
+      ["gateway", "setup", "--omniroute-password-stdin"],
+      "the-dashboard-password\n",
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("OmniRoute does not answer at http://127.0.0.1:20128");
+    expect(result.stderr).toContain("The gateway needs OmniRoute first");
+    expect(existsSync(m.paths.config)).toBe(false);
+  });
+
+  test("an answer with no key in it: refused, and the line says so", async () => {
+    const m = machine({ noCreatedKey: true });
+    const result = await m.runHere(
+      ["gateway", "setup", "--omniroute-password-stdin"],
+      "the-dashboard-password\n",
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("the answer to creating the key held no key");
+    expect(existsSync(m.paths.config)).toBe(false);
+  });
+
+  test("the password flag and a key on stdin together, or with --no-backend-key: wrong options", async () => {
+    const m = machine();
+    expect(
+      (
+        await m.runHere(
+          ["gateway", "setup", "--omniroute-password-stdin", "--backend-key-stdin", "omniroute"],
+          "x\n",
+        )
+      ).exitCode,
+    ).toBe(2);
+    expect(
+      (await m.runHere(["gateway", "setup", "--omniroute-password-stdin", "--no-backend-key"]))
+        .exitCode,
+    ).toBe(2);
+  });
+});
+
+describe("cc-smart-dev-kit gateway check: the installer's one question", () => {
+  // Exit codes: 0 the key works, 1 there is no OmniRoute key yet and OmniRoute answers, 3 it
+  // could not be judged, 4 the key in the file is one OmniRoute refuses. The installer asks for
+  // a key only on 1 and 4 (`install.sh`, `install.ps1`).
+  test("no config, and OmniRoute answers: 1, and it says one can be made", async () => {
+    const m = machine();
+    const result = await m.runHere(["gateway", "check"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain("the gateway has no config yet");
+    expect(result.stdout).toContain("OmniRoute answers at http://127.0.0.1:20128");
+    expect(result.stdout).toContain("OmniRoute's dashboard password");
+  });
+
+  test("no config, and nothing answers: 3, and it says the gateway needs OmniRoute first", async () => {
+    const m = machine({ silent: true });
+    const result = await m.runHere(["gateway", "check"]);
+    expect(result.exitCode).toBe(3);
+    expect(result.stdout).toContain("OmniRoute does not answer at http://127.0.0.1:20128");
+    expect(result.stdout).toContain("the gateway needs OmniRoute first");
+  });
+
+  test("a config whose key the backend accepts: 0", async () => {
+    const m = machine();
+    m.writeConfig(20177);
+    const result = await m.runHere(["gateway", "check"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      "✓ the gateway's OmniRoute key is accepted (http://127.0.0.1:20177, HTTP 200)\n",
+    );
+    expect(m.apiCalls).toHaveLength(1);
+  });
+
+  test("a config whose key the backend refuses: 4, naming both ways to fix it", async () => {
+    const m = machine({ modelsStatus: 401 });
+    m.writeConfig(20177);
+    const result = await m.runHere(["gateway", "check"]);
+    expect(result.exitCode).toBe(4);
+    expect(result.stdout).toContain(
+      "OmniRoute refused the key in ~/.config/cc-smart-dev-kit/gateway.json (HTTP 401)",
+    );
+    expect(result.stdout).toContain("gateway setup --backend-key-stdin omniroute < key-file");
+    expect(result.stdout).toContain("let setup make one with OmniRoute's dashboard password");
+  });
+
+  test("a config with no omniroute backend is the same question as no config at all", async () => {
+    const m = machine();
+    const config = {
+      backends: { ollama: { apiKey: "ollama-key", baseUrl: "https://ollama.com" } },
+      port: 20177,
+      slots: { "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"] },
+      version: 1,
+    };
+    mkdirSync(dirname(m.paths.config), { recursive: true });
+    writeFileSync(m.paths.config, JSON.stringify(config, null, 2), { mode: 0o600 });
+    const result = await m.runHere(["gateway", "check"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain("names no omniroute backend");
+  });
+
+  test("a config that cannot be read: 3, with its reason", async () => {
+    const m = machine();
+    mkdirSync(dirname(m.paths.config), { recursive: true });
+    writeFileSync(m.paths.config, "{not json", { mode: 0o600 });
+    const result = await m.runHere(["gateway", "check"]);
+    expect(result.exitCode).toBe(3);
+    expect(result.stdout).toContain("the gateway could not be checked");
+    expect(result.stdout).toContain("is not valid JSON");
+  });
+
+  test("check takes no options, and asks no port", async () => {
+    const m = machine();
+    expect((await m.runHere(["gateway", "check", "--now"])).exitCode).toBe(2);
+    expect(m.probed).toEqual([]);
   });
 });
 

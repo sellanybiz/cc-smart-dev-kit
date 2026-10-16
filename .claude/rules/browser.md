@@ -27,11 +27,31 @@ The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The b
   MCP's own 30-second deadline: never retry it in a loop that pops pages.
 - **The profile is the person's own Chrome, and it is one profile per machine** —
   `--profile-dir-name=claude-code`, never a per-project or per-session one. Nothing here starts,
-  stops or deletes a Chrome profile; the ONE file the plugin may write inside Chrome's own folder
-  is the profile's display name in `Local State`, only while no Chrome runs on that user data
-  folder, and through the managed-file helpers (`src/setup/`), never by hand.
-- **Chrome's `Preferences` and `Secure Preferences` are READ ONLY.** They are hash-signed, and
-  Chrome resets an edit. `allowsFileUrls` only reads them.
+  stops or deletes a Chrome profile. The plugin's writes inside Chrome's own folder are the
+  profile's display name, in the TWO places Chrome reads it — `Local State`'s
+  `profile.info_cache.<dir>.name`, and the profile's own `Preferences` → `profile.name` — only
+  while no Chrome runs on that user data folder (Chrome rewrites both from memory; when it runs,
+  the page says to close Chrome and run `browser setup` again), and through the managed-file
+  helpers (`src/setup/`), never by hand. `Local State` alone left the profile looking unnamed
+  (live, 2026-10-17).
+- **Chrome's `Preferences` and `Secure Preferences` are otherwise READ ONLY.** They are
+  hash-signed for the prefs Chrome protects, and it resets such an edit. `allowsFileUrls` only
+  reads them; the one key written in `Preferences` is the profile's own `profile.name`, which
+  Chrome does not protect.
+- **Which extensions are in the profile is Chrome's own record, never the folders**
+  (`otherExtensions`): a folder with a manifest (so Chrome's `Temp` folder is not one), and a
+  record that is not Chrome's own — `location` 5 / 10 (`kComponent` / `kExternalComponent`) or
+  `was_installed_by_default: true` (Chromium's `ManifestLocation`,
+  `extensions/common/mojom/manifest.mojom`). An entry with no folder is left out: Chrome keeps
+  one after an extension is gone. A real extra extension is named by its manifest name
+  (`__MSG_…__` resolved from its own `_locales`). Live, 2026-10-17: `doctor` named Chrome's
+  `Temp` folder and Web Store Payments, and the person could find neither in
+  `chrome://extensions`.
+- **A secret line is cleaned where it is read** (`src/cli/secret-line.ts`, `cleanSecretLine`):
+  the bracketed-paste markers a terminal wraps a paste in, and every other control character,
+  go before anything judges the text — a token pasted with them was refused as the wrong shape
+  and saved nowhere (live, 2026-10-17). The installers strip the same markers their own way
+  (`clean_secret`, `Clear-Secret`): keep the three in step.
 - **The extension must be the only one in that profile.** A second extension that injects a frame
   from its own `chrome-extension://` origin breaks the session (microsoft/playwright#43230, open),
   which is why `doctor` warns by name and `browser setup` says so.

@@ -86,6 +86,21 @@ function marketplaceRemove(context: Context, name: string): void {
   writeJson(knownFile(context), known);
 }
 
+/**
+ * `claude plugin marketplace update <name>` refreshes Claude Code's own clone of that
+ * marketplace, so its copy then declares the version the repository is on. A clone left stale
+ * is what made the first real run compare two 0.4.1s and update nothing (2026-10-17).
+ */
+function marketplaceUpdate(context: Context, name: string): void {
+  const known = readJson(knownFile(context));
+  const location = (known[name] as { installLocation?: unknown } | undefined)?.installLocation;
+  if (typeof location !== "string" || location === "") return;
+  writeJson(join(location, "plugin", ".claude-plugin", "plugin.json"), {
+    name: "cc-smart-dev-kit",
+    version: context.version,
+  });
+}
+
 function pluginEnable(context: Context): void {
   const settings = readJson(settingsFile(context));
   const enabled = (settings.enabledPlugins ?? {}) as Record<string, boolean>;
@@ -137,6 +152,10 @@ export function answer(argv: string[], context: Context): void {
   }
   if (command === "marketplace" && third === "remove" && fourth !== undefined) {
     marketplaceRemove(context, fourth);
+    return;
+  }
+  if (command === "marketplace" && third === "update" && fourth !== undefined) {
+    marketplaceUpdate(context, fourth);
     return;
   }
   if (command === "install" || command === "update") {

@@ -10,7 +10,11 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { readChanged } from "../setup/write";
 import { type ChromeWorld, chromeWorld, writeWorldToken } from "../testing/chrome-world";
-import { PLAYWRIGHT_EXTENSION_SETTINGS_URL, PLAYWRIGHT_EXTENSION_URL } from "./chrome";
+import {
+  PLAYWRIGHT_EXTENSION_ID,
+  PLAYWRIGHT_EXTENSION_SETTINGS_URL,
+  PLAYWRIGHT_EXTENSION_URL,
+} from "./chrome";
 import { legacyBrowserPaths } from "./legacy";
 import {
   browserRestoreLines,
@@ -55,17 +59,20 @@ describe("browser setup", () => {
     expect(result.guide.filter((line) => /^\d\./.test(line))).toHaveLength(5);
   });
 
-  test("a profile with the extension, file URLs on and a token: the name is the only change, once", () => {
+  test("a profile with the extension, file URLs on and a token: the name is the only change, in both of Chrome's files", () => {
     const world = chromeWorld();
     world.withProfile({ fileUrls: true });
     writeWorldToken(world);
     const first = browserSetup(world.paths, world.deps, { apply: true });
-    // No page is opened, and the one thing written is the profile's display name.
+    // No page is opened, and the only thing written is the profile's display name — in BOTH
+    // places Chrome reads it (live, 2026-10-17: `Local State` alone left the profile looking
+    // unnamed to the person).
     expect(world.detached).toEqual([]);
-    expect(first.changes).toHaveLength(1);
+    expect(first.changes).toHaveLength(2);
     expect(first.changes[0]).toContain("profile.info_cache.claude-code.name");
+    expect(first.changes[1]).toContain("Preferences: profile.name");
 
-    // A second run changes nothing at all: the name is right by then.
+    // A second run changes nothing at all: both names are right by then.
     const second = browserSetup(world.paths, world.deps, { apply: true });
     expect(second.changes).toEqual([]);
     expect(second.ok).toBe(true);
@@ -90,30 +97,83 @@ describe("browser setup", () => {
     expect(existsSync(world.profileDir)).toBe(false);
   });
 
-  test("the profile's display name is written through the managed helpers, so restore can undo it", () => {
+  test("the display name goes into both of Chrome's files, through the managed helpers, so restore can undo it", () => {
     const world = chromeWorld();
     world.withProfile({ fileUrls: true });
     const result = browserSetup(world.paths, world.deps, { apply: true });
     const localState = join(world.userDataDir, "Local State");
+    const preferences = join(world.profileDir, "Preferences");
     expect(
       JSON.parse(readFileSync(localState, "utf8")).profile.info_cache["claude-code"].name,
     ).toBe("claude-code");
+    // The profile's own file carries the same name, and ONLY that key changed: what Chrome put
+    // there (its extensions record) is still there.
+    const written = JSON.parse(readFileSync(preferences, "utf8")) as {
+      extensions: { settings: Record<string, unknown> };
+      profile: { name: string };
+    };
+    expect(written.profile.name).toBe("claude-code");
+    expect(Object.keys(written.extensions.settings)).toEqual([PLAYWRIGHT_EXTENSION_ID]);
     expect(result.changes.join("\n")).toContain("profile.info_cache.claude-code.name");
-    // The change is recorded: `restore` knows the file and the key it owns.
-    expect(Object.keys(readChanged(world.paths.stateDir))).toContain(localState);
-    // And the profile itself is untouched: its Preferences are still Chrome's own file.
-    expect(existsSync(join(world.profileDir, "Preferences"))).toBe(true);
+    // Both changes are recorded: `restore` knows the files and the keys it owns.
+    const changed = Object.keys(readChanged(world.paths.stateDir));
+    expect(changed).toContain(localState);
+    expect(changed).toContain(preferences);
   });
 
-  test("Chrome running: the name is left alone, and the line says how to rename it", () => {
+  test("a profile named something else in each file is renamed in both", () => {
+    // Chrome names a profile it made itself ("Person 1") in both places; a folder-route profile
+    // (dirName `claude-code`) may carry any name in Preferences.
+    const world = chromeWorld();
+    world.withProfile({ fileUrls: true, profileName: "Person 1" });
+    const result = browserSetup(world.paths, world.deps, { apply: true });
+    expect(
+      JSON.parse(readFileSync(join(world.userDataDir, "Local State"), "utf8")).profile.info_cache[
+        "claude-code"
+      ].name,
+    ).toBe("claude-code");
+    expect(
+      (
+        JSON.parse(readFileSync(join(world.profileDir, "Preferences"), "utf8")) as {
+          profile: { name: string };
+        }
+      ).profile.name,
+    ).toBe("claude-code");
+    expect(result.changes.join("\n")).toContain(
+      'profile.info_cache.claude-code.name = "claude-code"',
+    );
+    expect(result.changes.join("\n")).toContain('Preferences: profile.name = "claude-code"');
+  });
+
+  test("a profile whose Preferences already says claude-code: only Local State is written", () => {
+    const world = chromeWorld();
+    world.withProfile({ fileUrls: true, profileName: "claude-code" });
+    const result = browserSetup(world.paths, world.deps, { apply: true });
+    expect(result.changes).toHaveLength(1);
+    expect(result.changes[0]).toContain("profile.info_cache.claude-code.name");
+  });
+
+  test("Chrome running: both names are left alone, and the line says to close Chrome and run it again", () => {
     const world = chromeWorld({ lock: `${hostname()}-${String(process.pid)}` });
-    world.withProfile({ fileUrls: true });
+    world.withProfile({ fileUrls: true, profileName: "Person 1" });
     const result = browserSetup(world.paths, world.deps, { apply: true });
     const localState = join(world.userDataDir, "Local State");
     expect(
       JSON.parse(readFileSync(localState, "utf8")).profile.info_cache["claude-code"].name,
     ).toBe("Person 1");
+    // Chrome rewrites both files from memory while it runs, so neither is touched.
+    expect(
+      (
+        JSON.parse(readFileSync(join(world.profileDir, "Preferences"), "utf8")) as {
+          profile: { name: string };
+        }
+      ).profile.name,
+    ).toBe("Person 1");
+    expect(result.changes).toEqual([]);
     expect(result.info.join("\n")).toContain("Chrome is running");
+    expect(result.info.join("\n")).toContain(
+      "close Chrome, then run `cc-smart-dev-kit browser setup` again",
+    );
     expect(result.info.join("\n")).toContain("Customize profile");
   });
 
@@ -130,9 +190,9 @@ describe("browser setup", () => {
 
   test("another extension in that profile is a note naming the open upstream bug", () => {
     const world = chromeWorld();
-    world.withProfile({ fileUrls: true, others: ["aaaaother"] });
+    world.withProfile({ fileUrls: true, others: [{ id: "aaaaother", name: "Some Page Helper" }] });
     const result = browserSetup(world.paths, world.deps, { apply: false });
-    expect(result.notes.join("\n")).toContain("aaaaother");
+    expect(result.notes.join("\n")).toContain("Some Page Helper [aaaaother]");
     expect(result.notes.join("\n")).toContain("playwright#43230");
   });
 });

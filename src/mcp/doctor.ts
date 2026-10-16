@@ -16,8 +16,10 @@
  */
 import { COMMAND } from "../build-info";
 import type { CliPaths } from "../cli/paths";
-import { readUserServers } from "./register";
+import { readMcpRecords } from "./records";
+import { readUserServers, sameConfig } from "./register";
 import { SERVER_NAMES } from "./servers";
+import { describeServerConfig } from "./status";
 import { readTavilyKey } from "./tavily";
 
 export interface McpCheck {
@@ -86,6 +88,13 @@ export function mcpChecks(
   );
   const checks: McpCheck[] = [];
   const servers = readUserServers(paths.userConfigFile);
+  /** What setup registered. A record file that cannot be read: nothing is judged as ours. */
+  let records: null | Record<string, { json: string }> = null;
+  try {
+    records = readMcpRecords(paths.stateDir);
+  } catch {
+    records = null;
+  }
   for (const name of names) {
     if (servers === null) {
       checks.push({
@@ -98,6 +107,23 @@ export function mcpChecks(
       checks.push({
         ok: false,
         text: `the "${name}" MCP server is not registered for your user. Run: ${COMMAND} setup`,
+      });
+      continue;
+    }
+    // Registered, but not with what cc-smart-dev-kit recorded: someone else's server under our
+    // name — a project's own script, say. That is why the plugin's browser is not the one
+    // starting (live, 2026-10-17), so it is named here, with what runs instead. `!`, not a
+    // failure: setup is told to leave a person's own server alone, and this line says how to
+    // hand the name over. (The record file that cannot be read means "not ours" here, which is
+    // the truth: nothing of ours is being managed.)
+    const record = records?.[name];
+    if (record === undefined || !sameConfig(record.json, servers[name])) {
+      checks.push({
+        ok: true,
+        warn: true,
+        text:
+          `the "${name}" MCP server is registered by something else (${describeServerConfig(servers[name])}), ` +
+          `not by cc-smart-dev-kit. To let setup manage it: claude mcp remove ${name} --scope user, then ${COMMAND} setup`,
       });
       continue;
     }

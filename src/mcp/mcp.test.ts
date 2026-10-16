@@ -28,6 +28,7 @@ import {
   serenaContextSource,
 } from "./serena-context";
 import { mcpServers, serenaArgs } from "./servers";
+import { describeServerConfig, mcpServerStatus, mcpServerStatusLine } from "./status";
 import { readTavilyKey } from "./tavily";
 import { MCP_VERSIONS, TAVILY_MCP_URL } from "./versions";
 
@@ -758,5 +759,114 @@ describe("Serena's context", () => {
       ),
     ).toEqual({ file: paths_.serenaContextFile, outcome: "missing" });
     expect(existsSync(paths_.serenaContextFile)).toBe(false);
+  });
+});
+
+describe("mcp status: what is registered by something else", () => {
+  // Live, 2026-10-17: a project's own script had registered `playwright` (and the other three)
+  // before cc-smart-dev-kit was installed. setup left them alone — the rule — and the person
+  // never saw its `!` line, so the plugin's own browser never took over. This is the read-only
+  // question the installer asks before it offers to replace one, and the line `doctor` prints.
+  test("ours, foreign, missing: the record decides, never the name", () => {
+    const home = tempDir("mcp-status");
+    const paths_ = paths(home);
+    const servers = mcpServers(context(home));
+    const ours = servers[0];
+    const other = servers[1];
+    if (ours === undefined || other === undefined) throw new Error("the servers table moved");
+    mkdirSync(paths_.stateDir, { recursive: true });
+    // `playwright` is ours: the record holds exactly the JSON Claude Code has for it.
+    recordMcpServer(paths_.stateDir, ours.name, ours.json, "2026-10-17T00:00:00Z");
+    // `serena` was registered by something else: no record of ours at all.
+    writeFileSync(
+      paths_.userConfigFile,
+      JSON.stringify({
+        mcpServers: { [ours.name]: JSON.parse(ours.json), [other.name]: JSON.parse(other.json) },
+      }),
+    );
+    const status = mcpServerStatus(paths_);
+    expect(status.find((one) => one.name === ours.name)).toEqual({
+      name: ours.name,
+      runsWhat: null,
+      state: "ours",
+    });
+    expect(status.find((one) => one.name === other.name)?.state).toBe("foreign");
+    expect(status.find((one) => one.name === "sequential-thinking")?.state).toBe("missing");
+  });
+
+  test("a config changed since setup registered it is foreign again: it is the person's", () => {
+    const home = tempDir("mcp-status-changed");
+    const paths_ = paths(home);
+    const servers = mcpServers(context(home));
+    const ours = servers[0];
+    if (ours === undefined) throw new Error("the servers table moved");
+    recordMcpServer(paths_.stateDir, ours.name, ours.json, "2026-10-17T00:00:00Z");
+    writeFileSync(
+      paths_.userConfigFile,
+      JSON.stringify({
+        mcpServers: { [ours.name]: { args: ["/somewhere/else.js"], command: "node" } },
+      }),
+    );
+    expect(mcpServerStatus(paths_).find((one) => one.name === ours.name)).toEqual({
+      name: ours.name,
+      runsWhat: "node /somewhere/else.js",
+      state: "foreign",
+    });
+  });
+
+  test("no key for Tavily, and a config that cannot be read: nothing is guessed", () => {
+    const home = tempDir("mcp-status-none");
+    const paths_ = paths(home);
+    // Tavily without a key: the plugin wants none, so nothing is said about it.
+    expect(mcpServerStatus(paths_).map((one) => one.name)).toEqual([
+      "playwright",
+      "serena",
+      "sequential-thinking",
+    ]);
+    expect(mcpServerStatus(paths_).every((one) => one.state === "missing")).toBe(true);
+    // A user config that cannot be read: `unreadable`, never "missing" (the installer must not
+    // ask about a server it could not check).
+    mkdirSync(dirname(paths_.userConfigFile), { recursive: true });
+    writeFileSync(paths_.userConfigFile, "{not json");
+    expect(mcpServerStatus(paths_).every((one) => one.state === "unreadable")).toBe(true);
+  });
+
+  test("what runs instead is the command and its arguments — never an env or a header", () => {
+    // A server config can hold a key (the plugin's own Tavily one carries `${TAVILY_API_KEY}`, a
+    // person's may carry the key itself), and this line is PRINTED.
+    const planted = "sk-planted-SECRET";
+    expect(
+      describeServerConfig({
+        args: ["/opt/tools/server.js", "--port", "8080"],
+        command: "node",
+        env: { API_KEY: planted },
+        headers: { authorization: `Bearer ${planted}` },
+      }),
+    ).toBe("node /opt/tools/server.js --port 8080");
+    // A remote server: its URL, and none of its headers.
+    expect(
+      describeServerConfig({
+        headers: { authorization: `Bearer ${planted}` },
+        url: "https://example.com/mcp",
+      }),
+    ).toBe("https://example.com/mcp");
+    expect(describeServerConfig({ env: { API_KEY: planted } })).toBe("an unknown command");
+    // A command line with a control character in it is printed as one safe line.
+    expect(describeServerConfig({ args: [], command: "node\u001b[31m" })).toBe("node [31m");
+  });
+
+  test("the one line names the server, what runs instead, and the command that hands it back", () => {
+    expect(
+      mcpServerStatusLine({
+        name: "playwright",
+        runsWhat: "node /opt/tools/server.js",
+        state: "foreign",
+      }),
+    ).toBe(
+      "! playwright: registered by something else (node /opt/tools/server.js). To let setup manage it: claude mcp remove playwright --scope user, then cc-smart-dev-kit setup",
+    );
+    expect(mcpServerStatusLine({ name: "serena", runsWhat: null, state: "ours" })).toBe(
+      "✓ serena: registered by cc-smart-dev-kit",
+    );
   });
 });

@@ -22,6 +22,27 @@ import { cliPaths } from "../cli/paths";
 import type { Machine } from "../machine/machine";
 import { tempDir } from "./temp";
 
+/**
+ * One extension a test puts in the profile, as Chrome would have it there: a folder with a
+ * version and a manifest (or not), and the record `Preferences` keeps for it (or none).
+ * The defaults describe an extension a person installed from the Web Store.
+ */
+export interface WorldExtension {
+  id: string;
+  /** A folder holding a version and a manifest (default true). */
+  folder?: boolean;
+  /** The manifest's `name` (default: `messageKey` if given, else the id). */
+  name?: string;
+  /** Write `__MSG_<key>__` as the name, and resolve it from `_locales/en/messages.json`. */
+  messageKey?: string;
+  /** Chrome's `location` (`ManifestLocation`): 1 an install a person made, 5/10 Chrome's own. */
+  location?: number;
+  /** Chrome's `was_installed_by_default` mark. */
+  installedByDefault?: boolean;
+  /** No record in `Preferences` at all (Chrome keeps one after an extension is removed). */
+  noRecord?: boolean;
+}
+
 export interface ChromeWorldOptions {
   platform?: NodeJS.Platform;
   /** The Chrome executable exists (default: yes). */
@@ -47,8 +68,20 @@ export interface ChromeWorld {
   /** What `run` was asked, one line per call. */
   runs: string[];
   state: () => BrowserSetupState;
-  /** The profile folder, with the extension unpacked into it and Preferences written. */
-  withProfile: (options?: { extension?: boolean; fileUrls?: boolean; others?: string[] }) => void;
+  /**
+   * The profile folder, with the extension unpacked into it and Preferences written. `profileName`
+   * is the display name Chrome itself would have put in `Preferences` (`profile.name`): a
+   * profile Chrome made is named "Person 1" there, and `browser setup` writes `claude-code`.
+   */
+  withProfile: (options?: {
+    extension?: boolean;
+    fileUrls?: boolean;
+    /** Extensions the person or Chrome put in the profile, each exactly as Chrome records it. */
+    others?: WorldExtension[];
+    /** Chrome's own `Temp` folder under `Extensions/`: no manifest, gone after an install. */
+    tempFolder?: boolean;
+    profileName?: string;
+  }) => void;
   userDataDir: string;
 }
 
@@ -112,8 +145,36 @@ export function chromeWorld(options: ChromeWorldOptions = {}): ChromeWorld {
         recursive: true,
       });
     }
+    // Chrome's own Temp folder: under `Extensions/`, no manifest, and gone afterwards.
+    if (how.tempFolder === true) {
+      mkdirSync(join(profileDir, "Extensions", "Temp"), { recursive: true });
+    }
+    const records: Record<string, unknown> = {};
     for (const other of how.others ?? []) {
-      mkdirSync(join(profileDir, "Extensions", other), { recursive: true });
+      if (other.folder !== false) {
+        const version = join(profileDir, "Extensions", other.id, "1.0.0");
+        mkdirSync(version, { recursive: true });
+        const name =
+          other.messageKey === undefined ? (other.name ?? other.id) : `__MSG_${other.messageKey}__`;
+        writeFileSync(
+          join(version, "manifest.json"),
+          JSON.stringify({ manifest_version: 3, name, version: "1.0.0" }),
+        );
+        if (other.messageKey !== undefined) {
+          const locale = join(version, "_locales", "en");
+          mkdirSync(locale, { recursive: true });
+          writeFileSync(
+            join(locale, "messages.json"),
+            JSON.stringify({ [other.messageKey]: { message: other.name ?? other.id } }),
+          );
+        }
+      }
+      if (other.noRecord !== true) {
+        records[other.id] = {
+          location: other.location ?? 1,
+          ...(other.installedByDefault === true ? { was_installed_by_default: true } : {}),
+        };
+      }
     }
     // A populated record IS "installed" (Playwright's own rule), so a world without the
     // extension writes none: only the unpacked folder and the record together mean installed.
@@ -121,11 +182,15 @@ export function chromeWorld(options: ChromeWorldOptions = {}): ChromeWorld {
       join(profileDir, "Preferences"),
       JSON.stringify({
         extensions: {
-          settings:
-            how.extension === false
+          settings: {
+            ...(how.extension === false
               ? {}
-              : { [PLAYWRIGHT_EXTENSION_ID]: { newAllowFileAccess: how.fileUrls === true } },
+              : { [PLAYWRIGHT_EXTENSION_ID]: { newAllowFileAccess: how.fileUrls === true } }),
+            ...records,
+          },
         },
+        // What Chrome puts in a profile it made itself; `browser setup` renames it.
+        ...(how.profileName === undefined ? {} : { profile: { name: how.profileName } }),
       }),
     );
     writeFileSync(

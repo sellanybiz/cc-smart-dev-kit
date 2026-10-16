@@ -44,8 +44,23 @@ const REAL_BUN = process.execPath;
 const BASH: string = Bun.which("bash") ?? "";
 if (BASH === "") throw new Error("install.test.ts needs bash");
 
-/** The version the fake marketplace's copy of the plugin declares. */
-const MARKETPLACE_VERSION = "0.4.2";
+/**
+ * The version the two installers ship with: `version` in plugin/.claude-plugin/plugin.json,
+ * where the plugin's one home for it is (`.claude/rules/bundles-and-releases.md`). Each script
+ * carries its own copy of the number (a shell script cannot read the manifest), and the test at
+ * the end of this file keeps the two equal, the way the MIN_BUN test does.
+ */
+const INSTALLER_VERSION = (
+  JSON.parse(
+    readFileSync(join(import.meta.dir, "..", "plugin", ".claude-plugin", "plugin.json"), "utf8"),
+  ) as { version: string }
+).version;
+/**
+ * The version the fake marketplace's copy of the plugin declares, and the version the fake
+ * `claude plugin …` leaves in Claude Code's records: the repository the installer came from is
+ * this one, so the copy is on the same version the plugin's manifest carries.
+ */
+const MARKETPLACE_VERSION = INSTALLER_VERSION;
 /** The browser's token, in the shape the Playwright extension makes: 43 URL-safe characters. */
 const TOKEN = `${"A".repeat(41)}_-`;
 
@@ -72,6 +87,34 @@ interface WorldOptions {
   progressFile?: boolean;
   /** A router copy is on disk, as it is after an earlier `gateway setup`. */
   routerCopy?: boolean;
+  /**
+   * The version Claude Code's local CLONE of the marketplace declares when it is added: an
+   * older one is the stale clone the first real run compared against (0.4.1 vs 0.4.1).
+   */
+  cloneVersion?: string;
+  /** What the plugin's own CLI answers for `version`. Default: this installer's own version. */
+  cliVersion?: string;
+  /**
+   * What `gateway check` answers: 0 the gateway works, 1 no key yet (OmniRoute answers),
+   * 3 could not be judged, 4 the key is refused. Default 0.
+   */
+  gatewayCheck?: number;
+  /** The line the fake `gateway check` prints. */
+  gatewayCheckLine?: string;
+  /** The gateway refuses every key given to `--backend-key-stdin`, as a wrong one. */
+  gatewayKeyRefused?: boolean;
+  /** OmniRoute refuses the dashboard password `--omniroute-password-stdin` carries. */
+  omniRoutePasswordRefused?: boolean;
+  /** A `gateway.json` is already on disk, holding the router's key. */
+  gatewayConfig?: boolean;
+  /** `TAVILY_API_KEY` is in this shell's environment. */
+  tavilyInEnv?: string;
+  /** The Tavily key file setup reads is already there. */
+  tavilyKeyFile?: boolean;
+  /** The settings already hold `env.TAVILY_API_KEY`. */
+  tavilyInSettings?: boolean;
+  /** The plugin's MCP servers that are registered by something else on this machine. */
+  mcpForeign?: { name: string; runsWhat: string }[];
 }
 
 interface World {
@@ -102,8 +145,10 @@ function fakeScripts(log: string): Record<string, string> {
   return {
     // `--version` answers this machine's Bun; `-e` (the installer's JSON reader) runs the
     // real bun, which reaches no network; `upgrade` records the version it moved to; the
-    // plugin's own commands read their secret from stdin (and log only its shape); `doctor`
-    // fails while the browser's token is missing, as the real one does.
+    // plugin's own commands read their secret from stdin (and log only its shape); `version`
+    // answers the CLI's own version (what the installer checks after an install or update);
+    // `gateway check` answers this world's exit code and line; `doctor` fails while the
+    // browser's token is missing, as the real one does.
     bun: `#!/bin/sh
 log=${JSON.stringify(log)}
 printf '%s\\n' "bun $*" >> "$log"
@@ -114,8 +159,37 @@ fi
 if [ "$1" = "-e" ]; then exec ${JSON.stringify(REAL_BUN)} "$@"; fi
 if [ "$1" = "upgrade" ]; then printf '%s\\n' "$FAKE_BUN_UPGRADE_TO" > "$FAKE_BUN_UPGRADED"; exit 0; fi
 case "$*" in
+*dist/cli.js\\ version*)
+  # The plugin's own CLI, asked its version: the installer refuses to go on when it is older
+  # than the release this installer ships with.
+  printf 'cc-smart-dev-kit %s\\n' "$FAKE_CLI_VERSION"
+  exit 0
+  ;;
+esac
+case "$*" in
+*dist/cli.js\\ gateway\\ check*)
+  # The read-only question the installer asks before it asks a person for a key. The line and
+  # the exit code are this world's (0 works, 1 no key yet, 3 could not be judged, 4 refused).
+  printf '%s\\n' "$FAKE_GATEWAY_CHECK_LINE"
+  exit "$FAKE_GATEWAY_CHECK_CODE"
+  ;;
+esac
+case "$*" in
+*dist/cli.js\\ mcp\\ status*)
+  # Which of the plugin's MCP servers are registered by something else, as JSON: this world's.
+  printf '%s\\n' "$FAKE_MCP_STATUS"
+  exit 0
+  ;;
+esac
+case "$*" in
 *browser\\ token*)
   secret=""; IFS= read -r secret || secret=""
+  # The real browser-token command cleans the line it read before it judges its shape
+  # (src/cli/secret-line.ts): with some terminals a paste arrives wrapped in the bracketed-paste
+  # markers, and the markers are not part of the token. This fake stands for that command, so it
+  # cleans the same way — the test then proves the installer handed the paste over as it arrived,
+  # with nothing of its own added.
+  secret="$(printf '%s' "$secret" | "$FAKE_BUN_REAL" -e 'let t="";for await (const c of Bun.stdin.stream()) t+=new TextDecoder().decode(c);process.stdout.write(t.replaceAll("\\u001b[200~","").replaceAll("\\u001b[201~","").replace(/[\\p{Cc}\\p{Cf}]/gu,"").trim())')"
   printf '%s\\n' "stdin-\${#secret}-chars" >> "$log"
   # The real command writes the token file; the fake doctor below reads it.
   mkdir -p "$HOME/.config/cc-smart-dev-kit"
@@ -124,9 +198,30 @@ case "$*" in
   ;;
 esac
 case "$*" in
-*--backend-key-stdin* | *--tavily-key-stdin*)
+*--backend-key-stdin* | *--tavily-key-stdin* | *--omniroute-password-stdin*)
   secret="$(cat)"
   if [ -n "$secret" ]; then printf '%s\\n' "stdin-nonempty" >> "$log"; else printf '%s\\n' "stdin-empty" >> "$log"; fi
+  # The number of characters that arrived, and never the value: a test proves the installer's
+  # cleaning with it (a paste wrapped in the bracketed-paste markers must reach the command as
+  # the key itself, not 12 characters longer).
+  printf 'key-%s-chars\\n' "\${#secret}" >> "$log"
+  # A key the backend refuses: the real command saves NOTHING and keeps the key in the file.
+  # The refusal line lands on stderr, as the real one's does.
+  case "$*" in
+  *--backend-key-stdin*)
+    if [ "$FAKE_GATEWAY_KEY_REFUSED" = "yes" ]; then
+      printf 'cc-smart-dev-kit: omniroute answered HTTP 401 for this key: it does not accept it.\\nNothing was saved, and the key in the config is kept as it was.\\n' >&2
+      exit 1
+    fi
+    ;;
+  *--omniroute-password-stdin*)
+    if [ "$FAKE_OMNIROUTE_PASSWORD_REFUSED" = "yes" ]; then
+      printf 'cc-smart-dev-kit: OmniRoute rejected that dashboard password. Nothing was saved, and the key in the config is kept as it was.\\n' >&2
+      exit 1
+    fi
+    printf 'made the key "cc-smart-dev-kit-router-test" in OmniRoute (••••cdef)\\n'
+    ;;
+  esac
   ;;
 esac
 case "$*" in
@@ -174,7 +269,9 @@ if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "add" ]; then
   mkdir -p "$dir/plugin/.claude-plugin"
   case "$4" in
   *cc-smart-dev-kit)
-    printf '{"name":"cc-smart-dev-kit","version":"${MARKETPLACE_VERSION}"}\\n' > "$dir/plugin/.claude-plugin/plugin.json"
+    # The version the clone is on WHEN IT IS ADDED: this world may add it hours before the
+    # installer runs, at an older version (the first real run's own trap).
+    printf '{"name":"cc-smart-dev-kit","version":"%s"}\\n' "$FAKE_CLONE_VERSION" > "$dir/plugin/.claude-plugin/plugin.json"
     ;;
   esac
   "$bun" -e 'const fs=require("fs");const p=process.argv[1];let d={};try{d=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}d[process.argv[2]]={source:{source:"github",repo:process.argv[3]},installLocation:process.argv[4]};fs.writeFileSync(p,JSON.stringify(d,null,2))' \
@@ -183,6 +280,13 @@ fi
 if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "remove" ]; then
   "$bun" -e 'const fs=require("fs");const p=process.argv[1];let d={};try{d=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}delete d[process.argv[2]];fs.writeFileSync(p,JSON.stringify(d,null,2))' \
     "$CLAUDE_CONFIG_DIR/plugins/known_marketplaces.json" "$4"
+fi
+if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "update" ]; then
+  # A refresh brings the repository's newest commits into Claude Code's clone, so the copy's
+  # manifest then declares the version this world's repository is on. A clone left stale is
+  # exactly what made the first real run compare two 0.4.1s and update nothing (2026-10-17).
+  "$bun" -e 'const fs=require("fs");const p=process.argv[1];let d={};try{d=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}const l=(d[process.argv[2]]||{}).installLocation;if(l)fs.writeFileSync(l+"/plugin/.claude-plugin/plugin.json",JSON.stringify({name:"cc-smart-dev-kit",version:process.argv[3]}))' \
+    "$CLAUDE_CONFIG_DIR/plugins/known_marketplaces.json" "$4" "${MARKETPLACE_VERSION}"
 fi
 if [ "$1" = "plugin" ] && { [ "$2" = "install" ] || [ "$2" = "update" ]; }; then
   dir="$CLAUDE_CONFIG_DIR/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/${MARKETPLACE_VERSION}"
@@ -325,6 +429,46 @@ function world(options: WorldOptions = {}): World {
     mkdirSync(dirname(copy), { recursive: true });
     writeFileSync(copy, "// the router\n");
   }
+  if (options.gatewayConfig === true) {
+    const config = join(home, ".config/cc-smart-dev-kit/gateway.json");
+    mkdirSync(dirname(config), { recursive: true });
+    writeFileSync(
+      config,
+      `${JSON.stringify(
+        {
+          backends: {
+            omniroute: { apiKey: "the-router-key", baseUrl: "http://127.0.0.1:20128" },
+          },
+          port: 20100,
+          slots: { "cc-smart-dev-kit-worker": ["omniroute:m1"] },
+          version: 1,
+        },
+        null,
+        2,
+      )}\n`,
+      { mode: 0o600 },
+    );
+  }
+  if (options.tavilyKeyFile === true) {
+    const file = join(configDir, "cc-smart-dev-kit/tavily.key");
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "tvly-already-there\n", { mode: 0o600 });
+  }
+  if (options.tavilyInSettings === true) {
+    const file = join(configDir, "settings.json");
+    const settings: Record<string, unknown> = existsSync(file)
+      ? (JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>)
+      : {};
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(
+      file,
+      `${JSON.stringify(
+        { ...settings, env: { ...(settings.env as object), TAVILY_API_KEY: "tvly-in-settings" } },
+        null,
+        2,
+      )}\n`,
+    );
+  }
 
   const answersFile = join(home, "answers");
   writeFileSync(answersFile, `${(options.answers ?? []).join("\n")}\n`);
@@ -349,6 +493,33 @@ function world(options: WorldOptions = {}): World {
     FAKE_PLUGIN_DIR: pluginDir,
     FAKE_GIT_FAILS: options.gitFails === true ? "yes" : "no",
     FAKE_UNAME: "Linux",
+    // The marketplace's clone when it is added, the CLI's own version, and what the gateway
+    // check answers (`gatewayCheckLine` is the real command's own kind of line).
+    FAKE_CLONE_VERSION: options.cloneVersion ?? MARKETPLACE_VERSION,
+    FAKE_CLI_VERSION: options.cliVersion ?? INSTALLER_VERSION,
+    FAKE_GATEWAY_CHECK_CODE: String(options.gatewayCheck ?? 0),
+    FAKE_GATEWAY_CHECK_LINE:
+      options.gatewayCheckLine ??
+      (options.gatewayCheck === 3
+        ? "· the gateway could not be checked: OmniRoute does not answer at http://127.0.0.1:20128"
+        : options.gatewayCheck === 4
+          ? "✗ OmniRoute refused the key in ~/.config/cc-smart-dev-kit/gateway.json (HTTP 401): it is not an OmniRoute API key"
+          : options.gatewayCheck === 1
+            ? "✗ the gateway has no OmniRoute key yet, and OmniRoute answers at http://127.0.0.1:20128"
+            : "✓ the gateway's OmniRoute key is accepted (http://127.0.0.1:20128, HTTP 200)"),
+    FAKE_GATEWAY_KEY_REFUSED: options.gatewayKeyRefused === true ? "yes" : "no",
+    FAKE_OMNIROUTE_PASSWORD_REFUSED: options.omniRoutePasswordRefused === true ? "yes" : "no",
+    // A person's own Tavily key, in the three places setup reads one from.
+    TAVILY_API_KEY: options.tavilyInEnv ?? "",
+    // The MCP servers `mcp status --json` reports as registered by something else.
+    FAKE_MCP_STATUS: JSON.stringify({
+      servers: (options.mcpForeign ?? []).map((one) => ({
+        name: one.name,
+        runsWhat: one.runsWhat,
+        state: "foreign",
+      })),
+      userConfigFile: join(configDir, ".claude.json"),
+    }),
   };
 
   const spawn = (args: string[], env: Record<string, string>, input?: string) => {
@@ -398,9 +569,13 @@ function lines(out: string): string[] {
   return out.split("\n").filter((line) => line !== "");
 }
 
-/** The answers that finish the browser (yes, paste the token, and the token itself). */
+/**
+ * The answers that finish the browser: yes to `browser setup`, then the token itself. The token
+ * is one secret read now (not a yes/no question followed by a read), so a paste cannot land in
+ * the wrong answer.
+ */
 function browserAnswers(...rest: string[]): string[] {
-  return ["y", "y", TOKEN, ...rest];
+  return ["y", TOKEN, ...rest];
 }
 
 describe("install.sh: a machine, step by step", () => {
@@ -418,7 +593,7 @@ describe("install.sh: a machine, step by step", () => {
       "✓ 6/8 migrate finished (nothing to move on a machine without the old anymodel names)",
       "✓ 6/8 setup finished",
       "7/8 Set up the browser (Playwright on your own Chrome)? [y/N] ",
-      "7/8 Paste the extension's token now (the extension's status page shows it)? [y/N] ",
+      "7/8 Paste the token from the extension's status page (it is not shown). Enter to skip: ",
       "✓ 7/8 the browser's token is saved",
       "7/8 Set up the AI gateway now (affordable models for the haiku and sonnet subagents)? [y/N] ",
       "· 7/8 the gateway was skipped: README § The AI gateway has its steps",
@@ -432,12 +607,15 @@ describe("install.sh: a machine, step by step", () => {
       `  - the gateway: ${w.launcher} gateway setup --backend-key-stdin omniroute, then ${w.launcher} gateway on`,
       `  - the Tavily key: README § MCP servers says where it goes, then ${w.launcher} setup`,
     ]);
-    // The three marketplaces, in the README's order, then the install (whose line names the
-    // marketplace), then migrate before setup, both through the plugin's own bundle.
+    // The three marketplaces, in the README's order, then the marketplace REFRESH (before any
+    // version is compared: a stale clone is what made the first real run update nothing), then
+    // the install (whose line names the marketplace), then migrate before setup, both through
+    // the plugin's own bundle.
     expect(w.callsOf("claude")).toEqual([
       `plugin marketplace add ${REPO}`,
       "plugin marketplace add thedotmack/claude-mem",
       "plugin marketplace add anthropics/claude-plugins-official",
+      "plugin marketplace update cc-smart-dev-kit",
       "plugin install cc-smart-dev-kit@cc-smart-dev-kit --scope user",
     ]);
     expect(w.callsOf("bun")).toContain(`${w.cli} migrate`);
@@ -564,15 +742,71 @@ describe("install.sh: a machine, step by step", () => {
     expect(out).toContain(
       `✓ 5/8 the plugin is installed, at the marketplace's version (${MARKETPLACE_VERSION})\n`,
     );
-    // The second run adds no marketplace and reinstalls nothing — but still runs migrate and
-    // setup (both refresh what they own) and doctor.
+    // The second run adds no marketplace and reinstalls nothing — but the marketplace's own
+    // copy is still refreshed (that is how it knows the plugin is current), and migrate, setup
+    // and doctor still run.
     const second = w.calls().slice(afterFirst);
     expect(second.filter((call) => call.includes("marketplace add"))).toEqual([]);
     expect(second.filter((call) => call.includes("plugin install"))).toEqual([]);
     expect(second.filter((call) => call.includes("plugin update"))).toEqual([]);
+    expect(second).toContain("claude plugin marketplace update cc-smart-dev-kit");
     expect(second).toContain(`bun ${w.cli} migrate`);
     expect(second).toContain(`bun ${w.cli} setup`);
     expect(second).toContain("launcher doctor");
+  });
+
+  test("a stale marketplace clone: the refresh runs first, then the update", () => {
+    // The live trap (2026-10-17): the marketplace had been added hours earlier at 0.4.1, the
+    // installed plugin was 0.4.1 too, and the installer compared the two — equal — so it never
+    // updated, and then called an option the installed CLI did not have. The refresh is what
+    // makes the comparison mean something.
+    const w = world({
+      answers: browserAnswers("n", "n"),
+      cloneVersion: "0.4.0",
+      installedVersion: "0.4.0",
+    });
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    expect(w.callsOf("claude")).toEqual([
+      `plugin marketplace add ${REPO}`,
+      "plugin marketplace add thedotmack/claude-mem",
+      "plugin marketplace add anthropics/claude-plugins-official",
+      "plugin marketplace update cc-smart-dev-kit",
+      "plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user",
+    ]);
+    expect(out).toContain(`✓ 5/8 the plugin is updated (0.4.0 -> ${MARKETPLACE_VERSION})\n`);
+  });
+
+  test("the CLI is still older after the update: refused with the two commands, and nothing else runs", () => {
+    // The update ran, Claude Code's record says the new version, and the CLI that answers is
+    // still the old one (a marketplace that itself does not carry the new version, say): the
+    // installer must stop BEFORE it calls an option that CLI does not have.
+    const w = world({
+      answers: browserAnswers("n", "n"),
+      cliVersion: "0.4.1",
+      cloneVersion: "0.4.1",
+      installedVersion: "0.4.1",
+    });
+    const { code, out } = w.run();
+    expect(code).toBe(1);
+    expect(out).toContain(
+      `✗ the installed cc-smart-dev-kit CLI is 0.4.1, older than this installer's ${INSTALLER_VERSION}: this installer would call options that version does not have\n`,
+    );
+    expect(out).toContain(
+      "  Retry just that step with:\n" +
+        "    claude plugin marketplace update cc-smart-dev-kit\n" +
+        "    claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user\n" +
+        "  Then run this installer again: it goes on from there.\n",
+    );
+    // No later step ran at all: no migrate, no setup, no gateway check, no Tavily key. That is
+    // the point — every one of those calls a flag an older CLI does not have.
+    const bun = w.callsOf("bun");
+    expect(bun.filter((call) => call.includes(" migrate"))).toEqual([]);
+    expect(bun.filter((call) => call.includes(" setup"))).toEqual([]);
+    expect(bun.filter((call) => call.includes("gateway check"))).toEqual([]);
+    expect(bun.filter((call) => call.includes("--tavily-key-stdin"))).toEqual([]);
+    // The CLI's own version WAS asked, once, after the update.
+    expect(bun.filter((call) => call.endsWith("dist/cli.js version")).length).toBe(1);
   });
 
   test("inside a Claude Code session: refused, exit 2, nothing runs", () => {
@@ -698,7 +932,12 @@ describe("install.sh: a machine, step by step", () => {
       stderr: "pipe",
     });
     expect(result.exitCode).not.toBe(0);
-    expect(`${result.stdout.toString()}${result.stderr.toString()}`).toContain("syntax error");
+    // Where the truncation lands decides bash's own words: a file that stops inside a string is
+    // "unexpected EOF", one that stops between words is a "syntax error". Both are a parse
+    // error, and neither runs a statement.
+    expect(`${result.stdout.toString()}${result.stderr.toString()}`).toMatch(
+      /syntax error|unexpected EOF/,
+    );
     expect(w.calls()).toEqual([]);
     expect(existsSync(join(w.configDir, "plugins"))).toBe(false);
   });
@@ -738,10 +977,16 @@ describe("install.sh: a machine, step by step", () => {
 
 describe("install.sh: what only the person has", () => {
   const GATEWAY_KEY = "omniroute-key-abc123";
+  const GATEWAY_PASSWORD = "omni-dashboard-password-abc123";
   const TAVILY_KEY = "tvly-key-abc123";
 
-  test("the three secrets reach the plugin's own commands on stdin, never in an argument", () => {
-    const w = world({ answers: ["y", "y", TOKEN, "y", GATEWAY_KEY, "y", TAVILY_KEY] });
+  test("the secrets reach the plugin's own commands on stdin, never in an argument", () => {
+    // No OmniRoute key yet, and OmniRoute answers: the installer asks for the DASHBOARD
+    // password, and `gateway setup` makes the router's key itself (E).
+    const w = world({
+      answers: ["y", TOKEN, "y", GATEWAY_PASSWORD, "y", TAVILY_KEY],
+      gatewayCheck: 1,
+    });
     const { code, out } = w.run();
     expect(code).toBe(0);
     expect(out).toContain("✓ 7/8 the browser's token is saved\n");
@@ -752,26 +997,134 @@ describe("install.sh: what only the person has", () => {
     );
     expect(out).toContain("✓ 7/8 the Tavily key is saved\n");
 
-    // Each command is the plugin's own, and each secret reaches it on stdin: the fake
-    // reports what it read, and never the value.
+    // Each command is the plugin's own, and each secret reaches it on stdin: the fake reports
+    // what it read, and never the value.
     expect(w.callsOf("bun")).toContain(`${w.cli} browser setup`);
     expect(w.callsOf("bun")).toContain(`${w.cli} browser token`);
     expect(w.calls()).toContain(`stdin-${TOKEN.length}-chars`);
-    expect(w.callsOf("bun")).toContain(`${w.cli} gateway setup --backend-key-stdin omniroute`);
+    expect(w.callsOf("bun")).toContain(
+      `${w.cli} gateway setup --omniroute-password-stdin --save-unchecked`,
+    );
     expect(w.callsOf("bun")).toContain(`${w.cli} setup --tavily-key-stdin`);
-    // Two commands read a secret from a pipe: the gateway's key and the Tavily key.
+    // Two commands read a secret from a pipe: the dashboard password and the Tavily key.
     expect(w.calls().filter((line) => line === "stdin-nonempty")).toHaveLength(2);
 
     // No secret is in any fake's arguments, in the log, or in what the installer printed.
-    for (const secret of [TOKEN, GATEWAY_KEY, TAVILY_KEY]) {
+    for (const secret of [TOKEN, GATEWAY_PASSWORD, TAVILY_KEY]) {
       expect(w.calls().join("\n")).not.toContain(secret);
       expect(out).not.toContain(secret);
     }
   });
 
+  test("a secret pasted with the bracketed-paste markers around it reaches the command clean", () => {
+    // What Warp and other terminals put around a paste: ESC[200~ … ESC[201~. Both readers keep
+    // the characters, so a marker left in would reach the plugin's own command and be refused
+    // as the wrong shape (live, 2026-10-17: a token was pasted and never saved).
+    const markedToken = `\u001b[200~${TOKEN}\u001b[201~`;
+    const markedTavily = `\u001b[200~${TAVILY_KEY}\u001b[201~`;
+    const w = world({ answers: ["y", markedToken, "n", "y", markedTavily] });
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    // The fake logs the number of characters it read: exactly the token's own 43, so the
+    // markers were gone before the command saw them.
+    expect(w.calls()).toContain(`stdin-${TOKEN.length}-chars`);
+    expect(w.calls()).toContain(`key-${TAVILY_KEY.length}-chars`);
+    expect(out).toContain("✓ 7/8 the browser's token is saved\n");
+    expect(out).toContain("✓ 7/8 the Tavily key is saved\n");
+    for (const secret of [TOKEN, TAVILY_KEY, markedToken, markedTavily]) {
+      expect(w.calls().join("\n")).not.toContain(secret);
+      expect(out).not.toContain(secret);
+    }
+  });
+
+  test("a gateway that already works: no key is asked for at all", () => {
+    // The live failure (2026-10-17): the gateway worked, the person was asked for a key anyway,
+    // and a provider key replaced the router's own OmniRoute key.
+    const w = world({
+      answers: browserAnswers("y", "n"),
+      gatewayCheck: 0,
+      gatewayConfig: true,
+    });
+    const before = w.read(join(w.home, ".config/cc-smart-dev-kit/gateway.json"));
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    expect(out).toContain("· 7/8 the gateway already works, so no key is asked: ");
+    expect(out).not.toContain("Paste the OmniRoute API key");
+    expect(out).not.toContain("Paste your OmniRoute dashboard password");
+    // The router's own copy and service are still refreshed, and the key in the file is kept.
+    expect(w.callsOf("bun")).toContain(`${w.cli} gateway setup --no-backend-key`);
+    expect(w.callsOf("bun").filter((call) => call.includes("--backend-key-stdin"))).toEqual([]);
+    expect(w.read(join(w.home, ".config/cc-smart-dev-kit/gateway.json"))).toBe(before);
+  });
+
+  test("a key OmniRoute refuses: a new one is asked for, refused, asked once more, and the old file kept", () => {
+    const w = world({
+      answers: browserAnswers("y", GATEWAY_KEY, GATEWAY_KEY, "n"),
+      gatewayCheck: 4,
+      gatewayConfig: true,
+      gatewayKeyRefused: true,
+    });
+    const before = w.read(join(w.home, ".config/cc-smart-dev-kit/gateway.json"));
+    const { code, out } = w.run();
+    // The run goes on, and the gateway's key is what is left.
+    expect(code).toBe(0);
+    expect(out).toContain(
+      "7/8 Paste the OmniRoute API key the router uses (OmniRoute's dashboard → API keys; not your Ollama key). Enter to skip: \n",
+    );
+    // Asked AGAIN once, after the refusal, with the reason on the terminal.
+    expect(out.match(/Paste the OmniRoute API key the router uses/g)?.length).toBe(2);
+    expect(out).toContain("That was not saved:");
+    expect(out).toContain("cc-smart-dev-kit: omniroute answered HTTP 401 for this key");
+    expect(
+      w.callsOf("bun").filter((call) => call.includes("--backend-key-stdin omniroute")),
+    ).toHaveLength(2);
+    // Nothing was written: the key the machine had is still the one in the file.
+    expect(w.read(join(w.home, ".config/cc-smart-dev-kit/gateway.json"))).toBe(before);
+    expect(out).toContain("· 7/8 the gateway keeps the key it had: give it a new one with ");
+    expect(out).toContain(
+      "  - the gateway's key: README § The AI gateway says which key OmniRoute wants, then ",
+    );
+    for (const secret of [GATEWAY_KEY]) {
+      expect(w.calls().join("\n")).not.toContain(secret);
+      expect(out).not.toContain(secret);
+    }
+  });
+
+  test("OmniRoute refuses the dashboard password: nothing is saved, and it is asked once more", () => {
+    const w = world({
+      answers: browserAnswers("y", GATEWAY_PASSWORD, GATEWAY_PASSWORD, "n"),
+      gatewayCheck: 1,
+      omniRoutePasswordRefused: true,
+    });
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    expect(out.match(/Paste your OmniRoute dashboard password/g)?.length).toBe(2);
+    expect(out).toContain("cc-smart-dev-kit: OmniRoute rejected that dashboard password");
+    expect(
+      w.callsOf("bun").filter((call) => call.includes("--omniroute-password-stdin")),
+    ).toHaveLength(2);
+    expect(out).toContain("· 7/8 the gateway keeps the key it had: ");
+    expect(out).not.toContain(GATEWAY_PASSWORD);
+  });
+
+  test("no OmniRoute at all: nothing is asked, and the item is in what is left", () => {
+    const w = world({ answers: browserAnswers("y", "n"), gatewayCheck: 3 });
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    expect(out).toContain("· 7/8 the gateway is left as it is: · the gateway could not be checked");
+    expect(out).toContain(
+      `  - the gateway: README § The AI gateway says how to install and run OmniRoute, then ${w.launcher} gateway setup --omniroute-password\n`,
+    );
+    expect(out).not.toContain("Paste your OmniRoute dashboard password");
+    expect(out).not.toContain("Paste the OmniRoute API key");
+    // The router's copy and service are set up all the same (no key is touched).
+    expect(w.callsOf("bun")).toContain(`${w.cli} gateway setup --no-backend-key`);
+  });
+
   test("a router already installed: the restart is asked about, and --yes carries the yes", () => {
     const w = world({
-      answers: browserAnswers("y", "y", GATEWAY_KEY, "n"),
+      answers: browserAnswers("y", "y", GATEWAY_PASSWORD, "n"),
+      gatewayCheck: 1,
       routerCopy: true,
     });
     const { code, out } = w.run();
@@ -780,7 +1133,7 @@ describe("install.sh: what only the person has", () => {
       "7/8 A router is already installed here: setup restarts it, and running Claude Code sessions fail until you restart them. Go on? [y/N] \n",
     );
     expect(w.callsOf("bun")).toContain(
-      `${w.cli} gateway setup --backend-key-stdin omniroute --yes`,
+      `${w.cli} gateway setup --omniroute-password-stdin --save-unchecked --yes`,
     );
     expect(w.calls().filter((line) => line === "stdin-nonempty")).toHaveLength(1);
   });
@@ -797,12 +1150,13 @@ describe("install.sh: what only the person has", () => {
     );
     expect(w.callsOf("bun").filter((call) => call.includes("gateway setup"))).toEqual([]);
     expect(out).not.toContain("Paste the OmniRoute API key");
+    expect(w.callsOf("bun").filter((call) => call.includes("gateway check"))).toEqual([]);
   });
 
   test("a skipped secret is never asked again in one run", () => {
     // Yes to `browser setup`, no to the token: `browser token` must not run, and the
     // question must not come back later in the run.
-    const w = world({ answers: ["y", "n", "n", "n"] });
+    const w = world({ answers: ["y", "", "n", "n"] });
     const { code, out } = w.run();
     // The token was skipped, so doctor shows its ✗ and the run ends 3 (installed, with
     // items left) — the skip line is what the person acts on.
@@ -812,21 +1166,102 @@ describe("install.sh: what only the person has", () => {
     );
     expect(out).toContain(`  - the browser's token: ${w.launcher} browser token\n`);
     expect(w.callsOf("bun").filter((call) => call.includes("browser token"))).toEqual([]);
-    expect(out.match(/Paste the extension's token/g)?.length).toBe(1);
+    expect(out.match(/Paste the token from the extension's status page/g)?.length).toBe(1);
     // The gateway and the Tavily key were skipped, so neither of their commands ran.
     expect(w.callsOf("bun").filter((call) => call.includes("gateway setup"))).toEqual([]);
     expect(w.callsOf("bun").filter((call) => call.includes("--tavily-key-stdin"))).toEqual([]);
   });
 
-  test("a gateway with no key yet: setup runs with --no-backend-key", () => {
-    const w = world({ answers: browserAnswers("y", "", "n") });
+  test("a gateway with no key yet, and nothing pasted: setup runs with --no-backend-key", () => {
+    const w = world({ answers: browserAnswers("y", "", "n"), gatewayCheck: 1 });
     const { code, out } = w.run();
     expect(code).toBe(0);
+    expect(out).toContain("7/8 Paste your OmniRoute dashboard password");
     expect(out).toContain(
-      `✓ 7/8 the gateway is set up: turn it on with \`${w.launcher} gateway on\` when you want it\n`,
+      "· 7/8 the router's copy and service are refreshed, and the gateway's key is untouched\n",
     );
     expect(w.callsOf("bun")).toContain(`${w.cli} gateway setup --no-backend-key`);
     expect(w.callsOf("bun").filter((call) => call.includes("--backend-key-stdin"))).toEqual([]);
+    expect(w.callsOf("bun").filter((call) => call.includes("--omniroute-password-stdin"))).toEqual(
+      [],
+    );
+  });
+
+  test("a Tavily key that is already there is never asked for", () => {
+    // Live (2026-10-17): the person had TAVILY_API_KEY in their environment and their project
+    // already ran a Tavily MCP server; the installer asked anyway.
+    const fromEnv = world({ answers: browserAnswers("n"), tavilyInEnv: "tvly-in-the-environment" });
+    const first = fromEnv.run();
+    expect(first.code).toBe(0);
+    expect(first.out).toContain(
+      "· 7/8 Tavily: using TAVILY_API_KEY from your environment (nothing is asked, nothing is written)\n",
+    );
+    expect(first.out).not.toContain("Add your Tavily key now");
+
+    const fromFile = world({ answers: browserAnswers("n"), tavilyKeyFile: true });
+    expect(fromFile.run().out).toContain(
+      `· 7/8 Tavily: using the key already in ${fromFile.home}/.claude/cc-smart-dev-kit/tavily.key (nothing is asked)\n`,
+    );
+
+    const fromSettings = world({ answers: browserAnswers("n"), tavilyInSettings: true });
+    expect(fromSettings.run().out).toContain(
+      `· 7/8 Tavily: using the TAVILY_API_KEY already in ${fromSettings.configDir}/settings.json (nothing is asked)\n`,
+    );
+  });
+
+  test("a foreign MCP server, answered yes: removed, and setup runs again", () => {
+    // Live, 2026-10-17: a project's own script had registered `playwright` first, setup left it
+    // alone (the rule), and its `!` line was never seen among the installer's output — so the
+    // old browser kept starting. The installer asks now, showing what runs instead.
+    const w = world({
+      // The MCP question comes in step 6, before the browser's own questions.
+      answers: ["y", ...browserAnswers("n", "n")],
+      mcpForeign: [{ name: "playwright", runsWhat: "node /opt/tools/browser-server.js" }],
+    });
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    expect(out).toContain(
+      '6/8 The "playwright" server is registered by something else (node /opt/tools/browser-server.js). Replace it with cc-smart-dev-kit\'s? [y/N] \n',
+    );
+    expect(w.callsOf("claude")).toContain("mcp remove playwright --scope user");
+    // `setup` runs again, so the plugin registers its own server WITH its record.
+    expect(w.callsOf("bun").filter((call) => call === `${w.cli} setup`).length).toBe(2);
+    expect(out).toContain(
+      "✓ 6/8 setup ran again: cc-smart-dev-kit's own MCP servers are registered\n",
+    );
+    expect(out).not.toContain('  - the "playwright" MCP server');
+  });
+
+  test("a foreign MCP server, answered no: kept, and it is in what is left", () => {
+    const w = world({
+      answers: ["n", ...browserAnswers("n", "n")],
+      mcpForeign: [{ name: "serena", runsWhat: "uvx serena start-mcp-server" }],
+    });
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    expect(out).toContain(
+      '6/8 The "serena" server is registered by something else (uvx serena start-mcp-server)',
+    );
+    expect(w.callsOf("claude").filter((call) => call.startsWith("mcp remove")).length).toBe(0);
+    expect(out).toContain(
+      `  - the "serena" MCP server (registered by something else): claude mcp remove serena --scope user && ${w.launcher} setup\n`,
+    );
+    expect(out).toContain(
+      `· 6/8 the "serena" server was left as it is: run \`claude mcp remove serena --scope user\`, then \`${w.launcher} setup\`\n`,
+    );
+    // `setup` ran once only: nothing was replaced, so nothing is registered again.
+    expect(w.callsOf("bun").filter((call) => call === `${w.cli} setup`).length).toBe(1);
+  });
+
+  test("the plugin's own servers are never asked about, and the check is one read-only call", () => {
+    // The default world reports no foreign server, as `mcp status` does once setup registered
+    // them all: nothing is asked.
+    const w = world({ answers: browserAnswers("n", "n") });
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    expect(out).not.toContain("Replace it with cc-smart-dev-kit's?");
+    expect(w.callsOf("claude").filter((call) => call.startsWith("mcp remove"))).toEqual([]);
+    expect(w.calls()).toContain(`bun ${w.cli} mcp status --json`);
   });
 
   test("a step that fails stops the run, names the command, and exits 1", () => {
@@ -925,7 +1360,7 @@ describe("the Windows fakes: the same logic the Windows run uses, on Linux", () 
     ).toBeUndefined();
   });
 
-  test("the fake bun answers --version, upgrade, doctor and the launcher", async () => {
+  test("the fake bun answers --version, version, upgrade, gateway check, doctor and the launcher", async () => {
     const w = fakeWorld();
     const launcher = join(w.root, "launcher.cmd");
     writeFileSync(launcher, "@echo off\nexit /b 0\n");
@@ -933,22 +1368,50 @@ describe("the Windows fakes: the same logic the Windows run uses, on Linux", () 
       bunUpgradeTo: MIN_BUN,
       bunUpgraded: join(w.root, "bun-upgraded"),
       bunVersion: "1.2.0",
+      cliVersion: "0.4.3",
+      gatewayCheckCode: 4,
+      gatewayCheckLine: "✗ OmniRoute refused the key in gateway.json (HTTP 401)",
+      gatewayKeyRefused: false,
       home: w.root,
       launcher,
       log: w.log,
+      mcpStatus: '{"servers":[]}',
+      omniRoutePasswordRefused: false,
     };
     const said: string[] = [];
-    const io = { say: (line: string) => said.push(line) };
+    const errors: string[] = [];
+    const io = {
+      error: (line: string) => errors.push(line),
+      say: (line: string) => said.push(line),
+    };
     expect(await bun(["--version"], context, io)).toBe(0);
     expect(said.splice(0)).toEqual(["1.2.0"]);
     expect(await bun(["upgrade"], context, io)).toBe(0);
     expect(await bun(["--version"], context, io)).toBe(0);
     expect(said.splice(0)).toEqual([MIN_BUN]);
+    // The two questions the installer asks about the CLI itself: its version, and whether the
+    // gateway has a key its backend accepts.
+    expect(
+      await bun(
+        ["--no-env-file", "--config=x", "C:\\tools\\0.4.3\\dist\\cli.js", "version"],
+        context,
+        io,
+      ),
+    ).toBe(0);
+    expect(said.splice(0)).toEqual(["cc-smart-dev-kit 0.4.3"]);
+    expect(
+      await bun(
+        ["--no-env-file", "--config=x", "C:\\tools\\0.4.3\\dist\\cli.js", "gateway", "check"],
+        context,
+        io,
+      ),
+    ).toBe(4);
+    expect(said.splice(0)).toEqual([context.gatewayCheckLine]);
     // setup writes the launcher, the way the real one does (the template's own copy). The
     // arguments are the Windows shape the installer really passes -- a path with BACKSLASHES
     // -- so a matcher written with "/" (the bug that skipped this copy on the runner) fails
     // here instead of on a Windows runner.
-    const windowsCli = "C:\\tools\\0.4.2\\dist\\cli.js";
+    const windowsCli = "C:\\tools\\0.4.3\\dist\\cli.js";
     expect(await bun(["--no-env-file", "--config=x", windowsCli, "setup"], context, io)).toBe(0);
     expect(existsSync(join(w.root, ".local/bin/cc-smart-dev-kit.cmd"))).toBe(true);
     // doctor: the real ✗ line while the browser's token is missing, then the ✓ line.
@@ -958,6 +1421,11 @@ describe("the Windows fakes: the same logic the Windows run uses, on Linux", () 
     writeFileSync(tokenFile(w.root), "A\n", { mode: 0o600 });
     expect(await bun(["--no-env-file", "--config=x", windowsCli, "doctor"], context, io)).toBe(0);
     expect(said.splice(0)).toEqual([`✓ the browser token is set (${tokenFile(w.root)})`]);
+    // The paths that read stdin (a key, a password, the token) are exercised through the fake's
+    // own process — `scripts/install-windows-smoke.ps1` pipes one in, and the shell fakes above
+    // prove the same logic on Linux. Here the two questions the installer asks about the CLI
+    // itself are the ones worth pinning.
+    expect(errors).toEqual([]);
   });
 
   test("the fake git fails on purpose, and the fake gh always succeeds", () => {
@@ -1071,6 +1539,21 @@ describe("install.sh and install.ps1: the shared rules", () => {
   test("both installers check the MIN_BUN of src/build-info/bun.ts", () => {
     expect(/^MIN_BUN="([^"]+)"/m.exec(readFileSync(INSTALL_SH, "utf8"))?.[1]).toBe(MIN_BUN);
     expect(/^\$MinBun = "([^"]+)"/m.exec(readFileSync(INSTALL_PS1, "utf8"))?.[1]).toBe(MIN_BUN);
+  });
+
+  // The version each installer ships with, kept equal to the plugin's own manifest
+  // (`plugin/.claude-plugin/plugin.json`, its one home). A script reads it back off the
+  // installed CLI and refuses to go on when that CLI is older, so a script that carried a
+  // stale number would refuse a machine that is fine — or, worse, promise options the CLI it
+  // calls does not have, which is what the first real run did (2026-07-17).
+  test("both installers carry the version of plugin/.claude-plugin/plugin.json", () => {
+    expect(INSTALLER_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(/^INSTALLER_VERSION="([^"]+)"/m.exec(readFileSync(INSTALL_SH, "utf8"))?.[1]).toBe(
+      INSTALLER_VERSION,
+    );
+    expect(/^\$InstallerVersion = "([^"]+)"/m.exec(readFileSync(INSTALL_PS1, "utf8"))?.[1]).toBe(
+      INSTALLER_VERSION,
+    );
   });
 
   test("the PowerShell files are pure ASCII, so any Windows code page reads them", () => {

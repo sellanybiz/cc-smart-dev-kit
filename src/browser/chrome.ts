@@ -233,6 +233,28 @@ export function findClaudeCodeProfile(
   return null;
 }
 
+/**
+ * The name a profile's OWN `Preferences` carries (`profile.name`), or null when the file is not
+ * there or holds none. Chrome shows the picker's name from `Local State` and falls back to this
+ * one, so both have to say `claude-code` (live, 2026-10-17: a person saw the profile unnamed
+ * although `Local State` said otherwise).
+ *
+ * This one key is the only thing ever read or written in `Preferences`: every other key of it,
+ * and every byte of `Secure Preferences`, stays Chrome's own (`allowsFileUrls` only reads them).
+ */
+export function profileNameIn(profileDir: string, deps: ChromeDeps = {}): null | string {
+  const text = readFileIn(deps)(join(profileDir, "Preferences"));
+  if (text === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const name = (parsed as { profile?: { name?: unknown } } | null)?.profile?.name;
+  return typeof name === "string" ? name : null;
+}
+
 /** The extension folders in one profile, by extension id. */
 function extensionIds(profileDir: string, deps: ChromeDeps): string[] {
   return readdirIn(deps)(join(profileDir, "Extensions"));
@@ -282,13 +304,132 @@ export function extensionVersion(profileDir: string, deps: ChromeDeps = {}): nul
   return versions.sort().at(-1) ?? null;
 }
 
+/** One extension in the profile that is not this plugin's, as the person can recognise it. */
+export interface OtherExtension {
+  id: string;
+  /** The manifest's own name, or the id when it cannot be read (`__MSG_…__` and all). */
+  name: string;
+}
+
+/** The extensions directory's own bookkeeping folder, never an extension. */
+const EXTENSIONS_METADATA = "_metadata";
+
 /**
- * Every OTHER extension in this profile, by id. The Playwright extension must be alone there:
- * a second extension that injects a frame from its own `chrome-extension://` origin breaks the
- * session (microsoft/playwright#43230, open), and the fix is on that other extension's side.
+ * Chrome's own extensions, by the record it keeps: `location` is `ManifestLocation` and
+ * `was_installed_by_default` marks one that came with the browser or the system.
+ *
+ * The values, from Chromium's own source (`extensions/common/mojom/manifest.mojom`, read
+ * 2026-10-17): 0 kInvalidLocation, 1 kInternal, 2 kExternalPref, 3 kExternalRegistry,
+ * 4 kUnpacked, 5 kComponent, 6 kExternalPrefDownload, 7 kExternalPolicyDownload,
+ * 8 kCommandLine, 9 kExternalPolicy, 10 kExternalComponent. The file says the numbers are
+ * stored in the preferences and must keep their meaning, so they are safe to read.
+ *
+ * 5 (kComponent: "an integral component of Chrome itself, which happens to be implemented as
+ * an extension") and 10 (kExternalComponent: "considered an internal implementation detail of
+ * chrome") are Chrome's own: they are hidden from `chrome://extensions` and cannot be removed
+ * there, so naming them is a false alarm. `was_installed_by_default` is Chrome's own mark for
+ * the same class (the Web Store Payments extension carries both).
  */
-export function otherExtensionIds(profileDir: string, deps: ChromeDeps = {}): string[] {
-  return extensionIds(profileDir, deps).filter((id) => id !== PLAYWRIGHT_EXTENSION_ID);
+export function isChromesOwnExtension(record: Record<string, unknown>): boolean {
+  if (record.was_installed_by_default === true) return true;
+  const location = record.location;
+  return location === 5 || location === 10;
+}
+
+/**
+ * The installed version folder of ONE extension that really holds a manifest, or null.
+ *
+ * A folder without a manifest is not an extension: Chrome's own `Temp` folder sits under
+ * `<profile>/Extensions/` while an install runs, has no manifest, and is gone afterwards — it
+ * was named as "another extension" once (live, 2026-10-17).
+ */
+export function installedExtensionVersion(
+  profileDir: string,
+  id: string,
+  deps: ChromeDeps = {},
+): null | string {
+  const read = readFileIn(deps);
+  const versions = readdirIn(deps)(join(profileDir, "Extensions", id))
+    .filter((name) => name !== EXTENSIONS_METADATA)
+    .sort()
+    .reverse();
+  for (const version of versions) {
+    const manifest = read(join(profileDir, "Extensions", id, version, "manifest.json"));
+    if (manifest === null) continue;
+    try {
+      JSON.parse(manifest);
+      return version;
+    } catch {}
+  }
+  return null;
+}
+
+/** A manifest's `name`, with a `__MSG_key__` placeholder resolved from the extension's locales. */
+export function extensionName(
+  profileDir: string,
+  id: string,
+  version: string,
+  deps: ChromeDeps = {},
+): string {
+  const read = readFileIn(deps);
+  const folder = join(profileDir, "Extensions", id, version);
+  let manifest: Record<string, unknown> | null = null;
+  try {
+    manifest = JSON.parse(read(join(folder, "manifest.json")) ?? "") as Record<string, unknown>;
+  } catch {
+    return id;
+  }
+  const raw = typeof manifest?.name === "string" ? manifest.name : "";
+  const locale = typeof manifest?.default_locale === "string" ? manifest.default_locale : "";
+  const placeholder = /^__MSG_(.+)__$/.exec(raw);
+  if (placeholder === null) return raw.trim() === "" ? id : raw.trim();
+  const key = placeholder[1] ?? "";
+  // The manifest's own locale first, then English, then whatever locale the extension ships:
+  // the message file is `<profile>/Extensions/<id>/<version>/_locales/<locale>/messages.json`.
+  const locales = readdirIn(deps)(join(folder, "_locales")).filter(
+    (name) => name !== EXTENSIONS_METADATA,
+  );
+  const order = [locale, "en", "en_US", ...locales].filter((name) => name !== "");
+  for (const name of order) {
+    let messages: Record<string, unknown> | null = null;
+    try {
+      messages = JSON.parse(read(join(folder, "_locales", name, "messages.json")) ?? "") as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      continue;
+    }
+    const entry = messages?.[key];
+    const message = (entry as { message?: unknown } | null)?.message;
+    if (typeof message === "string" && message.trim() !== "") return message.trim();
+  }
+  return id;
+}
+
+/**
+ * Every extension in this profile that is NOT this plugin's, judged by Chrome's own record
+ * rather than by the folders on disk:
+ *   - a folder with a manifest (Chrome's `Temp`, or a folder left behind, is not one);
+ *   - and a `Preferences` / `Secure Preferences` record that is not Chrome's own
+ *     (`isChromesOwnExtension`: component, external-component, installed by default).
+ *
+ * `doctor` warns about these by name: one that injects a frame into pages breaks a browser
+ * session (microsoft/playwright#43230, open). Entries with a record but no folder are left out
+ * too — Chrome keeps the record after an extension is gone, which was the other half of the
+ * same false alarm.
+ */
+export function otherExtensions(profileDir: string, deps: ChromeDeps = {}): OtherExtension[] {
+  const found: OtherExtension[] = [];
+  for (const id of extensionIds(profileDir, deps)) {
+    if (id === PLAYWRIGHT_EXTENSION_ID || id === EXTENSIONS_METADATA) continue;
+    const version = installedExtensionVersion(profileDir, id, deps);
+    if (version === null) continue;
+    const record = extensionRecord(profileDir, id, deps);
+    if (record !== null && isChromesOwnExtension(record)) continue;
+    found.push({ id, name: extensionName(profileDir, id, version, deps) });
+  }
+  return found;
 }
 
 /**

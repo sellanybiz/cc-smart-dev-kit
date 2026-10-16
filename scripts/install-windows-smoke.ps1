@@ -37,19 +37,33 @@ if (-not (Test-Path $install)) { Stop-Smoke "install.ps1 is not at the repo root
 $shell = (Get-Process -Id $PID).Path
 if ([string]::IsNullOrEmpty($shell)) { Stop-Smoke "cannot find the PowerShell running this test" }
 $repo = "example-org/cc-smart-dev-kit"
-$marketplaceVersion = "0.4.2"
+# The minimum Bun the script checks, read from the script itself: this test never keeps a
+# second copy of that number (src/build-info/bun.ts is its one home, and
+# scripts/install.test.ts keeps the two installers equal to it).
+$minBun = [regex]::Match((Get-Content -Raw $install), '(?m)^\$MinBun = "([^"]+)"').Groups[1].Value
+if ([string]::IsNullOrEmpty($minBun)) { Stop-Smoke "install.ps1 has no MinBun line" }
+# The version the installer ships with, read from the script itself for the same reason: the
+# fake CLI answers it, the marketplace's copy declares it, and the installer refuses a CLI
+# older than it (plugin/.claude-plugin/plugin.json is its one home).
+$marketplaceVersion = [regex]::Match((Get-Content -Raw $install), '(?m)^\$InstallerVersion = "([^"]+)"').Groups[1].Value
+if ([string]::IsNullOrEmpty($marketplaceVersion)) { Stop-Smoke "install.ps1 has no InstallerVersion line" }
+
+# The line the fake `gateway check` prints for a code: the real command's own kind of line.
+function Get-GatewayLine([string]$Code) {
+  switch ($Code) {
+    "0" { return "(ok) the gateway's OmniRoute key is accepted (http://127.0.0.1:20128, HTTP 200)" }
+    "1" { return "[x] the gateway has no OmniRoute key yet, and OmniRoute answers at http://127.0.0.1:20128" }
+    "3" { return "- the gateway could not be checked: OmniRoute does not answer at http://127.0.0.1:20128" }
+    "4" { return "[x] OmniRoute refused the key in gateway.json (HTTP 401): it is not an OmniRoute API key" }
+    default { return "- the gateway could not be checked" }
+  }
+}
 # The fakes are `.cmd` wrappers around the real bun.exe running this folder's JavaScript:
 # found before any world prepends itself to PATH, so the wrapper never calls itself.
 $script:RealBun = (Get-Command bun -ErrorAction SilentlyContinue).Source
 if ([string]::IsNullOrEmpty($script:RealBun)) { Stop-Smoke "bun is not on PATH (the fakes run on it)" }
 $script:FakesDir = Join-Path $PSScriptRoot "install-windows-fakes"
 if (-not (Test-Path $script:FakesDir)) { Stop-Smoke "scripts/install-windows-fakes is not there" }
-
-# The minimum Bun the script checks, read from the script itself: this test never keeps a
-# second copy of that number (src/build-info/bun.ts is its one home, and
-# scripts/install.test.ts keeps the two installers equal to it).
-$minBun = [regex]::Match((Get-Content -Raw $install), '(?m)^\$MinBun = "([^"]+)"').Groups[1].Value
-if ([string]::IsNullOrEmpty($minBun)) { Stop-Smoke "install.ps1 has no `$MinBun line" }
 
 # --- the fakes -------------------------------------------------------------------------
 # One `.cmd` per program, and each is a single line that hands its arguments to the real
@@ -112,6 +126,11 @@ function New-World([string]$Name, [hashtable]$Options = @{}) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $copy) | Out-Null
     Set-Content -Path $copy -Value "// the router"
   }
+  if ($Options["GatewayConfig"] -eq $true) {
+    $config = Join-Path $worldHome ".config\cc-smart-dev-kit\gateway.json"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $config) | Out-Null
+    Set-Content -Path $config -Value '{"backends":{"omniroute":{"apiKey":"the-router-key","baseUrl":"http://127.0.0.1:20128"}},"port":20100,"slots":{"cc-smart-dev-kit-worker":["omniroute:m1"]},"version":1}'
+  }
   # The launcher the fake setup copies into place. It does what the real one does -- runs the
   # plugin's own CLI (bun, the two flags README, section Install uses, the installed bundle)
   # with the arguments it was given -- so `doctor` reaches the fake with its real argv. A
@@ -129,6 +148,8 @@ function New-World([string]$Name, [hashtable]$Options = @{}) {
   $answerLines = @()
   if ($Options.ContainsKey("Answers")) { $answerLines = $Options["Answers"] }
   Set-Content -Path $answers -Value ($answerLines -join "`r`n")
+  $gatewayCheck = $(if ($Options.ContainsKey("GatewayCheck")) { [string]$Options["GatewayCheck"] } else { "0" })
+  $mcpStatus = $(if ($Options.ContainsKey("McpForeign")) { $Options["McpForeign"] } else { '{"servers":[]}' })
   return @{
     dir = $dir; home = $worldHome; bin = $bin; log = $log
     env = @{
@@ -143,6 +164,15 @@ function New-World([string]$Name, [hashtable]$Options = @{}) {
       FAKE_BUN_VERSION = $(if ($Options.ContainsKey("BunVersion")) { $Options["BunVersion"] } else { $minBun })
       FAKE_BUN_UPGRADE_TO = $minBun
       FAKE_GIT_FAILS = $(if ($Options.ContainsKey("GitFails")) { $Options["GitFails"] } else { "no" })
+      # What the plugin's own CLI answers, and what `gateway check` says (0 works, 1 no key
+      # yet, 3 could not be judged, 4 the key is refused).
+      FAKE_CLI_VERSION = $marketplaceVersion
+      FAKE_GATEWAY_CHECK_CODE = $gatewayCheck
+      FAKE_GATEWAY_CHECK_LINE = Get-GatewayLine $gatewayCheck
+      FAKE_GATEWAY_KEY_REFUSED = $(if ($Options["GatewayKeyRefused"] -eq $true) { "yes" } else { "no" })
+      FAKE_OMNIROUTE_PASSWORD_REFUSED = $(if ($Options["OmniRoutePasswordRefused"] -eq $true) { "yes" } else { "no" })
+      # Which of the plugin's MCP servers are registered by something else, as JSON.
+      FAKE_MCP_STATUS = $mcpStatus
     }
   }
 }
@@ -216,7 +246,7 @@ $names = [System.Collections.Generic.List[string]]::new()
 try {
   # 1. A fresh machine, the browser done: the marketplaces, the plugin, migrate, setup,
   #    doctor, exit 0.
-  $world = New-World "fresh" @{ Answers = @("y", "y", ("A" * 43), "n", "n") }
+  $world = New-World "fresh" @{ Answers = @("y", ("A" * 43), "n", "n") }
   $result = Invoke-Install $world @($repo)
   Assert-Code "a fresh machine" $result 0 $world
   Assert-Contains "a fresh machine" $result.out "[ok] 1/8 not inside a Claude Code session"
@@ -269,7 +299,7 @@ try {
   $names.Add("the exit code 3")
 
   # 4. An old-anymodel machine: migrate, then setup -- and the old plugin is asked about.
-  $old = New-World "old" @{ Answers = @("y", "y", "y", ("A" * 43), "n", "n"); OldMarketplace = $true; InstalledVersion = $marketplaceVersion; OldPlugin = $true }
+  $old = New-World "old" @{ Answers = @("y", "y", ("A" * 43), "n", "n"); OldMarketplace = $true; InstalledVersion = $marketplaceVersion; OldPlugin = $true }
   $result = Invoke-Install $old @($repo)
   Assert-Code "an old anymodel machine" $result 0 $old
   Assert-Contains "an old anymodel machine" $result.out "[ok] 6/8 migrate finished"
@@ -283,7 +313,7 @@ try {
   $names.Add("an old anymodel machine")
 
   # 5. The old plugin left in place: one line, and it is in what is left.
-  $kept = New-World "kept" @{ Answers = @("n", "y", "y", ("A" * 43), "n", "n"); InstalledVersion = $marketplaceVersion; OldPlugin = $true }
+  $kept = New-World "kept" @{ Answers = @("n", "y", ("A" * 43), "n", "n"); InstalledVersion = $marketplaceVersion; OldPlugin = $true }
   $result = Invoke-Install $kept @($repo)
   Assert-Code "the old plugin left" $result 0 $kept
   Assert-Contains "the old plugin left" $result.out "the old anymodel plugin was left in place"
@@ -301,8 +331,9 @@ try {
   $passed++
   $names.Add("a half-moved machine")
 
-  # 7. The gateway's restart: a router is on disk, and the person says yes.
-  $router = New-World "router" @{ Answers = @("y", "y", ("A" * 43), "y", "y", "omniroute-key-abc123", "n"); RouterCopy = $true }
+  # 7. The gateway's restart: a router is on disk, the key in gateway.json is one OmniRoute
+  #    refuses, and the person says yes to the restart and pastes a new key.
+  $router = New-World "router" @{ Answers = @("y", ("A" * 43), "y", "y", "omniroute-key-abc123", "n"); RouterCopy = $true; GatewayCheck = 4 }
   $result = Invoke-Install $router @($repo)
   Assert-Code "the router restart" $result 0 $router
   Assert-Contains "the router restart" $result.out "A router is already installed here: setup restarts it"
@@ -311,6 +342,57 @@ try {
   }
   $passed++
   $names.Add("the gateway's restart")
+
+  # 7b. A gateway that already works: nobody is asked for a key at all, and the key in
+  #     gateway.json is kept (the live trap of 2026-10-17).
+  $working = New-World "working" @{ Answers = @("y", ("A" * 43), "y", "n"); GatewayCheck = 0; GatewayConfig = $true }
+  $result = Invoke-Install $working @($repo)
+  Assert-Code "a working gateway" $result 0 $working
+  Assert-Contains "a working gateway" $result.out "the gateway already works, so no key is asked"
+  Assert-Contains "a working gateway" $result.out "[ok] 7/8 the gateway is up to date"
+  if ((Get-Calls $working) -match "--backend-key-stdin|--omniroute-password-stdin") {
+    Stop-Smoke "a working gateway: a key was asked for anyway:`n$((Get-Calls $working) -join "`n")"
+  }
+  $passed++
+  $names.Add("a working gateway")
+
+  # 7c. No OmniRoute at all: nothing is asked, and the gateway is in what is left.
+  $noOmniRoute = New-World "no-omniroute" @{ Answers = @("y", ("A" * 43), "y", "n"); GatewayCheck = 3 }
+  $result = Invoke-Install $noOmniRoute @($repo)
+  Assert-Code "no OmniRoute" $result 0 $noOmniRoute
+  Assert-Contains "no OmniRoute" $result.out "the gateway is left as it is"
+  Assert-Contains "no OmniRoute" $result.out "the gateway: README, section The AI gateway, says how to install and run OmniRoute"
+  if ((Get-Calls $noOmniRoute) -match "--backend-key-stdin|--omniroute-password-stdin") {
+    Stop-Smoke "no OmniRoute: a key was asked for anyway:`n$((Get-Calls $noOmniRoute) -join "`n")"
+  }
+  $passed++
+  $names.Add("no OmniRoute at all")
+
+  # 7d. A foreign MCP server: the installer asks, showing what runs instead, and `setup` runs
+  #     again on a yes so the plugin registers its own WITH its record (live, 2026-10-17).
+  $foreign = New-World "mcp-foreign" @{ Answers = @("y", "y", ("A" * 43), "n", "n"); McpForeign = '{"servers":[{"name":"playwright","runsWhat":"node C:/tools/browser-server.js","state":"foreign"}]}' }
+  $result = Invoke-Install $foreign @($repo)
+  Assert-Code "a foreign MCP server" $result 0 $foreign
+  Assert-Contains "a foreign MCP server" $result.out 'The "playwright" server is registered by something else (node C:/tools/browser-server.js). Replace it with cc-smart-dev-kit''s?'
+  Assert-Contains "a foreign MCP server" $result.out "[ok] 6/8 setup ran again: cc-smart-dev-kit's own MCP servers are registered"
+  $calls = (Get-Calls $foreign) -join "`n"
+  if ($calls -notmatch "claude mcp remove playwright --scope user") {
+    Stop-Smoke "a foreign MCP server: it was not removed; the log is:`n$calls"
+  }
+  $passed++
+  $names.Add("a foreign MCP server")
+
+  # 7e. The same, answered no: the server is kept, and it is in what is left.
+  $keepForeign = New-World "mcp-keep" @{ Answers = @("n", "y", ("A" * 43), "n", "n"); McpForeign = '{"servers":[{"name":"serena","runsWhat":"uvx serena start-mcp-server","state":"foreign"}]}' }
+  $result = Invoke-Install $keepForeign @($repo)
+  Assert-Code "a foreign MCP server kept" $result 0 $keepForeign
+  Assert-Contains "a foreign MCP server kept" $result.out 'the "serena" server was left as it is'
+  Assert-Contains "a foreign MCP server kept" $result.out 'the "serena" MCP server (registered by something else)'
+  if ((Get-Calls $keepForeign) -match "mcp remove") {
+    Stop-Smoke "a foreign MCP server kept: it was removed anyway"
+  }
+  $passed++
+  $names.Add("a foreign MCP server kept")
 
   # 8. Inside a Claude Code session: refused, exit 2, nothing runs.
   $inside = New-World "inside" @{ Answers = @("n") }
@@ -357,22 +439,25 @@ try {
 
   # 12. A gateway with no key yet: the slots answer on Claude until one is added. This is the
   #     only case that runs a command through `$null |` (a command that must read nothing),
-  #     and the only one that reaches `gateway setup --no-backend-key`.
-  $noKey = New-World "no-key" @{ Answers = @("y", "y", ("A" * 43), "y", "", "n") }
+  #     and the only one that reaches `gateway setup --no-backend-key`. The check says there is
+  #     no key yet and OmniRoute answers, so the dashboard password IS asked (and nothing is
+  #     pasted).
+  $noKey = New-World "no-key" @{ Answers = @("y", ("A" * 43), "y", "", "n"); GatewayCheck = 1 }
   $result = Invoke-Install $noKey @($repo)
   Assert-Code "a gateway with no key" $result 0 $noKey
-  Assert-Contains "a gateway with no key" $result.out "[ok] 7/8 the gateway is set up"
+  Assert-Contains "a gateway with no key" $result.out "Paste your OmniRoute dashboard password"
+  Assert-Contains "a gateway with no key" $result.out "the gateway keeps the key it had"
   if (-not (Test-Called $noKey "gateway setup --no-backend-key")) {
     Stop-Smoke "a gateway with no key: setup did not run; the log is:`n$((Get-Calls $noKey) -join "`n")"
   }
-  if ((Get-Calls $noKey) | Where-Object { $_ -like "*--backend-key-stdin*" }) {
+  if ((Get-Calls $noKey) | Where-Object { $_ -like "*--backend-key-stdin*" -or $_ -like "*--omniroute-password-stdin*" }) {
     Stop-Smoke "a gateway with no key: the key path ran anyway"
   }
   $passed++
   $names.Add("a gateway with no key")
 
   # 13. The two keys the person has: on stdin, never in an argument, never printed.
-  $secrets = New-World "secrets" @{ Answers = @("y", "y", ("A" * 43), "y", "omniroute-key-abc123", "y", "tvly-key-abc123") }
+  $secrets = New-World "secrets" @{ Answers = @("y", ("A" * 43), "y", "omniroute-key-abc123", "y", "tvly-key-abc123"); GatewayCheck = 4 }
   $result = Invoke-Install $secrets @($repo)
   Assert-Code "the secrets" $result 0 $secrets
   Assert-Contains "the secrets" $result.out "[ok] 7/8 the gateway is set up"
@@ -382,7 +467,7 @@ try {
     Stop-Smoke "the secrets: a key did not reach its command on stdin:`n$($calls -join "`n")"
   }
   if (-not ($calls | Where-Object { $_ -eq "stdin-43-chars" })) {
-    Stop-Smoke "the secrets: the token did not reach `browser token` on stdin"
+    Stop-Smoke "the secrets: the token did not reach the token command on stdin"
   }
   foreach ($secret in @("omniroute-key-abc123", "tvly-key-abc123", ("A" * 43))) {
     if (($calls -join "`n").Contains($secret)) { Stop-Smoke "a secret is in a fake's arguments: $secret" }
@@ -390,6 +475,19 @@ try {
   }
   $passed++
   $names.Add("the secrets")
+
+  # 14. A secret pasted with the bracketed-paste markers around it: the installer's own read
+  #     strips them, so what reaches the command is the key itself (live, 2026-10-17). The
+  #     fake logs the count of characters it read, and never the value.
+  $pasted = New-World "pasted" @{ Answers = @("n", "y", "y", "$([char]27)[200~tvly-key-abc123$([char]27)[201~") }
+  $result = Invoke-Install $pasted @($repo)
+  Assert-Code "a pasted secret" $result 0 $pasted
+  Assert-Contains "a pasted secret" $result.out "[ok] 7/8 the Tavily key is saved"
+  if (-not ((Get-Calls $pasted) | Where-Object { $_ -eq "key-15-chars" })) {
+    Stop-Smoke "a pasted secret: the markers reached the command; the log is:`n$((Get-Calls $pasted) -join "`n")"
+  }
+  $passed++
+  $names.Add("a pasted secret")
 } finally {
   Get-ChildItem -Path ([System.IO.Path]::GetTempPath()) -Filter "cc-smart-dev-kit-install-*" -Directory -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue

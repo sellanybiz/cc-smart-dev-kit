@@ -3,6 +3,12 @@
  * when that session's own model is the `fable` tier. Nothing to Claude, never an error, nothing
  * in a session nobody watches, and nothing at all when the model cannot be read or the mark
  * cannot be kept.
+ *
+ * The events: SessionStart (the input's `model`), PostModelSwitch (`to_model` — the model the
+ * session moved TO, from Claude Code's own input schema) and Stop (the answer that just
+ * finished). The live bug this pins (2026-10-17): the old UserPromptSubmit read judged the
+ * PREVIOUS answer's model, so a switch to Fable was missed and the line then appeared while the
+ * person was back on Opus.
  */
 import { describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
@@ -40,11 +46,29 @@ function start(model: string | null, sessionId = SESSION): Record<string, unknow
   };
 }
 
-/** A prompt input; with a model, its transcript names that model. */
-function prompt(model: string | null): Record<string, unknown> {
+/**
+ * A PostModelSwitch input, as Claude Code 2.1.302 declares it: `to_model` is the resolved model
+ * the session runs after the switch, `from_model` the one before it, and `source` says what
+ * caused it (`command` for `/model <name>`, `picker`, `sdk`, `auto`, `resume`).
+ */
+function switchTo(model: string, from = "claude-opus-5-5"): Record<string, unknown> {
   return {
-    hook_event_name: "UserPromptSubmit",
+    hook_event_name: "PostModelSwitch",
+    from_model: from,
+    requested_model: null,
     session_id: SESSION,
+    source: "command",
+    to_model: model,
+    cwd: makeRepo(),
+  };
+}
+
+/** A Stop input; with a model, the transcript's last answer names that model. */
+function stop(model: string | null): Record<string, unknown> {
+  return {
+    hook_event_name: "Stop",
+    session_id: SESSION,
+    stop_hook_active: false,
     cwd: makeRepo(),
     ...(model === null ? {} : { transcript_path: transcriptNaming(model) }),
   };
@@ -70,7 +94,7 @@ describe("a session on the fable tier", () => {
     expect(existsSync(fableSessionMark(env, SESSION))).toBe(true);
   });
 
-  it("the same session is never told twice: another SessionStart, then a Fable prompt", async () => {
+  it("the same session is never told twice: another SessionStart, then a Fable stop", async () => {
     const env = hookEnv();
     expect(told(await runHook(fableSessionHook, start("claude-fable-5-1"), env))).toBe(THE_LINE);
     expect(
@@ -78,8 +102,8 @@ describe("a session on the fable tier", () => {
         await runHook(fableSessionHook, { ...start("claude-fable-5-1"), source: "resume" }, env),
       ),
     ).toBeNull();
-    // A prompt that would say it — the transcript names Fable — stays silent: the mark answers.
-    expect(told(await runHook(fableSessionHook, prompt("claude-fable-5-1"), env))).toBeNull();
+    // A stop that would say it — the last answer came from Fable — stays silent: the mark answers.
+    expect(told(await runHook(fableSessionHook, stop("claude-fable-5-1"), env))).toBeNull();
   });
 
   it("an Opus or Sonnet session says nothing, and keeps no mark", async () => {
@@ -90,32 +114,71 @@ describe("a session on the fable tier", () => {
     }
   });
 
-  it("a `/model` switch to Fable is caught once Fable has answered", async () => {
+  it("a switch TO Fable is warned at the switch itself, once", async () => {
+    // The live bug: this line never appeared at the switch — the old hook read the previous
+    // answer's model, so it only spoke one turn later.
     const env = hookEnv();
-    // The session started on Sonnet: nothing said then.
+    expect(told(await runHook(fableSessionHook, start("claude-opus-5-5"), env))).toBeNull();
+    expect(told(await runHook(fableSessionHook, switchTo("claude-fable-5-1"), env))).toBe(THE_LINE);
+    // Said once: a second switch to Fable in the same session says nothing more.
+    expect(
+      told(await runHook(fableSessionHook, switchTo("claude-fable-5-1", "claude-sonnet-5-5"), env)),
+    ).toBeNull();
+    expect(existsSync(fableSessionMark(env, SESSION))).toBe(true);
+  });
+
+  it("a switch back to Opus, and an Opus answer after it, never warn", async () => {
+    // The other half of the live bug: the line appeared while the person was on Opus.
+    const env = hookEnv();
+    expect(told(await runHook(fableSessionHook, start("claude-opus-5-5"), env))).toBeNull();
+    expect(told(await runHook(fableSessionHook, switchTo("claude-fable-5-1"), env))).toBe(THE_LINE);
+    // Back to Opus: the switch says nothing, and neither does the Opus answer that follows.
+    expect(
+      told(await runHook(fableSessionHook, switchTo("claude-opus-5-5", "claude-fable-5-1"), env)),
+    ).toBeNull();
+    expect(told(await runHook(fableSessionHook, stop("claude-opus-5-5"), env))).toBeNull();
+    // And a fresh session told nothing so far stays silent through the same shape.
+    const untouched = hookEnv();
+    expect(told(await runHook(fableSessionHook, start("claude-opus-5-5"), untouched))).toBeNull();
+    expect(
+      told(await runHook(fableSessionHook, switchTo("claude-opus-5-5"), untouched)),
+    ).toBeNull();
+    expect(told(await runHook(fableSessionHook, stop("claude-opus-5-5"), untouched))).toBeNull();
+    expect(existsSync(fableSessionMark(untouched, SESSION))).toBe(false);
+  });
+
+  it("with no PostModelSwitch, a Fable answer is caught at Stop, once", async () => {
+    // A Claude Code that fires no PostModelSwitch (or a switch the person made before this
+    // version): the stop judge still catches it, and only once.
+    const env = hookEnv();
     expect(told(await runHook(fableSessionHook, start("claude-sonnet-5-5"), env))).toBeNull();
-    // Fable answered: the next prompt says the line, once.
-    expect(told(await runHook(fableSessionHook, prompt("claude-fable-5-1"), env))).toBe(THE_LINE);
-    expect(told(await runHook(fableSessionHook, prompt("claude-fable-5-1"), env))).toBeNull();
+    expect(told(await runHook(fableSessionHook, stop("claude-fable-5-1"), env))).toBe(THE_LINE);
+    expect(told(await runHook(fableSessionHook, stop("claude-fable-5-1"), env))).toBeNull();
   });
 
   it("ANTHROPIC_MODEL names the model when no transcript has answered yet", async () => {
     const env = { ...hookEnv(), ANTHROPIC_MODEL: "claude-fable-5-1" };
-    expect(told(await runHook(fableSessionHook, prompt(null), env))).toBe(THE_LINE);
+    expect(told(await runHook(fableSessionHook, stop(null), env))).toBe(THE_LINE);
   });
 
   it("a session nobody watches (`claude -p`) is told nothing, and keeps no mark", async () => {
     const env = { ...hookEnv(), CLAUDE_CODE_SESSION_ATTENDED: "0" };
     expect(await runHook(fableSessionHook, start("claude-fable-5-1"), env)).toEqual({});
     expect(existsSync(fableSessionMark(env, SESSION))).toBe(false);
-    expect(await runHook(fableSessionHook, prompt("claude-fable-5-1"), env)).toEqual({});
+    expect(await runHook(fableSessionHook, switchTo("claude-fable-5-1"), env)).toEqual({});
+    expect(await runHook(fableSessionHook, stop("claude-fable-5-1"), env)).toEqual({});
     expect(existsSync(fableSessionMark(env, SESSION))).toBe(false);
   });
 
-  it("a model that cannot be read says nothing, at a start and at a prompt", async () => {
+  it("a model that cannot be read says nothing, at a start, a switch and a stop", async () => {
     const env = hookEnv();
     expect(await runHook(fableSessionHook, start(null), env)).toEqual({});
-    expect(await runHook(fableSessionHook, prompt(null), env)).toEqual({});
+    expect(await runHook(fableSessionHook, stop(null), env)).toEqual({});
+    // A switch whose input names no model: nothing is judged, and no mark is kept.
+    expect(await runHook(fableSessionHook, { ...switchTo("x"), to_model: undefined }, env)).toEqual(
+      {},
+    );
+    expect(existsSync(fableSessionMark(env, SESSION))).toBe(false);
     // A SessionStart that names no model judges nothing, even with the environment naming one.
     expect(
       await runHook(fableSessionHook, start(null), {
@@ -145,6 +208,15 @@ describe("a session on the fable tier", () => {
         }),
       ),
     ).toBe(BY_BACKEND);
+    // And a switch naming that same id warns the same way.
+    expect(
+      told(
+        await runHook(fableSessionHook, switchTo("openai:gpt-5.5"), {
+          ...hookEnv(),
+          ANTHROPIC_DEFAULT_FABLE_MODEL: "openai:gpt-5.5",
+        }),
+      ),
+    ).toBe(BY_BACKEND);
   });
 
   it("a mark another run made means told already; one that cannot be made means silence", async () => {
@@ -155,6 +227,7 @@ describe("a session on the fable tier", () => {
     mkdirSync(dirname(raced), { recursive: true });
     symlinkSync(join(racing.TMPDIR ?? "", "nowhere"), raced);
     expect(await runHook(fableSessionHook, start("claude-fable-5-1"), racing)).toEqual({});
+    expect(await runHook(fableSessionHook, switchTo("claude-fable-5-1"), racing)).toEqual({});
     // A state folder that cannot be written at all: the same silence, never a second line.
     const broken = hookEnv();
     const mark = fableSessionMark(broken, SESSION);
@@ -169,6 +242,13 @@ describe("a session on the fable tier", () => {
     const env = hookEnv();
     expect(
       await runHook(fableSessionHook, start("claude-fable-5-1", "not-a-session-id"), env),
+    ).toEqual({});
+    expect(
+      await runHook(
+        fableSessionHook,
+        { ...switchTo("claude-fable-5-1"), session_id: "not-a-session-id" },
+        env,
+      ),
     ).toEqual({});
   });
 });
