@@ -7897,6 +7897,8 @@ function lastClaudeModel(transcriptPath) {
   if (lines === null)
     return null;
   for (const entry of entriesFromEnd(lines)) {
+    if (entry.isSidechain === true)
+      continue;
     if (entry.type !== "assistant" || !isJsonObject3(entry.message))
       continue;
     const model = entry.message.model;
@@ -7978,7 +7980,7 @@ function resolveName(text, config) {
   if ("target" in parsed && parsed.target.kind === "backend") {
     return { claude: false, family: null, model: text };
   }
-  return { claude: false, family: null, model: text };
+  return { claude: true, family: null, model: text };
 }
 function resolveTarget(text) {
   const parsed = parseTarget(text);
@@ -8029,6 +8031,24 @@ function stringAt(text, from) {
   }
   return null;
 }
+function interpolated(text, from, end) {
+  for (let index = from + 1;index < end - 1; index += 1) {
+    const char = text[index] ?? "";
+    if (char === "\\") {
+      index += 1;
+      continue;
+    }
+    if (char === "$" && text[index + 1] === "{")
+      return true;
+  }
+  return false;
+}
+function literalAt(text, from) {
+  const literal = stringAt(text, from);
+  if (literal === null)
+    return null;
+  return text[from] === "`" && interpolated(text, from, literal.end) ? null : literal;
+}
 function endOf(text, from, open, close) {
   let depth = 0;
   for (let index = from;index < text.length; index += 1) {
@@ -8056,7 +8076,7 @@ function callText(script, open) {
 function firstArgument(call) {
   const args = call.slice(1);
   const lead = args.length - args.trimStart().length;
-  const literal = stringAt(call, 1 + lead);
+  const literal = literalAt(call, 1 + lead);
   return literal === null ? null : literal.value;
 }
 function stringOption(call, name) {
@@ -8064,61 +8084,199 @@ function stringOption(call, name) {
   if (found === null)
     return null;
   const at = found.index + found[0].length;
-  const literal = stringAt(call, at);
+  const literal = literalAt(call, at);
   return literal === null ? null : literal.value;
 }
-function agentCalls(script) {
-  const opens = [];
-  let state = "code";
+function callOpen(at, script) {
+  const rest = script.slice(at + 5);
+  return at + 5 + (rest.length - rest.trimStart().length);
+}
+function agentMentions(script) {
+  const mentions = [];
+  const stack = [{ braces: 0, kind: "code" }];
   for (let index = 0;index < script.length; index += 1) {
+    const frame = stack.at(-1);
+    if (frame === undefined)
+      break;
     const char = script[index] ?? "";
     const next = script[index + 1] ?? "";
-    if (state === "line") {
+    if (frame.kind === "line") {
       if (char === `
 `)
-        state = "code";
+        stack.pop();
       continue;
     }
-    if (state === "block") {
+    if (frame.kind === "block") {
       if (char === "*" && next === "/") {
-        state = "code";
+        stack.pop();
         index += 1;
       }
       continue;
     }
-    if (state !== "code") {
-      if (char === "\\") {
+    if (frame.kind === "single" || frame.kind === "double") {
+      if (char === "\\")
         index += 1;
-        continue;
-      }
-      if (state === "template" && char === "`" || state === "single" && char === "'" || state === "double" && char === '"') {
-        state = "code";
+      else if (char === (frame.kind === "single" ? "'" : '"'))
+        stack.pop();
+      continue;
+    }
+    if (frame.kind === "template") {
+      if (char === "\\")
+        index += 1;
+      else if (char === "`")
+        stack.pop();
+      else if (char === "$" && next === "{") {
+        stack.push({ braces: 0, kind: "code" });
+        index += 1;
       }
       continue;
     }
     if (char === "/" && next === "/") {
-      state = "line";
+      stack.push({ braces: 0, kind: "line" });
       index += 1;
       continue;
     }
     if (char === "/" && next === "*") {
-      state = "block";
+      stack.push({ braces: 0, kind: "block" });
       index += 1;
       continue;
     }
-    if (char === "'" || char === '"' || char === "`") {
-      state = char === "'" ? "single" : char === '"' ? "double" : "template";
+    if (char === "'" || char === '"') {
+      stack.push({ braces: 0, kind: char === "'" ? "single" : "double" });
       continue;
     }
-    if (script.startsWith("agent", index) && (index === 0 || /[^\w.$]/.test(script[index - 1] ?? "")) && /^\s*\(/.test(script.slice(index + 5))) {
-      opens.push(index + 5 + (script.slice(index + 5).length - script.slice(index + 5).trimStart().length));
+    if (char === "`") {
+      stack.push({ braces: 0, kind: "template" });
+      continue;
+    }
+    if (char === "{") {
+      frame.braces += 1;
+      continue;
+    }
+    if (char === "}") {
+      if (frame.braces > 0)
+        frame.braces -= 1;
+      else if (stack.length > 1)
+        stack.pop();
+      continue;
+    }
+    if (script.startsWith("agent", index) && (index === 0 || /[^\w.$]/.test(script[index - 1] ?? ""))) {
+      if (/[\w$]/.test(script[index + 5] ?? ""))
+        continue;
+      mentions.push({ at: index, call: /^\s*\(/.test(script.slice(index + 5)) });
     }
   }
-  return opens;
+  return mentions;
+}
+function lineOf(script, index) {
+  return script.slice(0, index).split(`
+`).length;
+}
+function builtAtRuntime(call) {
+  const stack = [];
+  const keys = [];
+  let keyExpected = false;
+  for (let index = 1;index < call.length; index += 1) {
+    const char = call[index] ?? "";
+    const next = call[index + 1] ?? "";
+    if (char === '"' || char === "'" || char === "`") {
+      const literal = stringAt(call, index);
+      if (literal === null)
+        return false;
+      index = literal.end - 1;
+      continue;
+    }
+    if (char === "/" && next === "/") {
+      const end = call.indexOf(`
+`, index);
+      if (end === -1)
+        return false;
+      index = end;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      const end = call.indexOf("*/", index + 2);
+      if (end === -1)
+        return false;
+      index = end + 1;
+      continue;
+    }
+    if (call.startsWith("...", index))
+      return true;
+    if (/\s/.test(char))
+      continue;
+    if (char === "{" || char === "(" || char === "[") {
+      if (keyExpected && char === "[")
+        return true;
+      stack.push(char);
+      if (char === "{")
+        keys.push(new Set);
+      keyExpected = char === "{";
+      continue;
+    }
+    if (char === "}" || char === ")" || char === "]") {
+      if (char === "}")
+        keys.pop();
+      stack.pop();
+      keyExpected = false;
+      continue;
+    }
+    if (char === ",") {
+      keyExpected = stack.at(-1) === "{";
+      continue;
+    }
+    const key = keyExpected ? /^[A-Za-z_$][\w$]*/.exec(call.slice(index))?.[0] : undefined;
+    if (key !== undefined) {
+      const open = keys.at(-1);
+      if (open !== undefined) {
+        if (open.has(key))
+          return true;
+        open.add(key);
+      }
+      index += key.length - 1;
+    }
+    keyExpected = false;
+  }
+  return false;
+}
+function callsOf(script) {
+  return agentMentions(script).filter((mention) => mention.call).map((mention) => callOpen(mention.at, script));
+}
+var AGENT_HANDED_AROUND = [
+  "A launch made through a variable runs inside the tool and never reaches a hook, so the guard cannot read the model and effort it will run on.",
+  'Write every launch as a direct `agent("<prompt>", { model: "\u2026", effort: "\u2026" })` call.'
+].join(`
+`);
+var OPTIONS_BUILT_AT_RUNTIME = [
+  "Its options are not what they seem: a `...spread`, a computed `[\u2026]` key, or the same option written twice (the last one wins at run time, while the guard reads the first). The model and effort it will really run on cannot be read.",
+  "Write `model`, `effort` and `agentType` once each, as string literals in the call's own options object."
+].join(`
+`);
+function workflowRefusal(script) {
+  const mentions = agentMentions(script);
+  const handed = mentions.find((mention) => !mention.call);
+  if (handed !== undefined) {
+    return [
+      `This Workflow uses \`agent\` without calling it at once (line ${lineOf(script, handed.at)}): a variable holds it, it is optional-called (\`agent?.(\u2026)\`), or it is passed as a value.`,
+      AGENT_HANDED_AROUND
+    ].join(`
+`);
+  }
+  for (const mention of mentions) {
+    if (!builtAtRuntime(callText(script, callOpen(mention.at, script)))) {
+      continue;
+    }
+    return [
+      `This Workflow's \`agent(\u2026)\` call at line ${lineOf(script, mention.at)} cannot be read.`,
+      OPTIONS_BUILT_AT_RUNTIME
+    ].join(`
+`);
+  }
+  return null;
 }
 function readWorkflowScript(script) {
   const launches = [];
-  for (const open of agentCalls(script)) {
+  for (const open of callsOf(script)) {
     const call = callText(script, open);
     const prompt = firstArgument(call);
     const label = stringOption(call, "label");
@@ -8227,7 +8385,7 @@ function judgeLaunch(launch, ctx, env) {
     if (launch.effort === null)
       return deny(null, NO_EFFORT);
   }
-  const real = launch.model !== null ? resolveLaunchModel(launch.model, ctx.config, env) : forkModel(ctx.sessionModel, ctx.config);
+  const real = launch.model !== null ? resolveLaunchModel(launch.model, ctx.config, env) : forkModel(ctx.sessionModel, ctx.config, env);
   const type = launch.subagentType ?? "";
   const review = ctx.reviewAgents === undefined ? agentList(REVIEW_AGENTS, env, REVIEW_AGENTS_ENV) : new Set(ctx.reviewAgents.map(agentKey));
   const readOnly = ctx.readOnlyAgents === undefined ? agentList(READ_ONLY_AGENTS, env, READ_ONLY_AGENTS_ENV) : new Set(ctx.readOnlyAgents.map(agentKey));
@@ -8301,10 +8459,10 @@ function judgeLaunch(launch, ctx, env) {
     why: `opus:${word}`
   };
 }
-function forkModel(sessionModel, config) {
+function forkModel(sessionModel, config, env) {
   if (sessionModel === null)
     return { claude: true, family: "opus", model: "the session's model (unknown)" };
-  return resolveName(withoutContextSuffix(sessionModel.trim()), config);
+  return resolveLaunchModel(sessionModel, config, env);
 }
 function readGuardContext(paths, input, env) {
   let config = null;
@@ -8334,6 +8492,9 @@ function guardFacts(input, context) {
     const script = stringField(toolInput(input).script);
     if (script === null)
       return {};
+    const refusal = workflowRefusal(script);
+    if (refusal !== null)
+      return { decision: "deny", launches: 0, tool: "Workflow", why: "unreadable" };
     const results = judgeWorkflow(script, guard, context.env);
     const decided = results.find((one) => one.verdict.decision !== "allow");
     return {
@@ -8381,6 +8542,9 @@ function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
     const script = stringField(toolInput(input).script);
     if (script === null)
       return SILENT;
+    const refusal = workflowRefusal(script);
+    if (refusal !== null)
+      return toolDecision("deny", refusal);
     const results = judgeWorkflow(script, context, env);
     for (const one of results) {
       if (one.verdict.decision === "deny")
@@ -8674,9 +8838,16 @@ function plainWords(command) {
 function shellWord(word) {
   return PLAIN_WORD.test(word) ? word : shellQuote(word);
 }
-function jobRunCommand(kind, command) {
+function routedShell(env, which = (command) => Bun.which(command, { PATH: env.PATH ?? "" })) {
+  const shell = env.SHELL ?? "";
+  const name = shell.split("/").pop() ?? "";
+  if (name === "bash" || name === "zsh")
+    return shell;
+  return which("bash") ?? "sh";
+}
+function jobRunCommand(kind, command, shell) {
   const words = plainWords(command);
-  const inner = words === null ? `sh -c ${shellQuote(command)}` : words.map(shellWord).join(" ");
+  const inner = words === null ? `${shellWord(shell)} -c ${shellQuote(command)}` : words.map(shellWord).join(" ");
   return `${LAUNCHER_IN_SHELL} job run --kind ${kind} -- ${inner}`;
 }
 function runsJobRun(command) {
@@ -8698,11 +8869,11 @@ function isJobRun(program, args) {
   const base = (program.split(/[\\/]/).pop() ?? program).replace(/\.(cmd|exe|ps1|bat)$/, "");
   return base === COMMAND && args[0] === "job" && args[1] === "run";
 }
-function routeHeavyCommand(command, kinds) {
+function routeHeavyCommand(command, kinds, shell) {
   if (runsJobRun(command))
     return null;
   const kind = classifyHeavyCommand(command, kinds);
-  return kind === null ? null : { command: jobRunCommand(kind, command), kind };
+  return kind === null ? null : { command: jobRunCommand(kind, command, shell), kind };
 }
 var REWRITE_SUPPORTED = true;
 function rewriteAnswer(fields, routed) {
@@ -8730,7 +8901,7 @@ function jobRoute(context) {
   const command = stringField(fields.command);
   if (command === null)
     return SILENT;
-  const routed = routeHeavyCommand(command, mergeKinds(context.project.config.jobs?.kinds));
+  const routed = routeHeavyCommand(command, mergeKinds(context.project.config.jobs?.kinds), routedShell(context.env));
   if (routed === null)
     return SILENT;
   return REWRITE_SUPPORTED ? rewriteAnswer(fields, routed) : routeDenial(routed);

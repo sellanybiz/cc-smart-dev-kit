@@ -13,7 +13,8 @@
  *
  * | The model behind the launch | The verdict |
  * |---|---|
- * | an affordable slot / a backend `<backend>:<model>` / any non-Claude name | allow; with the gateway on, its effort must be `max`, else deny |
+ * | an affordable slot key / a `<backend>:<model>` target | allow; with the gateway on, its effort must be `max`, else deny |
+ * | any other name (`best`, `opusplan`, `default`, `inherit`, a name no rule knows) | the Opus rule below: only what the guard can prove affordable is affordable |
  * | Claude Sonnet or Haiku | allow (Claude effort levels, nothing forced) |
  * | Claude Opus | a review agent (or one ending `:reviewer`): allow, no question (still refused at effort `max`); anything else with a prompt line `Opus reason: <one of OPUS_REASONS>`: **ask** (the person approves each one, and sees the reason); without that line: deny |
  * | Claude Fable | only a read-only agent type, with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: then **ask**; a builder type, no reason line, or an unattended session (`claude -p`): deny |
@@ -163,8 +164,10 @@ function resolveName(text: string, config: GatewayConfig | null): LaunchModel {
   if ("target" in parsed && parsed.target.kind === "backend") {
     return { claude: false, family: null, model: text };
   }
-  // A name the router does not know: not a Claude model, so the affordable-slot rule applies.
-  return { claude: false, family: null, model: text };
+  // A name no rule knows (`best`, `opusplan`, `default`, `inherit`, anything else): never read
+  // as an affordable slot. Only a slot key and a `<backend>:<model>` target are affordable —
+  // every other name gets the strictest rule, the one for a Claude id with no family to read.
+  return { claude: true, family: null, model: text };
 }
 
 /** A slot target as the model behind the launch. */
@@ -241,10 +244,18 @@ export interface GuardContext {
  * script fire **nothing** — no `Agent` call passes the hooks. So the guard reads the script
  * (`readWorkflowScript`) and judges each launch it can see.
  *
- * What it cannot see: a value held in a variable (`model: chosen`), a prompt built at run
- * time, and a launch made by a helper the script calls elsewhere. Those are denied for
- * Opus/Fable (no reason line can be read) and for a model it cannot see; say so in the
- * message rather than guess.
+ * What it cannot see is refused, never guessed:
+ *   - a value held in a variable (`model: chosen`), a prompt built at run time, and a
+ *     backtick literal that builds its text (`` `${…}` ``) leave that launch's verdict short
+ *     of a reason line, so an Opus or Fable launch is denied and a launch whose `model` cannot
+ *     be read is denied outright;
+ *   - options built at run time (a `...spread`, a computed `[…]` key) and a launch made
+ *     through a **variable** (`const run = agent; run(…)`, `agent?.(…)`, `agent` passed
+ *     around) hide every rule from the guard, so the whole Workflow is denied with the reason
+ *     (`workflowRefusal`).
+ *
+ * A launch written as a direct `agent(…)` call is read and judged wherever it is — inside a
+ * helper function defined in the script too, and inside a template literal's `${…}`.
  */
 export interface WorkflowLaunch {
   /** `agentType` of the call's options; null when the call names none or not as a literal. */
@@ -277,6 +288,30 @@ function stringAt(text: string, from: number): null | { end: number; value: stri
   return null;
 }
 
+/**
+ * True when the literal at `[from, end)` builds its text at run time: a template with an
+ * unescaped `${…}`. Its value is not the text between the backticks, so nothing is read from
+ * it — `model: \`op${n}us\`` names no model the guard can prove.
+ */
+function interpolated(text: string, from: number, end: number): boolean {
+  for (let index = from + 1; index < end - 1; index += 1) {
+    const char = text[index] ?? "";
+    if (char === "\\") {
+      index += 1;
+      continue;
+    }
+    if (char === "$" && text[index + 1] === "{") return true;
+  }
+  return false;
+}
+
+/** A **fixed** string literal's value at `from`; null when it is not one, or is built at run time. */
+function literalAt(text: string, from: number): null | { end: number; value: string } {
+  const literal = stringAt(text, from);
+  if (literal === null) return null;
+  return text[from] === "`" && interpolated(text, from, literal.end) ? null : literal;
+}
+
 /** Where a `{…}` object or a `(…)` call ends, skipping string literals; the text's end. */
 function endOf(text: string, from: number, open: string, close: string): number {
   let depth = 0;
@@ -302,91 +337,250 @@ function callText(script: string, open: number): string {
   return script.slice(open, endOf(script, open, "(", ")") + 1);
 }
 
-/** The first argument of a call, when it is a string literal; null otherwise. */
+/** The first argument of a call, when it is a fixed string literal; null otherwise. */
 function firstArgument(call: string): null | string {
   const args = call.slice(1);
   const lead = args.length - args.trimStart().length;
-  const literal = stringAt(call, 1 + lead);
+  const literal = literalAt(call, 1 + lead);
   return literal === null ? null : literal.value;
 }
 
-/** A string option of a call (`model: "opus"`), or null when absent or not a literal. */
+/** A fixed string option of a call (`model: "opus"`), or null when absent or not a literal. */
 function stringOption(call: string, name: string): null | string {
   const found = new RegExp(`(^|[{,\\s])${name}\\s*:\\s*`).exec(call);
   if (found === null) return null;
   const at = found.index + found[0].length;
-  const literal = stringAt(call, at);
+  const literal = literalAt(call, at);
   return literal === null ? null : literal.value;
 }
 
-/** Where a `(...)` call's opening parenthesis sits: code only, never a string or a comment. */
-function agentCalls(script: string): number[] {
-  const opens: number[] = [];
-  let state: "code" | "line" | "block" | "single" | "double" | "template" = "code";
+/** One way a script mentions the `agent` function: its name in code, and whether it is called. */
+interface AgentMention {
+  /** Where the name starts in the script. */
+  at: number;
+  /** True for a direct call (`agent(…)`); false when `agent` is handed around as a value. */
+  call: boolean;
+}
+
+/** The position of the `(` of a direct call whose name starts at `at`. */
+function callOpen(at: number, script: string): number {
+  const rest = script.slice(at + 5);
+  return at + 5 + (rest.length - rest.trimStart().length);
+}
+
+/**
+ * Every mention of `agent` in the script's code, and whether it is a direct call. In code
+ * only: the word inside a prompt, a string or a comment is not a mention, and neither is a
+ * property (`x.agent`) or a longer name (`agentType`, `agents`). A template literal's
+ * `${…}` is code again — a launch written there is a launch — so the scan keeps a stack of
+ * the contexts it is inside.
+ */
+function agentMentions(script: string): AgentMention[] {
+  type Frame = {
+    braces: number;
+    kind: "block" | "code" | "double" | "line" | "single" | "template";
+  };
+  const mentions: AgentMention[] = [];
+  const stack: Frame[] = [{ braces: 0, kind: "code" }];
   for (let index = 0; index < script.length; index += 1) {
+    const frame = stack.at(-1);
+    if (frame === undefined) break;
     const char = script[index] ?? "";
     const next = script[index + 1] ?? "";
-    if (state === "line") {
-      if (char === "\n") state = "code";
+    if (frame.kind === "line") {
+      if (char === "\n") stack.pop();
       continue;
     }
-    if (state === "block") {
+    if (frame.kind === "block") {
       if (char === "*" && next === "/") {
-        state = "code";
+        stack.pop();
         index += 1;
       }
       continue;
     }
-    if (state !== "code") {
-      if (char === "\\") {
+    if (frame.kind === "single" || frame.kind === "double") {
+      if (char === "\\") index += 1;
+      else if (char === (frame.kind === "single" ? "'" : '"')) stack.pop();
+      continue;
+    }
+    if (frame.kind === "template") {
+      if (char === "\\") index += 1;
+      else if (char === "`") stack.pop();
+      else if (char === "$" && next === "{") {
+        stack.push({ braces: 0, kind: "code" });
         index += 1;
-        continue;
-      }
-      if (
-        (state === "template" && char === "`") ||
-        (state === "single" && char === "'") ||
-        (state === "double" && char === '"')
-      ) {
-        state = "code";
       }
       continue;
     }
+    // Code.
     if (char === "/" && next === "/") {
-      state = "line";
+      stack.push({ braces: 0, kind: "line" });
       index += 1;
       continue;
     }
     if (char === "/" && next === "*") {
-      state = "block";
+      stack.push({ braces: 0, kind: "block" });
       index += 1;
       continue;
     }
-    if (char === "'" || char === '"' || char === "`") {
-      state = char === "'" ? "single" : char === '"' ? "double" : "template";
+    if (char === "'" || char === '"') {
+      stack.push({ braces: 0, kind: char === "'" ? "single" : "double" });
       continue;
     }
-    // `agent(` in code, and not a property or a longer name (`myagent(`, `x.agent(`).
+    if (char === "`") {
+      stack.push({ braces: 0, kind: "template" });
+      continue;
+    }
+    if (char === "{") {
+      frame.braces += 1;
+      continue;
+    }
+    if (char === "}") {
+      if (frame.braces > 0) frame.braces -= 1;
+      else if (stack.length > 1) stack.pop();
+      continue;
+    }
     if (
       script.startsWith("agent", index) &&
-      (index === 0 || /[^\w.$]/.test(script[index - 1] ?? "")) &&
-      /^\s*\(/.test(script.slice(index + 5))
+      (index === 0 || /[^\w.$]/.test(script[index - 1] ?? ""))
     ) {
-      opens.push(
-        index + 5 + (script.slice(index + 5).length - script.slice(index + 5).trimStart().length),
-      );
+      // `agentType`, `agents`: a longer name, not a mention of `agent`.
+      if (/[\w$]/.test(script[index + 5] ?? "")) continue;
+      mentions.push({ at: index, call: /^\s*\(/.test(script.slice(index + 5)) });
     }
   }
-  return opens;
+  return mentions;
+}
+
+/** The line of the script an index sits on, counting from 1: what a message names. */
+function lineOf(script: string, index: number): number {
+  return script.slice(0, index).split("\n").length;
+}
+
+/**
+ * True when a call's options are not what they seem: a `...spread` (which can replace any
+ * option), a computed key (`[…]`) where an object's key belongs, or the same key twice at one
+ * level (JavaScript keeps the last, the guard reads the first). Any of them can change `model`
+ * or `effort` after the literal the guard would have read.
+ */
+function builtAtRuntime(call: string): boolean {
+  const stack: string[] = [];
+  /** The keys seen so far, one set per open object literal. */
+  const keys: Array<Set<string>> = [];
+  let keyExpected = false;
+  for (let index = 1; index < call.length; index += 1) {
+    const char = call[index] ?? "";
+    const next = call[index + 1] ?? "";
+    if (char === '"' || char === "'" || char === "`") {
+      const literal = stringAt(call, index);
+      if (literal === null) return false;
+      index = literal.end - 1;
+      continue;
+    }
+    // A comment is not code: the `...` a person writes in one is not a spread.
+    if (char === "/" && next === "/") {
+      const end = call.indexOf("\n", index);
+      if (end === -1) return false;
+      index = end;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      const end = call.indexOf("*/", index + 2);
+      if (end === -1) return false;
+      index = end + 1;
+      continue;
+    }
+    if (call.startsWith("...", index)) return true;
+    if (/\s/.test(char)) continue;
+    if (char === "{" || char === "(" || char === "[") {
+      if (keyExpected && char === "[") return true;
+      stack.push(char);
+      if (char === "{") keys.push(new Set());
+      keyExpected = char === "{";
+      continue;
+    }
+    if (char === "}" || char === ")" || char === "]") {
+      if (char === "}") keys.pop();
+      stack.pop();
+      keyExpected = false;
+      continue;
+    }
+    if (char === ",") {
+      keyExpected = stack.at(-1) === "{";
+      continue;
+    }
+    // A key of an object literal: an identifier one (`"model": …` cannot be read as an option
+    // anyway), and never the same name twice in that object.
+    const key = keyExpected ? /^[A-Za-z_$][\w$]*/.exec(call.slice(index))?.[0] : undefined;
+    if (key !== undefined) {
+      const open = keys.at(-1);
+      if (open !== undefined) {
+        if (open.has(key)) return true;
+        open.add(key);
+      }
+      index += key.length - 1;
+    }
+    keyExpected = false;
+  }
+  return false;
+}
+
+/** Where each direct call's `(` sits, in script order: what `readWorkflowScript` reads. */
+function callsOf(script: string): number[] {
+  return agentMentions(script)
+    .filter((mention) => mention.call)
+    .map((mention) => callOpen(mention.at, script));
+}
+
+/** Said when the script hands `agent` around: nothing it launches can be read. */
+const AGENT_HANDED_AROUND = [
+  "A launch made through a variable runs inside the tool and never reaches a hook, so the guard cannot read the model and effort it will run on.",
+  'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call.',
+].join("\n");
+
+/** Said when a call's options are not what they seem: what the guard read can differ. */
+const OPTIONS_BUILT_AT_RUNTIME = [
+  "Its options are not what they seem: a `...spread`, a computed `[…]` key, or the same option written twice (the last one wins at run time, while the guard reads the first). The model and effort it will really run on cannot be read.",
+  "Write `model`, `effort` and `agentType` once each, as string literals in the call's own options object.",
+].join("\n");
+
+/**
+ * The reason this whole Workflow call is refused, or null when every launch in it can be
+ * read. Two things hide the rules from the guard, and a hook must refuse what it cannot see
+ * rather than let it run unchecked:
+ *   - `agent` mentioned without being called at once (`const run = agent; run(…)`,
+ *     `agent?.(…)`, `agent` passed around as a value);
+ *   - a call whose options are not what they seem (`builtAtRuntime`).
+ */
+export function workflowRefusal(script: string): null | string {
+  const mentions = agentMentions(script);
+  const handed = mentions.find((mention) => !mention.call);
+  if (handed !== undefined) {
+    return [
+      `This Workflow uses \`agent\` without calling it at once (line ${lineOf(script, handed.at)}): a variable holds it, it is optional-called (\`agent?.(…)\`), or it is passed as a value.`,
+      AGENT_HANDED_AROUND,
+    ].join("\n");
+  }
+  for (const mention of mentions) {
+    if (!builtAtRuntime(callText(script, callOpen(mention.at, script)))) {
+      continue;
+    }
+    return [
+      `This Workflow's \`agent(…)\` call at line ${lineOf(script, mention.at)} cannot be read.`,
+      OPTIONS_BUILT_AT_RUNTIME,
+    ].join("\n");
+  }
+  return null;
 }
 
 /**
  * Every `agent(...)` call of a Workflow script, in order. A call is found by its name, in code
  * only (the word inside a prompt, a string or a comment is not a call); its text runs to the
- * matching `)`. Nothing is evaluated: only string literals are read.
+ * matching `)`. Nothing is evaluated: only fixed string literals are read.
  */
 export function readWorkflowScript(script: string): WorkflowLaunch[] {
   const launches: WorkflowLaunch[] = [];
-  for (const open of agentCalls(script)) {
+  for (const open of callsOf(script)) {
     const call = callText(script, open);
     const prompt = firstArgument(call);
     const label = stringOption(call, "label");
@@ -530,7 +724,7 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
   const real =
     launch.model !== null
       ? resolveLaunchModel(launch.model, ctx.config, env)
-      : forkModel(ctx.sessionModel, ctx.config);
+      : forkModel(ctx.sessionModel, ctx.config, env);
   const type = launch.subagentType ?? "";
   const review =
     ctx.reviewAgents === undefined
@@ -624,10 +818,14 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
 }
 
 /** The model behind a fork: the session's own, unknowable → Claude Opus. */
-function forkModel(sessionModel: null | string, config: GatewayConfig | null): LaunchModel {
+function forkModel(
+  sessionModel: null | string,
+  config: GatewayConfig | null,
+  env: Env,
+): LaunchModel {
   if (sessionModel === null)
     return { claude: true, family: "opus", model: "the session's model (unknown)" };
-  return resolveName(withoutContextSuffix(sessionModel.trim()), config);
+  return resolveLaunchModel(sessionModel, config, env);
 }
 
 /** What the guard reads from this machine for `judgeLaunch`; never throws. */
@@ -668,6 +866,9 @@ export function guardFacts(input: HookInput, context: HookEnvContext): Record<st
   if (tool !== null && (WORKFLOW_TOOLS as readonly string[]).includes(tool)) {
     const script = stringField(toolInput(input).script);
     if (script === null) return {};
+    const refusal = workflowRefusal(script);
+    if (refusal !== null)
+      return { decision: "deny", launches: 0, tool: "Workflow", why: "unreadable" };
     const results = judgeWorkflow(script, guard, context.env);
     const decided = results.find((one) => one.verdict.decision !== "allow");
     return {
@@ -732,6 +933,10 @@ export function agentGuard(
   if (tool !== null && (WORKFLOW_TOOLS as readonly string[]).includes(tool)) {
     const script = stringField(toolInput(input).script);
     if (script === null) return SILENT;
+    // A launch the guard cannot follow — `agent` handed around, options built at run time —
+    // refuses the whole call: the rules would not hold for it.
+    const refusal = workflowRefusal(script);
+    if (refusal !== null) return toolDecision("deny", refusal);
     const results = judgeWorkflow(script, context, env);
     for (const one of results) {
       if (one.verdict.decision === "deny") continue;

@@ -35,6 +35,30 @@ describe("lastClaudeModel", () => {
     expect(lastClaudeModel(path)).toBe("claude-fable-5-1");
     expect(lastClaudeModel(join(folder, "none.jsonl"))).toBeNull();
   });
+
+  it("a sidechain line (a subagent's own conversation) is passed over", () => {
+    const path = write([
+      { message: { content: [], model: "claude-sonnet-5-5" }, type: "assistant" },
+      {
+        isSidechain: true,
+        message: { content: [], model: "claude-opus-5-5" },
+        type: "assistant",
+      },
+    ]);
+    expect(lastClaudeModel(path)).toBe("claude-sonnet-5-5");
+    // Only sidechain lines: nothing is known about the session's own model.
+    expect(
+      lastClaudeModel(
+        write([
+          {
+            isSidechain: true,
+            message: { content: [], model: "claude-opus-5-5" },
+            type: "assistant",
+          },
+        ]),
+      ),
+    ).toBeNull();
+  });
 });
 
 describe("lastCustomTitle", () => {

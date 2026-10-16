@@ -1,4 +1,5 @@
 import { existsSync, rmSync } from "node:fs";
+import { dirname } from "node:path";
 import { COMMAND } from "../build-info";
 import { configuredPort } from "../gateway/commands";
 import { messageOf } from "../gateway/config";
@@ -224,7 +225,11 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
           console.log(`  cannot read the router's port (${messageOf(error)}); not waiting for it`);
           port = null;
         }
-        const stopped = await stopRouter(options.runner, port, options.probe);
+        const stopped = await stopRouter(options.runner, port, options.probe, {
+          dir: dirname(paths.routerUnitFile),
+          socket: SOCKET_NAME,
+          unit: UNIT_NAME,
+        });
         switch (stopped.kind) {
           case "closed":
             console.log(

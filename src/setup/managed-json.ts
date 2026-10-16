@@ -173,8 +173,10 @@ function recordOf(path: KeyPath, value: unknown, secret: boolean): OwnedRecord {
  * Whose key is it now?
  * - `none`: cc-smart-dev-kit does not own it.
  * - `ours`: cc-smart-dev-kit owns it, and it holds what cc-smart-dev-kit wrote: the recorded value, a
- *   program's own default (`unchosen`), or nothing at all; or the record keeps no value.
- * - `changed`: cc-smart-dev-kit owned it, but it holds another value now: the person's choice.
+ *   program's own default (`unchosen`), or the record keeps no value at all (an `owned.json`
+ *   from before values were kept, or the claim made just before a write).
+ * - `changed`: cc-smart-dev-kit owned it, but it is not cc-smart-dev-kit's any more: it holds another
+ *   value now, or it is not in the file at all — the person changed it, or removed it.
  */
 export function ownership(
   records: readonly OwnedRecord[],
@@ -184,7 +186,9 @@ export function ownership(
 ): "none" | "ours" | "changed" {
   const record = records.find((entry) => samePath(entry.path, path));
   if (record === undefined) return "none";
-  if (!current.found) return "ours";
+  // A key that is not in the file any more is the person's: cc-smart-dev-kit does not put it
+  // back (`migrate` would otherwise re-add a key they deleted, or rewrite a value of theirs).
+  if (!current.found) return "changed";
   if (record.sha256 !== undefined) {
     if (hashOf(current.value) === record.sha256) return "ours";
   } else if (!Object.hasOwn(record, "value")) {
@@ -320,7 +324,12 @@ function applyOnce(
     }
     dropped.push(path);
     if (whose === "changed") {
-      skipped.push({ path, reason: "changed since cc-smart-dev-kit set it; left alone" });
+      skipped.push({
+        path,
+        reason: current.found
+          ? "changed since cc-smart-dev-kit set it; left alone"
+          : "not in the file any more (removed since cc-smart-dev-kit set it); left alone",
+      });
       continue;
     }
     if (!current.found) continue;

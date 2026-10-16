@@ -84,6 +84,31 @@ function writeConfig(env: Record<string, string>, config: unknown): void {
   writeFileSync(file, JSON.stringify(config));
 }
 
+/**
+ * The gateway, set up: `~/.config/cc-smart-dev-kit/gateway.json` exists (mode 600, or the
+ * loader refuses it). Only its existence matters to the two StopFailure hooks.
+ */
+function gatewaySetUp(env: Record<string, string>): void {
+  const file = cliPaths(env).gatewayConfigFile;
+  mkdirSync(join(file, ".."), { recursive: true });
+  writeFileSync(
+    file,
+    JSON.stringify({ aliases: {}, backends: {}, port: 20100, slots: {}, version: 1 }),
+    { mode: 0o600 },
+  );
+}
+
+/** The hook input at the plan's usage limit, as Claude Code sends it. */
+function limitInput(env: Record<string, string>): Record<string, unknown> {
+  return {
+    cwd: join(env.HOME ?? "", "rel-ssh"),
+    error: "rate_limit",
+    hook_event_name: "StopFailure",
+    last_assistant_message: "You've hit your limit · resets 3pm",
+    session_id: "s-5",
+  };
+}
+
 /** Warp's own plugin, on and installed, in the Claude config folder this env names. */
 function warpPlugin(env: Record<string, string>): void {
   const paths = cliPaths(env);
@@ -103,8 +128,9 @@ function warpPlugin(env: Record<string, string>): void {
 function setup(
   env: Record<string, string>,
   overrides: Partial<NotifyDeps> = {},
-): { deps: NotifyDeps; runs: string[][]; tty: string[] } {
+): { deps: NotifyDeps; runs: string[][]; session: string[]; tty: string[] } {
   const runs: string[][] = [];
+  const session: string[] = [];
   const tty: string[] = [];
   const deps: NotifyDeps = {
     env,
@@ -113,13 +139,17 @@ function setup(
     platform: "linux",
     run: (argv) => runs.push(argv),
     which: (command) => Bun.which(command, { PATH: env.PATH ?? "" }),
+    writeSessionTerminal: (sequence) => {
+      session.push(sequence);
+      return true;
+    },
     writeTerminal: (sequence) => {
       tty.push(sequence);
       return true;
     },
     ...overrides,
   };
-  return { deps, runs, tty };
+  return { deps, runs, session, tty };
 }
 
 /** A transcript, one JSON entry per line, written where the hook reads it. */
@@ -392,20 +422,63 @@ describe("what is notified, and with which words", () => {
     expect(fifth.runs.length).toBe(2);
   });
 
-  test("the usage limit is the StopFailure hook's alert: never two for one stop", () => {
+  test("a stop at the plan's limit, with a desktop and the gateway set up: the StopFailure hook's alert", () => {
     const { env } = machine();
+    gatewaySetUp(env);
+    const { deps, runs } = setup(env);
+    notifyHook(limitInput(env), "StopFailure", deps);
+    expect(runs).toEqual([]);
+  });
+
+  test("the same stop with no gateway set up: no stop-failure alert, so the notifier shows it", () => {
+    const { bin, env } = machine();
+    const { deps, runs } = setup(env);
+    notifyHook(limitInput(env), "StopFailure", deps);
+    expect(runs).toEqual([
+      [join(bin, "paplay"), "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga"],
+      [
+        join(bin, "notify-send"),
+        "--urgency=critical",
+        "Claude stopped · rel-ssh",
+        "You've hit your limit · resets 3pm",
+      ],
+    ]);
+  });
+
+  test("with the gateway set up but no desktop, over SSH: the notifier's own route, as OSC 777", () => {
+    const { env } = machine({
+      CLAUDE_CODE_VERSION: "2.1.301",
+      DISPLAY: "",
+      SSH_CONNECTION: "10.0.0.2 51000",
+    });
+    gatewaySetUp(env);
+    const { deps, runs, tty } = setup(env);
+    // StopFailure's answer is not read by Claude Code, so its route is the terminal itself
+    // (`/dev/tty`), the same one every other StopFailure alert of this hook takes.
+    expect(notifyHook(limitInput(env), "StopFailure", deps)).toEqual({});
+    expect(runs).toEqual([]);
+    expect(tty).toEqual([
+      "\u001b]777;notify;Claude stopped · rel-ssh;You've hit your limit · resets 3pm\u0007",
+    ]);
+  });
+
+  test("a short rate limit is no plan limit: the stop-failure hook stays out, and the notifier shows it", () => {
+    const { env } = machine();
+    gatewaySetUp(env);
     const { deps, runs } = setup(env);
     notifyHook(
       {
-        error: "rate_limit",
-        hook_event_name: "StopFailure",
-        last_assistant_message: "You've hit your limit · resets 3pm",
-        session_id: "s-5",
+        ...limitInput(env),
+        last_assistant_message:
+          "API Error: Server is temporarily limiting requests (not your usage limit)",
       },
       "StopFailure",
       deps,
     );
-    expect(runs).toEqual([]);
+    expect(runs.length).toBe(2);
+    expect(runs[1]?.[3]).toBe(
+      "API Error: Server is temporarily limiting requests (not your usage limit)",
+    );
   });
 
   test("an idle wait, another notification type, another event, or no JSON: nothing", () => {
@@ -604,11 +677,52 @@ describe("the SSH terminal route", () => {
     // What Claude Code 2.1.301 really gives a hook: no CLAUDE_CODE_VERSION, and no
     // controlling terminal (proved live: /dev/tty fails with ENXIO).
     const { env } = machine({ DISPLAY: "", SSH_CONNECTION: "10.0.0.2 51000" });
-    const { deps } = setup(env, { writeTerminal: () => false });
+    const { deps, session } = setup(env, { writeTerminal: () => false });
     expect(notifyHook(stopInput(env.HOME), "Stop", deps)).toEqual({
       stdout:
         '{"terminalSequence":"\\u001b]777;notify;Claude finished · rel-ssh;Claude finished its turn.\\u0007"}',
     });
+    // This event's answer is read: the session's own device is never also written to.
+    expect(session).toEqual([]);
+  });
+
+  test("an event whose answer is not read, and no /dev/tty: the session's own device carries it", () => {
+    // StopFailure on 2.1.301: Claude Code ignores its output, and the hook has no
+    // controlling terminal, so `/dev/tty` fails. The pty Claude Code is attached to is the
+    // route that works (proved live), wrapped for tmux here: tmux receives it as pane output.
+    const { env } = machine({
+      DISPLAY: "",
+      SSH_CONNECTION: "10.0.0.2 51000",
+      TMUX: "/tmp/tmux-1001/default,1234,0",
+    });
+    const { deps, runs, session, tty } = setup(env, { writeTerminal: () => false });
+    expect(
+      notifyHook(
+        {
+          cwd: join(env.HOME, "rel-ssh"),
+          error: "overloaded_error",
+          last_assistant_message: "API Error: Overloaded",
+          session_id: "s-9",
+        },
+        "StopFailure",
+        deps,
+      ),
+    ).toEqual({});
+    expect(runs).toEqual([]);
+    expect(tty).toEqual([]);
+    expect(session).toEqual([
+      "\u001bPtmux;\u001b\u001b]777;notify;Claude stopped · rel-ssh;API Error: Overloaded\u0007\u001b\\",
+    ]);
+    // With a `/dev/tty` that works (an older Claude Code gives the hook one), that is the
+    // route, and the device is never written to as well: one alert.
+    const onTty = setup(env);
+    notifyHook(
+      { cwd: join(env.HOME, "rel-ssh"), error: "authentication_error", session_id: "s-10" },
+      "StopFailure",
+      onTty.deps,
+    );
+    expect(onTty.tty).toHaveLength(1);
+    expect(onTty.session).toEqual([]);
   });
 
   test("in Warp over SSH: nothing (Warp's plugin emits its own)", () => {
