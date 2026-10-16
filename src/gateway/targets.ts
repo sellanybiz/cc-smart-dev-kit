@@ -5,14 +5,14 @@
  * Claude Code sends every request to the local router (`ANTHROPIC_BASE_URL`), with the
  * person's own Claude login on it. The model name decides the way out:
  *   - `claude-…`               → Anthropic, untouched (the own login is meant for it);
- *   - a slot key (`anymodel-scout`)  → the slot's targets, in order, first that answers;
+ *   - a slot key (`cc-smart-dev-kit-scout`)  → the slot's targets, in order, first that answers;
  *   - `<backend>:<model>`      → that backend, no fallback (an ad-hoc try);
  *   - anything else            → Anthropic, untouched: never a guess at a backend.
  * An alias from the config's `aliases` is resolved first (`resolveAlias`), so an old
  * model name reaches its new slot. One request is recognised by its body, not its name:
  * auto mode's safety check (`isAutoModeGuard`, on the request as it came) goes to the
- * `anymodel-judge` slot (`JUDGE_SLOT`), or stays on Claude in a config without one
- * (`resolveRequestRoute`), also when an alias would send it to a cheap backend.
+ * `cc-smart-dev-kit-judge` slot (`JUDGE_SLOT`), or stays on Claude in a config without one
+ * (`resolveRequestRoute`), also when an alias would send it to an affordable backend.
  *
  * A target is written as text in the config and on the command line (and an explicit
  * `<backend>:<model>` works as a model name too, for a one-off try):
@@ -31,7 +31,7 @@ export interface AnthropicTarget {
   model: string;
 }
 
-/** A cheap backend from the config's `backends`; it gets the backend's own key. */
+/** An affordable backend from the config's `backends`; it gets the backend's own key. */
 export interface BackendTarget {
   backend: string;
   kind: "backend";
@@ -44,10 +44,10 @@ export type Target = AnthropicTarget | BackendTarget;
 const BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 
 /** The prefix of every slot key. */
-export const SLOT_PREFIX = "anymodel-";
+export const SLOT_PREFIX = "cc-smart-dev-kit-";
 
-/** A slot key: `anymodel-` and a short lower-case name. */
-const SLOT_KEY = /^anymodel-[a-z0-9][a-z0-9-]*$/;
+/** A slot key: `cc-smart-dev-kit-` and a short lower-case name. (A model slot: `MODEL_SLOTS`.) */
+const SLOT_KEY = /^cc-smart-dev-kit-[a-z0-9][a-z0-9-]*$/;
 
 /**
  * Claude Code reads `[1m]` on a model id as "1M context" and is documented to strip it
@@ -98,7 +98,7 @@ export function parseTarget(text: string): { error: string } | { target: Target 
 }
 
 /**
- * The slot key a person types on the command line: `scout` means `anymodel-scout`, `anymodel-worker`
+ * The slot key a person types on the command line: `scout` means `cc-smart-dev-kit-scout`, `cc-smart-dev-kit-worker`
  * stays as it is. Null when it cannot be a slot key.
  */
 export function slotKeyFromArg(arg: string): null | string {
@@ -135,7 +135,7 @@ export type Route =
   | { kind: "explicit"; target: BackendTarget }
   /** A configured slot key: its targets in order. */
   | { kind: "slot"; slot: string; targets: Target[] }
-  /** `anymodel-…` that no slot has: an error, never a guess. */
+  /** `cc-smart-dev-kit-…` that no slot has: an error, never a guess. */
   | { kind: "unknown-slot"; slot: string };
 
 /** The parts of the config the route depends on. */
@@ -147,7 +147,7 @@ export interface RouteConfig {
 /**
  * The route for a model name. Anything the router does not recognise goes to Anthropic
  * as it came: that is where the own login is meant to go, and Anthropic answers the
- * error. A cheap backend is reached only by name (a slot, or an explicit
+ * error. An affordable backend is reached only by name (a slot, or an explicit
  * `<backend>:<model>`), never by a guess. Slot targets were checked when the config
  * loaded; one that does not parse here is skipped.
  */
@@ -181,10 +181,10 @@ export function resolveRoute(model: unknown, config: RouteConfig): Route {
  * The first words of the system prompt Claude Code sends with auto mode's safety check:
  * the request that judges each action before it runs. Seen in two forms on Claude Code
  * 2.1.x, both with this prompt and no tools: model `claude-sonnet-5`, thinking disabled,
- * `<severity>N` answers; and the `sonnet` alias (with the gateway on, `anymodel-worker`), no
+ * `<severity>N` answers; and the `sonnet` alias (with the gateway on, `cc-smart-dev-kit-worker`), no
  * thinking field, `<block>yes|no` answers. (docs/claude-code-contract.md)
  */
-const GUARD_PROMPT = "You are a security monitor for autonomous AI coding agents";
+export const GUARD_PROMPT = "You are a security monitor for autonomous AI coding agents";
 
 /**
  * Is this request auto mode's safety check? Its model name says nothing (a `claude-…` id,
@@ -219,7 +219,7 @@ export function isAutoModeGuard(
 /**
  * The route for a whole `/v1/messages` body, after any alias: by its model name, except
  * auto mode's safety check (`guard`: `isAutoModeGuard` on the request as it came) when the
- * config has no `anymodel-judge` slot (with one, the router sends every check there before
+ * config has no `cc-smart-dev-kit-judge` slot (with one, the router sends every check there before
  * this runs). Then the check stays on Claude:
  *   - a `claude-…` model (sent so, or an alias to one) → Anthropic with that model;
  *   - a slot with a Claude target → only that slot's Claude targets (only `model` changes);
@@ -246,14 +246,87 @@ export function resolveRequestRoute(
 }
 
 /**
- * The slot that judges auto mode's safety checks, opt-in and OFF by default: a new config
- * has no such slot, so every check goes to Anthropic untouched (`resolveRequestRoute`).
- * `gateway slot judge <target>[,<target>]` turns it on, for every session, Claude ones
- * too: auto mode then also works at the Claude limit. `gateway slot judge off` removes
- * it. The trade-off: a cheaper judge can block good work, a weak one can let a risky
- * command through, and it reads the conversation (docs/gateway.md).
+ * The fallback judge for auto mode's safety checks, opt-in and OFF by default: a new config
+ * has no such slot. Set or not, every check goes to Claude first (`resolveRequestRoute`);
+ * the judge answers only when Claude cannot: the plan's usage limit, a 401, or no login
+ * (the router's `judgeAsFallback`). So auto mode also works at the Claude limit.
+ * `gateway slot judge <target>[,<target>]` sets it after each target passes the judge test
+ * (`judge-test.ts`); `gateway slot judge off` removes it. The trade-off: a more affordable judge can
+ * block good work, a weak one can let a risky command through, and it reads the
+ * conversation (docs/gateway.md).
  */
-export const JUDGE_SLOT = "anymodel-judge";
+export const JUDGE_SLOT = "cc-smart-dev-kit-judge";
+
+/**
+ * The model slots: a fallback for a Claude model Claude Code sends by its real id (the main
+ * session's Opus, a Fable agent). OFF by default: with no entry in the config's
+ * `modelSlots`, `claude-opus-5-5` goes to Anthropic byte for byte, as it always did.
+ * `gateway slot opus claude-opus-5-5,<target>…` turns one on. Its first target is the model
+ * itself, sent byte for byte; the router moves to the next target ONLY when Anthropic
+ * answers with the plan's usage limit (`planUsageLimit`), never on a short 429 or a 5xx.
+ * The value is the family the slot's first target must name, so a typo such as
+ * `slot opus claude-sonnet-5-5,…` is refused.
+ */
+export const MODEL_SLOTS: Readonly<Record<string, string>> = {
+  "cc-smart-dev-kit-fable": "fable",
+  "cc-smart-dev-kit-opus": "opus",
+};
+
+/** Is this slot key a model slot (`cc-smart-dev-kit-opus`, `cc-smart-dev-kit-fable`)? */
+export function isModelSlot(slot: string): boolean {
+  return Object.hasOwn(MODEL_SLOTS, slot);
+}
+
+/** The model slot for a model name, from the config's `modelSlots`; null when it has none. */
+export function modelSlotFor(
+  model: unknown,
+  modelSlots: Readonly<Record<string, string>> | undefined,
+): null | { model: string; slot: string } {
+  if (typeof model !== "string" || !model.startsWith("claude-") || modelSlots === undefined) {
+    return null;
+  }
+  const name = withoutContextSuffix(model);
+  if (!Object.hasOwn(modelSlots, name)) return null;
+  const slot = modelSlots[name];
+  return slot === undefined ? null : { model: name, slot };
+}
+
+/**
+ * A subscription plan's usage limit, as Anthropic answers it to a Claude login. Not a short
+ * rate limit: those carry no `anthropic-ratelimit-unified-status: rejected`.
+ *   - `claim`: which window ran out (`five_hour`, `seven_day`, `seven_day_opus`, …), from
+ *     `anthropic-ratelimit-unified-representative-claim`; null when absent or odd.
+ *   - `resetsAt`: when it resets, Unix seconds, from `anthropic-ratelimit-unified-reset`.
+ */
+export interface PlanLimit {
+  claim: null | string;
+  resetsAt: null | number;
+}
+
+/**
+ * Is this answer the plan's usage limit? Status 429, `anthropic-ratelimit-unified-status:
+ * rejected`, and no paid extra usage taking over (`…-overage-status` absent or `rejected`).
+ * Claude Code 2.1.300 reads the same three headers the same way: its own test limiter builds
+ * exactly this answer, and with it Claude Code shows "You've hit your limit · resets …" and
+ * does not retry (docs/claude-code-contract.md). A 429 without these headers is a short
+ * rate limit, which Claude Code retries itself: it is never a plan limit here.
+ */
+export function planUsageLimit(
+  status: number,
+  header: (name: string) => null | string,
+): null | PlanLimit {
+  if (status !== 429) return null;
+  const state = header("anthropic-ratelimit-unified-status")?.trim().toLowerCase();
+  if (state !== "rejected") return null;
+  const overage = header("anthropic-ratelimit-unified-overage-status")?.trim().toLowerCase();
+  if (overage !== undefined && overage !== "" && overage !== "rejected") return null;
+  const claim = header("anthropic-ratelimit-unified-representative-claim")?.trim() ?? "";
+  const reset = Number(header("anthropic-ratelimit-unified-reset")?.trim() ?? "");
+  return {
+    claim: /^[a-z0-9_]{1,40}$/.test(claim) ? claim : null,
+    resetsAt: Number.isInteger(reset) && reset > 0 ? reset : null,
+  };
+}
 
 /** Statuses that mean "this target cannot answer now: try the next one". */
 const FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
@@ -263,7 +336,7 @@ const FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
  *   - Anthropic: only the "cannot answer now" statuses. Every other answer is the real
  *     one, and reaches Claude Code unchanged: it recovers from a 400 itself (it retries
  *     without thinking fields, for one), but only from the original body.
- *   - A cheap backend that is not the last target: any status but 2xx. A 401 / 404 is a
+ *   - An affordable backend that is not the last target: any status but 2xx. A 401 / 404 is a
  *     wrong key or model id, a 400 can be one model refusing another model's reasoning
  *     history: the next target may still answer (logged as a warning).
  * The caller returns the last target's answer whatever it is.

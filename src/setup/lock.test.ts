@@ -1,9 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
-import { FALLBACK_STALE_MS, LockBusyError, processStartTime, withLock } from "./lock";
+import {
+  FALLBACK_STALE_MS,
+  LockBusyError,
+  ownPidNamespace,
+  processStartTime,
+  withLock,
+} from "./lock";
 
 /** The pid of a process that has already exited. */
 async function deadPid(): Promise<number> {
@@ -16,6 +30,7 @@ interface FakeLock {
   pid: number;
   startTime?: string | null;
   host?: string;
+  pidns?: string | null;
   time?: number;
 }
 
@@ -30,6 +45,7 @@ function writeLock(stateDir: string, lock: FakeLock, name = "lock"): string {
       pid: lock.pid,
       startTime: lock.startTime === undefined ? processStartTime(lock.pid) : lock.startTime,
       host: lock.host ?? hostname(),
+      ...(lock.pidns !== undefined && { pidns: lock.pidns }),
       time,
       token: "someone-else",
     }),
@@ -62,7 +78,7 @@ describe("withLock", () => {
     const lockModule = join(import.meta.dir, "lock.ts");
     const holder = Bun.spawn(
       [
-        "bun",
+        process.execPath,
         "-e",
         `const { withLock } = await import(${JSON.stringify(lockModule)});
          await withLock(${JSON.stringify(stateDir)}, async () => {
@@ -86,7 +102,7 @@ describe("withLock", () => {
     // The holder blocks its own event loop: no timer of its own could run in that time.
     const holder = Bun.spawn(
       [
-        "bun",
+        process.execPath,
         "-e",
         `const { writeSync } = await import("node:fs");
          const { withLock } = await import(${JSON.stringify(lockModule)});
@@ -186,6 +202,51 @@ describe("withLock", () => {
     utimesSync(file, old, old);
     expect(await withLock(stateDir, () => "entered")).toBe("entered");
   });
+
+  // Another user wrote it with a narrow mode: busy, never a failure of the caller.
+  test.skipIf(process.getuid?.() === 0)(
+    "a lock this user may not read: busy while fresh, taken over after the fallback time",
+    async () => {
+      const stateDir = tempDir("lock");
+      const file = writeLock(stateDir, { pid: process.pid });
+      chmodSync(file, 0o000);
+      await expect(withLock(stateDir, () => "entered")).rejects.toThrow(
+        `another run holds ${file}`,
+      );
+      const old = longAgo() / 1000;
+      utimesSync(file, old, old);
+      expect(await withLock(stateDir, () => "entered")).toBe("entered");
+    },
+  );
+
+  test("the lock gets exactly the mode asked for, whatever the umask", async () => {
+    const stateDir = tempDir("lock");
+    const lockMode = () => statSync(join(stateDir, "lock")).mode & 0o777;
+    const before = process.umask(0o077);
+    try {
+      expect(await withLock(stateDir, lockMode, { mode: 0o664 })).toBe(0o664);
+      // Setup's own lock stays private.
+      expect(await withLock(stateDir, lockMode)).toBe(0o600);
+    } finally {
+      process.umask(before);
+    }
+  });
+
+  test.if(process.platform === "linux")(
+    "a live pid from another pid namespace is judged by time: respected while fresh, then taken over",
+    async () => {
+      const stateDir = tempDir("lock");
+      // This process's pid and start time, written in another namespace (a container on
+      // this host): there, that pid is another process.
+      writeLock(stateDir, { pid: process.pid, pidns: "pid:[1]" });
+      await expect(withLock(stateDir, () => "entered")).rejects.toThrow(LockBusyError);
+      writeLock(stateDir, { pid: process.pid, pidns: "pid:[1]", time: longAgo() });
+      expect(await withLock(stateDir, () => "entered")).toBe("entered");
+      // The same namespace: judged by its live pid, never by age.
+      writeLock(stateDir, { pid: process.pid, pidns: ownPidNamespace(), time: longAgo() });
+      await expect(withLock(stateDir, () => "entered")).rejects.toThrow(LockBusyError);
+    },
+  );
 
   test("a run that is taking over a stale lock right now is not disturbed", async () => {
     const stateDir = tempDir("lock");

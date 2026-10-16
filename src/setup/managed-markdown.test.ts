@@ -18,33 +18,38 @@ describe("applyManagedMarkdown", () => {
   test("appends the block at the end, after a blank line", () => {
     const { file, stateDir } = setup("# My notes\n\nKeep this.\n");
     expect(
-      applyManagedMarkdown({ file, stateDir, body: "@~/.claude/anymodel/instructions/general.md" })
-        .outcome,
+      applyManagedMarkdown({
+        file,
+        stateDir,
+        body: "@~/.claude/cc-smart-dev-kit/instructions/general.md",
+      }).outcome,
     ).toBe("updated");
     expect(read(file)).toBe(
-      "# My notes\n\nKeep this.\n\n<!-- anymodel:begin -->\n@~/.claude/anymodel/instructions/general.md\n<!-- anymodel:end -->\n",
+      "# My notes\n\nKeep this.\n\n<!-- cc-smart-dev-kit:begin -->\n@~/.claude/cc-smart-dev-kit/instructions/general.md\n<!-- cc-smart-dev-kit:end -->\n",
     );
   });
 
   test("appends to a file without a final newline", () => {
     const { file, stateDir } = setup("no newline");
     applyManagedMarkdown({ file, stateDir, body: "x" });
-    expect(read(file)).toBe("no newline\n\n<!-- anymodel:begin -->\nx\n<!-- anymodel:end -->\n");
+    expect(read(file)).toBe(
+      "no newline\n\n<!-- cc-smart-dev-kit:begin -->\nx\n<!-- cc-smart-dev-kit:end -->\n",
+    );
   });
 
   test("creates a missing file with only the block", () => {
     const { file, stateDir } = setup(null);
     expect(applyManagedMarkdown({ file, stateDir, body: "x" }).outcome).toBe("created");
-    expect(read(file)).toBe("<!-- anymodel:begin -->\nx\n<!-- anymodel:end -->\n");
+    expect(read(file)).toBe("<!-- cc-smart-dev-kit:begin -->\nx\n<!-- cc-smart-dev-kit:end -->\n");
   });
 
   test("replaces the block in place and keeps the text before and after it", () => {
     const { file, stateDir } = setup(
-      "Before.\n\n<!-- anymodel:begin -->\nold line 1\nold line 2\n<!-- anymodel:end -->\n\nAfter, written by the user.\n",
+      "Before.\n\n<!-- cc-smart-dev-kit:begin -->\nold line 1\nold line 2\n<!-- cc-smart-dev-kit:end -->\n\nAfter, written by the user.\n",
     );
     applyManagedMarkdown({ file, stateDir, body: "new" });
     expect(read(file)).toBe(
-      "Before.\n\n<!-- anymodel:begin -->\nnew\n<!-- anymodel:end -->\n\nAfter, written by the user.\n",
+      "Before.\n\n<!-- cc-smart-dev-kit:begin -->\nnew\n<!-- cc-smart-dev-kit:end -->\n\nAfter, written by the user.\n",
     );
   });
 
@@ -58,10 +63,10 @@ describe("applyManagedMarkdown", () => {
   });
 
   test("a broken block (begin without end) throws and writes nothing", () => {
-    const text = "Text.\n<!-- anymodel:begin -->\nhalf\n";
+    const text = "Text.\n<!-- cc-smart-dev-kit:begin -->\nhalf\n";
     const { file, stateDir } = setup(text);
     expect(() => applyManagedMarkdown({ file, stateDir, body: "x" })).toThrow(
-      "broken anymodel block",
+      "broken cc-smart-dev-kit block",
     );
     expect(read(file)).toBe(text);
   });
@@ -82,13 +87,13 @@ describe("applyManagedMarkdown", () => {
     expect(calls).toBe(2);
     expect(result.outcome).toBe("updated");
     expect(read(file)).toBe(
-      "Original.\nAdded by someone else.\n\n<!-- anymodel:begin -->\nx\n<!-- anymodel:end -->\n",
+      "Original.\nAdded by someone else.\n\n<!-- cc-smart-dev-kit:begin -->\nx\n<!-- cc-smart-dev-kit:end -->\n",
     );
   });
 });
 
 describe("removeManagedMarkdown", () => {
-  const BLOCK = "<!-- anymodel:begin -->\nx\n<!-- anymodel:end -->";
+  const BLOCK = "<!-- cc-smart-dev-kit:begin -->\nx\n<!-- cc-smart-dev-kit:end -->";
 
   test.each([
     ["at the end, after a blank line", `# Notes\n\nKeep.\n\n${BLOCK}\n`, "# Notes\n\nKeep.\n"],

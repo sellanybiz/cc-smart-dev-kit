@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,7 +6,7 @@ const created: string[] = [];
 
 /** A fresh temp folder (real path, no symlinks), removed after each test. */
 export function tempDir(label = "test"): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), `anymodel-${label}-`)));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), `cc-smart-dev-kit-${label}-`)));
   created.push(dir);
   return dir;
 }
@@ -16,11 +16,17 @@ export function removeTempDirs(): void {
   for (const dir of created.splice(0)) rmSync(dir, { recursive: true, force: true });
 }
 
-/** The environment without any GIT_* variable, so git in a test never reaches a real repo. */
+/**
+ * The environment without any GIT_* variable, so git in a test never reaches a real repo,
+ * and without CLAUDE_PROJECT_DIR, so a test run from a Claude Code session never reads that
+ * session's project.
+ */
 export function cleanGitEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && !key.startsWith("GIT_")) env[key] = value;
+    if (value !== undefined && !key.startsWith("GIT_") && key !== "CLAUDE_PROJECT_DIR") {
+      env[key] = value;
+    }
   }
   return {
     ...env,
@@ -45,4 +51,26 @@ export function git(cwd: string, ...args: string[]): string {
     throw new Error(`git ${args.join(" ")} failed: ${result.stderr.toString()}`);
   }
   return result.stdout.toString();
+}
+
+/**
+ * The environment with a `git` first on PATH that hangs on one subcommand (`["worktree",
+ * "remove"]`) and runs the real git for everything else: how a timeout is tested without
+ * waiting for the real timeout. The fake `exec`s `sleep`, so the process killed at the
+ * timeout is the sleeping one.
+ */
+export function withSlowGit(
+  env: Record<string, string>,
+  hangsOn: string[],
+  seconds = 30,
+): Record<string, string> {
+  const dir = tempDir("slow-git");
+  const real = Bun.which("git") ?? "/usr/bin/git";
+  const matches = hangsOn.map((word, index) => `[ "$${index + 1}" = "${word}" ]`).join(" && ");
+  writeFileSync(
+    join(dir, "git"),
+    `#!/bin/sh\nif ${matches}; then exec sleep ${seconds}; fi\nexec "${real}" "$@"\n`,
+  );
+  chmodSync(join(dir, "git"), 0o755);
+  return { ...env, PATH: `${dir}:${env.PATH ?? ""}` };
 }

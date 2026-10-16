@@ -76,7 +76,7 @@ for (const file of listFiles()) {
 if (hits.length > 0) {
   console.error(hits.join("\n"));
   console.error(
-    "Keep the plugin neutral: a project's own facts belong in its .claude/anymodel.json, not here.",
+    "Keep the plugin neutral: a project's own facts belong in its .claude/cc-smart-dev-kit.json, not here.",
   );
   process.exit(1);
 }

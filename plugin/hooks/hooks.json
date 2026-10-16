@@ -1,3 +1,269 @@
 {
-  "hooks": {}
+  "description": "cc-smart-dev-kit: git, edit (Edit/Write/NotebookEdit and Serena's edit tools), message and agent guards, a caller-named screenshot put in the shared browser's output folder, the folder Serena edits recorded per session, notifications (a finished turn, a question, a plan, a permission prompt, a stopped turn; on the desktop, in an SSH terminal as OSC 777, or left to Warp's own plugin), notes after a merge and at session start, session names, the usage-limit alert and the background update check. Each hook stays silent while the project wires its own for the same event.",
+  "hooks": {
+    "StopFailure": [
+      {
+        "matcher": "rate_limit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/stop-failure.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/git-guard.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit|mcp__serena__(replace_symbol_body|insert_after_symbol|insert_before_symbol|replace_content|rename_symbol|safe_delete_symbol|replace_in_files|write_memory|rename_memory|edit_memory|delete_memory)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/main-folder-guard.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/message-guard.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/job-route.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task|Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/agent-guard.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion|ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__serena__activate_project",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/serena-root.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__playwright__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/playwright-output.js"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input|worker_permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/after-merge.js"],
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion|ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__serena__activate_project",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/serena-root.js"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/after-merge.js"],
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion|ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/serena-root.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/worktree-leftovers.js"],
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/session-name.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/update-check.js"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/session-name.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
 }

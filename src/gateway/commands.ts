@@ -1,5 +1,5 @@
 /**
- * `anymodel gateway <command>`: serve the router, see it, switch its slots, install it,
+ * `cc-smart-dev-kit gateway <command>`: serve the router, see it, switch its slots, install it,
  * and turn it on or off for Claude Code.
  *
  *   serve     runs the router in this terminal (the systemd unit runs the copy instead).
@@ -14,11 +14,12 @@
  * API keys are masked in every output. The design: docs/gateway.md.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { withLock } from "../setup/lock";
 import { formatKeyPath, type ManagedJsonResult } from "../setup/managed-json";
+import { atomicWrite } from "../setup/write";
 import { listModels } from "./backends";
 import {
   ConfigError,
@@ -26,25 +27,44 @@ import {
   DEFAULT_FIRST_BYTE_MS,
   DEFAULT_PORT,
   type GatewayConfig,
+  judgeTargetTested,
+  judgeTestProof,
   loadConfigFile,
   messageOf,
   parseConfig,
   saveConfig,
 } from "./config";
 import { type HealthProbe, routerHealth } from "./health";
+import { JUDGE_TEST_ACTION, testJudgeTarget } from "./judge-test";
+import { formatLimitState, parseLimitState } from "./limit-state";
 import { startRouter } from "./router";
-import { type InstallOptions, installRouter, RESTART_WARNING, type Runner } from "./service";
+import { INSTALL_WARNINGS, type InstallOptions, installRouter, type Runner } from "./service";
 import { maskKey, settingsReport, shownValue, turnOff, turnOn } from "./settings";
-import { JUDGE_SLOT, parseTarget, slotKeyFromArg, type Target } from "./targets";
+import {
+  isModelSlot,
+  JUDGE_SLOT,
+  MODEL_SLOTS,
+  parseTarget,
+  slotKeyFromArg,
+  type Target,
+} from "./targets";
 
 export const USAGE = `Usage: ${COMMAND} gateway <command>
 
 Commands:
   status                 Router health, backends, slots, and the Claude Code settings.
   models                 Every model each backend offers, and the slots.
-  slot <slot> <targets>  Set a slot's targets, in order. <slot>: scout, worker or judge.
+  slot <slot> <targets>  Set a slot's targets, in order. <slot>: scout, worker, judge,
+                         opus or fable.
                          e.g. slot worker omniroute:ollama-cloud/glm-5.3-flash,claude-sonnet-5-5
-  slot judge off         Auto mode's safety check goes back to Claude.
+  slot opus claude-opus-5-5,<target>[,<target>]
+                         Opus goes to Anthropic unchanged; only at the plan's usage limit
+                         the next target answers. The same for fable (claude-fable-5-1).
+  slot judge <targets>   A fallback judge for auto mode's safety check, used only when
+                         Claude cannot answer it. Each target must first block a test
+                         check (a force push to main), or it is not set.
+  slot <judge|opus|fable> off
+                         Turn that fallback off.
   setup [--yes] [--backend-key-stdin <backend> | --no-backend-key]
                          Make the config (the key on stdin), install the router copy and
                          its systemd user unit, and start it. --yes: restart a running
@@ -58,6 +78,8 @@ export interface GatewayContext {
   paths: CliPaths;
   /** The bun that runs the router copy: `process.execPath`. */
   bunPath: string;
+  /** Its version: `Bun.version`. `setup` refuses one older than `MIN_BUN`. */
+  bunVersion: string;
   /** The plugin's own `dist/router.js`. */
   bundle: string;
   runner: Runner;
@@ -66,6 +88,10 @@ export interface GatewayContext {
   confirm: ((question: string) => boolean) | null;
   /** False where there is no systemd (macOS, Windows). */
   systemd: boolean;
+  /** Where a command's own lines go: `console.log` in use, a collector from the portal. */
+  print: (line: string) => void;
+  /** Where a refusal or a usage line goes: `console.error` in use. */
+  error: (line: string) => void;
   /**
    * Asks the router's health page and waits for it: `realProbe()` in use. A test passes
    * fakes, so it never reaches a port where a real router may run.
@@ -92,12 +118,13 @@ export const KNOWN_BACKENDS: Record<string, string> = {
  * The slot table a new config gets; `gateway slot` changes it. DeepSeek first in each:
  * almost every subagent token is a cached re-read, and its cached input costs less than
  * GLM's (ollama.com/pricing). The ids are the ones OmniRoute's `/v1/models` lists, so
- * `gateway slot` can check them. No aliases: a project's own migration writes those.
+ * `gateway slot` can check them. No aliases: a project's own migration writes those, and
+ * `migrate` writes the ones a machine moving from 0.2.x's slot names needs.
  *
- * No judge slot: auto mode's safety checks stay on Claude, untouched, until the person
- * turns the judge on (`gateway slot judge <targets>`). A cheaper judge trades the checks'
- * quality for Claude usage: it can block good work, and a weak one can let a risky
- * command through.
+ * No judge slot and no model slots: auto mode's safety checks stay on Claude, untouched,
+ * and with no fallback judge Claude Code asks the person when Claude cannot answer. The
+ * person may set a fallback judge (`gateway slot judge <targets>`, tested first): a more affordable
+ * judge can block good work, and a weak one can let a risky command through.
  */
 export function defaultConfig(omnirouteKey: string): GatewayConfig {
   return {
@@ -106,12 +133,12 @@ export function defaultConfig(omnirouteKey: string): GatewayConfig {
     backends: { omniroute: { apiKey: omnirouteKey, baseUrl: "http://127.0.0.1:20128" } },
     port: DEFAULT_PORT,
     slots: {
-      "anymodel-scout": [
+      "cc-smart-dev-kit-scout": [
         "omniroute:ollama-cloud/deepseek-v4.1-flash",
         "omniroute:ollama-cloud/glm-5.3-flash",
         "claude-sonnet-5-5",
       ],
-      "anymodel-worker": [
+      "cc-smart-dev-kit-worker": [
         "omniroute:ollama-cloud/deepseek-v4.1-flash",
         "omniroute:ollama-cloud/glm-5.3-flash",
         "claude-sonnet-5-5",
@@ -188,24 +215,44 @@ export function configuredPort(configPath: string): number {
  * Claude Code's haiku / sonnet names point at them. (A `claude-…` target in the judge slot
  * is no way back: the check's body is built for the model it names, and Claude Sonnet 5.5
  * refuses its `thinking: disabled` with a 400.)
+ *
+ * A judge change drops every judge test proof (`judgeTested`): `judge off` needs none, and
+ * new targets get theirs only from the test, in `commandSlot` (`withJudgeProofs`).
  */
 export function planSlotChange(
-  config: GatewayConfig,
+  current: GatewayConfig,
   slotArg: string,
   targetsText: string,
   modelsByBackend: Record<string, null | string[]>,
 ): { config: GatewayConfig; key: string; old: string[]; next: string[] } | { error: string } {
   const key = slotKeyFromArg(slotArg);
-  if (key === null)
-    return { error: `"${slotArg}" is not a slot name (scout, worker, judge, or anymodel-<name>)` };
+  if (key === null) {
+    return {
+      error: `"${slotArg}" is not a slot name (scout, worker, judge, opus, fable, or cc-smart-dev-kit-<name>)`,
+    };
+  }
+  const { judgeTested: _proofs, ...withoutProofs } = current;
+  const config = key === JUDGE_SLOT ? withoutProofs : current;
+  const model = isModelSlot(key);
+  // The model slots' entries in `modelSlots`, without this slot's.
+  const otherModelSlots = Object.fromEntries(
+    Object.entries(config.modelSlots ?? {}).filter(([, slot]) => slot !== key),
+  );
+  /** The config with `modelSlots` written only when it has an entry: absent is the default. */
+  const withModelSlots = (base: GatewayConfig, entries: Record<string, string>): GatewayConfig => {
+    const { modelSlots: _old, ...rest } = base;
+    return Object.keys(entries).length > 0 ? { ...rest, modelSlots: entries } : rest;
+  };
   if (targetsText.trim() === "off") {
-    if (key !== JUDGE_SLOT) {
-      return { error: `only ${JUDGE_SLOT} can be off; give ${key} its targets instead` };
+    if (key !== JUDGE_SLOT && !model) {
+      return {
+        error: `only ${JUDGE_SLOT}, cc-smart-dev-kit-opus and cc-smart-dev-kit-fable can be off; give ${key} its targets instead`,
+      };
     }
-    if (!Object.hasOwn(config.slots, key)) return { error: `${JUDGE_SLOT} is already off` };
+    if (!Object.hasOwn(config.slots, key)) return { error: `${key} is already off` };
     const slots = Object.fromEntries(Object.entries(config.slots).filter(([name]) => name !== key));
-    // An alias may still point at the judge slot: the check says so.
-    const checked = parseConfig({ ...config, slots });
+    // An alias may still point at the slot: the check says so.
+    const checked = parseConfig(withModelSlots({ ...config, slots }, otherModelSlots));
     if ("error" in checked) return { error: checked.error };
     return { config: checked.config, key, next: [], old: config.slots[key] ?? [] };
   }
@@ -214,6 +261,18 @@ export function planSlotChange(
     .map((text) => text.trim())
     .filter((text) => text !== "");
   if (next.length === 0) return { error: "give at least one target" };
+  if (model) {
+    // The first target is the Claude model the slot is for, sent unchanged; the rest answer
+    // only at its plan usage limit.
+    const first = next[0] ?? "";
+    const family = MODEL_SLOTS[key] ?? "";
+    if (!first.startsWith("claude-") || !first.includes(`-${family}-`)) {
+      return {
+        error: `${key}: start with the ${family} model itself, e.g. ${COMMAND} gateway slot ${family} ${family === "opus" ? "claude-opus-5-5" : "claude-fable-5-1"},omniroute:<model>`,
+      };
+    }
+    if (next.length < 2) return { error: `${key}: give the fallback targets after ${first}` };
+  }
   for (const text of next) {
     const parsed = parseTarget(text);
     if ("error" in parsed) return { error: parsed.error };
@@ -236,25 +295,47 @@ export function planSlotChange(
       };
     }
   }
-  const changed = { ...config, slots: { ...config.slots, [key]: next } };
+  const slots = { ...config.slots, [key]: next };
+  const changed = model
+    ? withModelSlots({ ...config, slots }, { ...otherModelSlots, [next[0] ?? ""]: key })
+    : { ...config, slots };
   const checked = parseConfig(changed);
   if ("error" in checked) return { error: checked.error };
   return { config: checked.config, key, next, old: config.slots[key] ?? [] };
 }
 
-function printSlots(config: GatewayConfig): void {
-  console.log("\nSlots (first that answers wins):");
+function printSlots(config: GatewayConfig, print: (line: string) => void): void {
+  print("\nSlots (first that answers wins):");
   const keys = Object.keys(config.slots).sort();
-  if (keys.length === 0) console.log("  (none)");
-  for (const key of keys)
-    console.log(`  ${key.padEnd(16)} ${(config.slots[key] ?? []).join(" → ")}`);
+  if (keys.length === 0) print("  (none)");
+  for (const key of keys) {
+    const untested = (config.slots[key] ?? []).filter(
+      (target) => !judgeTargetTested(config, target),
+    );
+    const note =
+      key === JUDGE_SLOT
+        ? untested.length > 0
+          ? `  (NOT TESTED, so ignored: ${untested.join(", ")}; run ${COMMAND} gateway slot judge <targets>)`
+          : "  (only when Claude cannot answer a check)"
+        : isModelSlot(key)
+          ? "  (the rest only at the plan's usage limit)"
+          : "";
+    print(`  ${key.padEnd(16)} ${(config.slots[key] ?? []).join(" → ")}${note}`);
+  }
   if (!Object.hasOwn(config.slots, JUDGE_SLOT)) {
-    console.log(`  ${JUDGE_SLOT.padEnd(16)} off: auto mode's safety checks go to Claude`);
+    print(
+      `  ${JUDGE_SLOT.padEnd(16)} off: auto mode's safety checks go to Claude, and to no one else`,
+    );
+  }
+  for (const [slot, family] of Object.entries(MODEL_SLOTS).sort(([a], [b]) => (a < b ? -1 : 1))) {
+    if (!Object.values(config.modelSlots ?? {}).includes(slot)) {
+      print(`  ${slot.padEnd(16)} off: ${family} goes to Anthropic unchanged`);
+    }
   }
   const aliases = Object.entries(config.aliases).sort(([a], [b]) => (a < b ? -1 : 1));
   if (aliases.length > 0) {
-    console.log("\nAliases (an old name, and what it means now):");
-    for (const [name, to] of aliases) console.log(`  ${name.padEnd(16)} → ${to}`);
+    print("\nAliases (an old name, and what it means now):");
+    for (const [name, to] of aliases) print(`  ${name.padEnd(16)} → ${to}`);
   }
 }
 
@@ -263,31 +344,63 @@ function printSlots(config: GatewayConfig): void {
 async function commandModels(ctx: GatewayContext): Promise<number> {
   const config = loadConfigFile(ctx.paths.gatewayConfigFile);
   for (const [name, backend] of Object.entries(config.backends)) {
-    console.log(`\n${name}  ${shownValue(backend.baseUrl)}  (key ${maskKey(backend.apiKey)})`);
+    ctx.print(`\n${name}  ${shownValue(backend.baseUrl)}  (key ${maskKey(backend.apiKey)})`);
     const listed = await listModels(backend.baseUrl, backend.apiKey);
-    if ("error" in listed) console.log(`  unreachable: ${listed.error}`);
-    else if (listed.status !== 200) console.log(`  /v1/models answered HTTP ${listed.status}`);
+    if ("error" in listed) ctx.print(`  unreachable: ${listed.error}`);
+    else if (listed.status !== 200) ctx.print(`  /v1/models answered HTTP ${listed.status}`);
     else {
       for (const model of [...listed.models].sort((a, b) => a.id.localeCompare(b.id))) {
         const context =
           model.contextLength === null
             ? ""
             : `  ${model.contextLength.toLocaleString("en-US")} tokens`;
-        console.log(`  ${name}:${model.id}${context}`);
+        ctx.print(`  ${name}:${model.id}${context}`);
       }
     }
   }
-  printSlots(config);
-  console.log(
+  printSlots(config, ctx.print);
+  ctx.print(
     "\nAny claude-<id> target (e.g. claude-sonnet-5-5) goes to Anthropic on your own Claude login.",
   );
   return 0;
 }
 
+/**
+ * The config with a judge test proof (`judgeTestProof`) for each target that passed, on
+ * the backend URL it passed on: a target whose backend moved since then gets none.
+ */
+export function withJudgeProofs(
+  config: GatewayConfig,
+  passed: Readonly<Record<string, string>>,
+): GatewayConfig {
+  const proofs = Object.fromEntries(
+    Object.entries(passed).map(([target, url]) => [target, judgeTestProof(target, url)]),
+  );
+  return Object.keys(proofs).length > 0 ? { ...config, judgeTested: proofs } : config;
+}
+
+/**
+ * A slot turned off loses its fallback record in the router's state file at once, so the
+ * status line stops showing it even before the router's next request (the router drops it
+ * too, when it reads the changed config). A file that is not there, or not readable, stays.
+ */
+function dropFallbackRecord(statePath: string, slot: string): void {
+  let state: ReturnType<typeof parseLimitState>;
+  try {
+    state = parseLimitState(readFileSync(statePath, "utf8"));
+  } catch {
+    // No state file: nothing to drop.
+    return;
+  }
+  if (state === null || !Object.hasOwn(state.fallbacks, slot)) return;
+  delete state.fallbacks[slot];
+  atomicWrite(statePath, formatLimitState(state), 0o600);
+}
+
 async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number> {
   const [slotArg, targets, ...extra] = args;
   if (slotArg === undefined || targets === undefined || extra.length > 0) {
-    console.error(USAGE);
+    ctx.error(USAGE);
     return 2;
   }
   const configPath = ctx.paths.gatewayConfigFile;
@@ -306,6 +419,25 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
   }
   const first = planSlotChange(config, slotArg, targets, modelsByBackend);
   if ("error" in first) throw new Error(first.error);
+  /** Each judge target that passed the test, and the backend URL it passed on. */
+  const passed: Record<string, string> = {};
+  if (first.key === JUDGE_SLOT && first.next.length > 0) {
+    // A judge is never set untested, and there is no way to skip the test.
+    for (const text of first.next) {
+      const parsed = parseTarget(text);
+      if (!("target" in parsed) || parsed.target.kind !== "backend") continue;
+      const backend = config.backends[parsed.target.backend];
+      if (backend === undefined) continue;
+      const result = await testJudgeTarget(backend.baseUrl, backend.apiKey, parsed.target.model);
+      if (result.verdict !== "block") {
+        throw new Error(
+          `${text} did not block the test check (${JUDGE_TEST_ACTION}): ${result.detail}. The judge was not set.`,
+        );
+      }
+      passed[text] = backend.baseUrl;
+      ctx.print(`judge test: ${text} blocked "${JUDGE_TEST_ACTION}"`);
+    }
+  }
   // Read again and save inside the lock: another command may have changed the file since
   // (a key set by `gateway setup`, another slot), and its change must not be lost.
   const plan = await withLock(
@@ -313,26 +445,37 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
     () => {
       const again = planSlotChange(loadConfigFile(configPath), slotArg, targets, modelsByBackend);
       if ("error" in again) throw new Error(again.error);
-      saveConfig(configPath, again.config);
+      saveConfig(
+        configPath,
+        again.key === JUDGE_SLOT ? withJudgeProofs(again.config, passed) : again.config,
+      );
+      if (again.next.length === 0) dropFallbackRecord(ctx.paths.gatewayStateFile, again.key);
       return again;
     },
     { waitMs: 10_000 },
   );
   const now =
-    plan.next.length === 0 ? "off (auto mode's safety check on Claude)" : plan.next.join(" → ");
-  console.log(`${plan.key}: ${plan.old.join(" → ") || "(new)"}\n  now: ${now}`);
-  console.log("The router uses it from its next request.");
+    plan.next.length > 0
+      ? plan.next.join(" → ")
+      : plan.key === JUDGE_SLOT
+        ? "off (auto mode's safety check on Claude, and on no one else)"
+        : `off (${MODEL_SLOTS[plan.key] ?? plan.key} goes to Anthropic unchanged)`;
+  ctx.print(`${plan.key}: ${plan.old.join(" → ") || "(new)"}\n  now: ${now}`);
+  ctx.print("The router uses it from its next request.");
   return 0;
 }
 
-function printOverrides(report: ReturnType<typeof settingsReport>): void {
+function printOverrides(
+  report: ReturnType<typeof settingsReport>,
+  print: (line: string) => void,
+): void {
   if (report.subagentOverrides.length > 0) {
-    console.log(
-      `  WARN ${report.subagentOverrides.join(", ")} set: every agent launched without a model runs on it, with the gateway possibly a cheap slot. Remove it by hand unless you want that.`,
+    print(
+      `  WARN ${report.subagentOverrides.join(", ")} set: every agent launched without a model runs on it, with the gateway possibly an affordable slot. Remove it by hand unless you want that.`,
     );
   }
   if (report.loginOverrides.length > 0) {
-    console.log(
+    print(
       `  WARN ${report.loginOverrides.join(", ")} set: that replaces your own Claude login. Remove it for the gateway.`,
     );
   }
@@ -343,38 +486,44 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
   try {
     config = loadConfigFile(ctx.paths.gatewayConfigFile);
   } catch (error) {
-    console.log(`config: ${messageOf(error)}`);
+    ctx.print(`config: ${messageOf(error)}`);
   }
   // Without a good config the router runs on the default port.
   const port = config?.port ?? DEFAULT_PORT;
   const health = await routerHealth(port, ctx.probe.fetch);
-  if ("error" in health) console.log(`router: DOWN on 127.0.0.1:${port} (${health.error})`);
+  if ("error" in health) ctx.print(`router: DOWN on 127.0.0.1:${port} (${health.error})`);
   else {
     const body = isJsonObject(health.body) ? health.body : {};
-    console.log(
+    ctx.print(
       `router: up on 127.0.0.1:${String(body.port)} for ${String(body.uptimeSec)} s, ${String(body.requests)} requests, ${String(body.fallbacks)} fallbacks`,
     );
     if (body.port !== port)
-      console.log(`  WARN the config says port ${port}; restart the router to move it`);
+      ctx.print(`  WARN the config says port ${port}; restart the router to move it`);
     const cooling = isJsonObject(body.cooling) ? Object.entries(body.cooling) : [];
     for (const [target, seconds] of cooling)
-      console.log(`  resting: ${target} for ${String(seconds)} s more`);
+      ctx.print(`  resting: ${target} for ${String(seconds)} s more`);
+    const limited = isJsonObject(body.limited) ? Object.entries(body.limited) : [];
+    for (const [model, seconds] of limited) {
+      ctx.print(
+        `  at its plan usage limit: ${model}; its model slot answers from a fallback, and asks it again in ${String(seconds)} s`,
+      );
+    }
   }
   if (config !== null) {
     for (const [name, backend] of Object.entries(config.backends)) {
       const listed = await listModels(backend.baseUrl, backend.apiKey);
       const state = "error" in listed ? `unreachable (${listed.error})` : `HTTP ${listed.status}`;
-      console.log(
+      ctx.print(
         `backend ${name}: ${shownValue(backend.baseUrl)} key ${maskKey(backend.apiKey)} → ${state}`,
       );
     }
-    printSlots(config);
+    printSlots(config, ctx.print);
   }
   const report = settingsReport(ctx.paths.settingsFile);
-  console.log(
+  ctx.print(
     `\nClaude Code (${tildify(ctx.paths.settingsFile, ctx.paths.home)}): ${report.baseUrl === null ? "gateway OFF (no ANTHROPIC_BASE_URL)" : `gateway ON → ${report.baseUrl}`}`,
   );
-  printOverrides(report);
+  printOverrides(report, ctx.print);
   return 0;
 }
 
@@ -403,11 +552,11 @@ function setupOptions(
 async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number> {
   const options = setupOptions(args);
   if (options === null) {
-    console.error(USAGE);
+    ctx.error(USAGE);
     return 2;
   }
   if (!ctx.systemd) {
-    console.error(NEEDS_SYSTEMD);
+    ctx.error(NEEDS_SYSTEMD);
     return 1;
   }
   const { paths } = ctx;
@@ -420,15 +569,17 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
   const configPath = paths.gatewayConfigFile;
   const install = (overrides: Partial<InstallOptions>): InstallOptions => ({
     bunPath: ctx.bunPath,
+    bunVersion: ctx.bunVersion,
     bundle: ctx.bundle,
     copyPath: paths.routerCopy,
     unitPath: paths.routerUnitFile,
+    socketPath: paths.routerSocketFile,
     home: paths.home,
     stateDir: paths.stateDir,
     port: configuredPort(configPath),
     probe: ctx.probe,
     runner: ctx.runner,
-    say: (line) => console.log(line),
+    say: ctx.print,
     yes: options.yes,
     confirm: ctx.confirm,
     ...overrides,
@@ -441,19 +592,19 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
     paths.stateDir,
     async () => {
       const said = ensureConfig(configPath, key, { allowNone: options.noKey });
-      console.log(said.replaceAll(configPath, tildify(configPath, paths.home)));
+      ctx.print(said.replaceAll(configPath, tildify(configPath, paths.home)));
       // The question was answered above: the warning is not repeated, and nothing asks again.
       await installRouter(
         install({
           yes: true,
           confirm: null,
           say: (line) => {
-            if (line !== RESTART_WARNING) console.log(line);
+            if (!INSTALL_WARNINGS.includes(line)) ctx.print(line);
           },
         }),
       );
       if (settingsReport(paths.settingsFile).baseUrl === null) {
-        console.log(
+        ctx.print(
           `Claude Code does not use the gateway yet. Check it: ${COMMAND} gateway status. Then: ${COMMAND} gateway on.`,
         );
       }
@@ -488,17 +639,17 @@ async function commandOn(ctx: GatewayContext): Promise<number> {
   turnOn({ ...options, dryRun: true });
   const result = await withLock(paths.stateDir, () => turnOn(options), { waitMs: 10_000 });
   if (result.changes.length === 0) {
-    console.log("Nothing to change: the gateway is already on.");
+    ctx.print("Nothing to change: the gateway is already on.");
   } else {
-    console.log(changeLines(result, paths.home).join("\n"));
-    console.log(
+    ctx.print(changeLines(result, paths.home).join("\n"));
+    ctx.print(
       `Done. The changed file has a backup in ${tildify(paths.stateDir, paths.home)}/backups/.`,
     );
-    console.log(
-      "Every Claude Code session on this machine, in every folder, uses the gateway from now on: its haiku / sonnet work (background titles and summaries too) goes to the cheap slots.",
+    ctx.print(
+      "Every Claude Code session on this machine, in every folder, uses the gateway from now on: its haiku / sonnet work (background titles and summaries too) goes to the affordable slots.",
     );
   }
-  printOverrides(settingsReport(paths.settingsFile));
+  printOverrides(settingsReport(paths.settingsFile), ctx.print);
   return 0;
 }
 
@@ -510,15 +661,15 @@ async function commandOff(ctx: GatewayContext): Promise<number> {
     { waitMs: 10_000 },
   );
   if (result.changes.length === 0) {
-    console.log(
+    ctx.print(
       `Nothing to remove: ${COMMAND} set no gateway key in ${tildify(paths.settingsFile, paths.home)}.`,
     );
   } else {
-    console.log(changeLines(result, paths.home).join("\n"));
-    console.log("Restart each Claude session: removing a setting needs a restart.");
+    ctx.print(changeLines(result, paths.home).join("\n"));
+    ctx.print("Restart each Claude session: removing a setting needs a restart.");
   }
   for (const key of foreign) {
-    console.log(
+    ctx.print(
       `  env.${key} stays: ${COMMAND} did not set it. Remove it by hand to turn the gateway off.`,
     );
   }
@@ -530,7 +681,7 @@ export async function runGateway(args: string[], ctx: GatewayContext): Promise<n
   const [command, ...rest] = args;
   const noArgs = (run: () => Promise<number>): Promise<number> => {
     if (rest.length > 0) {
-      console.error(USAGE);
+      ctx.error(USAGE);
       return Promise.resolve(2);
     }
     return run();
@@ -550,17 +701,17 @@ export async function runGateway(args: string[], ctx: GatewayContext): Promise<n
       return noArgs(() => commandOff(ctx));
     case "serve":
       return noArgs(async () => {
-        startRouter(ctx.paths.gatewayConfigFile);
+        await startRouter(ctx.paths.gatewayConfigFile, ctx.paths.gatewayStateFile);
         return 0;
       });
     case undefined:
     case "help":
     case "--help":
     case "-h":
-      console.log(USAGE);
+      ctx.print(USAGE);
       return 0;
     default:
-      console.error(`Unknown gateway command: ${command}\n\n${USAGE}`);
+      ctx.error(`Unknown gateway command: ${command}\n\n${USAGE}`);
       return 2;
   }
 }

@@ -1,6 +1,7 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { type AnymodelConfig, loadAnymodelConfig } from "./config";
+import { type CcSmartDevKitConfig, loadCcSmartDevKitConfig, readOwnHooks } from "./config";
+import { gitEnv } from "./git-env";
 
 export interface Project {
   /** The top folder of the checkout `cwd` is in (a linked worktree's own folder). */
@@ -11,8 +12,10 @@ export interface Project {
   isWorktree: boolean;
   /** The main checkout's folder, or null for a bare repo. */
   mainCheckout: string | null;
-  /** `<root>/.claude/anymodel.json`, else `<mainCheckout>/.claude/anymodel.json`, else null. */
-  config: AnymodelConfig | null;
+  /** `<root>/.claude/cc-smart-dev-kit.json`, else `<mainCheckout>/.claude/cc-smart-dev-kit.json`, else null. */
+  config: CcSmartDevKitConfig | null;
+  /** The file `config` was read from; null when there is none. */
+  configFile: string | null;
 }
 
 export interface ResolveOptions {
@@ -25,34 +28,24 @@ export interface ResolveOptions {
 /** `rev-parse --path-format` came in git 2.31. */
 export const MIN_GIT_VERSION = "2.31.0";
 
-/**
- * Git variables that would point git at another repo than `cwd`.
- * A git hook sets some of them, so we drop them: we always resolve from `cwd`.
- */
-const REPO_SELECTING_GIT_VARS = [
-  "GIT_DIR",
-  "GIT_WORK_TREE",
-  "GIT_COMMON_DIR",
-  "GIT_INDEX_FILE",
-  "GIT_OBJECT_DIRECTORY",
-  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-  "GIT_PREFIX",
-  "GIT_NAMESPACE",
-];
-
-function gitEnv(base: Record<string, string | undefined>): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined && !REPO_SELECTING_GIT_VARS.includes(key)) env[key] = value;
-  }
-  return env;
-}
-
 type Git = (args: string[]) => { ok: boolean; stdout: string; stderr: string };
+
+/**
+ * Each git call here may take this long. A hook resolves its project first, and a guard's
+ * own timeout is 10 s (`.claude/rules/hooks.md` § Timeouts); these calls take milliseconds.
+ */
+export const RESOLVE_GIT_TIMEOUT_MS = 5_000;
 
 function gitIn(cwd: string, env: Record<string, string>): Git {
   return (args) => {
-    const result = Bun.spawnSync(["git", ...args], { cwd, env, stdout: "pipe", stderr: "pipe" });
+    const result = Bun.spawnSync(["git", ...args], {
+      cwd,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: RESOLVE_GIT_TIMEOUT_MS,
+    });
     return {
       ok: result.exitCode === 0,
       stdout: result.stdout.toString(),
@@ -90,13 +83,16 @@ function findMainCheckout(git: Git, cwd: string): string | null {
   return realpathSync(path);
 }
 
+/** Where a checkout is, without its cc-smart-dev-kit.json: what a hook needs before it reads the file. */
+export type Checkout = Omit<Project, "config" | "configFile">;
+
 /**
- * Finds the git project `cwd` is in, and its anymodel.json.
- * Returns null outside git. Throws when git is older than 2.31 or the main checkout is
- * missing, AnymodelVersionError when the project needs another plugin version, and AnymodelConfigError
- * when an anymodel.json is invalid.
+ * Finds the git checkout `cwd` is in, reading no cc-smart-dev-kit.json. Returns null outside git or
+ * in a bare repo. Throws when git is older than 2.31 or the main checkout is missing.
+ * A hook calls it first, then `ownHooksOf`, so a hook the project runs as its own copy stays
+ * silent even when the cc-smart-dev-kit.json is broken.
  */
-export function resolveProject(cwd: string, options: ResolveOptions = {}): Project | null {
+export function locateCheckout(cwd: string, options: ResolveOptions = {}): Checkout | null {
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
@@ -126,14 +122,47 @@ export function resolveProject(cwd: string, options: ResolveOptions = {}): Proje
   const commonDir = realpathSync(common);
   const isWorktree = realpathSync(gitDir) !== commonDir;
   const mainCheckout = isWorktree ? findMainCheckout(git, cwd) : root;
+  return { root, commonDir, isWorktree, mainCheckout };
+}
 
-  const own = join(root, ".claude", "anymodel.json");
-  let config = loadAnymodelConfig(own, options.pluginVersion);
+/**
+ * The plugin hooks the project runs as its own copy (`ownHooks`), read on their own from the
+ * same cc-smart-dev-kit.json `loadProjectConfig` reads. Never throws: empty when there is no file,
+ * or it cannot be read.
+ */
+export function ownHooksOf(checkout: Checkout): string[] {
+  const { root, mainCheckout } = checkout;
+  const own = readOwnHooks(join(root, ".claude", "cc-smart-dev-kit.json"));
+  if (own !== null) return own;
+  if (mainCheckout === null || mainCheckout === root) return [];
+  return readOwnHooks(join(mainCheckout, ".claude", "cc-smart-dev-kit.json")) ?? [];
+}
+
+/**
+ * Reads the cc-smart-dev-kit.json of a located checkout: its own, else the main checkout's, and the
+ * file it came from. Throws CcSmartDevKitVersionError when the project needs another plugin
+ * version, and CcSmartDevKitConfigError when a cc-smart-dev-kit.json is invalid.
+ */
+export function loadProjectConfig(checkout: Checkout, pluginVersion?: string): Project {
+  const { root, mainCheckout } = checkout;
+  const own = join(root, ".claude", "cc-smart-dev-kit.json");
+  let config = loadCcSmartDevKitConfig(own, pluginVersion);
+  let configFile = config === null ? null : own;
   if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    config = loadAnymodelConfig(
-      join(mainCheckout, ".claude", "anymodel.json"),
-      options.pluginVersion,
-    );
+    const main = join(mainCheckout, ".claude", "cc-smart-dev-kit.json");
+    config = loadCcSmartDevKitConfig(main, pluginVersion);
+    configFile = config === null ? null : main;
   }
-  return { root, commonDir, isWorktree, mainCheckout, config };
+  return { ...checkout, config, configFile };
+}
+
+/**
+ * Finds the git project `cwd` is in, and its cc-smart-dev-kit.json.
+ * Returns null outside git. Throws when git is older than 2.31 or the main checkout is
+ * missing, CcSmartDevKitVersionError when the project needs another plugin version, and CcSmartDevKitConfigError
+ * when a cc-smart-dev-kit.json is invalid.
+ */
+export function resolveProject(cwd: string, options: ResolveOptions = {}): Project | null {
+  const checkout = locateCheckout(cwd, options);
+  return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
 }

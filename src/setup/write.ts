@@ -21,11 +21,11 @@ import { basename, dirname, join, resolve } from "node:path";
  * Backups live in the state folder, never beside the file: a settings file linked from a
  * dotfiles repo would get backups (with secrets in them) inside that repo, and a backup in
  * a bin folder would sit on PATH. Each file gets its own subfolder, named by its real path:
- * `<stateDir>/backups/<encodeURIComponent(real path)>/<name>.bak-anymodel-<UTC stamp>[-<n>][.absent|.mode-NNN]`.
+ * `<stateDir>/backups/<encodeURIComponent(real path)>/<name>.bak-cc-smart-dev-kit-<UTC stamp>[-<n>][.absent|.mode-NNN]`.
  */
 export const BACKUPS_DIR = "backups";
-/** The middle of a backup's name: `<name>.bak-anymodel-<stamp>`. */
-export const BACKUP_INFIX = ".bak-anymodel-";
+/** The middle of a backup's name: `<name>.bak-cc-smart-dev-kit-<stamp>`. */
+export const BACKUP_INFIX = ".bak-cc-smart-dev-kit-";
 /** A backup of a file that did not exist yet: restoring it removes the file. */
 export const ABSENT_SUFFIX = ".absent";
 
@@ -79,7 +79,10 @@ export function fileMode(file: string): number | null {
 function writeTemp(file: string, content: string, mode: number): string {
   const dir = dirname(file);
   mkdirSync(dir, { recursive: true });
-  const temp = join(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
+  const temp = join(
+    dir,
+    `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`,
+  );
   try {
     const fd = openSync(temp, "wx", mode);
     try {
@@ -227,20 +230,36 @@ export function backupFile(stateDir: string, file: string): string {
 }
 
 /**
- * What anymodel changed in a file, so restore knows how to take it out again:
+ * What cc-smart-dev-kit changed in a file, so restore knows how to take it out again:
  * - `json-keys`: keys listed in owned.json; restore removes them and keeps the rest.
- * - `markdown-block`: one anymodel block; restore removes it and keeps the text around it.
- * - `whole-file`: the file is anymodel's (the launcher); restore puts back the baseline.
+ * - `json-entries`: entries of a JSON string list, listed in owned-entries.json; restore
+ *   removes them and keeps every other entry.
+ * - `markdown-block`: one cc-smart-dev-kit block; restore removes it and keeps the text around it.
+ * - `file-line`: exact lines cc-smart-dev-kit added (`lines`); restore removes those and only those.
+ * - `whole-file`: the file is cc-smart-dev-kit's (the launcher); restore puts back the baseline.
  */
-export type ChangeKind = "json-keys" | "markdown-block" | "whole-file";
+export type ChangeKind =
+  | "json-keys"
+  | "json-entries"
+  | "markdown-block"
+  | "file-line"
+  | "whole-file";
 
 export interface ChangedEntry {
   kinds: ChangeKind[];
-  /** The first backup, made just before anymodel first changed the file. */
+  /** The first backup, made just before cc-smart-dev-kit first changed the file. */
   baseline: string | null;
+  /** The exact lines cc-smart-dev-kit added to the file (`file-line`), for restore. */
+  lines?: string[];
 }
 
-const CHANGE_KINDS: readonly ChangeKind[] = ["json-keys", "markdown-block", "whole-file"];
+const CHANGE_KINDS: readonly ChangeKind[] = [
+  "json-keys",
+  "json-entries",
+  "markdown-block",
+  "file-line",
+  "whole-file",
+];
 
 function isChangedEntry(value: unknown): value is ChangedEntry {
   if (typeof value !== "object" || value === null) return false;
@@ -248,11 +267,13 @@ function isChangedEntry(value: unknown): value is ChangedEntry {
   return (
     Array.isArray(entry.kinds) &&
     entry.kinds.every((kind) => CHANGE_KINDS.includes(kind)) &&
-    (entry.baseline === null || typeof entry.baseline === "string")
+    (entry.baseline === null || typeof entry.baseline === "string") &&
+    (entry.lines === undefined ||
+      (Array.isArray(entry.lines) && entry.lines.every((line) => typeof line === "string")))
   );
 }
 
-/** The files anymodel has changed, from `<stateDir>/changed.json`. */
+/** The files cc-smart-dev-kit has changed, from `<stateDir>/changed.json`. */
 export function readChanged(stateDir: string): Record<string, ChangedEntry> {
   const file = join(stateDir, CHANGED_FILE);
   if (!existsSync(file)) return {};
@@ -278,22 +299,41 @@ function writeChanged(stateDir: string, files: Record<string, ChangedEntry>): vo
 }
 
 /** Records that `file` gets a change of `kind`. Returns true when `backup` became its baseline. */
-function recordChange(stateDir: string, file: string, kind: ChangeKind, backup: string): boolean {
+function recordChange(
+  stateDir: string,
+  file: string,
+  kind: ChangeKind,
+  backup: string,
+  lines?: string[],
+): boolean {
   const files = readChanged(stateDir);
   const entry = files[file];
   if (!entry) {
-    files[file] = { kinds: [kind], baseline: backup };
+    files[file] = {
+      kinds: [kind],
+      baseline: backup,
+      ...(lines !== undefined && lines.length > 0 && { lines: [...lines] }),
+    };
     writeChanged(stateDir, files);
     return true;
   }
+  let changed = false;
   if (!entry.kinds.includes(kind)) {
     entry.kinds.push(kind);
-    writeChanged(stateDir, files);
+    changed = true;
   }
+  for (const line of lines ?? []) {
+    // The lines cc-smart-dev-kit added pile up: two writes may add different lines.
+    const known = entry.lines ?? [];
+    if (known.includes(line)) continue;
+    entry.lines = [...known, line];
+    changed = true;
+  }
+  if (changed) writeChanged(stateDir, files);
   return false;
 }
 
-/** Restore took everything of anymodel out of `file`: stop tracking it. */
+/** Restore took everything of cc-smart-dev-kit out of `file`: stop tracking it. */
 export function forgetChange(stateDir: string, file: string): void {
   const files = readChanged(stateDir);
   if (!(file in files)) return;
@@ -318,7 +358,7 @@ export function retryOnConcurrentChange<T>(file: string, fn: () => T, attempts =
       if (!(error instanceof ConcurrentChangeError) || attempt >= attempts) {
         if (error instanceof ConcurrentChangeError) {
           throw new ConcurrentChangeError(
-            `${file} kept changing while anymodel tried to update it (${attempts} tries). ` +
+            `${file} kept changing while cc-smart-dev-kit tried to update it (${attempts} tries). ` +
               "Close the program that writes it (for example Claude Code), then run again.",
           );
         }
@@ -332,6 +372,8 @@ export interface ManagedWriteOptions {
   stateDir: string;
   /** What this write changes, for restore. */
   kind: ChangeKind;
+  /** The exact lines this write adds (`file-line`): restore removes those, and only those. */
+  lines?: string[];
   /** The mode of a file that does not exist yet. An existing file keeps its own mode. */
   newFileMode?: number;
   /** Force this mode even on an existing file (the launcher must stay executable). */
@@ -360,7 +402,7 @@ function readCurrent(file: string): string | null {
 }
 
 /**
- * The one way anymodel changes a file: when the content differs, back it up, record it
+ * The one way cc-smart-dev-kit changes a file: when the content differs, back it up, record it
  * for restore, and write it atomically. Same content: nothing is written at all.
  *
  * The steps, in this order:
@@ -384,7 +426,7 @@ export function writeManagedFile(
   const current = currentMode === null ? null : readFileSync(target, "utf8");
   const checkUnchanged = (now: string | null) => {
     if (options.expectedContent !== undefined && now !== options.expectedContent) {
-      throw new ConcurrentChangeError(`${target} changed after anymodel read it.`);
+      throw new ConcurrentChangeError(`${target} changed after cc-smart-dev-kit read it.`);
     }
   };
   // An early check too: no backup and no temp file when the file changed already.
@@ -396,7 +438,7 @@ export function writeManagedFile(
   const outcome: WriteOutcome = currentMode === null ? "created" : "updated";
   if (options.dryRun) return { outcome, backup: null };
   const backup = backupFile(options.stateDir, target);
-  const isBaseline = recordChange(options.stateDir, target, options.kind, backup);
+  const isBaseline = recordChange(options.stateDir, target, options.kind, backup, options.lines);
   try {
     atomicWrite(target, content, wantedMode, () => {
       options.onBeforeCompare?.();
@@ -410,7 +452,7 @@ export function writeManagedFile(
   return { outcome, backup };
 }
 
-/** Removes a file anymodel created, after a backup of it. Returns the backup's path. */
+/** Removes a file cc-smart-dev-kit created, after a backup of it. Returns the backup's path. */
 export function removeManagedFile(stateDir: string, file: string): string {
   const backup = backupFile(stateDir, file);
   unlinkSync(file);

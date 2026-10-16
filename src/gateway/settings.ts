@@ -8,11 +8,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import {
   applyManagedJson,
+  createdObjects,
   ForeignKeyError,
   formatKeyPath,
+  getKey,
   type KeyPath,
   type ManagedJsonResult,
   ownedKeys,
+  ownedRecords,
+  ownership,
 } from "../setup/managed-json";
 import { realTarget } from "../setup/write";
 
@@ -23,19 +27,19 @@ import { realTarget } from "../setup/write";
  * `ENABLE_TOOL_SEARCH`: with a base URL that is not Anthropic's, Claude Code turns MCP tool
  * search off and sends every tool definition up front (measured: an Opus session started
  * at 184K tokens through the router, against 70K without it). On `true` the tools stay
- * deferred; Anthropic expands them itself, and the router expands them for a cheap backend
+ * deferred; Anthropic expands them itself, and the router expands them for an affordable backend
  * (`toolSearchForBackend` in router.ts). https://code.claude.com/docs/en/env-vars
  */
 export function gatewayEnv(port: number): Record<string, string> {
   return {
     ENABLE_TOOL_SEARCH: "true",
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: "anymodel-scout[1m]",
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: `Cheap model for search and reading: the scout slot (${COMMAND} gateway slot scout …)`,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (cheap)",
-    ANTHROPIC_DEFAULT_SONNET_MODEL: "anymodel-worker[1m]",
-    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: `Cheap model for routine code and docs: the worker slot (${COMMAND} gateway slot worker …)`,
-    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (cheap)",
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: "cc-smart-dev-kit-scout[1m]",
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: `Affordable model for search and reading: the scout slot (${COMMAND} gateway slot scout …)`,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (affordable)",
+    ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker[1m]",
+    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: `Affordable model for routine code and docs: the worker slot (${COMMAND} gateway slot worker …)`,
+    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (affordable)",
   };
 }
 
@@ -43,7 +47,7 @@ export function gatewayEnv(port: number): Record<string, string> {
  * Env keys the gateway must never write.
  * - `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`: they replace the person's own login.
  * - `CLAUDE_CODE_SUBAGENT_MODEL`: an agent launched without `model` (a reviewer, say)
- *   would silently run on it, possibly a cheap slot. Without it, a forgotten `model` falls
+ *   would silently run on it, possibly an affordable slot. Without it, a forgotten `model` falls
  *   back to the main model: dearer, never a worse review.
  * - `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`: it overrides the `model` of every Agent call, so a
  *   review could not stay on Claude.
@@ -91,6 +95,25 @@ export function maskKey(key: string): string {
   return key.length >= 12 ? `••••${key.slice(-4)}` : "••••";
 }
 
+/**
+ * A backend's address as a person reads it: the URL without any credentials in it, then its
+ * key in the masked form. One home, because two callers show it — `omniroute status` and the
+ * portal's pages — and neither may print a whole key.
+ */
+export function shownBackendUrl(baseUrl: string, apiKey: string): string {
+  const masked = maskKey(apiKey);
+  try {
+    const url = new URL(baseUrl);
+    if (url.username !== "" || url.password !== "") {
+      url.username = "";
+      url.password = "";
+    }
+    return `${url.href.replace(/\/$/, "")} (key ${masked})`;
+  } catch {
+    return `(key ${masked})`;
+  }
+}
+
 /** A settings value as output may show it: anything that looks like a key or a credential is masked. */
 export function shownValue(value: unknown): string {
   const text = typeof value === "string" ? value : JSON.stringify(value);
@@ -99,29 +122,61 @@ export function shownValue(value: unknown): string {
 }
 
 /**
- * The gateway env keys anymodel owns in the settings file: `gateway on` set them, and
- * neither `off` nor `restore` took them out yet. While there is one, running Claude
- * sessions may still send every request to the router.
+ * The gateway env keys cc-smart-dev-kit owns in the settings file AND still holds the value cc-smart-dev-kit
+ * wrote: a key the person changed or removed since is theirs (the record holds a value, and
+ * the file holds another one, or no key at all), and `restore` leaves it. A record with no
+ * value (an `owned.json` from before values were kept, or the claim written just before a
+ * write) counts as ours, whatever the key holds. While there is one, running Claude sessions
+ * may still send every request to the router.
  */
 export function ownedGatewayEnvKeys(settingsFile: string, stateDir: string): string[] {
-  const owned = ownedKeys(stateDir, realTarget(settingsFile));
-  return GATEWAY_ENV_KEYS.filter((key) =>
-    owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key),
+  const settings = currentSettings(settingsFile);
+  if (settings === null) {
+    // Unreadable (restore reports the file's own error a moment later): every gateway key
+    // cc-smart-dev-kit recorded counts as still in use. The conservative answer for the one
+    // caller: it decides whether a running router may be stopped at once, and a key that is
+    // there but cannot be read must keep every session working.
+    const owned = ownedKeys(stateDir, realTarget(settingsFile));
+    return GATEWAY_ENV_KEYS.filter((key) =>
+      owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key),
+    );
+  }
+  const records = ownedRecords(stateDir, realTarget(settingsFile));
+  return GATEWAY_ENV_KEYS.filter(
+    (key) => ownership(records, envPath(key), getKey(settings, envPath(key))) === "ours",
   );
 }
 
 /**
- * Throws ForeignKeyError when a gateway key is in the settings and anymodel does not own
+ * The settings file's object as it is now, for the ownership check above, or null when it
+ * cannot be read (not JSON, not an object, an `env` that is not one).
+ */
+function currentSettings(settingsFile: string): null | Record<string, unknown> {
+  try {
+    return readSettings(settingsFile);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Throws ForeignKeyError when a gateway key is in the settings and cc-smart-dev-kit does not own
  * it, also when it already has the wanted value: then `gateway off` could not remove it,
  * and the gateway would stay half on. An older install, or the person, set it; they remove
  * it (a project's migration does it for its machines). The value is masked.
+ *
+ * This check is by key path (`ownedKeys`), not by value like `ownedGatewayEnvKeys`: a key
+ * cc-smart-dev-kit set and the person changed since still counts as owned here, and the write itself
+ * refuses it with the message for that case (it was changed after cc-smart-dev-kit set it).
  */
 export function assertNoForeignGatewayKeys(settingsFile: string, stateDir: string): void {
   const env = readSettings(settingsFile).env;
   if (!isJsonObject(env)) return;
-  const owned = new Set(ownedGatewayEnvKeys(settingsFile, stateDir));
+  const owned = ownedKeys(stateDir, realTarget(settingsFile));
+  const owns = (key: string) =>
+    owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key);
   for (const key of GATEWAY_ENV_KEYS) {
-    if (!Object.hasOwn(env, key) || owned.has(key)) continue;
+    if (!Object.hasOwn(env, key) || owns(key)) continue;
     // Many people set ENABLE_TOOL_SEARCH themselves, for their own reasons: say so.
     const yourOwn =
       key === "ENABLE_TOOL_SEARCH"
@@ -159,7 +214,7 @@ export function turnOn(options: {
 }
 
 /**
- * Removes the gateway env keys anymodel owns. A gateway key someone else set stays, and
+ * Removes the gateway env keys cc-smart-dev-kit owns. A gateway key someone else set stays, and
  * is returned in `foreign`, so the output can name it.
  */
 export function turnOff(options: { settingsFile: string; stateDir: string; dryRun?: boolean }): {
@@ -171,6 +226,9 @@ export function turnOff(options: { settingsFile: string; stateDir: string; dryRu
     file: options.settingsFile,
     stateDir: options.stateDir,
     remove: GATEWAY_ENV_KEYS.map(envPath),
+    // Gateway setup created the `env` these keys live in, when the settings had none: an
+    // `env` this removal empties goes with them. One the person had stays.
+    createdObject: createdObjects(options.stateDir, options.settingsFile),
     ...(options.dryRun !== undefined && { dryRun: options.dryRun }),
   });
   const foreign = result.skipped

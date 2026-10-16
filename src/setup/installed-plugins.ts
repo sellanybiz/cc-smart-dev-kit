@@ -7,11 +7,15 @@ export interface PluginInstall {
 }
 
 /**
- * The user-scope install of anymodel@anymodel from Claude Code's `installed_plugins.json`,
+ * The user-scope install of a plugin (by default cc-smart-dev-kit@cc-smart-dev-kit) from Claude Code's
+ * `installed_plugins.json`,
  * or null when there is none. The launcher script repeats this lookup in plain JS
  * (it must work without this code) — keep the two in step.
  */
-export function findUserInstall(installedPluginsFile: string): PluginInstall | null {
+export function findUserInstall(
+  installedPluginsFile: string,
+  pluginId: string = PLUGIN_ID,
+): PluginInstall | null {
   if (!existsSync(installedPluginsFile)) return null;
   let parsed: unknown;
   try {
@@ -20,7 +24,7 @@ export function findUserInstall(installedPluginsFile: string): PluginInstall | n
     return null;
   }
   const plugins = (parsed as { plugins?: Record<string, unknown> } | null)?.plugins;
-  const entries = plugins?.[PLUGIN_ID];
+  const entries = plugins?.[pluginId];
   if (!Array.isArray(entries)) return null;
   const entry = entries.find(
     (candidate): candidate is { installPath: string; version?: unknown } =>

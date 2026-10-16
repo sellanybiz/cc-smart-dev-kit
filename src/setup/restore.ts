@@ -1,5 +1,8 @@
-import { existsSync, readFileSync } from "node:fs";
-import { applyManagedJson, formatKeyPath, ownedKeys } from "./managed-json";
+import { existsSync, readdirSync, readFileSync, rmdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { removeAllOwnedEntries } from "./managed-entries";
+import { applyManagedJson, createdObjects, formatKeyPath, ownedKeys } from "./managed-json";
+import { removeManagedLines } from "./managed-line";
 import { removeManagedMarkdown } from "./managed-markdown";
 import {
   ABSENT_SUFFIX,
@@ -7,6 +10,7 @@ import {
   forgetChange,
   listBackups,
   readChanged,
+  realTarget,
   removeManagedFile,
   writeManagedFile,
 } from "./write";
@@ -14,21 +18,21 @@ import {
 export interface RestoreResult {
   file: string;
   /**
-   * - `restored`: a file anymodel owns whole is back as it was before anymodel.
-   * - `removed`: anymodel had created the file; it is gone again.
-   * - `cleaned`: anymodel's keys or block are out; everything else stayed.
-   * - `unchanged`: nothing of anymodel was left in it.
-   * - `no-backup`: the backup from before anymodel is missing; the file was left alone.
+   * - `restored`: a file cc-smart-dev-kit owns whole is back as it was before cc-smart-dev-kit.
+   * - `removed`: cc-smart-dev-kit had created the file; it is gone again.
+   * - `cleaned`: cc-smart-dev-kit's keys or block are out; everything else stayed.
+   * - `unchanged`: nothing of cc-smart-dev-kit was left in it.
+   * - `no-backup`: the backup from before cc-smart-dev-kit is missing; the file was left alone.
    */
   action: "restored" | "removed" | "cleaned" | "unchanged" | "no-backup";
-  /** What was taken out: key paths, or "the anymodel block". */
+  /** What was taken out: key paths, or "the cc-smart-dev-kit block". */
   details: string[];
   /** The backup of the file's state just before this restore changed it. */
   savedAs?: string;
 }
 
-/** The baseline is an `.absent` marker: the file did not exist before anymodel. */
-function createdByUs(entry: ChangedEntry): boolean {
+/** The baseline is an `.absent` marker: the file did not exist before cc-smart-dev-kit. */
+export function createdByUs(entry: ChangedEntry): boolean {
   return entry.baseline?.endsWith(ABSENT_SUFFIX) ?? false;
 }
 
@@ -67,18 +71,37 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
   if (entry.kinds.includes("json-keys")) {
     const keys = ownedKeys(stateDir, file);
     if (keys.length > 0) {
-      const result = applyManagedJson({ file, stateDir, remove: keys });
+      // `createdObject`: an object cc-smart-dev-kit created and this removal emptied (the `env`
+      // its own keys made, say) goes with its last key; one the person had stays.
+      const result = applyManagedJson({
+        file,
+        stateDir,
+        remove: keys,
+        createdObject: createdObjects(stateDir, file),
+      });
       details.push(...result.changes.map((change) => formatKeyPath(change.path)));
       savedAs ??= result.backup;
     }
   }
+  if (entry.kinds.includes("json-entries")) {
+    const result = removeAllOwnedEntries(stateDir, file);
+    details.push(...result.removed.map((removed) => `the entry ${JSON.stringify(removed)}`));
+    savedAs ??= result.backup;
+  }
   if (entry.kinds.includes("markdown-block")) {
     const result = removeManagedMarkdown({ file, stateDir });
-    if (result.outcome !== "unchanged") details.push("the anymodel block");
+    if (result.outcome !== "unchanged") details.push("the cc-smart-dev-kit block");
+    savedAs ??= result.backup;
+  }
+  if (entry.kinds.includes("file-line")) {
+    // Only the exact lines cc-smart-dev-kit added: a line the person changed or removed since
+    // stays, and a file whose lines are all gone reports nothing.
+    const result = removeManagedLines({ file, lines: entry.lines ?? [], stateDir });
+    for (const line of result.removed) details.push(`the line ${JSON.stringify(line)}`);
     savedAs ??= result.backup;
   }
 
-  // anymodel created the file, and only an empty shell of ours is left: remove it.
+  // cc-smart-dev-kit created the file, and only an empty shell of ours is left: remove it.
   if (createdByUs(entry) && isEmpty(file)) {
     const backup = removeManagedFile(stateDir, file);
     return { file, action: "removed", details, savedAs: savedAs ?? backup };
@@ -88,27 +111,56 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
 }
 
 /**
- * Removes everything anymodel added, and keeps everything else:
- * - JSON files: the keys anymodel owns are removed (they did not exist before, because
- *   anymodel never overwrites a key it does not own). Keys others added stay.
- * - Markdown files: the anymodel block is removed; the text around it stays.
- * - Files anymodel owns whole (the launcher): back to the state before anymodel's first
- *   change, or removed when anymodel created them.
+ * Removes everything cc-smart-dev-kit added, and keeps everything else:
+ * - JSON files: the keys cc-smart-dev-kit owns are removed while they still hold the value
+ *   cc-smart-dev-kit wrote (they did not exist before, or held a program's own default, because
+ *   cc-smart-dev-kit never overwrites a key someone chose). A key the person changed since stays,
+ *   and so do keys others added. The list entries cc-smart-dev-kit owns are taken out; other
+ *   entries stay.
+ * - Markdown files: the cc-smart-dev-kit block is removed; the text around it stays.
+ * - Files cc-smart-dev-kit owns whole (the launcher): back to the state before cc-smart-dev-kit's first
+ *   change, or removed when cc-smart-dev-kit created them.
  * Each change makes a backup first. Afterwards the file is no longer tracked, so a second
  * restore changes nothing.
  *
  * `except`: files (their real paths, as `changed.json` records them) left as they are and
  * still tracked, for a later restore. `restore` uses it for the router's copy and unit
  * while running sessions still use the router.
+ *
+ * `only`: restore just these files (real paths); every other file stays as it is and
+ * still tracked. `setup --no-instructions` uses it for the instructions and their block.
+ *
+ * A removed file leaves no empty folder behind inside the state folder (the instructions'
+ * folders); a folder outside it is never touched.
  */
-export function restore(stateDir: string, options: { except?: string[] } = {}): RestoreResult[] {
+export function restore(
+  stateDir: string,
+  options: { except?: string[]; only?: string[] } = {},
+): RestoreResult[] {
   const except = new Set(options.except ?? []);
-  const entries = Object.entries(readChanged(stateDir)).filter(([file]) => !except.has(file));
+  const only = options.only === undefined ? null : new Set(options.only);
+  const entries = Object.entries(readChanged(stateDir)).filter(
+    ([file]) => !except.has(file) && (only === null || only.has(file)),
+  );
   return entries.map(([file, entry]) => {
     const result = entry.kinds.includes("whole-file")
       ? restoreWholeFile(file, entry, stateDir)
       : restorePartly(file, entry, stateDir);
     if (result.action !== "no-backup") forgetChange(stateDir, file);
+    if (result.action === "removed") removeEmptyFolders(file, stateDir);
     return result;
   });
+}
+
+/**
+ * Removes the folders above `file` that are empty now, up to (not including) the state
+ * folder. A folder outside the state folder, or one with anything in it, stays.
+ */
+function removeEmptyFolders(file: string, stateDir: string): void {
+  const root = realTarget(stateDir);
+  let dir = dirname(file);
+  while (dir.startsWith(`${root}/`) && existsSync(dir) && readdirSync(dir).length === 0) {
+    rmdirSync(dir);
+    dir = dirname(dir);
+  }
 }

@@ -1,9 +1,9 @@
 ---
 name: release
-description: Ship a new version of the anymodel plugin — pick the semver step, bump plugin.json, build, run every check and both validates, open the pull request, wait for the owner's yes, then update one machine and run doctor. Also covers a rollback. Use for "release", "bump the version", "ship the plugin", "roll back".
+description: Ship a new version of the cc-smart-dev-kit plugin — pick the semver step, bump plugin.json, build, run every check and both validates, open the pull request, wait for the owner's yes, then update one machine and run doctor. Also covers a rollback. Use for "release", "bump the version", "ship the plugin", "roll back".
 ---
 
-# Release the `anymodel` plugin
+# Release the `cc-smart-dev-kit` plugin
 
 Machines with auto-update on take a new version on their next start. So a release
 reaches everyone without a further step: check it well before the merge.
@@ -15,10 +15,10 @@ The version is `version` in `plugin/.claude-plugin/plugin.json`, `MAJOR.MINOR.PA
 | Step | When |
 |---|---|
 | **patch** | A fix. No new field, command or behaviour a project must know about. |
-| **minor** | Something new that breaks nothing: a command, a hook, a skill, an optional `anymodel.json` field (`.claude/rules/anymodel-json.md`). |
-| **major** | Something that breaks a project or a machine: an `anymodel.json` field removed, renamed or narrowed; a command removed; a managed file's format changed. Only with the owner's yes. |
+| **minor** | Something new that breaks nothing: a command, a hook, a skill, an optional `cc-smart-dev-kit.json` field (`.claude/rules/cc-smart-dev-kit-json.md`). |
+| **major** | Something that breaks a project or a machine: a `cc-smart-dev-kit.json` field removed, renamed or narrowed; a command removed; a managed file's format changed. Only with the owner's yes. |
 
-A project that needs the new version raises `requires` in its own `anymodel.json`. Say in
+A project that needs the new version raises `requires` in its own `cc-smart-dev-kit.json`. Say in
 the pull request which version a project should require for the new part.
 
 ## 2. Bump and build
@@ -47,10 +47,10 @@ a check.
 
 1. Commit `plugin.json`, `plugin/dist/` and the change in one commit.
 2. Open a pull request into `main`. In its body: what changed for a user, the version
-   step and why, and anything a user must run (`anymodel setup`, a restart).
+   step and why, and anything a user must run (`cc-smart-dev-kit setup`, a restart).
    The router changed (`plugin/dist/router.js` differs from the last release, which is
    `main`: `git diff origin/main -- plugin/dist/router.js`)? Say so in the body: each
-   machine with the gateway runs `anymodel gateway setup`, which asks before it restarts
+   machine with the gateway runs `cc-smart-dev-kit gateway setup`, which asks before it restarts
    the router (a restart cuts the answers in flight). A version bump alone does not
    change `router.js`: the router takes no baked version (`src/build-info/names.ts`).
 3. Wait for CI to go green.
@@ -59,20 +59,35 @@ a check.
 ## 5. After the merge, on one machine
 
 ```sh
-claude plugin marketplace update anymodel
-claude plugin update anymodel@anymodel
-anymodel doctor
+claude plugin marketplace update cc-smart-dev-kit
+claude plugin update cc-smart-dev-kit@cc-smart-dev-kit
+cc-smart-dev-kit doctor
 ```
+
+A machine still on 0.2.x (the version before the name change) takes a different path:
+add this marketplace, install this plugin, then run the new plugin's `dist/cli.js` with
+`bun --no-env-file --config=<that version's bunfig.toml>` - `cc-smart-dev-kit` does not
+exist there yet, the old launcher is the only one, and without the flags bun would load the
+working folder's `.env` files and run its `bunfig.toml`:
+
+```sh
+plugin="$HOME/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>"
+claude plugin marketplace add <owner>/cc-smart-dev-kit
+claude plugin install cc-smart-dev-kit@cc-smart-dev-kit
+bun --no-env-file --config="$plugin/bunfig.toml" "$plugin/dist/cli.js" migrate
+```
+
+That moves everything the old version wrote (`README.md` § Moving from anymodel).
 
 Then restart Claude Code: an update makes a new version folder, and a running session
 keeps the old one. After the restart:
 
-- `anymodel version` prints the new version;
-- `anymodel doctor` is all `✓`;
-- when the release changed what `setup` manages, run `anymodel setup --dry-run`, read
-  the change, then `anymodel setup`;
+- `cc-smart-dev-kit version` prints the new version;
+- `cc-smart-dev-kit doctor` is all `✓`;
+- when the release changed what `setup` manages, run `cc-smart-dev-kit setup --dry-run`, read
+  the change, then `cc-smart-dev-kit setup`;
 - when the release changed the router, and this machine runs the gateway: `doctor` says
-  the router copy is not this version's; run `anymodel gateway setup` (it asks before the
+  the router copy is not this version's; run `cc-smart-dev-kit gateway setup` (it asks before the
   restart).
 
 Something wrong? Roll back (below) before other machines start.

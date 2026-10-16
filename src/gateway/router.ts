@@ -1,8 +1,8 @@
 /**
- * anymodel-router: the local AI gateway between Claude Code and the model providers.
+ * cc-smart-dev-kit-router: the local AI gateway between Claude Code and the model providers.
  *
  * WHY IT EXISTS
- *   Routine subagents (search, reading, routine code) can run on cheap models; reviews
+ *   Routine subagents (search, reading, routine code) can run on affordable models; reviews
  *   and judgment stay on Claude. Claude Code points `ANTHROPIC_BASE_URL` here with NO
  *   gateway token, so every request carries the person's OWN Claude login: the pattern
  *   Anthropic documents for gateways. That login must only ever reach Anthropic.
@@ -15,29 +15,35 @@
  *     and headers unchanged (only hop-by-hop headers, `host` and `content-length` are
  *     dropped). The answer streams back unbuffered, compressed bytes and all
  *     (`decompress: false`).
- *   - A slot key (`anymodel-scout`, `anymodel-worker`) → the slot's targets in order
- *     (`targets.ts`). A cheap backend gets only an allow-list of headers plus its own
+ *   - A slot key (`cc-smart-dev-kit-scout`, `cc-smart-dev-kit-worker`) → the slot's targets in order
+ *     (`targets.ts`). An affordable backend gets only an allow-list of headers plus its own
  *     key, and the body without `metadata` (it holds the account id). A `claude-…`
  *     target goes to Anthropic with `model` changed, and only the fields that target
  *     refuses translated (`requestForClaudeFallback`). It moves to the next target
  *     only before an answer reaches Claude Code: a network error, a status
- *     `fallbackKind` names, or (on a streaming request to a cheap backend that is not
+ *     `fallbackKind` names, or (on a streaming request to an affordable backend that is not
  *     the last target) no response headers or no first real event within
  *     `firstByteMs`, or an error event before the first real one. A target that
  *     answered 429 / 5xx rests a while (`cooldownSeconds`); the last target of a slot is
  *     always tried. A client that hangs up rests nothing.
  *   - An explicit `<backend>:<model>` → that backend, no fallback.
+ *   - A Claude model with a model slot (`modelSlots`, off by default) → the model itself
+ *     first, the bytes as sent; the slot's next target only when Anthropic answers with
+ *     the plan's usage limit (`useModelSlot`, `planUsageLimit`).
  *   - Auto mode's safety check (`isAutoModeGuard`, on the request as it came, so an old
- *     name in `aliases` is seen too) → the `anymodel-judge` slot, only when the person
- *     turned it on (it is off by default). Without that slot it stays on Claude: a
- *     `claude-…` check untouched, a slot-named one to that slot's Claude targets only, and
- *     one whose name leads to no Claude target (a cheap-only slot, or an alias to
- *     `<backend>:<model>`) to Anthropic as it was sent (`resolveRequestRoute`).
- *   - No prompt text is ever changed. A cheap backend gets only the named format
+ *     name in `aliases` is seen too) → Claude, always first: a `claude-…` check
+ *     untouched, a slot-named one to that slot's Claude targets only, and one whose name
+ *     leads to no Claude target (an affordable-only slot, or an alias to `<backend>:<model>`) to
+ *     Anthropic as it was sent (`resolveRequestRoute`). The `cc-smart-dev-kit-judge` slot, when
+ *     the person set one, answers only when Claude cannot (`judgeAsFallback`).
+ *   - Every Claude answer's headers (never its body) say whether the plan's usage limit
+ *     was reached; the router writes that to its state file, for the status line and the
+ *     StopFailure alert (`limit-state.ts`).
+ *   - No prompt text is ever changed. An affordable backend gets only the named format
  *     translations below; a `claude-…` request reaches Anthropic as the bytes it came as.
- *   - A cheap backend never sees Claude Code's tool search: `toolSearchForBackend`.
- *   - A cheap backend gets "no reasoning" in a form it reads: `reasoningOffForBackend`.
- *   - A redirect from a cheap backend becomes a 502: Claude Code must never follow a
+ *   - An affordable backend never sees Claude Code's tool search: `toolSearchForBackend`.
+ *   - An affordable backend gets "no reasoning" in a form it reads: `reasoningOffForBackend`.
+ *   - A redirect from an affordable backend becomes a 502: Claude Code must never follow a
  *     `Location` it chose. Anthropic's own redirects pass as they are.
  *   - Only this machine: it binds 127.0.0.1, refuses a foreign `Host` and any `Origin`
  *     (a web page in a browser), and on `/v1/messages` wants JSON and an
@@ -55,19 +61,35 @@
  *     email addresses masked. It is written in the background: the client's answer never
  *     waits for the log.
  *   - On SIGTERM it stops taking requests and exits once the running ones finish.
+ *     Under systemd, the socket unit holds the port meanwhile, so new connections wait
+ *     for the next router instead of being refused (`startRouter`, `./listen.ts`).
  *
  * `createRouter` is the handler, with everything it touches passed in, so the tests
- * drive it with fake upstreams. `startRouter` serves it (`anymodel gateway serve`, and
+ * drive it with fake upstreams. `startRouter` serves it (`cc-smart-dev-kit gateway serve`, and
  * the systemd unit through `src/entries/router.ts`). The design: docs/gateway.md.
  */
 
-import { type GatewayConfig, messageOf, watchConfig } from "./config";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+// From ./names, not the index: the index bakes in the version (bundles-and-releases.md).
+import { COMMAND } from "../build-info/names";
+import { atomicWrite } from "../setup/write";
+import { type GatewayConfig, judgeTargetTested, messageOf, watchConfig } from "./config";
+import { cleanFallbackResponse } from "./fallback-answer";
+import { directIfLoopback } from "./hosts";
+import { emptyLimitState, formatLimitState, type LimitState } from "./limit-state";
+import { inheritedListenFd, innerSocketPath, LISTEN_VARS, listenOnFd, serveUnix } from "./listen";
+import { oneLine } from "./plain-text";
 import {
+  COOLDOWN_MAX_SEC,
   cooldownSeconds,
   fallbackKind,
   formatTarget,
   isAutoModeGuard,
   JUDGE_SLOT,
+  modelSlotFor,
+  type PlanLimit,
+  planUsageLimit,
   resolveAlias,
   resolveRequestRoute,
   resolveRoute,
@@ -82,6 +104,11 @@ export interface UpstreamInit {
   decompress: false;
   headers: Headers;
   method: string;
+  /**
+   * `false` for a backend on this machine: its key goes straight there, never through a
+   * proxy from the environment (`directIfLoopback`). Absent for any other upstream.
+   */
+  proxy?: false;
   /** A proxy passes a redirect on; it never follows one with the client's login. */
   redirect: "manual";
   signal: AbortSignal;
@@ -103,6 +130,12 @@ export interface RouterDeps {
   background?: (task: Promise<void>) => void;
   /** Named in the error a request for an unknown slot gets. */
   configPath: string;
+  /**
+   * TESTS ONLY, never set in use: a model slot's fallback answers reach Claude Code as the
+   * backend sent them, thinking blocks and all (`cleanFallbackResponse` is skipped). It
+   * exists for the live proof that the cleaning is needed (docs/claude-code-contract.md).
+   */
+  fallbackAnswersAsIs?: boolean;
   fetch: FetchLike;
   getConfig: () => GatewayConfig;
   log: (line: string) => void;
@@ -110,10 +143,35 @@ export interface RouterDeps {
   now: () => number;
   /** The port the server is bound to; the `Host` guard checks it. */
   port: number;
+  /**
+   * Writes the limit state file's text (`limit-state.ts`). Called in the background, never
+   * before an answer; it may throw, and the router logs that once. Absent: no file.
+   */
+  saveState?: (text: string) => void;
 }
 
+/** How often a model slot's `lastAt` reaches the state file, at most: once a minute. */
+const FALLBACK_SAVE_EVERY_MS = 60_000;
+
+/**
+ * The shortest rest of a model at its plan limit, in seconds, when the reset Anthropic
+ * named is already past (a clock off, or a reset that did not happen yet): without it,
+ * every request would ask Anthropic first and wait for its 429 again.
+ */
+export const LIMIT_REST_MIN_SEC = 60;
+
+/** Words of an error answer that say a conversation was too long for a model. */
+const TOO_LONG = /context|too long|too large|too many tokens|token limit|payload/i;
+
+/** Words of an error answer that say a model refused a kind of content block. */
+const UNSUPPORTED =
+  /unsupported|not supported|unknown (?:content|block|type)|invalid (?:content|block) type|image|document|server_tool|web_search|web_fetch|tool_reference/i;
+
+/** The words of Anthropic's 400 for a thinking block it cannot verify. */
+const BAD_SIGNATURE = "Invalid `signature`";
+
 /** Path of the router's own health check, answered before anything is forwarded. */
-export const HEALTH_PATH = "/__anymodel/health";
+export const HEALTH_PATH = "/__cc-smart-dev-kit/health";
 
 const MESSAGES_PATH = "/v1/messages";
 const COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
@@ -132,7 +190,7 @@ const HOP_BY_HOP = new Set([
 ]);
 
 /**
- * The only client headers a cheap backend sees. Never `authorization`, `x-api-key`,
+ * The only client headers an affordable backend sees. Never `authorization`, `x-api-key`,
  * `cookie` or `anthropic-beta`: the first three carry the Claude login, the last
  * announces the OAuth capability.
  */
@@ -186,7 +244,7 @@ export function backendRequestHeaders(client: Headers, apiKey: string): Headers 
 }
 
 /**
- * `retry-after` as whole seconds. Claude Code reads an integer; a cheap backend may
+ * `retry-after` as whole seconds. Claude Code reads an integer; an affordable backend may
  * send a fraction or an HTTP date. Null when it is neither.
  */
 export function retryAfterSeconds(value: null | string, nowMs: number): null | number {
@@ -199,7 +257,7 @@ export function retryAfterSeconds(value: null | string, nowMs: number): null | n
   return Math.max(0, Math.ceil((at - nowMs) / 1000));
 }
 
-/** Response headers for the client; a cheap backend's `retry-after` made whole seconds. */
+/** Response headers for the client; an affordable backend's `retry-after` made whole seconds. */
 function responseHeaders(upstream: Headers, normalizeRetryAfterAt: null | number): Headers {
   const dropped = droppedHeaders(upstream);
   const out = new Headers();
@@ -220,7 +278,7 @@ function responseHeaders(upstream: Headers, normalizeRetryAfterAt: null | number
  *
  * OmniRoute commits to `200 text/event-stream` after about a second, sends comment
  * lines (`: …`) as heartbeats, and reports a failure in-band as `event: error`. So
- * for a cheap backend "before the first byte" means "before the first real event":
+ * for an affordable backend "before the first byte" means "before the first real event":
  * comments are skipped; `ping` carries no content and decides nothing either.
  */
 export function sseScanner(): { push(text: string): "error" | "event" | null } {
@@ -275,13 +333,9 @@ export function sseScanner(): { push(text: string): "error" | "event" | null } {
   };
 }
 
-/** Text safe for one log line: no control characters, bounded length. */
+/** Text safe for one log line: printable ASCII only, bounded length (`oneLine`). */
 function printable(text: string, max = 120): string {
-  return text
-    .replace(/\s+/g, " ")
-    .replace(/[^\x20-\x7e]/g, "?")
-    .trim()
-    .slice(0, max);
+  return oneLine(text, max, { ascii: true });
 }
 
 /** A secret as the log shows it: `****` and, for a long one, its last four characters. */
@@ -356,6 +410,21 @@ export function maskSecrets(text: string, known: readonly string[] = []): string
     );
 }
 
+/**
+ * An outside error text as one line to show: anything like a key masked first
+ * (`maskSecrets`, with the `known` secrets), then made one line of at most `max`
+ * characters with no control character (`oneLine`). The router's log passes `ascii`;
+ * `cc-smart-dev-kit search` shows Unicode and marks a cut with `…`.
+ */
+export function maskedLine(
+  text: string,
+  known: readonly string[],
+  max: number,
+  options: { ascii?: boolean; mark?: string } = {},
+): string {
+  return oneLine(maskSecrets(text, known), max, options);
+}
+
 /** How long an error snippet in the log may be. */
 const SNIPPET_MAX = 300;
 
@@ -383,7 +452,7 @@ function snippetText(bytes: Uint8Array, known: readonly string[]): string {
     while (end > 0 && KEY_CHARACTER.test(text.charAt(end - 1))) end -= 1;
     text = text.slice(0, end);
   }
-  return printable(maskSecrets(text, known), SNIPPET_MAX);
+  return maskedLine(text, known, SNIPPET_MAX, { ascii: true });
 }
 
 /**
@@ -407,7 +476,7 @@ function decompressionFormat(encoding: string): Bun.CompressionFormat | null {
 }
 
 /**
- * Claude Code's tool search, made plain for a cheap backend.
+ * Claude Code's tool search, made plain for an affordable backend.
  *
  * With `ENABLE_TOOL_SEARCH=true` Claude Code marks most tools `defer_loading: true`
  * and, when its `ToolSearch` tool finds one, answers with a `tool_reference` block
@@ -419,7 +488,7 @@ function decompressionFormat(encoding: string): Bun.CompressionFormat | null {
  *     `defer_loading`; a tool that is not deferred stays as it is (`ToolSearch` too);
  *   - each `tool_reference` block becomes `{"type":"text","text":"Tool loaded: <name>"}`,
  *     the other blocks beside it kept.
- * The cheap model sees the core tools and `ToolSearch`; a tool it finds is a real
+ * The affordable model sees the core tools and `ToolSearch`; a tool it finds is a real
  * definition on its next turn — what Anthropic's server does. Nothing else changes.
  */
 export function toolSearchForBackend(body: Record<string, unknown>): Record<string, unknown> {
@@ -462,7 +531,7 @@ export function toolSearchForBackend(body: Record<string, unknown>): Record<stri
 }
 
 /**
- * "No reasoning", said so a cheap backend acts on it.
+ * "No reasoning", said so an affordable backend acts on it.
  *
  * Claude Code turns reasoning off with `thinking: {"type":"disabled"}` for short
  * background calls. OmniRoute translates that for an OpenAI-shaped provider such as
@@ -519,10 +588,10 @@ const ABOVE_HIGH = new Set(["max", "xhigh"]);
  * A slot request's body, made acceptable to the slot's `claude-…` target.
  *
  * Claude Code builds a request for the model name it sends. Under a slot name
- * (`anymodel-worker`) it knows nothing of the model behind it, so the body can carry a
+ * (`cc-smart-dev-kit-worker`) it knows nothing of the model behind it, so the body can carry a
  * field the Claude target refuses: Claude Sonnet 5.5 answers 400 to
  * `thinking: {type: "disabled"}`, which Claude Code sends to turn reasoning off for short
- * background calls. Without this, a slot that falls back to Claude after its cheap targets
+ * background calls. Without this, a slot that falls back to Claude after its affordable targets
  * fail answers 400 instead. So, for a target in `CLAUDE_TARGET_RULES` only, each refused
  * field gets the nearest value the target accepts:
  *   - `thinking: {type: "disabled"}` → `{type: "between_tools"}` (Sonnet 5.5; at effort
@@ -666,6 +735,186 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   const aliasesLogged = new Set<string>();
   /** Claude-target translations already logged (target and changes): once each. */
   const translationsLogged = new Set<string>();
+  /** What the state file says: plan limits seen, model slots on a fallback. */
+  const limitState: LimitState = emptyLimitState();
+  /**
+   * Claude model id → the time (ms) until which its model slot skips it: it answered with
+   * the plan's usage limit. Apart from `cooling`, so that a short 429 from another slot's
+   * Claude target never moves a model slot to its fallback.
+   */
+  const limitedUntil = new Map<string, number>();
+  /**
+   * Claude model ids a model slot's fallback answered for since the router started. A 400
+   * "Invalid `signature`" for one of them gets a WARN that names the cause, also once its
+   * fallback record is gone.
+   */
+  const fellBack = new Set<string>();
+  /** Judge targets already named in a WARN as untested: once each. */
+  const untestedLogged = new Set<string>();
+  /** What `cleanAnswer` changed, per slot and target: logged once each. */
+  const cleanedLogged = new Set<string>();
+  /** The config the fallback records were last checked against (`dropRemovedFallbacks`). */
+  let checkedConfig: GatewayConfig | null = null;
+  let saveQueued = false;
+  let lastSaveError = "";
+
+  /** Write the state file in the background, once for any number of changes in a row. */
+  function persist(): void {
+    const save = deps.saveState;
+    if (save === undefined || saveQueued) return;
+    saveQueued = true;
+    // A timer, not a microtask: the write must never run before the answer goes out.
+    const task = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        saveQueued = false;
+        try {
+          save(formatLimitState(limitState));
+          lastSaveError = "";
+        } catch (error) {
+          const message = messageOf(error);
+          if (message !== lastSaveError) deps.log(`ERROR cannot write the limit state: ${message}`);
+          lastSaveError = message;
+        }
+        resolve();
+      }, 0);
+    });
+    deps.background?.(task);
+  }
+
+  /**
+   * Read a Claude answer's headers (never its body): a plan usage limit is noted for the
+   * status line and the hook; any other answer below 400 ends the limit, and the fallback of
+   * any model slot that used it. Only a `/v1/messages` answer counts: `count_tokens` is not
+   * a model's answer, and a 200 to it during a rest says nothing about the limit. The answer
+   * itself is not touched. Returns the limit, or null.
+   */
+  function observeClaude(model: string, response: Response, path: string): null | PlanLimit {
+    if (path !== MESSAGES_PATH) return null;
+    const id = withoutContextSuffix(model);
+    const limit = planUsageLimit(response.status, (name) => response.headers.get(name));
+    if (limit !== null) {
+      const before = limitState.limits[id];
+      limitState.limits[id] = { ...limit, seenAt: deps.now() };
+      if (
+        before === undefined ||
+        before.resetsAt !== limit.resetsAt ||
+        deps.now() - before.seenAt >= FALLBACK_SAVE_EVERY_MS
+      ) {
+        persist();
+      } else {
+        // The file keeps the older `seenAt`; less than a minute apart, it says the same.
+        limitState.limits[id] = before;
+      }
+      return limit;
+    }
+    if (response.status >= 400 || !Object.hasOwn(limitState.limits, id)) return null;
+    delete limitState.limits[id];
+    for (const [slot, record] of Object.entries(limitState.fallbacks)) {
+      // The judge fallback ends only when Claude answers a check: `endJudgeFallback`.
+      if (record.model !== id || slot === JUDGE_SLOT) continue;
+      delete limitState.fallbacks[slot];
+      deps.log(`${slot}: ${id} answers again; its fallback is over`);
+    }
+    limitedUntil.delete(id);
+    persist();
+    return null;
+  }
+
+  /**
+   * A model slot asked its fallback: one WARN when it starts, and the state file. Only an
+   * answer below 400 makes the fallback active (the state file, the status line): a
+   * fallback that failed answered nothing, and its WARN says so.
+   */
+  function noteFallback(
+    slot: string,
+    model: string,
+    limit: PlanLimit | null,
+    outcome: Outcome,
+  ): void {
+    const now = deps.now();
+    const before = limitState.fallbacks[slot];
+    const resetsAt = limit?.resetsAt ?? before?.resetsAt ?? null;
+    const reset =
+      resetsAt === null
+        ? "no reset time given"
+        : `resets ${new Date(resetsAt * 1000).toISOString()}`;
+    const claim = printable(limit?.claim ?? "plan limit", 40);
+    if (!outcome.response.ok) {
+      if (before === undefined) {
+        deps.log(
+          `WARN ${slot}: ${model} is at its plan usage limit (${claim}, ${reset}); its fallback ${outcome.target} answered ${outcome.response.status}`,
+        );
+      }
+      return;
+    }
+    fellBack.add(model);
+    if (before === undefined) {
+      deps.log(
+        `WARN ${slot}: ${model} is at its plan usage limit (${claim}, ${reset}); answering from ${outcome.target} until ${model} answers again`,
+      );
+    }
+    limitState.fallbacks[slot] = {
+      lastAt: now,
+      model,
+      resetsAt,
+      since: before?.since ?? now,
+      target: outcome.target,
+    };
+    if (
+      before === undefined ||
+      before.target !== outcome.target ||
+      before.resetsAt !== resetsAt ||
+      now - before.lastAt >= FALLBACK_SAVE_EVERY_MS
+    ) {
+      persist();
+    }
+  }
+
+  /**
+   * A slot taken out of the config (`gateway slot opus off`, `slot judge off`, a hand edit)
+   * loses its fallback record, so the status line stops showing it. Checked once per
+   * config the router loads, before its first request.
+   */
+  function dropRemovedFallbacks(config: GatewayConfig): void {
+    if (config === checkedConfig) return;
+    checkedConfig = config;
+    const inUse = new Set(Object.values(config.modelSlots ?? {}));
+    if (judgeTargetsOf(config, false).length > 0) inUse.add(JUDGE_SLOT);
+    let changed = false;
+    for (const slot of Object.keys(limitState.fallbacks)) {
+      if (inUse.has(slot)) continue;
+      delete limitState.fallbacks[slot];
+      deps.log(`${slot}: removed from the config; its fallback record is dropped`);
+      changed = true;
+    }
+    if (changed) persist();
+  }
+
+  /**
+   * The judge's targets the router may use: only the ones `gateway slot judge` tested
+   * (`judgeTargetTested`). An untested one (a hand edit, a config from before 0.3) is
+   * ignored, with one WARN per target when `warn` is set.
+   */
+  function judgeTargetsOf(config: GatewayConfig, warn: boolean): Target[] {
+    const judge = resolveRoute(JUDGE_SLOT, config);
+    if (judge.kind !== "slot") return [];
+    return judge.targets.filter((target) => {
+      const text = formatTarget(target);
+      if (judgeTargetTested(config, text)) return true;
+      if (warn && !untestedLogged.has(text)) {
+        untestedLogged.add(text);
+        deps.log(
+          `WARN ${JUDGE_SLOT}: ${text} has not passed the judge test, so it judges nothing. Test and set it: ${COMMAND} gateway slot judge <targets>`,
+        );
+      }
+      return false;
+    });
+  }
+
+  /** Did a model slot's fallback answer for this Claude model since the router started? */
+  function hadFallback(model: string): boolean {
+    return fellBack.has(model);
+  }
 
   /** Cancel a response the client will never see, so its connection is freed. */
   async function discard(response: UpstreamBody): Promise<void> {
@@ -727,10 +976,17 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    * can take up to a second, and the client's answer must never wait for the log. Pass a
    * `clone()` when the client still needs the body.
    */
-  function logErrorAnswer(response: UpstreamBody, known: readonly string[], prefix: string): void {
+  function logErrorAnswer(
+    response: UpstreamBody,
+    known: readonly string[],
+    prefix: string,
+    /** Called with the snippet after its line: one more WARN that names a known cause. */
+    follow?: (snippet: string) => void,
+  ): void {
     const task = errorSnippet(response, known).then(
       (snippet) => {
         deps.log(`${prefix} — ${snippet}`);
+        follow?.(snippet);
       },
       (error: unknown) => {
         deps.log(`${prefix} — (body unreadable: ${messageOf(error)})`);
@@ -777,6 +1033,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       method: upstream.method,
       redirect: "manual",
       signal: controller.signal,
+      ...directIfLoopback(upstream.url),
     });
     try {
       const first = await (timer === null ? pending : Promise.race([pending, timer.done]));
@@ -794,7 +1051,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   }
 
   /**
-   * Hold a cheap backend's stream until its first real event (`sseScanner`). An
+   * Hold an affordable backend's stream until its first real event (`sseScanner`). An
    * error event, the end of the stream, or `deadlineAt` first → a failure, and the
    * next target is tried; nothing has reached the client yet. Otherwise the client
    * gets a stream that replays every byte read so far, then pipes the rest as it
@@ -933,15 +1190,15 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       ? config.backends[target.backend]
       : undefined;
     if (backend === undefined) return { error: `backend "${target.backend}" is not in the config` };
-    // `metadata` carries the Claude account id; a cheap backend never sees it.
-    const cheapBody: Record<string, unknown> = {
+    // `metadata` carries the Claude account id; an affordable backend never sees it.
+    const affordableBody: Record<string, unknown> = {
       ...reasoningOffForBackend(toolSearchForBackend(body), { absentIsOff: guard }),
       model: target.model,
     };
-    delete cheapBody.metadata;
+    delete affordableBody.metadata;
     return {
       upstream: {
-        body: encoder.encode(JSON.stringify(cheapBody)),
+        body: encoder.encode(JSON.stringify(affordableBody)),
         headers: backendRequestHeaders(req.headers, backend.apiKey),
         // Only the path: a query like `?beta=true` is Anthropic's, not the backend's.
         method: "POST",
@@ -981,6 +1238,17 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     return out;
   }
 
+  /** The Claude models a model slot skips now (their plan limit), with the seconds left. */
+  function limitedNow(): Record<string, number> {
+    const now = deps.now();
+    const out: Record<string, number> = {};
+    for (const [model, until] of limitedUntil) {
+      if (until <= now) limitedUntil.delete(model);
+      else out[model] = Math.ceil((until - now) / 1000);
+    }
+    return out;
+  }
+
   /** The client hung up: free any answer, rest nothing, count no fallback. */
   function closed(result: Attempt, label: string): Outcome {
     if ("response" in result) void discard(result.response);
@@ -1005,6 +1273,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     targets: Target[],
     name: string,
     guard: boolean,
+    /** A model slot's fallback: the Claude model it stands in for, named in a size WARN. */
+    standsInFor: null | string = null,
   ): Promise<Outcome> {
     const failures: string[] = [];
     let fallbacks = 0;
@@ -1019,7 +1289,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         continue;
       }
       // The header deadline guards only where it can help: a streaming request to a
-      // cheap backend with another target behind it. Anthropic, the last target and
+      // affordable backend with another target behind it. Anthropic, the last target and
       // a non-streaming answer (which may take minutes) wait as long as it takes;
       // the client hanging up still cancels them.
       // An auto-mode check gets the same deadline though it does not stream: a judge that
@@ -1034,6 +1304,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           ? { failure: built.error, status: null }
           : await send(req, built.upstream, deadlineAt);
       if (req.signal.aborted) return closed(result, label);
+      if (target.kind === "anthropic" && "response" in result) {
+        observeClaude(target.model, result.response, url.pathname);
+      }
       if (
         "response" in result &&
         !last &&
@@ -1070,7 +1343,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
             response: anthropicError(
               502,
               "api_error",
-              `anymodel-router: ${label} answered a redirect (${status}); not passed on`,
+              `cc-smart-dev-kit-router: ${label} answered a redirect (${status}); not passed on`,
             ),
             skipped,
             target: label,
@@ -1083,6 +1356,19 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
             result.response.clone(),
             knownSecrets(req, config),
             `WARN ${label} answered ${status}; returned as it is`,
+            standsInFor === null || (status !== 400 && status !== 413)
+              ? undefined
+              : (snippet) => {
+                  const kind = TOO_LONG.test(snippet)
+                    ? "too long"
+                    : UNSUPPORTED.test(snippet)
+                      ? "a kind of content it does not take"
+                      : null;
+                  if (kind === null) return;
+                  deps.log(
+                    `WARN ${name}: ${label} refused this ${standsInFor} conversation (${kind}). A long ([1m], 200k+ tokens) or rich (images, documents, server tools) ${standsInFor} conversation may be more than the fallback takes: /compact it, start a new one, or wait for ${standsInFor}'s reset`,
+                  );
+                },
           );
         }
         return { fallbacks, response: relay(result.response, target), skipped, target: label };
@@ -1103,7 +1389,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       response: anthropicError(
         502,
         "api_error",
-        `anymodel-router: no target for ${name} answered (${failures.join("; ") || "no targets"})`,
+        `cc-smart-dev-kit-router: no target for ${name} answered (${failures.join("; ") || "no targets"})`,
       ),
       skipped,
       target: lastTarget === undefined ? "none" : formatTarget(lastTarget),
@@ -1119,8 +1405,166 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     };
   }
 
+  /**
+   * A Claude model with a model slot. First the model itself, with the bytes Claude Code
+   * sent: whatever Anthropic answers goes back as it is (a short 429, a 5xx and a network
+   * error included: Claude Code retries those itself), EXCEPT the plan's usage limit
+   * (`planUsageLimit`). Then the slot's other targets, in order (`chain`, with an affordable
+   * backend's named translations), and the model rests until its reset (at most
+   * `COOLDOWN_MAX_SEC`: then one request asks Anthropic again). One WARN when a fallback
+   * starts; the state file says so for the status line.
+   */
+  async function useModelSlot(
+    req: Request,
+    url: URL,
+    config: GatewayConfig,
+    body: Record<string, unknown>,
+    sent: null | Uint8Array<ArrayBuffer>,
+    found: { model: string; slot: string },
+    rest: Target[],
+    answerDirect: (result: Attempt, observed: null | string, claudeModel?: string) => Outcome,
+  ): Promise<Outcome> {
+    const until = limitedUntil.get(found.model);
+    let limit: null | PlanLimit;
+    let skipped = 0;
+    if (until !== undefined && until > deps.now()) {
+      skipped = 1;
+      limit = limitState.limits[found.model] ?? null;
+    } else {
+      limitedUntil.delete(found.model);
+      const result = await send(req, anthropicUpstream(req, url, config, sent), null);
+      if (req.signal.aborted) return closed(result, found.model);
+      if (!("response" in result)) return answerDirect(result, null, found.model);
+      limit = observeClaude(found.model, result.response, url.pathname);
+      if (limit === null) return answerDirect(result, null, found.model);
+      const nowSec = deps.now() / 1000;
+      // A reset already past rests the shortest time, not none (`LIMIT_REST_MIN_SEC`).
+      const restSec =
+        limit.resetsAt === null
+          ? COOLDOWN_MAX_SEC
+          : limit.resetsAt <= nowSec
+            ? LIMIT_REST_MIN_SEC
+            : Math.min(limit.resetsAt - nowSec, COOLDOWN_MAX_SEC);
+      limitedUntil.set(found.model, deps.now() + restSec * 1000);
+      // Reading the snippet also cancels the rest of this answer; Claude Code never sees it.
+      logErrorAnswer(
+        result.response,
+        knownSecrets(req, config),
+        `WARN ${found.model} answered 429 (the plan's usage limit); trying the next target of ${found.slot}`,
+      );
+    }
+    const outcome = await chain(req, url, config, body, rest, found.slot, false, found.model);
+    if (!req.signal.aborted) noteFallback(found.slot, found.model, limit, outcome);
+    return {
+      ...outcome,
+      fallbacks: outcome.fallbacks + (skipped === 0 ? 1 : 0),
+      response: cleanAnswer(found, outcome),
+      skipped: outcome.skipped + skipped,
+    };
+  }
+
+  /**
+   * A model slot's fallback answer without thinking blocks, and with `tool_use` ids Claude
+   * takes (`cleanFallbackResponse`): Claude Code keeps it in the conversation, and the
+   * Claude model, once it answers again, refuses a thinking block it cannot verify.
+   * `fallbackAnswersAsIs` (tests only) skips it.
+   */
+  function cleanAnswer(found: { model: string; slot: string }, outcome: Outcome): Response {
+    if (deps.fallbackAnswersAsIs === true) return outcome.response;
+    const cleaned = cleanFallbackResponse(outcome.response, (changes) => {
+      const kinds = [
+        changes.thinking > 0 ? "thinking blocks removed" : "",
+        changes.ids > 0 ? "tool_use ids made safe" : "",
+      ].filter((part) => part !== "");
+      const text = `${found.slot}: ${outcome.target}'s answers: ${kinds.join(", ")}`;
+      if (cleanedLogged.has(text)) return;
+      cleanedLogged.add(text);
+      deps.log(`${text} (${found.model} refuses them in its history; logged once per kind)`);
+    });
+    if (cleaned.note !== null) deps.log(`WARN ${found.slot}: ${outcome.target}: ${cleaned.note}`);
+    return cleaned.response;
+  }
+
+  /**
+   * Auto mode's safety check with a judge slot set. The judge is a FALLBACK only:
+   *   1. Claude first, always: the check takes the way it takes with no judge (`toClaude`:
+   *      untouched, or only `model` changed for a slot-named check).
+   *   2. The judge only when Claude cannot answer it: the plan's usage limit
+   *      (`planUsageLimit`), a 401 (no valid Claude login), or a request with no login on it
+   *      at all (then Claude is not asked). Every other answer, a short 429 and a 5xx
+   *      included, goes back to Claude Code as it is, and Claude Code asks the person.
+   * One WARN for every check the judge answers, naming the target; the state file says the
+   * judge fallback is active, for the status line.
+   */
+  async function judgeAsFallback(
+    req: Request,
+    url: URL,
+    config: GatewayConfig,
+    body: Record<string, unknown>,
+    model: { name: string },
+    judgeTargets: Target[],
+    toClaude: () => Promise<Outcome>,
+  ): Promise<Outcome> {
+    const checkModel = withoutContextSuffix(String(body.model ?? "-"));
+    let limit: null | PlanLimit = null;
+    let reason: string;
+    if (!req.headers.has("authorization") && !req.headers.has("x-api-key")) {
+      reason = "the request carries no Claude login";
+    } else {
+      const outcome = await toClaude();
+      const answer = outcome.response;
+      limit = planUsageLimit(answer.status, (name) => answer.headers.get(name));
+      if (req.signal.aborted || (limit === null && answer.status !== 401)) {
+        if (answer.status < 400) endJudgeFallback();
+        return outcome;
+      }
+      // Claude Code never sees this answer: the judge's goes back instead.
+      void discard(answer);
+      reason =
+        limit === null
+          ? "Claude answered 401 (no valid Claude login)"
+          : `Claude is at the plan's usage limit (${limit.claim ?? "no window named"})`;
+    }
+    model.name = `${model.name} [judge fallback]`;
+    const judged = await chain(req, url, config, body, judgeTargets, JUDGE_SLOT, true);
+    if (req.signal.aborted) return judged;
+    deps.log(
+      `WARN safety check judged by ${judged.target} (${judged.response.status}), not by Claude: ${reason}`,
+    );
+    // A judge that failed judged nothing: the fallback is not active.
+    if (!judged.response.ok) return { ...judged, fallbacks: judged.fallbacks + 1 };
+    const now = deps.now();
+    const before = limitState.fallbacks[JUDGE_SLOT];
+    const resetsAt = limit?.resetsAt ?? null;
+    limitState.fallbacks[JUDGE_SLOT] = {
+      lastAt: now,
+      model: checkModel,
+      resetsAt,
+      since: before?.since ?? now,
+      target: judged.target,
+    };
+    if (
+      before === undefined ||
+      before.target !== judged.target ||
+      before.resetsAt !== resetsAt ||
+      now - before.lastAt >= FALLBACK_SAVE_EVERY_MS
+    ) {
+      persist();
+    }
+    return { ...judged, fallbacks: judged.fallbacks + 1 };
+  }
+
+  /** Claude answered a safety check again: the judge fallback, if any, is over. */
+  function endJudgeFallback(): void {
+    if (!Object.hasOwn(limitState.fallbacks, JUDGE_SLOT)) return;
+    delete limitState.fallbacks[JUDGE_SLOT];
+    deps.log(`${JUDGE_SLOT}: Claude answers safety checks again; the judge fallback is over`);
+    persist();
+  }
+
   async function route(req: Request, url: URL, model: { name: string }): Promise<Outcome> {
     const config = deps.getConfig();
+    dropRemovedFallbacks(config);
     const isMessages =
       req.method === "POST" &&
       (url.pathname === MESSAGES_PATH || url.pathname === COUNT_TOKENS_PATH);
@@ -1128,7 +1572,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       const type = (req.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
       if (type !== "application/json" || !req.headers.has("anthropic-version")) {
         return refusal(
-          "anymodel-router wants content-type: application/json and an anthropic-version header",
+          "cc-smart-dev-kit-router wants content-type: application/json and an anthropic-version header",
         );
       }
     }
@@ -1140,15 +1584,35 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         : new Uint8Array(await req.arrayBuffer());
     let bytes = sent;
 
-    const direct = async (body = bytes): Promise<Outcome> => {
-      const result = await send(req, anthropicUpstream(req, url, config, body), null);
+    /**
+     * Anthropic's answer to the bytes sent, as Claude Code gets it. `observed`: the Claude
+     * model the bytes name, whose answer's headers note or end a plan limit (`observeClaude`).
+     */
+    const answerDirect = (
+      result: Attempt,
+      observed: null | string,
+      /** The Claude model the bytes name, when known: a bad-signature 400 names its cause. */
+      claudeModel: null | string = observed,
+    ): Outcome => {
+      if (observed !== null && "response" in result) {
+        observeClaude(observed, result.response, url.pathname);
+      }
       // Only a model's answer: another path (`/v1/models`, a file, an account page) is
       // passed on as it is, and its errors are not the router's to log.
       if (isMessages && "response" in result && result.response.status >= 400) {
+        const id = claudeModel === null ? null : withoutContextSuffix(claudeModel);
         logErrorAnswer(
           result.response.clone(),
           knownSecrets(req, config),
           `WARN anthropic answered ${result.response.status}`,
+          id === null || result.response.status !== 400 || !hadFallback(id)
+            ? undefined
+            : (snippet) => {
+                if (!snippet.includes(BAD_SIGNATURE)) return;
+                deps.log(
+                  `WARN ${id} refused a thinking block's signature: this conversation holds a thinking block a fallback model wrote while ${id} was at its plan limit. Claude Code 2.1.300 sent the request once more and was answered (seen live); if the session stays stuck, /rewind in Claude Code to the message before the fallback answered, or start a new session`,
+                );
+              },
         );
       }
       const response =
@@ -1157,10 +1621,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           : anthropicError(
               502,
               "api_error",
-              `anymodel-router: Anthropic did not answer (${result.failure})`,
+              `cc-smart-dev-kit-router: Anthropic did not answer (${result.failure})`,
             );
       return { fallbacks: 0, response, skipped: 0, target: "anthropic" };
     };
+    const direct = async (body = bytes, observed: null | string = null): Promise<Outcome> =>
+      answerDirect(await send(req, anthropicUpstream(req, url, config, body), null), observed);
 
     if (!isMessages) return direct();
 
@@ -1179,7 +1645,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
     if (typeof parsed.model === "string") model.name = parsed.model;
     // The safety check is recognised on the request as it came, an old name included: an
-    // alias may point at a cheap backend, and with the judge off the check stays on Claude.
+    // alias may point at an affordable backend, and with the judge off the check stays on Claude.
     const guard = isAutoModeGuard(parsed, config.aliases);
     // Then the old name, so the rest routes on the name it stands for; even the safety
     // check, whose newer form is sent under the sonnet name.
@@ -1202,63 +1668,74 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
     // Its newer form carries the sonnet slot's name; the log must still tell it apart.
     if (guard) model.name = `${model.name} (safety check)`;
-    const judge = guard ? resolveRoute(JUDGE_SLOT, config) : null;
-    if (judge !== null && judge.kind === "slot" && judge.targets.length > 0) {
-      model.name = `${model.name} [judge]`;
-      if (url.pathname === COUNT_TOKENS_PATH) {
-        // A check judged off Claude never reaches Claude, not even to count its tokens.
-        return {
+    // The judge is a fallback only: a check goes to Claude exactly as with no judge, and to
+    // the judge only when Claude cannot answer it (`judgeAsFallback`). count_tokens never.
+    // Only targets `gateway slot judge` tested; an untested one is ignored, with one WARN.
+    const judgeTargets = guard ? judgeTargetsOf(config, true) : [];
+    if (judgeTargets.length > 0 && url.pathname === MESSAGES_PATH) {
+      return judgeAsFallback(req, url, config, body, model, judgeTargets, claudeRoute);
+    }
+    return claudeRoute();
+
+    /** The request's way to Claude, or by its name: everything but the judge fallback. */
+    // Not `async`: it only hands back a promise, and an extra async step would reorder the
+    // log lines a test reads.
+    function claudeRoute(): Promise<Outcome> {
+      // A Claude model with a model slot (`gateway slot opus …`): never the safety check, never
+      // a name an alias changed (so `body` is the request as sent), never count_tokens. Off by
+      // default (no `modelSlots`).
+      const found =
+        guard || alias !== null || url.pathname !== MESSAGES_PATH
+          ? null
+          : modelSlotFor(body.model, config.modelSlots);
+      const slotRoute = found === null ? null : resolveRoute(found.slot, config);
+      const rest = slotRoute?.kind === "slot" ? slotRoute.targets.slice(1) : [];
+      if (found !== null && rest.length > 0) {
+        return useModelSlot(req, url, config, body, sent, found, rest, answerDirect);
+      }
+      const decided = resolveRequestRoute(body, config, guard);
+      if (decided.kind === "anthropic") {
+        const named = typeof body.model === "string" && body.model.startsWith("claude-");
+        return direct(bytes, named ? String(body.model) : null);
+      }
+      // A check with no Claude target behind its name: Anthropic gets what Claude Code sent.
+      if (decided.kind === "anthropic-as-sent") return direct(sent);
+      if (decided.kind === "unknown-slot") {
+        const slots = Object.keys(config.slots);
+        return Promise.resolve({
           fallbacks: 0,
           response: anthropicError(
-            404,
-            "not_found_error",
-            "count_tokens is not available for the judge slot; Claude Code estimates instead",
+            400,
+            "invalid_request_error",
+            `cc-smart-dev-kit-router: "${decided.slot}" is not a slot in ${deps.configPath} (slots: ${slots.length > 0 ? slots.join(", ") : "none — run cc-smart-dev-kit gateway setup"})`,
           ),
           skipped: 0,
           target: "none",
-        };
+        });
       }
-      return chain(req, url, config, body, judge.targets, JUDGE_SLOT, true);
-    }
-    const decided = resolveRequestRoute(body, config, guard);
-    if (decided.kind === "anthropic") return direct();
-    // A check with no Claude target behind its name: Anthropic gets what Claude Code sent.
-    if (decided.kind === "anthropic-as-sent") return direct(sent);
-    if (decided.kind === "unknown-slot") {
-      const slots = Object.keys(config.slots);
-      return {
-        fallbacks: 0,
-        response: anthropicError(
-          400,
-          "invalid_request_error",
-          `anymodel-router: "${decided.slot}" is not a slot in ${deps.configPath} (slots: ${slots.length > 0 ? slots.join(", ") : "none — run anymodel gateway setup"})`,
-        ),
-        skipped: 0,
-        target: "none",
-      };
-    }
 
-    const targets = decided.kind === "slot" ? decided.targets : [decided.target];
-    const name = decided.kind === "slot" ? decided.slot : model.name;
-    if (url.pathname === COUNT_TOKENS_PATH) {
-      // Token counting has no fallback: the first target answers, or no one does.
-      const first = targets[0];
-      if (first === undefined || first.kind === "backend") {
-        return {
-          fallbacks: 0,
-          response: anthropicError(
-            404,
-            "not_found_error",
-            `count_tokens is not available for ${name}; Claude Code estimates instead`,
-          ),
-          skipped: 0,
-          target: first === undefined ? "none" : formatTarget(first),
-        };
+      const targets = decided.kind === "slot" ? decided.targets : [decided.target];
+      const name = decided.kind === "slot" ? decided.slot : model.name;
+      if (url.pathname === COUNT_TOKENS_PATH) {
+        // Token counting has no fallback: the first target answers, or no one does.
+        const first = targets[0];
+        if (first === undefined || first.kind === "backend") {
+          return Promise.resolve({
+            fallbacks: 0,
+            response: anthropicError(
+              404,
+              "not_found_error",
+              `count_tokens is not available for ${name}; Claude Code estimates instead`,
+            ),
+            skipped: 0,
+            target: first === undefined ? "none" : formatTarget(first),
+          });
+        }
+        // `first` is a Claude target here, so `guard` only keeps a check untranslated.
+        return chain(req, url, config, body, [first], name, guard);
       }
-      // `first` is a Claude target here, so `guard` only keeps a check untranslated.
-      return chain(req, url, config, body, [first], name, guard);
+      return chain(req, url, config, body, targets, name, guard);
     }
-    return chain(req, url, config, body, targets, name, guard);
   }
 
   return async function handle(req: Request): Promise<Response> {
@@ -1270,7 +1747,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
 
     const host = (req.headers.get("host") ?? "").toLowerCase();
     if (req.headers.has("origin") || !allowedHosts.has(host)) {
-      const outcome = refusal("anymodel-router accepts requests from this machine only");
+      const outcome = refusal("cc-smart-dev-kit-router accepts requests from this machine only");
       deps.log(line(outcome));
       return outcome.response;
     }
@@ -1279,6 +1756,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       return Response.json({
         cooling: coolingNow(),
         fallbacks: stats.fallbacks,
+        limited: limitedNow(),
+        modelSlots: deps.getConfig().modelSlots ?? {},
         ok: true,
         port: deps.port,
         requests: stats.requests,
@@ -1298,7 +1777,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         response: anthropicError(
           500,
           "api_error",
-          "anymodel-router failed on this request; see its log",
+          "cc-smart-dev-kit-router failed on this request; see its log",
         ),
         skipped: 0,
         target: "none",
@@ -1310,37 +1789,117 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   };
 }
 
-/** Serve the router on 127.0.0.1: `anymodel gateway serve`, and the systemd unit. */
-export function startRouter(configPath: string) {
+/**
+ * Serve the router on 127.0.0.1: `cc-smart-dev-kit gateway serve`, and the systemd unit.
+ *
+ * Under the unit, systemd's `cc-smart-dev-kit-router.socket` holds the port and passes it in
+ * (socket activation, `./listen.ts`): the router accepts on that socket and relays each
+ * connection to its own server on a private unix socket. Started any other way (a
+ * terminal, a unit without the socket), it binds the config's port itself.
+ *
+ * `env` is the process's environment; the socket-activation variables are removed from
+ * it once read, so a child process never takes the socket for its own.
+ */
+export async function startRouter(
+  configPath: string,
+  statePath: string,
+  env: Record<string, string | undefined> = process.env,
+): Promise<void> {
   const log = (line: string) => console.log(line);
   // A missing or bad file at start does not stop the router: it runs `emptyConfig()`
   // (both slots on Claude Sonnet 5.5) and picks the file up once it is fixed.
   const source = watchConfig(configPath, log);
-  const { port } = source.get();
-  const handler = createRouter({
-    configPath,
-    fetch: (url, init) => fetch(url, init),
-    getConfig: () => source.get(),
-    log,
-    now: () => Date.now(),
-    port,
-  });
-  // `idleTimeout: 0` turns Bun's 10-second idle cut-off off: a model that thinks
-  // for a minute sends nothing in between, and the stream must not be dropped.
-  const server = Bun.serve({ fetch: handler, hostname: "127.0.0.1", idleTimeout: 0, port });
-  log(`anymodel-router listening on http://127.0.0.1:${port} (config ${configPath})`);
-  // systemd stops (and restarts) with SIGTERM. `stop(false)` stops taking new
-  // connections and lets every answer in flight finish; its promise resolves once
-  // the last connection has closed. The unit's TimeoutStopSec bounds the wait.
-  process.once("SIGTERM", () => {
-    log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
-    server.stop(false).then(
-      () => process.exit(0),
-      (error: unknown) => {
-        log(`ERROR while stopping: ${messageOf(error)}`);
-        process.exit(1);
+  const configPort = source.get().port;
+  const handlerFor = (port: number) =>
+    createRouter({
+      configPath,
+      fetch: (url, init) => fetch(url, init),
+      getConfig: () => source.get(),
+      log,
+      now: () => Date.now(),
+      port,
+      // Mode 600 in an owner-only folder: it names models and times, nothing secret, but it is
+      // the person's own state.
+      saveState: (text) => {
+        mkdirSync(dirname(statePath), { mode: 0o700, recursive: true });
+        atomicWrite(statePath, text, 0o600);
       },
+    });
+
+  const fd = inheritedListenFd(env, process.pid);
+  for (const name of LISTEN_VARS) delete env[name];
+
+  if (fd === null) {
+    // `idleTimeout: 0` turns Bun's 10-second idle cut-off off: a model that thinks
+    // for a minute sends nothing in between, and the stream must not be dropped.
+    const server = Bun.serve({
+      fetch: handlerFor(configPort),
+      hostname: "127.0.0.1",
+      idleTimeout: 0,
+      port: configPort,
+    });
+    log(
+      `cc-smart-dev-kit-router listening on http://127.0.0.1:${configPort} (config ${configPath})`,
     );
+    // systemd stops (and restarts) with SIGTERM. `stop(false)` stops taking new
+    // connections and lets every answer in flight finish; its promise resolves once
+    // the last connection has closed. The unit's TimeoutStopSec bounds the wait.
+    process.once("SIGTERM", () => {
+      log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
+      exitWhenDone(server.stop(false), log, () => {});
+    });
+    return;
+  }
+
+  // Socket activation. Connections that arrive before the inner server is up wait, paused.
+  const inner = innerSocketPath(env, process.pid);
+  let innerReady: (path: string) => void = () => {};
+  const ready = new Promise<string>((resolve) => {
+    innerReady = resolve;
   });
-  return server;
+  const relay = await listenOnFd(fd, ready, log);
+  // The Host check uses the port the socket really listens on. The config's port reaches
+  // the socket only through `gateway setup`, which writes it into the socket unit.
+  if (relay.port !== configPort) {
+    log(
+      `WARN the socket listens on port ${relay.port}, the config says ${configPort}: serving on ${relay.port}. Run: cc-smart-dev-kit gateway setup`,
+    );
+  }
+  const server = serveUnix(inner.path, handlerFor(relay.port));
+  innerReady(inner.path);
+  log(
+    `cc-smart-dev-kit-router listening on http://127.0.0.1:${relay.port} (the socket systemd holds; config ${configPath})`,
+  );
+  // On SIGTERM it stops accepting. systemd keeps the socket open, so a new connection
+  // waits in its queue for the next router instead of being refused. A connection that
+  // sent nothing is closed (`IDLE_GRACE_MS`); every answer in flight finishes. The inner
+  // server stops only once every relayed request has reached it, and the router exits
+  // once the last relayed connection has closed.
+  process.once("SIGTERM", () => {
+    log(
+      `SIGTERM: finishing ${server.pendingRequests} request(s), then exiting; new connections wait in the socket for the next router`,
+    );
+    const drain = relay.drain();
+    const stopped = drain.connected.then(() => server.stop(false));
+    exitWhenDone(Promise.all([stopped, drain.closed]), log, inner.cleanup);
+  });
+}
+
+/** Exits 0 once `done` resolves (1 when it fails), after `cleanup`. */
+function exitWhenDone(
+  done: Promise<unknown>,
+  log: (line: string) => void,
+  cleanup: () => void,
+): void {
+  done.then(
+    () => {
+      cleanup();
+      process.exit(0);
+    },
+    (error: unknown) => {
+      log(`ERROR while stopping: ${messageOf(error)}`);
+      cleanup();
+      process.exit(1);
+    },
+  );
 }

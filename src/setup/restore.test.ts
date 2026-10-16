@@ -19,13 +19,16 @@ import { applyManagedMarkdown } from "./managed-markdown";
 import { restore } from "./restore";
 import { listBackups, readChanged, writeManagedFile } from "./write";
 
-const AUTO_UPDATE = ["extraKnownMarketplaces", "anymodel", "autoUpdate"] as const;
+const AUTO_UPDATE = ["extraKnownMarketplaces", "cc-smart-dev-kit", "autoUpdate"] as const;
+
+/** The path setup writes the Tavily key to: its own `env` object when the settings had none. */
+const TAVILY_KEY_PATH = ["env", "TAVILY_API_KEY"] as const;
 
 const ORIGINAL_SETTINGS = `${JSON.stringify(
   {
     model: "opus",
     extraKnownMarketplaces: {
-      anymodel: { source: { source: "github", repo: "example-org/anymodel" } },
+      "cc-smart-dev-kit": { source: { source: "github", repo: "example-org/cc-smart-dev-kit" } },
     },
   },
   null,
@@ -61,7 +64,37 @@ describe("restore: except", () => {
   });
 });
 
-describe("restore: removes what anymodel added, keeps the rest", () => {
+describe("restore: only", () => {
+  test("restores just the files named; every other file stays as it is and tracked", () => {
+    const { dir, stateDir } = setup();
+    const settings = join(dir, "settings.json");
+    const copy = join(stateDir, "instructions", "core.md");
+    writeFileSync(settings, ORIGINAL_SETTINGS);
+    applyManagedJson({ file: settings, stateDir, set: [[AUTO_UPDATE, true]] });
+    writeManagedFile(copy, "# Core\n", { stateDir, kind: "whole-file", mode: 0o644 });
+
+    const result = restore(stateDir, { only: [copy] });
+    expect(result.map((entry) => [entry.file, entry.action])).toEqual([[copy, "removed"]]);
+    expect(read(settings)).not.toBe(ORIGINAL_SETTINGS);
+    expect(Object.keys(readChanged(stateDir))).toEqual([settings]);
+  });
+
+  test("a removed file's empty folders go, up to the state folder; a folder outside it stays", () => {
+    const { dir, stateDir } = setup();
+    const inside = join(stateDir, "instructions", "optin", "worktrees.md");
+    const outside = join(dir, "bin", "tool");
+    writeManagedFile(inside, "# Worktrees\n", { stateDir, kind: "whole-file", mode: 0o644 });
+    writeManagedFile(outside, "#!/bin/sh\n", { stateDir, kind: "whole-file", mode: 0o755 });
+
+    restore(stateDir);
+    expect(existsSync(join(stateDir, "instructions"))).toBe(false);
+    expect(existsSync(stateDir)).toBe(true);
+    expect(existsSync(outside)).toBe(false);
+    expect(existsSync(join(dir, "bin"))).toBe(true);
+  });
+});
+
+describe("restore: removes what cc-smart-dev-kit added, keeps the rest", () => {
   test("a key added by someone else after setup survives a restore", () => {
     const { dir, stateDir } = setup();
     const file = join(dir, "settings.json");
@@ -75,11 +108,11 @@ describe("restore: removes what anymodel added, keeps the rest", () => {
 
     const [result] = restore(stateDir);
     expect(result?.action).toBe("cleaned");
-    expect(result?.details).toEqual(["extraKnownMarketplaces.anymodel.autoUpdate"]);
+    expect(result?.details).toEqual(['extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate']);
     expect(JSON.parse(read(file))).toEqual({
       model: "opus",
       extraKnownMarketplaces: {
-        anymodel: { source: { source: "github", repo: "example-org/anymodel" } },
+        "cc-smart-dev-kit": { source: { source: "github", repo: "example-org/cc-smart-dev-kit" } },
       },
       permissions: { allow: ["Bash(ls:*)"] },
     });
@@ -95,6 +128,55 @@ describe("restore: removes what anymodel added, keeps the rest", () => {
     applyManagedJson({ file, stateDir, set: [[["statusLine"], { type: "command" }]] });
     restore(stateDir);
     expect(read(file)).toBe(ORIGINAL_SETTINGS);
+  });
+
+  test("an env setup itself created goes with the Tavily key: no `env: {}` is left behind", () => {
+    const { dir, stateDir } = setup();
+    const file = join(dir, "settings.json");
+    // The person's settings, without an `env`: setup's key makes that object.
+    writeFileSync(file, ORIGINAL_SETTINGS);
+    applyManagedJson({
+      file,
+      stateDir,
+      set: [[TAVILY_KEY_PATH, "tvly-secret"]],
+      secret: () => true,
+    });
+    expect(JSON.parse(read(file)).env).toEqual({ TAVILY_API_KEY: "tvly-secret" });
+
+    const [result] = restore(stateDir);
+    expect(result?.action).toBe("cleaned");
+    expect(result?.details).toEqual(["env.TAVILY_API_KEY", "env"]);
+    expect(read(file)).toBe(ORIGINAL_SETTINGS);
+  });
+
+  test("an env the person had, even empty, stays: only cc-smart-dev-kit's key goes", () => {
+    const { dir, stateDir } = setup();
+    const file = join(dir, "settings.json");
+    const original = `${JSON.stringify(
+      {
+        model: "opus",
+        env: {},
+        extraKnownMarketplaces: {
+          "cc-smart-dev-kit": {
+            source: { source: "github", repo: "example-org/cc-smart-dev-kit" },
+          },
+        },
+      },
+      null,
+      2,
+    )}\n`;
+    writeFileSync(file, original);
+    applyManagedJson({
+      file,
+      stateDir,
+      set: [[TAVILY_KEY_PATH, "tvly-secret"]],
+      secret: () => true,
+    });
+
+    const [result] = restore(stateDir);
+    expect(result?.action).toBe("cleaned");
+    expect(result?.details).toEqual(["env.TAVILY_API_KEY"]);
+    expect(read(file)).toBe(original);
   });
 
   test("a whole file changed twice goes back to the state before the first change, with its mode", () => {
@@ -114,7 +196,7 @@ describe("restore: removes what anymodel added, keeps the rest", () => {
     const { dir, stateDir } = setup();
     const file = join(dir, "CLAUDE.md");
     writeFileSync(file, "# Notes\n\nKeep this.\n");
-    applyManagedMarkdown({ file, stateDir, body: "@anymodel/instructions/general.md" });
+    applyManagedMarkdown({ file, stateDir, body: "@cc-smart-dev-kit/instructions/general.md" });
     // The user writes more after the block.
     writeFileSync(file, `${read(file)}\nWritten later by the user.\n`);
     const [result] = restore(stateDir);
@@ -141,7 +223,7 @@ describe("restore: removes what anymodel added, keeps the rest", () => {
     expect(existsSync(path)).toBe(false);
   });
 
-  test("files anymodel created with only its own content are removed", () => {
+  test("files cc-smart-dev-kit created with only its own content are removed", () => {
     const { dir, stateDir } = setup();
     const json = join(dir, "new-settings.json");
     const markdown = join(dir, "NEW.md");
@@ -188,7 +270,7 @@ describe("restore: removes what anymodel added, keeps the rest", () => {
     expect(Object.keys(readChanged(stateDir))).toEqual([file]);
   });
 
-  test("nothing changed by anymodel: nothing to restore", () => {
+  test("nothing changed by cc-smart-dev-kit: nothing to restore", () => {
     expect(restore(setup().stateDir)).toEqual([]);
   });
 });
@@ -231,7 +313,7 @@ describe("where backups live", () => {
     applyManagedJson({ file, stateDir, set: [[AUTO_UPDATE, true]] });
     const folder = join(stateDir, "backups", encodeURIComponent(file));
     expect(readdirSync(folder)).toHaveLength(1);
-    expect(readdirSync(folder)[0]).toMatch(/^settings\.json\.bak-anymodel-\d{8}T\d{9}Z$/);
+    expect(readdirSync(folder)[0]).toMatch(/^settings\.json\.bak-cc-smart-dev-kit-\d{8}T\d{9}Z$/);
     expect(statSync(join(stateDir, "backups")).mode & 0o777).toBe(0o700);
     expect(statSync(folder).mode & 0o777).toBe(0o700);
     expect(readdirSync(dir).sort()).toEqual(["settings.json", "state"]);
@@ -266,7 +348,7 @@ describe("where backups live", () => {
     const { path } = installLauncher(linkedBin, { stateDir, bunPath: "/usr/bin/bun" });
     installLauncher(linkedBin, { stateDir, bunPath: "/opt/bun" });
     // Both writes are tracked under the real path, so the .absent baseline is found.
-    expect(Object.keys(readChanged(stateDir))).toEqual([join(realBin, "anymodel")]);
+    expect(Object.keys(readChanged(stateDir))).toEqual([join(realBin, "cc-smart-dev-kit")]);
     expect(restore(stateDir).map((result) => result.action)).toEqual(["removed"]);
     expect(existsSync(path)).toBe(false);
   });

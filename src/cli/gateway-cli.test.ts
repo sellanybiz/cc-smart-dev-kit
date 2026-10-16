@@ -1,5 +1,5 @@
 /**
- * `anymodel gateway …` end to end, as a person runs it: a temp HOME and config folder,
+ * `cc-smart-dev-kit gateway …` end to end, as a person runs it: a temp HOME and config folder,
  * a fake `systemctl` alone on PATH (it logs each call and keeps the unit's state in a
  * file), and a fake backend and router health page served by this test on a free port.
  *
@@ -14,18 +14,22 @@
  * here never closes.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { runGateway } from "../gateway/commands";
 import { gatewayChecks } from "../gateway/doctor";
 import type { HealthProbe } from "../gateway/health";
+import { shellQuote } from "../setup/launcher";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import { cliPaths } from "./paths";
-import { runRestore } from "./restore";
+import { runRestore, stageOneDone } from "./restore";
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 const BUILT_ROUTER = join(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
+/** This repo's own CLI bundle: what stage 1 names as the second restore. */
+const BUILT_CLI = join(import.meta.dir, "..", "..", "plugin", "dist", "cli.js");
 /** A made-up backend key: it must never show in any output. */
 const PLANTED_KEY = "sk-planted-SECRET-0123456789abcdef";
 
@@ -34,14 +38,46 @@ afterEach(() => {
   for (const server of servers.splice(0)) server.stop(true);
 });
 
-/** A fake OmniRoute (`/v1/models`) and a fake router health page, on one free port. */
-function fakeServer(options: { modelsStatus?: number } = {}) {
+/**
+ * A fake OmniRoute (`/v1/models`, the judge test's `/v1/messages`, and `cc-smart-dev-kit search`'s
+ * `/v1/search` and `/v1/web/fetch`) and a fake router health page, on one free port. Its
+ * search answers 401 with the key it was sent echoed back, as an upstream may.
+ */
+function fakeServer(
+  options: { judge?: Record<string, "allow" | "block">; modelsStatus?: number } = {},
+) {
   const seenKeys: string[] = [];
+  const searchKeys: string[] = [];
+  /** Each judge test request: its model, the key it carried, and its body. */
+  const judged: { body: Record<string, unknown>; key: string; model: string }[] = [];
   const server: Bun.Server<undefined> = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch(req): Response {
+    async fetch(req): Promise<Response> {
       const url = new URL(req.url);
+      if (url.pathname === "/v1/search" || url.pathname === "/v1/web/fetch") {
+        const authorization = req.headers.get("authorization") ?? "";
+        searchKeys.push(authorization);
+        if (url.pathname === "/v1/web/fetch") {
+          return Response.json({ content: "Page text.", url: "https://example.com/" });
+        }
+        return Response.json(
+          { error: { message: `invalid key in "${authorization}"` } },
+          { status: 401 },
+        );
+      }
+      if (url.pathname === "/v1/messages" && options.judge !== undefined) {
+        const body = (await req.json()) as Record<string, unknown>;
+        const model = String(body.model);
+        judged.push({ body, key: req.headers.get("authorization") ?? "", model });
+        const verdict = options.judge[model];
+        if (verdict === undefined) return new Response("no such model", { status: 404 });
+        return Response.json({
+          content: [{ text: verdict === "block" ? "<block>yes" : "<block>no", type: "text" }],
+          role: "assistant",
+          type: "message",
+        });
+      }
       if (url.pathname === "/v1/models") {
         seenKeys.push(req.headers.get("authorization") ?? "");
         if (options.modelsStatus !== undefined && options.modelsStatus !== 200) {
@@ -49,7 +85,7 @@ function fakeServer(options: { modelsStatus?: number } = {}) {
         }
         return Response.json({ data: [{ id: "m1" }, { context_length: 200000, id: "m2" }] });
       }
-      if (url.pathname === "/__anymodel/health") {
+      if (url.pathname === "/__cc-smart-dev-kit/health") {
         return Response.json({
           cooling: {},
           fallbacks: 0,
@@ -63,7 +99,7 @@ function fakeServer(options: { modelsStatus?: number } = {}) {
     },
   });
   servers.push(server);
-  return { port: server.port as number, seenKeys };
+  return { judged, port: server.port as number, searchKeys, seenKeys };
 }
 
 /** Another program on a free port: it answers, but not as this router (an older one, say). */
@@ -86,8 +122,10 @@ function machine(options: { systemctl?: boolean } = {}) {
   mkdirSync(fakeBin);
   const log = join(home, "systemctl.log");
   const state = join(home, "unit-state");
+  const socketState = join(home, "socket-state");
   if (options.systemctl !== false) {
-    // Shell builtins only: PATH holds nothing else.
+    // Shell builtins only: PATH holds nothing else. The service and its socket each keep
+    // their own state; a command acts on the units it names.
     writeFileSync(
       join(fakeBin, "systemctl"),
       [
@@ -95,11 +133,18 @@ function machine(options: { systemctl?: boolean } = {}) {
         `echo "$*" >> '${log}'`,
         "s=inactive",
         `[ -e '${state}' ] && read s < '${state}'`,
+        "k=inactive",
+        `[ -e '${socketState}' ] && read k < '${socketState}'`,
+        "set_to() {",
+        `  case "$2" in *.service*) echo "$1" > '${state}' ;; esac`,
+        `  case "$2" in *.socket*) echo "$1" > '${socketState}' ;; esac`,
+        "}",
         'case "$*" in',
-        '  *is-active*) [ "$1" = "--user" ] || exit 9; case "$*" in *--quiet*) ;; *) echo "$s" ;; esac; [ "$s" = active ] && exit 0; exit 3 ;;',
+        '  *is-active*) [ "$1" = "--user" ] || exit 9; case "$*" in *.socket*) w=$k ;; *) w=$s ;; esac; case "$*" in *--quiet*) ;; *) echo "$w" ;; esac; [ "$w" = active ] && exit 0; exit 3 ;;',
         // `disable` alone leaves a running unit running, as systemd does; `stop` stops it.
-        `  *disable*--now*|*" stop "*) echo inactive > '${state}' ;;`,
-        `  *restart*|*--now*) echo active > '${state}' ;;`,
+        '  *disable*--now*|*" stop "*) set_to inactive "$*" ;;',
+        `  *" restart "*) echo active > '${state}' ;;`,
+        '  *" start "*|*--now*) set_to active "$*" ;;',
         "esac",
         "exit 0",
         "",
@@ -125,9 +170,10 @@ function machine(options: { systemctl?: boolean } = {}) {
     return { exitCode, stdout, stderr };
   };
   const paths = {
-    config: join(home, ".config", "anymodel", "gateway.json"),
-    copy: join(home, ".local", "share", "anymodel", "router.js"),
-    unit: join(home, ".config", "systemd", "user", "anymodel-router.service"),
+    config: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
+    copy: join(home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    unit: join(home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
+    socket: join(home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
     settings: join(configDir, "settings.json"),
   };
   const calls = () => (existsSync(log) ? readFileSync(log, "utf8") : "");
@@ -172,7 +218,7 @@ function machine(options: { systemctl?: boolean } = {}) {
     };
   };
   /**
-   * `anymodel gateway …` or `anymodel restore …` in this process, for a command that
+   * `cc-smart-dev-kit gateway …` or `cc-smart-dev-kit restore …` in this process, for a command that
    * asks a port: the same temp machine and fake systemctl, but the fake health page
    * above, so no test reaches a router that may run on this machine (and a stopped unit
    * frees its port, which a fake server in this process cannot do for a subprocess).
@@ -198,6 +244,7 @@ function machine(options: { systemctl?: boolean } = {}) {
           ? await runRestore(paths, {
               yes: args.includes("--yes"),
               now: args.includes("--now"),
+              cliBundle: BUILT_CLI,
               runner,
               systemd: options.systemctl !== false,
               confirm: null,
@@ -206,16 +253,21 @@ function machine(options: { systemctl?: boolean } = {}) {
           : await runGateway(args.slice(1), {
               paths,
               bunPath: process.execPath,
+              // The Bun running the tests: the preload stops an older one.
+              bunVersion: Bun.version,
               bundle: BUILT_ROUTER,
               runner,
               readStdin: () => Promise.resolve(input ?? ""),
               confirm: null,
               systemd: options.systemctl !== false,
               probe,
+              // Where a command's own lines go: `out` and `err` are what the tests assert on.
+              print: (line: string) => out.push(`${line}\n`),
+              error: (line: string) => err.push(`${line}\n`),
             });
     } catch (thrown) {
       // What the CLI's own catch prints (src/entries/cli.ts).
-      err.push(`anymodel: ${thrown instanceof Error ? thrown.message : String(thrown)}\n`);
+      err.push(`cc-smart-dev-kit: ${thrown instanceof Error ? thrown.message : String(thrown)}\n`);
       exitCode = 1;
     } finally {
       log.mockRestore();
@@ -238,7 +290,7 @@ function machine(options: { systemctl?: boolean } = {}) {
       JSON.stringify({
         backends: { omniroute: { apiKey: PLANTED_KEY, baseUrl: `http://127.0.0.1:${port}` } },
         port,
-        slots: { "anymodel-scout": ["omniroute:m1", "claude-sonnet-5-5"], ...slots },
+        slots: { "cc-smart-dev-kit-scout": ["omniroute:m1", "claude-sonnet-5-5"], ...slots },
         version: 1,
       }),
       { mode: 0o600 },
@@ -262,7 +314,7 @@ function machine(options: { systemctl?: boolean } = {}) {
   };
 }
 
-describe("anymodel gateway setup", () => {
+describe("cc-smart-dev-kit gateway setup", () => {
   // Reworked: runs in this process (`runHere`). With no config the router listens on the
   // default port, and setup now asks that port first: a subprocess would reach a router
   // that may run on this machine. Every assertion is kept; the port asked is new.
@@ -273,11 +325,12 @@ describe("anymodel gateway setup", () => {
     expect(first.exitCode).toBe(0);
     expect(first.stdout).toBe(
       [
-        `no config at ~/.config/anymodel/gateway.json yet: the router answers every slot on your own Claude login until the OmniRoute key is added (setup --backend-key-stdin omniroute)`,
-        "+ ~/.local/share/anymodel/router.js: router copy created",
-        "+ ~/.config/systemd/user/anymodel-router.service: unit created",
-        "enabled and (re)started anymodel-router.service",
-        "Claude Code does not use the gateway yet. Check it: anymodel gateway status. Then: anymodel gateway on.",
+        `no config at ~/.config/cc-smart-dev-kit/gateway.json yet: the router answers every slot on your own Claude login until the OmniRoute key is added (setup --backend-key-stdin omniroute)`,
+        "+ ~/.local/share/cc-smart-dev-kit/router.js: router copy created",
+        "+ ~/.config/systemd/user/cc-smart-dev-kit-router.service: unit created",
+        "+ ~/.config/systemd/user/cc-smart-dev-kit-router.socket: socket unit created",
+        "enabled and (re)started cc-smart-dev-kit-router.service and cc-smart-dev-kit-router.socket",
+        "Claude Code does not use the gateway yet. Check it: cc-smart-dev-kit gateway status. Then: cc-smart-dev-kit gateway on.",
         "",
       ].join("\n"),
     );
@@ -285,32 +338,44 @@ describe("anymodel gateway setup", () => {
     expect(readFileSync(m.paths.unit, "utf8")).toContain(
       `\nExecStart="${process.execPath}" --no-env-file "${m.paths.copy}"\n`,
     );
+    expect(readFileSync(m.paths.socket, "utf8")).toContain("\nListenStream=127.0.0.1:20100\n");
     expect(existsSync(m.paths.config)).toBe(false);
     expect(m.calls()).toBe(
       [
-        // The read-only pass, then the writing pass, each asks once.
-        "--user is-active --quiet anymodel-router.service",
-        "--user is-active --quiet anymodel-router.service",
+        // The read-only pass, then the writing pass, each asks the socket and the unit.
+        "--user is-active --quiet cc-smart-dev-kit-router.socket",
+        "--user is-active --quiet cc-smart-dev-kit-router.service",
+        "--user is-active --quiet cc-smart-dev-kit-router.socket",
+        "--user is-active --quiet cc-smart-dev-kit-router.service",
         "--user daemon-reload",
-        "--user enable anymodel-router.service",
-        // Changed on purpose: a unit that is not active is asked its state before the
-        // restart, to say when an old router still drains.
-        "--user is-active anymodel-router.service",
-        "--user restart anymodel-router.service",
+        "--user enable cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+        // A unit that is not active is asked its state, to say when an old router
+        // still drains; nothing runs, so nothing is stopped. Changed on purpose: the
+        // socket opens the port first, then the router starts on it.
+        "--user is-active cc-smart-dev-kit-router.service",
+        "--user reset-failed cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+        "--user start cc-smart-dev-kit-router.socket",
+        "--user start cc-smart-dev-kit-router.service",
         "",
       ].join("\n"),
     );
     // No config: the default port. Asked of the fake, before each pass and after the restart.
     expect(m.probed).toEqual([
-      "http://127.0.0.1:20100/__anymodel/health",
-      "http://127.0.0.1:20100/__anymodel/health",
-      "http://127.0.0.1:20100/__anymodel/health",
+      "http://127.0.0.1:20100/__cc-smart-dev-kit/health",
+      "http://127.0.0.1:20100/__cc-smart-dev-kit/health",
+      "http://127.0.0.1:20100/__cc-smart-dev-kit/health",
     ]);
 
     const again = await m.runHere(["gateway", "setup", "--no-backend-key"]);
     expect(again.exitCode).toBe(0);
     expect(again.stdout).toContain("router already up to date (no restart)\n");
-    expect(m.calls().endsWith("--user enable --now anymodel-router.service\n")).toBe(true);
+    expect(
+      m
+        .calls()
+        .endsWith(
+          "--user enable --now cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service\n",
+        ),
+    ).toBe(true);
   });
 
   // Reworked: a config on the fake server's port first, so setup asks that port, never
@@ -326,24 +391,28 @@ describe("anymodel gateway setup", () => {
     expect(refused.exitCode).toBe(1);
     expect(refused.stdout).toBe(
       [
-        "anymodel-router is running. A restart cuts the answers in flight in running Claude sessions on this machine (Claude Code retries them).",
-        "Nothing was changed. Run again with --yes to restart: anymodel gateway setup --yes",
+        "cc-smart-dev-kit-router is running. A restart lets its answers in flight finish first (up to 120 s; a longer one is cut, and Claude Code retries it). New requests wait in its socket meanwhile; none fails.",
+        "Nothing was changed. Run again with --yes to restart: cc-smart-dev-kit gateway setup --yes",
         "",
       ].join("\n"),
     );
     expect(readFileSync(m.paths.copy, "utf8")).toBe("// an older router\n");
     expect(m.calls().slice(before.length)).toBe(
-      "--user is-active --quiet anymodel-router.service\n",
+      "--user is-active --quiet cc-smart-dev-kit-router.socket\n--user is-active --quiet cc-smart-dev-kit-router.service\n",
     );
 
     const yes = await m.run(["gateway", "setup", "--yes"]);
     expect(yes.exitCode).toBe(0);
     expect(yes.stdout).toContain(
-      "anymodel-router is running. A restart cuts the answers in flight in running Claude sessions on this machine (Claude Code retries them).\n",
+      "cc-smart-dev-kit-router is running. A restart lets its answers in flight finish first (up to 120 s; a longer one is cut, and Claude Code retries it). New requests wait in its socket meanwhile; none fails.\n",
     );
-    expect(yes.stdout).toContain("~ ~/.local/share/anymodel/router.js: router copy updated\n");
-    expect(yes.stdout).toContain("restarting anymodel-router\n");
-    expect(m.calls().endsWith("--user restart anymodel-router.service\n")).toBe(true);
+    expect(yes.stdout).toContain(
+      "~ ~/.local/share/cc-smart-dev-kit/router.js: router copy updated\n",
+    );
+    expect(yes.stdout).toContain(
+      "restarting cc-smart-dev-kit-router (new requests wait in its socket)\n",
+    );
+    expect(m.calls().endsWith("--user restart cc-smart-dev-kit-router.service\n")).toBe(true);
     expect(readFileSync(m.paths.copy).equals(readFileSync(BUILT_ROUTER))).toBe(true);
   });
 
@@ -365,7 +434,9 @@ describe("anymodel gateway setup", () => {
       `${PLANTED_KEY}\n`,
     );
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.split("\n")[0]).toBe("created ~/.config/anymodel/gateway.json (mode 600)");
+    expect(result.stdout.split("\n")[0]).toBe(
+      "created ~/.config/cc-smart-dev-kit/gateway.json (mode 600)",
+    );
     expect(statSync(m.paths.config).mode & 0o777).toBe(0o600);
     expect(JSON.parse(readFileSync(m.paths.config, "utf8")).backends.omniroute.apiKey).toBe(
       PLANTED_KEY,
@@ -383,7 +454,7 @@ describe("anymodel gateway setup", () => {
   });
 });
 
-describe("anymodel gateway setup: the port", () => {
+describe("cc-smart-dev-kit gateway setup: the port", () => {
   test("a port another program uses: setup refuses before any question, and writes nothing", async () => {
     const m = machine();
     const other = otherProgram();
@@ -392,18 +463,41 @@ describe("anymodel gateway setup: the port", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toBe("");
     expect(result.stderr).toBe(
-      `anymodel: port ${other.port} is used by another program (an older router? stop it first)\n`,
+      `cc-smart-dev-kit: port ${other.port} is used by another program (an older router? stop it first)\n`,
     );
     expect(existsSync(m.paths.copy)).toBe(false);
     expect(existsSync(m.paths.unit)).toBe(false);
-    expect(existsSync(join(m.home, ".claude", "anymodel"))).toBe(false);
-    expect(m.calls()).toBe("");
+    expect(existsSync(join(m.home, ".claude", "cc-smart-dev-kit"))).toBe(false);
+    // Changed on purpose: the socket is asked first, since an open socket of ours holds
+    // the port without an answer while its router restarts. It is not open: refused.
+    expect(m.calls()).toBe("--user is-active --quiet cc-smart-dev-kit-router.socket\n");
   });
 });
 
-describe("anymodel restore: the gateway in two stages", () => {
+describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
   const STAGE_1_KEYS =
-    "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_BASE_URL, env.ANTHROPIC_DEFAULT_HAIKU_MODEL, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, env.ANTHROPIC_DEFAULT_SONNET_MODEL, env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME; everything else kept";
+    "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_BASE_URL, env.ANTHROPIC_DEFAULT_HAIKU_MODEL, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, env.ANTHROPIC_DEFAULT_SONNET_MODEL, env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, env; everything else kept";
+
+  /**
+   * What stage 1 says when it removed the launcher: `cc-smart-dev-kit` is off the PATH, so it
+   * names the `bun --no-env-file …` form the README's install step uses.
+   */
+  const STAGE_1_AGAIN = `Restart every running Claude session (they still use the router), then run restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so \`cc-smart-dev-kit\` is not on your PATH any more: ${shellQuote(process.execPath)} '--no-env-file' '--config=${join(dirname(dirname(BUILT_CLI)), "bunfig.toml")}' '${BUILT_CLI}' restore`;
+
+  test("stageOneDone: the command that works, with the launcher gone and with it still there", () => {
+    const home = tempDir("stage-one");
+    const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
+    // No launcher (setup created it, and the first restore removed it): the bun line.
+    expect(stageOneDone(paths, "/plugin/dist/cli.js")).toBe(
+      `Restart every running Claude session (they still use the router), then run restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so \`cc-smart-dev-kit\` is not on your PATH any more: ${shellQuote(process.execPath)} '--no-env-file' '--config=/plugin/bunfig.toml' '/plugin/dist/cli.js' restore`,
+    );
+    // A launcher of the person's own, put back by the restore: the plain command works.
+    mkdirSync(paths.binDir, { recursive: true });
+    writeFileSync(join(paths.binDir, "cc-smart-dev-kit"), "#!/bin/sh\n");
+    expect(stageOneDone(paths, "/plugin/dist/cli.js")).toBe(
+      "Restart every running Claude session (they still use the router), then run `cc-smart-dev-kit restore` again to stop and remove the router.",
+    );
+  });
 
   // Rewritten on purpose (it was "restore stops the router (after a yes), then removes the
   // copy, the unit and the env keys"): stopping the router while sessions still point at it
@@ -423,32 +517,37 @@ describe("anymodel restore: the gateway in two stages", () => {
     const lines = first.stdout.split("\n");
     expect(lines).toHaveLength(4);
     expect(lines[0]).toBe(STAGE_1_KEYS);
-    expect(lines[1]).toStartWith("  (its state before this restore: ~/.claude/anymodel/backups/");
-    expect(lines[2]).toBe(
-      "Restart every running Claude session (they still use the router), then run `anymodel restore` again to stop and remove the router.",
+    expect(lines[1]).toStartWith(
+      "  (its state before this restore: ~/.claude/cc-smart-dev-kit/backups/",
     );
+    expect(lines[2]).toBe(STAGE_1_AGAIN);
     expect(lines[3]).toBe("");
     // The router keeps running: nothing was stopped, nothing asked of systemd.
     expect(m.calls().slice(before.length)).toBe("");
     expect(existsSync(m.paths.copy)).toBe(true);
     expect(existsSync(m.paths.unit)).toBe(true);
-    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus", env: {} });
+    // `env` went with its last key: the settings file before the gateway was set up.
+    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus" });
 
     // Stage 2: no gateway key left. Stopping a running router still asks first.
     const refused = await m.run(["restore"]);
     expect(refused.exitCode).toBe(1);
     expect(refused.stdout).toBe(
       [
-        "anymodel-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.",
-        "Nothing was changed. Run again with --yes to stop it: anymodel restore --yes",
+        "cc-smart-dev-kit-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.",
+        "Nothing was changed. Run again with --yes to stop it: cc-smart-dev-kit restore --yes",
         "",
       ].join("\n"),
     );
     expect(existsSync(m.paths.copy)).toBe(true);
 
     // A setup that did not finish has nothing left to finish once the router is gone.
-    const marker = join(m.configDir, "anymodel", "restart-pending");
+    const marker = join(m.configDir, "cc-smart-dev-kit", "restart-pending");
     writeFileSync(marker, "pending\n");
+    // Nor does the router's limit state: stage 2 removes it.
+    const limitState = join(m.home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json");
+    mkdirSync(dirname(limitState), { recursive: true });
+    writeFileSync(limitState, '{"fallbacks":{},"limits":{},"version":1}\n');
     // Reworked: in this process (`runHere`), because the stop now asks the router's port
     // until it closes, and the fake server of this test cannot close for a subprocess.
     // It was `disable --now`, which waits for the router's whole drain (up to 120 s).
@@ -457,33 +556,83 @@ describe("anymodel restore: the gateway in two stages", () => {
     expect(done.stderr).toBe("");
     expect(done.exitCode).toBe(0);
     expect(existsSync(marker)).toBe(false);
+    expect(existsSync(limitState)).toBe(false);
+    expect(done.stdout).toContain(
+      "- ~/.local/state/cc-smart-dev-kit/gateway-state.json: removed (the router's limit state)\n",
+    );
     expect(m.calls().slice(middle.length)).toBe(
       [
-        "--user is-active --quiet anymodel-router.service",
+        "--user is-active --quiet cc-smart-dev-kit-router.service",
         // Changed on purpose: the stop asks the unit's state, to wait only for its own port.
-        "--user is-active anymodel-router.service",
-        "--user disable anymodel-router.service",
-        "--user stop --no-block anymodel-router.service",
+        "--user is-active cc-smart-dev-kit-router.service",
+        "--user disable cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+        "--user stop --no-block cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
         "--user daemon-reload",
         "",
       ].join("\n"),
     );
     // The config's port was asked once the stop was sent, and it was closed.
-    expect(m.probed).toEqual([`http://127.0.0.1:${server.port}/__anymodel/health`]);
+    expect(m.probed).toEqual([`http://127.0.0.1:${server.port}/__cc-smart-dev-kit/health`]);
     expect(done.stdout).toContain(
-      `- anymodel-router.service: disabled and stopped (port ${server.port} closed; answers in flight finish in the background)\n`,
+      `- cc-smart-dev-kit-router.service and cc-smart-dev-kit-router.socket: disabled and stopped (port ${server.port} closed; answers in flight finish in the background)\n`,
     );
     expect(done.stdout).toContain(
-      "- ~/.local/share/anymodel/router.js: removed (anymodel had created it)\n",
+      "- ~/.local/share/cc-smart-dev-kit/router.js: removed (cc-smart-dev-kit had created it)\n",
     );
     expect(existsSync(m.paths.copy)).toBe(false);
     expect(existsSync(m.paths.unit)).toBe(false);
+    expect(existsSync(m.paths.socket)).toBe(false);
     // The config holds the person's key: restore leaves it.
     expect(existsSync(m.paths.config)).toBe(true);
     // A third restore has nothing left to do.
     expect((await m.run(["restore"])).stdout).toBe(
-      "Nothing to restore: anymodel has nothing in any file.\n",
+      "Nothing to restore: cc-smart-dev-kit has nothing in any file.\n",
     );
+  });
+
+  test("a key the person changed after setup is theirs: restore leaves it, and the two stages still finish", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    writeFileSync(m.paths.settings, '{ "model": "opus" }\n');
+    expect((await m.run(["gateway", "setup"])).exitCode).toBe(0);
+    expect((await m.run(["gateway", "on"])).exitCode).toBe(0);
+
+    // The person points Claude Code at their own gateway by hand. That key is theirs from
+    // now on; `ownedGatewayEnvKeys` drops it from the keys that still hold our value.
+    const settings = JSON.parse(readFileSync(m.paths.settings, "utf8")) as {
+      env: Record<string, string>;
+      model: string;
+    };
+    settings.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:19999";
+    writeFileSync(m.paths.settings, `${JSON.stringify(settings, null, 2)}\n`);
+
+    // Stage 1: our keys go, the person's one stays, and running sessions still get their
+    // warning to restart.
+    const first = await m.run(["restore"]);
+    expect(first.stderr).toBe("");
+    expect(first.exitCode).toBe(0);
+    expect(first.stdout).toContain(
+      "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_DEFAULT_HAIKU_MODEL, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, env.ANTHROPIC_DEFAULT_SONNET_MODEL, env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME; everything else kept\n",
+    );
+    expect(first.stdout).toContain(`${STAGE_1_AGAIN}\n`);
+    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:19999" },
+      model: "opus",
+    });
+
+    // Stage 2: no key that still holds our value is left, so the router goes; the person's
+    // key stays, because it was never cc-smart-dev-kit's to remove. (The router keeps running until
+    // the sessions restart: the first `restore` above said so.)
+    const done = await m.runHere(["restore", "--yes"]);
+    expect(done.stderr).toBe("");
+    expect(done.exitCode).toBe(0);
+    expect(existsSync(m.paths.copy)).toBe(false);
+    expect(existsSync(m.paths.unit)).toBe(false);
+    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:19999" },
+      model: "opus",
+    });
   });
 
   test("--now does both at once, after the warning that every running session fails", async () => {
@@ -499,8 +648,8 @@ describe("anymodel restore: the gateway in two stages", () => {
     expect(refused.exitCode).toBe(1);
     expect(refused.stdout).toBe(
       [
-        "restore --now stops anymodel-router while Claude sessions still use it: every running Claude session fails until it restarts.",
-        "Nothing was changed. Run again with --yes to do it now: anymodel restore --now --yes",
+        "restore --now stops cc-smart-dev-kit-router while Claude sessions still use it: every running Claude session fails until it restarts.",
+        "Nothing was changed. Run again with --yes to do it now: cc-smart-dev-kit restore --now --yes",
         "",
       ].join("\n"),
     );
@@ -513,24 +662,25 @@ describe("anymodel restore: the gateway in two stages", () => {
     expect(done.stderr).toBe("");
     expect(done.exitCode).toBe(0);
     expect(done.stdout).toStartWith(
-      `restore --now stops anymodel-router while Claude sessions still use it: every running Claude session fails until it restarts.\n- anymodel-router.service: disabled and stopped (port ${server.port} closed; answers in flight finish in the background)\n`,
+      `restore --now stops cc-smart-dev-kit-router while Claude sessions still use it: every running Claude session fails until it restarts.\n- cc-smart-dev-kit-router.service and cc-smart-dev-kit-router.socket: disabled and stopped (port ${server.port} closed; answers in flight finish in the background)\n`,
     );
     expect(done.stdout).toContain(`${STAGE_1_KEYS}\n`);
     // The warning above is the question: no `is-active --quiet` first. Changed on purpose:
     // the stop asks the unit's state (no --quiet), to wait only for its own port.
     expect(m.calls().slice(before.length)).toBe(
       [
-        "--user is-active anymodel-router.service",
-        "--user disable anymodel-router.service",
-        "--user stop --no-block anymodel-router.service",
+        "--user is-active cc-smart-dev-kit-router.service",
+        "--user disable cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+        "--user stop --no-block cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
         "--user daemon-reload",
         "",
       ].join("\n"),
     );
-    expect(m.probed).toEqual([`http://127.0.0.1:${server.port}/__anymodel/health`]);
+    expect(m.probed).toEqual([`http://127.0.0.1:${server.port}/__cc-smart-dev-kit/health`]);
     expect(existsSync(m.paths.copy)).toBe(false);
     expect(existsSync(m.paths.unit)).toBe(false);
-    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus", env: {} });
+    // `env` went with its last key: the settings file as it was before the gateway wrote there.
+    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus" });
   });
 
   test("a port still held 15 s after the stop: restore fails clearly and restores nothing else", async () => {
@@ -547,7 +697,7 @@ describe("anymodel restore: the gateway in two stages", () => {
     const failed = await m.runHere(["restore", "--now", "--yes"]);
     expect(failed.exitCode).toBe(1);
     expect(failed.stderr).toBe(
-      `anymodel: anymodel-router.service is disabled and was told to stop, but 127.0.0.1:${server.port} still takes connections after 15 s. Nothing else was restored. See why: systemctl --user status anymodel-router (and ss -ltnp for another program on the port). Then run anymodel restore again.\n`,
+      `cc-smart-dev-kit: cc-smart-dev-kit-router.service is disabled and was told to stop, but 127.0.0.1:${server.port} still takes connections after 15 s. Nothing else was restored. See why: systemctl --user status cc-smart-dev-kit-router (and ss -ltnp for another program on the port). Then run cc-smart-dev-kit restore again.\n`,
     );
     expect(m.clock.now - started).toBe(15_000);
     // Nothing else was restored: the env keys, the copy and the unit are all still there.
@@ -563,7 +713,7 @@ describe("anymodel restore: the gateway in two stages", () => {
   });
 
   const NOW_WARNING =
-    "restore --now stops anymodel-router while Claude sessions still use it: every running Claude session fails until it restarts.";
+    "restore --now stops cc-smart-dev-kit-router while Claude sessions still use it: every running Claude session fails until it restarts.";
 
   test("another program answers on the port (a 404, not a health answer): restore says so and finishes", async () => {
     const m = machine();
@@ -582,7 +732,7 @@ describe("anymodel restore: the gateway in two stages", () => {
       [
         NOW_WARNING,
         `  port ${server.port} answers, but not as this router (HTTP 404); not waiting for it`,
-        "- anymodel-router.service: disabled and stopping",
+        "- cc-smart-dev-kit-router.service and cc-smart-dev-kit-router.socket: disabled and stopping",
         "",
       ].join("\n"),
     );
@@ -611,8 +761,8 @@ describe("anymodel restore: the gateway in two stages", () => {
     expect(done.stdout).toStartWith(
       [
         NOW_WARNING,
-        `  anymodel-router.service was not running (systemctl --user is-active: activating); not waiting for port ${server.port}`,
-        "- anymodel-router.service: disabled and stopped",
+        `  cc-smart-dev-kit-router.service was not running (systemctl --user is-active: activating); not waiting for port ${server.port}`,
+        "- cc-smart-dev-kit-router.service and cc-smart-dev-kit-router.socket: disabled and stopped",
         "",
       ].join("\n"),
     );
@@ -621,9 +771,9 @@ describe("anymodel restore: the gateway in two stages", () => {
     expect(m.probed).toEqual([]);
     expect(m.calls().slice(before.length)).toBe(
       [
-        "--user is-active anymodel-router.service",
-        "--user disable anymodel-router.service",
-        "--user stop --no-block anymodel-router.service",
+        "--user is-active cc-smart-dev-kit-router.service",
+        "--user disable cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+        "--user stop --no-block cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
         "--user daemon-reload",
         "",
       ].join("\n"),
@@ -651,7 +801,7 @@ describe("anymodel restore: the gateway in two stages", () => {
       [
         NOW_WARNING,
         `  cannot read the router's port (${m.paths.config} is not valid JSON. Fix it by hand.); not waiting for it`,
-        "- anymodel-router.service: disabled and stopping",
+        "- cc-smart-dev-kit-router.service and cc-smart-dev-kit-router.socket: disabled and stopping",
         "",
       ].join("\n"),
     );
@@ -659,8 +809,8 @@ describe("anymodel restore: the gateway in two stages", () => {
     expect(m.probed).toEqual([]);
     expect(m.calls().slice(before.length)).toBe(
       [
-        "--user disable anymodel-router.service",
-        "--user stop --no-block anymodel-router.service",
+        "--user disable cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+        "--user stop --no-block cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
         "--user daemon-reload",
         "",
       ].join("\n"),
@@ -671,7 +821,7 @@ describe("anymodel restore: the gateway in two stages", () => {
   });
 });
 
-describe("anymodel gateway on / off", () => {
+describe("cc-smart-dev-kit gateway on / off", () => {
   test("on sets the env keys as owned keys; off removes them again", async () => {
     const m = machine();
     const server = fakeServer();
@@ -683,14 +833,14 @@ describe("anymodel gateway on / off", () => {
       [
         '~ ~/.claude/settings.json: env.ENABLE_TOOL_SEARCH: (none) -> "true"',
         `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: (none) -> "http://127.0.0.1:${server.port}"`,
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_HAIKU_MODEL: (none) -> "anymodel-scout[1m]"',
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: (none) -> "Cheap model for search and reading: the scout slot (anymodel gateway slot scout …)"',
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: (none) -> "Scout (cheap)"',
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_SONNET_MODEL: (none) -> "anymodel-worker[1m]"',
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: (none) -> "Cheap model for routine code and docs: the worker slot (anymodel gateway slot worker …)"',
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: (none) -> "Worker (cheap)"',
-        "Done. The changed file has a backup in ~/.claude/anymodel/backups/.",
-        "Every Claude Code session on this machine, in every folder, uses the gateway from now on: its haiku / sonnet work (background titles and summaries too) goes to the cheap slots.",
+        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_HAIKU_MODEL: (none) -> "cc-smart-dev-kit-scout[1m]"',
+        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: (none) -> "Affordable model for search and reading: the scout slot (cc-smart-dev-kit gateway slot scout …)"',
+        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: (none) -> "Scout (affordable)"',
+        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_SONNET_MODEL: (none) -> "cc-smart-dev-kit-worker[1m]"',
+        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: (none) -> "Affordable model for routine code and docs: the worker slot (cc-smart-dev-kit gateway slot worker …)"',
+        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: (none) -> "Worker (affordable)"',
+        "Done. The changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
+        "Every Claude Code session on this machine, in every folder, uses the gateway from now on: its haiku / sonnet work (background titles and summaries too) goes to the affordable slots.",
         "",
       ].join("\n"),
     );
@@ -701,7 +851,8 @@ describe("anymodel gateway on / off", () => {
     expect(off.stdout.split("\n").at(-2)).toBe(
       "Restart each Claude session: removing a setting needs a restart.",
     );
-    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus", env: {} });
+    // `env` went with its last key: the settings file as it was before the gateway wrote there.
+    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus" });
   });
 
   test("a gateway key someone else set stops on: ForeignKeyError, nothing written", async () => {
@@ -713,10 +864,10 @@ describe("anymodel gateway on / off", () => {
     const on = await m.run(["gateway", "on"]);
     expect(on.exitCode).toBe(1);
     expect(on.stderr).toBe(
-      `anymodel: ${m.paths.settings}: env.ANTHROPIC_DEFAULT_HAIKU_MODEL is old-scout[1m], set by someone else. anymodel does not overwrite it. Remove it by hand if anymodel should manage it.\n`,
+      `cc-smart-dev-kit: ${m.paths.settings}: env.ANTHROPIC_DEFAULT_HAIKU_MODEL is old-scout[1m], set by someone else. cc-smart-dev-kit does not overwrite it. Remove it by hand if cc-smart-dev-kit should manage it.\n`,
     );
     expect(readFileSync(m.paths.settings, "utf8")).toBe(settings);
-    expect(existsSync(join(m.home, ".claude", "anymodel"))).toBe(false);
+    expect(existsSync(join(m.home, ".claude", "cc-smart-dev-kit"))).toBe(false);
   });
 
   test("on refuses while the router does not answer: every request would fail", async () => {
@@ -727,28 +878,29 @@ describe("anymodel gateway on / off", () => {
     const on = await m.run(["gateway", "on"]);
     expect(on.exitCode).toBe(1);
     expect(on.stderr).toStartWith(
-      `anymodel: the router does not answer on 127.0.0.1:${server.port} (`,
+      `cc-smart-dev-kit: the router does not answer on 127.0.0.1:${server.port} (`,
     );
     expect(existsSync(m.paths.settings)).toBe(false);
   });
 });
 
-describe("anymodel doctor: the gateway", () => {
+describe("cc-smart-dev-kit doctor: the gateway", () => {
   test("set up and running: the unit, the copy, the health page, the backend, each slot's first target", async () => {
     const m = machine();
     const server = fakeServer();
-    m.writeConfig(server.port, { "anymodel-worker": ["claude-sonnet-5-5"] });
+    m.writeConfig(server.port, { "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"] });
     await m.run(["gateway", "setup"]);
     const doctor = await m.run(["doctor"]);
     expect(doctor.stdout).toEndWith(
       [
-        "✓ the router service (anymodel-router.service) is active",
-        "✓ the router copy ~/.local/share/anymodel/router.js is up to date",
+        "✓ the router service (cc-smart-dev-kit-router.service) is active",
+        "✓ the router copy ~/.local/share/cc-smart-dev-kit/router.js is up to date",
+        `✓ the router's socket (cc-smart-dev-kit-router.socket) holds 127.0.0.1:${server.port}`,
         `✓ the router answers on 127.0.0.1:${server.port}`,
         `✓ backend omniroute (http://127.0.0.1:${server.port}) answers`,
-        "· slot anymodel-scout: first target omniroute:m1",
-        "· slot anymodel-worker: first target claude-sonnet-5-5",
-        "· slot anymodel-judge: off, auto mode's safety checks go to Claude",
+        "· slot cc-smart-dev-kit-scout: first target omniroute:m1",
+        "· slot cc-smart-dev-kit-worker: first target claude-sonnet-5-5",
+        "· slot cc-smart-dev-kit-judge: off, auto mode's safety checks go to Claude",
         "",
       ].join("\n"),
     );
@@ -764,10 +916,10 @@ describe("anymodel doctor: the gateway", () => {
     const doctor = await m.run(["doctor"]);
     expect(doctor.exitCode).toBe(1);
     expect(doctor.stdout).toContain(
-      "✗ the router service (anymodel-router.service) is inactive. Run: anymodel gateway setup\n",
+      "✗ the router service (cc-smart-dev-kit-router.service) is inactive. Run: cc-smart-dev-kit gateway setup\n",
     );
     expect(doctor.stdout).toContain(
-      "✗ the router copy ~/.local/share/anymodel/router.js is not this plugin version's router. Run: anymodel gateway setup\n",
+      "✗ the router copy ~/.local/share/cc-smart-dev-kit/router.js is not this plugin version's router. Run: cc-smart-dev-kit gateway setup\n",
     );
     expect(doctor.stdout).toContain(
       `✗ backend omniroute (http://127.0.0.1:${server.port}) answered HTTP 401; check its key\n`,
@@ -790,14 +942,14 @@ describe("anymodel doctor: the gateway", () => {
   });
 });
 
-describe("anymodel doctor: a gateway that is not installed, or half", () => {
+describe("cc-smart-dev-kit doctor: a gateway that is not installed, or half", () => {
   test("gateway.json alone (restore keeps it): information, not a failure", async () => {
     const m = machine();
     const server = fakeServer();
     m.writeConfig(server.port);
     const doctor = await m.run(["doctor"]);
     expect(doctor.stdout).toContain(
-      "· gateway.json kept (~/.config/anymodel/gateway.json); the gateway is not installed. To use it: anymodel gateway setup\n",
+      "· gateway.json kept (~/.config/cc-smart-dev-kit/gateway.json); the gateway is not installed. To use it: cc-smart-dev-kit gateway setup\n",
     );
     expect(doctor.stdout).not.toContain("router");
     expect(m.calls()).toBe("");
@@ -805,12 +957,12 @@ describe("anymodel doctor: a gateway that is not installed, or half", () => {
 
   test("the restart-pending marker: ✗ whatever else is there", async () => {
     const m = machine();
-    mkdirSync(join(m.configDir, "anymodel"), { recursive: true });
-    writeFileSync(join(m.configDir, "anymodel", "restart-pending"), "pending\n");
+    mkdirSync(join(m.configDir, "cc-smart-dev-kit"), { recursive: true });
+    writeFileSync(join(m.configDir, "cc-smart-dev-kit", "restart-pending"), "pending\n");
     const doctor = await m.run(["doctor"]);
     expect(doctor.exitCode).toBe(1);
     expect(doctor.stdout).toContain(
-      "✗ a gateway setup did not finish; run: anymodel gateway setup\n· gateway: not set up (optional). To use it: anymodel gateway setup\n",
+      "✗ a gateway setup did not finish; run: cc-smart-dev-kit gateway setup\n· gateway: not set up (optional). To use it: cc-smart-dev-kit gateway setup\n",
     );
   });
 
@@ -828,20 +980,84 @@ describe("anymodel doctor: a gateway that is not installed, or half", () => {
     expect(
       checks.map((check) => `${check.info ? "·" : check.ok ? "✓" : "✗"} ${check.text}`),
     ).toEqual([
-      "✓ the router service (anymodel-router.service) is active",
-      "✓ the router copy ~/.local/share/anymodel/router.js is up to date",
-      "· no ~/.config/anymodel/gateway.json yet: the router answers every slot on your own Claude login. To add a backend: anymodel gateway setup --backend-key-stdin omniroute < key-file",
+      "✓ the router service (cc-smart-dev-kit-router.service) is active",
+      "✓ the router copy ~/.local/share/cc-smart-dev-kit/router.js is up to date",
+      "· no ~/.config/cc-smart-dev-kit/gateway.json yet: the router answers every slot on your own Claude login. To add a backend: cc-smart-dev-kit gateway setup --backend-key-stdin omniroute < key-file",
+      "✓ the router's socket (cc-smart-dev-kit-router.socket) holds 127.0.0.1:20100",
       "✓ the router answers on 127.0.0.1:20100",
-      "· slot anymodel-scout: first target claude-sonnet-5-5",
-      "· slot anymodel-worker: first target claude-sonnet-5-5",
-      "· slot anymodel-judge: off, auto mode's safety checks go to Claude",
+      "· slot cc-smart-dev-kit-scout: first target claude-sonnet-5-5",
+      "· slot cc-smart-dev-kit-worker: first target claude-sonnet-5-5",
+      "· slot cc-smart-dev-kit-judge: off, auto mode's safety checks go to Claude",
     ]);
     // Asked of the fake, never the network.
-    expect(m.probed).toEqual(["http://127.0.0.1:20100/__anymodel/health"]);
+    expect(m.probed).toEqual(["http://127.0.0.1:20100/__cc-smart-dev-kit/health"]);
+  });
+
+  /**
+   * The router's two lines when it does not answer, with a systemctl that answers per
+   * command: the service's state, the socket's state, and the socket's `Result`.
+   */
+  async function notAnswering(units: { service: string; socket: string; result: string }) {
+    const m = machine();
+    expect((await m.runHere(["gateway", "setup", "--no-backend-key"])).exitCode).toBe(0);
+    const asked: string[] = [];
+    const checks = await gatewayChecks({
+      paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
+      bundle: BUILT_ROUTER,
+      runner: (cmd) => {
+        asked.push(cmd.slice(2).join(" "));
+        if (cmd[2] === "show") return { exitCode: 0, output: `${units.result}\n` };
+        const word = cmd.at(-1)?.endsWith(".socket") ? units.socket : units.service;
+        return { exitCode: word === "active" ? 0 : 3, output: `${word}\n` };
+      },
+      systemd: true,
+      // An open socket with no router holds the connection: no answer in time.
+      fetch: async () => {
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      },
+    });
+    const lines = checks.map((check) => `${check.info ? "·" : check.ok ? "✓" : "✗"} ${check.text}`);
+    return { asked, lines };
+  }
+
+  test("the socket open and its router not answering (a crash loop): ✗ says requests wait, names the router's log", async () => {
+    const { lines } = await notAnswering({
+      result: "success",
+      service: "activating",
+      socket: "active",
+    });
+    expect(lines.slice(3, 5)).toEqual([
+      "✓ the router's socket (cc-smart-dev-kit-router.socket) holds 127.0.0.1:20100",
+      "✗ the socket holds 127.0.0.1:20100, but the router does not answer (The operation timed out.): every request waits in the socket and gets no answer. See why: journalctl --user -u cc-smart-dev-kit-router -n 30. Then: cc-smart-dev-kit gateway setup",
+    ]);
+  });
+
+  test("the socket closed by systemd after the router's start limit: ✗ says every request is refused, names the router's log", async () => {
+    const { asked, lines } = await notAnswering({
+      result: "service-start-limit-hit",
+      service: "failed",
+      socket: "failed",
+    });
+    expect(asked).toContain("show -p Result --value cc-smart-dev-kit-router.socket");
+    expect(lines.slice(3, 5)).toEqual([
+      "✗ the router's socket (cc-smart-dev-kit-router.socket) is failed. Run: cc-smart-dev-kit gateway setup",
+      "✗ the router failed to start again and again, so systemd closed its socket: every request to 127.0.0.1:20100 is refused (The operation timed out.). See why: journalctl --user -u cc-smart-dev-kit-router -n 30. Then: cc-smart-dev-kit gateway setup",
+    ]);
+  });
+
+  test("a socket stopped for another reason: the plain line", async () => {
+    const { lines } = await notAnswering({
+      result: "success",
+      service: "inactive",
+      socket: "inactive",
+    });
+    expect(lines[4]).toBe(
+      "✗ the router does not answer on 127.0.0.1:20100 (The operation timed out.)",
+    );
   });
 });
 
-describe("anymodel gateway slot: the file", () => {
+describe("cc-smart-dev-kit gateway slot: the file", () => {
   test("a field this version does not know survives a slot change; the file stays mode 600", async () => {
     const m = machine();
     const server = fakeServer();
@@ -858,7 +1074,7 @@ describe("anymodel gateway slot: the file", () => {
         },
         futureField: { level: 3 },
         port: server.port,
-        slots: { "anymodel-scout": ["omniroute:m1", "claude-sonnet-5-5"] },
+        slots: { "cc-smart-dev-kit-scout": ["omniroute:m1", "claude-sonnet-5-5"] },
         timeouts: { firstByteMs: 5000, idleMs: 9000 },
         version: 1,
       }),
@@ -880,20 +1096,210 @@ describe("anymodel gateway slot: the file", () => {
       futureField: { level: 3 },
       port: server.port,
       slots: {
-        "anymodel-scout": ["omniroute:m1", "claude-sonnet-5-5"],
-        "anymodel-worker": ["claude-sonnet-5-5"],
+        "cc-smart-dev-kit-scout": ["omniroute:m1", "claude-sonnet-5-5"],
+        "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"],
       },
       timeouts: { firstByteMs: 5000, idleMs: 9000 },
       version: 1,
     });
     expect(statSync(m.paths.config).mode & 0o777).toBe(0o600);
     // It saved under the lock (which made the state folder), and let it go.
-    expect(existsSync(join(m.configDir, "anymodel"))).toBe(true);
-    expect(existsSync(join(m.configDir, "anymodel", "lock"))).toBe(false);
+    expect(existsSync(join(m.configDir, "cc-smart-dev-kit"))).toBe(true);
+    expect(existsSync(join(m.configDir, "cc-smart-dev-kit", "lock"))).toBe(false);
   });
 });
 
-describe("anymodel gateway on: no gateway.json", () => {
+describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
+  test("a target that lets the force push run is refused; nothing is saved", async () => {
+    const m = machine();
+    const server = fakeServer({ judge: { m1: "block", m2: "allow" } });
+    m.writeConfig(server.port);
+    const before = readFileSync(m.paths.config, "utf8");
+    const refused = await m.run(["gateway", "slot", "judge", "omniroute:m1,omniroute:m2"]);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stdout).toBe(
+      'judge test: omniroute:m1 blocked "git push --force origin main"\n',
+    );
+    expect(refused.stderr).toBe(
+      "cc-smart-dev-kit: omniroute:m2 did not block the test check (git push --force origin main): let it run. The judge was not set.\n",
+    );
+    expect(readFileSync(m.paths.config, "utf8")).toBe(before);
+    // Each target got the check-shaped test, on the backend's own key.
+    expect(server.judged.map((call) => call.model)).toEqual(["m1", "m2"]);
+    expect(server.judged.map((call) => call.key)).toEqual([
+      `Bearer ${PLANTED_KEY}`,
+      `Bearer ${PLANTED_KEY}`,
+    ]);
+    expect(JSON.stringify(server.judged[0]?.body.system)).toContain(
+      "You are a security monitor for autonomous AI coding agents",
+    );
+  });
+
+  test("a target that does not answer the test is refused too", async () => {
+    const m = machine();
+    const server = fakeServer({ judge: { m1: "block" } });
+    m.writeConfig(server.port);
+    const refused = await m.run(["gateway", "slot", "judge", "omniroute:m2"]);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toBe(
+      "cc-smart-dev-kit: omniroute:m2 did not block the test check (git push --force origin main): HTTP 404. The judge was not set.\n",
+    );
+    expect(JSON.parse(readFileSync(m.paths.config, "utf8")).slots).not.toHaveProperty(
+      "cc-smart-dev-kit-judge",
+    );
+  });
+
+  test("targets that all block it are set", async () => {
+    const m = machine();
+    const server = fakeServer({ judge: { m1: "block", m2: "block" } });
+    m.writeConfig(server.port);
+    const set = await m.run(["gateway", "slot", "judge", "omniroute:m2,omniroute:m1"]);
+    expect(set.stderr).toBe("");
+    expect(set.exitCode).toBe(0);
+    expect(set.stdout).toBe(
+      [
+        'judge test: omniroute:m2 blocked "git push --force origin main"',
+        'judge test: omniroute:m1 blocked "git push --force origin main"',
+        "cc-smart-dev-kit-judge: (new)",
+        "  now: omniroute:m2 → omniroute:m1",
+        "The router uses it from its next request.",
+        "",
+      ].join("\n"),
+    );
+    const saved = JSON.parse(readFileSync(m.paths.config, "utf8"));
+    expect(saved.slots["cc-smart-dev-kit-judge"]).toEqual(["omniroute:m2", "omniroute:m1"]);
+    // The proof the router checks: the recipe in config.ts's `judgeTestProof`, by hand.
+    const url = `http://127.0.0.1:${server.port}`;
+    const proof = (target: string) =>
+      createHash("sha256")
+        .update(`cc-smart-dev-kit judge test 2\n${target}\n${url}`)
+        .digest("hex")
+        .slice(0, 32);
+    expect(saved.judgeTested).toEqual({
+      "omniroute:m1": proof("omniroute:m1"),
+      "omniroute:m2": proof("omniroute:m2"),
+    });
+    // `judge off` drops the slot, its proofs, and its fallback record in the state file.
+    const statePath = join(m.home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json");
+    mkdirSync(dirname(statePath), { recursive: true });
+    const record = { lastAt: 1, model: "claude-sonnet-5", resetsAt: null, since: 1, target: "x" };
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        fallbacks: { "cc-smart-dev-kit-judge": record, "cc-smart-dev-kit-opus": record },
+        limits: {},
+        version: 1,
+      }),
+    );
+    expect((await m.run(["gateway", "slot", "judge", "off"])).exitCode).toBe(0);
+    const after = JSON.parse(readFileSync(m.paths.config, "utf8"));
+    expect(after.slots).not.toHaveProperty("cc-smart-dev-kit-judge");
+    expect(after).not.toHaveProperty("judgeTested");
+    expect(JSON.parse(readFileSync(statePath, "utf8")).fallbacks).toEqual({
+      "cc-smart-dev-kit-opus": record,
+    });
+  });
+
+  test("a judge target set by hand, or by a config from before 0.3, is untested: doctor fails", async () => {
+    const m = machine();
+    const server = fakeServer();
+    expect((await m.runHere(["gateway", "setup", "--no-backend-key"])).exitCode).toBe(0);
+    mkdirSync(dirname(m.paths.config), { recursive: true });
+    writeFileSync(
+      m.paths.config,
+      JSON.stringify({
+        backends: {
+          omniroute: { apiKey: PLANTED_KEY, baseUrl: `http://127.0.0.1:${server.port}` },
+        },
+        // A proof for another target does not count for this one.
+        judgeTested: { "omniroute:m2": "0".repeat(32) },
+        port: server.port,
+        slots: {
+          "cc-smart-dev-kit-judge": ["omniroute:m1"],
+          "cc-smart-dev-kit-scout": ["claude-sonnet-5-5"],
+          "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"],
+        },
+        version: 1,
+      }),
+      { mode: 0o600 },
+    );
+    const checks = await gatewayChecks({
+      paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
+      bundle: BUILT_ROUTER,
+      runner: () => ({ exitCode: 0, output: "active\n" }),
+      systemd: true,
+      fetch: m.probe.fetch,
+    });
+    expect(checks.at(-1)).toEqual({
+      ok: false,
+      text: "slot cc-smart-dev-kit-judge: omniroute:m1 has not passed the judge test, so the router ignores it. Run: cc-smart-dev-kit gateway slot judge omniroute:m1",
+    });
+  });
+
+  test("an affordable slot falling back to Opus or Fable: ! a warning, never a failure", async () => {
+    const m = machine();
+    const server = fakeServer();
+    expect((await m.runHere(["gateway", "setup", "--no-backend-key"])).exitCode).toBe(0);
+    mkdirSync(dirname(m.paths.config), { recursive: true });
+    writeFileSync(
+      m.paths.config,
+      JSON.stringify({
+        backends: {
+          omniroute: { apiKey: PLANTED_KEY, baseUrl: `http://127.0.0.1:${server.port}` },
+        },
+        modelSlots: { "claude-opus-5-5": "cc-smart-dev-kit-opus" },
+        port: server.port,
+        slots: {
+          "cc-smart-dev-kit-opus": ["claude-opus-5-5", "omniroute:m1"],
+          "cc-smart-dev-kit-scout": ["omniroute:m1", "claude-fable-5-1"],
+          "cc-smart-dev-kit-worker": ["omniroute:m1", "claude-sonnet-5-5"],
+        },
+        version: 1,
+      }),
+      { mode: 0o600 },
+    );
+    const checks = await gatewayChecks({
+      paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
+      bundle: BUILT_ROUTER,
+      runner: () => ({ exitCode: 0, output: "active\n" }),
+      systemd: true,
+      fetch: m.probe.fetch,
+    });
+    const warnings = checks.filter((check) => check.warn === true);
+    expect(warnings.map((check) => check.text)).toEqual([
+      "slot cc-smart-dev-kit-scout falls back to claude-fable-5-1: an affordable slot that answers on Claude Opus or Fable spends your own plan usage. To change it: cc-smart-dev-kit gateway slot cc-smart-dev-kit-scout <targets>",
+    ]);
+    // A warning is not a failure, and the model slot is left alone (its first target IS the model).
+    expect(warnings.every((check) => check.ok)).toBe(true);
+    expect(checks.some((check) => check.text.includes("cc-smart-dev-kit-opus falls back"))).toBe(
+      false,
+    );
+    expect(checks.some((check) => check.text.includes("cc-smart-dev-kit-worker falls back"))).toBe(
+      false,
+    );
+  });
+
+  test("slot opus: on, then off; the file names the real model id", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    const on = await m.run(["gateway", "slot", "opus", "claude-opus-5-5,omniroute:m1"]);
+    expect(on.stderr).toBe("");
+    expect(on.stdout).toBe(
+      "cc-smart-dev-kit-opus: (new)\n  now: claude-opus-5-5 → omniroute:m1\nThe router uses it from its next request.\n",
+    );
+    const saved = JSON.parse(readFileSync(m.paths.config, "utf8"));
+    expect(saved.modelSlots).toEqual({ "claude-opus-5-5": "cc-smart-dev-kit-opus" });
+    expect(saved.slots["cc-smart-dev-kit-opus"]).toEqual(["claude-opus-5-5", "omniroute:m1"]);
+    const off = await m.run(["gateway", "slot", "opus", "off"]);
+    expect(off.stdout).toBe(
+      "cc-smart-dev-kit-opus: claude-opus-5-5 → omniroute:m1\n  now: off (opus goes to Anthropic unchanged)\nThe router uses it from its next request.\n",
+    );
+    expect(JSON.parse(readFileSync(m.paths.config, "utf8"))).not.toHaveProperty("modelSlots");
+  });
+});
+
+describe("cc-smart-dev-kit gateway on: no gateway.json", () => {
   test("on uses the default port, after its health check, when there is no config", async () => {
     const m = machine();
     expect((await m.runHere(["gateway", "setup", "--no-backend-key"])).exitCode).toBe(0);
@@ -901,7 +1307,7 @@ describe("anymodel gateway on: no gateway.json", () => {
     const on = await m.runHere(["gateway", "on"]);
     expect(on.stderr).toBe("");
     expect(on.exitCode).toBe(0);
-    expect(m.probed).toEqual(["http://127.0.0.1:20100/__anymodel/health"]);
+    expect(m.probed).toEqual(["http://127.0.0.1:20100/__cc-smart-dev-kit/health"]);
     expect(JSON.parse(readFileSync(m.paths.settings, "utf8")).env.ANTHROPIC_BASE_URL).toBe(
       "http://127.0.0.1:20100",
     );
@@ -912,7 +1318,7 @@ describe("anymodel gateway on: no gateway.json", () => {
     const refused = await m.runHere(["gateway", "on"]);
     expect(refused.exitCode).toBe(1);
     expect(refused.stderr).toStartWith(
-      "anymodel: the router does not answer on 127.0.0.1:20100 (Unable to connect.",
+      "cc-smart-dev-kit: the router does not answer on 127.0.0.1:20100 (Unable to connect.",
     );
   });
 });
@@ -922,7 +1328,7 @@ describe("secrets", () => {
     const m = machine();
     const server = fakeServer();
     const outputs: string[] = [];
-    const record = (result: { stdout: string; stderr: string }) => {
+    const record = <T extends { stdout: string; stderr: string }>(result: T): T => {
       outputs.push(result.stdout, result.stderr);
       return result;
     };
@@ -942,6 +1348,9 @@ describe("secrets", () => {
     record(await m.run(["gateway", "models"]));
     record(await m.run(["gateway", "slot", "worker", "omniroute:m1,claude-sonnet-5-5"]));
     record(await m.run(["gateway", "slot", "judge", "omniroute:m2"]));
+    record(await m.run(["gateway", "slot", "opus", "claude-opus-5-5,omniroute:m1"]));
+    record(await m.run(["gateway", "slot", "opus", "off"]));
+    record(await m.run(["usage"]));
     record(await m.run(["gateway", "slot", "worker", "omniroute:nope"]));
     record(await m.run(["gateway", "on"]));
     record(await m.run(["gateway", "status"]));
@@ -949,6 +1358,13 @@ describe("secrets", () => {
     record(await m.run(["doctor"]));
     record(await m.run(["gateway", "help"]));
     record(await m.run(["gateway", "setup", "--backend-key-stdin"], PLANTED_KEY));
+    // `cc-smart-dev-kit search` reads the same config and key: its search answers 401 with the key
+    // echoed, its fetch a page.
+    const searchFailed = record(await m.run(["search", "bun runtime"]));
+    record(await m.run(["search", "--json", "bun runtime"]));
+    record(await m.run(["search", "--fetch", "https://example.com/"]));
+    record(await m.run(["search", "--json", "--fetch", "https://example.com/"]));
+    record(await m.run(["search", "--max", "99", "bun runtime"]));
     // A broken file: the error must not quote the text around the mistake.
     writeFileSync(m.paths.config, `{"backends":{"omniroute":{"apiKey":"${PLANTED_KEY}",}}}`, {
       mode: 0o600,
@@ -958,6 +1374,7 @@ describe("secrets", () => {
     record(await m.run(["gateway", "models"]));
     record(await m.run(["gateway", "slot", "worker", "claude-sonnet-5-5"]));
     record(await m.run(["doctor"]));
+    record(await m.run(["search", "bun runtime"]));
     // Valid JSON that fails the schema: the error names fields, not values.
     writeFileSync(
       m.paths.config,
@@ -970,10 +1387,18 @@ describe("secrets", () => {
     );
     record(await m.run(["gateway", "models"]));
     record(await m.run(["doctor"]));
+    record(await m.run(["search", "bun runtime"]));
     const all = outputs.join("\n");
 
     // The backend did receive the key: the test would see a leak if one were printed.
     expect(server.seenKeys).toContain(`Bearer ${PLANTED_KEY}`);
+    // So did the search and the fetch, four times; the broken configs never sent it.
+    expect(server.searchKeys).toEqual(Array(4).fill(`Bearer ${PLANTED_KEY}`));
+    // The failed search printed the echoed key masked.
+    expect(searchFailed.exitCode).toBe(1);
+    expect(searchFailed.stderr).toStartWith(
+      'OmniRoute answered HTTP 401: invalid key in "Bearer ****cdef"\n',
+    );
     // The URL with the password was printed, masked, by status, models and doctor.
     const maskedUrl = `••••${String(server.port).slice(-4)}`;
     expect(all).toContain(`backend creds: ${maskedUrl} key ••••cdef → HTTP 200`);
@@ -1012,9 +1437,9 @@ describe("the router copy runs on its own", () => {
       }
       reader.releaseLock();
       expect(said).toBe(
-        `anymodel-router listening on http://127.0.0.1:${port} (config ${m.paths.config})\n`,
+        `cc-smart-dev-kit-router listening on http://127.0.0.1:${port} (config ${m.paths.config})\n`,
       );
-      const response = await fetch(`http://127.0.0.1:${port}/__anymodel/health`);
+      const response = await fetch(`http://127.0.0.1:${port}/__cc-smart-dev-kit/health`);
       expect(await response.json()).toMatchObject({ ok: true, port, requests: 0 });
     } finally {
       proc.kill();

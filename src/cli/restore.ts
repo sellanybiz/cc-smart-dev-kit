@@ -1,4 +1,5 @@
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info";
 import { configuredPort } from "../gateway/commands";
 import { messageOf } from "../gateway/config";
@@ -6,11 +7,17 @@ import type { HealthProbe } from "../gateway/health";
 import {
   type Runner,
   restartPendingFile,
+  SOCKET_NAME,
   stopRouter,
   UNIT_NAME,
   unitActive,
 } from "../gateway/service";
 import { ownedGatewayEnvKeys } from "../gateway/settings";
+import { forgetMcpServer, mcpRecordsFile } from "../mcp/records";
+import { removeMcpServers } from "../mcp/register";
+import { bunConfigPath } from "../setup/bun-config";
+import { forgetInstructionsState } from "../setup/instructions";
+import { LAUNCHER_NAME, shellQuote } from "../setup/launcher";
 import { withLock } from "../setup/lock";
 import { type RestoreResult, restore } from "../setup/restore";
 import { readChanged, realTarget } from "../setup/write";
@@ -20,39 +27,70 @@ function describe(result: RestoreResult, short: (path: string) => string): strin
   const file = short(result.file);
   switch (result.action) {
     case "restored":
-      return `~ ${file}: back as it was before anymodel`;
+      return `~ ${file}: back as it was before cc-smart-dev-kit`;
     case "removed":
-      return `- ${file}: removed (anymodel had created it)`;
+      return `- ${file}: removed (cc-smart-dev-kit had created it)`;
     case "cleaned":
       return `~ ${file}: removed ${result.details.join(", ")}; everything else kept`;
     case "unchanged":
-      return `  ${file}: nothing of anymodel left in it`;
+      return `  ${file}: nothing of cc-smart-dev-kit left in it`;
     case "no-backup":
-      return `! ${file}: the backup from before anymodel is missing; left alone`;
+      return `! ${file}: the backup from before cc-smart-dev-kit is missing; left alone`;
   }
 }
 
+/** The router's two units, as restore names them. */
+const UNITS = `${UNIT_NAME} and ${SOCKET_NAME}`;
+
 /** Said before restore stops a running router, and before the question. */
 export const STOP_WARNING =
-  "anymodel-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.";
+  "cc-smart-dev-kit-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.";
 
 /** Said before `restore --now`, and before the question. */
-export const NOW_WARNING = `restore --now stops anymodel-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
+export const NOW_WARNING = `restore --now stops cc-smart-dev-kit-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
 
-/** Said at the end of stage 1. */
-export const STAGE_ONE_DONE = `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
+/**
+ * Said at the end of stage 1. When this run removed the launcher (setup had created it), the
+ * second restore cannot be typed as `cc-smart-dev-kit restore` any more: the line then names
+ * the command that really works — the README's own `bun --no-env-file --config=… …/dist/cli.js
+ * restore` form, with this CLI's bundle (`RestoreOptions.cliBundle`, the installed version's
+ * own `dist/cli.js`) and the bun running this command (`bunPath`, `process.execPath`), so the
+ * line works on a machine whose PATH has no bun.
+ */
+export function stageOneDone(
+  paths: CliPaths,
+  cliBundle: string,
+  bunPath: string = process.execPath,
+): string {
+  const launcher = join(paths.binDir, LAUNCHER_NAME);
+  if (existsSync(launcher)) {
+    return `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
+  }
+  // The same two flags every run of the plugin's own bundles gets, and the plugin's own empty
+  // config: the bundle sits in the installed version's folder (`…/<version>/dist/cli.js`), and
+  // the config is beside it (`…/<version>/bunfig.toml`).
+  const bunfig = bunConfigPath(dirname(dirname(cliBundle)));
+  const flags = [shellQuote("--no-env-file"), shellQuote(`--config=${bunfig}`)].join(" ");
+  return `Restart every running Claude session (they still use the router), then run restore again — this one removed the launcher (${tildify(launcher, paths.home)}), so \`${COMMAND}\` is not on your PATH any more: ${shellQuote(bunPath)} ${flags} ${shellQuote(cliBundle)} restore`;
+}
 
 export interface RestoreOptions {
   /** `--yes`: stop a running router without asking. */
   yes: boolean;
   /** `--now`: both stages at once, though running sessions still use the router. */
   now: boolean;
+  /** This CLI's own bundle (`plugin/dist/cli.js`): what stage 1 names as the second run. */
+  cliBundle: string;
   runner: Runner;
   systemd: boolean;
   /** Asks the person; null when there is no terminal. */
   confirm: ((question: string) => boolean) | null;
   /** Asks the router's port after the stop, until it is closed; a test passes a fake. */
   probe: HealthProbe;
+  /** Runs one `claude` command, for the MCP servers setup registered. */
+  claude?: (argv: string[]) => { ok: boolean; out: string };
+  /** Finds `claude` on PATH; null: the MCP servers are left and said so. */
+  which?: (command: string) => null | string;
 }
 
 /** Asks before something that cuts running sessions; true to go on. Prints why it stops. */
@@ -82,17 +120,64 @@ function print(results: RestoreResult[], short: (path: string) => string): void 
 }
 
 /**
+ * Takes back the MCP servers setup registered, and the record of them. A server the person
+ * re-pointed is theirs and stays; its record goes either way, so a later restore does not try
+ * it again. Returns the lines to print.
+ *
+ * Stage 1 takes these back too: a registered server only affects a session that starts later,
+ * and every session that already started one keeps the server it is running.
+ *
+ * A caller that passes no `claude` runner gets no MCP handling at all — `removeMcpServers`
+ * would only be able to say it cannot run the command. `cc-smart-dev-kit restore` always
+ * passes both (`src/entries/cli.ts`).
+ */
+function removeMcp(
+  paths: CliPaths,
+  options: RestoreOptions,
+  short: (path: string) => string,
+): { lines: string[]; ok: boolean } {
+  if (options.claude === undefined || options.which === undefined) return { lines: [], ok: true };
+  const removal = removeMcpServers(paths, options.claude, options.which, false);
+  for (const name of removal.forgotten) forgetMcpServer(paths.stateDir, name);
+  const lines = [...removal.removed, ...removal.notes];
+  // Nothing left to take back: the record file goes with its last entry.
+  if (removal.kept.length === 0 && existsSync(mcpRecordsFile(paths.stateDir))) {
+    rmSync(mcpRecordsFile(paths.stateDir), { force: true });
+    lines.push(
+      `- ${short(mcpRecordsFile(paths.stateDir))}: removed (the record of the MCP servers)`,
+    );
+  }
+  return { lines, ok: removal.kept.length === 0 };
+}
+
+/**
+ * Restore takes the instructions out, so their two state files go too: the version stamp,
+ * and the stored `setup --no-instructions` (a setup after a restore starts fresh). Prints a
+ * line when a stored choice was forgotten; true when it was.
+ */
+function forgetInstructionChoice(stateDir: string, short: (path: string) => string): boolean {
+  const forgotten = forgetInstructionsState(stateDir);
+  if (forgotten === null) return false;
+  console.log(
+    `- ${short(forgotten)}: removed (your --no-instructions choice; the next setup installs the instructions)`,
+  );
+  return true;
+}
+
+/**
  * Restore also undoes the router service when `gateway setup` installed it. Running Claude
- * sessions read `ANTHROPIC_BASE_URL` at start, so while the gateway's env keys are in the
- * settings they still send every request to the router; stopping it would make each of
- * them fail. So, with the router installed:
- *   - stage 1, while anymodel's gateway env keys are there: everything is restored but the
- *     router's copy and unit, and the router keeps running. It says to restart the
+ * sessions read `ANTHROPIC_BASE_URL` at start, so while cc-smart-dev-kit's gateway env keys are in
+ * the settings they still send every request to the router; stopping it would make each of
+ * them fail. (A key cc-smart-dev-kit set and the person changed since is theirs, and does not count
+ * here: `ownedGatewayEnvKeys` keeps only the keys that still hold cc-smart-dev-kit's value.) So,
+ * with the router installed:
+ *   - stage 1, while cc-smart-dev-kit's gateway env keys are there: everything is restored but the
+ *     router's copy and units, and the router keeps running. It says to restart the
  *     sessions and run `restore` again.
- *   - stage 2, with no such key left: it disables and stops the unit (asking first when it
+ *   - stage 2, with no such key left: it disables and stops the unit and its socket (asking first when it
  *     runs, because that cuts answers in flight) and waits up to 15 s for its port to
  *     close (`stopRouter`; the drain goes on in the background), restores the rest (the
- *     copy and the unit are removed), reloads systemd, and clears the restart-pending
+ *     copy and the units are removed), reloads systemd, and clears the restart-pending
  *     marker.
  *   - `--now`: both at once, after the warning that every running session fails until it
  *     restarts (asked, or `--yes`).
@@ -100,9 +185,15 @@ function print(results: RestoreResult[], short: (path: string) => string): void 
 export async function runRestore(paths: CliPaths, options: RestoreOptions): Promise<number> {
   const short = (path: string) => tildify(path, paths.home);
   const changed = readChanged(paths.stateDir);
-  const routerFiles = [realTarget(paths.routerCopy), realTarget(paths.routerUnitFile)];
+  const routerFiles = [
+    realTarget(paths.routerCopy),
+    realTarget(paths.routerUnitFile),
+    realTarget(paths.routerSocketFile),
+  ];
   const routerTracked = routerFiles.some((file) => Object.hasOwn(changed, file));
   const unitTracked = options.systemd && Object.hasOwn(changed, realTarget(paths.routerUnitFile));
+  // A key the person changed since is theirs: `ownedGatewayEnvKeys` leaves it out, so it
+  // does not keep the router up for sessions that no longer point at it.
   const sessionsUseRouter =
     routerTracked && ownedGatewayEnvKeys(paths.settingsFile, paths.stateDir).length > 0;
 
@@ -113,7 +204,9 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       () => {
         const results = restore(paths.stateDir, { except: routerFiles });
         print(results, short);
-        console.log(STAGE_ONE_DONE);
+        for (const line of removeMcp(paths, options, short).lines) console.log(line);
+        forgetInstructionChoice(paths.stateDir, short);
+        console.log(stageOneDone(paths, options.cliBundle));
         return results.some((result) => result.action === "no-backup") ? 1 : 0;
       },
       { waitMs: 10_000 },
@@ -125,7 +218,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       !askFirst(
         options,
         NOW_WARNING,
-        "Stop anymodel-router and restore everything now?",
+        "Stop cc-smart-dev-kit-router and restore everything now?",
         `to do it now: ${COMMAND} restore --now --yes`,
       )
     ) {
@@ -136,7 +229,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       !askFirst(
         options,
         STOP_WARNING,
-        "Stop anymodel-router and restore?",
+        "Stop cc-smart-dev-kit-router and restore?",
         `to stop it: ${COMMAND} restore --yes`,
       )
     ) {
@@ -158,39 +251,53 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
           console.log(`  cannot read the router's port (${messageOf(error)}); not waiting for it`);
           port = null;
         }
-        const stopped = await stopRouter(options.runner, port, options.probe);
+        const stopped = await stopRouter(options.runner, port, options.probe, {
+          dir: dirname(paths.routerUnitFile),
+          socket: SOCKET_NAME,
+          unit: UNIT_NAME,
+        });
         switch (stopped.kind) {
           case "closed":
             console.log(
-              `- ${UNIT_NAME}: disabled and stopped (port ${port} closed; answers in flight finish in the background)`,
+              `- ${UNITS}: disabled and stopped (port ${port} closed; answers in flight finish in the background)`,
             );
             break;
           case "no-port":
-            console.log(`- ${UNIT_NAME}: disabled and stopping`);
+            console.log(`- ${UNITS}: disabled and stopping`);
             break;
           case "not-running":
             console.log(
               `  ${UNIT_NAME} was not running (systemctl --user is-active: ${stopped.state}); not waiting for port ${port}`,
             );
-            console.log(`- ${UNIT_NAME}: disabled and stopped`);
+            console.log(`- ${UNITS}: disabled and stopped`);
             break;
           case "other":
             console.log(
               `  port ${port} answers, but not as this router (${stopped.detail}); not waiting for it`,
             );
-            console.log(`- ${UNIT_NAME}: disabled and stopping`);
+            console.log(`- ${UNITS}: disabled and stopping`);
             break;
         }
       }
       const results = restore(paths.stateDir);
       if (unitTracked) options.runner(["systemctl", "--user", "daemon-reload"]);
+      // The MCP servers setup registered, and the record of them.
+      const mcp = removeMcp(paths, options, short);
       // The router is gone: a setup that did not finish has nothing left to finish.
       rmSync(restartPendingFile(paths.stateDir), { force: true });
-      if (results.length === 0) {
-        console.log("Nothing to restore: anymodel has nothing in any file.");
+      // So is its limit state: no status line or alert may read a stale fallback from it.
+      const stateGone = routerTracked && existsSync(paths.gatewayStateFile);
+      if (stateGone) rmSync(paths.gatewayStateFile, { force: true });
+      print(results, short);
+      if (stateGone) {
+        console.log(`- ${short(paths.gatewayStateFile)}: removed (the router's limit state)`);
+      }
+      for (const line of mcp.lines) console.log(line);
+      const forgot = forgetInstructionChoice(paths.stateDir, short);
+      if (results.length === 0 && !stateGone && mcp.lines.length === 0) {
+        if (!forgot) console.log("Nothing to restore: cc-smart-dev-kit has nothing in any file.");
         return 0;
       }
-      print(results, short);
       return results.some((result) => result.action === "no-backup") ? 1 : 0;
     },
     { waitMs: 10_000 },

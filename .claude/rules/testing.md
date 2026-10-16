@@ -29,7 +29,14 @@ A test never reaches the network or a real tool it does not test (`git ls-remote
 - it logs each call to a file, so the test can assert the exact arguments;
 - it succeeds or fails on purpose, so both paths are tested.
 
-`src/cli/cli.test.ts` does this for `git`.
+`src/cli/cli.test.ts` does this for `git`. `src/testing/fake-machine.ts` builds a temp home
+and a fake `Machine` (fake sudo, apt-get, dnf, rpm, brew, gpg, claude; a terminal that
+answers what the test says) for `runSetup` in the test's own process.
+
+**Never the host.** A test that runs the CLI as its own process gives it a PATH of fakes
+(plus bun's folder, and git alone when it needs the real one), never the host's PATH,
+and the host's facts in `CC_SMART_DEV_KIT_TEST_HOST` (platform, arch, os-release, the Warp app's
+path), so its exact output is the same on any machine.
 
 ## Never the live router's port
 

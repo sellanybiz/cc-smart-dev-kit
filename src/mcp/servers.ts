@@ -1,0 +1,128 @@
+/**
+ * The MCP servers `cc-smart-dev-kit setup` registers at USER scope, and the JSON each one is
+ * registered with.
+ *
+ * WHY USER SCOPE
+ *   A server served from a plugin gets a new tool-name prefix, which would break every
+ *   permission rule, hook matcher and agent tool list that names `mcp__<server>__*`. A
+ *   server from a project file (`.mcp.json`) or the "local" scope is stopped by Claude Code
+ *   as soon as the session's folder changes — and a session that works in a worktree moves
+ *   folders. Registered for the user, the names stay and the servers stay.
+ *
+ * WHAT THE PLUGIN REGISTERS
+ *   - `playwright`: the shared browser (`browser/launcher.ts`), so every session drives one
+ *     Chrome and sees only its own windows.
+ *   - `serena`: code intelligence, started with the plugin's own context, which allows
+ *     `activate_project` so a session can point Serena at its worktree.
+ *   - `sequential-thinking`: the general reasoning server.
+ *   - `tavily-websearch`: Tavily's remote HTTP server. Its key is never written here: the
+ *     header carries `${TAVILY_API_KEY}`, which Claude Code fills in from its own
+ *     environment when it connects, and the key itself lives in the person's environment or
+ *     in a key file only they can read (`tavily.ts`). Without a key the server is skipped.
+ *
+ * A project's own servers are the project's: the plugin never knows them.
+ */
+import { MCP_VERSIONS, TAVILY_MCP_URL } from "./versions";
+
+/** The servers this plugin manages, in the order setup registers them. */
+export const SERVER_NAMES = [
+  "playwright",
+  "serena",
+  "sequential-thinking",
+  "tavily-websearch",
+] as const;
+
+export type ServerName = (typeof SERVER_NAMES)[number];
+
+/** One server's registration: the name, and the JSON `claude mcp add-json` takes. */
+export interface McpServer {
+  name: ServerName;
+  /** The exact JSON, as one line. */
+  json: string;
+  /**
+   * A note instead of a registration: the server is left out, and setup says why. Set only
+   * for `tavily-websearch` without a key.
+   */
+  skipped?: string;
+}
+
+/** What building the registrations needs from the machine. */
+export interface McpContext {
+  /** The launcher (`~/.local/bin/cc-smart-dev-kit`): it finds bun itself, whatever PATH Claude Code was started with. */
+  launcher: string;
+  /** `bunx`, as an absolute path when there is one. */
+  bunx: string;
+  /** The Serena context installed beside the plugin's data (`<dataDir>/serena/contexts/worktree.yml`). */
+  serenaContextFile: string;
+  /**
+   * The Tavily key's state: `key: true` when one is available, else the reason it is not —
+   * that reason becomes the note setup prints (`skipped — <reason>`).
+   */
+  tavily: { key: true } | { key: false; reason: string };
+}
+
+function json(config: Record<string, unknown>): string {
+  return JSON.stringify(config);
+}
+
+/** Serena's start command, after `uvx`. `--context` takes a context name or a YAML path. */
+export function serenaArgs(contextFile: string): string[] {
+  return [
+    "--from",
+    `git+https://github.com/oraios/serena@${MCP_VERSIONS.serena}`,
+    "serena",
+    "start-mcp-server",
+    "--context",
+    contextFile,
+    "--open-web-dashboard",
+    "False",
+    "--project-from-cwd",
+  ];
+}
+
+/** The longest ONE tool call may run — a Tavily research, a Serena rename across a repo. */
+const LONG_CALL_MS = 300_000;
+
+/** Every server, with the JSON to register it by. */
+export function mcpServers(context: McpContext): McpServer[] {
+  return [
+    {
+      name: "playwright",
+      json: json({ command: context.launcher, args: ["browser", "mcp"] }),
+    },
+    {
+      name: "serena",
+      json: json({
+        args: serenaArgs(context.serenaContextFile),
+        command: "uvx",
+        timeout: LONG_CALL_MS,
+      }),
+    },
+    {
+      name: "sequential-thinking",
+      json: json({
+        args: [
+          "-y",
+          `@modelcontextprotocol/server-sequential-thinking@${MCP_VERSIONS.sequentialThinking}`,
+        ],
+        command: context.bunx,
+      }),
+    },
+    context.tavily.key
+      ? {
+          name: "tavily-websearch",
+          json: json({
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code's placeholder, filled in by Claude Code at connect time.
+            headers: { Authorization: "Bearer ${TAVILY_API_KEY}" },
+            timeout: LONG_CALL_MS,
+            type: "http",
+            url: TAVILY_MCP_URL,
+          }),
+        }
+      : {
+          name: "tavily-websearch",
+          json: "",
+          skipped: context.tavily.reason,
+        },
+  ];
+}

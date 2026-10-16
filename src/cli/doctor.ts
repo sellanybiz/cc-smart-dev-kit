@@ -1,43 +1,77 @@
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
+  bunTooOld,
+  COMMAND,
   MARKETPLACE,
   MARKETPLACE_ADD_COMMAND,
+  MIN_BUN,
   PLUGIN,
   PLUGIN_ID,
   PLUGIN_INSTALL_COMMAND,
   PLUGIN_UPDATE_COMMAND,
+  VERSION,
 } from "../build-info";
 import { gatewayChecks } from "../gateway/doctor";
 import type { Runner } from "../gateway/service";
+import { claudeMemAdvice } from "../machine/claude-mem";
+import { companionChecks } from "../machine/companions";
+import type { Machine } from "../machine/machine";
+import { warpCheck } from "../machine/warp";
+import { type McpDoctorDeps, mcpChecks } from "../mcp/doctor";
+import { omnirouteDoctorLine } from "../omniroute/commands";
+import type { RegistryFetch } from "../omniroute/registry";
 import { findUserInstall } from "../setup/installed-plugins";
+import {
+  copyDifferences,
+  copyInstalled,
+  instructionsBlockBody,
+  instructionsNeedRefresh,
+  instructionsOptedOut,
+  instructionsPaths,
+  readVersionStamp,
+} from "../setup/instructions";
 import { bakedBunPath, LAUNCHER_NAME, launcherScript } from "../setup/launcher";
 import {
   canReadGitRemote,
   canReadHttp,
+  marketplaceCopyVersion,
   marketplaceInstallLocation,
   marketplaceSource,
   redactUrl,
 } from "../setup/marketplace-access";
+import {
+  TMUX_LINE,
+  TMUX_MIN_VERSION,
+  TMUX_NOW_COMMAND,
+  tmuxLineIn,
+  tmuxPassthroughOf,
+} from "../setup/tmux";
+import { isOlder } from "../update/check";
+import { FORCE_PLUGIN_UPDATES_VAR, updateOptOuts } from "../update/opt-out";
+import {
+  heldSince,
+  readLastCheck,
+  runningSessions,
+  UNREACHABLE_FAILS_AFTER_HOURS,
+  updateFiles,
+} from "../update/state";
+import { type LiveDeps, parseClaudeVersion, readLiveRecord, runLiveCheck } from "./live-check";
 import { type CliPaths, tildify } from "./paths";
+import { projectChecks } from "./project-checks";
 
-interface Check {
+/** One line of the report. What `doctor` prints, and what the portal's Machine page shows. */
+export interface Check {
   ok: boolean;
   /** Information only: printed with `·`, never a failure. */
   info?: boolean;
+  /** A warning: printed with `!`, never a failure. */
+  warn?: boolean;
   text: string;
 }
 
-/** Claude Code variables that also stop plugin updates, unless FORCE_AUTOUPDATE_PLUGINS is set. */
-export const UPDATE_BLOCKING_VARS = [
-  "DISABLE_AUTOUPDATER",
-  "DISABLE_UPDATES",
-  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
-] as const;
-export const FORCE_PLUGIN_UPDATES_VAR = "FORCE_AUTOUPDATE_PLUGINS";
-
 /** The marketplace command that refreshes Claude Code's local copy of the marketplace. */
-const MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
+export const MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 
 type Env = Record<string, string | undefined>;
 
@@ -101,19 +135,22 @@ function checkLauncher(paths: CliPaths): Check {
   const launcher = join(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
   if (!existsSync(launcher))
-    return { ok: false, text: `no launcher at ${where}. Run: anymodel setup` };
+    return { ok: false, text: `no launcher at ${where}. Run: cc-smart-dev-kit setup` };
   if (!isExecutable(launcher)) {
-    return { ok: false, text: `the launcher ${where} is not executable. Run: anymodel setup` };
+    return {
+      ok: false,
+      text: `the launcher ${where} is not executable. Run: cc-smart-dev-kit setup`,
+    };
   }
   const script = readFileSync(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
-    return { ok: false, text: `the launcher ${where} is out of date. Run: anymodel setup` };
+    return { ok: false, text: `the launcher ${where} is out of date. Run: cc-smart-dev-kit setup` };
   }
   if (!isExecutable(bun)) {
     return {
       ok: false,
-      text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: anymodel setup`,
+      text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-smart-dev-kit setup`,
     };
   }
   const result = run([launcher, "version"]);
@@ -165,17 +202,6 @@ async function checkMarketplaceAccess(paths: CliPaths, env: Env): Promise<Check>
   }
 }
 
-/** The `version` in the plugin manifest of the marketplace's local copy, or null. */
-function marketplaceVersion(manifest: string): string | null {
-  try {
-    const version = (JSON.parse(readFileSync(manifest, "utf8")) as { version?: unknown } | null)
-      ?.version;
-    return typeof version === "string" ? version : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Is the installed version behind the marketplace's local copy? Then auto-update did not
  * install it (Claude Code's `autoUpdate` may refresh only the catalog). Null when there is
@@ -192,8 +218,7 @@ function checkInstalledVersion(paths: CliPaths): Check | null {
       text: `the ${MARKETPLACE} marketplace has no local copy. Run: ${MARKETPLACE_UPDATE_COMMAND}`,
     };
   }
-  const manifest = join(location, "plugin", ".claude-plugin", "plugin.json");
-  const latest = marketplaceVersion(manifest);
+  const { manifest, version: latest } = marketplaceCopyVersion(location, PLUGIN);
   if (latest === null) {
     return {
       ok: false,
@@ -227,44 +252,121 @@ function checkAutoUpdate(settings: Record<string, unknown> | null, paths: CliPat
     ? { ok: true, text: "plugin auto-update is on" }
     : {
         ok: false,
-        text: `plugin auto-update is off in ${tildify(paths.settingsFile, paths.home)}. Run: anymodel setup`,
+        text: `plugin auto-update is off in ${tildify(paths.settingsFile, paths.home)}. Run: cc-smart-dev-kit setup`,
       };
 }
 
-/** True when a variable is set to something other than empty, 0, false, no or off. */
-function isSet(value: unknown): boolean {
-  if (typeof value !== "string") return false;
-  return !["", "0", "false", "no", "off"].includes(value.trim().toLowerCase());
-}
-
 /**
- * Updates must not be switched off: each of UPDATE_BLOCKING_VARS also stops plugin
- * updates, unless FORCE_AUTOUPDATE_PLUGINS is set too. Claude Code reads them from its
- * environment and from the `env` of settings.json, so doctor looks in both.
+ * Updates must not be switched off: each of UPDATE_BLOCKING_VARS (`src/update/opt-out.ts`)
+ * also stops plugin updates, Claude Code's and cc-smart-dev-kit's background update alike, unless
+ * FORCE_AUTOUPDATE_PLUGINS is set too. Claude Code reads them from its environment and
+ * from the `env` of settings.json, so doctor looks in both.
  */
 function checkUpdatesNotOff(
   settings: Record<string, unknown> | null,
   env: Env,
   paths: CliPaths,
 ): Check {
-  const settingsEnv = (settings?.env ?? {}) as Record<string, unknown>;
-  const where = (name: string) =>
-    [
-      isSet(env[name]) ? "your environment" : null,
-      isSet(settingsEnv[name]) ? `the env of ${tildify(paths.settingsFile, paths.home)}` : null,
-    ].filter((place): place is string => place !== null);
-  if (where(FORCE_PLUGIN_UPDATES_VAR).length > 0) {
+  const fromSettings = (settings?.env ?? {}) as Record<string, unknown>;
+  const { blocking, forced } = updateOptOuts(env, fromSettings);
+  if (forced) {
     return { ok: true, text: `plugin updates are on (${FORCE_PLUGIN_UPDATES_VAR} is set)` };
   }
-  const blocking = UPDATE_BLOCKING_VARS.filter((name) => where(name).length > 0);
   if (blocking.length === 0) return { ok: true, text: "plugin updates are not switched off" };
-  const named = blocking.map((name) => `${name} (in ${where(name).join(" and ")})`).join(", ");
+  const settingsPlace = `the env of ${tildify(paths.settingsFile, paths.home)}`;
+  const named = blocking
+    .map((v) => {
+      const places = [v.inEnv ? "your environment" : null, v.inSettings ? settingsPlace : null];
+      return `${v.name} (in ${places.filter((place) => place !== null).join(" and ")})`;
+    })
+    .join(", ");
+  const names = blocking.map((v) => v.name);
   return {
     ok: false,
     text:
-      `plugin updates are switched off: ${named} ${blocking.length === 1 ? "is" : "are"} set. ` +
-      `Set ${FORCE_PLUGIN_UPDATES_VAR}=1 as well, or remove ${blocking.join(" and ")}.`,
+      `plugin updates are switched off: ${named} ${names.length === 1 ? "is" : "are"} set, so the background update skips them too. ` +
+      `Set ${FORCE_PLUGIN_UPDATES_VAR}=1 as well, or remove ${names.join(" and ")}.`,
   };
+}
+
+/**
+ * The self-update (`src/update/`): a hold, the last background check, and running
+ * sessions that loaded an older version than the one installed now. A hold and a check
+ * still to come are information; only a failed check is a ✗.
+ */
+function checkSelfUpdate(paths: CliPaths): Check[] {
+  const files = updateFiles(paths.stateDir);
+  const checks: Check[] = [];
+  const since = heldSince(files);
+  if (since !== null) {
+    checks.push({
+      ok: true,
+      info: true,
+      text: `background updates are on hold (since ${since}). To resume: ${COMMAND} update --resume`,
+    });
+  }
+  const last = readLastCheck(files);
+  const log = tildify(files.log, paths.home);
+  if (last === null) {
+    checks.push({
+      ok: true,
+      info: true,
+      text: "background update: no check yet (a new Claude session checks, at most once an hour)",
+    });
+  } else {
+    switch (last.result) {
+      case "up-to-date":
+        checks.push({
+          ok: true,
+          text: `background update: last check ${last.at}: ${last.detail} is the newest`,
+        });
+        break;
+      case "updated":
+        checks.push({
+          ok: true,
+          text: `background update: last check ${last.at}: installed ${last.detail}`,
+        });
+        break;
+      case "checking":
+        checks.push({
+          ok: true,
+          info: true,
+          text: `background update: a check started at ${last.at} (${log})`,
+        });
+        break;
+      case "skipped":
+        checks.push({
+          ok: true,
+          info: true,
+          text: `background update: last check ${last.at}: skipped: ${last.detail}`,
+        });
+        break;
+      case "unreachable":
+        checks.push({
+          ok: true,
+          info: true,
+          text: `background update: last check ${last.at}: ${last.detail}, since ${last.since ?? last.at}. It counts as a failure only after ${UNREACHABLE_FAILS_AFTER_HOURS} h in a row. To look now: ${COMMAND} update --check`,
+        });
+        break;
+      case "failed":
+        checks.push({
+          ok: false,
+          text: `background update: the last check, ${last.at}, failed: ${last.detail}. The log: ${log}. To try now: ${COMMAND} update`,
+        });
+        break;
+    }
+  }
+  const installed = findUserInstall(paths.installedPluginsFile)?.version ?? null;
+  const older = runningSessions(files).filter((session) => isOlder(session.version, installed));
+  if (older.length > 0) {
+    const versions = [...new Set(older.map((session) => session.version))].sort().join(", ");
+    checks.push({
+      ok: true,
+      info: true,
+      text: `${older.length} running Claude session${older.length === 1 ? "" : "s"} loaded ${PLUGIN} ${versions}; ${installed} is installed. Restart ${older.length === 1 ? "it" : "them"} to load it.`,
+    });
+  }
+  return checks;
 }
 
 function checkNameClash(settings: Record<string, unknown> | null): Check {
@@ -348,36 +450,335 @@ function checkOldPlugin(settings: Record<string, unknown> | null, paths: CliPath
   };
 }
 
+/**
+ * The instructions: installed, this plugin version's, and imported by the cc-smart-dev-kit block. The
+ * copy is compared two ways: its version stamp (`instructionsNeedRefresh`, the same test the
+ * refresh after an update uses) and its files against the plugin's. A stored
+ * `--no-instructions` is information, never a failure.
+ */
+function checkInstructions(paths: CliPaths, source: string): Check {
+  const where = instructionsPaths(paths, source);
+  const copy = `${tildify(where.target, paths.home)}/`;
+  const claudeMd = tildify(where.claudeMd, paths.home);
+  if (instructionsOptedOut(paths.stateDir)) {
+    return {
+      ok: true,
+      info: true,
+      text: "instructions: left out (cc-smart-dev-kit setup --no-instructions). To add them: cc-smart-dev-kit setup --instructions",
+    };
+  }
+  if (!copyInstalled(where)) {
+    return {
+      ok: false,
+      text: `the instructions are not installed in ${copy}. Run: cc-smart-dev-kit setup`,
+    };
+  }
+  const why = copyDifferences(where);
+  if (instructionsNeedRefresh(where, VERSION)) {
+    why.unshift(`written by ${readVersionStamp(paths.stateDir) ?? "an unknown version"}`);
+  }
+  if (why.length > 0) {
+    return {
+      ok: false,
+      text: `the instructions copy ${copy} is not this plugin version's (${why.join("; ")}). Run: cc-smart-dev-kit setup`,
+    };
+  }
+  const text = existsSync(where.claudeMd) ? readFileSync(where.claudeMd, "utf8") : "";
+  if (!text.includes(instructionsBlockBody(where.importPath))) {
+    return {
+      ok: false,
+      text: `${claudeMd} does not import the instructions (its cc-smart-dev-kit block is missing or changed). Run: cc-smart-dev-kit setup`,
+    };
+  }
+  return {
+    ok: true,
+    text: `the instructions copy ${copy} is this version's, and ${claudeMd} imports it`,
+  };
+}
+
+/**
+ * The last live check (`doctor --live`), as information. Nothing when it never ran, so a
+ * machine that never asked for it sees no line. When the installed Claude Code is not the
+ * one it passed on, the line says to run it again.
+ */
+function checkLiveRecord(paths: CliPaths): Check | null {
+  const record = readLiveRecord(paths.stateDir);
+  if (record === null) return null;
+  const now = parseClaudeVersion(run(["claude", "--version"]).output);
+  if (now !== null && now !== record.claudeCode) {
+    return {
+      ok: true,
+      info: true,
+      text: `the live check last passed on Claude Code ${record.claudeCode}; this machine has ${now}. Run: cc-smart-dev-kit doctor --live`,
+    };
+  }
+  return {
+    ok: true,
+    info: true,
+    text: `the live check passed on Claude Code ${record.claudeCode} (plugin ${record.plugin})`,
+  };
+}
+
+/** The memory files Claude Code loads from a project folder. */
+const PROJECT_MEMORY_FILES = ["CLAUDE.md", join(".claude", "CLAUDE.md"), "CLAUDE.local.md"];
+
+/**
+ * The `@~/…` or `@/…` imports of a CLAUDE.md that point into a cc-smart-dev-kit instructions copy
+ * (a path with `/cc-smart-dev-kit/instructions/` in it), outside code. Claude Code does not read an
+ * import inside a code span or a fenced block, so neither does this.
+ */
+export function ccSmartDevKitImports(text: string): string[] {
+  const found: string[] = [];
+  let inFence = false;
+  for (const line of text.split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const outsideCode = line.replace(/`[^`]*`/g, " ");
+    for (const match of outsideCode.matchAll(/(?:^|\s)@((?:~\/|\/)\S+)/g)) {
+      const path = match[1] ?? "";
+      if (path.includes("/cc-smart-dev-kit/instructions/")) found.push(path);
+    }
+  }
+  return found;
+}
+
+/**
+ * The project's CLAUDE.md imports a cc-smart-dev-kit file that is missing: it loads nothing, with
+ * no error from Claude Code. Claude Code reads the memory files of the current folder and
+ * every folder above it, so doctor looks in the same places. No line when none of them
+ * imports a cc-smart-dev-kit file. A missing file is `·` information when the person chose
+ * `--no-instructions` (the project wants them, this machine left them out), else ✗.
+ */
+function checkProjectImports(paths: CliPaths, cwd: string): Check | null {
+  const short = (path: string) => tildify(path, paths.home);
+  const imports: { from: string; path: string; file: string }[] = [];
+  for (let dir = cwd; ; dir = dirname(dir)) {
+    for (const name of PROJECT_MEMORY_FILES) {
+      const from = join(dir, name);
+      // The config folder's own CLAUDE.md is checked by the instructions check.
+      if (from === join(paths.claudeConfigDir, "CLAUDE.md") || !existsSync(from)) continue;
+      let text: string;
+      try {
+        text = readFileSync(from, "utf8");
+      } catch {
+        continue;
+      }
+      for (const path of ccSmartDevKitImports(text)) {
+        const file = path.startsWith("~/") ? join(paths.home, path.slice(2)) : path;
+        imports.push({ from, path, file });
+      }
+    }
+    if (dirname(dir) === dir) break;
+  }
+  if (imports.length === 0) return null;
+  const missing = imports.filter((entry) => !existsSync(entry.file));
+  if (missing.length === 0) {
+    const names = imports.map((entry) => entry.path).join(", ");
+    return { ok: true, text: `the project's CLAUDE.md imports ${names}, and it is there` };
+  }
+  const list = missing.map((entry) => `${short(entry.from)} imports ${entry.path}`).join("; ");
+  if (instructionsOptedOut(paths.stateDir)) {
+    return {
+      ok: true,
+      info: true,
+      text: `${list}, which is missing: it loads nothing while the instructions are left out here. To add them: cc-smart-dev-kit setup --instructions`,
+    };
+  }
+  return {
+    ok: false,
+    text: `${list}, which is missing: it loads nothing. Run: cc-smart-dev-kit setup`,
+  };
+}
+
+/** Where doctor finds the plugin's instructions, and the folder it was started in. */
+export interface DoctorLocal {
+  /** The plugin's `instructions` folder, beside `dist/`. */
+  instructionsSource: string;
+  /** The current folder: its CLAUDE.md files (and those above it) are checked for imports. */
+  cwd: string;
+}
+
+/** A claude-mem whose vector search may not start: a warning, never a failure. */
+function claudeMemCheck(paths: CliPaths): Check | null {
+  const advice = claudeMemAdvice(paths);
+  return advice === null ? null : { ok: true, warn: true, text: advice };
+}
+
+/**
+ * OmniRoute: one `·` line, and only when a newer release has been out for three days. Never
+ * a failure — when to update is the person's choice, and the update restarts the model path.
+ * Nothing when it is not installed, or when the registry cannot be read.
+ */
+async function omnirouteCheck(paths: CliPaths, env: Env, gateway: DoctorGateway): Promise<Check[]> {
+  const line = await omnirouteDoctorLine({
+    confirm: null,
+    env,
+    health: (url, init) => fetch(url, init),
+    now: () => Date.now(),
+    paths,
+    registry: gateway.fetch ?? ((url, init) => fetch(url, init)),
+    runner: gateway.runner,
+    say: () => undefined,
+    sleep: (ms) => Bun.sleep(ms),
+    // A test passes its own folders: the host's `/usr/lib/node_modules` may hold an OmniRoute
+    // that has nothing to do with the test, which would then read the real registry.
+    systemFolders: gateway.systemFolders,
+    systemd: gateway.systemd,
+    which: gateway.machine.which,
+  });
+  return line === null ? [] : [{ info: true, ok: true, text: line.text }];
+}
+
+/**
+ * tmux: an alert from a pane reaches the terminal the person is looking at only with tmux
+ * 3.3 or newer and its passthrough allowed (`all`, so a window the person is not looking at
+ * works too), which is why `cc-smart-dev-kit setup` writes one managed line into `~/.tmux.conf` and
+ * `restore` takes it out. Both lines are information (`·`), never failures: tmux is
+ * optional, and so is this.
+ */
+function checkTmux(paths: CliPaths, env: Env, machine: Machine): Check[] {
+  if (machine.which("tmux") === null) return [];
+  const checks: Check[] = [];
+  const conf = tildify(paths.tmuxConfFile, paths.home);
+  if (!tmuxLineIn(paths.tmuxConfFile)) {
+    checks.push({
+      info: true,
+      ok: true,
+      text: `${conf} has no "${TMUX_LINE}" line, so tmux drops an alert from a pane. To add it: ${COMMAND} setup`,
+    });
+  }
+  if ((env.TMUX ?? "") !== "" && tmuxPassthroughOf(machine.run) !== "all") {
+    checks.push({
+      info: true,
+      ok: true,
+      text: `tmux: alerts are not passed through (its allow-passthrough is not all). To apply it now: ${TMUX_NOW_COMMAND} (a restart works too); it needs tmux ${TMUX_MIN_VERSION} or newer`,
+    });
+  }
+  return checks;
+}
+
 /** What the gateway checks need: the plugin's router bundle, a command runner, systemd or not. */
 export interface DoctorGateway {
   bundle: string;
   runner: Runner;
   systemd: boolean;
+  /** Asks the system about Warp (its package manager); a test passes fakes. */
+  machine: Machine;
+  /**
+   * Asks the npm registry whether a newer OmniRoute is out. The real `fetch` by default; a
+   * test passes a fake, so it never reaches the network.
+   */
+  fetch?: RegistryFetch;
+  /**
+   * The folders outside the home a global OmniRoute may sit in. The machine's own by default
+   * (`SYSTEM_PACKAGE_FOLDERS`); a test passes none, so a real `/usr/lib/node_modules/omniroute`
+   * cannot make its run read the real registry or report a machine that is not its own.
+   */
+  systemFolders?: readonly string[] | undefined;
+}
+
+/** The Bun running doctor (through the launcher, the bun baked into it). */
+export interface DoctorBun {
+  /** Its file: `process.execPath`. */
+  path: string;
+  /** `Bun.version`. */
+  version: string;
+}
+
+/** Is the Bun running doctor new enough? `MIN_BUN` says why it matters. */
+function checkBun(bun: DoctorBun, paths: CliPaths): Check {
+  const where = tildify(bun.path, paths.home);
+  const tooOld = bunTooOld(bun.version, where);
+  return tooOld === null
+    ? { ok: true, text: `Bun ${bun.version} at ${where} (cc-smart-dev-kit needs ≥ ${MIN_BUN})` }
+    : { ok: false, text: `${tooOld} Upgrade this Bun, then run: ${COMMAND} doctor` };
+}
+
+/** The project `doctor` checks: the folder it runs in, and the plugin's hooks.json. */
+export interface DoctorProject {
+  cwd: string;
+  pluginHooksFile: string;
+}
+
+export interface DoctorOptions {
+  /** The Bun running doctor (through the launcher, the bun baked into it). */
+  bun: DoctorBun;
+  gateway: DoctorGateway;
+  /** Where the plugin's instructions are, and the folder doctor was started in. */
+  local: DoctorLocal;
+  /** Check the MCP servers setup registers (`mcp/doctor.ts`); null or left out: no MCP checks. */
+  mcp?: McpDoctorDeps | null;
+  /** Check the project of this folder (`project-checks.ts`); null: no project checks. */
+  project: DoctorProject | null;
+  /** Also run the live check (`doctor --live`), which starts real Claude Code sessions. */
+  live: LiveDeps | null;
 }
 
 /**
- * Prints one ✓ or ✗ line per check, and `·` for information (the gateway, when it was never
- * set up, is optional). Exit code 1 when any check fails.
+ * Every check, in order, and nothing printed. `runDoctor` prints them; the portal's Machine
+ * page shows the same list, so the two can never disagree about a machine.
+ *
+ * On a Bun older than `MIN_BUN` the gateway checks are skipped: they send the backend key,
+ * and that Bun would send it through a proxy from the environment.
+ */
+export async function doctorChecks(
+  paths: CliPaths,
+  env: Env,
+  { bun, gateway, local, mcp, project, live }: DoctorOptions,
+): Promise<Check[]> {
+  const settings = readSettings(paths.settingsFile);
+  const runtime = checkBun(bun, paths);
+  const mcpDeps = mcp ?? null;
+  const skipped: Check = {
+    ok: true,
+    info: true,
+    text: "gateway: not checked on this Bun (its checks send the backend key)",
+  };
+  const checks = [
+    runtime,
+    checkPlugin(paths),
+    checkInstalledVersion(paths),
+    checkLauncher(paths),
+    checkInstructions(paths, local.instructionsSource),
+    checkProjectImports(paths, local.cwd),
+    await checkMarketplaceAccess(paths, env),
+    checkAutoUpdate(settings, paths),
+    checkUpdatesNotOff(settings, env, paths),
+    ...checkSelfUpdate(paths),
+    checkNameClash(settings),
+    checkOldPlugin(settings, paths),
+    ...companionChecks(paths),
+    claudeMemCheck(paths),
+    ...(mcpDeps === null ? [] : mcpChecks(paths, mcpDeps, env)),
+    warpCheck(gateway.machine, paths),
+    ...checkTmux(paths, env, gateway.machine),
+    ...(project === null ? [] : projectChecks(project.cwd, env, paths, project.pluginHooksFile)),
+    ...(runtime.ok ? await gatewayChecks({ paths, ...gateway }) : [skipped]),
+    ...(await omnirouteCheck(paths, env, gateway)),
+    live === null ? checkLiveRecord(paths) : null,
+    ...(live === null ? [] : runLiveCheck(paths, env, live)),
+  ].filter((check): check is Check => check !== null);
+  return checks;
+}
+
+/** One check's line, as `doctor` prints it and the portal's page shows its mark. */
+export function checkLine(check: Check): string {
+  return `${check.warn === true ? "!" : check.info === true ? "·" : check.ok ? "✓" : "✗"} ${check.text}`;
+}
+
+/**
+ * Prints one ✓ or ✗ line per check, `·` for information (the gateway, when it was never
+ * set up, is optional) and `!` for a warning. Exit code 1 when any check fails.
  */
 export async function runDoctor(
   paths: CliPaths,
   env: Env,
-  gateway: DoctorGateway,
+  options: DoctorOptions,
 ): Promise<number> {
-  const settings = readSettings(paths.settingsFile);
-  const checks = [
-    checkPlugin(paths),
-    checkInstalledVersion(paths),
-    checkLauncher(paths),
-    await checkMarketplaceAccess(paths, env),
-    checkAutoUpdate(settings, paths),
-    checkUpdatesNotOff(settings, env, paths),
-    checkNameClash(settings),
-    checkOldPlugin(settings, paths),
-    ...(await gatewayChecks({ paths, ...gateway })),
-  ].filter((check): check is Check => check !== null);
-  for (const check of checks) {
-    console.log(`${check.info ? "·" : check.ok ? "✓" : "✗"} ${check.text}`);
-  }
+  const checks = await doctorChecks(paths, env, options);
+  for (const check of checks) console.log(checkLine(check));
   return checks.every((check) => check.ok) ? 0 : 1;
 }
