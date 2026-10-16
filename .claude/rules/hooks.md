@@ -143,7 +143,8 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
 ## A machine-wide hook
 
 Some hooks answer about the machine, not a project: `agent-guard` (the model a launch runs
-on) and `notify` (the alerts). `playwright-output` is machine-wide too — it puts a file the
+on), `fable-session` (the model the session itself runs on) and `notify` (the alerts).
+`playwright-output` is machine-wide too — it puts a file the
 CALLER names into the browser's own output folder (only while the live `playwright`
 registration is the one setup recorded; a server of the person's own is left alone entirely),
 and the browser is the machine's —
@@ -298,7 +299,8 @@ lock. It never restarts a service, never changes a permission, and never asks a 
 Those happen only in a manual `cc-smart-dev-kit setup` run that shows the change first. A start
 must stay quick: no fetch.
 
-The plugin's SessionStart hooks are the worktree-leftovers note, the session name, and the
+The plugin's SessionStart hooks are the worktree-leftovers note, the session name, the
+Fable-session note (`fable-session`, machine-wide) and the
 background self-update (`src/update/`, the owner's decision of 2026-10-15). `update-check`
 also brings the managed instructions copy up to this version when it is behind
 (`refreshInstructionsAtSessionStart`): the copy only, under the state lock, never the

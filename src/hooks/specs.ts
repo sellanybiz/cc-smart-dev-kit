@@ -12,6 +12,7 @@
  * | serena-root | PreToolUse, PostToolUse, PostToolUseFailure (activate_project), SessionStart | silent; the guard asks without a record |
  * | message-guard | PreToolUse (SendMessage) | asking before every message |
  * | agent-guard | PreToolUse (Agent, Task, Workflow) | machine-wide: it judges the same way without cc-smart-dev-kit.json (`agent-guard.ts`) |
+ * | fable-session | SessionStart, UserPromptSubmit | machine-wide: it says the same line without cc-smart-dev-kit.json (`fable-session.ts`) |
  * | merge-guard | PreToolUse (Bash, PowerShell) | asking before every command that merges a pull request (`merge-guard.ts`) |
  * | job-route | PreToolUse (Bash) | asking about a heavy command, classified with the default kinds |
  * | after-merge | PostToolUse, PostToolUseFailure (Bash, PowerShell) | one line after a merge |
@@ -46,6 +47,7 @@ import type { CcSmartDevKitConfig } from "../project/config";
 import { workflowDefaults } from "../workflow/schema";
 import { afterMerge, mergesPullRequest, requestsMerge } from "./after-merge";
 import { agentGuard, guardFacts } from "./agent-guard";
+import { fableSession } from "./fable-session";
 import { isInside } from "./git";
 import { DEFAULT_PROTECTED_BRANCHES, guardQuestions, runsGit } from "./git-guard";
 import {
@@ -305,6 +307,25 @@ export const agentGuardHook: HookSpec = {
 };
 
 /**
+ * The Fable-session note: SessionStart and UserPromptSubmit. **Machine-wide** like
+ * `agent-guard`: it runs with or without cc-smart-dev-kit.json, and its answer never depends on
+ * the project's file — it is about the model this session runs on (§ `fable-session.ts`). Its
+ * SessionStart entry carries **no matcher**, so every source is judged, a `fork` included, as
+ * `update-check`'s does. It says one line to the person, once in a session, and nothing to
+ * Claude: never an error and never a block, so a project that runs its own copy silences it
+ * through `ownHooks` like any other plugin hook.
+ */
+export const fableSessionHook: HookSpec = {
+  name: "fable-session",
+  events: ["SessionStart", "UserPromptSubmit"],
+  wiring: "plugin",
+  onConfigProblem: (_message, input, _event, _checkout, context) =>
+    fableSession(input, context.env, context.paths),
+  outsideGit: (input, _event, _why, context) => fableSession(input, context.env, context.paths),
+  run: ({ input, env, paths }) => fableSession(input, env, paths),
+};
+
+/**
  * The job queue's door: PreToolUse on Bash, for a project that turned it on
  * (`"jobs": { "route": true }`). A heavy command is rewritten to run through
  * `cc-smart-dev-kit job run` (or refused with that command line, `job-route.ts`). Off by default,
@@ -343,6 +364,7 @@ export const HOOKS: readonly HookSpec[] = [
   serenaRootHook,
   messageGuardHook,
   agentGuardHook,
+  fableSessionHook,
   jobRouteHook,
   afterMergeHook,
   reviewRecordHook,
@@ -383,12 +405,17 @@ export const USER_HOOKS: readonly string[] = [
 
 /**
  * Every hook that answers about the **machine**, not a project: the `USER_HOOKS` bundles
- * (no project file is needed for them to act) and `agent-guard`, a plugin hook whose answer
- * does not depend on the project's file either. `doctor`'s project checks never warn about a
- * project hook that runs beside one of these: it is the person's own business, not a second
+ * (no project file is needed for them to act) and the plugin hooks whose answer does not
+ * depend on the project's file either — `agent-guard` (the model a launch runs on) and
+ * `fable-session` (the model this session runs on). `doctor`'s project checks never warn about
+ * a project hook that runs beside one of these: it is the person's own business, not a second
  * copy of a project piece, and `USER_HOOKS` cannot be listed in `ownHooks` in any case.
  */
-export const MACHINE_WIDE_HOOKS: readonly string[] = [...USER_HOOKS, "agent-guard"];
+export const MACHINE_WIDE_HOOKS: readonly string[] = [
+  ...USER_HOOKS,
+  "agent-guard",
+  "fable-session",
+];
 
 /** The hooks a project wires itself, as `cc-smart-dev-kit hook <name>`: the worktree engine. */
 export const PROJECT_HOOKS: readonly HookSpec[] = [

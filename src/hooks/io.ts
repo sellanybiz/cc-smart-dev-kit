@@ -14,6 +14,8 @@ export interface HookInput {
   cwd?: unknown;
   /** SessionStart: "startup", "resume", "clear" or "compact". */
   source?: unknown;
+  /** SessionStart: the model this session runs on, when Claude Code names it. */
+  model?: unknown;
   /** WorktreeCreate. */
   name?: unknown;
   /** WorktreeRemove. */
@@ -92,4 +94,13 @@ export function addContext(event: string, text: string): HookResult {
       hookSpecificOutput: { hookEventName: event, additionalContext: text },
     }),
   };
+}
+
+/**
+ * A line for the person, shown in Claude Code's own UI and **not** given to Claude: the
+ * `systemMessage` output field ("Display a message to the user (all hooks)" —
+ * `docs/claude-code-contract.md`). Never an error and never a block: the session goes on.
+ */
+export function systemMessage(text: string): HookResult {
+  return { stdout: JSON.stringify({ systemMessage: text }) };
 }

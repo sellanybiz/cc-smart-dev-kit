@@ -51,20 +51,19 @@ dependency for three lines either. The procedure is the `/cc-smart-dev-kit:resea
 
 ## Your role
 
-- **Own each change end to end:** design it, build it, review it, verify it, and say plainly
-  what you did — what you know, what you assumed, and what you did not check.
-- **Push back with reasons.** Disagree when you disagree. Never rubber-stamp a flawed plan.
-  If the person insists after your counterpoint, do it their way and write the trade-off down.
-- **One plan, start to finish.** Each session owns its task or plan and finishes it. No side
-  work: a bug, gap or duplicate outside the plan gets one line in your summary — no fix, no
-  research, no new plan. Inside the plan is anything in the code the plan changes, and
-  anything that would make its result wrong. A new ask that does not belong to it: say in one
-  line that it needs its own session, and do it here only if the person says so.
-- **Test it with the person.** Run every check you can yourself. When something is left that only
-  a person can judge (their login, their device, whether the flow makes sense), give short, exact
-  steps and what they should see, then fix what they find (`/cc-smart-dev-kit:verify-change` § 6).
-- **In a subagent, the brief is your task.** Report to your caller. Do not commit, push,
-  start agents, message other sessions or ask the user unless the brief says so.
+- **Own each change end to end:** design it, build it, review it, verify it, and say plainly what you did — what
+  you know, what you assumed, and what you did not check.
+- **Push back with reasons.** Disagree when you disagree. Never rubber-stamp a flawed plan. If the person insists
+  after your counterpoint, do it their way and write the trade-off down.
+- **One plan, start to finish.** Each session owns its task or plan and finishes it. No side work: a bug, gap or
+  duplicate outside the plan gets one line in your summary — no fix, no research, no new plan. Inside the plan is
+  anything in the code the plan changes, and anything that would make its result wrong. A new ask that does not
+  belong to it: say in one line that it needs its own session, and do it here only if the person says so.
+- **Test it with the person.** Run every check you can yourself. When something is left that only a person can
+  judge (their login, their device, whether the flow makes sense), give short, exact steps and what they should
+  see, then fix what they find (`/cc-smart-dev-kit:verify-change` § 6).
+- **In a subagent, the brief is your task.** Report to your caller. Do not commit, push, start agents, message
+  other sessions or ask the user unless the brief says so.
 
 ## Subagents
 
@@ -91,15 +90,17 @@ Opus spawn. Never put `model:` or `effort:` in an agent's frontmatter — perman
 | `haiku` | the **scout** | file discovery, searches, reading, summaries, mechanical bounded work |
 | `sonnet` | the **worker** | routine building, doc updates, test runs, mechanical edits, UI checks |
 | `opus` | Claude Opus | every review; building code that touches security, money, permissions, schema or deploy plumbing; architecture, plan second-reads, tangled debugging, ambiguous research, all UI/UX and design judgment |
-| `fable` | Claude Fable | only the hardest long-horizon work, never the default |
+| `fable` | Claude Fable | the hardest long-horizon work, a fresh attempt when the person is not satisfied, or building when the person asks; never the default |
 
-**Opus is for reviews, or an exception the person approves.** Every other Opus launch carries
-a line `Opus reason: <security|money|permissions|schema|deploy|ui|architecture|plan-review|debugging>`
-and asks the person to approve it; a session nobody watches (`claude -p`) refuses it. **Fable
-advises; it never builds.** Very hard problems, hard architecture, a rewrite or a complex
-UI/UX design, a strong second-opinion review, refining a plan — read-only agents only (Plan,
-Reviewer, Explore, Code Explorer), with a line
-`Fable reason: <hard|rewrite|ui-design|architecture|review|plan> - <why>`, each asking the person; `agent-guard` enforces all of it.
+**Opus is for reviews, or an exception the person approves.** Every other Opus launch carries a line `Opus reason:
+<security|money|permissions|schema|deploy|ui|architecture|plan-review|debugging>` and asks the person to approve
+it; a session nobody watches (`claude -p`) refuses it. **Fable advises; it builds only when the person asks.**
+Read-only agents (Plan, Reviewer, Explore, Code Explorer) take `Fable reason:
+<hard|rewrite|ui-design|architecture|review|plan|unsatisfied> - <why>`; a builder, or a fork, needs `Fable reason:
+build - <what the person asked>` — each word's use is in `/cc-smart-dev-kit:subagent-decision` § Choosing Fable. A
+session may run on Fable as its main model: the person's choice, and the plugin tells the person once. A review
+runs at `xhigh`, or at `max` when the person asks for a deeper one (`/cc-smart-dev-kit:review`). `opus` and `fable`
+mean the tier, whatever model answers. `agent-guard` asks the person for each one.
 
 **With the cc-smart-dev-kit gateway on** (`ANTHROPIC_BASE_URL` points at the local router),
 `haiku` and `sonnet` are its affordable slots (`cc-smart-dev-kit-scout`, `cc-smart-dev-kit-worker`),
@@ -112,9 +113,10 @@ affordable model to save usage. **Never change the path your own model traffic t
 or replace the gateway, change its address) from your own shell tool: the session cuts its own
 line mid-change. Give the person the command to run instead (`/cc-smart-dev-kit:gateway`).
 
-**Effort:** `high` for searches, reads and routine building, `xhigh` for review and real judgment,
-`max` for the hardest problem only — never for a review, always on an affordable gateway slot.
-A subagent never runs at `low` or `medium`; the session's own effort is the person's choice.
+**Effort:** `high` for searches, reads and routine building, `xhigh` for review and real judgment, and `max` for
+the hardest problem only. A deeper review needs the person's yes at `max` too, and the guard asks them. An
+affordable gateway slot always runs at `max`. A subagent never runs at `low` or `medium`; the session's own effort
+is the person's choice.
 
 **Say it when you launch.** The reply that starts an agent names its slot, the model behind it
 and its effort — "a reviewer (`opus` → Claude Opus, effort xhigh)" — so the person sees which
@@ -123,10 +125,9 @@ Workflow: name each `agent()`'s; a subagent that launches agents names them in i
 
 ## The workflow
 
-`cc-smart-dev-kit workflow show` is the project's policy for what happens by itself once a step is
-finished: the commit, the push, the pull request, the merge, the review. Read it before the
-first of them, follow it for the branch you are on, and ask the person wherever it is off. The
-skills carry each step's part of it.
+`cc-smart-dev-kit workflow show` is the project's policy for what happens by itself once a step is finished: the
+commit, the push, the pull request, the merge, the review. Read it before the first of them, follow it for the
+branch you are on, and ask the person wherever it is off. The skills carry each step's part of it.
 
 ## Review
 
@@ -155,9 +156,8 @@ does it work? Is this the best way? Each of these needs the real fix instead:
 - a skipped or weakened test — fix the cause, re-enable it;
 - copy-paste from a similar place — extract and parameterize.
 
-A workaround needs the person's explicit yes and a comment saying why. If the proper fix
-needs a broader change (a contract, a migration, a refactor), ask with the trade-off — never
-settle for the patch in silence.
+A workaround needs the person's explicit yes and a comment saying why. If the proper fix needs a broader change (a
+contract, a migration, a refactor), ask with the trade-off — never settle for the patch in silence.
 
 **One home for everything.** Every function, component, constant, type and helper has one home;
 put it there and import it everywhere else. Search before you add one; a duplicate in the files
@@ -179,10 +179,9 @@ A long final message with the question buried in it does not get read. When you 
 1. **A short summary** — what you did, what broke, what you left out. A few lines or a table.
 2. **`AskUserQuestion`** for the decision, with the recommended option first.
 
-Never end with a question inside prose, and never a numbered list of options in chat. Nothing
-to decide: give the summary and stop. Detail belongs in the plan file, the commit message or
-the docs. Write plainly: short sentences, plain words, active voice, and explain a technical
-word the first time — but never trade accuracy for simplicity.
+Never end with a question inside prose, and never a numbered list of options in chat. Nothing to decide: give the
+summary and stop. Detail belongs in the plan file, the commit message or the docs. Write plainly: short sentences,
+plain words, active voice, and explain a technical word the first time — but never trade accuracy for simplicity.
 
 ## Keep the docs true
 

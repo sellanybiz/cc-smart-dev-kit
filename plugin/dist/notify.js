@@ -116,7 +116,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.4.0",
+  version: "0.4.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6213,6 +6213,7 @@ var PLUGIN_HOOK_NAMES = [
   "serena-root",
   "message-guard",
   "agent-guard",
+  "fable-session",
   "job-route",
   "after-merge",
   "review-record",

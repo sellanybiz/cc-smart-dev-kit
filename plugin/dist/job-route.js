@@ -5924,7 +5924,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.4.0",
+  version: "0.4.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6145,6 +6145,7 @@ var PLUGIN_HOOK_NAMES = [
   "serena-root",
   "message-guard",
   "agent-guard",
+  "fable-session",
   "job-route",
   "after-merge",
   "review-record",
@@ -6397,6 +6398,9 @@ function addContext(event, text) {
       hookSpecificOutput: { hookEventName: event, additionalContext: text }
     })
   };
+}
+function systemMessage(text) {
+  return { stdout: JSON.stringify({ systemMessage: text }) };
 }
 
 // src/hooks/run.ts
@@ -8670,13 +8674,16 @@ var OPUS_REASONS = [
   "plan-review",
   "debugging"
 ];
+var FABLE_BUILD_REASON = "build";
+var BUILDER_WORDS = [FABLE_BUILD_REASON];
 var FABLE_REASONS = [
   "hard",
   "rewrite",
   "ui-design",
   "architecture",
   "review",
-  "plan"
+  "plan",
+  "unsatisfied"
 ];
 var READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore", "Code Explorer"];
 var REVIEW_AGENTS = ["Reviewer"];
@@ -8694,6 +8701,14 @@ function agentList(from, env, name) {
   const listed = (env[name] ?? "").split(",").map((one) => one.trim()).filter((one) => one !== "");
   return new Set([...from, ...listed].map(agentKey));
 }
+function premiumTier(family) {
+  return family === "fable" || family === "opus" ? family : null;
+}
+function tierOfReading(id, family) {
+  if (family === null)
+    return premiumTier(familyOfModel(id)) ?? "opus";
+  return premiumTier(family);
+}
 function familyEnv(family) {
   return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
 }
@@ -8709,38 +8724,63 @@ function modelSlotFirstTarget(config, family) {
   }
   return null;
 }
+function tierOfMappedId(model, config, env) {
+  for (const premium of ["fable", "opus"]) {
+    const override = stringField(env[familyEnv(premium)]);
+    if (override !== null && withoutContextSuffix(override.trim()) === model)
+      return premium;
+    if (modelSlotFirstTarget(config, premium) === model)
+      return premium;
+  }
+  return null;
+}
 function resolveName(text, config) {
   if (text.startsWith("claude-")) {
     const slot = config?.modelSlots?.[text];
     const first = slot === undefined ? undefined : config?.slots[slot]?.[0];
     const shown = first ?? text;
-    return { claude: true, family: familyOfModel(shown), model: shown };
+    const family = familyOfModel(shown);
+    return { claude: true, family, model: shown, tier: tierOfReading(text, family) };
   }
   if (isSlotKey(text)) {
     const first = config?.slots[text]?.[0];
-    if (first === undefined)
-      return { claude: false, family: null, model: text };
-    return resolveTarget(first);
+    const model = first === undefined ? { claude: false, family: null, model: text, tier: null } : resolveTarget(first);
+    const slotFamily = MODEL_SLOTS[text];
+    return slotFamily === "fable" || slotFamily === "opus" ? { ...model, family: slotFamily, tier: slotFamily } : model;
   }
   const parsed = parseTarget(text);
   if ("target" in parsed && parsed.target.kind === "backend") {
-    return { claude: false, family: null, model: text };
+    return { claude: false, family: null, model: text, tier: null };
   }
-  return { claude: true, family: null, model: text };
+  return { claude: true, family: null, model: text, tier: "opus" };
 }
 function resolveTarget(text) {
   const parsed = parseTarget(text);
-  return "target" in parsed && parsed.target.kind === "anthropic" ? { claude: true, family: familyOfModel(parsed.target.model), model: parsed.target.model } : { claude: false, family: null, model: text };
+  if (!("target" in parsed) || parsed.target.kind !== "anthropic") {
+    return { claude: false, family: null, model: text, tier: null };
+  }
+  const family = familyOfModel(parsed.target.model);
+  return {
+    claude: true,
+    family,
+    model: parsed.target.model,
+    tier: tierOfReading(parsed.target.model, family)
+  };
 }
 function resolveLaunchModel(name, config, env) {
   const text = withoutContextSuffix(name.trim());
   const family = CLAUDE_FAMILIES.find((one) => one === text.toLowerCase());
-  if (family === undefined)
-    return resolveName(text, config);
+  if (family === undefined) {
+    const mapped = tierOfMappedId(text, config, env);
+    const resolved = resolveName(text, config);
+    return mapped === null || resolved.tier !== null ? resolved : { ...resolved, tier: mapped };
+  }
+  const tier = premiumTier(family);
   const override = stringField(env[familyEnv(family)]);
-  if (override !== null)
-    return resolveName(withoutContextSuffix(override.trim()), config);
-  return { claude: true, family, model: modelSlotFirstTarget(config, family) ?? text };
+  if (override !== null) {
+    return { ...resolveName(withoutContextSuffix(override.trim()), config), family, tier };
+  }
+  return { claude: true, family, model: modelSlotFirstTarget(config, family) ?? text, tier };
 }
 function readLaunch(input) {
   const tool = stringField(input.tool_name);
@@ -9060,7 +9100,7 @@ function judgeWorkflow(script, ctx, env) {
     if (launch.model === null) {
       return { launch, verdict: deny(verdict.real, NO_WORKFLOW_MODEL) };
     }
-    if (launch.prompt === null && verdict.decision !== "allow") {
+    if (launch.prompt === null && (verdict.decision === "deny" || verdict.restsOnPrompt === true)) {
       return {
         launch,
         verdict: {
@@ -9117,30 +9157,48 @@ function effortDenial(effort) {
   ].join(`
 `);
 }
-function opusDenial() {
+function namedModel(real) {
+  if (real.claude)
+    return real.tier === "fable" ? "Claude Fable" : "Claude Opus";
+  return `\`${real.tier ?? real.model}\` (answered by ${real.model})`;
+}
+function atEffort(effort) {
+  return effort === null ? "at the session's own effort" : `at effort \`${effort.toLowerCase()}\``;
+}
+function opusDenial(real) {
   return [
-    "This launch would run on Claude Opus.",
+    `This launch would run on ${namedModel(real)}.`,
     "Opus is for reviews and the owner's listed exceptions only: launch it as a review agent (`subagent_type` Reviewer, or one ending `:reviewer`), or put a line in the prompt saying why \u2014 the person is then asked to approve each one:",
     `Opus reason: <${OPUS_REASONS.join("|")}>`
   ].join(`
 `);
 }
-function fableDenial() {
+function fableDenial(real) {
   return [
-    "This launch would run on Claude Fable.",
-    "Fable advises the main session; it never builds. Use a read-only agent type (Plan, Reviewer, Explore, Code Explorer), and put a line in the prompt saying why:",
-    `Fable reason: <${FABLE_REASONS.join("|")}> - <why>`
+    `This launch would run on ${namedModel(real)}.`,
+    "Fable advises; it builds only when the person asks. Use a read-only agent type (Plan, Reviewer, Explore, Code Explorer) and put a line in the prompt saying why:",
+    `Fable reason: <${FABLE_REASONS.join("|")}> - <why>`,
+    `An agent that can change files needs \`Fable reason: ${FABLE_BUILD_REASON} - <what the person asked>\` instead.`
+  ].join(`
+`);
+}
+function fableBuildDenial(real, type) {
+  return [
+    `This launch would run on ${namedModel(real)}, and it asks for \`${type || "(no type)"}\`, which can change files.`,
+    "Fable builds only when the person asks: put what they asked for in the prompt as this line, and they approve this one launch:",
+    `Fable reason: ${FABLE_BUILD_REASON} - <what the person asked>`
   ].join(`
 `);
 }
 function judgeLaunch(launch, ctx, env) {
+  const named = launch.model;
   if (!launch.fork) {
-    if (launch.model === null)
+    if (named === null)
       return deny(null, NO_MODEL);
     if (launch.effort === null)
       return deny(null, NO_EFFORT);
   }
-  const real = launch.model !== null ? resolveLaunchModel(launch.model, ctx.config, env) : forkModel(ctx.sessionModel, ctx.config, env);
+  const real = launch.fork ? forkModel(ctx.sessionModel, ctx.config, env) : resolveLaunchModel(named ?? "", ctx.config, env);
   if (launch.effort !== null && !effortAllowed(launch.effort)) {
     return deny(real, effortDenial(launch.effort));
   }
@@ -9148,6 +9206,91 @@ function judgeLaunch(launch, ctx, env) {
   const review = ctx.reviewAgents === undefined ? agentList(REVIEW_AGENTS, env, REVIEW_AGENTS_ENV) : new Set(ctx.reviewAgents.map(agentKey));
   const readOnly = ctx.readOnlyAgents === undefined ? agentList(READ_ONLY_AGENTS, env, READ_ONLY_AGENTS_ENV) : new Set(ctx.readOnlyAgents.map(agentKey));
   const isReview = review.has(agentKey(type));
+  const builder = !readOnly.has(agentKey(type));
+  if (real.tier === "fable") {
+    const said = reasonLine(launch.prompt, "Fable reason");
+    const word = reasonWord(said, builder ? BUILDER_WORDS : FABLE_REASONS);
+    if (word === null)
+      return deny(real, builder ? fableBuildDenial(real, type) : fableDenial(real));
+    if (nobodyWatches(env)) {
+      return deny(real, [
+        "A Fable launch is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
+        "Run it in an interactive session."
+      ].join(`
+`));
+    }
+    return {
+      decision: "ask",
+      real,
+      reason: builder ? [
+        `${namedModel(real)} launch: \`${type || "(no type)"}\` will build here, ${atEffort(launch.effort)}, at the person's request, with the reason line \`Fable reason: ${said}\`.`,
+        "Fable builds only when the person asks, and this launch spends the person's own plan usage. Approve only if you asked for it."
+      ].join(`
+`) : [
+        `${namedModel(real)} launch: a read-only agent (\`${type}\`) ${atEffort(launch.effort)}, with the reason line \`Fable reason: ${said}\`.`,
+        "Fable advises; it builds only when the person asks. Approve if this is the advice, the review or the fresh attempt you want."
+      ].join(`
+`),
+      why: `fable:${word}`,
+      restsOnPrompt: true
+    };
+  }
+  if (real.tier === "opus") {
+    if (isReview) {
+      if (real.family !== "opus") {
+        if (nobodyWatches(env)) {
+          return deny(real, "A review whose model the guard cannot read as Claude Opus is approved by the person, one by one, and this session has nobody to answer (`claude -p`).");
+        }
+        return {
+          decision: "ask",
+          real,
+          reason: [
+            `A review on \`${real.model}\` ${atEffort(launch.effort)}: the guard cannot read the model behind it as Claude Opus.`,
+            "Approve only if this review really runs on the opus tier."
+          ].join(`
+`),
+          why: "opus:review-unreadable"
+        };
+      }
+      if (launch.effort?.toLowerCase() !== "max")
+        return allow(real, "review");
+      if (nobodyWatches(env)) {
+        return deny(real, [
+          "A review at effort `max` is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
+          "Run it at `xhigh`, or in an interactive session."
+        ].join(`
+`));
+      }
+      return {
+        decision: "ask",
+        real,
+        reason: `${namedModel(real)} review at effort \`max\`: reviews run at \`xhigh\` unless you asked for a deeper one. Approve if you did.`,
+        why: "opus:review-max"
+      };
+    }
+    const said = reasonLine(launch.prompt, "Opus reason");
+    const word = reasonWord(said, OPUS_REASONS);
+    if (word === null)
+      return deny(real, opusDenial(real));
+    if (nobodyWatches(env)) {
+      return deny(real, [
+        "An Opus launch other than a review is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
+        "Run it in an interactive session, or launch it as a review agent."
+      ].join(`
+`));
+    }
+    return {
+      decision: "ask",
+      real,
+      reason: [
+        `${namedModel(real)} launch: not a review, ${atEffort(launch.effort)}, with the reason line \`Opus reason: ${said}\`.`,
+        "Opus is for reviews and the listed exceptions. Approve only if this launch is one of them."
+      ].join(`
+`),
+      why: `opus:${word}`,
+      restsOnPrompt: true
+    };
+  }
   if (!real.claude) {
     if (ctx.gatewayOn && launch.effort?.toLowerCase() !== "max") {
       return deny(real, [
@@ -9158,89 +9301,40 @@ function judgeLaunch(launch, ctx, env) {
     }
     return allow(real, "");
   }
-  if (real.family === "haiku" || real.family === "sonnet")
-    return allow(real, "");
-  if (real.family === "fable") {
-    if (!readOnly.has(agentKey(type))) {
-      return deny(real, [
-        `Fable advises, it never builds \u2014 and this launch asks for \`${type || "(no type)"}\`, which works (and may change files).`,
-        "Ask a read-only agent on Fable (Plan, Reviewer, Explore, Code Explorer), or run this agent on another model."
-      ].join(`
-`));
-    }
-    const said = reasonLine(launch.prompt, "Fable reason");
-    const word = reasonWord(said, FABLE_REASONS);
-    if (word === null)
-      return deny(real, fableDenial());
-    if ((env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0") {
-      return deny(real, [
-        "A Fable launch is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
-        "Run it in an interactive session."
-      ].join(`
-`));
-    }
-    return {
-      decision: "ask",
-      real,
-      reason: [
-        `Claude Fable launch: a read-only agent (\`${type}\`) with the reason line \`Fable reason: ${said}\`.`,
-        "Fable advises; it never builds. Approve if this is the hard problem that needs it."
-      ].join(`
-`),
-      why: `fable:${word}`
-    };
-  }
-  if (isReview && launch.effort?.toLowerCase() === "max") {
-    return deny(real, "A review runs at effort `xhigh`, never `max`. Change the effort (reviews are real judgment, not the hardest problem).");
-  }
-  if (isReview)
-    return allow(real, "review");
-  const said = reasonLine(launch.prompt, "Opus reason");
-  const word = reasonWord(said, OPUS_REASONS);
-  if (word === null)
-    return deny(real, opusDenial());
-  if ((env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0") {
-    return deny(real, [
-      "An Opus launch other than a review is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
-      "Run it in an interactive session, or launch it as a review agent."
-    ].join(`
-`));
-  }
-  return {
-    decision: "ask",
-    real,
-    reason: [
-      `Claude Opus launch: not a review, with the reason line \`Opus reason: ${said}\`.`,
-      "Opus is for reviews and the listed exceptions. Approve only if this launch is one of them."
-    ].join(`
-`),
-    why: `opus:${word}`
-  };
+  return allow(real, "");
+}
+function nobodyWatches(env) {
+  return (env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0";
 }
 function forkModel(sessionModel, config, env) {
   if (sessionModel === null)
-    return { claude: true, family: "opus", model: "the session's model (unknown)" };
+    return { claude: true, family: "opus", model: "the session's model (unknown)", tier: "opus" };
   return resolveLaunchModel(sessionModel, config, env);
 }
-function readGuardContext(paths, input, env) {
-  let config = null;
+function gatewayConfigOf(paths) {
   try {
-    config = loadConfigFile(paths.gatewayConfigFile);
+    return loadConfigFile(paths.gatewayConfigFile);
   } catch {
-    config = null;
+    return null;
   }
+}
+function sessionModelOf(input, env) {
+  const transcript = stringField(input.transcript_path);
+  const answered = transcript === null ? null : lastClaudeModel(transcript);
+  return answered ?? stringField(env.ANTHROPIC_MODEL);
+}
+function readGuardContext(paths, input, env) {
+  const config = gatewayConfigOf(paths);
   let gatewayOn = false;
   try {
     gatewayOn = settingsReport(paths.settingsFile).baseUrl !== null;
   } catch {
     gatewayOn = false;
   }
-  const transcript = stringField(input.transcript_path);
-  const answered = transcript === null ? null : lastClaudeModel(transcript);
   return {
     config,
     gatewayOn,
-    sessionModel: answered ?? stringField(env.ANTHROPIC_MODEL)
+    sessionModel: sessionModelOf(input, env)
   };
 }
 function guardFacts(input, context) {
@@ -9273,12 +9367,13 @@ function guardFacts(input, context) {
     fork: launch.fork,
     model: launch.model,
     subagent_type: launch.subagentType,
+    tier: result.real?.tier ?? null,
     tool: launch.tool,
     ...result.why === "" ? {} : { why: result.why }
   };
 }
 function recorded(result, launch, input, cwd, nowMs) {
-  const family = result.real?.family;
+  const family = result.real?.tier;
   if (family !== "opus" && family !== "fable")
     return null;
   return {
@@ -9304,18 +9399,17 @@ function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
     if (refusal !== null)
       return toolDecision("deny", refusal);
     const results = judgeWorkflow(script, context, env);
+    const decided = results.find((one) => one.verdict.decision === "deny");
+    if (decided !== undefined)
+      return toolDecision("deny", workflowReason(decided));
     for (const one of results) {
-      if (one.verdict.decision === "deny")
-        continue;
       const record = recorded(one.verdict, asLaunch(one.launch), input, cwd, nowMs);
       if (record !== null)
         appendAgentLaunch(file, record);
     }
-    const decided = results.find((one) => one.verdict.decision === "deny");
-    const asked = results.find((one) => one.verdict.decision === "ask");
-    if (decided !== undefined)
-      return toolDecision("deny", workflowReason(decided));
-    return asked === undefined ? SILENT : toolDecision("ask", workflowReason(asked));
+    const asks = results.filter((one) => one.verdict.decision === "ask");
+    return asks.length === 0 ? SILENT : toolDecision("ask", asks.map((one) => workflowReason(one)).join(`
+`));
   }
   const launch = readLaunch(input);
   if (launch === null)
@@ -9325,6 +9419,126 @@ function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
   if (launchRecord !== null && result.decision !== "deny")
     appendAgentLaunch(file, launchRecord);
   return result.decision === "allow" ? SILENT : toolDecision(result.decision, result.reason);
+}
+
+// src/hooks/fable-session.ts
+import { existsSync as existsSync7, mkdirSync as mkdirSync5, writeFileSync as writeFileSync4 } from "fs";
+import { dirname as dirname3, join as join9 } from "path";
+
+// src/hooks/session-name.ts
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync6, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "fs";
+import { tmpdir as tmpdir2 } from "os";
+import { join as join8 } from "path";
+var MAX_SESSION_NAME = 60;
+function isSessionId(value) {
+  return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+}
+function cleanSessionName(raw) {
+  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
+  const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
+  if (plain === "")
+    return null;
+  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
+}
+function namesDir(env) {
+  return join8(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
+}
+function readName(file) {
+  try {
+    return existsSync6(file) ? cleanSessionName(readFileSync6(file, "utf8")) : null;
+  } catch {
+    return null;
+  }
+}
+function writeAtomic(file, text) {
+  const partial = `${file}.${process.pid}.tmp`;
+  writeFileSync3(partial, text);
+  renameSync2(partial, file);
+}
+function namingNote(sessionId, current) {
+  const command = `${COMMAND} session-name ${sessionId} "<the task, in a few words>"`;
+  return current === null ? `This session has no name yet. Name it once, as soon as its main task is clear: people and other sessions find it by this name in ListAgents and /resume. Run: ${command}` : `This session is named "${current}" after its main task. Keep it; rename it only if the name no longer describes the main task: ${command}`;
+}
+function sessionName(context) {
+  const { project, input, event, env } = context;
+  if (project.config?.sessionNames !== true)
+    return SILENT;
+  const sessionId = input.session_id;
+  if (!isSessionId(sessionId))
+    return SILENT;
+  const dir = namesDir(env);
+  const wanted = readName(join8(dir, `${sessionId}.name`));
+  const note = namingNote(sessionId, wanted);
+  if (event === "SessionStart") {
+    return {
+      stdout: JSON.stringify({
+        hookSpecificOutput: { hookEventName: event, additionalContext: note }
+      })
+    };
+  }
+  const appliedFile = join8(dir, sessionId);
+  const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
+  if (title !== null) {
+    mkdirSync4(dir, { recursive: true });
+    writeAtomic(appliedFile, title);
+    return {
+      stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: event, sessionTitle: title } })
+    };
+  }
+  return wanted === null ? {
+    stdout: JSON.stringify({
+      hookSpecificOutput: { hookEventName: event, additionalContext: note }
+    })
+  } : SILENT;
+}
+
+// src/hooks/fable-session.ts
+function fableSessionMessage(named) {
+  return `${COMMAND}: this session runs on ${named}, the premium model \u2014 it uses your plan's limits faster than Opus. Switch with /model if you did not mean to.`;
+}
+function fableSessionModelName(real) {
+  return real.claude ? "Claude Fable" : `the \`fable\` model, ${real.model}`;
+}
+function fableSessionMark(env, sessionId) {
+  return join9(namesDir(env), `${sessionId}.fable`);
+}
+function firstTime(mark) {
+  try {
+    mkdirSync5(dirname3(mark), { recursive: true });
+    writeFileSync4(mark, "", { flag: "wx" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function couldBeFable(model, env) {
+  if (familyOfModel(model) === "fable")
+    return true;
+  const override = stringField(env[familyEnv("fable")]);
+  if (override !== null && withoutContextSuffix(override.trim()) === model)
+    return true;
+  const text = withoutContextSuffix(model.trim());
+  return text === "fable" || MODEL_SLOTS[text] === "fable";
+}
+function fableSession(input, env, paths) {
+  const event = stringField(input.hook_event_name);
+  const sessionId = input.session_id;
+  if (event === null || !isSessionId(sessionId))
+    return SILENT;
+  if ((env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0")
+    return SILENT;
+  const mark = fableSessionMark(env, sessionId);
+  if (existsSync7(mark))
+    return SILENT;
+  const model = event === "SessionStart" ? stringField(input.model) : sessionModelOf(input, env);
+  if (model === null || !couldBeFable(model, env))
+    return SILENT;
+  const real = resolveLaunchModel(model, gatewayConfigOf(paths), env);
+  if (real.tier !== "fable")
+    return SILENT;
+  if (!firstTime(mark))
+    return SILENT;
+  return systemMessage(fableSessionMessage(fableSessionModelName(real)));
 }
 
 // src/hooks/git-guard.ts
@@ -9676,15 +9890,15 @@ function routeFacts(input) {
 import { isAbsolute as isAbsolute3, resolve as resolve5 } from "path";
 
 // src/hooks/serena-root.ts
-import { readFileSync as readFileSync6, rmSync, statSync as statSync4 } from "fs";
-import { isAbsolute as isAbsolute2, join as join8, resolve as resolve4 } from "path";
+import { readFileSync as readFileSync7, rmSync, statSync as statSync4 } from "fs";
+import { isAbsolute as isAbsolute2, join as join10, resolve as resolve4 } from "path";
 var SERENA_ACTIVATE_TOOL = "mcp__serena__activate_project";
 var SERENA_ROOT_DIR = "serena-root";
 var UNKNOWN = "unknown";
 function serenaRootFile(paths, sessionId) {
   if (typeof sessionId !== "string" || !/^[\w-]{1,128}$/.test(sessionId))
     return null;
-  return join8(paths.stateDir, SERENA_ROOT_DIR, `${sessionId}.txt`);
+  return join10(paths.stateDir, SERENA_ROOT_DIR, `${sessionId}.txt`);
 }
 function readSerenaRoot(paths, sessionId) {
   const file = serenaRootFile(paths, sessionId);
@@ -9692,7 +9906,7 @@ function readSerenaRoot(paths, sessionId) {
     return;
   let text;
   try {
-    text = readFileSync6(file, "utf8");
+    text = readFileSync7(file, "utf8");
   } catch (error) {
     const missing = error instanceof Error && "code" in error && error.code === "ENOENT";
     return missing ? undefined : { kind: "unknown" };
@@ -9908,10 +10122,10 @@ function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
 }
 
 // src/workflow/resolve.ts
-import { existsSync as existsSync7, readFileSync as readFileSync8 } from "fs";
+import { existsSync as existsSync9, readFileSync as readFileSync9 } from "fs";
 
 // src/cli/setup.ts
-import { delimiter, join as join9 } from "path";
+import { delimiter, join as join11 } from "path";
 
 // src/browser/chrome.ts
 var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
@@ -9969,37 +10183,37 @@ function shellWord2(path) {
   return /^[\w./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`;
 }
 function statuslineSetting(paths) {
-  return { command: `${shellWord2(join9(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+  return { command: `${shellWord2(join11(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 
 // src/update/state.ts
 import {
   appendFileSync as appendFileSync3,
-  existsSync as existsSync6,
-  mkdirSync as mkdirSync4,
+  existsSync as existsSync8,
+  mkdirSync as mkdirSync6,
   readdirSync as readdirSync2,
-  readFileSync as readFileSync7,
+  readFileSync as readFileSync8,
   rmSync as rmSync2,
   statSync as statSync5,
-  writeFileSync as writeFileSync3
+  writeFileSync as writeFileSync5
 } from "fs";
-import { join as join10 } from "path";
+import { join as join12 } from "path";
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
 var LOG_MAX_BYTES = 256 * 1024;
 function updateFiles(stateDir) {
   return {
-    hold: join10(stateDir, "update-hold"),
-    check: join10(stateDir, "update-check.json"),
-    reported: join10(stateDir, "update-reported"),
-    log: join10(stateDir, "update.log"),
-    lockDir: join10(stateDir, "update"),
-    sessions: join10(stateDir, "sessions")
+    hold: join12(stateDir, "update-hold"),
+    check: join12(stateDir, "update-check.json"),
+    reported: join12(stateDir, "update-reported"),
+    log: join12(stateDir, "update.log"),
+    lockDir: join12(stateDir, "update"),
+    sessions: join12(stateDir, "sessions")
   };
 }
 var UNREACHABLE_FAILS_AFTER_HOURS = 24;
 var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
 function isHeld(files) {
-  return existsSync6(files.hold);
+  return existsSync8(files.hold);
 }
 
 // src/workflow/resolve.ts
@@ -10010,11 +10224,11 @@ function personalWorkflowFile(paths) {
   return paths.workflowConfigFile;
 }
 function loadWorkflow(file) {
-  if (!existsSync7(file))
+  if (!existsSync9(file))
     return {};
   let raw;
   try {
-    raw = JSON.parse(readFileSync8(file, "utf8"));
+    raw = JSON.parse(readFileSync9(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
@@ -10056,7 +10270,7 @@ function alertsFrom(personal, project) {
 }
 function statusLineIsOurs(paths) {
   try {
-    const parsed = JSON.parse(readFileSync8(paths.settingsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync9(paths.settingsFile, "utf8"));
     if (typeof parsed !== "object" || parsed === null)
       return false;
     const statusLine = parsed.statusLine;
@@ -10101,19 +10315,19 @@ function resolveWorkflow(paths, projectConfig) {
 
 // src/workflow/reviews.ts
 import { createHash as createHash2 } from "crypto";
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync9 } from "fs";
-import { dirname as dirname3, join as join11 } from "path";
+import { mkdirSync as mkdirSync7, readFileSync as readFileSync10 } from "fs";
+import { dirname as dirname4, join as join13 } from "path";
 var REVIEWS_KEPT = 50;
 var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
 function repoKey(repo) {
   return createHash2("sha256").update(repo).digest("hex").slice(0, 16);
 }
 function reviewsFile(stateDir, repo) {
-  return join11(stateDir, "reviews", `${repoKey(repo)}.json`);
+  return join13(stateDir, "reviews", `${repoKey(repo)}.json`);
 }
 function readReviews(file) {
   try {
-    const parsed = JSON.parse(readFileSync9(file, "utf8"));
+    const parsed = JSON.parse(readFileSync10(file, "utf8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
       return {};
     const record = {};
@@ -10140,7 +10354,7 @@ function recordReview(file, sha, atMs) {
   for (const [commit, time] of Object.entries(record).sort(([, a], [, b]) => b.localeCompare(a)).slice(0, REVIEWS_KEPT)) {
     kept[commit] = time;
   }
-  mkdirSync5(dirname3(file), { mode: 448, recursive: true });
+  mkdirSync7(dirname4(file), { mode: 448, recursive: true });
   atomicWrite(file, `${JSON.stringify(kept, null, 2)}
 `, 384);
   return { added: true, at };
@@ -10391,9 +10605,9 @@ function mergeGuard(context) {
 }
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync8, readdirSync as readdirSync3, readFileSync as readFileSync10, statSync as statSync6 } from "fs";
+import { existsSync as existsSync10, readdirSync as readdirSync3, readFileSync as readFileSync11, statSync as statSync6 } from "fs";
 import { uptime } from "os";
-import { join as join12 } from "path";
+import { join as join14 } from "path";
 function parseSessionRecord(json) {
   let value;
   try {
@@ -10418,8 +10632,8 @@ function isRunning(pid) {
   }
 }
 function liveSessions(claudeConfigDir) {
-  const dir = join12(claudeConfigDir, "sessions");
-  if (!existsSync8(dir))
+  const dir = join14(claudeConfigDir, "sessions");
+  if (!existsSync10(dir))
     return [];
   const bootedAt = Date.now() - uptime() * 1000;
   const live = [];
@@ -10429,9 +10643,9 @@ function liveSessions(claudeConfigDir) {
       continue;
     let text;
     try {
-      if (statSync6(join12(dir, file)).mtimeMs < bootedAt)
+      if (statSync6(join14(dir, file)).mtimeMs < bootedAt)
         continue;
-      text = readFileSync10(join12(dir, file), "utf8");
+      text = readFileSync11(join14(dir, file), "utf8");
     } catch {
       continue;
     }
@@ -10478,8 +10692,8 @@ function messageGuard(context) {
 }
 
 // src/hooks/local-files.ts
-import { lstatSync as lstatSync2, readdirSync as readdirSync4, readFileSync as readFileSync11, readlinkSync as readlinkSync2 } from "fs";
-import { join as join13 } from "path";
+import { lstatSync as lstatSync2, readdirSync as readdirSync4, readFileSync as readFileSync12, readlinkSync as readlinkSync2 } from "fs";
+import { join as join15 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
@@ -10498,8 +10712,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   const same = (relative) => {
     if (--budget < 0)
       return false;
-    const here = join13(worktree, relative);
-    const there = join13(mainCheckout, relative);
+    const here = join15(worktree, relative);
+    const there = join15(mainCheckout, relative);
     try {
       const a = lstatSync2(here);
       const b = lstatSync2(there);
@@ -10507,9 +10721,9 @@ function sameAsMain(worktree, mainCheckout, path) {
         return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync2(here) === readlinkSync2(there);
       }
       if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync4(here).every((entry) => same(join13(relative, entry)));
+        return b.isDirectory() && readdirSync4(here).every((entry) => same(join15(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync11(here).equals(readFileSync11(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync12(here).equals(readFileSync12(there));
     } catch {
       return false;
     }
@@ -10590,93 +10804,26 @@ function reviewRecord(context) {
   return SILENT;
 }
 
-// src/hooks/session-name.ts
-import { existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync12, renameSync as renameSync2, writeFileSync as writeFileSync4 } from "fs";
-import { tmpdir as tmpdir2 } from "os";
-import { join as join14 } from "path";
-var MAX_SESSION_NAME = 60;
-function isSessionId(value) {
-  return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
-}
-function cleanSessionName(raw) {
-  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
-  const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
-  if (plain === "")
-    return null;
-  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
-}
-function namesDir(env) {
-  return join14(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
-}
-function readName(file) {
-  try {
-    return existsSync9(file) ? cleanSessionName(readFileSync12(file, "utf8")) : null;
-  } catch {
-    return null;
-  }
-}
-function writeAtomic(file, text) {
-  const partial = `${file}.${process.pid}.tmp`;
-  writeFileSync4(partial, text);
-  renameSync2(partial, file);
-}
-function namingNote(sessionId, current) {
-  const command = `${COMMAND} session-name ${sessionId} "<the task, in a few words>"`;
-  return current === null ? `This session has no name yet. Name it once, as soon as its main task is clear: people and other sessions find it by this name in ListAgents and /resume. Run: ${command}` : `This session is named "${current}" after its main task. Keep it; rename it only if the name no longer describes the main task: ${command}`;
-}
-function sessionName(context) {
-  const { project, input, event, env } = context;
-  if (project.config?.sessionNames !== true)
-    return SILENT;
-  const sessionId = input.session_id;
-  if (!isSessionId(sessionId))
-    return SILENT;
-  const dir = namesDir(env);
-  const wanted = readName(join14(dir, `${sessionId}.name`));
-  const note = namingNote(sessionId, wanted);
-  if (event === "SessionStart") {
-    return {
-      stdout: JSON.stringify({
-        hookSpecificOutput: { hookEventName: event, additionalContext: note }
-      })
-    };
-  }
-  const appliedFile = join14(dir, sessionId);
-  const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
-  if (title !== null) {
-    mkdirSync6(dir, { recursive: true });
-    writeAtomic(appliedFile, title);
-    return {
-      stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: event, sessionTitle: title } })
-    };
-  }
-  return wanted === null ? {
-    stdout: JSON.stringify({
-      hookSpecificOutput: { hookEventName: event, additionalContext: note }
-    })
-  } : SILENT;
-}
-
 // src/hooks/worktree-create.ts
 var FETCH_AGE_MS = 24 * 60 * 60 * 1000;
 
 // src/hooks/worktree-leftovers.ts
 import { readFileSync as readFileSync13, statSync as statSync7 } from "fs";
-import { basename as basename3, isAbsolute as isAbsolute4, join as join15, resolve as resolve6 } from "path";
+import { basename as basename3, isAbsolute as isAbsolute4, join as join16, resolve as resolve6 } from "path";
 var IDLE_MINUTES = 60;
 function idleMinutes(worktree, now) {
   let admin;
   try {
-    admin = readFileSync13(join15(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync13(join16(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return 0;
   }
   if (!isAbsolute4(admin))
     admin = resolve6(worktree, admin);
   let last = 0;
-  for (const file of ["index", "HEAD", join15("logs", "HEAD")]) {
+  for (const file of ["index", "HEAD", join16("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync7(join15(admin, file)).mtimeMs);
+      last = Math.max(last, statSync7(join16(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? 0 : (now - last) / 60000;
@@ -10864,6 +11011,14 @@ var agentGuardHook = {
   logFacts: guardFacts,
   run: ({ input, env, paths, cwd }) => agentGuard(input, env, paths, cwd)
 };
+var fableSessionHook = {
+  name: "fable-session",
+  events: ["SessionStart", "UserPromptSubmit"],
+  wiring: "plugin",
+  onConfigProblem: (_message, input, _event, _checkout, context) => fableSession(input, context.env, context.paths),
+  outsideGit: (input, _event, _why, context) => fableSession(input, context.env, context.paths),
+  run: ({ input, env, paths }) => fableSession(input, env, paths)
+};
 var jobRouteHook = {
   name: "job-route",
   events: ["PreToolUse"],
@@ -10885,6 +11040,7 @@ var HOOKS = [
   serenaRootHook,
   messageGuardHook,
   agentGuardHook,
+  fableSessionHook,
   jobRouteHook,
   afterMergeHook,
   reviewRecordHook,
@@ -10899,7 +11055,11 @@ var USER_HOOKS = [
   "notify",
   "playwright-output"
 ];
-var MACHINE_WIDE_HOOKS = [...USER_HOOKS, "agent-guard"];
+var MACHINE_WIDE_HOOKS = [
+  ...USER_HOOKS,
+  "agent-guard",
+  "fable-session"
+];
 
 // src/entries/job-route.ts
 await runHookEntry(jobRouteHook);

@@ -16,9 +16,9 @@
  *   (information); a listed one with no project hook on its event left to answer is a
  *   warning. A project hook on the same event and tool as a plugin hook the list does NOT
  *   name is a warning too: both run, so both may answer. The machine-wide hooks
- *   (`MACHINE_WIDE_HOOKS`: stop-failure, update-check, notify, and `agent-guard`, which runs
- *   with or without the project's file) are never warned about: they answer about the
- *   machine, so a project hook beside one is not a copy of a plugin piece.
+ *   (`MACHINE_WIDE_HOOKS`: stop-failure, update-check, notify, and `agent-guard` and
+ *   `fable-session`, which run with or without the project's file) are never warned about: they
+ *   answer about the machine, so a project hook beside one is not a copy of a plugin piece.
  *
  * The project's settings are read where Claude Code reads them: `$CLAUDE_PROJECT_DIR` when
  * it is set (doctor run from a session), else the checkout of the folder doctor runs in.
@@ -272,9 +272,9 @@ function ownCopyLines(
   const found = new Map<string, { hook: PluginHook; handler: WiredHandler; subjects: string[] }>();
   for (const hook of pluginHooks) {
     if (own.includes(hook.name)) continue;
-    // A machine-wide hook (stop-failure, update-check, notify, agent-guard) answers about
-    // the machine, not this project: a project hook on its event is the person's own
-    // business, not a second copy of a plugin piece, so nothing warns about it.
+    // A machine-wide hook (stop-failure, update-check, notify, agent-guard, fable-session)
+    // answers about the machine, not this project: a project hook on its event is the person's
+    // own business, not a second copy of a plugin piece, so nothing warns about it.
     if (MACHINE_WIDE_HOOKS.includes(hook.name)) continue;
     for (const subject of hook.subjects) {
       for (const handler of sources.flatMap((file) => wiredHandlers(file, hook.event, subject))) {

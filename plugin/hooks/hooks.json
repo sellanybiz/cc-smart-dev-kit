@@ -1,5 +1,5 @@
 {
-  "description": "cc-smart-dev-kit: git, edit (Edit/Write/NotebookEdit and Serena's edit tools), message, merge and agent guards, a caller-named screenshot put in the browser's output folder, the folder Serena edits recorded per session, notifications (a finished turn, a question, a plan, a permission prompt, a stopped turn; on the desktop, in an SSH terminal as OSC 777, or left to Warp's own plugin), notes after a merge and at session start, the review record a finished review agent writes, session names, the usage-limit alert and the background update check. Each hook stays silent while the project wires its own for the same event.",
+  "description": "cc-smart-dev-kit: git, edit (Edit/Write/NotebookEdit and Serena's edit tools), message, merge and agent guards, a caller-named screenshot put in the browser's output folder, the folder Serena edits recorded per session, notifications (a finished turn, a question, a plan, a permission prompt, a stopped turn; on the desktop, in an SSH terminal as OSC 777, or left to Warp's own plugin), notes after a merge and at session start, one note to the person when the session itself runs on Claude Fable, the review record a finished review agent writes, session names, the usage-limit alert and the background update check. Each hook stays silent while the project wires its own for the same event.",
   "hooks": {
     "StopFailure": [
       {
@@ -237,6 +237,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/fable-session.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/update-check.js\"",
             "timeout": 10
           }
@@ -249,6 +258,15 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/session-name.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/fable-session.js\"",
             "timeout": 10
           }
         ]
