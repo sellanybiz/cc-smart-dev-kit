@@ -9,7 +9,9 @@
  * it really lives (`write.ts`): without `--project`, the person's own defaults; with it, the
  * project's committed `.claude/cc-smart-dev-kit.json`. `review-done` records one commit in the
  * review record (`reviews.ts`) — default HEAD — which is what the merge guard reads before a
- * merge it would make without a person.
+ * merge it would make without a person. It refuses inside Claude Code (`CLAUDECODE`), where
+ * the `review-record` hook writes the record from the review agent's own end: a record a
+ * session writes for itself is only its own word.
  *
  * Exit codes, the same as the rest of the command: 0 done, 1 a file that cannot be read or
  * written, 2 a setting or a value that is not one of the settings there are.
@@ -47,7 +49,9 @@ switches.sessionNames and switches.jobRoute need --project, and switches.statusL
 switches.updateHold refuse it.
 review-done records that the change set up to a commit (default: HEAD, or --sha <commit>)
 had its one premium review and its fixes. The merge guard reads it before a merge it
-would make by itself, while reviewBeforePush is on.`;
+would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
+hook writes it, when a review agent (the reviewAgents setting) returns, so review-done
+refuses there: it is for your own terminal.`;
 
 /** One line of `show`: the setting, its value now, and where that value came from. */
 const ROWS: ReadonlyArray<
@@ -60,6 +64,7 @@ const ROWS: ReadonlyArray<
   ["mergeMethod", (r) => r.mergeMethod],
   ["deleteBranch", (r) => r.deleteBranch],
   ["reviewBeforePush", (r) => r.reviewBeforePush],
+  ["reviewAgents", (r) => r.reviewAgents],
   ["clearWorktreeAfterMerge", (r) => r.clearWorktreeAfterMerge],
   ["alerts.events", (r) => r.alerts.events],
   ["alerts.sound", (r) => r.alerts.sound],
@@ -153,6 +158,15 @@ function show(context: WorkflowContext): number {
  * repository. The command records; it never reviews anything itself.
  */
 function reviewDone(context: WorkflowContext, argv: string[]): number {
+  // Inside Claude Code the record must come from the review agent itself (`review-record`),
+  // or it is only the session's word: a session can record a commit nobody read. The person,
+  // in their own terminal, records one by hand — that is what this command is for.
+  if (context.env.CLAUDECODE !== undefined) {
+    context.error(
+      `${COMMAND} workflow review-done cannot run inside a Claude Code session: the review record is written by the review-record hook when a review agent (workflow setting reviewAgents) returns, so a record is never the session's own word. Run it in your own terminal to record one by hand.`,
+    );
+    return 1;
+  }
   let rev = "HEAD";
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index] ?? "";

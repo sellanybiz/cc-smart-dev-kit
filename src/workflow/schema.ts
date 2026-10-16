@@ -45,6 +45,16 @@ export const workflowSchema = z.strictObject({
   deleteBranch: z.boolean().optional(),
   /** Run the review before a push. */
   reviewBeforePush: z.boolean().optional(),
+  /**
+   * The subagent types whose return records a review (`review-record`): the plugin's own
+   * reviewer, plus any agent a project runs as its reviewer, by its exact name. Default:
+   * just the plugin's.
+   */
+  reviewAgents: z
+    .array(z.string().min(1))
+    .min(1)
+    .refine((agents) => new Set(agents).size === agents.length, "an agent is listed twice")
+    .optional(),
   /** Clear the worktree once its pull request merged. */
   clearWorktreeAfterMerge: z.boolean().optional(),
   alerts: z
@@ -70,6 +80,7 @@ export const workflowDefaults = {
   mergeMethod: "merge",
   deleteBranch: false,
   reviewBeforePush: true,
+  reviewAgents: ["cc-smart-dev-kit:reviewer"],
   clearWorktreeAfterMerge: false,
   alerts: {
     events: [...ALERT_EVENTS] as AlertEvent[],
@@ -94,6 +105,7 @@ export type WorkflowKey =
   | "mergeMethod"
   | "deleteBranch"
   | "reviewBeforePush"
+  | "reviewAgents"
   | "clearWorktreeAfterMerge"
   | "alerts.events"
   | "alerts.sound"
@@ -109,6 +121,7 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "mergeMethod",
   "deleteBranch",
   "reviewBeforePush",
+  "reviewAgents",
   "clearWorktreeAfterMerge",
   "alerts.events",
   "alerts.sound",
@@ -173,11 +186,6 @@ export function unsetWorkflowValue(workflow: Workflow, key: WorkflowKey): Workfl
 
 export type ParsedValue = { ok: true; value: unknown } | { ok: false; why: string };
 
-/** The four moments, in one list a person can read: `needs-you, question, finished, failed`. */
-export function listAlertEvents(events: readonly AlertEvent[]): string {
-  return events.join(", ");
-}
-
 /**
  * One value as a person typed it, for the key it belongs to. Refuses anything else with the
  * reason, so a typo never writes a value of the wrong kind.
@@ -198,6 +206,19 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
     return percent >= 1 && percent <= 100
       ? { ok: true, value: percent }
       : { ok: false, why: "alerts.usagePercent is a whole number 1-100" };
+  }
+  if (key === "reviewAgents") {
+    const named = value
+      .split(/[,\s]+/)
+      .map((word) => word.trim())
+      .filter((word) => word !== "");
+    if (named.length === 0) {
+      return {
+        ok: false,
+        why: "reviewAgents is a list of agent types, like cc-smart-dev-kit:reviewer",
+      };
+    }
+    return { ok: true, value: [...new Set(named)] };
   }
   if (key === "alerts.events") {
     const named = value
@@ -222,6 +243,6 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
 
 /** A value as `workflow show` prints it. */
 export function showValue(value: unknown): string {
-  if (Array.isArray(value)) return listAlertEvents(value as AlertEvent[]);
+  if (Array.isArray(value)) return (value as string[]).join(", ");
   return String(value);
 }

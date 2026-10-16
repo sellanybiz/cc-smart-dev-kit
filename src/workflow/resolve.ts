@@ -52,6 +52,7 @@ export interface ResolvedWorkflow {
   mergeMethod: ResolvedValue<"merge" | "squash" | "rebase">;
   deleteBranch: ResolvedValue<boolean>;
   reviewBeforePush: ResolvedValue<boolean>;
+  reviewAgents: ResolvedValue<string[]>;
   clearWorktreeAfterMerge: ResolvedValue<boolean>;
   alerts: {
     events: ResolvedValue<AlertEvent[]>;
@@ -113,8 +114,14 @@ function sourceOf(personal: Workflow, project: Workflow, key: WorkflowKey): Work
   return workflowValue(personal, key) !== undefined ? "personal" : "default";
 }
 
-/** The alerts of two workflow objects: the project's over the person's, field by field. */
-function alertsFrom(personal: Workflow, project: Workflow): ResolvedWorkflow["alerts"] {
+/**
+ * The alerts of two workflow objects: the project's over the person's, field by field.
+ *
+ * Exported for the one caller that must not fail when the person's file cannot be read
+ * (`alerts.ts`): it passes `{}` for the personal object, so the project's values still win
+ * and only the person's own are lost.
+ */
+export function alertsFrom(personal: Workflow, project: Workflow): ResolvedWorkflow["alerts"] {
   const merged = mergeWorkflows(personal, project);
   const alerts = merged.alerts ?? {};
   const of = <T>(key: WorkflowKey, value: T): ResolvedValue<T> => ({
@@ -203,6 +210,7 @@ export function resolveWorkflow(
       "reviewBeforePush",
       merged.reviewBeforePush ?? workflowDefaults.reviewBeforePush,
     ),
+    reviewAgents: of("reviewAgents", merged.reviewAgents ?? [...workflowDefaults.reviewAgents]),
     clearWorktreeAfterMerge: of(
       "clearWorktreeAfterMerge",
       merged.clearWorktreeAfterMerge ?? workflowDefaults.clearWorktreeAfterMerge,

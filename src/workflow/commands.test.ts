@@ -51,6 +51,7 @@ describe("workflow show", () => {
       "mergeMethod = merge (default)",
       "deleteBranch = false (default)",
       "reviewBeforePush = true (default)",
+      "reviewAgents = cc-smart-dev-kit:reviewer (default)",
       "clearWorktreeAfterMerge = false (default)",
       "alerts.events = needs-you, question, finished, failed (default)",
       "alerts.sound = false (default)",
@@ -406,6 +407,18 @@ describe("workflow review-done", () => {
     const unknown = context(repo, env);
     expect(runWorkflow(["review-done", "--now"], unknown.context)).toBe(2);
     expect(unknown.errors[0]).toContain("Unknown option: --now");
+  });
+
+  test("inside Claude Code it refuses: the review agent's own return records the review", () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    const run = context(repo, { ...env, CLAUDECODE: "1" });
+    expect(runWorkflow(["review-done"], run.context)).toBe(1);
+    expect(run.lines).toEqual([]);
+    expect(run.errors[0]).toBe(
+      "cc-smart-dev-kit workflow review-done cannot run inside a Claude Code session: the review record is written by the review-record hook when a review agent (workflow setting reviewAgents) returns, so a record is never the session's own word. Run it in your own terminal to record one by hand.",
+    );
+    expect(existsSync(recordFile(env, repo))).toBe(false);
   });
 
   test("a worktree records into the repository's own file", () => {

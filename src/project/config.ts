@@ -18,6 +18,7 @@ export const PLUGIN_HOOK_NAMES = [
   "agent-guard",
   "job-route",
   "after-merge",
+  "review-record",
   "worktree-leftovers",
   "session-name",
 ] as const;

@@ -110,7 +110,9 @@ Commands:
                      whether the commit here has a recorded review. set and unset write one
                      value; --project writes the project's file. review-done records that a
                      commit (default HEAD, or --sha <commit>) had its one premium review;
-                     the merge guard reads that record.
+                     the merge guard reads that record. It is for your own terminal: inside
+                     Claude Code the review-record hook writes the record when a review
+                     agent returns, so review-done refuses there.
   hook <worktree-create|worktree-remove|subagent-stop>
                      The worktree engine, for a project that wires it in its own
                      .claude/settings.json: reads the hook's input on stdin and answers

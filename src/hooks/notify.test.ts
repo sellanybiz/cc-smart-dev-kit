@@ -1197,7 +1197,7 @@ describe("the workflow's alert settings", () => {
     const result = notifyHook(stopInput(env.HOME), "Stop", deps);
     expect(runs.length).toBe(2); // the sound and the notification, as always
     expect(result.stderr).toStartWith(
-      "cc-smart-dev-kit: the alerts fall back to the built-in defaults (Invalid ",
+      "cc-smart-dev-kit: the alerts use the settings that can be read (Invalid ",
     );
     expect(result.stdout).toBeUndefined();
   });

@@ -239,6 +239,8 @@ export function resolvedValue(
       return resolved.deleteBranch;
     case "reviewBeforePush":
       return resolved.reviewBeforePush;
+    case "reviewAgents":
+      return resolved.reviewAgents;
     case "clearWorktreeAfterMerge":
       return resolved.clearWorktreeAfterMerge;
     case "alerts.events":

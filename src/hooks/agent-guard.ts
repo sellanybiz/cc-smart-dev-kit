@@ -124,7 +124,7 @@ function effortAllowed(effort: string): boolean {
 }
 
 /** A subagent type as a list compares it: after any `plugin:`, `-`/`_`/space as one `-`. */
-function agentKey(type: string): string {
+export function agentKey(type: string): string {
   const base = type.includes(":") ? (type.split(":").pop() ?? type) : type;
   return base
     .trim()

@@ -13,29 +13,72 @@
  *   (`src/workflow/auto-merge.ts` — the rules live there, once);
  * - every required check passed (`gh pr checks <n> --required --json name,bucket`; a skipped
  *   required check counts as passing, which is GitHub's own rule for a merge);
- * - with `reviewBeforePush` on, the pull request's **head commit** has a recorded review
- *   (`cc-smart-dev-kit workflow review-done`, `src/workflow/reviews.ts`).
+ * - with `reviewBeforePush` on, the pull request's **head commit** has a recorded review,
+ *   written by the review agent's own end (`src/hooks/review-record.ts`,
+ *   `src/workflow/reviews.ts`).
  *
- * Everything it reads is read-only — `gh pr view`, `gh repo view`, `gh pr checks` — and a
- * `gh` that is missing, fails, or answers something it cannot read **asks instead of
- * guessing**: a guard fails closed. Those calls run only for a command that really asks for
- * a merge (the line is read with the one lexer every guard uses, `shell-command.ts`, through
- * `after-merge.ts`), so an ordinary Bash call pays nothing and touches no network.
+ * **And only for this project's own repository.** A merge that names another one
+ * (`--repo`/`-R`, or a `gh api` path) always asks: the policy is about the repository the
+ * work is in, read from its `origin` remote.
+ *
+ * Every merge in the command is judged, in the order it runs them — `gh pr merge 5 && gh pr
+ * merge 6` checks both — and the first the policy does not allow asks, naming its pull
+ * request. The forms it cannot judge ask too, with the reason: a `gh api` merge, a GraphQL
+ * query it cannot read, a shell alias, a `gh <word>` that is neither a gh command nor an
+ * alias while the words name a merge, and a command whose earlier steps change the folder,
+ * the branch or the repository (`cd`, `git switch`, `GH_REPO=…`, `env`) the merge acts on.
+ *
+ * Everything it reads is read-only — `gh pr view`, `gh repo view`, `gh pr checks`, `gh alias
+ * list` when a `gh <word>` needs it — and a `gh` that is missing, fails, or answers
+ * something it cannot read **asks instead of guessing**: a guard fails closed. Those calls
+ * run only for a command that really asks for a merge (the line is read with the one lexer
+ * every guard uses, `shell-command.ts`, through `after-merge.ts`), so an ordinary Bash call
+ * pays nothing and touches no network.
  *
  * Timeouts: each `gh` call gets 10 s and this hook has 30 s of its own
- * (`plugin/hooks/hooks.json`), so its calls fit well inside it (`.claude/rules/hooks.md`
- * § Timeouts).
+ * (`plugin/hooks/hooks.json`). A one-merge command reads three facts; a command that merges
+ * several reads three each, with the default branch read once per repository
+ * (`.claude/rules/hooks.md` § Timeouts).
  */
 import type { CcSmartDevKitConfig } from "../project/config";
+import type { Project } from "../project/resolve";
 import { autoMergeOff, autoMergeRefusal } from "../workflow/auto-merge";
 import { type ResolvedWorkflow, resolveWorkflow } from "../workflow/resolve";
 import { hasReview, reviewsFile } from "../workflow/reviews";
-import { mergeTarget, requestsMerge } from "./after-merge";
+import { mergeCalls, repositoryKey, requestsMerge } from "./after-merge";
+import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
 import { type HookResult, SILENT, stringField, toolDecision, toolInput } from "./io";
 import type { Env, HookContext } from "./run";
 
 /** How long one `gh` call may take: it is a network call, and this hook has 30 s (above). */
 export const GH_TIMEOUT_MS = 10_000;
+
+/**
+ * The guard's own budget: the hook has 30 s (`plugin/hooks/hooks.json`), and this leaves room
+ * for the answer. A PreToolUse hook Claude Code has to kill blocks nothing — the call it
+ * guards then runs unguarded — so the guard gives itself a deadline instead of overrunning,
+ * and asks ("… in time") when too little of it is left for the next call.
+ */
+export const GUARD_BUDGET_MS = 25_000;
+
+/** What is kept back when a call is handed its time: the answer itself, and Claude Code reading it. */
+export const BUDGET_MARGIN_MS = 2_000;
+
+/**
+ * Where a test sets the budget: `CC_SMART_DEV_KIT_GUARD_BUDGET_MS`, in milliseconds, so the
+ * deadline can be proved to bite without waiting 25 s. A hook never sets it, and a value that
+ * is not a positive number leaves the default.
+ */
+export const GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
+
+/** `GUARD_BUDGET_MS`, or what `env` overrides it with (a test's own budget, in milliseconds). */
+export function budgetMs(env: Env): number {
+  const given = Number(env[GUARD_BUDGET_ENV]);
+  return Number.isFinite(given) && given > 0 ? given : GUARD_BUDGET_MS;
+}
+
+/** How long the alias lookup may take inside the budget: the same cap it has on its own. */
+const ALIAS_LIMIT_MS = 3_000;
 
 /** The fields `gh pr view --json` gives. */
 export const PULL_REQUEST_FACTS = "number,baseRefName,headRefOid";
@@ -139,7 +182,7 @@ export function mergeRefusal(facts: MergeFacts): string | null {
     return `its required checks are not all green: ${list}`;
   }
   if (facts.reviewBeforePush && !facts.reviewed) {
-    return `the head commit ${facts.headOid.slice(0, 7)} has no recorded review (reviewBeforePush is on: run the review, then \`cc-smart-dev-kit workflow review-done\`)`;
+    return `the head commit ${facts.headOid.slice(0, 7)} has no recorded review (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)`;
   }
   return null;
 }
@@ -156,6 +199,14 @@ export function notChecked(what: string, env: Env): string {
   return `cc-smart-dev-kit could not check this merge: ${why}. Approve the merge yourself if it is right.`;
 }
 
+/**
+ * The question when the guard's own budget ran out before it could read `what`. Its own
+ * answer, not `notChecked`'s: gh was never asked, and the reason is the guard's deadline.
+ */
+export function notInTime(what: string): string {
+  return `cc-smart-dev-kit could not check this merge in time: reading ${what} would have taken longer than the guard's own budget allows. Approve the merge yourself if it is right.`;
+}
+
 /** True when no `gh` is on the hook's PATH. */
 function ghMissing(env: Env): boolean {
   try {
@@ -170,7 +221,7 @@ function ghMissing(env: Env): boolean {
  * printed nothing. The exit code is not the test: `gh pr checks` exits 8 while the required
  * checks are still running, and the JSON on its stdout is what matters.
  */
-function ghStdout(args: string[], folder: string, env: Env): string | null {
+function ghStdout(args: string[], folder: string, env: Env, timeoutMs: number): string | null {
   try {
     const run = Bun.spawnSync(["gh", ...args], {
       cwd: folder,
@@ -178,7 +229,7 @@ function ghStdout(args: string[], folder: string, env: Env): string | null {
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
-      timeout: GH_TIMEOUT_MS,
+      timeout: timeoutMs,
     });
     const out = run.stdout.toString();
     return out.trim() === "" ? null : out;
@@ -193,6 +244,7 @@ export function viewPullRequest(
   target: { ref: string | null; repo: string | null },
   folder: string,
   env: Env,
+  timeoutMs: number = GH_TIMEOUT_MS,
 ): PullRequestFacts | null {
   const out = ghStdout(
     [
@@ -205,6 +257,7 @@ export function viewPullRequest(
     ],
     folder,
     env,
+    timeoutMs,
   );
   return out === null ? null : parsePullRequestFacts(out);
 }
@@ -215,6 +268,7 @@ export function requiredChecks(
   repo: string | null,
   folder: string,
   env: Env,
+  timeoutMs: number = GH_TIMEOUT_MS,
 ): RequiredCheck[] | null {
   const out = ghStdout(
     [
@@ -228,26 +282,59 @@ export function requiredChecks(
     ],
     folder,
     env,
+    timeoutMs,
   );
   return out === null ? null : parseRequiredChecks(out);
 }
 
 /**
  * The repository's default branch, or null when gh cannot say. A merge command that named
- * another repository (`--repo`) is judged against THAT repository's default branch, not the
- * one in the folder the session runs in.
+ * this project's own repository (`--repo owner/name`) is judged against THAT repository's
+ * default branch, not the one in the folder the session runs in.
+ *
+ * `gh repo view` takes the repository as an argument, not as a flag — `gh repo view --repo x`
+ * fails with "unknown flag: --repo" (gh 2.102.0, checked live), so the flag form only ever
+ * asked the guard a question it could have answered.
  */
 export function defaultBranchOf(
   folder: string,
   env: Env,
   repo: string | null = null,
+  timeoutMs: number = GH_TIMEOUT_MS,
 ): string | null {
   const out = ghStdout(
-    ["repo", "view", ...(repo === null ? [] : ["--repo", repo]), "--json", "defaultBranchRef"],
+    ["repo", "view", ...(repo === null ? [] : [repo]), "--json", "defaultBranchRef"],
     folder,
     env,
+    timeoutMs,
   );
   return out === null ? null : parseDefaultBranch(out);
+}
+
+/** The project's own repository, `owner/name` from its `origin` remote, or null when git cannot say. */
+function ownRepository(project: Project, env: Env, timeoutMs: number): string | null {
+  const folder = project.mainCheckout ?? project.root;
+  const origin = runGit(folder, ["remote", "get-url", "origin"], env, timeoutMs);
+  return origin.ok && origin.out !== "" ? repositoryKey(origin.out) : null;
+}
+
+/**
+ * The reason a merge naming `repo` (`--repo`/`-R`) must ask whatever the policy says, or
+ * null when it names this project's own repository — the only one the policy covers. `own`
+ * is `ownRepository`'s answer; null when git could not say, which asks too.
+ */
+function foreignRepository(repo: string | null, own: string | null): string | null {
+  if (repo === null) return null;
+  const named = repositoryKey(repo);
+  if (own !== null && named !== null && named === own) return null;
+  return own === null
+    ? `the command names the repository ${repo}, and cc-smart-dev-kit could not read this project's own (\`git remote get-url origin\`), so it cannot tell whether they are the same one`
+    : `the command names the repository ${repo}, and the autoMerge policy covers only this project's own repository (${own})`;
+}
+
+/** The pull request's number when the merge names it as one (`5`), else null. */
+function numericRef(ref: string | null): number | null {
+  return ref !== null && /^\d+$/.test(ref) ? Number(ref) : null;
 }
 
 /**
@@ -258,9 +345,8 @@ export function defaultBranchOf(
 export function mergeGuard(context: HookContext): HookResult {
   const { project, input, env, cwd, paths } = context;
   const command = stringField(toolInput(input).command);
+  // The cheap pure read first: an ordinary Bash call finds nothing here and pays nothing.
   if (command === null || !requestsMerge(command)) return SILENT;
-  const target = mergeTarget(command);
-  if (target === null) return SILENT;
   const config: CcSmartDevKitConfig | null = project.config;
   // A project that never opted in must not notice the plugin (`.claude/rules/hooks.md`):
   // the policy it would judge with lives in the project's own file.
@@ -274,34 +360,92 @@ export function mergeGuard(context: HookContext): HookResult {
     const why = error instanceof Error ? error.message : String(error);
     return toolDecision("ask", notByItself(`the workflow settings cannot be read (${why})`));
   }
-  // The policy first: it needs no gh, so a machine without gh hears the real reason.
+  // The policy first: it needs no gh, so a machine without gh hears the real reason — and a
+  // command the guard cannot judge at all costs no gh call either.
   const off = autoMergeOff(resolved);
   if (off !== null) return toolDecision("ask", notByItself(off));
 
-  const view = viewPullRequest(target, cwd, env);
-  if (view === null) {
-    return toolDecision("ask", notChecked("the pull request this command names", env));
-  }
-  const defaultBranch = defaultBranchOf(cwd, env, target.repo);
-  if (defaultBranch === null) {
-    return toolDecision("ask", notChecked("this repository's default branch", env));
-  }
-  const branchRefusal = autoMergeRefusal(resolved, config, view.base, defaultBranch);
-  const checks = branchRefusal === null ? requiredChecks(view.number, target.repo, cwd, env) : null;
-  if (branchRefusal === null && checks === null) {
-    return toolDecision("ask", notChecked(`the required checks of #${view.number}`, env));
-  }
-  const repository = project.mainCheckout ?? project.root;
-  const reviewed =
-    !resolved.reviewBeforePush.value ||
-    hasReview(reviewsFile(paths.stateDir, repository), view.headOid);
+  // One deadline for the whole run (fix: a killed hook blocks nothing, so an overrun is
+  // fail-open). Every call gets its own limit or what is left of the budget, whichever is
+  // smaller; when too little is left for the next one, the guard asks instead.
+  const startedAt = Date.now();
+  const budgetAt = startedAt + budgetMs(env);
+  const timeFor = (limitMs: number): number =>
+    Math.min(limitMs, budgetAt - Date.now() - BUDGET_MARGIN_MS);
 
-  const reason = mergeRefusal({
-    branchRefusal,
-    checks,
-    headOid: view.headOid,
-    reviewBeforePush: resolved.reviewBeforePush.value,
-    reviewed,
-  });
-  return reason === null ? SILENT : toolDecision("ask", notByItself(reason, view.number));
+  // Every merge the command runs, in order, its aliases read when a `gh <word>` needs them.
+  // A `--disable-auto` takes an armed merge back: it merges nothing, so it is not judged.
+  const merges = mergeCalls(command, cwd, env, timeFor(ALIAS_LIMIT_MS)).filter(
+    (one) => !one.disarms,
+  );
+  const defaultBranches = new Map<string, string | null>();
+  let own: string | null = null;
+  let ownRead = false;
+  for (const merge of merges) {
+    const number = numericRef(merge.target?.ref ?? null);
+    if (merge.unread !== null) return toolDecision("ask", notChecked(merge.unread, env));
+    if (merge.refusal !== null) return toolDecision("ask", notByItself(merge.refusal, number));
+    const target = merge.target;
+    if (target === null) continue;
+    // The policy covers this project's own repository only: a merge that names another one
+    // asks, whatever the facts say (and the origin is read once, only when one is named).
+    if (target.repo !== null) {
+      if (!ownRead) {
+        const left = timeFor(GUARD_GIT_TIMEOUT_MS);
+        if (left <= 0) return toolDecision("ask", notInTime("this project's own repository"));
+        own = ownRepository(project, env, left);
+        ownRead = true;
+      }
+      const foreign = foreignRepository(target.repo, own);
+      if (foreign !== null) return toolDecision("ask", notByItself(foreign, number));
+    }
+    const viewLeft = timeFor(GH_TIMEOUT_MS);
+    if (viewLeft <= 0) {
+      return toolDecision("ask", notInTime("the pull request this command names"));
+    }
+    const view = viewPullRequest(target, cwd, env, viewLeft);
+    if (view === null) {
+      return toolDecision("ask", notChecked("the pull request this command names", env));
+    }
+    // The default branch is a fact of the repository: read once for a command that merges
+    // several pull requests of the same one.
+    const where = target.repo ?? "";
+    if (!defaultBranches.has(where)) {
+      const branchLeft = timeFor(GH_TIMEOUT_MS);
+      if (branchLeft <= 0) {
+        return toolDecision("ask", notInTime("this repository's default branch"));
+      }
+      defaultBranches.set(where, defaultBranchOf(cwd, env, target.repo, branchLeft));
+    }
+    const defaultBranch = defaultBranches.get(where) ?? null;
+    if (defaultBranch === null) {
+      return toolDecision("ask", notChecked("this repository's default branch", env));
+    }
+    const branchRefusal = autoMergeRefusal(resolved, config, view.base, defaultBranch);
+    let checks: RequiredCheck[] | null = null;
+    if (branchRefusal === null) {
+      const checksLeft = timeFor(GH_TIMEOUT_MS);
+      if (checksLeft <= 0) {
+        return toolDecision("ask", notInTime(`the required checks of #${view.number}`));
+      }
+      checks = requiredChecks(view.number, target.repo, cwd, env, checksLeft);
+      if (checks === null) {
+        return toolDecision("ask", notChecked(`the required checks of #${view.number}`, env));
+      }
+    }
+    const repository = project.mainCheckout ?? project.root;
+    const reviewed =
+      !resolved.reviewBeforePush.value ||
+      hasReview(reviewsFile(paths.stateDir, repository), view.headOid);
+
+    const reason = mergeRefusal({
+      branchRefusal,
+      checks,
+      headOid: view.headOid,
+      reviewBeforePush: resolved.reviewBeforePush.value,
+      reviewed,
+    });
+    if (reason !== null) return toolDecision("ask", notByItself(reason, view.number));
+  }
+  return SILENT;
 }

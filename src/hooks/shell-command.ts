@@ -315,6 +315,10 @@ const ASSIGNMENT = /^[A-Za-z_]\w*=/;
 /**
  * Wrappers: each runs the command after it, so the command a line really runs is reached
  * through the wrapper's own options (`timeout 60 git push -f`, `env -i sudo -u me git push -f`).
+ *
+ * `sudo` is here: the git guard reads through it. What runs as another user is the merge
+ * guard's own rule — `after-merge.ts` refuses a merge under `sudo`/`doas`/`su` (its reason:
+ * the view the guard read is not the view that merges).
  */
 interface WrapperSpec {
   /** Long options that take the next word as their value. */
@@ -378,7 +382,7 @@ const SHELLS = new Set(["bash", "dash", "sh", "zsh"]);
 const REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|>&|&>)(.*)$/;
 
 /** `git.exe` → `git`, `C:\Program Files\Git\cmd\git` → `git`. */
-function programName(word: string): string {
+export function programName(word: string): string {
   return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
 }
 

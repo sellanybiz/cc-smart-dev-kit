@@ -324,6 +324,21 @@ into a table above.
   same rule (`src/update/opt-out.ts`). (Now)
 - **Which values count as "set" for these variables.** `doctor` assumes Claude Code
   treats an empty value, `0`, `false`, `no` or `off` as not set. (Now)
+- **A plugin-wired SubagentStop hook fires for a background agent, at its end.** On 2.1.301
+  every Agent call runs in the background: the tool call returns at launch, and the agent's
+  end comes later. So the `review-record` hook is a `SubagentStop` entry in `hooks.json` (the
+  one kind allowed there: it touches no worktree, `.claude/rules/hooks.md`), and it reads
+  `agent_type` and `cwd` from that input — both proved for a PROJECT-wired SubagentStop on
+  2.1.300 (the row above: a subagent's `cwd`, `agent_id`, `agent_type`). What is owed is one
+  live run with the plugin's own wiring: a subagent of a listed type (`workflow.reviewAgents`)
+  ending, and the record appearing. **What `agent_type` holds for a plugin agent is not
+  known**: no launch of one is recorded on this machine (searched 2026-10-16 — the session
+  transcripts' `subagent_type` values, `agent-guard`'s `<stateDir>/agent-launches.jsonl`, and
+  the hook logs; a plugin agent has never run here, and `agent-guard` already accepts both
+  forms, "Reviewer" and one ending ":reviewer"). The list is therefore compared the Agent
+  guard's own way (`agentKey`: any `plugin:` prefix ignored, case and `-`/`_`/space alike), so
+  `cc-smart-dev-kit:reviewer` and `reviewer` both match. Were neither to match, the merge
+  guard would ask the person — the safe way round. (Before the first release with the record.)
 - **`CLAUDE_CODE_PLUGIN_PREFER_HTTPS`** makes Claude Code fetch a `github` marketplace
   over HTTPS. `doctor` tries HTTPS first when it is set; only our reader is tested
   (`src/setup/marketplace-access.test.ts` › "github with CLAUDE_CODE_PLUGIN_PREFER_HTTPS:

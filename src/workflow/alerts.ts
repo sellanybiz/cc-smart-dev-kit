@@ -6,9 +6,10 @@
  * in the way of the person's work. So this reader:
  *
  * - **reads once per hook run**, not once per event: one call, the answer handed around;
- * - **never throws**: a project's `cc-smart-dev-kit.json` it cannot read, or a broken personal
- *   `workflow.json`, falls back to the built-in defaults — today's behaviour — and returns
- *   one short line for stderr saying why (`problem`);
+ * - **never throws**: a project's `cc-smart-dev-kit.json` it cannot read drops that file, and
+ *   a broken personal `workflow.json` drops the person's values — each keeps every value that
+ *   can still be read (the project's over the person's over the built-in default) — and
+ *   returns one short line for stderr saying why (`problem`);
  * - resolves the same way everything else does: the project's `workflow.alerts` over the
  *   person's `~/.config/cc-smart-dev-kit/workflow.json` over the built-in default
  *   (`resolveAlerts`).
@@ -16,7 +17,7 @@
 import type { CliPaths } from "../cli/paths";
 import { type CcSmartDevKitConfig, CcSmartDevKitConfigError } from "../project/config";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
-import { defaultAlerts, type ResolvedWorkflow, resolveAlerts } from "./resolve";
+import { alertsFrom, type ResolvedWorkflow, resolveAlerts } from "./resolve";
 
 type Env = Record<string, string | undefined>;
 
@@ -31,7 +32,7 @@ export interface AlertsHere {
 
 /** The line a hook writes when a file it needed could not be used. */
 function fallbackLine(problems: string[]): string {
-  return `cc-smart-dev-kit: the alerts fall back to the built-in defaults (${problems.join("; ")})`;
+  return `cc-smart-dev-kit: the alerts use the settings that can be read (${problems.join("; ")})`;
 }
 
 /**
@@ -57,7 +58,13 @@ export function alertsAt(paths: CliPaths, cwd: null | string, env: Env): AlertsH
     const alerts = resolveAlerts(paths, project);
     return { alerts, problem: problems.length === 0 ? null : fallbackLine(problems) };
   } catch (error) {
+    // The person's own file cannot be read. Its values are lost, and only its own: the
+    // project's still win (their `workflow.alerts` is the team's decision), so this resolves
+    // again with an empty personal object rather than dropping everything for the defaults.
     problems.push(error instanceof Error ? error.message : String(error));
-    return { alerts: defaultAlerts(), problem: fallbackLine(problems) };
+    return {
+      alerts: alertsFrom({}, project?.workflow ?? {}),
+      problem: fallbackLine(problems),
+    };
   }
 }
