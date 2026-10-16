@@ -309,10 +309,11 @@ export const agentGuardHook: HookSpec = {
 /**
  * The Fable-session note: SessionStart and UserPromptSubmit. **Machine-wide** like
  * `agent-guard`: it runs with or without cc-smart-dev-kit.json, and its answer never depends on
- * the project's file — it is about the model this session runs on (§ `fable-session.ts`). It
- * says one line to the person, once in a session, and nothing to Claude: never an error and
- * never a block, so a project that runs its own copy silences it through `ownHooks` like any
- * other plugin hook.
+ * the project's file — it is about the model this session runs on (§ `fable-session.ts`). Its
+ * SessionStart entry carries **no matcher**, so every source is judged, a `fork` included, as
+ * `update-check`'s does. It says one line to the person, once in a session, and nothing to
+ * Claude: never an error and never a block, so a project that runs its own copy silences it
+ * through `ownHooks` like any other plugin hook.
  */
 export const fableSessionHook: HookSpec = {
   name: "fable-session",

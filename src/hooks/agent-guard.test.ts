@@ -78,26 +78,61 @@ function verdict(fields: Record<string, unknown>, ctx: GuardContext = CTX, env =
 }
 
 describe("which model a launch runs on", () => {
-  it("a family name with no override and no gateway: the family itself", () => {
+  it("a family name with no override and no gateway: the family itself, and its tier", () => {
     expect(resolveLaunchModel("opus", null, NO_ENV)).toEqual({
       claude: true,
       family: "opus",
       model: "opus",
+      tier: "opus",
     });
     expect(resolveLaunchModel("fable", null, NO_ENV)).toEqual({
       claude: true,
       family: "fable",
       model: "fable",
+      tier: "fable",
+    });
+    // Haiku and Sonnet have no premium tier.
+    expect(resolveLaunchModel("sonnet", null, NO_ENV)).toEqual({
+      claude: true,
+      family: "sonnet",
+      model: "sonnet",
+      tier: null,
     });
   });
 
   it("Claude Code's env override wins: ANTHROPIC_DEFAULT_OPUS_MODEL (fable has one too)", () => {
     expect(
       resolveLaunchModel("opus", null, { ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-8" }),
-    ).toEqual({ claude: true, family: "opus", model: "claude-opus-4-8" });
+    ).toEqual({ claude: true, family: "opus", model: "claude-opus-4-8", tier: "opus" });
     expect(
       resolveLaunchModel("fable", null, { ANTHROPIC_DEFAULT_FABLE_MODEL: "claude-fable-5-1" }),
-    ).toEqual({ claude: true, family: "fable", model: "claude-fable-5-1" });
+    ).toEqual({ claude: true, family: "fable", model: "claude-fable-5-1", tier: "fable" });
+  });
+
+  it("a tier keeps its name whatever the override answers with (owner, 2026-10-16)", () => {
+    // `opus` is the tier even when a backend answers it: never affordable, never forced to max,
+    // and the family the messages and the record read stays the tier's own.
+    expect(
+      resolveLaunchModel("opus", null, { ANTHROPIC_DEFAULT_OPUS_MODEL: "openai:gpt-5.5" }),
+    ).toEqual({ claude: false, family: "opus", model: "openai:gpt-5.5", tier: "opus" });
+    expect(
+      resolveLaunchModel("fable", null, { ANTHROPIC_DEFAULT_FABLE_MODEL: "openai:gpt-5.5" }),
+    ).toEqual({ claude: false, family: "fable", model: "openai:gpt-5.5", tier: "fable" });
+    // The id an override names is that tier wherever it appears, the session's model included.
+    const env = { ANTHROPIC_DEFAULT_FABLE_MODEL: "openai:gpt-5.5" };
+    expect(resolveLaunchModel("openai:gpt-5.5", null, env)).toEqual({
+      claude: false,
+      family: null,
+      model: "openai:gpt-5.5",
+      tier: "fable",
+    });
+    // An id no override names keeps being an affordable target.
+    expect(resolveLaunchModel("openai:gpt-5.5", null, NO_ENV)).toEqual({
+      claude: false,
+      family: null,
+      model: "openai:gpt-5.5",
+      tier: null,
+    });
   });
 
   it("the gateway's model slot for the family: its first target answers (the model itself)", () => {
@@ -105,12 +140,21 @@ describe("which model a launch runs on", () => {
       claude: true,
       family: "opus",
       model: OPUS_ID,
+      tier: "opus",
     });
     // A full id that has a model slot keeps the Claude model first, the same way.
     expect(resolveLaunchModel(OPUS_ID, configWithModelSlot(), NO_ENV)).toEqual({
       claude: true,
       family: "opus",
       model: OPUS_ID,
+      tier: "opus",
+    });
+    // A model slot's own key is its family's tier too.
+    expect(resolveLaunchModel("cc-smart-dev-kit-opus", configWithModelSlot(), NO_ENV)).toEqual({
+      claude: true,
+      family: "opus",
+      model: OPUS_ID,
+      tier: "opus",
     });
   });
 
@@ -120,17 +164,21 @@ describe("which model a launch runs on", () => {
       claude: false,
       family: null,
       model: "omniroute:glm-5.3-flash",
+      tier: null,
     });
     expect(resolveLaunchModel("omniroute:glm-5.3-flash", config, NO_ENV)).toEqual({
       claude: false,
       family: null,
       model: "omniroute:glm-5.3-flash",
+      tier: null,
     });
-    // A name no rule knows is never read as an affordable slot: the strictest rule answers.
+    // A name no rule knows is never read as an affordable slot: the strictest rule answers, and
+    // that rule is the `opus` tier.
     expect(resolveLaunchModel("some-custom-model", config, NO_ENV)).toEqual({
       claude: true,
       family: null,
       model: "some-custom-model",
+      tier: "opus",
     });
   });
 
@@ -139,6 +187,7 @@ describe("which model a launch runs on", () => {
       claude: true,
       family: "sonnet",
       model: "claude-sonnet-5-5",
+      tier: null,
     });
   });
 });
@@ -442,15 +491,105 @@ describe("the verdict", () => {
     }
   });
 
-  it("Fable: the word `build` on a read-only type asks too (one list, so it is a listed word)", () => {
-    const asked = verdict({
+  it("Fable: `build` on a read-only type is denied — that word is the builder's own", () => {
+    const refused = verdict({
       effort: "max",
       model: "fable",
       prompt: "Fable reason: build - the person wants Fable on this plan",
       subagent_type: "Explore",
     });
+    expect(refused.decision).toBe("deny");
+    // The refusal lists the read-only words, and names `build` as the builder's own line.
+    expect(refused.reason).toContain(
+      "Fable reason: <hard|rewrite|ui-design|architecture|review|plan|unsatisfied> - <why>",
+    );
+    expect(refused.reason).toContain("Fable reason: build - <what the person asked>");
+  });
+
+  it("a fork is judged on the session's model, never on the model it names", () => {
+    // Claude Code ignores a `model` a fork is given (`docs/claude-code-contract.md`): a fork
+    // naming Haiku in a Fable session still runs on Fable, so the Fable rules judge it.
+    const fableSession: GuardContext = { config: null, gatewayOn: false, sessionModel: "fable" };
+    const bare = verdict(
+      { effort: "high", model: "haiku", prompt: "do it", subagent_type: "fork" },
+      fableSession,
+    );
+    expect(bare.decision).toBe("deny");
+    expect(bare.reason).toContain("Fable reason: build");
+    expect(bare.real?.tier).toBe("fable");
+    const built = verdict(
+      { effort: "high", model: "haiku", prompt: "Fable reason: build - x", subagent_type: "fork" },
+      fableSession,
+    );
+    expect(built.decision).toBe("ask");
+    expect(built.real?.tier).toBe("fable");
+    // A fork naming Sonnet in an Opus session runs on Opus: with no reason line, denied.
+    const opusSession: GuardContext = {
+      config: null,
+      gatewayOn: false,
+      sessionModel: "claude-opus-5-5",
+    };
+    const named = verdict(
+      { effort: "high", model: "sonnet", prompt: "do it", subagent_type: "fork" },
+      opusSession,
+    );
+    expect(named.decision).toBe("deny");
+    expect(named.reason).toContain("Opus reason: <security|money|");
+    expect(named.real?.tier).toBe("opus");
+    expect(named.real?.model).toBe("claude-opus-5-5");
+  });
+
+  it("a review whose model the guard cannot read asks about that reading", () => {
+    // The review shortcut needs a model the guard can really read as Opus (owner, 2026-10-16):
+    // an unreadable name asks about the reading instead of passing on a guess or denying it.
+    const asked = verdict({
+      effort: "xhigh",
+      model: "best",
+      prompt: "r",
+      subagent_type: "Reviewer",
+    });
     expect(asked.decision).toBe("ask");
-    expect(asked.why).toBe("fable:build");
+    expect(asked.reason).toContain("A review on `best` at effort `xhigh`");
+    expect(asked.reason).toContain("cannot read the model behind it as Claude Opus");
+    expect(asked.why).toBe("opus:review-unreadable");
+    // A review on a readable Opus stays allowed with no question.
+    expect(
+      verdict({ effort: "xhigh", model: "opus", prompt: "r", subagent_type: "Reviewer" }).decision,
+    ).toBe("allow");
+  });
+
+  it("every premium ask at effort max says so; Sonnet, Haiku and a slot stay silent", () => {
+    const review = verdict({
+      effort: "max",
+      model: "opus",
+      prompt: "r",
+      subagent_type: "Reviewer",
+    });
+    expect(review.reason).toContain("at effort `max`");
+    const opus = verdict({
+      effort: "max",
+      model: "opus",
+      prompt: "Opus reason: architecture - it is",
+    });
+    expect(opus.reason).toContain("at effort `max`");
+    const fable = verdict({
+      effort: "max",
+      model: "fable",
+      prompt: "Fable reason: hard - it is",
+      subagent_type: "Plan",
+    });
+    expect(fable.reason).toContain("at effort `max`");
+    const built = verdict({
+      effort: "max",
+      model: "fable",
+      prompt: "Fable reason: build - x",
+      subagent_type: "general-purpose",
+    });
+    expect(built.reason).toContain("at effort `max`");
+    // No gate for these: max is a silent allow.
+    for (const model of ["sonnet", "haiku", "cc-smart-dev-kit-worker"]) {
+      expect(verdict({ effort: "max", model, prompt: "build" }).decision).toBe("allow");
+    }
   });
 
   it("Fable: a fork of a Fable session needs `build` too; without a line it is denied", () => {
@@ -464,6 +603,8 @@ describe("the verdict", () => {
     expect(built.decision).toBe("ask");
     expect(built.real?.family).toBe("fable");
     expect(built.reason).toContain("will build here");
+    // A fork names no effort: it runs at the session's own, and the ask says so (not "at effort ``").
+    expect(built.reason).toContain("`fork` will build here, at the session's own effort,");
     const bare = verdict({ prompt: "do it", subagent_type: "fork" }, fableSession);
     expect(bare.decision).toBe("deny");
     expect(bare.reason).toContain("Fable reason: build");
@@ -490,14 +631,18 @@ describe("the verdict", () => {
     expect(result.reason).toContain("nobody to answer");
   });
 
-  it("the Fable refusal lists every word, `unsatisfied` and `build` included", () => {
-    const words = `Fable reason: <hard|rewrite|ui-design|architecture|review|plan|unsatisfied|build> - <why>`;
-    // No reason line at all, and a word nobody listed: the same refusal names the whole list.
+  it("the Fable refusal lists the read-only words, `unsatisfied` included, and `build` apart", () => {
+    // No reason line at all, and a word nobody listed: the same refusal, and it never offers
+    // `build` as a read-only word — a Builder's line is named separately (owner, 2026-10-16).
     for (const prompt of ["help", "Fable reason: because"]) {
       const refused = verdict({ effort: "max", model: "fable", prompt, subagent_type: "Explore" });
       expect(refused.decision).toBe("deny");
-      expect(refused.reason).toContain(words);
+      expect(refused.reason).toContain(
+        "Fable reason: <hard|rewrite|ui-design|architecture|review|plan|unsatisfied> - <why>",
+      );
       expect(refused.reason).toContain("unsatisfied");
+      expect(refused.reason).not.toContain("unsatisfied|build");
+      expect(refused.reason).toContain("Fable reason: build - <what the person asked>");
     }
   });
 
@@ -569,6 +714,101 @@ describe("the verdict", () => {
   });
 });
 
+describe("tiers, not vendors (owner, 2026-10-16)", () => {
+  // `opus` and `fable` mean the TIER: an override that points one at a backend keeps its gates,
+  // and it is never affordable, never forced to `max`, and always named with what answers it.
+  const OPENAI_OPUS = { ANTHROPIC_DEFAULT_OPUS_MODEL: "openai:gpt-5.5" };
+  const OPENAI_FABLE = { ANTHROPIC_DEFAULT_FABLE_MODEL: "openai:gpt-5.5" };
+  const ON: GuardContext = { config: null, gatewayOn: true, sessionModel: null };
+
+  it("`opus` over a backend keeps the Opus gate, and the affordable rule never applies", () => {
+    const bare = verdict({ effort: "high", model: "opus", prompt: "do it" }, ON, OPENAI_OPUS);
+    expect(bare.decision).toBe("deny");
+    expect(bare.reason).toContain("`opus` (answered by openai:gpt-5.5)");
+    expect(bare.reason).toContain("Opus reason: <security|money|");
+    // With the gateway on, a missing `max` is never a reason for a tier.
+    expect(bare.reason).not.toContain("affordable");
+    const asked = verdict(
+      { effort: "high", model: "opus", prompt: "Opus reason: architecture - it is" },
+      ON,
+      OPENAI_OPUS,
+    );
+    expect(asked.decision).toBe("ask");
+    expect(asked.reason).toContain("`opus` (answered by openai:gpt-5.5)");
+    // A review on the tier: allowed at xhigh, an ask at max, naming the model behind it.
+    expect(
+      verdict(
+        { effort: "xhigh", model: "opus", prompt: "r", subagent_type: "Reviewer" },
+        ON,
+        OPENAI_OPUS,
+      ).decision,
+    ).toBe("allow");
+    const deep = verdict(
+      { effort: "max", model: "opus", prompt: "r", subagent_type: "Reviewer" },
+      ON,
+      OPENAI_OPUS,
+    );
+    expect(deep.decision).toBe("ask");
+    expect(deep.reason).toContain("`opus` (answered by openai:gpt-5.5)");
+    expect(deep.reason).toContain("at effort `max`");
+    expect(deep.why).toBe("opus:review-max");
+  });
+
+  it("`fable` over a backend keeps the Fable gate: a builder needs `build`", () => {
+    const built = verdict(
+      {
+        effort: "high",
+        model: "fable",
+        prompt: "Fable reason: build - the person asked",
+        subagent_type: "general-purpose",
+      },
+      ON,
+      OPENAI_FABLE,
+    );
+    expect(built.decision).toBe("ask");
+    expect(built.reason).toContain("`fable` (answered by openai:gpt-5.5)");
+    expect(built.reason).toContain("at effort `high`");
+    const bare = verdict(
+      { effort: "high", model: "fable", prompt: "do it", subagent_type: "general-purpose" },
+      ON,
+      OPENAI_FABLE,
+    );
+    expect(bare.decision).toBe("deny");
+    expect(bare.reason).toContain("Fable reason: build - <what the person asked>");
+    // A read-only agent on the tier keeps the read-only words.
+    const advice = verdict(
+      { effort: "high", model: "fable", prompt: "Fable reason: plan - yes", subagent_type: "Plan" },
+      ON,
+      OPENAI_FABLE,
+    );
+    expect(advice.decision).toBe("ask");
+    expect(advice.why).toBe("fable:plan");
+  });
+
+  it("a fork of a session on the fable tier's backend keeps the Fable rules", () => {
+    const session: GuardContext = {
+      config: null,
+      gatewayOn: false,
+      sessionModel: "openai:gpt-5.5",
+    };
+    const built = verdict(
+      { prompt: "Fable reason: build - the person asked", subagent_type: "fork" },
+      session,
+      OPENAI_FABLE,
+    );
+    expect(built.decision).toBe("ask");
+    expect(built.real?.tier).toBe("fable");
+    expect(built.reason).toContain("`fable` (answered by openai:gpt-5.5)");
+    const bare = verdict({ prompt: "do it", subagent_type: "fork" }, session, OPENAI_FABLE);
+    expect(bare.decision).toBe("deny");
+    expect(bare.reason).toContain("Fable reason: build");
+    // The same id with no override naming it is an ordinary affordable target.
+    const affordable = verdict({ prompt: "do it", subagent_type: "fork" }, session, NO_ENV);
+    expect(affordable.decision).toBe("allow");
+    expect(affordable.real?.tier).toBeNull();
+  });
+});
+
 describe("a Workflow script", () => {
   it("reads each agent(…) call: its model, effort, agentType, label and literal prompt", () => {
     const script = [
@@ -637,6 +877,36 @@ describe("a Workflow script", () => {
     expect(answer.permissionDecision).toBe("ask");
     expect(answer.permissionDecisionReason).toContain('the launch "plan"');
     expect(answer.permissionDecisionReason).toContain("Fable advises");
+  });
+
+  it("an ask names every launch of the script that asks, not only the first", () => {
+    const script = [
+      'await agent("Fable reason: plan - look", { label: "advice", model: "fable", effort: "max", agentType: "Plan" });',
+      'await agent("Fable reason: build - write it", { label: "builder", model: "fable", effort: "max", agentType: "general-purpose" });',
+    ].join("\n");
+    const answer = JSON.parse(
+      agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app").stdout ?? "{}",
+    ).hookSpecificOutput;
+    expect(answer.permissionDecision).toBe("ask");
+    expect(answer.permissionDecisionReason).toContain('the launch "advice"');
+    expect(answer.permissionDecisionReason).toContain('the launch "builder"');
+  });
+
+  it("an ask that rests on the effort, not the prompt, survives a built prompt", () => {
+    // The review at `max` asks for the effort: a prompt the guard cannot read does not matter.
+    const review =
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture is a template that builds its prompt.
+      'await agent(`review ${x}`, { agentType: "Reviewer", model: "opus", effort: "max", label: "deep" });';
+    const deep = judgeWorkflow(review, CTX, NO_ENV);
+    expect(deep[0]?.verdict.decision).toBe("ask");
+    expect(deep[0]?.verdict.why).toBe("opus:review-max");
+    // A reason-line ask in the same shape is refused instead: there is nothing to approve.
+    const advice =
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture is a template that builds its prompt.
+      'await agent(`why ${x}`, { agentType: "Plan", model: "fable", effort: "max", label: "advice" });';
+    const refused = judgeWorkflow(advice, CTX, NO_ENV);
+    expect(refused[0]?.verdict.decision).toBe("deny");
+    expect(refused[0]?.verdict.reason).toContain("prompt is built at run time");
   });
 
   it("a launch whose model or prompt is not a literal: denied, never guessed", () => {
@@ -845,6 +1115,30 @@ describe("the hook's answer, and the record", () => {
     expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toHaveLength(2);
   });
 
+  it("a Workflow denied as a whole records none of its launches; an ask records them", () => {
+    const where = paths();
+    mkdirSync(where.stateDir, { recursive: true });
+    const denied = [
+      'await agent("Fable reason: plan - look", { label: "advice", model: "fable", effort: "max", agentType: "Plan" });',
+      'await agent("do it", { label: "plain", model: "opus", effort: "high" });',
+    ].join("\n");
+    const answer = JSON.parse(
+      agentGuard(workflowCall(denied), NO_ENV, where, "/tmp/app").stdout ?? "{}",
+    ).hookSpecificOutput;
+    expect(answer.permissionDecision).toBe("deny");
+    // The whole call was refused, so nothing in it ran: no launch of it is recorded.
+    expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toEqual([]);
+    const asked =
+      'await agent("Fable reason: plan - look", { label: "advice", model: "fable", effort: "max", agentType: "Plan" });';
+    const second = JSON.parse(
+      agentGuard(workflowCall(asked), NO_ENV, where, "/tmp/app").stdout ?? "{}",
+    ).hookSpecificOutput;
+    expect(second.permissionDecision).toBe("ask");
+    const launches = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.reason).toBe("fable:plan");
+  });
+
   it("a Fable build launch is recorded once with its reason, `fable:build`", () => {
     const where = paths();
     mkdirSync(where.stateDir, { recursive: true });
@@ -915,8 +1209,24 @@ describe("the hook's answer, and the record", () => {
       fork: false,
       model: "fable",
       subagent_type: "Plan",
+      tier: "fable",
       tool: "Agent",
       why: "fable:hard",
+    });
+    // The tier an override answers with is the tier the guard judged by.
+    const overridden = guardFacts(agentCall({ effort: "high", model: "opus", prompt: "do it" }), {
+      env: { ANTHROPIC_DEFAULT_OPUS_MODEL: "openai:gpt-5.5" },
+      paths: where,
+    });
+    expect(overridden).toEqual({
+      decision: "deny",
+      effort: "high",
+      family: "opus",
+      fork: false,
+      model: "opus",
+      subagent_type: null,
+      tier: "opus",
+      tool: "Agent",
     });
   });
 

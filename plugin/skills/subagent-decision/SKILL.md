@@ -68,6 +68,26 @@ the judgment for it in the brief:
 - **Its limits in words** — an affordable model follows written limits less reliably than Claude.
 - Two failed tries at the same job → hand it to `opus`; never a third affordable try.
 
+## Choosing Fable
+
+`fable` is the premium advisor (the core instructions' model table): the hardest long-horizon
+work, hard architecture, a rewrite or a complex UI/UX design, a strong second-opinion review,
+refining a plan — and a fresh attempt when the person is not satisfied with your answer. The
+guard asks the person about every Fable launch.
+
+- **Read-only agents** (Plan, Reviewer, Explore, Code Explorer) take an advisory word:
+  `Fable reason: <hard|rewrite|ui-design|architecture|review|plan|unsatisfied> - <why>`.
+  `unsatisfied` is the fresh attempt: something you answered did not land.
+- **An agent that can change files** — a builder, or a fork — needs the one word `build`, which
+  only the person can mean: `Fable reason: build - <what the person asked>`. `build` on a
+  read-only agent is refused, like every other word on a builder.
+- **A fork of a Fable session** runs on the session's own model, so it is a builder: name the
+  word `build`, and the person approves that one.
+
+**A fresh attempt's brief** (`unsatisfied`) carries: the task; your answer, or the files you
+changed; what the person disliked, in their words; and what it returns — a design, a plan or a
+fix for you or a worker to build, never a build of its own.
+
 ## While agents run
 
 - **Never switch or remove the folder an agent was launched from while it runs.** An agent's

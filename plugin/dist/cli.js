@@ -18052,6 +18052,7 @@ var OPUS_REASONS = [
   "debugging"
 ];
 var FABLE_BUILD_REASON = "build";
+var BUILDER_WORDS = [FABLE_BUILD_REASON];
 var FABLE_REASONS = [
   "hard",
   "rewrite",
@@ -18059,8 +18060,7 @@ var FABLE_REASONS = [
   "architecture",
   "review",
   "plan",
-  "unsatisfied",
-  FABLE_BUILD_REASON
+  "unsatisfied"
 ];
 var READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore", "Code Explorer"];
 var REVIEW_AGENTS = ["Reviewer"];
@@ -18078,6 +18078,14 @@ function agentList(from, env, name) {
   const listed = (env[name] ?? "").split(",").map((one) => one.trim()).filter((one) => one !== "");
   return new Set([...from, ...listed].map(agentKey));
 }
+function premiumTier(family) {
+  return family === "fable" || family === "opus" ? family : null;
+}
+function tierOfReading(id, family) {
+  if (family === null)
+    return premiumTier(familyOfModel(id)) ?? "opus";
+  return premiumTier(family);
+}
 function familyEnv(family) {
   return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
 }
@@ -18093,38 +18101,63 @@ function modelSlotFirstTarget(config, family) {
   }
   return null;
 }
+function tierOfMappedId(model, config, env) {
+  for (const premium of ["fable", "opus"]) {
+    const override = stringField(env[familyEnv(premium)]);
+    if (override !== null && withoutContextSuffix(override.trim()) === model)
+      return premium;
+    if (modelSlotFirstTarget(config, premium) === model)
+      return premium;
+  }
+  return null;
+}
 function resolveName(text, config) {
   if (text.startsWith("claude-")) {
     const slot = config?.modelSlots?.[text];
     const first = slot === undefined ? undefined : config?.slots[slot]?.[0];
     const shown = first ?? text;
-    return { claude: true, family: familyOfModel(shown), model: shown };
+    const family = familyOfModel(shown);
+    return { claude: true, family, model: shown, tier: tierOfReading(text, family) };
   }
   if (isSlotKey(text)) {
     const first = config?.slots[text]?.[0];
-    if (first === undefined)
-      return { claude: false, family: null, model: text };
-    return resolveTarget(first);
+    const model = first === undefined ? { claude: false, family: null, model: text, tier: null } : resolveTarget(first);
+    const slotFamily = MODEL_SLOTS[text];
+    return slotFamily === "fable" || slotFamily === "opus" ? { ...model, family: slotFamily, tier: slotFamily } : model;
   }
   const parsed = parseTarget(text);
   if ("target" in parsed && parsed.target.kind === "backend") {
-    return { claude: false, family: null, model: text };
+    return { claude: false, family: null, model: text, tier: null };
   }
-  return { claude: true, family: null, model: text };
+  return { claude: true, family: null, model: text, tier: "opus" };
 }
 function resolveTarget(text) {
   const parsed = parseTarget(text);
-  return "target" in parsed && parsed.target.kind === "anthropic" ? { claude: true, family: familyOfModel(parsed.target.model), model: parsed.target.model } : { claude: false, family: null, model: text };
+  if (!("target" in parsed) || parsed.target.kind !== "anthropic") {
+    return { claude: false, family: null, model: text, tier: null };
+  }
+  const family = familyOfModel(parsed.target.model);
+  return {
+    claude: true,
+    family,
+    model: parsed.target.model,
+    tier: tierOfReading(parsed.target.model, family)
+  };
 }
 function resolveLaunchModel(name, config, env) {
   const text = withoutContextSuffix(name.trim());
   const family = CLAUDE_FAMILIES.find((one) => one === text.toLowerCase());
-  if (family === undefined)
-    return resolveName(text, config);
+  if (family === undefined) {
+    const mapped = tierOfMappedId(text, config, env);
+    const resolved = resolveName(text, config);
+    return mapped === null || resolved.tier !== null ? resolved : { ...resolved, tier: mapped };
+  }
+  const tier = premiumTier(family);
   const override = stringField(env[familyEnv(family)]);
-  if (override !== null)
-    return resolveName(withoutContextSuffix(override.trim()), config);
-  return { claude: true, family, model: modelSlotFirstTarget(config, family) ?? text };
+  if (override !== null) {
+    return { ...resolveName(withoutContextSuffix(override.trim()), config), family, tier };
+  }
+  return { claude: true, family, model: modelSlotFirstTarget(config, family) ?? text, tier };
 }
 function readLaunch(input) {
   const tool = stringField(input.tool_name);
@@ -18444,7 +18477,7 @@ function judgeWorkflow(script, ctx, env) {
     if (launch.model === null) {
       return { launch, verdict: deny(verdict.real, NO_WORKFLOW_MODEL) };
     }
-    if (launch.prompt === null && verdict.decision !== "allow") {
+    if (launch.prompt === null && (verdict.decision === "deny" || verdict.restsOnPrompt === true)) {
       return {
         launch,
         verdict: {
@@ -18501,38 +18534,48 @@ function effortDenial(effort) {
   ].join(`
 `);
 }
-function opusDenial() {
+function namedModel(real) {
+  if (real.claude)
+    return real.tier === "fable" ? "Claude Fable" : "Claude Opus";
+  return `\`${real.tier ?? real.model}\` (answered by ${real.model})`;
+}
+function atEffort(effort) {
+  return effort === null ? "at the session's own effort" : `at effort \`${effort.toLowerCase()}\``;
+}
+function opusDenial(real) {
   return [
-    "This launch would run on Claude Opus.",
+    `This launch would run on ${namedModel(real)}.`,
     "Opus is for reviews and the owner's listed exceptions only: launch it as a review agent (`subagent_type` Reviewer, or one ending `:reviewer`), or put a line in the prompt saying why \u2014 the person is then asked to approve each one:",
     `Opus reason: <${OPUS_REASONS.join("|")}>`
   ].join(`
 `);
 }
-function fableDenial() {
+function fableDenial(real) {
   return [
-    "This launch would run on Claude Fable.",
+    `This launch would run on ${namedModel(real)}.`,
     "Fable advises; it builds only when the person asks. Use a read-only agent type (Plan, Reviewer, Explore, Code Explorer) and put a line in the prompt saying why:",
-    `Fable reason: <${FABLE_REASONS.join("|")}> - <why>`
+    `Fable reason: <${FABLE_REASONS.join("|")}> - <why>`,
+    `An agent that can change files needs \`Fable reason: ${FABLE_BUILD_REASON} - <what the person asked>\` instead.`
   ].join(`
 `);
 }
-function fableBuildDenial(type) {
+function fableBuildDenial(real, type) {
   return [
-    `This launch asks for \`${type || "(no type)"}\`, which can change files, and Fable builds only when the person asks.`,
-    "Put what the person asked for in the prompt as this line, and they approve this one launch:",
+    `This launch would run on ${namedModel(real)}, and it asks for \`${type || "(no type)"}\`, which can change files.`,
+    "Fable builds only when the person asks: put what they asked for in the prompt as this line, and they approve this one launch:",
     `Fable reason: ${FABLE_BUILD_REASON} - <what the person asked>`
   ].join(`
 `);
 }
 function judgeLaunch(launch, ctx, env) {
+  const named = launch.model;
   if (!launch.fork) {
-    if (launch.model === null)
+    if (named === null)
       return deny(null, NO_MODEL);
     if (launch.effort === null)
       return deny(null, NO_EFFORT);
   }
-  const real = launch.model !== null ? resolveLaunchModel(launch.model, ctx.config, env) : forkModel(ctx.sessionModel, ctx.config, env);
+  const real = launch.fork ? forkModel(ctx.sessionModel, ctx.config, env) : resolveLaunchModel(named ?? "", ctx.config, env);
   if (launch.effort !== null && !effortAllowed(launch.effort)) {
     return deny(real, effortDenial(launch.effort));
   }
@@ -18540,26 +18583,13 @@ function judgeLaunch(launch, ctx, env) {
   const review = ctx.reviewAgents === undefined ? agentList(REVIEW_AGENTS, env, REVIEW_AGENTS_ENV) : new Set(ctx.reviewAgents.map(agentKey));
   const readOnly = ctx.readOnlyAgents === undefined ? agentList(READ_ONLY_AGENTS, env, READ_ONLY_AGENTS_ENV) : new Set(ctx.readOnlyAgents.map(agentKey));
   const isReview = review.has(agentKey(type));
-  if (!real.claude) {
-    if (ctx.gatewayOn && launch.effort?.toLowerCase() !== "max") {
-      return deny(real, [
-        `This launch runs on ${real.model}, an affordable gateway slot.`,
-        'An affordable slot runs at effort `max` (its reasoning costs cents): pass `effort: "max"`.'
-      ].join(`
-`));
-    }
-    return allow(real, "");
-  }
-  if (real.family === "haiku" || real.family === "sonnet")
-    return allow(real, "");
-  if (real.family === "fable") {
+  const builder = !readOnly.has(agentKey(type));
+  if (real.tier === "fable") {
     const said = reasonLine(launch.prompt, "Fable reason");
-    const word = reasonWord2(said, FABLE_REASONS);
-    const builder = !readOnly.has(agentKey(type));
-    if (builder ? word !== FABLE_BUILD_REASON : word === null) {
-      return deny(real, builder ? fableBuildDenial(type) : fableDenial());
-    }
-    if ((env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0") {
+    const word = reasonWord2(said, builder ? BUILDER_WORDS : FABLE_REASONS);
+    if (word === null)
+      return deny(real, builder ? fableBuildDenial(real, type) : fableDenial(real));
+    if (nobodyWatches(env)) {
       return deny(real, [
         "A Fable launch is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
         "Run it in an interactive session."
@@ -18570,80 +18600,118 @@ function judgeLaunch(launch, ctx, env) {
       decision: "ask",
       real,
       reason: builder ? [
-        `Claude Fable launch: \`${type || "(no type)"}\` will build here, at the person's request, with the reason line \`Fable reason: ${said}\`.`,
-        "Claude Fable builds only when the person asks, and this launch spends the person's own plan usage. Approve only if you asked for it."
+        `${namedModel(real)} launch: \`${type || "(no type)"}\` will build here, ${atEffort(launch.effort)}, at the person's request, with the reason line \`Fable reason: ${said}\`.`,
+        "Fable builds only when the person asks, and this launch spends the person's own plan usage. Approve only if you asked for it."
       ].join(`
 `) : [
-        `Claude Fable launch: a read-only agent (\`${type}\`) with the reason line \`Fable reason: ${said}\`.`,
+        `${namedModel(real)} launch: a read-only agent (\`${type}\`) ${atEffort(launch.effort)}, with the reason line \`Fable reason: ${said}\`.`,
         "Fable advises; it builds only when the person asks. Approve if this is the advice, the review or the fresh attempt you want."
       ].join(`
 `),
-      why: `fable:${word}`
+      why: `fable:${word}`,
+      restsOnPrompt: true
     };
   }
-  if (isReview) {
-    if (launch.effort?.toLowerCase() !== "max")
-      return allow(real, "review");
-    if ((env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0") {
+  if (real.tier === "opus") {
+    if (isReview) {
+      if (real.family !== "opus") {
+        if (nobodyWatches(env)) {
+          return deny(real, "A review whose model the guard cannot read as Claude Opus is approved by the person, one by one, and this session has nobody to answer (`claude -p`).");
+        }
+        return {
+          decision: "ask",
+          real,
+          reason: [
+            `A review on \`${real.model}\` ${atEffort(launch.effort)}: the guard cannot read the model behind it as Claude Opus.`,
+            "Approve only if this review really runs on the opus tier."
+          ].join(`
+`),
+          why: "opus:review-unreadable"
+        };
+      }
+      if (launch.effort?.toLowerCase() !== "max")
+        return allow(real, "review");
+      if (nobodyWatches(env)) {
+        return deny(real, [
+          "A review at effort `max` is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
+          "Run it at `xhigh`, or in an interactive session."
+        ].join(`
+`));
+      }
+      return {
+        decision: "ask",
+        real,
+        reason: `${namedModel(real)} review at effort \`max\`: reviews run at \`xhigh\` unless you asked for a deeper one. Approve if you did.`,
+        why: "opus:review-max"
+      };
+    }
+    const said = reasonLine(launch.prompt, "Opus reason");
+    const word = reasonWord2(said, OPUS_REASONS);
+    if (word === null)
+      return deny(real, opusDenial(real));
+    if (nobodyWatches(env)) {
       return deny(real, [
-        "A review at effort `max` is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
-        "Run it at `xhigh`, or in an interactive session."
+        "An Opus launch other than a review is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
+        "Run it in an interactive session, or launch it as a review agent."
       ].join(`
 `));
     }
     return {
       decision: "ask",
       real,
-      reason: "Claude Opus review at effort `max`: reviews run at `xhigh` unless you asked for a deeper one. Approve if you did.",
-      why: "opus:review-max"
+      reason: [
+        `${namedModel(real)} launch: not a review, ${atEffort(launch.effort)}, with the reason line \`Opus reason: ${said}\`.`,
+        "Opus is for reviews and the listed exceptions. Approve only if this launch is one of them."
+      ].join(`
+`),
+      why: `opus:${word}`,
+      restsOnPrompt: true
     };
   }
-  const said = reasonLine(launch.prompt, "Opus reason");
-  const word = reasonWord2(said, OPUS_REASONS);
-  if (word === null)
-    return deny(real, opusDenial());
-  if ((env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0") {
-    return deny(real, [
-      "An Opus launch other than a review is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
-      "Run it in an interactive session, or launch it as a review agent."
-    ].join(`
+  if (!real.claude) {
+    if (ctx.gatewayOn && launch.effort?.toLowerCase() !== "max") {
+      return deny(real, [
+        `This launch runs on ${real.model}, an affordable gateway slot.`,
+        'An affordable slot runs at effort `max` (its reasoning costs cents): pass `effort: "max"`.'
+      ].join(`
 `));
+    }
+    return allow(real, "");
   }
-  return {
-    decision: "ask",
-    real,
-    reason: [
-      `Claude Opus launch: not a review, with the reason line \`Opus reason: ${said}\`.`,
-      "Opus is for reviews and the listed exceptions. Approve only if this launch is one of them."
-    ].join(`
-`),
-    why: `opus:${word}`
-  };
+  return allow(real, "");
+}
+function nobodyWatches(env) {
+  return (env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0";
 }
 function forkModel(sessionModel, config, env) {
   if (sessionModel === null)
-    return { claude: true, family: "opus", model: "the session's model (unknown)" };
+    return { claude: true, family: "opus", model: "the session's model (unknown)", tier: "opus" };
   return resolveLaunchModel(sessionModel, config, env);
 }
-function readGuardContext(paths, input, env) {
-  let config = null;
+function gatewayConfigOf(paths) {
   try {
-    config = loadConfigFile(paths.gatewayConfigFile);
+    return loadConfigFile(paths.gatewayConfigFile);
   } catch {
-    config = null;
+    return null;
   }
+}
+function sessionModelOf(input, env) {
+  const transcript = stringField(input.transcript_path);
+  const answered = transcript === null ? null : lastClaudeModel(transcript);
+  return answered ?? stringField(env.ANTHROPIC_MODEL);
+}
+function readGuardContext(paths, input, env) {
+  const config = gatewayConfigOf(paths);
   let gatewayOn = false;
   try {
     gatewayOn = settingsReport(paths.settingsFile).baseUrl !== null;
   } catch {
     gatewayOn = false;
   }
-  const transcript = stringField(input.transcript_path);
-  const answered = transcript === null ? null : lastClaudeModel(transcript);
   return {
     config,
     gatewayOn,
-    sessionModel: answered ?? stringField(env.ANTHROPIC_MODEL)
+    sessionModel: sessionModelOf(input, env)
   };
 }
 function guardFacts(input, context) {
@@ -18676,12 +18744,13 @@ function guardFacts(input, context) {
     fork: launch.fork,
     model: launch.model,
     subagent_type: launch.subagentType,
+    tier: result.real?.tier ?? null,
     tool: launch.tool,
     ...result.why === "" ? {} : { why: result.why }
   };
 }
 function recorded(result, launch, input, cwd, nowMs) {
-  const family = result.real?.family;
+  const family = result.real?.tier;
   if (family !== "opus" && family !== "fable")
     return null;
   return {
@@ -18707,18 +18776,17 @@ function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
     if (refusal !== null)
       return toolDecision("deny", refusal);
     const results = judgeWorkflow(script, context, env);
+    const decided = results.find((one) => one.verdict.decision === "deny");
+    if (decided !== undefined)
+      return toolDecision("deny", workflowReason(decided));
     for (const one of results) {
-      if (one.verdict.decision === "deny")
-        continue;
       const record = recorded(one.verdict, asLaunch(one.launch), input, cwd, nowMs);
       if (record !== null)
         appendAgentLaunch(file, record);
     }
-    const decided = results.find((one) => one.verdict.decision === "deny");
-    const asked = results.find((one) => one.verdict.decision === "ask");
-    if (decided !== undefined)
-      return toolDecision("deny", workflowReason(decided));
-    return asked === undefined ? SILENT : toolDecision("ask", workflowReason(asked));
+    const asks = results.filter((one) => one.verdict.decision === "ask");
+    return asks.length === 0 ? SILENT : toolDecision("ask", asks.map((one) => workflowReason(one)).join(`
+`));
   }
   const launch = readLaunch(input);
   if (launch === null)
@@ -18812,38 +18880,52 @@ function sessionName(context) {
 }
 
 // src/hooks/fable-session.ts
-var FABLE_SESSION_MESSAGE = "cc-smart-dev-kit: this session runs on Claude Fable, the premium model \u2014 it uses your plan's limits faster than Opus. Switch with /model if you did not mean to.";
-function fableSessionMark(paths, sessionId) {
-  return join29(paths.stateDir, `fable-session-${sessionId}`);
+function fableSessionMessage(named) {
+  return `${COMMAND}: this session runs on ${named}, the premium model \u2014 it uses your plan's limits faster than Opus. Switch with /model if you did not mean to.`;
+}
+function fableSessionModelName(real) {
+  return real.claude ? "Claude Fable" : `the \`fable\` model, ${real.model}`;
+}
+function fableSessionMark(env, sessionId) {
+  return join29(namesDir(env), `${sessionId}.fable`);
 }
 function firstTime(mark) {
   try {
-    if (existsSync31(mark))
-      return false;
     mkdirSync12(dirname9(mark), { recursive: true });
-    writeFileSync8(mark, "");
+    writeFileSync8(mark, "", { flag: "wx" });
     return true;
   } catch {
     return false;
   }
+}
+function couldBeFable(model, env) {
+  if (familyOfModel(model) === "fable")
+    return true;
+  const override = stringField(env[familyEnv("fable")]);
+  if (override !== null && withoutContextSuffix(override.trim()) === model)
+    return true;
+  const text = withoutContextSuffix(model.trim());
+  return text === "fable" || MODEL_SLOTS[text] === "fable";
 }
 function fableSession(input, env, paths) {
   const event = stringField(input.hook_event_name);
   const sessionId = input.session_id;
   if (event === null || !isSessionId(sessionId))
     return SILENT;
-  const mark = fableSessionMark(paths, sessionId);
+  if ((env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0")
+    return SILENT;
+  const mark = fableSessionMark(env, sessionId);
   if (existsSync31(mark))
     return SILENT;
-  const context = readGuardContext(paths, input, env);
-  const model = event === "SessionStart" ? stringField(input.model) : context.sessionModel;
-  if (model === null)
+  const model = event === "SessionStart" ? stringField(input.model) : sessionModelOf(input, env);
+  if (model === null || !couldBeFable(model, env))
     return SILENT;
-  if (resolveLaunchModel(model, context.config, env).family !== "fable")
+  const real = resolveLaunchModel(model, gatewayConfigOf(paths), env);
+  if (real.tier !== "fable")
     return SILENT;
   if (!firstTime(mark))
     return SILENT;
-  return systemMessage(FABLE_SESSION_MESSAGE);
+  return systemMessage(fableSessionMessage(fableSessionModelName(real)));
 }
 
 // src/hooks/git-guard.ts

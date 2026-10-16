@@ -272,9 +272,9 @@ function ownCopyLines(
   const found = new Map<string, { hook: PluginHook; handler: WiredHandler; subjects: string[] }>();
   for (const hook of pluginHooks) {
     if (own.includes(hook.name)) continue;
-    // A machine-wide hook (stop-failure, update-check, notify, agent-guard) answers about
-    // the machine, not this project: a project hook on its event is the person's own
-    // business, not a second copy of a plugin piece, so nothing warns about it.
+    // A machine-wide hook (stop-failure, update-check, notify, agent-guard, fable-session)
+    // answers about the machine, not this project: a project hook on its event is the person's
+    // own business, not a second copy of a plugin piece, so nothing warns about it.
     if (MACHINE_WIDE_HOOKS.includes(hook.name)) continue;
     for (const subject of hook.subjects) {
       for (const handler of sources.flatMap((file) => wiredHandlers(file, hook.event, subject))) {
