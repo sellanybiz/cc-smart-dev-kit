@@ -81,7 +81,10 @@ export async function answer(
   io: { say?: (line: string) => void } = {},
 ): Promise<number> {
   const say = io.say ?? ((line: string) => process.stdout.write(`${line}\n`));
-  const joined = argv.join(" ");
+  // The arguments as ONE string for matching, with every separator as "/": on Windows the
+  // installer builds `C:\…\dist\cli.js`, and a matcher written with "/" never sees it (this
+  // is the bug that made the fake skip writing the launcher on the first green-ish run).
+  const joined = argv.join(" ").replaceAll("\\", "/");
   const first = argv[0];
 
   if (first === "--version") {

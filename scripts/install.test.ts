@@ -944,29 +944,19 @@ describe("the Windows fakes: the same logic the Windows run uses, on Linux", () 
     expect(await bun(["upgrade"], context, io)).toBe(0);
     expect(await bun(["--version"], context, io)).toBe(0);
     expect(said.splice(0)).toEqual([MIN_BUN]);
-    // setup writes the launcher, the way the real one does (the template's own copy).
-    expect(
-      await bun(["--no-env-file", "--config=x", join(w.root, "dist/cli.js"), "setup"], context, io),
-    ).toBe(0);
+    // setup writes the launcher, the way the real one does (the template's own copy). The
+    // arguments are the Windows shape the installer really passes -- a path with BACKSLASHES
+    // -- so a matcher written with "/" (the bug that skipped this copy on the runner) fails
+    // here instead of on a Windows runner.
+    const windowsCli = "C:\\tools\\0.4.2\\dist\\cli.js";
+    expect(await bun(["--no-env-file", "--config=x", windowsCli, "setup"], context, io)).toBe(0);
     expect(existsSync(join(w.root, ".local/bin/cc-smart-dev-kit.cmd"))).toBe(true);
     // doctor: the real ✗ line while the browser's token is missing, then the ✓ line.
-    expect(
-      await bun(
-        ["--no-env-file", "--config=x", join(w.root, "dist/cli.js"), "doctor"],
-        context,
-        io,
-      ),
-    ).toBe(1);
+    expect(await bun(["--no-env-file", "--config=x", windowsCli, "doctor"], context, io)).toBe(1);
     expect(said.splice(0)).toEqual([bunDoctorLine(w.root)]);
     mkdirSync(dirname(tokenFile(w.root)), { recursive: true });
     writeFileSync(tokenFile(w.root), "A\n", { mode: 0o600 });
-    expect(
-      await bun(
-        ["--no-env-file", "--config=x", join(w.root, "dist/cli.js"), "doctor"],
-        context,
-        io,
-      ),
-    ).toBe(0);
+    expect(await bun(["--no-env-file", "--config=x", windowsCli, "doctor"], context, io)).toBe(0);
     expect(said.splice(0)).toEqual([`✓ the browser token is set (${tokenFile(w.root)})`]);
   });
 
