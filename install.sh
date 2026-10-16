@@ -503,7 +503,8 @@ main() {
       failed "updating the plugin failed" "claude plugin update $PLUGIN --scope user"
     fi
     PLUGIN_DIR="$(installed_path)"
-    step "5/8 the plugin is updated ($(installed_version))"
+    # Both versions on the line: what moved, and what the marketplace's own copy declares.
+    step "5/8 the plugin is updated ($have_version -> $want_version)"
   else
     if ! "$CLAUDE_BIN" plugin install "$PLUGIN" --scope user </dev/null; then
       failed "installing the plugin failed" "claude plugin install $PLUGIN --scope user"

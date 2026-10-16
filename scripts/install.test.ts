@@ -533,7 +533,7 @@ describe("install.sh: a machine, step by step", () => {
     const w = world({ answers: browserAnswers("n", "n"), installedVersion: "0.4.0" });
     const { code, out } = w.run();
     expect(code).toBe(0);
-    expect(out).toContain(`✓ 5/8 the plugin is updated (${MARKETPLACE_VERSION})\n`);
+    expect(out).toContain(`✓ 5/8 the plugin is updated (0.4.0 -> ${MARKETPLACE_VERSION})\n`);
     expect(w.callsOf("claude")).toContain(
       "plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user",
     );
@@ -989,6 +989,37 @@ describe("the PowerShell files: the patterns the Windows run taught us", () => {
   // inner array, the loop then walks two STRINGS before the pairs, and `$pair[0]` on a
   // string is its first character. A digit index on a variable is that pattern; the fix is
   // hashtables (`$marketplace.Name`), which cannot collapse.
+  // PowerShell variables are CASE-INSENSITIVE. `foreach ($marketplace in ...)` writes over a
+  // script-level `$Marketplace`, and 0.4.2's Windows run lost the marketplace's version that
+  // way: step 5 then printed "the plugin is updated" on a machine already at that version.
+  // Only the script-level names are checked -- a parameter or a loop variable inside a
+  // function has its own scope, and two functions may each name one the same way.
+  test("no script-level variable is spelled another way elsewhere", () => {
+    for (const file of [INSTALL_PS1, SMOKE_PS1]) {
+      // Comments cannot clobber anything, and these files explain the trap in them.
+      const text = readFileSync(file, "utf8")
+        .split("\n")
+        .filter((line) => !/^\s*#/.test(line))
+        .join("\n");
+      const scriptLevel = [...text.matchAll(/^\$([A-Za-z_][A-Za-z0-9_]*) = /gm)].map(
+        (match) => match[1] ?? "",
+      );
+      const otherSpellings: string[] = [];
+      for (const name of scriptLevel) {
+        const pattern = new RegExp(`\\$(${name})\\b`, "gi");
+        for (const found of text.matchAll(pattern)) {
+          const spelling = found[1] ?? "";
+          // `\$MinBun` is a regex inside a string (the smoke test reads install.ps1's own
+          // number that way), not a variable: an escaped dollar is skipped.
+          const before = text[(found.index ?? 0) - 1] ?? "";
+          if (spelling === name || before === "\\" || before === "`") continue;
+          otherSpellings.push(`${name} vs ${spelling}`);
+        }
+      }
+      expect([...new Set(otherSpellings)]).toEqual([]);
+    }
+  });
+
   test("no PowerShell file indexes a value that may be a string", () => {
     for (const file of [INSTALL_PS1, SMOKE_PS1]) {
       // Comments cannot break PowerShell, and the comment above names the pattern.

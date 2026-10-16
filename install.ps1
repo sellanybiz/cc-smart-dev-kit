@@ -242,9 +242,9 @@ function Test-JsonKey([string]$File, [string]$Key) {
 function Get-InstalledPath {
   if (-not (Test-Path $InstalledPlugins)) { return "" }
   try { $data = Get-Content -Raw -Path $InstalledPlugins | ConvertFrom-Json } catch { return "" }
-  $plugins = $data.plugins
-  if ($null -eq $plugins) { return "" }
-  $entries = $plugins.PSObject.Properties["$Plugin"]
+  $pluginList = $data.plugins
+  if ($null -eq $pluginList) { return "" }
+  $entries = $pluginList.PSObject.Properties["$Plugin"]
   if ($null -eq $entries) { return "" }
   foreach ($entry in @($entries.Value)) {
     if ($entry.scope -eq "user") { return [string]$entry.installPath }
@@ -255,9 +255,9 @@ function Get-InstalledPath {
 function Get-InstalledVersion {
   if (-not (Test-Path $InstalledPlugins)) { return "" }
   try { $data = Get-Content -Raw -Path $InstalledPlugins | ConvertFrom-Json } catch { return "" }
-  $plugins = $data.plugins
-  if ($null -eq $plugins) { return "" }
-  $entries = $plugins.PSObject.Properties["$Plugin"]
+  $pluginList = $data.plugins
+  if ($null -eq $pluginList) { return "" }
+  $entries = $pluginList.PSObject.Properties["$Plugin"]
   if ($null -eq $entries) { return "" }
   foreach ($entry in @($entries.Value)) {
     if ($entry.scope -eq "user") { return [string]$entry.version }
@@ -280,9 +280,9 @@ function Test-PluginEnabled {
 function Test-OldPluginInstalled {
   if (-not (Test-Path $InstalledPlugins)) { return $false }
   try { $data = Get-Content -Raw -Path $InstalledPlugins | ConvertFrom-Json } catch { return $false }
-  $plugins = $data.plugins
-  if ($null -eq $plugins) { return $false }
-  return $null -ne $plugins.PSObject.Properties["$OldPlugin"]
+  $pluginList = $data.plugins
+  if ($null -eq $pluginList) { return $false }
+  return $null -ne $pluginList.PSObject.Properties["$OldPlugin"]
 }
 
 # The version the marketplace's own copy declares: what `claude plugin install` would put
@@ -340,18 +340,21 @@ function Get-ShellWord([string]$Path) {
   return "'" + $Path.Replace("'", "''") + "'"
 }
 
-# Runs the plugin's own CLI with this machine's bun, in the exact form README, section
-# Install uses (both flags matter: Bun would otherwise read the folder's own `.env` files and
-# its `bunfig.toml`). The caller decides input: a pipe for a key, nothing (`$null`) for a
-# command that must not read anything.
+# The plugin's own CLI, in the exact form README, section Install uses: this machine's bun,
+# the two flags (Bun would otherwise read the folder's own `.env` files and its `bunfig.toml`)
+# and the installed bundle. ONE home for those three, splatted into every call, so a call that
+# pipes a secret can put the pipeline on the NATIVE command: a function in a pipeline receives
+# the input as `$input` and hands the child nothing (that is how `browser token` got an empty
+# stdin on the runner).
+# Runs the plugin's own CLI. The caller decides input.
 function Invoke-Cli([string[]]$CliArgs) {
-  & $Bun --no-env-file "--config=$PluginDir\bunfig.toml" "$PluginDir\dist\cli.js" @CliArgs
+  & $Bun @cliArgv @CliArgs
 }
 
 # The same, reading nothing: a command that never asks the person must not be able to eat an
 # answer meant for a question.
 function Invoke-CliQuiet([string[]]$CliArgs) {
-  $null | Invoke-Cli $CliArgs
+  $null | & $Bun @cliArgv @CliArgs
 }
 
 # A native command's output and its stderr, as one string. Windows PowerShell turns a native
@@ -519,9 +522,13 @@ if ([string]::IsNullOrEmpty($Bun)) {
 
 # --- 4. marketplaces -------------------------------------------------------------------
 $Added = [System.Collections.Generic.List[string]]::new()
-foreach ($marketplace in $MarketplacesToAdd) {
-  $name = $marketplace.Name
-  $source = $marketplace.Source
+# `$entry`, never `$marketplace`: PowerShell variables are case-INSENSITIVE, and a loop
+# variable spelled like the script's `$Marketplace` writes over it -- which is exactly how
+# step 5 lost the marketplace's version on 0.4.2's Windows run (it printed "the plugin is
+# updated" on a machine that was already current).
+foreach ($entry in $MarketplacesToAdd) {
+  $name = $entry.Name
+  $source = $entry.Source
   if (Test-MarketplaceAdded $name) { continue }
   if (-not $DryRun) {
     & $ClaudeBin plugin marketplace add $source
@@ -551,16 +558,19 @@ $WantVersion = Get-MarketplaceVersion
 if (-not [string]::IsNullOrEmpty($PluginDir) -and -not [string]::IsNullOrEmpty($WantVersion) -and $HaveVersion -eq $WantVersion) {
   Write-Step "5/8 the plugin is installed, at the marketplace's version ($WantVersion)"
 } elseif ($DryRun) {
-  Write-Skip "5/8 the plugin is $(if ([string]::IsNullOrEmpty($HaveVersion)) { "not installed" } else { $HaveVersion }): the plan installs or updates $Plugin at the user scope"
+  Write-Skip "5/8 the plugin is $(if ([string]::IsNullOrEmpty($HaveVersion)) { "not installed" } else { $HaveVersion }), the marketplace's copy is $(if ([string]::IsNullOrEmpty($WantVersion)) { "not readable" } else { $WantVersion }): the plan installs or updates $Plugin at the user scope"
 } elseif (-not [string]::IsNullOrEmpty($PluginDir)) {
   # An older copy: `claude plugin update` is the command that moves one version on, and the
-  # plugin's own update runs exactly it (docs/claude-code-contract.md proves it).
+  # plugin's own update runs exactly it (docs/claude-code-contract.md proves it). The line
+  # names both versions: what moved, and -- when the marketplace's own copy cannot be read --
+  # that it could not be.
+  $before = Get-InstalledVersion
   & $ClaudeBin plugin update $Plugin --scope user
   if ($LASTEXITCODE -ne 0) {
     Stop-Failed "updating the plugin failed" @("claude plugin update $Plugin --scope user")
   }
   $PluginDir = Get-InstalledPath
-  Write-Step "5/8 the plugin is updated ($(Get-InstalledVersion))"
+  Write-Step "5/8 the plugin is updated ($before -> $(Get-InstalledVersion))"
 } else {
   & $ClaudeBin plugin install $Plugin --scope user
   if ($LASTEXITCODE -ne 0) {
@@ -586,6 +596,7 @@ if (-not $DryRun -and -not [string]::IsNullOrEmpty($PluginDir) -and -not (Test-P
 if ([string]::IsNullOrEmpty($PluginDir) -and -not $DryRun) {
   Stop-Failed "the plugin's own folder is not in $InstalledPlugins" @("claude plugin install $Plugin --scope user")
 }
+$cliArgv = @("--no-env-file", "--config=$PluginDir\bunfig.toml", "$PluginDir\dist\cli.js")
 if ($DryRun) {
   Write-Skip "6/8 migrate runs (it moves a machine with the old anymodel names, and says `"Nothing to move.`" on one without them), then setup; both ask their own questions on the console"
 } else {
@@ -652,7 +663,7 @@ if ($DryRun) {
       $script:Answer = ""
       $saved = $false
       if (-not [string]::IsNullOrEmpty($BrowserToken)) {
-        $BrowserToken | Invoke-Cli @("browser", "token")
+        $BrowserToken | & $Bun @cliArgv browser token
         $BrowserToken = ""
         if ($LASTEXITCODE -ne 0) { Stop-Failed "the token was not saved" @((Get-PluginCommand @("browser", "token"))) }
         $saved = $true
@@ -702,7 +713,7 @@ if ($DryRun) {
         $script:Answer = ""
         if (-not [string]::IsNullOrEmpty($GatewayKey)) {
           # The key goes in on stdin, never as an argument.
-          $GatewayKey | & $Bun --no-env-file "--config=$PluginDir\bunfig.toml" "$PluginDir\dist\cli.js" gateway setup --backend-key-stdin omniroute @RestartFlag
+          $GatewayKey | & $Bun @cliArgv gateway setup --backend-key-stdin omniroute @RestartFlag
           $GatewayKey = ""
           if ($LASTEXITCODE -ne 0) {
             Stop-Failed "gateway setup failed" @((Get-PluginCommand @("gateway", "setup", "--backend-key-stdin", "omniroute")))
@@ -727,7 +738,7 @@ if ($DryRun) {
     $TavilyKey = $script:Answer
     $script:Answer = ""
     if (-not [string]::IsNullOrEmpty($TavilyKey)) {
-      $TavilyKey | & $Bun --no-env-file "--config=$PluginDir\bunfig.toml" "$PluginDir\dist\cli.js" setup --tavily-key-stdin
+      $TavilyKey | & $Bun @cliArgv setup --tavily-key-stdin
       $TavilyKey = ""
       if ($LASTEXITCODE -ne 0) {
         Stop-Failed "saving the Tavily key failed" @((Get-PluginCommand @("setup", "--tavily-key-stdin")))
