@@ -35,6 +35,7 @@ import {
   mainFolderGuardHook,
   messageGuardHook,
   PROJECT_HOOKS,
+  serenaRootHook,
   sessionNameHook,
   subagentStopHook,
   worktreeCreateHook,
@@ -242,6 +243,34 @@ const CASES: Case[] = [
       };
     },
     failsClosed: askLine,
+  },
+  {
+    spec: serenaRootHook,
+    own: { event: "PreToolUse", matcher: "mcp__serena__activate_project" },
+    setup: (config) => {
+      const repo = project(config);
+      // An activation outside the repo: the one call this hook refuses.
+      return {
+        input: {
+          hook_event_name: "PreToolUse",
+          session_id: SESSION,
+          cwd: repo,
+          tool_name: "mcp__serena__activate_project",
+          tool_input: { project: tempDir("elsewhere") },
+        },
+        env: hookEnv(),
+      };
+    },
+    // Nothing is recorded while cc-smart-dev-kit.json cannot be read — the main-folder guard
+    // then ASKS about a Serena edit (specs.ts, mainFolderGuardHook.onConfigProblem) — and one
+    // line on stderr says why.
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      expect(result.stdout).toBeUndefined();
+      expect(result.stderr).toStartWith(
+        "cc-smart-dev-kit cannot check which folder Serena edits: ",
+      );
+    },
   },
   {
     spec: messageGuardHook,

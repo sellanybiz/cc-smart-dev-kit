@@ -126,6 +126,7 @@ or local copy names the same server.
 | `@playwright/mcp` (0.0.83) attaches to a running Chrome over CDP with `--cdp-endpoint=ws://…`, adopts **every** page in the browser, and its `page._instrumentation` (a private field) carries `addListener({onApiCallBegin, onApiCallEnd})`; over CDP it does not send `Browser.setDownloadBehavior` and skips `Emulation.setFocusEmulationEnabled`. | 0.0.83 | live: the project this was ported from drove two real sessions on one Chrome (2026-10-12), which is the measurement behind every refusal in `cdp-tab-filter.ts`; `cc-smart-dev-kit browser check` repeats it (two real MCPs, one throwaway Chrome, popups, download, upload, `browser_close`). The filter's own rules are unit-tested message by message (`src/browser/cdp-tab-filter.test.ts`). |
 | Bun's own WebSocket carries a **30 MB message**, client and server (`Bun.serve` with `maxPayloadLength` raised, and `new WebSocket`), so the tab filter needs no WebSocket package. (The project this came from measured the opposite for Bun's `ws` stand-in on Bun 1.4.2 and used the `ws` package for it.) | Bun 1.4.3 | live: a one-file probe on this machine (2026-10-16) — a 30 MB string through a local `Bun.serve` and back; `src/browser/cdp-tab-filter-server.test.ts` drives the same layers with two clients and a fake Chrome. |
 | A WebSocket upgrade request from a web page carries an `Origin` header, and Playwright's does not — so a local port that refuses a connection with an `Origin` cannot be driven by any page the person opens. | Chrome 155, Bun 1.4.3 | live: the socket layer refuses such a connection (test: the same in `cdp-tab-filter-server.test.ts`, over a real WebSocket with `origin` set). |
+| With `--output-dir` set, `@playwright/mcp` 0.0.83 puts a file it names itself (`page-….png`, `page-….yml`) in that folder, but a file the **caller** names (`filename: "x.png"`) in the folder the MCP process was started in — the session's own folder. An absolute `filename` is used as it is. | 0.0.83, Chrome 155 | live (2026-10-16), headless, throwaway profile: `browser_take_screenshot` with `filename: "cc-raw.png"` wrote `<cwd>/cc-raw.png` and left the output folder holding only the server-named page snapshot; the same call with the absolute path inside the output folder wrote it there. (Why the `playwright-output` hook exists; `src/hooks/playwright-output.test.ts` keeps the rewrite, and that the answer is `updatedInput` with no permission decision is the row below.) |
 | Chrome's process-singleton socket lives under `TMPDIR` (`$TMPDIR/com.google.Chrome.<random>/SingletonSocket`), and Chrome **aborts (SIGABRT) when that path is too long**: `FATAL:chrome/browser/process_singleton_posix.cc: Socket path too long`. A machine whose `TMPDIR` is a deep path (a long scratch folder) cannot start the shared browser at all. | Chrome 155 | live (2026-10-16): a headless Chrome with `TMPDIR` set to a 118-character scratch path died with that FATAL line and left no `DevToolsActivePort`; the same Chrome with a short `TMPDIR` started at once. The plugin's own error then reads "Chrome exited (signal SIGABRT) before its debug port was ready". |
 
 ## The plugin on disk
@@ -275,6 +276,16 @@ into a table above.
   over HTTPS. `doctor` tries HTTPS first when it is set; only our reader is tested
   (`src/setup/marketplace-access.test.ts` › "github with CLAUDE_CODE_PLUGIN_PREFER_HTTPS:
   HTTPS first"). (Phase 3)
+- **A PostToolUse hook fires for an MCP tool call, and its input carries the tool's
+  `tool_response`.** `serena-root` reads the folder Serena reports out of
+  `mcp__serena__activate_project`'s answer. The project this was ported from runs its own
+  `serena-root` hook with that wiring in production, and Claude Code's docs list
+  PostToolUse for every tool; nothing here has watched a real MCP tool call reach a hook. The
+  plugin does not depend on it alone: the PreToolUse branch already records the folder the call
+  names, an unreadable answer keeps that record rather than clearing it, and the
+  `PostToolUseFailure` branch writes "unknown" — where the guard then ASKS rather than passes.
+  (Prove it in one session with Serena registered: log a PostToolUse hook's input while an
+  `activate_project` call runs.)
 - **An MCP server served from a plugin gets a new tool-name prefix**, and one registered at
   user scope keeps `mcp__<server>__*`; a user-scope server is what a session uses, unless a
   project's `.mcp.json` or a "local" copy names the same server (the docs say a project file

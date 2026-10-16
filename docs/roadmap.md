@@ -78,6 +78,13 @@ affordable models to subagent slots, and an opt-in judge for auto mode's safety 
   Worktrees): the sessions a restart or a closed window stopped, and the worktrees that are
   finished enough to remove.
 
+The two project pieces that belonged to those servers came with them: the **Serena root
+record** (`serena-root`, so the main-folder guard can place a Serena edit and refuses an
+activation that names a project by name or a folder outside the repo) and the **Playwright
+output hook** (`playwright-output`: a file the caller names goes into the shared browser's
+output folder — proved live on the pinned `@playwright/mcp`, which resolves a caller-named
+path against its own working folder).
+
 **Left in the projects that had them** (project values, not general): the dev-server probe
 (`isDevServerRunning`, which reads one project's `.dev-server.json` and ports) — the
 plugin's rule is a program running from the worktree or working in it; and the Windows

@@ -659,8 +659,8 @@ and optional shared folders for containers or users on one host, in
 ## The hooks
 
 The plugin's hooks run in every project. Most stay silent in a **project without
-`.claude/cc-smart-dev-kit.json`**; the two that are about your machine, not a project — `agent-guard`
-and `notify` — run there too (§ Notifications below). The plugin ships no worktree hook:
+`.claude/cc-smart-dev-kit.json`**; the three that are about your machine, not a project —
+`agent-guard`, `notify` and `playwright-output` — run there too (§ Notifications below). The plugin ships no worktree hook:
 Claude Code makes its own worktrees, unless a project turns on the worktree engine
 (§ Worktrees). Each hook runs through `bin/cc-smart-dev-kit-bun`, which finds bun even when your
 PATH has none: the bun `cc-smart-dev-kit setup` saved in the launcher first, then
@@ -672,7 +672,9 @@ closed), and every other hook writes one line on stderr and the session goes on
 | Hook | When | What it does |
 |---|---|---|
 | `git-guard` | before a Bash or PowerShell command | Asks you before a force-push, a push to a protected branch (`protectedBranches`), `push --all` / `--mirror`, a branch deleted on the remote (`git push origin :x`, `--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that throws changes away, `branch -D`, `stash clear` and an unnamed `stash drop` (they throw work away), and (with `worktrees`) a bare `git stash` or `stash pop`: every worktree shares one stash. Text in quotes, here-docs and comments is not a command; a shell keyword, a wrapper (`timeout 60 git push -f`, `sudo -u me …`), a here-doc fed to `sh`, and the text piped into `sh` are read through. Git's own abbreviations count (`--forc` is `--force`). Not read: a git alias (`-c alias.x=…`, or one of your own), `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file, and a branch it cannot name. |
-| `main-folder-guard` | before Edit, Write, NotebookEdit | With `worktrees.guardMainFolder`: refuses an edit of a file in the main checkout itself, and says how to get into a worktree. |
+| `main-folder-guard` | before Edit, Write, NotebookEdit, and Serena's edit tools | With `worktrees.guardMainFolder`: refuses an edit of a file in the main checkout itself, and says how to get into a worktree. A Serena edit is placed by the folder Serena has active, which `serena-root` records for the session; a folder it cannot work out, it asks about rather than letting the edit through. |
+| `serena-root` | `mcp__serena__activate_project` (before and after the call), and a session start | Records which folder Serena edits for this session (`worktrees.guardMainFolder`), so the guard above can place a Serena edit: from the moment an activation is allowed the record says "unknown" until Serena's own answer names the folder, so the guard asks rather than trusting a folder Serena may not be on. It refuses an activation that names a project by name, or a folder outside this repo and its worktrees. At a session start it forgets the record (`startup`) or distrusts it (`resume`, `clear`, `fork`). |
+| `playwright-output` | before every `mcp__playwright__*` call | Puts a screenshot or snapshot the caller names by a relative `filename` into the shared browser's output folder instead of the folder the session runs in (`@playwright/mcp` resolves a caller-named file against the process's own folder). |
 | `message-guard` | before SendMessage | Refuses a message to a session that works outside this repo (ListAgents lists every session on the machine). |
 | `agent-guard` | before an Agent launch | **Machine-wide** (it runs with or without `.claude/cc-smart-dev-kit.json`): it resolves the model the launch really runs on and holds the model rules. A launch with no `model` or no `effort` is refused (it would inherit the session's, which nobody chose); an affordable gateway slot needs `effort: "max"`, and only a slot key or a `<backend>:<model>` target counts as affordable — a name no rule knows (`best`, `opusplan`, `default`, …) is judged like Opus; Claude Opus is allowed for a review agent, and any other Opus launch needs an `Opus reason: <word>` line and asks you to approve it (in `claude -p`, with nobody to answer, it is refused; a review is not); Claude Fable only for a read-only agent with a `Fable reason: <word> - <why>` line, and Claude Code then asks you to approve each one. A fork runs on the session's model and needs no `model`; an unknown session model counts as Opus. A **Workflow** call is judged the same way, from the `agent(...)` options in its script — a launch whose `model` is built at run time is refused, never guessed, and a script that hands `agent` around (`const run = agent; run(…)`, `agent?.(…)`) or builds a call's options at run time (a `...spread`, a computed key) is refused whole — because (proved live) a workflow's agents run inside the tool and pass no hook of their own. Every Opus or Fable launch is recorded, and `cc-smart-dev-kit usage` lists them with why. |
 | `job-route` | before a Bash command | With `"jobs": { "route": true }`: a heavy command (the project's own [kinds](docs/jobs.md#kinds)) is sent through the machine's queue — rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>`, byte for byte the same command. A command already inside `cc-smart-dev-kit job run` is left as it is. |
@@ -787,7 +789,11 @@ refreshed once, for everyone.
   logins stay.
 - Everything the browser saves (screenshots, page snapshots, console and network logs,
   downloads) goes to one folder, `~/.local/share/cc-smart-dev-kit/playwright-output/`, kept
-  under 200 MB by the MCP itself.
+  under 200 MB by the MCP itself. A file a session NAMES (`filename: "home-dark.png"`) too:
+  the MCP would put that one beside the project's files — it resolves a caller-named path
+  against the folder it runs in — so the `playwright-output` hook rewrites it into that
+  folder first. A path a session gives in full is left as it is: a caller who named a place
+  meant it.
 - **A person's click opens the file picker.** While Claude is acting, the MCP holds the
   picker and waits for `browser_file_upload`; the rest of the time (and two seconds after a
   call) the interception is off, so a click in that window opens the normal picker. The file

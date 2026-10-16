@@ -34,6 +34,10 @@ on, each proved: `docs/claude-code-contract.md` § The shared browser.
   throw into the MCP — anything that fails goes to its one warning line. It is copied beside
   the profile, never run from the plugin's version folder (an update deletes that folder while
   a session's MCP runs).
+- **Where a browser file lands is one question with one home**: the launcher's
+  `--output-dir` for what the MCP names itself, and the `playwright-output` hook for what a
+  CALLER names (the MCP resolves that against its own working folder — proved live on 0.0.83).
+  A second rewrite, or a `.gitignore` guess at screenshot names, is the bug the hook exists for.
 - **A lock is a port** (`src/ports.ts`, `hold-port.ts`): the system frees it however the holder
   ends, so it can never go stale, and a new port goes into that table with its reason.
 
@@ -44,5 +48,7 @@ on, each proved: `docs/claude-code-contract.md` § The shared browser.
   each sees only its own page, a session that lets go closes only its own, a web page's
   connection is refused.
 - `browser check` — the same against the real Playwright and the real Chrome, on a throwaway
-  profile. Run it after moving the `@playwright/mcp` pin, and before a release that touches
+  profile.
+- `src/hooks/playwright-output.test.ts` — a caller-named file goes into the output folder, an
+  absolute path stays as it was. Run it after moving the `@playwright/mcp` pin, and before a release that touches
   `src/browser/`.

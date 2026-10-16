@@ -6058,6 +6058,7 @@ function satisfiesRange(version, range) {
 var PLUGIN_HOOK_NAMES = [
   "git-guard",
   "main-folder-guard",
+  "serena-root",
   "message-guard",
   "agent-guard",
   "job-route",
@@ -6901,6 +6902,9 @@ function isInside(path, folder, ignoreCase = IGNORE_CASE) {
   const parent = form(folder);
   return child === parent || child.startsWith(`${parent}/`);
 }
+function samePath(a, b, ignoreCase = IGNORE_CASE) {
+  return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
+}
 function realPath(path) {
   const rest = [];
   let at = resolve(path);
@@ -7559,7 +7563,58 @@ function afterMerge(context) {
 }
 
 // src/gateway/config.ts
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
+import { mkdirSync as mkdirSync3, readFileSync as readFileSync3, statSync as statSync3 } from "fs";
+
+// src/setup/write.ts
+import {
+  chmodSync,
+  closeSync,
+  existsSync as existsSync4,
+  fsyncSync,
+  lstatSync,
+  mkdirSync as mkdirSync2,
+  openSync,
+  readdirSync,
+  readFileSync as readFileSync2,
+  readlinkSync,
+  realpathSync as realpathSync3,
+  renameSync,
+  statSync as statSync2,
+  unlinkSync,
+  writeFileSync as writeFileSync2
+} from "fs";
+import { basename as basename2, dirname as dirname2, join as join6, resolve as resolve2 } from "path";
+function writeTemp(file, content, mode) {
+  const dir = dirname2(file);
+  mkdirSync2(dir, { recursive: true });
+  const temp = join6(dir, `.${basename2(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
+  try {
+    const fd = openSync(temp, "wx", mode);
+    try {
+      writeFileSync2(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    chmodSync(temp, mode);
+  } catch (error) {
+    if (existsSync4(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+  return temp;
+}
+function atomicWrite(file, content, mode, beforeRename) {
+  const temp = writeTemp(file, content, mode);
+  try {
+    beforeRename?.();
+    renameSync(temp, file);
+  } catch (error) {
+    if (existsSync4(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+}
 
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
@@ -7721,7 +7776,7 @@ function parseConfig(raw) {
 function loadConfigFile(path) {
   let mode;
   try {
-    mode = statSync2(path).mode;
+    mode = statSync3(path).mode;
   } catch (error) {
     throw new ConfigError(`cannot read ${path}: ${messageOf(error)}`, { cause: error });
   }
@@ -7730,7 +7785,7 @@ function loadConfigFile(path) {
   }
   let raw;
   try {
-    raw = JSON.parse(readFileSync2(path, "utf8"));
+    raw = JSON.parse(readFileSync3(path, "utf8"));
   } catch (error) {
     throw new ConfigError(`${path} is not valid JSON. Fix it by hand.`, { cause: error });
   }
@@ -7742,7 +7797,7 @@ ${parsed.error}`);
 }
 
 // src/gateway/settings.ts
-import { existsSync as existsSync4, readFileSync as readFileSync3 } from "fs";
+import { existsSync as existsSync5, readFileSync as readFileSync4 } from "fs";
 function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
@@ -7762,11 +7817,11 @@ function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function readSettings(path) {
-  if (!existsSync4(path))
+  if (!existsSync5(path))
     return {};
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync3(path, "utf8"));
+    parsed = JSON.parse(readFileSync4(path, "utf8"));
   } catch {
     throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
   }
@@ -7798,15 +7853,15 @@ function settingsReport(settingsPath) {
 }
 
 // src/hooks/agent-launches.ts
-import { appendFileSync as appendFileSync2, readFileSync as readFileSync4 } from "fs";
-import { join as join6 } from "path";
+import { appendFileSync as appendFileSync2, readFileSync as readFileSync5 } from "fs";
+import { join as join7 } from "path";
 function agentLaunchesFile(stateDir) {
-  return join6(stateDir, "agent-launches.jsonl");
+  return join7(stateDir, "agent-launches.jsonl");
 }
 function lastAgentLaunch(file) {
   let text;
   try {
-    text = readFileSync4(file, "utf8");
+    text = readFileSync5(file, "utf8");
   } catch {
     return null;
   }
@@ -7853,7 +7908,7 @@ function parseAgentLaunch(line) {
 }
 
 // src/hooks/transcript.ts
-import { closeSync, fstatSync, openSync, readSync } from "fs";
+import { closeSync as closeSync2, fstatSync, openSync as openSync2, readSync } from "fs";
 var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -7861,7 +7916,7 @@ function isJsonObject3(value) {
 function tailLines(transcriptPath) {
   let text;
   try {
-    const fd = openSync(transcriptPath, "r");
+    const fd = openSync2(transcriptPath, "r");
     try {
       const size = fstatSync(fd).size;
       const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
@@ -7869,7 +7924,7 @@ function tailLines(transcriptPath) {
       readSync(fd, buffer, 0, length, size - length);
       text = buffer.toString("utf8");
     } finally {
-      closeSync(fd);
+      closeSync2(fd);
     }
   } catch {
     return null;
@@ -8570,7 +8625,7 @@ function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
 }
 
 // src/hooks/git-guard.ts
-import { isAbsolute, resolve as resolve2 } from "path";
+import { isAbsolute, resolve as resolve3 } from "path";
 var DEFAULT_PROTECTED_BRANCHES = ["main"];
 var PUSH_VALUE_OPTIONS = [
   ["--exec", 4],
@@ -8591,13 +8646,13 @@ function movedTo(program, folder, args) {
     return null;
   const path = process.platform === "win32" ? target.replace(/^\/([A-Za-z])(?=\/|$)/, "$1:") : target;
   if (isAbsolute(path))
-    return resolve2(path);
-  return folder === null ? null : resolve2(folder, path);
+    return resolve3(path);
+  return folder === null ? null : resolve3(folder, path);
 }
 function currentBranch(folder, dir, env) {
   if (folder === null)
     return;
-  const where = dir === undefined ? folder : resolve2(folder, dir);
+  const where = dir === undefined ? folder : resolve3(folder, dir);
   const run = runGit(where, ["symbolic-ref", "--short", "-q", "HEAD"], env, GUARD_GIT_TIMEOUT_MS);
   return run.ok && run.out !== "" ? run.out : undefined;
 }
@@ -8914,44 +8969,201 @@ function routeFacts(input) {
 }
 
 // src/hooks/main-folder-guard.ts
-import { isAbsolute as isAbsolute2, resolve as resolve3 } from "path";
+import { isAbsolute as isAbsolute3, resolve as resolve5 } from "path";
+
+// src/hooks/serena-root.ts
+import { readFileSync as readFileSync6, rmSync, statSync as statSync4 } from "fs";
+import { isAbsolute as isAbsolute2, join as join8, resolve as resolve4 } from "path";
+var SERENA_ACTIVATE_TOOL = "mcp__serena__activate_project";
+var SERENA_ROOT_DIR = "serena-root";
+var UNKNOWN = "unknown";
+function serenaRootFile(paths, sessionId) {
+  if (typeof sessionId !== "string" || !/^[\w-]{1,128}$/.test(sessionId))
+    return null;
+  return join8(paths.stateDir, SERENA_ROOT_DIR, `${sessionId}.txt`);
+}
+function readSerenaRoot(paths, sessionId) {
+  const file = serenaRootFile(paths, sessionId);
+  if (file === null)
+    return;
+  let text;
+  try {
+    text = readFileSync6(file, "utf8");
+  } catch (error) {
+    const missing = error instanceof Error && "code" in error && error.code === "ENOENT";
+    return missing ? undefined : { kind: "unknown" };
+  }
+  const root = text.trim();
+  return root !== UNKNOWN && isAbsolute2(root) ? { kind: "path", path: resolve4(root) } : { kind: "unknown" };
+}
+function writeSerenaRoot(paths, sessionId, root) {
+  const file = serenaRootFile(paths, sessionId);
+  if (file === null)
+    return;
+  atomicWrite(file, root.kind === "path" ? root.path : UNKNOWN, 384);
+}
+function clearSerenaRoot(paths, sessionId) {
+  const file = serenaRootFile(paths, sessionId);
+  if (file !== null)
+    rmSync(file, { force: true });
+}
+function textsOf(value, depth = 0) {
+  if (typeof value === "string")
+    return [value];
+  if (depth > 4 || value === null || typeof value !== "object")
+    return [];
+  const parts = Array.isArray(value) ? value : Object.values(value);
+  return parts.flatMap((part) => textsOf(part, depth + 1));
+}
+function activatedRoot(toolResponse) {
+  const pattern = /^(?:The project with name '[^'\n]*' at (.+) is activated\.|Created and activated a new project with name '[^'\n]*' at (.+)\.)\s*$/m;
+  for (const text of textsOf(toolResponse)) {
+    const match = pattern.exec(text);
+    const root = match?.[1] ?? match?.[2];
+    if (root !== undefined)
+      return root.trim();
+  }
+  return;
+}
+function isFolder(path) {
+  try {
+    return isAbsolute2(path) && statSync4(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+function activationAllowed(project, folders) {
+  if (typeof project !== "string" || !isAbsolute2(project))
+    return false;
+  const wanted = resolve4(project);
+  return folders.some((folder) => samePath(wanted, folder, IGNORE_CASE));
+}
+var ACTIVATION_REFUSAL = "Point Serena only at this repo's main checkout or one of its worktrees, by absolute path \u2014 never a project name and never a folder outside the repo: every worktree shares one project name, so a name cannot say which folder is meant.";
+function requestedProject(input) {
+  return toolInput(input)["project"];
+}
+function repoFolders(context) {
+  const main = context.project.mainCheckout ?? context.project.root;
+  const [, ...worktrees] = listWorktrees(main, context.env, GUARD_GIT_TIMEOUT_MS);
+  return [main, ...worktrees.map((worktree) => worktree.path)];
+}
+function serenaRoot(context) {
+  const { input, event, paths, project } = context;
+  const sessionId = input.session_id;
+  if (project.config?.worktrees?.guardMainFolder !== true)
+    return SILENT;
+  if (event === "SessionStart") {
+    const source = stringField(input.source);
+    if (source === "startup")
+      clearSerenaRoot(paths, sessionId);
+    else if (source === "resume" || source === "clear" || source === "fork") {
+      writeSerenaRoot(paths, sessionId, { kind: "unknown" });
+    }
+    return SILENT;
+  }
+  const tool = stringField(input.tool_name);
+  if (tool !== SERENA_ACTIVATE_TOOL)
+    return SILENT;
+  if (event === "PostToolUse") {
+    const root = activatedRoot(input.tool_response);
+    if (root !== undefined && isFolder(root)) {
+      writeSerenaRoot(paths, sessionId, { kind: "path", path: resolve4(root) });
+    }
+    return SILENT;
+  }
+  if (event !== "PreToolUse")
+    return SILENT;
+  const wanted = requestedProject(input);
+  if (!activationAllowed(wanted, repoFolders(context))) {
+    return toolDecision("deny", ACTIVATION_REFUSAL);
+  }
+  writeSerenaRoot(paths, sessionId, { kind: "unknown" });
+  return SILENT;
+}
+
+// src/hooks/main-folder-guard.ts
+var SERENA_EDIT_TOOLS = new Set([
+  "mcp__serena__replace_symbol_body",
+  "mcp__serena__insert_after_symbol",
+  "mcp__serena__insert_before_symbol",
+  "mcp__serena__replace_content",
+  "mcp__serena__rename_symbol",
+  "mcp__serena__safe_delete_symbol",
+  "mcp__serena__replace_in_files"
+]);
 function editedFile(input, cwd) {
   const fields = toolInput(input);
   const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
   if (path === null)
     return null;
-  return realPath(isAbsolute2(path) ? resolve3(path) : resolve3(cwd, path));
+  return realPath(isAbsolute3(path) ? resolve5(path) : resolve5(cwd, path));
+}
+function serenaEditedFile(input, record, projectDir) {
+  const tool = stringField(input.tool_name);
+  if (tool === null || !SERENA_EDIT_TOOLS.has(tool))
+    return null;
+  const fields = toolInput(input);
+  const relative = stringField(fields.relative_path) ?? (tool.endsWith("replace_in_files") ? "" : null);
+  if (relative === null)
+    return null;
+  if (record?.kind === "unknown")
+    return { unplaceable: true };
+  const root = record?.kind === "path" ? record.path : projectDir;
+  if (root === null || !isAbsolute3(root))
+    return { unplaceable: true };
+  return { file: realPath(resolve5(root, relative)) };
 }
 function editsMainFolder(file, mainCheckout, worktrees) {
   if (!isInside(file, mainCheckout))
     return false;
   return innermostWorktree(file, [mainCheckout, ...worktrees]) === mainCheckout;
 }
-function mainFolderRefusal(mainCheckout, base) {
+function mainFolderRefusal(mainCheckout, base, viaSerena = false) {
   return [
     `This file is in the main checkout (${mainCheckout}). This project keeps the main checkout on \`${base}\` and makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).`,
-    "Already working in a worktree? Edit the same file under that worktree's folder.",
+    viaSerena ? "A Serena edit lands in the project Serena has active, and that is the main checkout. Point Serena at your worktree first: `mcp__serena__activate_project` with the worktree's absolute path \u2014 then edit through Serena again. Or use Edit/Write with the same file's path under the worktree." : "Already working in a worktree? Edit the same file under that worktree's folder.",
     "Not in one yet: EnterWorktree, with the branch for this work as its `name`, makes one."
   ].join(`
 `);
 }
-function mainFolderGuard(context) {
-  const { project, input, cwd, env } = context;
-  const worktreesConfig = project.config?.worktrees;
-  if (worktreesConfig?.guardMainFolder !== true || project.mainCheckout === null)
-    return SILENT;
-  const file = editedFile(input, cwd);
-  if (file === null)
-    return SILENT;
-  const main = realPath(project.mainCheckout);
+function unplaceableSerenaRefusal() {
+  return [
+    "This is a Serena edit, and the folder Serena has active is not known to cc-smart-dev-kit, so it cannot tell whether the file is in the main checkout.",
+    "Point Serena at a folder with `mcp__serena__activate_project` and an ABSOLUTE path (your worktree, or this repo's main checkout), then edit through Serena again \u2014 or use Edit/Write with the file's absolute path."
+  ].join(`
+`);
+}
+function startFolder(env) {
+  const dir = env["CLAUDE_PROJECT_DIR"];
+  return dir !== undefined && dir !== "" && isAbsolute3(dir) ? dir : null;
+}
+function judge(file, context, viaSerena) {
+  const { project, env } = context;
+  const main = realPath(project.mainCheckout ?? "");
   const [, ...worktrees] = listWorktrees(main, env, GUARD_GIT_TIMEOUT_MS);
-  return editsMainFolder(file, main, worktrees.map((worktree) => realPath(worktree.path))) ? toolDecision("deny", mainFolderRefusal(project.mainCheckout, worktreesConfig.base)) : SILENT;
+  if (!editsMainFolder(file, main, worktrees.map((worktree) => realPath(worktree.path)))) {
+    return SILENT;
+  }
+  const base = project.config?.worktrees?.base ?? "the base branch";
+  return toolDecision("deny", mainFolderRefusal(main, base, viaSerena));
+}
+function mainFolderGuard(context) {
+  const { project, input, cwd, env, paths } = context;
+  if (project.config?.worktrees?.guardMainFolder !== true || project.mainCheckout === null) {
+    return SILENT;
+  }
+  const serena = serenaEditedFile(input, readSerenaRoot(paths, input.session_id), startFolder(env));
+  if (serena !== null) {
+    return "unplaceable" in serena ? toolDecision("ask", unplaceableSerenaRefusal()) : judge(serena.file, context, true);
+  }
+  const file = editedFile(input, cwd);
+  return file === null ? SILENT : judge(file, context, false);
 }
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync5, readdirSync, readFileSync as readFileSync5, statSync as statSync3 } from "fs";
+import { existsSync as existsSync6, readdirSync as readdirSync2, readFileSync as readFileSync7, statSync as statSync5 } from "fs";
 import { uptime } from "os";
-import { join as join7 } from "path";
+import { join as join9 } from "path";
 function parseSessionRecord(json) {
   let value;
   try {
@@ -8976,20 +9188,20 @@ function isRunning(pid) {
   }
 }
 function liveSessions(claudeConfigDir) {
-  const dir = join7(claudeConfigDir, "sessions");
-  if (!existsSync5(dir))
+  const dir = join9(claudeConfigDir, "sessions");
+  if (!existsSync6(dir))
     return [];
   const bootedAt = Date.now() - uptime() * 1000;
   const live = [];
-  for (const file of readdirSync(dir)) {
+  for (const file of readdirSync2(dir)) {
     const pid = Number(file.replace(/\.json$/, ""));
     if (!file.endsWith(".json") || !Number.isInteger(pid) || !isRunning(pid))
       continue;
     let text;
     try {
-      if (statSync3(join7(dir, file)).mtimeMs < bootedAt)
+      if (statSync5(join9(dir, file)).mtimeMs < bootedAt)
         continue;
-      text = readFileSync5(join7(dir, file), "utf8");
+      text = readFileSync7(join9(dir, file), "utf8");
     } catch {
       continue;
     }
@@ -9036,9 +9248,9 @@ function messageGuard(context) {
 }
 
 // src/hooks/session-name.ts
-import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync6, renameSync, writeFileSync as writeFileSync2 } from "fs";
+import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync8, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
-import { join as join8 } from "path";
+import { join as join10 } from "path";
 var MAX_SESSION_NAME = 60;
 function isSessionId(value) {
   return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
@@ -9051,19 +9263,19 @@ function cleanSessionName(raw) {
   return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
 }
 function namesDir(env) {
-  return join8(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
+  return join10(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
 }
 function readName(file) {
   try {
-    return existsSync6(file) ? cleanSessionName(readFileSync6(file, "utf8")) : null;
+    return existsSync7(file) ? cleanSessionName(readFileSync8(file, "utf8")) : null;
   } catch {
     return null;
   }
 }
 function writeAtomic(file, text) {
   const partial = `${file}.${process.pid}.tmp`;
-  writeFileSync2(partial, text);
-  renameSync(partial, file);
+  writeFileSync3(partial, text);
+  renameSync2(partial, file);
 }
 function namingNote(sessionId, current) {
   const command = `${COMMAND} session-name ${sessionId} "<the task, in a few words>"`;
@@ -9077,7 +9289,7 @@ function sessionName(context) {
   if (!isSessionId(sessionId))
     return SILENT;
   const dir = namesDir(env);
-  const wanted = readName(join8(dir, `${sessionId}.name`));
+  const wanted = readName(join10(dir, `${sessionId}.name`));
   const note = namingNote(sessionId, wanted);
   if (event === "SessionStart") {
     return {
@@ -9086,10 +9298,10 @@ function sessionName(context) {
       })
     };
   }
-  const appliedFile = join8(dir, sessionId);
+  const appliedFile = join10(dir, sessionId);
   const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
   if (title !== null) {
-    mkdirSync3(dir, { recursive: true });
+    mkdirSync4(dir, { recursive: true });
     writeAtomic(appliedFile, title);
     return {
       stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: event, sessionTitle: title } })
@@ -9109,12 +9321,12 @@ var FALLBACK_STALE_MS = 10 * 60 * 1000;
 var FETCH_AGE_MS = 24 * 60 * 60 * 1000;
 
 // src/hooks/worktree-leftovers.ts
-import { readFileSync as readFileSync8, statSync as statSync4 } from "fs";
-import { basename as basename2, isAbsolute as isAbsolute3, join as join10, resolve as resolve4 } from "path";
+import { readFileSync as readFileSync10, statSync as statSync6 } from "fs";
+import { basename as basename3, isAbsolute as isAbsolute4, join as join12, resolve as resolve6 } from "path";
 
 // src/hooks/local-files.ts
-import { lstatSync, readdirSync as readdirSync2, readFileSync as readFileSync7, readlinkSync } from "fs";
-import { join as join9 } from "path";
+import { lstatSync as lstatSync2, readdirSync as readdirSync3, readFileSync as readFileSync9, readlinkSync as readlinkSync2 } from "fs";
+import { join as join11 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
@@ -9133,18 +9345,18 @@ function sameAsMain(worktree, mainCheckout, path) {
   const same = (relative) => {
     if (--budget < 0)
       return false;
-    const here = join9(worktree, relative);
-    const there = join9(mainCheckout, relative);
+    const here = join11(worktree, relative);
+    const there = join11(mainCheckout, relative);
     try {
-      const a = lstatSync(here);
-      const b = lstatSync(there);
+      const a = lstatSync2(here);
+      const b = lstatSync2(there);
       if (a.isSymbolicLink() || b.isSymbolicLink()) {
-        return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync(here) === readlinkSync(there);
+        return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync2(here) === readlinkSync2(there);
       }
       if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync2(here).every((entry) => same(join9(relative, entry)));
+        return b.isDirectory() && readdirSync3(here).every((entry) => same(join11(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync7(here).equals(readFileSync7(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync9(here).equals(readFileSync9(there));
     } catch {
       return false;
     }
@@ -9170,16 +9382,16 @@ var IDLE_MINUTES = 60;
 function idleMinutes(worktree, now) {
   let admin;
   try {
-    admin = readFileSync8(join10(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync10(join12(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return 0;
   }
-  if (!isAbsolute3(admin))
-    admin = resolve4(worktree, admin);
+  if (!isAbsolute4(admin))
+    admin = resolve6(worktree, admin);
   let last = 0;
-  for (const file of ["index", "HEAD", join10("logs", "HEAD")]) {
+  for (const file of ["index", "HEAD", join12("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync4(join10(admin, file)).mtimeMs);
+      last = Math.max(last, statSync6(join12(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? 0 : (now - last) / 60000;
@@ -9190,7 +9402,7 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
   if (listed.prunable)
     return "gone";
   try {
-    statSync4(listed.path);
+    statSync6(listed.path);
   } catch {
     return "gone";
   }
@@ -9208,7 +9420,7 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
 function leftoversNote(base, finished, gone) {
   const parts = [];
   if (finished.length > 0) {
-    const names = finished.map((worktree) => basename2(worktree.path)).join(", ");
+    const names = finished.map((worktree) => basename3(worktree.path)).join(", ");
     const count = finished.length === 1 ? "1 finished worktree is" : `${finished.length} finished worktrees are`;
     parts.push(`${count} left in this repo: ${names}. Each has every commit on origin/${base}, nothing uncommitted, no running session, and no git use for an hour. ` + "Tell the user, and when they agree, remove each in the main checkout: `git worktree remove <folder>`, then `git branch -d <branch>`.");
   }
@@ -9286,12 +9498,22 @@ var mainFolderGuardHook = {
   name: "main-folder-guard",
   events: ["PreToolUse"],
   wiring: "plugin",
-  onConfigProblem: (message, input, _event, checkout) => {
+  onConfigProblem: (message, input, _event, checkout, context) => {
     const file = typeof input.cwd === "string" ? editedFile(input, input.cwd) : null;
     const repo = checkout.mainCheckout ?? checkout.root;
-    return file !== null && isInside(file, repo) ? toolDecision("ask", cannotCheck("whether this edit belongs in a worktree", message)) : SILENT;
+    if (file !== null && isInside(file, repo)) {
+      return toolDecision("ask", cannotCheck("whether this edit belongs in a worktree", message));
+    }
+    return serenaEditedFile(input, readSerenaRoot(context.paths, input.session_id), null) === null ? SILENT : toolDecision("ask", cannotCheck("whether this Serena edit belongs in a worktree", message));
   },
   run: mainFolderGuard
+};
+var serenaRootHook = {
+  name: "serena-root",
+  events: ["PreToolUse", "PostToolUse", "SessionStart"],
+  wiring: "plugin",
+  onConfigProblem: (message) => ({ stderr: cannotCheck("which folder Serena edits", message) }),
+  run: serenaRoot
 };
 var messageGuardHook = {
   name: "message-guard",
@@ -9350,6 +9572,7 @@ function cwdOf(input) {
 var HOOKS = [
   gitGuardHook,
   mainFolderGuardHook,
+  serenaRootHook,
   messageGuardHook,
   agentGuardHook,
   jobRouteHook,
@@ -9357,8 +9580,14 @@ var HOOKS = [
   worktreeLeftoversHook,
   sessionNameHook
 ];
-var GUARD_BUNDLES = new Set(HOOKS.filter((spec) => spec.events.includes("PreToolUse")).map((spec) => spec.name));
-var USER_HOOKS = ["stop-failure", "update-check", "notify"];
+var NON_GUARD_PRE_TOOL_USE = new Set(["playwright-output"]);
+var GUARD_BUNDLES = new Set(HOOKS.filter((spec) => spec.events.includes("PreToolUse") && !NON_GUARD_PRE_TOOL_USE.has(spec.name)).map((spec) => spec.name));
+var USER_HOOKS = [
+  "stop-failure",
+  "update-check",
+  "notify",
+  "playwright-output"
+];
 var MACHINE_WIDE_HOOKS = [...USER_HOOKS, "agent-guard"];
 
 // src/entries/main-folder-guard.ts

@@ -108,7 +108,10 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
 ## A machine-wide hook
 
 Some hooks answer about the machine, not a project: `agent-guard` (the model a launch runs
-on) and `notify` (the alerts). `notify` is a `USER_HOOKS` bundle like `update-check`: it
+on) and `notify` (the alerts). `playwright-output` is machine-wide too — it puts a file the
+CALLER names into the shared browser's own output folder, and the browser is the machine's —
+and, like `notify` and `update-check`, it is a `USER_HOOKS` bundle: no frame, no
+`cc-smart-dev-kit.json`, no `ownHooks`. `notify` is a `USER_HOOKS` bundle like `update-check`: it
 never enters the frame, reads no `cc-smart-dev-kit.json`, and its opt-in is the machine. It alerts on
 `Notification`, `Stop`, `PreToolUse` on `AskUserQuestion|ExitPlanMode`, and `StopFailure`
 (`rate_limit` only where the `stop-failure` hook will not show its own alert —

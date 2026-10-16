@@ -2299,8 +2299,12 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     const checked = run(["doctor"]);
     expect(checked.stdout).toContain('✓ MCP server "tavily-websearch": Connected\n');
     expect(checked.stdout).not.toContain("tvly-file-secret");
-    // restore removes it again.
-    expect(run(["restore"]).exitCode).toBe(0);
+    // restore removes it again, and never prints it either.
+    const restored = run(["restore"]);
+    expect(restored.exitCode).toBe(0);
+    expect(`${restored.stdout}${restored.stderr}`).not.toContain("tvly-file-secret");
+    // The line names the key's PATH, never its value.
+    expect(restored.stdout).toContain("env.TAVILY_API_KEY; everything else kept");
     expect(readJson(join(home, ".claude", "settings.json")).env?.TAVILY_API_KEY).toBeUndefined();
   });
 

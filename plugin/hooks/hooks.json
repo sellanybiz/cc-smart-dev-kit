@@ -1,5 +1,5 @@
 {
-  "description": "cc-smart-dev-kit: git, edit, message and agent guards, notifications (a finished turn, a question, a plan, a permission prompt, a stopped turn; on the desktop, in an SSH terminal as OSC 777, or left to Warp's own plugin), notes after a merge and at session start, session names, the usage-limit alert and the background update check. Each hook stays silent while the project wires its own for the same event.",
+  "description": "cc-smart-dev-kit: git, edit (Edit/Write/NotebookEdit and Serena's edit tools), message and agent guards, a caller-named screenshot put in the shared browser's output folder, the folder Serena edits recorded per session, notifications (a finished turn, a question, a plan, a permission prompt, a stopped turn; on the desktop, in an SSH terminal as OSC 777, or left to Warp's own plugin), notes after a merge and at session start, session names, the usage-limit alert and the background update check. Each hook stays silent while the project wires its own for the same event.",
   "hooks": {
     "StopFailure": [
       {
@@ -37,7 +37,7 @@
         ]
       },
       {
-        "matcher": "Edit|Write|NotebookEdit",
+        "matcher": "Edit|Write|NotebookEdit|mcp__serena__(replace_symbol_body|insert_after_symbol|insert_before_symbol|replace_content|rename_symbol|safe_delete_symbol|replace_in_files)",
         "hooks": [
           {
             "type": "command",
@@ -90,6 +90,28 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "mcp__serena__activate_project",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/serena-root.js"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__playwright__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/playwright-output.js"],
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Notification": [
@@ -139,6 +161,17 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "mcp__serena__activate_project",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/serena-root.js"],
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
@@ -166,6 +199,17 @@
       }
     ],
     "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
+            "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/serena-root.js"],
+            "timeout": 10
+          }
+        ]
+      },
       {
         "matcher": "startup|resume",
         "hooks": [

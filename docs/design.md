@@ -632,7 +632,9 @@ worktrees).
 | Hook | Event (matcher) | On when | What it does |
 |---|---|---|---|
 | `git-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks before a force-push (git's abbreviations included: `--forc`), a push to a protected branch (`protectedBranches`, default `main`), `push --all`/`--mirror`, a branch deleted on the remote (`git push origin :x`, `-d`/`--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that discards changes, `branch -D`, `stash clear` and an unnamed `stash drop`, and (with `worktrees`) a bare `git stash` / `stash pop`. One shell lexer (`shell-command.ts`) reads each command of a line; quoted text, here-docs and comments are data, and shell keywords, wrappers (`timeout 60 git push -f`, `env -i sudo -u me …`, `xargs …`), the here-doc a shell reads as its script, and the text piped into one are read through. Known limits: a git alias, `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file. "Ask", never "deny": the person may mean it. |
-| `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit) | `worktrees.guardMainFolder` | Denies an edit of a file in the main checkout itself, with the way into a worktree. |
+| `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit, Serena's edit tools) | `worktrees.guardMainFolder` | Denies an edit of a file in the main checkout itself, with the way into a worktree. A Serena edit names its file relative to the folder Serena has ACTIVE, so it is placed by `serena-root`'s record (else by `CLAUDE_PROJECT_DIR`, the folder the session started in); a file it cannot place is an `ask`, never a pass. |
+| `serena-root` | PreToolUse, PostToolUse (`mcp__serena__activate_project`), SessionStart | `worktrees.guardMainFolder` | Records which folder Serena edits for this session (`<stateDir>/serena-root/<session id>.txt`): "unknown" from the moment an activation is allowed until Serena's own answer names the folder, so the record is only ever a folder Serena confirmed — and the guard ASKS while it is unknown. It refuses an activation that names a project by NAME or a folder outside this repo and its worktrees. On a broken cc-smart-dev-kit.json it records nothing and says so. |
+| `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the shared browser's output folder, with `updatedInput` and no permission decision. |
 | `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists | Denies a message to a session that works outside this repo (from Claude Code's session records). |
 | `agent-guard` | PreToolUse (Agent, Task) | **machine-wide** | The model a launch really runs on, and the owner's model rules (2026-10-16): no `model`/no `effort` → deny; an affordable slot needs `effort: "max"`; Opus only for a review or with an `Opus reason:` word; Fable only read-only, with a `Fable reason:` word, as an **ask** (never build). Every Opus/Fable launch is recorded with its reason. § The Agent guard. |
 | `job-route` | PreToolUse (Bash) | `jobs.route` | A heavy command is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301). § The job route. |
@@ -782,9 +784,10 @@ why it is opt-in per project.
 on one package manager, the local database wipe guard, the heavy-job guard, a pull request
 into a release branch, the main checkout following the base branch after each merge
 (installs and migrations), the notes about one project's dev notes, migrations and env
-files, and the claude-mem start-folder note. **Waiting for Phase 4:** the Serena root
-record (Serena's edits in the main-folder guard) and the Playwright output folder, both tied
-to MCP servers the plugin registers in Phase 4. **Not ported:** the Windows helper that
+files, and the claude-mem start-folder note. **Ported in Phase 4, with the MCP servers the
+plugin registers:** the Serena root record (Serena's edits in the main-folder guard — the
+`serena-root` hook, above) and the Playwright output folder (the `playwright-output` hook).
+**Not ported:** the Windows helper that
 removes a worktree after the session lets go of it (the plugin is macOS and Linux for now);
 and, from the older notification script, the click on a notification raising the terminal
 window and picking its tab (xdotool, AT-SPI and a per-session DBus helper — one desktop's
@@ -870,6 +873,13 @@ One Google Chrome for the whole machine (`src/browser/`, rules in `.claude/rules
   set on the server side only, and the client side carried a 30 MB message in a live
   measurement (`claude-code-contract.md` § Bun) — so no WebSocket package is needed and the
   plugin keeps its one runtime dependency.
+- **Where a named file goes.** `@playwright/mcp` resolves a file the CALLER names
+  (`filename: "home-dark.png"`) against the folder the MCP process was started in — proved
+  live on 0.0.83 — so a named screenshot would land beside the project's files. The
+  `playwright-output` hook (PreToolUse on `mcp__playwright__.*`) rewrites a relative name
+  into `browserOutputDir` first, with `updatedInput`; an absolute path is left as the caller
+  wrote it. The launcher's `--allow-unrestricted-file-access` is what lets the server take an
+  absolute path from any worktree.
 - **The file picker** (`picker.ts`): the MCP loads it for every tab (`--init-page`), and it
   holds the picker for Claude only while a browser call is running (plus two seconds), so a
   person's click opens the normal picker. It reads one private field of playwright-core, says
