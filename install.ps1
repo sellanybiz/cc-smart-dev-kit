@@ -698,6 +698,10 @@ if (-not $DryRun -and -not [string]::IsNullOrEmpty($PluginDir) -and -not (Test-P
   Write-Step "5/8 the plugin is enabled"
 }
 
+# The plugin's own CLI, as every later call runs it. Set before the version check below, which is
+# its first caller: set after it (as it once was), `Invoke-CliQuiet` ran a bare `bun version`.
+$cliArgv = @("--no-env-file", "--config=$PluginDir\bunfig.toml", "$PluginDir\dist\cli.js")
+
 # The CLI that is really installed now, asked its own version. A CLI older than this script does
 # not have the options the later steps pass it (`--tavily-key-stdin`, `gateway check`), and the
 # first real run died exactly there: the marketplace's clone had been stale, so the update never
@@ -717,7 +721,6 @@ if (-not $DryRun -and -not [string]::IsNullOrEmpty($PluginDir)) {
 if ([string]::IsNullOrEmpty($PluginDir) -and -not $DryRun) {
   Stop-Failed "the plugin's own folder is not in $InstalledPlugins" @("claude plugin install $Plugin --scope user")
 }
-$cliArgv = @("--no-env-file", "--config=$PluginDir\bunfig.toml", "$PluginDir\dist\cli.js")
 if ($DryRun) {
   Write-Skip "6/8 migrate runs (it moves a machine with the old anymodel names, and says `"Nothing to move.`" on one without them), then setup; both ask their own questions on the console"
 } else {

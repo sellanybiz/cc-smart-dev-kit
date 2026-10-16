@@ -1635,6 +1635,17 @@ describe("install.sh and install.ps1: the shared rules", () => {
     expect(code).not.toContain("$mcpStatusText = Get-CommandText");
   });
 
+  // Read as text on purpose: PowerShell cannot run here, and the Windows job hit this order bug
+  // (the version check ran `Invoke-CliQuiet` before `$cliArgv` was set, so it ran `bun version`).
+  test("install.ps1 sets the CLI's argv once, before its first caller (the version check)", () => {
+    const lines = readFileSync(INSTALL_PS1, "utf8").split("\n");
+    const assigned = lines.flatMap((line, index) => (/^\$cliArgv = @\(/.test(line) ? [index] : []));
+    const versionCheck = lines.findIndex((line) => line.includes('Invoke-CliQuiet @("version")'));
+    expect(assigned).toHaveLength(1);
+    expect(versionCheck).toBeGreaterThan(-1);
+    expect(assigned[0] ?? Number.POSITIVE_INFINITY).toBeLessThan(versionCheck);
+  });
+
   test("the PowerShell files are pure ASCII, so any Windows code page reads them", () => {
     for (const file of [INSTALL_PS1, SMOKE_PS1]) {
       const text = readFileSync(file, "utf8");
