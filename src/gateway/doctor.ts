@@ -176,7 +176,8 @@ export async function gatewayChecks(options: {
     checks.push({ ok: true, info: true, text: `slot ${slot}: first target ${first}` });
   }
   // An affordable slot that falls back to Claude Opus or Fable spends the person's own plan usage
-  // without saying so (the Agent guard allows those models only for reviews and reasons):
+  // without saying so (the Agent guard asks the person about every launch on those models, a
+  // review at `high` or `xhigh` aside):
   // a warning, not a failure. The model slots are left out: their own first target IS the
   // Claude model, which is what they are for.
   for (const [slot, targets] of Object.entries(config.slots).sort(([a], [b]) => (a < b ? -1 : 1))) {

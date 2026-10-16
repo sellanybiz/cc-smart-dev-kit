@@ -30,6 +30,7 @@ import type { HookSpec } from "./run";
 import {
   afterMergeHook,
   agentGuardHook,
+  fableSessionHook,
   gitGuardHook,
   HOOKS,
   jobRouteHook,
@@ -228,6 +229,26 @@ const CASES: Case[] = [
       env: hookEnv(),
     }),
     failsClosed: denyLine,
+  },
+  {
+    spec: fableSessionHook,
+    own: { event: "SessionStart", matcher: "startup" },
+    machineWide: true,
+    setup: (config) => ({
+      input: {
+        hook_event_name: "SessionStart",
+        session_id: SESSION,
+        cwd: project(config),
+        source: "startup",
+        model: "claude-fable-5-1",
+      },
+      env: hookEnv(),
+    }),
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      const said: string = JSON.parse(result.stdout ?? "{}").systemMessage;
+      expect(said).toStartWith("cc-smart-dev-kit: this session runs on Claude Fable");
+    },
   },
   {
     spec: jobRouteHook,
@@ -497,12 +518,13 @@ describe("no cc-smart-dev-kit.json", () => {
     expect(await runHook(c.spec, input, env)).toEqual({});
   });
 
-  test("a machine-wide hook judges the same without cc-smart-dev-kit.json (agent-guard)", async () => {
-    const c = CASES.find((one) => one.spec === agentGuardHook);
-    if (c === undefined) throw new Error("no case");
-    const { input, env } = c.setup(undefined);
-    c.failsClosed(await runHook(c.spec, input, env));
-  });
+  test.each(CASES.filter((c) => c.machineWide === true).map((c) => [c.spec.name, c] as const))(
+    "the machine-wide %s judges the same without cc-smart-dev-kit.json",
+    async (_name, c) => {
+      const { input, env } = c.setup(undefined);
+      c.failsClosed(await runHook(c.spec, input, env));
+    },
+  );
 
   const NEEDS =
     "this project wires the cc-smart-dev-kit worktree hooks (cc-smart-dev-kit hook ...), but has no .claude/cc-smart-dev-kit.json. " +

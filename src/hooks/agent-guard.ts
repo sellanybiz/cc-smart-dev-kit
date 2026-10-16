@@ -15,17 +15,18 @@
  * **Effort.** A subagent never runs at `low` or `medium` (the owner, 2026-10-16), whatever the
  * model: the guard refuses a launch whose `effort` is not `high`, `xhigh` or `max`. That list
  * lives once, in `ALLOWED_EFFORTS`, and the guard, its messages and the tests all read it. On
- * top of it, an affordable slot must be `max` and a review runs at `xhigh`, never `max`.
+ * top of it, an affordable slot must be `max` and a review runs at `xhigh` by default — at
+ * `max` only when the person asks for a deeper review, and then the guard asks them.
  *
  * | The model behind the launch | The verdict |
  * |---|---|
  * | an affordable slot key / a `<backend>:<model>` target | allow; with the gateway on, its effort must be `max`, else deny |
  * | any other name (`best`, `opusplan`, `default`, `inherit`, a name no rule knows) | the Opus rule below: only what the guard can prove affordable is affordable |
  * | Claude Sonnet or Haiku | allow (the effort rule above still holds) |
- * | Claude Opus | a review agent (or one ending `:reviewer`): allow, no question (still refused at effort `max`); anything else with a prompt line `Opus reason: <one of OPUS_REASONS>`: **ask** (the person approves each one, and sees the reason); without that line: deny |
- * | Claude Fable | only a read-only agent type, with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: then **ask**; a builder type, no reason line, or an unattended session (`claude -p`): deny |
+ * | Claude Opus | a review agent (or one ending `:reviewer`): allow, no question — but at effort `max` a review is an **ask** (a deeper review the person asked for); anything else with a prompt line `Opus reason: <one of OPUS_REASONS>`: **ask** (the person approves each one, and sees the reason); without that line: deny |
+ * | Claude Fable | a read-only agent type with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: **ask**; an agent that can change files (any other type, a fork included) with `Fable reason: build - <why>`: **ask** (the person asked for it); no line, a builder without the word `build`, or an unattended session (`claude -p`): deny |
  * | no `model` / no `effort` | deny (a launch that names neither would inherit the session's, which nobody chose) — except a `fork`, which always inherits both |
- * | a session nobody watches (`claude -p`) | a non-review Opus or Fable launch: deny (there is nobody to approve it); a review on Opus: allow |
+ * | a session nobody watches (`claude -p`) | a non-review Opus or Fable launch: deny (there is nobody to approve it); a review on Opus at `high` or `xhigh`: allow (a review at `max` asks, so it is denied there too) |
  *
  * **Which model, exactly.** The call's `model` is a name (`haiku|sonnet|opus|fable` — the
  * only four Claude Code's Agent tool accepts, proved live from its own schema; a full id, a
@@ -90,6 +91,12 @@ export const OPUS_REASONS = [
   "debugging",
 ] as const;
 
+/**
+ * The one reason word an agent that can change files may use on Fable: the person asked Fable
+ * to build it (the owner, 2026-10-16). Every other word, and no word, is refused there.
+ */
+export const FABLE_BUILD_REASON = "build";
+
 /** What `Fable reason:` may name (the owner's list). */
 export const FABLE_REASONS = [
   "hard",
@@ -98,9 +105,15 @@ export const FABLE_REASONS = [
   "architecture",
   "review",
   "plan",
+  "unsatisfied",
+  FABLE_BUILD_REASON,
 ] as const;
 
-/** The subagent types a launch may use on Fable: they read and report, never build. */
+/**
+ * The subagent types that count as read-only on Fable: they read and report, never build, so
+ * any word of `FABLE_REASONS` is enough. Every other type — a fork included — can change
+ * files and needs the one word `build` (`FABLE_BUILD_REASON`).
+ */
 export const READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore", "Code Explorer"] as const;
 
 /** The subagent types that count as reviews (Claude Opus without a reason line). */
@@ -114,7 +127,8 @@ export const READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGEN
  * The effort levels a subagent may run at — the one home of that list (owner, 2026-10-16):
  * `low` and `medium` are refused on every model, a Claude model and an affordable gateway slot
  * alike. Two rules name one level each, on top of this one: an affordable slot must be `max`,
- * and a review runs at `xhigh`, never `max`.
+ * and a review runs at `xhigh` by default — at `max` only when the person asks for a deeper
+ * review, and then the guard asks them.
  */
 export const ALLOWED_EFFORTS = ["high", "xhigh", "max"] as const;
 
@@ -738,11 +752,24 @@ function opusDenial(): string {
   ].join("\n");
 }
 
+/** Said when a read-only Fable launch names no reason word, or one nobody listed. */
 function fableDenial(): string {
   return [
     "This launch would run on Claude Fable.",
-    "Fable advises the main session; it never builds. Use a read-only agent type (Plan, Reviewer, Explore, Code Explorer), and put a line in the prompt saying why:",
+    "Fable advises; it builds only when the person asks. Use a read-only agent type (Plan, Reviewer, Explore, Code Explorer) and put a line in the prompt saying why:",
     `Fable reason: <${FABLE_REASONS.join("|")}> - <why>`,
+  ].join("\n");
+}
+
+/**
+ * Said when an agent that can change files (a builder, or a fork) asks for Fable without the
+ * one word that means the person asked for it.
+ */
+function fableBuildDenial(type: string): string {
+  return [
+    `This launch asks for \`${type || "(no type)"}\`, which can change files, and Fable builds only when the person asks.`,
+    "Put what the person asked for in the prompt as this line, and they approve this one launch:",
+    `Fable reason: ${FABLE_BUILD_REASON} - <what the person asked>`,
   ].join("\n");
 }
 
@@ -788,18 +815,15 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
   if (real.family === "haiku" || real.family === "sonnet") return allow(real, "");
 
   if (real.family === "fable") {
-    if (!readOnly.has(agentKey(type))) {
-      return deny(
-        real,
-        [
-          `Fable advises, it never builds — and this launch asks for \`${type || "(no type)"}\`, which works (and may change files).`,
-          "Ask a read-only agent on Fable (Plan, Reviewer, Explore, Code Explorer), or run this agent on another model.",
-        ].join("\n"),
-      );
-    }
     const said = reasonLine(launch.prompt, "Fable reason");
     const word = reasonWord(said, FABLE_REASONS);
-    if (word === null) return deny(real, fableDenial());
+    // An agent that can change files — any type that is not read-only, a fork included — runs
+    // on Fable only when the person asked for it: the one word `build`. Everything else about
+    // it is unchanged: no line, or any other word, is refused.
+    const builder = !readOnly.has(agentKey(type));
+    if (builder ? word !== FABLE_BUILD_REASON : word === null) {
+      return deny(real, builder ? fableBuildDenial(type) : fableDenial());
+    }
     if ((env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0") {
       return deny(
         real,
@@ -812,24 +836,43 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
     return {
       decision: "ask",
       real,
-      reason: [
-        `Claude Fable launch: a read-only agent (\`${type}\`) with the reason line \`Fable reason: ${said}\`.`,
-        "Fable advises; it never builds. Approve if this is the hard problem that needs it.",
-      ].join("\n"),
+      reason: builder
+        ? [
+            `Claude Fable launch: \`${type || "(no type)"}\` will build here, at the person's request, with the reason line \`Fable reason: ${said}\`.`,
+            "Claude Fable builds only when the person asks, and this launch spends the person's own plan usage. Approve only if you asked for it.",
+          ].join("\n")
+        : [
+            `Claude Fable launch: a read-only agent (\`${type}\`) with the reason line \`Fable reason: ${said}\`.`,
+            "Fable advises; it builds only when the person asks. Approve if this is the advice, the review or the fresh attempt you want.",
+          ].join("\n"),
       why: `fable:${word}`,
     };
   }
 
   // Claude Opus, or a Claude id no family can be read from: the strictest of the rules.
-  // A review is allowed without a question; anything else on Opus asks the person, with the
-  // reason line the launch wrote, and is refused when nobody is there to answer.
-  if (isReview && launch.effort?.toLowerCase() === "max") {
-    return deny(
+  // A review is allowed without a question at the usual efforts; at `max` it asks — a deeper
+  // review is the person's own call (the owner, 2026-10-16), and the ask is their yes.
+  // Anything else on Opus asks too, with a reason line, and is refused when nobody is there
+  // to answer.
+  if (isReview) {
+    if (launch.effort?.toLowerCase() !== "max") return allow(real, "review");
+    if ((env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0") {
+      return deny(
+        real,
+        [
+          "A review at effort `max` is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
+          "Run it at `xhigh`, or in an interactive session.",
+        ].join("\n"),
+      );
+    }
+    return {
+      decision: "ask",
       real,
-      "A review runs at effort `xhigh`, never `max`. Change the effort (reviews are real judgment, not the hardest problem).",
-    );
+      reason:
+        "Claude Opus review at effort `max`: reviews run at `xhigh` unless you asked for a deeper one. Approve if you did.",
+      why: "opus:review-max",
+    };
   }
-  if (isReview) return allow(real, "review");
   const said = reasonLine(launch.prompt, "Opus reason");
   const word = reasonWord(said, OPUS_REASONS);
   if (word === null) return deny(real, opusDenial());

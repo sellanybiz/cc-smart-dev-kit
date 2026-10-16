@@ -246,7 +246,7 @@ describe("the verdict", () => {
     expect(result.decision).toBe("deny");
   });
 
-  it("a review agent on Opus is allowed; at effort max it is denied", () => {
+  it("a review agent on Opus is allowed; at effort max it asks the person", () => {
     expect(
       verdict({ effort: "xhigh", model: "opus", prompt: "review", subagent_type: "Reviewer" })
         .decision,
@@ -259,14 +259,36 @@ describe("the verdict", () => {
         subagent_type: "cc-smart-dev-kit:reviewer",
       }).decision,
     ).toBe("allow");
+    // A deeper review: `max` asks, and the person's yes is the ask's answer (no reason line).
     const max = verdict({
       effort: "max",
       model: "opus",
       prompt: "review",
       subagent_type: "Reviewer",
     });
+    expect(max.decision).toBe("ask");
+    expect(max.reason).toContain("Claude Opus review at effort `max`");
+    expect(max.reason).toContain("reviews run at `xhigh` unless you asked for a deeper one");
+    expect(max.why).toBe("opus:review-max");
+  });
+
+  it("a review at effort max under `claude -p` is denied: nobody is there to approve it", () => {
+    const where = { CLAUDE_CODE_SESSION_ATTENDED: "0" };
+    const max = verdict(
+      { effort: "max", model: "opus", prompt: "review", subagent_type: "Reviewer" },
+      CTX,
+      where,
+    );
     expect(max.decision).toBe("deny");
-    expect(max.reason).toContain("runs at effort `xhigh`, never `max`");
+    expect(max.reason).toContain("nobody to answer");
+    // The usual effort stays allowed there.
+    expect(
+      verdict(
+        { effort: "xhigh", model: "opus", prompt: "review", subagent_type: "Reviewer" },
+        CTX,
+        where,
+      ).decision,
+    ).toBe("allow");
   });
 
   it("Sonnet and Haiku are free of the model rules, and are never recorded", () => {
@@ -359,7 +381,7 @@ describe("the verdict", () => {
     expect(fork("best").real?.family).toBeNull();
   });
 
-  it("Fable: a read-only agent with a reason line asks the person; a builder is denied", () => {
+  it("Fable: a read-only agent with a reason line asks the person; a builder needs the word `build`", () => {
     const plan = verdict({
       effort: "max",
       model: "fable",
@@ -376,7 +398,107 @@ describe("the verdict", () => {
       subagent_type: "general-purpose",
     });
     expect(builder.decision).toBe("deny");
-    expect(builder.reason).toContain("Fable advises, it never builds");
+    expect(builder.reason).toContain("Fable reason: build");
+  });
+
+  it("Fable: `unsatisfied` on a read-only type asks, and the ask names that reason", () => {
+    const fresh = verdict({
+      effort: "max",
+      model: "fable",
+      prompt: "Fable reason: unsatisfied - the person did not like the first layout",
+      subagent_type: "Plan",
+    });
+    expect(fresh.decision).toBe("ask");
+    expect(fresh.reason).toContain(
+      "Fable reason: unsatisfied - the person did not like the first layout",
+    );
+    expect(fresh.why).toBe("fable:unsatisfied");
+  });
+
+  it("Fable: a builder with `Fable reason: build` asks the person, and the ask says it builds", () => {
+    const built = verdict({
+      effort: "max",
+      model: "fable",
+      prompt: "Fable reason: build - the person asked Fable to write the migration",
+      subagent_type: "general-purpose",
+    });
+    expect(built.decision).toBe("ask");
+    expect(built.reason).toContain("general-purpose");
+    expect(built.reason).toContain("will build here");
+    expect(built.reason).toContain(
+      "Fable reason: build - the person asked Fable to write the migration",
+    );
+    expect(built.why).toBe("fable:build");
+    // A builder with any other word — or none — is refused, and the message names the line it
+    // needs. The person asked is the only way Fable builds.
+    for (const prompt of [
+      "Fable reason: hard - it is",
+      "Fable reason: unsatisfied - the layout",
+      "build it",
+    ]) {
+      const refused = verdict({ effort: "max", model: "fable", prompt, subagent_type: "Task" });
+      expect(refused.decision).toBe("deny");
+      expect(refused.reason).toContain("Fable reason: build - <what the person asked>");
+    }
+  });
+
+  it("Fable: the word `build` on a read-only type asks too (one list, so it is a listed word)", () => {
+    const asked = verdict({
+      effort: "max",
+      model: "fable",
+      prompt: "Fable reason: build - the person wants Fable on this plan",
+      subagent_type: "Explore",
+    });
+    expect(asked.decision).toBe("ask");
+    expect(asked.why).toBe("fable:build");
+  });
+
+  it("Fable: a fork of a Fable session needs `build` too; without a line it is denied", () => {
+    // A fork runs on the session's own model and can change files, so it is a builder: a
+    // session on Fable could not fork at all before this rule.
+    const fableSession: GuardContext = { config: null, gatewayOn: false, sessionModel: "fable" };
+    const built = verdict(
+      { prompt: "Fable reason: build - the person asked for it", subagent_type: "fork" },
+      fableSession,
+    );
+    expect(built.decision).toBe("ask");
+    expect(built.real?.family).toBe("fable");
+    expect(built.reason).toContain("will build here");
+    const bare = verdict({ prompt: "do it", subagent_type: "fork" }, fableSession);
+    expect(bare.decision).toBe("deny");
+    expect(bare.reason).toContain("Fable reason: build");
+    // The full id a transcript names resolves to the same family.
+    const byId = verdict(
+      { prompt: "Fable reason: build - go", subagent_type: "fork" },
+      { config: null, gatewayOn: false, sessionModel: "claude-fable-5-1" },
+    );
+    expect(byId.decision).toBe("ask");
+  });
+
+  it("Fable: `build` in a session nobody watches (`claude -p`) is denied", () => {
+    const result = verdict(
+      {
+        effort: "max",
+        model: "fable",
+        prompt: "Fable reason: build - the person asked",
+        subagent_type: "general-purpose",
+      },
+      CTX,
+      { CLAUDE_CODE_SESSION_ATTENDED: "0" },
+    );
+    expect(result.decision).toBe("deny");
+    expect(result.reason).toContain("nobody to answer");
+  });
+
+  it("the Fable refusal lists every word, `unsatisfied` and `build` included", () => {
+    const words = `Fable reason: <hard|rewrite|ui-design|architecture|review|plan|unsatisfied|build> - <why>`;
+    // No reason line at all, and a word nobody listed: the same refusal names the whole list.
+    for (const prompt of ["help", "Fable reason: because"]) {
+      const refused = verdict({ effort: "max", model: "fable", prompt, subagent_type: "Explore" });
+      expect(refused.decision).toBe("deny");
+      expect(refused.reason).toContain(words);
+      expect(refused.reason).toContain("unsatisfied");
+    }
   });
 
   it("Fable: no reason line is denied; a reason word nobody listed too", () => {
@@ -721,6 +843,47 @@ describe("the hook's answer, and the record", () => {
     // Another tool call in the same session is a second launch.
     agentGuard({ ...input, tool_use_id: "toolu_2" }, NO_ENV, where, "/tmp/app");
     expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toHaveLength(2);
+  });
+
+  it("a Fable build launch is recorded once with its reason, `fable:build`", () => {
+    const where = paths();
+    mkdirSync(where.stateDir, { recursive: true });
+    const input = {
+      ...agentCall({
+        effort: "max",
+        model: "fable",
+        prompt: "Fable reason: build - the person asked Fable to write the migration",
+        subagent_type: "general-purpose",
+      }),
+      session_id: "11111111-2222-3333-4444-555555555555",
+      tool_use_id: "toolu_build",
+    };
+    const asked = agentGuard(input, NO_ENV, where, "/tmp/app");
+    expect(JSON.parse(asked.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
+    const launches = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.family).toBe("fable");
+    expect(launches[0]?.reason).toBe("fable:build");
+    expect(launches[0]?.subagentType).toBe("general-purpose");
+    // The hook runs twice for one call (proved live): one record, not two.
+    agentGuard(input, NO_ENV, where, "/tmp/app");
+    expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toHaveLength(1);
+  });
+
+  it("a deeper review at effort max is recorded as `opus:review-max`, so `usage` lists it", () => {
+    const where = paths();
+    mkdirSync(where.stateDir, { recursive: true });
+    const result = agentGuard(
+      agentCall({ effort: "max", model: "opus", prompt: "review it", subagent_type: "Reviewer" }),
+      NO_ENV,
+      where,
+      "/tmp/app",
+    );
+    expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
+    const [launch] = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
+    expect(launch?.family).toBe("opus");
+    expect(launch?.reason).toBe("opus:review-max");
+    expect(launch?.subagentType).toBe("Reviewer");
   });
 
   it("a Sonnet launch is not recorded, and a record of another shape is skipped", () => {

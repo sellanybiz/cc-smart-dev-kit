@@ -87,6 +87,27 @@ Done in this release:
   it may still have running — is reported by `doctor` (with the command that deletes the folder,
   which is the person's own call, and the pid of that Chrome) and is never deleted or used.
 
+## 0.4.1 — the model rules of 2026-10-16
+
+The owner's decisions, all about which model runs what, in one patch release:
+
+- **Fable is not only an advisor** (`design.md` § The Agent guard): `agent-guard` takes the new
+  reason `unsatisfied` — a fresh attempt after the person did not like the main session's
+  answer — and an agent that can change files (a builder, or a fork) runs on Fable with the one
+  word `build`, which the person approves, so a session whose own model is Fable can fork. A
+  review may run on Fable by the session's own judgment for a hard or high-stakes change.
+- **A review at effort `max`** is an `ask` instead of a refusal — the deeper review is the
+  person's call — and is recorded as `opus:review-max` for `cc-smart-dev-kit usage`. In
+  `claude -p` it is still refused.
+- **`fable-session`**, a new machine-wide hook (`design.md` § The Fable-session note): one
+  `systemMessage` to the person, once a session, when the session's own model is Claude Fable —
+  nothing to Claude, never an error. The model is read the guard's way (the start's `model`,
+  else the transcript's, then `ANTHROPIC_MODEL`), so a `/model` switch to Fable is caught at
+  the next prompt.
+
+The general instructions (`plugin/instructions/core.md`) and the `review` skill carry the same
+words; core.md stays at its 190 lines.
+
 ## 1 — Foundation (done)
 
 The repo, CI, the bundle step and its check, `claude plugin validate --strict`, the

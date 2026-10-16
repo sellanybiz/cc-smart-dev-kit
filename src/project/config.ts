@@ -16,6 +16,7 @@ export const PLUGIN_HOOK_NAMES = [
   "serena-root",
   "message-guard",
   "agent-guard",
+  "fable-session",
   "job-route",
   "after-merge",
   "review-record",

@@ -91,15 +91,15 @@ Opus spawn. Never put `model:` or `effort:` in an agent's frontmatter — perman
 | `haiku` | the **scout** | file discovery, searches, reading, summaries, mechanical bounded work |
 | `sonnet` | the **worker** | routine building, doc updates, test runs, mechanical edits, UI checks |
 | `opus` | Claude Opus | every review; building code that touches security, money, permissions, schema or deploy plumbing; architecture, plan second-reads, tangled debugging, ambiguous research, all UI/UX and design judgment |
-| `fable` | Claude Fable | only the hardest long-horizon work, never the default |
+| `fable` | Claude Fable | the hardest long-horizon work, a fresh attempt when the person is not satisfied, or building when the person asks; never the default |
 
-**Opus is for reviews, or an exception the person approves.** Every other Opus launch carries
-a line `Opus reason: <security|money|permissions|schema|deploy|ui|architecture|plan-review|debugging>`
-and asks the person to approve it; a session nobody watches (`claude -p`) refuses it. **Fable
-advises; it never builds.** Very hard problems, hard architecture, a rewrite or a complex
-UI/UX design, a strong second-opinion review, refining a plan — read-only agents only (Plan,
-Reviewer, Explore, Code Explorer), with a line
-`Fable reason: <hard|rewrite|ui-design|architecture|review|plan> - <why>`, each asking the person; `agent-guard` enforces all of it.
+**Opus is for reviews, or an exception the person approves.** Every other Opus launch carries a line `Opus reason: <security|money|permissions|schema|deploy|ui|architecture|plan-review|debugging>` and
+asks the person to approve it; a session nobody watches (`claude -p`) refuses it. **Fable advises; it builds only when the person asks.** Very hard problems, hard architecture, a rewrite or a complex
+UI/UX design, a strong second-opinion review — on your own judgment for a hard or high-stakes change (security, money, permissions, a big architecture change), or when the person asks — refining a plan,
+and a fresh attempt when the person is not satisfied with your answer (a design, an engineering problem, a fix — give it the task, your answer and what they disliked; it proposes, you or a worker build) —
+read-only agents only (Plan, Reviewer, Explore, Code Explorer), with a line `Fable reason: <hard|rewrite|ui-design|architecture|review|plan|unsatisfied|build> - <why>`, each asking the person. An agent
+that can change files — a builder, or a fork — runs on Fable only with `Fable reason: build - <what the person asked>`. A session may run on Fable as its main model: the person's choice, and Claude never
+comments on it — the plugin tells the person once. A review runs at `xhigh` by default; at `max` only when the person asks for a deeper one, and the guard then asks them. `agent-guard` enforces all of it.
 
 **With the cc-smart-dev-kit gateway on** (`ANTHROPIC_BASE_URL` points at the local router),
 `haiku` and `sonnet` are its affordable slots (`cc-smart-dev-kit-scout`, `cc-smart-dev-kit-worker`),
@@ -112,9 +112,9 @@ affordable model to save usage. **Never change the path your own model traffic t
 or replace the gateway, change its address) from your own shell tool: the session cuts its own
 line mid-change. Give the person the command to run instead (`/cc-smart-dev-kit:gateway`).
 
-**Effort:** `high` for searches, reads and routine building, `xhigh` for review and real judgment,
-`max` for the hardest problem only — never for a review, always on an affordable gateway slot.
-A subagent never runs at `low` or `medium`; the session's own effort is the person's choice.
+**Effort:** `high` for searches, reads and routine building, `xhigh` for review and real judgment, `max` for the
+hardest problem only, or for a deeper review when the person asks (the guard asks them then) — always on an
+affordable gateway slot. A subagent never runs at `low` or `medium`; the session's own effort is the person's choice.
 
 **Say it when you launch.** The reply that starts an agent names its slot, the model behind it
 and its effort — "a reviewer (`opus` → Claude Opus, effort xhigh)" — so the person sees which
