@@ -25,9 +25,15 @@
  * well.
  *
  * Three routes, one of them chosen per alert:
- *   - **the desktop**: `notify-send` on Linux (with a desktop to show it on), `osascript` on
- *     macOS, a PowerShell toast on Windows (`windowsToast`), and the freedesktop sound when
- *     `paplay` is there. Windows plays the sound of its own notification, so none is added.
+ *   - **the desktop**: `notify-send` on Linux (with a desktop to show it on) — and, where
+ *     the installed launcher and one of the desktop's own tools are there, the detached
+ *     `alert-worker` in its place: it waits for a click that raises the session's terminal
+ *     window, keeps one alert per session on screen, and moves the alert to the
+ *     notification centre after a minute (`desktop-alert.ts`: the extras the older
+ *     notification script had, ported) — `osascript` on macOS, a PowerShell toast on
+ *     Windows (`windowsToast`), and the freedesktop sound when `paplay` is there, with
+ *     XFCE's Do Not Disturb silencing an ordinary alert's sound. Windows plays the sound
+ *     of its own notification, so none is added.
  *   - **the SSH terminal**: with no desktop route here but a session over SSH
  *     (`SSH_CONNECTION` or `SSH_TTY`), the same alert goes to the terminal the person is
  *     looking at as OSC 777: through the hook's `terminalSequence` output field, which Claude
@@ -67,11 +73,19 @@ import { notifyCommand } from "../update/apply";
 import { alertsAt, type ResolvedAlerts } from "../workflow/alerts";
 import type { AlertEvent } from "../workflow/schema";
 import { type SoundName, soundArgv } from "./alert-sound";
+import {
+  canWaitForClick,
+  desktopTools,
+  dndOn,
+  hasDesktop,
+  type NotifyTarget,
+  notifyWorkerAlert,
+} from "./desktop-alert";
 import { startDetached } from "./detached";
 import { type HookResult, SILENT } from "./io";
 import type { Env } from "./run";
 import { cleanSessionName } from "./session-name";
-import { stopFailureWillAlert } from "./stop-failure";
+import { ALERT_WORKER_COMMAND, type Runner, stopFailureWillAlert } from "./stop-failure";
 import { lastAssistantText, lastCustomTitle, startedByPeer } from "./transcript";
 
 /** The notification types that mean "Claude needs you", the ones `hooks.json` matches. */
@@ -526,8 +540,17 @@ export interface NotifyDeps {
   which: (command: string) => null | string;
   /** Starts a program detached: the notifier, the sound. */
   run: NotifyRunner;
+  /** Runs a short program now and captures its stdout: the Do Not Disturb check, and the
+   * decision that a click can be waited for. Never a program that waits. */
+  capture: Runner;
   /** The plugin's paths: the Claude config folder, and `notify.json`. */
   paths: CliPaths;
+  /**
+   * The installed launcher (`~/.local/bin/cc-smart-dev-kit`), when setup wrote it: the
+   * worker that waits for a click runs from the installed version, never from this hook's
+   * version folder, which an update may delete while it waits.
+   */
+  launcher: null | string;
   /** The clock, for the mark that keeps one wait from alerting twice. */
   nowMs: number;
   /** Writes one sequence to the session's terminal (`/dev/tty`); false when there is none. */
@@ -541,13 +564,48 @@ export interface NotifyDeps {
   writeSessionTerminal: (sequence: string) => boolean;
 }
 
-/** The desktop's own notifier command, or null: no desktop route on this machine. */
-function desktopCommand(alert: Alert, deps: NotifyDeps): null | string[] {
-  // On Linux a desktop notification needs a desktop (`DISPLAY`: X, or a Wayland session that
-  // sets it). Without one — an SSH session, a headless machine — `notify-send` has no bus to
-  // show anything on, so the terminal route is the one that works. Windows always has a
-  // desktop, so its route is the toast `notifyCommand` builds, whenever PowerShell is there.
-  if (deps.platform === "linux" && (deps.env.DISPLAY ?? "") === "") return null;
+/**
+ * What the desktop alert needs about this session (the worker's window hint): its folder
+ * and name for a VS Code or Warp window, the terminal's own `WINDOWID`, and the session id
+ * for the one-alert-per-session record.
+ */
+function desktopTarget(
+  deps: NotifyDeps,
+  cwd: null | string,
+  label: null | string,
+  session: string,
+): NotifyTarget {
+  return {
+    folder: cwd === null ? "" : basename(cwd),
+    name: label ?? "",
+    program: deps.env.TERM_PROGRAM ?? "",
+    session,
+    windowId: deps.env.WINDOWID ?? "",
+  };
+}
+
+/**
+ * The desktop's own notifier command, or null: no desktop route on this machine (`notify.ts`
+ * § The routes).
+ *
+ * On Linux this is the **detached worker** where it can do better than a plain
+ * notification — wait for a click, raise the session's window, close the alert on the
+ * minute — and today's plain `notify-send` everywhere else (`notifyCommand`). Without one
+ * of the two tools the worker needs (`canWaitForClick`) there is nothing to wait for, and
+ * the direct notification stays: one sender either way, never both. macOS and Windows are
+ * unchanged (`osascript`, the PowerShell toast).
+ */
+function desktopCommand(alert: Alert, deps: NotifyDeps, target: NotifyTarget): null | string[] {
+  if (deps.platform === "linux") {
+    if (!hasDesktop(deps.platform, deps.env)) return null;
+    if (deps.launcher !== null && canWaitForClick(desktopTools(deps.which), deps.capture)) {
+      return [
+        deps.launcher,
+        ALERT_WORKER_COMMAND,
+        JSON.stringify(notifyWorkerAlert(alert, target)),
+      ];
+    }
+  }
   return notifyCommand(alert.body, deps.platform, deps.which, alert.title, alert.critical);
 }
 
@@ -557,6 +615,12 @@ function desktopCommand(alert: Alert, deps: NotifyDeps): null | string[] {
  * `notify.json` (`desktopSound`, on by default — today's behaviour) or the project or the
  * person asked for one in the workflow (`alerts.sound`). Which program plays it, and on
  * which platform: `alert-sound.ts`.
+ *
+ * XFCE's Do Not Disturb silences an ordinary alert's sound (an urgent one sounds anyway —
+ * XFCE shows those under Do Not Disturb too): the older notification script's own check,
+ * `xfconf-query` reading `/do-not-disturb` (`desktop-alert.ts`). The popup itself is the
+ * notification server's business: under Do Not Disturb it stays off the screen and the
+ * centre keeps it, so the alert is not lost.
  */
 function playSound(
   alert: Alert,
@@ -565,6 +629,13 @@ function playSound(
   alerts: ResolvedAlerts,
 ): void {
   if (alert.sound === null || !(config.desktopSound || alerts.sound.value)) return;
+  if (
+    !alert.critical &&
+    deps.platform === "linux" &&
+    dndOn(desktopTools(deps.which), deps.capture)
+  ) {
+    return;
+  }
   const argv = soundArgv(alert.sound, deps.platform, deps.which);
   if (argv !== null) deps.run(argv);
 }
@@ -607,6 +678,7 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
 
   const transcript = typeof input.transcript_path === "string" ? input.transcript_path : null;
   const cwd = typeof input.cwd === "string" ? input.cwd : null;
+  const label = sessionLabel(transcript, cwd);
   // Asked only for a limit stop: the StopFailure hook shows that alert itself where it can,
   // and this hook must not be the second one (or, where it cannot, the missing one).
   const limitAlertIsStopFailures =
@@ -621,7 +693,7 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
       : false;
   const alert = alertFor(input, event, {
     failed,
-    label: sessionLabel(transcript, cwd),
+    label,
     limitAlertIsStopFailures,
     mark,
     nowMs: deps.nowMs,
@@ -643,7 +715,7 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
   }
 
   const config = readNotifyConfig(deps.paths.notifyConfigFile);
-  const argv = desktopCommand(alert, deps);
+  const argv = desktopCommand(alert, deps, desktopTarget(deps, cwd, label, session));
   if (isWarpTerminal(deps.env) && warpPluginOn(deps.paths.claudeConfigDir)) {
     if (warpShowsIt(event, input)) {
       // Warp's own plugin shows this one itself, in its window while it is in front and as

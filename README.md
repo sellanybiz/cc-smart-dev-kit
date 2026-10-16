@@ -269,6 +269,10 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   `tmux set -g allow-passthrough all`): tmux is optional. When neither is wrong — the line
   is in the file, and you are outside tmux, or inside one whose passthrough is `all` —
   doctor prints no tmux line at all;
+- the Linux desktop extras of the alerts (§ Notifications), when a desktop is there: a `·`
+  line for each tool that is missing — `gdbus` for the minute on screen and one alert per
+  session, `xdotool` for the raise on a click, `xfconf-query` for XFCE's Do Not Disturb —
+  never a failure, and nothing when they are all installed;
 - no other plugin named `cc-smart-dev-kit` is enabled, and the plugin's old id `cc@cc-agentic`
   (its name before version 0.2.0) is not enabled either: two copies of the same hooks
   would run. When the old setup ran on this machine (its folder `~/.claude/cc-agentic`
@@ -1053,17 +1057,36 @@ usage limit **where the `stop-failure` hook shows that alert itself** (a desktop
 gateway set up — never two alerts for one stop). Where that hook has no alert to show (no
 desktop, no gateway), the stopped turn is this hook's alert like any other.
 
-**A desktop** shows the alert through `notify-send` on Linux (it needs `DISPLAY`) or
-`osascript` on macOS, and plays the freedesktop sound when `paplay` is installed. **An SSH
-session** with no desktop to show it on gets the same alert in the terminal you are looking
-at, as an OSC 777 notification — no `notify-send` needed on a server: Claude Code writes the
-sequence for the hook (2.1.141 or later, wrapped for tmux itself), and for an event whose
-answer Claude Code does not read (the usage-limit alert) the hook writes it to the terminal
-device Claude Code's own session is attached to. **Inside Warp** Warp's own
+**A desktop** shows the alert through `notify-send` on Linux (it needs a desktop:
+`DISPLAY` or `WAYLAND_DISPLAY`) or `osascript` on macOS, and plays the freedesktop sound
+when `paplay` is installed. **An SSH session** with no desktop to show it on gets the same
+alert in the terminal you are looking at, as an OSC 777 notification — no `notify-send`
+needed on a server: Claude Code writes the sequence for the hook (2.1.141 or later, wrapped
+for tmux itself), and for an event whose answer Claude Code does not read (the usage-limit
+alert) the hook writes it to the terminal device Claude Code's own session is attached to.
+**Inside Warp** Warp's own
 Claude Code plugin shows a finished turn, a question, a permission prompt and an error
 itself, so ours stays quiet and plays only the sound — except a question or a waiting agent,
 which may sit in a tab you are not looking at: those stay ours. With no desktop, no SSH and
 no Warp there is nowhere to show it, and nothing happens — not a failure.
+
+**A Linux desktop gives the alert three more things, each where its tool is installed**
+(`cc-smart-dev-kit doctor` names a missing one, as information, and without them the alert still
+shows exactly as before):
+
+| What | Needs | Without it |
+|---|---|---|
+| a click on the alert raises the session's terminal window (the terminal's own window id, or a VS Code or Warp window found by its name) | `xdotool`, and a notification that reports a click: `gdbus`, or a `notify-send` whose `--help` lists `--action` and `--wait` | the alert shows, and a click only closes it |
+| the alert leaves the screen for the notification centre after a minute, and only one alert per session is on screen | `gdbus` (glib's `libglib2.0-bin`) | the alert stays until it is clicked or dismissed |
+| an ordinary alert's sound stays off while XFCE's Do Not Disturb is on (an urgent one sounds anyway) | `xfconf-query` | the sound plays while Do Not Disturb is on |
+
+The wait for a click runs in a small background process, never in Claude Code's way. The
+window raise needs the installed launcher (`cc-smart-dev-kit setup`), and the alert is shown by
+the notification server itself (`gdbus`) or `notify-send`; under Do Not Disturb the desktop
+keeps an ordinary alert off the screen but in the centre, so it is never lost. One older
+behaviour does not come over: picking the session's **tab** inside XFCE Terminal (that needs
+the desktop's accessibility service, which this plugin does not carry) — the window comes to
+the front, and the tab stays where it is.
 
 One settings file, `~/.claude/cc-smart-dev-kit/notify.json` (both keys optional):
 

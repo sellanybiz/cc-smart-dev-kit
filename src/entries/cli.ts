@@ -19,6 +19,13 @@ import { type GatewayContext, runGateway } from "../gateway/commands";
 import { realProbe } from "../gateway/health";
 import { type Runner, routerServiceKind } from "../gateway/service";
 import { windowsAccount } from "../gateway/service-windows";
+import {
+  ALERT_SCREEN_MS,
+  parseNotifyWorkerAlert,
+  runDesktopAlert,
+  type Watch,
+} from "../hooks/desktop-alert";
+import { runtimeDir } from "../hooks/notify";
 import { projectHookSettingsText } from "../hooks/project-wiring";
 import { runHookEntry } from "../hooks/run";
 import { recordSessionName } from "../hooks/session-name";
@@ -298,6 +305,31 @@ function omnirouteContext(paths: ReturnType<typeof cliPaths>) {
   };
 }
 
+/**
+ * Reads a program's stdout line by line while it runs: the notification server's signal
+ * monitor (`gdbus monitor`, `src/hooks/desktop-alert.ts`). The alert's wait ends on one of
+ * those lines, or on the minute; `stop` ends the monitor either way.
+ */
+const watchLines: Watch = (argv, onLine) => {
+  const monitor = Bun.spawn(argv, { stdin: "ignore", stderr: "ignore", stdout: "pipe" });
+  const read = async (): Promise<void> => {
+    const decoder = new TextDecoder();
+    let rest = "";
+    for await (const chunk of monitor.stdout) {
+      rest += decoder.decode(chunk, { stream: true });
+      const lines = rest.split("\n");
+      rest = lines.pop() ?? "";
+      for (const line of lines) onLine(line);
+    }
+  };
+  read().catch((error) =>
+    // The monitor dying early only means the alert waits out its minute instead of the
+    // click; one line says so, and the process is one the hook never sees.
+    console.error(`${COMMAND}: the notification monitor stopped: ${String(error)}`),
+  );
+  return { stop: () => monitor.kill() };
+};
+
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
   const refusal = oldBunRefusal(command, Bun.version, process.execPath);
@@ -378,19 +410,37 @@ async function main(argv: string[]): Promise<number> {
     case "usage":
       return runUsage(paths, rest, Date.now());
     case ALERT_WORKER_COMMAND: {
-      // Not in --help: the StopFailure hook starts it, detached, through the launcher, so the
-      // half hour it may wait for a click runs from the installed version, not the hook's
-      // version folder (src/entries/stop-failure.ts).
-      const alert = rest.length === 1 ? parseAlert(rest[0] ?? "") : null;
+      // Not in --help: the two alert hooks start it, detached, through the launcher, so the
+      // wait for a click — a minute on screen, half an hour for the usage-limit alert —
+      // runs from the installed version, not the hook's version folder
+      // (src/entries/stop-failure.ts, src/entries/notify.ts).
+      const argument = rest.length === 1 ? (rest[0] ?? "") : null;
+      const notifyAlert = argument === null ? null : parseNotifyWorkerAlert(argument);
+      if (notifyAlert !== null) {
+        // The notifier's alert: the desktop extras around it, everything that waits, and
+        // the window raised on a click (`src/hooks/desktop-alert.ts`).
+        const outcome = await runDesktopAlert(notifyAlert, {
+          capture: spawnRunner,
+          nowMs: () => Date.now(),
+          screenMs: ALERT_SCREEN_MS,
+          sleep: (ms) => Bun.sleep(ms),
+          stateDir: runtimeDir(process.env),
+          watch: watchLines,
+          which: (command) => Bun.which(command, { PATH: process.env.PATH ?? "" }),
+        });
+        if (outcome === "no notifier") {
+          console.error(`${COMMAND}: ${notifyAlert.title}. ${notifyAlert.body}`);
+        }
+        return 0;
+      }
+      const alert = argument === null ? null : parseAlert(argument);
       if (alert === null) {
-        console.error(
-          `Usage: cc-smart-dev-kit ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`,
-        );
+        console.error(`Usage: ${COMMAND} ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
         return 2;
       }
       const launcher = join(paths.binDir, LAUNCHER_NAME);
       if (runAlert(alert, process.platform, launcher, spawnRunner) === "no notifier") {
-        console.error(`cc-smart-dev-kit: ${alert.title}. ${alert.body}`);
+        console.error(`${COMMAND}: ${alert.title}. ${alert.body}`);
       }
       return 0;
     }

@@ -46,6 +46,7 @@ import {
 import { settingsReport } from "../gateway/settings";
 import { MODEL_SLOTS, parseTarget, withoutContextSuffix } from "../gateway/targets";
 import { alertsAt, type ResolvedAlerts } from "../workflow/alerts";
+import { hasDesktop } from "./desktop-alert";
 import type { Env } from "./run";
 import { lastClaudeModel } from "./transcript";
 import { TOAST_SHELL, windowsToastArgvFor } from "./windows-toast";
@@ -276,16 +277,20 @@ export interface LimitAlertDeps {
 
 /**
  * True when this machine has a desktop to show the alert on — the route the StopFailure
- * hook's own alert needs: `notify-send` with a `DISPLAY` on Linux (without a desktop it has
- * no bus to show anything on), `osascript` on macOS, the PowerShell toast on Windows. False:
- * that hook has no route here, and the alert is the notifier's.
+ * hook's own alert needs: `notify-send` with a desktop on Linux (without one it has no bus
+ * to show anything on), `osascript` on macOS, the PowerShell toast on Windows. False: that
+ * hook has no route here, and the alert is the notifier's.
+ *
+ * The Linux desktop rule is one home, `hasDesktop` (`desktop-alert.ts`): the notifier
+ * decides its own route by the same one, so the two hooks can never disagree about whether
+ * a desktop is there and alert twice (or not at all).
  */
 export function limitAlertDesktop(
   platform: NodeJS.Platform,
   env: Env,
   which: (command: string) => null | string,
 ): boolean {
-  if (platform === "linux") return (env.DISPLAY ?? "") !== "" && which("notify-send") !== null;
+  if (platform === "linux") return hasDesktop(platform, env) && which("notify-send") !== null;
   if (platform === "darwin") return which("osascript") !== null;
   if (platform === "win32") return which(TOAST_SHELL) !== null;
   return false;

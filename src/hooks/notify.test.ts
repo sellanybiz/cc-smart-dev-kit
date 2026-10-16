@@ -130,10 +130,11 @@ function warpPlugin(env: Record<string, string>): void {
 function setup(
   env: Record<string, string>,
   overrides: Partial<NotifyDeps> = {},
-): { deps: NotifyDeps; runs: string[][]; session: string[]; tty: string[] } {
+): { deps: NotifyDeps; runs: string[][]; session: string[]; tty: string[]; asked: string[][] } {
   const runs: string[][] = [];
   const session: string[] = [];
   const tty: string[] = [];
+  const asked: string[][] = [];
   const deps: NotifyDeps = {
     env,
     nowMs: Date.now(),
@@ -141,6 +142,16 @@ function setup(
     platform: "linux",
     run: (argv) => runs.push(argv),
     which: (command) => Bun.which(command, { PATH: env.PATH ?? "" }),
+    // The short programs the hook runs itself (the Do Not Disturb check, the probe that a
+    // click can be waited for): recorded, and answered with nothing — the same answer as a
+    // machine with neither `xfconf-query` nor a `notify-send` that lists the two flags.
+    capture: (run) => {
+      asked.push(run.argv);
+      return { exitCode: 0, stdout: "", timedOut: false };
+    },
+    // No launcher by default: the desktop alert stays a direct `notify-send`, as it always
+    // was. A worker test passes the path setup would write.
+    launcher: null,
     writeSessionTerminal: (sequence) => {
       session.push(sequence);
       return true;
@@ -151,7 +162,7 @@ function setup(
     },
     ...overrides,
   };
-  return { deps, runs, session, tty };
+  return { deps, runs, session, tty, asked };
 }
 
 /** A transcript, one JSON entry per line, written where the hook reads it. */
@@ -840,6 +851,163 @@ describe("the SSH terminal route", () => {
     notifyHook(stopInput(env.HOME), "Stop", deps);
     expect(runs.length).toBe(1);
     expect(runs[0]?.[0]).toEndWith("notify-send");
+  });
+});
+
+describe("the Linux desktop worker: a click can be waited for", () => {
+  const LAUNCHER = "/home/user/.local/bin/cc-smart-dev-kit";
+
+  /** A fake program on PATH that answers every call with one line: `true`, a help text. */
+  function fakeAnswer(bin: string, name: string, answer: string): void {
+    writeFileSync(join(bin, name), `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(answer)}\n`);
+    chmodSync(join(bin, name), 0o755);
+  }
+
+  /** A fake `notify-send` whose `--help` lists the two flags the click wait needs. */
+  function notifySendWithActions(bin: string, home: string): void {
+    writeFileSync(
+      join(bin, "notify-send"),
+      [
+        "#!/bin/sh",
+        `[ "$1" = "--help" ] && { printf '%s\\n' "-A, --action=[NAME=]Text" "-w, --wait" "-t, --expire-time=TIME"; exit 0; }`,
+        `echo "notify-send $*" >> '${join(home, "notify.log")}'`,
+        "",
+      ].join("\n"),
+    );
+    chmodSync(join(bin, "notify-send"), 0o755);
+  }
+
+  test("the bus is there and the launcher is installed: the alert goes to the worker, with the session's window", () => {
+    const { env } = machine({ DISPLAY: ":0", TERM_PROGRAM: "vscode", WINDOWID: "12345" }, [
+      "gdbus",
+      "xdotool",
+      "notify-send",
+      "paplay",
+    ]);
+    const { deps, runs } = setup(env, { launcher: LAUNCHER });
+    notifyHook(
+      {
+        cwd: join(env.HOME, "my-app"),
+        hook_event_name: "Notification",
+        message: "Claude needs your permission to use Bash",
+        notification_type: "permission_prompt",
+        session_id: "s-1",
+      },
+      "Notification",
+      deps,
+    );
+    // The sound, then the worker — never the notification itself as well: one sender.
+    expect(runs[0]?.[1]).toEndWith("service-login.oga");
+    expect(runs[1]?.slice(0, 2)).toEqual([LAUNCHER, "alert-worker"]);
+    expect(JSON.parse(runs[1]?.[2] ?? "")).toEqual({
+      body: "Claude needs your permission to use Bash",
+      critical: true,
+      kind: "notify",
+      session: "s-1",
+      title: "Claude needs you · my-app",
+      window: { folder: "my-app", name: "my-app", program: "vscode", windowId: "12345" },
+    });
+    // The hook itself never runs notify-send: the worker is the one that shows the alert.
+    expect(runs.filter((argv) => argv[0]?.endsWith("notify-send"))).toEqual([]);
+  });
+
+  test("no launcher (setup never ran): the direct notification stays, no worker", () => {
+    const { bin, env } = machine({ DISPLAY: ":0" }, ["gdbus", "xdotool", "notify-send", "paplay"]);
+    const { deps, runs } = setup(env);
+    notifyHook(stopInput(env.HOME), "Stop", deps);
+    expect(runs).toEqual([
+      [join(bin, "paplay"), "/usr/share/sounds/freedesktop/stereo/service-logout.oga"],
+      [join(bin, "notify-send"), "Claude finished · rel-ssh", "Claude finished its turn."],
+    ]);
+  });
+
+  test("only a notify-send that cannot do the two flags: the direct notification stays", () => {
+    const { bin, env } = machine({ DISPLAY: ":0" }, ["notify-send", "paplay"]);
+    const { asked, deps, runs } = setup(env, { launcher: LAUNCHER });
+    notifyHook(stopInput(env.HOME), "Stop", deps);
+    // The probe read its help: no `--action`, so there is no click to wait for.
+    expect(asked).toContainEqual([join(bin, "notify-send"), "--help"]);
+    expect(runs).toEqual([
+      [join(bin, "paplay"), "/usr/share/sounds/freedesktop/stereo/service-logout.oga"],
+      [join(bin, "notify-send"), "Claude finished · rel-ssh", "Claude finished its turn."],
+    ]);
+  });
+
+  test("no gdbus, but a notify-send whose help lists the flags: the worker runs", () => {
+    const { bin, env } = machine({ DISPLAY: ":0" }, ["notify-send", "paplay"]);
+    notifySendWithActions(bin, env.HOME);
+    const { deps, runs } = setup(env, {
+      launcher: LAUNCHER,
+      // The probe a real hook makes: it runs `notify-send --help` and reads the flags.
+      capture: (run) => ({
+        exitCode: 0,
+        stdout: run.argv.includes("--help") ? "-A, --action=[NAME=]Text\n-w, --wait\n" : "",
+        timedOut: false,
+      }),
+    });
+    notifyHook(stopInput(env.HOME), "Stop", deps);
+    expect(runs.map((argv) => argv.slice(0, 2))).toEqual([
+      [join(bin, "paplay"), "/usr/share/sounds/freedesktop/stereo/service-logout.oga"],
+      [LAUNCHER, "alert-worker"],
+    ]);
+  });
+
+  test("a Wayland session with no DISPLAY is a desktop too", () => {
+    const { env } = machine({ DISPLAY: "", WAYLAND_DISPLAY: "wayland-0" }, [
+      "gdbus",
+      "xdotool",
+      "notify-send",
+      "paplay",
+    ]);
+    const { deps, runs } = setup(env, { launcher: LAUNCHER });
+    notifyHook(stopInput(env.HOME), "Stop", deps);
+    expect(runs[1]?.slice(0, 2)).toEqual([LAUNCHER, "alert-worker"]);
+  });
+
+  test("Do Not Disturb: an ordinary alert's sound stays off; an urgent one sounds anyway", () => {
+    const { bin, env } = machine({ DISPLAY: ":0" }, ["notify-send", "paplay"]);
+    fakeAnswer(bin, "xfconf-query", "true");
+    // What the hook's own call reads: the fake answers the XFCE setting, as the real one does.
+    const asked: string[][] = [];
+    const reading = (answer: string) => (run: { argv: string[] }) => {
+      asked.push(run.argv);
+      return {
+        exitCode: 0,
+        stdout: run.argv[0]?.endsWith("xfconf-query") === true ? `${answer}\n` : "",
+        timedOut: false,
+      };
+    };
+    // An ordinary alert (a finished turn): the sound is silenced.
+    const dnd = setup(env, { capture: reading("true") });
+    notifyHook(stopInput(env.HOME), "Stop", dnd.deps);
+    expect(dnd.runs).toEqual([
+      [join(bin, "notify-send"), "Claude finished · rel-ssh", "Claude finished its turn."],
+    ]);
+    expect(asked).toContainEqual([
+      join(bin, "xfconf-query"),
+      "-c",
+      "xfce4-notifyd",
+      "-p",
+      "/do-not-disturb",
+    ]);
+    // An urgent alert (a question): it sounds anyway, as XFCE shows those under DND too.
+    const urgent = setup(env, { capture: reading("true") });
+    notifyHook(
+      {
+        cwd: join(env.HOME, "rel-ssh"),
+        hook_event_name: "PreToolUse",
+        session_id: "s-1",
+        tool_input: { question: "Which branch?" },
+        tool_name: "AskUserQuestion",
+      },
+      "PreToolUse",
+      urgent.deps,
+    );
+    expect(urgent.runs[0]?.[1]).toEndWith("service-login.oga");
+    // DND off: the sound plays for an ordinary alert as always.
+    const off = setup(env, { capture: reading("false") });
+    notifyHook(stopInput(env.HOME), "Stop", off.deps);
+    expect(off.runs[0]?.[1]).toEndWith("service-logout.oga");
   });
 });
 
