@@ -61,7 +61,6 @@ function claudeMemDataDir(env, home) {
 }
 
 // src/hooks/notify.ts
-import { spawn } from "child_process";
 import { readFileSync as readFileSync4, rmSync, statSync as statSync2, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join as join3 } from "path";
@@ -116,6 +115,58 @@ var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURC
 var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
+// src/hooks/windows-toast.ts
+var TOAST_SHELL = "powershell";
+var TOAST_APP_ID = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe";
+function powershellLiteral(text) {
+  return `'${text.replaceAll("'", "''")}'`;
+}
+function windowsToastScript(title, body, critical) {
+  const scenario = critical ? ' scenario="reminder"' : "";
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    `$title = ${powershellLiteral(title)}`,
+    `$body = ${powershellLiteral(body)}`,
+    `$appId = ${powershellLiteral(TOAST_APP_ID)}`,
+    "try {",
+    "  $xml = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]::New()",
+    `  $xml.LoadXml('<toast${scenario}><visual><binding template="ToastGeneric"><text id="1" /><text id="2" /></binding></visual></toast>')`,
+    "  $texts = $xml.GetElementsByTagName('text')",
+    "  $null = $texts.Item(0).AppendChild($xml.CreateTextNode($title))",
+    "  $null = $texts.Item(1).AppendChild($xml.CreateTextNode($body))",
+    "  $toast = [Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType = WindowsRuntime]::New($xml)",
+    "  [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]::CreateToastNotifier($appId).Show($toast)",
+    "} catch {",
+    "  try {",
+    "    Add-Type -AssemblyName System.Windows.Forms",
+    "    Add-Type -AssemblyName System.Drawing",
+    "    $balloon = New-Object System.Windows.Forms.NotifyIcon",
+    "    $balloon.Icon = [System.Drawing.SystemIcons]::Information",
+    "    $balloon.BalloonTipTitle = $title",
+    "    $balloon.BalloonTipText = $body",
+    "    $balloon.Visible = $true",
+    "    $balloon.ShowBalloonTip(10000)",
+    "    Start-Sleep -Milliseconds 4000",
+    "    $balloon.Dispose()",
+    "  } catch {",
+    "    [Console]::Error.WriteLine('cc-smart-dev-kit: the desktop notification could not be shown: ' + $_.Exception.Message)",
+    "    exit 1",
+    "  }",
+    "}"
+  ].join(`
+`);
+}
+function windowsToastArgv(shell, title, body, critical = false) {
+  const script = windowsToastScript(title, body, critical);
+  return [
+    shell,
+    "-NoProfile",
+    "-NonInteractive",
+    "-EncodedCommand",
+    Buffer.from(script, "utf16le").toString("base64")
+  ];
+}
+
 // src/setup/marketplace-access.ts
 var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
@@ -134,7 +185,46 @@ function notifyCommand(text, platform, which, title = PLUGIN, critical = false) 
       `display notification ${JSON.stringify(text)} with title ${JSON.stringify(title)}`
     ];
   }
+  if (platform === "win32") {
+    const powershell = which(TOAST_SHELL);
+    return powershell === null ? null : windowsToastArgv(powershell, title, text, critical);
+  }
   return null;
+}
+
+// src/hooks/detached.ts
+import { spawn } from "child_process";
+function detachedArgv(platform, argv) {
+  return platform === "win32" ? ["cmd", "/c", "start", "", "/b", ...argv] : argv;
+}
+function startDetached(platform, argv, options) {
+  const [file, ...args] = argv;
+  if (file === undefined)
+    return;
+  const where = {
+    ...options.cwd !== undefined && { cwd: options.cwd },
+    ...options.env !== undefined && { env: options.env }
+  };
+  try {
+    if (platform === "win32") {
+      const result = Bun.spawnSync(detachedArgv(platform, argv), {
+        ...where,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+        windowsHide: true
+      });
+      const exitCode = result.exitCode ?? 1;
+      if (exitCode !== 0)
+        options.onError(`cmd /c start failed (exit ${exitCode})`);
+      return;
+    }
+    const child = spawn(file, args, { ...where, detached: true, stdio: "ignore" });
+    child.on("error", (error) => options.onError(error.message));
+    child.unref();
+  } catch (error) {
+    options.onError(error instanceof Error ? error.message : String(error));
+  }
 }
 
 // src/hooks/io.ts
@@ -6476,6 +6566,8 @@ function limitAlertDesktop(platform, env, which) {
     return (env.DISPLAY ?? "") !== "" && which("notify-send") !== null;
   if (platform === "darwin")
     return which("osascript") !== null;
+  if (platform === "win32")
+    return which(TOAST_SHELL) !== null;
   return false;
 }
 function stopFailureWillAlert(input, deps) {
@@ -6732,20 +6824,13 @@ function readNotifyConfig(file) {
     sshBell: parsed.sshBell === true
   };
 }
-var spawnNotify = (argv) => {
-  const [file, ...args] = argv;
-  if (file === undefined)
-    return;
-  try {
-    const child = spawn(file, args, { detached: true, stdio: "ignore" });
-    child.on("error", (error) => {
-      console.error(`cc-smart-dev-kit notify: could not show the notification: ${error.message}`);
+function spawnNotifyFor(platform) {
+  return (argv) => {
+    startDetached(platform, argv, {
+      onError: (message) => console.error(`cc-smart-dev-kit notify: could not show the notification: ${message}`)
     });
-    child.unref();
-  } catch (error) {
-    console.error(`cc-smart-dev-kit notify: ${error instanceof Error ? error.message : error}`);
-  }
-};
+  };
+}
 function desktopCommand(alert, deps) {
   if (deps.platform === "linux" && (deps.env.DISPLAY ?? "") === "")
     return null;
@@ -6839,6 +6924,9 @@ function claudePid(env, fallback) {
     return pid;
   return Number.isInteger(fallback) && fallback > 1 ? fallback : 0;
 }
+function ttyDevice(platform) {
+  return platform === "win32" ? null : "/dev/tty";
+}
 function sessionTerminalDevice(probe) {
   if (probe.platform !== "linux")
     return null;
@@ -6891,7 +6979,8 @@ function realTerminalProbe(env, parentPid) {
 
 // src/entries/notify.ts
 function writeTerminal(sequence) {
-  return writeDevice("/dev/tty", sequence);
+  const device = ttyDevice(process.platform);
+  return device !== null && writeDevice(device, sequence);
 }
 async function hook() {
   let input;
@@ -6909,7 +6998,7 @@ async function hook() {
     nowMs: Date.now(),
     paths: cliPaths(env),
     platform: process.platform,
-    run: spawnNotify,
+    run: spawnNotifyFor(process.platform),
     which: (command) => Bun.which(command, { PATH: env.PATH ?? "" }),
     writeSessionTerminal: (sequence) => {
       const device = sessionTerminalDevice(probe);

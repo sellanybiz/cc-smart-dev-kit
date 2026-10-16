@@ -15,11 +15,13 @@ import { tempDir } from "../testing/temp";
 import {
   type Alert,
   type AlertContext,
+  limitAlertDesktop,
   parseAlert,
   planAlert,
   type Run,
   readAlertContext,
   runAlert,
+  usesAlertWorker,
 } from "./stop-failure";
 
 const NOW = Date.UTC(2026, 9, 15, 10, 0, 0);
@@ -328,7 +330,7 @@ describe("the worker shows it", () => {
     ]);
   });
 
-  it("a notify-send without --action: the plain notification instead; macOS: osascript; others: none", () => {
+  it("a notify-send without --action: the plain notification instead; macOS: osascript; Windows: a toast; others: none", () => {
     const old = fakeRunner([
       { exitCode: 1, stdout: "" },
       { exitCode: 0, stdout: "" },
@@ -349,9 +351,41 @@ describe("the worker shows it", () => {
       "-e",
       'display notification "say \\"hi\\" \\\\ there" with title "Claude usage limit reached"',
     ]);
+    // Windows: the same words as macOS, as a toast. The action stays Linux-only — a toast
+    // with a button needs an activation callback the worker does not have.
+    const win = fakeRunner([{ exitCode: 0, stdout: "" }]);
+    expect(runAlert(ALERT, "win32", LAUNCHER, win.run)).toBe("shown");
+    expect(win.runs[0]?.argv.slice(0, 4)).toEqual([
+      "powershell",
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+    ]);
+    const script = Buffer.from(win.runs[0]?.argv[4] ?? "", "base64").toString("utf16le");
+    expect(script).toContain("$title = 'Claude usage limit reached'\n");
+    expect(script).toContain("$body = 'body text'\n");
     const none = fakeRunner([]);
-    expect(runAlert(ALERT, "win32", LAUNCHER, none.run)).toBe("no notifier");
+    expect(runAlert(ALERT, "freebsd", LAUNCHER, none.run)).toBe("no notifier");
     expect(none.runs).toEqual([]);
+  });
+
+  it("the worker only where a click can wait: the launcher's route, and never Windows", () => {
+    expect(usesAlertWorker("linux", true)).toBe(true);
+    expect(usesAlertWorker("darwin", true)).toBe(true);
+    expect(usesAlertWorker("linux", false)).toBe(false);
+    expect(usesAlertWorker("win32", true)).toBe(false);
+    expect(usesAlertWorker("win32", false)).toBe(false);
+  });
+
+  it("the desktop route: notify-send with a display on Linux, osascript on macOS, PowerShell on Windows", () => {
+    const found = (names: string[]) => (command: string) =>
+      names.includes(command) ? `/usr/bin/${command}` : null;
+    expect(limitAlertDesktop("linux", { DISPLAY: ":0" }, found(["notify-send"]))).toBe(true);
+    expect(limitAlertDesktop("linux", {}, found(["notify-send"]))).toBe(false);
+    expect(limitAlertDesktop("darwin", {}, found(["osascript"]))).toBe(true);
+    expect(limitAlertDesktop("win32", {}, found(["powershell"]))).toBe(true);
+    expect(limitAlertDesktop("win32", {}, found(["notify-send", "osascript"]))).toBe(false);
+    expect(limitAlertDesktop("freebsd", {}, found(["notify-send"]))).toBe(false);
   });
 
   it("parseAlert reads the hook's JSON back, and nothing else", () => {

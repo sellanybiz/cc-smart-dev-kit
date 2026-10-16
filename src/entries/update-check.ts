@@ -4,10 +4,12 @@
 // (the copy only, quietly), and starts the check when one is due (src/update/background.ts).
 import { PLUGIN, VERSION } from "../build-info";
 import { cliPaths } from "../cli/paths";
+import { startDetached } from "../hooks/detached";
 import { instructionsFolder, instructionsPaths } from "../setup/instructions";
 import { capturingRunner, commandContext, notifyCommand } from "../update/apply";
 import {
   backgroundCheck,
+  backgroundCheckArgv,
   refreshInstructionsAtSessionStart,
   sessionStart,
 } from "../update/background";
@@ -44,14 +46,19 @@ if (process.argv.includes("--background")) {
       sessionPid: sessionPid(),
       version: VERSION,
       spawnBackground: () => {
-        // Detached (its own session, setsid) with no pipe to this hook: it outlives the
-        // hook, and Claude Code never waits for it. In the home folder, without the git
-        // variables of the session's repo (`commandContext`).
-        Bun.spawn([process.execPath, Bun.main, "--background"], {
-          ...commandContext(env, paths.home),
-          detached: true,
-          stdio: ["ignore", "ignore", "ignore"],
-        }).unref();
+        // Detached with no pipe to this hook: it outlives the hook, and Claude Code never
+        // waits for it. On Linux and macOS that is a session of its own (`setsid`); on
+        // Windows it is the `cmd /c start` trampoline, because a detached child dies with
+        // its hook there (`backgroundCheckArgv`, `src/hooks/detached.ts`). In the home
+        // folder, without the git variables of the session's repo (`commandContext`).
+        startDetached(
+          process.platform,
+          backgroundCheckArgv(process.platform, process.execPath, Bun.main),
+          {
+            ...commandContext(env, paths.home),
+            onError: (message) => console.error(`${PLUGIN} update check: ${message}`),
+          },
+        );
       },
     });
     if (answer !== "") process.stdout.write(`${answer}\n`);

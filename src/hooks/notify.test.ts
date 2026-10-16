@@ -215,6 +215,35 @@ describe("what is notified, and with which words", () => {
     ]);
   });
 
+  test("Windows: the same alert as a PowerShell toast, urgent for a permission prompt, and no sound of ours", () => {
+    const { env } = machine({}, ["powershell"]);
+    const { deps, runs } = setup(env, { platform: "win32" });
+    notifyHook(
+      {
+        cwd: join(env.HOME, "rel-ssh"),
+        hook_event_name: "Notification",
+        message: "Claude needs your permission to use Bash",
+        notification_type: "permission_prompt",
+        session_id: "11111111-2222-3333-4444-555555555555",
+      },
+      "Notification",
+      deps,
+    );
+    // One program: the toast. Windows plays the sound of its own notification, so nothing
+    // of ours runs beside it; the alert's words ride in the encoded script, not the argv.
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.slice(0, 4)).toEqual([
+      join(env.PATH, "powershell"),
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+    ]);
+    const script = Buffer.from(runs[0]?.[4] ?? "", "base64").toString("utf16le");
+    expect(script).toContain("$title = 'Claude needs you · rel-ssh'\n");
+    expect(script).toContain("$body = 'Claude needs your permission to use Bash'\n");
+    expect(script).toContain('<toast scenario="reminder">');
+  });
+
   test("the turn's end: the last answer as the body, the session's name, no urgency, the other sound", () => {
     const { bin, env, home } = machine();
     const file = transcript(
@@ -426,6 +455,14 @@ describe("what is notified, and with which words", () => {
     const { env } = machine();
     gatewaySetUp(env);
     const { deps, runs } = setup(env);
+    notifyHook(limitInput(env), "StopFailure", deps);
+    expect(runs).toEqual([]);
+  });
+
+  test("Windows: that same stop is still the StopFailure hook's toast, and only one alert", () => {
+    const { env } = machine({}, ["powershell"]);
+    gatewaySetUp(env);
+    const { deps, runs } = setup(env, { platform: "win32" });
     notifyHook(limitInput(env), "StopFailure", deps);
     expect(runs).toEqual([]);
   });

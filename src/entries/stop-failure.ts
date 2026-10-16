@@ -5,29 +5,29 @@
 // (`~/.local/bin/cc-smart-dev-kit alert-worker <alert JSON>`), never from this file's version
 // folder: it may wait half an hour for a click, and an update may delete the folder
 // meanwhile. With no launcher (setup never ran), a plain notification with no action,
-// which ends at once, is started instead. The logic and its tests: src/hooks/stop-failure.ts.
+// which ends at once, is started instead — and on Windows that plain notification is the
+// route itself (`usesAlertWorker`: no click waits there, and the launcher is a `.cmd` twin
+// this path does not name). The logic and its tests: src/hooks/stop-failure.ts.
 
-import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { startDetached } from "../hooks/detached";
 import {
   ALERT_WORKER_COMMAND,
   plainNotification,
   planAlert,
   readAlertContext,
+  usesAlertWorker,
 } from "../hooks/stop-failure";
 import { LAUNCHER_NAME } from "../setup/launcher";
 
 /** Starts a program detached from the hook, which does not wait for it. */
 function detached(argv: string[]): void {
-  const [file, ...args] = argv;
-  if (file === undefined) return;
-  const child = spawn(file, args, { detached: true, stdio: "ignore" });
-  child.on("error", (error) => {
-    console.error(`cc-smart-dev-kit StopFailure: could not show the alert: ${error.message}`);
+  startDetached(process.platform, argv, {
+    onError: (message) =>
+      console.error(`cc-smart-dev-kit StopFailure: could not show the alert: ${message}`),
   });
-  child.unref();
 }
 
 async function hook(): Promise<void> {
@@ -42,7 +42,7 @@ async function hook(): Promise<void> {
   const alert = planAlert(input, readAlertContext(paths, Date.now(), input));
   if (alert === null) return;
   const launcher = join(paths.binDir, LAUNCHER_NAME);
-  if (existsSync(launcher)) {
+  if (usesAlertWorker(process.platform, existsSync(launcher))) {
     detached([launcher, ALERT_WORKER_COMMAND, JSON.stringify(alert)]);
     return;
   }

@@ -26,6 +26,9 @@
  *     `cc-smart-dev-kit gateway slot <opus|fable> <model>,<targets>`; "Wait" does nothing. The
  *     fallback then ends by itself: the router asks Claude again and goes back once it answers.
  *   - macOS: a plain notification that names the command.
+ *   - Windows: the same kind of alert as macOS, as a toast (`windowsToastArgv`), which names
+ *     the command; a toast with an action button needs an activation callback this hook does
+ *     not have, so the action stays Linux-only.
  *   - Anything else: one stderr line.
  */
 
@@ -44,6 +47,7 @@ import { settingsReport } from "../gateway/settings";
 import { MODEL_SLOTS, parseTarget, withoutContextSuffix } from "../gateway/targets";
 import type { Env } from "./run";
 import { lastClaudeModel } from "./transcript";
+import { TOAST_SHELL, windowsToastArgvFor } from "./windows-toast";
 
 /** The words Claude Code 2.1.300 shows when a plan's usage limit stops a turn. */
 const LIMIT_TEXT = /^You've hit your (?:[\w-]+ ){0,3}limit\b/;
@@ -243,8 +247,8 @@ export interface LimitAlertDeps {
 /**
  * True when this machine has a desktop to show the alert on — the route the StopFailure
  * hook's own alert needs: `notify-send` with a `DISPLAY` on Linux (without a desktop it has
- * no bus to show anything on), `osascript` on macOS. False: that hook has no route here, and
- * the alert is the notifier's.
+ * no bus to show anything on), `osascript` on macOS, the PowerShell toast on Windows. False:
+ * that hook has no route here, and the alert is the notifier's.
  */
 export function limitAlertDesktop(
   platform: NodeJS.Platform,
@@ -253,6 +257,7 @@ export function limitAlertDesktop(
 ): boolean {
   if (platform === "linux") return (env.DISPLAY ?? "") !== "" && which("notify-send") !== null;
   if (platform === "darwin") return which("osascript") !== null;
+  if (platform === "win32") return which(TOAST_SHELL) !== null;
   return false;
 }
 
@@ -332,7 +337,12 @@ function appleString(text: string): string {
   return `"${text.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
-/** A plain notification, no action: its program run for this platform; null when none. */
+/**
+ * A plain notification, no action: its program run for this platform; null when none. On
+ * Windows the same sender the notifier and the update hook use (`windowsToastArgv`), with no
+ * shell looked up first: the hook that decided this machine has a desktop route looked it
+ * up already (`limitAlertDesktop`).
+ */
 export function plainNotification(alert: Alert, platform: string): null | Run {
   const body = alert.body;
   if (platform === "linux") {
@@ -351,7 +361,26 @@ export function plainNotification(alert: Alert, platform: string): null | Run {
       timeoutMs: 10_000,
     };
   }
+  if (platform === "win32") {
+    // The toast script waits a few seconds at most (the balloon fallback), so 10 s is room.
+    return { argv: windowsToastArgvFor(alert.title, body), timeoutMs: 10_000 };
+  }
   return null;
+}
+
+/**
+ * True when the hook starts the detached worker for this alert: the launcher is there and the
+ * platform has something the worker would do that the hook cannot.
+ *
+ * The worker exists for the wait — the Linux notification stays until the person clicks, and
+ * it may wait half an hour, so it runs from the installed version through the launcher
+ * (`src/entries/stop-failure.ts`) rather than from the plugin folder an update may delete.
+ * Windows has no such wait: the alert is a plain toast, shown now (`runAlert`), and the
+ * launcher there is a `.cmd` twin this POSIX-named path cannot point at
+ * (docs/windows-notify.md). So on Windows the hook shows the toast itself.
+ */
+export function usesAlertWorker(platform: NodeJS.Platform, launcherExists: boolean): boolean {
+  return platform !== "win32" && launcherExists;
 }
 
 /**

@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND, MARKETPLACE, PLUGIN, PLUGIN_ID } from "../build-info";
 import type { CliPaths } from "../cli/paths";
+import { TOAST_SHELL, windowsToastArgv } from "../hooks/windows-toast";
 import { gitEnv } from "../project/git-env";
 import { findUserInstall } from "../setup/installed-plugins";
 import {
@@ -123,9 +124,11 @@ export function installedText(version: null | string, routerChanged = false): st
 
 /**
  * The command that shows a desktop notification here, or null when there is none:
- * `notify-send` on Linux, `osascript` on macOS. `title` is the notification's summary (the
- * plugin's name by default). `critical` asks the desktop to keep the notification on screen
- * (and show it even under Do Not Disturb): for the alerts where the person must act.
+ * `notify-send` on Linux, `osascript` on macOS, and a PowerShell toast on Windows
+ * (`windowsToastArgv`: the title and the text cannot change the program). `title` is the
+ * notification's summary (the plugin's name by default). `critical` asks the desktop to
+ * keep the notification on screen (and show it even under Do Not Disturb): for the alerts
+ * where the person must act — a Windows reminder toast for the same reason.
  */
 export function notifyCommand(
   text: string,
@@ -150,6 +153,10 @@ export function notifyCommand(
           "-e",
           `display notification ${JSON.stringify(text)} with title ${JSON.stringify(title)}`,
         ];
+  }
+  if (platform === "win32") {
+    const powershell = which(TOAST_SHELL);
+    return powershell === null ? null : windowsToastArgv(powershell, title, text, critical);
   }
   return null;
 }
