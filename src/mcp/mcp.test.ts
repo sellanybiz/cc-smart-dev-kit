@@ -1149,9 +1149,10 @@ describe("a same-name server one scope down wins over the user scope", () => {
     const line = checks.find((one) => one.text.includes("wins over yours"));
     expect(line?.warn).toBe(true);
     expect(line?.ok).toBe(true);
-    // The command's own name, and the file tildified: what a person reads.
+    // The command's own name, and the file tildified: what a person reads. The path keeps the
+    // platform's own separators (`~\repo\.mcp.json` on Windows), as `tildify` does everywhere.
     expect(line?.text).toBe(
-      'the "playwright" MCP server has a copy that wins over yours (other in ~/repo/.mcp.json): ' +
+      `the "playwright" MCP server has a copy that wins over yours (other in ${join("~", "repo", ".mcp.json")}): ` +
         "a project's .mcp.json, or the local scope, takes precedence over the user-scope server, so " +
         "cc-smart-dev-kit's is not the one starting. Remove it from that file (or merge the base " +
         "branch when it came from one), then run: cc-smart-dev-kit doctor",
