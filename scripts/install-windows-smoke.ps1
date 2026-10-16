@@ -481,7 +481,10 @@ try {
   #     fake logs the count of characters it read, and never the value.
   $pasted = New-World "pasted" @{ Answers = @("n", "y", "y", "$([char]27)[200~tvly-key-abc123$([char]27)[201~") }
   $result = Invoke-Install $pasted @($repo)
-  Assert-Code "a pasted secret" $result 0 $pasted
+  # The browser is answered "n", so doctor still has its token line: the run ends 3, "installed,
+  # with items left", and the browser is the item (the exit-code contract, README: Install).
+  Assert-Code "a pasted secret" $result 3 $pasted
+  Assert-Contains "a pasted secret" $result.out "What is left:"
   Assert-Contains "a pasted secret" $result.out "[ok] 7/8 the Tavily key is saved"
   if (-not ((Get-Calls $pasted) | Where-Object { $_ -eq "key-15-chars" })) {
     Stop-Smoke "a pasted secret: the markers reached the command; the log is:`n$((Get-Calls $pasted) -join "`n")"
