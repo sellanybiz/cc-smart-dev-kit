@@ -975,7 +975,7 @@ worktrees).
 | `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the shared browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
 | `merge-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks the person before a command that merges a pull request (`gh pr merge`, `--auto` included), unless the whole policy allows it: `autoMerge` on, the base is the integration base (`autoMergeAllowed`), every required check `gh pr checks --required` reports green, and (with `reviewBeforePush`) the head commit's review is recorded. Every other case — and a `gh` that is missing or does not answer — is an `ask` with the reason. Read-only `gh`, 10 s a call of the hook's 30 s. § The workflow › The merge guard. |
 | `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists | Denies a message to a session that works outside this repo (from Claude Code's session records). |
-| `agent-guard` | PreToolUse (Agent, Task) | **machine-wide** | The model a launch really runs on, and the owner's model rules (2026-10-16): no `model`/no `effort` → deny; an affordable slot needs `effort: "max"`; Opus only for a review or with an `Opus reason:` word; Fable only read-only, with a `Fable reason:` word, as an **ask** (never build). Every Opus/Fable launch is recorded with its reason. § The Agent guard. |
+| `agent-guard` | PreToolUse (Agent, Task) | **machine-wide** | The model a launch really runs on, and the owner's model rules (2026-10-16): no `model`/no `effort` → deny; `low`/`medium` effort → deny on every model; an affordable slot needs `effort: "max"`; Opus only for a review or with an `Opus reason:` word; Fable only read-only, with a `Fable reason:` word, as an **ask** (never build). Every Opus/Fable launch is recorded with its reason. § The Agent guard. |
 | `job-route` | PreToolUse (Bash) | `jobs.route` | A heavy command is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301). § The job route. |
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After `gh pr merge`: the steps that clear the merged worktree, and the message to send the other sessions when it went into `worktrees.base`. |
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone. Removes nothing. |
@@ -997,9 +997,12 @@ does not change its answer (the frame hands it the input and the environment ins
 It is wired `--missing=ask`: a guard fails closed.
 
 Why the owner asked for it (2026-10-16): an Agent call that names no model runs on the
-session's model — on an Opus session, every plain `Explore` is an Opus spawn — and an Opus or
-Fable agent spends the person's own plan usage. So the guard reads the launch's `model`,
-`effort`, `subagent_type` and prompt, and resolves the model the launch will really run on:
+session's model — on an Opus session, every plain `Explore` is an Opus spawn — an Opus or
+Fable agent spends the person's own plan usage, and a subagent at `low` or `medium` does work
+nobody chose to cheapen. So the guard holds the effort rule first — `high`, `xhigh` or `max`
+only, `ALLOWED_EFFORTS` in the code, refused on every model — and then reads the launch's
+`model`, `effort`, `subagent_type` and prompt, and resolves the model the launch will really
+run on:
 
 1. a family name (`haiku|sonnet|opus|fable`) goes through Claude Code's own override
    (`ANTHROPIC_DEFAULT_<FAMILY>_MODEL`; all four exist on 2.1.301, Fable included), then the

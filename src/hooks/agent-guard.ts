@@ -8,14 +8,20 @@
  * silent there. It is wired with `--missing=ask`: a guard fails closed.
  *
  * **Why.** An Agent call with no `model` runs on whatever model the session has; an Opus or
- * Fable launch spends the person's own plan usage; and an affordable gateway slot works well only at
- * effort `max`. The owner's decisions (2026-10-16):
+ * Fable launch spends the person's own plan usage; a subagent at `low` or `medium` does work
+ * nobody chose to cheapen; and an affordable gateway slot works well only at effort `max`.
+ * The owner's decisions (2026-10-16):
+ *
+ * **Effort.** A subagent never runs at `low` or `medium` (the owner, 2026-10-16), whatever the
+ * model: the guard refuses a launch whose `effort` is not `high`, `xhigh` or `max`. That list
+ * lives once, in `ALLOWED_EFFORTS`, and the guard, its messages and the tests all read it. On
+ * top of it, an affordable slot must be `max` and a review runs at `xhigh`, never `max`.
  *
  * | The model behind the launch | The verdict |
  * |---|---|
  * | an affordable slot key / a `<backend>:<model>` target | allow; with the gateway on, its effort must be `max`, else deny |
  * | any other name (`best`, `opusplan`, `default`, `inherit`, a name no rule knows) | the Opus rule below: only what the guard can prove affordable is affordable |
- * | Claude Sonnet or Haiku | allow (Claude effort levels, nothing forced) |
+ * | Claude Sonnet or Haiku | allow (the effort rule above still holds) |
  * | Claude Opus | a review agent (or one ending `:reviewer`): allow, no question (still refused at effort `max`); anything else with a prompt line `Opus reason: <one of OPUS_REASONS>`: **ask** (the person approves each one, and sees the reason); without that line: deny |
  * | Claude Fable | only a read-only agent type, with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: then **ask**; a builder type, no reason line, or an unattended session (`claude -p`): deny |
  * | no `model` / no `effort` | deny (a launch that names neither would inherit the session's, which nobody chose) — except a `fork`, which always inherits both |
@@ -103,6 +109,19 @@ export const REVIEW_AGENTS = ["Reviewer"] as const;
 /** The environment variables a person may extend those two lists with (comma-separated). */
 export const REVIEW_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS";
 export const READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";
+
+/**
+ * The effort levels a subagent may run at — the one home of that list (owner, 2026-10-16):
+ * `low` and `medium` are refused on every model, a Claude model and an affordable gateway slot
+ * alike. Two rules name one level each, on top of this one: an affordable slot must be `max`,
+ * and a review runs at `xhigh`, never `max`.
+ */
+export const ALLOWED_EFFORTS = ["high", "xhigh", "max"] as const;
+
+/** True when an effort a launch names is one a subagent may run at. */
+function effortAllowed(effort: string): boolean {
+  return (ALLOWED_EFFORTS as readonly string[]).includes(effort.toLowerCase());
+}
 
 /** A subagent type as a list compares it: after any `plugin:`, `-`/`_`/space as one `-`. */
 function agentKey(type: string): string {
@@ -694,10 +713,22 @@ const NO_MODEL = [
   "An agent given none runs on the session's model and effort, which nobody chose: pass `model` and `effort` on every launch.",
 ].join("\n");
 
+/** The levels of `ALLOWED_EFFORTS` as the guard's messages name them: `` `high`, `xhigh`, `max` ``. */
+const EFFORTS = ALLOWED_EFFORTS.map((one) => `\`${one}\``).join(", ");
+
 const NO_EFFORT = [
   "This Agent launch names no `effort`.",
-  "An agent given none runs at the session's effort: pass `effort` on every launch (on Claude: `low`, `medium`, `high`, `xhigh`; `max` only for the hardest problem).",
+  `An agent given none runs at the session's effort: pass \`effort\` on every launch — ${EFFORTS} only, never \`low\` or \`medium\` (\`max\` for the hardest problem, always on an affordable gateway slot).`,
 ].join("\n");
+
+/** Said when a launch names an effort a subagent never runs at: `low`, `medium`, or a level no rule knows. */
+function effortDenial(effort: string): string {
+  return [
+    `This launch asks for effort \`${effort}\`, which no subagent may run at (the owner's rule, 2026-10-16).`,
+    `A subagent runs at ${EFFORTS} only — \`low\` and \`medium\` are refused on every model, a Claude model and an affordable gateway slot alike.`,
+    "`high` is for searches, reads and routine building, `xhigh` for review and real judgment, and `max` for the hardest problem only (always on an affordable gateway slot).",
+  ].join("\n");
+}
 
 function opusDenial(): string {
   return [
@@ -725,6 +756,11 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
     launch.model !== null
       ? resolveLaunchModel(launch.model, ctx.config, env)
       : forkModel(ctx.sessionModel, ctx.config, env);
+  // The owner's rule, before every model rule: a subagent never runs at `low` or `medium` — on
+  // a Claude model and an affordable slot alike. A level no rule knows is refused, not guessed.
+  if (launch.effort !== null && !effortAllowed(launch.effort)) {
+    return deny(real, effortDenial(launch.effort));
+  }
   const type = launch.subagentType ?? "";
   const review =
     ctx.reviewAgents === undefined
