@@ -331,6 +331,30 @@ to see and change the gateway's settings, the updates, the heavy-job queue, the 
 and OmniRoute. The screens the owner approved (2026-10-16) are `views.ts`, and the copy on
 each one follows them.
 
+**Settings and the Project card.** `/settings` shows every workflow setting — the flow after
+a finished step, the alerts, the switches — one row each, with the value now and where it
+came from (`yours`, `this project`, `default`). A change is one POST that runs the module's
+own `writePersonalSetting` (the two project switches go to `writeProjectSetting`), so the
+page and `cc-smart-dev-kit workflow show` can never disagree; a row the project sets is
+read-only here and links to the Project card, and a value outside its row's own set is
+refused in words. The Project card on Machine is about the repo the portal was started in:
+state A (no `.claude/cc-smart-dev-kit.json`) or the form, whose first values are the command
+line's own detection (`detectFacts` + `defaultAnswers` — the default branch, the lockfile's
+command, GitHub's protected branches). Its **preview is the server's own `planProjectInit`**,
+the same pure function the write runs, so the browser never builds the file: every form
+change is a `project.preview` POST and the boxes are drawn from the answer. `Write the files`
+asks first and runs `applyProjectInit` — a backup, an atomic write, two files, and never a
+commit.
+
+**The workflow module is behind one seam** (`src/portal/workflow-adapter.ts`). The values,
+the writes, the auto-merge rule and the project's two files all come from `src/workflow/`
+and `src/project/init.ts` through one typed interface, injected as `PortalOptions.workflow`
+and faked in tests (`src/testing/fake-workflow.ts`). The portal re-implements none of it, and
+a test drives both screens without reading a real workflow file, running git, or writing
+anything. The project's own defaults are remembered per file text for the run (`server.ts`):
+`detectFacts` reads git and, when `gh` is there, GitHub itself, so a form change is a plan,
+not a network read.
+
 ### What it is, and what it is not
 
 - **Everything it does is real**, and goes through the command line's own code. A slot, the
@@ -347,9 +371,10 @@ each one follows them.
   command to copy (the Machine page's Warp card, next to `doctor`'s own line for it).
 - **The gateway is optional, and the pages say so.** With no config to read, Overview, Slots
   and Health draw one page: "The gateway is not set up", the command that sets it up, and a
-  button to Machine. Machine and the privacy page draw anyway — updates, the heavy-job queue,
-  the companions, `doctor` (its gateway line is information, never a failure), OmniRoute and
-  Warp all work without a gateway, and `doctor` matters most on a machine that has none. What
+  button to Machine. Machine, Settings, the Project card and the privacy page draw anyway —
+  updates, the heavy-job queue, the companions, `doctor` (its gateway line is information,
+  never a failure), the workflow settings, OmniRoute and Warp all work without a gateway, and
+  `doctor` matters most on a machine that has none. What
   does need the config says so in a short line instead of an invented value: the header's
   router pill, the OmniRoute card's Backend line, the card at the foot of Machine, and the
   privacy page's sentence about the router. A config that is there but unreadable is named

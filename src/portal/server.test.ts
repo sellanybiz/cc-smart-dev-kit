@@ -14,7 +14,8 @@ import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { saveConfig } from "../gateway/config";
 import type { Machine } from "../machine/machine";
-import { tempDir } from "../testing/temp";
+import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
+import { git, tempDir } from "../testing/temp";
 import { isOlder } from "../update/check";
 import { type DoctorSource, portalOmnirouteContext } from "./actions";
 import { PORTAL_CSS, PORTAL_JS, THEME_JS } from "./assets";
@@ -23,6 +24,7 @@ import { omnirouteRow } from "./facts";
 import type { PluginFolder } from "./plugin-folder";
 import { startPortal } from "./server";
 import { IDLE_MS } from "./session";
+import type { ProjectInitAnswers, WorkflowAdapter } from "./workflow-adapter";
 
 /** The key planted in the config: no page may ever hold it. */
 const KEY = "omni_PLANTED_SECRET_a1b2";
@@ -103,12 +105,32 @@ async function open(options: {
   pluginFolder?: () => PluginFolder;
   /** Runs while the router's health page is asked: a test that changes the config mid-request. */
   onProbe?: () => void;
+  /**
+   * The portal's own folder is a git repo with these files in `.claude/` — the Project card's
+   * world. Left out, it is a plain temp folder (no git project), which is what the other
+   * pages need.
+   */
+  projectFiles?: { config?: string; settings?: string };
   /** True where the test's machine has systemd (the router restart needs it). */
   systemd?: boolean;
+  /** The workflow module behind the adapter; a fake by default, never a real file or repo. */
+  workflow?: WorkflowAdapter;
   withConfig?: boolean;
 }) {
   const home = tempDir("portal");
   const cwd = tempDir("portal-project");
+  if (options.projectFiles !== undefined) {
+    // A repo of this test's own, so `resolveProject` reads a real checkout — and never the
+    // repo this test runs from.
+    git(cwd, "init", "-q", "-b", "main");
+    mkdirSync(join(cwd, ".claude"), { recursive: true });
+    if (options.projectFiles.config !== undefined) {
+      writeFileSync(join(cwd, ".claude", "cc-smart-dev-kit.json"), options.projectFiles.config);
+    }
+    if (options.projectFiles.settings !== undefined) {
+      writeFileSync(join(cwd, ".claude", "settings.json"), options.projectFiles.settings);
+    }
+  }
   const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   // The plugin's own folder, as a machine really has it: the repo's `plugin/` here.
   const pluginFolder = join(import.meta.dir, "..", "..", "plugin");
@@ -219,6 +241,7 @@ async function open(options: {
       })),
     ...(options.idleMs === undefined ? {} : { idleMs: options.idleMs }),
     port: 0,
+    workflow: options.workflow ?? fakeWorkflow(),
   });
 
   let cookie = "";
@@ -262,6 +285,8 @@ async function open(options: {
     cookieNow: () => cookie,
     csrfOf,
     ctx,
+    /** The folder the portal was started in: the project its Project card is about. */
+    cwd,
     enter,
     home,
     /** The context the server's actions use for OmniRoute (`portalOmnirouteContext`). */
@@ -316,7 +341,7 @@ describe("the door", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      for (const path of ["/", "/slots", "/health", "/machine", "/privacy"]) {
+      for (const path of ["/", "/slots", "/health", "/machine", "/settings", "/privacy"]) {
         expect((await world.call(path)).status).toBe(403);
       }
       // The page cannot draw without these, so they need no session — and only these.
@@ -551,7 +576,7 @@ describe("every answer", () => {
       expect(first.headers.get("x-content-type-options")).toBe("nosniff");
       expect(first.headers.get("referrer-policy")).toBe("no-referrer");
       expect(first.headers.get("cache-control")).toBe("no-store");
-      for (const path of ["/", "/slots", "/health", "/machine", "/privacy"]) {
+      for (const path of ["/", "/slots", "/health", "/machine", "/settings", "/privacy"]) {
         const page = await world.call(path);
         expect(page.headers.get("content-security-policy")).toBe(csp);
         // No script without a `src`, no `on*=` handler, and no `style` attribute: the policy
@@ -575,7 +600,7 @@ describe("every answer", () => {
     const world = await open({ backendPort: backend.port, omniroute: "3.8.51" });
     try {
       const first = await world.enter();
-      for (const path of ["/", "/slots", "/health", "/machine", "/privacy"]) {
+      for (const path of ["/", "/slots", "/health", "/machine", "/settings", "/privacy"]) {
         const page = await world.call(path);
         expect(page.body).not.toContain(KEY);
         // The masked form may appear; the whole key never does.
@@ -634,6 +659,7 @@ describe("every answer", () => {
         ["/slots", "Slots"],
         ["/health", "Health"],
         ["/machine", "Machine"],
+        ["/settings", "Settings"],
         ["/privacy", "How the portal stays private"],
       ];
       for (const [path, heading] of headings) {
@@ -853,10 +879,10 @@ describe("every answer", () => {
       expect(PORTAL_CSS).toContain(
         "main.wrap { display: flex; flex-direction: column; gap: 28px; padding-top: 32px; padding-bottom: 48px; }",
       );
-      // A phone header: three rows instead of six, and the four links on one row of equal
-      // columns, each still 44px tall.
+      // A phone header: three rows instead of six, and the five links in equal columns at
+      // least 96px wide (two rows of them at 390px), each still 44px tall.
       expect(PORTAL_CSS).toContain("@media (max-width: 640px)");
-      expect(PORTAL_CSS).toContain("grid-template-columns: repeat(4, minmax(0, 1fr))");
+      expect(PORTAL_CSS).toContain("grid-template-columns: repeat(auto-fill, minmax(96px, 1fr))");
       expect(PORTAL_CSS).toContain(".theme { order: 2; margin-left: auto; }");
       expect(PORTAL_CSS).toContain(".chips { order: 3; width: 100%; }");
       const overview = await world.call("/");
@@ -1528,6 +1554,588 @@ describe("the actions", () => {
       expect(JSON.parse(applied.body).lines).toEqual([
         "This folder is not inside a git project, so there is nothing to copy.",
       ]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+});
+
+// ── The Settings page ───────────────────────────────────────────────────────────
+
+/** The project's own file, as a real one looks; its base is what the auto-merge rule names. */
+const PROJECT_CONFIG = `${JSON.stringify(
+  {
+    requires: ">=0.3",
+    worktrees: { base: "integration", prefix: "app-wt-", setup: ["bun", "install"] },
+    protectedBranches: ["main", "integration"],
+  },
+  null,
+  2,
+)}\n`;
+
+describe("the settings page", () => {
+  test("the design's rows, each saying where its value comes from", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({
+      backendPort: backend.port,
+      projectFiles: { config: PROJECT_CONFIG },
+      workflow: fakeWorkflow({
+        resolved: {
+          autoCommit: { source: "personal", value: true },
+          deleteBranch: { source: "project", value: true },
+          openPr: { source: "personal", value: "ready" },
+        },
+      }),
+    });
+    try {
+      await world.enter();
+      const page = await world.call("/settings");
+      expect(page.status).toBe(200);
+      // The three cards, in the design's words and order.
+      expect(page.body).toContain('<h2 id="flow-h">Work flow</h2>');
+      expect(page.body).toContain('<h2 id="alerts-h">Alerts</h2>');
+      expect(page.body).toContain('<h2 id="switches-h">Switches</h2>');
+      // Rows: the label and its own help line, word for word.
+      expect(page.body).toContain(">Auto commit<");
+      expect(page.body).toContain("Commit each finished, reviewed step without asking.");
+      expect(page.body).toContain("Off: never. Draft: open it as a draft the team can look at.");
+      expect(page.body).toContain(
+        "A second read of the whole change before it leaves this computer: one premium second opinion.",
+      );
+      expect(page.body).toContain("Which events alert you.");
+      expect(page.body).toContain("No new kit version installs until you turn this off again.");
+      // The three source tags, with the values the resolver gave.
+      expect(page.body).toContain('<span class="src personal">yours</span>');
+      expect(page.body).toContain('<span class="src project">this project</span>');
+      expect(page.body).toContain('<span class="src default">default</span>');
+      expect(page.body).toContain('aria-checked="true"');
+      // The footer rule, once.
+      expect(page.body).toContain("Your choices are saved on this computer for every project.");
+      // Every row carries a control the page can send: the keys are the module's own.
+      expect(page.body).toContain("&quot;key&quot;:&quot;autoCommit&quot;");
+      expect(page.body).toContain('data-events="alerts.events"');
+      expect(page.body).toContain('data-setting="alerts.usagePercent"');
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("a row the project sets is read-only here, and says where to change it", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({
+      backendPort: backend.port,
+      projectFiles: { config: PROJECT_CONFIG },
+      workflow: fakeWorkflow({ resolved: { deleteBranch: { source: "project", value: true } } }),
+    });
+    try {
+      await world.enter();
+      const page = await world.call("/settings");
+      // The switch is drawn with its value and its label, and nothing invites a change.
+      expect(page.body).toContain('aria-labelledby="set-del" class="switch" disabled');
+      expect(page.body).toContain("change it in the project");
+      expect(page.body).toContain('href="/machine#project"');
+      // No action anywhere carries a project row's key: the page cannot send one.
+      expect(page.body).not.toContain("&quot;key&quot;:&quot;deleteBranch&quot;");
+      // A row nobody sets stays changeable, right beside it.
+      expect(page.body).toContain("&quot;key&quot;:&quot;autoCommit&quot;");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("changing a value writes it through the module, with the key the row shows", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const workflow = fakeWorkflow();
+    const world = await open({ backendPort: backend.port, workflow });
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      const answer = await world.post("workflow.set", { key: "openPr", value: "draft" }, csrf);
+      expect(answer.status).toBe(200);
+      expect(JSON.parse(answer.body).ok).toBe(true);
+      expect(workflow.calls.writePersonalSetting).toEqual([{ key: "openPr", value: "draft" }]);
+      // The module's own line is what the page shows.
+      expect(JSON.parse(answer.body).lines).toEqual(["~ your own defaults: openPr = draft"]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("a value outside the row's own set is refused in words, and nothing is written", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const workflow = fakeWorkflow();
+    const world = await open({ backendPort: backend.port, workflow });
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      const cases: [string, unknown, string][] = [
+        ["openPr", "whenever", "openPr is one of off, draft, ready"],
+        ["mergeMethod", "fast-forward", "mergeMethod is one of merge, squash, rebase"],
+        ["alerts.usagePercent", 140, "alerts.usagePercent is a whole number 1-100"],
+        ["alerts.usagePercent", "85", "alerts.usagePercent is a whole number 1-100"],
+        ["alerts.events", [], "alerts.events is a list of needs-you, question, finished, failed"],
+        ["alerts.events", ["needs-you", "needs-you"], "alerts.events: an event is listed twice"],
+        ["alerts.events", ["finished", "later"], "alerts.events: unknown later"],
+        ["autoCommit", "yes", "autoCommit is true or false"],
+        ["switches.statusLine", 1, "switches.statusLine is true or false"],
+        ["not-a-setting", true, '"not-a-setting" is not a setting this page shows.'],
+      ];
+      for (const [key, value, why] of cases) {
+        const answer = await world.post("workflow.set", { key, value }, csrf);
+        expect(answer.status).toBe(400);
+        const body = JSON.parse(answer.body);
+        expect(body.ok).toBe(false);
+        expect(body.lines[0]).toContain(why);
+      }
+      expect(workflow.calls.writePersonalSetting).toEqual([]);
+      expect(workflow.calls.writeProjectSetting).toEqual([]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("a project-owned switch is written into the project's file, after the page's yes", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const workflow = fakeWorkflow();
+    const world = await open({
+      backendPort: backend.port,
+      projectFiles: { config: PROJECT_CONFIG },
+      workflow,
+    });
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      // No confirmation: nothing is written, and the answer says so.
+      const no = await world.post("workflow.set", { key: "switches.jobRoute", value: true }, csrf);
+      expect(JSON.parse(no.body).ok).toBe(false);
+      expect(workflow.calls.writeProjectSetting).toEqual([]);
+      expect(workflow.calls.writePersonalSetting).toEqual([]);
+      // Confirmed: the project's own writer, with the folder the portal runs in.
+      const yes = await world.post(
+        "workflow.set",
+        { confirm: true, key: "switches.jobRoute", value: true },
+        csrf,
+      );
+      expect(JSON.parse(yes.body).ok).toBe(true);
+      expect(workflow.calls.writeProjectSetting).toEqual([
+        { cwd: world.cwd, key: "switches.jobRoute", value: true },
+      ]);
+      expect(workflow.calls.writePersonalSetting).toEqual([]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("a project-owned switch without a project file is refused, not written elsewhere", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const workflow = fakeWorkflow();
+    const world = await open({ backendPort: backend.port, workflow });
+    try {
+      await world.enter();
+      const answer = await world.post(
+        "workflow.set",
+        { confirm: true, key: "switches.sessionNames", value: true },
+        await world.csrfOf(),
+      );
+      expect(JSON.parse(answer.body).ok).toBe(false);
+      expect(JSON.parse(answer.body).lines[0]).toContain(
+        "has no .claude/cc-smart-dev-kit.json yet",
+      );
+      expect(workflow.calls.writeProjectSetting).toEqual([]);
+      expect(workflow.calls.writePersonalSetting).toEqual([]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the auto-merge row carries the rule box, word for word, with the project's base", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const workflow = fakeWorkflow({
+      autoMerge: true,
+      resolved: { autoMerge: { source: "personal", value: true } },
+    });
+    const world = await open({
+      backendPort: backend.port,
+      projectFiles: { config: PROJECT_CONFIG },
+      workflow,
+    });
+    try {
+      await world.enter();
+      const page = await world.call("/settings");
+      expect(page.body).toContain(
+        "Only into the project's integration branch (integration here), after CI is green and the review is done. Never main, a release branch or production: those always ask you.",
+      );
+      // The module's own rule decided the line under it, with the repository's default branch.
+      expect(page.body).toContain(
+        "On this project, a pull request into integration may be merged by itself, once CI is green and the review is done.",
+      );
+      expect(workflow.calls.autoMergeAllowed).toEqual([
+        { defaultBranch: "main", prBase: "integration" },
+      ]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("a broken file of the person's own is a notice in words, never an invented value", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const broken = fakeWorkflow();
+    const world = await open({
+      backendPort: backend.port,
+      workflow: {
+        ...broken,
+        resolveWorkflow: () => {
+          throw new Error(
+            "Invalid /home/someone/.config/cc-smart-dev-kit/workflow.json: openPr: Invalid option",
+          );
+        },
+      },
+    });
+    try {
+      await world.enter();
+      const page = await world.call("/settings");
+      expect(page.status).toBe(200);
+      expect(page.body).toContain("The workflow settings cannot be read:");
+      expect(page.body).toContain("workflow.json: openPr: Invalid option");
+      // Not one row: a value it cannot read is never shown as a default.
+      expect(page.body).not.toContain(">Auto commit<");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("a project file that cannot be read is named, never read as silence", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({
+      backendPort: backend.port,
+      projectFiles: { config: "{ not json" },
+      workflow: fakeWorkflow(),
+    });
+    try {
+      await world.enter();
+      const page = await world.call("/settings");
+      expect(page.status).toBe(200);
+      // The rows draw from the person's own defaults — with the reason said out loud, so no
+      // row claims `default` for a value the project really sets.
+      expect(page.body).toContain("No project&#39;s own values here: Invalid");
+      expect(page.body).toContain(">Auto commit<");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("no gateway config: the Settings page draws, and invents no port", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port, withConfig: false });
+    try {
+      await world.enter();
+      const page = await world.call("/settings");
+      expect(page.status).toBe(200);
+      expect(page.body).toContain("Gateway not set up");
+      expect(page.body).toContain("Hold self-updates");
+      expect(page.body).not.toContain("127.0.0.1:20199");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+});
+
+// ── The Project card on Machine ─────────────────────────────────────────────────
+
+/** The form's answers, as the page's own script collects them. */
+function formAnswers(overrides: Record<string, unknown> = {}) {
+  return {
+    base: "trunk",
+    bases: { "fix/": "main" },
+    engine: "own",
+    guards: { guardMainFolder: false, jobRoute: true, sessionNames: false },
+    prefix: "wt-",
+    protectedBranches: ["main"],
+    setup: ["npm", "ci"],
+    ...overrides,
+  };
+}
+
+/** The same answers, over the fake's own defaults: what the plan is really made from. */
+const MERGED_ANSWERS: ProjectInitAnswers = {
+  base: "trunk",
+  bases: { "fix/": "main" },
+  engine: "own",
+  guards: { guardMainFolder: false, jobRoute: true, sessionNames: false },
+  prefix: "wt-",
+  protectedBranches: ["main"],
+  setup: ["npm", "ci"],
+  workflow: { openPr: "draft" },
+};
+
+describe("the project card", () => {
+  test("nothing set up yet: the line, the button, and the form behind it", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const workflow = fakeWorkflow();
+    const world = await open({ backendPort: backend.port, projectFiles: {}, workflow });
+    try {
+      await world.enter();
+      const page = await world.call("/machine");
+      expect(page.status).toBe(200);
+      expect(page.body).toContain('<span class="muted bold">not set up</span>');
+      expect(page.body).toContain(
+        "No <code>.claude/cc-smart-dev-kit.json</code>: the project's guards and worktree hooks are off here.",
+      );
+      expect(page.body).toContain("data-setup-show");
+      expect(page.body).toContain("Set up this project");
+      // The form is there — the page's script reveals it — but closed, and its first values
+      // are the ones the module's own detection gave, never a word this page made up.
+      expect(page.body).toContain("data-project-form hidden");
+      expect(page.body).toContain('value="integration"');
+      expect(workflow.calls.projectInitDefaults).toEqual([{ existing: null, root: world.cwd }]);
+      // The plan is drawn from the answers, and nothing is written to make a preview.
+      expect(workflow.calls.planProjectInit.length).toBe(1);
+      expect(workflow.calls.applyProjectInit).toEqual([]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("a project that is set up: the form, filled from the project's own file", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const workflow = fakeWorkflow();
+    const world = await open({
+      backendPort: backend.port,
+      projectFiles: { config: PROJECT_CONFIG, settings: '{\n  "hooks": {}\n}\n' },
+      workflow,
+    });
+    try {
+      await world.enter();
+      const page = await world.call("/machine");
+      expect(page.body).not.toContain("not set up");
+      // The three fields, the base rows, the protected chips, the guards and the engine.
+      expect(page.body).toContain('id="f-base"');
+      expect(page.body).toContain('data-base-prefix value="hotfix/"');
+      expect(page.body).toContain('data-protected-name value="integration"');
+      expect(page.body).toContain('data-form-switch="guardMainFolder"');
+      expect(page.body).toContain('aria-pressed="true" data-engine-value="plugin"');
+      // The preview: the plan's own text, the three lines the settings file gets, and the note.
+      expect(page.body).toContain("&quot;base&quot;: &quot;integration&quot;");
+      expect(page.body).toContain(
+        "&quot;command&quot;: &quot;cc-smart-dev-kit hook worktree&quot;",
+      );
+      expect(page.body).toContain(
+        "3 lines, added inside the existing file. Nothing else there changes.",
+      );
+      expect(page.body).toContain("Write the files");
+      expect(page.body).toContain("Cancel");
+      expect(page.body).toContain(
+        "This writes two files in the repo. Commit them like any change: the team shares one setup.",
+      );
+      // The card read the project through the module, with the file's own text.
+      expect(workflow.calls.projectInitDefaults).toEqual([
+        { existing: PROJECT_CONFIG, root: world.cwd },
+      ]);
+      expect(workflow.calls.resolveWorkflow).toEqual([]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the form's answers are checked, in words, before anything is planned", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const workflow = fakeWorkflow();
+    const world = await open({
+      backendPort: backend.port,
+      projectFiles: { config: PROJECT_CONFIG },
+      workflow,
+    });
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      const cases: [Record<string, unknown>, string][] = [
+        [{ base: "" }, "The base branch is needed: it is the branch a new worktree starts from."],
+        [{ prefix: "app/wt-" }, "The worktree folder prefix cannot hold / or"],
+        [{ bases: { hotfix: "main" } }, '"hotfix" is not prefix=base: the prefix ends with "/".'],
+        [{ setup: [] }, 'The setup command must be words, like "bun install".'],
+        [{ protectedBranches: [7] }, "The protected branches must be a list of branch names."],
+        [{ guards: { guardMainFolder: true } }, "guards.sessionNames is true or false."],
+        [{ engine: "git" }, 'The worktree engine is "plugin" or "own".'],
+      ];
+      for (const [override, why] of cases) {
+        const answer = await world.post(
+          "project.preview",
+          { answers: formAnswers(override) },
+          csrf,
+        );
+        expect(answer.status).toBe(400);
+        expect(JSON.parse(answer.body).lines[0]).toContain(why);
+      }
+      expect(workflow.calls.planProjectInit).toEqual([]);
+      expect(workflow.calls.applyProjectInit).toEqual([]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the preview is the module's own plan, made from the form over the project's defaults", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const workflow = fakeWorkflow({
+      defaults: {
+        answers: { ...fakeDefaults().answers, workflow: { openPr: "draft" } },
+      },
+    });
+    const world = await open({
+      backendPort: backend.port,
+      projectFiles: { config: PROJECT_CONFIG },
+      workflow,
+    });
+    try {
+      await world.enter();
+      const answer = await world.post(
+        "project.preview",
+        { answers: formAnswers() },
+        await world.csrfOf(),
+      );
+      expect(answer.status).toBe(200);
+      const body = JSON.parse(answer.body);
+      expect(body.ok).toBe(true);
+      // Written by hand: the form's fields, over the workflow policy the project's file holds
+      // — the browser never sends that one, and could not change it if it did.
+      expect(workflow.calls.planProjectInit).toEqual([
+        {
+          answers: MERGED_ANSWERS,
+          existing: PROJECT_CONFIG,
+          existingSettings: null,
+          root: world.cwd,
+        },
+      ]);
+      // The answer is that plan, exactly: the two file names, the file's own text, and no
+      // lines for an engine of the project's own.
+      expect(body.preview).toEqual({
+        changed: true,
+        diff: ['+ worktrees.base: "trunk"'],
+        file: join(world.cwd, ".claude", "cc-smart-dev-kit.json"),
+        hookLines: [],
+        notes: [],
+        settingsChanged: false,
+        settingsFile: join(world.cwd, ".claude", "settings.json"),
+        settingsText: "\n",
+        text: `${JSON.stringify(MERGED_ANSWERS, null, 2)}\n`,
+      });
+      // A preview is a plan: nothing was written.
+      expect(workflow.calls.applyProjectInit).toEqual([]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("writing asks first, calls the module's own write once, and commits nothing", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const workflow = fakeWorkflow();
+    const world = await open({ backendPort: backend.port, projectFiles: {}, workflow });
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      // Without the page's own yes, nothing is written.
+      const no = await world.post("project.write", { answers: formAnswers() }, csrf);
+      expect(JSON.parse(no.body).ok).toBe(false);
+      expect(workflow.calls.applyProjectInit).toEqual([]);
+      // With it: one call, the same plan, under the one state folder backups go in.
+      const yes = await world.post(
+        "project.write",
+        { answers: formAnswers(), confirm: true },
+        csrf,
+      );
+      expect(yes.status).toBe(200);
+      expect(JSON.parse(yes.body).ok).toBe(true);
+      expect(workflow.calls.applyProjectInit.length).toBe(1);
+      const call = workflow.calls.applyProjectInit[0];
+      expect(call?.options).toEqual({ stateDir: world.paths.stateDir });
+      expect(call?.plan.file).toBe(join(world.cwd, ".claude", "cc-smart-dev-kit.json"));
+      expect(JSON.parse(yes.body).lines).toEqual([
+        `+ ${join(world.cwd, ".claude", "cc-smart-dev-kit.json")}`,
+        "Commit both files with the project: the team shares one setup.",
+      ]);
+      // The portal itself never writes the repo: the module does, and this test's module is a
+      // fake — so the file is still not there.
+      expect(existsSync(join(world.cwd, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("a folder that is not a git project says so, and offers no form", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const workflow = fakeWorkflow();
+    const world = await open({ backendPort: backend.port, workflow });
+    try {
+      await world.enter();
+      const page = await world.call("/machine");
+      expect(page.status).toBe(200);
+      expect(page.body).toContain("The project cannot be read:");
+      expect(page.body).toContain("this folder is not inside a git project");
+      expect(page.body).not.toContain("data-setup-show");
+      expect(workflow.calls.projectInitDefaults).toEqual([]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the new routes and actions are behind the same door", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const workflow = fakeWorkflow();
+    const world = await open({
+      backendPort: backend.port,
+      projectFiles: { config: PROJECT_CONFIG },
+      workflow,
+    });
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      const bodies: [string, unknown][] = [
+        ["workflow.set", { key: "openPr", value: "draft" }],
+        ["project.preview", { answers: formAnswers() }],
+        ["project.write", { answers: formAnswers(), confirm: true }],
+      ];
+      for (const [action, body] of bodies) {
+        // A browser that never held the session.
+        const fresh = await world.call(`/api/${action}`, {
+          body,
+          headers: { origin: `http://127.0.0.1:${world.portal.port}`, "x-ccsdk-csrf": csrf },
+          noCookie: true,
+        });
+        expect(fresh.status).toBe(403);
+        // A page that is not ours, with a session that is.
+        const foreign = await world.call(`/api/${action}`, {
+          body,
+          headers: { origin: "http://evil.example", "x-ccsdk-csrf": csrf },
+        });
+        expect(foreign.status).toBe(403);
+        // Our own page, but without the token that came with it.
+        const noToken = await world.call(`/api/${action}`, {
+          body,
+          headers: { origin: `http://127.0.0.1:${world.portal.port}` },
+        });
+        expect(noToken.status).toBe(403);
+      }
+      // Not one of the refused calls reached the module.
+      expect(workflow.calls.writePersonalSetting).toEqual([]);
+      expect(workflow.calls.writeProjectSetting).toEqual([]);
+      expect(workflow.calls.planProjectInit).toEqual([]);
+      expect(workflow.calls.applyProjectInit).toEqual([]);
     } finally {
       world.portal.stop();
       backend.stop();

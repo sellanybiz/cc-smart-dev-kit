@@ -147,10 +147,10 @@ nav.pages a[aria-current="page"] { background: var(--chip-bg); color: var(--acce
 }
 /* ── The header on a phone ────────────────────────────────────────────────
    Every row above is a flex row that wraps, so at 390px the brand, the router chip, the Bun
-   chip, the four links and the theme toggle each took a line (about 280px before the page).
-   Here they become three rows: the brand and the theme toggle, the two chips, then the four
-   links on one row of equal columns — 44px tall each, the touch target size kept. The order
-   is the CSS order property, so the desktop layout (and its own order) never changes. */
+   chip, the links and the theme toggle each took a line (about 280px before the page). Here
+   they become three rows: the brand and the theme toggle, the two chips, then the five links
+   in equal columns — 44px tall each, the touch target size kept. The order is the CSS order
+   property, so the desktop layout (and its own order) never changes. */
 @media (max-width: 640px) {
   header.top .wrap { gap: 8px 12px; }
   .brand { order: 1; }
@@ -158,7 +158,9 @@ nav.pages a[aria-current="page"] { background: var(--chip-bg); color: var(--acce
   .chips { order: 3; width: 100%; }
   nav.pages {
     order: 4; width: 100%; margin-left: 0; display: grid; gap: 4px;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    /* As many columns as the width allows, 96px each: five links (Settings included) fit
+       two rows on a phone, and every one keeps its 44px touch target. */
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
   }
   nav.pages a { justify-content: center; padding: 0 6px; }
 }
@@ -359,6 +361,85 @@ footer.bottom .wrap {
 .tap { min-height: 44px; }
 .warnrow { display: grid; grid-template-columns: 84px 64px 1fr; gap: 12px; align-items: center; }
 .footnote { padding: 12px 20px; font-size: 14px; }
+
+/* ── The Settings page, and the Project card ─────────────────────────────
+   One row per setting: the words, the control, and the tag saying where the value comes
+   from. The three tag words are the design's own: yours, this project, default. */
+.setrow { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; }
+.src { flex: none; padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 500; }
+.src.personal { background: var(--chip-bg); color: var(--accent); }
+.src.project { background: var(--warn-soft); color: var(--warn-text); }
+.src.default { background: var(--line-soft); color: var(--muted-2); }
+.rulebox {
+  display: flex; align-items: flex-start; gap: 10px; flex-basis: 100%;
+  padding: 10px 12px; border: 1px solid var(--warn-line); border-radius: 8px;
+  background: var(--warn-bg); color: var(--warn-text); font-size: 14px;
+}
+.ruleicon { display: inline-flex; flex: none; margin-top: 2px; }
+/* The module's own answer for this project, on its own line under the rule. */
+.rulemore { display: block; margin-top: 4px; }
+.segment {
+  display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 4px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2);
+}
+.segment button {
+  display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px;
+  border: 1px solid transparent; border-radius: 8px; background: transparent;
+  color: var(--muted-2); font-weight: 500; cursor: pointer;
+}
+.segment button[aria-pressed="true"] {
+  border-color: var(--accent); background: var(--chip-bg); color: var(--accent-strong); font-weight: 600;
+}
+.segment button[disabled] { color: var(--disabled-text); cursor: not-allowed; }
+.segment button[aria-pressed="true"][disabled] {
+  border-color: var(--dashed); background: var(--disabled-bg); color: var(--muted-2);
+}
+.events label { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; font-size: 14px; }
+.events input { width: 18px; height: 18px; accent-color: var(--accent); }
+.numrow { gap: 8px; }
+.numinput {
+  min-height: 44px; width: 96px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); color: var(--text);
+  font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 14px; text-align: right;
+}
+.switch[disabled] {
+  border-color: var(--disabled-line); background: var(--disabled-bg); color: var(--disabled-text);
+  cursor: not-allowed;
+}
+.switch[disabled] .track { background: var(--disabled-text); }
+.note {
+  padding: 12px 16px; border: 1px solid var(--line-soft); border-radius: 10px;
+  background: var(--surface-2); font-size: 14px; color: var(--muted-2);
+}
+
+/* ── The Project card's form ───────────────────────────────────────────── */
+.fields { display: flex; flex-wrap: wrap; gap: 16px; }
+.field { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.field label { font-size: 13px; font-weight: 500; }
+.field input, .chipinput {
+  min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); color: var(--text);
+  font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px;
+}
+.field input { width: 100%; font-size: 14px; }
+.baserow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
+.chipinput { width: 150px; }
+.lockchip { gap: 6px; min-height: 44px; padding: 0 4px 0 10px; }
+.lockchip .chipinput { width: 120px; border: 0; background: transparent; padding: 0 4px; }
+.lockchip .btn.icon { min-width: 36px; border: 0; background: transparent; }
+.btn.dashed { border-style: dashed; border-color: var(--dashed); color: var(--muted-2); font-weight: 500; }
+.codebox { border: 1px solid var(--line-soft); border-radius: 10px; overflow: hidden; }
+.codehead {
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 6px 6px 6px 14px; background: var(--surface-2); border-bottom: 1px solid var(--line-soft);
+}
+.codehead code { font-size: 13px; }
+.codehead .btn { min-height: 44px; padding: 0 12px; font-weight: 500; }
+.codebox pre {
+  margin: 0; padding: 14px 16px; background: var(--code-bg); color: var(--code-text);
+  font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; line-height: 1.6;
+  overflow-x: auto;
+}
 `;
 
 /**
@@ -473,9 +554,13 @@ export const PORTAL_JS = `(function () {
 
   // ── Copy buttons ────────────────────────────────────────────────────────
   document.addEventListener("click", function (event) {
-    var button = event.target.closest("[data-copy]");
+    var button = event.target.closest("[data-copy], [data-copy-node]");
     if (!button) return;
-    var text = button.getAttribute("data-copy");
+    var node = button.hasAttribute("data-copy-node")
+      ? document.querySelector(button.getAttribute("data-copy-node"))
+      : null;
+    if (button.hasAttribute("data-copy-node") && !node) return;
+    var text = node ? node.textContent || "" : button.getAttribute("data-copy");
     var done = function () {
       var was = button.textContent;
       button.textContent = "Copied";
@@ -493,7 +578,10 @@ export const PORTAL_JS = `(function () {
     var body = {};
     try { body = JSON.parse(button.getAttribute("data-body") || "{}"); } catch (error) { body = {}; }
     if (button.getAttribute("data-confirm") && !window.confirm(button.getAttribute("data-confirm"))) return;
-    var out = document.querySelector("[data-out-for='" + name + "']");
+    // The message goes to the nearest box for this action (data-scope: a card, or a form
+    // with more than one of them), so two cards never show each other's lines.
+    var scope = button.closest("[data-scope]") || document;
+    var out = scope.querySelector("[data-out-for='" + name + "']");
     busy(button, true);
     post("/api/" + name, body).then(function (data) {
       busy(button, false);
@@ -544,6 +632,230 @@ export const PORTAL_JS = `(function () {
       apply();
     }
     window.addEventListener("beforeunload", function () { clearInterval(timer); });
+  }
+
+  // ── The Settings page ───────────────────────────────────────────────────
+  // A row is a POST and a reload, like every switch here; the two controls a plain button
+  // cannot carry (the event checkboxes and the percentage box) get their own small handlers.
+  // A refused change puts the control back the way the server still sees it.
+  var outFor = function (node, name) {
+    var scope = node.closest("[data-scope]") || document;
+    return scope.querySelector("[data-out-for='" + name + "']");
+  };
+
+  var setSetting = function (node, key, value, putBack) {
+    var out = outFor(node, "workflow.set");
+    post("/api/workflow.set", { key: key, value: value }).then(function (data) {
+      say(out, !!data.ok, data.lines);
+      if (data.ok) setTimeout(function () { location.reload(); }, 700);
+      else if (putBack) putBack();
+    });
+  };
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-events]"), function (group) {
+    var key = group.getAttribute("data-events");
+    var boxes = group.querySelectorAll("input[type=checkbox]");
+    var picked = function () {
+      var chosen = [];
+      Array.prototype.forEach.call(boxes, function (box) { if (box.checked) chosen.push(box.value); });
+      return chosen;
+    };
+    var lastGood = picked();
+    group.addEventListener("change", function () {
+      var before = lastGood;
+      var chosen = picked();
+      lastGood = chosen;
+      setSetting(group, key, chosen, function () {
+        Array.prototype.forEach.call(boxes, function (box) {
+          box.checked = before.indexOf(box.value) !== -1;
+        });
+      });
+    });
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-setting]"), function (input) {
+    var key = input.getAttribute("data-setting");
+    var lastGood = input.value;
+    input.addEventListener("change", function () {
+      var before = lastGood;
+      lastGood = input.value;
+      setSetting(input, key, Number(input.value), function () {
+        input.value = before;
+      });
+    });
+  });
+
+  // ── The Project card on Machine ─────────────────────────────────────────
+  // The form is a plan, never a file: every change asks the server, which runs the same pure
+  // planProjectInit the write runs, so the boxes show exactly what will be written.
+  var projectRoot = document.querySelector("[data-project]");
+  // No form means the plan cannot be built at all (the card says why), so only the button
+  // that would reveal it is wired: nothing else on the card is there to reach for.
+  var projectForm = projectRoot ? projectRoot.querySelector("[data-project-form]") : null;
+  var reveal = projectRoot ? projectRoot.querySelector("[data-setup-show]") : null;
+  if (reveal) {
+    reveal.addEventListener("click", function () {
+      if (projectForm) projectForm.hidden = false;
+      reveal.hidden = true;
+    });
+  }
+  if (projectRoot && projectForm) {
+    var form = projectForm;
+    var writeOut = projectRoot.querySelector("[data-out-for='project.write']");
+    var filePre = projectRoot.querySelector("[data-preview-file]");
+    var settingsPre = projectRoot.querySelector("[data-preview-settings]");
+    var noteLine = projectRoot.querySelector("[data-preview-note]");
+    var notesBox = projectRoot.querySelector("[data-preview-notes]");
+    // Every answer carries the number of the question it answers: a slower, older answer
+    // never overwrites a newer one on screen.
+    var asked = 0;
+
+    var answerOf = function (name) {
+      var node = form.querySelector("[data-answer='" + name + "']");
+      return node ? node.value.trim() : "";
+    };
+    var guardOn = function (name) {
+      var node = form.querySelector("[data-form-switch='" + name + "']");
+      return !!node && node.getAttribute("aria-checked") === "true";
+    };
+    var answers = function () {
+      var bases = {};
+      Array.prototype.forEach.call(form.querySelectorAll("[data-base-row]"), function (row) {
+        var prefix = row.querySelector("[data-base-prefix]").value.trim();
+        var base = row.querySelector("[data-base-value]").value.trim();
+        if (prefix !== "" && base !== "") bases[prefix] = base;
+      });
+      var protectedNames = [];
+      Array.prototype.forEach.call(form.querySelectorAll("[data-protected-name]"), function (node) {
+        var name = node.value.trim();
+        if (name !== "") protectedNames.push(name);
+      });
+      var setupText = answerOf("setup");
+      var engine = form.querySelector("[data-engine] button[aria-pressed='true']");
+      return {
+        answers: {
+          base: answerOf("base"),
+          prefix: answerOf("prefix"),
+          setup: setupText === "" ? null : setupText.split(/\\s+/),
+          bases: bases,
+          protectedBranches: protectedNames,
+          guards: {
+            guardMainFolder: guardOn("guardMainFolder"),
+            sessionNames: guardOn("sessionNames"),
+            jobRoute: guardOn("jobRoute")
+          },
+          engine: engine ? engine.getAttribute("data-engine-value") : "plugin"
+        }
+      };
+    };
+
+    var drawPlan = function (data, preview) {
+      filePre.textContent = preview.text;
+      settingsPre.textContent = (preview.hookLines || []).join("\\n");
+      // The note under the settings box comes from the server, like the boxes: one home for
+      // the sentence, and it can never describe a different plan than the one drawn.
+      if (data.lines && data.lines[0]) noteLine.textContent = data.lines[0];
+      notesBox.textContent = "";
+      (preview.notes || []).forEach(function (note) {
+        var p = document.createElement("p");
+        p.className = "small muted";
+        p.textContent = note;
+        notesBox.appendChild(p);
+      });
+    };
+
+    var ask = function () {
+      var mine = (asked += 1);
+      post("/api/project.preview", answers()).then(function (data) {
+        if (mine !== asked) return;
+        if (!data.ok || !data.preview) { say(writeOut, false, data.lines); return; }
+        drawPlan(data, data.preview);
+      });
+    };
+
+    // A change is one finished edit (a box left, a box ticked, a row added or removed): the
+    // same answer is not asked again for every keystroke.
+    form.addEventListener("change", ask);
+
+    var flip = function (button) {
+      var on = button.getAttribute("aria-checked") === "true";
+      button.setAttribute("aria-checked", on ? "false" : "true");
+      var label = button.querySelector("[data-switch-label]");
+      if (label) label.textContent = on ? "Off" : "On";
+      ask();
+    };
+    Array.prototype.forEach.call(form.querySelectorAll("[data-form-switch]"), function (button) {
+      button.addEventListener("click", function () { flip(button); });
+    });
+
+    Array.prototype.forEach.call(form.querySelectorAll("[data-engine] button"), function (button) {
+      button.addEventListener("click", function () {
+        Array.prototype.forEach.call(form.querySelectorAll("[data-engine] button"), function (other) {
+          other.setAttribute("aria-pressed", other === button ? "true" : "false");
+        });
+        ask();
+      });
+    });
+
+    // An added row is the page's own markup, taken from the template beside the list: the
+    // form has one home for what a row looks like, and this script adds no markup of its own.
+    var added = function (templateName) {
+      var template = projectRoot.querySelector("template[" + templateName + "]");
+      if (!template) return null;
+      return template.content.firstElementChild
+        ? template.content.firstElementChild.cloneNode(true)
+        : null;
+    };
+
+    var addBase = projectRoot.querySelector("[data-add-base]");
+    if (addBase) {
+      addBase.addEventListener("click", function () {
+        var row = added("data-base-template");
+        if (!row) return;
+        projectRoot.querySelector("[data-bases]").appendChild(row);
+        var first = row.querySelector("input");
+        if (first) first.focus();
+      });
+    }
+
+    var addProtected = projectRoot.querySelector("[data-add-protected]");
+    if (addProtected) {
+      addProtected.addEventListener("click", function () {
+        var chip = added("data-chip-template");
+        if (!chip) return;
+        projectRoot.querySelector("[data-protected]").insertBefore(chip, addProtected);
+        var input = chip.querySelector("input");
+        if (input) input.focus();
+      });
+    }
+
+    form.addEventListener("click", function (event) {
+      var row = event.target.closest("[data-base-row]");
+      if (row) {
+        if (event.target.closest("[data-remove-row]")) { row.remove(); ask(); }
+        return;
+      }
+      var chip = event.target.closest("[data-chip]");
+      if (chip && event.target.closest("[data-remove-chip]")) { chip.remove(); ask(); }
+    });
+
+    var write = projectRoot.querySelector("[data-write]");
+    if (write) {
+      write.addEventListener("click", function () {
+        if (write.getAttribute("data-confirm") && !window.confirm(write.getAttribute("data-confirm"))) return;
+        var body = answers();
+        body.confirm = true;
+        busy(write, true);
+        post("/api/project.write", body).then(function (data) {
+          busy(write, false);
+          say(writeOut, !!data.ok, data.lines);
+          if (data.ok) setTimeout(function () { location.reload(); }, 700);
+        });
+      });
+    }
+
+    var cancel = projectRoot.querySelector("[data-cancel]");
+    if (cancel) cancel.addEventListener("click", function () { location.reload(); });
   }
 
   // ── The Slots page ──────────────────────────────────────────────────────
