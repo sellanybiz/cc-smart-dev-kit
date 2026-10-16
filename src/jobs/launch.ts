@@ -43,12 +43,18 @@
  *   The memory is given back only once the group (and the scope) is empty: a worker that
  *   lives on after the job's first process ended still uses memory. Leftovers get a moment
  *   to end by themselves, then SIGTERM, then SIGKILL, so `job run` never hangs on them.
+ *
+ *   WINDOWS: there are no signals there, and no process groups to signal. So a stop is
+ *   `taskkill /T /F` on the job's tree (`windows.ts`: Node's own rule, every signal ends
+ *   the process forcefully), and "the group is empty" is "the job's first process is
+ *   gone". A worker the job left behind is not seen: docs/windows-jobs.md § Running a job.
  */
 
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { constants } from "node:os";
 import { type ReadText, userSliceCgroup } from "./memory";
+import { endJobTree, processIsGone, realWindowsFacts, type WindowsFacts } from "./windows";
 
 /**
  * How long a probe of systemd may take. A probe takes about 30 ms; a systemd that does not
@@ -259,6 +265,10 @@ export interface SpawnOptions {
   killWaitMs?: number;
   /** How often to look whether the group is empty. */
   pollMs?: number;
+  /** How this system stops the job's processes: the default is this process's platform. */
+  platform?: NodeJS.Platform;
+  /** Windows: one PowerShell call for a start time, and `taskkill`. Default: the real ones. */
+  windows?: WindowsFacts;
 }
 
 const LEFTOVER_GRACE_MS = 2_000;
@@ -288,9 +298,10 @@ function groupIsEmpty(pgid: number): boolean {
 /**
  * Starts `argv` with this process's stdin, stdout, stderr and environment, in a process
  * group of its own. SIGINT, SIGTERM and SIGHUP are sent on to the whole group (and the
- * scope). It resolves with the exit code of the first process (a signal death: 128 + n;
- * a command that cannot start: 127, as a shell says), and only once the group and the
- * scope are empty: leftovers are stopped (THE JOB'S OWN PROCESS GROUP above).
+ * scope); on Windows the job's tree is ended with `taskkill` instead, and only the job's
+ * first process is watched. It resolves with the exit code of the first process (a signal
+ * death: 128 + n; a command that cannot start: 127, as a shell says), and only once the
+ * group and the scope are empty: leftovers are stopped (THE JOB'S OWN PROCESS GROUP above).
  */
 export function spawnAndWait(
   argv: readonly [string, ...string[]],
@@ -301,14 +312,22 @@ export function spawnAndWait(
   const [program, ...args] = argv;
   const scope = options.scope ?? null;
   const pollMs = options.pollMs ?? GROUP_POLL_MS;
+  // Windows has no signals and no process groups to signal (`windows.ts`).
+  const windows = (options.platform ?? process.platform) === "win32";
+  const windowsFacts = options.windows ?? realWindowsFacts;
   return new Promise((resolve) => {
     const child = spawn(program, args, { stdio: "inherit", detached: true });
     const pgid = child.pid;
     const sendAll = (signal: NodeJS.Signals) => {
-      if (pgid !== undefined) signalGroup(pgid, signal);
+      if (pgid !== undefined) {
+        if (windows) endJobTree(pgid, windowsFacts);
+        else signalGroup(pgid, signal);
+      }
       scope?.kill(signal);
     };
-    const isEmpty = () => (pgid === undefined || groupIsEmpty(pgid)) && (scope?.isEmpty() ?? true);
+    const isEmpty = () =>
+      (pgid === undefined || (windows ? processIsGone(pgid) : groupIsEmpty(pgid))) &&
+      (scope?.isEmpty() ?? true);
     /** Waits up to `ms` for the group and the scope to empty; true when they did. */
     const emptyWithin = async (ms: number): Promise<boolean> => {
       const end = Date.now() + ms;

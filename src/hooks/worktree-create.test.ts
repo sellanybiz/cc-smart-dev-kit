@@ -17,6 +17,7 @@ import {
   addWorktree,
   badName,
   badPrefix,
+  baseForBranch,
   configuredFolder,
   fetchedRecently,
   isSubagentName,
@@ -243,6 +244,41 @@ describe("a session's worktree", () => {
     expect(head(folder)).toBe(newest);
     // It does not track the base: a plain push must not go to main.
     expect(() => git(folder, "rev-parse", "--abbrev-ref", "@{upstream}")).toThrow();
+  });
+
+  test("a branch under a `worktrees.bases` prefix is cut from that prefix's base", async () => {
+    const { repo, beside } = configured();
+    // A `dev` branch on origin, ahead of main: a release branch must start from it.
+    git(repo, "checkout", "-q", "-b", "dev");
+    writeFileSync(join(repo, "release.txt"), "release work\n");
+    git(repo, "add", "release.txt");
+    git(repo, "commit", "-q", "-m", "release base");
+    const devHead = head(repo);
+    git(repo, "push", "-q", "origin", "dev");
+    git(repo, "checkout", "-q", "main");
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", prefix: "app-wt-", bases: { "release/": "dev" } },
+    });
+    const result = await create(repo, "release/1.0");
+    const folder = join(beside, "app-wt-release-1.0");
+    expect(result).toEqual({ stdout: folder });
+    expect(head(folder)).toBe(devHead);
+    expect(head(folder)).not.toBe(head(repo, "origin/main"));
+    // Every other branch still starts from `worktrees.base`.
+    await create(repo, "fix/plain");
+    expect(head(join(beside, "app-wt-fix-plain"))).toBe(head(repo, "origin/main"));
+  });
+
+  test("a prefix that matches nothing, and the longest prefix", () => {
+    const worktrees = {
+      base: "main",
+      prefix: "app-wt-",
+      bases: { "release/": "dev", "release/hotfix/": "stable" },
+    };
+    expect(baseForBranch(worktrees, "release/1.0")).toBe("dev");
+    expect(baseForBranch(worktrees, "release/hotfix/urgent")).toBe("stable");
+    expect(baseForBranch(worktrees, "fix/login")).toBe("main");
+    expect(baseForBranch({ base: "main", prefix: "app-wt-" }, "release/1.0")).toBe("main");
   });
 
   test("an existing local branch is checked out, not cut again", async () => {

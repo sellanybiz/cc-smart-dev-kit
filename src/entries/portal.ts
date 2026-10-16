@@ -13,19 +13,32 @@
  * Claude Code session. The refusal is repeated here, because a copy can be run by hand: the
  * portal changes this machine's model path and the safety judge.
  *
- * **It never opens the browser Claude drives.** It opens the person's default browser, in
- * their own desktop session; the page says so too.
+ * **It never opens the browser Claude drives.** When Chrome's `claude-code` profile — the
+ * one Claude Code drives — is on this machine, it opens no browser at all: Chrome opens an
+ * outside link in the window it last used, and that window may be Claude's own profile, where
+ * the session cookie would put the portal's buttons within Claude's reach. It prints the link
+ * and says which window to open it in (`mayAutoOpen`, `openYourselfLine`). Without that
+ * profile it opens the person's default browser, in their own desktop session.
  */
 
 import { join } from "node:path";
+import { chromeUserDataDir, findClaudeCodeProfile } from "../browser/chrome";
+import { realBrowserDoctorDeps } from "../browser/doctor";
 import { VERSION } from "../build-info";
 import type { DoctorOptions } from "../cli/doctor";
 import { cliPaths, tildify } from "../cli/paths";
 import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
-import { realMachine } from "../machine/machine";
+import { type Machine, realMachine } from "../machine/machine";
+import { openUrlOnDesktop } from "../machine/open-url";
 import { realMcpDoctorDeps } from "../mcp/doctor";
-import { claudeCodeRefusal, PORTAL_USAGE, parsePortalChildArgs } from "../portal/command";
+import {
+  claudeCodeRefusal,
+  mayAutoOpen,
+  openYourselfLine,
+  PORTAL_USAGE,
+  parsePortalChildArgs,
+} from "../portal/command";
 import type { PortalContext } from "../portal/context";
 import { resolvePluginFolder } from "../portal/plugin-folder";
 import { startPortal } from "../portal/server";
@@ -51,28 +64,34 @@ const runner: Runner = (cmd) => {
   }
 };
 
-/** Opens a URL in the person's own browser. Never waits, and never fails the portal. */
+/**
+ * True when Chrome's `claude-code` profile — the one Claude Code drives — is on this machine.
+ * A read of the profile folders only (`chrome.ts`): nothing is started, and a machine whose
+ * Chrome folder cannot be read answers "not here", which is the safe answer for opening a
+ * browser (that machine has no profile for Claude to drive).
+ */
+function claudeCodeProfileHere(machine: Machine, home: string): boolean {
+  const userDataDir = chromeUserDataDir(machine.platform, home);
+  if (userDataDir === null) return false;
+  return findClaudeCodeProfile(userDataDir, realBrowserDoctorDeps(machine, home)) !== null;
+}
+
+/**
+ * Opens a URL in the person's own browser. Never waits, and never fails the portal.
+ * Which program opens it, per platform: `open-url.ts` (one home for that rule, with
+ * `sessions`). On Windows that is `cmd.exe /c start "" <url>` — there is no `xdg-open` there.
+ */
 function openBrowser(
   platform: NodeJS.Platform,
   url: string,
   which: (name: string) => null | string,
 ): void {
-  const candidates =
-    platform === "darwin"
-      ? [["open", url]]
-      : [
-          ["xdg-open", url],
-          ["gio", "open", url],
-        ];
-  for (const argv of candidates) {
-    if (which(argv[0] ?? "") === null) continue;
-    try {
+  openUrlOnDesktop(platform, url, {
+    which,
+    spawn: (argv) => {
       Bun.spawn(argv, { stderr: "ignore", stdin: "ignore", stdout: "ignore" });
-      return;
-    } catch {
-      // Try the next one; the link is printed either way.
-    }
-  }
+    },
+  });
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -115,12 +134,13 @@ async function main(argv: string[]): Promise<number> {
     if ("error" in found) return found;
     const { folder } = found;
     return {
+      browser: realBrowserDoctorDeps(machine, ctx.paths.home),
       bun: { path: process.execPath, version: Bun.version },
       gateway: {
         bundle: join(folder, "dist", "router.js"),
         machine,
         runner,
-        systemd: ctx.systemd,
+        service: ctx.systemd ? "systemd" : "none",
       },
       live: null,
       local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join(folder, "dist")) },
@@ -144,7 +164,13 @@ async function main(argv: string[]): Promise<number> {
     `It binds 127.0.0.1:${portal.port} only, and stops after ${IDLE_MS / 60_000} minutes with no request.`,
   );
   console.log("Stop it now with Ctrl+C here.");
-  if (!options.noOpen) ctx.openBrowser(portal.url);
+  const profileHere = claudeCodeProfileHere(machine, paths.home);
+  if (mayAutoOpen({ claudeCodeProfile: profileHere, noOpen: options.noOpen })) {
+    ctx.openBrowser(portal.url);
+  } else if (!options.noOpen) {
+    console.log("");
+    console.log(openYourselfLine());
+  }
 
   const how = await portal.finished;
   if (how === "idle") {

@@ -34,6 +34,7 @@ import { PORTAL_CSS, PORTAL_ICON, PORTAL_JS, THEME_JS } from "./assets";
 import type { PortalContext } from "./context";
 import {
   backendRows,
+  browserCardData,
   type ConfigRead,
   claudeModels,
   companionRows,
@@ -41,9 +42,12 @@ import {
   limitFacts,
   type ModelRow,
   omnirouteRow,
+  projectCardData,
+  projectFileTexts,
   readConfig,
   routerFacts,
   routerLog,
+  settingsData,
   shellFacts,
   slotRows,
   switchFacts,
@@ -77,11 +81,18 @@ import {
   notSetUpPage,
   overviewPage,
   privacyPage,
+  settingsPage,
   slotsPage,
 } from "./views";
+import {
+  type Env,
+  type ProjectInitDefaults,
+  type WorkflowAdapter,
+  workflowAdapter,
+} from "./workflow-adapter";
 
 /** The page routes, and which screen each one draws. */
-const PAGES = new Set(["/", "/health", "/machine", "/slots"]);
+const PAGES = new Set(["/", "/health", "/machine", "/settings", "/slots"]);
 
 /** How often the idle clock is looked at. Never longer than a quarter of the idle window. */
 export function idleCheckMs(idleMs: number): number {
@@ -103,6 +114,12 @@ export interface PortalOptions {
   port: number;
   /** The secrets; a test passes a fixed one. */
   random?: Random;
+  /**
+   * The workflow module, behind `workflow-adapter.ts`: the Settings page's values, the
+   * personal writes, and the Project card's plan. A test passes a fake and never reads a real
+   * workflow file, runs git, or writes anything.
+   */
+  workflow?: WorkflowAdapter;
 }
 
 /** The portal, running. */
@@ -198,6 +215,7 @@ export async function startPortal(
   const random: Random =
     options.random ?? ((bytes) => Buffer.from(crypto.getRandomValues(new Uint8Array(bytes))));
   const idleMs = options.idleMs ?? IDLE_MS;
+  const workflow = options.workflow ?? workflowAdapter;
   const state: ServerState = {
     doctor: null,
     doctorRun: null,
@@ -230,12 +248,29 @@ export async function startPortal(
     settle("idle");
   }, idleCheckMs(idleMs));
 
+  /**
+   * The project's own defaults, remembered for this run. Reading them runs git and, when `gh`
+   * is on PATH, GitHub itself (`detectFacts`), so the answers for one file's text are computed
+   * once and kept until that file changes: a form change on the Project card is a plan, not a
+   * network read. The key is the file's text — the moment it changes, the next reader is fresh.
+   */
+  let remembered: { defaults: ProjectInitDefaults; key: string } | null = null;
+  function projectDefaults(input: { env: Env; root: string }): ProjectInitDefaults {
+    const key = `${input.root}\u0000${projectFileTexts(input.root).existing ?? ""}`;
+    if (remembered === null || remembered.key !== key) {
+      remembered = { defaults: workflow.projectInitDefaults(input), key };
+    }
+    return remembered.defaults;
+  }
+
   function actionContext(): ActionContext {
     return {
       cwd: options.cwd,
       memory: state.memory,
       omniroute: portalOmnirouteContext(ctx),
       portal: ctx,
+      projectDefaults,
+      workflow,
     };
   }
 
@@ -283,10 +318,12 @@ export async function startPortal(
     const updates = updateState(actionContext());
     return {
       autoMode: autoMode(),
+      browser: browserCardData(ctx),
       companions: companionRows(ctx),
       doctor: state.doctor,
       jobs: await jobLines(actionContext()),
       omniroute: await omnirouteRow(actionContext().omniroute, isOlder),
+      project: projectCardData(ctx, options.cwd, projectDefaults, workflow),
       updates: {
         heldSince: updates.heldSince,
         installed: updates.installed,
@@ -318,6 +355,11 @@ export async function startPortal(
       const error = configExists(ctx) ? { configError: found.error } : {};
       if (path === "/machine") {
         return html(machinePage(shell, { ...(await machineData()), ...error }), extra);
+      }
+      // The Settings page needs no gateway either: the workflow is a file of the person's
+      // own and the project's, so it draws with the header's "Gateway not set up" line.
+      if (path === "/settings") {
+        return html(settingsPage(shell, settingsData(ctx, options.cwd, workflow)), extra);
       }
       return html(notSetUpPage(shell, { backends: [], ...error }), extra);
     }
@@ -373,6 +415,9 @@ export async function startPortal(
       );
     }
     if (path === "/machine") return html(machinePage(shell, await machineData()), extra);
+    if (path === "/settings") {
+      return html(settingsPage(shell, settingsData(ctx, options.cwd, workflow)), extra);
+    }
     const limits = limitFacts(ctx);
     const dashboard = config.backends.omniroute?.baseUrl ?? null;
     return html(

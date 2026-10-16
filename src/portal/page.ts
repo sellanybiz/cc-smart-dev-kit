@@ -22,7 +22,8 @@ export function escapeHtml(value: string): string {
 /** The icon at the top left, the same shape on every page. */
 const MARK = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"></rect><path d="M7 10l3 2-3 2"></path><path d="M12 15h5"></path></svg>`;
 
-const LOCK = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path></svg>`;
+/** The lock, for the private bar and a protected branch. */
+export const LOCK_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path></svg>`;
 
 /** The pages in the header, in order. */
 export const PAGES = [
@@ -30,6 +31,7 @@ export const PAGES = [
   { href: "/slots", id: "slots", label: "Slots" },
   { href: "/health", id: "health", label: "Health" },
   { href: "/machine", id: "machine", label: "Machine" },
+  { href: "/settings", id: "settings", label: "Settings" },
 ] as const;
 
 export type PageId = (typeof PAGES)[number]["id"] | null;
@@ -64,8 +66,8 @@ function header(shell: Shell, active: PageId): string {
 </header>
 <div class="privatebar">
 <div class="wrap">
-<span>${LOCK}Private session on this computer only. It ends when the portal stops.</span>
-<span>For you, not for Claude: never open this page in the browser Claude drives.</span>
+<span>${LOCK_ICON}Private session on this computer only. It ends when the portal stops.</span>
+<span>For you, not for Claude: never open this page in the Chrome profile Claude drives (its own, <span class="mono">claude-code</span>).</span>
 </div>
 </div>`;
 }
@@ -140,11 +142,16 @@ export function command(text: string, label: string): string {
   return `<div class="cmd"><code>${escapeHtml(text)}</code><button type="button" data-copy="${escapeHtml(text)}" aria-label="${escapeHtml(label)}">Copy</button></div>`;
 }
 
-/** A switch: `role="switch"`, 44px tall, and its label stays put. */
+/**
+ * A switch: `role="switch"`, 44px tall, and its label stays put. A `disabled` one is a value
+ * a page shows but does not change here (a row the project sets): it carries no action, so
+ * nothing in the markup invites a change the server would refuse.
+ */
 export function switchButton(options: {
   action: string;
   body?: Record<string, unknown>;
   confirm?: string;
+  disabled?: boolean;
   id: string;
   label: string;
   on: boolean;
@@ -154,7 +161,11 @@ export function switchButton(options: {
     options.body === undefined ? "" : ` data-body="${escapeHtml(JSON.stringify(options.body))}"`;
   const confirm =
     options.confirm === undefined ? "" : ` data-confirm="${escapeHtml(options.confirm)}"`;
-  return `<button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${options.id}" class="switch" data-action="${options.action}"${body}${confirm}${options.reload === true ? " data-reload" : ""} data-toggle><span class="track" aria-hidden="true"><span class="knob"></span></span><span data-switch-label>${options.on ? "On" : "Off"}</span></button>`;
+  const inside = `<span class="track" aria-hidden="true"><span class="knob"></span></span><span data-switch-label>${options.on ? "On" : "Off"}</span>`;
+  if (options.disabled === true) {
+    return `<button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${options.id}" class="switch" disabled>${inside}</button>`;
+  }
+  return `<button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${options.id}" class="switch" data-action="${options.action}"${body}${confirm}${options.reload === true ? " data-reload" : ""} data-toggle>${inside}</button>`;
 }
 
 /** One `✓` / `✗` / `·` / `!` line of a list like doctor's. */

@@ -3,9 +3,9 @@
 # (plugin/hooks/hooks.json), without needing bun on PATH: Claude Code's hooks get the PATH
 # Claude Code started with, which may lack bun. It tries, in order:
 #   1. the bun `cc-smart-dev-kit setup` baked into the launcher ~/.local/bin/cc-smart-dev-kit;
-#   2. $BUN_INSTALL/bin/bun;
-#   3. ~/.bun/bin/bun;
-#   4. bun on PATH.
+#   2. $BUN_INSTALL/bin/bun, then bun.exe beside it;
+#   3. ~/.bun/bin/bun, then bun.exe beside it;
+#   4. bun on PATH, then bun.exe.
 # Only shell built-ins, so it works with an empty PATH too.
 #
 # Two flags, on every bun run:
@@ -22,6 +22,14 @@
 # a word (measured on Bun 1.2.23 and 1.3.0: the folder's .env values reached the program), and
 # 1.4.3 is the first whose `fetch` honours `proxy: false` (src/build-info/bun.ts). So a too-old
 # Bun fails closed here, exactly like a missing one, before it starts anything.
+#
+# On Windows this shim runs under Git Bash (the shell Claude Code gives a shell-form hook
+# there). Bun's Windows installer writes bun.exe, never a file called bun, and a hook's
+# PATH may have no bun at all, so both names are tried. `$HOME` is Git Bash's own and it is
+# %USERPROFILE%, so ~/.bun/bin is the same folder as $USERPROFILE/.bun/bin. The bun.exe
+# behind the launcher or $BUN_INSTALL is a native `C:\…` path: the MSYS runtime behind Git
+# Bash accepts Win32 paths as well as POSIX ones, so `"$bun" --version` and the `-nt` test
+# below read those paths like any other.
 #
 # The first argument says what to do when no bun is found (or the bun is too old), and is never
 # passed to bun:
@@ -80,7 +88,7 @@ if [ -f "$launcher" ]; then
 fi
 
 bun=
-for candidate in "$baked" "${BUN_INSTALL:+$BUN_INSTALL/bin/bun}" "$HOME/.bun/bin/bun"; do
+for candidate in "$baked" "${BUN_INSTALL:+$BUN_INSTALL/bin/bun}" "${BUN_INSTALL:+$BUN_INSTALL/bin/bun.exe}" "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bun.exe"; do
   if [ -n "$candidate" ] && [ -x "$candidate" ]; then
     bun=$candidate
     break
@@ -88,6 +96,9 @@ for candidate in "$baked" "${BUN_INSTALL:+$BUN_INSTALL/bin/bun}" "$HOME/.bun/bin
 done
 if [ -z "$bun" ]; then
   bun=$(command -v bun 2>/dev/null) || bun=
+fi
+if [ -z "$bun" ]; then
+  bun=$(command -v bun.exe 2>/dev/null) || bun=
 fi
 if [ -z "$bun" ]; then
   if [ "$mode" = "--missing=ask" ]; then

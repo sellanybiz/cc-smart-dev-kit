@@ -55,6 +55,7 @@ import {
   toolSearchForBackend,
   type UpstreamInit,
 } from "./router";
+import type { CheckDay } from "./safety-checks";
 import { cooldownSeconds, isAutoModeGuard, planUsageLimit, resolveRoute } from "./targets";
 
 /**
@@ -68,7 +69,7 @@ const JUDGE_PROOFS = {
 };
 
 const PORT = 20100;
-/** File modes are POSIX: this tooling runs on Linux and macOS only. */
+/** Windows makes the modes up (`statSync().mode` is 0666 for a writable file): POSIX assertions. */
 const NO_POSIX_MODES = process.platform === "win32";
 const TOKEN = "sk-ant-oat01-TESTTOKEN";
 const CONFIG_PATH = "/home/someone/.config/cc-smart-dev-kit/gateway.json";
@@ -198,9 +199,13 @@ function router(
     getConfig?: () => GatewayConfig;
     /** Tests only: a model slot's fallback answers as the backend sent them. */
     fallbackAnswersAsIs?: boolean;
+    /** The safety-check counts the router starts from (a restart reads the file). */
+    loadedChecks?: null | string;
     now?: () => number;
     /** The state file's texts, in the order the router wrote them. */
     states?: string[];
+    /** The safety-check file's texts, in the order the router wrote them. */
+    checks?: string[];
   } = {},
 ) {
   const upstream = fakeFetch(replies);
@@ -219,9 +224,13 @@ function router(
       : { fallbackAnswersAsIs: options.fallbackAnswersAsIs }),
     fetch: upstream.fetch,
     getConfig: options.getConfig ?? (() => cfg),
+    loadSafetyChecks: () => options.loadedChecks ?? null,
     log: (line) => logs.push(line),
     now: options.now ?? (() => Date.UTC(2026, 9, 15, 10, 0, 0)),
     port: PORT,
+    saveSafetyChecks: (text) => {
+      options.checks?.push(text);
+    },
     saveState: (text) => {
       options.states?.push(text);
     },
@@ -1394,6 +1403,155 @@ describe("auto mode's safety check", () => {
     expect(calls.map((c) => c.url)).toEqual(["http://omni.test/v1/messages"]);
     expect(JSON.parse(calls[0]?.body ?? "")).toMatchObject({ model: "glm-5.3-flash" });
   });
+
+  // ─── Every check counted, for `cc-smart-dev-kit usage` ───────────────────────────
+
+  /**
+   * The one day a saved safety-check file holds, and its record. The day key is the
+   * machine's own calendar day (the router counts by local day, on purpose: see
+   * `safety-checks.test.ts`), so only its shape is written here.
+   */
+  function countedDay(text: string): [string, CheckDay] {
+    const state = JSON.parse(text) as { days: Record<string, CheckDay> };
+    const days = Object.entries(state.days);
+    expect(days).toHaveLength(1);
+    const first = days[0];
+    if (first === undefined) throw new Error(`the router wrote no day: ${text}`);
+    const [day, record] = first;
+    expect(day).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    return [day, record];
+  }
+
+  /** A check's answer, JSON, as Anthropic sends it. */
+  const answerWithUsage = (input: number, output: number) => () =>
+    new Response(
+      `{"content":[{"text":"<severity>1","type":"text"}],"id":"msg_1","type":"message","usage":{"cache_creation_input_tokens":0,"cache_read_input_tokens":500,"input_tokens":${input},"output_tokens":${output}}}`,
+      { headers: { "content-type": "application/json" }, status: 200 },
+    );
+
+  const EMPTY_COUNT = { cacheRead: 0, cacheWrite: 0, checks: 0, input: 0, output: 0 };
+
+  it("a check is counted at once, and its answer's tokens once the client has them", async () => {
+    const checks: string[] = [];
+    const { handle, settled } = router([answerWithUsage(1234, 7)], { checks });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    // The check itself, and who answered it, are written before the answer is read: a
+    // client that never read it still went through a check.
+    expect(checks).toHaveLength(1);
+    expect(countedDay(checks[0] ?? "")[1]).toEqual({
+      anthropic: { ...EMPTY_COUNT, checks: 1 },
+      checks: 1,
+      fallback: EMPTY_COUNT,
+    });
+    expect(await res.text()).toContain("<severity>1");
+    await settled();
+    expect(countedDay(checks.at(-1) ?? "")[1]).toEqual({
+      anthropic: { cacheRead: 500, cacheWrite: 0, checks: 1, input: 1234, output: 7 },
+      checks: 1,
+      fallback: EMPTY_COUNT,
+    });
+  });
+
+  it("a streamed check's answer: counted, and Claude Code gets it byte for byte", async () => {
+    const sse = [
+      "event: message_start",
+      'data: {"message":{"id":"msg_1","type":"message","usage":{"cache_creation_input_tokens":0,"cache_read_input_tokens":500,"input_tokens":1234,"output_tokens":1}},"type":"message_start"}',
+      "",
+      "event: content_block_delta",
+      'data: {"delta":{"text":"<severity>","type":"text_delta"},"index":0,"type":"content_block_delta"}',
+      "",
+      "event: message_delta",
+      'data: {"delta":{"stop_reason":"stop_sequence"},"type":"message_delta","usage":{"output_tokens":7}}',
+      "",
+      "event: message_stop",
+      'data: {"type":"message_stop"}',
+      "",
+      "",
+    ].join("\n");
+    // Three chunks the router does not choose, cut inside events: the bytes that go out are
+    // the bytes that came in, whatever the boundaries are.
+    const chunks = [sse.slice(0, 40), sse.slice(40, 41), sse.slice(41)];
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+        controller.close();
+      },
+    });
+    const checks: string[] = [];
+    const { handle, settled } = router(
+      [
+        () =>
+          new Response(upstream, {
+            headers: { "content-type": "text/event-stream" },
+            status: 200,
+          }),
+      ],
+      { checks },
+    );
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    const got = new Uint8Array(await res.arrayBuffer());
+    expect(new TextDecoder().decode(got)).toBe(sse);
+    expect(got.byteLength).toBe(new TextEncoder().encode(sse).byteLength);
+    await settled();
+    expect(countedDay(checks.at(-1) ?? "")[1]).toEqual({
+      anthropic: { cacheRead: 500, cacheWrite: 0, checks: 1, input: 1234, output: 7 },
+      checks: 1,
+      fallback: EMPTY_COUNT,
+    });
+  });
+
+  it("the counts survive a restart: the next router goes on counting the same day", async () => {
+    const checks: string[] = [];
+    const first = router([answerWithUsage(10, 2)], { checks });
+    const one = await first.handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    await one.text();
+    await first.settled();
+    // A new router (an update, a crash) reads the file and adds to it.
+    const second = router([answerWithUsage(10, 2)], {
+      checks,
+      loadedChecks: checks.at(-1) ?? null,
+    });
+    const two = await second.handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    await two.text();
+    await second.settled();
+    expect(countedDay(checks.at(-1) ?? "")[1]).toEqual({
+      anthropic: { cacheRead: 1000, cacheWrite: 0, checks: 2, input: 20, output: 4 },
+      checks: 2,
+      fallback: EMPTY_COUNT,
+    });
+  });
+
+  it("a check the judge answered counts as a fallback, with what its own answer reported", async () => {
+    const checks: string[] = [];
+    const { handle, settled } = router([atLimit, answerWithUsage(11, 3)], {
+      checks,
+      config: withJudge(),
+    });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    await res.text();
+    await settled();
+    expect(countedDay(checks.at(-1) ?? "")[1]).toEqual({
+      anthropic: EMPTY_COUNT,
+      checks: 1,
+      fallback: { cacheRead: 500, cacheWrite: 0, checks: 1, input: 11, output: 3 },
+    });
+  });
+
+  it("nothing but the check is counted: an ordinary request leaves the file alone", async () => {
+    const checks: string[] = [];
+    const { handle } = router([ok, ok], { checks });
+    await handle(clientRequest({ body: JSON.stringify(message("claude-opus-5-5")) }));
+    // A `count_tokens` for a check judges nothing: it is not counted either.
+    await handle(
+      clientRequest({
+        body: JSON.stringify(guardBody()),
+        path: "/v1/messages/count_tokens?beta=true",
+      }),
+    );
+    expect(checks).toEqual([]);
+    await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(countedDay(checks[0] ?? "")[1].checks).toBe(1);
+  });
 });
 
 // ─── Reasoning off, for an affordable backend ─────────────────────────────────────────
@@ -2354,6 +2512,20 @@ describe("config file", () => {
     write(path, fileJson({ "cc-smart-dev-kit-scout": ["claude-sonnet-5-5"] }), 1000);
     chmodSync(path, 0o640);
     expect(() => loadConfigFile(path)).toThrow(`Run: chmod 600 ${path}`);
+  });
+
+  it("on Windows that same file is read: the mode there says nothing", () => {
+    // A writable file reports 0o100666 on Windows whatever its ACL says, so a refusal over those
+    // bits throws on EVERY Windows machine: the router would run on its fallback config, and
+    // `gateway status`, `gateway slot` and `stop-failure` would all fail. The profile's ACL is
+    // what protects the file there.
+    const path = join(dir, "gateway.json");
+    write(path, fileJson({ "cc-smart-dev-kit-scout": ["claude-sonnet-5-5"] }), 1000);
+    chmodSync(path, 0o666);
+    expect(() => loadConfigFile(path, "linux")).toThrow("can be read by other users");
+    expect(loadConfigFile(path, "win32").slots).toEqual({
+      "cc-smart-dev-kit-scout": ["claude-sonnet-5-5"],
+    });
   });
 
   it.skipIf(NO_POSIX_MODES)(

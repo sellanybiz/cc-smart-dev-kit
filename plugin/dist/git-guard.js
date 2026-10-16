@@ -3,20 +3,37 @@
 import { appendFileSync } from "fs";
 
 // src/cli/paths.ts
-import { join as join2 } from "path";
+import { join as join2, sep } from "path";
 
 // src/gateway/paths.ts
 import { homedir } from "os";
 import { join } from "path";
+
+// src/machine/host.ts
+var TEST_HOST_VAR = "CC_SMART_DEV_KIT_TEST_HOST";
+function hostPlatform(env = process.env) {
+  const text = env[TEST_HOST_VAR];
+  if (!text)
+    return process.platform;
+  const given = JSON.parse(text);
+  return given.platform ?? process.platform;
+}
+
+// src/gateway/paths.ts
 function homeDir(env = process.env) {
-  return env.HOME || homedir();
+  if (env.HOME)
+    return env.HOME;
+  if (hostPlatform(env) === "win32" && env.USERPROFILE)
+    return env.USERPROFILE;
+  return homedir();
 }
 function routerPaths(env = process.env) {
   const home = homeDir(env);
   return {
     home,
     gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json")
+    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
+    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json")
   };
 }
 
@@ -38,11 +55,11 @@ function cliPaths(env = process.env) {
     binDir: join2(router.home, ".local", "bin"),
     stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
     dataDir: join2(router.home, ".local", "share", "cc-smart-dev-kit"),
-    browserProfileDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright"),
     browserOutputDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
-    browserPickerFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-picker.js"),
+    browserTokenFile: join2(router.home, ".config", "cc-smart-dev-kit", "playwright-extension.token"),
     serenaContextFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "serena", "contexts", "worktree.yml"),
     routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
     omnirouteStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
@@ -50,6 +67,7 @@ function cliPaths(env = process.env) {
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
     routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
     notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
+    workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf"),
     tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
   };
@@ -5906,7 +5924,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.3.0",
+  version: "0.4.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6034,6 +6052,68 @@ function mergeKinds(projectKinds) {
   return { ...DEFAULT_KINDS, ...projectKinds ?? {} };
 }
 
+// src/workflow/schema.ts
+var ALERT_EVENTS = ["needs-you", "question", "finished", "failed"];
+var alertEventsSchema = array(_enum(ALERT_EVENTS)).min(1).refine((events) => new Set(events).size === events.length, "an event is listed twice");
+var workflowSchema = strictObject({
+  autoCommit: boolean2().optional(),
+  autoPush: boolean2().optional(),
+  openPr: _enum(["off", "draft", "ready"]).optional(),
+  autoMerge: boolean2().optional(),
+  mergeMethod: _enum(["merge", "squash", "rebase"]).optional(),
+  deleteBranch: boolean2().optional(),
+  reviewBeforePush: boolean2().optional(),
+  reviewAgents: array(string2().min(1)).min(1).refine((agents) => new Set(agents).size === agents.length, "an agent is listed twice").optional(),
+  clearWorktreeAfterMerge: boolean2().optional(),
+  alerts: strictObject({
+    events: alertEventsSchema.optional(),
+    sound: boolean2().optional(),
+    usagePercent: number2().int().min(1).max(100).optional()
+  }).optional()
+});
+var workflowDefaults = {
+  autoCommit: false,
+  autoPush: false,
+  openPr: "off",
+  autoMerge: false,
+  mergeMethod: "merge",
+  deleteBranch: false,
+  reviewBeforePush: true,
+  reviewAgents: ["cc-smart-dev-kit:reviewer"],
+  clearWorktreeAfterMerge: false,
+  alerts: {
+    events: [...ALERT_EVENTS],
+    sound: false,
+    usagePercent: 85
+  }
+};
+var SWITCH_NAMES = ["statusLine", "sessionNames", "jobRoute", "updateHold"];
+var POLICY_KEYS = [
+  "autoCommit",
+  "autoPush",
+  "openPr",
+  "autoMerge",
+  "mergeMethod",
+  "deleteBranch",
+  "reviewBeforePush",
+  "reviewAgents",
+  "clearWorktreeAfterMerge",
+  "alerts.events",
+  "alerts.sound",
+  "alerts.usagePercent"
+];
+var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
+var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
+function workflowValue(workflow, key) {
+  const [head, tail] = key.split(".");
+  if (head === undefined || tail === undefined)
+    return workflow[head ?? ""];
+  const group = workflow[head];
+  if (typeof group !== "object" || group === null)
+    return;
+  return group[tail];
+}
+
 // src/project/version-range.ts
 var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
 var IDENT = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
@@ -6060,12 +6140,14 @@ function satisfiesRange(version, range) {
 // src/project/config.ts
 var PLUGIN_HOOK_NAMES = [
   "git-guard",
+  "merge-guard",
   "main-folder-guard",
   "serena-root",
   "message-guard",
   "agent-guard",
   "job-route",
   "after-merge",
+  "review-record",
   "worktree-leftovers",
   "session-name"
 ];
@@ -6075,13 +6157,22 @@ var ccSmartDevKitConfigSchema = strictObject({
     base: string2().min(1),
     prefix: string2().min(1),
     setup: array(string2().min(1)).min(1).optional(),
-    guardMainFolder: boolean2().optional()
+    guardMainFolder: boolean2().optional(),
+    bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
+      error: (issue) => {
+        const given = issue.input;
+        const wrong = typeof given === "object" && given !== null ? Object.keys(given).find((prefix) => !prefix.endsWith("/")) : undefined;
+        return `"${wrong ?? "a prefix"}" must end with "/" (a branch-name prefix, like "release/")`;
+      }
+    }).optional(),
+    engine: _enum(["plugin", "own"]).optional()
   }).optional(),
   protectedBranches: array(string2().min(1)).min(1).optional(),
   sessionNames: boolean2().optional(),
   instructions: boolean2().optional(),
   autoMode: array(string2().min(1)).optional(),
   jobs: strictObject({ kinds: kindsSchema.optional(), route: boolean2().optional() }).optional(),
+  workflow: workflowSchema.optional(),
   ownHooks: array(_enum(PLUGIN_HOOK_NAMES)).optional()
 });
 
@@ -6169,21 +6260,27 @@ function gitEnv(base) {
 // src/project/resolve.ts
 var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
+var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
 function gitIn(cwd, env) {
   return (args) => {
-    const result = Bun.spawnSync(["git", ...args], {
-      cwd,
-      env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: RESOLVE_GIT_TIMEOUT_MS
-    });
-    return {
-      ok: result.exitCode === 0,
-      stdout: result.stdout.toString(),
-      stderr: result.stderr.toString()
-    };
+    try {
+      const result = Bun.spawnSync(["git", ...args], {
+        cwd,
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: RESOLVE_GIT_TIMEOUT_MS
+      });
+      return {
+        ok: result.exitCode === 0,
+        stdout: result.stdout.toString(),
+        stderr: result.stderr.toString()
+      };
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      throw /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+    }
   };
 }
 function requireGitVersion(git) {
@@ -7374,24 +7471,359 @@ function programsOf(command) {
 }
 
 // src/hooks/after-merge.ts
-function mergeRuns(command, depth = 0) {
-  const runs = [];
-  for (const step of shellSteps(command, { joinLines: true })) {
-    const invocation = invocationOf2(wordsOf2(step.text));
-    if (invocation === undefined)
-      continue;
-    const { args, program } = invocation;
-    if (program === "gh" && args[0] === "pr" && args[1] === "merge")
-      runs.push(args.slice(2));
-    const inner = nestedCommand2(program, args, step.pipedFrom);
-    if (inner !== undefined && depth < MAX_NESTING2)
-      runs.push(...mergeRuns(inner, depth + 1));
-  }
-  return runs;
+var GH_COMMANDS = new Set([
+  "accessibility",
+  "actions",
+  "agent-task",
+  "alias",
+  "api",
+  "attestation",
+  "auth",
+  "browse",
+  "cache",
+  "co",
+  "codespace",
+  "completion",
+  "config",
+  "copilot",
+  "discussion",
+  "environment",
+  "exit-codes",
+  "extension",
+  "formatting",
+  "gist",
+  "gpg-key",
+  "help",
+  "issue",
+  "label",
+  "licenses",
+  "mintty",
+  "org",
+  "pr",
+  "preview",
+  "project",
+  "reference",
+  "release",
+  "repo",
+  "ruleset",
+  "run",
+  "search",
+  "secret",
+  "skill",
+  "ssh-key",
+  "status",
+  "telemetry",
+  "variable",
+  "workflow"
+]);
+function call(fields = {}) {
+  return {
+    target: null,
+    refusal: null,
+    unread: null,
+    arms: false,
+    disarms: false,
+    unknown: null,
+    ...fields
+  };
 }
-var isArmingFlag = (word) => /^--(?:auto|disable-auto)(?:=|$)/.test(word);
-function mergesPullRequest(command) {
-  return mergeRuns(command).some((words) => !words.some(isArmingFlag));
+var CHANGE_DIR = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
+var ENV_PROGRAM = /^(?:.*[\\/])?env(?:\.(?:exe|cmd))?$/i;
+var GH_POINTING_TEXT = /GH_(?:REPO|HOST)/;
+var GH_POINTING = /^GH_(?:REPO|HOST)=/;
+var isAutoFlag = (word) => /^--auto(?:=|$)/.test(word);
+var isDisableAutoFlag = (word) => /^--disable-auto(?:=|$)/.test(word);
+function pullRequestMerges(command, aliases = null, depth = 0, movedBefore = null) {
+  const calls = [];
+  let moved = movedBefore;
+  for (const step of shellSteps(command, { joinLines: true })) {
+    const words = wordsOf2(step.text);
+    if (words.some((word) => GH_POINTING_TEXT.test(word))) {
+      moved ??= "an earlier step in the same command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";
+    }
+    const invocation = invocationOf2(words);
+    const runnerWord = RUNNERS[programName(words[0] ?? "")];
+    if (invocation === undefined) {
+      if (runnerWord !== undefined)
+        moved ??= runnerWord.moved;
+      continue;
+    }
+    const { args, program } = invocation;
+    if (program === "git")
+      moved ??= gitMoved(args);
+    else if (CHANGE_DIR.has(program)) {
+      moved ??= `an earlier \`${program}\` in the same command changes the folder it runs in`;
+    }
+    const runner = runnerOf(program, prefixWords(words, args));
+    if (runner === null && runnerWord !== undefined)
+      moved ??= runnerWord.moved;
+    if (program === "gh" && runner === null) {
+      calls.push(...dispatch(args, moved ?? prefixMoved(words, args), aliases, depth));
+      moved ??= ghSwitchReason(args, aliases, depth);
+    } else if (runner !== null) {
+      calls.push(...runnerCalls(words, runner, moved ?? prefixMoved(words, args), aliases, depth));
+    }
+    const inner = nestedCommand2(program, args, step.pipedFrom);
+    if (inner !== undefined && depth < MAX_NESTING2) {
+      calls.push(...pullRequestMerges(inner, aliases, depth + 1, moved));
+    }
+    const script = suScript(program, args);
+    if (script !== undefined && depth < MAX_NESTING2) {
+      calls.push(...runnerCallsOfScript(script, runner ?? SU_RUNNER, moved, aliases, depth));
+    }
+  }
+  return calls;
+}
+function prefixWords(words, args) {
+  return words.slice(0, Math.max(0, words.length - args.length - 1));
+}
+function suScript(program, args) {
+  if (program !== "su")
+    return;
+  const at = args.findIndex((arg) => arg === "-c" || /^-[a-zA-Z]*c[a-zA-Z]*$/.test(arg));
+  return at === -1 ? undefined : args[at + 1];
+}
+var RUNNERS = {
+  doas: {
+    feeds: false,
+    moved: "an earlier `doas` in the same command may run the merge as another user",
+    reason: "the merge runs under `doas`, with another user's login and gh config"
+  },
+  find: {
+    feeds: false,
+    moved: "an earlier `find` in the same command may run the merge once for each match",
+    reason: "the merge runs from `find -exec`, once for each match"
+  },
+  parallel: {
+    feeds: true,
+    moved: "an earlier `parallel` in the same command may feed the merge its arguments from outside the line",
+    reason: "the merge runs from `parallel`, whose arguments come from outside the line"
+  },
+  su: {
+    feeds: true,
+    moved: "an earlier `su` in the same command may run the merge in another shell, with its own environment",
+    reason: "the merge runs from `su`, whose command and environment come from outside the line"
+  },
+  sudo: {
+    feeds: false,
+    moved: "an earlier `sudo` in the same command may run the merge under another user",
+    reason: "the merge runs under `sudo`, with another user's login and gh config"
+  },
+  watch: {
+    feeds: false,
+    moved: "an earlier `watch` in the same command may run the merge over and over",
+    reason: "the merge runs from `watch`, over and over"
+  },
+  xargs: {
+    feeds: true,
+    moved: "an earlier `xargs` in the same command may feed the merge its arguments from outside the line",
+    reason: "the merge runs from `xargs`, whose arguments come from outside the line"
+  }
+};
+var SU_RUNNER = {
+  feeds: true,
+  name: "su",
+  reason: "the merge runs from `su`, whose command and environment come from outside the line"
+};
+function runnerOf(program, before) {
+  for (const word of [program, ...before]) {
+    const name = programName(word);
+    const spec = RUNNERS[name];
+    if (spec !== undefined)
+      return { feeds: spec.feeds, name, reason: spec.reason };
+  }
+  return null;
+}
+function runnerCalls(words, runner, moved, aliases, depth) {
+  const at = words.findIndex((word) => programName(word) === "gh");
+  if (at !== -1)
+    return refuseRunner(dispatch(words.slice(at + 1), null, aliases, depth), runner);
+  const held = words.find((word) => /\bgh\b/i.test(word) && /\bmerge\b/i.test(word));
+  if (held === undefined)
+    return [];
+  return refuseRunner(pullRequestMerges(held, aliases, depth + 1, moved), runner);
+}
+function runnerCallsOfScript(script, runner, moved, aliases, depth) {
+  return refuseRunner(pullRequestMerges(script, aliases, depth + 1, moved), runner);
+}
+function refuseRunner(calls, runner) {
+  return calls.filter((one) => !one.disarms).map((one) => call({ target: runner.feeds ? null : one.target, refusal: runner.reason }));
+}
+function gitMoved(args) {
+  let index = 0;
+  let otherFolder = false;
+  for (;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "-C") {
+      otherFolder = true;
+      index += 1;
+    } else if (["--git-dir", "--namespace", "--work-tree", "-c"].includes(arg)) {
+      index += 1;
+    } else if (!arg.startsWith("-")) {
+      break;
+    }
+  }
+  if (otherFolder)
+    return "an earlier `git -C` in the same command runs in another folder";
+  const sub = args[index];
+  if (sub === "switch" || sub === "checkout") {
+    return `an earlier \`git ${sub}\` in the same command may change the branch it merges from`;
+  }
+  return null;
+}
+function prefixMoved(words, args) {
+  const before = words.slice(0, Math.max(0, words.length - args.length - 1));
+  if (before.some((word) => GH_POINTING.test(word))) {
+    return "the merge sets `GH_REPO`/`GH_HOST` itself, so which repository it merges in is not certain";
+  }
+  if (before.some((word) => ENV_PROGRAM.test(word))) {
+    return "the merge runs through `env`, so which environment gh sees is not certain";
+  }
+  return null;
+}
+function leadingFlags(words) {
+  let repo = null;
+  let index = 0;
+  for (;index < words.length; index++) {
+    const word = words[index] ?? "";
+    if (word === "--")
+      return { rest: words.slice(index + 1), repo, unknown: null, help: false };
+    if (!word.startsWith("-"))
+      break;
+    if (word === "-h" || word === "--help") {
+      return { rest: [], repo, unknown: null, help: true };
+    }
+    if (word === "-R" || word === "--repo")
+      repo = words[++index] ?? null;
+    else if (word.startsWith("--repo="))
+      repo = word.slice("--repo=".length) || null;
+    else if (isShort(word) && word.startsWith("-R"))
+      repo = word.slice(2) || null;
+    else
+      return { rest: words.slice(index + 1), repo, unknown: word, help: false };
+  }
+  return { rest: words.slice(index), repo, unknown: null, help: false };
+}
+function couldBeMerge(rest) {
+  const command = rest[0]?.toLowerCase();
+  if (command === undefined)
+    return false;
+  if (command === "api")
+    return true;
+  if (command === "pr")
+    return rest.slice(1).some((word) => word.toLowerCase() === "merge");
+  return !GH_COMMANDS.has(command);
+}
+function dispatch(words, moved, aliases, depth, repo = null) {
+  const leading = leadingFlags(words);
+  const carried = repo ?? leading.repo;
+  if (leading.unknown !== null) {
+    return couldBeMerge(leading.rest) ? [
+      call({
+        refusal: `the command carries \`${leading.unknown}\` before the gh command, which this guard does not know`
+      })
+    ] : [];
+  }
+  const word = leading.rest[0];
+  if (word === undefined)
+    return [];
+  const command = word.toLowerCase();
+  if (command === "pr")
+    return prCalls(leading.rest.slice(1), moved, carried);
+  if (command === "api")
+    return apiCalls(leading.rest.slice(1));
+  if (GH_COMMANDS.has(command))
+    return [];
+  const rest = leading.rest.slice(1);
+  if (aliases === null)
+    return [call({ unknown: command })];
+  const expansion = aliases.get(command);
+  if (expansion === undefined) {
+    return leading.rest.some((word) => /merge/i.test(word)) ? [
+      call({
+        refusal: `\`gh ${command}\` is no gh command or alias, and its words name a merge, which this guard does not judge`
+      })
+    ] : [];
+  }
+  if (expansion.startsWith("!")) {
+    return [
+      call({ refusal: `\`gh ${command}\` is a shell alias, so what it runs cannot be read` })
+    ];
+  }
+  if (depth >= MAX_NESTING2) {
+    return [
+      call({
+        refusal: `\`gh ${command}\` expands to further commands, which this guard does not follow`
+      })
+    ];
+  }
+  return dispatch([...wordsOf2(expansion), ...rest], moved, aliases, depth + 1, carried);
+}
+function ghSwitchReason(words, aliases, depth) {
+  if (depth > MAX_NESTING2)
+    return null;
+  const leading = leadingFlags(words);
+  if (leading.unknown !== null)
+    return null;
+  const command = leading.rest[0]?.toLowerCase();
+  const args = leading.rest.slice(1);
+  if (command === "co") {
+    return "an earlier `gh co` in the same command changes the branch gh works on";
+  }
+  if (command === "pr" && args[0] === "checkout") {
+    return "an earlier `gh pr checkout` in the same command changes the branch gh works on";
+  }
+  if (command === "repo" && args[0] === "set-default") {
+    return "an earlier `gh repo set-default` in the same command changes the repository gh works on";
+  }
+  if (command === undefined || GH_COMMANDS.has(command))
+    return null;
+  const expansion = aliases?.get(command);
+  if (expansion === undefined || expansion.startsWith("!"))
+    return null;
+  return ghSwitchReason([...wordsOf2(expansion), ...args], aliases, depth + 1);
+}
+function prCalls(rest, moved, carried) {
+  let repo = null;
+  let index = 0;
+  for (;index < rest.length; index++) {
+    const word = rest[index] ?? "";
+    if (word === "--") {
+      index += 1;
+      break;
+    }
+    if (!word.startsWith("-"))
+      break;
+    if (word === "-h" || word === "--help")
+      return [];
+    if (word === "-R" || word === "--repo")
+      repo = rest[++index] ?? null;
+    else if (word.startsWith("--repo="))
+      repo = word.slice("--repo=".length) || null;
+    else if (isShort(word) && word.startsWith("-R"))
+      repo = word.slice(2) || null;
+    else {
+      return [
+        call({
+          refusal: `\`gh pr\` takes a flag this guard does not know (\`${word}\`), so it cannot tell whether this is a merge`
+        })
+      ];
+    }
+  }
+  if (rest[index] !== "merge")
+    return [];
+  const args = rest.slice(index + 1);
+  if (args.some((arg) => arg === "-h" || arg === "--help"))
+    return [];
+  const named = namedPullRequest(args);
+  return [
+    call({
+      target: { ref: named.ref, repo: repo ?? named.repo ?? carried },
+      refusal: moved,
+      arms: args.some(isAutoFlag),
+      disarms: args.some(isDisableAutoFlag)
+    })
+  ];
 }
 var MERGE_FLAGS_WITH_VALUE = new Set([
   "--author-email",
@@ -7399,35 +7831,257 @@ var MERGE_FLAGS_WITH_VALUE = new Set([
   "--body-file",
   "--match-head-commit",
   "--repo",
-  "--subject",
-  "-A",
-  "-b",
-  "-F",
-  "-R",
-  "-t"
+  "--subject"
 ]);
-function mergeTarget(command) {
-  const runs = mergeRuns(command);
-  const words = runs.find((run) => !run.some(isArmingFlag)) ?? runs[0];
-  if (words === undefined)
-    return null;
+var MERGE_SHORT_WITH_VALUE = "AbtFR";
+function namedPullRequest(words) {
   let ref = null;
   let repo = null;
-  for (let i = 0;i < words.length; i++) {
-    const word = words[i];
-    if (word === undefined)
+  for (let index = 0;index < words.length; index++) {
+    const word = words[index] ?? "";
+    if (word === "--") {
+      ref ??= words[index + 1] || null;
       break;
-    if (word.startsWith("-")) {
-      const [flag, value] = word.split("=", 2);
-      if (flag === "--repo" || flag === "-R")
-        repo = (value ?? words[i + 1] ?? "") || null;
-      if (!word.includes("=") && MERGE_FLAGS_WITH_VALUE.has(word))
-        i += 1;
+    }
+    if (word.startsWith("--")) {
+      const at = word.indexOf("=");
+      const name = at === -1 ? word : word.slice(0, at);
+      const value = at === -1 ? undefined : word.slice(at + 1);
+      if (name === "--repo")
+        repo = value ?? words[index + 1] ?? null;
+      if (value === undefined && MERGE_FLAGS_WITH_VALUE.has(name))
+        index += 1;
+      continue;
+    }
+    if (isShort(word)) {
+      const { flags, wantsNext } = shortFlags(word, MERGE_SHORT_WITH_VALUE);
+      const letter = flags.slice(-1);
+      if (letter !== "" && MERGE_SHORT_WITH_VALUE.includes(letter)) {
+        const value = wantsNext ? words[index + 1] ?? null : word.slice(flags.length + 1);
+        if (letter === "R")
+          repo = value === "" ? null : value;
+        if (wantsNext)
+          index += 1;
+      }
       continue;
     }
     ref ??= word || null;
   }
   return { ref, repo };
+}
+var API_VALUE_FLAGS = new Set([
+  "--cache",
+  "--field",
+  "--header",
+  "--hostname",
+  "--input",
+  "--jq",
+  "--method",
+  "--preview",
+  "--raw-field",
+  "--template",
+  "-F",
+  "-H",
+  "-X",
+  "-f",
+  "-p",
+  "-q",
+  "-t"
+]);
+var API_PLAIN_FLAGS = new Set([
+  "--allow-escape-sequences",
+  "--include",
+  "--paginate",
+  "--silent",
+  "--slurp",
+  "--verbose",
+  "-i"
+]);
+var API_VALUE_LETTERS = "FHXfpqt";
+var API_MERGE_REFUSAL = "it merges with `gh api`, a form this guard does not judge";
+function apiCalls(rest) {
+  const fields = [];
+  let endpoint = null;
+  let body = false;
+  for (let index = 0;index < rest.length; index++) {
+    const word = rest[index] ?? "";
+    if (word === "--") {
+      endpoint ??= rest[index + 1] ?? null;
+      break;
+    }
+    if (word === "-h" || word === "--help")
+      return [];
+    if (word.startsWith("--")) {
+      const at = word.indexOf("=");
+      const name = at === -1 ? word : word.slice(0, at);
+      if (!API_VALUE_FLAGS.has(name) && !API_PLAIN_FLAGS.has(name)) {
+        return [
+          call({
+            refusal: `\`gh api\` takes a flag this guard does not know (\`${name}\`), so it cannot tell whether this is a merge`
+          })
+        ];
+      }
+      if (name === "--input")
+        body = true;
+      if (name === "--field" || name === "--raw-field") {
+        fields.push(at === -1 ? rest[index + 1] ?? "" : word.slice(at + 1));
+      }
+      if (at === -1 && API_VALUE_FLAGS.has(name))
+        index += 1;
+      continue;
+    }
+    if (isShort(word)) {
+      const { flags, wantsNext } = shortFlags(word, API_VALUE_LETTERS);
+      const unknown = flags.split("").find((one) => one !== "i" && !API_VALUE_LETTERS.includes(one));
+      if (unknown !== undefined) {
+        return [
+          call({
+            refusal: `\`gh api\` takes a flag this guard does not know (\`-${unknown}\`), so it cannot tell whether this is a merge`
+          })
+        ];
+      }
+      const letter = flags.slice(-1);
+      if (letter === "" || !API_VALUE_LETTERS.includes(letter))
+        continue;
+      const value = wantsNext ? rest[index + 1] ?? "" : word.slice(flags.length + 1);
+      if (wantsNext)
+        index += 1;
+      if (letter === "f" || letter === "F")
+        fields.push(value);
+      continue;
+    }
+    endpoint ??= word;
+  }
+  if (endpoint === null)
+    return [];
+  if (isGraphqlEndpoint(endpoint))
+    return graphqlCalls(fields, body);
+  if (endpoint.endsWith("/")) {
+    return [
+      call({
+        refusal: "the `gh api` path is cut short (gh's `{owner}`-style placeholders are read as parts of the command line), so this guard cannot tell which API path it reaches"
+      })
+    ];
+  }
+  const merged = pullRequestMergePath(endpoint);
+  return merged === null ? [] : [call({ target: merged, refusal: API_MERGE_REFUSAL })];
+}
+function isGraphqlEndpoint(endpoint) {
+  const path = endpoint.replace(/[?#].*$/, "").replace(/\/+$/, "").toLowerCase();
+  return path === "graphql" || path.endsWith("/graphql");
+}
+function graphqlCalls(fields, body) {
+  if (body) {
+    return [
+      call({
+        refusal: "the GraphQL request is read from a file or standard input, so this guard cannot read the query"
+      })
+    ];
+  }
+  for (const field of fields) {
+    if (!field.startsWith("query="))
+      continue;
+    const query = field.slice("query=".length);
+    if (query.startsWith("@") || /\$\(|\$\{|`/.test(query)) {
+      return [
+        call({
+          refusal: "the GraphQL query is read from a file or built by the shell, so this guard cannot read it"
+        })
+      ];
+    }
+    if (/mergePullRequest|enablePullRequestAutoMerge/i.test(query)) {
+      return [
+        call({
+          refusal: "the GraphQL query it sends merges a pull request (`mergePullRequest`), which this guard does not judge"
+        })
+      ];
+    }
+  }
+  return [];
+}
+function pullRequestMergePath(endpoint) {
+  const path = endpoint.replace(/^https?:\/\/[^/]+/i, "").replace(/[?#].*$/, "").replace(/^\/+|\/+$/g, "");
+  const match = /^repos\/([^/]+)\/([^/]+)\/pulls\/([^/]+)\/merge$/.exec(path);
+  const [, owner, name, number] = match ?? [];
+  if (owner === undefined || name === undefined || number === undefined)
+    return null;
+  const placeholder = (part) => part.includes("{");
+  return {
+    ref: number,
+    repo: placeholder(owner) || placeholder(name) ? null : `${owner}/${name}`
+  };
+}
+function mergeCalls(command, folder, env, timeoutMs = ALIAS_TIMEOUT_MS) {
+  const unread = pullRequestMerges(command);
+  if (!unread.some((one) => one.unknown !== null))
+    return unread;
+  const aliases = readGhAliases(folder, env, timeoutMs);
+  if (aliases === null) {
+    return [...unread.filter((one) => one.unknown === null), call({ unread: "its aliases" })];
+  }
+  return pullRequestMerges(command, aliases);
+}
+var GH_TIMEOUT_MS = 1e4;
+var ALIAS_TIMEOUT_MS = 3000;
+function readGhAliases(folder, env, timeoutMs = ALIAS_TIMEOUT_MS) {
+  if (timeoutMs <= 0)
+    return null;
+  try {
+    const run = Bun.spawnSync(["gh", "alias", "list"], {
+      cwd: folder,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs
+    });
+    const out = run.stdout.toString();
+    if (run.exitCode !== 0) {
+      return /no aliases configured/i.test(`${out}${run.stderr.toString()}`) ? new Map : null;
+    }
+    return parseAliasList(out);
+  } catch {
+    return null;
+  }
+}
+function parseAliasList(text) {
+  const aliases = new Map;
+  for (const line of text.split(/\r?\n/)) {
+    if (line.trim() === "")
+      continue;
+    const match = /^([^\s:][^:]*):[ \t]?(.*)$/.exec(line);
+    const name = match?.[1]?.trim();
+    const rest = match?.[2]?.trim();
+    if (name === undefined || rest === undefined)
+      return null;
+    const expansion = unquoteYaml(rest);
+    if (expansion === null)
+      return null;
+    aliases.set(name, expansion);
+  }
+  return aliases;
+}
+function unquoteYaml(value) {
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replace(/''/g, "'");
+  }
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    return value.slice(1, -1).replace(/\\"/g, '"');
+  }
+  if (/^[|>&*]/.test(value))
+    return null;
+  return value;
+}
+function mergesPullRequest(command) {
+  return pullRequestMerges(command).some((one) => !one.arms && !one.disarms && (one.target !== null || one.refusal !== null));
+}
+function requestsMerge(command) {
+  return pullRequestMerges(command).some((one) => !one.disarms);
+}
+function mergeTargetOf(calls) {
+  const named = calls.filter((one) => one.target !== null);
+  const chosen = named.find((one) => !one.arms && !one.disarms) ?? named[0];
+  return chosen?.target ?? null;
 }
 var PULL_REQUEST_FIELDS = "number,title,baseRefName,headRefName,state,url,mergedAt";
 function parsePullRequestView(json) {
@@ -7454,13 +8108,16 @@ function pullRequestRepository(url) {
   const match = /github\.com\/([^/\s]+)\/([^/\s]+)\/pull\//i.exec(url);
   return match === null ? null : `${match[1] ?? ""}/${match[2] ?? ""}`.toLowerCase();
 }
-function remoteRepository(remote) {
-  const match = /[/:]([^/:\s]+)\/([^/:\s]+?)(?:\.git)?\/?$/.exec(remote.trim());
-  return match === null ? null : `${match[1] ?? ""}/${match[2] ?? ""}`.toLowerCase();
+function repositoryKey(spec) {
+  const parts = spec.trim().replace(/\.git$/i, "").replace(/\/+$/, "").split(/[/:]/).filter((part) => part !== "");
+  if (parts.length < 2)
+    return null;
+  const [owner, name] = parts.slice(-2);
+  return owner === undefined || name === undefined ? null : `${owner}/${name}`.toLowerCase();
 }
 function sameRepository(prUrl, origin) {
   const pr = pullRequestRepository(prUrl);
-  return pr !== null && pr === remoteRepository(origin);
+  return pr !== null && pr === repositoryKey(origin);
 }
 var ANNOUNCE_WINDOW_MS = 15 * 60000;
 function mergeOutcome(params) {
@@ -7488,8 +8145,15 @@ function clearWorktreeNote(path, branch) {
   ].join(`
 `);
 }
-function tellSessionsNote(pr, base) {
-  const message = `${base} now has #${pr.number} (${quotableTitle(pr.title)}). At your next stop, once your current work is committed: ` + `git fetch origin ${base}, then git merge origin/${base}, and fix any conflict. No reply needed.`;
+function otherBaseCaution(bases, base) {
+  const elsewhere = Object.entries(bases).filter(([, target]) => target !== base).map(([prefix]) => prefix);
+  if (elsewhere.length === 0)
+    return null;
+  return `One exception: a branch whose pull request goes into another base (${elsewhere.join(", ")}) must NOT merge ${base} in, ` + `because that would ship unreleased work. A branch there stays as it is.`;
+}
+function tellSessionsNote(pr, base, bases = {}) {
+  const caution = otherBaseCaution(bases, base);
+  const message = `${base} now has #${pr.number} (${quotableTitle(pr.title)}). At your next stop, once your current work is committed: ` + `git fetch origin ${base}, then git merge origin/${base}, and fix any conflict. ` + `${caution === null ? "" : `${caution} `}No reply needed.`;
   return [
     `That merged #${pr.number} into ${base}.`,
     "Tell the other sessions of this repo, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo (not this session, not a subagent, not another project) with exactly this text:",
@@ -7508,7 +8172,7 @@ function viewPullRequest(ref, repo, folder, env) {
       ...repo === null ? [] : ["--repo", repo],
       "--json",
       PULL_REQUEST_FIELDS
-    ], { cwd: folder, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 1e4 });
+    ], { cwd: folder, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: GH_TIMEOUT_MS });
     return view.exitCode === 0 ? parsePullRequestView(view.stdout.toString()) : null;
   } catch {
     return null;
@@ -7524,9 +8188,10 @@ function afterMerge(context) {
   if (base === undefined)
     return SILENT;
   const command = stringField(toolInput(input).command);
-  if (command === null || !mergesPullRequest(command))
+  if (command === null)
     return SILENT;
-  const target = mergeTarget(command);
+  const calls = mergeCalls(command, cwd, env).filter((one) => !one.arms && !one.disarms);
+  const target = mergeTargetOf(calls);
   if (target === null)
     return SILENT;
   const repo = project.mainCheckout ?? project.root;
@@ -7556,7 +8221,7 @@ function afterMerge(context) {
   if (outcome.clear !== null)
     notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
   if (outcome.announce !== null && record !== null) {
-    notes.push(tellSessionsNote(outcome.announce, base));
+    notes.push(tellSessionsNote(outcome.announce, base, project.config?.worktrees?.bases ?? {}));
     mkdirSync(join5(record, ".."), { recursive: true });
     writeFileSync(record, "");
   }
@@ -7568,9 +8233,28 @@ function afterMerge(context) {
 // src/gateway/config.ts
 import { mkdirSync as mkdirSync3, readFileSync as readFileSync3, statSync as statSync3 } from "fs";
 
+// src/setup/file-mode.ts
+import { chmodSync, fchmodSync } from "fs";
+function failureIsFatal(platform) {
+  return platform !== "win32";
+}
+function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
+  try {
+    if (typeof fileOrFd === "number")
+      fchmodSync(fileOrFd, mode);
+    else
+      chmodSync(fileOrFd, mode);
+  } catch (error) {
+    if (failureIsFatal(platform))
+      throw error;
+  }
+}
+function isOwnerOnly(mode, platform = hostPlatform()) {
+  return platform === "win32" || (mode & 63) === 0;
+}
+
 // src/setup/write.ts
 import {
-  chmodSync,
   closeSync,
   existsSync as existsSync4,
   fsyncSync,
@@ -7599,7 +8283,7 @@ function writeTemp(file, content, mode) {
     } finally {
       closeSync(fd);
     }
-    chmodSync(temp, mode);
+    setFileMode(temp, mode);
   } catch (error) {
     if (existsSync4(temp))
       unlinkSync(temp);
@@ -7776,14 +8460,14 @@ function parseConfig(raw) {
   const result = gatewayConfigSchema.safeParse(raw);
   return result.success ? { config: result.data } : { error: prettifyError(result.error) };
 }
-function loadConfigFile(path) {
+function loadConfigFile(path, platform = hostPlatform()) {
   let mode;
   try {
     mode = statSync3(path).mode;
   } catch (error) {
     throw new ConfigError(`cannot read ${path}: ${messageOf(error)}`, { cause: error });
   }
-  if ((mode & 63) !== 0) {
+  if (!isOwnerOnly(mode, platform)) {
     throw new ConfigError(`${path} can be read by other users (mode ${(mode & 511).toString(8)}); it holds API keys. Run: chmod 600 ${path}`);
   }
   let raw;
@@ -7998,6 +8682,10 @@ var READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore", "Code Explorer"];
 var REVIEW_AGENTS = ["Reviewer"];
 var REVIEW_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS";
 var READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";
+var ALLOWED_EFFORTS = ["high", "xhigh", "max"];
+function effortAllowed(effort) {
+  return ALLOWED_EFFORTS.includes(effort.toLowerCase());
+}
 function agentKey(type) {
   const base = type.includes(":") ? type.split(":").pop() ?? type : type;
   return base.trim().toLowerCase().replace(/[\s_-]+/g, "-");
@@ -8415,11 +9103,20 @@ var NO_MODEL = [
   "An agent given none runs on the session's model and effort, which nobody chose: pass `model` and `effort` on every launch."
 ].join(`
 `);
+var EFFORTS = ALLOWED_EFFORTS.map((one) => `\`${one}\``).join(", ");
 var NO_EFFORT = [
   "This Agent launch names no `effort`.",
-  "An agent given none runs at the session's effort: pass `effort` on every launch (on Claude: `low`, `medium`, `high`, `xhigh`; `max` only for the hardest problem)."
+  `An agent given none runs at the session's effort: pass \`effort\` on every launch \u2014 ${EFFORTS} only, never \`low\` or \`medium\` (\`max\` for the hardest problem, always on an affordable gateway slot).`
 ].join(`
 `);
+function effortDenial(effort) {
+  return [
+    `This launch asks for effort \`${effort}\`, which no subagent may run at (the owner's rule, 2026-10-16).`,
+    `A subagent runs at ${EFFORTS} only \u2014 \`low\` and \`medium\` are refused on every model, a Claude model and an affordable gateway slot alike.`,
+    "`high` is for searches, reads and routine building, `xhigh` for review and real judgment, and `max` for the hardest problem only (always on an affordable gateway slot)."
+  ].join(`
+`);
+}
 function opusDenial() {
   return [
     "This launch would run on Claude Opus.",
@@ -8444,6 +9141,9 @@ function judgeLaunch(launch, ctx, env) {
       return deny(null, NO_EFFORT);
   }
   const real = launch.model !== null ? resolveLaunchModel(launch.model, ctx.config, env) : forkModel(ctx.sessionModel, ctx.config, env);
+  if (launch.effort !== null && !effortAllowed(launch.effort)) {
+    return deny(real, effortDenial(launch.effort));
+  }
   const type = launch.subagentType ?? "";
   const review = ctx.reviewAgents === undefined ? agentList(REVIEW_AGENTS, env, REVIEW_AGENTS_ENV) : new Set(ctx.reviewAgents.map(agentKey));
   const readOnly = ctx.readOnlyAgents === undefined ? agentList(READ_ONLY_AGENTS, env, READ_ONLY_AGENTS_ENV) : new Set(ctx.readOnlyAgents.map(agentKey));
@@ -8636,7 +9336,7 @@ var PUSH_VALUE_OPTIONS = [
   ["--receive-pack", 5],
   ["--repo", 6]
 ];
-var CHANGE_DIR = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
+var CHANGE_DIR2 = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
 function longOption(arg, full, min) {
   const name = arg.split("=")[0] ?? arg;
   return name.length >= min && name.length <= full.length && full.startsWith(name);
@@ -8846,7 +9546,7 @@ function inspect2(command, cwd, joinLines, options, depth = 0) {
     const { args, program } = invocation;
     if (program === "git")
       found.push(...gitQuestions(args, folder, options));
-    if (CHANGE_DIR.has(program))
+    if (CHANGE_DIR2.has(program))
       folder = movedTo(program, folder, args);
     const inner = nestedCommand2(program, args, step.pipedFrom);
     if (inner !== undefined && depth < MAX_NESTING2) {
@@ -8868,6 +9568,7 @@ function runsGit(command) {
 }
 
 // src/setup/launcher.ts
+var LAUNCHER_NAME = "cc-smart-dev-kit";
 var FIND_INSTALL_JS = [
   "const f=process.argv[process.argv.length-1];",
   'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
@@ -9181,10 +9882,518 @@ function mainFolderGuard(context) {
   return file === null ? SILENT : judge(file, context, false);
 }
 
+// src/workflow/auto-merge.ts
+function autoMergeOff(resolved) {
+  return resolved.autoMerge.value ? null : `autoMerge is off (${resolved.autoMerge.source}): turn it on with \`cc-smart-dev-kit workflow set autoMerge true --project\``;
+}
+function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
+  const off = autoMergeOff(resolved);
+  if (off !== null)
+    return off;
+  const integration = projectConfig?.worktrees?.base;
+  if (integration === undefined) {
+    return "this project names no integration base (worktrees.base in .claude/cc-smart-dev-kit.json), so there is no branch cc-smart-dev-kit may merge into by itself";
+  }
+  if (prBase !== integration) {
+    return `the pull request's base is ${prBase}, not the project's integration base ${integration}`;
+  }
+  if (integration === defaultBranch) {
+    return `${integration} is the repository's default branch: merging there is a release, and that is your decision`;
+  }
+  const targets = Object.values(projectConfig?.worktrees?.bases ?? {});
+  if (targets.includes(integration)) {
+    return `${integration} is the target of another branch family (worktrees.bases), so it is not a plain integration base`;
+  }
+  return null;
+}
+
+// src/workflow/resolve.ts
+import { existsSync as existsSync7, readFileSync as readFileSync8 } from "fs";
+
+// src/cli/setup.ts
+import { delimiter, join as join9 } from "path";
+
+// src/browser/chrome.ts
+var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
+var PLAYWRIGHT_EXTENSION_URL = `https://chromewebstore.google.com/detail/playwright-extension/${PLAYWRIGHT_EXTENSION_ID}`;
+var PLAYWRIGHT_EXTENSION_SETTINGS_URL = `chrome://extensions/?id=${PLAYWRIGHT_EXTENSION_ID}`;
+
+// src/browser/legacy.ts
+var WINDOWS_LIST = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object CommandLine | " + 'ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }';
+
+// src/browser/token.ts
+var BROWSER_TOKEN_ENV = "PLAYWRIGHT_MCP_EXTENSION_TOKEN";
+var TOKEN_LINE_PREFIX = `${BROWSER_TOKEN_ENV}=`;
+
+// src/browser/setup.ts
+var WINDOWS_KEY = `HKCU\\Software\\Google\\Chrome\\Extensions\\${PLAYWRIGHT_EXTENSION_ID}`;
+
+// src/machine/claude-mem.ts
+var API_KEY = "CLAUDE_MEM_OPENAI_COMPAT_API_KEY";
+var PROVIDER = "CLAUDE_MEM_PROVIDER";
+var UNCHOSEN = {
+  [PROVIDER]: ["", "claude"],
+  CLAUDE_MEM_OPENAI_COMPAT_PRESET: [""],
+  CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: [""],
+  CLAUDE_MEM_OPENAI_COMPAT_MODEL: [""],
+  [API_KEY]: [""],
+  CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: ["", "claude"],
+  CLAUDE_MEM_QUOTA_FALLBACK_MODEL: [""]
+};
+
+// src/machine/warp.ts
+var WARP_KEY_URL = "https://releases.warp.dev/linux/keys/warp.asc";
+var YUM_REPO_TEXT = `[warpdotdev]
+name=warpdotdev
+baseurl=https://releases.warp.dev/linux/rpm/stable
+enabled=1
+gpgcheck=1
+gpgkey=${WARP_KEY_URL}
+`;
+
+// src/setup/lock.ts
+var FALLBACK_STALE_MS = 10 * 60 * 1000;
+
+// src/setup/launcher-cmd.ts
+var FIND_INSTALL_JS2 = [
+  "const f=process.argv[process.argv.length-1];",
+  "const j=JSON.parse(require('fs').readFileSync(f,'utf8'));",
+  `const e=((j&&j.plugins&&j.plugins['${PLUGIN_ID}'])||[]).find(function(x){`,
+  "return x&&x.scope==='user'&&typeof x.installPath==='string';});",
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
+
+// src/cli/setup.ts
+function shellWord2(path) {
+  return /^[\w./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`;
+}
+function statuslineSetting(paths) {
+  return { command: `${shellWord2(join9(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+}
+
+// src/update/state.ts
+import {
+  appendFileSync as appendFileSync3,
+  existsSync as existsSync6,
+  mkdirSync as mkdirSync4,
+  readdirSync as readdirSync2,
+  readFileSync as readFileSync7,
+  rmSync as rmSync2,
+  statSync as statSync5,
+  writeFileSync as writeFileSync3
+} from "fs";
+import { join as join10 } from "path";
+var CHECK_INTERVAL_MS = 60 * 60 * 1000;
+var LOG_MAX_BYTES = 256 * 1024;
+function updateFiles(stateDir) {
+  return {
+    hold: join10(stateDir, "update-hold"),
+    check: join10(stateDir, "update-check.json"),
+    reported: join10(stateDir, "update-reported"),
+    log: join10(stateDir, "update.log"),
+    lockDir: join10(stateDir, "update"),
+    sessions: join10(stateDir, "sessions")
+  };
+}
+var UNREACHABLE_FAILS_AFTER_HOURS = 24;
+var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
+function isHeld(files) {
+  return existsSync6(files.hold);
+}
+
+// src/workflow/resolve.ts
+class WorkflowConfigError extends Error {
+  name = "WorkflowConfigError";
+}
+function personalWorkflowFile(paths) {
+  return paths.workflowConfigFile;
+}
+function loadWorkflow(file) {
+  if (!existsSync7(file))
+    return {};
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync8(file, "utf8"));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
+  }
+  const parsed = workflowSchema.safeParse(raw);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((issue) => {
+      const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
+      return issue.code === "unrecognized_keys" ? `${issue.keys.join(", ")}: unknown field` : `${field}: ${issue.message}`;
+    });
+    throw new WorkflowConfigError(`Invalid ${file}: ${issues.join("; ")}`);
+  }
+  return parsed.data;
+}
+function mergeWorkflows(personal, project) {
+  const merged = { ...personal, ...project };
+  const alerts = { ...personal.alerts, ...project.alerts };
+  if (Object.keys(alerts).length > 0)
+    merged.alerts = alerts;
+  return merged;
+}
+function sourceOf(personal, project, key) {
+  if (workflowValue(project, key) !== undefined)
+    return "project";
+  return workflowValue(personal, key) !== undefined ? "personal" : "default";
+}
+function alertsFrom(personal, project) {
+  const merged = mergeWorkflows(personal, project);
+  const alerts = merged.alerts ?? {};
+  const of = (key, value) => ({
+    value,
+    source: sourceOf(personal, project, key)
+  });
+  return {
+    events: of("alerts.events", alerts.events ?? workflowDefaults.alerts.events),
+    sound: of("alerts.sound", alerts.sound ?? workflowDefaults.alerts.sound),
+    usagePercent: of("alerts.usagePercent", alerts.usagePercent ?? workflowDefaults.alerts.usagePercent)
+  };
+}
+function statusLineIsOurs(paths) {
+  try {
+    const parsed = JSON.parse(readFileSync8(paths.settingsFile, "utf8"));
+    if (typeof parsed !== "object" || parsed === null)
+      return false;
+    const statusLine = parsed.statusLine;
+    return Bun.deepEquals(statusLine, statuslineSetting(paths), true);
+  } catch {
+    return false;
+  }
+}
+function current(value, source) {
+  return { value, source };
+}
+function projectFlag(value) {
+  return value === undefined ? current(false, "default") : current(value, "project");
+}
+function resolveWorkflow(paths, projectConfig) {
+  const personal = loadWorkflow(personalWorkflowFile(paths));
+  const project = projectConfig?.workflow ?? {};
+  const merged = mergeWorkflows(personal, project);
+  const of = (key, value) => ({
+    value,
+    source: sourceOf(personal, project, key)
+  });
+  return {
+    autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
+    autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
+    openPr: of("openPr", merged.openPr ?? workflowDefaults.openPr),
+    autoMerge: of("autoMerge", merged.autoMerge ?? workflowDefaults.autoMerge),
+    mergeMethod: of("mergeMethod", merged.mergeMethod ?? workflowDefaults.mergeMethod),
+    deleteBranch: of("deleteBranch", merged.deleteBranch ?? workflowDefaults.deleteBranch),
+    reviewBeforePush: of("reviewBeforePush", merged.reviewBeforePush ?? workflowDefaults.reviewBeforePush),
+    reviewAgents: of("reviewAgents", merged.reviewAgents ?? [...workflowDefaults.reviewAgents]),
+    clearWorktreeAfterMerge: of("clearWorktreeAfterMerge", merged.clearWorktreeAfterMerge ?? workflowDefaults.clearWorktreeAfterMerge),
+    alerts: alertsFrom(personal, project),
+    switches: {
+      statusLine: statusLineIsOurs(paths) ? current(true, "personal") : current(false, "default"),
+      sessionNames: projectFlag(projectConfig?.sessionNames),
+      jobRoute: projectFlag(projectConfig?.jobs?.route),
+      updateHold: isHeld(updateFiles(paths.stateDir)) ? current(true, "personal") : current(false, "default")
+    }
+  };
+}
+
+// src/workflow/reviews.ts
+import { createHash as createHash2 } from "crypto";
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync9 } from "fs";
+import { dirname as dirname3, join as join11 } from "path";
+var REVIEWS_KEPT = 50;
+var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
+function repoKey(repo) {
+  return createHash2("sha256").update(repo).digest("hex").slice(0, 16);
+}
+function reviewsFile(stateDir, repo) {
+  return join11(stateDir, "reviews", `${repoKey(repo)}.json`);
+}
+function readReviews(file) {
+  try {
+    const parsed = JSON.parse(readFileSync9(file, "utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+      return {};
+    const record = {};
+    for (const [sha, at] of Object.entries(parsed)) {
+      if (COMMIT_SHA.test(sha) && typeof at === "string")
+        record[sha] = at;
+    }
+    return record;
+  } catch {
+    return {};
+  }
+}
+function hasReview(file, sha) {
+  return readReviews(file)[sha] !== undefined;
+}
+function recordReview(file, sha, atMs) {
+  const record = readReviews(file);
+  const before = record[sha];
+  if (before !== undefined)
+    return { added: false, at: before };
+  const at = new Date(atMs).toISOString();
+  record[sha] = at;
+  const kept = {};
+  for (const [commit, time] of Object.entries(record).sort(([, a], [, b]) => b.localeCompare(a)).slice(0, REVIEWS_KEPT)) {
+    kept[commit] = time;
+  }
+  mkdirSync5(dirname3(file), { mode: 448, recursive: true });
+  atomicWrite(file, `${JSON.stringify(kept, null, 2)}
+`, 384);
+  return { added: true, at };
+}
+
+// src/hooks/merge-guard.ts
+var GH_TIMEOUT_MS2 = 1e4;
+var GUARD_BUDGET_MS = 25000;
+var BUDGET_MARGIN_MS = 2000;
+var GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
+function budgetMs(env) {
+  const given = Number(env[GUARD_BUDGET_ENV]);
+  return Number.isFinite(given) && given > 0 ? given : GUARD_BUDGET_MS;
+}
+var ALIAS_LIMIT_MS = 3000;
+var PULL_REQUEST_FACTS = "number,baseRefName,headRefOid";
+function parsePullRequestFacts(json) {
+  try {
+    const view = JSON.parse(json);
+    const { baseRefName, headRefOid, number } = view;
+    if (typeof number !== "number" || typeof baseRefName !== "string")
+      return null;
+    if (typeof headRefOid !== "string" || !/^[0-9a-f]{40,64}$/.test(headRefOid))
+      return null;
+    return { number, base: baseRefName, headOid: headRefOid };
+  } catch {
+    return null;
+  }
+}
+function parseDefaultBranch(json) {
+  try {
+    const view = JSON.parse(json);
+    const ref = view.defaultBranchRef;
+    if (typeof ref !== "object" || ref === null)
+      return null;
+    const name = ref.name;
+    return typeof name === "string" && name !== "" ? name : null;
+  } catch {
+    return null;
+  }
+}
+function parseRequiredChecks(json) {
+  try {
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed))
+      return null;
+    const checks = [];
+    for (const entry of parsed) {
+      if (typeof entry !== "object" || entry === null)
+        return null;
+      const { bucket, name } = entry;
+      if (typeof bucket !== "string" || typeof name !== "string")
+        return null;
+      checks.push({ bucket, name });
+    }
+    return checks;
+  } catch {
+    return null;
+  }
+}
+var PASSING_BUCKETS = new Set(["pass", "skipping"]);
+function mergeRefusal(facts) {
+  if (facts.branchRefusal !== null)
+    return facts.branchRefusal;
+  if (facts.checks === null)
+    return null;
+  if (facts.checks.length === 0) {
+    return "gh reports no required checks for it, so there is nothing green to trust";
+  }
+  const failing = facts.checks.filter((check) => !PASSING_BUCKETS.has(check.bucket));
+  if (failing.length > 0) {
+    const list = failing.map((check) => `${check.name} (${check.bucket})`).join(", ");
+    return `its required checks are not all green: ${list}`;
+  }
+  if (facts.reviewBeforePush && !facts.reviewed) {
+    return `the head commit ${facts.headOid.slice(0, 7)} has no recorded review (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)`;
+  }
+  return null;
+}
+function notByItself(reason, number = null) {
+  const which = number === null ? "this pull request" : `#${number}`;
+  return `cc-smart-dev-kit will not merge ${which} by itself: ${reason}. Approve the merge yourself if you meant it.`;
+}
+function notChecked(what, env) {
+  const why = ghMissing(env) ? "gh is not installed" : `gh could not read ${what}`;
+  return `cc-smart-dev-kit could not check this merge: ${why}. Approve the merge yourself if it is right.`;
+}
+function notInTime(what) {
+  return `cc-smart-dev-kit could not check this merge in time: reading ${what} would have taken longer than the guard's own budget allows. Approve the merge yourself if it is right.`;
+}
+function ghMissing(env) {
+  try {
+    return Bun.which("gh", { PATH: env.PATH ?? "" }) === null;
+  } catch {
+    return false;
+  }
+}
+function ghStdout(args, folder, env, timeoutMs) {
+  try {
+    const run = Bun.spawnSync(["gh", ...args], {
+      cwd: folder,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs
+    });
+    const out = run.stdout.toString();
+    return out.trim() === "" ? null : out;
+  } catch {
+    return null;
+  }
+}
+function viewPullRequest2(target, folder, env, timeoutMs = GH_TIMEOUT_MS2) {
+  const out = ghStdout([
+    "pr",
+    "view",
+    ...target.ref === null ? [] : [target.ref],
+    ...target.repo === null ? [] : ["--repo", target.repo],
+    "--json",
+    PULL_REQUEST_FACTS
+  ], folder, env, timeoutMs);
+  return out === null ? null : parsePullRequestFacts(out);
+}
+function requiredChecks(number, repo, folder, env, timeoutMs = GH_TIMEOUT_MS2) {
+  const out = ghStdout([
+    "pr",
+    "checks",
+    String(number),
+    "--required",
+    ...repo === null ? [] : ["--repo", repo],
+    "--json",
+    "name,bucket"
+  ], folder, env, timeoutMs);
+  return out === null ? null : parseRequiredChecks(out);
+}
+function defaultBranchOf(folder, env, repo = null, timeoutMs = GH_TIMEOUT_MS2) {
+  const out = ghStdout(["repo", "view", ...repo === null ? [] : [repo], "--json", "defaultBranchRef"], folder, env, timeoutMs);
+  return out === null ? null : parseDefaultBranch(out);
+}
+function ownRepository(project, env, timeoutMs) {
+  const folder = project.mainCheckout ?? project.root;
+  const origin = runGit(folder, ["remote", "get-url", "origin"], env, timeoutMs);
+  return origin.ok && origin.out !== "" ? repositoryKey(origin.out) : null;
+}
+function foreignRepository(repo, own) {
+  if (repo === null)
+    return null;
+  const named = repositoryKey(repo);
+  if (own !== null && named !== null && named === own)
+    return null;
+  return own === null ? `the command names the repository ${repo}, and cc-smart-dev-kit could not read this project's own (\`git remote get-url origin\`), so it cannot tell whether they are the same one` : `the command names the repository ${repo}, and the autoMerge policy covers only this project's own repository (${own})`;
+}
+function numericRef(ref) {
+  return ref !== null && /^\d+$/.test(ref) ? Number(ref) : null;
+}
+function mergeGuard(context) {
+  const { project, input, env, cwd, paths } = context;
+  const command = stringField(toolInput(input).command);
+  if (command === null || !requestsMerge(command))
+    return SILENT;
+  const config = project.config;
+  if (config === null)
+    return SILENT;
+  let resolved;
+  try {
+    resolved = resolveWorkflow(paths, config);
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return toolDecision("ask", notByItself(`the workflow settings cannot be read (${why})`));
+  }
+  const off = autoMergeOff(resolved);
+  if (off !== null)
+    return toolDecision("ask", notByItself(off));
+  const startedAt = Date.now();
+  const budgetAt = startedAt + budgetMs(env);
+  const timeFor = (limitMs) => Math.min(limitMs, budgetAt - Date.now() - BUDGET_MARGIN_MS);
+  const merges = mergeCalls(command, cwd, env, timeFor(ALIAS_LIMIT_MS)).filter((one) => !one.disarms);
+  const defaultBranches = new Map;
+  let own = null;
+  let ownRead = false;
+  for (const merge of merges) {
+    const number = numericRef(merge.target?.ref ?? null);
+    if (merge.unread !== null)
+      return toolDecision("ask", notChecked(merge.unread, env));
+    if (merge.refusal !== null)
+      return toolDecision("ask", notByItself(merge.refusal, number));
+    const target = merge.target;
+    if (target === null)
+      continue;
+    if (target.repo !== null) {
+      if (!ownRead) {
+        const left = timeFor(GUARD_GIT_TIMEOUT_MS);
+        if (left <= 0)
+          return toolDecision("ask", notInTime("this project's own repository"));
+        own = ownRepository(project, env, left);
+        ownRead = true;
+      }
+      const foreign = foreignRepository(target.repo, own);
+      if (foreign !== null)
+        return toolDecision("ask", notByItself(foreign, number));
+    }
+    const viewLeft = timeFor(GH_TIMEOUT_MS2);
+    if (viewLeft <= 0) {
+      return toolDecision("ask", notInTime("the pull request this command names"));
+    }
+    const view = viewPullRequest2(target, cwd, env, viewLeft);
+    if (view === null) {
+      return toolDecision("ask", notChecked("the pull request this command names", env));
+    }
+    const where = target.repo ?? "";
+    if (!defaultBranches.has(where)) {
+      const branchLeft = timeFor(GH_TIMEOUT_MS2);
+      if (branchLeft <= 0) {
+        return toolDecision("ask", notInTime("this repository's default branch"));
+      }
+      defaultBranches.set(where, defaultBranchOf(cwd, env, target.repo, branchLeft));
+    }
+    const defaultBranch = defaultBranches.get(where) ?? null;
+    if (defaultBranch === null) {
+      return toolDecision("ask", notChecked("this repository's default branch", env));
+    }
+    const branchRefusal = autoMergeRefusal(resolved, config, view.base, defaultBranch);
+    let checks = null;
+    if (branchRefusal === null) {
+      const checksLeft = timeFor(GH_TIMEOUT_MS2);
+      if (checksLeft <= 0) {
+        return toolDecision("ask", notInTime(`the required checks of #${view.number}`));
+      }
+      checks = requiredChecks(view.number, target.repo, cwd, env, checksLeft);
+      if (checks === null) {
+        return toolDecision("ask", notChecked(`the required checks of #${view.number}`, env));
+      }
+    }
+    const repository = project.mainCheckout ?? project.root;
+    const reviewed = !resolved.reviewBeforePush.value || hasReview(reviewsFile(paths.stateDir, repository), view.headOid);
+    const reason = mergeRefusal({
+      branchRefusal,
+      checks,
+      headOid: view.headOid,
+      reviewBeforePush: resolved.reviewBeforePush.value,
+      reviewed
+    });
+    if (reason !== null)
+      return toolDecision("ask", notByItself(reason, view.number));
+  }
+  return SILENT;
+}
+
 // src/hooks/sessions.ts
-import { existsSync as existsSync6, readdirSync as readdirSync2, readFileSync as readFileSync7, statSync as statSync5 } from "fs";
+import { existsSync as existsSync8, readdirSync as readdirSync3, readFileSync as readFileSync10, statSync as statSync6 } from "fs";
 import { uptime } from "os";
-import { join as join9 } from "path";
+import { join as join12 } from "path";
 function parseSessionRecord(json) {
   let value;
   try {
@@ -9209,20 +10418,20 @@ function isRunning(pid) {
   }
 }
 function liveSessions(claudeConfigDir) {
-  const dir = join9(claudeConfigDir, "sessions");
-  if (!existsSync6(dir))
+  const dir = join12(claudeConfigDir, "sessions");
+  if (!existsSync8(dir))
     return [];
   const bootedAt = Date.now() - uptime() * 1000;
   const live = [];
-  for (const file of readdirSync2(dir)) {
+  for (const file of readdirSync3(dir)) {
     const pid = Number(file.replace(/\.json$/, ""));
     if (!file.endsWith(".json") || !Number.isInteger(pid) || !isRunning(pid))
       continue;
     let text;
     try {
-      if (statSync5(join9(dir, file)).mtimeMs < bootedAt)
+      if (statSync6(join12(dir, file)).mtimeMs < bootedAt)
         continue;
-      text = readFileSync7(join9(dir, file), "utf8");
+      text = readFileSync10(join12(dir, file), "utf8");
     } catch {
       continue;
     }
@@ -9268,86 +10477,9 @@ function messageGuard(context) {
   return folder === null ? SILENT : toolDecision("deny", otherProjectRefusal(to, folder));
 }
 
-// src/hooks/session-name.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync8, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "fs";
-import { tmpdir as tmpdir2 } from "os";
-import { join as join10 } from "path";
-var MAX_SESSION_NAME = 60;
-function isSessionId(value) {
-  return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
-}
-function cleanSessionName(raw) {
-  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
-  const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
-  if (plain === "")
-    return null;
-  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
-}
-function namesDir(env) {
-  return join10(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
-}
-function readName(file) {
-  try {
-    return existsSync7(file) ? cleanSessionName(readFileSync8(file, "utf8")) : null;
-  } catch {
-    return null;
-  }
-}
-function writeAtomic(file, text) {
-  const partial = `${file}.${process.pid}.tmp`;
-  writeFileSync3(partial, text);
-  renameSync2(partial, file);
-}
-function namingNote(sessionId, current) {
-  const command = `${COMMAND} session-name ${sessionId} "<the task, in a few words>"`;
-  return current === null ? `This session has no name yet. Name it once, as soon as its main task is clear: people and other sessions find it by this name in ListAgents and /resume. Run: ${command}` : `This session is named "${current}" after its main task. Keep it; rename it only if the name no longer describes the main task: ${command}`;
-}
-function sessionName(context) {
-  const { project, input, event, env } = context;
-  if (project.config?.sessionNames !== true)
-    return SILENT;
-  const sessionId = input.session_id;
-  if (!isSessionId(sessionId))
-    return SILENT;
-  const dir = namesDir(env);
-  const wanted = readName(join10(dir, `${sessionId}.name`));
-  const note = namingNote(sessionId, wanted);
-  if (event === "SessionStart") {
-    return {
-      stdout: JSON.stringify({
-        hookSpecificOutput: { hookEventName: event, additionalContext: note }
-      })
-    };
-  }
-  const appliedFile = join10(dir, sessionId);
-  const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
-  if (title !== null) {
-    mkdirSync4(dir, { recursive: true });
-    writeAtomic(appliedFile, title);
-    return {
-      stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: event, sessionTitle: title } })
-    };
-  }
-  return wanted === null ? {
-    stdout: JSON.stringify({
-      hookSpecificOutput: { hookEventName: event, additionalContext: note }
-    })
-  } : SILENT;
-}
-
-// src/setup/lock.ts
-var FALLBACK_STALE_MS = 10 * 60 * 1000;
-
-// src/hooks/worktree-create.ts
-var FETCH_AGE_MS = 24 * 60 * 60 * 1000;
-
-// src/hooks/worktree-leftovers.ts
-import { readFileSync as readFileSync10, statSync as statSync6 } from "fs";
-import { basename as basename3, isAbsolute as isAbsolute4, join as join12, resolve as resolve6 } from "path";
-
 // src/hooks/local-files.ts
-import { lstatSync as lstatSync2, readdirSync as readdirSync3, readFileSync as readFileSync9, readlinkSync as readlinkSync2 } from "fs";
-import { join as join11 } from "path";
+import { lstatSync as lstatSync2, readdirSync as readdirSync4, readFileSync as readFileSync11, readlinkSync as readlinkSync2 } from "fs";
+import { join as join13 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
@@ -9366,8 +10498,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   const same = (relative) => {
     if (--budget < 0)
       return false;
-    const here = join11(worktree, relative);
-    const there = join11(mainCheckout, relative);
+    const here = join13(worktree, relative);
+    const there = join13(mainCheckout, relative);
     try {
       const a = lstatSync2(here);
       const b = lstatSync2(there);
@@ -9375,9 +10507,9 @@ function sameAsMain(worktree, mainCheckout, path) {
         return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync2(here) === readlinkSync2(there);
       }
       if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync3(here).every((entry) => same(join11(relative, entry)));
+        return b.isDirectory() && readdirSync4(here).every((entry) => same(join13(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync9(here).equals(readFileSync9(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync11(here).equals(readFileSync11(there));
     } catch {
       return false;
     }
@@ -9398,21 +10530,153 @@ function localFiles(worktree, mainCheckout, env) {
   return parseIgnored(status.out).filter((entry) => !REBUILDABLE.some((pattern) => pattern.test(entry)) && !(mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry)));
 }
 
+// src/hooks/worktree-remove.ts
+function subagentWorktreeOf(cwd, agentId) {
+  if (agentId === null || !/^[0-9a-f]+$/.test(agentId))
+    return null;
+  const found = new RegExp(String.raw`^(.*[\\/]\.claude[\\/]worktrees[\\/]agent-${agentId})(?:[\\/]|$)`).exec(cwd);
+  return found?.[1] ?? null;
+}
+
+// src/hooks/review-record.ts
+function agentTypeOf(input) {
+  return stringField(input.agent_type);
+}
+function recordsReview(agent, agents) {
+  const key = agentKey(agent);
+  return agents.some((name) => agentKey(name) === key);
+}
+function headCommit(folder, env) {
+  const run = runGit(folder, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], env, GUARD_GIT_TIMEOUT_MS);
+  return run.ok && /^[0-9a-f]{40,64}$/.test(run.out) ? run.out : null;
+}
+function couldNotWrite(why) {
+  return { stderr: `cc-smart-dev-kit review-record: cannot write the record (${why})` };
+}
+function inSubagentWorktree(cwd, agentId) {
+  if (subagentWorktreeOf(cwd, agentId) !== null)
+    return true;
+  return /[\\/]\.claude[\\/]worktrees[\\/]agent-[0-9a-f]+(?:[\\/]|$)/.test(cwd);
+}
+function reviewRecord(context) {
+  const { project, input, env, cwd, paths } = context;
+  const config = project.config;
+  if (config === null)
+    return SILENT;
+  const agent = agentTypeOf(input);
+  if (agent === null)
+    return SILENT;
+  if (inSubagentWorktree(cwd, stringField(input.agent_id)))
+    return SILENT;
+  let resolved;
+  try {
+    resolved = resolveWorkflow(paths, config);
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      stderr: `cc-smart-dev-kit review-record: the workflow settings cannot be read (${why})`
+    };
+  }
+  if (!recordsReview(agent, resolved.reviewAgents.value))
+    return SILENT;
+  const commit = headCommit(cwd, env);
+  if (commit === null)
+    return SILENT;
+  try {
+    recordReview(reviewsFile(paths.stateDir, project.mainCheckout ?? project.root), commit, Date.now());
+  } catch (error) {
+    return couldNotWrite(error instanceof Error ? error.message : String(error));
+  }
+  return SILENT;
+}
+
+// src/hooks/session-name.ts
+import { existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync12, renameSync as renameSync2, writeFileSync as writeFileSync4 } from "fs";
+import { tmpdir as tmpdir2 } from "os";
+import { join as join14 } from "path";
+var MAX_SESSION_NAME = 60;
+function isSessionId(value) {
+  return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+}
+function cleanSessionName(raw) {
+  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
+  const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
+  if (plain === "")
+    return null;
+  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
+}
+function namesDir(env) {
+  return join14(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
+}
+function readName(file) {
+  try {
+    return existsSync9(file) ? cleanSessionName(readFileSync12(file, "utf8")) : null;
+  } catch {
+    return null;
+  }
+}
+function writeAtomic(file, text) {
+  const partial = `${file}.${process.pid}.tmp`;
+  writeFileSync4(partial, text);
+  renameSync2(partial, file);
+}
+function namingNote(sessionId, current) {
+  const command = `${COMMAND} session-name ${sessionId} "<the task, in a few words>"`;
+  return current === null ? `This session has no name yet. Name it once, as soon as its main task is clear: people and other sessions find it by this name in ListAgents and /resume. Run: ${command}` : `This session is named "${current}" after its main task. Keep it; rename it only if the name no longer describes the main task: ${command}`;
+}
+function sessionName(context) {
+  const { project, input, event, env } = context;
+  if (project.config?.sessionNames !== true)
+    return SILENT;
+  const sessionId = input.session_id;
+  if (!isSessionId(sessionId))
+    return SILENT;
+  const dir = namesDir(env);
+  const wanted = readName(join14(dir, `${sessionId}.name`));
+  const note = namingNote(sessionId, wanted);
+  if (event === "SessionStart") {
+    return {
+      stdout: JSON.stringify({
+        hookSpecificOutput: { hookEventName: event, additionalContext: note }
+      })
+    };
+  }
+  const appliedFile = join14(dir, sessionId);
+  const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
+  if (title !== null) {
+    mkdirSync6(dir, { recursive: true });
+    writeAtomic(appliedFile, title);
+    return {
+      stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: event, sessionTitle: title } })
+    };
+  }
+  return wanted === null ? {
+    stdout: JSON.stringify({
+      hookSpecificOutput: { hookEventName: event, additionalContext: note }
+    })
+  } : SILENT;
+}
+
+// src/hooks/worktree-create.ts
+var FETCH_AGE_MS = 24 * 60 * 60 * 1000;
+
 // src/hooks/worktree-leftovers.ts
+import { readFileSync as readFileSync13, statSync as statSync7 } from "fs";
+import { basename as basename3, isAbsolute as isAbsolute4, join as join15, resolve as resolve6 } from "path";
 var IDLE_MINUTES = 60;
 function idleMinutes(worktree, now) {
   let admin;
   try {
-    admin = readFileSync10(join12(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync13(join15(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return 0;
   }
   if (!isAbsolute4(admin))
     admin = resolve6(worktree, admin);
   let last = 0;
-  for (const file of ["index", "HEAD", join12("logs", "HEAD")]) {
+  for (const file of ["index", "HEAD", join15("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync6(join12(admin, file)).mtimeMs);
+      last = Math.max(last, statSync7(join15(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? 0 : (now - last) / 60000;
@@ -9423,7 +10687,7 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
   if (listed.prunable)
     return "gone";
   try {
-    statSync6(listed.path);
+    statSync7(listed.path);
   } catch {
     return "gone";
   }
@@ -9515,6 +10779,20 @@ var gitGuardHook = {
 `));
   }
 };
+var mergeGuardHook = {
+  name: "merge-guard",
+  events: ["PreToolUse"],
+  wiring: "plugin",
+  onConfigProblem: (message, input) => {
+    const command = stringField(toolInput(input).command);
+    return command !== null && requestsMerge(command) ? toolDecision("ask", cannotCheck("whether this merge may happen by itself", message)) : SILENT;
+  },
+  logFacts: (input) => {
+    const command = stringField(toolInput(input).command);
+    return command === null ? {} : { programs: programsOf(command) };
+  },
+  run: mergeGuard
+};
 var mainFolderGuardHook = {
   name: "main-folder-guard",
   events: ["PreToolUse"],
@@ -9552,6 +10830,16 @@ var afterMergeHook = {
     return command !== null && mergesPullRequest(command) ? addContext(event, `cc-smart-dev-kit: ${message}`) : SILENT;
   },
   run: afterMerge
+};
+var reviewRecordHook = {
+  name: "review-record",
+  events: ["SubagentStop"],
+  wiring: "plugin",
+  onConfigProblem: (message, input) => {
+    const agent = agentTypeOf(input);
+    return agent !== null && recordsReview(agent, workflowDefaults.reviewAgents) ? { stderr: `cc-smart-dev-kit review-record: ${message}` } : SILENT;
+  },
+  run: reviewRecord
 };
 var worktreeLeftoversHook = {
   name: "worktree-leftovers",
@@ -9592,12 +10880,14 @@ function cwdOf(input) {
 }
 var HOOKS = [
   gitGuardHook,
+  mergeGuardHook,
   mainFolderGuardHook,
   serenaRootHook,
   messageGuardHook,
   agentGuardHook,
   jobRouteHook,
   afterMergeHook,
+  reviewRecordHook,
   worktreeLeftoversHook,
   sessionNameHook
 ];

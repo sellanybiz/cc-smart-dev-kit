@@ -47,7 +47,9 @@ A subagent has none of your conversation. Treat it as a smart colleague who just
 - **A dense report:** findings with `file:line` evidence and the commands it actually ran. No
   restating the brief, no pasted code you can read yourself.
 - `Explore` and `Plan` load no `CLAUDE.md`: restate every constraint they must respect.
-- Independent agents start in one message, with several calls.
+- **Parallel by default:** independent research, reviews of different change sets and
+  builders run at once. Independent agents start in one message, with several calls. One
+  thing runs alone: a browser check (`/cc-smart-dev-kit:ui-verify` § 2).
 
 ### Briefing an affordable model
 

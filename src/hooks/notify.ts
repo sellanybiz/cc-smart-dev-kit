@@ -25,8 +25,15 @@
  * well.
  *
  * Three routes, one of them chosen per alert:
- *   - **the desktop**: `notify-send` on Linux (with a desktop to show it on), `osascript` on
- *     macOS, and the freedesktop sound when `paplay` is there.
+ *   - **the desktop**: `notify-send` on Linux (with a desktop to show it on) — and, where
+ *     the installed launcher and one of the desktop's own tools are there, the detached
+ *     `alert-worker` in its place: it waits for a click that raises the session's terminal
+ *     window, keeps one alert per session on screen, and moves the alert to the
+ *     notification centre after a minute (`desktop-alert.ts`: the extras the older
+ *     notification script had, ported) — `osascript` on macOS, a PowerShell toast on
+ *     Windows (`windowsToast`), and the freedesktop sound when `paplay` is there, with
+ *     XFCE's Do Not Disturb silencing an ordinary alert's sound. Windows plays the sound
+ *     of its own notification, so none is added.
  *   - **the SSH terminal**: with no desktop route here but a session over SSH
  *     (`SSH_CONNECTION` or `SSH_TTY`), the same alert goes to the terminal the person is
  *     looking at as OSC 777: through the hook's `terminalSequence` output field, which Claude
@@ -45,21 +52,40 @@
  * not looking at, so those stay ours (owner, 2026-10-11). Over plain SSH Warp's variables
  * are not forwarded, so the session gets our alert.
  *
- * Every setting: `~/.claude/cc-smart-dev-kit/notify.json` (`readNotifyConfig`). A hook's output is
- * read only for the `terminalSequence` field here; every error is one short stderr line and
- * exit 0 — a notifier must never stop a session.
+ * **The workflow's alert settings** are read too (`alertsAt`, once per run, at the folder the
+ * session is in): `alerts.events` says which of the four moments alert at all — a moment left
+ * out is silence, for every event that would have shown it — and `alerts.sound` adds a sound
+ * where the platform has one (macOS, and the SSH terminal's bell), on top of
+ * `notify.json`'s own two. A settings file that cannot be read changes nothing here: the
+ * alerts go on as they always did, with one line on stderr saying why.
+ *
+ * Every setting: `~/.claude/cc-smart-dev-kit/notify.json` (`readNotifyConfig`) and the
+ * project's and person's workflow files (`src/workflow/alerts.ts`). A hook's output is read
+ * only for the `terminalSequence` field here; every error is one short stderr line and exit
+ * 0 — a notifier must never stop a session.
  */
-import { spawn } from "node:child_process";
 import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { oneLine } from "../gateway/plain-text";
 import { notifyCommand } from "../update/apply";
+import { alertsAt, type ResolvedAlerts } from "../workflow/alerts";
+import type { AlertEvent } from "../workflow/schema";
+import { type SoundName, soundArgv } from "./alert-sound";
+import {
+  canWaitForClick,
+  desktopTools,
+  dndOn,
+  hasDesktop,
+  type NotifyTarget,
+  notifyWorkerAlert,
+} from "./desktop-alert";
+import { startDetached } from "./detached";
 import { type HookResult, SILENT } from "./io";
 import type { Env } from "./run";
 import { cleanSessionName } from "./session-name";
-import { stopFailureWillAlert } from "./stop-failure";
+import { ALERT_WORKER_COMMAND, type Runner, stopFailureWillAlert } from "./stop-failure";
 import { lastAssistantText, lastCustomTitle, startedByPeer } from "./transcript";
 
 /** The notification types that mean "Claude needs you", the ones `hooks.json` matches. */
@@ -97,12 +123,6 @@ export const ASK_MARK_MS = 10 * 60_000;
 
 /** Claude Code writes the turn's last answer to the transcript just after the Stop event. */
 export const TRANSCRIPT_FLUSH_MS = 300;
-
-/** The freedesktop sounds the desktop route plays, by name, under this folder. */
-export const SOUND_DIR = "/usr/share/sounds/freedesktop/stereo";
-
-/** A freedesktop sound's name: which alert it belongs to. */
-export type SoundName = "dialog-warning" | "service-login" | "service-logout";
 
 /** One alert to show. Every text is already one line, never empty, and capped. */
 export interface Alert {
@@ -410,6 +430,8 @@ export type TerminalRoute = "field" | "field-if-no-tty" | "tty";
  *   - `tty`: this event's answer is not read, or the version is known to be too old for the
  *     field: `/dev/tty` first, and the session's own terminal device when the hook has no
  *     controlling terminal (`writeSessionTerminal`; only one of the two is ever written to).
+ *     Both are POSIX devices and neither exists on Windows (`ttyDevice`), so there this route
+ *     writes nothing: the desktop toast is the alert's way out (docs/windows-notify.md).
  */
 export function terminalRoute(event: string, env: Env): TerminalRoute {
   if (!TERMINAL_SEQUENCE_EVENTS.includes(event)) return "tty";
@@ -496,23 +518,20 @@ export function readNotifyConfig(file: string): NotifyConfig {
 export type NotifyRunner = (argv: string[]) => void;
 
 /**
- * The real runner: the notifier starts detached from the hook, which does not wait for it. A
- * notification that waits for a click (or a slow daemon) must not hold the hook, and Claude
- * Code exits after a `Stop` hook in `claude -p`: the detached program still shows it.
+ * The real runner for `platform`: the notifier starts detached from the hook, which does not
+ * wait for it. A notification that waits for a click (or a slow daemon) must not hold the
+ * hook, and Claude Code exits after a `Stop` hook in `claude -p`: the detached program still
+ * shows it. On Windows that takes the `cmd /c start` trampoline — a detached child dies with
+ * its hook there (`detached.ts`).
  */
-export const spawnNotify: NotifyRunner = (argv) => {
-  const [file, ...args] = argv;
-  if (file === undefined) return;
-  try {
-    const child = spawn(file, args, { detached: true, stdio: "ignore" });
-    child.on("error", (error) => {
-      console.error(`cc-smart-dev-kit notify: could not show the notification: ${error.message}`);
+export function spawnNotifyFor(platform: NodeJS.Platform): NotifyRunner {
+  return (argv) => {
+    startDetached(platform, argv, {
+      onError: (message) =>
+        console.error(`cc-smart-dev-kit notify: could not show the notification: ${message}`),
     });
-    child.unref();
-  } catch (error) {
-    console.error(`cc-smart-dev-kit notify: ${error instanceof Error ? error.message : error}`);
-  }
-};
+  };
+}
 
 export interface NotifyDeps {
   env: Env;
@@ -521,8 +540,17 @@ export interface NotifyDeps {
   which: (command: string) => null | string;
   /** Starts a program detached: the notifier, the sound. */
   run: NotifyRunner;
+  /** Runs a short program now and captures its stdout: the Do Not Disturb check, and the
+   * decision that a click can be waited for. Never a program that waits. */
+  capture: Runner;
   /** The plugin's paths: the Claude config folder, and `notify.json`. */
   paths: CliPaths;
+  /**
+   * The installed launcher (`~/.local/bin/cc-smart-dev-kit`), when setup wrote it: the
+   * worker that waits for a click runs from the installed version, never from this hook's
+   * version folder, which an update may delete while it waits.
+   */
+  launcher: null | string;
   /** The clock, for the mark that keeps one wait from alerting twice. */
   nowMs: number;
   /** Writes one sequence to the session's terminal (`/dev/tty`); false when there is none. */
@@ -536,24 +564,93 @@ export interface NotifyDeps {
   writeSessionTerminal: (sequence: string) => boolean;
 }
 
-/** The desktop's own notifier command, or null: no desktop route on this machine. */
-function desktopCommand(alert: Alert, deps: NotifyDeps): null | string[] {
-  // On Linux a desktop notification needs a desktop (`DISPLAY`: X, or a Wayland session that
-  // sets it). Without one — an SSH session, a headless machine — `notify-send` has no bus to
-  // show anything on, so the terminal route is the one that works.
-  if (deps.platform === "linux" && (deps.env.DISPLAY ?? "") === "") return null;
+/**
+ * What the desktop alert needs about this session (the worker's window hint): its folder
+ * and name for a VS Code or Warp window, the terminal's own `WINDOWID`, and the session id
+ * for the one-alert-per-session record.
+ */
+function desktopTarget(
+  deps: NotifyDeps,
+  cwd: null | string,
+  label: null | string,
+  session: string,
+): NotifyTarget {
+  return {
+    folder: cwd === null ? "" : basename(cwd),
+    name: label ?? "",
+    program: deps.env.TERM_PROGRAM ?? "",
+    session,
+    windowId: deps.env.WINDOWID ?? "",
+  };
+}
+
+/**
+ * The desktop's own notifier command, or null: no desktop route on this machine (`notify.ts`
+ * § The routes).
+ *
+ * On Linux this is the **detached worker** where it can do better than a plain
+ * notification — wait for a click, raise the session's window, close the alert on the
+ * minute — and today's plain `notify-send` everywhere else (`notifyCommand`). Without one
+ * of the two tools the worker needs (`canWaitForClick`) there is nothing to wait for, and
+ * the direct notification stays: one sender either way, never both. macOS and Windows are
+ * unchanged (`osascript`, the PowerShell toast).
+ */
+function desktopCommand(alert: Alert, deps: NotifyDeps, target: NotifyTarget): null | string[] {
+  if (deps.platform === "linux") {
+    if (!hasDesktop(deps.platform, deps.env)) return null;
+    if (deps.launcher !== null && canWaitForClick(desktopTools(deps.which), deps.capture)) {
+      return [
+        deps.launcher,
+        ALERT_WORKER_COMMAND,
+        JSON.stringify(notifyWorkerAlert(alert, target)),
+      ];
+    }
+  }
   return notifyCommand(alert.body, deps.platform, deps.which, alert.title, alert.critical);
 }
 
-/** Plays the alert's sound, detached, when this machine has `paplay` and the person left it on. */
-function playSound(alert: Alert, deps: NotifyDeps, config: NotifyConfig): void {
-  if (alert.sound === null || !config.desktopSound) return;
-  // paplay and the freedesktop sound theme are Linux's; macOS and Windows have their own.
-  if (deps.platform !== "linux") return;
-  const paplay = deps.which("paplay");
-  if (paplay === null) return;
-  deps.run([paplay, join(SOUND_DIR, `${alert.sound}.oga`)]);
+/**
+ * Plays the alert's sound on the desktop route, detached, when this machine has a player and
+ * a sound is wanted. A sound is wanted when either the person turned it on in
+ * `notify.json` (`desktopSound`, on by default — today's behaviour) or the project or the
+ * person asked for one in the workflow (`alerts.sound`). Which program plays it, and on
+ * which platform: `alert-sound.ts`.
+ *
+ * XFCE's Do Not Disturb silences an ordinary alert's sound (an urgent one sounds anyway —
+ * XFCE shows those under Do Not Disturb too): the older notification script's own check,
+ * `xfconf-query` reading `/do-not-disturb` (`desktop-alert.ts`). The popup itself is the
+ * notification server's business: under Do Not Disturb it stays off the screen and the
+ * centre keeps it, so the alert is not lost.
+ */
+function playSound(
+  alert: Alert,
+  deps: NotifyDeps,
+  config: NotifyConfig,
+  alerts: ResolvedAlerts,
+): void {
+  if (alert.sound === null || !(config.desktopSound || alerts.sound.value)) return;
+  if (
+    !alert.critical &&
+    deps.platform === "linux" &&
+    dndOn(desktopTools(deps.which), deps.capture)
+  ) {
+    return;
+  }
+  const argv = soundArgv(alert.sound, deps.platform, deps.which);
+  if (argv !== null) deps.run(argv);
 }
+
+/**
+ * The alert moment a hook event is, for `alerts.events`. Only the events `alertFor` accepts
+ * reach this, so it maps by the event alone — which notification types and which tools count
+ * is decided in one place (`alertFor`, and `hooks.json`).
+ */
+export const ALERT_EVENT_OF: Readonly<Record<string, AlertEvent>> = {
+  Notification: "needs-you",
+  PreToolUse: "question",
+  Stop: "finished",
+  StopFailure: "failed",
+};
 
 /**
  * The hook's work: show the alert for this event, or stay quiet. At most one alert per
@@ -581,6 +678,7 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
 
   const transcript = typeof input.transcript_path === "string" ? input.transcript_path : null;
   const cwd = typeof input.cwd === "string" ? input.cwd : null;
+  const label = sessionLabel(transcript, cwd);
   // Asked only for a limit stop: the StopFailure hook shows that alert itself where it can,
   // and this hook must not be the second one (or, where it cannot, the missing one).
   const limitAlertIsStopFailures =
@@ -595,7 +693,7 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
       : false;
   const alert = alertFor(input, event, {
     failed,
-    label: sessionLabel(transcript, cwd),
+    label,
     limitAlertIsStopFailures,
     mark,
     nowMs: deps.nowMs,
@@ -603,33 +701,47 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
   });
   if (alert === null) return SILENT;
 
+  // The alerts' own settings, once per run, at the folder the session is in: which moments
+  // alert, and whether a sound goes with them. Read only here, where there is an alert to
+  // show; a file that cannot be read keeps today's behaviour and says so on stderr.
+  const here = alertsAt(deps.paths, cwd, deps.env);
+  const kind = ALERT_EVENT_OF[event];
+  if (kind !== undefined && !here.alerts.events.value.includes(kind)) {
+    // The person asked for no alert at this moment. The mark written above goes with it: a
+    // question with no alert must not hide the permission prompt that follows it, which is
+    // the same wait and may be a moment the person does want to hear about.
+    if (event === "PreToolUse") forget(mark);
+    return withProblem(SILENT, here.problem);
+  }
+
   const config = readNotifyConfig(deps.paths.notifyConfigFile);
-  const argv = desktopCommand(alert, deps);
+  const argv = desktopCommand(alert, deps, desktopTarget(deps, cwd, label, session));
   if (isWarpTerminal(deps.env) && warpPluginOn(deps.paths.claudeConfigDir)) {
     if (warpShowsIt(event, input)) {
       // Warp's own plugin shows this one itself, in its window while it is in front and as
       // its own notification while it is not; ours would be the second alert for one event.
       // The sound is still ours, where there is a desktop to play it on: Warp plays none on
       // Linux (its sound setting is macOS-only).
-      if (argv !== null) playSound(alert, deps, config);
-      return SILENT;
+      if (argv !== null) playSound(alert, deps, config, here.alerts);
+      return withProblem(SILENT, here.problem);
     }
   }
 
   if (argv !== null) {
-    playSound(alert, deps, config);
+    playSound(alert, deps, config, here.alerts);
     deps.run(argv);
-    return SILENT;
+    return withProblem(SILENT, here.problem);
   }
 
-  if (!isSsh(deps.env)) return SILENT;
+  if (!isSsh(deps.env)) return withProblem(SILENT, here.problem);
   // The same alert, into the terminal the person is looking at, as OSC 777. The field
   // carries the bare sequence: Claude Code writes it out, and wraps it for tmux itself.
-  const sequence = config.sshBell
-    ? `${notifySequence(alert.title, alert.body)}\u0007`
-    : notifySequence(alert.title, alert.body);
+  const sequence =
+    config.sshBell || here.alerts.sound.value
+      ? `${notifySequence(alert.title, alert.body)}\u0007`
+      : notifySequence(alert.title, alert.body);
   const route = terminalRoute(event, deps.env);
-  if (route === "field") return fieldAnswer(sequence);
+  if (route === "field") return withProblem(fieldAnswer(sequence), here.problem);
   const onTty = forTty(sequence, deps.env);
   if (route === "tty") {
     // This event's answer is not read (StopFailure), or the Claude Code is too old for the
@@ -637,15 +749,26 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
     // — and, when the hook has no controlling terminal (2.1.301: ENXIO), the session's own
     // terminal device, which is the pty Claude Code runs on (`writeSessionTerminal`).
     // Never both: one alert.
-    if (deps.writeTerminal(onTty)) return SILENT;
+    if (deps.writeTerminal(onTty)) return withProblem(SILENT, here.problem);
     deps.writeSessionTerminal(onTty);
-    return SILENT;
+    return withProblem(SILENT, here.problem);
   }
   // The version is not known: /dev/tty, or the field when the hook has no terminal at all.
-  return deps.writeTerminal(onTty) ? SILENT : fieldAnswer(sequence);
+  return deps.writeTerminal(onTty)
+    ? withProblem(SILENT, here.problem)
+    : withProblem(fieldAnswer(sequence), here.problem);
 }
 
 /** The hook's answer that has Claude Code write the sequence to the session's terminal. */
 function fieldAnswer(sequence: string): HookResult {
   return { stdout: JSON.stringify({ terminalSequence: sequence }) };
+}
+
+/**
+ * The answer with the alert settings' own line on stderr, when reading them fell back to the
+ * defaults. A hook's stderr is one short line: an answer that already says something keeps it.
+ */
+function withProblem(result: HookResult, problem: null | string): HookResult {
+  if (problem === null || result.stderr !== undefined) return result;
+  return { ...result, stderr: problem };
 }

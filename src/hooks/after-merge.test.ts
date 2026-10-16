@@ -7,9 +7,10 @@ import {
   clearWorktreeNote,
   mergeOutcome,
   mergesPullRequest,
-  mergeTarget,
+  mergeTargetOf,
   type PullRequestView,
   parsePullRequestView,
+  pullRequestMerges,
   sameRepository,
   tellSessionsNote,
 } from "./after-merge";
@@ -33,22 +34,100 @@ describe("did the command merge a pull request?", () => {
     ['echo "gh pr merge 3" | sh', true],
     ["cat <<EOF\ngh pr merge 1\nEOF", false],
     ["gh pr view 1", false],
+    // gh's own flags may come before the command word (both are live gh 2.102.0 forms).
+    ["gh -R org/app pr merge 18", true],
+    ["gh --repo=org/app pr merge 19", true],
+    ["gh --repo org/app pr merge 19", true],
+    ["gh -Rorg/app pr merge 19", true],
+    ["gh --admin=true pr merge 20", true],
+    ["gh -R org/app pr list --limit 1", false],
+    // A merge run by a program whose arguments, repeats or identity the line does not show.
+    ["seq 5 6 | xargs -n1 gh pr merge", true],
+    ["xargs -I{} gh pr merge {}", true],
+    ["parallel gh pr merge ::: 5 6", true],
+    ["parallel 'gh pr merge {}' ::: 5 6", true],
+    ["find . -name x -exec gh pr merge 17 \\;", true],
+    ["find . -execdir gh pr merge 17 +", true],
+    ["watch -n 5 gh pr merge 16", true],
+    ["sudo gh pr merge 7", true],
+    ["sudo -u me gh pr merge 7", true],
+    ["doas -u me gh pr merge 7", true],
+    ["su -c 'gh pr merge 7'", true],
+    ["sudo -u me git push -f", false],
+    ["parallel echo hi", false],
+    ["find . -name '*.ts'", false],
+    ["watch -n 5 git status", false],
+    // A gh call that switches the branch or the repository before a later merge.
+    ["gh pr checkout 11 && gh pr merge", true],
+    ["gh co 12 && gh pr merge", true],
+    ["gh repo set-default other/repo && gh pr merge 10", true],
+    ["gh pr checkout 11", false],
   ])("%j: %j", (command, expected) => {
     expect(mergesPullRequest(command)).toBe(expected);
   });
 
+  test("the refusal a runner, a switch or a pointing assignment gives (the guard's words)", () => {
+    const refusal = (command: string) => {
+      const calls = pullRequestMerges(command, new Map([["m", "pr merge"]]));
+      return calls.filter((one) => !one.disarms).map((one) => one.refusal);
+    };
+    // The runner runs it: whatever the words say is not what merges.
+    expect(refusal("seq 5 6 | xargs -n1 gh pr merge")).toEqual([
+      "the merge runs from `xargs`, whose arguments come from outside the line",
+    ]);
+    expect(refusal("sudo gh pr merge 7")).toEqual([
+      "the merge runs under `sudo`, with another user's login and gh config",
+    ]);
+    // An earlier step moves the merge: the folder, the branch, or gh's own repository.
+    expect(refusal("export GH_REPO=o/r && gh pr merge 5")).toEqual([
+      "an earlier step in the same command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain",
+    ]);
+    expect(refusal("gh pr checkout 11 && gh pr merge")).toEqual([
+      "an earlier `gh pr checkout` in the same command changes the branch gh works on",
+    ]);
+    // An alias that expands to a switch moves the merge after it, like `gh pr checkout 11`
+    // (and a `pr checkout` is no merge itself, so the only call is the one after it).
+    expect(
+      pullRequestMerges("gh x 7 && gh pr merge", new Map([["x", "pr checkout"]])),
+    ).toMatchObject([
+      // The reason names what the alias really runs: the person reads the command, not `x`.
+      { refusal: "an earlier `gh pr checkout` in the same command changes the branch gh works on" },
+    ]);
+    // An alias that expands to a merge is no switch: it merges, and moves nothing.
+    expect(pullRequestMerges("gh m 7 && gh pr merge", new Map([["m", "pr merge"]]))).toMatchObject([
+      { refusal: null },
+      { refusal: null, target: { ref: null } },
+    ]);
+    // gh's own flags before the command: the repository is read, and an unknown flag asks.
+    expect(pullRequestMerges("gh -R org/app pr merge 18")).toEqual([
+      {
+        target: { ref: "18", repo: "org/app" },
+        refusal: null,
+        unread: null,
+        arms: false,
+        disarms: false,
+        unknown: null,
+      },
+    ]);
+    expect(refusal("gh --admin=true pr merge 20")).toEqual([
+      "the command carries `--admin=true` before the gh command, which this guard does not know",
+    ]);
+  });
+
   test("which pull request, and which repo", () => {
-    expect(mergeTarget("gh pr merge")).toEqual({ ref: null, repo: null });
-    expect(mergeTarget("gh pr merge 12 --squash")).toEqual({ ref: "12", repo: null });
-    expect(mergeTarget("gh pr merge --subject x fix/a -R org/app")).toEqual({
+    const target = (command: string) => mergeTargetOf(pullRequestMerges(command));
+    expect(target("gh pr merge")).toEqual({ ref: null, repo: null });
+    expect(target("gh pr merge 12 --squash")).toEqual({ ref: "12", repo: null });
+    expect(target("gh pr merge --subject x fix/a -R org/app")).toEqual({
       ref: "fix/a",
       repo: "org/app",
     });
-    expect(mergeTarget("gh pr merge --repo=org/app https://github.com/org/app/pull/7")).toEqual({
+    expect(target("gh pr merge --repo=org/app https://github.com/org/app/pull/7")).toEqual({
       ref: "https://github.com/org/app/pull/7",
       repo: "org/app",
     });
-    expect(mergeTarget("ls")).toBeNull();
+    expect(target("gh pr merge -Rorg/app 7")).toEqual({ ref: "7", repo: "org/app" });
+    expect(target("ls")).toBeNull();
   });
 
   test("same repository: https, ssh, an ssh alias; case does not matter", () => {
@@ -139,8 +218,12 @@ describe("mergeOutcome", () => {
 });
 
 describe("the hook", () => {
-  /** A fake gh first on PATH that answers `pr view` with `view`. */
-  function fakeGh(view: Record<string, unknown> | null): Record<string, string> {
+  /**
+   * A fake gh first on PATH that answers `pr view` with `view`, and `alias list` with
+   * `aliases` when one is given (any other call answers the view too, which is what a test
+   * asserting the exact calls catches).
+   */
+  function fakeGh(view: Record<string, unknown> | null, aliases?: string): Record<string, string> {
     const env = hookEnv();
     const bin = tempDir("fake-gh");
     const log = join(bin, "calls.log");
@@ -149,6 +232,16 @@ describe("the hook", () => {
       [
         "#!/bin/sh",
         `echo "$*" >> "${log}"`,
+        ...(aliases === undefined
+          ? []
+          : [
+              'if [ "$1 $2" = "alias list" ]; then',
+              "  cat <<'ALIASES'",
+              aliases.trimEnd(),
+              "ALIASES",
+              "  exit 0",
+              "fi",
+            ]),
         view === null ? "exit 1" : `cat <<'EOF'\n${JSON.stringify(view)}\nEOF`,
         "",
       ].join("\n"),
@@ -157,11 +250,11 @@ describe("the hook", () => {
     return { ...env, PATH: `${bin}:${env.PATH ?? ""}`, GH_LOG: log };
   }
 
-  function project() {
+  function project(bases?: Record<string, string>) {
     const { repo } = makeClone();
     git(repo, "remote", "set-url", "origin", "git@github.com:example-org/app.git");
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      worktrees: { base: "main", prefix: "app-wt-" },
+      worktrees: { base: "main", prefix: "app-wt-", ...(bases === undefined ? {} : { bases }) },
     });
     const worktree = join(repo, "..", "app-wt-fix-a");
     git(repo, "worktree", "add", "-q", "-b", "fix/a", worktree);
@@ -213,6 +306,35 @@ describe("the hook", () => {
     expect(again.stdout).not.toContain("Tell the other sessions");
   });
 
+  test("the hook's message carries the caution when the project names other bases", async () => {
+    // A branch there goes into `dev`, not into this merge's base (`main`).
+    const { worktree } = project({ "hotfix/": "dev", "release/": "dev" });
+    const env = fakeGh(merged);
+    const result = await runHook(
+      afterMergeHook,
+      ran(join(worktree, "src"), "gh pr merge --squash"),
+      env,
+    );
+    const context = (
+      JSON.parse(result.stdout ?? "{}") as {
+        hookSpecificOutput?: { additionalContext?: string };
+      }
+    ).hookSpecificOutput?.additionalContext;
+    expect(context).toContain(
+      "One exception: a branch whose pull request goes into another base (hotfix/, release/) must NOT merge main in, because that would ship unreleased work. A branch there stays as it is.",
+    );
+  });
+
+  test("with no bases, or bases that all point at the same base: no caution", () => {
+    const pr = parsePullRequestView(JSON.stringify(merged));
+    if (pr === null) throw new Error("bad view");
+    expect(tellSessionsNote(pr, "main")).not.toContain("another base");
+    expect(tellSessionsNote(pr, "main", { "hotfix/": "main" })).not.toContain("another base");
+    expect(tellSessionsNote(pr, "main", { "hotfix/": "dev", "release/": "main" })).toContain(
+      "another base (hotfix/) must NOT merge main in",
+    );
+  });
+
   test("the notes say exactly this", () => {
     const pr = parsePullRequestView(JSON.stringify(merged));
     if (pr === null) throw new Error("bad view");
@@ -250,6 +372,84 @@ describe("the hook", () => {
         fakeGh(null),
       ),
     ).toEqual({});
+  });
+
+  test("a merge written `gh pr -R <repo> merge`: the same note, and --repo in the lookup", async () => {
+    const { worktree } = project();
+    const env = fakeGh(merged);
+    const pr = parsePullRequestView(JSON.stringify(merged));
+    if (pr === null) throw new Error("bad view");
+    const result = await runHook(
+      afterMergeHook,
+      ran(join(worktree, "src"), "gh pr -R example-org/app merge --squash"),
+      env,
+    );
+    expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toBe(
+      `${clearWorktreeNote(worktree, "fix/a")}\n\n${tellSessionsNote(pr, "main")}`,
+    );
+    expect(readFileSync(env.GH_LOG ?? "", "utf8")).toBe(
+      "pr view --repo example-org/app --json number,title,baseRefName,headRefName,state,url,mergedAt\n",
+    );
+  });
+
+  test("a `gh api` merge: the path names the pull request, so the note is written", async () => {
+    const { worktree } = project();
+    const env = fakeGh(merged);
+    const result = await runHook(
+      afterMergeHook,
+      ran(join(worktree, "src"), "gh api -X PUT repos/example-org/app/pulls/7/merge"),
+      env,
+    );
+    expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toContain(
+      "Clear the worktree now",
+    );
+    expect(readFileSync(env.GH_LOG ?? "", "utf8")).toBe(
+      "pr view 7 --repo example-org/app --json number,title,baseRefName,headRefName,state,url,mergedAt\n",
+    );
+  });
+
+  test("a gh alias for `pr merge`: noted like the merge it expands to", async () => {
+    const { worktree } = project();
+    const env = fakeGh(merged, "co: pr checkout\nm: pr merge\n");
+    const result = await runHook(afterMergeHook, ran(join(worktree, "src"), "gh m --squash"), env);
+    expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toContain(
+      "Clear the worktree now",
+    );
+    expect(readFileSync(env.GH_LOG ?? "", "utf8")).toBe(
+      "alias list\npr view --json number,title,baseRefName,headRefName,state,url,mergedAt\n",
+    );
+  });
+
+  test("a form that names no pull request (a shell alias, a GraphQL merge): silent", async () => {
+    const { worktree } = project();
+    const env = fakeGh(merged, "m: '!gh pr merge 7'\n");
+    expect(await runHook(afterMergeHook, ran(worktree, "gh m"), env)).toEqual({});
+    expect(
+      await runHook(
+        afterMergeHook,
+        ran(
+          worktree,
+          "gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
+        ),
+        env,
+      ),
+    ).toEqual({});
+    // The alias list was read (once), and no pull request was looked up.
+    expect(readFileSync(env.GH_LOG ?? "", "utf8")).toBe("alias list\n");
+  });
+
+  test("an armed alias merge (`--auto`) is no merge yet: silent", async () => {
+    const { worktree } = project();
+    const env = fakeGh(merged, "m: pr merge\n");
+    expect(await runHook(afterMergeHook, ran(worktree, "gh m --auto 7"), env)).toEqual({});
+    expect(readFileSync(env.GH_LOG ?? "", "utf8")).toBe("alias list\n");
+  });
+
+  test("with the alias list unreadable: no note, and no lookup", async () => {
+    const { worktree } = project();
+    const env = fakeGh(merged); // no alias answer: `gh alias list` fails
+    expect(await runHook(afterMergeHook, ran(worktree, "gh m 7"), env)).toEqual({});
+    expect(readFileSync(env.GH_LOG ?? "", "utf8")).toBe("alias list\n");
   });
 
   test("without worktrees in cc-smart-dev-kit.json: silent", async () => {

@@ -58,24 +58,25 @@ the first time you use it.
 |---|---|
 | `src/entries/*.ts` | One file per bundle. Each becomes `plugin/dist/<name>.js`. |
 | `src/build-info/` | The version and the marketplace source, baked in from `plugin.json` at build time; the fixed names, without the version, in `names.ts` (the router bundle uses those). |
-| `src/project/` | Finds the git project from a folder and reads its `.claude/cc-smart-dev-kit.json`. |
+| `src/project/` | Finds the git project from a folder and reads its `.claude/cc-smart-dev-kit.json`; `init.ts` plans and writes the two files `project init` makes. |
+| `src/workflow/` | The workflow: the settings it holds (`schema.ts`), the resolution order and the switches (`resolve.ts`), the one auto-merge decision (`auto-merge.ts`, whose refusal is the merge guard's reason), the writers (`write.ts`), the review record (`reviews.ts`), the alerts a hook reads (`alerts.ts`), and the command (`commands.ts`). |
 | `src/setup/` | Safe changes to user files: managed keys, list entries and blocks, backups, atomic writes, the lock, the launcher, restore, marketplace access, the auto-mode block. |
-| `src/cli/` | The `cc-smart-dev-kit` commands: `setup`, `doctor` (and `--live`; its checks of the current folder's project in `project-checks.ts`), `hook`, `browser`, `sessions`, `worktrees`, `restore`, `migrate` (a machine still on 0.2.x's names), `update`, `session-name`, `statusline`, `usage`, `version`. |
-| `src/machine/` | Machine setup: the companion plugins, claude-mem's settings, Warp, and `Machine` (the system, faked in tests). |
+| `src/cli/` | The `cc-smart-dev-kit` commands: `setup`, `doctor` (and `--live`; its checks of the current folder's project in `project-checks.ts`), `project init` (the two files a project opts in with, `project-init.ts`), `workflow`, `hook`, `browser`, `sessions`, `worktrees`, `restore`, `migrate` (a machine still on 0.2.x's names), `update`, `session-name`, `statusline`, `usage`, `version`. |
+| `src/machine/` | Machine setup: the companion plugins, claude-mem's settings, Warp, `Machine` (the system, faked in tests), the host's platform (`host.ts`), and opening a URL on the person's desktop (`open-url.ts`). |
 | `src/gateway/` | The optional AI gateway: the router, its config and slots (the model slots, the judge test and its proof too), a model slot's fallback answer made safe for Claude (`fallback-answer.ts`), the limit state file, `gateway <command>`, its service (a socket unit and the router unit) and its doctor checks. |
 | `src/update/` | The self-update: the SessionStart hook's part, the detached background check, `cc-smart-dev-kit update`'s steps, and their state files. |
 | `src/search/` | The `cc-smart-dev-kit search` command: web search and one page's text through the gateway's OmniRoute backend. |
-| `src/browser/` | The shared browser: one Chrome for the machine, the tab filter that keeps each session's windows its own, the Playwright MCP launcher (`browser mcp`), the file-picker init page, and `browser check` (`.claude/rules/browser.md`). |
+| `src/browser/` | The browser: finding the person's Chrome and its `claude-code` profile, the token file, the Playwright MCP launcher (`browser mcp`, extension mode), `browser setup`/`token`/`check`, and `doctor`'s browser lines (`.claude/rules/browser.md`). |
 | `src/mcp/` | The MCP servers `setup` registers at user scope: the registrations (`servers.ts`), Claude Code's own `claude mcp` commands around them (`register.ts`), the record of what it registered (`records.ts`), the Tavily key (`tavily.ts`), Serena's context (`serena-context.ts`), `doctor`'s lines (`doctor.ts`). |
 | `src/sessions/` | The `cc-smart-dev-kit sessions` command: reading Claude Code's saved sessions, and reopening the ones a restart or a closed window stopped. |
 | `src/worktrees/` | The `cc-smart-dev-kit worktrees` command: the finished-worktree verdict (`verdict.ts`), the machine's facts (`machine-facts.ts`), the scan and removal (`scan.ts`). |
 | `src/ports.ts` | The local ports cc-smart-dev-kit holds as locks, and why they stay below 32768. |
 | `src/hooks/` | The hooks: the frame every one runs in (`run.ts`), the guards, the notes, the StopFailure usage-limit alert, the project's own copies (`ownHooks`, `settings-hooks.ts`), and the worktree engine a project wires itself (`cc-smart-dev-kit hook <name>`; its lines in `project-wiring.ts`, its create lock in `create-lock.ts`); `specs.ts` lists them all, by who wires them. Each hook's entry is in `src/entries/`. |
 | `src/jobs/` | The heavy-job queue: kinds, memory readings, the lease store, the queue, the launch, `job <command>`, the classifier. |
-| `src/shell/` | The shell lexer: reads a Bash line as the commands it runs (quotes, here-docs, `bash -c`). |
+| `src/shell/` | The shell text: the lexer that reads a Bash line as the commands it runs (quotes, here-docs, `bash -c`), and the PowerShell single-quoted literal. |
 | `src/testing/` | Test helpers: temp folders, a clean git environment, a fake machine for setup, the guard that fails any test reaching the live router's port 20100. |
-| `plugin/` | What users get: `dist/` (built, committed), `bin/` (`cc-smart-dev-kit`, and `cc-smart-dev-kit-bun`, which the hooks run through), `hooks/hooks.json`, `instructions/` (`setup` copies and imports them), `skills/`, `agents/`, `output-styles/`, the manifest. |
-| `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check), `check-duplicates.ts` (one home per rule in `plugin/`) and `check-version-bump.ts` (CI: a `plugin/` change raises the version). |
+| `plugin/` | What users get: `dist/` (built, committed), `bin/` (`cc-smart-dev-kit`, and `cc-smart-dev-kit-bun.sh`, which the hooks run through), `hooks/hooks.json`, `instructions/` (`setup` copies and imports them), `skills/`, `agents/`, `output-styles/`, the manifest. |
+| `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check), `check-duplicates.ts` (one home per rule in `plugin/`), `check-core-lines.ts` (the general instructions' line budget), `check-version-bump.ts` (CI: a `plugin/` change raises the version) and `windows-hook-smoke.sh` (the Windows CI job's hook proof, `docs/windows-hooks.md`). |
 | `docs/` | How the plugin is designed, the phases ahead, and the Claude Code behaviour it relies on. |
 
 Tests sit beside the code as `*.test.ts`.
@@ -89,6 +90,7 @@ Tests sit beside the code as `*.test.ts`.
 | `bun run lint` | Biome: lint and format check. `bun run format` fixes formatting. |
 | `bun run check:neutral` | Fails when a file names the publisher. |
 | `bun run check:duplicates` | Fails when a sentence of 12+ words repeats across the plugin's instructions, skills, agents and output styles. |
+| `bun run check:core-lines` | Fails when `plugin/instructions/core.md` passes 200 lines, and warns above 190: every session on every machine loads that file. |
 | `bun test` | The tests. |
 | `bun run build` / `build:check` | Rebuild `plugin/dist`, or fail when it is stale. |
 | `claude plugin validate plugin --strict` | Checks the plugin manifest. |
@@ -107,7 +109,7 @@ Each rule loads itself when you touch a file it covers.
 | `neutrality.md` | every turn | No names; where project details come from. |
 | `bundles-and-releases.md` | `src/`, `scripts/`, `plugin/`, `package.json` | Committed bundles, what `plugin/` may hold, versions. |
 | `hooks.md` | `src/hooks/`, `src/entries/`, `plugin/hooks/` | The hook contract (Phase 3). |
-| `browser.md` | `src/browser/`, the picker entry, `plugin/serena/` | The shared browser: never stdout, one profile, the filter's refusals, the picker bundle. |
+| `browser.md` | `src/browser/`, `src/testing/chrome-world.ts`, `plugin/serena/` | The browser: never stdout, the required token, Chrome's own profile, read-only Preferences, the costs upstream will not fix. |
 | `setup-and-managed-files.md` | `src/setup/`, `src/cli/`, `src/machine/` | How the command changes user files and the system. |
 | `gateway.md` | `src/gateway/`, `src/entries/router.ts`, the gateway skill and doc | Never change prompt text; the login reaches Anthropic only; the judge is a fallback only; model slots only at the usage limit; secrets; restarts. |
 | `cc-smart-dev-kit-json.md` | `src/project/` | The `.claude/cc-smart-dev-kit.json` contract. |
@@ -132,6 +134,10 @@ Each rule loads itself when you touch a file it covers.
 - `docs/search.md` — `cc-smart-dev-kit search`: how it works, what a search costs, and its limits.
 - `docs/jobs.md` — the heavy-job queue: how a job waits and runs, the kinds, the config,
   the shared view, and its limits.
+- `docs/windows-setup.md` — native Windows: the one path layout, the `.cmd` launcher, file
+  modes vs the profile's ACL, Git Bash, and what still has to be tested on Windows; with its
+  four companions: `docs/windows-hooks.md`, `docs/windows-notify.md`, `docs/windows-jobs.md`
+  and `docs/windows-gateway.md`.
 
 **Keep them true in the same change.** Change how a part works: update `docs/design.md`.
 Change a command or a `cc-smart-dev-kit.json` field: update `README.md`. Rely on a new Claude Code

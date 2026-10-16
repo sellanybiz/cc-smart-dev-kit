@@ -9,9 +9,10 @@
  * which is a device path and not something the plugin owns.
  *
  * The flag pair is spelled in one place here and in one place per language that cannot import
- * it: `plugin/bin/cc-smart-dev-kit-bun` and `plugin/bin/cc-smart-dev-kit` (hand-written sh),
- * and the launcher script `src/setup/launcher.ts` writes (it names the installed version's own
- * config, which is not known before that script runs).
+ * it: `plugin/bin/cc-smart-dev-kit-bun.sh` and `plugin/bin/cc-smart-dev-kit` (hand-written sh),
+ * and the two launcher scripts — `src/setup/launcher.ts` (hand-written sh) and
+ * `src/setup/launcher-cmd.ts` (hand-written `cmd`) — which name the installed version's own
+ * config, not known before those scripts run.
  */
 
 import { basename, join } from "node:path";

@@ -26,35 +26,55 @@ Each spec in `src/hooks/specs.ts` says who wires it (`wiring`):
   README the same). Today: the worktree engine (WorktreeCreate, WorktreeRemove,
   SubagentStop). No `ownHooks` step: the wiring is the project's opt-in.
 
-**Never wire WorktreeCreate, WorktreeRemove or SubagentStop in `hooks.json`.** A
-WorktreeCreate hook replaces Claude Code's own creation in every project where it is wired,
-for sessions and subagents, and one that prints no folder makes the creation fail (proved
-live). So a plugin WorktreeCreate cannot step aside for a project that did not opt in, and a
-hook-made worktree loses Claude Code's lock, its cleanup marker, `-w "#123"` and its Git LFS
-handling. `entries.test.ts` fails on a worktree event in `hooks.json`.
+**Never wire WorktreeCreate or WorktreeRemove in `hooks.json`, and never the engine's
+`subagent-stop`.** A WorktreeCreate hook replaces Claude Code's own creation in every project
+where it is wired, for sessions and subagents, and one that prints no folder makes the
+creation fail (proved live). So a plugin WorktreeCreate cannot step aside for a project that
+did not opt in, and a hook-made worktree loses Claude Code's lock, its cleanup marker,
+`-w "#123"` and its Git LFS handling. `subagent-stop` is on that list for the same reason:
+it removes the worktree of the subagent that stopped, and which worktrees a project keeps is
+the project's decision, so it stays wired by the project.
 
-## The plugin's hooks: exec form, through the bun shim
+**A plugin SubagentStop hook that touches no worktree is fine** (today: `review-record`
+only). It can be silent for a project that never opted in, it removes nothing, and no other
+SubagentStop hook competes with it. `entries.test.ts` fails when `hooks.json` wires
+WorktreeCreate, WorktreeRemove, or a SubagentStop entry that runs anything but
+`review-record` — so `subagent-stop` can never creep in.
 
-Every entry in `plugin/hooks/hooks.json` uses the exec form, never a shell string:
+## The plugin's hooks: shell form, through the bun shim
+
+Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec form:
 
 ```json
-{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun", "args": ["${CLAUDE_PLUGIN_ROOT}/dist/<name>.js"], "timeout": 10 }
+{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/<name>.js\"", "timeout": 10 }
 ```
 
+- **Why not exec form:** on Windows exec form needs a `command` that is a real executable,
+  and a shell script is not one — such a hook never starts there, and a guard that cannot
+  start lets the call through. In shell form Claude Code gives the string to a shell: `sh -c`
+  on macOS and Linux, Git Bash on Windows, where a first token ending in `.sh` is run as
+  `bash <command>`, so the shim needs no execute bit. `docs/windows-hooks.md`, and
+  `docs/claude-code-contract.md` § Windows for what that rests on and what is still owed a
+  real Windows run.
+- **The quotes are load-bearing:** in shell form Claude Code exports `${CLAUDE_PLUGIN_ROOT}`
+  rather than substituting it, so the shell expands it — only the quotes keep a plugin folder
+  with a space in it one word.
 - **Never `"command": "bun"`.** Claude Code started from a desktop launcher or a service
-  may have no bun on PATH, and then the hook never runs (seen live). `plugin/bin/cc-smart-dev-kit-bun`
+  may have no bun on PATH, and then the hook never runs (seen live). `plugin/bin/cc-smart-dev-kit-bun.sh`
   finds bun where the launcher does (the bun baked into `~/.local/bin/cc-smart-dev-kit`,
-  `$BUN_INSTALL/bin/bun`, `~/.bun/bin/bun`, then PATH); it uses only shell built-ins, so it
-  works with an empty PATH too. **It starts bun with `--no-env-file` and a `--config=` flag
+  `$BUN_INSTALL/bin/bun`, `~/.bun/bin/bun`, then PATH — each also as `bun.exe`, which is
+  what Windows has); it uses only shell built-ins, so it works with an empty PATH too.
+  **It starts bun with `--no-env-file` and a `--config=` flag
   pointing at the plugin's own empty `bunfig.toml`** (`plugin/bunfig.toml`), like the launcher and
   `bin/cc-smart-dev-kit`: bun would otherwise add the working folder's `.env` files to the
   hook and run its `bunfig.toml`, and a hook must see the environment Claude Code gave it.
   `src/hooks/bun-shim.test.ts` and `src/setup/bun-shim.test.ts`
-  check the order, both flags and both modes. **A Bun older than `MIN_BUN` fails closed
+  check the order, both names, both flags and both modes. **A Bun older than `MIN_BUN` fails closed
   here**, the same way as a missing one, with its own message: an older Bun drops
   `--no-env-file` without a word, so the hook would run on guarantees the plugin does not
   have. The shim asks `bun --version` only when the bun is not the one setup baked into the
   launcher — that one setup already proved, so an ordinary hook pays nothing for the check.
+  On Windows the same checks read the `bun.exe` it found, through the same MSYS path rules.
 - **The shim's first argument says what to do when no bun is found**, and is never passed
   to bun: `--missing=ask` prints one PreToolUse answer on stdout, asking the person, and
   exits 0; `--missing=quiet` writes one line on stderr and exits 0. A hook never stops a
@@ -65,7 +85,9 @@ Every entry in `plugin/hooks/hooks.json` uses the exec form, never a shell strin
 - `<name>` is a bundle built from `src/entries/<name>.ts` (`bundles-and-releases.md`).
   The hook's logic lives in `src/hooks/`, where it can be tested; the entry is two lines:
   `runHookEntry(<its spec>)` from `src/hooks/run.ts`, with the spec from `specs.ts`.
-- No shell string: no quoting bugs, the same on every system.
+- The command string is fixed: the quoted shim, the mode, the quoted bundle, nothing else.
+  `entries.test.ts` asserts the whole string, so a stray quote or a bare path fails a test
+  rather than a person's session.
 - A new plugin hook: its logic in `src/hooks/`, its spec in `specs.ts` (and in `HOOKS`), its
   entry, its `hooks.json` entry, and a row in `src/hooks/matrix.test.ts`. `entries.test.ts`
   fails when the four do not match.
@@ -76,6 +98,11 @@ Every entry in `plugin/hooks/hooks.json` uses the exec form, never a shell strin
   `"$HOME/.local/bin/cc-smart-dev-kit" hook <name>`. The shell fills in `$HOME`, so it works
   whatever PATH Claude Code has; the launcher runs its baked bun. The bare name `cc-smart-dev-kit`
   would need `~/.local/bin` on that PATH.
+- **The same line works on Windows**, where the shell is Git Bash: no `args`, so Claude Code
+  passes the string to a shell; Git Bash sets `$HOME`; and it runs the extensionless
+  `#!/bin/sh` launcher on the strength of its `#!` first two characters, since Windows has no
+  execute bit (`docs/windows-hooks.md`). The Windows CI job runs this exact line
+  (`scripts/windows-hook-smoke.sh`).
 - `src/entries/cli.ts` runs the spec through `runHookEntry`, the same frame and the same
   answers as a plugin hook's entry.
 - A new project hook: its logic in `src/hooks/`, its spec in `specs.ts` (and in
@@ -117,17 +144,21 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
 
 Some hooks answer about the machine, not a project: `agent-guard` (the model a launch runs
 on) and `notify` (the alerts). `playwright-output` is machine-wide too — it puts a file the
-CALLER names into the shared browser's own output folder (only while the live `playwright`
+CALLER names into the browser's own output folder (only while the live `playwright`
 registration is the one setup recorded; a server of the person's own is left alone entirely),
 and the browser is the machine's —
 and, like `notify` and `update-check`, it is a `USER_HOOKS` bundle: no frame, no
 `cc-smart-dev-kit.json`, no `ownHooks`. `notify` is a `USER_HOOKS` bundle like `update-check`: it
-never enters the frame, reads no `cc-smart-dev-kit.json`, and its opt-in is the machine. It alerts on
+never enters the frame, needs no `cc-smart-dev-kit.json`, and its opt-in is the machine. (The one
+thing it reads from a project that has one is its `workflow.alerts` settings — which moments
+alert, and whether a sound goes with them — through `src/workflow/alerts.ts`.) It alerts on
 `Notification`, `Stop`, `PreToolUse` on `AskUserQuestion|ExitPlanMode`, and `StopFailure`
 (`rate_limit` only where the `stop-failure` hook will not show its own alert —
 `stopFailureWillAlert`: no desktop, no gateway set up, or a short rate limit), and clears its mark
 on `PostToolUse`, `PostToolUseFailure` and `UserPromptSubmit`. The route is the desktop
-(`notify-send`, `osascript`, with the freedesktop sound), or — with no desktop route here and
+(`notify-send` — on a Linux desktop with the right tools the detached `alert-worker` in its
+place, which waits for a click and raises the session's window, `src/hooks/desktop-alert.ts`
+— `osascript`, with the freedesktop sound), or — with no desktop route here and
 an SSH session (`SSH_CONNECTION`/`SSH_TTY`) — the terminal as OSC 777; inside Warp whose own
 plugin is on it stays quiet but for the sound and a waiting question; with nowhere to show it,
 nothing. The whole contract, the marks and the two settings: `docs/design.md` § The notifier.
@@ -234,8 +265,14 @@ PreToolUse decision is JSON, and SessionStart's text goes into the session's con
 - Every child process and network call inside a hook has its own timeout, shorter than
   the hook's (a `git fetch` 5 or 30 s, `gh` 10 s, the setup command 540 s of 600,
   `git worktree add` 500 s, `git worktree remove` 50 s).
-- PreToolUse runs before every matching tool call: keep it fast, with no network. Every git
-  call in a guard takes `GUARD_GIT_TIMEOUT_MS` (5 s) or less, against the hook's own 10 s.
+- PreToolUse runs before every matching tool call: keep it fast. No network, except where
+  the guard's question *is* about the network — the merge guard's read-only `gh` calls (10 s
+  each, and only for a command that really asks for a merge). **The merge guard also gives
+  itself one deadline** (`GUARD_BUDGET_MS`, 25 s of its 30 s): each call gets the smaller of
+  its own limit and the time left, and when too little is left for the next call the guard
+  asks instead of overrunning — a PreToolUse hook Claude Code has to kill blocks nothing, so
+  an overrun would be fail-open. Every git call in a guard takes `GUARD_GIT_TIMEOUT_MS` (5 s)
+  or less, against the hook's own 10 s.
 - A long job (installing packages in a new worktree) gets the long timeout; a guard
   gets a short one.
 - A timeout that can leave something half done (a worktree) has to say how to finish by

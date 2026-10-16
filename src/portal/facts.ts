@@ -16,7 +16,16 @@
  *     never reads: `/v1/models` carries an id and a context length, and that is all.
  */
 
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { basename, join } from "node:path";
+import {
+  type BrowserGuide,
+  type BrowserSetupState,
+  browserGuide,
+  browserSetup,
+  realBrowserSetupDeps,
+} from "../browser/setup";
 import { VERSION } from "../build-info";
 import { listModels } from "../gateway/backends";
 import {
@@ -42,10 +51,27 @@ import { companionChecks, companionState, companions } from "../machine/companio
 import { detectSystem, detectWarpApp, warpCheck } from "../machine/warp";
 import { type OmnirouteContext, omnirouteFacts } from "../omniroute/commands";
 import type { GlobalInstall } from "../omniroute/install";
+import type { CcSmartDevKitConfig } from "../project/config";
+import { resolveProject } from "../project/resolve";
 import type { PortalContext } from "./context";
+import { type SettingsRow, settingsRows } from "./settings";
+import type {
+  Env,
+  ProjectInitAnswers,
+  ProjectInitDefaults,
+  ProjectInitPlan,
+  ResolvedWorkflow,
+  WorkflowAdapter,
+} from "./workflow-adapter";
 
 /** What every page's header and footer show. */
 export interface PortalFacts {
+  /**
+   * The platform this portal runs on (`machine.platform`). It is for the words only — the
+   * token file's "mode 600" is a POSIX idea, and Windows protects it with the profile's ACL
+   * instead — and no page ever branches on anything else.
+   */
+  platform: NodeJS.Platform;
   /** The port the portal itself listens on. */
   portalPort: number;
   /**
@@ -101,11 +127,12 @@ export async function shellFacts(
   portalPort: number,
   found: ConfigRead,
 ): Promise<PortalFacts> {
+  const platform = ctx.machine.platform;
   // No config to read: no port names a router, so no page claims one (and nothing is probed).
-  if ("error" in found) return { portalPort, router: null, version: VERSION };
+  if ("error" in found) return { platform, portalPort, router: null, version: VERSION };
   const port = found.config.port;
   const health = await routerHealth(port, ctx.probe.fetch);
-  return { portalPort, router: { port, up: !("error" in health) }, version: VERSION };
+  return { platform, portalPort, router: { port, up: !("error" in health) }, version: VERSION };
 }
 
 // ── The router's health page ────────────────────────────────────────────────────
@@ -629,6 +656,29 @@ export interface OmnirouteRow {
 }
 
 /**
+ * What the Machine page's Browser card shows. The guide and the state come from the same module
+ * `browser setup` prints from (`src/browser/setup.ts`), so the card can never describe a different
+ * browser than the command does; the check lines beside them are doctor's own (`section: "browser"`).
+ */
+export interface BrowserCardData {
+  /** The whole guide, structured: the card draws its numbered steps. */
+  guide: BrowserGuide;
+  /** `!` lines: what could not be read or done on this machine. */
+  notes: string[];
+  state: BrowserSetupState;
+}
+
+export function browserCardData(ctx: PortalContext): BrowserCardData {
+  const result = browserSetup(ctx.paths, realBrowserSetupDeps(ctx.machine, ctx.paths.home), {
+    apply: false,
+  });
+  const state = result.state;
+  // A browser-less machine's note is the same sentence as the check line above it: the check
+  // lines win, so the note is left out then (one home per sentence, on the page too).
+  return { guide: browserGuide(state), notes: result.ok ? result.notes : [], state };
+}
+
+/**
  * What the Machine page's Warp card shows. Warp is optional, and installing or removing it
  * needs `sudo`: the card shows the two commands to copy, and the page never runs them.
  */
@@ -645,6 +695,269 @@ export function warpRow(ctx: PortalContext): WarpRow {
     detail: warpCheck(ctx.machine, ctx.paths).text,
     installed: detectWarpApp(ctx.machine, system).installed,
   };
+}
+
+// ── The project: the Settings page, and the card on Machine ─────────────────────
+
+/**
+ * The project the portal's folder is in, as both screens read it — through the plugin's own
+ * `resolveProject`, so the portal and every hook agree about one repo. Never throws: a folder
+ * outside git, a project file that will not parse, and a version the plugin does not meet all
+ * come back as one line in words, and the screens draw without it.
+ */
+export interface ProjectRead {
+  /** The project's file, parsed; null when there is none (or it cannot be read). */
+  config: CcSmartDevKitConfig | null;
+  /** The file it came from; null when there is none. */
+  configFile: null | string;
+  /** The repo root: `<root>/.claude/` holds the two files the Project card writes. */
+  root: null | string;
+  /** Why there is no usable project, in words; null when there is one, or none is needed. */
+  why: null | string;
+}
+
+export function readProject(ctx: PortalContext, cwd: string): ProjectRead {
+  try {
+    const project = resolveProject(cwd, { env: ctx.env });
+    if (project === null) {
+      return {
+        config: null,
+        configFile: null,
+        root: null,
+        why: "this folder is not inside a git project",
+      };
+    }
+    return {
+      config: project.config,
+      configFile: project.configFile,
+      root: project.root,
+      why: project.config === null ? "this project has no .claude/cc-smart-dev-kit.json yet" : null,
+    };
+  } catch (error) {
+    // Git older than 2.31, a main checkout that moved, or a cc-smart-dev-kit.json that is
+    // broken or needs a newer plugin: doctor's to report, and a line here.
+    return {
+      config: null,
+      configFile: null,
+      root: null,
+      why: messageOf(error),
+    };
+  }
+}
+
+/** The project's own name, as the Project card shows it: the root folder's name. */
+export function projectName(root: string): string {
+  return basename(root);
+}
+
+/** A file's text, or null when it is not there (or cannot be read). */
+function readTextFile(file: string): null | string {
+  try {
+    return readFileSync(file, "utf8");
+  } catch {
+    // Not there, or not readable: both are "no file" to a plan that writes it.
+    return null;
+  }
+}
+
+/** Where the two files of a project live: `<root>/.claude/`. */
+export function projectFiles(root: string): { config: string; settings: string } {
+  return {
+    config: join(root, ".claude", "cc-smart-dev-kit.json"),
+    settings: join(root, ".claude", "settings.json"),
+  };
+}
+
+/** Both files as they are now: what a plan is made against, read at the moment it is made. */
+export function projectFileTexts(root: string): {
+  existing: null | string;
+  existingSettings: null | string;
+} {
+  const files = projectFiles(root);
+  return {
+    existing: readTextFile(files.config),
+    existingSettings: readTextFile(files.settings),
+  };
+}
+
+/**
+ * The line under the Project card's settings preview: what the plan does to the settings file.
+ * One home — the page draws it and the preview's answer carries it (`project.preview`), so
+ * the sentence can never describe a different plan than the boxes beside it. Both engines go
+ * through here: the plugin's adds its hook lines, and an engine of the project's own takes
+ * exactly those lines back out.
+ */
+export function settingsLineNote(added: number, removed: number): string {
+  const parts: string[] = [];
+  if (added > 0) {
+    parts.push(`${added} line${added === 1 ? "" : "s"}, added inside the existing file`);
+  }
+  if (removed > 0) {
+    parts.push(`${removed} line${removed === 1 ? "" : "s"} removed, the plugin's own hooks`);
+  }
+  if (parts.length === 0) return "No line is added to .claude/settings.json.";
+  return `${parts.join(", and ")}. Nothing else there changes.`;
+}
+
+/**
+ * A short hash of the two files a plan was made against. The preview sends it, the write sends
+ * it back, and the server matches the two: a plan made before someone else changed the file
+ * is refused instead of quietly overwriting them.
+ */
+export function projectFilesHash(texts: {
+  existing: null | string;
+  existingSettings: null | string;
+}): string {
+  return createHash("sha256")
+    .update(texts.existing ?? "\u0000")
+    .update("\u0000")
+    .update(texts.existingSettings ?? "\u0000")
+    .digest("hex")
+    .slice(0, 32);
+}
+
+/** The Project card's own data: the form's answers, and the plan they would write. */
+export interface ProjectCardData {
+  /** The form's first answers; null when there is nothing to fill it with. */
+  answers: ProjectInitAnswers | null;
+  /** Why the project cannot be read at all: a notice instead of the form. */
+  error: null | string;
+  /** The folder's own name, when there is a project folder. */
+  name: null | string;
+  /** The plan the answers would write, the moment the page is drawn; null when it cannot be made. */
+  plan: ProjectInitPlan | null;
+  /** Why the preview cannot be built; null when it can. */
+  planError: null | string;
+  /**
+   * `projectFilesHash` of the two files the plan was made against; null when there is no plan.
+   * It travels to the page and comes back with the write.
+   */
+  filesHash: null | string;
+  /** The repo root the two files go in; null when the folder is not in a git project. */
+  root: null | string;
+  /** True: `.claude/cc-smart-dev-kit.json` is there. */
+  set: boolean;
+}
+
+/**
+ * The project's own defaults, as the card and the actions read them. `detectFacts` runs git
+ * and, when `gh` is on PATH, GitHub itself, so the server hands in the remembered reader
+ * (`server.ts`) instead of calling the module for every form change.
+ */
+export type ProjectDefaultsReader = (input: { env: Env; root: string }) => ProjectInitDefaults;
+
+/**
+ * The card's facts, read through the workflow adapter: the CLI's own detection for the form's
+ * defaults, and the same pure plan the write will make. A project that cannot be read — no
+ * git, a broken file — is one line in words and no form.
+ */
+export function projectCardData(
+  ctx: PortalContext,
+  cwd: string,
+  readDefaults: ProjectDefaultsReader,
+  workflow: WorkflowAdapter,
+): ProjectCardData {
+  const base: ProjectCardData = {
+    answers: null,
+    error: null,
+    filesHash: null,
+    name: null,
+    plan: null,
+    planError: null,
+    root: null,
+    set: false,
+  };
+  const project = readProject(ctx, cwd);
+  if (project.root === null) return { ...base, error: project.why };
+  // The root is there: a missing file is the card's "not set up" state, never an error. A file
+  // that is there but cannot be read is `readProject`'s own line, above.
+  const texts = projectFileTexts(project.root);
+  const head: ProjectCardData = {
+    ...base,
+    name: projectName(project.root),
+    root: project.root,
+    set: project.config !== null,
+  };
+  try {
+    // The defaults are the CLI's own detection over the project's file; the plan is then made
+    // against the same file text this page read, so the preview and the answers agree.
+    const defaults = readDefaults({ env: ctx.env, root: project.root });
+    return {
+      ...head,
+      answers: defaults.answers,
+      // The hash is of the same two texts the plan is made from, so the page's first preview
+      // and a write with nothing changed in between carry the same one.
+      filesHash: projectFilesHash(texts),
+      plan: workflow.planProjectInit({
+        answers: defaults.answers,
+        existing: texts.existing,
+        existingSettings: texts.existingSettings,
+        root: project.root,
+      }),
+    };
+  } catch (error) {
+    return { ...head, planError: messageOf(error) };
+  }
+}
+
+/** The Settings page's own data: every row, its value, and where that value came from. */
+export interface SettingsData {
+  /**
+   * The auto-merge row's own line, computed with the module's own rule: `null` when the value
+   * is off (nothing would merge), else whether a pull request into this project's base may be
+   * merged by itself, and the base's name.
+   */
+  autoMerge: null | { allowed: boolean; base: null | string };
+  /** Why the values cannot be resolved (a broken file of the person's own, no module): a notice. */
+  error: null | string;
+  /** What to know about the project, when its own file cannot be read; null otherwise. */
+  projectNote: null | string;
+  rows: SettingsRow[];
+}
+
+/**
+ * Every row of the Settings page. The values come from the module's own `resolveWorkflow`, so
+ * the page and `cc-smart-dev-kit workflow show` can never disagree; a file of the person's own
+ * that is broken is a notice — never a row showing a default it does not have.
+ */
+export function settingsData(
+  ctx: PortalContext,
+  cwd: string,
+  workflow: WorkflowAdapter,
+): SettingsData {
+  const empty = (why: string | null): SettingsData => ({
+    autoMerge: null,
+    error: why,
+    projectNote: null,
+    rows: [],
+  });
+  const project = readProject(ctx, cwd);
+  // Named whether there is no project at all or its file cannot be read: a row may not show
+  // `default` for a value the project really sets, and a broken file must not read as silence.
+  const projectNote = project.why === null ? null : `No project's own values here: ${project.why}.`;
+  let resolved: ResolvedWorkflow;
+  try {
+    resolved = workflow.resolveWorkflow(ctx.paths, project.config);
+  } catch (error) {
+    return { ...empty(messageOf(error)), projectNote };
+  }
+  const rows = settingsRows(resolved, { projectFile: project.configFile !== null });
+  const base = project.config?.worktrees?.base ?? null;
+  const autoMerge = resolved.autoMerge.value
+    ? {
+        allowed:
+          base !== null &&
+          project.root !== null &&
+          workflow.autoMergeAllowed(
+            resolved,
+            project.config,
+            base,
+            workflow.repositoryDefaultBranch(project.root, ctx.env),
+          ),
+        base,
+      }
+    : null;
+  return { autoMerge, error: null, projectNote, rows };
 }
 
 export async function omnirouteRow(

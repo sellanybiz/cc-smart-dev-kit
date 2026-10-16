@@ -1,6 +1,5 @@
 import {
   closeSync,
-  fchmodSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -11,6 +10,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { setFileMode } from "./file-mode";
 
 /**
  * When a lock cannot be judged by its process, it is stale after this long: the start
@@ -226,7 +226,8 @@ function isStale(held: Held, fallbackStaleMs: number): boolean {
 
 /**
  * Creates `file` with O_EXCL (only one process can), holding `info`, with exactly `mode`
- * (fchmod: the umask may have narrowed the mode `open` gave it). False when it exists.
+ * (`setFileMode`: the umask may have narrowed the mode `open` gave it; Windows does not
+ * implement `fchmod` and protects a file by the profile's ACL instead). False when it exists.
  */
 function tryCreate(file: string, info: LockInfo, mode: number): boolean {
   let fd: number;
@@ -237,7 +238,7 @@ function tryCreate(file: string, info: LockInfo, mode: number): boolean {
     throw error;
   }
   try {
-    fchmodSync(fd, mode);
+    setFileMode(fd, mode);
     writeSync(fd, JSON.stringify(info));
   } finally {
     closeSync(fd);

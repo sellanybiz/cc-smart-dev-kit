@@ -12,9 +12,9 @@
  * TO MOVE ONE
  *   Change it here, run `cc-smart-dev-kit setup` again, restart Claude Code, and check the
  *   server still starts (`cc-smart-dev-kit doctor`). The Playwright pin has one more check:
- *   `cc-smart-dev-kit browser check` drives two real sessions on one Chrome through the tab
- *   filter, which leans on how this version talks to Chrome over CDP — and the picker reads
- *   one private field of the playwright-core inside it.
+ *   `cc-smart-dev-kit browser check` drives a real session on the person's own Chrome through the
+ *   Playwright extension — the flags, the token variable and the connect deadline are all this
+ *   package's, and its README's option table is where the spellings below come from.
  */
 export const MCP_VERSIONS = {
   /** `@playwright/mcp` — started by `cc-smart-dev-kit browser mcp`. */

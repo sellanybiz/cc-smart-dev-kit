@@ -36,21 +36,34 @@ type Git = (args: string[]) => { ok: boolean; stdout: string; stderr: string };
  */
 export const RESOLVE_GIT_TIMEOUT_MS = 5_000;
 
+/** What a machine with no git at all is told, instead of the spawner's own words. */
+export const GIT_NOT_FOUND =
+  "git was not found, so this project's own values cannot be read. Install git, then try again.";
+
 function gitIn(cwd: string, env: Record<string, string>): Git {
   return (args) => {
-    const result = Bun.spawnSync(["git", ...args], {
-      cwd,
-      env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: RESOLVE_GIT_TIMEOUT_MS,
-    });
-    return {
-      ok: result.exitCode === 0,
-      stdout: result.stdout.toString(),
-      stderr: result.stderr.toString(),
-    };
+    try {
+      const result = Bun.spawnSync(["git", ...args], {
+        cwd,
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: RESOLVE_GIT_TIMEOUT_MS,
+      });
+      return {
+        ok: result.exitCode === 0,
+        stdout: result.stdout.toString(),
+        stderr: result.stderr.toString(),
+      };
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      // No git on this machine's PATH at all — on Windows without Git for Windows, or in a
+      // container. The spawner's own words for it (`Executable not found in $PATH: "git"`)
+      // reach a portal page, where they read as a crash rather than as a fact to act on. A
+      // folder that is gone, or anything else that throws here, is re-thrown as it is.
+      throw /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+    }
   };
 }
 

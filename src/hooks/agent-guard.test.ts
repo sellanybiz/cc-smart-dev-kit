@@ -1,8 +1,9 @@
 /**
  * The Agent guard (`agent-guard.ts`): which model a launch really runs on, and the owner's
- * verdict for each — an affordable slot at effort max, Claude Sonnet/Haiku free, Claude Opus only
- * for a review or a reason line, Claude Fable only read-only with a reason and a person to
- * answer. Plus the record `cc-smart-dev-kit usage` reads.
+ * verdict for each — effort high or above (never `low` or `medium`), an affordable slot at
+ * effort max, Claude Sonnet/Haiku free of the model rules, Claude Opus only for a review or a
+ * reason line, Claude Fable only read-only with a reason and a person to answer. Plus the
+ * record `cc-smart-dev-kit usage` reads.
  */
 import { describe, expect, it } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -12,6 +13,7 @@ import { cliPaths } from "../cli/paths";
 import type { GatewayConfig } from "../gateway/config";
 import { tempDir } from "../testing/temp";
 import {
+  ALLOWED_EFFORTS,
   agentGuard,
   type GuardContext,
   guardFacts,
@@ -267,11 +269,49 @@ describe("the verdict", () => {
     expect(max.reason).toContain("runs at effort `xhigh`, never `max`");
   });
 
-  it("Sonnet and Haiku are allowed at any effort, and are never recorded", () => {
-    expect(verdict({ effort: "low", model: "haiku", prompt: "search" }).decision).toBe("allow");
+  it("Sonnet and Haiku are free of the model rules, and are never recorded", () => {
     const sonnet = verdict({ effort: "high", model: "sonnet", prompt: "build" });
     expect(sonnet.decision).toBe("allow");
     expect(sonnet.why).toBe("");
+    expect(verdict({ effort: "xhigh", model: "haiku", prompt: "search" }).decision).toBe("allow");
+  });
+
+  it("`low` and `medium` are refused on every model: a Claude family and an affordable slot", () => {
+    const on: GuardContext = { ...CTX, config: configWithModelSlot(), gatewayOn: true };
+    for (const effort of ["low", "medium"]) {
+      for (const model of ["haiku", "sonnet", "cc-smart-dev-kit-worker"]) {
+        for (const ctx of [CTX, on]) {
+          const result = verdict({ effort, model, prompt: "search it" }, ctx);
+          expect(result.decision).toBe("deny");
+          expect(result.reason).toContain(`asks for effort \`${effort}\``);
+          expect(result.reason).toContain("owner's rule");
+          for (const level of ALLOWED_EFFORTS) {
+            expect(result.reason).toContain(`\`${level}\``);
+          }
+        }
+      }
+      // A fork inherits, but one that names a level itself is held to the same rule.
+      const fork = verdict(
+        { effort, prompt: "x", subagent_type: "fork" },
+        {
+          config: null,
+          gatewayOn: false,
+          sessionModel: "claude-haiku-4-5",
+        },
+      );
+      expect(fork.decision).toBe("deny");
+      expect(fork.reason).toContain(`asks for effort \`${effort}\``);
+    }
+  });
+
+  it("every allowed level passes a Claude builder; a level no rule knows is refused", () => {
+    for (const effort of ALLOWED_EFFORTS) {
+      expect(verdict({ effort, model: "sonnet", prompt: "build" }).decision).toBe("allow");
+    }
+    // Only the three levels above are allowed: a level no rule knows is refused, not guessed.
+    const odd = verdict({ effort: "none", model: "sonnet", prompt: "build" });
+    expect(odd.decision).toBe("deny");
+    expect(odd.reason).toContain("asks for effort `none`");
   });
 
   it("an affordable slot is allowed with the gateway off, and needs effort max with it on", () => {
@@ -505,8 +545,8 @@ describe("a Workflow script", () => {
     expect(model[0]?.verdict.reason).toContain("names no `model` the guard can read");
     // A backtick literal with no placeholder is a fixed string, and read like any other.
     expect(
-      judgeWorkflow('await agent("x", { model: `haiku`, effort: "low" });', CTX, NO_ENV)[0]?.verdict
-        .decision,
+      judgeWorkflow('await agent("x", { model: `haiku`, effort: "high" });', CTX, NO_ENV)[0]
+        ?.verdict.decision,
     ).toBe("allow");
     const prompt = judgeWorkflow(
       // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture is a template that builds its prompt.
@@ -577,11 +617,29 @@ describe("a Workflow script", () => {
     expect(judgeWorkflow(helper, CTX, NO_ENV)[0]?.verdict.decision).toBe("deny");
     const inTemplate =
       // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture calls `agent` inside a template.
-      'const done = `result: ${await agent("x", { model: "haiku", effort: "low" })}`;';
+      'const done = `result: ${await agent("x", { model: "haiku", effort: "high" })}`;';
     expect(workflowRefusal(inTemplate)).toBeNull();
     expect(judgeWorkflow(inTemplate, CTX, NO_ENV).map((one) => one.verdict.decision)).toEqual([
       "allow",
     ]);
+  });
+
+  it("a Workflow agent() at `low` or `medium` is refused, on every model", () => {
+    const script = [
+      'await agent("search it", { label: "scout", model: "haiku", effort: "medium" });',
+      'await agent("build it", { label: "worker", model: "cc-smart-dev-kit-worker", effort: "low" });',
+      'await agent("check it", { label: "audit", model: "sonnet", effort: "high" });',
+    ].join("\n");
+    const results = judgeWorkflow(script, CTX, NO_ENV);
+    expect(results.map((one) => one.verdict.decision)).toEqual(["deny", "deny", "allow"]);
+    expect(results[0]?.verdict.reason).toContain("asks for effort `medium`");
+    expect(results[1]?.verdict.reason).toContain("asks for effort `low`");
+    const answer = JSON.parse(
+      agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app").stdout ?? "{}",
+    ).hookSpecificOutput;
+    expect(answer.permissionDecision).toBe("deny");
+    expect(answer.permissionDecisionReason).toContain('the launch "scout"');
+    expect(answer.permissionDecisionReason).toContain("asks for effort `medium`");
   });
 
   it("a script with no agent(…) call, or no script at all: nothing to say", () => {

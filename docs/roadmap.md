@@ -8,7 +8,7 @@ parts fit: `design.md`.
 | 1 | Foundation | Done |
 | 2 | The AI gateway | Done |
 | 3 | Hooks and `doctor --live` | Done (0.3.0) |
-| 4 | Shared browser, Serena, MCP registration, session tools | Done (0.3.0) |
+| 4 | Shared browser, Serena, MCP registration, session tools | Done (0.3.0; the browser replaced in 0.4.0) |
 | 5 | Instructions, skills, agents | Done (0.3.0) |
 | 6 | Notifications, claude-mem settings, the auto-mode block | Done (0.3.0) |
 | 7 | Opus and Fable slots, the usage-limit alert | Done (0.3.0) |
@@ -21,6 +21,71 @@ parts fit: `design.md`.
 command, its folders and its slots were `anymodel` in 0.2.x, and are
 `cc-smart-dev-kit` now. `cc-smart-dev-kit migrate` moves a machine that still has the
 old names (`README.md` § Moving from anymodel).
+
+## 0.4.0 — the workflow, and a project that sets itself up
+
+Done in this release:
+
+- **`cc-smart-dev-kit project init`** (`README.md` § `project init`): the two files a project
+  opts in with, asked question by question with the defaults read from the repo (the base
+  from `origin/HEAD`, else the repo's only branch, else `main`, else `master`; the setup
+  command from the lockfile; the protected branches from git and `gh`), a flag for every question, the diff shown before anything is written, a backup
+  first, and a line saying to commit them. The worktree engine's three hook lines come from
+  the one home that owns them (`src/hooks/project-wiring.ts`).
+- **The workflow** (`design.md` § The workflow): what cc-smart-dev-kit may do by itself —
+  commit, push, open a pull request, merge — held by the project's committed file over the
+  person's own `~/.config/cc-smart-dev-kit/workflow.json` over the safe built-in defaults, each
+  value with where it came from. Read and written by `cc-smart-dev-kit workflow`; the four
+  `switches.*` are settings that already exist (the status line, `sessionNames`,
+  `jobs.route`, the update hold), so there is one truth for each. `autoMergeAllowed` is the
+  one decision that lets a merge happen without a person, and it refuses every base that is
+  not a plain integration base.
+- **A base branch per branch prefix** (`worktrees.bases`): a `hotfix/…` or `release/…`
+  worktree starts from the base that prefix names, not from the integration base, so
+  unreleased work never leaks into a released line; the after-merge note tells sessions on
+  those branches not to merge the integration base in.
+- **`worktrees.engine`** (`"plugin"` or `"own"`): a project that already runs its own
+  worktree engine says so, and `doctor` expects no cc-smart-dev-kit hook lines there (a `·`
+  line, never ✗), while warning about the double worktree when they are wired anyway.
+- **Native Windows** (`windows-setup.md` and the four other `windows-*.md` pages): every hook
+  in **shell form** through `bin/cc-smart-dev-kit-bun.sh`, a `.cmd` launcher beside the `sh`
+  one, the paths under `%USERPROFILE%`, the gateway as a per-user Scheduled Task, the job
+  queue's own memory reading, `win:` leases and `taskkill` end, the desktop toast, and a
+  Windows CI job that runs the hooks through Git Bash.
+- **The parallel-work instructions** (`plugin/instructions/core.md`, the `plan-task` and
+  `subagent-decision` skills): nothing waits for a merge, a release, a review or an answer it
+  does not need; a plan lists its phases in waves, and two phases that might change one file
+  are split instead of run in turn.
+- **Auto mode's safety checks, counted** (`usage`): the router counts the checks by day, who
+  answered each and the tokens their answers reported (`gateway.md` § The safety-check counts).
+- **The merge guard** (`design.md` § The workflow): the `merge-guard` hook asks the person
+  before a `gh pr merge` its policy does not allow, and lets one through with no question only
+  when `autoMerge` allows it, every required check is green, and the head commit's review is
+  recorded. **The review record**: `cc-smart-dev-kit workflow review-done` writes it, and
+  `workflow show` says whether the commit here has one.
+- **The alert settings** (`alerts.events`, `alerts.sound`, `alerts.usagePercent`): the two
+  alert hooks and the status line read them — which moments alert, a sound where the platform
+  has one, and the plan share the status line warns from.
+- **The Linux desktop extras of the alerts** (`design.md` § The notifier): a click on an
+  alert raises the session's terminal window, the alert leaves the screen for the
+  notification centre after a minute, one alert per session is on screen, and XFCE's Do Not
+  Disturb keeps an ordinary alert's sound off — each where its tool is installed (`gdbus`,
+  `xdotool`, `xfconf-query`), in the detached worker, ported from the older notification
+  script so a machine that moves to the plugin loses nothing.
+- **The skills follow the workflow**: the commit, pull-request, review and worktree skills,
+  and the general instructions, read `cc-smart-dev-kit workflow show`, so one policy — not an
+  older hard-coded default — says when a step goes by itself.
+- **The portal's Settings page and Project card**: the workflow settings with where each
+  value comes from (yours, this project, default), and the project's two files planned and
+  written from the form (`project init`'s own functions), never committed.
+- **The browser drives your own Chrome** (`design.md` § The browser, `README.md` § The browser):
+  the Playwright MCP server runs in extension mode, in a Chrome profile of its own named
+  `claude-code`, with the Playwright extension's token required — `browser setup`, `browser token`
+  and `browser check` are new, the plugin's own shared Chrome, its profile folder, the tab filter
+  and the file-picker bundle are gone, and `doctor` and the portal's Machine page report the
+  browser's own state. What 0.3.0 left — the profile folder `<dataDir>/playwright` and the Chrome
+  it may still have running — is reported by `doctor` (with the command that deletes the folder,
+  which is the person's own call, and the pid of that Chrome) and is never deleted or used.
 
 ## 1 — Foundation (done)
 
@@ -66,11 +131,14 @@ affordable models to subagent slots, and an opt-in judge for auto mode's safety 
 
 ## 4 — Shared browser, Serena, MCP, session tools (done, 0.3.0)
 
-- The Playwright MCP server with one Chrome for every session (`design.md` § The shared
-  browser): one profile in the data folder, a tab filter per session so each sees only its
-  own windows, and `browser check` as the end-to-end proof on a throwaway profile. The
-  filter's endpoint carries a private token (any other path refused, and the token reaches the
-  MCP in its environment, never in `argv`), and the profile and output folders are owner-only.
+- The Playwright MCP server with one Chrome for every session, as 0.3.0 shipped it: one profile
+  in the plugin's data folder, a tab filter per session so each saw only its own windows, the
+  filter's endpoint carrying a private token (any other path refused, the token in the MCP's
+  environment, never in `argv`), owner-only profile and output folders, and `browser check` as
+  the end-to-end proof on a throwaway profile. **0.4.0 replaced all of it** with the person's own
+  Chrome through the Playwright extension (`design.md` § The browser): the plugin's own browser,
+  the profile in the data folder, the tab filter and the picker bundle are gone, and the browser
+  refuses to run without the extension's token.
 - Serena, with the plugin's own context (project switching on, so a session can point it at
   its worktree) installed in the data folder.
 - `setup` registers the general MCP servers at user scope, so tool names stay
@@ -83,14 +151,15 @@ affordable models to subagent slots, and an opt-in judge for auto mode's safety 
 The two project pieces that belonged to those servers came with them: the **Serena root
 record** (`serena-root`, so the main-folder guard can place a Serena edit and refuses an
 activation that names a project by name or a folder outside the repo) and the **Playwright
-output hook** (`playwright-output`: a file the caller names goes into the shared browser's
+output hook** (`playwright-output`: a file the caller names goes into the browser's
 output folder — proved live on the pinned `@playwright/mcp`, which resolves a caller-named
 path against its own working folder).
 
 **Left in the projects that had them** (project values, not general): the dev-server probe
 (`isDevServerRunning`, which reads one project's `.dev-server.json` and ports) — the
 plugin's rule is a program running from the worktree or working in it; and the Windows
-shutdown log (`wevtutil qe System`), since the plugin is macOS and Linux for now.
+shutdown log (`wevtutil qe System`) — on every platform the sign is the time one, several
+sessions closed in the same moment before the machine started (`docs/windows-setup.md`).
 
 ## 5 — Instructions, skills, agents (done, 0.3.0)
 

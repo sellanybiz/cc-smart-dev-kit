@@ -7,7 +7,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.3.0",
+  version: "0.4.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -29,20 +29,37 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/cli/paths.ts
-import { join as join2 } from "path";
+import { join as join2, sep } from "path";
 
 // src/gateway/paths.ts
 import { homedir } from "os";
 import { join } from "path";
+
+// src/machine/host.ts
+var TEST_HOST_VAR = "CC_SMART_DEV_KIT_TEST_HOST";
+function hostPlatform(env = process.env) {
+  const text = env[TEST_HOST_VAR];
+  if (!text)
+    return process.platform;
+  const given = JSON.parse(text);
+  return given.platform ?? process.platform;
+}
+
+// src/gateway/paths.ts
 function homeDir(env = process.env) {
-  return env.HOME || homedir();
+  if (env.HOME)
+    return env.HOME;
+  if (hostPlatform(env) === "win32" && env.USERPROFILE)
+    return env.USERPROFILE;
+  return homedir();
 }
 function routerPaths(env = process.env) {
   const home = homeDir(env);
   return {
     home,
     gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json")
+    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
+    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json")
   };
 }
 
@@ -64,11 +81,11 @@ function cliPaths(env = process.env) {
     binDir: join2(router.home, ".local", "bin"),
     stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
     dataDir: join2(router.home, ".local", "share", "cc-smart-dev-kit"),
-    browserProfileDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright"),
     browserOutputDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
-    browserPickerFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-picker.js"),
+    browserTokenFile: join2(router.home, ".config", "cc-smart-dev-kit", "playwright-extension.token"),
     serenaContextFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "serena", "contexts", "worktree.yml"),
     routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
     omnirouteStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
@@ -76,6 +93,7 @@ function cliPaths(env = process.env) {
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
     routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
     notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
+    workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf"),
     tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
   };
@@ -89,7 +107,89 @@ function claudeMemDataDir(env, home) {
   return dir.startsWith("~/") ? join2(home, dir.slice(2)) : dir;
 }
 function tildify(path, home) {
-  return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+  const rest = path.slice(home.length);
+  return path === home || path.startsWith(home) && (rest.startsWith("/") || rest.startsWith(sep)) ? `~${rest}` : path;
+}
+
+// src/hooks/detached.ts
+import { spawn } from "child_process";
+var CMD = "cmd";
+var CMD_ARGUMENTS = ["/d", "/s", "/v:off", "/c"];
+function unableInCmd(argument) {
+  if (argument.includes('"'))
+    return 'a " would end the quoted argument';
+  if (argument.includes("%"))
+    return "a % is read as a variable name, inside double quotes too";
+  if (/[\r\n]/.test(argument))
+    return "a line break ends the command line";
+  if (argument.includes("\x00"))
+    return "a NUL ends the command line";
+  return null;
+}
+function cmdArgument(argument) {
+  const reason = unableInCmd(argument);
+  if (reason !== null)
+    return { ok: false, reason };
+  const trailing = /\\+$/.exec(argument)?.[0] ?? "";
+  const kept = argument.slice(0, argument.length - trailing.length);
+  return { ok: true, text: `"${kept}${trailing}${trailing}"` };
+}
+function windowsStart(argv) {
+  if (argv[0] === undefined) {
+    return { argument: "", ok: false, reason: "there is no program to start" };
+  }
+  const quoted = [];
+  for (const argument of argv) {
+    const one = cmdArgument(argument);
+    if (!one.ok)
+      return { argument, ok: false, reason: one.reason };
+    quoted.push(one.text);
+  }
+  return { argv: [CMD, ...CMD_ARGUMENTS, `"start "" /b ${quoted.join(" ")}"`], ok: true };
+}
+function forMessage(argument) {
+  return argument.replace(/[\r\n]/g, " ").replaceAll("\x00", " ");
+}
+function detachedArgv(platform, argv) {
+  if (platform !== "win32")
+    return argv;
+  const start = windowsStart(argv);
+  return start.ok ? start.argv : [];
+}
+function startDetached(platform, argv, options) {
+  const [file, ...args] = argv;
+  if (file === undefined)
+    return;
+  const where = {
+    ...options.cwd !== undefined && { cwd: options.cwd },
+    ...options.env !== undefined && { env: options.env }
+  };
+  try {
+    if (platform === "win32") {
+      const start = windowsStart(argv);
+      if (!start.ok) {
+        options.onError(`cannot run "${forMessage(start.argument)}" through cmd.exe: ${start.reason}; nothing was started`);
+        return;
+      }
+      const result = Bun.spawnSync(start.argv, {
+        ...where,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+        windowsHide: true,
+        windowsVerbatimArguments: true
+      });
+      const exitCode = result.exitCode ?? 1;
+      if (exitCode !== 0)
+        options.onError(`cmd /d /s /c start failed (exit ${exitCode})`);
+      return;
+    }
+    const child = spawn(file, args, { ...where, detached: true, stdio: "ignore" });
+    child.on("error", (error) => options.onError(error.message));
+    child.unref();
+  } catch (error) {
+    options.onError(error instanceof Error ? error.message : String(error));
+  }
 }
 
 // src/setup/bun-config.ts
@@ -107,12 +207,11 @@ function pluginFolderBeside(importDir) {
 
 // src/setup/instructions.ts
 import { existsSync as existsSync7, readdirSync as readdirSync3, readFileSync as readFileSync8, rmSync } from "fs";
-import { join as join8, relative, sep } from "path";
+import { join as join8, relative, sep as sep2 } from "path";
 
 // src/setup/lock.ts
 import {
   closeSync,
-  fchmodSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -123,6 +222,25 @@ import {
 } from "fs";
 import { hostname } from "os";
 import { join as join4 } from "path";
+
+// src/setup/file-mode.ts
+import { chmodSync, fchmodSync } from "fs";
+function failureIsFatal(platform) {
+  return platform !== "win32";
+}
+function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
+  try {
+    if (typeof fileOrFd === "number")
+      fchmodSync(fileOrFd, mode);
+    else
+      chmodSync(fileOrFd, mode);
+  } catch (error) {
+    if (failureIsFatal(platform))
+      throw error;
+  }
+}
+
+// src/setup/lock.ts
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
 var LOCK_FILE = "lock";
 var TAKEOVER_SUFFIX = ".takeover";
@@ -259,7 +377,7 @@ function tryCreate(file, info, mode) {
     throw error;
   }
   try {
-    fchmodSync(fd, mode);
+    setFileMode(fd, mode);
     writeSync(fd, JSON.stringify(info));
   } finally {
     closeSync(fd);
@@ -335,7 +453,6 @@ import { existsSync as existsSync2, readFileSync as readFileSync3 } from "fs";
 
 // src/setup/write.ts
 import {
-  chmodSync,
   closeSync as closeSync2,
   existsSync,
   fsyncSync,
@@ -399,7 +516,7 @@ function writeTemp(file, content, mode) {
     } finally {
       closeSync2(fd);
     }
-    chmodSync(temp, mode);
+    setFileMode(temp, mode);
   } catch (error) {
     if (existsSync(temp))
       unlinkSync2(temp);
@@ -438,7 +555,7 @@ function backupDir(stateDir, file) {
 }
 function makePrivateDir(dir) {
   mkdirSync2(dir, { recursive: true, mode: 448 });
-  chmodSync(dir, 448);
+  setFileMode(dir, 448);
 }
 function listBackups(stateDir, file) {
   const dir = backupDir(stateDir, file);
@@ -454,7 +571,7 @@ function copyNotExecutable(file, target) {
   const mode = fileMode(file) ?? 384;
   const safeMode = mode & ~73;
   writeFileSync(target, readFileSync2(file), { flag: "wx", mode: safeMode });
-  chmodSync(target, safeMode);
+  setFileMode(target, safeMode);
   return mode;
 }
 function backupFile(stateDir, file) {
@@ -688,6 +805,9 @@ function isObject(value) {
 function samePath(a, b) {
   return a.length === b.length && a.every((segment, index) => segment === b[index]);
 }
+function detectIndent(text) {
+  return /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
+}
 function readJsonObject(file) {
   if (!existsSync3(file))
     return { data: {}, indent: "  ", text: null };
@@ -703,8 +823,7 @@ function readJsonObject(file) {
   }
   if (!isObject(parsed))
     throw new Error(`${file} must hold a JSON object.`);
-  const indent = /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
-  return { data: parsed, indent, text };
+  return { data: parsed, indent: detectIndent(text), text };
 }
 function toRecord(entry, file) {
   if (Array.isArray(entry) && entry.every((segment) => typeof segment === "string")) {
@@ -1296,7 +1415,7 @@ function listInstructionFiles(source) {
   if (!existsSync7(source)) {
     throw new Error(`The plugin's instructions folder is missing: ${source}. Reinstall the plugin.`);
   }
-  const files = readdirSync3(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative(source, join8(entry.parentPath, entry.name)).split(sep).join("/")).sort();
+  const files = readdirSync3(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative(source, join8(entry.parentPath, entry.name)).split(sep2).join("/")).sort();
   if (!files.includes(ALWAYS_ON_FILE)) {
     throw new Error(`The plugin's instructions folder has no ${ALWAYS_ON_FILE}: ${source}. Reinstall the plugin.`);
   }
@@ -1393,6 +1512,70 @@ async function refreshInstructionsCopy(paths, version, options = {}) {
 // src/update/apply.ts
 import { existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
 import { join as join10 } from "path";
+
+// src/shell/powershell.ts
+var SINGLE_QUOTES = /['\u2018\u2019\u201A\u201B]/g;
+function powershellLiteral(value) {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(`cannot put ${JSON.stringify(value)} in a PowerShell command`);
+  }
+  return `'${value.replace(SINGLE_QUOTES, (quote) => quote + quote)}'`;
+}
+
+// src/hooks/windows-toast.ts
+var TOAST_SHELL = "powershell";
+var TOAST_APP_ID = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe";
+function base64Literal(text) {
+  return `'${Buffer.from(text, "utf8").toString("base64")}'`;
+}
+function decodedText(text) {
+  return `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(${base64Literal(text)}))`;
+}
+function windowsToastScript(title, body, critical) {
+  const scenario = critical ? ' scenario="reminder"' : "";
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    `$title = ${decodedText(title)}`,
+    `$body = ${decodedText(body)}`,
+    `$appId = ${powershellLiteral(TOAST_APP_ID)}`,
+    "try {",
+    "  $xml = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]::New()",
+    `  $xml.LoadXml('<toast${scenario}><visual><binding template="ToastGeneric"><text id="1" /><text id="2" /></binding></visual></toast>')`,
+    "  $texts = $xml.GetElementsByTagName('text')",
+    "  $null = $texts.Item(0).AppendChild($xml.CreateTextNode($title))",
+    "  $null = $texts.Item(1).AppendChild($xml.CreateTextNode($body))",
+    "  $toast = [Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType = WindowsRuntime]::New($xml)",
+    "  [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]::CreateToastNotifier($appId).Show($toast)",
+    "} catch {",
+    "  try {",
+    "    Add-Type -AssemblyName System.Windows.Forms",
+    "    Add-Type -AssemblyName System.Drawing",
+    "    $balloon = New-Object System.Windows.Forms.NotifyIcon",
+    "    $balloon.Icon = [System.Drawing.SystemIcons]::Information",
+    "    $balloon.BalloonTipTitle = $title",
+    "    $balloon.BalloonTipText = $body",
+    "    $balloon.Visible = $true",
+    "    $balloon.ShowBalloonTip(10000)",
+    "    Start-Sleep -Milliseconds 4000",
+    "    $balloon.Dispose()",
+    "  } catch {",
+    "    [Console]::Error.WriteLine('cc-smart-dev-kit: the desktop notification could not be shown: ' + $_.Exception.Message)",
+    "    exit 1",
+    "  }",
+    "}"
+  ].join(`
+`);
+}
+function windowsToastArgv(shell, title, body, critical = false) {
+  const script = windowsToastScript(title, body, critical);
+  return [
+    shell,
+    "-NoProfile",
+    "-NonInteractive",
+    "-EncodedCommand",
+    Buffer.from(script, "utf16le").toString("base64")
+  ];
+}
 
 // src/project/git-env.ts
 var REPO_SELECTING_GIT_VARS = [
@@ -1737,6 +1920,10 @@ function notifyCommand(text, platform, which, title = PLUGIN, critical = false) 
       `display notification ${JSON.stringify(text)} with title ${JSON.stringify(title)}`
     ];
   }
+  if (platform === "win32") {
+    const powershell = which(TOAST_SHELL);
+    return powershell === null ? null : windowsToastArgv(powershell, title, text, critical);
+  }
   return null;
 }
 function commandContext(env, home) {
@@ -1980,6 +2167,9 @@ function sessionStart(deps) {
     deps.spawnBackground();
   return answer;
 }
+function backgroundCheckArgv(platform, bun, bundle, pluginDir) {
+  return detachedArgv(platform, backgroundCommand(bun, bundle, pluginDir));
+}
 async function refreshInstructionsAtSessionStart(deps) {
   try {
     await refreshInstructionsCopy(deps.where, deps.version, { waitMs: deps.waitMs ?? 2000 });
@@ -2093,11 +2283,10 @@ if (process.argv.includes("--background")) {
       sessionPid: sessionPid(),
       version: VERSION,
       spawnBackground: () => {
-        Bun.spawn(backgroundCommand(process.execPath, Bun.main, pluginFolderBeside(import.meta.dir)), {
+        startDetached(process.platform, backgroundCheckArgv(process.platform, process.execPath, Bun.main, pluginFolderBeside(import.meta.dir)), {
           ...commandContext(env, paths.home),
-          detached: true,
-          stdio: ["ignore", "ignore", "ignore"]
-        }).unref();
+          onError: (message) => console.error(`${PLUGIN} update check: ${message}`)
+        });
       }
     });
     if (answer !== "")

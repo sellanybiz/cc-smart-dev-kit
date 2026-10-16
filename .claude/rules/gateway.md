@@ -113,9 +113,11 @@ person chose and that passed the test; otherwise by the person, because Claude C
   only through `src/gateway/plain-text.ts` (`oneLine`, `plainText`, `printableJson`;
   `maskedLine` for an error): never a second copy of that logic.
 - A backend key comes on stdin, never argv. `gateway.json` is mode 600, and a file
-  others can read is refused. No output, log line or error message ever holds a key: mask
-  it (`maskKey`; in the router's log, `maskSecrets`), and never echo a parser's message
-  about the config's text. The test
+  others can read is refused — off Windows, where the bits decide: on Windows the mode
+  says nothing and the profile's ACL protects the file, so `isOwnerOnly`
+  (`src/setup/file-mode.ts`) never refuses one there. No output, log line or error
+  message ever holds a key: mask it (`maskKey`; in the router's log, `maskSecrets`), and
+  never echo a parser's message about the config's text. The test
   `gateway-cli.test.ts` › "secrets" runs every command with a planted key; add a new
   command to it.
 
@@ -123,6 +125,12 @@ person chose and that passed the test; otherwise by the person, because Claude C
 
 - The unit runs the copy in `~/.local/share/cc-smart-dev-kit/`, with the absolute bun path,
   never a file under `${CLAUDE_PLUGIN_ROOT}`.
+- **Windows runs a per-user Scheduled Task, not a Windows service** (`service-windows.ts`):
+  no administrator, no elevation. It has no socket activation, so a restart refuses requests
+  for a moment and stops cut the answers in flight; its warnings and `doctor` say so, and
+  must never claim the Linux guarantee. Its definition file
+  (`paths.routerTaskFile`) is the one home for what the task runs; the registered action is
+  what `doctor` checks. Everything PowerShell, never `schtasks` (its words are localized).
 - **The port belongs to `cc-smart-dev-kit-router.socket`**, never to the router alone: systemd
   holds it across restarts and passes it as fd 3 (`src/gateway/listen.ts`). Keep the
   router able to serve both ways (inherited socket, or its own bind for `gateway serve`),

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { VERSION } from "../build-info";
 import { git, tempDir } from "../testing/temp";
 import { CcSmartDevKitConfigError, CcSmartDevKitVersionError } from "./config";
-import { locateCheckout, ownHooksOf, resolveProject } from "./resolve";
+import { GIT_NOT_FOUND, locateCheckout, ownHooksOf, resolveProject } from "./resolve";
 
 /** A repo with one commit, so `git worktree add` works. */
 function makeRepo(): string {
@@ -58,6 +58,25 @@ describe("resolveProject", () => {
     expect(resolveProject(tempDir("nogit"))).toBeNull();
   });
 
+  test("a machine with no git is told the fact, not the spawner's own words", () => {
+    // A portal page, a hook and a command line all read this message. Bun's own words for a
+    // missing executable ("Executable not found in $PATH: \"git\"") read as a crash, so the
+    // fact and what to do about it are said instead. PATH is set to a folder that is not
+    // there: without a PATH at all the spawner falls back to its own and finds git.
+    const repo = makeRepo();
+    const env = { HOME: tempDir("nogit-home"), PATH: "/nonexistent" };
+    let thrown: unknown = null;
+    try {
+      resolveProject(repo, { env });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe(GIT_NOT_FOUND);
+    expect((thrown as Error).message).toContain("git was not found");
+    expect((thrown as Error).message).not.toContain("$PATH");
+  });
+
   test("no cc-smart-dev-kit.json gives config null", () => {
     expect(resolveProject(makeRepo())?.config).toBeNull();
   });
@@ -73,11 +92,14 @@ describe("resolveProject", () => {
           prefix: "app-wt-",
           setup: ["bun", "install"],
           guardMainFolder: true,
+          bases: { "hotfix/": "main", "release/": "main" },
+          engine: "own",
         },
         protectedBranches: ["main", "release"],
         sessionNames: true,
         instructions: true,
         autoMode: ["In my-app: never touch production."],
+        workflow: { autoCommit: true, alerts: { usagePercent: 70 } },
         ownHooks: ["git-guard", "after-merge"],
       }),
     );
@@ -88,11 +110,14 @@ describe("resolveProject", () => {
         prefix: "app-wt-",
         setup: ["bun", "install"],
         guardMainFolder: true,
+        bases: { "hotfix/": "main", "release/": "main" },
+        engine: "own",
       },
       protectedBranches: ["main", "release"],
       sessionNames: true,
       instructions: true,
       autoMode: ["In my-app: never touch production."],
+      workflow: { autoCommit: true, alerts: { usagePercent: 70 } },
       ownHooks: ["git-guard", "after-merge"],
     });
   });
@@ -108,6 +133,17 @@ describe("resolveProject", () => {
       { worktrees: { base: "dev", prefix: "x-", guardMainFolder: 1 } },
       "worktrees.guardMainFolder:",
     ],
+    [
+      { worktrees: { base: "dev", prefix: "x-", bases: { hotfix: "main" } } },
+      'worktrees.bases: "hotfix" must end with "/"',
+    ],
+    [
+      { worktrees: { base: "dev", prefix: "x-", bases: { "hotfix/": "" } } },
+      "worktrees.bases.hotfix/:",
+    ],
+    [{ worktrees: { base: "dev", prefix: "x-", engine: "mine" } }, "worktrees.engine:"],
+    [{ workflow: { autoCommit: "yes" } }, "workflow.autoCommit:"],
+    [{ workflow: { switches: { statusLine: true } } }, "workflow.switches:"],
   ])("the hook fields are checked: %j names %j", (content, field) => {
     const repo = makeRepo();
     const file = writeCcSmartDevKitJson(repo, JSON.stringify(content));

@@ -15,9 +15,12 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { cliPaths } from "../cli/paths";
 import { processStartTime } from "../setup/lock";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { type JobContext, runJobCommand } from "./commands";
+import { GIB, type MemoryFacts } from "./memory";
 import { currentFileHolder } from "./store";
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
@@ -523,5 +526,62 @@ describe("job kinds", () => {
     const result = cli(m, ["queue"]);
     expect(result.code).toBe(2);
     expect(result.stderr).toStartWith("Unknown job command: queue\n");
+  });
+});
+
+/**
+ * `job status` on Windows, run in this process: the machine's platform is one of its facts
+ * (`MemoryFacts`), and this machine is not Windows. A CLI subprocess could only ever report
+ * this machine's platform.
+ */
+describe("job status on Windows", () => {
+  /** A `job status` context over a temp home, with the memory facts of a Windows machine. */
+  function context(availableGb: number | null) {
+    const home = tempDir("jobs-home");
+    const printed: string[] = [];
+    const said: string[] = [];
+    const memory: MemoryFacts = {
+      platform: "win32",
+      read: () => null, // no /proc/meminfo and no cgroup there: both are Linux files
+      totalmem: () => 32 * GIB,
+      freemem: () => (availableGb ?? 0) * GIB,
+    };
+    const ctx: JobContext = {
+      paths: cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") }),
+      cwd: tempDir("jobs-work"),
+      execArgv: ["--no-env-file"],
+      memory,
+      say: (line) => said.push(line),
+      print: (line) => printed.push(line),
+      now: () => Date.UTC(2026, 9, 11, 9, 5),
+    };
+    return { ctx, printed, said };
+  }
+
+  test("reads os.freemem(), and says plainly that no memory ceiling can be made", async () => {
+    const { ctx, printed, said } = context(11);
+    expect(await runJobCommand(["status"], ctx)).toBe(0);
+    expect(said).toEqual([]);
+    // The ceiling line, written here by hand: it is what a person on Windows reads.
+    expect(printed).toEqual([
+      "Memory: 32 GB, 11 GB free now.",
+      "Budget for heavy jobs here: 14 GB (32 GB of memory less 22 GB kept for everything else).",
+      "No memory ceiling on this system: Windows has no memory group, so a heavy job runs as a plain child, and the queue is what keeps heavy jobs apart.",
+      "This machine (~/.local/share/cc-smart-dev-kit/jobs): 14 of 14 GB free",
+      "  nothing held, nobody waits",
+    ]);
+  });
+
+  test("Linux never says it: the same facts there have no free reading", async () => {
+    const { ctx, printed } = context(null);
+    // The Linux branch reads /proc/meminfo and the cgroup, and this fake has neither.
+    const linux: JobContext = { ...ctx, memory: { ...ctx.memory, platform: "linux" } };
+    expect(await runJobCommand(["status"], linux)).toBe(0);
+    expect(printed).toEqual([
+      "Memory: 32 GB, free memory cannot be read on this system (no live check).",
+      "Budget for heavy jobs here: 14 GB (32 GB of memory less 22 GB kept for everything else).",
+      "This machine (~/.local/share/cc-smart-dev-kit/jobs): 14 of 14 GB free",
+      "  nothing held, nobody waits",
+    ]);
   });
 });

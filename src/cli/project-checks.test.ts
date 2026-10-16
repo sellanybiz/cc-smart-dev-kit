@@ -103,6 +103,56 @@ describe("the worktree engine's wiring", () => {
     ]);
   });
 
+  test('engine "own", the plugin hooks not wired: one · line, never a ✗', () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", prefix: "app-wt-", engine: "own" },
+    });
+    expect(check(repo)).toEqual([
+      '· project: "worktrees.engine" is "own" in .claude/cc-smart-dev-kit.json, so this project runs its own worktree engine and the cc-smart-dev-kit engine hooks are not wired here',
+    ]);
+  });
+
+  test('engine "own" with the project\'s own worktree hook: still one · line', () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", prefix: "app-wt-", engine: "own" },
+    });
+    writeClaudeFile(repo, "settings.json", {
+      hooks: { WorktreeCreate: [{ hooks: [{ type: "command", command: "./make-worktree.sh" }] }] },
+    });
+    expect(check(repo)).toEqual([
+      '· project: "worktrees.engine" is "own" in .claude/cc-smart-dev-kit.json, so this project runs its own worktree engine and the cc-smart-dev-kit engine hooks are not wired here',
+    ]);
+  });
+
+  test('engine "own" but the plugin\'s engine wired anyway: a ! line, two engines', () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", prefix: "app-wt-", engine: "own" },
+    });
+    writeClaudeFile(repo, "settings.json", projectHookSettings());
+    expect(check(repo)).toEqual([
+      '! project: "worktrees.engine" is "own", so this project runs its own worktree engine, but its settings also wire WorktreeCreate, WorktreeRemove, SubagentStop to cc-smart-dev-kit hook: two engines answer each worktree request. Take the cc-smart-dev-kit hook lines out',
+    ]);
+  });
+
+  test('engine "own", the plugin wired next to another WorktreeCreate hook: a ! for each', () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", prefix: "app-wt-", engine: "own" },
+    });
+    const settings = projectHookSettings();
+    settings.hooks.WorktreeCreate?.push({
+      hooks: [{ type: "command", command: "./make-worktree.sh", timeout: 60 }],
+    });
+    writeClaudeFile(repo, "settings.json", settings);
+    expect(check(repo)).toEqual([
+      '! project: "worktrees.engine" is "own", so this project runs its own worktree engine, but its settings also wire WorktreeCreate, WorktreeRemove, SubagentStop to cc-smart-dev-kit hook: two engines answer each worktree request. Take the cc-smart-dev-kit hook lines out',
+      "! project: another WorktreeCreate hook runs too: ./make-worktree.sh (.claude/settings.json). Claude Code runs both and makes two worktrees for each request; remove one",
+    ]);
+  });
+
   test("a broken cc-smart-dev-kit.json: ✗ naming the file and field", () => {
     const repo = makeRepo();
     const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktree: {} });
@@ -153,13 +203,21 @@ describe("a project that used the old anymodel name", () => {
     expect(check(repo)).toEqual([
       "✓ project: the worktree engine is wired (WorktreeCreate, WorktreeRemove, SubagentStop)",
       "! project: the plugin's git-guard and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of git-guard, list \"git-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
+      "! project: the plugin's merge-guard and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of merge-guard, list \"merge-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
       "! project: the plugin's job-route and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of job-route, list \"job-route\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
     ]);
   });
 
   test("a launcher path is the old name; a word that merely holds it is not", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code's placeholder, filled in by Claude Code.
+    const pluginRoot = "${CLAUDE_PLUGIN_ROOT}";
     expect(renamedCommand('"$HOME/.local/bin/anymodel-bun" x')).toBe(
-      '"$HOME/.local/bin/cc-smart-dev-kit-bun" x',
+      '"$HOME/.local/bin/cc-smart-dev-kit-bun.sh" x',
+    );
+    // The plugin folder's own shim, as a project copied it out of hooks.json: the file is
+    // `cc-smart-dev-kit-bun.sh` now (the hooks are shell form).
+    expect(renamedCommand(`"${pluginRoot}/bin/anymodel-bun" x`)).toBe(
+      `"${pluginRoot}/bin/cc-smart-dev-kit-bun.sh" x`,
     );
     expect(renamedCommand("anymodel --version")).toBe("cc-smart-dev-kit --version");
     expect(renamedCommand("./note-anymodel.sh")).toBe("./note-anymodel.sh");
@@ -184,6 +242,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     wireOnly(repo, [], OTHERS);
     expect(check(repo)).toEqual([
       both("git-guard", "./guard.sh", "PreToolUse (Bash)"),
+      both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
       both("job-route", "./guard.sh", "PreToolUse (Bash)"),
       // serena-root also runs at a session start (it forgets or distrusts its record there).
       both("serena-root", "./hello.sh", "SessionStart (startup)"),
@@ -202,6 +261,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     expect(check(repo)).toEqual([
       "· project: the plugin's git-guard is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
       "· project: the plugin's session-name is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
+      both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
       both("job-route", "./guard.sh", "PreToolUse (Bash)"),
       both("serena-root", "./hello.sh", "SessionStart (startup)"),
       both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),
@@ -251,10 +311,38 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     wireOnly(repo, [], {
       PostToolUse: [{ matcher: "*", hooks: [{ type: "command", command: "./log.sh" }] }],
     });
+    // review-record runs on SubagentStop, not PostToolUse, so a PostToolUse "*" never meets it.
     expect(check(repo)).toEqual([
       both("after-merge", "./log.sh", "PostToolUse (Bash, PowerShell)"),
       both("serena-root", "./log.sh", "PostToolUse (mcp__serena__activate_project)"),
     ]);
+  });
+
+  test("a project hook on SubagentStop is the engine's own line: no 'second copy' warning", () => {
+    // Every project that wires the worktree engine has a SubagentStop line, and the plugin's
+    // review-record shares that event: they are different pieces, so pairing them would warn
+    // on every healthy project. The engine's own check is what judges those lines.
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", prefix: "app-wt-" },
+    });
+    writeClaudeFile(repo, "settings.json", {
+      hooks: {
+        SubagentStop: [
+          {
+            hooks: [
+              {
+                type: "command",
+                command: '"$HOME/.local/bin/cc-smart-dev-kit" hook subagent-stop',
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const lines = check(repo);
+    expect(lines.some((line) => line.includes("review-record"))).toBe(false);
+    expect(lines.some((line) => line.includes("both may answer"))).toBe(false);
   });
 
   test("no cc-smart-dev-kit.json: the plugin hooks are silent, so nothing can answer twice", () => {

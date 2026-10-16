@@ -19,10 +19,23 @@
  * Beside the transcripts it lists the Opus and Fable launches the Agent guard allowed
  * (`src/hooks/agent-launches.ts`), with why: an Opus or Fable agent spends the person's own
  * plan usage, and the reason the guard accepted is the one thing the transcripts cannot say.
+ *
+ * It also shows the auto-mode safety checks the router counted (`../gateway/safety-checks.ts`),
+ * by day: those requests are not in the transcripts, since they belong to no session's
+ * conversation. The file is the router's own state; with no gateway set up there is none,
+ * and the report says so.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import {
+  type CheckCount,
+  localDay,
+  parseSafetyCheckState,
+  recentCheckDays,
+  SAFETY_CHECK_WINDOW_DAYS,
+  type SafetyCheckState,
+} from "../gateway/safety-checks";
 import {
   type AgentLaunch,
   agentLaunchesFile,
@@ -227,6 +240,66 @@ function add(into: Record<string, number>, from: Record<string, number>): void {
   for (const [model, count] of Object.entries(from)) into[model] = (into[model] ?? 0) + count;
 }
 
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+/** What one side's answers reported, as the report shows it. */
+function tokens(count: CheckCount): string {
+  return `${count.input} in, ${count.output} out, ${count.cacheRead} cache read, ${count.cacheWrite} cache write`;
+}
+
+/**
+ * The safety-check lines of the report: the days the router counted, today and the seven
+ * before it (`SAFETY_CHECK_WINDOW_DAYS`), newest first. `timeZone` is the machine's own
+ * unless a test names one, as the router counts by local day.
+ *
+ * What these numbers cannot say, in one line under them: whether the tokens count against
+ * a Pro, Max or Team plan's limit. Anthropic's docs say they count for Enterprise and API
+ * accounts; for the rest it is not confirmed, and a report that guessed would be worse
+ * than one that says so (`README.md` § The usage limit).
+ */
+export function formatSafetyChecks(
+  state: null | SafetyCheckState,
+  nowMs: number,
+  timeZone?: string,
+): string[] {
+  const lines = ["", "Auto mode's safety checks the router counted on this machine:"];
+  const days =
+    state === null ? [] : recentCheckDays(state, nowMs, SAFETY_CHECK_WINDOW_DAYS, timeZone);
+  if (days.length === 0) {
+    lines.push(
+      `  none in the last ${SAFETY_CHECK_WINDOW_DAYS} days (the gateway must be set up, and a session must have run with auto mode on)`,
+    );
+    return lines;
+  }
+  const today = localDay(nowMs, timeZone);
+  for (const [day, record] of days) {
+    const fallback =
+      record.fallback.checks > 0
+        ? `; a fallback ${record.fallback.checks} (${tokens(record.fallback)})`
+        : "";
+    lines.push(
+      `  ${day === today ? `today (${day})` : day}: ${plural(record.checks, "check")} — Anthropic ${record.anthropic.checks} (${tokens(record.anthropic)})${fallback}`,
+    );
+  }
+  lines.push(
+    "  The tokens are what each answer's `usage` reported; whether they count against a Pro, Max or Team plan's limit is not confirmed (Anthropic's docs say they do on Enterprise and API accounts).",
+  );
+  return lines;
+}
+
+/** The safety-check counts the router wrote; null when there are none to read. */
+function readSafetyChecks(file: string): null | SafetyCheckState {
+  try {
+    return parseSafetyCheckState(readFileSync(file, "utf8"));
+  } catch {
+    // Not there (the router counted none yet, or the gateway is not set up), or not
+    // readable: the report says none, and no count is invented.
+    return null;
+  }
+}
+
 /** The report's lines. */
 export function formatUsage(
   sessions: SessionUsage[],
@@ -269,7 +342,6 @@ export function formatUsage(
     add(replies, session.replies);
   }
   const { opus, total } = share(replies);
-  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
   lines.push(
     "",
     `Main sessions: ${plural(mainSessions, "session")}; replies by model: ${counts(main) || "none"}`,
@@ -317,13 +389,16 @@ export function runUsage(paths: CliPaths, args: string[], nowMs: number): number
   const sinceMs = nowMs - options.hours * 3_600_000;
   const sessions = collectUsage(projectsDir, { project: options.project, sinceMs });
   console.log(
-    formatUsage(
-      sessions,
-      options.hours,
-      projectsDir,
-      paths.home,
-      readAgentLaunches(agentLaunchesFile(paths.stateDir), sinceMs),
-    ),
+    [
+      formatUsage(
+        sessions,
+        options.hours,
+        projectsDir,
+        paths.home,
+        readAgentLaunches(agentLaunchesFile(paths.stateDir), sinceMs),
+      ),
+      ...formatSafetyChecks(readSafetyChecks(paths.safetyChecksFile), nowMs),
+    ].join("\n"),
   );
   return 0;
 }

@@ -7,7 +7,9 @@ finding a lost session — are the `/cc-smart-dev-kit:worktree` skill.
 
 The project's values come from its `.claude/cc-smart-dev-kit.json`, `worktrees` field: `base` (the
 branch new work starts from and pull requests go into), `prefix` (the folder name of a
-worktree beside the repo) and `setup` (the command a new worktree runs). The project's own
+worktree beside the repo), `setup` (the command a new worktree runs) and `bases` (a branch
+whose name starts with one of those prefixes starts from the base that prefix names, not from
+`base`). The project's own
 `CLAUDE.md`, rules and `.claude/cc-smart-dev-kit/worktree.md` win where they say more.
 
 **Where a worktree lands.** The cc-smart-dev-kit plugin adds no worktree hook to every project.

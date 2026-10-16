@@ -62,10 +62,13 @@ import {
   installRouter,
   type Runner,
   stopUnits,
+  systemdService,
   type UnitStop,
   unitActive,
 } from "../gateway/service";
 import { gatewayEnv } from "../gateway/settings";
+import { hostPlatform } from "../machine/host";
+import { isOwnerOnly } from "../setup/file-mode";
 import { findUserInstall, type PluginInstall } from "../setup/installed-plugins";
 import {
   copyInstalled,
@@ -717,11 +720,16 @@ export function settingsChanges(
  * The gateway config's text as an object. Its own reader, not `loadConfigFile`: the old
  * config's slot keys fail this version's schema, which is exactly what migrate is here to
  * change. It keeps that reader's rules: a file others can read is refused, and a parse
- * error never quotes the text (it holds API keys).
+ * error never quotes the text (it holds API keys). "Others can read" is `isOwnerOnly`'s
+ * answer, so on Windows — where the mode says nothing and the profile's ACL protects the
+ * file — nothing is refused.
  */
-export function readOldConfig(file: string): Record<string, unknown> {
+export function readOldConfig(
+  file: string,
+  platform: NodeJS.Platform = hostPlatform(),
+): Record<string, unknown> {
   const mode = statSync(file).mode;
-  if ((mode & 0o077) !== 0) {
+  if (!isOwnerOnly(mode, platform)) {
     throw new ConfigError(
       `${file} can be read by other users (mode ${(mode & 0o777).toString(8)}); it holds API keys. Run: chmod 600 ${file}`,
     );
@@ -1350,14 +1358,15 @@ export async function runMigrate(paths: CliPaths, options: MigrateOptions): Prom
         bunVersion: options.bunVersion,
         bundle: options.bundle,
         copyPath: paths.routerCopy,
-        unitPath: old.unitFile,
-        socketPath: old.socketFile,
         home: paths.home,
         stateDir: paths.stateDir,
         port: plan.port,
         probe: options.probe,
         runner: options.runner,
         say: (line) => console.log(`  ${line}`),
+        // Always systemd: this path replaces a running 0.2.x machine's units, which only
+        // exist on Linux (on Windows the step above says to remove them by hand).
+        service: systemdService({ socketPath: old.socketFile, unitPath: old.unitFile }),
         yes: true,
         confirm: null,
       });

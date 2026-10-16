@@ -12,8 +12,9 @@
  *   `cc-smart-dev-kit doctor` warns about); none only when neither is installed.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { cliPaths } from "../cli/paths";
 import { PLUGIN_HOOK_NAMES } from "../project/config";
 import {
   hookEnv,
@@ -33,8 +34,10 @@ import {
   HOOKS,
   jobRouteHook,
   mainFolderGuardHook,
+  mergeGuardHook,
   messageGuardHook,
   PROJECT_HOOKS,
+  reviewRecordHook,
   serenaRootHook,
   sessionNameHook,
   subagentStopHook,
@@ -196,6 +199,21 @@ const CASES: Case[] = [
     failsClosed: askLine,
   },
   {
+    spec: mergeGuardHook,
+    own: { event: "PreToolUse", matcher: "Bash|PowerShell" },
+    setup: (config) => ({
+      input: {
+        hook_event_name: "PreToolUse",
+        session_id: SESSION,
+        cwd: project(config),
+        tool_name: "Bash",
+        tool_input: { command: "gh pr merge 7" },
+      },
+      env: hookEnv(),
+    }),
+    failsClosed: askLine,
+  },
+  {
     spec: agentGuardHook,
     own: { event: "PreToolUse", matcher: "Agent|Task|Workflow" },
     machineWide: true,
@@ -322,6 +340,35 @@ const CASES: Case[] = [
       };
     },
     failsClosed: contextLine,
+  },
+  {
+    spec: reviewRecordHook,
+    own: { event: "SubagentStop" },
+    setup: (config) => {
+      const env = hookEnv();
+      // A successful record is silence (SubagentStop carries no context), so the one answer
+      // this hook has is a failure: the person's own workflow file cannot be read. That is
+      // also how the shared rows' "it speaks" is proved here.
+      const file = cliPaths(env).workflowConfigFile;
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, "{ not json");
+      return {
+        input: {
+          hook_event_name: "SubagentStop",
+          session_id: SESSION,
+          cwd: project(config),
+          agent_id: AGENT,
+          agent_type: "cc-smart-dev-kit:reviewer",
+        },
+        env,
+      };
+    },
+    // One stderr line, exit 0: a subagent must always finish.
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      expect(result.stdout).toBeUndefined();
+      expect(result.stderr).toStartWith("cc-smart-dev-kit review-record: ");
+    },
   },
   {
     spec: worktreeLeftoversHook,
@@ -482,7 +529,7 @@ describe("no cc-smart-dev-kit.json", () => {
 
 describe("the guard matrix", () => {
   const guards = CASES.filter((c) =>
-    [gitGuardHook, mainFolderGuardHook, messageGuardHook].includes(c.spec),
+    [gitGuardHook, mergeGuardHook, mainFolderGuardHook, messageGuardHook].includes(c.spec),
   );
 
   // [plugin installed, project wires its own, listed in ownHooks, requires met, guards that answer]

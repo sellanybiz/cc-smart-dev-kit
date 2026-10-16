@@ -34,9 +34,13 @@ check (`/cc-smart-dev-kit:verify-change` § 5).
 `Agent` with the `cc-smart-dev-kit:ui-verifier` type, on `sonnet` (the worker slot; effort as the
 core instructions say for that slot). **One at a time:** the session's Playwright MCP server
 drives one browser, and a second agent fights the first for its pages. Another session has
-its own server and its own windows, so a check there does not clash with this one (with
-`cc-smart-dev-kit setup` run, every session drives one shared Chrome and sees only the pages it
-opened).
+its own MCP server and its own tab group, so a check there does not clash with this one (with
+`cc-smart-dev-kit setup` run, every session drives the person's own Chrome through the Playwright
+extension, in a profile of its own, and sees only the tabs of its own group).
+
+A browser tool that will not connect usually means the extension's token is not saved yet:
+`cc-smart-dev-kit browser setup` prints the steps, and `cc-smart-dev-kit browser token` saves it
+(the plugin never runs without it, so nothing waits for an approval click).
 
 **The brief carries:**
 
@@ -59,10 +63,12 @@ clipping well but miscounts fine detail, so it measures and you judge.
 ## 4. Close out
 
 - Close the browser (`browser_close`) when the check is done: the agent leaves it open on
-  purpose. Installed by `cc-smart-dev-kit setup`, that closes only this session's windows — the
-  one shared Chrome and its logins stay for every session. With a stock Playwright MCP of your
-  own it closes the page that server drives.
+  purpose. With cc-smart-dev-kit's own `playwright` server that ends this session's connection —
+  the person's Chrome and its tabs stay, and so do the tabs of the closed connection (the tab
+  group outlives it: the extension's own behaviour). With a stock Playwright MCP of your own it
+  closes the page that server drives.
 - **A page needs a login:** the agent reports it and never signs in. Open the page yourself
-  and ask the person to sign in there, once — with the shared Chrome, that sign-in is every
-  session's. Never sign out or switch accounts without asking: the login is everyone's.
+  and ask the person to sign in there, once — in that `claude-code` profile the sign-in stays
+  for every session. Never sign out or switch accounts without asking: that profile is
+  everyone's.
 - An affordable run that fails twice: `/cc-smart-dev-kit:subagent-decision` § Briefing an affordable model.

@@ -9,6 +9,10 @@
  *   v1). Then the total is that ceiling, and the free memory is the ceiling less what the
  *   group uses, not counting the file cache the kernel can drop (`inactive_file`). The
  *   smaller of the two views wins.
+ * - **Windows:** `os.totalmem()` and `os.freemem()`: both are real readings there. There
+ *   is no cgroup. Windows counts the standby cache as used, so its free memory is lower
+ *   than what can really still be handed out: the live check then waits a little longer,
+ *   the safe side (docs/windows-jobs.md § Memory).
  * - **macOS and others:** `os.totalmem()` for the total, and no free-memory reading: the
  *   queue still works on its budget, without the live check.
  *
@@ -16,7 +20,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { totalmem } from "node:os";
+import { freemem, totalmem } from "node:os";
 
 export const GIB = 1024 ** 3;
 
@@ -28,6 +32,8 @@ export interface MemoryFacts {
   read: ReadText;
   /** `os.totalmem()`: the fallback when nothing better can be read. */
   totalmem: () => number;
+  /** `os.freemem()`: what Windows reports as free right now. */
+  freemem: () => number;
 }
 
 export const realReadText: ReadText = (path) => {
@@ -39,7 +45,7 @@ export const realReadText: ReadText = (path) => {
 };
 
 export function realMemoryFacts(): MemoryFacts {
-  return { platform: process.platform, read: realReadText, totalmem };
+  return { platform: process.platform, read: realReadText, totalmem, freemem };
 }
 
 /** One field of `/proc/meminfo`, in bytes, or null when it is not there. */
@@ -130,6 +136,10 @@ export interface MachineMemory {
 
 /** This machine's memory: the smaller of `/proc/meminfo` and any cgroup ceiling. */
 export function machineMemory(facts: MemoryFacts): MachineMemory {
+  if (facts.platform === "win32") {
+    // Windows reads both numbers itself, and has no cgroup to lower them.
+    return { totalBytes: facts.totalmem(), availableBytes: facts.freemem(), limit: null };
+  }
   if (facts.platform !== "linux") {
     return { totalBytes: facts.totalmem(), availableBytes: null, limit: null };
   }

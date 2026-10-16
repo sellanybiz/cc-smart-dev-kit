@@ -1,5 +1,6 @@
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { type BrowserDoctorDeps, browserChecks } from "../browser/doctor";
 import {
   bunTooOld,
   COMMAND,
@@ -13,7 +14,8 @@ import {
   VERSION,
 } from "../build-info";
 import { gatewayChecks } from "../gateway/doctor";
-import type { Runner } from "../gateway/service";
+import type { RouterServiceKind, Runner } from "../gateway/service";
+import { hasDesktop } from "../hooks/desktop-alert";
 import { claudeMemAdvice } from "../machine/claude-mem";
 import { companionChecks } from "../machine/companions";
 import type { Machine } from "../machine/machine";
@@ -32,6 +34,12 @@ import {
   readVersionStamp,
 } from "../setup/instructions";
 import { bakedBunPath, LAUNCHER_NAME, launcherScript } from "../setup/launcher";
+import {
+  cmdBakedBunPath,
+  LAUNCHER_CMD_NAME,
+  launcherCmdArgv,
+  launcherCmdScript,
+} from "../setup/launcher-cmd";
 import {
   canReadGitRemote,
   canReadHttp,
@@ -56,6 +64,7 @@ import {
   UNREACHABLE_FAILS_AFTER_HOURS,
   updateFiles,
 } from "../update/state";
+import { checkGitBash } from "./git-bash";
 import { type LiveDeps, parseClaudeVersion, readLiveRecord, runLiveCheck } from "./live-check";
 import { type CliPaths, tildify } from "./paths";
 import { projectChecks } from "./project-checks";
@@ -67,6 +76,12 @@ export interface Check {
   info?: boolean;
   /** A warning: printed with `!`, never a failure. */
   warn?: boolean;
+  /**
+   * Which part of the report the line belongs to. Only the browser's lines carry it, because the
+   * portal draws those on the Browser card and leaves them out of the Doctor card's list: one
+   * home per line, and the same words a person reads in `cc-smart-dev-kit doctor`.
+   */
+  section?: "browser";
   text: string;
 }
 
@@ -128,35 +143,97 @@ function isExecutable(file: string): boolean {
 }
 
 /**
+ * Is this bun there? On Windows there is no execute bit to check: a `.exe` runs by being
+ * there, so existence is the whole question (and `accessSync(X_OK)` does not answer it the
+ * same way everywhere).
+ */
+function isUsableBun(bun: string, platform: NodeJS.Platform): boolean {
+  return platform === "win32" ? existsSync(bun) : isExecutable(bun);
+}
+
+/**
  * The launcher is compared with the script for the bun baked into it, not with the bun
  * running doctor: another bun on PATH is no reason to rewrite it.
+ *
+ * Windows has two launchers that run the same thing: the `sh` script, which Git Bash and the
+ * project-wired hooks run, and its `.cmd` twin, which cmd and PowerShell run
+ * (`launcher-cmd.ts`). Both carry the same baked bun, and each is compared with its own
+ * script. The `sh` one cannot be started on Windows (no shell will run it there), so its
+ * "does it run" question is answered by the `.cmd`; the mode and the execute bit mean nothing
+ * on Windows either.
  */
-function checkLauncher(paths: CliPaths): Check {
+function checkLauncher(paths: CliPaths, platform: NodeJS.Platform): Check[] {
+  const win = platform === "win32";
   const launcher = join(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
   if (!existsSync(launcher))
-    return { ok: false, text: `no launcher at ${where}. Run: cc-smart-dev-kit setup` };
-  if (!isExecutable(launcher)) {
-    return {
-      ok: false,
-      text: `the launcher ${where} is not executable. Run: cc-smart-dev-kit setup`,
-    };
+    return [{ ok: false, text: `no launcher at ${where}. Run: cc-smart-dev-kit setup` }];
+  if (!win && !isExecutable(launcher)) {
+    return [
+      {
+        ok: false,
+        text: `the launcher ${where} is not executable. Run: cc-smart-dev-kit setup`,
+      },
+    ];
   }
   const script = readFileSync(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
-    return { ok: false, text: `the launcher ${where} is out of date. Run: cc-smart-dev-kit setup` };
+    return [
+      { ok: false, text: `the launcher ${where} is out of date. Run: cc-smart-dev-kit setup` },
+    ];
   }
-  if (!isExecutable(bun)) {
-    return {
-      ok: false,
-      text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-smart-dev-kit setup`,
-    };
+  if (!isUsableBun(bun, platform)) {
+    return [
+      {
+        ok: false,
+        text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-smart-dev-kit setup`,
+      },
+    ];
   }
+  if (win)
+    return [
+      checkLauncherCmd(paths, where),
+      { ok: true, text: `the launcher ${where} is in place (Git Bash runs it)` },
+    ];
   const result = run([launcher, "version"]);
   if (!result.ok)
-    return { ok: false, text: `the launcher ${where} does not run: ${result.output}` };
-  return { ok: true, text: `the launcher ${where} runs ${result.output}` };
+    return [{ ok: false, text: `the launcher ${where} does not run: ${result.output}` }];
+  return [{ ok: true, text: `the launcher ${where} runs ${result.output}` }];
+}
+
+/**
+ * The Windows launcher's own check: the `.cmd` is there, is this version's, and runs. It is
+ * started through `cmd.exe` — a `.cmd` is not an executable, so `Bun.spawn` cannot start one
+ * (`launcherCmdArgv`).
+ */
+function checkLauncherCmd(paths: CliPaths, shLauncher: string): Check {
+  const cmd = join(paths.binDir, LAUNCHER_CMD_NAME);
+  const where = tildify(cmd, paths.home);
+  if (!existsSync(cmd)) {
+    return {
+      ok: false,
+      text: `no Windows launcher at ${where}, so cmd and PowerShell cannot run cc-smart-dev-kit (Git Bash runs ${shLauncher}). Run: cc-smart-dev-kit setup`,
+    };
+  }
+  const script = readFileSync(cmd, "utf8");
+  const bun = cmdBakedBunPath(script);
+  if (bun === null || script !== launcherCmdScript(bun)) {
+    return {
+      ok: false,
+      text: `the Windows launcher ${where} is out of date. Run: cc-smart-dev-kit setup`,
+    };
+  }
+  if (!isUsableBun(bun, "win32")) {
+    return {
+      ok: false,
+      text: `the Windows launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-smart-dev-kit setup`,
+    };
+  }
+  const result = run(launcherCmdArgv(cmd, ["version"]));
+  if (!result.ok)
+    return { ok: false, text: `the Windows launcher ${where} does not run: ${result.output}` };
+  return { ok: true, text: `the Windows launcher ${where} runs ${result.output}` };
 }
 
 /**
@@ -626,7 +703,7 @@ async function omnirouteCheck(paths: CliPaths, env: Env, gateway: DoctorGateway)
     // A test passes its own folders: the host's `/usr/lib/node_modules` may hold an OmniRoute
     // that has nothing to do with the test, which would then read the real registry.
     systemFolders: gateway.systemFolders,
-    systemd: gateway.systemd,
+    systemd: gateway.service === "systemd",
     which: gateway.machine.which,
   });
   return line === null ? [] : [{ info: true, ok: true, text: line.text }];
@@ -640,6 +717,17 @@ async function omnirouteCheck(paths: CliPaths, env: Env, gateway: DoctorGateway)
  * optional, and so is this.
  */
 function checkTmux(paths: CliPaths, env: Env, machine: Machine): Check[] {
+  // Windows has no tmux, and setup manages `~/.tmux.conf` only where it is installed:
+  // information, never a failure (`docs/windows-setup.md`).
+  if (machine.platform === "win32") {
+    return [
+      {
+        info: true,
+        ok: true,
+        text: "tmux: not on Windows, so no passthrough line is managed there",
+      },
+    ];
+  }
   if (machine.which("tmux") === null) return [];
   const checks: Check[] = [];
   const conf = tildify(paths.tmuxConfFile, paths.home);
@@ -660,11 +748,53 @@ function checkTmux(paths: CliPaths, env: Env, machine: Machine): Check[] {
   return checks;
 }
 
-/** What the gateway checks need: the plugin's router bundle, a command runner, systemd or not. */
+/**
+ * The Linux desktop extras the notifier can use (`src/hooks/desktop-alert.ts`): a click on
+ * an alert that raises the session's terminal window, the alert's minute on screen, one
+ * alert per session, and the XFCE Do-Not-Disturb check. Each is skipped in silence when
+ * its tool is missing, so doctor names the missing tool — as information (`·`), never a
+ * failure: a desktop without them still shows every alert, exactly as before.
+ *
+ * The Do-Not-Disturb line is for an XFCE session only (`xfconf-query` is XFCE's own
+ * tool, and no other desktop has that setting to miss); everything else is looked up on
+ * any Linux desktop.
+ */
+function checkDesktopExtras(platform: NodeJS.Platform, env: Env, machine: Machine): Check[] {
+  if (platform !== "linux" || !hasDesktop(platform, env)) return [];
+  const checks: Check[] = [];
+  if (machine.which("gdbus") === null) {
+    checks.push({
+      info: true,
+      ok: true,
+      text: "gdbus is not installed (glib's libglib2.0-bin provides it): a desktop alert has no minute on screen, and two alerts of one session can stay there together",
+    });
+  }
+  if (machine.which("xdotool") === null) {
+    checks.push({
+      info: true,
+      ok: true,
+      text: "xdotool is not installed: a click on a desktop alert cannot raise the session's terminal window",
+    });
+  }
+  if (
+    (env.XDG_CURRENT_DESKTOP ?? "").toLowerCase().includes("xfce") &&
+    machine.which("xfconf-query") === null
+  ) {
+    checks.push({
+      info: true,
+      ok: true,
+      text: "xfconf-query is not installed: an alert's sound plays while XFCE's Do Not Disturb is on",
+    });
+  }
+  return checks;
+}
+
+/** What the gateway checks need: the plugin's router bundle, a runner, and this machine's service. */
 export interface DoctorGateway {
   bundle: string;
   runner: Runner;
-  systemd: boolean;
+  /** The service this machine can run the router under (`routerServiceKind`). */
+  service: RouterServiceKind;
   /** Asks the system about Warp (its package manager); a test passes fakes. */
   machine: Machine;
   /**
@@ -706,6 +836,12 @@ export interface DoctorProject {
 export interface DoctorOptions {
   /** The Bun running doctor (through the launcher, the bun baked into it). */
   bun: DoctorBun;
+  /**
+   * The browser's own checks (`src/browser/doctor.ts`): Chrome, the `claude-code` profile, the
+   * Playwright extension in it, the token, and the registration. A test hands in a temp home;
+   * null or left out: no browser lines.
+   */
+  browser?: BrowserDoctorDeps | null;
   gateway: DoctorGateway;
   /** Where the plugin's instructions are, and the folder doctor was started in. */
   local: DoctorLocal;
@@ -727,7 +863,7 @@ export interface DoctorOptions {
 export async function doctorChecks(
   paths: CliPaths,
   env: Env,
-  { bun, gateway, local, mcp, project, live }: DoctorOptions,
+  { browser, bun, gateway, local, mcp, project, live }: DoctorOptions,
 ): Promise<Check[]> {
   const settings = readSettings(paths.settingsFile);
   const runtime = checkBun(bun, paths);
@@ -737,11 +873,13 @@ export async function doctorChecks(
     info: true,
     text: "gateway: not checked on this Bun (its checks send the backend key)",
   };
+  const gitBash = checkGitBash(gateway.machine.platform, env, gateway.machine);
   const checks = [
     runtime,
     checkPlugin(paths),
     checkInstalledVersion(paths),
-    checkLauncher(paths),
+    ...checkLauncher(paths, gateway.machine.platform),
+    gitBash,
     checkInstructions(paths, local.instructionsSource),
     checkProjectImports(paths, local.cwd),
     await checkMarketplaceAccess(paths, env),
@@ -753,8 +891,10 @@ export async function doctorChecks(
     ...companionChecks(paths),
     claudeMemCheck(paths),
     ...(mcpDeps === null ? [] : mcpChecks(paths, mcpDeps, env)),
+    ...(browser == null ? [] : browserChecks(paths, browser)),
     warpCheck(gateway.machine, paths),
     ...checkTmux(paths, env, gateway.machine),
+    ...checkDesktopExtras(gateway.machine.platform, env, gateway.machine),
     ...(project === null ? [] : projectChecks(project.cwd, env, paths, project.pluginHooksFile)),
     ...(runtime.ok ? await gatewayChecks({ paths, ...gateway }) : [skipped]),
     ...(await omnirouteCheck(paths, env, gateway)),

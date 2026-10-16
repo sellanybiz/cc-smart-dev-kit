@@ -3,7 +3,15 @@
  *
  * It refuses inside a Claude Code session (`CLAUDECODE`). The portal changes this machine's
  * model path and the safety judge, so a session must never open one for itself: the person
- * runs it in their own terminal, and never opens the page in the browser Claude drives.
+ * runs it in their own terminal, and opens the link in a browser window that is not the one
+ * Claude drives.
+ *
+ * **It never opens the browser Claude drives.** In 0.4.0 Claude Code drives the `claude-code`
+ * profile of the person's own Chrome, and Chrome opens an outside link in the last window it
+ * used — which may be that very profile. So when that profile is on this machine the portal
+ * does not open a browser at all; it prints the link and says where to open it
+ * (`mayAutoOpen`, `openYourselfLine`). Without that profile it opens the default browser, as
+ * it always did.
  *
  * It runs from a **copy** in `~/.local/share/cc-smart-dev-kit/portal.js`, never from the
  * plugin's version folder: Claude Code deletes an old version folder some time after an
@@ -14,6 +22,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { CLAUDE_CODE_PROFILE } from "../browser/chrome";
 import { COMMAND } from "../build-info";
 import type { CliPaths } from "../cli/paths";
 import { bunConfigArg } from "../setup/bun-config";
@@ -31,8 +40,9 @@ the updates, the heavy-job queue and the companions. It binds 127.0.0.1 only.
   --no-open       do not open your browser; print the link instead
 
 It prints a link with a one-time token, and stops after 30 minutes with no request. It
-refuses to run inside a Claude Code session: run it in your own terminal, and never open it
-in the browser Claude drives.`;
+refuses to run inside a Claude Code session: run it in your own terminal. When Chrome's
+"claude-code" profile is on this machine — the one Claude Code drives — it does not open a
+browser by itself: open the link in a window that is NOT that profile.`;
 
 /** What the portal's own options are, parsed: `pluginDir` only for the child (below). */
 interface PortalArgs {
@@ -102,13 +112,29 @@ export function portalCopy(paths: CliPaths): string {
 }
 
 /**
+ * Whether the portal may open a browser by itself. It may not when Chrome's `claude-code`
+ * profile — the one Claude Code drives — is on this machine: Chrome opens an outside link in
+ * the window it last used, that window may be Claude's own profile, and the portal's session
+ * cookie would then sit inside the profile Claude drives, whose buttons Claude could reach.
+ * `--no-open` refuses it in any case; without that profile it opens, as it always did.
+ */
+export function mayAutoOpen(options: { claudeCodeProfile: boolean; noOpen: boolean }): boolean {
+  return !options.noOpen && !options.claudeCodeProfile;
+}
+
+/** What the portal prints instead of opening a browser, when it must not open one. */
+export function openYourselfLine(): string {
+  return `Chrome's "${CLAUDE_CODE_PROFILE}" profile is on this machine, and Claude Code drives it: no browser was opened for you. Open the link above in a browser window that is NOT that profile — another Chrome profile, or another browser — and never in the window Claude works in.`;
+}
+
+/**
  * The refusal inside a Claude Code session, in the words the design uses. Null when the
  * person is in their own terminal.
  */
 export function claudeCodeRefusal(env: Record<string, string | undefined>): null | string {
   return env.CLAUDECODE === undefined
     ? null
-    : `${COMMAND} portal cannot run inside a Claude Code session: the portal is for you, not for Claude. It changes this machine's model path and the safety judge, and a session must never do that for itself. Run it in your own terminal — and never open the page in the browser Claude drives.`;
+    : `${COMMAND} portal cannot run inside a Claude Code session: the portal is for you, not for Claude. It changes this machine's model path and the safety judge, and a session must never do that for itself. Run it in your own terminal, and open the link in a browser window that is not Chrome's "${CLAUDE_CODE_PROFILE}" profile (the one Claude Code drives).`;
 }
 
 /** What `runPortal` needs from outside; a test passes its own. */

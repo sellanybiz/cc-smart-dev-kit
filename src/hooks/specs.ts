@@ -12,17 +12,21 @@
  * | serena-root | PreToolUse, PostToolUse, PostToolUseFailure (activate_project), SessionStart | silent; the guard asks without a record |
  * | message-guard | PreToolUse (SendMessage) | asking before every message |
  * | agent-guard | PreToolUse (Agent, Task, Workflow) | machine-wide: it judges the same way without cc-smart-dev-kit.json (`agent-guard.ts`) |
+ * | merge-guard | PreToolUse (Bash, PowerShell) | asking before every command that merges a pull request (`merge-guard.ts`) |
  * | job-route | PreToolUse (Bash) | asking about a heavy command, classified with the default kinds |
  * | after-merge | PostToolUse, PostToolUseFailure (Bash, PowerShell) | one line after a merge |
+ * | review-record | SubagentStop | one line when the review could not be recorded |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
  *
  * Three more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they are about
- * the person, not a project, so they never enter the frame and read no `cc-smart-dev-kit.json` —
+ * the person, not a project, so they never enter the frame and need no `cc-smart-dev-kit.json`
+ * to act (the notifier and the limit alert read a project's `workflow.alerts` settings when
+ * one has them: `src/workflow/alerts.ts`) —
  * `stop-failure` (the usage-limit alert), `update-check` (the background self-update and the
  * instructions copy), `notify` (the alerts: desktop, SSH terminal, Warp; `notify.ts`) and
- * `playwright-output` (a caller-named screenshot goes into the shared browser's output
- * folder, `playwright-output.ts`).
+ * `playwright-output` (a caller-named screenshot goes into the browser's output folder,
+ * `playwright-output.ts`).
  * A project wires these itself, as `cc-smart-dev-kit hook <name>` (`PROJECT_HOOKS`): the worktree
  * engine. A plugin WorktreeCreate would replace Claude Code's own worktrees in every
  * project, so the engine is opt-in (`docs/design.md` § The worktree engine). Each needs
@@ -39,7 +43,8 @@ import { existsSync } from "node:fs";
 import { classifyHeavyCommand } from "../jobs/classify";
 import { mergeKinds } from "../jobs/kinds";
 import type { CcSmartDevKitConfig } from "../project/config";
-import { afterMerge, mergesPullRequest } from "./after-merge";
+import { workflowDefaults } from "../workflow/schema";
+import { afterMerge, mergesPullRequest, requestsMerge } from "./after-merge";
 import { agentGuard, guardFacts } from "./agent-guard";
 import { isInside } from "./git";
 import { DEFAULT_PROTECTED_BRANCHES, guardQuestions, runsGit } from "./git-guard";
@@ -54,7 +59,9 @@ import {
 } from "./io";
 import { jobRoute, routeFacts } from "./job-route";
 import { editedFile, mainFolderGuard, serenaEditedFile } from "./main-folder-guard";
+import { mergeGuard } from "./merge-guard";
 import { messageGuard } from "./message-guard";
+import { agentTypeOf, recordsReview, reviewRecord } from "./review-record";
 import type { HookSpec } from "./run";
 import { readSerenaRoot, serenaRoot } from "./serena-root";
 import { sessionName } from "./session-name";
@@ -152,6 +159,31 @@ export const gitGuardHook: HookSpec = {
   },
 };
 
+/**
+ * The merge guard: PreToolUse on Bash and PowerShell, before a command that merges a pull
+ * request. It lets the merge through without a question only when the project's `autoMerge`
+ * allows it, the required checks are green, and the head commit's review is recorded;
+ * everything else is a question for the person (§ `merge-guard.ts`, `src/workflow/`).
+ */
+export const mergeGuardHook: HookSpec = {
+  name: "merge-guard",
+  events: ["PreToolUse"],
+  wiring: "plugin",
+  onConfigProblem: (message, input) => {
+    const command = stringField(toolInput(input).command);
+    return command !== null && requestsMerge(command)
+      ? toolDecision("ask", cannotCheck("whether this merge may happen by itself", message))
+      : SILENT;
+  },
+  // For the hook log: the programs of the command line, read the way the guard reads it, so
+  // `doctor --live` can prove the guard parsed the call.
+  logFacts: (input) => {
+    const command = stringField(toolInput(input).command);
+    return command === null ? {} : { programs: programsOf(command) };
+  },
+  run: mergeGuard,
+};
+
 export const mainFolderGuardHook: HookSpec = {
   name: "main-folder-guard",
   events: ["PreToolUse"],
@@ -207,6 +239,32 @@ export const afterMergeHook: HookSpec = {
       : SILENT;
   },
   run: afterMerge,
+};
+
+/**
+ * The review record: SubagentStop, when the agent that stopped is a review agent
+ * (`workflow.reviewAgents`, default: the plugin's own reviewer). It records the commit the
+ * session's working folder is on, which is what the merge guard reads before a merge it
+ * would make with no person watching (`src/hooks/review-record.ts`, the whole story).
+ *
+ * A plugin-wired SubagentStop is safe for THIS hook because it never touches a worktree: the
+ * engine's own `subagent-stop` stays the project's opt-in (`.claude/rules/hooks.md`).
+ * SubagentStop carries no context, so its answers are silence and stderr only.
+ */
+export const reviewRecordHook: HookSpec = {
+  name: "review-record",
+  events: ["SubagentStop"],
+  wiring: "plugin",
+  onConfigProblem: (message, input) => {
+    // Which agents record is in the project's file, so with no usable file the built-in list
+    // decides whether this is even about a review: one stderr line when it is, silence when
+    // it is not, like `after-merge` only speaks after a merge.
+    const agent = agentTypeOf(input);
+    return agent !== null && recordsReview(agent, workflowDefaults.reviewAgents)
+      ? { stderr: `cc-smart-dev-kit review-record: ${message}` }
+      : SILENT;
+  },
+  run: reviewRecord,
 };
 
 export const worktreeLeftoversHook: HookSpec = {
@@ -280,12 +338,14 @@ function cwdOf(input: HookInput): string {
 /** The hooks the plugin wires in `plugin/hooks/hooks.json`, by their bundle name. */
 export const HOOKS: readonly HookSpec[] = [
   gitGuardHook,
+  mergeGuardHook,
   mainFolderGuardHook,
   serenaRootHook,
   messageGuardHook,
   agentGuardHook,
   jobRouteHook,
   afterMergeHook,
+  reviewRecordHook,
   worktreeLeftoversHook,
   sessionNameHook,
 ];
@@ -323,8 +383,8 @@ export const USER_HOOKS: readonly string[] = [
 
 /**
  * Every hook that answers about the **machine**, not a project: the `USER_HOOKS` bundles
- * (they never read cc-smart-dev-kit.json at all) and `agent-guard`, a plugin hook whose answer does
- * not depend on the project's file either. `doctor`'s project checks never warn about a
+ * (no project file is needed for them to act) and `agent-guard`, a plugin hook whose answer
+ * does not depend on the project's file either. `doctor`'s project checks never warn about a
  * project hook that runs beside one of these: it is the person's own business, not a second
  * copy of a project piece, and `USER_HOOKS` cannot be listed in `ownHooks` in any case.
  */

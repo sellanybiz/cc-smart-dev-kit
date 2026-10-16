@@ -10,7 +10,8 @@ from), named `cc-smart-dev-kit`.
 
 ## Install
 
-You need macOS or Linux (for now: the launcher and `bin/` are POSIX `sh` scripts),
+You need macOS, Linux or Windows (native Windows; the parts that are `sh` scripts run
+through Git Bash there — [Windows](#windows)),
 [Claude Code](https://code.claude.com), [Bun](https://bun.sh) 1.4.3 or later (an older
 Bun would send a backend's key through a proxy and would ignore the flags that keep a
 project's `.env` files and `bunfig.toml` out of the plugin; `bun --version` shows yours),
@@ -57,13 +58,116 @@ hooks do not run at all: the hook shim stops before starting one.
    Setup installs the launcher `~/.local/bin/cc-smart-dev-kit`, turns on auto-update for the
    plugin, registers the MCP servers for your user ([MCP servers](#mcp-servers)), installs
    the plugin's general instructions for Claude (§ Instructions, skills
-   and agents), and adds any companion marketplace that is missing. Add `--dry-run` to see
-   the changes first; it writes and runs nothing at all. Add `--no-instructions` to leave
-   the instructions out (setup remembers that choice).
+   and agents), adds any companion marketplace that is missing, and prints the [browser](#the-browser)'s
+   own steps while they are still open (the browser needs the Playwright extension in a Chrome
+   profile of its own, and its token — `browser setup` does the machine's half of that). Add
+   `--dry-run` to see the changes first; it writes and runs nothing at all. Add
+   `--no-instructions` to leave the instructions out (setup remembers that choice).
 
-4. Restart Claude Code.
+4. Restart Claude Code. Finish the browser's steps if setup printed them
+   ([The browser](#the-browser)); without the token, the browser tools do not work.
 
 After that, use `cc-smart-dev-kit setup` to set up again (for example after an update).
+
+## What's new in 0.4.0
+
+- **`cc-smart-dev-kit project init`** sets a project up: its `.claude/cc-smart-dev-kit.json`
+  and, unless the project runs an engine of its own, the worktree engine's three hook lines
+  ([`project init`](#project-init)).
+- **The workflow, and `cc-smart-dev-kit workflow`**: what cc-smart-dev-kit may do by itself
+  here — commit, push, open a pull request, merge. The project's committed file wins over
+  your own defaults, and `show` prints each value with where it came from
+  ([The workflow](#the-workflow)).
+- **A base per branch prefix** (`worktrees.bases`): a `hotfix/…` or `release/…` worktree
+  starts from the base that prefix names, not from the integration base
+  ([Worktrees](#worktrees)).
+- **`worktrees.engine: "own"`**: a project that runs its own worktree engine says so, and
+  `doctor` expects no cc-smart-dev-kit hook lines there ([A project's
+  `.claude/cc-smart-dev-kit.json`](#a-projects-claudecc-smart-dev-kitjson)).
+- **Windows**: native Windows, with Git Bash for the parts that are `sh` scripts — the
+  hooks, setup, the launcher, the gateway as a Scheduled Task, the job queue, the toasts
+  ([Windows](#windows)).
+- **`cc-smart-dev-kit usage`** also shows auto mode's safety checks, which the gateway's
+  router counted, by day, with the tokens each answer reported
+  ([The usage limit: the alert, the status line, and `usage`](#the-usage-limit-the-alert-the-status-line-and-usage)).
+- **The browser drives your own Chrome**, through the Playwright extension, in a profile of its
+  own named `claude-code`: `cc-smart-dev-kit browser setup` makes it and prints the steps,
+  `browser token` saves the token its status page shows — and `browser mcp` refuses to start
+  without that token, so nothing ever waits for an approval click ([The
+  browser](#the-browser)). The plugin's own shared Chrome, its profile and the tab filter are
+  gone; the profile folder 0.3.0 left stays on disk, `doctor` names it and the command that
+  deletes it, and nothing here deletes it for you.
+- **The instructions work in parallel**: the plugin's general instructions tell Claude to
+  start every independent phase at once, and never to wait for a merge, a release, a review
+  or an answer it does not need ([Instructions, skills and agents](#instructions-skills-and-agents)).
+- **The merge guard, and the review record** ([The workflow](#the-workflow)): the `merge-guard`
+  hook asks you before a `gh pr merge` your policy does not allow, and `workflow show` says
+  whether the commit here has a recorded review.
+- **The effort rule** ([The hooks](#the-hooks)): `agent-guard` allows a subagent only at
+  `high`, `xhigh` or `max` — `low`, `medium` or a level it does not know is refused, as
+  before a launch with no model or no effort. An affordable slot still runs at `max`; a
+  review runs at `xhigh`, never `max`.
+- **The alert settings** ([Notifications](#notifications)): `alerts.events` says which moments
+  alert, `alerts.sound` adds the platform's sound, and `alerts.usagePercent` is the plan share
+  the status line warns from.
+- **The Linux desktop extras of the alerts** ([Notifications](#notifications)): a click
+  raises the session's window, the alert moves to the notification centre after a minute, one
+  alert per session is on screen, and XFCE's Do Not Disturb keeps an ordinary alert quiet —
+  each only where its tool is installed.
+- **The portal's Settings page, its Project card and its Browser card** ([The
+  portal](#the-portal)): the workflow settings with where each value comes from, the project's
+  two files planned and written from the form, and the browser's state with the button that
+  runs `browser setup`.
+- **"Dynamic, not hard-coded"** ([Instructions, skills and agents](#instructions-skills-and-agents)):
+  the instructions tell Claude to read every value — a name, a path, a port, a URL, a version,
+  a branch, a list — from the one place that owns it, never from a copy in the text.
+
+**After you update, run `cc-smart-dev-kit gateway setup` on every machine with the gateway.**
+The router changed in this release (it counts auto mode's safety checks, which `usage` reads),
+and that command puts the new copy in place. It asks before it restarts the router, because a
+restart cuts the answers in flight.
+
+**The browser needs its two steps too** ([The browser](#the-browser)): the `playwright` server
+refuses to start until `cc-smart-dev-kit browser setup` has made the `claude-code` profile and
+`cc-smart-dev-kit browser token` has saved the token from the extension's status page. A machine
+that ran 0.3.0 also still has its old shared profile at
+`~/.local/share/cc-smart-dev-kit/playwright`, and possibly the Chrome 0.3.0 started: nothing uses
+either now, and `doctor` names both — where the folder is, the command that deletes it, and the
+pid of that Chrome, whose debug port any program on your machine can drive. Neither is deleted
+for you: the folder may hold sign-ins, so that call is yours.
+
+## Windows
+
+The plugin runs on **native Windows** (not WSL). What it does there, and where Windows
+differs:
+
+| Part | On Windows |
+|---|---|
+| The `sh` parts | Need **Git Bash** (Git for Windows): Claude Code runs a shell-form hook and the Bash tool through it, and the plugin's own hooks are `sh` scripts. `doctor` finds it, or says `✗ Git Bash was not found`. |
+| The launcher | `~/.local/bin/cc-smart-dev-kit` for Git Bash, and `cc-smart-dev-kit.cmd` beside it for `cmd` and PowerShell. `setup` writes both. |
+| Every path | The same layout as Linux and macOS, under `%USERPROFILE%` (`%USERPROFILE%\.claude`, `…\.local\share\cc-smart-dev-kit`, `…\.config\cc-smart-dev-kit`). |
+| The gateway | A per-user **Scheduled Task** instead of the systemd units. A restart refuses requests for a moment (Claude Code retries them), and a stop cuts the answers in flight. |
+| The heavy-job queue | Runs each job as a plain child, with no memory ceiling, and reads the free memory Windows reports. |
+| Notifications | A desktop toast through PowerShell (Windows plays the toast's own sound); the terminal route is Claude Code's own. |
+| `sessions --open` | Warp tabs where Warp is there, else a Windows Terminal window each. |
+
+Five pages say how, and what still has to be tested there:
+
+- [docs/windows-setup.md](docs/windows-setup.md): the folders, the `.cmd` launcher, file modes
+  vs the profile's ACL, Git Bash, and the owed checks: the `.cmd` from `cmd` and PowerShell,
+  Git Bash end to end, Chrome, worktrees, `sessions --open`, file modes, paths and Ctrl+C.
+- [docs/windows-hooks.md](docs/windows-hooks.md): the hooks' shell form, the `.sh` first token,
+  and the owed run: a guard blocking in a real session with bun absent, and Git Bash missing on
+  purpose.
+- [docs/windows-notify.md](docs/windows-notify.md): the toast, the sound Windows plays with
+  it and the self-update trampoline, and the owed run: a toast from a hook, the reminder
+  toast, and `powershell` on a hook's PATH.
+- [docs/windows-jobs.md](docs/windows-jobs.md): the memory reading, the `win:` leases and the
+  `taskkill` end, and the owed run: two sessions on one queue, `job status`, a killed holder,
+  Ctrl+C and a worker left behind.
+- [docs/windows-gateway.md](docs/windows-gateway.md): the Scheduled Task, what Windows loses
+  (no socket activation, no journal), and the owed run: `gateway setup` without elevation, the
+  task's states in `doctor`, a restart, and `restore`.
 
 ## Commands
 
@@ -77,16 +181,20 @@ After that, use `cc-smart-dev-kit setup` to set up again (for example after an u
 | `cc-smart-dev-kit setup --remove-warp` | Removes the Warp terminal, its package source and key, your Warp shortcuts and its Claude plugin. Shown and asked first. |
 | `cc-smart-dev-kit setup --statusline` | Also sets Claude Code's status line to `cc-smart-dev-kit statusline`, as a key cc-smart-dev-kit owns, without asking (also after an earlier "no"). It never replaces a status line you set: one you set yourself, also after setup had set it, stops setup before it writes anything, and `restore` leaves it. |
 | `cc-smart-dev-kit statusline` | The status line itself: plan usage, a warning from 85 %, and any gateway fallback in use. Reads the JSON Claude Code passes on stdin. |
-| `cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>]` | Which models answered on this machine, per session, from Claude Code's transcripts: the main session's replies by model, and apart, its subagents (how each was launched, the model of each reply, the share on Opus). Default: the last 6 hours. Read only; no message text. |
+| `cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>]` | Which models answered on this machine, per session, from Claude Code's transcripts: the main session's replies by model, and apart, its subagents (how each was launched, the model of each reply, the share on Opus). Default: the last 6 hours. It also shows auto mode's safety checks, which the gateway's router counted, by day, with the tokens each answer reported (below). Read only; no message text. |
 | `cc-smart-dev-kit doctor [--live]` | Checks the install, the cc-smart-dev-kit files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below). Prints ✓ or ✗ for each check, `·` for information and `!` for a warning (neither is a failure), and exits with 1 when a check fails. `--live` also proves the hooks and the worktree engine on the Claude Code installed here (below); it never runs without the flag. |
 | `cc-smart-dev-kit hook <worktree-create\|worktree-remove\|subagent-stop>` | The worktree engine, for a project that wires it in its own `.claude/settings.json` (§ Worktrees). It reads the hook's input on stdin and answers as Claude Code expects. With no name, it prints the lines to paste. |
+| `cc-smart-dev-kit project init [--dry-run] [--yes] [flags]` | Sets a project up ([`project init`](#project-init)): it writes the project's `.claude/cc-smart-dev-kit.json` (the worktrees, the protected branches, the guards, and optionally the [workflow](#the-workflow) policy) and, unless the project runs an engine of its own, the worktree engine's three lines in `.claude/settings.json`. It asks first, showing each default, which comes from the repo (the base from `origin/HEAD`, the setup command from the lockfile, the protected branches from git and, when `gh` is installed and answers, GitHub); every question has a flag, so a run with no terminal writes nothing unless `--yes` is given. It never commits. `cc-smart-dev-kit project init --help` lists the flags. |
+| `cc-smart-dev-kit workflow [show] \| set <setting> <value> [--project] \| unset <setting> [--project] \| review-done [--sha <commit>]` | What cc-smart-dev-kit may do by itself here — commit, push, open a pull request, merge — and the switches that map onto settings which already exist ([The workflow](#the-workflow)). `show` (the default) prints each value and where it came from: the project's file, your own defaults, or the built-in default, and whether the commit here has a recorded review. `set` and `unset` write one value; `--project` writes the project's committed file. `review-done` records that a commit had its one premium review, for your own terminal: it refuses inside Claude Code, where the [review-record hook](#the-workflow) writes the record when a review agent returns. |
 | `cc-smart-dev-kit session-name <session id> <name>` | Names a Claude session after its task. A session runs it itself when the project turns on `sessionNames` (below). |
 | `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too, and the launcher when setup created it — so `cc-smart-dev-kit` may be off your PATH then, and the line it prints is the `bun --no-env-file --config=… …/dist/cli.js restore` form of [Install](#install) step 3, with the bun running the restore, its own absolute path, and your installed version) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing. |
 | `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version. `--check` only says whether a newer version exists (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
 | `cc-smart-dev-kit gateway <command>` | The optional AI gateway (below). |
-| `cc-smart-dev-kit browser mcp` | Starts the Playwright MCP server on the ONE Google Chrome every session shares, through a filter that shows this session only its own windows ([The shared browser](#the-shared-browser)). `setup` registers it as the `playwright` MCP server; you do not run it by hand. |
-| `cc-smart-dev-kit browser check [--headless] [--idle]` | Proves the shared browser end to end: two real sessions, each with a real Playwright, on one throwaway Chrome (a sign-in, tabs, popups, a screenshot, an upload, a download, `browser_close`). Exit 0 when every check passed. `--headless` opens no window; `--idle` adds a 150-second wait, to show a quiet session keeps its tabs. |
-| `cc-smart-dev-kit sessions [--open] [--dry-run]` | This project's Claude Code sessions of the last two days, by name and worktree, with the command that resumes each ([Sessions](#sessions)). With Warp installed it also saves a Warp tab for each. `--open` reopens every session that was open when the machine went down or its window closed (Warp tabs, or XFCE Terminal windows on Linux); `--dry-run` says what it would open and opens nothing. |
+| `cc-smart-dev-kit browser mcp` | Starts the Playwright MCP server on **your own Google Chrome**, through the Playwright extension, in the profile `claude-code` ([The browser](#the-browser)). `setup` registers it as the `playwright` MCP server; you do not run it by hand. **It refuses to start without the token**: without one the extension would ask you to approve every connection. |
+| `cc-smart-dev-kit browser setup [--dry-run]` | Finds Chrome, opens the Playwright extension's Web Store page in the `claude-code` profile (Chrome makes that profile on that launch, if it is not there yet), pre-registers the extension for your user on macOS and Windows, and prints the steps that are left for you. It never installs or removes an extension, and never deletes a profile. `--dry-run` prints the same lines and runs and writes nothing. |
+| `cc-smart-dev-kit browser token [--clear]` | Saves the token the extension's status page shows — paste the whole line (its Copy button copies `PLAYWRIGHT_MCP_EXTENSION_TOKEN=…`), and it is not echoed while you type. It is written to `~/.config/cc-smart-dev-kit/playwright-extension.token` (mode 600 on Linux and macOS; on Windows your profile's own permissions keep it yours), and is never printed again. `--clear` removes it. |
+| `cc-smart-dev-kit browser check` | Proves the browser end to end on your own Chrome: a real connection with **no approval page**, a `file://` page (which needs "Allow access to file URLs"), screenshots (one the server names, one a caller names), an upload, a download, and `browser_close`. Exit 0 when every check passed. It opens that Chrome window once, and the tabs of its connection stay behind. |
+| `cc-smart-dev-kit sessions [--open] [--dry-run]` | This project's Claude Code sessions of the last two days, by name and worktree, with the command that resumes each ([Sessions](#sessions)). With Warp installed it also saves a Warp tab for each. `--open` reopens every session that was open when the machine went down or its window closed (Warp tabs, or a terminal window each: XFCE Terminal on Linux, Windows Terminal on Windows); `--dry-run` says what it would open and opens nothing. |
 | `cc-smart-dev-kit worktrees [--clean] [--remove <path>] [--no-fetch]` | Every worktree of this repo: who works in it, and which are finished ([Worktrees](#worktrees)). `--clean` removes the finished ones with their branches; `--remove <path>` removes one now, for the session that has just finished in it, so without the one-hour wait; `--no-fetch` judges against `origin/<base>` as it is. `--clean` and `--remove` run in the main checkout only, one at a time. |
 | `cc-smart-dev-kit omniroute <status\|update\|rollback>` | The OmniRoute behind the gateway's affordable slots (below): what is installed, the newest npm release at least three days old, the user unit that runs it, and the backend that talks to it. `update` installs the newest such release, restarts its unit, checks the model path, and puts the old version back when the new one does not answer. `rollback` installs the version the last update replaced. `update` and `rollback` refuse to run inside a Claude Code session, and are never in the background. |
 | `cc-smart-dev-kit portal [--port <port>] [--no-open]` | The local portal (below): a page on this machine to see and change the gateway's settings, the updates, the heavy-job queue, the companions and the OmniRoute. It binds `127.0.0.1` only, prints a link with a one-time token, and stops after 30 minutes with no request. It refuses to run inside a Claude Code session: the portal is for you, not for Claude. |
@@ -108,7 +216,8 @@ hour**, in the background, and never makes the session wait or prints anything:
 2. When either is behind, it runs the same two commands as `cc-smart-dev-kit update`, in your
    home folder and without git variables like `GIT_DIR` that a session may carry, logs
    each step to `~/.claude/cc-smart-dev-kit/update.log`, and shows one desktop notification when
-   a new version was installed (`notify-send` on Linux, `osascript` on macOS): "cc-smart-dev-kit
+   a new version was installed (`notify-send` on Linux, `osascript` on macOS, a PowerShell
+   toast on Windows): "cc-smart-dev-kit
    X installed; restart Claude sessions to load it". When the new version's router
    differs from the one running, the notification adds the `cc-smart-dev-kit gateway setup` hint.
 
@@ -126,7 +235,7 @@ It honours Claude Code's own switches for updates: while `DISABLE_AUTOUPDATER`,
 environment or the `env` of `settings.json`) and `FORCE_AUTOUPDATE_PLUGINS` is not, it
 checks nothing and only records "skipped: <name> is set".
 
-The hook runs bun through `plugin/bin/cc-smart-dev-kit-bun`, which finds bun where the launcher
+The hook runs bun through `plugin/bin/cc-smart-dev-kit-bun.sh`, which finds bun where the launcher
 does (the bun `cc-smart-dev-kit setup` baked in, `$BUN_INSTALL/bin`, `~/.bun/bin`, then PATH), so
 it works when Claude Code was started with a PATH that has no bun. It starts bun with
 `--no-env-file` and the plugin's own empty config, so a hook sees the environment Claude Code
@@ -145,6 +254,10 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   update cc-smart-dev-kit";
 - the launcher matches the script setup would write for the `bun` baked into it, and
   that `bun` is executable;
+- on Windows, the second launcher and Git Bash: `~/.local/bin/cc-smart-dev-kit.cmd` is there,
+  is this version's and runs (through `cmd.exe`), Git Bash is found (the `✗` says to install
+  Git for Windows or to set `CLAUDE_CODE_GIT_BASH_PATH`; a `!` for a variable Claude Code
+  ignores), and `tmux: not on Windows` is a `·` line (§ Windows);
 - the instructions: the copy in `~/.claude/cc-smart-dev-kit/instructions/` is this plugin
   version's (its version stamp, and each file against the plugin's), and `~/.claude/CLAUDE.md`
   still holds the block that imports it. A ✗ says "Run: cc-smart-dev-kit setup". After
@@ -183,7 +296,14 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
 - Warp: the app and its version, and its Claude plugin. Not installed, or installed
   without its plugin (or with it turned off), is information (`·`): Warp is optional.
   ✗ only for the plugin without the app;
-- the MCP servers setup registers (the `playwright` shared browser, `serena`,
+- the browser: Google Chrome is installed, the `claude-code` Chrome profile is there, the
+  Playwright extension is installed in it and it is the ONLY extension there (a second one
+  breaks a browser session: microsoft/playwright#43230, open — a `!` line names it), the profile
+  lets the extension open `file://` pages, and the extension's token is saved. A ✗ names the
+  command or the click that fixes it; without the token nothing runs at all
+  ([The browser](#the-browser)). Whether the `playwright` server is registered and starts is the
+  MCP servers' own line, just below;
+- the MCP servers setup registers (the `playwright` browser, `serena`,
   `sequential-thinking`, `tavily-websearch`): each is registered at user scope and starts
   (`claude mcp get`, which starts it once). ✗ when one is missing ("Run: cc-smart-dev-kit setup")
   or when another copy of it wins — a project's `.mcp.json`, or the local scope — naming
@@ -198,6 +318,10 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   `tmux set -g allow-passthrough all`): tmux is optional. When neither is wrong — the line
   is in the file, and you are outside tmux, or inside one whose passthrough is `all` —
   doctor prints no tmux line at all;
+- the Linux desktop extras of the alerts (§ Notifications), when a desktop is there: a `·`
+  line for each tool that is missing — `gdbus` for the minute on screen and one alert per
+  session, `xdotool` for the raise on a click, `xfconf-query` for XFCE's Do Not Disturb —
+  never a failure, and nothing when they are all installed;
 - no other plugin named `cc-smart-dev-kit` is enabled, and the plugin's old id `cc@cc-agentic`
   (its name before version 0.2.0) is not enabled either: two copies of the same hooks
   would run. When the old setup ran on this machine (its folder `~/.claude/cc-agentic`
@@ -208,7 +332,8 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   cc@cc-agentic`, then `claude plugin marketplace remove cc-agentic`;
 - no gateway setup stopped half way: while one did, ✗ "a gateway setup did not finish;
   run: cc-smart-dev-kit gateway setup";
-- the gateway, when it is installed (the router copy or one of its units is there): the
+- the gateway, when it is installed (the router copy, or one of its units — on Windows, its
+  Scheduled Task — is there): the
   router service is active, the router copy is this plugin version's, the socket unit
   `cc-smart-dev-kit-router.socket` is there, listens on the config's port and is active (a
   router set up by an older version has none: ✗ "Run: cc-smart-dev-kit gateway setup"), the
@@ -411,8 +536,10 @@ one, with the name it becomes.
 
 A local router, `cc-smart-dev-kit-router`, lets Claude Code's `haiku` and `sonnet` subagents run on
 more affordable models (for example through OmniRoute and Ollama Cloud), while Claude models stay
-real Claude on your own login. No prompt text is ever changed. Linux only for now
-(systemd user units). How it works: [docs/gateway.md](docs/gateway.md).
+real Claude on your own login. No prompt text is ever changed. The service that keeps the
+router running is a systemd user unit on Linux and a per-user Scheduled Task on Windows
+(see [Windows](#windows)); macOS has neither, and `gateway setup` refuses there.
+How it works: [docs/gateway.md](docs/gateway.md).
 
 | Command | What it does |
 |---|---|
@@ -532,7 +659,8 @@ cc-smart-dev-kit omniroute rollback   # put back what the last update replaced
   set up). On Linux it offers "Use <target> until it resets", which runs the `slot opus`
   command above (the model, then Sonnet when only the Opus window ran out, then the worker
   slot's affordable targets), and "Wait"; after "Use", send a message in Claude Code to go on.
-  On macOS it names the command. It needs a desktop to show the alert on: where there is none
+  On macOS and Windows it names the command (a Windows toast has no action button).
+  It needs a desktop to show the alert on: where there is none
   (an SSH session, a headless machine) or the gateway was never set up, the `notify` hook
   announces the stopped turn instead. A short rate limit is not the plan's limit: Claude Code
   retries it, and the `notify` hook announces the turn only if it dies then.
@@ -544,6 +672,24 @@ cc-smart-dev-kit omniroute rollback   # put back what the last update replaced
   model wrote each reply, and the share on Opus. It also lists the Opus and Fable launches
   the `agent-guard` hook allowed, with the reason each one gave (review, or its
   `Opus reason:` / `Fable reason:` word) — an Opus or Fable agent spends your own plan usage.
+- **Auto mode's safety checks**, in the same report when the gateway is set up. In auto mode
+  Claude Code sends one extra request for every shell command or network action it judges
+  ([The auto-mode block](#the-auto-mode-block)). Those requests are not a session's replies —
+  they are Claude Code's own, so the transcripts this command reads do not show them. The
+  router counts them — how many went through each day, how many Anthropic answered and how
+  many the judge, and the input, output and cache tokens each answer reported — and keeps
+  the newest 30 days in
+  `~/.local/state/cc-smart-dev-kit/safety-checks.json`. `cc-smart-dev-kit usage` shows today
+  and the seven days before it, one line a day. The counting never changes an answer: the
+  bytes reach Claude Code exactly as they came, and they are read after the client has them.
+  **What this cannot tell you:** whether those tokens count against a **Pro, Max or Team**
+  plan's limit. Anthropic's docs say they count on **Enterprise and API** accounts; for the
+  others it is not confirmed, so the report says so under the numbers. Treat them as what was
+  spent, not as what will be billed. With no gateway set up there is no router to count, and
+  the report says "none".
+  **After updating to this version, run `cc-smart-dev-kit gateway setup` on each machine**: the
+  router gained this counting, and the copy a machine runs is replaced by that command (it
+  asks before it restarts the router, which cuts the answers in flight).
 
 ## The portal
 
@@ -561,34 +707,67 @@ It binds 127.0.0.1:20150 only, and stops after 30 minutes with no request.
 Stop it now with Ctrl+C here.
 ```
 
-Your default browser opens that link. `--port <n>` changes the port (0 takes a free one);
+Your default browser opens that link — unless Chrome's `claude-code` profile is on this
+machine, the one Claude drives: then nothing is opened for you, and the line under the link
+says where to open it instead (below). `--port <n>` changes the port (0 takes a free one);
 `--no-open` only prints it.
 
 **It refuses to run inside a Claude Code session** (`CLAUDECODE`): "the portal is for you,
 not for Claude". The portal changes this machine's model path and the safety judge, and a
-session must never do that for itself. Run it in your own terminal — and never open the page
-in the browser Claude drives.
+session must never do that for itself. Run it in your own terminal — and open the link in a
+browser window that is not Chrome's `claude-code` profile, the one Claude drives: it would put
+the portal's session cookie inside that profile, where Claude could reach the page's buttons.
+(When that profile is on this machine, `portal` opens no browser by itself for exactly that
+reason: it prints the link and says where to open it. Without that profile it opens your
+default browser, as always.)
 
-Five screens, each following the design the owner approved (2026-10-16):
+Six screens, each following the design the owner approved (2026-10-16):
 
 | Screen | What it shows |
 |---|---|
 | **Overview** | The plan limits the router saw and the slots answering from a fallback; every slot's chain; the three switches (the gateway, your own judge, the opus and fable fallback); the latest warnings. |
 | **Slots** | A chain per slot, built from the backends' live model lists. **Test each target** — one tiny chat to each affordable model, and the force-push test for a judge — then **Save**, after a confirmation that every running Claude session uses it from its next request. Save is held off for the **judge** slot until every backend target has blocked the force-push test; the command line's own rule, said in the judge note. |
 | **Health** | The router's counters, each backend and whether it answers, the targets resting, and its journal. Looks again every five seconds (Pause stops that, and a hidden tab is not reloaded at all); a look of its own does not count as activity, so an open Health tab cannot hold the portal up. |
-| **Machine** | Updates (installed, newest, last check, on hold, check now, install), the heavy-job queue, the companion plugins, the OmniRoute card, `doctor` (run again), the project's auto-mode rules, and the **Warp card**, which shows the install and remove commands to copy. |
+| **Machine** | Updates (installed, newest, last check, on hold, check now, install), the heavy-job queue, the companion plugins, the OmniRoute card, the **Browser card** (the browser's own `doctor` lines, the five steps as one numbered list — each step's sentence, then the address or command it needs in a box of its own with a Copy button — a button that runs `browser setup`, which opens the extension's page in your `claude-code` profile and names that profile in Chrome's own settings file while Chrome is closed, and a masked field that saves the token: the stored value is never on the page), `doctor` (run again, without the browser's lines, which are on that card), the project's auto-mode rules, the **Project card** (below), and the **Warp card**, which shows the install and remove commands to copy. |
+| **Settings** | Every workflow setting, one row each: what Claude does after a finished step (auto commit, auto push, the pull request, the auto-merge rule, the merge method, the branch and the worktree), the alerts (which events, the sound, the usage-limit percentage), and the switches (the status line, the session names, the heavy-job queue, the update hold). Each row says where its value comes from — `yours`, `this project` or `default` — and a row the project sets is read-only here, with a link to the Project card. |
 | **How this page stays private** | The security design in plain words, linked from the footer. |
+
+**The Settings page writes one value at a time**, through the same functions the command
+line's `workflow set` uses, so the page and `cc-smart-dev-kit workflow show` can never
+disagree about this machine: your own choices go to
+`~/.config/cc-smart-dev-kit/workflow.json`, and the two switches the project owns
+(`switches.sessionNames`, `switches.jobRoute`) are written into the project's committed
+`.claude/cc-smart-dev-kit.json` after a confirmation that says so. A row the project sets is
+read-only here — the project's choice wins — and says where to change it. A value outside a
+row's own set (a merge method that is not `merge`, `squash` or `rebase`; a percentage that is
+not 1–100) is refused in words, and nothing is written.
+
+**The Project card** is about the repo the portal was started in. Nothing set up yet: the
+line and **Set up this project**, which opens the form — the base branch, the worktree folder
+prefix, the setup command, the branches that start from another base, the protected branches,
+the three guards and the worktree engine. Its first values are what
+`cc-smart-dev-kit project init` would offer for this repo (its default branch — the remote's
+`origin/HEAD`, else the repo's only branch, else `main`, else `master`, else the branch you
+are on — its lockfile's command, the branches GitHub protects), never a value this page made
+up. The preview is that command's own plan, made on the server and sent to the page: a box
+asks again once the typing pauses (300 ms, and at once when an edit is finished), so the boxes
+follow the words, and the browser never builds the file. Each answer carries the hash of the
+two files it was planned from, and **Write the files** sends it back: a project file someone
+changed in between makes the write refuse ("preview again") rather than quietly write their
+change away. The write itself goes through the same `applyProjectInit` (a backup, then an
+atomic write), asks first, and **never commits**: commit them with the project.
 
 **Without a gateway config** (never set up, or one that cannot be read): Overview, Slots and
 Health show "The gateway is not set up", with the command that sets it up and a button to
-Machine. **Machine and the privacy page still work**, because neither needs the gateway:
-the updates, the heavy-job queue, the companions, `doctor` and the Warp card are all real
-there — `doctor` matters most on a machine that has no gateway, and its gateway line is
-information (`·`), never a failure. What does need the config says so in a short line
-instead of showing a made-up value: the header pill reads "Gateway not set up", the
-OmniRoute card's Backend line says "the gateway is not set up", a last card on Machine names
-the setup command, and the privacy page says that no router answers here rather than naming
-a port. A config that is there but broken is named as such, with its own error.
+Machine. **Machine, Settings, the Project card and the privacy page still work**, because
+none of them needs the gateway: the updates, the heavy-job queue, the companions, `doctor`,
+the workflow settings and the Warp card are all real there — `doctor` matters most on a
+machine that has no gateway, and its gateway line is information (`·`), never a failure.
+What does need the config says so in a short line instead of showing a made-up value: the
+header pill reads "Gateway not set up", the OmniRoute card's Backend line says "the gateway
+is not set up", a last card on Machine names the setup command, and the privacy page says
+that no router answers here rather than naming a port. A config that is there but broken is
+named as such, with its own error.
 
 **Everything it does is real**, and every action runs the same function the command line
 runs — the same checks, the same lock, the same words (`docs/design.md` § The portal). What
@@ -869,7 +1048,7 @@ The plugin's hooks run in every project. Most stay silent in a **project without
 `.claude/cc-smart-dev-kit.json`**; the three that are about your machine, not a project —
 `agent-guard`, `notify` and `playwright-output` — run there too (§ Notifications below). The plugin ships no worktree hook:
 Claude Code makes its own worktrees, unless a project turns on the worktree engine
-(§ Worktrees). Each hook runs through `bin/cc-smart-dev-kit-bun`, which finds bun even when your
+(§ Worktrees). Each hook runs through `bin/cc-smart-dev-kit-bun.sh`, which finds bun even when your
 PATH has none: the bun `cc-smart-dev-kit setup` saved in the launcher first, then
 `$BUN_INSTALL/bin/bun`, `~/.bun/bin/bun`, and bun on PATH. It starts bun with
 `--no-env-file` and the plugin's own empty `bunfig.toml`, so a hook never reads the working
@@ -883,11 +1062,13 @@ guard fails closed), and every other hook writes one line on stderr and the sess
 | `git-guard` | before a Bash or PowerShell command | Asks you before a force-push, a push to a protected branch (`protectedBranches`), `push --all` / `--mirror`, a branch deleted on the remote (`git push origin :x`, `--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that throws changes away, `branch -D`, `stash clear` and an unnamed `stash drop` (they throw work away), and (with `worktrees`) a bare `git stash` or `stash pop`: every worktree shares one stash. Text in quotes, here-docs and comments is not a command; a shell keyword, a wrapper (`timeout 60 git push -f`, `sudo -u me …`), a here-doc fed to `sh`, and the text piped into `sh` are read through. Git's own abbreviations count (`--forc` is `--force`). Not read: a git alias (`-c alias.x=…`, or one of your own), `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file, and a branch it cannot name. |
 | `main-folder-guard` | before Edit, Write, NotebookEdit, and Serena's edit tools | With `worktrees.guardMainFolder`: refuses an edit of a file in the main checkout itself, and says how to get into a worktree. A Serena edit is placed by the folder Serena has active, which `serena-root` records for the session; a folder it cannot work out, it asks about rather than letting the edit through. |
 | `serena-root` | `mcp__serena__activate_project` (before and after the call), and a session start | Records which folder Serena edits for this session (`worktrees.guardMainFolder`), so the guard above can place a Serena edit: from the moment an activation is allowed the record says "unknown" until Serena's own answer names the folder, so the guard asks rather than trusting a folder Serena may not be on. It refuses an activation that names a project by name, or a folder outside this repo and its worktrees. At a session start it forgets the record (`startup`) or distrusts it (`resume`, `clear`, `fork`). |
-| `playwright-output` | before every `mcp__playwright__*` call | Puts a screenshot or snapshot the caller names by a relative `filename` into the shared browser's output folder instead of the folder the session runs in (`@playwright/mcp` resolves a caller-named file against the process's own folder). |
+| `playwright-output` | before every `mcp__playwright__*` call | Puts a screenshot or snapshot the caller names by a relative `filename` into the browser's output folder instead of the folder the session runs in (`@playwright/mcp` resolves a caller-named file against the process's own folder). |
+| `merge-guard` | before a Bash or PowerShell command | Asks you before a command that merges a pull request. The forms it reads: `gh pr merge` (`gh pr -R owner/repo merge 5` included), `--auto` (an armed merge lands once the checks pass, with nobody watching), a `gh alias` that expands to one (read from `gh alias list`), and — asking whatever the policy says — a `gh api` call to the pull-request merge endpoint (`repos/o/r/pulls/5/merge`, any method spelling) or a GraphQL query that names `mergePullRequest` / `enablePullRequestAutoMerge`. **Every merge in the command is judged**: `gh pr merge 5 && gh pr merge 6` checks both, and the first it does not allow asks, naming that pull request. It reads three facts, read-only: the pull request (`gh pr view`), the repository's default branch (`gh repo view`), and its required checks (`gh pr checks --required`; a skipped one counts as passing, GitHub's own rule). It lets a merge through with no question only when `autoMerge` is on, the pull request's base is the project's integration base, every required check passed, and — with `reviewBeforePush` on — the head commit has a [recorded review](#the-workflow). Every other case asks you, with the reason it asks; so does a merge that names a repository other than this project's own (`--repo`/`-R`: the policy covers this repository only), one whose earlier steps change the folder, branch or repository it acts on (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing, fails, or answers something it cannot read. In a project without `.claude/cc-smart-dev-kit.json` it stays silent, like every project hook. |
 | `message-guard` | before SendMessage | Refuses a message to a session that works outside this repo (ListAgents lists every session on the machine). |
-| `agent-guard` | before an Agent launch | **Machine-wide** (it runs with or without `.claude/cc-smart-dev-kit.json`): it resolves the model the launch really runs on and holds the model rules. A launch with no `model` or no `effort` is refused (it would inherit the session's, which nobody chose); an affordable gateway slot needs `effort: "max"`, and only a slot key or a `<backend>:<model>` target counts as affordable — a name no rule knows (`best`, `opusplan`, `default`, …) is judged like Opus; Claude Opus is allowed for a review agent, and any other Opus launch needs an `Opus reason: <word>` line and asks you to approve it (in `claude -p`, with nobody to answer, it is refused; a review is not); Claude Fable only for a read-only agent with a `Fable reason: <word> - <why>` line, and Claude Code then asks you to approve each one. A fork runs on the session's model and needs no `model`; an unknown session model counts as Opus. A **Workflow** call is judged the same way, from the `agent(...)` options in its script — a launch whose `model` is built at run time is refused, never guessed, and a script that hands `agent` around (`const run = agent; run(…)`, `agent?.(…)`) or builds a call's options at run time (a `...spread`, a computed key) is refused whole — because (proved live) a workflow's agents run inside the tool and pass no hook of their own. Every Opus or Fable launch is recorded, and `cc-smart-dev-kit usage` lists them with why. |
+| `agent-guard` | before an Agent launch | **Machine-wide** (it runs with or without `.claude/cc-smart-dev-kit.json`): it resolves the model the launch really runs on and holds the model rules. A launch with no `model` or no `effort` is refused (it would inherit the session's, which nobody chose); `effort` `low` or `medium` is refused on every model, a Claude model and an affordable slot alike (a subagent runs at `high`, `xhigh` or `max` only); an affordable gateway slot needs `effort: "max"`, and only a slot key or a `<backend>:<model>` target counts as affordable — a name no rule knows (`best`, `opusplan`, `default`, …) is judged like Opus; Claude Opus is allowed for a review agent, and any other Opus launch needs an `Opus reason: <word>` line and asks you to approve it (in `claude -p`, with nobody to answer, it is refused; a review is not); Claude Fable only for a read-only agent with a `Fable reason: <word> - <why>` line, and Claude Code then asks you to approve each one. A fork runs on the session's model and needs no `model`; an unknown session model counts as Opus. A **Workflow** call is judged the same way, from the `agent(...)` options in its script — a launch whose `model` is built at run time is refused, never guessed, and a script that hands `agent` around (`const run = agent; run(…)`, `agent?.(…)`) or builds a call's options at run time (a `...spread`, a computed key) is refused whole — because (proved live) a workflow's agents run inside the tool and pass no hook of their own. Every Opus or Fable launch is recorded, and `cc-smart-dev-kit usage` lists them with why. |
 | `job-route` | before a Bash command | With `"jobs": { "route": true }`: a heavy command (the project's own [kinds](docs/jobs.md#kinds)) is sent through the machine's queue — rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>`, byte for byte the same command. A command already inside `cc-smart-dev-kit job run` is left as it is. |
-| `after-merge` | after `gh pr merge` | With `worktrees`: the steps to clear the worktree that was merged, and, for a merge into `worktrees.base`, the message to send the other sessions of the repo. |
+| `after-merge` | after a pull-request merge | With `worktrees`: the steps to clear the worktree that was merged, and, for a merge into `worktrees.base`, the message to send the other sessions of the repo. Noted forms: `gh pr merge`, `gh pr -R owner/repo merge 5`, a `gh api` merge whose path names the pull request, and a `gh` alias that expands to one ([The hooks](#the-hooks) has the guard's row). A form that names no pull request — a shell alias, a GraphQL merge, a runner such as `xargs` — gets no note. |
+| `review-record` | when a subagent finishes | Records the commit the session's working folder is on, when the agent that finished is one `reviewAgents` lists (the plugin's reviewer by default): the record the merge guard reads for a merge it would make with no person watching ([The review record](#the-workflow)). It writes nothing for an agent that stopped inside its own worktree. |
 | `worktree-leftovers` | a session starts | With `worktrees`: names the worktrees that are finished (every commit on `origin/<base>`, nothing uncommitted, no running session, idle for an hour) or whose folder is gone. It removes nothing. |
 | `session-name` | a session starts; each prompt | With `sessionNames`: asks the session to name itself after its task, then sets that name at the next prompt. |
 
@@ -907,10 +1088,14 @@ silent all the same.
 
 ### Notifications
 
-Three more hooks are about your machine, not a project, so they run in every folder and read
-no `.claude/cc-smart-dev-kit.json`: `notify` (the alerts below), `stop-failure` (the usage-limit
-alert) and `update-check` (the background self-update, which also brings the managed
-instructions copy up to a new plugin version at the first session start).
+Three more hooks are about your machine, not a project, so they run in every folder and no
+`.claude/cc-smart-dev-kit.json` is needed for them to act: `notify` (the alerts below),
+`stop-failure` (the usage-limit alert) and `update-check` (the background self-update, which
+also brings the managed instructions copy up to a new plugin version at the first session
+start). The first two do read a project's `workflow.alerts` settings when there is one
+([The workflow](#the-workflow)): which moments alert, and whether a sound goes with them. A
+settings file that cannot be read changes nothing — the alerts go on as always, with one line
+on stderr saying why.
 
 `notify` alerts you when Claude needs you, and when a turn ends or dies. One event, one
 alert:
@@ -932,17 +1117,36 @@ usage limit **where the `stop-failure` hook shows that alert itself** (a desktop
 gateway set up — never two alerts for one stop). Where that hook has no alert to show (no
 desktop, no gateway), the stopped turn is this hook's alert like any other.
 
-**A desktop** shows the alert through `notify-send` on Linux (it needs `DISPLAY`) or
-`osascript` on macOS, and plays the freedesktop sound when `paplay` is installed. **An SSH
-session** with no desktop to show it on gets the same alert in the terminal you are looking
-at, as an OSC 777 notification — no `notify-send` needed on a server: Claude Code writes the
-sequence for the hook (2.1.141 or later, wrapped for tmux itself), and for an event whose
-answer Claude Code does not read (the usage-limit alert) the hook writes it to the terminal
-device Claude Code's own session is attached to. **Inside Warp** Warp's own
+**A desktop** shows the alert through `notify-send` on Linux (it needs a desktop:
+`DISPLAY` or `WAYLAND_DISPLAY`) or `osascript` on macOS, and plays the freedesktop sound
+when `paplay` is installed. **An SSH session** with no desktop to show it on gets the same
+alert in the terminal you are looking at, as an OSC 777 notification — no `notify-send`
+needed on a server: Claude Code writes the sequence for the hook (2.1.141 or later, wrapped
+for tmux itself), and for an event whose answer Claude Code does not read (the usage-limit
+alert) the hook writes it to the terminal device Claude Code's own session is attached to.
+**Inside Warp** Warp's own
 Claude Code plugin shows a finished turn, a question, a permission prompt and an error
 itself, so ours stays quiet and plays only the sound — except a question or a waiting agent,
 which may sit in a tab you are not looking at: those stay ours. With no desktop, no SSH and
 no Warp there is nowhere to show it, and nothing happens — not a failure.
+
+**A Linux desktop gives the alert three more things, each where its tool is installed**
+(`cc-smart-dev-kit doctor` names a missing one, as information, and without them the alert still
+shows exactly as before):
+
+| What | Needs | Without it |
+|---|---|---|
+| a click on the alert raises the session's terminal window (the terminal's own window id, or a VS Code or Warp window found by its name) | `xdotool`, and a notification that reports a click: `gdbus`, or a `notify-send` whose `--help` lists `--action` and `--wait` | the alert shows, and a click only closes it |
+| the alert leaves the screen for the notification centre after a minute, and only one alert per session is on screen | `gdbus` (glib's `libglib2.0-bin`) | the alert stays until it is clicked or dismissed |
+| an ordinary alert's sound stays off while XFCE's Do Not Disturb is on (an urgent one sounds anyway) | `xfconf-query` | the sound plays while Do Not Disturb is on |
+
+The wait for a click runs in a small background process, never in Claude Code's way. The
+window raise needs the installed launcher (`cc-smart-dev-kit setup`), and the alert is shown by
+the notification server itself (`gdbus`) or `notify-send`; under Do Not Disturb the desktop
+keeps an ordinary alert off the screen but in the centre, so it is never lost. One older
+behaviour does not come over: picking the session's **tab** inside XFCE Terminal (that needs
+the desktop's accessibility service, which this plugin does not carry) — the window comes to
+the front, and the tab stays where it is.
 
 One settings file, `~/.claude/cc-smart-dev-kit/notify.json` (both keys optional):
 
@@ -969,71 +1173,132 @@ to apply it now (a restart works too) and never changes the running server itsel
 running server does not pass alerts through. Without it, an alert still arrives in a
 terminal that is not tmux, and a session in tmux gets none.
 
-## The shared browser
+## The browser
 
-Every Claude session drives the **same Google Chrome**, on one profile folder,
-`~/.local/share/cc-smart-dev-kit/playwright`. Sign in there once and every session — now and
-after a restart — is signed in. Each session works in windows of its own and never sees
-another session's.
+Claude Code's browser tools (`mcp__playwright__*`) drive **your own Google Chrome**, through the
+**Playwright extension**, in ONE profile of its own named **`claude-code`**. You watch the work in
+that window, and you can take the page over.
 
-Why one browser and not one per session: Chrome lets exactly one process open a profile
-folder, and a login copied into a second browser does not survive (a site that refreshes its
-token logs an old copy out everywhere). One browser has one cookie jar, so the token is
-refreshed once, for everyone.
+Why your Chrome and not a browser of its own: you see what Claude does, you can sign in once in
+that profile, and there is no second browser of ours to keep alive. The costs, both upstream and
+neither planned to change:
 
-**One OS user per machine.** The profile and the output folder are made readable by their
-owner only (0700), and an older folder others could read is tightened the next time the
-browser starts. That keeps other OS users out of the signed-in cookies — but two doors
-stay open, because the shared browser is machine-wide by design: Chrome's own debug port
-speaks over 127.0.0.1 with no authentication and hands its WebSocket URL to any local
-process of any user (`/json/version`), so anyone who can run a program on this machine can
-drive the shared browser; and the start-lock port is shared the same way, so another user's
-program holding it stops the launcher with a clear message. A second person needs their own
-account on their own machine.
+- **Every connection brings the `claude-code` window to the front and switches its active tab**
+  (microsoft/playwright#42343, closed as not planned). Nothing here can stop that.
+- **The `claude-code` profile must hold the Playwright extension and nothing else.** A second
+  extension that injects a frame into pages breaks the session (microsoft/playwright#43230, open).
+  `doctor` names any other extension in that profile; `browser setup` says the same.
+- **There is no headless mode.** A machine with no desktop cannot use the browser at all.
 
-- The first session that needs the browser starts it, detached, so it outlives that session;
-  every later session finds it. Two sessions starting at the same moment cannot start two
-  Chromes: the starter holds a port as a lock, and the other waits for the browser it brings
-  up. The system frees that port however the starter ends, so the lock can never go stale.
-- The launcher (`cc-smart-dev-kit browser mcp`, registered as the `playwright` MCP server)
-  opens a **tab filter** on a free local port and points the Playwright MCP at it
-  (`PLAYWRIGHT_MCP_CDP_ENDPOINT`, in the MCP's environment). Stock Playwright, attached to a
-  running Chrome, adopts EVERY tab in it (microsoft/playwright#42961, no fix upstream) — the
-  filter is what makes a session see only the pages it opened and the popups those opened. It
-  also turns downloads on in the shared browser, which Playwright does not do over CDP, and
-  refuses the browser-wide commands that would reach every session (`Browser.crash`,
-  `Network.clearBrowserCookies`, a cookie clear, `Fetch.enable` on the browser's own session).
-  It never raises a window on your desktop. The filter's endpoint carries a **random token**,
-  and any connection to another path — a web page's, a port scan's — is refused; the token
-  travels in an environment variable, never in a command line, which every user on the machine
-  can read (`/proc`). It stops anything that does not know the token; it does not stop a
-  process of your own user, which can read that environment.
-- When the MCP lets go — `browser_close`, ten idle minutes with no browser call, or the
-  session ending — the filter closes **this session's** windows. The shared Chrome and its
-  logins stay.
-- Everything the browser saves (screenshots, page snapshots, console and network logs,
-  downloads) goes to one folder, `~/.local/share/cc-smart-dev-kit/playwright-output/`, kept
-  under 200 MB by the MCP itself. A file a session NAMES (`filename: "home-dark.png"`) too:
-  the MCP would put that one beside the project's files — it resolves a caller-named path
-  against the folder it runs in — so the `playwright-output` hook rewrites it into that
-  folder first. A path a session gives in full is left as it is: a caller who named a place
-  meant it. A relative name with `..` in it is refused: the launcher passes
-  `--allow-unrestricted-file-access` (a session's files live in its worktree, outside the
-  folder the server was started in), so nothing else would stop it. The hook acts only while
-  the live `playwright` server is the one setup registered — a `playwright` of your own keeps
-  its own output folder and this hook keeps out of it.
-- **A person's click opens the file picker.** While Claude is acting, the MCP holds the
-  picker and waits for `browser_file_upload`; the rest of the time (and two seconds after a
-  call) the interception is off, so a click in that window opens the normal picker. The file
-  that does it is written beside the profile and passed as `--init-page`; it reads one
-  private field of the playwright-core inside the pinned `@playwright/mcp`, and without it
-  every picker stays held for Claude (it says so once in the MCP log).
-- The tool names stay `mcp__playwright__*`: the server is registered for your user, not
+**The token is required, and there is no approval mode.** The extension normally asks you, in a
+page, to approve every connection. The plugin never runs that way: `browser mcp` refuses to start
+until the token is saved, and says which command adds it. The token is what the extension's status
+page shows; it is generated inside the extension, stored in the profile's own extension storage, and
+nothing outside Chrome can read it — that is why you copy it once, by hand:
+
+1. `cc-smart-dev-kit browser setup` — it finds Chrome, makes the `claude-code` profile, opens the
+   Playwright extension's page in it, and prints the steps.
+2. In that window: **Add to Chrome**, then **Add extension**. That profile only.
+3. Open `chrome://extensions/?id=mmlmfjhmonkocbjadbfplnigmagldckm` in that window (paste it: Chrome
+   does not open `chrome://` addresses from a command line) and switch on **Allow access to file
+   URLs** — without it the extension cannot open a local file.
+4. Pin the extension, click its icon, and press **Copy** next to `PLAYWRIGHT_MCP_EXTENSION_TOKEN=…`
+   — the button copies the whole line.
+5. `cc-smart-dev-kit browser token` — paste it (it is not echoed), or use the portal's Browser card
+   (`cc-smart-dev-kit portal`, § The portal). Then start a new Claude session.
+
+`cc-smart-dev-kit setup` prints the same state and the same steps, and never reports the browser
+ready while the token is missing; it is read-only there, so the one command that opens the window
+is `browser setup`.
+
+Where the token lives, and where it does not: `~/.config/cc-smart-dev-kit/playwright-extension.token`,
+mode 600 on Linux and macOS, readable by you alone (on Windows a file mode says nothing: your user
+profile's own permissions keep it yours); the launcher puts it in the Playwright MCP child's
+**environment**, never in a command line (`argv` is world-readable in `/proc`) and never in
+`~/.claude.json`. No command, page or log ever prints its value: the portal's Browser card shows a
+masked field and says "a token is set".
+
+A token that no longer matches the extension — you pressed "Generate new token", or reinstalled the
+extension — does **not** fall back to the approval page: the extension answers the connect page with
+*Invalid token provided.*, and the session's browser call then fails after the MCP's own 30-second
+deadline with a message naming the profile and the variable. Copy the token again and run
+`cc-smart-dev-kit browser token`.
+
+- **Each session gets its own tab group** in that profile (`Playwright · claude-code`, then `(2)`,
+  `(3)` … since Playwright v1.63), and sees only the tabs in it. A tab you drag out of the group is
+  no longer Claude's.
+- **Everything the browser saves** (screenshots, page snapshots, console and network logs,
+  downloads) goes to `~/.local/share/cc-smart-dev-kit/playwright-output/`, kept under 200 MB by the
+  MCP itself and readable by you alone. A file a session NAMES (`filename: "home-dark.png"`) too:
+  the MCP resolves that against the folder it runs in — the project's own folder — so the
+  `playwright-output` hook rewrites a relative name into that output folder first, and refuses a
+  relative name with a `..` in it. A path a session gives in full is left as it is. The hook acts
+  only while the live `playwright` server is the one setup registered.
+- **`browser check`** proves all of it on your real Chrome: a connection with no approval page, a
+  `file://` page, a screenshot the server names and one a caller names, an upload through the MCP's
+  file-upload tool, a download, and `browser_close`. Run it when the browser misbehaves.
+- **Nothing here is a second browser.** The plugin starts no Chrome of its own, keeps no profile of
+  its own and never deletes one. The single thing it may write inside Chrome's own folder is the
+  profile's **display name** in `Local State`, and only while no Chrome is running on that user data
+  folder (`restore` puts that one name back; every other byte of that file is left as it is).
+- **What 0.3.0 left is left alone.** 0.3.0 kept its shared profile at
+  `~/.local/share/cc-smart-dev-kit/playwright` (with its file picker beside it) and started a
+  **detached** Chrome on that folder. Nothing here reads or deletes either — the folder may hold
+  sign-ins, so removing it is your call. `doctor` names the folder and the exact command that
+  deletes it, and, while that old Chrome still runs, names its pid: its debug port has no
+  password, so any program on this machine can drive that signed-in browser until it is closed.
+- **`cc-smart-dev-kit restore`** removes the token file and the pre-registration it added on macOS
+  and Windows, and **never touches the `claude-code` profile or the extension** — those are your
+  browser's data. It prints a line saying so.
+- **The tool names stay `mcp__playwright__*`**: the server is registered for your user, not
   served from the plugin (a plugin-served server would rename every tool).
 
-`cc-smart-dev-kit browser check` proves all of it end to end with two real sessions on one
-throwaway Chrome. Run it after moving the pinned `@playwright/mcp`, or when the browser
-misbehaves; the profile you signed in to is never touched.
+### Still owed: the live checks
+
+Everything below needs a real Chrome with the real extension, so it is run by hand, on each
+platform, and none of it has been run yet. The pinned `@playwright/mcp` is 0.0.83 and the Web
+Store extension is 0.4.0 at the time of writing.
+
+1. **Linux, end to end**: `browser setup`, the Web Store install in the `claude-code` profile,
+   the token, then `browser check` — and it must pass with **no approval page** (that is the
+   whole point of the token). Then two Claude sessions at once: each gets its own tab group
+   (`Playwright · claude-code`, `(2)`), neither sees the other's tabs, and Chrome comes to the
+   front when each connects. After a session lets go, its tab group stays behind.
+2. **A wrong token**: generate a new token in the extension, keep the old one in the file, and
+   run a browser call. Expected, from the source: the connect page shows *Invalid token
+   provided.*, no approval page appears, and the call fails after about 30 s with the MCP's own
+   message. Nothing should retry or open a second page.
+3. **The token off disk**: whether the plugin could read `auth-token` out of the profile's
+   `Local Storage/leveldb/` for a signed-in profile, and whether that survives a Chrome restart.
+   If it does not, pasting stays the only way (which is what the guide says today). This is
+   Playwright's own advice too: its tests read the token off the status page.
+4. **Profile creation and naming**: `--profile-directory=claude-code --new-window <url>` making
+   the profile folder while Chrome is ALREADY running on another profile; whether the window
+   really opens in that profile; and the display name — the `Local State` write (Chrome closed)
+   against Chrome's own **Customize profile** rename. Also whether Chrome opens a `chrome://`
+   address given on a command line (the guide tells you to paste it, which works either way).
+5. **The profile page, from a command line, per platform**: the exact `--profile-directory` and
+   `--new-window` behaviour on macOS (a Chrome already running) and on Windows (Git Bash,
+   PowerShell and `cmd` quoting of the guide's commands).
+6. **`--output-dir` in extension mode is unproved**: `browser check` covers a screenshot the
+   server names and one a caller names, an upload (`browser_file_upload`, with no picker bundle
+   of ours any more) and a download — read the folder it reports each time.
+7. **macOS**: the whole path, plus the per-user External Extensions JSON (`~/Library/Application
+   Support/Google/Chrome/External Extensions/<id>.json`) and whether macOS 27 still honours it,
+   and the Space switch side of the focus steal.
+8. **Windows**: `%LOCALAPPDATA%\Google\Chrome\User Data\claude-code`, the HKCU
+   `Software\Google\Chrome\Extensions\<id>` key and the Enable confirmation, and the
+   `lockfile` question ("is Chrome running") — the same owed item as `docs/windows-setup.md` § 4.
+9. **Chrome version drift**: the pin (0.0.83) against a NEWER Web Store extension than 0.4.0, and
+   what `doctor` reads as its version then (`<profile>/Extensions/<id>/<version>/`).
+10. **Edge** (`--browser=msedge`) if it is ever supported: Playwright maps a user data dir for it,
+    but the plugin's own discovery and guide say Google Chrome only, and Brave/Chromium have no
+    channel mapping at all.
+11. **`doctor` must not open a page.** Its MCP check runs `claude mcp get playwright`, which starts
+    the launcher once. With the token saved, the MCP must answer `initialize` and its tool list
+    WITHOUT connecting to Chrome (the connect page is opened on the first browser call) — watch
+    that no window comes to the front and no `connect.html` tab appears. Without a token the
+    launcher exits before starting anything, which is why the check reports a failure then.
 
 ## MCP servers
 
@@ -1046,7 +1311,7 @@ folders. Registered for the user, the names stay and the servers stay.
 
 | Server | What it is |
 |---|---|
-| `playwright` | The shared browser ([The shared browser](#the-shared-browser)): the launcher, `browser mcp`. |
+| `playwright` | The browser ([The browser](#the-browser)): the launcher, `browser mcp`, on your own Chrome through the Playwright extension. |
 | `serena` | [Serena](https://github.com/oraios/serena) code intelligence, at a pinned commit, started with the plugin's own context (installed as `~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml`): Serena's `claude-code` context with project switching on, so `activate_project` is listed and a session can point Serena at its worktree. |
 | `sequential-thinking` | `@modelcontextprotocol/server-sequential-thinking`, at a pinned version, through `bunx`. |
 | `tavily-websearch` | [Tavily](https://tavily.com)'s remote web-search server (`https://mcp.tavily.com/mcp/`). Its key is **never** written into a registration or printed: the header carries `Bearer ${TAVILY_API_KEY}`, which Claude Code fills in from its own environment at connect time. |
@@ -1056,9 +1321,11 @@ folders. Registered for the user, the names stay and the servers stay.
   copies into the `env` of your `settings.json` as a secret key cc-smart-dev-kit owns (masked in
   output, kept as a hash in `owned.json`, and the settings file left at mode 600). Without a
   key the server is skipped, and setup says so. A key file others can read, or an empty one,
-  is refused with the command that fixes it — never with the key in it. When the key moves to
-  your environment (or goes away), the copy setup wrote is removed with it, and a Tavily server
-  setup had registered is taken back — never a stale registration left behind.
+  is refused with the command that fixes it — never with the key in it. On Windows a mode says
+  nothing (the profile's ACL protects the file), so a key file there is read whatever its bits
+  say. When the key moves to your environment (or goes away), the copy setup wrote is removed
+  with it, and a Tavily server setup had registered is taken back — never a stale registration
+  left behind.
 - Versions are **pinned** (`src/mcp/versions.ts`): a server started as `@latest` asks the
   registry on every session start and installs whatever was published a minute ago, and
   re-resolving a dependency tree makes the start slow enough to fail inside Claude Code's
@@ -1103,7 +1370,8 @@ last went down, or when their window closed**, and that nobody has resumed since
 
 On Linux without Warp, `--open` opens each session in an XFCE Terminal window of its own
 (through `systemd-run --user` where there is one, so the window takes the desktop session's
-environment and opens over SSH too). A session already running is never opened again
+environment and opens over SSH too). On Windows it opens a **Windows Terminal** window each
+(`wt.exe`) where Warp is not there. A session already running is never opened again
 (`~/.claude/sessions/<pid>.json` is how that is known), and one `--open` has just opened is
 left alone for the next few minutes too (a marker in `~/.claude/cc-smart-dev-kit/` — a resumed
 session takes a moment to write to its file, and a quick second run must not open a second
@@ -1181,6 +1449,24 @@ Wired without `worktrees` in `cc-smart-dev-kit.json`, or with a `cc-smart-dev-ki
 plugin or is broken, each of the three fails closed: no worktree is made or removed, and
 the message says why. `cc-smart-dev-kit doctor`, run in the project, checks the wiring.
 
+**A branch that belongs to another line of work starts from another base.** `worktrees.bases`
+maps a branch-name prefix to the base a new worktree for such a branch starts from:
+`{"hotfix/": "main", "release/": "main"}` makes every `release/…` branch start from the
+freshly fetched `origin/main`, while a `fix/…` branch keeps starting from `worktrees.base`
+(the integration base). The longest prefix that matches wins. So a released line of work
+never inherits unreleased work from the integration base. The after-merge note names those
+prefixes too: a session on such a branch is told **not** to merge the integration base in,
+because that would ship unreleased work.
+
+**A project that already runs its own worktree engine** sets `worktrees.engine` to `"own"`.
+It then wires no `cc-smart-dev-kit hook` lines at all, and `cc-smart-dev-kit doctor` expects none
+(one `·` line) instead of reporting ✗; it warns (`!`) when the plugin's engine hooks are
+wired anyway next to another WorktreeCreate hook, because two hooks make two worktrees for
+each request. Use it when the project has an engine of its own (its own script, or another
+plugin) that makes its worktrees: cc-smart-dev-kit's after-merge and leftovers notes, the
+`worktrees` command and the stash question all keep working, because they read
+`worktrees.base` and never make a worktree.
+
 **Moving from a project's own worktree hook:** replace its WorktreeCreate, WorktreeRemove
 and SubagentStop lines with these, in one commit. Two WorktreeCreate hooks make two
 worktrees for each request; `cc-smart-dev-kit doctor` reports a second one.
@@ -1228,7 +1514,164 @@ A session's own worktree is normally cleared by the session: the after-merge not
 merge, and the SessionStart note when finished worktrees are left behind, both point at
 `cc-smart-dev-kit worktrees --clean`.
 
+## `project init`
+
+`cc-smart-dev-kit project init` writes the two files a project opts in with, so nobody has to
+copy them from this page:
+
+- `.claude/cc-smart-dev-kit.json` — the project's settings (below);
+- `.claude/settings.json` — the worktree engine's three hook lines (§ Worktrees), merged
+  with whatever that file already wires. A project that runs an engine of its own
+  (`"worktrees.engine": "own"`) gets none added, and the cc-smart-dev-kit lines an earlier
+  run left there are **taken back out**: with both wired, two engines answer each worktree
+  request (`doctor` flags exactly that).
+
+It asks first and shows every default, which it reads from the repo: the base branch from
+`origin/HEAD` — else the repo's only branch when it has one (a repo whose only branch is `dev`
+works from `dev`, never from a `main` it does not have), else `main`, else `master`, else the
+branch HEAD is on — the setup command from the lockfile
+(`bun install`, `npm ci`, `pnpm install`, `yarn`), the worktree folder prefix from the
+repo's name, the bases offered for `hotfix/` and `release/` from the default branch, and the
+protected branches from the default branch and the base plus, when `gh` is installed and
+answers, the branches GitHub protects (a read-only `gh api`; anything missing is skipped
+quietly). Then it prints the file it will write with the changes line by line, the lines it
+adds to (or takes out of) `.claude/settings.json`, and writes both — a backup first, in
+`~/.claude/cc-smart-dev-kit/backups/`. **Nothing is committed:** commit the two files with the
+project.
+
+Every question has a flag, so it also runs without a terminal:
+
+```sh
+cc-smart-dev-kit project init --base dev --prefix my-app-wt- --setup "bun install" \
+  --bases "hotfix/=main,release/=main" --protected "main,dev" \
+  --guard-main-folder --session-names --engine plugin --workflow "openPr=draft"
+```
+
+`cc-smart-dev-kit project init --help` lists them all. With no terminal it writes nothing unless
+`--yes` is given: it prints the plan and the line to run instead. `--dry-run` prints the plan
+and writes nothing at all. Run it again on a project that has a file: it shows the diff and
+asks, and `--yes` keeps every field the flags do not set. A `requires` the file already has
+is never lowered (a project needing a newer plugin keeps its range); an older one is raised
+to the plugin that wrote the file.
+
+## The workflow
+
+The workflow is what cc-smart-dev-kit may do **by itself** after a step is finished — commit
+it, push the branch, open a pull request, merge it — and how. Two files hold the policy, and
+the project's wins field by field:
+
+1. **the project's** `workflow` object in `.claude/cc-smart-dev-kit.json`, committed with the
+   code, so a team shares one policy;
+2. **yours** in `~/.config/cc-smart-dev-kit/workflow.json` (mode 0600), this machine's defaults;
+3. **the built-in default** under both — the safe one: nothing is committed, pushed or
+   merged without you, and every alert is on.
+
+`cc-smart-dev-kit workflow show` prints every value and where it came from:
+
+```
+your own defaults: ~/.config/cc-smart-dev-kit/workflow.json; a project's .claude/cc-smart-dev-kit.json wins field by field
+autoCommit = false (default)
+openPr = draft (project)
+alerts.events = needs-you, question, finished, failed (default)
+alerts.usagePercent = 85 (default)
+switches.sessionNames = true (project)
+```
+
+| Setting | Default | What it means |
+|---|---|---|
+| `autoCommit` | `false` | Commit each finished, reviewed step without asking. |
+| `autoPush` | `false` | Push the session's own branch. Never a protected branch: the git guard still asks there. |
+| `openPr` | `"off"` | Open a pull request for the branch: `"off"`, `"draft"` or `"ready"`. |
+| `autoMerge` | `false` | Merge into the project's integration base, after CI is green and the review is done. |
+| `mergeMethod` | `"merge"` | `"merge"`, `"squash"` or `"rebase"`. |
+| `deleteBranch` | `false` | Delete the branch after its merge. |
+| `reviewBeforePush` | `true` | Run the review before a push. |
+| `reviewAgents` | `["cc-smart-dev-kit:reviewer"]` | The subagent types whose return records a review (§ The review record). |
+| `clearWorktreeAfterMerge` | `false` | Clear the worktree once its pull request merged. |
+| `alerts.events` | all four | Which moments alert: `needs-you`, `question`, `finished`, `failed`. |
+| `alerts.sound` | `false` | A sound with the alert. |
+| `alerts.usagePercent` | `85` | The plan usage, in percent, a warning starts at (1–100). |
+
+**Auto-merge is the strictest one.** Even with `autoMerge` on, cc-smart-dev-kit merges by
+itself only when the pull request's base **is** the project's integration base
+(`worktrees.base`), and that base is a plain one:
+
+- never when it is the repository's default branch (`main`): merging there is a release,
+  and that is your decision;
+- never when it is a target of `worktrees.bases` (a `release/` family feeding it): then it
+  is not a plain integration base;
+- the integration base may itself be listed in `protectedBranches` — it is the one branch
+  this may write to, and the git guard still asks about a push of it by hand. Every other
+  protected branch is never a target here: the pull request's base must be the integration
+  base, so those keep asking you.
+
+`autoMerge` says only that a merge **may** happen by itself once the branches are right. That
+CI is green and the review is done is the caller's check (the merge guard hook), and
+`mergeMethod` and `deleteBranch` say how the merge is made, not that it skips a question.
+
+**Two things follow a setting: a hook, or the instructions.**
+
+| Setting | What follows it |
+|---|---|
+| `autoCommit`, `autoPush`, `openPr`, `clearWorktreeAfterMerge` | the instructions: the commit and worktree skills read `cc-smart-dev-kit workflow show` and follow it. |
+| `autoMerge` (with `mergeMethod`, `deleteBranch`) | the **merge guard hook**, which asks you before a merge its rules do not allow — every merge form it reads, in this repository only (§ The hooks). |
+| `reviewBeforePush` | both: the **review-record hook** writes the record when the review agent finishes (§ below), and the merge guard asks about a merge whose head commit has no record. |
+| `reviewAgents` | the **review-record hook**: only an agent listed there records a review. |
+| `alerts.events`, `alerts.sound` | the two alert hooks, `notify` and `stop-failure` (§ Notifications). |
+| `alerts.usagePercent` | the status line: from that share of a plan window it warns. |
+
+**The review record.** The record says one thing: the commit the change set was on had its one
+premium review. It is one small JSON file per repository under
+`~/.claude/cc-smart-dev-kit/reviews/` (mode 0600), and `cc-smart-dev-kit workflow show` prints
+whether the commit here has a record. It is written **by the review-record hook**: Claude Code
+tells it when a subagent finishes, and if that agent is one `reviewAgents` lists (by default
+the plugin's own reviewer) it records the commit the working folder is on at that moment. A
+name is compared ignoring any `plugin:` prefix, case and `-`/`_`/space, so whichever form
+Claude Code reports matches the list. An agent that stopped inside its own worktree records
+nothing: that worktree's branch is a fresh one from the base, never the commit a reviewer
+read. `cc-smart-dev-kit workflow review-done [--sha <commit>]` records one by hand for the
+person's own terminal: it refuses inside Claude Code, where a record a session writes for
+itself is only the session's own word. With `reviewBeforePush` on, the merge guard reads the
+record for the pull request's head commit: no record, and the merge asks you.
+
+**The alert settings**, read by `notify`, `stop-failure` and the status line:
+
+| Setting | What it does |
+|---|---|
+| `alerts.events` | Which moments alert: `needs-you` (a permission prompt, an MCP prompt, a background agent waiting), `question` (a question, or a plan for your OK), `finished` (a turn ended), `failed` (a turn died). A moment left out is silence, on every route. |
+| `alerts.sound` | A sound with the alert where the platform has one: Linux's freedesktop sound through `paplay` (else `canberra-gtk-play`), a system sound through `afplay` on macOS, the toast's own sound on Windows, a terminal bell over SSH. Off by default; `notify.json`'s own `desktopSound` and `sshBell` keep working beside it. |
+| `alerts.usagePercent` | The plan usage, in percent, a warning starts at (85 by default) — the status line's `⚠`. |
+
+**The switches** (`switches.*`) are not stored anywhere: each one reads and writes the
+setting that already exists, so there is only one truth for it.
+
+| Switch | The setting behind it |
+|---|---|
+| `switches.statusLine` | Claude Code's own `statusLine` key, the one `setup --statusline` writes. A status line someone else set is never overwritten, and reads as off. |
+| `switches.sessionNames` | The project's `sessionNames` field. |
+| `switches.jobRoute` | The project's `jobs.route` field. |
+| `switches.updateHold` | The hold file behind `cc-smart-dev-kit update --hold`. |
+
+`set` and `unset` write one value, and say where:
+
+```sh
+cc-smart-dev-kit workflow set autoCommit true                 # your own defaults
+cc-smart-dev-kit workflow set openPr draft --project          # the project's committed file
+cc-smart-dev-kit workflow unset alerts.sound                  # back to the default
+cc-smart-dev-kit workflow set switches.sessionNames true --project
+cc-smart-dev-kit workflow set switches.updateHold true
+```
+
+A switch is written where it really lives, so `switches.sessionNames` and
+`switches.jobRoute` need `--project`, and `switches.statusLine` and `switches.updateHold`
+refuse it (they are yours, per machine). A value of the wrong kind, or a setting that is not
+one of the settings there are, is refused before anything is written; a file that is not
+valid JSON is named, never rewritten.
+
 ## A project's `.claude/cc-smart-dev-kit.json`
+
+`cc-smart-dev-kit project init` (§ [`project init`](#project-init)) writes this file and asks
+every question it holds.
 
 ```json
 {
@@ -1237,14 +1680,17 @@ merge, and the SessionStart note when finished worktrees are left behind, both p
     "base": "main",
     "prefix": "app-wt-",
     "setup": ["bun", "install"],
-    "guardMainFolder": true
+    "guardMainFolder": true,
+    "bases": { "hotfix/": "main", "release/": "main" },
+    "engine": "plugin"
   },
   "protectedBranches": ["main"],
   "sessionNames": true,
   "ownHooks": ["git-guard"],
   "instructions": true,
   "autoMode": ["In my-app: never touch production."],
-  "jobs": { "kinds": { "e2e": { "gb": 4, "match": [{ "script": "test:e2e" }] } }, "route": true }
+  "jobs": { "kinds": { "e2e": { "gb": 4, "match": [{ "script": "test:e2e" }] } }, "route": true },
+  "workflow": { "openPr": "draft", "autoMerge": true }
 }
 ```
 
@@ -1256,6 +1702,8 @@ merge, and the SessionStart note when finished worktrees are left behind, both p
 | `worktrees.prefix` | The folder-name prefix of a worktree beside the repo (no `/`). |
 | `worktrees.setup` | A command run inside a new worktree, as a list of words (`["bun", "install"]`). Its output goes to the hook's log, not to Claude. When it fails, the worktree stays and the next request for it runs the setup again. |
 | `worktrees.guardMainFolder` | `true`: refuse edits in the main checkout itself. Off when left out. |
+| `worktrees.bases` | A branch-name prefix (ending in `/`) to the base a new worktree for such a branch starts from (`{"hotfix/": "main", "release/": "main"}`). The longest prefix that matches wins; every other branch starts from `base` (§ Worktrees). |
+| `worktrees.engine` | `"plugin"` (the default): the project wires cc-smart-dev-kit's worktree engine. `"own"`: it runs an engine of its own, so `doctor` expects no cc-smart-dev-kit hook lines (§ Worktrees). |
 | `protectedBranches` | The branches the git guard asks about before a push. Default `["main"]`. |
 | `sessionNames` | `true`: each session names itself after its task. Off when left out. |
 | `ownHooks` | The plugin hooks this project still runs as its own copy (in its own settings): exactly those stay silent here, so nothing runs twice. `["git-guard"]` while the project still has its own git guard; empty it once that copy is gone (§ The hooks). |
@@ -1263,6 +1711,7 @@ merge, and the SessionStart note when finished worktrees are left behind, both p
 | `autoMode` | Used now: `setup` copies it into your settings ([The auto-mode block](#the-auto-mode-block)). |
 | `jobs.kinds` | Used now: the project's own heavy-job kinds over the defaults ([docs/jobs.md](docs/jobs.md) § Kinds). |
 | `jobs.route` | `true`: the `job-route` hook sends a heavy Bash command through `cc-smart-dev-kit job run` instead of running it raw (§ The hooks). Off when left out. |
+| `workflow` | This project's [workflow](#the-workflow) policy, over your own defaults: what cc-smart-dev-kit may do by itself here. Each field is optional, and the project's value wins field by field. |
 
 `requires` is a version range (npm syntax). When the installed plugin is outside it, the
 plugin says so and asks you to run `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit`. A project that
@@ -1277,7 +1726,11 @@ See `.claude/CLAUDE.md`. In short: `bun install`, change `src/`, `bun run build`
 
 - [Design](docs/design.md): how the parts fit, and why.
 - [The AI gateway](docs/gateway.md): the router, its slots, and the judge.
-- [Web search](docs/search.md): `cc-smart-dev-kit search`, its cost and its limits.- [Roadmap](docs/roadmap.md): the phases, done and ahead.
+- [Web search](docs/search.md): `cc-smart-dev-kit search`, its cost and its limits.
+- [Roadmap](docs/roadmap.md): the phases, done and ahead.
 - [Heavy jobs](docs/jobs.md): the machine-wide queue, its kinds, config and limits.
 - [Claude Code contract](docs/claude-code-contract.md): the Claude Code behaviour the
   plugin relies on, and the version it was last proved on.
+- Windows: [setup](docs/windows-setup.md), [hooks](docs/windows-hooks.md),
+  [notifications](docs/windows-notify.md), [heavy jobs](docs/windows-jobs.md),
+  [the gateway](docs/windows-gateway.md) ([Windows](#windows) above).

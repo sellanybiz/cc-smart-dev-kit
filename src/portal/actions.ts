@@ -18,6 +18,13 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
+import {
+  parseBrowserToken,
+  readBrowserToken,
+  tokenSavedLine,
+  writeBrowserToken,
+} from "../browser/token";
 import { type Check, checkLine, type DoctorOptions, doctorChecks } from "../cli/doctor";
 import type { CliPaths } from "../cli/paths";
 import { runUpdate } from "../cli/update";
@@ -34,10 +41,20 @@ import { applyAutoMode, autoModeSource } from "../setup/auto-mode";
 import { findUserInstall } from "../setup/installed-plugins";
 import { withLock } from "../setup/lock";
 import type { ManagedEntriesResult } from "../setup/managed-entries";
+import { isObject } from "../setup/managed-json";
 import { atomicWrite } from "../setup/write";
 import { CLAUDE_TIMEOUT_MS, commandContext } from "../update/apply";
 import { heldSince, type LastCheck, readLastCheck, updateFiles } from "../update/state";
 import type { PortalContext } from "./context";
+import {
+  type ProjectDefaultsReader,
+  projectFilesHash,
+  projectFileTexts,
+  readProject,
+  settingsLineNote,
+} from "./facts";
+import { parseSettingValue, settingSpec } from "./settings";
+import type { ProjectInitAnswers, ProjectInitPlan, WorkflowAdapter } from "./workflow-adapter";
 
 /**
  * The OmniRoute context every portal action uses: the portal's own network, clock and runner,
@@ -66,11 +83,28 @@ export function portalOmnirouteContext(ctx: PortalContext): OmnirouteContext {
 export interface ActionResult {
   ok: boolean;
   lines: string[];
+  /**
+   * How the page shows the lines. `"info"`: a fact, not a failure — the token field's
+   * "nothing was pasted, so the saved token is unchanged" is the one case. Left out, a
+   * refusal is an alarm, as every other one is.
+   */
+  tone?: "info";
+  /**
+   * `project.preview` only: the plan the Project card's boxes draw — the same pure
+   * `planProjectInit` the write runs, so what the page shows is exactly what will be written.
+   */
+  preview?: ProjectInitPlan;
+  /**
+   * `project.preview` only: `projectFilesHash` of the two texts that plan was made against.
+   * The page sends it back with the write, which refuses to run on a plan that no longer
+   * matches the files on disk.
+   */
+  filesHash?: string;
   /** `slot.test` only: one result per target, for the chain's own marks. */
   results?: { detail: string; target: string; verdict: "bad" | "blocked" | "good" }[];
 }
 
-/** Everything an action is given: the portal's own context, and the CLI's two. */
+/** Everything an action is given: the portal's own context, the CLI's two, and the workflow. */
 export interface ActionContext {
   /** The folder the portal was started in: the project its auto-mode rules come from. */
   cwd: string;
@@ -78,6 +112,13 @@ export interface ActionContext {
   memory: PortalMemory;
   omniroute: OmnirouteContext;
   portal: PortalContext;
+  /**
+   * The project's own defaults, remembered for this run: reading them runs git and, when `gh`
+   * is there, GitHub itself, so one file's answers are computed once (`server.ts`).
+   */
+  projectDefaults: ProjectDefaultsReader;
+  /** The workflow module (`src/workflow/`, `src/project/init.ts`), behind one adapter. */
+  workflow: WorkflowAdapter;
 }
 
 /** The portal's own small state, in the plugin's state folder. */
@@ -173,7 +214,10 @@ function gatewayContext(
       probe: portal.probe,
       readStdin: () => Promise.resolve(""),
       runner: portal.runner,
-      systemd: portal.systemd,
+      // The portal's own service kind: systemd's units, or a Windows Scheduled Task.
+      service: portal.systemd ? "systemd" : "none",
+      account: null,
+      platform: process.platform,
     },
   };
 }
@@ -604,8 +648,337 @@ async function omnirouteAction(action: ActionContext, args: string[]): Promise<A
   return { lines, ok: code === 0 };
 }
 
-// ── The door ────────────────────────────────────────────────────────────────────
+// ── The workflow settings ───────────────────────────────────────────────────────
 
+/**
+ * One setting the Settings page changed. The key must be a row of that page, the value one
+ * of that row's own (`parseSettingValue`), and a project-owned setting needs the page's own
+ * confirmation — a hand-made POST can never write what the form itself could not send. The
+ * write itself is the module's own (`writePersonalSetting` / `writeProjectSetting`), so the
+ * file, its indentation and its validation are the command line's, never a second copy.
+ */
+async function setWorkflowSetting(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  const spec = settingSpec(body.key);
+  if (spec === undefined) {
+    return { lines: [`"${String(body.key)}" is not a setting this page shows.`], ok: false };
+  }
+  const parsed = parseSettingValue(spec, body.value);
+  if (!parsed.ok) return { lines: [parsed.why], ok: false };
+  if (spec.where === "project") {
+    if (body.confirm !== true) {
+      return {
+        lines: ["The project's own setting was not confirmed, so nothing was written."],
+        ok: false,
+      };
+    }
+    // The row is read-only without a project file, because there is nothing to write it into;
+    // a hand-made POST gets the same answer, not another file's.
+    if (readProject(action.portal, action.cwd).configFile === null) {
+      return {
+        lines: [
+          `${spec.key} is this project's own setting, and this project has no .claude/cc-smart-dev-kit.json yet: set it up on Machine first.`,
+        ],
+        ok: false,
+      };
+    }
+  }
+  try {
+    // The project's writer runs git with the portal's own environment, never `process.env`:
+    // the portal reaches this machine only through its context (`context.ts`).
+    const line =
+      spec.where === "project"
+        ? action.workflow.writeProjectSetting(action.cwd, spec.key, parsed.value, action.portal.env)
+        : action.workflow.writePersonalSetting(action.portal.paths, spec.key, parsed.value);
+    return { lines: [line], ok: true };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+
+// ── The project's two files ─────────────────────────────────────────────────────
+
+/** The form's own fields: everything the Project card shows, and nothing else. */
+export interface ProjectFormFields {
+  base: string;
+  bases: Record<string, string>;
+  engine: "plugin" | "own";
+  guards: { guardMainFolder: boolean; jobRoute: boolean; sessionNames: boolean };
+  prefix: string;
+  protectedBranches: string[];
+  setup: null | string[];
+}
+
+/**
+ * The form's answers, checked field by field: a value the command line would refuse is
+ * refused here too, in the same words (`"hotfix" is not prefix=base`). Only the fields the
+ * form shows are taken; a field it does not show never arrives from a page.
+ */
+export function parseProjectForm(
+  value: unknown,
+): { ok: true; value: ProjectFormFields } | { ok: false; why: string } {
+  if (!isObject(value)) return { ok: false, why: "The form's answers did not arrive." };
+  const base = typeof value.base === "string" ? value.base.trim() : "";
+  if (base === "") {
+    return {
+      ok: false,
+      why: "The base branch is needed: it is the branch a new worktree starts from.",
+    };
+  }
+  const prefix = typeof value.prefix === "string" ? value.prefix.trim() : "";
+  if (prefix === "") {
+    return {
+      ok: false,
+      why: "The worktree folder prefix is needed: it names the folder beside the repo.",
+    };
+  }
+  if (prefix.includes("/") || prefix.includes("\\")) {
+    return {
+      ok: false,
+      why: "The worktree folder prefix cannot hold / or \\: it is a folder name.",
+    };
+  }
+  let setup: null | string[] = null;
+  if (value.setup !== null && value.setup !== undefined) {
+    if (
+      !Array.isArray(value.setup) ||
+      value.setup.length === 0 ||
+      !value.setup.every((word) => typeof word === "string" && word !== "")
+    ) {
+      return { ok: false, why: 'The setup command must be words, like "bun install".' };
+    }
+    setup = value.setup as string[];
+  }
+  if (!isObject(value.bases)) return { ok: false, why: "The bases must be prefix → base pairs." };
+  const bases: Record<string, string> = {};
+  for (const [from, to] of Object.entries(value.bases)) {
+    if (!from.endsWith("/") || typeof to !== "string" || to === "") {
+      return { ok: false, why: `"${from}" is not prefix=base: the prefix ends with "/".` };
+    }
+    bases[from] = to;
+  }
+  if (!Array.isArray(value.protectedBranches)) {
+    return { ok: false, why: "The protected branches must be a list of branch names." };
+  }
+  const protectedBranches: string[] = [];
+  for (const name of value.protectedBranches) {
+    if (typeof name !== "string" || name === "") {
+      return { ok: false, why: "The protected branches must be a list of branch names." };
+    }
+    protectedBranches.push(name);
+  }
+  if (!isObject(value.guards))
+    return { ok: false, why: "guards must say true or false for each guard." };
+  const guards = { guardMainFolder: false, jobRoute: false, sessionNames: false };
+  // The order the form shows them in, so a refused one is named the way the page reads.
+  for (const name of ["guardMainFolder", "sessionNames", "jobRoute"] as const) {
+    const on = value.guards[name];
+    if (typeof on !== "boolean") return { ok: false, why: `guards.${name} is true or false.` };
+    guards[name] = on;
+  }
+  if (value.engine !== "plugin" && value.engine !== "own") {
+    return { ok: false, why: 'The worktree engine is "plugin" or "own".' };
+  }
+  return {
+    ok: true,
+    value: { base, bases, engine: value.engine, guards, prefix, protectedBranches, setup },
+  };
+}
+
+/**
+ * The answers a POST would write: the form's own fields over the project's own defaults
+ * (`projectInitDefaults`), so the fields the form does not show — the workflow policy, and
+ * anything the command line detects — come from the machine, never from a browser.
+ */
+function projectAnswers(
+  action: ActionContext,
+  body: Record<string, unknown>,
+):
+  | {
+      ok: true;
+      answers: ProjectInitAnswers;
+      existing: null | string;
+      existingSettings: null | string;
+      root: string;
+    }
+  | { ok: false; why: string } {
+  const project = readProject(action.portal, action.cwd);
+  if (project.root === null) {
+    return { ok: false, why: project.why ?? "there is no project folder here" };
+  }
+  const form = parseProjectForm(body.answers);
+  if (!form.ok) return form;
+  const texts = projectFileTexts(project.root);
+  try {
+    const defaults = action.projectDefaults({ env: action.portal.env, root: project.root });
+    return {
+      ok: true,
+      answers: { ...defaults.answers, ...form.value },
+      ...texts,
+      root: project.root,
+    };
+  } catch (error) {
+    return { ok: false, why: messageOf(error) };
+  }
+}
+
+/** The project's two files, as the form would leave them — the plan, never a write. */
+async function projectPreview(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  const built = projectAnswers(action, body);
+  if (!built.ok) return { lines: [built.why], ok: false };
+  try {
+    const plan = action.workflow.planProjectInit({
+      answers: built.answers,
+      existing: built.existing,
+      existingSettings: built.existingSettings,
+      root: built.root,
+    });
+    // The line under the settings box travels with the plan: the page draws the same sentence
+    // from the same helper, so the two can never describe different plans.
+    return {
+      filesHash: projectFilesHash({
+        existing: built.existing,
+        existingSettings: built.existingSettings,
+      }),
+      lines: [settingsLineNote(plan.hookLines.length, plan.removedLines.length)],
+      ok: true,
+      preview: plan,
+    };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+
+/**
+ * Writes the project's two files, through `applyProjectInit` — a backup first, an atomic
+ * write, and **never a commit**: both files belong to the project, and the person commits
+ * them.
+ *
+ * **The plan is made again, and only while the two files are still the ones the page planned
+ * against.** The form holds the whole file it would write — the protected branches, the
+ * bases, the guards — so a field filled in from a plan made before someone else edited the
+ * project's file would quietly write their change away. The page sends back the hash its
+ * preview carried (`projectFilesHash`); a text that differs now is refused, and the person
+ * previews again.
+ */
+async function projectWrite(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  if (body.confirm !== true) {
+    return { lines: ["The write was not confirmed, so nothing was written."], ok: false };
+  }
+  const built = projectAnswers(action, body);
+  if (!built.ok) return { lines: [built.why], ok: false };
+  if (body.previewHash !== projectFilesHash(built)) {
+    return {
+      lines: ["The project's files changed since the preview — preview again."],
+      ok: false,
+    };
+  }
+  try {
+    const plan = action.workflow.planProjectInit({
+      answers: built.answers,
+      existing: built.existing,
+      existingSettings: built.existingSettings,
+      root: built.root,
+    });
+    const writes = action.workflow.applyProjectInit(plan, {
+      stateDir: action.portal.paths.stateDir,
+    });
+    if (writes.length === 0) {
+      return { lines: ["Nothing to change: both files already say this."], ok: true };
+    }
+    return {
+      lines: [
+        ...writes.map((write) => `${write.created ? "+" : "~"} ${write.file}`),
+        "Commit both files with the project: the team shares one setup.",
+      ],
+      ok: true,
+    };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+
+/**
+ * The Browser card's setup button: the same steps `cc-smart-dev-kit browser setup` runs, through
+ * the same module — Chrome is opened on the extension's Web Store page in the `claude-code`
+ * profile, and anything that is left for the person is printed. It never installs or removes an
+ * extension, and it never deletes a Chrome profile. What it does write is exactly what that
+ * command writes by itself, and every one of them is reported in the answer's lines: the
+ * profile's display name in Chrome's own `Local State`, and only while no Chrome runs on that
+ * user data folder (through the managed-file helpers, so `restore` puts it back), and, on
+ * Windows, the per-user HKCU key that offers the extension in that profile. The person still
+ * clicks Enable.
+ */
+async function browserSetupAction(action: ActionContext): Promise<ActionResult> {
+  try {
+    const result = browserSetup(
+      action.portal.paths,
+      realBrowserSetupDeps(action.portal.machine, action.portal.paths.home),
+      { apply: true },
+    );
+    return {
+      lines: [
+        ...(result.changes.length > 0 ? result.changes : ["Nothing to change."]),
+        ...result.info,
+        ...result.notes,
+        ...result.guide,
+      ],
+      ok: result.ok,
+    };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+
+/**
+ * The Browser card's token field: the same writer `cc-smart-dev-kit browser token` uses
+ * (`writeBrowserToken`), so a token saved here and one saved in a terminal are the same file,
+ * and the same protection. The value is checked first (the extension's own shape), and **never
+ * printed back**: the answer says the token is set, and nothing of it reaches the page, a line
+ * or a log.
+ */
+function browserTokenAction(action: ActionContext, body: Record<string, unknown>): ActionResult {
+  const pasted = typeof body.token === "string" ? body.token : "";
+  const parsed = parseBrowserToken(pasted);
+  if (!parsed.ok) {
+    // An empty field with a token already saved is not a failure: nothing was lost, and there
+    // is nothing to fix. "The token was not saved" would read as though it had gone, so the
+    // page is told the fact, in its own quieter tone. With no token saved it stays a refusal:
+    // the browser does not work until one is pasted.
+    if (pasted.trim() === "" && readBrowserToken(action.portal.paths).source === "file") {
+      return {
+        lines: ["Nothing was pasted, so the saved token is unchanged."],
+        ok: false,
+        tone: "info",
+      };
+    }
+    return { lines: [`The token was not saved: ${parsed.why}.`], ok: false };
+  }
+  try {
+    writeBrowserToken(action.portal.paths, parsed.token);
+    return {
+      lines: [
+        // The command line's own line, word for word (`src/entries/cli.ts`): the portal
+        // shows what `browser token` prints, never a second wording of it.
+        tokenSavedLine(action.portal.paths.browserTokenFile),
+        "Start a new Claude session (or restart the running one) to use it.",
+      ],
+      ok: true,
+    };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+
+// ── The door ────────────────────────────────────────────────────────────────────
 /**
  * Runs one action. `body` is the page's JSON, already parsed; nothing here trusts it — every
  * value is checked, and a value a command would refuse is refused here too.
@@ -639,6 +1012,10 @@ export async function runAction(
           return { lines: [`"${which}" is not a switch.`], ok: false };
       }
     }
+    case "browser.setup":
+      return browserSetupAction(action);
+    case "browser.token":
+      return browserTokenAction(action, body);
     case "update.check":
       return updateCheck(action);
     case "update.install":
@@ -655,6 +1032,12 @@ export async function runAction(
       return omnirouteAction(action, ["rollback", "--yes"]);
     case "automode.apply":
       return applyAutoModeAction(action, body);
+    case "workflow.set":
+      return setWorkflowSetting(action, body);
+    case "project.preview":
+      return projectPreview(action, body);
+    case "project.write":
+      return projectWrite(action, body);
     default:
       return { lines: [`"${name}" is not an action.`], ok: false };
   }

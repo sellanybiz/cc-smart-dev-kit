@@ -169,6 +169,8 @@ export function world(options: WorldOptions = {}) {
   }
   const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: home };
   const questions: string[] = [];
+  /** Every `spawnDetached` call, as one line: what a real run would have started. */
+  const detached: string[] = [];
   const answer = options.answer === undefined ? true : options.answer;
   const existing = new Set(options.existing ?? []);
   const spawn = (argv: string[]) => {
@@ -187,6 +189,10 @@ export function world(options: WorldOptions = {}) {
   const machine: Machine = {
     run: spawn,
     runOnTerminal: (argv) => spawn(argv).exitCode,
+    spawnDetached: (argv) => {
+      // A test must never start a real program (the browser): the call is recorded instead.
+      detached.push(argv.join(" "));
+    },
     which: (command) => Bun.which(command, { PATH: bin }),
     confirm:
       answer === null
@@ -229,5 +235,5 @@ export function world(options: WorldOptions = {}) {
       .split("\n")
       .filter((line) => !/^(dpkg-query --status|rpm -q |brew list |claude mcp )/.test(line))
       .join("\n");
-  return { home, paths, bin, staged, machine, questions, setup, calls };
+  return { calls, detached, home, machine, paths, questions, setup, staged, bin };
 }

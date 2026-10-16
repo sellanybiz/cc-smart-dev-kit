@@ -10,6 +10,8 @@
  *   `cc-smart-dev-kit hook <name>`; wired without `worktrees`, every worktree would fail. Next to the
  *   engine, a second WorktreeCreate hook (the project's or the user's) would make a second
  *   worktree for each request (Claude Code runs both: `docs/claude-code-contract.md`).
+ *   `"worktrees.engine": "own"` says the project runs an engine of its own: the plugin's
+ *   hooks are then not expected (`·`, not ✗), and wiring them anyway is the warning.
  * - **The project's own copies of plugin hooks.** Each hook `ownHooks` lists is off here
  *   (information); a listed one with no project hook on its event left to answer is a
  *   warning. A project hook on the same event and tool as a plugin hook the list does NOT
@@ -68,12 +70,16 @@ const OLD_NAME = "anymodel";
 /** The old launcher in a settings hook: `"$HOME/.local/bin/anymodel" hook …`. */
 const OLD_LAUNCHER = new RegExp(`(^|[\\s"'/])${OLD_NAME}(-bun)?(["'\\s]|$)`);
 
-/** A command with the plugin's old launcher written the new way, as the fix for it. */
+/**
+ * A command with the plugin's old launcher written the new way, as the fix for it. A command
+ * that named the hooks' old shim (`…/bin/anymodel-bun`) becomes the shim's own name today,
+ * `cc-smart-dev-kit-bun.sh` — the hooks run in shell form, and the file ends in `.sh`.
+ */
 export function renamedCommand(command: string): string {
   return command.replace(
     new RegExp(OLD_LAUNCHER.source, "g"),
     (_all, before: string, bun: string | undefined, after: string) =>
-      `${before}${COMMAND}${bun ?? ""}${after}`,
+      `${before}${COMMAND}${bun === undefined ? "" : "-bun.sh"}${after}`,
   );
 }
 
@@ -115,7 +121,15 @@ function oldNameLines(projectDir: string, sources: string[], home: string): Proj
   return lines;
 }
 
-/** The worktree engine's wiring against `worktrees` in cc-smart-dev-kit.json. */
+/**
+ * The worktree engine's wiring against `worktrees` in cc-smart-dev-kit.json.
+ *
+ * `"worktrees.engine": "own"` says the project runs an engine of its own: the plugin's
+ * engine hooks are then not expected, so their absence is one `·` line and never a ✗. What
+ * is wrong there is the other way round: the plugin's hooks wired anyway, next to the
+ * project's own worktree hook, make two worktrees for each request — a `!` line, since the
+ * person may be mid-way through removing ours.
+ */
 function engineLines(
   config: CcSmartDevKitConfig | null,
   sources: string[],
@@ -129,14 +143,29 @@ function engineLines(
   });
   const missing = hooks.filter((hook) => !hook.wired).map((hook) => hook.event);
   const wired = hooks.filter((hook) => hook.wired).map((hook) => hook.event);
+  const own = config?.worktrees?.engine === "own";
   const lines: ProjectLine[] = [];
-  if (config?.worktrees !== undefined) {
+  if (config?.worktrees !== undefined && !own) {
     lines.push(
       missing.length === 0
         ? { ok: true, text: `project: the worktree engine is wired (${wired.join(", ")})` }
         : {
             ok: false,
             text: `project: "worktrees" is set in .claude/cc-smart-dev-kit.json, but the project's settings do not wire ${missing.join(", ")} to cc-smart-dev-kit hook${missing.includes("WorktreeCreate") ? ", so Claude Code makes its own worktrees" : ""}. ${ENGINE_HINT}`,
+          },
+    );
+  } else if (config?.worktrees !== undefined) {
+    lines.push(
+      wired.length === 0
+        ? {
+            ok: true,
+            info: true,
+            text: 'project: "worktrees.engine" is "own" in .claude/cc-smart-dev-kit.json, so this project runs its own worktree engine and the cc-smart-dev-kit engine hooks are not wired here',
+          }
+        : {
+            ok: true,
+            warn: true,
+            text: `project: "worktrees.engine" is "own", so this project runs its own worktree engine, but its settings also wire ${wired.join(", ")} to cc-smart-dev-kit hook: two engines answer each worktree request. Take the cc-smart-dev-kit hook lines out`,
           },
     );
   } else if (wired.length > 0) {
@@ -151,7 +180,8 @@ function engineLines(
       .filter((handler) => !runsProjectHook(handler.command, "worktree-create"));
     for (const other of others) {
       lines.push({
-        ok: false,
+        ok: own,
+        ...(own ? { warn: true } : {}),
         text: `project: another WorktreeCreate hook runs too: ${other.command} (${shown(other.file, projectDir, paths.home)}). Claude Code runs both and makes two worktrees for each request; remove one`,
       });
     }
@@ -166,17 +196,21 @@ interface PluginHook {
   subjects: Array<string | null>;
 }
 
-/** The hooks the plugin's hooks.json wires: each bundle's name, event and matcher's names. */
+/**
+ * The hooks the plugin's hooks.json wires: each bundle's name, event and matcher's names.
+ *
+ * The handlers are shell form (`.claude/rules/hooks.md`), so the bundle is the one path under
+ * `dist/` in the handler's command: `"…/bin/cc-smart-dev-kit-bun.sh" --missing=<mode>
+ * "…/dist/<name>.js"`. A handler with no such path is not one of ours and is skipped.
+ */
 export function readPluginHooks(file: string): PluginHook[] {
   const parsed = JSON.parse(readFileSync(file, "utf8")) as {
-    hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ args?: string[] }> }>>;
+    hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>>;
   };
   return Object.entries(parsed.hooks ?? {}).flatMap(([event, groups]) =>
     groups.flatMap((group) =>
       (group.hooks ?? []).flatMap((handler) => {
-        const bundle = (handler.args ?? [])
-          .map((arg) => /\/dist\/([a-z-]+)\.js$/.exec(arg)?.[1])
-          .find((name) => name !== undefined);
+        const bundle = /\/dist\/([a-z-]+)\.js(?:["'\s]|$)/.exec(handler.command ?? "")?.[1];
         if (bundle === undefined) return [];
         const subjects =
           group.matcher === undefined || group.matcher === "" ? [null] : group.matcher.split("|");
@@ -244,6 +278,10 @@ function ownCopyLines(
     if (MACHINE_WIDE_HOOKS.includes(hook.name)) continue;
     for (const subject of hook.subjects) {
       for (const handler of sources.flatMap((file) => wiredHandlers(file, hook.event, subject))) {
+        // The engine's own lines (`cc-smart-dev-kit hook subagent-stop`) are the plugin's
+        // project-wired hooks, never a copy of this one: `SubagentStop` carries both, and the
+        // engine's own check above judges them. Only a different command may be a copy.
+        if (PROJECT_HOOKS.some((spec) => runsProjectHook(handler.command, spec.name))) continue;
         const key = JSON.stringify([hook.name, hook.event, handler.file, handler.command]);
         const entry = found.get(key) ?? { hook, handler, subjects: [] };
         if (subject !== null) entry.subjects.push(subject);

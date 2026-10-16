@@ -2,13 +2,25 @@ import { existsSync, statSync } from "node:fs";
 import { uptime } from "node:os";
 import { join, resolve } from "node:path";
 import { browserCheckCommand, runBrowserCheck } from "../browser/check";
-import { installPicker, runBrowserMcp } from "../browser/launcher";
+import { realBrowserDoctorDeps } from "../browser/doctor";
+import { runBrowserMcp } from "../browser/launcher";
+import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
+import {
+  canHideInput,
+  clearBrowserToken,
+  parseBrowserToken,
+  readSecretLine,
+  readTokenFromStdin,
+  tokenSavedLine,
+  writeBrowserToken,
+} from "../browser/token";
 import { COMMAND, VERSION } from "../build-info";
 import { oldBunRefusal } from "../cli/bun-check";
 import { runDoctor } from "../cli/doctor";
 import { type LiveRunner, liveHookCommand } from "../cli/live-check";
 import { runMigrate } from "../cli/migrate";
 import { cliPaths } from "../cli/paths";
+import { runProjectInit } from "../cli/project-init";
 import { runRestore } from "../cli/restore";
 import { runSetup } from "../cli/setup";
 import { runStatusline } from "../cli/statusline";
@@ -16,7 +28,15 @@ import { runUpdate } from "../cli/update";
 import { runUsage } from "../cli/usage";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { realProbe } from "../gateway/health";
-import type { Runner } from "../gateway/service";
+import { type Runner, routerServiceKind } from "../gateway/service";
+import { windowsAccount } from "../gateway/service-windows";
+import {
+  ALERT_SCREEN_MS,
+  parseNotifyWorkerAlert,
+  runDesktopAlert,
+  type Watch,
+} from "../hooks/desktop-alert";
+import { runtimeDir } from "../hooks/notify";
 import { projectHookSettingsText } from "../hooks/project-wiring";
 import { runHookEntry } from "../hooks/run";
 import { recordSessionName } from "../hooks/session-name";
@@ -27,14 +47,16 @@ import { realMemoryFacts } from "../jobs/memory";
 import { realMachine } from "../machine/machine";
 import { realMcpDoctorDeps } from "../mcp/doctor";
 import { serenaFolder } from "../mcp/serena-context";
-import { MCP_VERSIONS } from "../mcp/versions";
 import { runOmniroute } from "../omniroute/commands";
 import { runPortal } from "../portal/command";
+import { locateCheckout } from "../project/resolve";
 import { runSearch } from "../search/command";
 import { runSessions } from "../sessions/command";
 import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
 import { LAUNCHER_NAME } from "../setup/launcher";
+import { alertsAt } from "../workflow/alerts";
+import { runWorkflow } from "../workflow/commands";
 import { runWorktrees } from "../worktrees/command";
 
 const HELP = `cc-smart-dev-kit ${VERSION} - set up and check the cc-smart-dev-kit plugin for Claude Code
@@ -70,6 +92,27 @@ Commands:
                      --live: also run two throwaway Claude Code sessions in temp repos,
                      to prove the hooks and the worktree engine on this Claude Code
                      (uses your login; a few cents). Records the version it passed on.
+  project init [--dry-run] [--yes] [flags]
+                     Set this project up: write .claude/cc-smart-dev-kit.json (the worktrees, the
+                     protected branches, the guards, and optionally the workflow policy)
+                     and, unless the project runs an engine of its own, the worktree
+                     engine's three lines in .claude/settings.json. It asks first, showing
+                     each default; every question has a flag, so a run with no terminal
+                     writes nothing unless --yes is given. It never commits.
+                     cc-smart-dev-kit project init --help lists the flags.
+  workflow [show] | set <setting> <value> [--project] | unset <setting> [--project]
+           | review-done [--sha <commit>]
+                     What cc-smart-dev-kit may do by itself here (commit, push, open a pull
+                     request, merge) and the switches that map onto settings which already
+                     exist. show (the default) prints each value with where it came from:
+                     the project's .claude/cc-smart-dev-kit.json, your own
+                     ~/.config/cc-smart-dev-kit/workflow.json, or the built-in default, and
+                     whether the commit here has a recorded review. set and unset write one
+                     value; --project writes the project's file. review-done records that a
+                     commit (default HEAD, or --sha <commit>) had its one premium review;
+                     the merge guard reads that record. It is for your own terminal: inside
+                     Claude Code the review-record hook writes the record when a review
+                     agent returns, so review-done refuses there.
   hook <worktree-create|worktree-remove|subagent-stop>
                      The worktree engine, for a project that wires it in its own
                      .claude/settings.json: reads the hook's input on stdin and answers
@@ -114,11 +157,15 @@ Commands:
                      it again. Nothing restarts: restart the sessions to load it.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      cc-smart-dev-kit gateway --help lists them.
-  browser <command>  The shared browser. cc-smart-dev-kit browser mcp starts the Playwright
-                     MCP server on the ONE Chrome every session shares, through a filter that
-                     shows this session only its own windows (setup registers it as the
-                     "playwright" MCP server). browser check runs two real sessions on one
-                     throwaway Chrome and proves it end to end (--headless: no window).
+  browser <command>  The browser. cc-smart-dev-kit browser mcp starts the Playwright MCP
+                     server on YOUR OWN Chrome, through the Playwright extension, in the
+                     profile "claude-code" (setup registers it as the "playwright" MCP
+                     server). browser setup finds Chrome, makes that profile and prints the
+                     five steps that are left for you. browser token saves the extension's
+                     token, pasted from its status page: it is REQUIRED, because without it
+                     the extension would ask you to approve every connection. browser check
+                     proves a real connection, a file:// page, screenshots, an upload and a
+                     download end to end (it opens that Chrome window once).
   sessions [--open] [--dry-run]
                      This project's Claude Code sessions of the last two days, by name and
                      worktree, with the command that resumes each. --open reopens every
@@ -228,6 +275,14 @@ const runner: Runner = (cmd) => {
 /** systemd user units need Linux and systemctl on PATH. */
 const systemd = process.platform === "linux" && Bun.which("systemctl") !== null;
 
+/** The service that runs the router here: systemd's units, or a Windows Scheduled Task. */
+const service = routerServiceKind(process.platform, (command) =>
+  Bun.which(command, { PATH: process.env.PATH ?? "" }),
+);
+
+/** The Windows account a Scheduled Task runs as (`MACHINE\user`); null everywhere else. */
+const account = windowsAccount(process.env);
+
 /** Asks on the terminal; null when stdin is not one (a pipe, a script, a test). */
 const ask = process.stdin.isTTY ? (question: string) => confirm(question) : null;
 
@@ -240,7 +295,9 @@ function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
     runner,
     readStdin: () => Bun.stdin.text(),
     confirm: ask,
-    systemd,
+    service,
+    account,
+    platform: process.platform,
     probe: realProbe(),
     print: (line) => console.log(line),
     error: (line) => console.error(line),
@@ -263,6 +320,31 @@ function omnirouteContext(paths: ReturnType<typeof cliPaths>) {
     which: (command: string) => Bun.which(command, { PATH: process.env.PATH ?? "" }),
   };
 }
+
+/**
+ * Reads a program's stdout line by line while it runs: the notification server's signal
+ * monitor (`gdbus monitor`, `src/hooks/desktop-alert.ts`). The alert's wait ends on one of
+ * those lines, or on the minute; `stop` ends the monitor either way.
+ */
+const watchLines: Watch = (argv, onLine) => {
+  const monitor = Bun.spawn(argv, { stdin: "ignore", stderr: "ignore", stdout: "pipe" });
+  const read = async (): Promise<void> => {
+    const decoder = new TextDecoder();
+    let rest = "";
+    for await (const chunk of monitor.stdout) {
+      rest += decoder.decode(chunk, { stream: true });
+      const lines = rest.split("\n");
+      rest = lines.pop() ?? "";
+      for (const line of lines) onLine(line);
+    }
+  };
+  read().catch((error) =>
+    // The monitor dying early only means the alert waits out its minute instead of the
+    // click; one line says so, and the process is one the hook never sees.
+    console.error(`${COMMAND}: the notification monitor stopped: ${String(error)}`),
+  );
+  return { stop: () => monitor.kill() };
+};
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
@@ -334,27 +416,47 @@ async function main(argv: string[]): Promise<number> {
     }
     case "statusline":
       // Claude Code pipes its JSON in; run by hand in a terminal, there is none to wait for.
+      // The warning share comes from the workflow settings of the folder the session is in.
       return runStatusline(
         paths,
         () => (process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text()),
         Date.now(),
+        alertsAt(paths, process.cwd(), process.env),
       );
     case "usage":
       return runUsage(paths, rest, Date.now());
     case ALERT_WORKER_COMMAND: {
-      // Not in --help: the StopFailure hook starts it, detached, through the launcher, so the
-      // half hour it may wait for a click runs from the installed version, not the hook's
-      // version folder (src/entries/stop-failure.ts).
-      const alert = rest.length === 1 ? parseAlert(rest[0] ?? "") : null;
+      // Not in --help: the two alert hooks start it, detached, through the launcher, so the
+      // wait for a click — a minute on screen, half an hour for the usage-limit alert —
+      // runs from the installed version, not the hook's version folder
+      // (src/entries/stop-failure.ts, src/entries/notify.ts).
+      const argument = rest.length === 1 ? (rest[0] ?? "") : null;
+      const notifyAlert = argument === null ? null : parseNotifyWorkerAlert(argument);
+      if (notifyAlert !== null) {
+        // The notifier's alert: the desktop extras around it, everything that waits, and
+        // the window raised on a click (`src/hooks/desktop-alert.ts`).
+        const outcome = await runDesktopAlert(notifyAlert, {
+          capture: spawnRunner,
+          nowMs: () => Date.now(),
+          screenMs: ALERT_SCREEN_MS,
+          sleep: (ms) => Bun.sleep(ms),
+          stateDir: runtimeDir(process.env),
+          watch: watchLines,
+          which: (command) => Bun.which(command, { PATH: process.env.PATH ?? "" }),
+        });
+        if (outcome === "no notifier") {
+          console.error(`${COMMAND}: ${notifyAlert.title}. ${notifyAlert.body}`);
+        }
+        return 0;
+      }
+      const alert = argument === null ? null : parseAlert(argument);
       if (alert === null) {
-        console.error(
-          `Usage: cc-smart-dev-kit ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`,
-        );
+        console.error(`Usage: ${COMMAND} ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
         return 2;
       }
       const launcher = join(paths.binDir, LAUNCHER_NAME);
       if (runAlert(alert, process.platform, launcher, spawnRunner) === "no notifier") {
-        console.error(`cc-smart-dev-kit: ${alert.title}. ${alert.body}`);
+        console.error(`${COMMAND}: ${alert.title}. ${alert.body}`);
       }
       return 0;
     }
@@ -365,11 +467,12 @@ async function main(argv: string[]): Promise<number> {
         return 2;
       }
       return runDoctor(paths, process.env, {
+        browser: realBrowserDoctorDeps(realMachine(process.env, null), paths.home),
         bun: { path: process.execPath, version: Bun.version },
         gateway: {
           bundle: routerBundle(),
           runner,
-          systemd,
+          service,
           machine: realMachine(process.env, null),
         },
         local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
@@ -398,6 +501,53 @@ async function main(argv: string[]): Promise<number> {
       // Reads stdin, answers, and exits with the hook's code.
       return runHookEntry(spec);
     }
+    case "project": {
+      const [sub, ...flags] = rest;
+      if (sub !== "init") {
+        console.error(`Usage: ${COMMAND} project init [--dry-run] [--yes] [flags]\n\n${HELP}`);
+        return 2;
+      }
+      // `--help` works anywhere; the repo is resolved only for a run that would write.
+      let root = process.cwd();
+      if (!flags.includes("--help") && !flags.includes("-h")) {
+        try {
+          const checkout = locateCheckout(process.cwd(), { env: process.env });
+          if (checkout === null) {
+            console.error(`${COMMAND} project init: this folder is not in a git project`);
+            return 2;
+          }
+          root = checkout.root;
+        } catch (error) {
+          console.error(
+            `${COMMAND} project init: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          return 1;
+        }
+      }
+      return runProjectInit(flags, {
+        root,
+        env: process.env,
+        stateDir: paths.stateDir,
+        home: paths.home,
+        terminal:
+          process.stdin.isTTY && process.stdout.isTTY
+            ? {
+                confirm: (question) => confirm(question),
+                text: (question, fallback) => prompt(question, fallback) ?? fallback,
+              }
+            : null,
+        print: (line) => console.log(line),
+        error: (line) => console.error(line),
+      });
+    }
+    case "workflow":
+      return runWorkflow(rest, {
+        paths,
+        cwd: process.cwd(),
+        env: process.env,
+        print: (line) => console.log(line),
+        error: (line) => console.error(line),
+      });
     case "session-name": {
       const [sessionId, ...words] = rest;
       if (sessionId === undefined || words.length === 0) {
@@ -427,7 +577,7 @@ async function main(argv: string[]): Promise<number> {
         yes: rest.includes("--yes"),
         now: rest.includes("--now"),
         runner,
-        systemd,
+        service,
         confirm: ask,
         probe: realProbe(),
         which: (command) => Bun.which(command),
@@ -457,16 +607,15 @@ async function main(argv: string[]): Promise<number> {
       return runUpdate(paths, process.env, rest);
     case "browser": {
       const [sub, ...extra] = rest;
+      const machine = realMachine(process.env, null);
+      const browserDeps = realBrowserSetupDeps(machine, paths.home);
       if (sub === "mcp") {
         // Runs until the MCP exits. Nothing here may write to stdout: it IS the MCP stream.
         return await runBrowserMcp(paths, extra, {
-          installPicker,
           log: (line) => console.error(`[cc-smart-dev-kit-browser] ${line}`),
-          package: `@playwright/mcp@${MCP_VERSIONS.playwright}`,
-          pickerBundle: distBundle("browser-picker.js"),
           spawn: (argv, options) => {
-            // The launcher's own variables (the tab filter's endpoint) go on top of this
-            // process's environment: the MCP must find bun and everything else as usual.
+            // The token goes on top of this process's environment: the MCP must find bun and
+            // everything else as usual.
             const child = Bun.spawn(argv, {
               env: { ...process.env, ...options.env },
               stdio: [options.stdio, options.stdio, options.stdio],
@@ -476,23 +625,87 @@ async function main(argv: string[]): Promise<number> {
           which: (command) => Bun.which(command),
         });
       }
-      if (sub === "check") {
-        const unknown = extra.filter((arg) => arg !== "--headless" && arg !== "--idle");
+      if (sub === "setup") {
+        const unknown = extra.filter((arg) => arg !== "--dry-run");
         if (unknown.length > 0) {
           console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
           return 2;
         }
-        // Two real launchers (this CLI), each with a real Playwright MCP, on one Chrome.
-        const result = await runBrowserCheck(extra, {
+        const apply = !extra.includes("--dry-run");
+        const result = browserSetup(paths, browserDeps, { apply });
+        const lines = [
+          ...(result.changes.length > 0 ? result.changes : ["Nothing to change."]),
+          ...result.info,
+          ...result.notes,
+          ...result.guide,
+        ];
+        console.log(lines.join("\n"));
+        if (!apply) console.log("Dry run: nothing was written or run.");
+        return result.ok ? 0 : 1;
+      }
+      if (sub === "token") {
+        const unknown = extra.filter((arg) => arg !== "--clear");
+        if (unknown.length > 0) {
+          console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+          return 2;
+        }
+        if (extra.includes("--clear")) {
+          const removed = clearBrowserToken(paths);
+          console.log(
+            removed === null
+              ? `  nothing to remove: there is no token file at ${paths.browserTokenFile}`
+              : `- ${paths.browserTokenFile}: removed`,
+          );
+          return 0;
+        }
+        const hide = canHideInput(process.stdin);
+        const pasted = await readTokenFromStdin(
+          {
+            isTTY: hide,
+            readAll: () => Bun.stdin.text(),
+            ...(hide ? { readSecret: () => readSecretLine(process.stdin) } : {}),
+          },
+          (line) => console.log(line),
+        ).catch((error: unknown) => {
+          console.error(
+            `${error instanceof Error ? error.message : String(error)}. Save the token to a file and pipe it in (\`${COMMAND} browser token < token.txt\`), or paste it in the portal's Browser card (\`${COMMAND} portal\`).`,
+          );
+          return null;
+        });
+        if (pasted === null) {
+          console.error("Nothing was saved (Ctrl+C).");
+          return 130;
+        }
+        const parsed = parseBrowserToken(pasted);
+        if (!parsed.ok) {
+          console.error(`The token was not saved: ${parsed.why}.`);
+          return 1;
+        }
+        writeBrowserToken(paths, parsed.token);
+        // The token itself is never printed, only the file it went to.
+        console.log(tokenSavedLine(paths.browserTokenFile));
+        console.log("Start a new Claude session (or restart the running one) to use it.");
+        return 0;
+      }
+      if (sub === "check") {
+        if (extra.length > 0) {
+          console.error(`Unknown option: ${extra.join(" ")}\n\n${HELP}`);
+          return 2;
+        }
+        // One real launcher (this CLI) with a real Playwright MCP, on the person's own Chrome
+        // through the Playwright extension. It opens a window in the claude-code profile.
+        const result = await runBrowserCheck({
           check: (name, ok, why) =>
             console.log(
               `${ok ? "✓" : "✗"} ${name}${ok || why === undefined ? "" : ` — ${why.slice(0, 400)}`}`,
             ),
-          // Each launcher is this CLI again, with the two flags every run of the plugin's
-          // own bundles gets (the hook shim, `doctor --live`): the working folder's `.env`
-          // files and its `bunfig.toml` stay out of it.
+          // The launcher is this CLI again, with the two flags every run of the plugin's own
+          // bundles gets (the hook shim, `doctor --live`): the working folder's `.env` files and
+          // its `bunfig.toml` stay out of it.
           cli: browserCheckCommand(process.execPath, process.argv[1] ?? "", pluginDir()),
           log: (line) => console.error(line),
+          machine: browserDeps,
+          paths,
         });
         console.log(
           result.failed === 0
@@ -501,7 +714,7 @@ async function main(argv: string[]): Promise<number> {
         );
         return result.failed === 0 ? 0 : 1;
       }
-      console.error(`Usage: ${COMMAND} browser <mcp|check> [options]\n\n${HELP}`);
+      console.error(`Usage: ${COMMAND} browser <mcp|setup|token|check> [options]\n\n${HELP}`);
       return 2;
     }
     case "sessions": {

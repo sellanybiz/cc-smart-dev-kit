@@ -1,17 +1,22 @@
 import { existsSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
+import {
+  type BrowserSetupRecord,
+  browserRestoreLines,
+  readBrowserSetupRecord,
+} from "../browser/setup";
 import { COMMAND } from "../build-info";
-import { configuredPort } from "../gateway/commands";
+import { configuredPort, routerService } from "../gateway/commands";
 import { messageOf } from "../gateway/config";
 import type { HealthProbe } from "../gateway/health";
 import {
+  type RouterServiceKind,
   type Runner,
   restartPendingFile,
   SOCKET_NAME,
-  stopRouter,
   UNIT_NAME,
-  unitActive,
 } from "../gateway/service";
+import { TASK_LABEL } from "../gateway/service-windows";
 import { ownedGatewayEnvKeys } from "../gateway/settings";
 import { forgetMcpServer, mcpRecordsFile } from "../mcp/records";
 import { removeMcpServers } from "../mcp/register";
@@ -39,7 +44,7 @@ function describe(result: RestoreResult, short: (path: string) => string): strin
   }
 }
 
-/** The router's two units, as restore names them. */
+/** The router's own definition files, as restore knows them. */
 const UNITS = `${UNIT_NAME} and ${SOCKET_NAME}`;
 
 /** Said before restore stops a running router, and before the question. */
@@ -74,6 +79,17 @@ export function stageOneDone(
   return `Restart every running Claude session (they still use the router), then run restore again — this one removed the launcher (${tildify(launcher, paths.home)}), so \`${COMMAND}\` is not on your PATH any more: ${shellQuote(bunPath)} ${flags} ${shellQuote(cliBundle)} restore`;
 }
 
+/**
+ * What running the router means for this machine's service, in the words of the definition
+ * `restore` removes: a task on Windows, a unit and its socket on Linux. A machine with no
+ * service (macOS) has no definition either.
+ */
+function serviceFile(paths: CliPaths, service: RouterServiceKind): null | string {
+  if (service === "scheduled-task") return paths.routerTaskFile;
+  if (service === "systemd") return paths.routerUnitFile;
+  return null;
+}
+
 export interface RestoreOptions {
   /** `--yes`: stop a running router without asking. */
   yes: boolean;
@@ -82,7 +98,8 @@ export interface RestoreOptions {
   /** This CLI's own bundle (`plugin/dist/cli.js`): what stage 1 names as the second run. */
   cliBundle: string;
   runner: Runner;
-  systemd: boolean;
+  /** The service this machine can run the router under (`routerServiceKind`). */
+  service: RouterServiceKind;
   /** Asks the person; null when there is no terminal. */
   confirm: ((question: string) => boolean) | null;
   /** Asks the router's port after the stop, until it is closed; a test passes a fake. */
@@ -151,6 +168,31 @@ function removeMcp(
 }
 
 /**
+ * The browser's own part: the token file, and the extension pre-registration setup added on
+ * Windows (`browserRestoreLines`). The macOS pre-registration is a managed file, so `restore`
+ * handles it above.
+ *
+ * **Chrome's `claude-code` profile and the installed extension are never touched**, and the lines
+ * say so: they are the person's browser data, not cc-smart-dev-kit's. The profile's display name in
+ * `Local State` is the one exception — it is a managed change, so `restore` puts it back, and every
+ * other byte of that file is left as it is.
+ */
+function removeBrowser(
+  paths: CliPaths,
+  record: BrowserSetupRecord,
+  runner: Runner,
+): { lines: string[] } {
+  const done = browserRestoreLines(paths, { record, run: (argv) => runner(argv) });
+  const lines = [...done.lines];
+  if (done.profileTouched) {
+    lines.push(
+      "  Chrome's \"claude-code\" profile and the Playwright extension stay exactly as they are: they are your browser's, not cc-smart-dev-kit's.",
+    );
+  }
+  return { lines };
+}
+
+/**
  * Restore takes the instructions out, so their two state files go too: the version stamp,
  * and the stored `setup --no-instructions` (a setup after a restore starts fresh). Prints a
  * line when a stored choice was forgotten; true when it was.
@@ -185,13 +227,27 @@ function forgetInstructionChoice(stateDir: string, short: (path: string) => stri
 export async function runRestore(paths: CliPaths, options: RestoreOptions): Promise<number> {
   const short = (path: string) => tildify(path, paths.home);
   const changed = readChanged(paths.stateDir);
+  // The browser's record is read BEFORE `restore` runs: the record file is a managed file, so
+  // restore takes it back, and what it says is what the browser's own cleanup has to undo.
+  const browserRecord = readBrowserSetupRecord(paths.stateDir);
   const routerFiles = [
     realTarget(paths.routerCopy),
     realTarget(paths.routerUnitFile),
     realTarget(paths.routerSocketFile),
+    realTarget(paths.routerTaskFile),
   ];
   const routerTracked = routerFiles.some((file) => Object.hasOwn(changed, file));
-  const unitTracked = options.systemd && Object.hasOwn(changed, realTarget(paths.routerUnitFile));
+  // The service's own definition: the unit file on Linux, the task's on Windows.
+  const definition = serviceFile(paths, options.service);
+  const definitionTracked = definition !== null && Object.hasOwn(changed, realTarget(definition));
+  // The service this machine runs the router under, for its state and its stop. The account
+  // a Windows task would run as is not needed: restore writes no definition.
+  const service = routerService({
+    account: null,
+    paths,
+    runner: options.runner,
+    service: options.service,
+  });
   // A key the person changed since is theirs: `ownedGatewayEnvKeys` leaves it out, so it
   // does not keep the router up for sessions that no longer point at it.
   const sessionsUseRouter =
@@ -205,6 +261,9 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
         const results = restore(paths.stateDir, { except: routerFiles });
         print(results, short);
         for (const line of removeMcp(paths, options, short).lines) console.log(line);
+        for (const line of removeBrowser(paths, browserRecord, options.runner).lines) {
+          console.log(line);
+        }
         forgetInstructionChoice(paths.stateDir, short);
         console.log(stageOneDone(paths, options.cliBundle));
         return results.some((result) => result.action === "no-backup") ? 1 : 0;
@@ -224,7 +283,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
     ) {
       return 1;
     }
-  } else if (unitTracked && unitActive(options.runner)) {
+  } else if (definitionTracked && service.running(options.runner)) {
     if (
       !askFirst(
         options,
@@ -240,7 +299,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
   return withLock(
     paths.stateDir,
     async () => {
-      if (unitTracked) {
+      if (definitionTracked) {
         // The port the router listens on: the config's. An unusable config leaves it
         // unknown; the stop is sent all the same, with no port to wait for. (Its health
         // answer names its port too, but it can only be asked on a port already known.)
@@ -251,38 +310,46 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
           console.log(`  cannot read the router's port (${messageOf(error)}); not waiting for it`);
           port = null;
         }
-        const stopped = await stopRouter(options.runner, port, options.probe, {
-          dir: dirname(paths.routerUnitFile),
-          socket: SOCKET_NAME,
-          unit: UNIT_NAME,
-        });
+        const stopped = await service.stop(options.runner, port, options.probe);
+        // The service's own words: systemd disables the units and stops them (the drain
+        // goes on in the background); Windows removes the task, and its router with it.
+        const windows = options.service === "scheduled-task";
+        const where = windows ? TASK_LABEL : UNITS;
+        // What "was not running" is asked of: the service itself, not both of its units.
+        const subject = windows ? TASK_LABEL : UNIT_NAME;
+        const gone = windows ? "removed" : "disabled and stopped";
         switch (stopped.kind) {
           case "closed":
             console.log(
-              `- ${UNITS}: disabled and stopped (port ${port} closed; answers in flight finish in the background)`,
+              windows
+                ? `- ${where}: removed (port ${port} closed)`
+                : `- ${where}: disabled and stopped (port ${port} closed; answers in flight finish in the background)`,
             );
             break;
           case "no-port":
-            console.log(`- ${UNITS}: disabled and stopping`);
+            console.log(windows ? `- ${where}: removed` : `- ${where}: disabled and stopping`);
             break;
           case "not-running":
             console.log(
-              `  ${UNIT_NAME} was not running (systemctl --user is-active: ${stopped.state}); not waiting for port ${port}`,
+              windows
+                ? `  ${subject} was not running (its state is ${stopped.state}); not waiting for port ${port}`
+                : `  ${subject} was not running (systemctl --user is-active: ${stopped.state}); not waiting for port ${port}`,
             );
-            console.log(`- ${UNITS}: disabled and stopped`);
+            console.log(`- ${where}: ${gone}`);
             break;
           case "other":
             console.log(
               `  port ${port} answers, but not as this router (${stopped.detail}); not waiting for it`,
             );
-            console.log(`- ${UNITS}: disabled and stopping`);
+            console.log(windows ? `- ${where}: removed` : `- ${where}: disabled and stopping`);
             break;
         }
       }
       const results = restore(paths.stateDir);
-      if (unitTracked) options.runner(["systemctl", "--user", "daemon-reload"]);
+      if (definitionTracked) service.forget(options.runner);
       // The MCP servers setup registered, and the record of them.
       const mcp = removeMcp(paths, options, short);
+      const browser = removeBrowser(paths, browserRecord, options.runner);
       // The router is gone: a setup that did not finish has nothing left to finish.
       rmSync(restartPendingFile(paths.stateDir), { force: true });
       // So is its limit state: no status line or alert may read a stale fallback from it.
@@ -293,8 +360,14 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
         console.log(`- ${short(paths.gatewayStateFile)}: removed (the router's limit state)`);
       }
       for (const line of mcp.lines) console.log(line);
+      for (const line of browser.lines) console.log(line);
       const forgot = forgetInstructionChoice(paths.stateDir, short);
-      if (results.length === 0 && !stateGone && mcp.lines.length === 0) {
+      if (
+        results.length === 0 &&
+        !stateGone &&
+        mcp.lines.length === 0 &&
+        browser.lines.length === 0
+      ) {
         if (!forgot) console.log("Nothing to restore: cc-smart-dev-kit has nothing in any file.");
         return 0;
       }

@@ -96,6 +96,11 @@ Each of them:
 
 ## State, lock and paths
 
+- **The browser's one write inside Chrome's own folder** is the `claude-code` profile's display
+  name in `Local State`, through `applyManagedJson` (`json-keys`), and only while no Chrome runs
+  on that user data folder — Chrome rewrites that file from memory. `restore` puts it back like
+  any other key; nothing else of Chrome's is written, and no command deletes a profile or an
+  extension (`.claude/rules/browser.md`).
 - **State (`<stateDir>`):** `$CLAUDE_CONFIG_DIR/cc-smart-dev-kit/` (by default
   `~/.claude/cc-smart-dev-kit/`): `owned.json`, `owned-entries.json`, `changed.json`, the `lock`, and `backups/`
   (mode 0700). Beside them, the instructions' two state files: `no-instructions` (a stored
@@ -111,8 +116,18 @@ Each of them:
   There is no refresh timer. A run that removes a stale lock first takes the claim file
   `lock.takeover` (O_EXCL), so it never removes a live lock that took the stale one's
   place. A waiting run tries for up to 10 seconds, then says who holds it.
-- **Paths come from `cliPaths()`,** which follows `HOME` and `CLAUDE_CONFIG_DIR`. Never
-  call `homedir()` or write `~/.claude` anywhere else: tests point these at a temp folder.
+- **Paths come from `cliPaths()`,** which follows `HOME`, `CLAUDE_CONFIG_DIR` and (on
+  Windows, where `HOME` is undefined) `USERPROFILE`. Never call `homedir()` or write
+  `~/.claude` anywhere else: tests point these at a temp folder. On Windows the layout is
+  the same one under `%USERPROFILE%` — `docs/windows-setup.md` says why.
+- **A mode call goes through `setFileMode()`** (`file-mode.ts`): on Windows a mode is not
+  protection (the profile's ACL is) and a failing `chmod`/`fchmod` must never end a run.
+- **A check that reads a mode goes through `isOwnerOnly()`** in the same module: every
+  reader that refuses a file "the group or others can read" (the gateway's config, the
+  browser's token, the Tavily key file, the browser's output folder) asks it. Off Windows
+  the bits decide; on Windows every file counts as the owner's alone, because
+  `statSync().mode` there is made up (`0666` for a writable file) and a refusal over it
+  would refuse **every** file the plugin owns.
 - **One launcher, many config folders.** The launcher `~/.local/bin/cc-smart-dev-kit` is
   shared by every config folder; the state (lock, records, backups) is per config folder.
   So a `restore` under one `CLAUDE_CONFIG_DIR` can remove a launcher another one relies
@@ -185,6 +200,12 @@ valid across updates.
   PATH).
 - It repeats the lookup of `findUserInstall()` (`installed-plugins.ts`) in plain JS.
   **Change one, change the other**, and the launcher tests.
+- **Windows gets a second launcher beside it:** `cc-smart-dev-kit.cmd` (`launcher-cmd.ts`),
+  written by `setup` on a `win32` host and removed by `restore` like the `sh` one (one whole
+  file each). `cmd` and PowerShell cannot run a `sh` script; Git Bash runs the `sh` one.
+  `doctor` checks both, and starts the `.cmd` through `cmd.exe` — a `.cmd` is not an
+  executable. Its plugin lookup cannot use `for /f` over a path with spaces, so it prints
+  the folder to a file in `%TEMP%` and reads it back. `docs/windows-setup.md`.
 
 ## What setup may do, and when
 

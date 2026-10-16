@@ -28,6 +28,7 @@ import {
   stoppedByRestart,
   tabConfigName,
   warpTabConfig,
+  windowsTerminalCommand,
   xfceTerminalCommand,
 } from "./saved-sessions";
 
@@ -131,6 +132,20 @@ describe("the saved Warp tab", () => {
     expect(xfceTerminalCommand(session({ id: "not a session; rm -rf /" }), "/work")).toBeNull();
   });
 
+  test("the Windows Terminal window: in the main checkout, resuming, and it stays open", () => {
+    expect(windowsTerminalCommand(session(), "C:\\work\\my-app")).toEqual([
+      "wt.exe",
+      "-d",
+      "C:\\work\\my-app",
+      "cmd",
+      "/k",
+      "claude --resume aaaaaaaa-1111-2222-3333-444444444444",
+    ]);
+    expect(
+      windowsTerminalCommand(session({ id: "not a session; rm -rf /" }), "C:\\work"),
+    ).toBeNull();
+  });
+
   test("which terminal brings sessions back", () => {
     const has = (names: string[]) => (name: string) => names.includes(name);
     expect(
@@ -152,6 +167,20 @@ describe("the saved Warp tab", () => {
     ).toBe("xfce-terminal");
     expect(
       pickReopenTerminal({ hasProgram: has([]), platform: "darwin", warpDataFolder: false }),
+    ).toBe("nowhere");
+    // Windows: Warp wins where its data folder is there, else Windows Terminal, else nothing.
+    expect(
+      pickReopenTerminal({ hasProgram: has([]), platform: "win32", warpDataFolder: true }),
+    ).toBe("warp");
+    expect(
+      pickReopenTerminal({ hasProgram: has(["wt.exe"]), platform: "win32", warpDataFolder: false }),
+    ).toBe("windows-terminal");
+    expect(
+      pickReopenTerminal({
+        hasProgram: has(["xfce4-terminal"]),
+        platform: "win32",
+        warpDataFolder: false,
+      }),
     ).toBe("nowhere");
   });
 
@@ -540,5 +569,38 @@ describe("the sessions command", () => {
     }
     expect(opened).toHaveLength(1);
     expect(existsSync(openedMarkerFile(w.paths.stateDir, id))).toBe(false);
+  });
+
+  test("on Windows --open brings each session back in a Windows Terminal window", async () => {
+    const now = 100 * 3_600_000;
+    const startedAt = now - 3600 * 1000;
+    const id = "aaaaaaaa-1111-2222-3333-444444444444";
+    const w = world([
+      {
+        id,
+        tail: line({ agentName: "Fix the login bug", cwd: "/work/my-app", type: "agent-name" }),
+        // Killed at the restart: `--open` brings it back.
+        writtenAt: startedAt - 1000,
+      },
+    ]);
+    const { deps: fake, opened } = deps({
+      platform: "win32",
+      which: (command) => (command === "wt.exe" ? "C:\\Windows\\wt.exe" : null),
+    });
+    const out: string[] = [];
+    const print = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      out.push(args.join(" "));
+    });
+    try {
+      expect(await runSessions(w.paths, { dryRun: false, open: true }, fake, w.project)).toBe(0);
+    } finally {
+      print.mockRestore();
+    }
+    // No XFCE Terminal and no `systemd-run` on Windows: the window is started directly.
+    expect(opened).toEqual([["wt.exe", "-d", w.project, "cmd", "/k", `claude --resume ${id}`]]);
+    expect(out.join("\n")).toContain(
+      "--open reopens the stopped ones, each in a Windows Terminal window of its own.",
+    );
+    expect(out.join("\n")).toContain(`Opened: Fix the login bug — my-app`);
   });
 });

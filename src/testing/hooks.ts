@@ -77,7 +77,17 @@ export function hookEnv(): Record<string, string> {
   const tmp = join(home, "tmp");
   mkdirSync(join(home, ".claude"), { recursive: true });
   mkdirSync(tmp);
-  return { ...cleanGitEnv(), HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude"), TMPDIR: tmp };
+  const env: Record<string, string> = {
+    ...cleanGitEnv(),
+    HOME: home,
+    CLAUDE_CONFIG_DIR: join(home, ".claude"),
+    TMPDIR: tmp,
+  };
+  // `CLAUDECODE` is dropped: it says the suite itself runs inside Claude Code, not that the
+  // person is, and a command that refuses there must be tested on purpose (a test that wants
+  // it sets it). Without this, a suite run from a session tests a different machine than CI.
+  delete env.CLAUDECODE;
+  return env;
 }
 
 /** Runs a hook in this process on `input`, the way its entry does. */

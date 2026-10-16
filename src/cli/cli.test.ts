@@ -12,10 +12,12 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { MARKETPLACE_SOURCE, VERSION } from "../build-info";
+import { localDay } from "../gateway/safety-checks";
 import { type Machine, TEST_HOST_VAR } from "../machine/machine";
 import { MCP_VERSIONS } from "../mcp/versions";
 import { versionStampFile } from "../setup/instructions";
 import { installLauncher } from "../setup/launcher";
+import { installLauncherCmd } from "../setup/launcher-cmd";
 import { listBackups } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
@@ -40,9 +42,33 @@ interface SetupOptions {
   companions?: boolean;
   /** A fake `claude` on PATH that logs each call. Default: true. */
   claude?: boolean;
+  /**
+   * A ready browser for this world (default: true): the Chrome profile `claude-code` with the
+   * Playwright extension in it, the file-URL switch on, a saved token, and the `playwright`
+   * registration as setup leaves it. false models the machine that has not done the browser's
+   * steps yet, where the browser's own lines are ✗ and `doctor` exits 1 — the state
+   * `src/browser/`'s own tests cover line by line.
+   */
+  browser?: boolean;
+  /**
+   * System paths that exist on the test's machine (`host.exists`). Empty by default: no Chrome,
+   * no Warp app — never whatever the machine running the test happens to have.
+   */
+  existing?: string[];
   /** The fake git first on PATH. Default: true. false: the real git (a real project). */
   fakeGit?: boolean;
 }
+
+/** The Chrome this world claims is installed, when `browser: true` asks for a ready browser. */
+const CHROME_ON_PATH = "/usr/bin/google-chrome";
+
+/** Where Chrome keeps its profiles under a home folder, on Linux. */
+function browserChromeDir(home: string): string {
+  return join(home, ".config", "google-chrome");
+}
+
+/** The Playwright extension's id, for the profile this world writes. */
+const PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
 
 /** The companions' marketplaces, as Claude Code lists them once added. */
 const COMPANION_MARKETPLACES = {
@@ -187,11 +213,30 @@ function setup(options: SetupOptions = {}) {
   // The CLI runs as its own process: it never reads the host. PATH holds the fakes, the
   // launcher's folder and bun's, nothing else; the host's facts are given (a Linux with no
   // os-release, so no package manager cc-smart-dev-kit knows, and no Warp app).
+  // `browser: true`: the browser as it is once its steps are done. The Chrome EXECUTABLE is a
+  // path this world claims exists (`host.exists` is the whole truth there), the profile and the
+  // token are real files under the temp home, and the token has the extension's own shape.
+  const paths_ = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: configDir });
+  const browserFiles: string[] = [];
+  if (options.browser !== false) {
+    const chrome = join(browserChromeDir(home), "claude-code");
+    mkdirSync(join(chrome, "Extensions", PLAYWRIGHT_EXTENSION_ID, "0.4.0"), { recursive: true });
+    writeFileSync(
+      join(chrome, "Preferences"),
+      JSON.stringify({
+        extensions: { settings: { [PLAYWRIGHT_EXTENSION_ID]: { newAllowFileAccess: true } } },
+      }),
+    );
+    mkdirSync(dirname(paths_.browserTokenFile), { recursive: true, mode: 0o700 });
+    writeFileSync(paths_.browserTokenFile, `${"A".repeat(40)}_-b\n`, { mode: 0o600 });
+    browserFiles.push(CHROME_ON_PATH, chrome, paths_.browserTokenFile);
+  }
   const env: Record<string, string> = {
     HOME: home,
     CLAUDE_CONFIG_DIR: configDir,
     PATH: `${fakeBin}:${join(home, ".local", "bin")}:${bunBin}`,
     [TEST_HOST_VAR]: JSON.stringify({
+      existing: [...(options.existing ?? []), ...browserFiles],
       platform: "linux",
       arch: "x64",
       osRelease: null,
@@ -326,6 +371,7 @@ function noHostMachine(home: string, confirm: Machine["confirm"]): Machine {
   return {
     run: () => ({ exitCode: 1, output: "" }),
     runOnTerminal: () => 1,
+    spawnDetached: () => undefined,
     which: () => null,
     confirm,
     platform: "linux",
@@ -806,6 +852,14 @@ describe("cc-smart-dev-kit doctor", () => {
         ...MCP_DOCTOR_OK,
         // Tavily is optional: without a key its server is skipped, never a failure.
         tavilyDoctorSkipped(home),
+        // The browser's own lines. This world's Chrome is the path it claims (host.exists is
+        // the whole truth there), and the profile, the extension and the token are its own.
+        `✓ Google Chrome is at ${CHROME_ON_PATH}`,
+        `✓ the Chrome profile "claude-code" is at ${join(browserChromeDir(home), "claude-code")} (found by its folder)`,
+        "✓ the Playwright extension 0.4.0 is installed in that profile",
+        "✓ no other extension is in that profile",
+        "✓ that profile lets the extension open file:// pages",
+        `✓ the browser token is set (${join(home, ".config", "cc-smart-dev-kit", "playwright-extension.token")}, mode 600)`,
         // Warp is optional too.
         "· Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
         // The gateway is optional: never set up is information, not a failure.
@@ -859,6 +913,38 @@ describe("cc-smart-dev-kit doctor", () => {
     ).toEqual([
       '· ~/.tmux.conf has no "set -g allow-passthrough all" line, so tmux drops an alert from a pane. To add it: cc-smart-dev-kit setup',
     ]);
+  });
+
+  test("the Linux desktop extras: a missing tool is named as information, and no desktop means no line", () => {
+    const { fakeBin, run } = setup();
+    run(["setup"]);
+    // No DISPLAY: an SSH session or a headless machine — nothing about the desktop at all.
+    expect(run(["doctor"]).stdout).not.toContain("xdotool");
+    // A desktop with none of the extras' tools: one line each, information, never a failure.
+    const desktop = run(["doctor"], { DISPLAY: ":0", XDG_CURRENT_DESKTOP: "XFCE" });
+    expect(desktop.exitCode).toBe(0);
+    expect(desktop.stdout).toContain(
+      "· gdbus is not installed (glib's libglib2.0-bin provides it): a desktop alert has no minute on screen, and two alerts of one session can stay there together\n",
+    );
+    expect(desktop.stdout).toContain(
+      "· xdotool is not installed: a click on a desktop alert cannot raise the session's terminal window\n",
+    );
+    expect(desktop.stdout).toContain(
+      "· xfconf-query is not installed: an alert's sound plays while XFCE's Do Not Disturb is on\n",
+    );
+    // Another desktop (or none named): the XFCE setting is not this machine's to miss.
+    expect(run(["doctor"], { DISPLAY: ":0", XDG_CURRENT_DESKTOP: "GNOME" }).stdout).not.toContain(
+      "xfconf-query",
+    );
+    // The tools installed: nothing about them.
+    for (const tool of ["gdbus", "xdotool", "xfconf-query"]) {
+      writeFileSync(join(fakeBin, tool), "#!/bin/sh\nexit 0\n");
+      chmodSync(join(fakeBin, tool), 0o755);
+    }
+    const complete = run(["doctor"], { DISPLAY: ":0", XDG_CURRENT_DESKTOP: "XFCE" });
+    expect(complete.stdout).not.toContain("gdbus");
+    expect(complete.stdout).not.toContain("xdotool");
+    expect(complete.stdout).not.toContain("xfconf-query");
   });
 
   test("on a Bun older than 1.4.3: ✗ first, and the gateway checks, which send the key, are skipped", async () => {
@@ -940,7 +1026,7 @@ describe("cc-smart-dev-kit doctor", () => {
               return { exitCode: 0, output: "" };
             },
             systemFolders: [],
-            systemd: true,
+            service: "systemd",
             machine: fakeMachine,
           },
           local: { instructionsSource: join(home, "no-instructions-source"), cwd: home },
@@ -979,8 +1065,33 @@ describe("cc-smart-dev-kit doctor", () => {
     const { home, run } = setup();
     const macApp = join(home, "Applications", "Warp.app");
     mkdirSync(macApp, { recursive: true });
+    // The browser as macOS keeps it, so `doctor` reads this world and never the host's Chrome.
+    const macChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    const macProfile = join(
+      home,
+      "Library",
+      "Application Support",
+      "Google",
+      "Chrome",
+      "claude-code",
+    );
+    mkdirSync(join(macProfile, "Extensions", PLAYWRIGHT_EXTENSION_ID, "0.4.0"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(macProfile, "Preferences"),
+      JSON.stringify({
+        extensions: { settings: { [PLAYWRIGHT_EXTENSION_ID]: { newAllowFileAccess: true } } },
+      }),
+    );
     const host = {
       [TEST_HOST_VAR]: JSON.stringify({
+        existing: [
+          macApp,
+          macChrome,
+          macProfile,
+          join(home, ".config", "cc-smart-dev-kit", "playwright-extension.token"),
+        ],
         platform: "darwin",
         arch: "arm64",
         osRelease: null,
@@ -2229,6 +2340,31 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
     );
   });
 
+  test("statusline warns at the workflow's own alerts.usagePercent, not a fixed 85", () => {
+    const { home, configDir } = setup();
+    const guard = subprocessGuard();
+    const now = Math.floor(Date.now() / 1000);
+    mkdirSync(join(home, ".config", "cc-smart-dev-kit"), { recursive: true });
+    writeFileSync(
+      join(home, ".config", "cc-smart-dev-kit", "workflow.json"),
+      `${JSON.stringify({ alerts: { usagePercent: 40 } })}\n`,
+    );
+    const result = Bun.spawnSync([process.execPath, ...guard.args, CLI, "statusline"], {
+      env: { CLAUDE_CONFIG_DIR: configDir, HOME: home, PATH: process.env.PATH ?? "", ...guard.env },
+      stdin: new Blob([
+        JSON.stringify({
+          model: { display_name: "Opus 5.5" },
+          rate_limits: { five_hour: { resets_at: now + 3600, used_percentage: 40 } },
+        }),
+      ]),
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toStartWith("Opus 5.5 · ⚠ 5h 40% (resets ");
+    expect(result.stderr.toString()).toBe("");
+  });
+
   test("usage reads the projects folder; a wrong option exits 2", () => {
     const { configDir, run } = setup();
     const folder = join(configDir, "projects", "-home-user-my-app", "session-1", "subagents");
@@ -2262,12 +2398,49 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
         "Main sessions: 0 sessions; replies by model: none",
         "Subagents: 1 in 1 session; replies by model: glm-5.3-flash 1; on Opus: 0 of 1 replies (0%)",
         "",
+        "Auto mode's safety checks the router counted on this machine:",
+        "  none in the last 8 days (the gateway must be set up, and a session must have run with auto mode on)",
+        "",
       ].join("\n"),
     );
     expect(result.stdout).not.toContain("secret words");
     const wrong = run(["usage", "--days", "1"]);
     expect(wrong.exitCode).toBe(2);
     expect(wrong.stderr).toStartWith("Unknown option: --days");
+  });
+
+  test("usage shows the safety checks the router counted, today first", () => {
+    const { home, run } = setup();
+    // The router's file, as it writes it. Its days are the machine's own calendar days
+    // (proved in `src/gateway/safety-checks.test.ts`), so today's key comes from the clock.
+    const file = join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json");
+    mkdirSync(dirname(file), { recursive: true });
+    const today = localDay(Date.now());
+    writeFileSync(
+      file,
+      `${JSON.stringify(
+        {
+          days: {
+            [today]: {
+              anthropic: { cacheRead: 500, cacheWrite: 0, checks: 2, input: 1234, output: 7 },
+              checks: 3,
+              fallback: { cacheRead: 0, cacheWrite: 0, checks: 1, input: 11, output: 3 },
+            },
+          },
+          version: 1,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const result = run(["usage", "--hours", "1"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.split("\n").slice(-4)).toEqual([
+      "Auto mode's safety checks the router counted on this machine:",
+      `  today (${today}): 3 checks — Anthropic 2 (1234 in, 7 out, 500 cache read, 0 cache write); a fallback 1 (11 in, 3 out, 0 cache read, 0 cache write)`,
+      "  The tokens are what each answer's `usage` reported; whether they count against a Pro, Max or Team plan's limit is not confirmed (Anthropic's docs say they do on Enterprise and API accounts).",
+      "",
+    ]);
   });
 });
 
@@ -2479,5 +2652,167 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain('$ claude mcp add-json --scope user playwright {"command":"');
     expect(existsSync(join(configDir, ".claude.json"))).toBe(false);
+  });
+});
+
+describe("cc-smart-dev-kit on Windows: the launcher, Git Bash, and what doctor says", () => {
+  /**
+   * The host facts a Windows machine gives the CLI: the same shape as the Linux ones above,
+   * with `platform: "win32"`. The platform decides the launcher's `.cmd` twin, doctor's Git
+   * Bash check and the PATH note — everything else is the same temp home.
+   */
+  function windowsHost(extra: Record<string, string> = {}): Record<string, string> {
+    return {
+      [TEST_HOST_VAR]: JSON.stringify({
+        platform: "win32",
+        arch: "x64",
+        osRelease: null,
+        macApp: "C:\\no-such-Warp.app",
+      }),
+      ...extra,
+    };
+  }
+
+  test("setup writes the .cmd twin beside the sh launcher, as one managed file", () => {
+    const { binDir, run } = setup();
+    const result = run(["setup"], windowsHost());
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("+ ~/.local/bin/cc-smart-dev-kit: launcher created");
+    expect(result.stdout).toContain("+ ~/.local/bin/cc-smart-dev-kit.cmd: launcher created");
+    const cmd = join(binDir, "cc-smart-dev-kit.cmd");
+    expect(existsSync(cmd)).toBe(true);
+    // It bakes the bun that ran setup, and runs the installed cli.js.
+    expect(readFileSync(cmd, "utf8")).toContain(`set "baked_bun=${process.execPath}"`);
+    // A second setup changes nothing.
+    expect(run(["setup"], windowsHost()).stdout).toContain(
+      "Nothing to change. Setup is up to date.",
+    );
+  });
+
+  test("off Windows setup writes no .cmd, and Linux output is untouched", () => {
+    const { binDir, run } = setup();
+    const result = run(["setup"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain("cc-smart-dev-kit.cmd");
+    expect(existsSync(join(binDir, "cc-smart-dev-kit.cmd"))).toBe(false);
+  });
+
+  test("restore removes the .cmd too", () => {
+    const { binDir, run } = setup();
+    run(["setup"], windowsHost());
+    const cmd = join(binDir, "cc-smart-dev-kit.cmd");
+    expect(existsSync(cmd)).toBe(true);
+    const result = run(["restore"]);
+    expect(result.stdout).toContain(
+      "- ~/.local/bin/cc-smart-dev-kit.cmd: removed (cc-smart-dev-kit had created it)",
+    );
+    expect(existsSync(cmd)).toBe(false);
+    expect(existsSync(join(binDir, "cc-smart-dev-kit"))).toBe(false);
+  });
+
+  test("the PATH note names the Windows folder and where to add it", () => {
+    const { binDir, fakeBin, run } = setup();
+    // A PATH without the launcher's folder: what a fresh Windows machine has.
+    const result = run(["setup"], windowsHost({ PATH: fakeBin }));
+    expect(existsSync(join(binDir, "cc-smart-dev-kit.cmd"))).toBe(true);
+    expect(result.stdout).toContain(
+      `Note: ${binDir} is not on your PATH. Add it there (Windows Settings → System → About → Advanced system settings → Environment Variables → Path for your account), then open a new terminal, so the cc-smart-dev-kit command works.`,
+    );
+  });
+
+  test("doctor on Windows: no Git Bash and no .cmd are ✗, each saying what to run", () => {
+    const { binDir, run } = setup();
+    run(["setup"], windowsHost());
+    // The .cmd is gone (a person removed it, or an older setup never wrote one).
+    rmSync(join(binDir, "cc-smart-dev-kit.cmd"));
+    const result = run(["doctor"], windowsHost());
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain(
+      "✗ no Windows launcher at ~/.local/bin/cc-smart-dev-kit.cmd, so cmd and PowerShell cannot run cc-smart-dev-kit (Git Bash runs ~/.local/bin/cc-smart-dev-kit). Run: cc-smart-dev-kit setup",
+    );
+    // The sh launcher is still checked, and is in place: Git Bash runs it.
+    expect(result.stdout).toContain(
+      "✓ the launcher ~/.local/bin/cc-smart-dev-kit is in place (Git Bash runs it)",
+    );
+    expect(result.stdout).toContain("✗ Git Bash was not found");
+    expect(result.stdout).toContain("Install Git for Windows (https://git-scm.com/download/win)");
+    // The Linux-only parts are information, never a failure.
+    expect(result.stdout).toContain(
+      "· tmux: not on Windows, so no passthrough line is managed there",
+    );
+  });
+
+  test("doctor on Windows with no launcher at all names the sh one first", () => {
+    const { run } = setup();
+    const result = run(["doctor"], windowsHost());
+    expect(result.stdout).toContain(
+      "✗ no launcher at ~/.local/bin/cc-smart-dev-kit. Run: cc-smart-dev-kit setup",
+    );
+  });
+
+  test("doctor on Windows: a .cmd baked with a bun that is gone is ✗ with the setup command", () => {
+    const { binDir, stateDir, run } = setup();
+    run(["setup"], windowsHost());
+    const gone = join(tempDir("gone"), "bun.exe");
+    installLauncherCmd(binDir, { stateDir, bunPath: gone });
+    const result = run(["doctor"], windowsHost());
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain(
+      `✗ the Windows launcher's bun ${gone} is missing or not executable. Run: cc-smart-dev-kit setup`,
+    );
+  });
+
+  test("doctor on Windows asks whether the bun is there, not whether it has an execute bit", () => {
+    const { binDir, stateDir, run } = setup();
+    run(["setup"], windowsHost());
+    // A bun with no execute bit. On Windows a mode means nothing — an `.exe` runs by being
+    // there — so this is a working bun there and the launchers are fine. (The same file
+    // would be "not executable" on Linux, which is the check that must not run on Windows.)
+    const bun = join(tempDir("bun"), "bun.exe");
+    writeFileSync(bun, "not really bun\n", { mode: 0o600 });
+    installLauncher(binDir, { stateDir, bunPath: bun });
+    installLauncherCmd(binDir, { stateDir, bunPath: bun });
+    chmodSync(join(binDir, "cc-smart-dev-kit"), 0o755);
+    const result = run(["doctor"], windowsHost());
+    expect(result.stdout).toContain(
+      "✓ the launcher ~/.local/bin/cc-smart-dev-kit is in place (Git Bash runs it)",
+    );
+    expect(result.stdout).not.toContain("missing or not executable");
+  });
+
+  test("doctor on Windows after setup: the .cmd runs through cmd.exe, Git Bash found by the variable", () => {
+    const { fakeBin, run } = setup();
+    // A fake `cmd.exe`, so the launcher's run is exercised without a Windows machine. It
+    // logs its arguments, which is what proves doctor starts the .cmd through cmd.exe.
+    const log = join(fakeBin, "cmd-calls.log");
+    const fakeCmd = join(fakeBin, "cmd.exe");
+    writeFileSync(fakeCmd, `#!/bin/sh\necho "$*" >> ${JSON.stringify(log)}\necho ${VERSION}\n`);
+    chmodSync(fakeCmd, 0o755);
+    // Git Bash where CLAUDE_CODE_GIT_BASH_PATH says it is (Claude Code accepts bash.exe).
+    const bash = join(fakeBin, "bash.exe");
+    writeFileSync(bash, "#!/bin/sh\nexit 0\n");
+    chmodSync(bash, 0o755);
+
+    run(["setup"], windowsHost());
+    const result = run(["doctor"], windowsHost({ CLAUDE_CODE_GIT_BASH_PATH: bash }));
+    expect(result.stdout).toContain(
+      "✓ the launcher ~/.local/bin/cc-smart-dev-kit is in place (Git Bash runs it)",
+    );
+    expect(result.stdout).toContain(
+      `✓ the Windows launcher ~/.local/bin/cc-smart-dev-kit.cmd runs ${VERSION}`,
+    );
+    expect(result.stdout).toContain(
+      `✓ Git Bash is at ${bash}, which the hooks and the Bash tool run through`,
+    );
+    expect(readFileSync(log, "utf8")).toContain("cc-smart-dev-kit.cmd version");
+  });
+
+  test("doctor off Windows knows nothing of Git Bash or a .cmd", () => {
+    const { run } = setup();
+    run(["setup"]);
+    const result = run(["doctor"]);
+    expect(result.stdout).not.toContain("Git Bash");
+    expect(result.stdout).not.toContain(".cmd");
+    expect(result.stdout).not.toContain("tmux: not on Windows");
   });
 });

@@ -1,8 +1,8 @@
 /**
  * The Playwright output hook: a screenshot the caller names by a relative `filename` goes into
- * the shared browser's output folder, and a name that climbs out of it is refused.
+ * the browser's output folder, and a name that climbs out of it is refused.
  *
- * The measurement behind it (`docs/claude-code-contract.md` § The shared browser): with
+ * The measurement behind it (`docs/claude-code-contract.md` § The browser): with
  * `@playwright/mcp` 0.0.83 and `--output-dir`, a caller-named file lands in the MCP process's
  * cwd; a server-named one lands in the output folder. The launcher passes
  * `--allow-unrestricted-file-access`, so the server itself writes a `../x.png` wherever it
@@ -105,7 +105,7 @@ describe("the answer for the plugin's own server", () => {
       const output = hookOutput(playwrightOutputAnswer({ tool_input: { filename } }, OUTPUT, true));
       expect(output.permissionDecision).toBe("deny");
       expect(output.permissionDecisionReason).toContain(
-        `This call names a file outside the shared browser's output folder ("filename": ${JSON.stringify(filename)} — a path with ".." in it).`,
+        `This call names a file outside the browser's output folder ("filename": ${JSON.stringify(filename)} — a path with ".." in it).`,
       );
       expect(output.permissionDecisionReason).toContain(OUTPUT);
       expect(output.updatedInput).toBeUndefined();

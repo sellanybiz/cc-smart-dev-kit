@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { type RouterPaths, routerPaths } from "../gateway/paths";
 
 export interface CliPaths extends RouterPaths {
@@ -20,12 +20,13 @@ export interface CliPaths extends RouterPaths {
   stateDir: string;
   /** What outlives a plugin version: `~/.local/share/cc-smart-dev-kit`. */
   dataDir: string;
-  /** The shared Chrome's profile, one for the whole machine: `<dataDir>/playwright`. */
-  browserProfileDir: string;
   /** Everything the browser saves: screenshots, snapshots, downloads (`<dataDir>/playwright-output`). */
   browserOutputDir: string;
-  /** The init page the Playwright MCP loads for every tab: `<dataDir>/playwright-picker.js`. */
-  browserPickerFile: string;
+  /**
+   * The Playwright extension's token, mode 0600: it is what connects the MCP to the person's own
+   * Chrome without an approval page (`src/browser/token.ts`).
+   */
+  browserTokenFile: string;
   /** The Serena context the plugin starts Serena with: `<dataDir>/serena/contexts/worktree.yml`. */
   serenaContextFile: string;
   /** The router's long-running copy: `~/.local/share/cc-smart-dev-kit/router.js`. */
@@ -42,8 +43,15 @@ export interface CliPaths extends RouterPaths {
   omnirouteStateFile: string;
   /** The router's systemd user unit: `~/.config/systemd/user/cc-smart-dev-kit-router.service`. */
   routerUnitFile: string;
+  /**
+   * The Windows Scheduled Task's definition: `~/.local/share/cc-smart-dev-kit/router-task.xml`.
+   * `gateway setup` writes it and registers the task from it (`src/gateway/service-windows.ts`).
+   */
+  routerTaskFile: string;
   /** claude-mem's settings: `$CLAUDE_MEM_DATA_DIR/settings.json`, else `~/.claude-mem/settings.json`. */
   claudeMemSettingsFile: string;
+  /** This person's workflow defaults: `~/.config/cc-smart-dev-kit/workflow.json` (0600). */
+  workflowConfigFile: string;
   /** The socket unit that holds the router's port: `~/.config/systemd/user/cc-smart-dev-kit-router.socket`. */
   routerSocketFile: string;
   /** The notifier's settings: `~/.claude/cc-smart-dev-kit/notify.json`. */
@@ -70,6 +78,16 @@ function userConfigFile(env: Record<string, string | undefined>, home: string): 
  * Every path the CLI touches, from HOME, CLAUDE_CONFIG_DIR and CLAUDE_MEM_DATA_DIR, so tests
  * can point it anywhere. The router's two paths come from `src/gateway/paths.ts`: the router
  * bundle reads that module, and no CLI path may reach it.
+ *
+ * **Windows keeps this same layout, under `%USERPROFILE%`** (`homeDir()` in
+ * `src/gateway/paths.ts`): Claude Code's own folder is `%USERPROFILE%\.claude`, the
+ * launcher is `%USERPROFILE%\.local\bin\cc-smart-dev-kit` (and its `.cmd` twin beside it),
+ * the state is `%USERPROFILE%\.claude\cc-smart-dev-kit`, the data
+ * `%USERPROFILE%\.local\share\cc-smart-dev-kit`, the gateway's config
+ * `%USERPROFILE%\.config\cc-smart-dev-kit\gateway.json`. Deliberately not `%APPDATA%` or
+ * `%LOCALAPPDATA%`: Git Bash's `$HOME`, PowerShell and this module then name one folder,
+ * and `tildify` keeps working. The reasoning and what it costs:
+ * `docs/windows-setup.md`.
  */
 export function cliPaths(env: Record<string, string | undefined> = process.env): CliPaths {
   const router = routerPaths(env);
@@ -84,14 +102,12 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     binDir: join(router.home, ".local", "bin"),
     stateDir: join(claudeConfigDir, "cc-smart-dev-kit"),
     dataDir: join(router.home, ".local", "share", "cc-smart-dev-kit"),
-    browserProfileDir: join(router.home, ".local", "share", "cc-smart-dev-kit", "playwright"),
     browserOutputDir: join(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
-    browserPickerFile: join(
+    browserTokenFile: join(
       router.home,
-      ".local",
-      "share",
+      ".config",
       "cc-smart-dev-kit",
-      "playwright-picker.js",
+      "playwright-extension.token",
     ),
     serenaContextFile: join(
       router.home,
@@ -103,6 +119,7 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
       "worktree.yml",
     ),
     routerCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    routerTaskFile: join(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalStateFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
     omnirouteStateFile: join(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
@@ -122,6 +139,7 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
       "cc-smart-dev-kit-router.socket",
     ),
     notifyConfigFile: join(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
+    workflowConfigFile: join(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     tmuxConfFile: join(router.home, ".tmux.conf"),
     tavilyKeyFile: join(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),
   };
@@ -135,7 +153,13 @@ function claudeMemDataDir(env: Record<string, string | undefined>, home: string)
   return dir.startsWith("~/") ? join(home, dir.slice(2)) : dir;
 }
 
-/** Shows a path with `~` for the home folder, to keep the output short. */
+/**
+ * Shows a path with `~` for the home folder, to keep the output short. The rest keeps its own
+ * separators: on Windows a path under the home folder goes on with `\` (`~\.claude\x`).
+ */
 export function tildify(path: string, home: string): string {
-  return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+  const rest = path.slice(home.length);
+  return path === home || (path.startsWith(home) && (rest.startsWith("/") || rest.startsWith(sep)))
+    ? `~${rest}`
+    : path;
 }

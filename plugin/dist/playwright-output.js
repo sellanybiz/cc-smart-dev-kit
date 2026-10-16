@@ -1,22 +1,39 @@
 // @bun
 // src/hooks/playwright-output.ts
-import { isAbsolute, resolve, sep } from "path";
+import { isAbsolute, resolve, sep as sep2 } from "path";
 
 // src/cli/paths.ts
-import { join as join2 } from "path";
+import { join as join2, sep } from "path";
 
 // src/gateway/paths.ts
 import { homedir } from "os";
 import { join } from "path";
+
+// src/machine/host.ts
+var TEST_HOST_VAR = "CC_SMART_DEV_KIT_TEST_HOST";
+function hostPlatform(env = process.env) {
+  const text = env[TEST_HOST_VAR];
+  if (!text)
+    return process.platform;
+  const given = JSON.parse(text);
+  return given.platform ?? process.platform;
+}
+
+// src/gateway/paths.ts
 function homeDir(env = process.env) {
-  return env.HOME || homedir();
+  if (env.HOME)
+    return env.HOME;
+  if (hostPlatform(env) === "win32" && env.USERPROFILE)
+    return env.USERPROFILE;
+  return homedir();
 }
 function routerPaths(env = process.env) {
   const home = homeDir(env);
   return {
     home,
     gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json")
+    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
+    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json")
   };
 }
 
@@ -38,11 +55,11 @@ function cliPaths(env = process.env) {
     binDir: join2(router.home, ".local", "bin"),
     stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
     dataDir: join2(router.home, ".local", "share", "cc-smart-dev-kit"),
-    browserProfileDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright"),
     browserOutputDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
-    browserPickerFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-picker.js"),
+    browserTokenFile: join2(router.home, ".config", "cc-smart-dev-kit", "playwright-extension.token"),
     serenaContextFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "serena", "contexts", "worktree.yml"),
     routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
     omnirouteStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
@@ -50,6 +67,7 @@ function cliPaths(env = process.env) {
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
     routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
     notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
+    workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf"),
     tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
   };
@@ -97,7 +115,7 @@ var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
 
 // src/build-info/index.ts
 var info = {
-  version: "0.3.0",
+  version: "0.4.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -202,7 +220,7 @@ function outputFilename(fields, outputDir) {
     return null;
   const name = filename.replace(/^(?:\.[\\/])+/, "");
   const target = resolve(outputDir, name);
-  if (!target.startsWith(outputDir + sep))
+  if (!target.startsWith(outputDir + sep2))
     return null;
   return target;
 }
@@ -210,7 +228,7 @@ function climbsOut(filename) {
   return filename.split(/[\\/]+/).includes("..");
 }
 function outsideReason(filename, outputDir) {
-  return `This call names a file outside the shared browser's output folder ("filename": ${JSON.stringify(filename)} \u2014 a path with ".." in it). ` + `Files the shared browser saves live in ${outputDir}. Name the file with a relative name (it lands there), or use an absolute path inside that folder.`;
+  return `This call names a file outside the browser's output folder ("filename": ${JSON.stringify(filename)} \u2014 a path with ".." in it). ` + `Files the browser saves live in ${outputDir}. Name the file with a relative name (it lands there), or use an absolute path inside that folder.`;
 }
 function rewrittenAnswer(input, filename) {
   return {

@@ -80,6 +80,9 @@ const context = (home: string) => ({
  */
 const noPending = (): void => {};
 
+/** Windows makes the modes up (`statSync().mode` is 0666 for a writable file): POSIX assertions. */
+const NO_POSIX_MODES = process.platform === "win32";
+
 describe("the servers the plugin registers", () => {
   test("the four general servers, pinned and at user scope; the browser runs the launcher", () => {
     const home = tempDir("mcp-servers");
@@ -631,8 +634,9 @@ describe("restore: exactly what setup registered", () => {
       "serena",
       "tavily-websearch",
     ]);
+    // `~` and then the platform's own separators: `~\.claude\.claude.json` on Windows.
     expect(removal.notes).toEqual([
-      "! cannot read ~/.claude/.claude.json: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: playwright, sequential-thinking, serena, tavily-websearch",
+      `! cannot read ${join("~", ".claude", ".claude.json")}: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: playwright, sequential-thinking, serena, tavily-websearch`,
     ]);
     expect(fake.calls).toHaveLength(callsBefore);
     expect(Object.keys(readMcpRecords(fake.paths.stateDir))).toHaveLength(4);
@@ -657,15 +661,30 @@ describe("the Tavily key", () => {
     expect(JSON.stringify(key)).not.toContain("readable by others");
   });
 
-  test("a key file others can read is refused, naming the file and never its content", () => {
+  test.skipIf(NO_POSIX_MODES)(
+    "a key file others can read is refused, naming the file and never its content",
+    () => {
+      const home = tempDir("mcp-tavily");
+      const paths_ = paths(home);
+      mkdirSync(dirname(paths_.tavilyKeyFile), { recursive: true });
+      writeFileSync(paths_.tavilyKeyFile, "tvly-exposed\n", { mode: 0o644 });
+      const key = readTavilyKey(paths_, {});
+      expect(key.source).toBe("none");
+      expect(key.source === "none" ? key.reason : "").toContain("readable by others (mode 644)");
+      expect(key.source === "none" ? key.reason : "").not.toContain("tvly-exposed");
+    },
+  );
+
+  test("the same shared-looking key file: refused off Windows, used on Windows", () => {
+    // Windows reports 0o100666 for a writable file whatever its ACL says, so the bits cannot
+    // decide there: refusing every file would leave every Windows machine without a Tavily
+    // server, over a file the profile's ACL already keeps to its owner.
     const home = tempDir("mcp-tavily");
     const paths_ = paths(home);
     mkdirSync(dirname(paths_.tavilyKeyFile), { recursive: true });
-    writeFileSync(paths_.tavilyKeyFile, "tvly-exposed\n", { mode: 0o644 });
-    const key = readTavilyKey(paths_, {});
-    expect(key.source).toBe("none");
-    expect(key.source === "none" ? key.reason : "").toContain("readable by others (mode 644)");
-    expect(key.source === "none" ? key.reason : "").not.toContain("tvly-exposed");
+    writeFileSync(paths_.tavilyKeyFile, "tvly-exposed\n", { mode: 0o666 });
+    expect(readTavilyKey(paths_, {}, "linux").source).toBe("none");
+    expect(readTavilyKey(paths_, {}, "win32")).toEqual({ source: "file", value: "tvly-exposed" });
   });
 
   test("an empty file, and no file at all: a reason that says what to do", () => {
@@ -675,6 +694,12 @@ describe("the Tavily key", () => {
     expect(missing.source).toBe("none");
     expect(missing.source === "none" ? missing.reason : "").toContain(
       "no TAVILY_API_KEY in the environment, and no key file",
+    );
+    // No `chmod 600` on Windows: there is no such thing there, and the profile's ACL is what
+    // keeps the key file to its owner.
+    const missingOnWindows = readTavilyKey(paths_, {}, "win32");
+    expect(missingOnWindows.source === "none" ? missingOnWindows.reason : "").not.toContain(
+      "chmod",
     );
     // The reason names the file only when there is one to fix: doctor names it either way.
     mkdirSync(dirname(paths_.tavilyKeyFile), { recursive: true });

@@ -1,19 +1,40 @@
 // @bun
+// src/entries/notify.ts
+import { existsSync as existsSync6 } from "fs";
+import { join as join7 } from "path";
+
 // src/cli/paths.ts
-import { join as join2 } from "path";
+import { join as join2, sep } from "path";
 
 // src/gateway/paths.ts
 import { homedir } from "os";
 import { join } from "path";
+
+// src/machine/host.ts
+var TEST_HOST_VAR = "CC_SMART_DEV_KIT_TEST_HOST";
+function hostPlatform(env = process.env) {
+  const text = env[TEST_HOST_VAR];
+  if (!text)
+    return process.platform;
+  const given = JSON.parse(text);
+  return given.platform ?? process.platform;
+}
+
+// src/gateway/paths.ts
 function homeDir(env = process.env) {
-  return env.HOME || homedir();
+  if (env.HOME)
+    return env.HOME;
+  if (hostPlatform(env) === "win32" && env.USERPROFILE)
+    return env.USERPROFILE;
+  return homedir();
 }
 function routerPaths(env = process.env) {
   const home = homeDir(env);
   return {
     home,
     gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json")
+    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
+    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json")
   };
 }
 
@@ -35,11 +56,11 @@ function cliPaths(env = process.env) {
     binDir: join2(router.home, ".local", "bin"),
     stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
     dataDir: join2(router.home, ".local", "share", "cc-smart-dev-kit"),
-    browserProfileDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright"),
     browserOutputDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
-    browserPickerFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-picker.js"),
+    browserTokenFile: join2(router.home, ".config", "cc-smart-dev-kit", "playwright-extension.token"),
     serenaContextFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "serena", "contexts", "worktree.yml"),
     routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
     omnirouteStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
@@ -47,6 +68,7 @@ function cliPaths(env = process.env) {
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
     routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
     notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
+    workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf"),
     tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
   };
@@ -61,10 +83,9 @@ function claudeMemDataDir(env, home) {
 }
 
 // src/hooks/notify.ts
-import { spawn } from "child_process";
-import { readFileSync as readFileSync4, rmSync, statSync as statSync2, writeFileSync } from "fs";
+import { readFileSync as readFileSync6, rmSync, statSync as statSync3, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { basename, join as join3 } from "path";
+import { basename, join as join5 } from "path";
 
 // src/gateway/plain-text.ts
 var CONTROL = /[\p{Cc}\p{Cf}]/gu;
@@ -95,7 +116,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.3.0",
+  version: "0.4.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -116,6 +137,90 @@ var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURC
 var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
+// src/shell/powershell.ts
+var SINGLE_QUOTES = /['\u2018\u2019\u201A\u201B]/g;
+function powershellLiteral(value) {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(`cannot put ${JSON.stringify(value)} in a PowerShell command`);
+  }
+  return `'${value.replace(SINGLE_QUOTES, (quote) => quote + quote)}'`;
+}
+
+// src/hooks/windows-toast.ts
+var TOAST_SHELL = "powershell";
+var TOAST_APP_ID = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe";
+function base64Literal(text) {
+  return `'${Buffer.from(text, "utf8").toString("base64")}'`;
+}
+function decodedText(text) {
+  return `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(${base64Literal(text)}))`;
+}
+function windowsToastScript(title, body, critical) {
+  const scenario = critical ? ' scenario="reminder"' : "";
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    `$title = ${decodedText(title)}`,
+    `$body = ${decodedText(body)}`,
+    `$appId = ${powershellLiteral(TOAST_APP_ID)}`,
+    "try {",
+    "  $xml = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]::New()",
+    `  $xml.LoadXml('<toast${scenario}><visual><binding template="ToastGeneric"><text id="1" /><text id="2" /></binding></visual></toast>')`,
+    "  $texts = $xml.GetElementsByTagName('text')",
+    "  $null = $texts.Item(0).AppendChild($xml.CreateTextNode($title))",
+    "  $null = $texts.Item(1).AppendChild($xml.CreateTextNode($body))",
+    "  $toast = [Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType = WindowsRuntime]::New($xml)",
+    "  [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]::CreateToastNotifier($appId).Show($toast)",
+    "} catch {",
+    "  try {",
+    "    Add-Type -AssemblyName System.Windows.Forms",
+    "    Add-Type -AssemblyName System.Drawing",
+    "    $balloon = New-Object System.Windows.Forms.NotifyIcon",
+    "    $balloon.Icon = [System.Drawing.SystemIcons]::Information",
+    "    $balloon.BalloonTipTitle = $title",
+    "    $balloon.BalloonTipText = $body",
+    "    $balloon.Visible = $true",
+    "    $balloon.ShowBalloonTip(10000)",
+    "    Start-Sleep -Milliseconds 4000",
+    "    $balloon.Dispose()",
+    "  } catch {",
+    "    [Console]::Error.WriteLine('cc-smart-dev-kit: the desktop notification could not be shown: ' + $_.Exception.Message)",
+    "    exit 1",
+    "  }",
+    "}"
+  ].join(`
+`);
+}
+function windowsToastArgv(shell, title, body, critical = false) {
+  const script = windowsToastScript(title, body, critical);
+  return [
+    shell,
+    "-NoProfile",
+    "-NonInteractive",
+    "-EncodedCommand",
+    Buffer.from(script, "utf16le").toString("base64")
+  ];
+}
+
+// src/project/git-env.ts
+var REPO_SELECTING_GIT_VARS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_PREFIX",
+  "GIT_NAMESPACE"
+];
+function gitEnv(base) {
+  const env = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value !== undefined && !REPO_SELECTING_GIT_VARS.includes(key))
+      env[key] = value;
+  }
+  return env;
+}
+
 // src/setup/marketplace-access.ts
 var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
@@ -134,27 +239,15 @@ function notifyCommand(text, platform, which, title = PLUGIN, critical = false) 
       `display notification ${JSON.stringify(text)} with title ${JSON.stringify(title)}`
     ];
   }
+  if (platform === "win32") {
+    const powershell = which(TOAST_SHELL);
+    return powershell === null ? null : windowsToastArgv(powershell, title, text, critical);
+  }
   return null;
 }
 
-// src/hooks/io.ts
-var SILENT = {};
-
-// src/hooks/session-name.ts
-var MAX_SESSION_NAME = 60;
-function cleanSessionName(raw) {
-  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
-  const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
-  if (plain === "")
-    return null;
-  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
-}
-
-// src/hooks/stop-failure.ts
-import { existsSync as existsSync2, readFileSync as readFileSync3 } from "fs";
-
-// src/gateway/config.ts
-import { mkdirSync, readFileSync, statSync } from "fs";
+// src/project/config.ts
+import { existsSync, readFileSync } from "fs";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -1174,6 +1267,7 @@ function datetime(args) {
 var anyString = /^[\s\S]{0,}$/;
 var integer = /^-?\d+$/;
 var number = /^-?\d+(?:\.\d+)?$/;
+var boolean = /^(?:true|false)$/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
@@ -2054,6 +2148,26 @@ var $ZodNumber = /* @__PURE__ */ $constructor("$ZodNumber", (inst, def) => {
 var $ZodNumberFormat = /* @__PURE__ */ $constructor("$ZodNumberFormat", (inst, def) => {
   $ZodCheckNumberFormat.init(inst, def);
   $ZodNumber.init(inst, def);
+});
+var $ZodBoolean = /* @__PURE__ */ $constructor("$ZodBoolean", (inst, def) => {
+  $ZodType.init(inst, def);
+  inst._zod.pattern = boolean;
+  inst._zod.parse = (payload, _ctx) => {
+    if (def.coerce)
+      try {
+        payload.value = Boolean(payload.value);
+      } catch (_) {}
+    const input = payload.value;
+    if (typeof input === "boolean")
+      return payload;
+    payload.issues.push({
+      expected: "boolean",
+      code: "invalid_type",
+      input,
+      inst
+    });
+    return payload;
+  };
 });
 var $ZodUnknown = /* @__PURE__ */ $constructor("$ZodUnknown", (inst, def) => {
   $ZodType.init(inst, def);
@@ -3771,6 +3885,12 @@ function _int(Class, params) {
     ...normalizeParams(params)
   });
 }
+function _boolean(Class, params) {
+  return new Class({
+    type: "boolean",
+    ...normalizeParams(params)
+  });
+}
 function _unknown(Class) {
   return new Class({
     type: "unknown"
@@ -4652,6 +4772,9 @@ var numberProcessor = (schema, ctx, _json, params) => {
     if (rest.length)
       json.allOf = [...json.allOf ?? [], ...rest.map((m) => ({ multipleOf: m }))];
   }
+};
+var booleanProcessor = (_schema, _ctx, json, _params) => {
+  json.type = "boolean";
 };
 var neverProcessor = (_schema, _ctx, json, _params) => {
   json.not = {};
@@ -5555,6 +5678,14 @@ var ZodNumberFormat = /* @__PURE__ */ $constructor("ZodNumberFormat", (inst, def
 function int(params) {
   return _int(ZodNumberFormat, params);
 }
+var ZodBoolean = /* @__PURE__ */ $constructor("ZodBoolean", (inst, def) => {
+  $ZodBoolean.init(inst, def);
+  ZodType.init(inst, def);
+  inst._zod.processJSONSchema = (ctx, json, params) => booleanProcessor(inst, ctx, json, params);
+});
+function boolean2(params) {
+  return _boolean(ZodBoolean, params);
+}
 var ZodUnknown = /* @__PURE__ */ $constructor("ZodUnknown", (inst, def) => {
   $ZodUnknown.init(inst, def);
   ZodType.init(inst, def);
@@ -5654,6 +5785,14 @@ function object(shape, params) {
     ...normalizeParams(params)
   };
   return new ZodObject(def);
+}
+function strictObject(shape, params) {
+  return new ZodObject({
+    type: "object",
+    shape,
+    catchall: never(),
+    ...normalizeParams(params)
+  });
 }
 function looseObject(shape, params) {
   return new ZodObject({
@@ -5950,6 +6089,330 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
+// src/jobs/kinds.ts
+var matchRuleSchema = union([
+  strictObject({
+    tool: string2().min(1),
+    sub: array(string2().min(1)).optional(),
+    flags: array(string2().min(1)).optional(),
+    argIncludes: string2().min(1).optional(),
+    valued: array(string2().min(1)).optional()
+  }),
+  strictObject({
+    script: string2().min(1)
+  })
+]);
+var kindSpecSchema = strictObject({
+  gb: number2().int().min(0).max(1024),
+  filesGb: number2().int().min(0).max(1024).optional(),
+  maxFiles: number2().int().min(1).optional(),
+  printOnly: array(string2().min(1)).optional(),
+  skipWords: array(string2().min(1)).optional(),
+  valuedFlags: array(string2().min(1)).optional(),
+  workers: strictObject({
+    flag: string2().min(1),
+    aliases: array(string2().min(1)).optional(),
+    gbEach: number2().positive()
+  }).optional(),
+  match: array(matchRuleSchema).optional(),
+  about: string2().min(1).optional()
+});
+var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
+var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
+
+// src/workflow/schema.ts
+var ALERT_EVENTS = ["needs-you", "question", "finished", "failed"];
+var alertEventsSchema = array(_enum(ALERT_EVENTS)).min(1).refine((events) => new Set(events).size === events.length, "an event is listed twice");
+var workflowSchema = strictObject({
+  autoCommit: boolean2().optional(),
+  autoPush: boolean2().optional(),
+  openPr: _enum(["off", "draft", "ready"]).optional(),
+  autoMerge: boolean2().optional(),
+  mergeMethod: _enum(["merge", "squash", "rebase"]).optional(),
+  deleteBranch: boolean2().optional(),
+  reviewBeforePush: boolean2().optional(),
+  reviewAgents: array(string2().min(1)).min(1).refine((agents) => new Set(agents).size === agents.length, "an agent is listed twice").optional(),
+  clearWorktreeAfterMerge: boolean2().optional(),
+  alerts: strictObject({
+    events: alertEventsSchema.optional(),
+    sound: boolean2().optional(),
+    usagePercent: number2().int().min(1).max(100).optional()
+  }).optional()
+});
+var workflowDefaults = {
+  autoCommit: false,
+  autoPush: false,
+  openPr: "off",
+  autoMerge: false,
+  mergeMethod: "merge",
+  deleteBranch: false,
+  reviewBeforePush: true,
+  reviewAgents: ["cc-smart-dev-kit:reviewer"],
+  clearWorktreeAfterMerge: false,
+  alerts: {
+    events: [...ALERT_EVENTS],
+    sound: false,
+    usagePercent: 85
+  }
+};
+var SWITCH_NAMES = ["statusLine", "sessionNames", "jobRoute", "updateHold"];
+var POLICY_KEYS = [
+  "autoCommit",
+  "autoPush",
+  "openPr",
+  "autoMerge",
+  "mergeMethod",
+  "deleteBranch",
+  "reviewBeforePush",
+  "reviewAgents",
+  "clearWorktreeAfterMerge",
+  "alerts.events",
+  "alerts.sound",
+  "alerts.usagePercent"
+];
+var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
+var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
+function workflowValue(workflow, key) {
+  const [head, tail] = key.split(".");
+  if (head === undefined || tail === undefined)
+    return workflow[head ?? ""];
+  const group = workflow[head];
+  if (typeof group !== "object" || group === null)
+    return;
+  return group[tail];
+}
+
+// src/project/version-range.ts
+var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
+var IDENT = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
+var PARTIAL = `v?${NUMBER}(?:\\.${NUMBER}(?:\\.${NUMBER}(?:-${IDENT})?(?:\\+${IDENT})?)?)?`;
+var COMPARATOR = new RegExp(`^(?:[<>]=?|=|\\^|~)?${PARTIAL}$`);
+var HYPHEN = new RegExp(`^(${PARTIAL})\\s+-\\s+(${PARTIAL})$`);
+function isValidRange(range) {
+  const alternatives = range.split("||").map((part) => part.trim());
+  if (alternatives.some((part) => part === ""))
+    return false;
+  return alternatives.every((part) => {
+    if (HYPHEN.test(part))
+      return true;
+    const comparators = part.replace(/([<>]=?|=|\^|~)\s+/g, "$1").split(/\s+/);
+    return comparators.every((comparator) => COMPARATOR.test(comparator));
+  });
+}
+function satisfiesRange(version, range) {
+  if (!isValidRange(range))
+    throw new Error(`"${range}" is not a valid version range`);
+  return Bun.semver.satisfies(version, range);
+}
+
+// src/project/config.ts
+var PLUGIN_HOOK_NAMES = [
+  "git-guard",
+  "merge-guard",
+  "main-folder-guard",
+  "serena-root",
+  "message-guard",
+  "agent-guard",
+  "job-route",
+  "after-merge",
+  "review-record",
+  "worktree-leftovers",
+  "session-name"
+];
+var ccSmartDevKitConfigSchema = strictObject({
+  requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
+  worktrees: strictObject({
+    base: string2().min(1),
+    prefix: string2().min(1),
+    setup: array(string2().min(1)).min(1).optional(),
+    guardMainFolder: boolean2().optional(),
+    bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
+      error: (issue) => {
+        const given = issue.input;
+        const wrong = typeof given === "object" && given !== null ? Object.keys(given).find((prefix) => !prefix.endsWith("/")) : undefined;
+        return `"${wrong ?? "a prefix"}" must end with "/" (a branch-name prefix, like "release/")`;
+      }
+    }).optional(),
+    engine: _enum(["plugin", "own"]).optional()
+  }).optional(),
+  protectedBranches: array(string2().min(1)).min(1).optional(),
+  sessionNames: boolean2().optional(),
+  instructions: boolean2().optional(),
+  autoMode: array(string2().min(1)).optional(),
+  jobs: strictObject({ kinds: kindsSchema.optional(), route: boolean2().optional() }).optional(),
+  workflow: workflowSchema.optional(),
+  ownHooks: array(_enum(PLUGIN_HOOK_NAMES)).optional()
+});
+
+class CcSmartDevKitConfigError extends Error {
+  name = "CcSmartDevKitConfigError";
+}
+
+class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
+  name = "CcSmartDevKitVersionError";
+}
+function describeIssue(issue) {
+  const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
+  if (issue.code === "unrecognized_keys") {
+    const keys = issue.keys.map((key) => field === "(top level)" ? key : `${field}.${key}`);
+    return `${keys.join(", ")}: unknown field (a newer cc-smart-dev-kit may be needed)`;
+  }
+  return `${field}: ${issue.message}`;
+}
+function checkRequires(file, raw, pluginVersion) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return;
+  const requires = raw.requires;
+  if (typeof requires !== "string" || !isValidRange(requires))
+    return;
+  if (!satisfiesRange(pluginVersion, requires)) {
+    throw new CcSmartDevKitVersionError(`${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
+  }
+}
+function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
+  if (!existsSync(file))
+    return null;
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new CcSmartDevKitConfigError(`Invalid ${file}: not valid JSON (${reason})`);
+  }
+  checkRequires(file, raw, pluginVersion);
+  const parsed = ccSmartDevKitConfigSchema.safeParse(raw);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map(describeIssue).join("; ");
+    throw new CcSmartDevKitConfigError(`Invalid ${file}: ${issues}`);
+  }
+  return parsed.data;
+}
+
+// src/project/resolve.ts
+import { existsSync as existsSync2, realpathSync, statSync } from "fs";
+import { join as join3 } from "path";
+var MIN_GIT_VERSION = "2.31.0";
+var RESOLVE_GIT_TIMEOUT_MS = 5000;
+var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
+function gitIn(cwd, env) {
+  return (args) => {
+    try {
+      const result = Bun.spawnSync(["git", ...args], {
+        cwd,
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: RESOLVE_GIT_TIMEOUT_MS
+      });
+      return {
+        ok: result.exitCode === 0,
+        stdout: result.stdout.toString(),
+        stderr: result.stderr.toString()
+      };
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      throw /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+    }
+  };
+}
+function requireGitVersion(git) {
+  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(git(["--version"]).stdout);
+  if (!match)
+    return;
+  const version = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
+  if (Bun.semver.order(version, MIN_GIT_VERSION) < 0) {
+    throw new Error(`git 2.31 or newer is needed; you have git ${version}. Update git.`);
+  }
+}
+function findMainCheckout(git, cwd) {
+  const list = git(["worktree", "list", "--porcelain"]);
+  if (!list.ok)
+    throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
+  const [firstEntry = ""] = list.stdout.split(`
+
+`);
+  const lines = firstEntry.split(`
+`);
+  if (lines.includes("bare"))
+    return null;
+  const pathLine = lines.find((line) => line.startsWith("worktree "));
+  if (!pathLine)
+    return null;
+  const path = pathLine.slice("worktree ".length);
+  if (!existsSync2(path) || lines.some((line) => line.startsWith("prunable"))) {
+    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
+  }
+  return realpathSync(path);
+}
+function locateCheckout(cwd, options = {}) {
+  if (!existsSync2(cwd) || !statSync(cwd).isDirectory()) {
+    throw new Error(`resolveProject: ${cwd} is not a folder`);
+  }
+  const git = gitIn(cwd, gitEnv(options.env ?? process.env));
+  const revParse = git([
+    "rev-parse",
+    "--path-format=absolute",
+    "--show-toplevel",
+    "--absolute-git-dir",
+    "--git-common-dir"
+  ]);
+  const [top, gitDir, common] = revParse.stdout.trim().split(`
+`);
+  if (!revParse.ok || top?.startsWith("--")) {
+    requireGitVersion(git);
+    if (revParse.ok) {
+      throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
+    }
+    return null;
+  }
+  if (!top || !gitDir || !common)
+    return null;
+  const root = realpathSync(top);
+  const commonDir = realpathSync(common);
+  const isWorktree = realpathSync(gitDir) !== commonDir;
+  const mainCheckout = isWorktree ? findMainCheckout(git, cwd) : root;
+  return { root, commonDir, isWorktree, mainCheckout };
+}
+function loadProjectConfig(checkout, pluginVersion) {
+  const { root, mainCheckout } = checkout;
+  const own = join3(root, ".claude", "cc-smart-dev-kit.json");
+  let config = loadCcSmartDevKitConfig(own, pluginVersion);
+  let configFile = config === null ? null : own;
+  if (config === null && mainCheckout !== null && mainCheckout !== root) {
+    const main = join3(mainCheckout, ".claude", "cc-smart-dev-kit.json");
+    config = loadCcSmartDevKitConfig(main, pluginVersion);
+    configFile = config === null ? null : main;
+  }
+  return { ...checkout, config, configFile };
+}
+
+// src/workflow/resolve.ts
+import { existsSync as existsSync4, readFileSync as readFileSync4 } from "fs";
+
+// src/setup/file-mode.ts
+function isOwnerOnly(mode, platform = hostPlatform()) {
+  return platform === "win32" || (mode & 63) === 0;
+}
+
+// src/browser/chrome.ts
+var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
+var PLAYWRIGHT_EXTENSION_URL = `https://chromewebstore.google.com/detail/playwright-extension/${PLAYWRIGHT_EXTENSION_ID}`;
+var PLAYWRIGHT_EXTENSION_SETTINGS_URL = `chrome://extensions/?id=${PLAYWRIGHT_EXTENSION_ID}`;
+
+// src/browser/legacy.ts
+var WINDOWS_LIST = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object CommandLine | " + 'ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }';
+
+// src/browser/token.ts
+var BROWSER_TOKEN_ENV = "PLAYWRIGHT_MCP_EXTENSION_TOKEN";
+var TOKEN_LINE_PREFIX = `${BROWSER_TOKEN_ENV}=`;
+
+// src/browser/setup.ts
+var WINDOWS_KEY = `HKCU\\Software\\Google\\Chrome\\Extensions\\${PLAYWRIGHT_EXTENSION_ID}`;
+
+// src/gateway/config.ts
+import { mkdirSync, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
+
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 var SLOT_KEY = /^cc-smart-dev-kit-[a-z0-9][a-z0-9-]*$/;
@@ -6107,19 +6570,19 @@ function parseConfig(raw) {
   const result = gatewayConfigSchema.safeParse(raw);
   return result.success ? { config: result.data } : { error: prettifyError(result.error) };
 }
-function loadConfigFile(path) {
+function loadConfigFile(path, platform = hostPlatform()) {
   let mode;
   try {
-    mode = statSync(path).mode;
+    mode = statSync2(path).mode;
   } catch (error) {
     throw new ConfigError(`cannot read ${path}: ${messageOf(error)}`, { cause: error });
   }
-  if ((mode & 63) !== 0) {
+  if (!isOwnerOnly(mode, platform)) {
     throw new ConfigError(`${path} can be read by other users (mode ${(mode & 511).toString(8)}); it holds API keys. Run: chmod 600 ${path}`);
   }
   let raw;
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    raw = JSON.parse(readFileSync2(path, "utf8"));
   } catch (error) {
     throw new ConfigError(`${path} is not valid JSON. Fix it by hand.`, { cause: error });
   }
@@ -6129,6 +6592,371 @@ function loadConfigFile(path) {
 ${parsed.error}`);
   return parsed.config;
 }
+
+// src/gateway/settings.ts
+import { existsSync as existsSync3, readFileSync as readFileSync3 } from "fs";
+function gatewayEnv(port) {
+  return {
+    ENABLE_TOOL_SEARCH: "true",
+    ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: "cc-smart-dev-kit-scout[1m]",
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: `Affordable model for search and reading: the scout slot (${COMMAND} gateway slot scout \u2026)`,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (affordable)",
+    ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker[1m]",
+    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: `Affordable model for routine code and docs: the worker slot (${COMMAND} gateway slot worker \u2026)`,
+    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (affordable)"
+  };
+}
+var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
+var SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
+var LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+function isJsonObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function readSettings(path) {
+  if (!existsSync3(path))
+    return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync3(path, "utf8"));
+  } catch {
+    throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
+  }
+  if (!isJsonObject(parsed))
+    throw new Error(`${path} is not a JSON object; not touching it`);
+  const env = parsed.env;
+  if (env !== undefined && !isJsonObject(env))
+    throw new Error(`${path} has an "env" that is not an object`);
+  return parsed;
+}
+function maskKey(key) {
+  return key.length >= 12 ? `\u2022\u2022\u2022\u2022${key.slice(-4)}` : "\u2022\u2022\u2022\u2022";
+}
+function shownValue(value) {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  if (/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(text))
+    return maskKey(text);
+  return /^sk-|[A-Za-z0-9_-]{32,}/.test(text) ? maskKey(text) : text;
+}
+function settingsReport(settingsPath) {
+  const settings = readSettings(settingsPath);
+  const env = isJsonObject(settings.env) ? settings.env : {};
+  const baseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? shownValue(env.ANTHROPIC_BASE_URL) : null;
+  const loginOverrides = LOGIN_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
+  if (Object.hasOwn(settings, "apiKeyHelper"))
+    loginOverrides.push("apiKeyHelper");
+  const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
+  return { baseUrl, loginOverrides, subagentOverrides };
+}
+
+// src/machine/claude-mem.ts
+var API_KEY = "CLAUDE_MEM_OPENAI_COMPAT_API_KEY";
+var PROVIDER = "CLAUDE_MEM_PROVIDER";
+var UNCHOSEN = {
+  [PROVIDER]: ["", "claude"],
+  CLAUDE_MEM_OPENAI_COMPAT_PRESET: [""],
+  CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: [""],
+  CLAUDE_MEM_OPENAI_COMPAT_MODEL: [""],
+  [API_KEY]: [""],
+  CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: ["", "claude"],
+  CLAUDE_MEM_QUOTA_FALLBACK_MODEL: [""]
+};
+
+// src/machine/warp.ts
+var WARP_KEY_URL = "https://releases.warp.dev/linux/keys/warp.asc";
+var YUM_REPO_TEXT = `[warpdotdev]
+name=warpdotdev
+baseurl=https://releases.warp.dev/linux/rpm/stable
+enabled=1
+gpgcheck=1
+gpgkey=${WARP_KEY_URL}
+`;
+
+// src/setup/launcher.ts
+var LAUNCHER_NAME = "cc-smart-dev-kit";
+var FIND_INSTALL_JS = [
+  "const f=process.argv[process.argv.length-1];",
+  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
+  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
+
+// src/setup/lock.ts
+var FALLBACK_STALE_MS = 10 * 60 * 1000;
+
+// src/setup/launcher-cmd.ts
+var FIND_INSTALL_JS2 = [
+  "const f=process.argv[process.argv.length-1];",
+  "const j=JSON.parse(require('fs').readFileSync(f,'utf8'));",
+  `const e=((j&&j.plugins&&j.plugins['${PLUGIN_ID}'])||[]).find(function(x){`,
+  "return x&&x.scope==='user'&&typeof x.installPath==='string';});",
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
+
+// src/update/state.ts
+var CHECK_INTERVAL_MS = 60 * 60 * 1000;
+var LOG_MAX_BYTES = 256 * 1024;
+var UNREACHABLE_FAILS_AFTER_HOURS = 24;
+var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
+
+// src/workflow/resolve.ts
+class WorkflowConfigError extends Error {
+  name = "WorkflowConfigError";
+}
+function personalWorkflowFile(paths) {
+  return paths.workflowConfigFile;
+}
+function loadWorkflow(file) {
+  if (!existsSync4(file))
+    return {};
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync4(file, "utf8"));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
+  }
+  const parsed = workflowSchema.safeParse(raw);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((issue) => {
+      const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
+      return issue.code === "unrecognized_keys" ? `${issue.keys.join(", ")}: unknown field` : `${field}: ${issue.message}`;
+    });
+    throw new WorkflowConfigError(`Invalid ${file}: ${issues.join("; ")}`);
+  }
+  return parsed.data;
+}
+function mergeWorkflows(personal, project) {
+  const merged = { ...personal, ...project };
+  const alerts = { ...personal.alerts, ...project.alerts };
+  if (Object.keys(alerts).length > 0)
+    merged.alerts = alerts;
+  return merged;
+}
+function sourceOf(personal, project, key) {
+  if (workflowValue(project, key) !== undefined)
+    return "project";
+  return workflowValue(personal, key) !== undefined ? "personal" : "default";
+}
+function alertsFrom(personal, project) {
+  const merged = mergeWorkflows(personal, project);
+  const alerts = merged.alerts ?? {};
+  const of = (key, value) => ({
+    value,
+    source: sourceOf(personal, project, key)
+  });
+  return {
+    events: of("alerts.events", alerts.events ?? workflowDefaults.alerts.events),
+    sound: of("alerts.sound", alerts.sound ?? workflowDefaults.alerts.sound),
+    usagePercent: of("alerts.usagePercent", alerts.usagePercent ?? workflowDefaults.alerts.usagePercent)
+  };
+}
+function resolveAlerts(paths, projectConfig) {
+  const personal = loadWorkflow(personalWorkflowFile(paths));
+  return alertsFrom(personal, projectConfig?.workflow ?? {});
+}
+
+// src/workflow/alerts.ts
+function fallbackLine(problems) {
+  return `cc-smart-dev-kit: the alerts use the settings that can be read (${problems.join("; ")})`;
+}
+function alertsAt(paths, cwd, env) {
+  const problems = [];
+  let project = null;
+  if (cwd !== null) {
+    try {
+      const checkout = locateCheckout(cwd, { env });
+      if (checkout !== null)
+        project = loadProjectConfig(checkout).config;
+    } catch (error) {
+      if (error instanceof CcSmartDevKitConfigError)
+        problems.push(error.message);
+    }
+  }
+  try {
+    const alerts = resolveAlerts(paths, project);
+    return { alerts, problem: problems.length === 0 ? null : fallbackLine(problems) };
+  } catch (error) {
+    problems.push(error instanceof Error ? error.message : String(error));
+    return {
+      alerts: alertsFrom({}, project?.workflow ?? {}),
+      problem: fallbackLine(problems)
+    };
+  }
+}
+
+// src/hooks/alert-sound.ts
+import { join as join4 } from "path";
+var SOUND_DIR = "/usr/share/sounds/freedesktop/stereo";
+var MACOS_SOUNDS = {
+  "dialog-warning": "Basso",
+  "service-login": "Glass",
+  "service-logout": "Pop"
+};
+function soundArgv(moment, platform, which) {
+  if (platform === "linux") {
+    const paplay = which("paplay");
+    if (paplay !== null)
+      return [paplay, join4(SOUND_DIR, `${moment}.oga`)];
+    const canberra = which("canberra-gtk-play");
+    return canberra === null ? null : [canberra, "-i", moment];
+  }
+  if (platform === "darwin") {
+    const afplay = which("afplay");
+    return afplay === null ? null : [afplay, join4("/System/Library/Sounds", `${MACOS_SOUNDS[moment]}.aiff`)];
+  }
+  return null;
+}
+
+// src/hooks/desktop-alert.ts
+var TOOL_TIMEOUT_MS = 5000;
+function hasDesktop(platform, env) {
+  if (platform !== "linux")
+    return true;
+  return (env.DISPLAY ?? "") !== "" || (env.WAYLAND_DISPLAY ?? "") !== "";
+}
+function desktopTools(which) {
+  return {
+    gdbus: which("gdbus"),
+    notifySend: which("notify-send"),
+    xdotool: which("xdotool"),
+    xfconfQuery: which("xfconf-query")
+  };
+}
+function notifySendCapabilities(help) {
+  return {
+    actions: help.includes("--action"),
+    expire: help.includes("--expire-time"),
+    wait: help.includes("--wait")
+  };
+}
+function canWaitForClick(tools, capture) {
+  if (tools.gdbus !== null)
+    return true;
+  if (tools.notifySend === null)
+    return false;
+  const help = capture({ argv: [tools.notifySend, "--help"], timeoutMs: TOOL_TIMEOUT_MS });
+  const capabilities = notifySendCapabilities(help.stdout);
+  return capabilities.actions && capabilities.wait;
+}
+function dndOn(tools, capture) {
+  if (tools.xfconfQuery === null)
+    return false;
+  const run = capture({
+    argv: [tools.xfconfQuery, "-c", "xfce4-notifyd", "-p", "/do-not-disturb"],
+    timeoutMs: TOOL_TIMEOUT_MS
+  });
+  return run.exitCode === 0 && run.stdout.trim() === "true";
+}
+var NOTIFY_ALERT_KIND = "notify";
+function notifyWorkerAlert(alert, target) {
+  return {
+    body: alert.body,
+    critical: alert.critical,
+    kind: NOTIFY_ALERT_KIND,
+    session: target.session,
+    title: alert.title,
+    window: {
+      folder: target.folder,
+      name: target.name,
+      program: target.program,
+      windowId: target.windowId
+    }
+  };
+}
+
+// src/hooks/detached.ts
+import { spawn } from "child_process";
+var CMD = "cmd";
+var CMD_ARGUMENTS = ["/d", "/s", "/v:off", "/c"];
+function unableInCmd(argument) {
+  if (argument.includes('"'))
+    return 'a " would end the quoted argument';
+  if (argument.includes("%"))
+    return "a % is read as a variable name, inside double quotes too";
+  if (/[\r\n]/.test(argument))
+    return "a line break ends the command line";
+  if (argument.includes("\x00"))
+    return "a NUL ends the command line";
+  return null;
+}
+function cmdArgument(argument) {
+  const reason = unableInCmd(argument);
+  if (reason !== null)
+    return { ok: false, reason };
+  const trailing = /\\+$/.exec(argument)?.[0] ?? "";
+  const kept = argument.slice(0, argument.length - trailing.length);
+  return { ok: true, text: `"${kept}${trailing}${trailing}"` };
+}
+function windowsStart(argv) {
+  if (argv[0] === undefined) {
+    return { argument: "", ok: false, reason: "there is no program to start" };
+  }
+  const quoted = [];
+  for (const argument of argv) {
+    const one = cmdArgument(argument);
+    if (!one.ok)
+      return { argument, ok: false, reason: one.reason };
+    quoted.push(one.text);
+  }
+  return { argv: [CMD, ...CMD_ARGUMENTS, `"start "" /b ${quoted.join(" ")}"`], ok: true };
+}
+function forMessage(argument) {
+  return argument.replace(/[\r\n]/g, " ").replaceAll("\x00", " ");
+}
+function startDetached(platform, argv, options) {
+  const [file, ...args] = argv;
+  if (file === undefined)
+    return;
+  const where = {
+    ...options.cwd !== undefined && { cwd: options.cwd },
+    ...options.env !== undefined && { env: options.env }
+  };
+  try {
+    if (platform === "win32") {
+      const start = windowsStart(argv);
+      if (!start.ok) {
+        options.onError(`cannot run "${forMessage(start.argument)}" through cmd.exe: ${start.reason}; nothing was started`);
+        return;
+      }
+      const result = Bun.spawnSync(start.argv, {
+        ...where,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+        windowsHide: true,
+        windowsVerbatimArguments: true
+      });
+      const exitCode = result.exitCode ?? 1;
+      if (exitCode !== 0)
+        options.onError(`cmd /d /s /c start failed (exit ${exitCode})`);
+      return;
+    }
+    const child = spawn(file, args, { ...where, detached: true, stdio: "ignore" });
+    child.on("error", (error) => options.onError(error.message));
+    child.unref();
+  } catch (error) {
+    options.onError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+// src/hooks/io.ts
+var SILENT = {};
+
+// src/hooks/session-name.ts
+var MAX_SESSION_NAME = 60;
+function cleanSessionName(raw) {
+  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
+  const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
+  if (plain === "")
+    return null;
+  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
+}
+
+// src/hooks/stop-failure.ts
+import { existsSync as existsSync5, readFileSync as readFileSync5 } from "fs";
 
 // src/gateway/limit-state.ts
 var NO_RESET_FRESH_MS = 15 * 60000;
@@ -6189,62 +7017,6 @@ function current(resetsAt, lastMs, nowMs) {
 }
 function currentLimits(state, nowMs) {
   return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
-}
-
-// src/gateway/settings.ts
-import { existsSync, readFileSync as readFileSync2 } from "fs";
-function gatewayEnv(port) {
-  return {
-    ENABLE_TOOL_SEARCH: "true",
-    ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: "cc-smart-dev-kit-scout[1m]",
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: `Affordable model for search and reading: the scout slot (${COMMAND} gateway slot scout \u2026)`,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (affordable)",
-    ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker[1m]",
-    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: `Affordable model for routine code and docs: the worker slot (${COMMAND} gateway slot worker \u2026)`,
-    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (affordable)"
-  };
-}
-var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
-var SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
-var LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
-function isJsonObject(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function readSettings(path) {
-  if (!existsSync(path))
-    return {};
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync2(path, "utf8"));
-  } catch {
-    throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
-  }
-  if (!isJsonObject(parsed))
-    throw new Error(`${path} is not a JSON object; not touching it`);
-  const env = parsed.env;
-  if (env !== undefined && !isJsonObject(env))
-    throw new Error(`${path} has an "env" that is not an object`);
-  return parsed;
-}
-function maskKey(key) {
-  return key.length >= 12 ? `\u2022\u2022\u2022\u2022${key.slice(-4)}` : "\u2022\u2022\u2022\u2022";
-}
-function shownValue(value) {
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  if (/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(text))
-    return maskKey(text);
-  return /^sk-|[A-Za-z0-9_-]{32,}/.test(text) ? maskKey(text) : text;
-}
-function settingsReport(settingsPath) {
-  const settings = readSettings(settingsPath);
-  const env = isJsonObject(settings.env) ? settings.env : {};
-  const baseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? shownValue(env.ANTHROPIC_BASE_URL) : null;
-  const loginOverrides = LOGIN_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
-  if (Object.hasOwn(settings, "apiKeyHelper"))
-    loginOverrides.push("apiKeyHelper");
-  const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
-  return { baseUrl, loginOverrides, subagentOverrides };
 }
 
 // src/hooks/transcript.ts
@@ -6362,6 +7134,7 @@ var LIMIT_TEXT = /^You've hit your (?:[\w-]+ ){0,3}limit\b/;
 var NOT_LIMIT_TEXT = /\(not your usage limit\)/;
 var STATE_FRESH_MS = 2 * 60000;
 var OTHER_CLAUDE = "claude-sonnet-5-5";
+var ALERT_WORKER_COMMAND = "alert-worker";
 function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -6386,6 +7159,8 @@ function shortName(target) {
   return target.slice(target.lastIndexOf("/") + 1).replace(/^[^:]*:/, "");
 }
 function planAlert(input, ctx) {
+  if (!ctx.alerts.events.value.includes("failed"))
+    return null;
   if (!isJsonObject3(input) || input.error !== "rate_limit")
     return null;
   const text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
@@ -6445,8 +7220,10 @@ function planAlert(input, ctx) {
     title
   };
 }
-function readAlertContext(paths, nowMs, input) {
-  const gatewaySetUp = existsSync2(paths.gatewayConfigFile);
+function readAlertContext(paths, nowMs, input, env = process.env) {
+  const cwd = isJsonObject3(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
+  const here = alertsAt(paths, cwd, env);
+  const gatewaySetUp = existsSync5(paths.gatewayConfigFile);
   let config = null;
   if (gatewaySetUp) {
     try {
@@ -6457,7 +7234,7 @@ function readAlertContext(paths, nowMs, input) {
   }
   let state = null;
   try {
-    state = parseLimitState(readFileSync3(paths.gatewayStateFile, "utf8"));
+    state = parseLimitState(readFileSync5(paths.gatewayStateFile, "utf8"));
   } catch {
     state = null;
   }
@@ -6469,20 +7246,43 @@ function readAlertContext(paths, nowMs, input) {
   }
   const transcript = isJsonObject3(input) && typeof input.transcript_path === "string" ? input.transcript_path : null;
   const sessionModel = transcript === null ? null : lastClaudeModel(transcript);
-  return { config, gatewayOn, gatewaySetUp, nowMs, sessionModel, state };
+  return {
+    alerts: here.alerts,
+    alertsProblem: here.problem,
+    config,
+    gatewayOn,
+    gatewaySetUp,
+    nowMs,
+    sessionModel,
+    state
+  };
 }
 function limitAlertDesktop(platform, env, which) {
   if (platform === "linux")
-    return (env.DISPLAY ?? "") !== "" && which("notify-send") !== null;
+    return hasDesktop(platform, env) && which("notify-send") !== null;
   if (platform === "darwin")
     return which("osascript") !== null;
+  if (platform === "win32")
+    return which(TOAST_SHELL) !== null;
   return false;
 }
 function stopFailureWillAlert(input, deps) {
   if (!limitAlertDesktop(deps.platform, deps.env, deps.which))
     return false;
-  return planAlert(input, readAlertContext(deps.paths, deps.nowMs, input)) !== null;
+  return planAlert(input, readAlertContext(deps.paths, deps.nowMs, input, deps.env)) !== null;
 }
+var spawnRunner = ({ argv, timeoutMs }) => {
+  try {
+    const result = Bun.spawnSync(argv, { stderr: "ignore", stdout: "pipe", timeout: timeoutMs });
+    return {
+      exitCode: result.exitCode,
+      stdout: result.stdout.toString(),
+      timedOut: result.exitedDueToTimeout === true
+    };
+  } catch {
+    return { exitCode: null, stdout: "", timedOut: false };
+  }
+};
 var ACTION_WAIT_MS = 30 * 60000;
 
 // src/hooks/notify.ts
@@ -6506,7 +7306,6 @@ var MAX_TEXT = 180;
 var MAX_TITLE = 80;
 var ASK_MARK_MS = 10 * 60000;
 var TRANSCRIPT_FLUSH_MS = 300;
-var SOUND_DIR = "/usr/share/sounds/freedesktop/stereo";
 var TERMINAL_SEQUENCE_MIN_VERSION = "2.1.141";
 var TERMINAL_SEQUENCE_EVENTS = ["Notification", "PreToolUse", "Stop"];
 var WARP_PLUGIN_ID = "warp@claude-code-warp";
@@ -6535,7 +7334,7 @@ function forget(file) {
 }
 function markedWaiting(file, nowMs) {
   try {
-    return nowMs - statSync2(file).mtimeMs < ASK_MARK_MS;
+    return nowMs - statSync3(file).mtimeMs < ASK_MARK_MS;
   } catch {
     return false;
   }
@@ -6556,7 +7355,7 @@ function isWarpTerminal(env) {
 }
 function warpPluginOn(claudeConfigDir) {
   try {
-    const settings = JSON.parse(readFileSync4(join3(claudeConfigDir, "settings.json"), "utf8"));
+    const settings = JSON.parse(readFileSync6(join5(claudeConfigDir, "settings.json"), "utf8"));
     if (!isJsonObject4(settings) || !isJsonObject4(settings.enabledPlugins))
       return false;
     if (settings.enabledPlugins[WARP_PLUGIN_ID] !== true)
@@ -6565,7 +7364,7 @@ function warpPluginOn(claudeConfigDir) {
     return false;
   }
   try {
-    const installed = JSON.parse(readFileSync4(join3(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
+    const installed = JSON.parse(readFileSync6(join5(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
     if (!isJsonObject4(installed) || !isJsonObject4(installed.plugins))
       return false;
     const entries = installed.plugins[WARP_PLUGIN_ID];
@@ -6676,7 +7475,7 @@ function waitThenLastAnswer(transcript) {
 }
 function readFailed(file) {
   try {
-    const text = readFileSync4(file, "utf8").trim();
+    const text = readFileSync6(file, "utf8").trim();
     return text === "" ? null : text;
   } catch {
     return null;
@@ -6721,7 +7520,7 @@ var DEFAULT_NOTIFY_CONFIG = { desktopSound: true, sshBell: false };
 function readNotifyConfig(file) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync4(file, "utf8"));
+    parsed = JSON.parse(readFileSync6(file, "utf8"));
   } catch {
     return DEFAULT_NOTIFY_CONFIG;
   }
@@ -6732,35 +7531,52 @@ function readNotifyConfig(file) {
     sshBell: parsed.sshBell === true
   };
 }
-var spawnNotify = (argv) => {
-  const [file, ...args] = argv;
-  if (file === undefined)
-    return;
-  try {
-    const child = spawn(file, args, { detached: true, stdio: "ignore" });
-    child.on("error", (error) => {
-      console.error(`cc-smart-dev-kit notify: could not show the notification: ${error.message}`);
+function spawnNotifyFor(platform) {
+  return (argv) => {
+    startDetached(platform, argv, {
+      onError: (message) => console.error(`cc-smart-dev-kit notify: could not show the notification: ${message}`)
     });
-    child.unref();
-  } catch (error) {
-    console.error(`cc-smart-dev-kit notify: ${error instanceof Error ? error.message : error}`);
+  };
+}
+function desktopTarget(deps, cwd, label, session) {
+  return {
+    folder: cwd === null ? "" : basename(cwd),
+    name: label ?? "",
+    program: deps.env.TERM_PROGRAM ?? "",
+    session,
+    windowId: deps.env.WINDOWID ?? ""
+  };
+}
+function desktopCommand(alert, deps, target) {
+  if (deps.platform === "linux") {
+    if (!hasDesktop(deps.platform, deps.env))
+      return null;
+    if (deps.launcher !== null && canWaitForClick(desktopTools(deps.which), deps.capture)) {
+      return [
+        deps.launcher,
+        ALERT_WORKER_COMMAND,
+        JSON.stringify(notifyWorkerAlert(alert, target))
+      ];
+    }
   }
-};
-function desktopCommand(alert, deps) {
-  if (deps.platform === "linux" && (deps.env.DISPLAY ?? "") === "")
-    return null;
   return notifyCommand(alert.body, deps.platform, deps.which, alert.title, alert.critical);
 }
-function playSound(alert, deps, config) {
-  if (alert.sound === null || !config.desktopSound)
+function playSound(alert, deps, config, alerts) {
+  if (alert.sound === null || !(config.desktopSound || alerts.sound.value))
     return;
-  if (deps.platform !== "linux")
+  if (!alert.critical && deps.platform === "linux" && dndOn(desktopTools(deps.which), deps.capture)) {
     return;
-  const paplay = deps.which("paplay");
-  if (paplay === null)
-    return;
-  deps.run([paplay, join3(SOUND_DIR, `${alert.sound}.oga`)]);
+  }
+  const argv = soundArgv(alert.sound, deps.platform, deps.which);
+  if (argv !== null)
+    deps.run(argv);
 }
+var ALERT_EVENT_OF = {
+  Notification: "needs-you",
+  PreToolUse: "question",
+  Stop: "finished",
+  StopFailure: "failed"
+};
 function notifyHook(input, event, deps) {
   if (!isJsonObject4(input))
     return SILENT;
@@ -6768,14 +7584,15 @@ function notifyHook(input, event, deps) {
     return SILENT;
   const session = sessionKey(input.session_id);
   const dir = runtimeDir(deps.env);
-  const mark = join3(dir, `cc-smart-dev-kit-notify-asked-${session}`);
-  const failed = join3(dir, `cc-smart-dev-kit-notify-failed-${session}`);
+  const mark = join5(dir, `cc-smart-dev-kit-notify-asked-${session}`);
+  const failed = join5(dir, `cc-smart-dev-kit-notify-failed-${session}`);
   if (WAIT_END_EVENTS.includes(event)) {
     forget(mark);
     return SILENT;
   }
   const transcript = typeof input.transcript_path === "string" ? input.transcript_path : null;
   const cwd = typeof input.cwd === "string" ? input.cwd : null;
+  const label = sessionLabel(transcript, cwd);
   const limitAlertIsStopFailures = event === "StopFailure" && input.error === "rate_limit" ? stopFailureWillAlert(input, {
     env: deps.env,
     nowMs: deps.nowMs,
@@ -6785,7 +7602,7 @@ function notifyHook(input, event, deps) {
   }) : false;
   const alert = alertFor(input, event, {
     failed,
-    label: sessionLabel(transcript, cwd),
+    label,
     limitAlertIsStopFailures,
     mark,
     nowMs: deps.nowMs,
@@ -6793,42 +7610,54 @@ function notifyHook(input, event, deps) {
   });
   if (alert === null)
     return SILENT;
+  const here = alertsAt(deps.paths, cwd, deps.env);
+  const kind = ALERT_EVENT_OF[event];
+  if (kind !== undefined && !here.alerts.events.value.includes(kind)) {
+    if (event === "PreToolUse")
+      forget(mark);
+    return withProblem(SILENT, here.problem);
+  }
   const config = readNotifyConfig(deps.paths.notifyConfigFile);
-  const argv = desktopCommand(alert, deps);
+  const argv = desktopCommand(alert, deps, desktopTarget(deps, cwd, label, session));
   if (isWarpTerminal(deps.env) && warpPluginOn(deps.paths.claudeConfigDir)) {
     if (warpShowsIt(event, input)) {
       if (argv !== null)
-        playSound(alert, deps, config);
-      return SILENT;
+        playSound(alert, deps, config, here.alerts);
+      return withProblem(SILENT, here.problem);
     }
   }
   if (argv !== null) {
-    playSound(alert, deps, config);
+    playSound(alert, deps, config, here.alerts);
     deps.run(argv);
-    return SILENT;
+    return withProblem(SILENT, here.problem);
   }
   if (!isSsh(deps.env))
-    return SILENT;
-  const sequence = config.sshBell ? `${notifySequence(alert.title, alert.body)}\x07` : notifySequence(alert.title, alert.body);
+    return withProblem(SILENT, here.problem);
+  const sequence = config.sshBell || here.alerts.sound.value ? `${notifySequence(alert.title, alert.body)}\x07` : notifySequence(alert.title, alert.body);
   const route = terminalRoute(event, deps.env);
   if (route === "field")
-    return fieldAnswer(sequence);
+    return withProblem(fieldAnswer(sequence), here.problem);
   const onTty = forTty(sequence, deps.env);
   if (route === "tty") {
     if (deps.writeTerminal(onTty))
-      return SILENT;
+      return withProblem(SILENT, here.problem);
     deps.writeSessionTerminal(onTty);
-    return SILENT;
+    return withProblem(SILENT, here.problem);
   }
-  return deps.writeTerminal(onTty) ? SILENT : fieldAnswer(sequence);
+  return deps.writeTerminal(onTty) ? withProblem(SILENT, here.problem) : withProblem(fieldAnswer(sequence), here.problem);
 }
 function fieldAnswer(sequence) {
   return { stdout: JSON.stringify({ terminalSequence: sequence }) };
 }
+function withProblem(result, problem) {
+  if (problem === null || result.stderr !== undefined)
+    return result;
+  return { ...result, stderr: problem };
+}
 
 // src/hooks/terminal.ts
-import { closeSync as closeSync2, constants, openSync as openSync2, readlinkSync, statSync as statSync3, writeSync } from "fs";
-import { join as join4 } from "path";
+import { closeSync as closeSync2, constants, openSync as openSync2, readlinkSync, statSync as statSync4, writeSync } from "fs";
+import { join as join6 } from "path";
 var TERMINAL_DEVICE = /^\/dev\/(?:pts\/\d+|tty\d+)$/;
 function isTerminalDevice(device) {
   return TERMINAL_DEVICE.test(device);
@@ -6839,12 +7668,15 @@ function claudePid(env, fallback) {
     return pid;
   return Number.isInteger(fallback) && fallback > 1 ? fallback : 0;
 }
+function ttyDevice(platform) {
+  return platform === "win32" ? null : "/dev/tty";
+}
 function sessionTerminalDevice(probe) {
   if (probe.platform !== "linux")
     return null;
   const allowed = probe.isTerminalDevice ?? isTerminalDevice;
   for (const fd of [0, 1, 2]) {
-    const device = probe.readlink(join4(probe.procRoot, String(probe.pid), "fd", String(fd)));
+    const device = probe.readlink(join6(probe.procRoot, String(probe.pid), "fd", String(fd)));
     if (device === null || !allowed(device))
       continue;
     if (probe.owner(device) !== probe.uid)
@@ -6881,7 +7713,7 @@ function realTerminalProbe(env, parentPid) {
     },
     owner: (path) => {
       try {
-        return statSync3(path).uid;
+        return statSync4(path).uid;
       } catch {
         return null;
       }
@@ -6891,7 +7723,8 @@ function realTerminalProbe(env, parentPid) {
 
 // src/entries/notify.ts
 function writeTerminal(sequence) {
-  return writeDevice("/dev/tty", sequence);
+  const device = ttyDevice(process.platform);
+  return device !== null && writeDevice(device, sequence);
 }
 async function hook() {
   let input;
@@ -6903,13 +7736,17 @@ async function hook() {
   }
   const event = typeof input === "object" && input !== null && !Array.isArray(input) ? input.hook_event_name : undefined;
   const env = process.env;
+  const paths = cliPaths(env);
   const probe = realTerminalProbe(env, process.ppid);
+  const launcher = join7(paths.binDir, LAUNCHER_NAME);
   const result = notifyHook(input, typeof event === "string" ? event : "", {
+    capture: spawnRunner,
     env,
+    launcher: existsSync6(launcher) ? launcher : null,
     nowMs: Date.now(),
-    paths: cliPaths(env),
+    paths,
     platform: process.platform,
-    run: spawnNotify,
+    run: spawnNotifyFor(process.platform),
     which: (command) => Bun.which(command, { PATH: env.PATH ?? "" }),
     writeSessionTerminal: (sequence) => {
       const device = sessionTerminalDevice(probe);

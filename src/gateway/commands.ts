@@ -38,7 +38,15 @@ import { type HealthProbe, routerHealth } from "./health";
 import { JUDGE_TEST_ACTION, testJudgeTarget } from "./judge-test";
 import { formatLimitState, parseLimitState } from "./limit-state";
 import { startRouter } from "./router";
-import { INSTALL_WARNINGS, type InstallOptions, installRouter, type Runner } from "./service";
+import {
+  type InstallOptions,
+  installRouter,
+  type RouterService,
+  type RouterServiceKind,
+  type Runner,
+  systemdService,
+} from "./service";
+import { scheduledTaskService } from "./service-windows";
 import { maskKey, settingsReport, shownValue, turnOff, turnOn } from "./settings";
 import {
   isModelSlot,
@@ -67,8 +75,9 @@ Commands:
                          Turn that fallback off.
   setup [--yes] [--backend-key-stdin <backend> | --no-backend-key]
                          Make the config (the key on stdin), install the router copy and
-                         its systemd user unit, and start it. --yes: restart a running
-                         router without asking (a restart cuts the answers in flight).
+                         the service that runs it (a systemd user unit on Linux, a
+                         per-user Scheduled Task on Windows), and start it. --yes:
+                         restart a running router without asking.
   on                     Point Claude Code at the router (every session on this machine).
   off                    Remove what "on" set. Restart the sessions afterwards.
   serve                  Run the router in this terminal.`;
@@ -86,8 +95,12 @@ export interface GatewayContext {
   readStdin: () => Promise<string>;
   /** Asks the person; null when there is no terminal. */
   confirm: ((question: string) => boolean) | null;
-  /** False where there is no systemd (macOS, Windows). */
-  systemd: boolean;
+  /** The service this machine can run the router under (`routerServiceKind`). */
+  service: RouterServiceKind;
+  /** Windows: the account the Scheduled Task runs as (`MACHINE\user`). */
+  account: null | string;
+  /** This machine's platform (`process.platform`): the words of a refusal, nothing else. */
+  platform: NodeJS.Platform;
   /** Where a command's own lines go: `console.log` in use, a collector from the portal. */
   print: (line: string) => void;
   /** Where a refusal or a usage line goes: `console.error` in use. */
@@ -99,8 +112,32 @@ export interface GatewayContext {
   probe: HealthProbe;
 }
 
-/** The message when the service cannot run here. */
+/** The message when the service cannot run here: no systemd to run its units. */
 export const NEEDS_SYSTEMD = "the gateway service needs systemd (Linux) for now.";
+
+/** The same, on Windows without PowerShell (it ships with every Windows 10/11). */
+export const NEEDS_POWERSHELL =
+  "the gateway service needs PowerShell, and this machine has none: with no PowerShell and no systemd, there is no way to run the router here.";
+
+/**
+ * The service this machine runs the router under, from the context: systemd's units on
+ * Linux, a per-user Scheduled Task on Windows.
+ */
+export function routerService(ctx: {
+  paths: CliPaths;
+  service: RouterServiceKind;
+  runner: Runner;
+  account: null | string;
+}): RouterService {
+  const { paths } = ctx;
+  return ctx.service === "scheduled-task"
+    ? scheduledTaskService({
+        account: ctx.account,
+        runner: ctx.runner,
+        taskPath: paths.routerTaskFile,
+      })
+    : systemdService({ socketPath: paths.routerSocketFile, unitPath: paths.routerUnitFile });
+}
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -555,11 +592,12 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
     ctx.error(USAGE);
     return 2;
   }
-  if (!ctx.systemd) {
-    ctx.error(NEEDS_SYSTEMD);
+  if (ctx.service === "none") {
+    ctx.error(ctx.platform === "win32" ? NEEDS_POWERSHELL : NEEDS_SYSTEMD);
     return 1;
   }
   const { paths } = ctx;
+  const service = routerService(ctx);
   let key: null | { backend: string; value: string } = null;
   if (options.keyBackend !== null) {
     const value = (await ctx.readStdin()).trim();
@@ -572,16 +610,16 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
     bunVersion: ctx.bunVersion,
     bundle: ctx.bundle,
     copyPath: paths.routerCopy,
-    unitPath: paths.routerUnitFile,
-    socketPath: paths.routerSocketFile,
     home: paths.home,
     stateDir: paths.stateDir,
     port: configuredPort(configPath),
     probe: ctx.probe,
     runner: ctx.runner,
     say: ctx.print,
+    service,
     yes: options.yes,
     confirm: ctx.confirm,
+    ...(ctx.account === null ? {} : { account: ctx.account }),
     ...overrides,
   });
   // Everything is checked, the port asked and the question answered, before the lock and
@@ -599,7 +637,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
           yes: true,
           confirm: null,
           say: (line) => {
-            if (!INSTALL_WARNINGS.includes(line)) ctx.print(line);
+            if (!service.warnings.includes(line)) ctx.print(line);
           },
         }),
       );
@@ -701,7 +739,7 @@ export async function runGateway(args: string[], ctx: GatewayContext): Promise<n
       return noArgs(() => commandOff(ctx));
     case "serve":
       return noArgs(async () => {
-        await startRouter(ctx.paths.gatewayConfigFile, ctx.paths.gatewayStateFile);
+        await startRouter(ctx.paths);
         return 0;
       });
     case undefined:
