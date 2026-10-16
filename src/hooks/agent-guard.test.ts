@@ -22,6 +22,7 @@ import {
   readWorkflowScript,
   reasonLine,
   resolveLaunchModel,
+  workflowRefusal,
 } from "./agent-guard";
 import { agentLaunchesFile, parseAgentLaunch, readAgentLaunches } from "./agent-launches";
 import type { HookInput } from "./io";
@@ -111,7 +112,7 @@ describe("which model a launch runs on", () => {
     });
   });
 
-  it("a slot key, a backend target and a name nobody knows: not Claude", () => {
+  it("a slot key and a backend target are affordable; a name nobody knows is not", () => {
     const config = configWithModelSlot();
     expect(resolveLaunchModel("cc-smart-dev-kit-worker", config, NO_ENV)).toEqual({
       claude: false,
@@ -123,8 +124,9 @@ describe("which model a launch runs on", () => {
       family: null,
       model: "omniroute:glm-5.3-flash",
     });
+    // A name no rule knows is never read as an affordable slot: the strictest rule answers.
     expect(resolveLaunchModel("some-custom-model", config, NO_ENV)).toEqual({
-      claude: false,
+      claude: true,
       family: null,
       model: "some-custom-model",
     });
@@ -289,6 +291,34 @@ describe("the verdict", () => {
     ).toBe("allow");
   });
 
+  it("a name the guard does not know is never affordable: the strictest rule answers", () => {
+    const on: GuardContext = { ...CTX, config: configWithModelSlot(), gatewayOn: true };
+    // Only a slot key and a `<backend>:<model>` target count as affordable: an unknown name
+    // could be anything, so it is judged like a Claude id with no family to read.
+    for (const model of ["best", "opusplan", "default", "inherit", "gpt-5", "some-custom-model"]) {
+      const result = verdict({ effort: "max", model, prompt: "build it" }, on);
+      expect(result.decision).toBe("deny");
+      expect(result.reason).toContain("This launch would run on Claude Opus");
+    }
+    const asked = verdict({
+      effort: "xhigh",
+      model: "opusplan",
+      prompt: "Opus reason: debugging - it is",
+    });
+    expect(asked.decision).toBe("ask");
+    expect(asked.real?.family).toBeNull();
+    // A fork's session model follows the same rule: a family name is that family, an unknown
+    // name is the strict one.
+    const fork = (sessionModel: string) =>
+      verdict(
+        { prompt: "x", subagent_type: "fork" },
+        { config: null, gatewayOn: false, sessionModel },
+      );
+    expect(fork("sonnet").decision).toBe("allow");
+    expect(fork("best").decision).toBe("deny");
+    expect(fork("best").real?.family).toBeNull();
+  });
+
   it("Fable: a read-only agent with a reason line asks the person; a builder is denied", () => {
     const plan = verdict({
       effort: "max",
@@ -417,6 +447,8 @@ describe("a Workflow script", () => {
         where: "Say agent(nothing) here.",
       },
     ]);
+    // None of them is a use of `agent` either: the call stands, nothing refuses the Workflow.
+    expect(workflowRefusal(script)).toBeNull();
   });
 
   it("judges every launch of the call: a heavy one denies the whole Workflow call", () => {
@@ -460,6 +492,96 @@ describe("a Workflow script", () => {
     );
     expect(prompt[0]?.verdict.decision).toBe("deny");
     expect(prompt[0]?.verdict.reason).toContain("prompt is built at run time");
+  });
+
+  it("a backtick literal that builds its text is not a literal: denied, never guessed", () => {
+    const model = judgeWorkflow(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture is a template that builds its model.
+      'await agent("x", { model: `op${n}`, effort: "high" });',
+      CTX,
+      NO_ENV,
+    );
+    expect(model[0]?.verdict.decision).toBe("deny");
+    expect(model[0]?.verdict.reason).toContain("names no `model` the guard can read");
+    // A backtick literal with no placeholder is a fixed string, and read like any other.
+    expect(
+      judgeWorkflow('await agent("x", { model: `haiku`, effort: "low" });', CTX, NO_ENV)[0]?.verdict
+        .decision,
+    ).toBe("allow");
+    const prompt = judgeWorkflow(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture is a template that builds its prompt.
+      'await agent(`fix ${file}`, { model: "opus", effort: "high" });',
+      CTX,
+      NO_ENV,
+    );
+    expect(prompt[0]?.verdict.decision).toBe("deny");
+    expect(prompt[0]?.verdict.reason).toContain("prompt is built at run time");
+  });
+
+  it("`agent` handed around refuses the whole Workflow: nothing it launches can be read", () => {
+    const script = [
+      'const run = agent;\nawait run("x", { model: "opus", effort: "high" });',
+      'await agent?.("x", { model: "haiku", effort: "low" });',
+      'const helpers = [agent];\nawait helpers[0]("x", { model: "haiku", effort: "low" });',
+      // A use inside a template literal's placeholder is code too: the scan reads it.
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture hands `agent` around inside a template.
+      "const label = `run: ${agent}`;\nexport const meta = { label };",
+    ].join("\n");
+    const refusal = workflowRefusal(script);
+    expect(refusal).toContain("without calling it at once");
+    // The first one is named by its line, so the script can be fixed.
+    expect(refusal).toContain("(line 1)");
+    const answer = JSON.parse(
+      agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app").stdout ?? "{}",
+    ).hookSpecificOutput;
+    expect(answer.permissionDecision).toBe("deny");
+    expect(answer.permissionDecisionReason).toContain("never reaches a hook");
+    expect(answer.permissionDecisionReason).toContain('agent("<prompt>"');
+  });
+
+  it("options built at run time refuse the whole Workflow: the literal read can be replaced", () => {
+    const scripts = [
+      'await agent("x", { model: "haiku", effort: "low", ["model"]: "opus" });',
+      'await agent("x", { model: "haiku", effort: "low", ...overrides });',
+      // The same option twice: JavaScript keeps the last, the guard would read the first.
+      'await agent("x", { model: "haiku", effort: "low", model: "opus" });',
+    ];
+    for (const script of scripts) {
+      expect(workflowRefusal(script)).toContain("cannot be read");
+      const answer = JSON.parse(
+        agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app").stdout ?? "{}",
+      ).hookSpecificOutput;
+      expect(answer.permissionDecision).toBe("deny");
+      expect(answer.permissionDecisionReason).toContain("not what they seem");
+    }
+    // A `[` that is a value, not a key: an array option is not a computed key.
+    expect(
+      workflowRefusal('await agent("x", { model: "haiku", effort: "low", list: [1, 2] });'),
+    ).toBeNull();
+    // A comment is not code either: the `...` a person writes in one is not a spread.
+    expect(
+      workflowRefusal('await agent("x", { model: "haiku", effort: "low" /* ... */ });'),
+    ).toBeNull();
+    expect(
+      workflowRefusal('await agent("x", {\n  model: "haiku", // ...\n  effort: "low"\n});'),
+    ).toBeNull();
+  });
+
+  it("a direct call is read wherever it is written: in a helper, in a template's placeholder", () => {
+    const helper = [
+      "async function one(file) {",
+      '  return agent("fix " + file, { model: "opus", effort: "high" });',
+      "}",
+    ].join("\n");
+    expect(workflowRefusal(helper)).toBeNull();
+    expect(judgeWorkflow(helper, CTX, NO_ENV)[0]?.verdict.decision).toBe("deny");
+    const inTemplate =
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture calls `agent` inside a template.
+      'const done = `result: ${await agent("x", { model: "haiku", effort: "low" })}`;';
+    expect(workflowRefusal(inTemplate)).toBeNull();
+    expect(judgeWorkflow(inTemplate, CTX, NO_ENV).map((one) => one.verdict.decision)).toEqual([
+      "allow",
+    ]);
   });
 
   it("a script with no agent(…) call, or no script at all: nothing to say", () => {

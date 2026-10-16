@@ -199,6 +199,10 @@ it works when Claude Code was started with a PATH that has no bun.
   - `!` warnings (never a failure) for an `ownHooks` entry with no project hook left to
     answer, and for a project hook that runs next to a plugin hook `ownHooks` does not
     name: both would answer (§ The hooks);
+  - `!` warnings for the plugin's old `anymodel` names a project still carries from 0.2.x
+    (`.claude/anymodel.json`, a `.claude/anymodel/` folder, a settings hook that calls
+    `~/.local/bin/anymodel`): each names the new file, folder or command (§ Projects that
+    used the old name);
 - the last live check, as information (`·`), when `doctor --live` passed on this machine
   before: the Claude Code version it passed on, and "run it again" when the installed
   Claude Code is another version.
@@ -272,6 +276,22 @@ over (the proof's own text changed with the name), so a fallback judge needs its
 again: `cc-smart-dev-kit gateway slot judge <targets>`. Without it the judge is simply
 not used, and `doctor` says so.
 
+## Projects that used the old name
+
+`migrate` moves your **machine's** own files. A project keeps what 0.2.x wrote in its own
+`.claude/` folder, so run `cc-smart-dev-kit doctor` inside the project: it warns about each
+one, with the name it becomes.
+
+- **`.claude/anymodel.json`** — the old name of `.claude/cc-smart-dev-kit.json`, the file the
+  plugin reads now. Rename it (merge the two when both are there): with only the old file, the
+  project looks like one that never opted in, and every plugin hook stays silent in it.
+- **`.claude/anymodel/`** — the old name of `.claude/cc-smart-dev-kit/`, where a skill reads the
+  project's own add-ons (`review.md`, `plan-task.md`, …). Rename the folder.
+- **A hook in `.claude/settings.json`** that still calls `"$HOME/.local/bin/anymodel" hook
+  <name>` — that launcher went with 0.2.x. Change it to
+  `"$HOME/.local/bin/cc-smart-dev-kit" hook <name>` (the lines are in § Worktrees, and
+  `cc-smart-dev-kit hook` prints them).
+
 ## The AI gateway (optional)
 
 A local router, `cc-smart-dev-kit-router`, lets Claude Code's `haiku` and `sonnet` subagents run on
@@ -340,7 +360,10 @@ and the limits: [docs/search.md](docs/search.md).
   set up). On Linux it offers "Use <target> until it resets", which runs the `slot opus`
   command above (the model, then Sonnet when only the Opus window ran out, then the worker
   slot's affordable targets), and "Wait"; after "Use", send a message in Claude Code to go on.
-  On macOS it names the command. A short rate limit gets no alert: Claude Code retries it.
+  On macOS it names the command. It needs a desktop to show the alert on: where there is none
+  (an SSH session, a headless machine) or the gateway was never set up, the `notify` hook
+  announces the stopped turn instead. A short rate limit is not the plan's limit: Claude Code
+  retries it, and the `notify` hook announces the turn only if it dies then.
 - **The status line.** `cc-smart-dev-kit setup --statusline` sets Claude Code's status line to
   `cc-smart-dev-kit statusline`. It shows your 5-hour and 7-day plan usage, warns from 85 %, and
   shows any fallback in use.
@@ -608,7 +631,7 @@ closed), and every other hook writes one line on stderr and the session goes on
 | `git-guard` | before a Bash or PowerShell command | Asks you before a force-push, a push to a protected branch (`protectedBranches`), `push --all` / `--mirror`, a branch deleted on the remote (`git push origin :x`, `--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that throws changes away, `branch -D`, `stash clear` and an unnamed `stash drop` (they throw work away), and (with `worktrees`) a bare `git stash` or `stash pop`: every worktree shares one stash. Text in quotes, here-docs and comments is not a command; a shell keyword, a wrapper (`timeout 60 git push -f`, `sudo -u me …`), a here-doc fed to `sh`, and the text piped into `sh` are read through. Git's own abbreviations count (`--forc` is `--force`). Not read: a git alias (`-c alias.x=…`, or one of your own), `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file, and a branch it cannot name. |
 | `main-folder-guard` | before Edit, Write, NotebookEdit | With `worktrees.guardMainFolder`: refuses an edit of a file in the main checkout itself, and says how to get into a worktree. |
 | `message-guard` | before SendMessage | Refuses a message to a session that works outside this repo (ListAgents lists every session on the machine). |
-| `agent-guard` | before an Agent launch | **Machine-wide** (it runs with or without `.claude/cc-smart-dev-kit.json`): it resolves the model the launch really runs on and holds the model rules. A launch with no `model` or no `effort` is refused (it would inherit the session's, which nobody chose); an affordable gateway slot needs `effort: "max"`; Claude Opus is allowed for a review agent, and any other Opus launch needs an `Opus reason: <word>` line and asks you to approve it (in `claude -p`, with nobody to answer, it is refused; a review is not); Claude Fable only for a read-only agent with a `Fable reason: <word> - <why>` line, and Claude Code then asks you to approve each one. A fork runs on the session's model and needs no `model`; an unknown session model counts as Opus. A **Workflow** call is judged the same way, from the `agent(...)` options in its script — a launch whose `model` is built at run time is refused, never guessed — because (proved live) a workflow's agents run inside the tool and pass no hook of their own. Every Opus or Fable launch is recorded, and `cc-smart-dev-kit usage` lists them with why. |
+| `agent-guard` | before an Agent launch | **Machine-wide** (it runs with or without `.claude/cc-smart-dev-kit.json`): it resolves the model the launch really runs on and holds the model rules. A launch with no `model` or no `effort` is refused (it would inherit the session's, which nobody chose); an affordable gateway slot needs `effort: "max"`, and only a slot key or a `<backend>:<model>` target counts as affordable — a name no rule knows (`best`, `opusplan`, `default`, …) is judged like Opus; Claude Opus is allowed for a review agent, and any other Opus launch needs an `Opus reason: <word>` line and asks you to approve it (in `claude -p`, with nobody to answer, it is refused; a review is not); Claude Fable only for a read-only agent with a `Fable reason: <word> - <why>` line, and Claude Code then asks you to approve each one. A fork runs on the session's model and needs no `model`; an unknown session model counts as Opus. A **Workflow** call is judged the same way, from the `agent(...)` options in its script — a launch whose `model` is built at run time is refused, never guessed, and a script that hands `agent` around (`const run = agent; run(…)`, `agent?.(…)`) or builds a call's options at run time (a `...spread`, a computed key) is refused whole — because (proved live) a workflow's agents run inside the tool and pass no hook of their own. Every Opus or Fable launch is recorded, and `cc-smart-dev-kit usage` lists them with why. |
 | `job-route` | before a Bash command | With `"jobs": { "route": true }`: a heavy command (the project's own [kinds](docs/jobs.md#kinds)) is sent through the machine's queue — rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>`, byte for byte the same command. A command already inside `cc-smart-dev-kit job run` is left as it is. |
 | `after-merge` | after `gh pr merge` | With `worktrees`: the steps to clear the worktree that was merged, and, for a merge into `worktrees.base`, the message to send the other sessions of the repo. |
 | `worktree-leftovers` | a session starts | With `worktrees`: names the worktrees that are finished (every commit on `origin/<base>`, nothing uncommitted, no running session, idle for an hour) or whose folder is gone. It removes nothing. |
@@ -650,14 +673,18 @@ a hook of their own: Claude Code raises no notification at the moment Claude ask
 waits stay quiet on purpose: the idle wait (the "finished" alert already announced that
 turn), the permission prompt that follows a question about six seconds later (the same wait),
 a "finished" alert for a turn another session started (a merge broadcast wakes every session
-of a repo), the same error twice in a row (until a turn ends well), and the plan's usage
-limit (the `stop-failure` hook's alert — never two for one stop).
+of a repo), the same error twice in a row (until a turn ends well), and a stop at the plan's
+usage limit **where the `stop-failure` hook shows that alert itself** (a desktop, and the
+gateway set up — never two alerts for one stop). Where that hook has no alert to show (no
+desktop, no gateway), the stopped turn is this hook's alert like any other.
 
 **A desktop** shows the alert through `notify-send` on Linux (it needs `DISPLAY`) or
 `osascript` on macOS, and plays the freedesktop sound when `paplay` is installed. **An SSH
 session** with no desktop to show it on gets the same alert in the terminal you are looking
 at, as an OSC 777 notification — no `notify-send` needed on a server: Claude Code writes the
-sequence for the hook (2.1.141 or later, wrapped for tmux itself). **Inside Warp** Warp's own
+sequence for the hook (2.1.141 or later, wrapped for tmux itself), and for an event whose
+answer Claude Code does not read (the usage-limit alert) the hook writes it to the terminal
+device Claude Code's own session is attached to. **Inside Warp** Warp's own
 Claude Code plugin shows a finished turn, a question, a permission prompt and an error
 itself, so ours stays quiet and plays only the sound — except a question or a waiting agent,
 which may sit in a tab you are not looking at: those stay ours. With no desktop, no SSH and

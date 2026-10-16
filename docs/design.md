@@ -617,18 +617,26 @@ Fable agent spends the person's own plan usage. So the guard reads the launch's 
    (`ANTHROPIC_DEFAULT_<FAMILY>_MODEL`; all four exist on 2.1.301, Fable included), then the
    gateway's model slot for that family — whose first target is the Claude model itself;
 2. a full id, a slot key or `<backend>:<model>` is resolved as itself (a slot's first target
-   answers, `modelSlots` keeps the Claude id first);
+   answers, `modelSlots` keeps the Claude id first); **any other name** (`best`, `opusplan`,
+   `default`, `inherit`, a name no rule knows) is resolved the strictest way — the rule for a
+   Claude id with no family to read — because only what the guard can prove affordable is
+   affordable;
 3. a `fork` always inherits: its model is the session's own, read from the tail of the hook
-   input's `transcript_path` (`lastClaudeModel`, shared with the StopFailure alert), else from
-   `ANTHROPIC_MODEL`; an unknown one counts as Claude Opus.
+   input's `transcript_path` (`lastClaudeModel`, shared with the StopFailure alert; a
+   sidechain line is a subagent's, not the session's), else from `ANTHROPIC_MODEL`; an
+   unknown one counts as Claude Opus.
 
 A **Workflow** tool call is judged too: its `agent(...)` launches run inside the tool and pass
 no hook of their own (proved live on 2.1.301 — a project hook with the matcher
 `Agent|Task|Workflow` saw the `Workflow` call and nothing else), so the guard reads the
 `script` text: the `model`, `effort` and `agentType` of each call, and its prompt when that
-is a string literal (`readWorkflowScript`). A `model` held in a variable, or a prompt built at
-run time, is refused for an Opus or Fable launch rather than guessed. The strictest launch of
-the call answers for the whole call.
+is a fixed string literal (`readWorkflowScript` — a template that builds its text, `` `${…}` ``,
+is not one). A `model` held in a variable, or a prompt built at run time, is refused for an
+Opus or Fable launch rather than guessed. Two things are refused for the whole call
+(`workflowRefusal`), because no rule can hold for a launch the guard cannot follow: `agent`
+mentioned without a direct call (`const run = agent; run(…)`, `agent?.(…)`, `agent` passed
+around), and a call whose options are built at run time (a `...spread`, a computed `[…]`
+key). The strictest launch of the call answers for the whole call.
 
 The rules are in one table in `src/hooks/agent-guard.ts` (its header), the two lists a person
 may extend are environment variables (`CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS`,
@@ -654,8 +662,11 @@ transcript's tail, 300 ms after the event because Claude Code writes it just the
 `PreToolUse` on `AskUserQuestion|ExitPlanMode` (Claude Code raises no Notification at the
 moment Claude asks, so this covers it); `PostToolUse`, `PostToolUseFailure` on the same two
 tools and `UserPromptSubmit` (that wait is over: the mark goes, nothing is shown); and
-`StopFailure` (the turn died). `rate_limit` belongs to the `stop-failure` hook — never two
-alerts for one stop.
+`StopFailure` (the turn died). A `rate_limit` stop belongs to the `stop-failure` hook only
+where that hook will show its alert — a desktop to show it on, the gateway set up, and a
+plan limit (`stopFailureWillAlert`) — so one stop never gives two alerts; where it has no
+alert to give (no desktop, no gateway, a short rate limit, which is no plan limit), the
+notifier announces the stopped turn on its own routes.
 
 **The waits that stay quiet**, all from the team's older notification script, which this
 replaces: the permission prompt about six seconds after a question (the same wait — a mark
@@ -676,7 +687,13 @@ line, capped) and sent through the hook's `terminalSequence` output field (Claud
 and later writes it to the session's terminal itself, and wraps it for tmux — a wrapped
 sequence in the field is rejected, so the field carries the bare one), or straight to
 `/dev/tty` (wrapped for tmux by `tmuxPassthrough` when `TMUX` is set) for a Claude Code
-without that field; **nothing** — no desktop route, not over SSH, or **inside Warp** with
+without that field; **the session's own device** — for an event whose answer Claude Code does
+not read at all (`StopFailure`), and for a Claude Code too old for the field, where `/dev/tty`
+is tried first and a hook on 2.1.301 has no controlling terminal at all (ENXIO): the pty
+Claude Code is attached to, found from its pid (`CLAUDE_PID`, then the hook's parent:
+`/proc/<pid>/fd/0`, then 1 and 2), written to only when this user owns it, and wrapped for
+tmux like `/dev/tty` (proved live 2026-10-16: the alert arrived in the terminal beyond tmux,
+exactly once; `src/hooks/terminal.ts`, `docs/claude-code-contract.md`); **nothing** — no desktop route, not over SSH, or **inside Warp** with
 Warp's own plugin on (`TERM_PROGRAM=WarpTerminal`, or the `WARP_*` pair a background session
 keeps), whose hooks already show a finished turn, a question, a permission prompt and an
 error. In Warp ours plays only the sound, and shows a question (`elicitation_*`) or a waiting

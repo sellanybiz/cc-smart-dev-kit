@@ -120,10 +120,17 @@ hook (PreToolUse on Bash, in `src/hooks/job-route.ts`) rewrites the call to
 through the hook's `updatedInput` — byte for byte the same command, in the same folder —
 so the reservation, the waiting line and the workers come out the same as a person's own
 `job run`. One plain command goes in as its own argv words (`bunx vitest run src/a.test.ts`);
-anything else (a pipe, `&&`, a glob, an expansion) through `sh -c '<the line>'`, so the
-shell reads exactly what was written. A command already inside `cc-smart-dev-kit job run` is left
-alone. Off unless the project says so, because it changes the call; `ownHooks` silences it
-like any other plugin hook.
+anything else (a pipe, `&&`, a glob, an expansion) through the **person's own shell**
+(`<shell> -c '<the line>'`: `$SHELL` when it is bash or zsh, else `bash` where the machine has
+it, else `sh` — never `/bin/sh`, which is dash on Debian and Ubuntu, and cannot read bash
+syntax), so the shell reads exactly what was written, the way the person's terminal would
+have. A command already inside `cc-smart-dev-kit job run` is left alone. Off unless the project
+says so, because it changes the call; `ownHooks` silences it like any other plugin hook.
+
+**The folder.** The rewritten command runs in the Bash tool's own shell, so it starts in the
+folder that shell is in. A `cd` **inside** the command lives only for that command: it does
+not move the Bash tool's folder for the next call. Run `cd <folder>` as a call of its own
+when the calls after it should start there.
 
 ## One job per name: `--exclusive`
 

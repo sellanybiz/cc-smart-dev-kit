@@ -14,8 +14,11 @@
  *   - **deny**: the same command line, named in the reason, for the session to run.
  *
  * The command is passed through as argv words when it is one plain command
- * (`bun run test:run x.ts`), and through `/bin/sh -c <quoted line>` otherwise (`a && b`,
- * a pipe, an expansion): a shell string the shell runs exactly as it would have.
+ * (`bun run test:run x.ts`), and through a shell otherwise (`a && b`, a pipe, an expansion):
+ * **the person's own shell** (`routedShell`), so a line written for bash reads the same
+ * through the queue as it does in the terminal. The rewritten command runs in the Bash tool's
+ * own shell and starts in the folder that shell is in; a `cd` **inside** the command lives
+ * only for that command, and does not move the Bash tool's folder for the next call.
  *
  * A command already inside `cc-smart-dev-kit job run` stays as it is (the queue would nest), and
  * anything the hook cannot read lets the call through.
@@ -33,7 +36,7 @@ import {
   toolDecision,
   toolInput,
 } from "./io";
-import type { HookContext } from "./run";
+import type { Env, HookContext } from "./run";
 
 /** The launcher, as a shell finds it from a hook or a rewritten command: its path under $HOME. */
 export const LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${COMMAND}"`;
@@ -67,13 +70,36 @@ function shellWord(word: string): string {
 }
 
 /**
- * The command that runs `command` through the queue: `cc-smart-dev-kit job run --kind <kind> -- …`.
- * One plain command goes in as its own words; anything else through `/bin/sh -c`, so the
- * shell reads exactly the line the person wrote.
+ * The shell a routed line runs in: **the person's own**, so a line with bash syntax (`[[ … ]]`,
+ * `source`, an array, `$'…'`) reads the same through the queue as it does in the terminal.
+ * `/bin/sh` is dash on Debian and Ubuntu, and a shell string the person wrote for bash is not
+ * a shell string dash can read.
+ *
+ * `$SHELL` when it is bash or zsh (the login shell, normally an absolute path); else `bash`
+ * where this machine has it on PATH; else `sh`, the smallest shell every machine has.
  */
-export function jobRunCommand(kind: string, command: string): string {
+export function routedShell(
+  env: Env,
+  which: (command: string) => null | string = (command) =>
+    Bun.which(command, { PATH: env.PATH ?? "" }),
+): string {
+  const shell = env.SHELL ?? "";
+  const name = shell.split("/").pop() ?? "";
+  if (name === "bash" || name === "zsh") return shell;
+  return which("bash") ?? "sh";
+}
+
+/**
+ * The command that runs `command` through the queue: `cc-smart-dev-kit job run --kind <kind> -- …`.
+ * One plain command goes in as its own words; anything else through `shell -c`, so the shell
+ * reads exactly the line the person wrote.
+ */
+export function jobRunCommand(kind: string, command: string, shell: string): string {
   const words = plainWords(command);
-  const inner = words === null ? `sh -c ${shellQuote(command)}` : words.map(shellWord).join(" ");
+  const inner =
+    words === null
+      ? `${shellWord(shell)} -c ${shellQuote(command)}`
+      : words.map(shellWord).join(" ");
   return `${LAUNCHER_IN_SHELL} job run --kind ${kind} -- ${inner}`;
 }
 
@@ -104,10 +130,10 @@ export interface Routed {
 }
 
 /** The route for a heavy command, or null when there is nothing to route. Pure. */
-export function routeHeavyCommand(command: string, kinds: Kinds): null | Routed {
+export function routeHeavyCommand(command: string, kinds: Kinds, shell: string): null | Routed {
   if (runsJobRun(command)) return null;
   const kind = classifyHeavyCommand(command, kinds);
-  return kind === null ? null : { command: jobRunCommand(kind, command), kind };
+  return kind === null ? null : { command: jobRunCommand(kind, command, shell), kind };
 }
 
 /**
@@ -155,7 +181,11 @@ export function jobRoute(context: HookContext): HookResult {
   const fields = toolInput(context.input);
   const command = stringField(fields.command);
   if (command === null) return SILENT;
-  const routed = routeHeavyCommand(command, mergeKinds(context.project.config.jobs?.kinds));
+  const routed = routeHeavyCommand(
+    command,
+    mergeKinds(context.project.config.jobs?.kinds),
+    routedShell(context.env),
+  );
   if (routed === null) return SILENT;
   return REWRITE_SUPPORTED ? rewriteAnswer(fields, routed) : routeDenial(routed);
 }

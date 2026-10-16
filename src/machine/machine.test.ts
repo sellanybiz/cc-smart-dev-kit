@@ -26,7 +26,7 @@ describe("realMachine", () => {
     expect(requests).toBe(0);
   });
 
-  test("the host's facts come from ANYMODEL_TEST_HOST when it is set", () => {
+  test("the host's facts come from CC_SMART_DEV_KIT_TEST_HOST when it is set", () => {
     const machine = realMachine(
       {
         PATH: "",

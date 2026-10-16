@@ -1,12 +1,12 @@
 /** `doctor`'s checks of the project in the folder it runs in (`project-checks.ts`). */
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { projectHookSettings } from "../hooks/project-wiring";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { cliPaths } from "./paths";
-import { projectChecks } from "./project-checks";
+import { projectChecks, renamedCommand } from "./project-checks";
 
 const PLUGIN_HOOKS = join(import.meta.dir, "..", "..", "plugin", "hooks", "hooks.json");
 const ENGINE = { worktrees: { base: "main", prefix: "app-wt-" } };
@@ -109,6 +109,60 @@ describe("the worktree engine's wiring", () => {
     expect(check(repo)).toEqual([
       `✗ project: Invalid ${file}: worktree: unknown field (a newer cc-smart-dev-kit may be needed)`,
     ]);
+  });
+});
+
+describe("a project that used the old anymodel name", () => {
+  test("the old config file, the old add-ons folder and an old launcher in a hook: one ! each", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "anymodel.json", { sessionNames: true });
+    mkdirSync(join(repo, ".claude", "anymodel"), { recursive: true });
+    writeClaudeFile(repo, "settings.json", {
+      hooks: {
+        SessionStart: [
+          {
+            hooks: [
+              {
+                type: "command",
+                command: '"$HOME/.local/bin/anymodel" hook session-name',
+                timeout: 10,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(check(repo)).toEqual([
+      "! project: .claude/anymodel.json is the old name of .claude/cc-smart-dev-kit.json, which the plugin reads now: rename it (merge the two when both are there)",
+      "! project: .claude/anymodel/ is the old name of .claude/cc-smart-dev-kit/, where a skill reads the project's own add-ons: rename the folder",
+      '! project: the hook "$HOME/.local/bin/anymodel" hook session-name (.claude/settings.json) still runs the plugin\'s old "anymodel" launcher: change it to "$HOME/.local/bin/cc-smart-dev-kit" hook session-name',
+    ]);
+  });
+
+  test("the new names: no warning; a hook that only says anymodel somewhere else is not one", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", ENGINE);
+    writeClaudeFile(repo, "settings.json", {
+      hooks: {
+        PreToolUse: [
+          { matcher: "Bash", hooks: [{ type: "command", command: "./note-anymodel.sh" }] },
+        ],
+        ...projectHookSettings().hooks,
+      },
+    });
+    expect(check(repo)).toEqual([
+      "✓ project: the worktree engine is wired (WorktreeCreate, WorktreeRemove, SubagentStop)",
+      "! project: the plugin's git-guard and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of git-guard, list \"git-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
+      "! project: the plugin's job-route and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of job-route, list \"job-route\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
+    ]);
+  });
+
+  test("a launcher path is the old name; a word that merely holds it is not", () => {
+    expect(renamedCommand('"$HOME/.local/bin/anymodel-bun" x')).toBe(
+      '"$HOME/.local/bin/cc-smart-dev-kit-bun" x',
+    );
+    expect(renamedCommand("anymodel --version")).toBe("cc-smart-dev-kit --version");
+    expect(renamedCommand("./note-anymodel.sh")).toBe("./note-anymodel.sh");
   });
 });
 

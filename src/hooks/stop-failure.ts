@@ -42,6 +42,7 @@ import {
 } from "../gateway/limit-state";
 import { settingsReport } from "../gateway/settings";
 import { MODEL_SLOTS, parseTarget, withoutContextSuffix } from "../gateway/targets";
+import type { Env } from "./run";
 import { lastClaudeModel } from "./transcript";
 
 /** The words Claude Code 2.1.300 shows when a plan's usage limit stops a turn. */
@@ -227,6 +228,44 @@ export function readAlertContext(paths: CliPaths, nowMs: number, input: unknown)
     isJsonObject(input) && typeof input.transcript_path === "string" ? input.transcript_path : null;
   const sessionModel = transcript === null ? null : lastClaudeModel(transcript);
   return { config, gatewayOn, gatewaySetUp, nowMs, sessionModel, state };
+}
+
+/** What the notifier asks about this stop: the machine both hooks run on. */
+export interface LimitAlertDeps {
+  env: Env;
+  nowMs: number;
+  paths: CliPaths;
+  platform: NodeJS.Platform;
+  /** Finds a program on PATH (the real one: `Bun.which` with the hook's PATH). */
+  which: (command: string) => null | string;
+}
+
+/**
+ * True when this machine has a desktop to show the alert on — the route the StopFailure
+ * hook's own alert needs: `notify-send` with a `DISPLAY` on Linux (without a desktop it has
+ * no bus to show anything on), `osascript` on macOS. False: that hook has no route here, and
+ * the alert is the notifier's.
+ */
+export function limitAlertDesktop(
+  platform: NodeJS.Platform,
+  env: Env,
+  which: (command: string) => null | string,
+): boolean {
+  if (platform === "linux") return (env.DISPLAY ?? "") !== "" && which("notify-send") !== null;
+  if (platform === "darwin") return which("osascript") !== null;
+  return false;
+}
+
+/**
+ * True when the StopFailure hook will show this stop's usage-limit alert itself: a desktop to
+ * show it on, a person who set the gateway up, and a plan limit rather than a short rate
+ * limit (`planAlert`). The notifier asks this before it stays quiet for a `rate_limit` stop,
+ * so one stop never gives two alerts — and where that hook has no alert to give (no desktop,
+ * no gateway, a short limit), the notifier shows one on its own routes instead.
+ */
+export function stopFailureWillAlert(input: unknown, deps: LimitAlertDeps): boolean {
+  if (!limitAlertDesktop(deps.platform, deps.env, deps.which)) return false;
+  return planAlert(input, readAlertContext(deps.paths, deps.nowMs, input)) !== null;
 }
 
 /** One program run: its argv and how long it may take. */
