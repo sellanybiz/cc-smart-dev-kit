@@ -20,6 +20,7 @@ import { dirname, join } from "node:path";
 import { runGateway } from "../gateway/commands";
 import { gatewayChecks } from "../gateway/doctor";
 import type { HealthProbe } from "../gateway/health";
+import { shellQuote } from "../setup/launcher";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import { cliPaths } from "./paths";
@@ -481,14 +482,14 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
    * What stage 1 says when it removed the launcher: `cc-smart-dev-kit` is off the PATH, so it
    * names the `bun --no-env-file …` form the README's install step uses.
    */
-  const STAGE_1_AGAIN = `Restart every running Claude session (they still use the router), then run the second restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so \`cc-smart-dev-kit\` is not on your PATH any more: bun --no-env-file '${BUILT_CLI}' restore`;
+  const STAGE_1_AGAIN = `Restart every running Claude session (they still use the router), then run restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so \`cc-smart-dev-kit\` is not on your PATH any more: ${shellQuote(process.execPath)} '--no-env-file' '--config=${join(dirname(dirname(BUILT_CLI)), "bunfig.toml")}' '${BUILT_CLI}' restore`;
 
   test("stageOneDone: the command that works, with the launcher gone and with it still there", () => {
     const home = tempDir("stage-one");
     const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
     // No launcher (setup created it, and the first restore removed it): the bun line.
     expect(stageOneDone(paths, "/plugin/dist/cli.js")).toBe(
-      "Restart every running Claude session (they still use the router), then run the second restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so `cc-smart-dev-kit` is not on your PATH any more: bun --no-env-file '/plugin/dist/cli.js' restore",
+      `Restart every running Claude session (they still use the router), then run restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so \`cc-smart-dev-kit\` is not on your PATH any more: ${shellQuote(process.execPath)} '--no-env-file' '--config=/plugin/bunfig.toml' '/plugin/dist/cli.js' restore`,
     );
     // A launcher of the person's own, put back by the restore: the plain command works.
     mkdirSync(paths.binDir, { recursive: true });

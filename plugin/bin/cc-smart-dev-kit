@@ -2,4 +2,8 @@
 # Runs the cc-smart-dev-kit command of this plugin version (on the Bash tool's PATH in Claude Code).
 # --no-env-file: bun would load the .env files of the working folder into the command, and
 # "cc-smart-dev-kit job run" must hand its job exactly the environment it was given.
-exec bun --no-env-file "$(dirname "$0")/../dist/cli.js" "$@"
+# --config: bun would also read the working folder's bunfig.toml, and a project's `preload`
+# would run its own code inside the command. This points bun at the plugin's own empty config,
+# in the plugin folder beside this script.
+dir=$(dirname "$0")
+exec bun --no-env-file --config="$dir/../bunfig.toml" "$dir/../dist/cli.js" "$@"

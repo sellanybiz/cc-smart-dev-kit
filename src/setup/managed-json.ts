@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   atomicWrite,
+  type ChangedEntry,
   listBackups,
   readChanged,
   realTarget,
@@ -272,11 +273,22 @@ export function deleteKeyAndEmptiedObjects(
  * The objects in `file` cc-smart-dev-kit created, read from the baseline backup: the file just
  * before cc-smart-dev-kit's first change. A key path the baseline does not hold was not there
  * then, so cc-smart-dev-kit made it. A missing or unreadable baseline answers false for
- * everything: nothing that may be the person's is ever pruned.
+ * everything: nothing that may be the person's is ever pruned. A `changed.json` that cannot be
+ * read answers false too, with one line on stderr: this is called by read-only passes
+ * (setup's, and `gateway off --dry-run`), and a record they cannot use must not fail them —
+ * the command that needs the record reads it itself and reports its own error.
  */
 export function createdObjects(stateDir: string, file: string): (path: KeyPath) => boolean {
   const real = realTarget(file);
-  const entry = readChanged(stateDir)[real];
+  let entry: ChangedEntry | undefined;
+  try {
+    entry = readChanged(stateDir)[real];
+  } catch (error) {
+    console.error(
+      `cc-smart-dev-kit: the record of changed files cannot be read (${error instanceof Error ? error.message : String(error)}), so nothing is pruned from ${real}.`,
+    );
+    return () => false;
+  }
   const baseline =
     entry === undefined
       ? undefined

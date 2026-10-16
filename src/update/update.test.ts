@@ -19,7 +19,12 @@ import { lockIsHeld, withLock } from "../setup/lock";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import { installedText, notifyCommand } from "./apply";
-import { backgroundCheck, refreshInstructionsAtSessionStart, sessionStart } from "./background";
+import {
+  backgroundCheck,
+  backgroundCommand,
+  refreshInstructionsAtSessionStart,
+  sessionStart,
+} from "./background";
 import { isOlder } from "./check";
 import {
   CHECK_INTERVAL_MS,
@@ -203,6 +208,26 @@ function machine(options: MachineOptions = {}) {
     ][0].version as string;
   return { cli, env, files, home, hook, installedVersion, paths, read, settled };
 }
+
+describe("backgroundCommand", () => {
+  test("this bun and this bundle again, with --background and the plugin's two flags", () => {
+    // The child runs bun a second time, in the home folder: without the flags bun would read
+    // that folder's `.env` files and its `bunfig.toml`.
+    expect(
+      backgroundCommand(
+        "/opt/bun/bin/bun",
+        "/plugins/cc-smart-dev-kit/dist/update-check.js",
+        "/plugins/cc-smart-dev-kit",
+      ),
+    ).toEqual([
+      "/opt/bun/bin/bun",
+      "--no-env-file",
+      "--config=/plugins/cc-smart-dev-kit/bunfig.toml",
+      "/plugins/cc-smart-dev-kit/dist/update-check.js",
+      "--background",
+    ]);
+  });
+});
 
 describe("the SessionStart hook and the background check, end to end", () => {
   test("a newer version: the hook returns at once with no output; the detached check refreshes, updates, logs and notifies", async () => {

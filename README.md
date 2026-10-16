@@ -12,9 +12,11 @@ from), named `cc-smart-dev-kit`.
 
 You need macOS or Linux (for now: the launcher and `bin/` are POSIX `sh` scripts),
 [Claude Code](https://code.claude.com), [Bun](https://bun.sh) 1.4.3 or later (an older
-Bun would send a backend's key through a proxy; `bun --version` shows yours), and read
-access to this repo with git (an SSH key, or a git credential helper when the repo is
-private). On an older Bun only `doctor`, `restore`, `version` and `--help` run.
+Bun would send a backend's key through a proxy and would ignore the flags that keep a
+project's `.env` files and `bunfig.toml` out of the plugin; `bun --version` shows yours),
+and read access to this repo with git (an SSH key, or a git credential helper when the repo
+is private). On an older Bun only `doctor`, `restore`, `version` and `--help` run, and the
+hooks do not run at all: the hook shim stops before starting one.
 
 1. Add the marketplace. `<owner>/cc-smart-dev-kit` is where this repo lives: the `repository`
    field of `plugin/.claude-plugin/plugin.json`. Add the marketplaces of the two
@@ -41,13 +43,16 @@ private). On an older Bun only `doctor`, `restore`, `version` and `--help` run.
    version, so read it with `ls ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/`:
 
    ```sh
-   bun --no-env-file ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>/dist/cli.js setup
+   plugin="$HOME/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>"
+   bun --no-env-file --config="$plugin/bunfig.toml" "$plugin/dist/cli.js" setup
    ```
 
-   `--no-env-file` matters: Bun adds the `.env` files of the folder you run the command from,
-   so without it a project's `.env.local` (its `TAVILY_API_KEY`, say) would look like your
-   environment's to setup. The launcher, `plugin/bin/cc-smart-dev-kit` and the hooks' bun shim
-   all pass it for the same reason.
+   Both flags matter: Bun adds the `.env` files of the folder you run the command from and
+   reads its `bunfig.toml`, so without them a project's `.env.local` (its `TAVILY_API_KEY`,
+   say) or a project's `preload` would reach setup. The launcher,
+   `plugin/bin/cc-smart-dev-kit` and the hooks' bun shim all pass both for the same reason.
+   The bundle path is the installed version's own folder (`…/<version>/dist/cli.js`) and the
+   empty config sits beside it (`…/<version>/bunfig.toml`), so a later version ships its own.
 
    Setup installs the launcher `~/.local/bin/cc-smart-dev-kit`, turns on auto-update for the
    plugin, registers the MCP servers for your user ([MCP servers](#mcp-servers)), installs
@@ -76,7 +81,7 @@ After that, use `cc-smart-dev-kit setup` to set up again (for example after an u
 | `cc-smart-dev-kit doctor [--live]` | Checks the install, the cc-smart-dev-kit files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below). Prints ✓ or ✗ for each check, `·` for information and `!` for a warning (neither is a failure), and exits with 1 when a check fails. `--live` also proves the hooks and the worktree engine on the Claude Code installed here (below); it never runs without the flag. |
 | `cc-smart-dev-kit hook <worktree-create\|worktree-remove\|subagent-stop>` | The worktree engine, for a project that wires it in its own `.claude/settings.json` (§ Worktrees). It reads the hook's input on stdin and answers as Claude Code expects. With no name, it prints the lines to paste. |
 | `cc-smart-dev-kit session-name <session id> <name>` | Names a Claude session after its task. A session runs it itself when the project turns on `sessionNames` (below). |
-| `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too, and the launcher when setup created it — so `cc-smart-dev-kit` may be off your PATH then, and the line it prints is the `bun --no-env-file …/dist/cli.js restore` form of [Install](#install) step 3, with your installed version) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing. |
+| `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too, and the launcher when setup created it — so `cc-smart-dev-kit` may be off your PATH then, and the line it prints is the `bun --no-env-file --config=… …/dist/cli.js restore` form of [Install](#install) step 3, with the bun running the restore, its own absolute path, and your installed version) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing. |
 | `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version. `--check` only says whether a newer version exists (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
 | `cc-smart-dev-kit gateway <command>` | The optional AI gateway (below). |
 | `cc-smart-dev-kit browser mcp` | Starts the Playwright MCP server on the ONE Google Chrome every session shares, through a filter that shows this session only its own windows ([The shared browser](#the-shared-browser)). `setup` registers it as the `playwright` MCP server; you do not run it by hand. |
@@ -123,7 +128,11 @@ checks nothing and only records "skipped: <name> is set".
 
 The hook runs bun through `plugin/bin/cc-smart-dev-kit-bun`, which finds bun where the launcher
 does (the bun `cc-smart-dev-kit setup` baked in, `$BUN_INSTALL/bin`, `~/.bun/bin`, then PATH), so
-it works when Claude Code was started with a PATH that has no bun.
+it works when Claude Code was started with a PATH that has no bun. It starts bun with
+`--no-env-file` and the plugin's own empty config, so a hook sees the environment Claude Code
+gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun older than
+1.4.3 cannot start a hook at all: the shim stops first, and a guard asks instead (see
+[Install](#install)).
 
 `doctor` checks that:
 
@@ -280,13 +289,22 @@ exactly as step 3 of [Install](#install) runs `setup`. Put the installed version
 `ls ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/`:
 
 ```sh
+plugin="$HOME/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>"
 claude plugin marketplace add <owner>/cc-smart-dev-kit
 claude plugin install cc-smart-dev-kit@cc-smart-dev-kit
-bun --no-env-file ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>/dist/cli.js migrate
+bun --no-env-file --config="$plugin/bunfig.toml" "$plugin/dist/cli.js" migrate
 ```
 
 Add the marketplace by its **new** name, as the first line does. The old source is already
-added, and adding it again changes nothing at all — no new marketplace appears.
+added, and Claude Code reuses a marketplace already added from that source rather than making
+a second one (its own documentation; the move has not been proved live on a 0.2.x machine, so
+treat it as likely, not certain).
+
+The new plugin shows `✘ failed to load` too, until its two companions' marketplaces are
+added: `claude plugin marketplace add thedotmack/claude-mem` and
+`claude plugin marketplace add anthropics/claude-plugins-official`. The install says so
+("will not load without them"), and the `cc-smart-dev-kit setup` at the end of the move adds
+both and installs the companions.
 
 Until the move, `claude plugin list` shows the old plugin as broken:
 
@@ -296,9 +314,13 @@ Until the move, `claude plugin list` shows the old plugin as broken:
   Error: Plugin anymodel not found in marketplace anymodel
 ```
 
-That is expected once 0.3.0 is on `main`: Claude Code refreshes the old marketplace by
-itself, the refreshed one lists `cc-smart-dev-kit`, and the old plugin's entry has nothing
-left to load. It is only the entry: the router keeps running from its own copy
+That is expected once 0.3.0 is on `main` **and the old marketplace's catalog has been
+refreshed**. The refreshed catalog declares `cc-smart-dev-kit`, so the old plugin's entry has
+nothing left to load; a refresh never renames the marketplace itself. Two ways it happens:
+`claude plugin marketplace update anymodel`, or an update the session runs by itself (the
+auto-update was not seen live from a 0.2.x clone, only a clone already on the new catalog).
+Until then, the old clone still lists `anymodel` and its plugin stays ✔ enabled. Either way
+it is only that entry: the router keeps running from its own copy
 (`~/.local/share/anymodel/router.js`), so model traffic is unaffected until `migrate`
 replaces it, and `migrate`'s last step removes the old plugin.
 
@@ -849,9 +871,11 @@ The plugin's hooks run in every project. Most stay silent in a **project without
 Claude Code makes its own worktrees, unless a project turns on the worktree engine
 (§ Worktrees). Each hook runs through `bin/cc-smart-dev-kit-bun`, which finds bun even when your
 PATH has none: the bun `cc-smart-dev-kit setup` saved in the launcher first, then
-`$BUN_INSTALL/bin/bun`, `~/.bun/bin/bun`, and bun on PATH. With no bun at all, a
-PreToolUse guard asks you before every call it covers (`--missing=ask`: a guard fails
-closed), and every other hook writes one line on stderr and the session goes on
+`$BUN_INSTALL/bin/bun`, `~/.bun/bin/bun`, and bun on PATH. It starts bun with
+`--no-env-file` and the plugin's own empty `bunfig.toml`, so a hook never reads the working
+folder's `.env` files or its `bunfig.toml` (a project's `preload`). With no bun at all, or one
+older than 1.4.3, a PreToolUse guard asks you before every call it covers (`--missing=ask`: a
+guard fails closed), and every other hook writes one line on stderr and the session goes on
 (`--missing=quiet`).
 
 | Hook | When | What it does |

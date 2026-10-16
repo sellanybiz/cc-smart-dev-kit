@@ -20,7 +20,10 @@ describe("bakedBunPath", () => {
   });
 });
 
-/** A fake plugin version whose dist/cli.js prints its name and its arguments as JSON. */
+/**
+ * A fake plugin version whose dist/cli.js prints its name and its arguments as JSON, with the
+ * empty `bunfig.toml` a real install ships beside it (the launcher points bun at that file).
+ */
 function fakeVersion(cacheDir: string, version: string): string {
   const installPath = join(cacheDir, version);
   mkdirSync(join(installPath, "dist"), { recursive: true });
@@ -28,6 +31,7 @@ function fakeVersion(cacheDir: string, version: string): string {
     join(installPath, "dist", "cli.js"),
     `console.log(JSON.stringify({ version: ${JSON.stringify(version)}, argv: process.argv.slice(2) }));\n`,
   );
+  writeFileSync(join(installPath, "bunfig.toml"), "");
   return installPath;
 }
 
@@ -59,9 +63,10 @@ function setup(bunPath = process.execPath) {
 /** A PATH with no bun on it: one empty folder. */
 const pathWithoutBun = () => tempDir("empty-path");
 
-function runLauncher(launcher: string, env: Record<string, string>, args: string[]) {
+function runLauncher(launcher: string, env: Record<string, string>, args: string[], cwd?: string) {
   const result = Bun.spawnSync([launcher, ...args], {
     env: { PATH: process.env.PATH ?? "", ...env },
+    ...(cwd === undefined ? {} : { cwd }),
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -147,6 +152,44 @@ describe("the launcher", () => {
     ]);
     const result = runLauncher(launcher, { HOME: home, CLAUDE_CONFIG_DIR: configDir }, []);
     expect(JSON.parse(result.stdout)).toEqual({ version: "1.0.0", argv: [] });
+  });
+
+  test("--config: the working folder's bunfig.toml never runs inside the command, or its lookup", () => {
+    // The launcher runs in whatever folder the person is in. bun reads that folder's
+    // bunfig.toml, so a project's `preload` would run its own code inside the command — and
+    // inside the little lookup that finds the install path, where a printed line would be
+    // taken as that path. `--config` covers the command; the lookup runs in the launcher's
+    // own folder. Run for real: the bun running this test is the one baked in.
+    const { home, configDir, cacheDir, launcher } = setup(process.execPath);
+    writeInstalled(configDir, [userEntry(fakeVersion(cacheDir, "1.0.0"), "1.0.0")]);
+    const project = tempDir("project");
+    writeFileSync(join(project, "preload.js"), 'console.log("PRELOAD RAN");\n');
+    writeFileSync(join(project, "bunfig.toml"), 'preload = ["./preload.js"]\n');
+    const result = runLauncher(
+      launcher,
+      { HOME: home, CLAUDE_CONFIG_DIR: configDir, PATH: pathWithoutBun() },
+      ["version"],
+      project,
+    );
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toEqual({ version: "1.0.0", argv: ["version"] });
+  });
+
+  test("a version folder with no bunfig.toml (0.2.x, until migrate replaces it) still runs", () => {
+    // The plugin's own empty config arrived with 0.3.0. An older installed version has none,
+    // and bun refuses a config path that does not exist: the flag is left out for it.
+    const { home, configDir, cacheDir, launcher } = setup(process.execPath);
+    const installPath = fakeVersion(cacheDir, "1.0.0");
+    rmSync(join(installPath, "bunfig.toml"));
+    writeInstalled(configDir, [userEntry(installPath, "1.0.0")]);
+    const result = runLauncher(
+      launcher,
+      { HOME: home, CLAUDE_CONFIG_DIR: configDir, PATH: pathWithoutBun() },
+      ["version"],
+    );
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ version: "1.0.0", argv: ["version"] });
   });
 
   test("a removed version folder gives the install message and exit 1", () => {

@@ -92,9 +92,22 @@ function tildify(path, home) {
   return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
 }
 
+// src/setup/bun-config.ts
+import { basename, join as join3 } from "path";
+var BUN_CONFIG_NAME = "bunfig.toml";
+function bunConfigPath(pluginDir) {
+  return join3(pluginDir, BUN_CONFIG_NAME);
+}
+function bunConfigArg(pluginDir) {
+  return `--config=${bunConfigPath(pluginDir)}`;
+}
+function pluginFolderBeside(importDir) {
+  return basename(importDir) === "dist" ? join3(importDir, "..") : join3(importDir, "..", "..", "plugin");
+}
+
 // src/setup/instructions.ts
 import { existsSync as existsSync7, readdirSync as readdirSync3, readFileSync as readFileSync8, rmSync } from "fs";
-import { join as join7, relative, sep } from "path";
+import { join as join8, relative, sep } from "path";
 
 // src/setup/lock.ts
 import {
@@ -109,7 +122,7 @@ import {
   writeSync
 } from "fs";
 import { hostname } from "os";
-import { join as join3 } from "path";
+import { join as join4 } from "path";
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
 var LOCK_FILE = "lock";
 var TAKEOVER_SUFFIX = ".takeover";
@@ -286,7 +299,7 @@ function takeOverStale(file, judged, fallbackStaleMs, mode) {
 }
 async function withLock(stateDir, fn, options = {}) {
   mkdirSync(stateDir, { recursive: true });
-  const file = join3(stateDir, LOCK_FILE);
+  const file = join4(stateDir, LOCK_FILE);
   const mine = newLockInfo();
   const deadline = Date.now() + (options.waitMs ?? 0);
   const fallbackStaleMs = options.fallbackStaleMs ?? FALLBACK_STALE_MS;
@@ -338,7 +351,7 @@ import {
   unlinkSync as unlinkSync2,
   writeFileSync
 } from "fs";
-import { basename, dirname, join as join4, resolve } from "path";
+import { basename as basename2, dirname, join as join5, resolve } from "path";
 var BACKUPS_DIR = "backups";
 var BACKUP_INFIX = ".bak-cc-smart-dev-kit-";
 var ABSENT_SUFFIX = ".absent";
@@ -365,7 +378,7 @@ function realTarget(file) {
     }
     if (!isLink) {
       const parent = dirname(path);
-      return parent === path ? path : join4(realTarget(parent), basename(path));
+      return parent === path ? path : join5(realTarget(parent), basename2(path));
     }
     path = resolve(dirname(path), readlinkSync2(path));
   }
@@ -377,7 +390,7 @@ function fileMode(file) {
 function writeTemp(file, content, mode) {
   const dir = dirname(file);
   mkdirSync2(dir, { recursive: true });
-  const temp = join4(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
+  const temp = join5(dir, `.${basename2(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
   try {
     const fd = openSync2(temp, "wx", mode);
     try {
@@ -421,7 +434,7 @@ function parseBackupName(base, name) {
   };
 }
 function backupDir(stateDir, file) {
-  return join4(stateDir, BACKUPS_DIR, encodeURIComponent(realTarget(file)));
+  return join5(stateDir, BACKUPS_DIR, encodeURIComponent(realTarget(file)));
 }
 function makePrivateDir(dir) {
   mkdirSync2(dir, { recursive: true, mode: 448 });
@@ -431,9 +444,9 @@ function listBackups(stateDir, file) {
   const dir = backupDir(stateDir, file);
   if (!existsSync(dir))
     return [];
-  const base = basename(realTarget(file));
+  const base = basename2(realTarget(file));
   return readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup !== null).sort((a, b) => a.stamp === b.stamp ? a.counter - b.counter : a.stamp < b.stamp ? -1 : 1).map((backup) => {
-    const path = join4(dir, backup.name);
+    const path = join5(dir, backup.name);
     return { path, absent: backup.absent, mode: backup.mode ?? fileMode(path) ?? 384 };
   });
 }
@@ -447,15 +460,15 @@ function copyNotExecutable(file, target) {
 function backupFile(stateDir, file) {
   const real = realTarget(file);
   const dir = backupDir(stateDir, real);
-  const base = basename(real);
+  const base = basename2(real);
   const stamp = utcStamp();
   const mode = fileMode(real);
   const suffix = mode === null ? ABSENT_SUFFIX : (mode & 73) !== 0 ? `.mode-${mode.toString(8)}` : "";
-  makePrivateDir(join4(stateDir, BACKUPS_DIR));
+  makePrivateDir(join5(stateDir, BACKUPS_DIR));
   makePrivateDir(dir);
   const sameStamp = readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup?.stamp === stamp);
   const counter = sameStamp.length === 0 ? 0 : Math.max(...sameStamp.map((backup) => backup.counter)) + 1;
-  const target = join4(dir, `${base}${BACKUP_INFIX}${stamp}${counter === 0 ? "" : `-${counter}`}${suffix}`);
+  const target = join5(dir, `${base}${BACKUP_INFIX}${stamp}${counter === 0 ? "" : `-${counter}`}${suffix}`);
   if (mode === null) {
     writeFileSync(target, "", { flag: "wx", mode: 384 });
   } else {
@@ -477,7 +490,7 @@ function isChangedEntry(value) {
   return Array.isArray(entry.kinds) && entry.kinds.every((kind) => CHANGE_KINDS.includes(kind)) && (entry.baseline === null || typeof entry.baseline === "string") && (entry.lines === undefined || Array.isArray(entry.lines) && entry.lines.every((line) => typeof line === "string"));
 }
 function readChanged(stateDir) {
-  const file = join4(stateDir, CHANGED_FILE);
+  const file = join5(stateDir, CHANGED_FILE);
   if (!existsSync(file))
     return {};
   const parsed = JSON.parse(readFileSync2(file, "utf8"));
@@ -489,7 +502,7 @@ function readChanged(stateDir) {
 }
 function writeChanged(stateDir, files) {
   const sorted = Object.fromEntries(Object.entries(files).sort(([a], [b]) => a < b ? -1 : 1));
-  atomicWrite(join4(stateDir, CHANGED_FILE), `${JSON.stringify({ files: sorted }, null, 2)}
+  atomicWrite(join5(stateDir, CHANGED_FILE), `${JSON.stringify({ files: sorted }, null, 2)}
 `, 384);
 }
 function recordChange(stateDir, file, kind, backup, lines) {
@@ -651,12 +664,12 @@ import { dirname as dirname2 } from "path";
 
 // src/setup/managed-entries.ts
 import { existsSync as existsSync4, readFileSync as readFileSync5 } from "fs";
-import { join as join6 } from "path";
+import { join as join7 } from "path";
 
 // src/setup/managed-json.ts
 import { createHash } from "crypto";
 import { existsSync as existsSync3, readFileSync as readFileSync4 } from "fs";
-import { join as join5 } from "path";
+import { join as join6 } from "path";
 var OWNED_FILE = "owned.json";
 
 class ForeignKeyError extends Error {
@@ -708,7 +721,7 @@ function toRecord(entry, file) {
   throw new Error(`Invalid ${file}: an owned key that is neither a path nor a record`);
 }
 function readOwned(stateDir) {
-  const file = join5(stateDir, OWNED_FILE);
+  const file = join6(stateDir, OWNED_FILE);
   if (!existsSync3(file))
     return {};
   const parsed = JSON.parse(readFileSync4(file, "utf8"));
@@ -723,7 +736,7 @@ function readOwned(stateDir) {
   return owned;
 }
 function writeOwned(stateDir, owned) {
-  atomicWrite(join5(stateDir, OWNED_FILE), `${JSON.stringify(owned, null, 2)}
+  atomicWrite(join6(stateDir, OWNED_FILE), `${JSON.stringify(owned, null, 2)}
 `, 384);
 }
 function ownedKeys(stateDir, file) {
@@ -803,7 +816,13 @@ function deleteKeyAndEmptiedObjects(data, path, createdObject) {
 }
 function createdObjects(stateDir, file) {
   const real = realTarget(file);
-  const entry = readChanged(stateDir)[real];
+  let entry;
+  try {
+    entry = readChanged(stateDir)[real];
+  } catch (error) {
+    console.error(`cc-smart-dev-kit: the record of changed files cannot be read (${error instanceof Error ? error.message : String(error)}), so nothing is pruned from ${real}.`);
+    return () => false;
+  }
   const baseline = entry === undefined ? undefined : listBackups(stateDir, real).find((backup) => backup.path === entry.baseline);
   if (baseline === undefined)
     return () => false;
@@ -947,7 +966,7 @@ function isOwnedEntry(value) {
   return isObject(value) && typeof value.entry === "string" && typeof value.source === "string";
 }
 function readOwnedEntries(stateDir) {
-  const file = join6(stateDir, OWNED_ENTRIES_FILE);
+  const file = join7(stateDir, OWNED_ENTRIES_FILE);
   if (!existsSync4(file))
     return {};
   const parsed = JSON.parse(readFileSync5(file, "utf8"));
@@ -958,7 +977,7 @@ function readOwnedEntries(stateDir) {
   return parsed;
 }
 function writeOwnedEntries(stateDir, state) {
-  atomicWrite(join6(stateDir, OWNED_ENTRIES_FILE), `${JSON.stringify(state, null, 2)}
+  atomicWrite(join7(stateDir, OWNED_ENTRIES_FILE), `${JSON.stringify(state, null, 2)}
 `, 384);
 }
 function withRecords(state, file, key, records) {
@@ -1244,10 +1263,10 @@ function removeEmptyFolders(file, stateDir) {
 // src/setup/instructions.ts
 var ALWAYS_ON_FILE = "core.md";
 function optOutFile(stateDir) {
-  return join7(stateDir, "no-instructions");
+  return join8(stateDir, "no-instructions");
 }
 function versionStampFile(stateDir) {
-  return join7(stateDir, "instructions-version");
+  return join8(stateDir, "instructions-version");
 }
 function instructionsOptedOut(stateDir) {
   return existsSync7(optOutFile(stateDir));
@@ -1260,24 +1279,24 @@ function readVersionStamp(stateDir) {
   return version === "" ? null : version;
 }
 function instructionsPaths(paths, source) {
-  const target = join7(paths.stateDir, "instructions");
+  const target = join8(paths.stateDir, "instructions");
   return {
     source,
     target,
-    claudeMd: join7(paths.claudeConfigDir, "CLAUDE.md"),
+    claudeMd: join8(paths.claudeConfigDir, "CLAUDE.md"),
     stateDir: paths.stateDir,
-    importPath: tildify(join7(target, ALWAYS_ON_FILE), paths.home)
+    importPath: tildify(join8(target, ALWAYS_ON_FILE), paths.home)
   };
 }
 function instructionsFolder(bundleDir) {
-  const beside = join7(bundleDir, "..", "instructions");
-  return existsSync7(beside) ? beside : join7(bundleDir, "..", "..", "plugin", "instructions");
+  const beside = join8(bundleDir, "..", "instructions");
+  return existsSync7(beside) ? beside : join8(bundleDir, "..", "..", "plugin", "instructions");
 }
 function listInstructionFiles(source) {
   if (!existsSync7(source)) {
     throw new Error(`The plugin's instructions folder is missing: ${source}. Reinstall the plugin.`);
   }
-  const files = readdirSync3(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative(source, join7(entry.parentPath, entry.name)).split(sep).join("/")).sort();
+  const files = readdirSync3(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative(source, join8(entry.parentPath, entry.name)).split(sep).join("/")).sort();
   if (!files.includes(ALWAYS_ON_FILE)) {
     throw new Error(`The plugin's instructions folder has no ${ALWAYS_ON_FILE}: ${source}. Reinstall the plugin.`);
   }
@@ -1336,9 +1355,9 @@ function installCopy(paths, dryRun, version) {
   const files = listInstructionFiles(paths.source);
   const wanted = new Set;
   for (const name of files) {
-    const file = join7(paths.target, name);
+    const file = join8(paths.target, name);
     wanted.add(realTarget(file));
-    const result = writeManagedFile(file, readFileSync8(join7(paths.source, name), "utf8"), {
+    const result = writeManagedFile(file, readFileSync8(join8(paths.source, name), "utf8"), {
       stateDir: paths.stateDir,
       kind: "whole-file",
       mode: 420,
@@ -1373,7 +1392,7 @@ async function refreshInstructionsCopy(paths, version, options = {}) {
 
 // src/update/apply.ts
 import { existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
-import { join as join9 } from "path";
+import { join as join10 } from "path";
 
 // src/project/git-env.ts
 var REPO_SELECTING_GIT_VARS = [
@@ -1421,7 +1440,7 @@ function findUserInstall(installedPluginsFile, pluginId = PLUGIN_ID) {
 
 // src/setup/marketplace-access.ts
 import { existsSync as existsSync9, readFileSync as readFileSync10 } from "fs";
-import { join as join8 } from "path";
+import { join as join9 } from "path";
 var ACCESS_TIMEOUT_MS = 1e4;
 function marketplaceSource(knownMarketplacesFile, name, env = process.env) {
   if (!existsSync9(knownMarketplacesFile))
@@ -1571,9 +1590,9 @@ function pluginFolderIn(marketplaceJson, plugin) {
 function marketplaceCopyVersion(location, plugin) {
   let folder = "plugin";
   try {
-    folder = pluginFolderIn(readFileSync10(join8(location, ".claude-plugin", "marketplace.json"), "utf8"), plugin) ?? folder;
+    folder = pluginFolderIn(readFileSync10(join9(location, ".claude-plugin", "marketplace.json"), "utf8"), plugin) ?? folder;
   } catch {}
-  const manifest = join8(location, folder, ".claude-plugin", "plugin.json");
+  const manifest = join9(location, folder, ".claude-plugin", "plugin.json");
   try {
     const version = JSON.parse(readFileSync10(manifest, "utf8"))?.version;
     return { manifest, version: typeof version === "string" ? version : null };
@@ -1694,7 +1713,7 @@ function routerNeedsSetup(paths) {
   const install = findUserInstall(paths.installedPluginsFile);
   if (install === null || !existsSync10(paths.routerCopy))
     return false;
-  const bundle = join9(install.installPath, "dist", "router.js");
+  const bundle = join10(install.installPath, "dist", "router.js");
   return existsSync10(bundle) && readFileSync11(bundle, "utf8") !== readFileSync11(paths.routerCopy, "utf8");
 }
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
@@ -1793,17 +1812,17 @@ import {
   statSync as statSync3,
   writeFileSync as writeFileSync2
 } from "fs";
-import { join as join10 } from "path";
+import { join as join11 } from "path";
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
 var LOG_MAX_BYTES = 256 * 1024;
 function updateFiles(stateDir) {
   return {
-    hold: join10(stateDir, "update-hold"),
-    check: join10(stateDir, "update-check.json"),
-    reported: join10(stateDir, "update-reported"),
-    log: join10(stateDir, "update.log"),
-    lockDir: join10(stateDir, "update"),
-    sessions: join10(stateDir, "sessions")
+    hold: join11(stateDir, "update-hold"),
+    check: join11(stateDir, "update-check.json"),
+    reported: join11(stateDir, "update-reported"),
+    log: join11(stateDir, "update.log"),
+    lockDir: join11(stateDir, "update"),
+    sessions: join11(stateDir, "sessions")
   };
 }
 var RESULTS = [
@@ -1849,7 +1868,7 @@ function readLastCheck(files) {
   }
 }
 function writeLastCheck(files, check) {
-  ensureDir(join10(files.check, ".."));
+  ensureDir(join11(files.check, ".."));
   atomicWrite(files.check, `${JSON.stringify(check, null, 2)}
 `, 384);
 }
@@ -1866,7 +1885,7 @@ function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
 }
 function appendLog(files, line, nowMs) {
-  ensureDir(join10(files.log, ".."));
+  ensureDir(join11(files.log, ".."));
   try {
     if (statSync3(files.log).size > LOG_MAX_BYTES) {
       const text = readFileSync13(files.log, "utf8");
@@ -1886,7 +1905,7 @@ function wasReported(files, at) {
   }
 }
 function markReported(files, at) {
-  ensureDir(join10(files.reported, ".."));
+  ensureDir(join11(files.reported, ".."));
   atomicWrite(files.reported, `${at}
 `, 384);
 }
@@ -1911,13 +1930,13 @@ function registerSession(files, pid, version) {
     return;
   ensureDir(files.sessions);
   for (const name of readdirSync4(files.sessions).filter((entry) => SESSION_FILE.test(entry))) {
-    const file = join10(files.sessions, name);
+    const file = join11(files.sessions, name);
     const session = readSession(file);
     if (session === null || !isRunning(session))
       rmSync2(file, { force: true });
   }
   const record = { pid, start, version };
-  atomicWrite(join10(files.sessions, `${pid}.json`), `${JSON.stringify(record)}
+  atomicWrite(join11(files.sessions, `${pid}.json`), `${JSON.stringify(record)}
 `, 384);
 }
 
@@ -1930,6 +1949,9 @@ function optOutDetail(name) {
 }
 function isAttended(env) {
   return env.CLAUDE_CODE_SESSION_ATTENDED !== "0";
+}
+function backgroundCommand(bunPath, entryPath, pluginDir) {
+  return [bunPath, "--no-env-file", bunConfigArg(pluginDir), entryPath, "--background"];
 }
 function sessionStart(deps) {
   const files = updateFiles(deps.paths.stateDir);
@@ -2071,7 +2093,7 @@ if (process.argv.includes("--background")) {
       sessionPid: sessionPid(),
       version: VERSION,
       spawnBackground: () => {
-        Bun.spawn([process.execPath, Bun.main, "--background"], {
+        Bun.spawn(backgroundCommand(process.execPath, Bun.main, pluginFolderBeside(import.meta.dir)), {
           ...commandContext(env, paths.home),
           detached: true,
           stdio: ["ignore", "ignore", "ignore"]

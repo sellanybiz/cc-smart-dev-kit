@@ -9,7 +9,7 @@
  * Each security rule is one test, and each was watched failing with its rule broken.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { saveConfig } from "../gateway/config";
@@ -101,6 +101,8 @@ async function open(options: {
   omnirouteUnit?: boolean;
   /** A plugin folder of this test's own, for the "the folder is gone" case. */
   pluginFolder?: () => PluginFolder;
+  /** Runs while the router's health page is asked: a test that changes the config mid-request. */
+  onProbe?: () => void;
   /** True where the test's machine has systemd (the router restart needs it). */
   systemd?: boolean;
   withConfig?: boolean;
@@ -173,6 +175,7 @@ async function open(options: {
     probe: {
       // The router's health page: up, so `gateway on` and the header both work.
       fetch: async (url) => {
+        options.onProbe?.();
         if (String(url).includes("/__cc-smart-dev-kit/health")) {
           return Response.json({
             fallbacks: 0,
@@ -740,6 +743,81 @@ describe("every answer", () => {
       expect(machine.body).toContain("is not valid JSON. Fix it by hand.");
       const overview = await world.call("/");
       expect(overview.body).toContain("The gateway config cannot be read:");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the config is read once per request: a change while the router is asked cannot split a page", async () => {
+    // The shell's facts read the config, then ask the router's health page. A second read
+    // after that could see a config a hand edit (or another command) just changed: the page
+    // would carry the shell's router and the new error at once. One read per request means
+    // the whole page agrees with what it started from.
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    let arm = false;
+    const world = await open({
+      backendPort: backend.port,
+      onProbe: () => {
+        if (!arm) return;
+        arm = false;
+        writeFileSync(world.paths.gatewayConfigFile, "{ broken\n");
+      },
+    });
+    try {
+      await world.enter();
+      arm = true;
+      const page = await world.call("/");
+      expect(page.status).toBe(200);
+      expect(page.body).toContain("Router running");
+      expect(page.body).not.toContain("The gateway is not set up.");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "a gateway config others cannot read (mode 000) is an error to fix, never 'not set up'",
+    async () => {
+      // `readFileSync` on a mode-000 file is EACCES. Only ENOENT means "never set up": the
+      // person must see the config's own problem, not a page telling them to run the command
+      // they already ran.
+      const backend = fakeBackend(["glm-5.3-flash"]);
+      const world = await open({ backendPort: backend.port, withConfig: false });
+      try {
+        mkdirSync(dirname(world.paths.gatewayConfigFile), { recursive: true });
+        writeFileSync(world.paths.gatewayConfigFile, "{}\\n");
+        chmodSync(world.paths.gatewayConfigFile, 0o000);
+        await world.enter();
+
+        const machine = await world.call("/machine");
+        expect(machine.status).toBe(200);
+        expect(machine.body).toContain("<h2>The gateway config cannot be read</h2>");
+        expect(machine.body).not.toContain("<h2>The gateway is not set up</h2>");
+        // The pages that need the config keep the page that says so — with the config's own
+        // error in it, never the plain "never set up" one (`configExists` told the two apart).
+        const overview = await world.call("/");
+        expect(overview.body).toContain("The gateway config cannot be read:");
+        expect(overview.body).toContain("Nothing here can change until it is fixed.");
+      } finally {
+        world.portal.stop();
+        backend.stop();
+      }
+    },
+  );
+
+  test("a gateway config that is a folder (EISDIR) is an error to fix, never 'not set up'", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port, withConfig: false });
+    try {
+      mkdirSync(world.paths.gatewayConfigFile, { recursive: true });
+      await world.enter();
+
+      const machine = await world.call("/machine");
+      expect(machine.status).toBe(200);
+      expect(machine.body).toContain("<h2>The gateway config cannot be read</h2>");
+      expect(machine.body).not.toContain("<h2>The gateway is not set up</h2>");
     } finally {
       world.portal.stop();
       backend.stop();

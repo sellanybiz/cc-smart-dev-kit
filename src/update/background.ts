@@ -15,6 +15,7 @@
 
 import { COMMAND, PLUGIN, PLUGIN_ID } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
+import { bunConfigArg } from "../setup/bun-config";
 import { type InstructionsPaths, refreshInstructionsCopy } from "../setup/instructions";
 import { LockBusyError, withLock } from "../setup/lock";
 import { redactUrlsIn } from "../setup/marketplace-access";
@@ -64,6 +65,16 @@ export function optOutDetail(name: string): string {
  */
 export function isAttended(env: Env): boolean {
   return env.CLAUDE_CODE_SESSION_ATTENDED !== "0";
+}
+
+/**
+ * The detached check's own command line: this bun and this bundle again, with `--background`,
+ * and the two flags every run of the plugin's own bundles gets (`src/setup/bun-config.ts`).
+ * The child runs in the home folder: without them bun would read that folder's `.env` files
+ * and its `bunfig.toml`.
+ */
+export function backgroundCommand(bunPath: string, entryPath: string, pluginDir: string): string[] {
+  return [bunPath, "--no-env-file", bunConfigArg(pluginDir), entryPath, "--background"];
 }
 
 export interface SessionStartDeps {

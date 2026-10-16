@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
   lstatSync,
@@ -244,6 +244,90 @@ describe("applyManagedJson: an object cc-smart-dev-kit created goes with its las
     add(file, stateDir);
     // A state folder with no changed.json at all (an old one, or a hand-cleaned one).
     expect(createdObjects(join(dir, "empty-state"), file)(["env"])).toBe(false);
+  });
+
+  test("a baseline that is there but not valid JSON proves nothing: the empty object stays", () => {
+    const { file, stateDir } = setup({ model: "opus" });
+    add(file, stateDir);
+    // What a hand edit (or a half-written backup) leaves: the record names the baseline, and
+    // the baseline cannot be read as a JSON object.
+    const baseline = listBackups(stateDir, file)[0];
+    expect(baseline).toBeDefined();
+    writeFileSync((baseline as { path: string }).path, "{ broken\n");
+    expect(createdObjects(stateDir, file)(["env"])).toBe(false);
+    const result = applyManagedJson({
+      file,
+      stateDir,
+      remove: [TAVILY],
+      createdObject: createdObjects(stateDir, file),
+    });
+    expect(result.changes.map((change) => change.path)).toEqual([["env", "TAVILY_API_KEY"]]);
+    expect(read(file)).toEqual({ env: {}, model: "opus" });
+  });
+
+  test("a key the person added to a setup-created object keeps it, also at the last removal", () => {
+    const { file, stateDir } = setup({ model: "opus" });
+    add(file, stateDir);
+    // The person uses the object setup made, for a key of their own.
+    const settings = read(file);
+    settings.env.MY_OWN_KEY = "mine";
+    writeFileSync(file, JSON.stringify(settings, null, 2));
+    const result = applyManagedJson({
+      file,
+      stateDir,
+      remove: [TAVILY],
+      createdObject: createdObjects(stateDir, file),
+    });
+    // The object holds their key, so it is not empty and does not go with cc-smart-dev-kit's.
+    expect(result.changes.map((change) => change.path)).toEqual([["env", "TAVILY_API_KEY"]]);
+    expect(read(file)).toEqual({ env: { MY_OWN_KEY: "mine" }, model: "opus" });
+  });
+
+  test("a baseline with the .absent marker says cc-smart-dev-kit created the whole file", () => {
+    const { file, stateDir } = setup(null);
+    add(file, stateDir);
+    expect(listBackups(stateDir, file)[0]?.absent).toBe(true);
+    // Everything in a file cc-smart-dev-kit created came from cc-smart-dev-kit.
+    expect(createdObjects(stateDir, file)(["env"])).toBe(true);
+    expect(createdObjects(stateDir, file)(["anything", "at", "all"])).toBe(true);
+  });
+
+  test("a changed.json that cannot be read: nothing is pruned, and one line says so", () => {
+    // A read-only pass (setup's, `gateway off --dry-run`) calls this. A record it cannot use
+    // must not fail it: the command that needs the record reads it itself, and reports its
+    // own error. Without a record, nothing may be the person's and nothing is pruned.
+    const { file, stateDir } = setup({ model: "opus" });
+    add(file, stateDir);
+    writeFileSync(join(stateDir, "changed.json"), "{ broken\n");
+    const lines: string[] = [];
+    const error = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    });
+    let plan: ReturnType<typeof applyManagedJson>;
+    try {
+      expect(createdObjects(stateDir, file)(["env"])).toBe(false);
+      plan = applyManagedJson({
+        file,
+        stateDir,
+        remove: [TAVILY],
+        createdObject: createdObjects(stateDir, file),
+        dryRun: true,
+      });
+    } finally {
+      error.mockRestore();
+    }
+    // One line per call: one for each answer that had to fall back to "nothing is pruned".
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toStartWith("cc-smart-dev-kit: the record of changed files cannot be read (");
+    expect(lines[0]).toEndWith(`, so nothing is pruned from ${file}.`);
+    expect(lines[1]).toBe(lines[0]);
+    // The read-only pass above planned the removal, kept the object (nothing proves
+    // cc-smart-dev-kit made it) and wrote nothing. A pass that really writes reads the record
+    // itself and fails with its own error: that is the command the person asked for, not a
+    // check.
+    expect(plan.changes.map((change) => change.path)).toEqual([["env", "TAVILY_API_KEY"]]);
+    expect(plan.written).toBe(false);
+    expect(read(file)).toEqual({ env: { TAVILY_API_KEY: "tvly-secret" }, model: "opus" });
   });
 });
 

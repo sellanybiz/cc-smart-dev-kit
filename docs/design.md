@@ -65,6 +65,18 @@ Where it is checked, each time against the Bun running the code (`Bun.version`):
   Bun ≥ 1.4.3; this is 1.4.2 (<path>). Upgrade this Bun, then run the command again.",
   except the ones that send no key and help the person out: `doctor`, `restore`,
   `version` and help (`src/cli/bun-check.ts`).
+- **The hooks' shim** (`plugin/bin/cc-smart-dev-kit-bun`), before it starts bun. A hook
+  bundle has no check of its own, and an older Bun is not visibly broken: it drops
+  `--no-env-file` without a word (measured on 1.2.23 and 1.3.0: the working folder's `.env`
+  values reached the program), so the hook would run on guarantees the plugin does not have.
+  The shim asks `bun --version` and fails closed exactly like the no-bun case: a guard asks
+  the person, any other hook writes one line and exits 0. It asks only a bun that is **not**
+  the one setup baked into the launcher (setup refuses to run on a Bun below `MIN_BUN`, so
+  that one is already proved) and that has not been replaced since (its file newer than the
+  launcher): a hook pays nothing for the check in the ordinary case, and one `bun --version`
+  (2.9 ms median against a 48 ms hook call, measured on Bun 1.4.3) when a bun of the
+  person's own is asked. The number lives in the shim too, beside its messages, and
+  `src/hooks/bun-shim.test.ts` fails when it differs from `MIN_BUN`.
 - **`doctor`**: its first line is the Bun, ✓ or ✗. On an older Bun it skips the gateway
   checks, which send the backend key.
 - **`gateway setup`** (`installRouter`): refuses to install the router for an older Bun,
@@ -78,6 +90,32 @@ Where it is checked, each time against the Bun running the code (`Bun.version`):
   with one line. The `package.json` scripts call `"$npm_execpath"` (the Bun running
   `bun run`), never `bun` from PATH, and tests start subprocesses with
   `process.execPath`: `<path>/bun run check` runs every step on that one Bun.
+
+### The two flags on every bun run inside a person's folder
+
+Bun loads the working folder's `.env` files and reads its `bunfig.toml` for whatever it
+runs. A command or hook started in a project must see neither: a project's `.env.local`
+would look like the person's environment, and a project's `preload` in `bunfig.toml` would
+run its own code inside the plugin. So every bun the plugin starts in a person's folder
+gets `--no-env-file` and a `--config=` flag pointing at the plugin's own empty
+`bunfig.toml`:
+
+- the hook shim `plugin/bin/cc-smart-dev-kit-bun` and the CLI shim
+  `plugin/bin/cc-smart-dev-kit` (hand-written `sh`, so they spell both flags themselves);
+- the launcher `src/setup/launcher.ts` writes. Its lookup of the installed version runs in
+  the launcher's own folder instead: the plugin's config is inside the folder that lookup
+  has yet to find. It passes the config only when the installed version has one, since bun
+  refuses a config path that does not exist and a 0.2.x install has none;
+- the portal child, `doctor --live`'s hook command, the background self-update child and
+  `browser check`'s two launchers, through `bunConfigArg` in `src/setup/bun-config.ts`;
+- the commands the README prints for a person to run from a folder of their own, and the
+  line `restore` prints when it removed the launcher (`stageOneDone`).
+
+The plugin ships the empty config as `plugin/bunfig.toml`, not `/dev/null`: a device path
+is not a config the plugin owns, and the same flag then works on every system. Nothing the
+plugin runs needs anything a bunfig would give it, and `src/hooks/bun-shim.test.ts` and
+`src/setup/bun-shim.test.ts` run the real bundles with it, in a folder whose own
+`bunfig.toml` preload would print a line.
 
 ## The AI gateway
 
@@ -127,8 +165,10 @@ An optional local router between Claude Code and the model providers
   two stages: first the env keys (the router keeps running), then, after the sessions
   restarted, the router (asked first). Stage 1 also puts back the launcher, and when it had
   created it the file is gone: the line it ends with then names the second run in full
-  (`stageOneDone`: `bun --no-env-file <this plugin's dist/cli.js> restore`, with the bundle
-  its entry passed in), because `cc-smart-dev-kit` is not on the PATH any more. `restore
+  (`stageOneDone`: `<the bun running it, absolute> --no-env-file --config=<the installed
+  version's empty config> <this plugin's dist/cli.js> restore`, with the bundle its entry
+  passed in), because `cc-smart-dev-kit` is not on the PATH any more — a bare `bun` would
+  need bun on the PATH, which setup never proved. `restore
   --now` does both, with a warning. The
   stop never waits for the router's drain: `disable`, then one `stop --no-block` of the
   socket and the service together, then up to 15 s for the port to close.
@@ -247,11 +287,16 @@ The guarantees:
   setup created it. An object cc-smart-dev-kit created that a removal empties (the `env` its
   own keys went into) goes with its last key, so no `"env": {}` is left behind; an object the
   person had stays, also when it is empty (`createdObjects`, from the baseline backup: a
-  baseline that is missing or unreadable proves nothing, and nothing is pruned). It backs up
+  baseline that is missing or unreadable proves nothing, and nothing is pruned). An object
+  setup created is removed **even when the person emptied it later**: it is still the object
+  setup made, and a missing object and `{}` read the same to Claude Code. A record
+  (`changed.json`) that cannot be read is not an error here — a read-only pass must go on —
+  so nothing is pruned and one line on stderr says so; a command that really writes reads
+  the record itself and reports its own error. It backs up
   each file before it changes it. With the gateway on, the
   router's copy and unit wait for a second restore (§ The AI gateway), and its first stage
-  names the command that runs the second one — the `bun --no-env-file …/dist/cli.js restore`
-  line, when that stage removed the launcher and `cc-smart-dev-kit` is off the PATH. A
+  names the command that runs the second one — the `bun --no-env-file --config=… …/dist/cli.js
+  restore` line, when that stage removed the launcher and `cc-smart-dev-kit` is off the PATH. A
   restore with nothing left changes nothing.
 
 Its state (`<stateDir>`) lives in `$CLAUDE_CONFIG_DIR/cc-smart-dev-kit/` (by default
@@ -753,9 +798,10 @@ spec, `specs.ts`):
   `~/.bun/bin/bun`, and PATH. With none it answers by its `--missing=` mode and exits 0: a
   PreToolUse guard passes `--missing=ask`, so it asks the person instead of letting the tool
   run (a guard fails closed); every other hook passes `--missing=quiet`, one line on stderr.
-  It starts bun with `--no-env-file`, like the launcher and `plugin/bin/cc-smart-dev-kit`:
-  bun would otherwise add the working folder's `.env` files to the hook, and a hook must see
-  the environment Claude Code gave it — the same rule `job run` refuses a job without.
+  It starts bun with `--no-env-file` and the plugin's own empty config, like the launcher and
+  `plugin/bin/cc-smart-dev-kit`: bun would otherwise add the working folder's `.env` files to
+  the hook and run its `bunfig.toml`, and a hook must see the environment Claude Code gave
+  it, never a project's — the same rule `job run` refuses a job without.
   The baked line is
   single-quoted the way `shellQuote` writes it (each `'` as `'\''`), and the shim undoes
   exactly that, so a bun under a folder like `/home/o'brien` is found.

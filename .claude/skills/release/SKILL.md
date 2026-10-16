@@ -66,13 +66,15 @@ cc-smart-dev-kit doctor
 
 A machine still on 0.2.x (the version before the name change) takes a different path:
 add this marketplace, install this plugin, then run the new plugin's `dist/cli.js` with
-`bun --no-env-file` - `cc-smart-dev-kit` does not exist there yet, the old launcher is the
-only one, and without the flag bun would load the working folder's `.env` files:
+`bun --no-env-file --config=<that version's bunfig.toml>` - `cc-smart-dev-kit` does not
+exist there yet, the old launcher is the only one, and without the flags bun would load the
+working folder's `.env` files and run its `bunfig.toml`:
 
 ```sh
+plugin="$HOME/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>"
 claude plugin marketplace add <owner>/cc-smart-dev-kit
 claude plugin install cc-smart-dev-kit@cc-smart-dev-kit
-bun --no-env-file ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>/dist/cli.js migrate
+bun --no-env-file --config="$plugin/bunfig.toml" "$plugin/dist/cli.js" migrate
 ```
 
 That moves everything the old version wrote (`README.md` § Moving from anymodel).

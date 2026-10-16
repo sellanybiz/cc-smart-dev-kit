@@ -97,6 +97,7 @@ describe("the portal command", () => {
         argv: [
           "/opt/bun/bin/bun",
           "--no-env-file",
+          `--config=${join(machine.pluginDir, "bunfig.toml")}`,
           machine.copy,
           "--plugin-dir",
           machine.pluginDir,
@@ -121,6 +122,7 @@ describe("the portal command", () => {
     expect(machine.spawned[0]?.argv).toEqual([
       "/opt/bun/bin/bun",
       "--no-env-file",
+      `--config=${join(machine.pluginDir, "bunfig.toml")}`,
       machine.copy,
       "--plugin-dir",
       machine.pluginDir,

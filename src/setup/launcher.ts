@@ -59,11 +59,25 @@ fi
 config_dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 installed="$config_dir/plugins/installed_plugins.json"
 [ -f "$installed" ] || fail "the cc-smart-dev-kit plugin is not installed."
-install_path=$("$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the cc-smart-dev-kit plugin is not installed."
+# The lookup runs in this launcher's own folder (never the person's working folder): bun reads
+# the working folder's bunfig.toml, and a project's preload could print another path — this
+# very path decides which CLI runs. The plugin's own empty config cannot be used here: it sits
+# in the folder this lookup has yet to find.
+launcher_dir=$HOME/.local/bin
+case $0 in */*) launcher_dir=\${0%/*} ;; esac
+install_path=$(cd "$launcher_dir" && "$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the cc-smart-dev-kit plugin is not installed."
 [ -n "$install_path" ] || fail "the cc-smart-dev-kit plugin is not installed."
 [ -f "$install_path/dist/cli.js" ] || fail "the cc-smart-dev-kit plugin folder is missing: $install_path."
 # --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.
-exec "$bun" --no-env-file "$install_path/dist/cli.js" "$@"
+# --config: the plugin's own empty config, beside the CLI in the same version folder, so the
+# working folder's bunfig.toml (a project's preload) never runs inside the command. An
+# installed version older than that file (0.2.x, until migrate replaces it) has none: bun
+# refuses a config path that does not exist, so the flag is left out then.
+set -- "$install_path/dist/cli.js" "$@"
+if [ -f "$install_path/bunfig.toml" ]; then
+  set -- "--config=$install_path/bunfig.toml" "$@"
+fi
+exec "$bun" --no-env-file "$@"
 `;
 }
 

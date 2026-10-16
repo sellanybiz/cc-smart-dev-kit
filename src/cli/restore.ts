@@ -15,6 +15,7 @@ import {
 import { ownedGatewayEnvKeys } from "../gateway/settings";
 import { forgetMcpServer, mcpRecordsFile } from "../mcp/records";
 import { removeMcpServers } from "../mcp/register";
+import { bunConfigPath } from "../setup/bun-config";
 import { forgetInstructionsState } from "../setup/instructions";
 import { LAUNCHER_NAME, shellQuote } from "../setup/launcher";
 import { withLock } from "../setup/lock";
@@ -51,15 +52,26 @@ export const NOW_WARNING = `restore --now stops cc-smart-dev-kit-router while Cl
 /**
  * Said at the end of stage 1. When this run removed the launcher (setup had created it), the
  * second restore cannot be typed as `cc-smart-dev-kit restore` any more: the line then names
- * the command that really works — the README's own `bun --no-env-file …/dist/cli.js restore`
- * form, with this CLI's bundle (`RestoreOptions.cliBundle`).
+ * the command that really works — the README's own `bun --no-env-file --config=… …/dist/cli.js
+ * restore` form, with this CLI's bundle (`RestoreOptions.cliBundle`, the installed version's
+ * own `dist/cli.js`) and the bun running this command (`bunPath`, `process.execPath`), so the
+ * line works on a machine whose PATH has no bun.
  */
-export function stageOneDone(paths: CliPaths, cliBundle: string): string {
+export function stageOneDone(
+  paths: CliPaths,
+  cliBundle: string,
+  bunPath: string = process.execPath,
+): string {
   const launcher = join(paths.binDir, LAUNCHER_NAME);
   if (existsSync(launcher)) {
     return `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
   }
-  return `Restart every running Claude session (they still use the router), then run the second restore again — this one removed the launcher (${tildify(launcher, paths.home)}), so \`${COMMAND}\` is not on your PATH any more: bun --no-env-file ${shellQuote(cliBundle)} restore`;
+  // The same two flags every run of the plugin's own bundles gets, and the plugin's own empty
+  // config: the bundle sits in the installed version's folder (`…/<version>/dist/cli.js`), and
+  // the config is beside it (`…/<version>/bunfig.toml`).
+  const bunfig = bunConfigPath(dirname(dirname(cliBundle)));
+  const flags = [shellQuote("--no-env-file"), shellQuote(`--config=${bunfig}`)].join(" ");
+  return `Restart every running Claude session (they still use the router), then run restore again — this one removed the launcher (${tildify(launcher, paths.home)}), so \`${COMMAND}\` is not on your PATH any more: ${shellQuote(bunPath)} ${flags} ${shellQuote(cliBundle)} restore`;
 }
 
 export interface RestoreOptions {

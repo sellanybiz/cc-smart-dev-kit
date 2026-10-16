@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { uptime } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
-import { runBrowserCheck } from "../browser/check";
+import { join, resolve } from "node:path";
+import { browserCheckCommand, runBrowserCheck } from "../browser/check";
 import { installPicker, runBrowserMcp } from "../browser/launcher";
 import { COMMAND, VERSION } from "../build-info";
 import { oldBunRefusal } from "../cli/bun-check";
@@ -32,6 +32,7 @@ import { runOmniroute } from "../omniroute/commands";
 import { runPortal } from "../portal/command";
 import { runSearch } from "../search/command";
 import { runSessions } from "../sessions/command";
+import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
 import { LAUNCHER_NAME } from "../setup/launcher";
 import { runWorktrees } from "../worktrees/command";
@@ -94,8 +95,9 @@ Commands:
                      slots (with an alias for each old name, so running sessions keep
                      working), and the router units. On a 0.2.x machine this command does
                      not exist yet: run the installed plugin's dist/cli.js with
-                     bun --no-env-file (README, Moving from anymodel: without the flag bun
-                     loads the working folder's .env files into the command).
+                     bun --no-env-file --config=<its own bunfig.toml> (README, Moving from
+                     anymodel: without the flags bun loads the working folder's .env files
+                     into the command and runs its bunfig.toml).
                      It reads and checks everything, then asks every question, and writes
                      nothing before they are answered: a "no" leaves the machine as it
                      was. It then prints its steps and walks them; a step that fails keeps
@@ -190,9 +192,7 @@ function routerBundle(): string {
  * loads with `--plugin-dir`. Run from the source, the repo's `plugin/`.
  */
 function pluginDir(): string {
-  return basename(import.meta.dir) === "dist"
-    ? dirname(import.meta.dir)
-    : join(import.meta.dir, "..", "..", "plugin");
+  return pluginFolderBeside(import.meta.dir);
 }
 
 const liveRunner: LiveRunner = (argv, { cwd, env, timeoutMs }) => {
@@ -488,7 +488,10 @@ async function main(argv: string[]): Promise<number> {
             console.log(
               `${ok ? "✓" : "✗"} ${name}${ok || why === undefined ? "" : ` — ${why.slice(0, 400)}`}`,
             ),
-          cli: [process.execPath, process.argv[1] ?? ""],
+          // Each launcher is this CLI again, with the two flags every run of the plugin's
+          // own bundles gets (the hook shim, `doctor --live`): the working folder's `.env`
+          // files and its `bunfig.toml` stay out of it.
+          cli: browserCheckCommand(process.execPath, process.argv[1] ?? "", pluginDir()),
           log: (line) => console.error(line),
         });
         console.log(

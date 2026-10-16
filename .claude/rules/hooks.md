@@ -45,10 +45,16 @@ Every entry in `plugin/hooks/hooks.json` uses the exec form, never a shell strin
   may have no bun on PATH, and then the hook never runs (seen live). `plugin/bin/cc-smart-dev-kit-bun`
   finds bun where the launcher does (the bun baked into `~/.local/bin/cc-smart-dev-kit`,
   `$BUN_INSTALL/bin/bun`, `~/.bun/bin/bun`, then PATH); it uses only shell built-ins, so it
-  works with an empty PATH too. **It starts bun with `--no-env-file`**, like the launcher and
+  works with an empty PATH too. **It starts bun with `--no-env-file` and a `--config=` flag
+  pointing at the plugin's own empty `bunfig.toml`** (`plugin/bunfig.toml`), like the launcher and
   `bin/cc-smart-dev-kit`: bun would otherwise add the working folder's `.env` files to the
-  hook, and a hook must see the environment Claude Code gave it. `src/hooks/bun-shim.test.ts` and `src/setup/bun-shim.test.ts`
-  check the order and both modes.
+  hook and run its `bunfig.toml`, and a hook must see the environment Claude Code gave it.
+  `src/hooks/bun-shim.test.ts` and `src/setup/bun-shim.test.ts`
+  check the order, both flags and both modes. **A Bun older than `MIN_BUN` fails closed
+  here**, the same way as a missing one, with its own message: an older Bun drops
+  `--no-env-file` without a word, so the hook would run on guarantees the plugin does not
+  have. The shim asks `bun --version` only when the bun is not the one setup baked into the
+  launcher — that one setup already proved, so an ordinary hook pays nothing for the check.
 - **The shim's first argument says what to do when no bun is found**, and is never passed
   to bun: `--missing=ask` prints one PreToolUse answer on stdout, asking the person, and
   exits 0; `--missing=quiet` writes one line on stderr and exits 0. A hook never stops a

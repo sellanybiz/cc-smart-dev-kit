@@ -16,6 +16,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info";
 import type { CliPaths } from "../cli/paths";
+import { bunConfigArg } from "../setup/bun-config";
 import { writeManagedFile } from "../setup/write";
 
 /** The port the portal binds when nothing else is asked: 20150, the design's own number. */
@@ -165,9 +166,13 @@ export function runPortal(ctx: PortalCommandContext, args: readonly string[]): n
   // project) to the child, and the portal must read this terminal's environment, not a
   // project's file — a `.env.local` naming HOME or CLAUDE_CONFIG_DIR would point it at other
   // paths than the command that started it.
+  // `--config`: bun would also read the working folder's bunfig.toml, and a project's
+  // `preload` would run its own code inside the portal. This points it at the plugin's own
+  // empty config, beside the bundle this command copies.
   const argv = [
     ctx.bunPath,
     "--no-env-file",
+    bunConfigArg(ctx.pluginDir),
     copy,
     "--plugin-dir",
     ctx.pluginDir,

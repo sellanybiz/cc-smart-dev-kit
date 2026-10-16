@@ -4,10 +4,12 @@
 // (the copy only, quietly), and starts the check when one is due (src/update/background.ts).
 import { PLUGIN, VERSION } from "../build-info";
 import { cliPaths } from "../cli/paths";
+import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder, instructionsPaths } from "../setup/instructions";
 import { capturingRunner, commandContext, notifyCommand } from "../update/apply";
 import {
   backgroundCheck,
+  backgroundCommand,
   refreshInstructionsAtSessionStart,
   sessionStart,
 } from "../update/background";
@@ -47,11 +49,16 @@ if (process.argv.includes("--background")) {
         // Detached (its own session, setsid) with no pipe to this hook: it outlives the
         // hook, and Claude Code never waits for it. In the home folder, without the git
         // variables of the session's repo (`commandContext`).
-        Bun.spawn([process.execPath, Bun.main, "--background"], {
-          ...commandContext(env, paths.home),
-          detached: true,
-          stdio: ["ignore", "ignore", "ignore"],
-        }).unref();
+        // The same two flags the shim gave this hook: the child starts bun again, in the home
+        // folder, and must not read that folder's `.env` files or its `bunfig.toml`.
+        Bun.spawn(
+          backgroundCommand(process.execPath, Bun.main, pluginFolderBeside(import.meta.dir)),
+          {
+            ...commandContext(env, paths.home),
+            detached: true,
+            stdio: ["ignore", "ignore", "ignore"],
+          },
+        ).unref();
       },
     });
     if (answer !== "") process.stdout.write(`${answer}\n`);

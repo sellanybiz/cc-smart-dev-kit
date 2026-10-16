@@ -14,13 +14,23 @@ import { launcherScript } from "./launcher";
 
 const PLUGIN = join(import.meta.dir, "..", "..", "plugin");
 const SHIM = join(PLUGIN, "bin", "cc-smart-dev-kit-bun");
+/** The two flags the shim gives every bun it starts, with the config path as the shim spells it. */
+const FLAGS = `--no-env-file --config=${join(PLUGIN, "bin")}/../bunfig.toml`;
 /** sh and the tools a shell script needs, without any bun. */
 const NO_BUN_PATH = "/usr/bin:/bin";
 
-/** A fake bun at `path` that prints its name and arguments. */
-function fakeBun(path: string, name: string): string {
+/** A fake bun at `path` that prints its name and arguments, and a version when asked. */
+function fakeBun(path: string, name: string, version = "1.9.9"): string {
   mkdirSync(join(path, ".."), { recursive: true });
-  writeFileSync(path, `#!/bin/sh\necho "${name} $*"\n`);
+  writeFileSync(
+    path,
+    `#!/bin/sh
+case $1 in
+  --version) echo "${version}" ;;
+  *) echo "${name} $*" ;;
+esac
+`,
+  );
   chmodSync(path, 0o755);
   return path;
 }
@@ -51,7 +61,7 @@ describe("the hooks' bun shim", () => {
     expect(runShim({ HOME: home, PATH: NO_BUN_PATH })).toEqual({
       exitCode: 0,
       stderr: "",
-      stdout: "baked --no-env-file /x/dist/update-check.js\n",
+      stdout: `baked ${FLAGS} /x/dist/update-check.js\n`,
     });
   });
 
@@ -67,14 +77,14 @@ describe("the hooks' bun shim", () => {
     writeFileSync(join(home, ".local", "bin", "cc-smart-dev-kit"), launcherScript("/nowhere/bun"));
     const path = `${pathDir}:${NO_BUN_PATH}`;
     expect(runShim({ BUN_INSTALL: install, HOME: home, PATH: path }).stdout).toBe(
-      "bun-install --no-env-file /x/dist/update-check.js\n",
+      `bun-install ${FLAGS} /x/dist/update-check.js\n`,
     );
     expect(runShim({ HOME: home, PATH: path }).stdout).toBe(
-      "home-bun --no-env-file /x/dist/update-check.js\n",
+      `home-bun ${FLAGS} /x/dist/update-check.js\n`,
     );
     const bare = tempDir("shim");
     expect(runShim({ HOME: bare, PATH: path }).stdout).toBe(
-      "path-bun --no-env-file /x/dist/update-check.js\n",
+      `path-bun ${FLAGS} /x/dist/update-check.js\n`,
     );
   });
 
@@ -86,6 +96,31 @@ describe("the hooks' bun shim", () => {
         "cc-smart-dev-kit: bun not found (not in ~/.local/bin/cc-smart-dev-kit, $BUN_INSTALL/bin, ~/.bun/bin or PATH), so the hook did not run. Install bun, then run: cc-smart-dev-kit setup\n",
       stdout: "",
     });
+  });
+
+  test("--config: the working folder's bunfig.toml (a project's preload) never runs in a hook", () => {
+    // The shim is run from a project folder whose bunfig.toml would print a line before the
+    // hook's own: bun must read the plugin's own empty config instead.
+    const home = tempDir("shim");
+    const project = tempDir("project");
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(
+      join(home, ".local", "bin", "cc-smart-dev-kit"),
+      launcherScript(process.execPath),
+    );
+    writeFileSync(join(project, "preload.js"), 'console.log("PRELOAD RAN");\n');
+    writeFileSync(join(project, "bunfig.toml"), 'preload = ["./preload.js"]\n');
+    const script = join(home, "hello.js");
+    writeFileSync(script, 'console.log("hook ran");\n');
+    const result = Bun.spawnSync([SHIM, script], {
+      cwd: project,
+      env: { HOME: home, PATH: NO_BUN_PATH },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(result.stderr.toString()).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe("hook ran\n");
   });
 
   test("the real bun, found through the launcher with no bun on PATH, runs the hook's bundle", () => {

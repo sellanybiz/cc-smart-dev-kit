@@ -30,6 +30,7 @@ import type { PortalContext } from "../portal/context";
 import { resolvePluginFolder } from "../portal/plugin-folder";
 import { startPortal } from "../portal/server";
 import { IDLE_MS } from "../portal/session";
+import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
 
 /** How long a command may take; `claude plugin` alone may clone for a while. */
@@ -74,13 +75,6 @@ function openBrowser(
   }
 }
 
-/** The plugin's own folder beside this bundle: `plugin/`, beside `dist/`, or the repo's when run from source. */
-function besideThisBundle(): string {
-  return import.meta.dir.endsWith("/dist")
-    ? join(import.meta.dir, "..")
-    : join(import.meta.dir, "..", "..", "plugin");
-}
-
 async function main(argv: string[]): Promise<number> {
   const refusal = claudeCodeRefusal(process.env);
   if (refusal !== null) {
@@ -96,7 +90,7 @@ async function main(argv: string[]): Promise<number> {
   const which = (name: string): null | string => Bun.which(name, { PATH: process.env.PATH ?? "" });
   const machine = realMachine(process.env, null);
   /** Where the plugin's files are now: the installed version, else the folder the parent passed. */
-  const fallback = options.pluginDir ?? besideThisBundle();
+  const fallback = options.pluginDir ?? pluginFolderBeside(import.meta.dir);
   const ctx: PortalContext = {
     bunVersion: Bun.version,
     env: process.env,

@@ -34,6 +34,7 @@ import { PORTAL_CSS, PORTAL_ICON, PORTAL_JS, THEME_JS } from "./assets";
 import type { PortalContext } from "./context";
 import {
   backendRows,
+  type ConfigRead,
   claudeModels,
   companionRows,
   configExists,
@@ -297,13 +298,17 @@ export async function startPortal(
     };
   }
 
-  /** The page route a path names, or null when no page lives there. */
+  /**
+   * The page route a path names, or null when no page lives there. `found` is the request's
+   * one config read (`readConfig`), the same answer the shell's facts came from: reading it
+   * twice could draw a page with both a router and a config error in it.
+   */
   async function pageResponse(
     path: string,
     shell: Shell,
     extra: Record<string, string>,
+    found: ConfigRead,
   ): Promise<Response> {
-    const found = readConfig(ctx);
     if ("error" in found) {
       // No config, or one that cannot be read. The Machine page draws anyway: every card on
       // it works without the gateway, and `doctor` matters most on a machine that has none.
@@ -448,13 +453,19 @@ export async function startPortal(
       // served in the same answer, so the URL can be cleaned by the page's own script.
       const value = exchangeToken(state.session, token, random, ctx.now());
       if (value === null) return refused();
+      const found = readConfig(ctx);
       const shell: Shell = {
         bun: ctx.bunVersion,
         csrf: state.session.csrf,
-        facts: await shellFacts(ctx, port),
+        facts: await shellFacts(ctx, port, found),
       };
       const path = PAGES.has(url.pathname) ? url.pathname : "/";
-      return pageResponse(path, shell, { "set-cookie": sessionCookie(cookieName(port), value) });
+      return pageResponse(
+        path,
+        shell,
+        { "set-cookie": sessionCookie(cookieName(port), value) },
+        found,
+      );
     }
 
     if (url.pathname.startsWith("/api/")) {
@@ -488,16 +499,19 @@ export async function startPortal(
     }
 
     if (method !== "GET") return refused();
+    // One read of the config for the whole request: the shell's facts and the page take the
+    // same answer.
+    const found = readConfig(ctx);
     const shell: Shell = {
       bun: ctx.bunVersion,
       csrf: state.session.csrf,
-      facts: await shellFacts(ctx, port),
+      facts: await shellFacts(ctx, port, found),
     };
     if (url.pathname === "/privacy") {
       return html(privacyPage(shell), {});
     }
     if (!PAGES.has(url.pathname)) return expiredPageResponse();
-    return pageResponse(url.pathname, shell, {});
+    return pageResponse(url.pathname, shell, {}, found);
   }
 
   /** A route that is not one of ours, with no session: the link is dead. */

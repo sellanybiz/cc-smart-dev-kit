@@ -8,12 +8,23 @@
 #   4. bun on PATH.
 # Only shell built-ins, so it works with an empty PATH too.
 #
-# --no-env-file: bun would load the .env files of the working folder (the project) into the
-# hook, and a hook must see the environment Claude Code gave it — not a project's .env.local.
-# The launcher and bin/cc-smart-dev-kit do the same, and "cc-smart-dev-kit job run" refuses to
-# hand a job a folder's .env values.
+# Two flags, on every bun run:
+#  - --no-env-file: bun would load the .env files of the working folder (the project) into the
+#    hook, and a hook must see the environment Claude Code gave it — not a project's .env.local.
+#    The launcher and bin/cc-smart-dev-kit do the same, and "cc-smart-dev-kit job run" refuses to
+#    hand a job a folder's .env values.
+#  - --config=<the plugin's own empty bunfig.toml>, in the plugin folder beside this script: bun
+#    would otherwise read the working folder's bunfig.toml, and a project's `preload` would run
+#    its own code inside the hook. The plugin ships that empty file; it is not /dev/null, which
+#    is a device path and not a config the plugin owns.
 #
-# The first argument says what to do when no bun is found, and is never passed to bun:
+# A Bun older than the plugin needs must not start a hook at all: it drops --no-env-file without
+# a word (measured on Bun 1.2.23 and 1.3.0: the folder's .env values reached the program), and
+# 1.4.3 is the first whose `fetch` honours `proxy: false` (src/build-info/bun.ts). So a too-old
+# Bun fails closed here, exactly like a missing one, before it starts anything.
+#
+# The first argument says what to do when no bun is found (or the bun is too old), and is never
+# passed to bun:
 #   --missing=ask    the guards fail closed: one PreToolUse answer on stdout, asking the
 #                    person, and exit 0 (a hook never stops a session).
 #   --missing=quiet  one line on stderr, exit 0.
@@ -29,6 +40,18 @@ case $1 in
     shift
     ;;
 esac
+
+# The oldest Bun the plugin runs on: the same number as MIN_BUN in src/build-info/bun.ts, and
+# a test keeps the two equal. This script runs before any of the plugin's own code, so it
+# cannot read that file.
+min_bun=1.4.3
+
+# The plugin's own empty Bun config: this script's folder is the plugin's bin/, so its parent
+# is the plugin folder. Without a path in $0 (nobody calls it that way; a hook runs it by an
+# absolute path) there is no folder to take, and the flag is left out.
+shim_dir=${0%/*}
+case $shim_dir in "$0") shim_dir= ;; esac
+
 launcher="$HOME/.local/bin/cc-smart-dev-kit"
 baked=
 if [ -f "$launcher" ]; then
@@ -55,13 +78,74 @@ if [ -f "$launcher" ]; then
     esac
   done <"$launcher"
 fi
-for bun in "$baked" "${BUN_INSTALL:+$BUN_INSTALL/bin/bun}" "$HOME/.bun/bin/bun"; do
-  if [ -n "$bun" ] && [ -x "$bun" ]; then exec "$bun" --no-env-file "$@"; fi
+
+bun=
+for candidate in "$baked" "${BUN_INSTALL:+$BUN_INSTALL/bin/bun}" "$HOME/.bun/bin/bun"; do
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    bun=$candidate
+    break
+  fi
 done
-if bun=$(command -v bun 2>/dev/null) && [ -n "$bun" ]; then exec "$bun" --no-env-file "$@"; fi
-if [ "$mode" = "--missing=ask" ]; then
-  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"cc-smart-dev-kit cannot run its guard: bun was not found. Install bun or run cc-smart-dev-kit setup."}}'
+if [ -z "$bun" ]; then
+  bun=$(command -v bun 2>/dev/null) || bun=
+fi
+if [ -z "$bun" ]; then
+  if [ "$mode" = "--missing=ask" ]; then
+    printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"cc-smart-dev-kit cannot run its guard: bun was not found. Install bun or run cc-smart-dev-kit setup."}}'
+    exit 0
+  fi
+  echo "cc-smart-dev-kit: bun not found (not in ~/.local/bin/cc-smart-dev-kit, \$BUN_INSTALL/bin, ~/.bun/bin or PATH), so the hook did not run. Install bun, then run: cc-smart-dev-kit setup" >&2
   exit 0
 fi
-echo "cc-smart-dev-kit: bun not found (not in ~/.local/bin/cc-smart-dev-kit, \$BUN_INSTALL/bin, ~/.bun/bin or PATH), so the hook did not run. Install bun, then run: cc-smart-dev-kit setup" >&2
-exit 0
+
+# True when $1 is a Bun version at or above $min_bun. A pre-release of the minimum itself
+# (`1.4.3-canary.1`) counts as older, like `bunTooOld` says: it may have been built before the
+# fix. A version that cannot be read counts as older too.
+bun_is_new_enough() {
+  case $1 in *.*.*) ;; *) return 1 ;; esac
+  v_major=${1%%.*}
+  v_rest=${1#*.}
+  v_minor=${v_rest%%.*}
+  v_rest=${v_rest#*.}
+  v_patch=${v_rest%%[!0-9]*}
+  case $v_major in "" | *[!0-9]*) return 1 ;; esac
+  case $v_minor in "" | *[!0-9]*) return 1 ;; esac
+  case $v_patch in "" | *[!0-9]*) return 1 ;; esac
+  [ "$v_major" -gt "$min_major" ] && return 0
+  [ "$v_major" -lt "$min_major" ] && return 1
+  [ "$v_minor" -gt "$min_minor" ] && return 0
+  [ "$v_minor" -lt "$min_minor" ] && return 1
+  case $1 in *-* | *+*) [ "$v_patch" -gt "$min_patch" ] && return 0; return 1 ;; esac
+  [ "$v_patch" -ge "$min_patch" ] && return 0
+  return 1
+}
+min_major=${min_bun%%.*}
+min_rest=${min_bun#*.}
+min_minor=${min_rest%%.*}
+min_patch=${min_rest#*.}
+
+# The bun setup baked is the one setup itself ran on, and setup refuses to run on a bun older
+# than the plugin needs — so it is not asked its version (no cost on a hook). Every other bun
+# is asked: `bun --version` (about 3 ms, measured) does not read the working folder's
+# bunfig.toml, so the project cannot influence the answer. A baked bun whose file changed
+# after setup wrote the launcher (a `bun upgrade`) is asked too; one the person replaced at
+# the same path by an older Bun is the one case this cannot see.
+version=
+if [ "$bun" != "$baked" ] || [ "$bun" -nt "$launcher" ]; then
+  version=$("$bun" --version 2>/dev/null)
+  bun_is_new_enough "$version" || {
+    detail="needs Bun >= $min_bun"
+    [ -n "$version" ] && detail="needs Bun >= $min_bun; this is $version"
+    if [ "$mode" = "--missing=ask" ]; then
+      printf '%s\n' "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"cc-smart-dev-kit cannot run its guard: this Bun is older than the plugin needs ($detail). Run: bun upgrade\"}}"
+      exit 0
+    fi
+    echo "cc-smart-dev-kit: this Bun is older than the plugin needs ($detail), so the hook did not run. Run: bun upgrade" >&2
+    exit 0
+  }
+fi
+
+if [ -n "$shim_dir" ]; then
+  set -- "--config=$shim_dir/../bunfig.toml" "$@"
+fi
+exec "$bun" --no-env-file "$@"

@@ -20,6 +20,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
+import { bunConfigArg } from "../setup/bun-config";
 
 type ToolResult = { images: number; isError: boolean; text: string };
 
@@ -178,8 +179,22 @@ const tabCount = (text: string): number => (text.match(/^- \d+:/gm) ?? []).lengt
 const ref = (snapshot: string, name: string): string =>
   new RegExp(`"${name}" \\[ref=([a-z0-9]+)\\]`).exec(snapshot)?.[1] ?? "";
 
+/**
+ * The command that runs the CLI again for each of the check's two sessions: this bun, the two
+ * flags every run of the plugin's own bundles gets (`src/setup/bun-config.ts`), and this
+ * bundle. Both sessions run in the folder the person is in: without the flags bun would read
+ * that folder's `.env` files and its `bunfig.toml` (a project's `preload`).
+ */
+export function browserCheckCommand(
+  bunPath: string,
+  entryPath: string,
+  pluginDir: string,
+): string[] {
+  return [bunPath, "--no-env-file", bunConfigArg(pluginDir), entryPath];
+}
+
 export interface BrowserCheckDeps {
-  /** The command that runs the CLI: `[bunPath, entryPath]`. */
+  /** The command that runs the CLI: `browserCheckCommand`. */
   cli: string[];
   /** Where a note goes (this command's stderr). */
   log: (line: string) => void;

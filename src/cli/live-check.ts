@@ -39,6 +39,7 @@ import { dirname, join } from "node:path";
 import { VERSION } from "../build-info";
 import { projectHookSettings } from "../hooks/project-wiring";
 import { HOOK_LOG_ENV } from "../hooks/run";
+import { bunConfigArg } from "../setup/bun-config";
 import { shellQuote } from "../setup/launcher";
 import { atomicWrite } from "../setup/write";
 import type { CliPaths } from "./paths";
@@ -88,11 +89,12 @@ export interface LiveDeps {
  * `dist/cli.js` run with `bunPath` (the bun running this CLI). The launcher is not used: it
  * always runs the *installed* version, which is not what `doctor --live` checks.
  *
- * `--no-env-file`, like every other run of this plugin's own bundles: a hook sees the
- * environment it was given, never the working folder's `.env` files.
+ * `--no-env-file` and `--config`, like every other run of this plugin's own bundles: a hook
+ * sees the environment it was given, never the working folder's `.env` files, and the working
+ * folder's `bunfig.toml` (a project's `preload`) never runs inside it.
  */
 export function liveHookCommand(pluginDir: string, bunPath: string): (name: string) => string {
-  const command = `${shellQuote(bunPath)} --no-env-file ${shellQuote(join(pluginDir, "dist", "cli.js"))}`;
+  const command = `${shellQuote(bunPath)} --no-env-file ${shellQuote(bunConfigArg(pluginDir))} ${shellQuote(join(pluginDir, "dist", "cli.js"))}`;
   return (name) => `${command} hook ${name}`;
 }
 

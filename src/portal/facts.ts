@@ -62,8 +62,15 @@ export function configuredPort(config: GatewayConfig | null): number {
   return config?.port ?? DEFAULT_PORT;
 }
 
-/** The config, or why it cannot be used. Never throws: a page must still render. */
-export function readConfig(ctx: PortalContext): { config: GatewayConfig } | { error: string } {
+/** What `readConfig` answered: the config, or why it cannot be used. */
+export type ConfigRead = { config: GatewayConfig } | { error: string };
+
+/**
+ * The config, or why it cannot be used. Never throws: a page must still render. Read once per
+ * request (`server.ts`): the shell's facts and the page both take that one answer, so a
+ * config that changes in between cannot draw a page saying two things at once.
+ */
+export function readConfig(ctx: PortalContext): ConfigRead {
   try {
     return { config: loadConfigFile(ctx.paths.gatewayConfigFile) };
   } catch (error) {
@@ -71,19 +78,29 @@ export function readConfig(ctx: PortalContext): { config: GatewayConfig } | { er
   }
 }
 
-/** True when `gateway.json` is there at all: without one the gateway was never set up. */
+/**
+ * True when `gateway.json` is there at all: only `ENOENT` means the gateway was never set
+ * up. A file that is there but cannot be read (mode 000, a folder) is a problem to fix, and
+ * its own error is shown instead of a page that says nothing is set up.
+ */
 export function configExists(ctx: PortalContext): boolean {
   try {
     readFileSync(ctx.paths.gatewayConfigFile);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
   }
 }
 
-/** The shell's facts: the version, this portal's port, and whether the router answers. */
-export async function shellFacts(ctx: PortalContext, portalPort: number): Promise<PortalFacts> {
-  const found = readConfig(ctx);
+/**
+ * The shell's facts: the version, this portal's port, and whether the router answers. `found`
+ * is the request's one config read (`readConfig`); the page is drawn from the same answer.
+ */
+export async function shellFacts(
+  ctx: PortalContext,
+  portalPort: number,
+  found: ConfigRead,
+): Promise<PortalFacts> {
   // No config to read: no port names a router, so no page claims one (and nothing is probed).
   if ("error" in found) return { portalPort, router: null, version: VERSION };
   const port = found.config.port;

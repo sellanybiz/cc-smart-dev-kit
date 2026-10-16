@@ -18,9 +18,13 @@ Claude Code copies only `plugin/` into
   carries all its code (`zod` included), or a small shell script.
 - **`plugin/` holds:** `.claude-plugin/plugin.json` (the manifest), `dist/` (bundles),
   `bin/` (on the Bash tool's PATH in Claude Code), `hooks/hooks.json`, `instructions/`
-  (plain Markdown that `setup` copies), `skills/`, `agents/`, `output-styles/`, and
+  (plain Markdown that `setup` copies), `skills/`, `agents/`, `output-styles/`,
   `serena/` (the one file `setup` copies to the data folder and starts Serena with,
-  `contexts/worktree.yml`: a registration cannot name a path that an update deletes).
+  `contexts/worktree.yml`: a registration cannot name a path that an update deletes), and
+  `bunfig.toml` (**empty, and it stays empty**: every bun the plugin starts in a person's
+  folder gets `--config=` pointing at it, so a project's own `bunfig.toml` — its `preload` —
+  never runs inside the plugin; `docs/design.md` § The two flags on every bun run inside a
+  person's folder).
 - **The router bundle never changes by accident.** Code that `src/entries/router.ts`
   imports (`src/gateway/`, its paths in `src/gateway/paths.ts`) changes
   `plugin/dist/router.js`, which makes every machine restart its router. The router reads
