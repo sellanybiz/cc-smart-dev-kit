@@ -64,6 +64,21 @@ describe("setup on a terminal: the auto-mode entries", () => {
     expect(printed.join("\n")).not.toContain("Done.");
   });
 
+  test("--dry-run on a terminal: the entries as changes, the no-terminal note left out, nothing asked or written", async () => {
+    const repo = project({ autoMode: [RULE] });
+    const w = world({ git: true });
+    const before = readFileSync(w.paths.settingsFile, "utf8");
+    expect(await w.setup({ project: repo, dryRun: true })).toBe(0);
+    expect(printed).toContain(
+      `~ ~/.claude/settings.json: autoMode.environment: added ${JSON.stringify(RULE)}`,
+    );
+    // A terminal is there: the note a run without one prints stays out.
+    expect(printed.join("\n")).not.toContain("left out");
+    expect(w.questions).toEqual([]);
+    expect(readFileSync(w.paths.settingsFile, "utf8")).toBe(before);
+    expect(printed).toContain("Dry run: nothing was written or run.");
+  });
+
   test("the person says no: left out, and the rest of setup is done", async () => {
     const repo = project({ autoMode: [RULE] });
     const w = world({ git: true, answer: false });

@@ -37,8 +37,8 @@ private). On an older Bun only `doctor`, `restore`, `version` and `--help` run.
    installs the companions.
 
 3. Run the first setup. The `cc-smart-dev-kit` command does not exist yet, so run it from the
-   plugin folder. Put the installed version in place of `<version>` (the install prints
-   it; `ls ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/` shows it too):
+   plugin folder. Put the installed version in place of `<version>`: the install prints no
+   version, so read it with `ls ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/`:
 
    ```sh
    bun ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>/dist/cli.js setup
@@ -70,7 +70,7 @@ After that, use `cc-smart-dev-kit setup` to set up again (for example after an u
 | `cc-smart-dev-kit doctor [--live]` | Checks the install, the cc-smart-dev-kit files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below). Prints ✓ or ✗ for each check, `·` for information and `!` for a warning (neither is a failure), and exits with 1 when a check fails. `--live` also proves the hooks and the worktree engine on the Claude Code installed here (below); it never runs without the flag. |
 | `cc-smart-dev-kit hook <worktree-create\|worktree-remove\|subagent-stop>` | The worktree engine, for a project that wires it in its own `.claude/settings.json` (§ Worktrees). It reads the hook's input on stdin and answers as Claude Code expects. With no name, it prints the lines to paste. |
 | `cc-smart-dev-kit session-name <session id> <name>` | Names a Claude session after its task. A session runs it itself when the project turns on `sessionNames` (below). |
-| `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. A restore with nothing left changes nothing. |
+| `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing. |
 | `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version. `--check` only says whether a newer version exists (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
 | `cc-smart-dev-kit gateway <command>` | The optional AI gateway (below). |
 | `cc-smart-dev-kit search "<query>" [--max <n>] [--json]`<br>`cc-smart-dev-kit search --fetch <url> [--json]` | Searches the web through the gateway's OmniRoute backend (Ollama's web search among its providers), or reads one page's text with `--fetch`. Prints each result's title, its URL and a short snippet. `--max` asks for 1 to 50 results. The query, or the URL, goes to that search or fetch provider on the internet; `--fetch` refuses a local or private address. Needs the gateway set up (below). |
@@ -149,10 +149,13 @@ it works when Claude Code was started with a PATH that has no bun.
   update skips them too. A value that is empty, `0`, `false`, `no` or `off` counts as not
   set;
 - each companion plugin (`claude-mem@thedotmack`, `frontend-design@claude-plugins-official`)
-  is installed and on, and inside its version range. cc-smart-dev-kit does not load without them.
-  ✗ says what to run: `cc-smart-dev-kit setup` (its marketplace or the plugin is missing),
-  `claude plugin enable <id>` (you turned it off), or `claude plugin update <id>` (too
-  old, or a version that is a commit id, which cannot be checked);
+  is installed and on, and inside the version range this plugin's manifest pins for it.
+  Only claude-mem has a range. cc-smart-dev-kit does not load without them. ✗ says what to
+  run: `cc-smart-dev-kit setup` (its marketplace or the plugin is missing), `claude plugin
+  enable <id>` (you turned it off), or `claude plugin update <id>` (too old). A recorded
+  version that is a commit id, not a version number, is a ✗ for a pinned companion alone,
+  and only because it cannot be checked against its range; frontend-design, unpinned,
+  shows ✓ with a commit id;
 - claude-mem is 13.35.0 or newer. Older is a warning (`!`), not a failure: before
   13.35.0, a fresh install's vector search may not start (pydantic 2.14 broke
   chroma-mcp; 13.35.0 pins pydantic below it);
@@ -162,7 +165,9 @@ it works when Claude Code was started with a PATH that has no bun.
 - tmux, when it is on your PATH: whether `~/.tmux.conf` has the line that lets an alert out
   of a pane (§ Notifications), and, inside a tmux session, whether the running server passes
   alerts through. Both are information (`·`) with the fix (`cc-smart-dev-kit setup`, or
-  `tmux set -g allow-passthrough all`): tmux is optional;
+  `tmux set -g allow-passthrough all`): tmux is optional. When neither is wrong — the line
+  is in the file, and you are outside tmux, or inside one whose passthrough is `all` —
+  doctor prints no tmux line at all;
 - no other plugin named `cc-smart-dev-kit` is enabled, and the plugin's old id `cc@cc-agentic`
   (its name before version 0.2.0) is not enabled either: two copies of the same hooks
   would run. When the old setup ran on this machine (its folder `~/.claude/cc-agentic`
@@ -244,8 +249,8 @@ that version's names: its folders (`~/.config/anymodel`, `~/.claude/anymodel`,
 Install this version first. The `cc-smart-dev-kit` command does not exist on your machine
 yet — the old launcher `~/.local/bin/anymodel` is the only one there — so run `migrate`
 from the plugin folder, exactly as step 3 of [Install](#install) runs `setup`. Put the
-version `claude plugin install` printed in place of `<version>`
-(`ls ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/` shows it too):
+installed version in place of `<version>`: the install prints no version, so read it with
+`ls ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/`:
 
 ```sh
 claude plugin marketplace add <owner>/cc-smart-dev-kit
@@ -264,12 +269,20 @@ sessions afterwards.
 `restore` still undoes what the old setup added), gives the settings keys the old setup
 owned this version's value (the slots' names, and the words of their descriptions),
 rewrites the instructions block in `~/.claude/CLAUDE.md` to the new markers and import
-path (and refreshes the copy), renames the gateway config's slots — and adds an `alias`
-for each old slot name, so Claude sessions that are still running keep working until
-they restart; an alias of a project's own that pointed at an old slot is pointed at the
-renamed one — replaces the `anymodel-router` units with this version's, and then tells
-you to uninstall the old plugin (it does it after a yes on a terminal, and only when it
-is still installed). Each changed file gets a backup first, and every step is printed.
+path and refreshes the copy (0.2.x shipped no instructions, so a 0.2.x machine has no
+block: there the move installs none), renames the gateway config's slots — and adds an
+`alias` for each old slot name, so Claude sessions that are still running keep working
+until they restart; an alias of a project's own that pointed at an old slot is pointed at
+the renamed one — replaces the `anymodel-router` units with this version's, and then
+tells you to uninstall the old plugin (it does it after a yes on a terminal, and only
+when it is still installed). Each changed file gets a backup first, and every step is
+printed.
+
+**Then run `cc-smart-dev-kit setup`.** One `migrate` run does not install the
+instructions: it only rewrites the block a machine already has. A 0.2.x machine has none,
+so it ends the move without them, and without the copy `setup` would have made. `setup`
+installs both, and refreshes the launcher and the companions with them. `migrate` says
+this in its closing lines when it applies to your machine.
 
 The order matters, and it is fixed: it reads and checks everything (the plugin install,
 the folders, the gateway config through its schema, the settings, the records), then
@@ -612,7 +625,8 @@ in its `cc-smart-dev-kit.json` (`autoMode`), and `cc-smart-dev-kit setup`, run i
 
 - **Shown, then asked on a terminal**, because these are trust rules: a person at a
   terminal always decides. `--yes` skips only the question. With no terminal they are
-  left out, also with `--yes`, and setup says so.
+  left out, also with `--yes`, and setup says so — a `--dry-run` without a terminal
+  prints the same note, beside the entries it shows.
 - **In a worktree**, the question names the file the rules come from: the worktree's own
   `cc-smart-dev-kit.json`, or else the main checkout's. When the worktree's own file says
   something else than the main checkout's, the question says so.

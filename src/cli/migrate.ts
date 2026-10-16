@@ -68,6 +68,7 @@ import {
 import { gatewayEnv } from "../gateway/settings";
 import { findUserInstall, type PluginInstall } from "../setup/installed-plugins";
 import {
+  copyInstalled,
   type InstructionsLine,
   type InstructionsPaths,
   installInstructions,
@@ -1421,5 +1422,24 @@ export async function runMigrate(paths: CliPaths, options: MigrateOptions): Prom
   console.log(
     `\nDone. Restart every running Claude session: until then they still hold the old names (the router's aliases keep them working).`,
   );
+  // 0.2.x shipped no instructions, so a machine that never had the block ends the move with
+  // none: only `setup` installs them (`migrateInstructions` rewrites an old block, and has
+  // nothing to rewrite without one).
+  if (instructionsToSetup(paths, options)) {
+    console.log(
+      `\nThis machine had no instructions block, so this move installed none. Run ${COMMAND} setup: it installs them, and refreshes the launcher and the companions.`,
+    );
+  }
   return 0;
+}
+
+/**
+ * True when the machine still has no instructions after the move: no copy of them tracked
+ * in the state folder, and no `--no-instructions` choice stored (that choice carries over,
+ * and setup honours it). The block in `~/.claude/CLAUDE.md` is what imports the copy, and
+ * it comes only with a copy.
+ */
+function instructionsToSetup(paths: CliPaths, options: MigrateOptions): boolean {
+  if (instructionsOptedOut(paths.stateDir)) return false;
+  return !copyInstalled(instructionsPaths(paths, options.instructionsSource));
 }

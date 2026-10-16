@@ -300,8 +300,10 @@ anymodel). The command has a fixed order, and the order is the point of it:
    changed; the settings keys the old setup owned (and that still hold its value, the
    remembered-value rule — a key the person changed *or removed* since is theirs); the
    instructions block's markers and import path, then the copy through
-   `installInstructions`, the one path `setup` uses; the gateway config's slots, with an
-   alias for each old name so a session that still holds one keeps working, and an alias
+   `installInstructions`, the one path `setup` uses — **when a block is there**: 0.2.x
+   shipped no instructions, so a 0.2.x machine has none, and the move installs none and
+   says so in its closing lines (`instructionsToSetup`); the gateway config's slots, with
+   an alias for each old name so a session that still holds one keeps working, and an alias
    of a project's own that pointed at an old slot pointed at the renamed one (an alias to
    an alias would make the whole config invalid); the limit state's fallback keys; and the
    launcher's text for this version.
@@ -876,7 +878,10 @@ plugin only copies it.
 - **Trust rules are asked, always of a person at a terminal.** A change is shown as `+` /
   `-` lines, then asked; `--yes` skips the question, not the lines, and only on a
   terminal. With no terminal the entries are left out, whatever the flags, and setup
-  says so. A change of the same entries again is no change: nothing is shown or asked.
+  says so — a `--dry-run` with no terminal prints that same note, beside the entries it
+  would otherwise write, so it never promises what such a run will not do
+  (`autoModeAsking` in `src/cli/setup.ts`, the one place the terminal is decided). A
+  change of the same entries again is no change: nothing is shown or asked.
 - **The question names the file.** In a worktree with its own `cc-smart-dev-kit.json`, that file
   is where the entries come from; when it says something else than the main checkout's,
   the question says so plainly.

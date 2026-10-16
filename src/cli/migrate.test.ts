@@ -624,9 +624,14 @@ describe("migrate — the real 0.2.1 machine", () => {
     );
     expect(settings.model).toBe("opus");
 
-    // No instructions block was there, and none was added: that is `setup`'s job.
+    // No instructions block was there, and none was added: that is `setup`'s job, and the
+    // closing lines say so (0.2.x shipped no instructions, so `migrateInstructions` had
+    // nothing to rewrite).
     expect(readFileSync(m.claudeMd, "utf8")).toBe(
       "# My notes\n\nText of my own, and no block at all.\n",
+    );
+    expect(printed.join("\n")).toContain(
+      "\nThis machine had no instructions block, so this move installed none. Run cc-smart-dev-kit setup: it installs them, and refreshes the launcher and the companions.",
     );
 
     // The records and the backups name this version's files.
@@ -919,6 +924,8 @@ describe("migrate — the later 0.3.0 development build", () => {
     expect(claudeMd).toContain("@~/.claude/cc-smart-dev-kit/instructions/core.md");
     expect(claudeMd).toContain("Text of my own, after the block.");
     expect(claudeMd).not.toContain(OLD.name);
+    // The instructions are in place, so the closing line about running `setup` stays out.
+    expect(printed.join("\n")).not.toContain("no instructions block");
 
     // The gateway config: the slots renamed, an alias for each old name, the model slots
     // renamed, the proof left alone (the judge test has to run again), mode 600.

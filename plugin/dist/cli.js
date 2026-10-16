@@ -17503,7 +17503,16 @@ Dry run: nothing was written, run or stopped.`);
   rmSync8(progressFile(paths.stateDir), { force: true });
   console.log(`
 Done. Restart every running Claude session: until then they still hold the old names (the router's aliases keep them working).`);
+  if (instructionsToSetup(paths, options)) {
+    console.log(`
+This machine had no instructions block, so this move installed none. Run ${COMMAND} setup: it installs them, and refreshes the launcher and the companions.`);
+  }
   return 0;
+}
+function instructionsToSetup(paths, options) {
+  if (instructionsOptedOut(paths.stateDir))
+    return false;
+  return !copyInstalled(instructionsPaths(paths, options.instructionsSource));
 }
 
 // src/cli/restore.ts
@@ -17820,6 +17829,15 @@ function planAutoMode(paths, options, notes) {
   const diff = applyAutoMode(paths.settingsFile, paths.stateDir, wanted, true);
   return { wanted, added: diff.added, removed: diff.removed };
 }
+var AUTO_MODE_NO_TERMINAL_NOTE = "! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run cc-smart-dev-kit setup in a terminal.";
+function autoModeAsking(machine, planned) {
+  const confirm2 = machine.confirm;
+  if (planned.added.length === 0 && planned.removed.length === 0)
+    return { ask: false, note: null };
+  if (confirm2 === null)
+    return { ask: false, note: AUTO_MODE_NO_TERMINAL_NOTE };
+  return { ask: true, confirm: confirm2 };
+}
 function askAutoMode(paths, options, planned, notes) {
   const { wanted, added, removed } = planned;
   if (added.length === 0 && removed.length === 0)
@@ -17834,13 +17852,15 @@ function askAutoMode(paths, options, planned, notes) {
     console.log(`  + ${JSON.stringify(entry)}`);
   for (const entry of removed)
     console.log(`  - ${JSON.stringify(entry)}`);
-  if (options.machine.confirm === null) {
-    notes.push("! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run cc-smart-dev-kit setup in a terminal.");
+  const asking = autoModeAsking(options.machine, planned);
+  if (!asking.ask) {
+    if (asking.note !== null)
+      notes.push(asking.note);
     return null;
   }
   if (options.yes)
     return wanted;
-  if (!options.machine.confirm("Write these auto-mode entries?")) {
+  if (!asking.confirm("Write these auto-mode entries?")) {
     notes.push("  auto-mode entries left out (you said no)");
     return null;
   }
@@ -17968,6 +17988,11 @@ async function runSetup2(paths, options) {
       ...warp.removeShortcuts ? removeWarpDesktopEntries(paths, true) : [],
       ...planned.changes
     ];
+    if (autoMode !== null) {
+      const asking = autoModeAsking(machine, autoMode);
+      if (!asking.ask && asking.note !== null)
+        report.notes.push(asking.note);
+    }
     printReport({
       changes,
       info: [...warp.info, ...planned.info, ...report.info],

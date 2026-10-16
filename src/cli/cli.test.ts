@@ -1426,14 +1426,17 @@ describe("cc-smart-dev-kit setup: the auto-mode block", () => {
     }
   });
 
-  test("--dry-run: the entries as changes, nothing asked, nothing written", () => {
+  test("--dry-run, no terminal: the entries as changes, and the note that a run without one leaves them out", () => {
     const repo = project({ autoMode: [RULE] });
     const { settingsFile, stateDir, run } = setup({ fakeGit: false });
     const result = run(["setup", "--dry-run"], GIT_ENV, repo);
     expect(result.stdout).toContain(
       `~ ~/.claude/settings.json: autoMode.environment: added "$defaults"\n~ ~/.claude/settings.json: autoMode.environment: added ${JSON.stringify(RULE)}\n`,
     );
-    expect(result.stdout).not.toContain("left out");
+    // The same note the real run prints: these entries are left out without a terminal.
+    expect(result.stdout).toContain(
+      "! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run cc-smart-dev-kit setup in a terminal.\n",
+    );
     expect(readJson(settingsFile).autoMode).toBeUndefined();
     expect(existsSync(stateDir)).toBe(false);
   });

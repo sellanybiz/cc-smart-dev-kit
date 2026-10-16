@@ -289,6 +289,13 @@ function runOnTerminal(
   return true;
 }
 
+/** The auto-mode entries a run would write, and the change they make. */
+interface AutoModePlan {
+  wanted: AutoModeSource;
+  added: string[];
+  removed: string[];
+}
+
 /**
  * The auto-mode entries this project asks for, and the change they make. Null: no
  * project, or the project cannot be read: then `notes` says why, and setup goes on
@@ -298,7 +305,7 @@ function planAutoMode(
   paths: CliPaths,
   options: SetupOptions,
   notes: string[],
-): { wanted: AutoModeSource; added: string[]; removed: string[] } | null {
+): AutoModePlan | null {
   let wanted: AutoModeSource | null;
   try {
     wanted = autoModeSource(options.project, options.machine.which);
@@ -312,6 +319,33 @@ function planAutoMode(
 }
 
 /**
+ * The note a run prints when the auto-mode entries are left out for lack of a terminal.
+ * `--yes` never stands in for one: the entries are trust rules, and only a person at a
+ * terminal can answer for them.
+ */
+const AUTO_MODE_NO_TERMINAL_NOTE =
+  "! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run cc-smart-dev-kit setup in a terminal.";
+
+/**
+ * What this run does about the auto-mode question. The entries are trust rules, so only a
+ * person at a terminal answers for them (`--yes` skips the question, never the terminal).
+ * This is the one place that decides it, so `--dry-run` and a real run say the same thing:
+ *
+ * - `ask`: the terminal to ask on, when there is a change to make;
+ * - `note`: the note to print instead, when there is a change to make and no terminal;
+ * - `ask: false` with no note: nothing to change, so nothing to ask and nothing to say.
+ */
+function autoModeAsking(
+  machine: Machine,
+  planned: AutoModePlan,
+): { ask: false; note: string | null } | { ask: true; confirm: (question: string) => boolean } {
+  const confirm = machine.confirm;
+  if (planned.added.length === 0 && planned.removed.length === 0) return { ask: false, note: null };
+  if (confirm === null) return { ask: false, note: AUTO_MODE_NO_TERMINAL_NOTE };
+  return { ask: true, confirm };
+}
+
+/**
  * Asks about the auto-mode entries. They are trust rules, so a change is shown first,
  * then asked, always on a terminal: `--yes` skips only the question, and with no terminal
  * they are left out whatever the flags. Null: they are left out in this run.
@@ -319,7 +353,7 @@ function planAutoMode(
 function askAutoMode(
   paths: CliPaths,
   options: SetupOptions,
-  planned: { wanted: AutoModeSource; added: string[]; removed: string[] },
+  planned: AutoModePlan,
   notes: string[],
 ): AutoModeSource | null {
   const { wanted, added, removed } = planned;
@@ -336,14 +370,13 @@ function askAutoMode(
   }
   for (const entry of added) console.log(`  + ${JSON.stringify(entry)}`);
   for (const entry of removed) console.log(`  - ${JSON.stringify(entry)}`);
-  if (options.machine.confirm === null) {
-    notes.push(
-      "! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run cc-smart-dev-kit setup in a terminal.",
-    );
+  const asking = autoModeAsking(options.machine, planned);
+  if (!asking.ask) {
+    if (asking.note !== null) notes.push(asking.note);
     return null;
   }
   if (options.yes) return wanted;
-  if (!options.machine.confirm("Write these auto-mode entries?")) {
+  if (!asking.confirm("Write these auto-mode entries?")) {
     notes.push("  auto-mode entries left out (you said no)");
     return null;
   }
@@ -533,6 +566,12 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       ...(warp.removeShortcuts ? removeWarpDesktopEntries(paths, true) : []),
       ...planned.changes,
     ];
+    // The entries above are left out in a run with no terminal, whatever the flags: the
+    // dry run says so in the same words a real run prints (`autoModeAsking`).
+    if (autoMode !== null) {
+      const asking = autoModeAsking(machine, autoMode);
+      if (!asking.ask && asking.note !== null) report.notes.push(asking.note);
+    }
     printReport(
       {
         changes,
