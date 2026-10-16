@@ -11,7 +11,7 @@ import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 
 const ROOT = join(import.meta.dir, "..", "..");
-const SHIM = join(ROOT, "plugin", "bin", "cc-smart-dev-kit-bun");
+const SHIM = join(ROOT, "plugin", "bin", "cc-smart-dev-kit-bun.sh");
 
 /** A fake bun that says which one it is, and its arguments. */
 function fakeBun(path: string, label: string): string {
@@ -55,6 +55,30 @@ describe("cc-smart-dev-kit-bun finds bun without PATH", () => {
     expect(runShim(env)).toEqual({ exitCode: 0, stdout: "baked a b c\n", stderr: "" });
     rmSync(baked);
     expect(runShim(env).stdout).toBe("bun-install a b c\n");
+    rmSync(installed);
+    expect(runShim(env).stdout).toBe("home-bun a b c\n");
+    rmSync(homeBun);
+    expect(runShim(env).stdout).toBe("path-bun a b c\n");
+  });
+
+  test("a Windows layout: the same folders hold bun.exe, and PATH is asked for bun.exe too", () => {
+    // Bun's Windows installer writes bun.exe, never a file called bun, so those are the names
+    // the shim looks for in Git Bash. Here a file called bun.exe is only a name — this is the
+    // candidate list, not Windows itself; the shim running on real Windows is the smoke test
+    // of `scripts/windows-hook-smoke.sh`.
+    const home = tempDir("shim-home");
+    const emptyPath = tempDir("empty-path");
+    const pathDir = tempDir("path-bun");
+    const installed = fakeBun(join(tempDir("bun-install"), "bin", "bun.exe"), "bun-install");
+    const homeBun = fakeBun(join(home, ".bun", "bin", "bun.exe"), "home-bun");
+    fakeBun(join(pathDir, "bun.exe"), "path-bun");
+    const env = {
+      HOME: home,
+      BUN_INSTALL: join(installed, "..", ".."),
+      PATH: `${emptyPath}:${pathDir}`,
+    };
+
+    expect(runShim(env)).toEqual({ exitCode: 0, stdout: "bun-install a b c\n", stderr: "" });
     rmSync(installed);
     expect(runShim(env).stdout).toBe("home-bun a b c\n");
     rmSync(homeBun);

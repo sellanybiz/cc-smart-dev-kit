@@ -166,17 +166,21 @@ interface PluginHook {
   subjects: Array<string | null>;
 }
 
-/** The hooks the plugin's hooks.json wires: each bundle's name, event and matcher's names. */
+/**
+ * The hooks the plugin's hooks.json wires: each bundle's name, event and matcher's names.
+ *
+ * The handlers are shell form (`.claude/rules/hooks.md`), so the bundle is the one path under
+ * `dist/` in the handler's command: `"…/bin/cc-smart-dev-kit-bun.sh" --missing=<mode>
+ * "…/dist/<name>.js"`. A handler with no such path is not one of ours and is skipped.
+ */
 export function readPluginHooks(file: string): PluginHook[] {
   const parsed = JSON.parse(readFileSync(file, "utf8")) as {
-    hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ args?: string[] }> }>>;
+    hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>>;
   };
   return Object.entries(parsed.hooks ?? {}).flatMap(([event, groups]) =>
     groups.flatMap((group) =>
       (group.hooks ?? []).flatMap((handler) => {
-        const bundle = (handler.args ?? [])
-          .map((arg) => /\/dist\/([a-z-]+)\.js$/.exec(arg)?.[1])
-          .find((name) => name !== undefined);
+        const bundle = /\/dist\/([a-z-]+)\.js(?:["'\s]|$)/.exec(handler.command ?? "")?.[1];
         if (bundle === undefined) return [];
         const subjects =
           group.matcher === undefined || group.matcher === "" ? [null] : group.matcher.split("|");

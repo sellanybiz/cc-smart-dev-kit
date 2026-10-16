@@ -19185,7 +19185,7 @@ function engineLines(config, sources, projectDir, paths) {
 function readPluginHooks(file) {
   const parsed = JSON.parse(readFileSync39(file, "utf8"));
   return Object.entries(parsed.hooks ?? {}).flatMap(([event, groups]) => groups.flatMap((group) => (group.hooks ?? []).flatMap((handler) => {
-    const bundle = (handler.args ?? []).map((arg) => /\/dist\/([a-z-]+)\.js$/.exec(arg)?.[1]).find((name) => name !== undefined);
+    const bundle = /\/dist\/([a-z-]+)\.js(?:["'\s]|$)/.exec(handler.command ?? "")?.[1];
     if (bundle === undefined)
       return [];
     const subjects = group.matcher === undefined || group.matcher === "" ? [null] : group.matcher.split("|");

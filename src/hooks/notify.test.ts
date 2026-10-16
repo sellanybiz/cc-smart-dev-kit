@@ -33,17 +33,19 @@ import {
 const ENTRY = join(import.meta.dir, "..", "entries", "notify.ts");
 const ROOT = join(import.meta.dir, "..", "..");
 
-/** The hooks.json entry for the notify bundle: which events and matchers wire it. */
-function wiredNotify(): Array<{ event: string; matcher: null | string; args: string[] }> {
+/** The hooks.json entry for the notify bundle: which events and matchers wire it, and the mode. */
+function wiredNotify(): Array<{ event: string; matcher: null | string; mode: string }> {
   const file = JSON.parse(readFileSync(join(ROOT, "plugin", "hooks", "hooks.json"), "utf8")) as {
-    hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ args: string[] }> }>>;
+    hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string }> }>>;
   };
-  const wired: Array<{ event: string; matcher: null | string; args: string[] }> = [];
+  const wired: Array<{ event: string; matcher: null | string; mode: string }> = [];
   for (const [event, groups] of Object.entries(file.hooks)) {
     for (const group of groups) {
       for (const handler of group.hooks) {
-        if (handler.args[1]?.endsWith("/dist/notify.js") === true) {
-          wired.push({ event, matcher: group.matcher ?? null, args: handler.args });
+        // The handlers are shell form: the bundle and the mode both sit in the command string.
+        const mode = /--missing=(ask|quiet)\b/.exec(handler.command)?.[1];
+        if (mode !== undefined && handler.command.includes("/dist/notify.js")) {
+          wired.push({ event, matcher: group.matcher ?? null, mode: `--missing=${mode}` });
         }
       }
     }
@@ -886,8 +888,9 @@ describe("hooks.json wires what this hook handles", () => {
         "UserPromptSubmit ",
       ].sort(),
     );
-    for (const { args } of wired) {
-      expect(args[0]).toBe("--missing=quiet");
+    for (const { mode } of wired) {
+      // The notifier is not a guard: with no bun it is quiet, one line on stderr.
+      expect(mode).toBe("--missing=quiet");
     }
   });
 });

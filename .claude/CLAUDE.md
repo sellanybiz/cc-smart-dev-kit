@@ -74,8 +74,8 @@ the first time you use it.
 | `src/jobs/` | The heavy-job queue: kinds, memory readings, the lease store, the queue, the launch, `job <command>`, the classifier. |
 | `src/shell/` | The shell lexer: reads a Bash line as the commands it runs (quotes, here-docs, `bash -c`). |
 | `src/testing/` | Test helpers: temp folders, a clean git environment, a fake machine for setup, the guard that fails any test reaching the live router's port 20100. |
-| `plugin/` | What users get: `dist/` (built, committed), `bin/` (`cc-smart-dev-kit`, and `cc-smart-dev-kit-bun`, which the hooks run through), `hooks/hooks.json`, `instructions/` (`setup` copies and imports them), `skills/`, `agents/`, `output-styles/`, the manifest. |
-| `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check), `check-duplicates.ts` (one home per rule in `plugin/`) and `check-version-bump.ts` (CI: a `plugin/` change raises the version). |
+| `plugin/` | What users get: `dist/` (built, committed), `bin/` (`cc-smart-dev-kit`, and `cc-smart-dev-kit-bun.sh`, which the hooks run through), `hooks/hooks.json`, `instructions/` (`setup` copies and imports them), `skills/`, `agents/`, `output-styles/`, the manifest. |
+| `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check), `check-duplicates.ts` (one home per rule in `plugin/`), `check-version-bump.ts` (CI: a `plugin/` change raises the version) and `windows-hook-smoke.sh` (the Windows CI job's hook proof, `docs/windows-hooks.md`). |
 | `docs/` | How the plugin is designed, the phases ahead, and the Claude Code behaviour it relies on. |
 
 Tests sit beside the code as `*.test.ts`.
