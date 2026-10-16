@@ -858,4 +858,21 @@ describe("install.sh and install.ps1: the shared rules", () => {
       expect(/[✓✗·…—]/.test(text)).toBe(false);
     }
   });
+
+  // Read as text on purpose: PowerShell cannot run on Linux, and this is a parse error the
+  // Windows job hit (`"... $Repo: ..."` reads as a drive-qualified variable). A variable
+  // followed by `:` must be written `${Name}:`, unless the colon is a scope (`$env:`, …).
+  test("no PowerShell variable runs into a colon (`$Repo:` is a parse error; braces fix it)", () => {
+    const scopes = /^(env|script|global|local|private|using|function|variable)$/i;
+    for (const file of [INSTALL_PS1, SMOKE_PS1]) {
+      const bad = readFileSync(file, "utf8")
+        .split("\n")
+        .flatMap((line, index) =>
+          [...line.matchAll(/(?<!\$\{)\$([A-Za-z_][A-Za-z0-9_]*):(?!:)/g)]
+            .filter((match) => !scopes.test(match[1] ?? ""))
+            .map((match) => `${file.split("/").pop()}:${index + 1}: ${match[0]}`),
+        );
+      expect(bad).toEqual([]);
+    }
+  });
 });

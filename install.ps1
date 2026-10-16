@@ -423,7 +423,7 @@ if (Test-GitCanRead) {
 } elseif ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
   Stop-Failed "git is not on PATH, and a private repository needs it (Git for Windows brings it)" @("install Git for Windows: https://git-scm.com/download/win")
 } else {
-  Stop-Failed "git cannot read $Repo: a private repository needs your git credentials" @("gh auth login", "gh auth setup-git")
+  Stop-Failed "git cannot read ${Repo}: a private repository needs your git credentials" @("gh auth login", "gh auth setup-git")
 }
 
 # --- 3. Bun ----------------------------------------------------------------------------
@@ -462,11 +462,11 @@ if ([string]::IsNullOrEmpty($Bun)) {
   }
 } elseif (-not (Test-VersionAtLeast $BunVersion $MinBun)) {
   if ($DryRun) {
-    Write-Skip "3/8 Bun $BunVersion is older than $MinBun: the plan asks to upgrade it (bun upgrade)"
+    Write-Skip "3/8 Bun $BunVersion is older than ${MinBun}: the plan asks to upgrade it (bun upgrade)"
   } else {
     Read-Yes "3/8 Bun $BunVersion is older than $MinBun. Upgrade it now with bun upgrade?"
     if ($script:Answer -eq "no") {
-      Stop-Refused "Bun is still $BunVersion: cc-smart-dev-kit needs Bun $MinBun or newer" @("$Bun upgrade")
+      Stop-Refused "Bun is still ${BunVersion}: cc-smart-dev-kit needs Bun $MinBun or newer" @("$Bun upgrade")
     }
     Write-Output "  upgrading Bun..."
     & $Bun upgrade
