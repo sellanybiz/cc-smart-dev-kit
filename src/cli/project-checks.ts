@@ -1,6 +1,10 @@
 /**
  * `doctor`'s checks of the project in the folder it runs in:
  *
+ * - **The project still on the plugin's old `anymodel` name.** `.claude/anymodel.json`, a
+ *   `.claude/anymodel/` folder and a settings hook that calls `~/.local/bin/anymodel` are
+ *   left there by 0.2.x: `migrate` moves a machine's own files, never a project's, so each of
+ *   them is a warning that names the new file, folder or command.
  * - **The worktree engine is wired as `cc-smart-dev-kit.json` says.** With `worktrees`, the project's
  *   settings must wire WorktreeCreate, WorktreeRemove and SubagentStop to
  *   `cc-smart-dev-kit hook <name>`; wired without `worktrees`, every worktree would fail. Next to the
@@ -19,8 +23,15 @@
  * Outside a git project it says nothing.
  */
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { COMMAND } from "../build-info/names";
 import { runsProjectHook } from "../hooks/project-wiring";
-import { projectSettingsFiles, type WiredHandler, wiredHandlers } from "../hooks/settings-hooks";
+import {
+  allWiredHandlers,
+  projectSettingsFiles,
+  type WiredHandler,
+  wiredHandlers,
+} from "../hooks/settings-hooks";
 import { MACHINE_WIDE_HOOKS, PROJECT_HOOKS } from "../hooks/specs";
 import { type CcSmartDevKitConfig, CcSmartDevKitConfigError } from "../project/config";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
@@ -50,6 +61,59 @@ function shown(file: string, projectDir: string, home: string): string {
 
 const ENGINE_HINT =
   "Run `cc-smart-dev-kit hook` for the lines to paste (also in the cc-smart-dev-kit README, § Worktrees)";
+
+/** The plugin's old name: 0.2.x wrote it into projects, and `migrate` moves no project's files. */
+const OLD_NAME = "anymodel";
+
+/** The old launcher in a settings hook: `"$HOME/.local/bin/anymodel" hook …`. */
+const OLD_LAUNCHER = new RegExp(`(^|[\\s"'/])${OLD_NAME}(-bun)?(["'\\s]|$)`);
+
+/** A command with the plugin's old launcher written the new way, as the fix for it. */
+export function renamedCommand(command: string): string {
+  return command.replace(
+    new RegExp(OLD_LAUNCHER.source, "g"),
+    (_all, before: string, bun: string | undefined, after: string) =>
+      `${before}${COMMAND}${bun ?? ""}${after}`,
+  );
+}
+
+/**
+ * A project that ran 0.2.x still carries the old `anymodel` names: its config file, the
+ * add-ons folder a skill reads, and a settings hook that calls the old launcher. `migrate`
+ * moves a machine's own files, never a project's, so `doctor` names each one and the new
+ * file, folder or command it becomes — a project with only the old config file looks like
+ * one that never opted in, and every plugin hook stays silent in it.
+ */
+function oldNameLines(projectDir: string, sources: string[], home: string): ProjectLine[] {
+  const lines: ProjectLine[] = [];
+  const config = join(projectDir, ".claude", `${OLD_NAME}.json`);
+  if (existsSync(config)) {
+    lines.push({
+      ok: true,
+      warn: true,
+      text: `project: ${shown(config, projectDir, home)} is the old name of .claude/cc-smart-dev-kit.json, which the plugin reads now: rename it (merge the two when both are there)`,
+    });
+  }
+  const addons = join(projectDir, ".claude", OLD_NAME);
+  if (existsSync(addons)) {
+    lines.push({
+      ok: true,
+      warn: true,
+      text: `project: ${shown(addons, projectDir, home)}/ is the old name of .claude/cc-smart-dev-kit/, where a skill reads the project's own add-ons: rename the folder`,
+    });
+  }
+  for (const file of sources) {
+    for (const handler of allWiredHandlers(file)) {
+      if (!OLD_LAUNCHER.test(handler.command)) continue;
+      lines.push({
+        ok: true,
+        warn: true,
+        text: `project: the hook ${handler.command} (${shown(handler.file, projectDir, home)}) still runs the plugin's old "${OLD_NAME}" launcher: change it to ${renamedCommand(handler.command)}`,
+      });
+    }
+  }
+  return lines;
+}
 
 /** The worktree engine's wiring against `worktrees` in cc-smart-dev-kit.json. */
 function engineLines(
@@ -227,7 +291,10 @@ export function projectChecks(
     if (!(error instanceof CcSmartDevKitConfigError)) throw error;
     return [{ ok: false, text: `project: ${error.message}` }];
   }
-  const lines = engineLines(config, sources, projectDir, paths);
+  const lines = [
+    ...oldNameLines(projectDir, sources, paths.home),
+    ...engineLines(config, sources, projectDir, paths),
+  ];
   // Without cc-smart-dev-kit.json every plugin hook is silent: nothing can answer twice.
   if (config !== null) {
     lines.push(...ownCopyLines(config, sources, pluginHooksFile, projectDir, paths.home));

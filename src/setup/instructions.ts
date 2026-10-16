@@ -77,8 +77,10 @@ export function instructionsPaths(paths: CliPaths, source: string): Instructions
   return {
     source,
     target,
-    // Not a field of cliPaths: only this file builds it, and the shared table holds the
-    // paths more than one command uses.
+    // Not a field of cliPaths: that table holds the paths more than one command uses, and
+    // the instructions step's own paths stay here. The callers that install or refresh the
+    // copy build them through this function: `setup`, `migrate`, the session-start refresh
+    // (`src/update/`), and `doctor` when it checks the copy.
     claudeMd: join(paths.claudeConfigDir, "CLAUDE.md"),
     stateDir: paths.stateDir,
     // `~/...` keeps a CLAUDE.md shared between machines (a dotfiles repo) right on each one.

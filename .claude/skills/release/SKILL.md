@@ -65,8 +65,16 @@ cc-smart-dev-kit doctor
 ```
 
 A machine still on 0.2.x (the version before the name change) takes a different path:
-add this marketplace, install this plugin, then run `cc-smart-dev-kit migrate`
-(`README.md` § Moving from anymodel), which moves everything the old version wrote.
+add this marketplace, install this plugin, then run the new plugin's `dist/cli.js` with bun
+- `cc-smart-dev-kit` does not exist there yet, the old launcher is the only one:
+
+```sh
+claude plugin marketplace add <owner>/cc-smart-dev-kit
+claude plugin install cc-smart-dev-kit@cc-smart-dev-kit
+bun ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>/dist/cli.js migrate
+```
+
+That moves everything the old version wrote (`README.md` § Moving from anymodel).
 
 Then restart Claude Code: an update makes a new version folder, and a running session
 keeps the old one. After the restart:

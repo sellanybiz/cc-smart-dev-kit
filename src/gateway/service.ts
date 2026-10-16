@@ -440,6 +440,51 @@ export type StopResult =
   /** Something that is not this router answers on the port: not waited for. */
   | { detail: string; kind: "other" };
 
+/** What `stopUnits` did, so its callers can say it and go on. */
+export interface UnitStop {
+  /** The units whose files are there: disabled, and told to stop (`--no-block`). */
+  stopped: string[];
+  /** The units whose files are not there: nothing of them to stop. */
+  missing: string[];
+  /** Calls systemctl refused, with what it said. `stopUnits` never throws on them. */
+  refused: { command: string; exitCode: number; output: string }[];
+}
+
+/**
+ * Disables and stops the units whose files are there, and reports — never throws — what
+ * systemctl refused.
+ *
+ * Why both parts matter: a machine set up by a version before the socket unit has no socket
+ * file, and `systemctl --user disable <name>.socket` then fails with "Unit … does not
+ * exist". A `restore` may stop on that (nothing is half done yet); a move to this version
+ * must not, because half a moved machine is worse than a unit left disabled — it says what
+ * systemctl answered and goes on.
+ *
+ * Two calls altogether (one `disable`, one `stop --no-block`), so nothing reopens a router
+ * between them; `--no-block` returns at once and the drain goes on in the background.
+ */
+export function stopUnits(
+  runner: Runner,
+  options: { dir: string; names: readonly string[] },
+): UnitStop {
+  const result: UnitStop = { missing: [], refused: [], stopped: [] };
+  const there = options.names.filter((name) => {
+    if (existsSync(join(options.dir, name))) return true;
+    result.missing.push(name);
+    return false;
+  });
+  if (there.length === 0) return result;
+  for (const args of [["disable"], ["stop", "--no-block"]]) {
+    const cmd = ["systemctl", "--user", ...args, ...there];
+    const ran = runner(cmd);
+    if (ran.exitCode !== 0) {
+      result.refused.push({ command: cmd.join(" "), exitCode: ran.exitCode, output: ran.output });
+    }
+  }
+  result.stopped = there;
+  return result;
+}
+
 /**
  * Disables the unit and its socket and stops both, for `restore`, while their files are
  * still there.
@@ -447,11 +492,13 @@ export type StopResult =
  * Not `disable --now`: that waits until the router has drained its answers in flight, up
  * to the unit's `TimeoutStopSec` (120 s), and the port is closed in the first second, so
  * every new request of every session fails for that whole time while restore looks
- * stuck. So: it asks the unit's state, then runs `disable` for both, then `stop
- * --no-block` for both in one call (systemd closes the socket and sends the router
- * SIGTERM, and returns; one call, so no connection reopens the router in between), then
- * asks the port (`probe`) while this router answers there, for up to 15 s. The drain
- * finishes in the background.
+ * stuck. So: it asks the unit's state, then runs `disable` and `stop --no-block` through
+ * `stopUnits` (systemd closes the socket and sends the router SIGTERM, and returns; one
+ * call, so no connection reopens the router in between), then asks the port (`probe`)
+ * while this router answers there, for up to 15 s. The drain finishes in the background.
+ *
+ * `names.dir` is where the unit files live: a unit whose file is not there (a socket a
+ * version older than the socket unit never wrote) is skipped instead of failing the stop.
  *
  * It waits only for the unit's own router: only when the unit was `active` or
  * `deactivating` before the stop, and only while the port answers as this router. A
@@ -466,11 +513,18 @@ export async function stopRouter(
   runner: Runner,
   port: null | number,
   probe: HealthProbe,
-  names: { socket: string; unit: string } = { socket: SOCKET_NAME, unit: UNIT_NAME },
+  names: { dir: string; socket: string; unit: string },
 ): Promise<StopResult> {
   const state = port === null ? null : unitState(runner, names.unit);
-  run(runner, ["systemctl", "--user", "disable", names.socket, names.unit]);
-  run(runner, ["systemctl", "--user", "stop", "--no-block", names.socket, names.unit]);
+  const stop = stopUnits(runner, { dir: names.dir, names: [names.socket, names.unit] });
+  // A unit whose file is not there is skipped above; a systemctl that refuses one stops a
+  // restore before anything is restored (a move to this version goes on instead).
+  const refused = stop.refused[0];
+  if (refused !== undefined) {
+    throw new Error(
+      `${refused.command} failed (exit ${refused.exitCode}):\n${refused.output.trim()}`,
+    );
+  }
   if (port === null || state === null) return { kind: "no-port" };
   if (!HOLDS_ITS_PORT.has(state)) return { kind: "not-running", state };
   const result = await waitWhileRouterAnswers(port, probe, STOP_WAIT_MS);

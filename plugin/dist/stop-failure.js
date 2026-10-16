@@ -6227,6 +6227,8 @@ function lastClaudeModel(transcriptPath) {
   if (lines === null)
     return null;
   for (const entry of entriesFromEnd(lines)) {
+    if (entry.isSidechain === true)
+      continue;
     if (entry.type !== "assistant" || !isJsonObject2(entry.message))
       continue;
     const model = entry.message.model;

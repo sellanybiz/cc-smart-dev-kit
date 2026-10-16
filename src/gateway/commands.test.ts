@@ -35,10 +35,12 @@ import {
   renderSocket,
   renderUnit,
   SOCKET_CHANGED_WARNING,
+  SOCKET_NAME,
   SOCKET_STOPPED_WARNING,
   STOP_WAIT_MS,
   socketPort,
   stopRouter,
+  UNIT_NAME,
   UP_TO_DATE,
 } from "./service";
 import {
@@ -1146,13 +1148,22 @@ describe("router service stop", () => {
    * go), then refuses; with `other`, another program answers there (a 404, not a health
    * answer). Every call goes into one `events` list, so the order is the assertion. The
    * clock moves only when the code sleeps. No network.
+   *
+   * The units' files live in a temp folder: `stopRouter` stops only the units whose files
+   * are there (`stopUnits`), so `files` leaves one or both out on purpose.
    */
   function stopMachine(options: {
     heldPolls: number;
     failOn?: string;
     other?: boolean;
     unit?: string;
+    files?: string[];
   }) {
+    const dir = tempDir("router-units");
+    for (const name of options.files ?? [UNIT_NAME, SOCKET_NAME]) {
+      writeFileSync(join(dir, name), "# a unit\n");
+    }
+    const names = { dir, socket: SOCKET_NAME, unit: UNIT_NAME };
     const events: string[] = [];
     const start = Date.UTC(2026, 9, 15, 10, 0, 0);
     const clock = { now: start };
@@ -1183,7 +1194,7 @@ describe("router service stop", () => {
         clock.now += ms;
       },
     };
-    return { clock, events, probe, runner, waited: () => clock.now - start };
+    return { clock, events, names, probe, runner, waited: () => clock.now - start };
   }
 
   const HEALTH = `probe http://127.0.0.1:${FAKE_PORT}/__cc-smart-dev-kit/health`;
@@ -1198,7 +1209,7 @@ describe("router service stop", () => {
   // first (IS_ACTIVE), so the port is waited for only while the unit itself runs.
   it("disables, stops without waiting for the drain, then asks the port until it is refused", async () => {
     const m = stopMachine({ heldPolls: 3 });
-    expect(await stopRouter(m.runner, FAKE_PORT, m.probe)).toEqual({ kind: "closed" });
+    expect(await stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).toEqual({ kind: "closed" });
     // Never `disable --now`: that waits up to TimeoutStopSec while the drain runs.
     expect(m.events).toEqual([IS_ACTIVE, DISABLE, STOP, HEALTH, HEALTH, HEALTH, HEALTH]);
     // Three held answers, a 200 ms rest after each, then the refusal.
@@ -1207,21 +1218,21 @@ describe("router service stop", () => {
 
   it("a port that is free at once: one probe, no rest", async () => {
     const m = stopMachine({ heldPolls: 0 });
-    expect(await stopRouter(m.runner, FAKE_PORT, m.probe)).toEqual({ kind: "closed" });
+    expect(await stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).toEqual({ kind: "closed" });
     expect(m.events).toEqual([IS_ACTIVE, DISABLE, STOP, HEALTH]);
     expect(m.waited()).toBe(0);
   });
 
   it("a unit that is still deactivating (an earlier stop) is waited for like a running one", async () => {
     const m = stopMachine({ heldPolls: 2, unit: "deactivating" });
-    expect(await stopRouter(m.runner, FAKE_PORT, m.probe)).toEqual({ kind: "closed" });
+    expect(await stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).toEqual({ kind: "closed" });
     expect(m.events).toEqual([IS_ACTIVE, DISABLE, STOP, HEALTH, HEALTH, HEALTH]);
     expect(m.waited()).toBe(400);
   });
 
   it("the port answers, but not as this router (a 404): no wait, the reason given back", async () => {
     const m = stopMachine({ heldPolls: Number.POSITIVE_INFINITY, other: true });
-    expect(await stopRouter(m.runner, FAKE_PORT, m.probe)).toEqual({
+    expect(await stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).toEqual({
       detail: "HTTP 404",
       kind: "other",
     });
@@ -1233,7 +1244,7 @@ describe("router service stop", () => {
     // A `gateway serve` started by hand answers the health page; the unit cannot bind.
     for (const unit of ["activating", "failed", "inactive"]) {
       const m = stopMachine({ heldPolls: Number.POSITIVE_INFINITY, unit });
-      expect(await stopRouter(m.runner, FAKE_PORT, m.probe)).toEqual({
+      expect(await stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).toEqual({
         kind: "not-running",
         state: unit,
       });
@@ -1245,7 +1256,7 @@ describe("router service stop", () => {
   it("a port still held after 15 s: a clear error, after the stop was sent", async () => {
     const m = stopMachine({ heldPolls: Number.POSITIVE_INFINITY });
     expect(STOP_WAIT_MS).toBe(15_000);
-    await expect(stopRouter(m.runner, FAKE_PORT, m.probe)).rejects.toThrow(
+    await expect(stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).rejects.toThrow(
       `cc-smart-dev-kit-router.service is disabled and was told to stop, but 127.0.0.1:${FAKE_PORT} still takes connections after 15 s. Nothing else was restored. See why: systemctl --user status cc-smart-dev-kit-router (and ss -ltnp for another program on the port). Then run cc-smart-dev-kit restore again.`,
     );
     expect(m.events.slice(0, 4)).toEqual([IS_ACTIVE, DISABLE, STOP, HEALTH]);
@@ -1256,16 +1267,40 @@ describe("router service stop", () => {
 
   it("an unknown port (null): the stop is sent, nothing is asked", async () => {
     const m = stopMachine({ heldPolls: 0 });
-    expect(await stopRouter(m.runner, null, m.probe)).toEqual({ kind: "no-port" });
+    expect(await stopRouter(m.runner, null, m.probe, m.names)).toEqual({ kind: "no-port" });
     expect(m.events).toEqual([DISABLE, STOP]);
   });
 
   it("a failing systemctl stops it before anything else", async () => {
     const m = stopMachine({ failOn: "disable", heldPolls: 0 });
-    await expect(stopRouter(m.runner, FAKE_PORT, m.probe)).rejects.toThrow(
+    await expect(stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).rejects.toThrow(
       "systemctl --user disable cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service failed (exit 1):\nFailed to connect to bus",
     );
-    expect(m.events).toEqual([IS_ACTIVE, DISABLE]);
+    expect(m.events).toEqual([IS_ACTIVE, DISABLE, STOP]);
+  });
+
+  it("a machine from before the socket unit: the service is stopped, and the missing socket never fails it", async () => {
+    // The move from 0.2.x: `anymodel-router.service` and no socket file at all. Stopping the
+    // socket unit too would fail with "Unit … does not exist" and stop the restore.
+    const m = stopMachine({ files: [UNIT_NAME], heldPolls: 0 });
+    expect(await stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).toEqual({ kind: "closed" });
+    expect(m.events).toEqual([
+      IS_ACTIVE,
+      "$ systemctl --user disable cc-smart-dev-kit-router.service",
+      "$ systemctl --user stop --no-block cc-smart-dev-kit-router.service",
+      HEALTH,
+    ]);
+  });
+
+  it("neither unit's file is there: nothing is sent to systemctl, and no port is waited for", async () => {
+    // An old setup whose unit files are gone: `is-active` says inactive (a unit that is not
+    // there is never "active"), so there is no router of the unit's to wait for.
+    const m = stopMachine({ files: [], heldPolls: 0, unit: "inactive" });
+    expect(await stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).toEqual({
+      kind: "not-running",
+      state: "inactive",
+    });
+    expect(m.events).toEqual([IS_ACTIVE]);
   });
 });
 

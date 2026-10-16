@@ -87,3 +87,10 @@ export function projectSettingsFiles(projectDir: string): string[] {
     join(projectDir, ".claude", "settings.local.json"),
   ];
 }
+
+/** Every handler a settings file wires, whatever its event: `doctor`'s old-name check reads this. */
+export function allWiredHandlers(file: string): WiredHandler[] {
+  const hooks = hooksOf(file);
+  if (hooks === null) return [];
+  return Object.keys(hooks).flatMap((event) => wiredHandlers(file, event, null));
+}
