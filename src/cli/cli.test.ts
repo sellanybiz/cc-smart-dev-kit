@@ -13,6 +13,7 @@ import {
 import { dirname, join } from "node:path";
 import { MARKETPLACE_SOURCE, VERSION } from "../build-info";
 import { type Machine, TEST_HOST_VAR } from "../machine/machine";
+import { MCP_VERSIONS } from "../mcp/versions";
 import { versionStampFile } from "../setup/instructions";
 import { installLauncher } from "../setup/launcher";
 import { listBackups } from "../setup/write";
@@ -155,11 +156,19 @@ function setup(options: SetupOptions = {}) {
     symlinkSync(realGit, join(fakeBin, "git"));
   }
   // A fake claude that logs each call (setup runs `claude plugin …`), and package tools
-  // that know no Warp: no test reaches a real one.
+  // that know no Warp: no test reaches a real one. `claude mcp …` is emulated for real —
+  // Claude Code writes the user-scope servers into `<config dir>/.claude.json` under
+  // `mcpServers` (seen live, 2.1.301) — so a second setup finds what the first registered.
   const claudeLog = join(home, "claude-calls.log");
   const fakes: Record<string, string> = { "dpkg-query": "exit 1", rpm: "exit 1", brew: "exit 1" };
   if (options.claude !== false) {
-    fakes.claude = `echo "$*" >> ${JSON.stringify(claudeLog)}\nexit 0`;
+    const mcpHelper = join(fakeBin, "fake-claude-mcp.js");
+    writeFileSync(mcpHelper, FAKE_CLAUDE_MCP_JS);
+    fakes.claude = [
+      `echo "$*" >> ${JSON.stringify(claudeLog)}`,
+      `[ "$1" = mcp ] && exec bun ${JSON.stringify(mcpHelper)} "$@"`,
+      "exit 0",
+    ].join("\n");
   }
   for (const [name, body] of Object.entries(fakes)) {
     writeFileSync(join(fakeBin, name), `#!/bin/sh\n${body}\n`);
@@ -217,6 +226,16 @@ function setup(options: SetupOptions = {}) {
   };
   const gitCalls = () => (existsSync(gitLog) ? readFileSync(gitLog, "utf8") : "");
   const claudeCalls = () => (existsSync(claudeLog) ? readFileSync(claudeLog, "utf8") : "");
+  /**
+   * The `claude plugin …` calls only: the MCP registrations (`claude mcp …`) are asserted
+   * where they belong (§ MCP servers), so a test about the companions or Warp does not have
+   * to carry them.
+   */
+  const pluginCalls = () =>
+    claudeCalls()
+      .split("\n")
+      .filter((line) => !line.startsWith("mcp ") && line !== "")
+      .join("\n");
   return {
     home,
     configDir,
@@ -229,10 +248,64 @@ function setup(options: SetupOptions = {}) {
     runAsync,
     gitCalls,
     claudeCalls,
+    pluginCalls,
   };
 }
 
 const readJson = (file: string) => JSON.parse(readFileSync(file, "utf8"));
+
+/**
+ * The fake `claude mcp` (run by the fake `claude` on PATH): it emulates Claude Code's own
+ * writes, so setup's registration, doctor's check and restore's removal are exercised for
+ * real — user-scope servers live in `<config dir>/.claude.json` under `mcpServers`.
+ */
+const FAKE_CLAUDE_MCP_JS = `
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const file = join(process.env.CLAUDE_CONFIG_DIR ?? join(process.env.HOME ?? "", ".claude"), ".claude.json");
+const read = () => (existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {});
+const argv = process.argv.slice(2);
+const verb = argv[1];
+const rest = argv.slice(2);
+if (verb === "add-json") {
+  const name = rest[rest.length - 2];
+  const config = JSON.parse(rest[rest.length - 1]);
+  const all = read();
+  if (all.mcpServers?.[name] !== undefined) {
+    console.error("MCP server " + name + " already exists in user config");
+    process.exit(1);
+  }
+  writeFileSync(file, JSON.stringify({ ...all, mcpServers: { ...all.mcpServers, [name]: config } }, null, 2));
+  console.log("Added stdio MCP server " + name + " to user config");
+  process.exit(0);
+}
+if (verb === "remove") {
+  const name = rest[0];
+  const all = read();
+  if (all.mcpServers?.[name] === undefined) {
+    console.error("No MCP server found with name: " + name);
+    process.exit(1);
+  }
+  delete all.mcpServers[name];
+  writeFileSync(file, JSON.stringify(all, null, 2));
+  console.log("Removed MCP server " + name);
+  process.exit(0);
+}
+if (verb === "get") {
+  const name = rest[0];
+  const config = read().mcpServers?.[name];
+  if (config === undefined) {
+    console.error("No MCP server found with name: " + name);
+    process.exit(1);
+  }
+  console.log(name + ":");
+  console.log("  Scope: User config (available in all your projects)");
+  console.log("  Status: ✔ Connected");
+  console.log("  Type: " + (config.type ?? "stdio"));
+  process.exit(0);
+}
+process.exit(0);
+`;
 
 /**
  * For setup or doctor run in this process: a Linux with no package manager cc-smart-dev-kit knows,
@@ -268,7 +341,10 @@ function setupOptions(
     machine: noHostMachine(home, confirm),
     instructions: null,
     instructionsSource: PLUGIN_INSTRUCTIONS,
+    serenaSource: PLUGIN_SERENA,
     statusline: false,
+    // No environment of its own: a test that wants a key sets one through `extra`.
+    env: {},
     ...extra,
   };
 }
@@ -280,6 +356,50 @@ const INSTRUCTIONS_CREATED = [
   "+ ~/.claude/CLAUDE.md: created, with the cc-smart-dev-kit block",
 ];
 
+/**
+ * The MCP servers setup registers, as it prints them: the three that need no key, then the
+ * context Serena is started with. Tavily is left out without a key (`TAVILY_SKIPPED`).
+ */
+const MCP_REGISTERED = [
+  "+ MCP server playwright registered for your user",
+  "+ MCP server serena registered for your user",
+  "+ MCP server sequential-thinking registered for your user",
+];
+const SERENA_CONTEXT =
+  "+ ~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml: Serena's context (project switching on)";
+const TAVILY_SKIPPED =
+  "! tavily-websearch: skipped — no TAVILY_API_KEY in the environment, and no key file: put the key there (chmod 600) or set the variable, then run setup again";
+
+/** The `claude mcp add-json` lines a dry run prints, written by hand from `home`. */
+function mcpDryRunLines(home: string): string[] {
+  const launcher = join(home, ".local", "bin", "cc-smart-dev-kit");
+  const context = join(
+    home,
+    ".local",
+    "share",
+    "cc-smart-dev-kit",
+    "serena",
+    "contexts",
+    "worktree.yml",
+  );
+  return [
+    `$ claude mcp add-json --scope user playwright {"command":"${launcher}","args":["browser","mcp"]}`,
+    `$ claude mcp add-json --scope user serena {"args":["--from","git+https://github.com/oraios/serena@${MCP_VERSIONS.serena}","serena","start-mcp-server","--context","${context}","--open-web-dashboard","False","--project-from-cwd"],"command":"uvx","timeout":300000}`,
+    `$ claude mcp add-json --scope user sequential-thinking {"args":["-y","@modelcontextprotocol/server-sequential-thinking@${MCP_VERSIONS.sequentialThinking}"],"command":"bunx"}`,
+  ];
+}
+
+/** doctor's information line for the Tavily server on a machine with no key. */
+const tavilyDoctorSkipped = (home: string): string =>
+  `· the Tavily MCP server is skipped: no TAVILY_API_KEY in the environment, and no key file: put the key there (chmod 600) or set the variable, then run setup again (key file: ${join(home, ".claude", "cc-smart-dev-kit", "tavily.key")})`;
+
+/** doctor's lines for the MCP servers, after a setup registered them. */
+const MCP_DOCTOR_OK = [
+  '✓ MCP server "playwright": Connected',
+  '✓ MCP server "serena": Connected',
+  '✓ MCP server "sequential-thinking": Connected',
+];
+
 /** The block setup writes into ~/.claude/CLAUDE.md. */
 const BLOCK = [
   "<!-- cc-smart-dev-kit:begin -->",
@@ -289,6 +409,9 @@ const BLOCK = [
 ].join("\n");
 
 const PLUGIN_INSTRUCTIONS = join(import.meta.dir, "..", "..", "plugin", "instructions");
+
+/** The plugin's real `serena` folder: setup installs its context as it does for a person. */
+const PLUGIN_SERENA = join(import.meta.dir, "..", "..", "plugin", "serena");
 
 /** What setup prints when it stores `--no-instructions`, and when `--instructions` clears it. */
 const OPT_OUT_STORED =
@@ -302,16 +425,19 @@ const INSTRUCTIONS_OK =
 
 describe("cc-smart-dev-kit setup", () => {
   test("installs the launcher and turns on auto-update, keeping the other settings", () => {
-    const { settingsFile, launcher, run, claudeCalls } = setup();
+    const { settingsFile, launcher, run, pluginCalls } = setup();
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
-    // The companions are there already: claude is not run.
-    expect(claudeCalls()).toBe("");
+    // The companions are there already: no `claude plugin …` step runs.
+    expect(pluginCalls()).toBe("");
     expect(result.stdout).toBe(
       [
+        ...MCP_REGISTERED,
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        SERENA_CONTEXT,
         ...INSTRUCTIONS_CREATED,
+        TAVILY_SKIPPED,
         "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
       ].join("\n"),
@@ -339,6 +465,8 @@ describe("cc-smart-dev-kit setup", () => {
     expect(listBackups(stateDir, settingsFile)).toHaveLength(1);
     expect(readdirSync(binDir)).toEqual(["cc-smart-dev-kit"]);
     expect(readdirSync(configDir).sort()).toEqual([
+      // Claude Code's own user-scope config: the fake `claude mcp add-json` writes it.
+      ".claude.json",
       "CLAUDE.md",
       "cc-smart-dev-kit",
       "plugins",
@@ -351,7 +479,7 @@ describe("cc-smart-dev-kit setup", () => {
     run(["setup"]);
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe("Nothing to change. Setup is up to date.\n");
+    expect(result.stdout).toBe(`Nothing to change. Setup is up to date.\n${TAVILY_SKIPPED}\n`);
     expect(listBackups(stateDir, settingsFile)).toHaveLength(1);
   });
 
@@ -362,9 +490,12 @@ describe("cc-smart-dev-kit setup", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
       [
+        ...mcpDryRunLines(home),
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        SERENA_CONTEXT,
         ...INSTRUCTIONS_CREATED,
+        TAVILY_SKIPPED,
         "Dry run: nothing was written or run.",
         "",
       ].join("\n"),
@@ -422,6 +553,7 @@ describe("cc-smart-dev-kit setup", () => {
       [
         "Nothing to change. Setup is up to date.",
         '  ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: already set by someone else; left alone',
+        TAVILY_SKIPPED,
         "",
       ].join("\n"),
     );
@@ -485,6 +617,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
     expect(result.stdout).toBe(
       [
         "~ ~/.claude/cc-smart-dev-kit/instructions/core.md: updated",
+        TAVILY_SKIPPED,
         "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
       ].join("\n"),
@@ -497,9 +630,12 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
       [
+        ...MCP_REGISTERED,
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        SERENA_CONTEXT,
         OPT_OUT_STORED,
+        TAVILY_SKIPPED,
         "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
       ].join("\n"),
@@ -520,7 +656,9 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
       "- ~/.claude/cc-smart-dev-kit/instructions/core.md: removed",
       "- ~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md: removed",
     ];
-    expect(dry.stdout).toBe([...expected, "Dry run: nothing was written or run.", ""].join("\n"));
+    expect(dry.stdout).toBe(
+      [...expected, TAVILY_SKIPPED, "Dry run: nothing was written or run.", ""].join("\n"),
+    );
     expect(readFileSync(claudeMd, "utf8")).toContain(BLOCK);
 
     const result = run(["setup", "--no-instructions"]);
@@ -528,6 +666,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
     expect(result.stdout).toBe(
       [
         ...expected,
+        TAVILY_SKIPPED,
         "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
       ].join("\n"),
@@ -535,7 +674,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
     expect(readFileSync(claudeMd, "utf8")).toBe("# My notes\n");
     expect(existsSync(join(stateDir, "instructions"))).toBe(false);
     expect(run(["setup", "--no-instructions"]).stdout).toBe(
-      "Nothing to change. Setup is up to date.\n",
+      `Nothing to change. Setup is up to date.\n${TAVILY_SKIPPED}\n`,
     );
   });
 
@@ -557,7 +696,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
     run(["setup", "--no-instructions"]);
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe("Nothing to change. Setup is up to date.\n");
+    expect(result.stdout).toBe(`Nothing to change. Setup is up to date.\n${TAVILY_SKIPPED}\n`);
     expect(existsSync(join(configDir, "CLAUDE.md"))).toBe(false);
     expect(existsSync(join(stateDir, "instructions"))).toBe(false);
   });
@@ -567,9 +706,13 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
     run(["setup", "--no-instructions"]);
     const dry = run(["setup", "--instructions", "--dry-run"]);
     expect(dry.stdout).toBe(
-      [OPT_OUT_CLEARED, ...INSTRUCTIONS_CREATED, "Dry run: nothing was written or run.", ""].join(
-        "\n",
-      ),
+      [
+        OPT_OUT_CLEARED,
+        ...INSTRUCTIONS_CREATED,
+        TAVILY_SKIPPED,
+        "Dry run: nothing was written or run.",
+        "",
+      ].join("\n"),
     );
     expect(existsSync(join(stateDir, "no-instructions"))).toBe(true);
     const result = run(["setup", "--instructions"]);
@@ -577,11 +720,14 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
       [
         OPT_OUT_CLEARED,
         ...INSTRUCTIONS_CREATED,
+        TAVILY_SKIPPED,
         "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
       ].join("\n"),
     );
-    expect(run(["setup"]).stdout).toBe("Nothing to change. Setup is up to date.\n");
+    expect(run(["setup"]).stdout).toBe(
+      `Nothing to change. Setup is up to date.\n${TAVILY_SKIPPED}\n`,
+    );
   });
 
   test("--instructions and --no-instructions together are refused with exit 2", () => {
@@ -621,7 +767,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
 
 describe("cc-smart-dev-kit doctor", () => {
   test("all green after setup, through the launcher; git reads the marketplace over SSH", () => {
-    const { run, gitCalls } = setup();
+    const { home, run, gitCalls } = setup();
     run(["setup"]);
     // Setup asked git about the project it ran in (none: the fake knows no repo).
     const afterSetup = gitCalls().length;
@@ -642,6 +788,9 @@ describe("cc-smart-dev-kit doctor", () => {
         "✓ no other enabled plugin is named cc-smart-dev-kit",
         "✓ claude-mem@thedotmack 13.39.0 is installed and on",
         "✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
+        ...MCP_DOCTOR_OK,
+        // Tavily is optional: without a key its server is skipped, never a failure.
+        tavilyDoctorSkipped(home),
         // Warp is optional too.
         "· Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
         // The gateway is optional: never set up is information, not a failure.
@@ -792,7 +941,7 @@ describe("cc-smart-dev-kit doctor", () => {
   });
 
   test("the host is the test's: a macOS with the Warp app (given, not read) is information, and setup leaves Warp alone", () => {
-    const { home, run, claudeCalls } = setup();
+    const { home, run } = setup();
     const macApp = join(home, "Applications", "Warp.app");
     mkdirSync(macApp, { recursive: true });
     const host = {
@@ -805,7 +954,8 @@ describe("cc-smart-dev-kit doctor", () => {
     };
     const setupResult = run(["setup"], host);
     expect(setupResult.exitCode).toBe(0);
-    expect(claudeCalls()).toBe("");
+    // No `claude plugin …` step: the companions are there, and this world's claude is a fake.
+    expect(setupResult.stdout).toContain("+ MCP server playwright registered for your user\n");
     const result = run(["doctor"], host);
     expect(result.stdout).toContain(
       "· Warp is installed, without its Claude plugin (optional: cc-smart-dev-kit setup --warp)\n",
@@ -1184,32 +1334,36 @@ describe("ccSmartDevKitImports", () => {
 
 describe("cc-smart-dev-kit setup: the companion plugins", () => {
   test("their marketplaces are not added: setup adds each, which installs the plugin", () => {
-    const { run, claudeCalls, launcher } = setup({ companions: false });
+    const { run, pluginCalls, launcher } = setup({ companions: false });
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
       [
         "+ marketplace thedotmack (thedotmack/claude-mem), which installs claude-mem@thedotmack",
         "+ marketplace claude-plugins-official (anthropics/claude-plugins-official), which installs frontend-design@claude-plugins-official",
+        ...MCP_REGISTERED,
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        SERENA_CONTEXT,
         ...INSTRUCTIONS_CREATED,
+        TAVILY_SKIPPED,
         "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
       ].join("\n"),
     );
-    expect(claudeCalls()).toBe(
+    // No `claude plugin …` step beyond the two marketplaces: the MCP registrations are
+    // `claude mcp …`, asserted in § MCP servers.
+    expect(pluginCalls()).toBe(
       [
         "plugin marketplace add thedotmack/claude-mem",
         "plugin marketplace add anthropics/claude-plugins-official",
-        "",
       ].join("\n"),
     );
     expect(existsSync(launcher)).toBe(true);
   });
 
   test("a marketplace that is there, with its plugin gone: setup installs the plugin", () => {
-    const { configDir, run, claudeCalls } = setup();
+    const { configDir, run, pluginCalls } = setup();
     const installed = join(configDir, "plugins", "installed_plugins.json");
     const plugins = readJson(installed);
     delete plugins.plugins["claude-mem@thedotmack"];
@@ -1217,11 +1371,11 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("+ plugin claude-mem@thedotmack\n");
-    expect(claudeCalls()).toBe("plugin install claude-mem@thedotmack\n");
+    expect(pluginCalls()).toBe("plugin install claude-mem@thedotmack");
   });
 
   test("a companion the person turned off stays off; setup says how to turn it on", () => {
-    const { settingsFile, run, claudeCalls } = setup();
+    const { settingsFile, run, pluginCalls } = setup();
     const settings = readJson(settingsFile);
     settings.enabledPlugins["claude-mem@thedotmack"] = false;
     writeFileSync(settingsFile, JSON.stringify(settings));
@@ -1230,19 +1384,19 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
     expect(result.stdout).toContain(
       "! claude-mem@thedotmack is turned off, and cc-smart-dev-kit does not load without it. Run: claude plugin enable claude-mem@thedotmack\n",
     );
-    expect(claudeCalls()).toBe("");
+    expect(pluginCalls()).toBe("");
     expect(readJson(settingsFile).enabledPlugins["claude-mem@thedotmack"]).toBe(false);
   });
 
   test("--dry-run lists the claude steps and runs none", () => {
-    const { run, claudeCalls, stateDir } = setup({ companions: false });
+    const { run, pluginCalls, stateDir } = setup({ companions: false });
     const result = run(["setup", "--dry-run"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toStartWith(
       "+ marketplace thedotmack (thedotmack/claude-mem), which installs claude-mem@thedotmack\n",
     );
     expect(result.stdout).toEndWith("Dry run: nothing was written or run.\n");
-    expect(claudeCalls()).toBe("");
+    expect(pluginCalls()).toBe("");
     expect(existsSync(stateDir)).toBe(false);
   });
 
@@ -1269,10 +1423,15 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
       [
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        SERENA_CONTEXT,
         ...INSTRUCTIONS_CREATED,
         "! The claude command is not on PATH, so setup skipped these steps. Run them once it is:",
         "  $ claude plugin marketplace add thedotmack/claude-mem",
         "  $ claude plugin marketplace add anthropics/claude-plugins-official",
+        "! The claude command is not on PATH, so playwright was not registered. Run it once it is.",
+        "! The claude command is not on PATH, so serena was not registered. Run it once it is.",
+        "! The claude command is not on PATH, so sequential-thinking was not registered. Run it once it is.",
+        TAVILY_SKIPPED,
         "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
       ].join("\n"),
@@ -1451,7 +1610,7 @@ describe("cc-smart-dev-kit setup: the auto-mode block", () => {
       const { launcher, run } = setup({ fakeGit: false });
       const result = run(["setup"], GIT_ENV, repo);
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toStartWith("+ ~/.local/bin/cc-smart-dev-kit: launcher created\n");
+      expect(result.stdout).toContain("+ ~/.local/bin/cc-smart-dev-kit: launcher created\n");
       expect(result.stdout).toContain(
         `! auto-mode entries left out: ${reason(`${repo}/.claude/cc-smart-dev-kit.json`)}`,
       );
@@ -1613,7 +1772,9 @@ describe("cc-smart-dev-kit setup: claude-mem on the gateway's affordable model",
     expect(statSync(file).mode & 0o777).toBe(0o600);
 
     // A second run: nothing to change, and no need to ask the backend again.
-    expect(run(["setup"]).stdout).toBe("Nothing to change. Setup is up to date.\n");
+    expect(run(["setup"]).stdout).toBe(
+      `Nothing to change. Setup is up to date.\n${TAVILY_SKIPPED}\n`,
+    );
     expect(backend.seen).toHaveLength(1);
 
     // Restore takes out the keys setup owns: claude-mem falls back to its own defaults.
@@ -1816,6 +1977,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the gateway's affordable model",
       [
         "Nothing to change. Setup is up to date.",
         "! claude-mem still uses the backend cc-smart-dev-kit set for it, but the gateway is not set up. Run cc-smart-dev-kit setup again once the gateway has an affordable model, or cc-smart-dev-kit restore to put claude-mem back on its own defaults.",
+        TAVILY_SKIPPED,
         "",
       ].join("\n"),
     );
@@ -1936,17 +2098,18 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
       );
       expect(asked).toEqual([]);
       writeFileSync(settingsFile, JSON.stringify(settings));
-      // A "no": not set, and remembered.
-      expect(await runSetup(paths, setupOptions(home, say(false)))).toBe(0);
+      // A "no": not set, and remembered. Exit 1: this world has no `claude` on PATH, so the
+      // MCP servers cannot be registered (that part is skipped and named).
+      expect(await runSetup(paths, setupOptions(home, say(false)))).toBe(1);
       expect(asked).toHaveLength(1);
       expect(readJson(settingsFile)).not.toHaveProperty("statusLine");
       expect(readFileSync(join(stateDir, "statusline-declined"), "utf8")).toBe("no\n");
       // Not asked again.
-      expect(await runSetup(paths, setupOptions(home, say(true)))).toBe(0);
+      expect(await runSetup(paths, setupOptions(home, say(true)))).toBe(1);
       expect(asked).toHaveLength(1);
       expect(readJson(settingsFile)).not.toHaveProperty("statusLine");
       // `--statusline` sets it all the same.
-      expect(await runSetup(paths, setupOptions(home, say(false), { statusline: true }))).toBe(0);
+      expect(await runSetup(paths, setupOptions(home, say(false), { statusline: true }))).toBe(1);
       expect(asked).toHaveLength(1);
       expect(readJson(settingsFile).statusLine.command).toEndWith(
         "/.local/bin/cc-smart-dev-kit statusline",
@@ -2067,5 +2230,138 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
     const wrong = run(["usage", "--days", "1"]);
     expect(wrong.exitCode).toBe(2);
     expect(wrong.stderr).toStartWith("Unknown option: --days");
+  });
+});
+
+describe("cc-smart-dev-kit setup: the MCP servers", () => {
+  test("setup registers them at user scope, doctor checks them, restore takes them back", () => {
+    const { configDir, home, run } = setup();
+    const result = run(["setup"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("+ MCP server playwright registered for your user\n");
+    // Claude Code's own config holds them, and the launcher is the browser server's command.
+    const userConfig = readJson(join(configDir, ".claude.json"));
+    expect(Object.keys(userConfig.mcpServers).sort()).toEqual([
+      "playwright",
+      "sequential-thinking",
+      "serena",
+    ]);
+    expect(userConfig.mcpServers.playwright).toEqual({
+      args: ["browser", "mcp"],
+      command: join(home, ".local", "bin", "cc-smart-dev-kit"),
+    });
+    expect(userConfig.mcpServers.serena.args).toContain("--project-from-cwd");
+    // Serena's context is installed beside the plugin's data, and is a managed file.
+    expect(
+      existsSync(join(home, ".local/share/cc-smart-dev-kit/serena/contexts/worktree.yml")),
+    ).toBe(true);
+
+    // doctor: each one is registered and starts (the fake `claude mcp get` says Connected).
+    const checked = run(["doctor"]);
+    expect(checked.stdout).toContain('✓ MCP server "playwright": Connected\n');
+    expect(checked.stdout).toContain('✓ MCP server "serena": Connected\n');
+    expect(checked.stdout).toContain('✓ MCP server "sequential-thinking": Connected\n');
+
+    // restore: removed from Claude Code's config, and no record left.
+    const restored = run(["restore"]);
+    expect(restored.exitCode).toBe(0);
+    expect(restored.stdout).toContain("- MCP server playwright removed from your user config\n");
+    expect(readJson(join(configDir, ".claude.json")).mcpServers).toEqual({});
+    expect(existsSync(join(configDir, "cc-smart-dev-kit", "mcp-servers.json"))).toBe(false);
+    expect(
+      existsSync(join(home, ".local/share/cc-smart-dev-kit/serena/contexts/worktree.yml")),
+    ).toBe(false);
+  });
+
+  test("a Tavily key in a 0600 file: an owned secret in the settings, never printed, mode 600", () => {
+    const { configDir, home, run } = setup();
+    const keyFile = join(configDir, "cc-smart-dev-kit", "tavily.key");
+    mkdirSync(join(configDir, "cc-smart-dev-kit"), { recursive: true });
+    writeFileSync(keyFile, "tvly-file-secret\n", { mode: 0o600 });
+    const result = run(["setup"]);
+    expect(result.exitCode).toBe(0);
+    // Registered with the placeholder Claude Code fills in at connect time, never the key.
+    const userConfig = readJson(join(configDir, ".claude.json"));
+    expect(userConfig.mcpServers["tavily-websearch"]).toEqual({
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code's placeholder.
+      headers: { Authorization: "Bearer ${TAVILY_API_KEY}" },
+      timeout: 300_000,
+      type: "http",
+      url: "https://mcp.tavily.com/mcp/",
+    });
+    // The key itself went into the settings, an owned secret left at mode 600.
+    const settings = readJson(join(home, ".claude", "settings.json"));
+    expect(settings.env.TAVILY_API_KEY).toBe("tvly-file-secret");
+    expect(statSync(join(home, ".claude", "settings.json")).mode & 0o777).toBe(0o600);
+    expect(`${result.stdout}${result.stderr}`).not.toContain("tvly-file-secret");
+    expect(result.stdout).toContain("(a secret)");
+    // doctor sees the key and checks the server; it never prints the key either.
+    const checked = run(["doctor"]);
+    expect(checked.stdout).toContain('✓ MCP server "tavily-websearch": Connected\n');
+    expect(checked.stdout).not.toContain("tvly-file-secret");
+    // restore removes it again.
+    expect(run(["restore"]).exitCode).toBe(0);
+    expect(readJson(join(home, ".claude", "settings.json")).env?.TAVILY_API_KEY).toBeUndefined();
+  });
+
+  test("a Tavily key the environment already has: nothing is written for it", () => {
+    const { configDir, home, run } = setup();
+    const result = run(["setup"], { TAVILY_API_KEY: "tvly-from-environment" });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("+ MCP server tavily-websearch registered for your user\n");
+    expect(readJson(join(home, ".claude", "settings.json")).env?.TAVILY_API_KEY).toBeUndefined();
+    expect(result.stdout).not.toContain("tvly-from-environment");
+    // The registration still carries only the placeholder.
+    expect(
+      readJson(join(configDir, ".claude.json")).mcpServers["tavily-websearch"].headers,
+    ).toEqual({
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code's placeholder.
+      Authorization: "Bearer ${TAVILY_API_KEY}",
+    });
+  });
+
+  test("a key file others can read is refused, naming the file and never its content", () => {
+    const { configDir, run } = setup();
+    const keyFile = join(configDir, "cc-smart-dev-kit", "tavily.key");
+    mkdirSync(join(configDir, "cc-smart-dev-kit"), { recursive: true });
+    writeFileSync(keyFile, "tvly-exposed-secret\n", { mode: 0o644 });
+    const result = run(["setup"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(
+      `! tavily-websearch: skipped — ${keyFile} is readable by others (mode 644): run \`chmod 600 ${keyFile}\`, then setup again`,
+    );
+    expect(`${result.stdout}${result.stderr}`).not.toContain("tvly-exposed-secret");
+    // And doctor reports it as information, never a failure.
+    const checked = run(["doctor"]);
+    expect(checked.exitCode).toBe(0);
+    expect(checked.stdout).toContain("· the Tavily MCP server is skipped: ");
+    expect(checked.stdout).not.toContain("tvly-exposed-secret");
+  });
+
+  test("a server of the person's own under one of our names is never taken over", () => {
+    const { configDir, run, claudeCalls } = setup();
+    writeFileSync(
+      join(configDir, ".claude.json"),
+      JSON.stringify({ mcpServers: { playwright: { args: [], command: "/opt/theirs" } } }),
+    );
+    const result = run(["setup"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(
+      "! playwright is registered already, and not by cc-smart-dev-kit: left alone",
+    );
+    expect(readJson(join(configDir, ".claude.json")).mcpServers.playwright).toEqual({
+      args: [],
+      command: "/opt/theirs",
+    });
+    // Claude Code was never asked to touch it.
+    expect(claudeCalls()).not.toContain("mcp remove playwright");
+  });
+
+  test("--dry-run prints the registrations and runs none", () => {
+    const { configDir, run } = setup();
+    const result = run(["setup", "--dry-run"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('$ claude mcp add-json --scope user playwright {"command":"');
+    expect(existsSync(join(configDir, ".claude.json"))).toBe(false);
   });
 });

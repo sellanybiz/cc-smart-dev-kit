@@ -8,7 +8,7 @@ parts fit: `design.md`.
 | 1 | Foundation | Done |
 | 2 | The AI gateway | Done |
 | 3 | Hooks and `doctor --live` | Done (0.3.0) |
-| 4 | Shared browser, Serena, MCP registration, session tools | Next |
+| 4 | Shared browser, Serena, MCP registration, session tools | Done (0.3.0) |
 | 5 | Instructions, skills, agents | Done (0.3.0) |
 | 6 | Notifications, claude-mem settings, the auto-mode block | Done (0.3.0) |
 | 7 | Opus and Fable slots, the usage-limit alert | Done (0.3.0) |
@@ -64,12 +64,24 @@ affordable models to subagent slots, and an opt-in judge for auto mode's safety 
   a restart waits for the old router's drain).
 - Heavy commands are routed into the job queue by a PreToolUse hook (`job-route`).
 
-## 4 — Shared browser, Serena, MCP, session tools (next)
+## 4 — Shared browser, Serena, MCP, session tools (done, 0.3.0)
 
-- The Playwright MCP server with one Chrome for every session.
-- Serena.
-- `setup` registers MCP servers at user scope, so tool names stay `mcp__<server>__*`.
-- `cc-smart-dev-kit sessions` and `cc-smart-dev-kit worktrees`.
+- The Playwright MCP server with one Chrome for every session (`design.md` § The shared
+  browser): one profile in the data folder, a tab filter per session so each sees only its
+  own windows, and `browser check` as the end-to-end proof on a throwaway profile.
+- Serena, with the plugin's own context (project switching on, so a session can point it at
+  its worktree) installed in the data folder.
+- `setup` registers the general MCP servers at user scope, so tool names stay
+  `mcp__<server>__*`, and `restore` removes exactly what it registered. Tavily's key comes
+  from the environment or a 0600 file, is never printed, and never reaches a registration.
+- `cc-smart-dev-kit sessions` and `cc-smart-dev-kit worktrees` (`README.md` § Sessions, §
+  Worktrees): the sessions a restart or a closed window stopped, and the worktrees that are
+  finished enough to remove.
+
+**Left in the projects that had them** (project values, not general): the dev-server probe
+(`isDevServerRunning`, which reads one project's `.dev-server.json` and ports) — the
+plugin's rule is a program running from the worktree or working in it; and the Windows
+shutdown log (`wevtutil qe System`), since the plugin is macOS and Linux for now.
 
 ## 5 — Instructions, skills, agents (done, 0.3.0)
 

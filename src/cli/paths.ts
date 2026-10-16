@@ -7,10 +7,27 @@ export interface CliPaths extends RouterPaths {
   installedPluginsFile: string;
   /** Claude Code's list of added marketplaces, with where each comes from. */
   knownMarketplacesFile: string;
+  /**
+   * Claude Code's own user-scope config: `$CLAUDE_CONFIG_DIR/.claude.json`, else
+   * `~/.claude.json`. It holds the user-scope MCP servers (`mcpServers`), which is where
+   * `claude mcp add --scope user` writes them. Read only, to check and to remove: writing
+   * it by hand would be a second writer of Claude Code's file.
+   */
+  userConfigFile: string;
   /** Where the launcher goes: `~/.local/bin`. */
   binDir: string;
   /** cc-smart-dev-kit's own state: lock, owned keys, changed files. */
   stateDir: string;
+  /** What outlives a plugin version: `~/.local/share/cc-smart-dev-kit`. */
+  dataDir: string;
+  /** The shared Chrome's profile, one for the whole machine: `<dataDir>/playwright`. */
+  browserProfileDir: string;
+  /** Everything the browser saves: screenshots, snapshots, downloads (`<dataDir>/playwright-output`). */
+  browserOutputDir: string;
+  /** The init page the Playwright MCP loads for every tab: `<dataDir>/playwright-picker.js`. */
+  browserPickerFile: string;
+  /** The Serena context the plugin starts Serena with: `<dataDir>/serena/contexts/worktree.yml`. */
+  serenaContextFile: string;
   /** The router's long-running copy: `~/.local/share/cc-smart-dev-kit/router.js`. */
   routerCopy: string;
   /** The router's systemd user unit: `~/.config/systemd/user/cc-smart-dev-kit-router.service`. */
@@ -21,8 +38,22 @@ export interface CliPaths extends RouterPaths {
   routerSocketFile: string;
   /** The notifier's settings: `~/.claude/cc-smart-dev-kit/notify.json`. */
   notifyConfigFile: string;
-  /** tmux's own config: `~/.tmux.conf` (setup adds one managed line there). */
+  /** The tmux line's file: `~/.tmux.conf` (setup adds one managed line there). */
   tmuxConfFile: string;
+  /** The Tavily key file an owner may write: `<config dir>/cc-smart-dev-kit/tavily.key` (0600). */
+  tavilyKeyFile: string;
+}
+
+/**
+ * Where Claude Code keeps the config of the folder it runs from. With `CLAUDE_CONFIG_DIR`
+ * set, its own files (`.claude.json` included) live inside it; without, `.claude.json` sits
+ * in the home folder, beside `~/.claude` (seen live, 2.1.301: `claude mcp add --scope user`
+ * writes `$CLAUDE_CONFIG_DIR/.claude.json` when the variable is set, `~/.claude.json` when
+ * it is not: `docs/claude-code-contract.md` § MCP servers).
+ */
+function userConfigFile(env: Record<string, string | undefined>, home: string): string {
+  const dir = env.CLAUDE_CONFIG_DIR;
+  return dir ? join(dir, ".claude.json") : join(home, ".claude.json");
 }
 
 /**
@@ -39,8 +70,28 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     settingsFile: join(claudeConfigDir, "settings.json"),
     installedPluginsFile: join(claudeConfigDir, "plugins", "installed_plugins.json"),
     knownMarketplacesFile: join(claudeConfigDir, "plugins", "known_marketplaces.json"),
+    userConfigFile: userConfigFile(env, router.home),
     binDir: join(router.home, ".local", "bin"),
     stateDir: join(claudeConfigDir, "cc-smart-dev-kit"),
+    dataDir: join(router.home, ".local", "share", "cc-smart-dev-kit"),
+    browserProfileDir: join(router.home, ".local", "share", "cc-smart-dev-kit", "playwright"),
+    browserOutputDir: join(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
+    browserPickerFile: join(
+      router.home,
+      ".local",
+      "share",
+      "cc-smart-dev-kit",
+      "playwright-picker.js",
+    ),
+    serenaContextFile: join(
+      router.home,
+      ".local",
+      "share",
+      "cc-smart-dev-kit",
+      "serena",
+      "contexts",
+      "worktree.yml",
+    ),
     routerCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
     routerUnitFile: join(
       router.home,
@@ -59,6 +110,7 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     ),
     notifyConfigFile: join(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
     tmuxConfFile: join(router.home, ".tmux.conf"),
+    tavilyKeyFile: join(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),
   };
 }
 

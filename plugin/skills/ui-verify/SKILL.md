@@ -33,8 +33,10 @@ check (`/cc-smart-dev-kit:verify-change` § 5).
 
 `Agent` with the `cc-smart-dev-kit:ui-verifier` type, on `sonnet` (the worker slot; effort as the
 core instructions say for that slot). **One at a time:** the session's Playwright MCP server
-drives one browser, and a second agent fights the first for its pages. (A project whose add-on
-says its browser is shared by every session on the machine: one at a time across them too.)
+drives one browser, and a second agent fights the first for its pages. Another session has
+its own server and its own windows, so a check there does not clash with this one (with
+`cc-smart-dev-kit setup` run, every session drives one shared Chrome and sees only the pages it
+opened).
 
 **The brief carries:**
 
@@ -57,10 +59,10 @@ clipping well but miscounts fine detail, so it measures and you judge.
 ## 4. Close out
 
 - Close the browser (`browser_close`) when the check is done: the agent leaves it open on
-  purpose. With stock Playwright MCP it closes this session's page. A project whose
-  add-on says its browser is shared by every session may set it up so that `browser_close`
-  closes only your windows: the add-on says which.
+  purpose. Installed by `cc-smart-dev-kit setup`, that closes only this session's windows — the
+  one shared Chrome and its logins stay for every session. With a stock Playwright MCP of your
+  own it closes the page that server drives.
 - **A page needs a login:** the agent reports it and never signs in. Open the page yourself
-  and ask the person to sign in there, once. Never sign out or switch accounts without
-  asking — in a browser the project shares between sessions, that login is everyone's.
+  and ask the person to sign in there, once — with the shared Chrome, that sign-in is every
+  session's. Never sign out or switch accounts without asking: the login is everyone's.
 - An affordable run that fails twice: `/cc-smart-dev-kit:subagent-decision` § Briefing an affordable model.

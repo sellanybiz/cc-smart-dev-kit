@@ -18,6 +18,7 @@ import { claudeMemAdvice } from "../machine/claude-mem";
 import { companionChecks } from "../machine/companions";
 import type { Machine } from "../machine/machine";
 import { warpCheck } from "../machine/warp";
+import { type McpDoctorDeps, mcpChecks } from "../mcp/doctor";
 import { findUserInstall } from "../setup/installed-plugins";
 import {
   copyDifferences,
@@ -669,6 +670,8 @@ export interface DoctorOptions {
   gateway: DoctorGateway;
   /** Where the plugin's instructions are, and the folder doctor was started in. */
   local: DoctorLocal;
+  /** Check the MCP servers setup registers (`mcp/doctor.ts`); null or left out: no MCP checks. */
+  mcp?: McpDoctorDeps | null;
   /** Check the project of this folder (`project-checks.ts`); null: no project checks. */
   project: DoctorProject | null;
   /** Also run the live check (`doctor --live`), which starts real Claude Code sessions. */
@@ -685,10 +688,11 @@ export interface DoctorOptions {
 export async function runDoctor(
   paths: CliPaths,
   env: Env,
-  { bun, gateway, local, project, live }: DoctorOptions,
+  { bun, gateway, local, mcp, project, live }: DoctorOptions,
 ): Promise<number> {
   const settings = readSettings(paths.settingsFile);
   const runtime = checkBun(bun, paths);
+  const mcpDeps = mcp ?? null;
   const skipped: Check = {
     ok: true,
     info: true,
@@ -709,6 +713,7 @@ export async function runDoctor(
     checkOldPlugin(settings, paths),
     ...companionChecks(paths),
     claudeMemCheck(paths),
+    ...(mcpDeps === null ? [] : mcpChecks(paths, mcpDeps, env)),
     warpCheck(gateway.machine, paths),
     ...checkTmux(paths, env, gateway.machine),
     ...(project === null ? [] : projectChecks(project.cwd, env, paths, project.pluginHooksFile)),
