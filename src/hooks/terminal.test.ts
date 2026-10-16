@@ -12,6 +12,7 @@ import {
   realTerminalProbe,
   sessionTerminalDevice,
   type TerminalProbe,
+  ttyDevice,
   writeDevice,
 } from "./terminal";
 
@@ -45,6 +46,14 @@ function probe(overrides: Partial<TerminalProbe> = {}): TerminalProbe {
     ...overrides,
   };
 }
+
+describe("ttyDevice", () => {
+  it("a controlling terminal everywhere that has one; Windows has no such device", () => {
+    expect(ttyDevice("linux")).toBe("/dev/tty");
+    expect(ttyDevice("darwin")).toBe("/dev/tty");
+    expect(ttyDevice("win32")).toBe(null);
+  });
+});
 
 describe("claudePid", () => {
   it("CLAUDE_PID when it is usable, else the hook's parent, else nothing", () => {

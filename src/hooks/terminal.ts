@@ -55,6 +55,16 @@ export function claudePid(env: Env, fallback: number): number {
   return Number.isInteger(fallback) && fallback > 1 ? fallback : 0;
 }
 
+/**
+ * The controlling terminal a hook tries first: `/dev/tty` on every system that has one.
+ * Windows has no such device, and a path of that name there would be an ordinary file on the
+ * current drive — a write would land in that file instead of a terminal — so nothing is
+ * tried, and the caller falls back.
+ */
+export function ttyDevice(platform: NodeJS.Platform): null | string {
+  return platform === "win32" ? null : "/dev/tty";
+}
+
 /** The session's terminal device (`/dev/pts/3`), or null when there is none to write to. */
 export function sessionTerminalDevice(probe: TerminalProbe): null | string {
   if (probe.platform !== "linux") return null;

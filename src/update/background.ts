@@ -16,6 +16,7 @@
 import { COMMAND, PLUGIN, PLUGIN_ID } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { bunConfigArg } from "../setup/bun-config";
+import { detachedArgv } from "../hooks/detached";
 import { type InstructionsPaths, refreshInstructionsCopy } from "../setup/instructions";
 import { LockBusyError, withLock } from "../setup/lock";
 import { redactUrlsIn } from "../setup/marketplace-access";
@@ -127,6 +128,23 @@ export function sessionStart(deps: SessionStartDeps): string {
   }
   if (isDue(last, deps.nowMs)) deps.spawnBackground();
   return answer;
+}
+
+/**
+ * The argv the detached background check runs: this Bun, the same bundle, `--background`.
+ *
+ * On Windows it goes through the `cmd /c start` trampoline (`detachedArgv`) — a plain
+ * detached child dies with its hook there (oven-sh/bun#31603) — and carries `--no-env-file`:
+ * the trampoline starts in the home folder, where Bun would otherwise load a `.env` of the
+ * person's into the check. Linux and macOS keep the argv they had.
+ */
+export function backgroundCheckArgv(
+  platform: NodeJS.Platform,
+  bun: string,
+  bundle: string,
+  pluginDir: string,
+): string[] {
+  return detachedArgv(platform, backgroundCommand(bun, bundle, pluginDir));
 }
 
 export interface BackgroundDeps {

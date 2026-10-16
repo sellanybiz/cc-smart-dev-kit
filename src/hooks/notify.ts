@@ -26,7 +26,8 @@
  *
  * Three routes, one of them chosen per alert:
  *   - **the desktop**: `notify-send` on Linux (with a desktop to show it on), `osascript` on
- *     macOS, and the freedesktop sound when `paplay` is there.
+ *     macOS, a PowerShell toast on Windows (`windowsToast`), and the freedesktop sound when
+ *     `paplay` is there. Windows plays the sound of its own notification, so none is added.
  *   - **the SSH terminal**: with no desktop route here but a session over SSH
  *     (`SSH_CONNECTION` or `SSH_TTY`), the same alert goes to the terminal the person is
  *     looking at as OSC 777: through the hook's `terminalSequence` output field, which Claude
@@ -49,13 +50,13 @@
  * read only for the `terminalSequence` field here; every error is one short stderr line and
  * exit 0 — a notifier must never stop a session.
  */
-import { spawn } from "node:child_process";
 import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { oneLine } from "../gateway/plain-text";
 import { notifyCommand } from "../update/apply";
+import { startDetached } from "./detached";
 import { type HookResult, SILENT } from "./io";
 import type { Env } from "./run";
 import { cleanSessionName } from "./session-name";
@@ -410,6 +411,8 @@ export type TerminalRoute = "field" | "field-if-no-tty" | "tty";
  *   - `tty`: this event's answer is not read, or the version is known to be too old for the
  *     field: `/dev/tty` first, and the session's own terminal device when the hook has no
  *     controlling terminal (`writeSessionTerminal`; only one of the two is ever written to).
+ *     Both are POSIX devices and neither exists on Windows (`ttyDevice`), so there this route
+ *     writes nothing: the desktop toast is the alert's way out (docs/windows-notify.md).
  */
 export function terminalRoute(event: string, env: Env): TerminalRoute {
   if (!TERMINAL_SEQUENCE_EVENTS.includes(event)) return "tty";
@@ -496,23 +499,20 @@ export function readNotifyConfig(file: string): NotifyConfig {
 export type NotifyRunner = (argv: string[]) => void;
 
 /**
- * The real runner: the notifier starts detached from the hook, which does not wait for it. A
- * notification that waits for a click (or a slow daemon) must not hold the hook, and Claude
- * Code exits after a `Stop` hook in `claude -p`: the detached program still shows it.
+ * The real runner for `platform`: the notifier starts detached from the hook, which does not
+ * wait for it. A notification that waits for a click (or a slow daemon) must not hold the
+ * hook, and Claude Code exits after a `Stop` hook in `claude -p`: the detached program still
+ * shows it. On Windows that takes the `cmd /c start` trampoline — a detached child dies with
+ * its hook there (`detached.ts`).
  */
-export const spawnNotify: NotifyRunner = (argv) => {
-  const [file, ...args] = argv;
-  if (file === undefined) return;
-  try {
-    const child = spawn(file, args, { detached: true, stdio: "ignore" });
-    child.on("error", (error) => {
-      console.error(`cc-smart-dev-kit notify: could not show the notification: ${error.message}`);
+export function spawnNotifyFor(platform: NodeJS.Platform): NotifyRunner {
+  return (argv) => {
+    startDetached(platform, argv, {
+      onError: (message) =>
+        console.error(`cc-smart-dev-kit notify: could not show the notification: ${message}`),
     });
-    child.unref();
-  } catch (error) {
-    console.error(`cc-smart-dev-kit notify: ${error instanceof Error ? error.message : error}`);
-  }
-};
+  };
+}
 
 export interface NotifyDeps {
   env: Env;
@@ -540,7 +540,8 @@ export interface NotifyDeps {
 function desktopCommand(alert: Alert, deps: NotifyDeps): null | string[] {
   // On Linux a desktop notification needs a desktop (`DISPLAY`: X, or a Wayland session that
   // sets it). Without one — an SSH session, a headless machine — `notify-send` has no bus to
-  // show anything on, so the terminal route is the one that works.
+  // show anything on, so the terminal route is the one that works. Windows always has a
+  // desktop, so its route is the toast `notifyCommand` builds, whenever PowerShell is there.
   if (deps.platform === "linux" && (deps.env.DISPLAY ?? "") === "") return null;
   return notifyCommand(alert.body, deps.platform, deps.which, alert.title, alert.critical);
 }

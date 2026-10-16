@@ -21462,6 +21462,63 @@ async function runStatusline(paths, readStdin, nowMs) {
 // src/update/apply.ts
 import { existsSync as existsSync41, readFileSync as readFileSync45 } from "fs";
 import { join as join41 } from "path";
+
+// src/hooks/windows-toast.ts
+var TOAST_SHELL = "powershell";
+var TOAST_APP_ID = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe";
+function powershellLiteral(text) {
+  return `'${text.replaceAll("'", "''")}'`;
+}
+function windowsToastScript(title, body, critical) {
+  const scenario = critical ? ' scenario="reminder"' : "";
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    `$title = ${powershellLiteral(title)}`,
+    `$body = ${powershellLiteral(body)}`,
+    `$appId = ${powershellLiteral(TOAST_APP_ID)}`,
+    "try {",
+    "  $xml = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]::New()",
+    `  $xml.LoadXml('<toast${scenario}><visual><binding template="ToastGeneric"><text id="1" /><text id="2" /></binding></visual></toast>')`,
+    "  $texts = $xml.GetElementsByTagName('text')",
+    "  $null = $texts.Item(0).AppendChild($xml.CreateTextNode($title))",
+    "  $null = $texts.Item(1).AppendChild($xml.CreateTextNode($body))",
+    "  $toast = [Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType = WindowsRuntime]::New($xml)",
+    "  [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]::CreateToastNotifier($appId).Show($toast)",
+    "} catch {",
+    "  try {",
+    "    Add-Type -AssemblyName System.Windows.Forms",
+    "    Add-Type -AssemblyName System.Drawing",
+    "    $balloon = New-Object System.Windows.Forms.NotifyIcon",
+    "    $balloon.Icon = [System.Drawing.SystemIcons]::Information",
+    "    $balloon.BalloonTipTitle = $title",
+    "    $balloon.BalloonTipText = $body",
+    "    $balloon.Visible = $true",
+    "    $balloon.ShowBalloonTip(10000)",
+    "    Start-Sleep -Milliseconds 4000",
+    "    $balloon.Dispose()",
+    "  } catch {",
+    "    [Console]::Error.WriteLine('cc-smart-dev-kit: the desktop notification could not be shown: ' + $_.Exception.Message)",
+    "    exit 1",
+    "  }",
+    "}"
+  ].join(`
+`);
+}
+function windowsToastArgv(shell, title, body, critical = false) {
+  const script = windowsToastScript(title, body, critical);
+  return [
+    shell,
+    "-NoProfile",
+    "-NonInteractive",
+    "-EncodedCommand",
+    Buffer.from(script, "utf16le").toString("base64")
+  ];
+}
+function windowsToastArgvFor(title, body, critical = false) {
+  return windowsToastArgv(TOAST_SHELL, title, body, critical);
+}
+
+// src/update/apply.ts
 var CLAUDE_TIMEOUT_MS = 180000;
 var MARKETPLACE_REFRESH = ["plugin", "marketplace", "update", MARKETPLACE];
 var PLUGIN_UPDATE = ["plugin", "update", PLUGIN_ID, "--scope", "user"];
@@ -21939,6 +21996,9 @@ function plainNotification(alert, platform) {
       ],
       timeoutMs: 1e4
     };
+  }
+  if (platform === "win32") {
+    return { argv: windowsToastArgvFor(alert.title, body), timeoutMs: 1e4 };
   }
   return null;
 }

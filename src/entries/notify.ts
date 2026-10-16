@@ -4,13 +4,20 @@
 // a project, so it does not enter the frame. The logic and its tests: src/hooks/notify.ts.
 
 import { cliPaths } from "../cli/paths";
-import { notifyHook, spawnNotify } from "../hooks/notify";
-import { realTerminalProbe, sessionTerminalDevice, writeDevice } from "../hooks/terminal";
+import { notifyHook, spawnNotifyFor } from "../hooks/notify";
+import {
+  realTerminalProbe,
+  sessionTerminalDevice,
+  ttyDevice,
+  writeDevice,
+} from "../hooks/terminal";
 
 /** Writes one sequence to the session's terminal; false when there is none. */
 function writeTerminal(sequence: string): boolean {
-  // No controlling terminal (`claude -p`, a service): false, and the caller falls back.
-  return writeDevice("/dev/tty", sequence);
+  // No controlling terminal (`claude -p`, a service) or no such device (`ttyDevice`: Windows
+  // has none): false, and the caller falls back.
+  const device = ttyDevice(process.platform);
+  return device !== null && writeDevice(device, sequence);
 }
 
 async function hook(): Promise<void> {
@@ -32,7 +39,7 @@ async function hook(): Promise<void> {
     nowMs: Date.now(),
     paths: cliPaths(env),
     platform: process.platform,
-    run: spawnNotify,
+    run: spawnNotifyFor(process.platform),
     which: (command) => Bun.which(command, { PATH: env.PATH ?? "" }),
     // The session's own terminal device: the pty Claude Code is attached to, found from its
     // pid. The route for an event whose answer Claude Code does not read (`terminal.ts`).

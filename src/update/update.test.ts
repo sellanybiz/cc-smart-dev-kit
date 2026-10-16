@@ -22,6 +22,7 @@ import { installedText, notifyCommand } from "./apply";
 import {
   backgroundCheck,
   backgroundCommand,
+  backgroundCheckArgv,
   refreshInstructionsAtSessionStart,
   sessionStart,
 } from "./background";
@@ -859,7 +860,7 @@ describe("the notification", () => {
   const which = (found: string[]) => (command: string) =>
     found.includes(command) ? `/usr/bin/${command}` : null;
 
-  test("notify-send on Linux, osascript on macOS, nothing elsewhere or without the tool", () => {
+  test("notify-send on Linux, osascript on macOS, a PowerShell toast on Windows, nothing without the tool", () => {
     const text = installedText("1.2.3");
     expect(text).toBe("cc-smart-dev-kit 1.2.3 installed; restart Claude sessions to load it");
     expect(notifyCommand(text, "linux", which(["notify-send"]))).toEqual([
@@ -874,6 +875,18 @@ describe("the notification", () => {
       'display notification "cc-smart-dev-kit 1.2.3 installed; restart Claude sessions to load it" with title "cc-smart-dev-kit"',
     ]);
     expect(notifyCommand(text, "win32", which(["notify-send", "osascript"]))).toBe(null);
+    // Windows: the toast, with the alert's words in the encoded script, never on the command
+    // line (`windows-toast.ts`; the script itself is pinned in its own test file).
+    const toast = notifyCommand(text, "win32", which(["powershell"]));
+    expect(toast?.slice(0, 4)).toEqual([
+      "/usr/bin/powershell",
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+    ]);
+    const script = Buffer.from(toast?.[4] ?? "", "base64").toString("utf16le");
+    expect(script).toContain("$title = 'cc-smart-dev-kit'\n");
+    expect(script).toContain(`$body = '${text}'\n`);
   });
 
   test("a version that is not plain text never reaches the notifier", () => {
@@ -891,6 +904,39 @@ describe("the notification", () => {
     expect(isOlder("1.2.0", "1.1.0")).toBe(false);
     expect(isOlder(null, "1.1.0")).toBe(true);
     expect(isOlder("1.0.0", null)).toBe(false);
+  });
+});
+
+describe("the background check's argv", () => {
+  test("both bun flags everywhere; the cmd /c start trampoline on Windows only", () => {
+    // A detached child dies with its hook on Windows (oven-sh/bun#31603): the trampoline
+    // starts the check outside that job object (`src/hooks/detached.ts`). The flags keep
+    // the home folder's `.env` and `bunfig.toml` out of the child on every system.
+    expect(
+      backgroundCheckArgv(
+        "win32",
+        "C:\\Users\\u\\.bun\\bin\\bun.exe",
+        "C:\\p\\dist\\update-check.js",
+        "C:\\p",
+      ),
+    ).toEqual([
+      "cmd",
+      "/c",
+      "start",
+      "",
+      "/b",
+      ...backgroundCommand(
+        "C:\\Users\\u\\.bun\\bin\\bun.exe",
+        "C:\\p\\dist\\update-check.js",
+        "C:\\p",
+      ),
+    ]);
+    for (const platform of ["linux", "darwin"] as const) {
+      const argv = backgroundCheckArgv(platform, "/usr/bin/bun", "/p/dist/update-check.js", "/p");
+      expect(argv).toEqual(backgroundCommand("/usr/bin/bun", "/p/dist/update-check.js", "/p"));
+      expect(argv).toContain("--no-env-file");
+      expect(argv).toContain(`--config=${join("/p", "bunfig.toml")}`);
+    }
   });
 });
 

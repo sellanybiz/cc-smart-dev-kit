@@ -105,6 +105,41 @@ function pluginFolderBeside(importDir) {
   return basename(importDir) === "dist" ? join3(importDir, "..") : join3(importDir, "..", "..", "plugin");
 }
 
+// src/hooks/detached.ts
+import { spawn } from "child_process";
+function detachedArgv(platform, argv) {
+  return platform === "win32" ? ["cmd", "/c", "start", "", "/b", ...argv] : argv;
+}
+function startDetached(platform, argv, options) {
+  const [file, ...args] = argv;
+  if (file === undefined)
+    return;
+  const where = {
+    ...options.cwd !== undefined && { cwd: options.cwd },
+    ...options.env !== undefined && { env: options.env }
+  };
+  try {
+    if (platform === "win32") {
+      const result = Bun.spawnSync(detachedArgv(platform, argv), {
+        ...where,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+        windowsHide: true
+      });
+      const exitCode = result.exitCode ?? 1;
+      if (exitCode !== 0)
+        options.onError(`cmd /c start failed (exit ${exitCode})`);
+      return;
+    }
+    const child = spawn(file, args, { ...where, detached: true, stdio: "ignore" });
+    child.on("error", (error) => options.onError(error.message));
+    child.unref();
+  } catch (error) {
+    options.onError(error instanceof Error ? error.message : String(error));
+  }
+}
+
 // src/setup/instructions.ts
 import { existsSync as existsSync7, readdirSync as readdirSync3, readFileSync as readFileSync8, rmSync } from "fs";
 import { join as join8, relative, sep } from "path";
@@ -1394,6 +1429,58 @@ async function refreshInstructionsCopy(paths, version, options = {}) {
 import { existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
 import { join as join10 } from "path";
 
+// src/hooks/windows-toast.ts
+var TOAST_SHELL = "powershell";
+var TOAST_APP_ID = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe";
+function powershellLiteral(text) {
+  return `'${text.replaceAll("'", "''")}'`;
+}
+function windowsToastScript(title, body, critical) {
+  const scenario = critical ? ' scenario="reminder"' : "";
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    `$title = ${powershellLiteral(title)}`,
+    `$body = ${powershellLiteral(body)}`,
+    `$appId = ${powershellLiteral(TOAST_APP_ID)}`,
+    "try {",
+    "  $xml = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]::New()",
+    `  $xml.LoadXml('<toast${scenario}><visual><binding template="ToastGeneric"><text id="1" /><text id="2" /></binding></visual></toast>')`,
+    "  $texts = $xml.GetElementsByTagName('text')",
+    "  $null = $texts.Item(0).AppendChild($xml.CreateTextNode($title))",
+    "  $null = $texts.Item(1).AppendChild($xml.CreateTextNode($body))",
+    "  $toast = [Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType = WindowsRuntime]::New($xml)",
+    "  [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]::CreateToastNotifier($appId).Show($toast)",
+    "} catch {",
+    "  try {",
+    "    Add-Type -AssemblyName System.Windows.Forms",
+    "    Add-Type -AssemblyName System.Drawing",
+    "    $balloon = New-Object System.Windows.Forms.NotifyIcon",
+    "    $balloon.Icon = [System.Drawing.SystemIcons]::Information",
+    "    $balloon.BalloonTipTitle = $title",
+    "    $balloon.BalloonTipText = $body",
+    "    $balloon.Visible = $true",
+    "    $balloon.ShowBalloonTip(10000)",
+    "    Start-Sleep -Milliseconds 4000",
+    "    $balloon.Dispose()",
+    "  } catch {",
+    "    [Console]::Error.WriteLine('cc-smart-dev-kit: the desktop notification could not be shown: ' + $_.Exception.Message)",
+    "    exit 1",
+    "  }",
+    "}"
+  ].join(`
+`);
+}
+function windowsToastArgv(shell, title, body, critical = false) {
+  const script = windowsToastScript(title, body, critical);
+  return [
+    shell,
+    "-NoProfile",
+    "-NonInteractive",
+    "-EncodedCommand",
+    Buffer.from(script, "utf16le").toString("base64")
+  ];
+}
+
 // src/project/git-env.ts
 var REPO_SELECTING_GIT_VARS = [
   "GIT_DIR",
@@ -1737,6 +1824,10 @@ function notifyCommand(text, platform, which, title = PLUGIN, critical = false) 
       `display notification ${JSON.stringify(text)} with title ${JSON.stringify(title)}`
     ];
   }
+  if (platform === "win32") {
+    const powershell = which(TOAST_SHELL);
+    return powershell === null ? null : windowsToastArgv(powershell, title, text, critical);
+  }
   return null;
 }
 function commandContext(env, home) {
@@ -1980,6 +2071,9 @@ function sessionStart(deps) {
     deps.spawnBackground();
   return answer;
 }
+function backgroundCheckArgv(platform, bun, bundle, pluginDir) {
+  return detachedArgv(platform, backgroundCommand(bun, bundle, pluginDir));
+}
 async function refreshInstructionsAtSessionStart(deps) {
   try {
     await refreshInstructionsCopy(deps.where, deps.version, { waitMs: deps.waitMs ?? 2000 });
@@ -2093,11 +2187,10 @@ if (process.argv.includes("--background")) {
       sessionPid: sessionPid(),
       version: VERSION,
       spawnBackground: () => {
-        Bun.spawn(backgroundCommand(process.execPath, Bun.main, pluginFolderBeside(import.meta.dir)), {
+        startDetached(process.platform, backgroundCheckArgv(process.platform, process.execPath, Bun.main, pluginFolderBeside(import.meta.dir)), {
           ...commandContext(env, paths.home),
-          detached: true,
-          stdio: ["ignore", "ignore", "ignore"]
-        }).unref();
+          onError: (message) => console.error(`${PLUGIN} update check: ${message}`)
+        });
       }
     });
     if (answer !== "")

@@ -5,11 +5,12 @@
 import { PLUGIN, VERSION } from "../build-info";
 import { cliPaths } from "../cli/paths";
 import { pluginFolderBeside } from "../setup/bun-config";
+import { startDetached } from "../hooks/detached";
 import { instructionsFolder, instructionsPaths } from "../setup/instructions";
 import { capturingRunner, commandContext, notifyCommand } from "../update/apply";
 import {
   backgroundCheck,
-  backgroundCommand,
+  backgroundCheckArgv,
   refreshInstructionsAtSessionStart,
   sessionStart,
 } from "../update/background";
@@ -46,19 +47,26 @@ if (process.argv.includes("--background")) {
       sessionPid: sessionPid(),
       version: VERSION,
       spawnBackground: () => {
-        // Detached (its own session, setsid) with no pipe to this hook: it outlives the
-        // hook, and Claude Code never waits for it. In the home folder, without the git
-        // variables of the session's repo (`commandContext`).
-        // The same two flags the shim gave this hook: the child starts bun again, in the home
-        // folder, and must not read that folder's `.env` files or its `bunfig.toml`.
-        Bun.spawn(
-          backgroundCommand(process.execPath, Bun.main, pluginFolderBeside(import.meta.dir)),
+        // Detached with no pipe to this hook: it outlives the hook, and Claude Code never
+        // waits for it. On Linux and macOS that is a session of its own (`setsid`); on
+        // Windows it is the `cmd /c start` trampoline, because a detached child dies with
+        // its hook there (`backgroundCheckArgv`, `src/hooks/detached.ts`). In the home
+        // folder, without the git variables of the session's repo (`commandContext`). The
+        // child starts bun again with the same two flags the shim gave this hook, so it reads
+        // neither that folder's `.env` files nor its `bunfig.toml`.
+        startDetached(
+          process.platform,
+          backgroundCheckArgv(
+            process.platform,
+            process.execPath,
+            Bun.main,
+            pluginFolderBeside(import.meta.dir),
+          ),
           {
             ...commandContext(env, paths.home),
-            detached: true,
-            stdio: ["ignore", "ignore", "ignore"],
+            onError: (message) => console.error(`${PLUGIN} update check: ${message}`),
           },
-        ).unref();
+        );
       },
     });
     if (answer !== "") process.stdout.write(`${answer}\n`);
