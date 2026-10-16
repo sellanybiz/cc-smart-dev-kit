@@ -113,9 +113,11 @@ person chose and that passed the test; otherwise by the person, because Claude C
   only through `src/gateway/plain-text.ts` (`oneLine`, `plainText`, `printableJson`;
   `maskedLine` for an error): never a second copy of that logic.
 - A backend key comes on stdin, never argv. `gateway.json` is mode 600, and a file
-  others can read is refused. No output, log line or error message ever holds a key: mask
-  it (`maskKey`; in the router's log, `maskSecrets`), and never echo a parser's message
-  about the config's text. The test
+  others can read is refused — off Windows, where the bits decide: on Windows the mode
+  says nothing and the profile's ACL protects the file, so `isOwnerOnly`
+  (`src/setup/file-mode.ts`) never refuses one there. No output, log line or error
+  message ever holds a key: mask it (`maskKey`; in the router's log, `maskSecrets`), and
+  never echo a parser's message about the config's text. The test
   `gateway-cli.test.ts` › "secrets" runs every command with a planted key; add a new
   command to it.
 

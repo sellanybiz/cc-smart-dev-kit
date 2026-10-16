@@ -16,10 +16,13 @@
  *   3. neither: no Tavily server; setup says how to add the key.
  *
  * The key itself is never printed, by any command, and never logged. A key file that others
- * can read is refused (the message names the file, never its content).
+ * can read is refused on Linux and macOS (the message names the file, never its content); on
+ * Windows the profile's ACL is what protects it, and no file is refused over its bits.
  */
 import { existsSync, readFileSync, statSync } from "node:fs";
 import type { CliPaths } from "../cli/paths";
+import { hostPlatform } from "../machine/host";
+import { isOwnerOnly } from "../setup/file-mode";
 
 /** The settings key the key is written to, for Claude Code's `${TAVILY_API_KEY}`. */
 export const TAVILY_ENV_KEY = "TAVILY_API_KEY";
@@ -35,23 +38,26 @@ export type TavilyKey =
   /** No usable key: the reason says what to do (never a value). */
   | { source: "none"; reason: string };
 
-/** A file only its owner (and root) may read: every bit for group and other is clear. */
-function isPrivate(mode: number): boolean {
-  return (mode & 0o077) === 0;
-}
-
 /**
  * The Tavily key, from the environment or the key file. Never prints a value: the reason
  * for a refusal names the file and what to do.
+ *
+ * What "only its owner may read" means comes from `isOwnerOnly`: the mode says it on Linux
+ * and macOS, and on Windows the mode says nothing — the profile's ACL protects the file, so
+ * no key file is refused there. That is also why only the refusal off Windows names `chmod`.
  */
-export function readTavilyKey(paths: CliPaths, env: Record<string, string | undefined>): TavilyKey {
+export function readTavilyKey(
+  paths: CliPaths,
+  env: Record<string, string | undefined>,
+  platform: NodeJS.Platform = hostPlatform(),
+): TavilyKey {
   if ((env[TAVILY_ENV_KEY] ?? "") !== "") return { source: "environment" };
   if (!existsSync(paths.tavilyKeyFile)) {
     return {
       source: "none",
       reason:
-        `no ${TAVILY_ENV_KEY} in the environment, and no key file: put the key there ` +
-        `(chmod 600) or set the variable, then run setup again`,
+        `no ${TAVILY_ENV_KEY} in the environment, and no key file: put the key there` +
+        `${platform === "win32" ? "" : " (chmod 600)"} or set the variable, then run setup again`,
     };
   }
   let mode: number;
@@ -65,7 +71,7 @@ export function readTavilyKey(paths: CliPaths, env: Record<string, string | unde
       reason: `${paths.tavilyKeyFile} cannot be read (${error instanceof Error ? error.message : String(error)})`,
     };
   }
-  if (!isPrivate(mode)) {
+  if (!isOwnerOnly(mode, platform)) {
     return {
       source: "none",
       reason:

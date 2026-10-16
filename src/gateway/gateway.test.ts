@@ -69,7 +69,7 @@ const JUDGE_PROOFS = {
 };
 
 const PORT = 20100;
-/** File modes are POSIX: this tooling runs on Linux and macOS only. */
+/** Windows makes the modes up (`statSync().mode` is 0666 for a writable file): POSIX assertions. */
 const NO_POSIX_MODES = process.platform === "win32";
 const TOKEN = "sk-ant-oat01-TESTTOKEN";
 const CONFIG_PATH = "/home/someone/.config/cc-smart-dev-kit/gateway.json";
@@ -2512,6 +2512,20 @@ describe("config file", () => {
     write(path, fileJson({ "cc-smart-dev-kit-scout": ["claude-sonnet-5-5"] }), 1000);
     chmodSync(path, 0o640);
     expect(() => loadConfigFile(path)).toThrow(`Run: chmod 600 ${path}`);
+  });
+
+  it("on Windows that same file is read: the mode there says nothing", () => {
+    // A writable file reports 0o100666 on Windows whatever its ACL says, so a refusal over those
+    // bits throws on EVERY Windows machine: the router would run on its fallback config, and
+    // `gateway status`, `gateway slot` and `stop-failure` would all fail. The profile's ACL is
+    // what protects the file there.
+    const path = join(dir, "gateway.json");
+    write(path, fileJson({ "cc-smart-dev-kit-scout": ["claude-sonnet-5-5"] }), 1000);
+    chmodSync(path, 0o666);
+    expect(() => loadConfigFile(path, "linux")).toThrow("can be read by other users");
+    expect(loadConfigFile(path, "win32").slots).toEqual({
+      "cc-smart-dev-kit-scout": ["claude-sonnet-5-5"],
+    });
   });
 
   it.skipIf(NO_POSIX_MODES)(

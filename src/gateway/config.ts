@@ -2,8 +2,10 @@
  * The AI gateway's config file: `~/.config/cc-smart-dev-kit/gateway.json`, one per machine.
  *
  * It holds the affordable backends' API keys, so only its owner may read it: a file whose mode
- * lets the group or others read it is refused, never loaded. No Claude credential is ever
- * in it: Claude requests carry the person's own login.
+ * lets the group or others read it is refused, never loaded. On Windows the mode says nothing
+ * (the numbers there are synthetic) and the profile's ACL is what protects it, so nothing is
+ * refused there (`isOwnerOnly`). No Claude credential is ever in it: Claude requests carry the
+ * person's own login.
  *
  * The router reads it again when the file changes, so `cc-smart-dev-kit gateway slot` switches
  * a slot live. A bad edit keeps the last good config, with one error line.
@@ -19,6 +21,8 @@ import { z } from "zod";
 // From ./names, not the index: the index bakes in the version, and the router bundle
 // must not change with it (a changed bundle restarts every machine's router).
 import { COMMAND } from "../build-info/names";
+import { hostPlatform } from "../machine/host";
+import { isOwnerOnly } from "../setup/file-mode";
 import { atomicWrite } from "../setup/write";
 import {
   isBackendName,
@@ -261,15 +265,23 @@ export function parseConfig(raw: unknown): { config: GatewayConfig } | { error: 
  * Read and check the config file. Throws a ConfigError when the file is missing, readable
  * by the group or others, not JSON, or not a valid config. The error never quotes the
  * file's text: it holds API keys.
+ *
+ * `platform` decides what "readable by others" means (see `isOwnerOnly`): on Windows it is
+ * never the mode, because there it says nothing — the ACL of the user profile protects the
+ * file, and a refusal over those synthetic bits would leave the router on its fallback
+ * config on every Windows machine.
  */
-export function loadConfigFile(path: string): GatewayConfig {
+export function loadConfigFile(
+  path: string,
+  platform: NodeJS.Platform = hostPlatform(),
+): GatewayConfig {
   let mode: number;
   try {
     mode = statSync(path).mode;
   } catch (error) {
     throw new ConfigError(`cannot read ${path}: ${messageOf(error)}`, { cause: error });
   }
-  if ((mode & 0o077) !== 0) {
+  if (!isOwnerOnly(mode, platform)) {
     throw new ConfigError(
       `${path} can be read by other users (mode ${(mode & 0o777).toString(8)}); it holds API keys. Run: chmod 600 ${path}`,
     );
