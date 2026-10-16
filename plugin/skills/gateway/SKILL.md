@@ -25,7 +25,9 @@ repository (the installed plugin does not carry the docs).
   its model name, and any field that model refuses put in the form it accepts (Claude
   Sonnet 5.5 refuses "thinking disabled"); never a word of the prompt.
 - **User-wide:** once it is on, every Claude Code session on the machine, in every folder,
-  sends its `haiku` / `sonnet` work to the slots. **Linux only** for now (systemd).
+  sends its `haiku` / `sonnet` work to the slots. It runs as a systemd user unit on Linux
+  and as a per-user Scheduled Task on Windows; on Windows a restart refuses requests for a
+  moment, and Claude Code retries them.
 
 ## Set it up
 

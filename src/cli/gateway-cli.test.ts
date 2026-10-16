@@ -110,8 +110,13 @@ function otherProgram() {
   return { port: server.port as number };
 }
 
-/** A temp machine: HOME, config folder, a fake systemctl alone on PATH. */
-function machine(options: { systemctl?: boolean } = {}) {
+/**
+ * A temp machine: HOME, config folder, a fake systemctl alone on PATH — or, with
+ * `windows: true`, the machine a Windows one is to the CLI: a fake Task Scheduler answering
+ * in place of `powershell` (`task`), and no systemd at all. Nothing here reaches the real
+ * Task Scheduler, PowerShell or systemctl, or a real gateway.
+ */
+function machine(options: { systemctl?: boolean; windows?: boolean } = {}) {
   const home = tempDir("gateway-cli");
   const configDir = join(home, ".claude");
   mkdirSync(configDir, { recursive: true });
@@ -120,7 +125,75 @@ function machine(options: { systemctl?: boolean } = {}) {
   const log = join(home, "systemctl.log");
   const state = join(home, "unit-state");
   const socketState = join(home, "socket-state");
-  if (options.systemctl !== false) {
+  const taskPath = join(home, ".local", "share", "cc-smart-dev-kit", "router-task.xml");
+  /**
+   * The fake Task Scheduler a Windows machine talks to: the state a real one would hold,
+   * and the calls that changed it. `register` reads the definition file back, so the driver
+   * sees what setup wrote.
+   */
+  const task: {
+    action: null | { arguments: string; execute: string; workingDirectory: string };
+    lastResult: null | number;
+    registered: boolean;
+    state: string;
+  } = { action: null, lastResult: 267011, registered: false, state: "Ready" };
+  const taskCalls: string[] = [];
+  const windowsRunner = (cmd: string[]) => {
+    const script = cmd.at(-1) ?? "";
+    if (script.includes("Get-ScheduledTaskInfo")) {
+      taskCalls.push("query");
+      if (!task.registered) return { exitCode: 0, output: "registered=false\n" };
+      const action = task.action;
+      return {
+        exitCode: 0,
+        output: [
+          "registered=true",
+          `state=${task.state}`,
+          `last=${String(task.lastResult)}`,
+          `execute=${action?.execute ?? ""}`,
+          `arguments=${action?.arguments ?? ""}`,
+          `working=${action?.workingDirectory ?? ""}`,
+          "",
+        ].join("\n"),
+      };
+    }
+    if (script.startsWith("Register-ScheduledTask")) {
+      taskCalls.push("register");
+      const xml = existsSync(taskPath) ? readFileSync(taskPath, "utf8") : "";
+      const pick = (tag: string) =>
+        (new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(xml)?.[1] ?? "")
+          .replaceAll("&lt;", "<")
+          .replaceAll("&gt;", ">")
+          .replaceAll("&amp;", "&");
+      task.action = {
+        arguments: pick("Arguments"),
+        execute: pick("Command"),
+        workingDirectory: pick("WorkingDirectory"),
+      };
+      task.registered = true;
+      task.state = "Ready";
+      return { exitCode: 0, output: "" };
+    }
+    if (script.startsWith("Start-ScheduledTask")) {
+      taskCalls.push("start");
+      task.state = "Running";
+      return { exitCode: 0, output: "" };
+    }
+    if (script.startsWith("Stop-ScheduledTask")) {
+      taskCalls.push("stop");
+      task.state = "Ready";
+      return { exitCode: 0, output: "" };
+    }
+    if (script.startsWith("Unregister-ScheduledTask")) {
+      taskCalls.push("unregister");
+      task.registered = false;
+      task.state = "Ready";
+      return { exitCode: 0, output: "" };
+    }
+    taskCalls.push(`unknown: ${script}`);
+    return { exitCode: 0, output: "" };
+  };
+  if (options.systemctl !== false && options.windows !== true) {
     // Shell builtins only: PATH holds nothing else. The service and its socket each keep
     // their own state; a command acts on the units it names.
     writeFileSync(
@@ -188,7 +261,15 @@ function machine(options: { systemctl?: boolean } = {}) {
     fetch: async (url) => {
       probed.push(url);
       if (port.other) return new Response("not found", { status: 404 });
-      const unit = existsSync(state) ? readFileSync(state, "utf8").trim() : "inactive";
+      // A Windows machine has no unit: its task holds the port while its router runs.
+      const unit =
+        options.windows === true
+          ? task.state === "Running"
+            ? "active"
+            : "inactive"
+          : existsSync(state)
+            ? readFileSync(state, "utf8").trim()
+            : "inactive";
       if (unit === "active" || port.held) return Response.json({ ok: true });
       throw Object.assign(
         new TypeError("Unable to connect. Is the computer able to access the url?"),
@@ -241,8 +322,13 @@ function machine(options: { systemctl?: boolean } = {}) {
           ? await runRestore(paths, {
               yes: args.includes("--yes"),
               now: args.includes("--now"),
-              runner,
-              systemd: options.systemctl !== false,
+              runner: options.windows === true ? windowsRunner : runner,
+              service:
+                options.windows === true
+                  ? "scheduled-task"
+                  : options.systemctl === false
+                    ? "none"
+                    : "systemd",
               confirm: null,
               probe,
             })
@@ -252,10 +338,17 @@ function machine(options: { systemctl?: boolean } = {}) {
               // The Bun running the tests: the preload stops an older one.
               bunVersion: Bun.version,
               bundle: BUILT_ROUTER,
-              runner,
+              runner: options.windows === true ? windowsRunner : runner,
               readStdin: () => Promise.resolve(input ?? ""),
               confirm: null,
-              systemd: options.systemctl !== false,
+              service:
+                options.windows === true
+                  ? "scheduled-task"
+                  : options.systemctl === false
+                    ? "none"
+                    : "systemd",
+              account: options.windows === true ? "MACHINE\\user" : null,
+              platform: options.windows === true ? "win32" : "linux",
               probe,
               // Where a command's own lines go: `out` and `err` are what the tests assert on.
               print: (line: string) => out.push(`${line}\n`),
@@ -298,6 +391,10 @@ function machine(options: { systemctl?: boolean } = {}) {
     env,
     run,
     runHere,
+    task,
+    taskCalls,
+    taskPath,
+    windowsRunner,
     probe,
     probed,
     port,
@@ -950,7 +1047,7 @@ describe("cc-smart-dev-kit doctor: a gateway that is not installed, or half", ()
       paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
       bundle: BUILT_ROUTER,
       runner: () => ({ exitCode: 0, output: "active\n" }),
-      systemd: true,
+      service: "systemd",
       fetch: m.probe.fetch,
     });
     expect(
@@ -986,7 +1083,7 @@ describe("cc-smart-dev-kit doctor: a gateway that is not installed, or half", ()
         const word = cmd.at(-1)?.endsWith(".socket") ? units.socket : units.service;
         return { exitCode: word === "active" ? 0 : 3, output: `${word}\n` };
       },
-      systemd: true,
+      service: "systemd",
       // An open socket with no router holds the connection: no answer in time.
       fetch: async () => {
         throw new DOMException("The operation timed out.", "TimeoutError");
@@ -1203,7 +1300,7 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
       paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
       bundle: BUILT_ROUTER,
       runner: () => ({ exitCode: 0, output: "active\n" }),
-      systemd: true,
+      service: "systemd",
       fetch: m.probe.fetch,
     });
     expect(checks.at(-1)).toEqual({
@@ -1238,7 +1335,7 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
       paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
       bundle: BUILT_ROUTER,
       runner: () => ({ exitCode: 0, output: "active\n" }),
-      systemd: true,
+      service: "systemd",
       fetch: m.probe.fetch,
     });
     const warnings = checks.filter((check) => check.warn === true);
@@ -1422,4 +1519,146 @@ describe("the router copy runs on its own", () => {
       await proc.exited;
     }
   }, 20_000);
+});
+
+describe("cc-smart-dev-kit gateway on Windows: the router as a Scheduled Task", () => {
+  test("setup writes the task's definition, registers it, and starts the router", async () => {
+    const m = machine({ windows: true });
+    const done = await m.runHere(["gateway", "setup", "--no-backend-key"]);
+    expect(done.stderr).toBe("");
+    expect(done.exitCode).toBe(0);
+    expect(done.stdout).toBe(
+      [
+        "no config at ~/.config/cc-smart-dev-kit/gateway.json yet: the router answers every slot on your own Claude login until the OmniRoute key is added (setup --backend-key-stdin omniroute)",
+        "+ ~/.local/share/cc-smart-dev-kit/router.js: router copy created",
+        "+ ~/.local/share/cc-smart-dev-kit/router-task.xml: task created",
+        "registered and (re)started the task cc-smart-dev-kit-router",
+        "Claude Code does not use the gateway yet. Check it: cc-smart-dev-kit gateway status. Then: cc-smart-dev-kit gateway on.",
+        "",
+      ].join("\n"),
+    );
+    expect(readFileSync(m.paths.copy).equals(readFileSync(BUILT_ROUTER))).toBe(true);
+    // The definition runs the copy, at logon, as this person, without elevation.
+    const definition = readFileSync(m.taskPath, "utf8");
+    expect(definition).toContain("<UserId>MACHINE\\user</UserId>");
+    expect(definition).toContain("<LogonType>InteractiveToken</LogonType>");
+    expect(definition).toContain("<RunLevel>LeastPrivilege</RunLevel>");
+    expect(definition).toContain(`<Arguments>--no-env-file "${m.paths.copy}"</Arguments>`);
+    expect(definition).toContain(`<Command>${process.execPath}</Command>`);
+    // The read-only pass asks the task twice, the writing pass twice, then registers and starts.
+    expect(m.taskCalls).toEqual(["query", "query", "query", "query", "register", "start"]);
+    expect(m.task.registered).toBe(true);
+    expect(m.task.state).toBe("Running");
+    // Not one systemctl call: this machine has no units.
+    expect(m.calls()).toBe("");
+    expect(m.probed).toEqual([
+      "http://127.0.0.1:20100/__cc-smart-dev-kit/health",
+      "http://127.0.0.1:20100/__cc-smart-dev-kit/health",
+      "http://127.0.0.1:20100/__cc-smart-dev-kit/health",
+    ]);
+
+    const again = await m.runHere(["gateway", "setup", "--no-backend-key"]);
+    expect(again.exitCode).toBe(0);
+    expect(again.stdout).toContain("router already up to date (no restart)\n");
+    // Two more passes: both ask the task's state, whether it runs what setup writes, and
+    // its state again. Nothing changed, so nothing is registered or started.
+    expect(m.taskCalls.slice(6)).toEqual(["query", "query", "query", "query", "query"]);
+  });
+
+  test("restore stops the task, removes it, and waits for its port to close", async () => {
+    const m = machine({ windows: true });
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    expect((await m.runHere(["gateway", "setup"])).exitCode).toBe(0);
+    expect((await m.runHere(["gateway", "on"])).exitCode).toBe(0);
+    expect(m.task.state).toBe("Running");
+
+    const done = await m.runHere(["restore", "--now", "--yes"]);
+    expect(done.stderr).toBe("");
+    expect(done.exitCode).toBe(0);
+    expect(done.stdout).toContain(
+      `- the task cc-smart-dev-kit-router: removed (port ${server.port} closed)\n`,
+    );
+    // The definition and the copy go with it; the config holds the person's key and stays.
+    expect(done.stdout).toContain(
+      "- ~/.local/share/cc-smart-dev-kit/router-task.xml: removed (cc-smart-dev-kit had created it)\n",
+    );
+    expect(existsSync(m.taskPath)).toBe(false);
+    expect(existsSync(m.paths.copy)).toBe(false);
+    expect(existsSync(m.paths.config)).toBe(true);
+    expect(m.task.registered).toBe(false);
+    expect(m.taskCalls.slice(-3)).toEqual(["query", "stop", "unregister"]);
+  });
+
+  test("doctor: the task's state, its definition, and the router's answer", async () => {
+    const m = machine({ windows: true });
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    expect((await m.runHere(["gateway", "setup"])).exitCode).toBe(0);
+    const paths = cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir });
+    const checks = () =>
+      gatewayChecks({
+        bundle: BUILT_ROUTER,
+        fetch: m.probe.fetch,
+        paths,
+        runner: m.windowsRunner,
+        service: "scheduled-task",
+      });
+    const line = (check: { info?: boolean; ok: boolean; text: string }) =>
+      `${check.info === true ? "·" : check.ok ? "✓" : "✗"} ${check.text}`;
+    expect((await checks()).map(line).slice(0, 4)).toEqual([
+      "✓ the router service (the task cc-smart-dev-kit-router) is active",
+      "✓ the router copy ~/.local/share/cc-smart-dev-kit/router.js is up to date",
+      "✓ the task definition ~/.local/share/cc-smart-dev-kit/router-task.xml is up to date",
+      `✓ the router answers on 127.0.0.1:${server.port}`,
+    ]);
+
+    // A task someone removed by hand: doctor says so, and the definition with it.
+    m.task.registered = false;
+    expect((await checks()).map(line).slice(0, 3)).toEqual([
+      "✗ the router service (the task cc-smart-dev-kit-router) is not registered. Run: cc-smart-dev-kit gateway setup",
+      "✓ the router copy ~/.local/share/cc-smart-dev-kit/router.js is up to date",
+      "✗ the task definition ~/.local/share/cc-smart-dev-kit/router-task.xml is not registered as the task cc-smart-dev-kit-router. Run: cc-smart-dev-kit gateway setup",
+    ]);
+
+    // A task re-pointed at another program: the definition is right, the task is not.
+    m.task.registered = true;
+    m.task.action = {
+      arguments: '--no-env-file "C:\\somewhere\\other.js"',
+      execute: "C:\\other\\bun.exe",
+      workingDirectory: "C:\\other",
+    };
+    expect((await checks()).map(line).slice(0, 3)).toEqual([
+      "✓ the router service (the task cc-smart-dev-kit-router) is active",
+      "✓ the router copy ~/.local/share/cc-smart-dev-kit/router.js is up to date",
+      "✗ the task cc-smart-dev-kit-router does not run ~/.local/share/cc-smart-dev-kit/router.js. Run: cc-smart-dev-kit gateway setup",
+    ]);
+  });
+
+  test("a Windows machine with no PowerShell: its own refusal, and nothing is written", async () => {
+    const m = machine({ windows: true });
+    const said: string[] = [];
+    const code = await runGateway(["setup", "--no-backend-key"], {
+      account: "MACHINE\\user",
+      bunPath: process.execPath,
+      bunVersion: Bun.version,
+      bundle: BUILT_ROUTER,
+      confirm: null,
+      error: (line) => said.push(line),
+      paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
+      platform: "win32",
+      print: (line) => said.push(line),
+      probe: m.probe,
+      readStdin: () => Promise.resolve(""),
+      runner: m.windowsRunner,
+      service: "none",
+    });
+    expect(code).toBe(1);
+    // Never the systemd sentence on a Windows machine: it names what is really missing.
+    expect(said).toEqual([
+      "the gateway service needs PowerShell, and this machine has none: with no PowerShell and no systemd, there is no way to run the router here.",
+    ]);
+    expect(existsSync(m.taskPath)).toBe(false);
+    expect(existsSync(m.paths.copy)).toBe(false);
+  });
 });

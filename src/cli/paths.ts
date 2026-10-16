@@ -42,6 +42,11 @@ export interface CliPaths extends RouterPaths {
   omnirouteStateFile: string;
   /** The router's systemd user unit: `~/.config/systemd/user/cc-smart-dev-kit-router.service`. */
   routerUnitFile: string;
+  /**
+   * The Windows Scheduled Task's definition: `~/.local/share/cc-smart-dev-kit/router-task.xml`.
+   * `gateway setup` writes it and registers the task from it (`src/gateway/service-windows.ts`).
+   */
+  routerTaskFile: string;
   /** claude-mem's settings: `$CLAUDE_MEM_DATA_DIR/settings.json`, else `~/.claude-mem/settings.json`. */
   claudeMemSettingsFile: string;
   /** The socket unit that holds the router's port: `~/.config/systemd/user/cc-smart-dev-kit-router.socket`. */
@@ -103,6 +108,7 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
       "worktree.yml",
     ),
     routerCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    routerTaskFile: join(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalStateFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
     omnirouteStateFile: join(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),

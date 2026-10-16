@@ -173,7 +173,10 @@ function gatewayContext(
       probe: portal.probe,
       readStdin: () => Promise.resolve(""),
       runner: portal.runner,
-      systemd: portal.systemd,
+      // The portal's own service kind: systemd's units, or a Windows Scheduled Task.
+      service: portal.systemd ? "systemd" : "none",
+      account: null,
+      platform: process.platform,
     },
   };
 }

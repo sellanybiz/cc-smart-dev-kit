@@ -16,7 +16,8 @@ import { runUpdate } from "../cli/update";
 import { runUsage } from "../cli/usage";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { realProbe } from "../gateway/health";
-import type { Runner } from "../gateway/service";
+import { type Runner, routerServiceKind } from "../gateway/service";
+import { windowsAccount } from "../gateway/service-windows";
 import { projectHookSettingsText } from "../hooks/project-wiring";
 import { runHookEntry } from "../hooks/run";
 import { recordSessionName } from "../hooks/session-name";
@@ -227,6 +228,14 @@ const runner: Runner = (cmd) => {
 /** systemd user units need Linux and systemctl on PATH. */
 const systemd = process.platform === "linux" && Bun.which("systemctl") !== null;
 
+/** The service that runs the router here: systemd's units, or a Windows Scheduled Task. */
+const service = routerServiceKind(process.platform, (command) =>
+  Bun.which(command, { PATH: process.env.PATH ?? "" }),
+);
+
+/** The Windows account a Scheduled Task runs as (`MACHINE\user`); null everywhere else. */
+const account = windowsAccount(process.env);
+
 /** Asks on the terminal; null when stdin is not one (a pipe, a script, a test). */
 const ask = process.stdin.isTTY ? (question: string) => confirm(question) : null;
 
@@ -239,7 +248,9 @@ function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
     runner,
     readStdin: () => Bun.stdin.text(),
     confirm: ask,
-    systemd,
+    service,
+    account,
+    platform: process.platform,
     probe: realProbe(),
     print: (line) => console.log(line),
     error: (line) => console.error(line),
@@ -368,7 +379,7 @@ async function main(argv: string[]): Promise<number> {
         gateway: {
           bundle: routerBundle(),
           runner,
-          systemd,
+          service,
           machine: realMachine(process.env, null),
         },
         local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
@@ -424,7 +435,7 @@ async function main(argv: string[]): Promise<number> {
         yes: rest.includes("--yes"),
         now: rest.includes("--now"),
         runner,
-        systemd,
+        service,
         confirm: ask,
         probe: realProbe(),
         which: (command) => Bun.which(command),

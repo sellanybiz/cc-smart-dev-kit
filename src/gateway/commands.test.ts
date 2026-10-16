@@ -25,6 +25,7 @@ import { tempDir } from "../testing/temp";
 import { parseModelList } from "./backends";
 import { ensureConfig, planSlotChange } from "./commands";
 import { type GatewayConfig, loadConfigFile } from "./config";
+import type { HealthProbe } from "./health";
 import { judgeTestRequest, judgeVerdict } from "./judge-test";
 import {
   DRAIN_NOTE,
@@ -34,15 +35,25 @@ import {
   RESTART_WARNING,
   renderSocket,
   renderUnit,
+  routerServiceKind,
   SOCKET_CHANGED_WARNING,
   SOCKET_NAME,
   SOCKET_STOPPED_WARNING,
   STOP_WAIT_MS,
   socketPort,
-  stopRouter,
+  systemdService,
   UNIT_NAME,
   UP_TO_DATE,
 } from "./service";
+import {
+  parseTaskFacts,
+  renderTask,
+  scheduledTaskService,
+  TASK_RESTART_WARNING,
+  taskFacts,
+  taskRunsCopy,
+  windowsAccount,
+} from "./service-windows";
 import {
   FORBIDDEN_ENV_KEYS,
   GATEWAY_ENV_KEYS,
@@ -535,11 +546,10 @@ describe("router service install", () => {
         bunVersion: options.bunVersion ?? "1.4.3",
         bundle,
         copyPath,
-        unitPath,
-        socketPath,
         home,
         stateDir,
         port: options.port ?? FAKE_PORT,
+        service: systemdService({ socketPath, unitPath }),
         probe: {
           fetch: async (url) => {
             probed.push(url);
@@ -1194,7 +1204,11 @@ describe("router service stop", () => {
         clock.now += ms;
       },
     };
-    return { clock, events, names, probe, runner, waited: () => clock.now - start };
+    const service = systemdService({
+      socketPath: join(dir, SOCKET_NAME),
+      unitPath: join(dir, UNIT_NAME),
+    });
+    return { clock, events, names, probe, runner, service, waited: () => clock.now - start };
   }
 
   const HEALTH = `probe http://127.0.0.1:${FAKE_PORT}/__cc-smart-dev-kit/health`;
@@ -1209,7 +1223,7 @@ describe("router service stop", () => {
   // first (IS_ACTIVE), so the port is waited for only while the unit itself runs.
   it("disables, stops without waiting for the drain, then asks the port until it is refused", async () => {
     const m = stopMachine({ heldPolls: 3 });
-    expect(await stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).toEqual({ kind: "closed" });
+    expect(await m.service.stop(m.runner, FAKE_PORT, m.probe)).toEqual({ kind: "closed" });
     // Never `disable --now`: that waits up to TimeoutStopSec while the drain runs.
     expect(m.events).toEqual([IS_ACTIVE, DISABLE, STOP, HEALTH, HEALTH, HEALTH, HEALTH]);
     // Three held answers, a 200 ms rest after each, then the refusal.
@@ -1218,21 +1232,21 @@ describe("router service stop", () => {
 
   it("a port that is free at once: one probe, no rest", async () => {
     const m = stopMachine({ heldPolls: 0 });
-    expect(await stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).toEqual({ kind: "closed" });
+    expect(await m.service.stop(m.runner, FAKE_PORT, m.probe)).toEqual({ kind: "closed" });
     expect(m.events).toEqual([IS_ACTIVE, DISABLE, STOP, HEALTH]);
     expect(m.waited()).toBe(0);
   });
 
   it("a unit that is still deactivating (an earlier stop) is waited for like a running one", async () => {
     const m = stopMachine({ heldPolls: 2, unit: "deactivating" });
-    expect(await stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).toEqual({ kind: "closed" });
+    expect(await m.service.stop(m.runner, FAKE_PORT, m.probe)).toEqual({ kind: "closed" });
     expect(m.events).toEqual([IS_ACTIVE, DISABLE, STOP, HEALTH, HEALTH, HEALTH]);
     expect(m.waited()).toBe(400);
   });
 
   it("the port answers, but not as this router (a 404): no wait, the reason given back", async () => {
     const m = stopMachine({ heldPolls: Number.POSITIVE_INFINITY, other: true });
-    expect(await stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).toEqual({
+    expect(await m.service.stop(m.runner, FAKE_PORT, m.probe)).toEqual({
       detail: "HTTP 404",
       kind: "other",
     });
@@ -1244,7 +1258,7 @@ describe("router service stop", () => {
     // A `gateway serve` started by hand answers the health page; the unit cannot bind.
     for (const unit of ["activating", "failed", "inactive"]) {
       const m = stopMachine({ heldPolls: Number.POSITIVE_INFINITY, unit });
-      expect(await stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).toEqual({
+      expect(await m.service.stop(m.runner, FAKE_PORT, m.probe)).toEqual({
         kind: "not-running",
         state: unit,
       });
@@ -1256,7 +1270,7 @@ describe("router service stop", () => {
   it("a port still held after 15 s: a clear error, after the stop was sent", async () => {
     const m = stopMachine({ heldPolls: Number.POSITIVE_INFINITY });
     expect(STOP_WAIT_MS).toBe(15_000);
-    await expect(stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).rejects.toThrow(
+    await expect(m.service.stop(m.runner, FAKE_PORT, m.probe)).rejects.toThrow(
       `cc-smart-dev-kit-router.service is disabled and was told to stop, but 127.0.0.1:${FAKE_PORT} still takes connections after 15 s. Nothing else was restored. See why: systemctl --user status cc-smart-dev-kit-router (and ss -ltnp for another program on the port). Then run cc-smart-dev-kit restore again.`,
     );
     expect(m.events.slice(0, 4)).toEqual([IS_ACTIVE, DISABLE, STOP, HEALTH]);
@@ -1267,13 +1281,13 @@ describe("router service stop", () => {
 
   it("an unknown port (null): the stop is sent, nothing is asked", async () => {
     const m = stopMachine({ heldPolls: 0 });
-    expect(await stopRouter(m.runner, null, m.probe, m.names)).toEqual({ kind: "no-port" });
+    expect(await m.service.stop(m.runner, null, m.probe)).toEqual({ kind: "no-port" });
     expect(m.events).toEqual([DISABLE, STOP]);
   });
 
   it("a failing systemctl stops it before anything else", async () => {
     const m = stopMachine({ failOn: "disable", heldPolls: 0 });
-    await expect(stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).rejects.toThrow(
+    await expect(m.service.stop(m.runner, FAKE_PORT, m.probe)).rejects.toThrow(
       "systemctl --user disable cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service failed (exit 1):\nFailed to connect to bus",
     );
     expect(m.events).toEqual([IS_ACTIVE, DISABLE, STOP]);
@@ -1283,7 +1297,7 @@ describe("router service stop", () => {
     // The move from 0.2.x: `anymodel-router.service` and no socket file at all. Stopping the
     // socket unit too would fail with "Unit … does not exist" and stop the restore.
     const m = stopMachine({ files: [UNIT_NAME], heldPolls: 0 });
-    expect(await stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).toEqual({ kind: "closed" });
+    expect(await m.service.stop(m.runner, FAKE_PORT, m.probe)).toEqual({ kind: "closed" });
     expect(m.events).toEqual([
       IS_ACTIVE,
       "$ systemctl --user disable cc-smart-dev-kit-router.service",
@@ -1296,7 +1310,7 @@ describe("router service stop", () => {
     // An old setup whose unit files are gone: `is-active` says inactive (a unit that is not
     // there is never "active"), so there is no router of the unit's to wait for.
     const m = stopMachine({ files: [], heldPolls: 0, unit: "inactive" });
-    expect(await stopRouter(m.runner, FAKE_PORT, m.probe, m.names)).toEqual({
+    expect(await m.service.stop(m.runner, FAKE_PORT, m.probe)).toEqual({
       kind: "not-running",
       state: "inactive",
     });
@@ -1423,5 +1437,489 @@ describe("the judge test", () => {
       detail: "no content in the answer",
       verdict: "unclear",
     });
+  });
+});
+
+describe("the router as a Windows Scheduled Task", () => {
+  /** `<` and `&` back, as Task Scheduler un-escapes the XML it reads. */
+  function unescapeXml(text: string): string {
+    return text.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
+  }
+
+  /**
+   * A Windows machine, driven from Linux: a fake `powershell` answers the task queries from
+   * `state`, logs each call's short name in `actions`, and reads the task's definition file
+   * back on `register` — so what the driver sees is what setup wrote there. No real Task
+   * Scheduler, no PowerShell, no network: the probe answers while the task runs, and nothing
+   * listens while it does not.
+   */
+  function taskMachine() {
+    const home = tempDir("gateway-task");
+    const bundle = join(home, "plugin", "dist", "router.js");
+    mkdirSync(join(home, "plugin", "dist"), { recursive: true });
+    writeFileSync(bundle, "// router v1\n");
+    const dataDir = join(home, ".local", "share", "cc-smart-dev-kit");
+    const copyPath = join(dataDir, "router.js");
+    const taskPath = join(dataDir, "router-task.xml");
+    const stateDir = join(home, ".claude", "cc-smart-dev-kit");
+    const marker = join(stateDir, "restart-pending");
+    const state: {
+      action: null | { arguments: string; execute: string; workingDirectory: string };
+      lastResult: null | number;
+      registered: boolean;
+      taskState: string;
+    } = { action: null, lastResult: 267011, registered: false, taskState: "Ready" };
+    /** Something that is not this router answers on the port (`gateway serve` by hand). */
+    const port = { other: false };
+    const actions: string[] = [];
+    const scripts: string[] = [];
+    const probed: string[] = [];
+    const events: string[] = [];
+    const clock = { now: Date.UTC(2026, 9, 16, 10, 0, 0) };
+    const runner = (cmd: string[]) => {
+      const script = cmd.at(-1) ?? "";
+      scripts.push(script);
+      if (script.includes("Get-ScheduledTaskInfo")) {
+        actions.push("query");
+        if (!state.registered) return { exitCode: 0, output: "registered=false\n" };
+        const action = state.action;
+        return {
+          exitCode: 0,
+          output: [
+            "registered=true",
+            `state=${state.taskState}`,
+            `last=${String(state.lastResult)}`,
+            `execute=${action?.execute ?? ""}`,
+            `arguments=${action?.arguments ?? ""}`,
+            `working=${action?.workingDirectory ?? ""}`,
+            "",
+          ].join("\n"),
+        };
+      }
+      if (script.startsWith("Register-ScheduledTask")) {
+        actions.push("register");
+        const xml = readFileSync(taskPath, "utf8");
+        const pick = (tag: string) =>
+          unescapeXml(new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(xml)?.[1] ?? "");
+        state.action = {
+          arguments: pick("Arguments"),
+          execute: pick("Command"),
+          workingDirectory: pick("WorkingDirectory"),
+        };
+        state.registered = true;
+        state.taskState = "Ready";
+        return { exitCode: 0, output: "" };
+      }
+      if (script.startsWith("Start-ScheduledTask")) {
+        actions.push("start");
+        state.taskState = "Running";
+        return { exitCode: 0, output: "" };
+      }
+      if (script.startsWith("Stop-ScheduledTask")) {
+        actions.push("stop");
+        state.taskState = "Ready";
+        return { exitCode: 0, output: "" };
+      }
+      if (script.startsWith("Unregister-ScheduledTask")) {
+        actions.push("unregister");
+        state.registered = false;
+        state.taskState = "Ready";
+        return { exitCode: 0, output: "" };
+      }
+      actions.push(`unknown: ${script}`);
+      return { exitCode: 0, output: "" };
+    };
+    const probe: HealthProbe = {
+      fetch: async (url) => {
+        probed.push(url);
+        if (port.other) return new Response("not found", { status: 404 });
+        if (state.taskState === "Running") return Response.json({ ok: true, port: FAKE_PORT });
+        throw connectionRefused();
+      },
+      now: () => clock.now,
+      sleep: async (ms) => {
+        clock.now += ms;
+      },
+    };
+    const account = "MACHINE\\user";
+    const service = () => scheduledTaskService({ account, runner, taskPath });
+    const install = (options: {
+      confirm?: ((question: string) => boolean) | null;
+      dryRun?: boolean;
+      yes?: boolean;
+    }) =>
+      installRouter({
+        account,
+        bunPath: "/opt/bun/bin/bun",
+        bunVersion: "1.4.3",
+        bundle,
+        confirm: options.confirm === undefined ? null : options.confirm,
+        copyPath,
+        home,
+        port: FAKE_PORT,
+        probe,
+        runner,
+        say: (line) => events.push(line),
+        service: service(),
+        stateDir,
+        yes: options.yes ?? false,
+        ...(options.dryRun !== undefined && { dryRun: options.dryRun }),
+      });
+    return {
+      actions,
+      bundle,
+      copyPath,
+      events,
+      home,
+      install,
+      marker,
+      port,
+      probe,
+      probed,
+      runner,
+      scripts,
+      service,
+      state,
+      stateDir,
+      taskPath,
+    };
+  }
+
+  const STARTED = "registered and (re)started the task cc-smart-dev-kit-router";
+  const RESTARTING =
+    "restarting the task cc-smart-dev-kit-router (new requests are refused until it answers)";
+
+  it("first install: the copy, the definition, the task registered from it, then started", async () => {
+    const m = taskMachine();
+    expect(await m.install({})).toBe("installed");
+    expect(m.actions).toEqual(["query", "query", "register", "start"]);
+    expect(m.events).toEqual([
+      "+ ~/.local/share/cc-smart-dev-kit/router.js: router copy created",
+      "+ ~/.local/share/cc-smart-dev-kit/router-task.xml: task created",
+      STARTED,
+    ]);
+    expect(readFileSync(m.copyPath, "utf8")).toBe("// router v1\n");
+    // The definition is registered from the file it was written to, by name.
+    expect(m.scripts[2]).toBe(
+      `Register-ScheduledTask -TaskName 'cc-smart-dev-kit-router' -Xml (Get-Content -Raw -Encoding UTF8 -LiteralPath '${m.taskPath}') -Force | Out-Null`,
+    );
+    expect(m.scripts[3]).toBe(`Start-ScheduledTask -TaskName 'cc-smart-dev-kit-router'`);
+    // What the fake read back out of that file: what Windows holds is what setup wrote.
+    expect(m.state.action).toEqual({
+      arguments: `--no-env-file "${m.copyPath}"`,
+      execute: "/opt/bun/bin/bun",
+      workingDirectory: m.home,
+    });
+    expect(m.state.taskState).toBe("Running");
+    expect(existsSync(m.marker)).toBe(false);
+    // The port is asked before anything, then once for the router to answer.
+    expect(m.probed).toEqual([
+      `http://127.0.0.1:${FAKE_PORT}/__cc-smart-dev-kit/health`,
+      `http://127.0.0.1:${FAKE_PORT}/__cc-smart-dev-kit/health`,
+    ]);
+  });
+
+  it("nothing changed: the task is left alone, and the router is not restarted", async () => {
+    const m = taskMachine();
+    await m.install({});
+    m.actions.length = 0;
+    m.events.length = 0;
+    expect(await m.install({})).toBe("up-to-date");
+    // The task's state, whether it runs what setup writes, and its state again: nothing else.
+    expect(m.actions).toEqual(["query", "query", "query"]);
+    expect(m.events).toEqual([UP_TO_DATE]);
+    // Nothing runs: the task is registered again (Windows holds no entry for it) and started.
+    m.state.taskState = "Ready";
+    m.actions.length = 0;
+    m.events.length = 0;
+    expect(await m.install({})).toBe("installed");
+    expect(m.actions).toEqual(["query", "query", "query", "register", "start"]);
+    expect(m.events).toEqual([STARTED]);
+  });
+
+  it("the task Windows holds runs another program: setup registers the one it writes", async () => {
+    const m = taskMachine();
+    await m.install({});
+    // Someone re-pointed the task by hand (or an older version wrote it).
+    m.state.action = {
+      arguments: '--no-env-file "C:\\somewhere\\other.js"',
+      execute: "C:\\other\\bun.exe",
+      workingDirectory: "C:\\other",
+    };
+    m.actions.length = 0;
+    m.events.length = 0;
+    expect(await m.install({ yes: true })).toBe("installed");
+    expect(m.actions).toEqual(["query", "query", "query", "register", "stop", "start"]);
+    expect(m.state.action?.execute).toBe("/opt/bun/bin/bun");
+  });
+
+  it("a changed copy with a running router: the warning, no restart without a yes, then the restart", async () => {
+    const m = taskMachine();
+    await m.install({});
+    writeFileSync(m.copyPath, "// router v2\n");
+    m.actions.length = 0;
+    m.events.length = 0;
+    expect(await m.install({})).toBe("declined");
+    // Said plainly, before the question: Windows loses the socket's promise.
+    expect(m.events).toEqual([
+      TASK_RESTART_WARNING,
+      "Nothing was changed. Run again with --yes to restart: cc-smart-dev-kit gateway setup --yes",
+    ]);
+    expect(m.actions).toEqual(["query", "query"]);
+    // Nothing was written: the file is still what the test put there, never the bundle.
+    expect(readFileSync(m.copyPath, "utf8")).toBe("// router v2\n");
+
+    m.actions.length = 0;
+    m.events.length = 0;
+    expect(await m.install({ yes: true })).toBe("installed");
+    // Registered again, the running router stopped, its port waited for, then started.
+    expect(m.actions).toEqual(["query", "query", "register", "stop", "start"]);
+    expect(m.events).toEqual([
+      TASK_RESTART_WARNING,
+      "~ ~/.local/share/cc-smart-dev-kit/router.js: router copy updated",
+      RESTARTING,
+      STARTED,
+    ]);
+    // The copy is the bundle's now: that is what the restart was for.
+    expect(readFileSync(m.copyPath, "utf8")).toBe("// router v1\n");
+    expect(m.state.taskState).toBe("Running");
+  });
+
+  it("the port still answering after the stop: the restart stops with the reason, nothing started", async () => {
+    const m = taskMachine();
+    await m.install({});
+    writeFileSync(m.copyPath, "// router v2\n");
+    // Something holds the port on purpose: `waitWhileRouterAnswers` never sees it free.
+    m.probe.fetch = async (url) => {
+      m.probed.push(url);
+      return Response.json({ ok: true, port: FAKE_PORT });
+    };
+    m.actions.length = 0;
+    await expect(m.install({ yes: true })).rejects.toThrow(
+      `the task cc-smart-dev-kit-router was stopped, but 127.0.0.1:${FAKE_PORT} still answers after 5 s, so the new router cannot bind it. Nothing was started. Stop what holds that port, then run: cc-smart-dev-kit gateway setup`,
+    );
+    expect(m.actions).toEqual(["query", "query", "register", "stop"]);
+    // The marker stays: `doctor` says a setup did not finish, and the next one restarts.
+    expect(existsSync(m.marker)).toBe(true);
+  });
+
+  it("the router does not answer after the start: the error names the task's state and its result", async () => {
+    const m = taskMachine();
+    await m.install({});
+    writeFileSync(m.copyPath, "// router v2\n");
+    // The task starts, but another program answers on the port, never this router.
+    m.port.other = true;
+    await expect(m.install({ yes: true })).rejects.toThrow(
+      `the router did not answer on 127.0.0.1:${FAKE_PORT} within 5 s of the task's start (the task cc-smart-dev-kit-router is Running, last run result 267011). See why: stop the task cc-smart-dev-kit-router (\`Stop-ScheduledTask -TaskName cc-smart-dev-kit-router\`) and run \`cc-smart-dev-kit gateway serve\` in a terminal: a task has no console, so the router's log goes nowhere else. Then run: cc-smart-dev-kit gateway setup again.`,
+    );
+  });
+
+  it("stop, for restore: the router is stopped, the task removed, and the port waited for", async () => {
+    const m = taskMachine();
+    await m.install({});
+    m.actions.length = 0;
+    expect(await m.service().stop(m.runner, FAKE_PORT, m.probe)).toEqual({ kind: "closed" });
+    expect(m.actions).toEqual(["query", "stop", "unregister"]);
+    expect(m.state.registered).toBe(false);
+    expect(m.state.taskState).toBe("Ready");
+  });
+
+  it("a task that is not running, and a machine with no task at all", async () => {
+    const m = taskMachine();
+    await m.install({});
+    m.state.taskState = "Ready";
+    m.actions.length = 0;
+    // A task that is not running is removed all the same: it must not start at logon again.
+    expect(await m.service().stop(m.runner, FAKE_PORT, m.probe)).toEqual({
+      kind: "not-running",
+      state: "Ready",
+    });
+    expect(m.actions).toEqual(["query", "unregister"]);
+
+    const none = taskMachine();
+    expect(await none.service().stop(none.runner, FAKE_PORT, none.probe)).toEqual({
+      kind: "not-running",
+      state: "not registered",
+    });
+    expect(none.actions).toEqual(["query"]);
+  });
+
+  it("this machine's service, from the platform and what is on PATH", () => {
+    const powershell = () => "/usr/bin/powershell";
+    const nothing = () => null;
+    expect(routerServiceKind("win32", powershell)).toBe("scheduled-task");
+    // No PowerShell anywhere: no service this plugin installs.
+    expect(routerServiceKind("win32", nothing)).toBe("none");
+    expect(routerServiceKind("linux", powershell)).toBe("systemd");
+    expect(routerServiceKind("linux", nothing)).toBe("none");
+    expect(routerServiceKind("darwin", powershell)).toBe("none");
+  });
+
+  it("the Windows account the task runs as, from the environment", () => {
+    expect(windowsAccount({ USERDOMAIN: "MACHINE", USERNAME: "me" })).toBe("MACHINE\\me");
+    expect(windowsAccount({ USERNAME: "me" })).toBe("me");
+    expect(windowsAccount({ USERDOMAIN: "MACHINE" })).toBe(null);
+    expect(windowsAccount({})).toBe(null);
+  });
+
+  it("Task Scheduler's answer: its own state names, its last result, and the action", () => {
+    const running = parseTaskFacts(
+      [
+        "registered=true",
+        "state=Running",
+        "last=0",
+        "execute=C:\\bun\\bun.exe",
+        'arguments=--no-env-file "C:\\Users\\me\\.local\\share\\cc-smart-dev-kit\\router.js"',
+        "working=C:\\Users\\me",
+        "",
+      ].join("\r\n"),
+    );
+    expect(running).toEqual({
+      action: {
+        arguments: '--no-env-file "C:\\Users\\me\\.local\\share\\cc-smart-dev-kit\\router.js"',
+        execute: "C:\\bun\\bun.exe",
+        workingDirectory: "C:\\Users\\me",
+      },
+      lastResult: 0,
+      registered: true,
+      state: "Running",
+    });
+    expect(taskRunsCopy(running, "C:\\Users\\me\\.local\\share\\cc-smart-dev-kit\\router.js")).toBe(
+      true,
+    );
+    // Case differs between programs on Windows: the same file is the same copy.
+    expect(taskRunsCopy(running, "c:\\users\\ME\\.local\\share\\cc-smart-dev-kit\\router.js")).toBe(
+      true,
+    );
+    expect(taskRunsCopy(running, "C:\\elsewhere\\router.js")).toBe(false);
+    expect(parseTaskFacts("registered=true\nstate=Ready\nlast=267011\n").lastResult).toBe(267011);
+    expect(parseTaskFacts("registered=false\n")).toEqual({
+      action: null,
+      lastResult: null,
+      registered: false,
+      state: "not registered",
+    });
+    // A PowerShell that refuses: the error says what it said, and never a key.
+    expect(() => taskFacts(() => ({ exitCode: 1, output: "Access is denied." }))).toThrow(
+      "could not ask Windows about the task cc-smart-dev-kit-router (exit 1): Access is denied.",
+    );
+  });
+
+  it("the definition the task is registered from, written out by hand", () => {
+    expect(
+      renderTask({
+        account: "MACHINE\\me",
+        bunPath: "C:\\bun\\bun.exe",
+        copyPath: "C:\\Users\\me\\.local\\share\\cc-smart-dev-kit\\router.js",
+        home: "C:\\Users\\me",
+        port: 20100,
+      }),
+    ).toBe(`<?xml version="1.0" encoding="UTF-8"?>
+<!-- cc-smart-dev-kit-router: the local CC gateway for Claude Code (127.0.0.1 only).
+     Written by \`cc-smart-dev-kit gateway setup\`; it is registered as a Scheduled Task with
+     \`Register-ScheduledTask -Xml\`. The next setup overwrites it; edits here are lost. -->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Local CC gateway for Claude Code (127.0.0.1:20100 only). Written by \`cc-smart-dev-kit gateway setup\`.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>MACHINE\\me</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>MACHINE\\me</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>C:\\bun\\bun.exe</Command>
+      <Arguments>--no-env-file "C:\\Users\\me\\.local\\share\\cc-smart-dev-kit\\router.js"</Arguments>
+      <WorkingDirectory>C:\\Users\\me</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+`);
+    // A `&` in a path is Task Scheduler's own markup: escaped, never written raw.
+    expect(
+      renderTask({
+        account: "MACHINE\\me",
+        bunPath: "C:\\b&b\\bun.exe",
+        copyPath: "C:\\router.js",
+        home: "C:\\Users\\me",
+        port: 20100,
+      }),
+    ).toContain("<Command>C:\\b&amp;b\\bun.exe</Command>");
+    // A quote would end the argument that carries the copy's path, and a control character
+    // no quoting can carry: refused, as a unit file refuses both.
+    expect(() =>
+      renderTask({
+        account: "MACHINE\\me",
+        bunPath: 'C:\\b"un\\bun.exe',
+        copyPath: "C:\\router.js",
+        home: "C:\\Users\\me",
+        port: 20100,
+      }),
+    ).toThrow('cannot put "C:\\\\b\\"un\\\\bun.exe" in the task\'s definition');
+    expect(() =>
+      renderTask({
+        account: "MACHINE\\me",
+        bunPath: "C:\\bun\\bun.exe",
+        copyPath: "C:\\route\nr.js",
+        home: "C:\\Users\\me",
+        port: 20100,
+      }),
+    ).toThrow("cannot put");
+  });
+
+  it("with no account in the environment, Windows is asked once, and its answer is kept", () => {
+    const asked: string[] = [];
+    const service = scheduledTaskService({
+      account: null,
+      runner: (cmd) => {
+        asked.push(cmd.at(-1) ?? "");
+        return { exitCode: 0, output: "OTHERBOX\\them\n" };
+      },
+      taskPath: "/tmp/router-task.xml",
+    });
+    const input = {
+      bunPath: "/opt/bun/bin/bun",
+      copyPath: "/opt/router.js",
+      home: "/home/them",
+      port: 20100,
+      probe: { fetch: async () => new Response(), now: () => 0, sleep: async () => undefined },
+      say: () => undefined,
+    };
+    expect(service.definitions(input)[0]?.text).toContain("<UserId>OTHERBOX\\them</UserId>");
+    // Asked once: the next definition uses the answer it already has.
+    expect(service.definitions(input)[0]?.text).toContain("<UserId>OTHERBOX\\them</UserId>");
+    expect(asked).toEqual(["[System.Security.Principal.WindowsIdentity]::GetCurrent().Name"]);
   });
 });

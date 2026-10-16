@@ -78,6 +78,7 @@ function cliPaths(env = process.env) {
     browserPickerFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-picker.js"),
     serenaContextFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "serena", "contexts", "worktree.yml"),
     routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
     omnirouteStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
@@ -8242,6 +8243,17 @@ async function probeRouterPort(port, fetchImpl, timeoutMs = 2000, path = HEALTH_
   }
   return isJsonObject3(body) && body.ok === true ? { state: "ours" } : { detail: "not this router's health answer", state: "other" };
 }
+async function waitWhileRouterAnswers(port, probe, waitMs, path = HEALTH_PATH) {
+  const deadline = probe.now() + waitMs;
+  for (;; ) {
+    const result = await probeRouterPort(port, probe.fetch, 1000, path);
+    if (result.state !== "ours")
+      return result;
+    if (probe.now() >= deadline)
+      return { state: "held" };
+    await probe.sleep(200);
+  }
+}
 async function waitForRouter(port, probe, waitMs = 5000) {
   const deadline = probe.now() + waitMs;
   for (;; ) {
@@ -9757,7 +9769,7 @@ import { join as join33 } from "path";
 
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync30, readFileSync as readFileSync33 } from "fs";
-import { dirname as dirname8, join as join29 } from "path";
+import { dirname as dirname9, join as join29 } from "path";
 
 // src/gateway/doctor.ts
 import { existsSync as existsSync14, readFileSync as readFileSync15 } from "fs";
@@ -10194,7 +10206,7 @@ async function testJudgeTarget(baseUrl, apiKey, model, fetchImpl = fetch) {
 
 // src/gateway/service.ts
 import { existsSync as existsSync11, readFileSync as readFileSync12, rmSync as rmSync3 } from "fs";
-import { basename as basename2, join as join12 } from "path";
+import { basename as basename2, dirname as dirname4, join as join12 } from "path";
 var UNIT_NAME = "cc-smart-dev-kit-router.service";
 var SOCKET_NAME = "cc-smart-dev-kit-router.socket";
 var UP_TO_DATE = "router already up to date (no restart)";
@@ -10296,30 +10308,20 @@ function restartPendingFile(stateDir) {
   return join12(stateDir, "restart-pending");
 }
 var HEALTH_WAIT_MS = 5000;
-function restartWarning(rebind, socketOpen, socketPlan, socketPath, port) {
-  if (!rebind)
-    return RESTART_WARNING;
-  if (!socketOpen)
-    return socketPlan === "created" ? MOVE_WARNING : SOCKET_STOPPED_WARNING;
-  const oldPort = existsSync11(socketPath) ? socketPort(readFileSync12(socketPath, "utf8")) : null;
-  return oldPort !== null && oldPort !== port ? PORT_WARNING : SOCKET_CHANGED_WARNING;
-}
 async function installRouter(options) {
   const tooOld = bunTooOld(options.bunVersion, tildify(options.bunPath, options.home));
   if (tooOld !== null) {
     throw new Error(`${tooOld} The router is not installed. Upgrade this Bun, then run: ${COMMAND} gateway setup`);
   }
-  const unitName = basename2(options.unitPath);
-  const socketName = basename2(options.socketPath);
+  const { service } = options;
   const port = await probeRouterPort(options.port, options.probe.fetch);
-  const socketOpen = unitActive(options.runner, socketName);
-  if (port.state === "other" && !socketOpen) {
+  const listenerUp = service.listenerUp(options.runner);
+  if (port.state === "other" && !listenerUp) {
     throw new Error(`port ${options.port} is used by another program (an older router? stop it first)`);
   }
   const short = (path) => tildify(path, options.home);
   const copyText = readFileSync12(options.bundle, "utf8");
-  const unitText = renderUnit(options.bunPath, options.copyPath, socketName);
-  const socketText = renderSocket(options.port, unitName);
+  const definitions = service.definitions(options);
   const marker = restartPendingFile(options.stateDir);
   const write = (file, text, dryRun) => writeManagedFile(file, text, {
     stateDir: options.stateDir,
@@ -10328,20 +10330,22 @@ async function installRouter(options) {
     dryRun
   });
   const copyPlan = write(options.copyPath, copyText, true).outcome;
-  const unitPlan = write(options.unitPath, unitText, true).outcome;
-  const socketPlan = write(options.socketPath, socketText, true).outcome;
-  const filesUnchanged = copyPlan === "unchanged" && unitPlan === "unchanged" && socketPlan === "unchanged";
-  if (filesUnchanged && socketOpen && !existsSync11(marker)) {
+  const outcomes = {};
+  for (const definition of definitions) {
+    outcomes[definition.id] = write(definition.path, definition.text, true).outcome;
+  }
+  const filesUnchanged = copyPlan === "unchanged" && definitions.every((definition) => outcomes[definition.id] === "unchanged") && service.current(options.runner, options);
+  if (filesUnchanged && listenerUp && !existsSync11(marker)) {
     if (options.dryRun)
       return "up-to-date";
-    run(options.runner, ["systemctl", "--user", "enable", "--now", socketName, unitName]);
+    service.ensureRunning(options.runner);
     options.say(UP_TO_DATE);
     return "up-to-date";
   }
-  const rebind = !socketOpen || socketPlan !== "unchanged";
-  const active = unitActive(options.runner, unitName);
-  if (active) {
-    options.say(restartWarning(rebind, socketOpen, socketPlan, options.socketPath, options.port));
+  const running = service.running(options.runner);
+  const plan = service.plan(listenerUp, running, outcomes);
+  if (plan.running) {
+    options.say(service.restartWarning(options, plan));
     if (!options.yes) {
       const yes = options.confirm?.("Restart cc-smart-dev-kit-router now?") ?? null;
       if (yes !== true) {
@@ -10360,40 +10364,430 @@ async function installRouter(options) {
     }
   };
   said(options.copyPath, "router copy", write(options.copyPath, copyText, false).outcome);
-  said(options.unitPath, "unit", write(options.unitPath, unitText, false).outcome);
-  said(options.socketPath, "socket unit", write(options.socketPath, socketText, false).outcome);
-  run(options.runner, ["systemctl", "--user", "daemon-reload"]);
-  run(options.runner, ["systemctl", "--user", "enable", socketName, unitName]);
-  if (rebind) {
-    const state = unitState(options.runner, unitName);
-    if (state === "active" || state === "deactivating")
-      options.say(DRAIN_NOTE);
-    if (state !== "inactive" && state !== "failed") {
-      run(options.runner, ["systemctl", "--user", "stop", "--no-block", unitName]);
-    }
-    if (socketOpen)
-      run(options.runner, ["systemctl", "--user", "stop", socketName]);
-    options.runner(["systemctl", "--user", "reset-failed", socketName, unitName]);
-    const openSocket = ["systemctl", "--user", "start", socketName];
-    const opened = options.runner(openSocket);
-    if (opened.exitCode !== 0) {
-      options.say(`${openSocket.join(" ")} failed (exit ${opened.exitCode}): ${(opened.output.trim().split(`
-`)[0] ?? "").replace(/\.$/, "")}. Starting ${stem(unitName)} without its socket: the router binds 127.0.0.1:${options.port} itself, and until the socket opens, a restart refuses new requests while the old router drains. Is another program on that port? See: ss -ltnp, and journalctl --user -u ${socketName} -n 30. Then run ${COMMAND} gateway setup again.`);
-    }
-    run(options.runner, ["systemctl", "--user", "start", unitName]);
-  } else {
-    if (active)
-      options.say(`restarting ${stem(unitName)} (new requests wait in its socket)`);
-    run(options.runner, ["systemctl", "--user", "restart", unitName]);
+  for (const definition of definitions) {
+    said(definition.path, definition.what, write(definition.path, definition.text, false).outcome);
   }
+  service.afterWrite(options.runner, options);
+  await service.activate(options.runner, options, plan);
   if (!await waitForRouter(options.port, options.probe, HEALTH_WAIT_MS)) {
-    throw new Error(`${unitName} did not answer on 127.0.0.1:${options.port} within ${HEALTH_WAIT_MS / 1000} s of the restart (systemctl --user is-active: ${unitState(options.runner, unitName)}). See why: journalctl --user -u ${stem(unitName)} -n 30. Then run ${COMMAND} gateway setup again.`);
+    throw new Error(service.noAnswer(options.runner, options.port, HEALTH_WAIT_MS));
   }
   rmSync3(marker, { force: true });
-  options.say(`enabled and (re)started ${unitName} and ${socketName}`);
+  options.say(service.started);
   return "installed";
 }
+function systemdService(options) {
+  const unitName = basename2(options.unitPath);
+  const socketName = basename2(options.socketPath);
+  return {
+    async activate(runner, input, plan) {
+      if (plan.rebind) {
+        const state = unitState(runner, unitName);
+        if (state === "active" || state === "deactivating")
+          input.say(DRAIN_NOTE);
+        if (state !== "inactive" && state !== "failed") {
+          run(runner, ["systemctl", "--user", "stop", "--no-block", unitName]);
+        }
+        if (plan.listenerUp)
+          run(runner, ["systemctl", "--user", "stop", socketName]);
+        runner(["systemctl", "--user", "reset-failed", socketName, unitName]);
+        const openSocket = ["systemctl", "--user", "start", socketName];
+        const opened = runner(openSocket);
+        if (opened.exitCode !== 0) {
+          input.say(`${openSocket.join(" ")} failed (exit ${opened.exitCode}): ${(opened.output.trim().split(`
+`)[0] ?? "").replace(/\.$/, "")}. Starting ${stem(unitName)} without its socket: the router binds 127.0.0.1:${input.port} itself, and until the socket opens, a restart refuses new requests while the old router drains. Is another program on that port? See: ss -ltnp, and journalctl --user -u ${socketName} -n 30. Then run ${COMMAND} gateway setup again.`);
+        }
+        run(runner, ["systemctl", "--user", "start", unitName]);
+        return;
+      }
+      if (plan.running)
+        input.say(`restarting ${stem(unitName)} (new requests wait in its socket)`);
+      run(runner, ["systemctl", "--user", "restart", unitName]);
+    },
+    afterWrite(runner) {
+      run(runner, ["systemctl", "--user", "daemon-reload"]);
+      run(runner, ["systemctl", "--user", "enable", socketName, unitName]);
+    },
+    current: () => true,
+    definitions(input) {
+      return [
+        {
+          id: "unit",
+          path: options.unitPath,
+          text: renderUnit(input.bunPath, input.copyPath, socketName),
+          what: "unit"
+        },
+        {
+          id: "socket",
+          path: options.socketPath,
+          text: renderSocket(input.port, unitName),
+          what: "socket unit"
+        }
+      ];
+    },
+    ensureRunning(runner) {
+      run(runner, ["systemctl", "--user", "enable", "--now", socketName, unitName]);
+    },
+    forget(runner) {
+      run(runner, ["systemctl", "--user", "daemon-reload"]);
+    },
+    listenerUp(runner) {
+      return unitActive(runner, socketName);
+    },
+    logHint: `journalctl --user -u ${stem(unitName)} -n 30`,
+    name: unitName,
+    noAnswer(runner, port, waitedMs) {
+      return `${unitName} did not answer on 127.0.0.1:${port} within ${waitedMs / 1000} s of the restart (systemctl --user is-active: ${unitState(runner, unitName)}). See why: journalctl --user -u ${stem(unitName)} -n 30. Then run ${COMMAND} gateway setup again.`;
+    },
+    plan(listenerUp, running, outcomes) {
+      return {
+        listenerUp,
+        outcomes,
+        rebind: !listenerUp || outcomes.socket !== "unchanged",
+        running
+      };
+    },
+    restartWarning(input, plan) {
+      if (!plan.rebind)
+        return RESTART_WARNING;
+      if (!plan.listenerUp) {
+        return plan.outcomes.socket === "created" ? MOVE_WARNING : SOCKET_STOPPED_WARNING;
+      }
+      const oldPort = existsSync11(options.socketPath) ? socketPort(readFileSync12(options.socketPath, "utf8")) : null;
+      return oldPort !== null && oldPort !== input.port ? PORT_WARNING : SOCKET_CHANGED_WARNING;
+    },
+    running(runner) {
+      return unitActive(runner, unitName);
+    },
+    async stop(runner, port, probe) {
+      const state = port === null ? null : unitState(runner, unitName);
+      const stop = stopUnits(runner, {
+        dir: dirname4(options.unitPath),
+        names: [socketName, unitName]
+      });
+      const refused = stop.refused[0];
+      if (refused !== undefined) {
+        throw new Error(`${refused.command} failed (exit ${refused.exitCode}):
+${refused.output.trim()}`);
+      }
+      if (port === null || state === null)
+        return { kind: "no-port" };
+      if (!HOLDS_ITS_PORT.has(state))
+        return { kind: "not-running", state };
+      const result = await waitWhileRouterAnswers(port, probe, STOP_WAIT_MS);
+      if (result.state === "free")
+        return { kind: "closed" };
+      if (result.state === "other")
+        return { detail: result.detail, kind: "other" };
+      throw new Error(`${unitName} is disabled and was told to stop, but 127.0.0.1:${port} still takes connections after ${STOP_WAIT_MS / 1000} s. Nothing else was restored. See why: systemctl --user status ${stem(unitName)} (and ss -ltnp for another program on the port). Then run ${COMMAND} restore again.`);
+    },
+    started: `enabled and (re)started ${unitName} and ${socketName}`,
+    state(runner) {
+      return unitState(runner, unitName);
+    },
+    warnings: INSTALL_WARNINGS
+  };
+}
+var STOP_WAIT_MS = 15000;
 var HOLDS_ITS_PORT = new Set(["active", "deactivating"]);
+function stopUnits(runner, options) {
+  const result = { missing: [], refused: [], stopped: [] };
+  const there = options.names.filter((name) => {
+    if (existsSync11(join12(options.dir, name)))
+      return true;
+    result.missing.push(name);
+    return false;
+  });
+  if (there.length === 0)
+    return result;
+  for (const args of [["disable"], ["stop", "--no-block"]]) {
+    const cmd = ["systemctl", "--user", ...args, ...there];
+    const ran = runner(cmd);
+    if (ran.exitCode !== 0) {
+      result.refused.push({ command: cmd.join(" "), exitCode: ran.exitCode, output: ran.output });
+    }
+  }
+  result.stopped = there;
+  return result;
+}
+
+// src/gateway/service-windows.ts
+var TASK_NAME = "cc-smart-dev-kit-router";
+var TASK_LABEL = `the task ${TASK_NAME}`;
+var TASK_RESTART_WARNING = `the task ${TASK_NAME} is running. A restart stops it and starts it again, so new requests are refused for a moment (Claude Code retries them). Windows has no socket that holds the router's port across a restart, so this restart cannot promise what a Linux one does: that no request fails.`;
+var TASK_WARNINGS = [TASK_RESTART_WARNING];
+var TASK_STOP_WAIT_MS = 5000;
+var POWERSHELL = "powershell";
+var PS_FLAGS = ["-NoProfile", "-NonInteractive", "-Command"];
+function psQuote(value) {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(`cannot put ${JSON.stringify(value)} in a PowerShell command`);
+  }
+  return `'${value.replaceAll("'", "''")}'`;
+}
+function taskQuery() {
+  return [
+    `$n=${psQuote(TASK_NAME)}`,
+    "$t=Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue",
+    `if($null -eq $t){'registered=false'}else{$a=@($t.Actions)[0];'registered=true'`,
+    `'state='+$t.State`,
+    `'last='+(Get-ScheduledTaskInfo -TaskName $n).LastTaskResult`,
+    `'execute='+$a.Execute`,
+    `'arguments='+$a.Arguments`,
+    `'working='+$a.WorkingDirectory}`
+  ].join(";");
+}
+function fieldOf(lines, key) {
+  const prefix = `${key}=`;
+  const line = lines.find((one) => one.startsWith(prefix));
+  return line === undefined ? null : line.slice(prefix.length).trim();
+}
+function parseTaskFacts(output) {
+  const lines = output.split(/\r?\n/).map((line) => line.trim());
+  if (fieldOf(lines, "registered") !== "true") {
+    return { action: null, lastResult: null, registered: false, state: "not registered" };
+  }
+  const state = fieldOf(lines, "state") ?? "unknown";
+  const last = fieldOf(lines, "last");
+  const lastResult = last !== null && /^-?\d+$/.test(last) ? Number(last) : null;
+  const execute = fieldOf(lines, "execute");
+  return {
+    action: execute === null ? null : {
+      arguments: fieldOf(lines, "arguments") ?? "",
+      execute,
+      workingDirectory: fieldOf(lines, "working") ?? ""
+    },
+    lastResult,
+    registered: true,
+    state
+  };
+}
+function taskFacts(runner) {
+  const result = runner([POWERSHELL, ...PS_FLAGS, taskQuery()]);
+  if (result.exitCode !== 0) {
+    throw new Error(`could not ask Windows about ${TASK_LABEL} (exit ${result.exitCode}): ${oneLine(result.output, 300)}`);
+  }
+  return parseTaskFacts(result.output);
+}
+function taskRunning(runner) {
+  return taskFacts(runner).state === "Running";
+}
+function runTask(runner, script, what) {
+  const result = runner([POWERSHELL, ...PS_FLAGS, script]);
+  if (result.exitCode !== 0) {
+    throw new Error(`${what} failed (exit ${result.exitCode}): ${oneLine(result.output, 300)}`);
+  }
+}
+function registerTask(runner, taskPath) {
+  runTask(runner, `Register-ScheduledTask -TaskName ${psQuote(TASK_NAME)} -Xml (Get-Content -Raw -Encoding UTF8 -LiteralPath ${psQuote(taskPath)}) -Force | Out-Null`, `registering ${TASK_LABEL}`);
+}
+function startTask(runner) {
+  runTask(runner, `Start-ScheduledTask -TaskName ${psQuote(TASK_NAME)}`, `starting ${TASK_LABEL}`);
+}
+function stopTask(runner) {
+  runTask(runner, `Stop-ScheduledTask -TaskName ${psQuote(TASK_NAME)}`, `stopping ${TASK_LABEL}`);
+}
+function unregisterTask(runner) {
+  runTask(runner, `Unregister-ScheduledTask -TaskName ${psQuote(TASK_NAME)} -Confirm:$false`, `removing ${TASK_LABEL}`);
+}
+function xmlEscape(text) {
+  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+function checkTaskPath(path) {
+  if (/["\p{Cc}]/u.test(path)) {
+    throw new Error(`cannot put ${JSON.stringify(path)} in the task's definition`);
+  }
+}
+function renderTask(options) {
+  for (const path of [options.bunPath, options.copyPath, options.home])
+    checkTaskPath(path);
+  const account = xmlEscape(options.account);
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!-- ${TASK_NAME}: the local CC gateway for Claude Code (127.0.0.1 only).
+     Written by \`${COMMAND} gateway setup\`; it is registered as a Scheduled Task with
+     \`Register-ScheduledTask -Xml\`. The next setup overwrites it; edits here are lost. -->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Local CC gateway for Claude Code (127.0.0.1:${options.port} only). Written by \`${COMMAND} gateway setup\`.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>${account}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>${account}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>${xmlEscape(options.bunPath)}</Command>
+      <Arguments>--no-env-file "${xmlEscape(options.copyPath)}"</Arguments>
+      <WorkingDirectory>${xmlEscape(options.home)}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+`;
+}
+function taskAction(input) {
+  return {
+    arguments: `--no-env-file "${input.copyPath}"`,
+    execute: input.bunPath,
+    workingDirectory: input.home
+  };
+}
+function samePath2(left, right) {
+  return left.trim().toLowerCase() === right.trim().toLowerCase();
+}
+function taskRunsCopy(facts, copyPath) {
+  const action = facts.action;
+  if (action === null)
+    return false;
+  return action.arguments.toLowerCase().includes(copyPath.trim().toLowerCase());
+}
+function actionCurrent(facts, input) {
+  if (facts.action === null)
+    return false;
+  const wanted = taskAction({
+    bunPath: input.bunPath,
+    copyPath: input.copyPath,
+    home: input.home
+  });
+  return samePath2(facts.action.execute, wanted.execute) && samePath2(facts.action.arguments, wanted.arguments) && samePath2(facts.action.workingDirectory, wanted.workingDirectory);
+}
+function scheduledTaskService(options) {
+  const { taskPath } = options;
+  let account = options.account?.trim() || null;
+  const accountNow = () => {
+    if (account === null) {
+      const result = options.runner([
+        POWERSHELL,
+        ...PS_FLAGS,
+        "[System.Security.Principal.WindowsIdentity]::GetCurrent().Name"
+      ]);
+      const name = result.output.trim().split(`
+`)[0]?.trim() ?? "";
+      if (result.exitCode !== 0 || name === "") {
+        throw new Error(`could not tell which Windows account this is (exit ${result.exitCode}): ${oneLine(result.output, 300)}`);
+      }
+      account = name;
+    }
+    return account;
+  };
+  const logHint = `stop ${TASK_LABEL} (\`Stop-ScheduledTask -TaskName ${TASK_NAME}\`) and run \`${COMMAND} gateway serve\` in a terminal: a task has no console, so the router's log goes nowhere else`;
+  const definition = (input) => ({
+    id: "task",
+    path: taskPath,
+    text: renderTask({
+      account: accountNow(),
+      bunPath: input.bunPath,
+      copyPath: input.copyPath,
+      home: input.home,
+      port: input.port
+    }),
+    what: "task"
+  });
+  return {
+    async activate(runner, input, plan) {
+      if (plan.running) {
+        input.say(`restarting ${TASK_LABEL} (new requests are refused until it answers)`);
+        stopTask(runner);
+        const waited = await waitWhileRouterAnswers(input.port, input.probe, TASK_STOP_WAIT_MS);
+        if (waited.state === "held") {
+          throw new Error(`${TASK_LABEL} was stopped, but 127.0.0.1:${input.port} still answers after ${TASK_STOP_WAIT_MS / 1000} s, so the new router cannot bind it. Nothing was started. Stop what holds that port, then run: ${COMMAND} gateway setup`);
+        }
+        if (waited.state === "other") {
+          input.say(`port ${input.port} answers, but not as this router (${waited.detail}); starting ${TASK_LABEL} all the same`);
+        }
+      }
+      startTask(runner);
+    },
+    afterWrite(runner) {
+      registerTask(runner, taskPath);
+    },
+    current(runner, input) {
+      const facts = taskFacts(runner);
+      return facts.registered && actionCurrent(facts, input);
+    },
+    definitions(input) {
+      return [definition(input)];
+    },
+    ensureRunning(runner) {
+      if (!taskRunning(runner))
+        startTask(runner);
+    },
+    forget() {},
+    listenerUp(runner) {
+      return taskRunning(runner);
+    },
+    logHint,
+    name: TASK_LABEL,
+    noAnswer(runner, port, waitedMs) {
+      const facts = taskFacts(runner);
+      const last = facts.lastResult === null ? "" : `, last run result ${facts.lastResult}`;
+      return `the router did not answer on 127.0.0.1:${port} within ${waitedMs / 1000} s of the task's start (${TASK_LABEL} is ${facts.state}${last}). See why: ${logHint}. Then run: ${COMMAND} gateway setup again.`;
+    },
+    plan(listenerUp, running, outcomes) {
+      return { listenerUp, outcomes, rebind: true, running };
+    },
+    restartWarning() {
+      return TASK_RESTART_WARNING;
+    },
+    running(runner) {
+      return taskRunning(runner);
+    },
+    async stop(runner, port, probe) {
+      const before = taskFacts(runner);
+      if (!before.registered)
+        return { kind: "not-running", state: "not registered" };
+      if (before.state === "Running")
+        stopTask(runner);
+      unregisterTask(runner);
+      if (port === null)
+        return { kind: "no-port" };
+      if (before.state !== "Running")
+        return { kind: "not-running", state: before.state };
+      const result = await waitWhileRouterAnswers(port, probe, STOP_WAIT_MS);
+      if (result.state === "free")
+        return { kind: "closed" };
+      if (result.state === "other")
+        return { detail: result.detail, kind: "other" };
+      throw new Error(`${TASK_LABEL} was removed, but 127.0.0.1:${port} still takes connections after ${STOP_WAIT_MS / 1000} s. Nothing else was restored. Stop what holds that port, then run ${COMMAND} restore again.`);
+    },
+    state(runner) {
+      return taskFacts(runner).state;
+    },
+    started: `registered and (re)started ${TASK_LABEL}`,
+    warnings: TASK_WARNINGS
+  };
+}
 
 // src/gateway/settings.ts
 import { existsSync as existsSync12, readFileSync as readFileSync13 } from "fs";
@@ -10529,12 +10923,22 @@ Commands:
                          Turn that fallback off.
   setup [--yes] [--backend-key-stdin <backend> | --no-backend-key]
                          Make the config (the key on stdin), install the router copy and
-                         its systemd user unit, and start it. --yes: restart a running
-                         router without asking (a restart cuts the answers in flight).
+                         the service that runs it (a systemd user unit on Linux, a
+                         per-user Scheduled Task on Windows), and start it. --yes:
+                         restart a running router without asking.
   on                     Point Claude Code at the router (every session on this machine).
   off                    Remove what "on" set. Restart the sessions afterwards.
   serve                  Run the router in this terminal.`;
 var NEEDS_SYSTEMD = "the gateway service needs systemd (Linux) for now.";
+var NEEDS_POWERSHELL = "the gateway service needs PowerShell, and this machine has none: with no PowerShell and no systemd, there is no way to run the router here.";
+function routerService(ctx) {
+  const { paths } = ctx;
+  return ctx.service === "scheduled-task" ? scheduledTaskService({
+    account: ctx.account,
+    runner: ctx.runner,
+    taskPath: paths.routerTaskFile
+  }) : systemdService({ socketPath: paths.routerSocketFile, unitPath: paths.routerUnitFile });
+}
 function isJsonObject6(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -10862,11 +11266,12 @@ async function commandSetup(ctx, args) {
     ctx.error(USAGE);
     return 2;
   }
-  if (!ctx.systemd) {
-    ctx.error(NEEDS_SYSTEMD);
+  if (ctx.service === "none") {
+    ctx.error(ctx.platform === "win32" ? NEEDS_POWERSHELL : NEEDS_SYSTEMD);
     return 1;
   }
   const { paths } = ctx;
+  const service = routerService(ctx);
   let key = null;
   if (options.keyBackend !== null) {
     const value = (await ctx.readStdin()).trim();
@@ -10880,16 +11285,16 @@ async function commandSetup(ctx, args) {
     bunVersion: ctx.bunVersion,
     bundle: ctx.bundle,
     copyPath: paths.routerCopy,
-    unitPath: paths.routerUnitFile,
-    socketPath: paths.routerSocketFile,
     home: paths.home,
     stateDir: paths.stateDir,
     port: configuredPort(configPath),
     probe: ctx.probe,
     runner: ctx.runner,
     say: ctx.print,
+    service,
     yes: options.yes,
     confirm: ctx.confirm,
+    ...ctx.account === null ? {} : { account: ctx.account },
     ...overrides
   });
   ensureConfig(configPath, key, { allowNone: options.noKey, dryRun: true });
@@ -10902,7 +11307,7 @@ async function commandSetup(ctx, args) {
       yes: true,
       confirm: null,
       say: (line) => {
-        if (!INSTALL_WARNINGS.includes(line))
+        if (!service.warnings.includes(line))
           ctx.print(line);
       }
     }));
@@ -11005,13 +11410,19 @@ async function gatewayChecks(options) {
   const { paths } = options;
   const short = (path) => tildify(path, paths.home);
   const checks = [];
+  const service = routerService({
+    account: null,
+    paths,
+    runner: options.runner,
+    service: options.service
+  });
   if (existsSync14(restartPendingFile(paths.stateDir))) {
     checks.push({
       ok: false,
       text: `a gateway setup did not finish; run: ${COMMAND} gateway setup`
     });
   }
-  const installed = existsSync14(paths.routerCopy) || existsSync14(paths.routerUnitFile) || existsSync14(paths.routerSocketFile);
+  const installed = existsSync14(paths.routerCopy) || existsSync14(paths.routerUnitFile) || existsSync14(paths.routerSocketFile) || existsSync14(paths.routerTaskFile);
   if (!installed) {
     checks.push(existsSync14(paths.gatewayConfigFile) ? {
       ok: true,
@@ -11024,16 +11435,14 @@ async function gatewayChecks(options) {
     });
     return checks;
   }
-  if (!options.systemd) {
+  if (options.service === "none") {
     checks.push({
       ok: false,
       text: `gateway: ${NEEDS_SYSTEMD}`
     });
   } else {
-    const state = options.runner(["systemctl", "--user", "is-active", UNIT_NAME]);
-    const word = state.output.trim().split(`
-`)[0] || "unknown";
-    checks.push(state.exitCode === 0 ? { ok: true, text: `the router service (${UNIT_NAME}) is active` } : { ok: false, text: `the router service (${UNIT_NAME}) is ${word}. ${SETUP}` });
+    const state = service.state(options.runner);
+    checks.push(service.running(options.runner) ? { ok: true, text: `the router service (${service.name}) is active` } : { ok: false, text: `the router service (${service.name}) is ${state}. ${SETUP}` });
   }
   if (!existsSync14(paths.routerCopy)) {
     checks.push({ ok: false, text: `no router copy at ${short(paths.routerCopy)}. ${SETUP}` });
@@ -11061,10 +11470,13 @@ async function gatewayChecks(options) {
       return checks;
     }
   }
-  const socket = socketCheck(options, config.port);
-  checks.push(socket.check);
+  const holder = portHolderCheck(options, config.port);
+  checks.push(holder.check);
   const health = await routerHealth(config.port, options.fetch);
-  checks.push("error" in health ? { ok: false, text: notAnswering(config.port, health.error, socket.state) } : { ok: true, text: `the router answers on 127.0.0.1:${config.port}` });
+  checks.push("error" in health ? {
+    ok: false,
+    text: notAnswering(options, service, config.port, health.error, holder.state)
+  } : { ok: true, text: `the router answers on 127.0.0.1:${config.port}` });
   for (const [name, backend] of Object.entries(config.backends)) {
     const url = shownValue(backend.baseUrl);
     const listed = await listModels(backend.baseUrl, backend.apiKey, 5000);
@@ -11109,16 +11521,54 @@ async function gatewayChecks(options) {
   }
   return checks;
 }
-var ROUTER_LOG = `journalctl --user -u ${UNIT_NAME.replace(/\.service$/, "")} -n 30`;
-function notAnswering(port, error, socket) {
-  switch (socket) {
+function notAnswering(options, service, port, error, holder) {
+  if (options.service === "scheduled-task") {
+    return holder === "open" ? `${TASK_LABEL} runs, but the router does not answer on 127.0.0.1:${port} (${error}): every request is refused. See why: ${service.logHint}. Then: ${COMMAND} gateway setup` : `the router does not answer on 127.0.0.1:${port} (${error}). See why: ${service.logHint}. Then: ${COMMAND} gateway setup`;
+  }
+  switch (holder) {
     case "open":
-      return `the socket holds 127.0.0.1:${port}, but the router does not answer (${error}): every request waits in the socket and gets no answer. See why: ${ROUTER_LOG}. Then: ${COMMAND} gateway setup`;
+      return `the socket holds 127.0.0.1:${port}, but the router does not answer (${error}): every request waits in the socket and gets no answer. See why: ${service.logHint}. Then: ${COMMAND} gateway setup`;
     case "start-limit":
-      return `the router failed to start again and again, so systemd closed its socket: every request to 127.0.0.1:${port} is refused (${error}). See why: ${ROUTER_LOG}. Then: ${COMMAND} gateway setup`;
+      return `the router failed to start again and again, so systemd closed its socket: every request to 127.0.0.1:${port} is refused (${error}). See why: ${service.logHint}. Then: ${COMMAND} gateway setup`;
     case "other":
       return `the router does not answer on 127.0.0.1:${port} (${error})`;
   }
+}
+function portHolderCheck(options, port) {
+  return options.service === "scheduled-task" ? taskDefinitionCheck(options) : socketCheck(options, port);
+}
+function taskDefinitionCheck(options) {
+  const { paths } = options;
+  const where = tildify(paths.routerTaskFile, paths.home);
+  if (!existsSync14(paths.routerTaskFile)) {
+    return {
+      check: { ok: false, text: `no task definition at ${where}. ${SETUP}` },
+      state: "other"
+    };
+  }
+  const facts = taskFacts(options.runner);
+  if (!facts.registered) {
+    return {
+      check: {
+        ok: false,
+        text: `the task definition ${where} is not registered as ${TASK_LABEL}. ${SETUP}`
+      },
+      state: "other"
+    };
+  }
+  if (!taskRunsCopy(facts, paths.routerCopy)) {
+    return {
+      check: {
+        ok: false,
+        text: `${TASK_LABEL} does not run ${tildify(paths.routerCopy, paths.home)}. ${SETUP}`
+      },
+      state: "other"
+    };
+  }
+  return {
+    check: { ok: true, text: `the task definition ${where} is up to date` },
+    state: facts.state === "Running" ? "open" : "other"
+  };
 }
 function socketCheck(options, port) {
   const { paths } = options;
@@ -11141,7 +11591,7 @@ function socketCheck(options, port) {
       state: "other"
     };
   }
-  if (!options.systemd) {
+  if (options.service !== "systemd") {
     return { check: { ok: true, text: `the socket unit ${where} is up to date` }, state: "other" };
   }
   const active = options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
@@ -11449,7 +11899,7 @@ import {
   readFileSync as readFileSync17,
   realpathSync as realpathSync3
 } from "fs";
-import { dirname as dirname4, join as join13 } from "path";
+import { dirname as dirname5, join as join13 } from "path";
 var PACKAGE2 = "omniroute";
 var NAME = "OmniRoute";
 function tokenize(text) {
@@ -11545,11 +11995,11 @@ function versionOf(folder, name) {
   }
 }
 function packageFolderOf(script, name) {
-  let dir = dirname4(script);
+  let dir = dirname5(script);
   for (let step = 0;step < 8; step += 1) {
     if (versionOf(dir, name) !== null)
       return dir;
-    const up = dirname4(dir);
+    const up = dirname5(dir);
     if (up === dir)
       break;
     dir = up;
@@ -11596,7 +12046,7 @@ function fromPath(which) {
 }
 function findOmniroute(options) {
   const { paths, env } = options;
-  const units = userUnits(dirname4(paths.routerUnitFile));
+  const units = userUnits(dirname5(paths.routerUnitFile));
   const unit = units.find((entry) => entry.argv.some(namesOmniroute)) ?? units.find((entry) => entry.argv.some((word) => word.includes(PACKAGE2))) ?? null;
   const script = unit?.argv.find(namesOmniroute) ?? null;
   const fromUnit = script === null ? null : packageFolderOf(script, PACKAGE2);
@@ -11661,7 +12111,7 @@ function writable(dir) {
   }
 }
 function installIsWritable(install) {
-  return writable(install.folder) && writable(dirname4(install.folder));
+  return writable(install.folder) && writable(dirname5(install.folder));
 }
 
 // src/omniroute/registry.ts
@@ -12419,7 +12869,7 @@ import {
   writeFileSync as writeFileSync6
 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
-import { dirname as dirname7, join as join26 } from "path";
+import { dirname as dirname8, join as join26 } from "path";
 
 // src/hooks/specs.ts
 import { existsSync as existsSync26 } from "fs";
@@ -12921,7 +13371,7 @@ import { join as join17 } from "path";
 
 // src/hooks/git.ts
 import { realpathSync as realpathSync4 } from "fs";
-import { basename as basename3, dirname as dirname5, join as join16, resolve as resolve2 } from "path";
+import { basename as basename3, dirname as dirname6, join as join16, resolve as resolve2 } from "path";
 var GUARD_GIT_TIMEOUT_MS = 5000;
 function runGit(cwd, args, env, timeoutMs = 15000) {
   try {
@@ -12955,7 +13405,7 @@ function isInside(path, folder, ignoreCase = IGNORE_CASE) {
   const parent = form(folder);
   return child === parent || child.startsWith(`${parent}/`);
 }
-function samePath2(a, b, ignoreCase = IGNORE_CASE) {
+function samePath3(a, b, ignoreCase = IGNORE_CASE) {
   return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
 }
 function realPath(path) {
@@ -12965,7 +13415,7 @@ function realPath(path) {
     try {
       return join16(realpathSync4(at), ...rest);
     } catch {
-      const parent = dirname5(at);
+      const parent = dirname6(at);
       if (parent === at)
         return resolve2(path);
       rest.unshift(basename3(at));
@@ -14830,7 +15280,7 @@ function activationAllowed(project, folders) {
   if (typeof project !== "string" || !isAbsolute2(project))
     return false;
   const wanted = resolve4(project);
-  return folders.some((folder) => samePath2(wanted, folder, IGNORE_CASE));
+  return folders.some((folder) => samePath3(wanted, folder, IGNORE_CASE));
 }
 var ACTIVATION_REFUSAL = "Point Serena only at this repo's main checkout or one of its worktrees, by absolute path \u2014 never a project name and never a folder outside the repo: every worktree shares one project name, so a name cannot say which folder is meant.";
 function requestedProject(input) {
@@ -15136,7 +15586,7 @@ import {
   statSync as statSync9,
   writeFileSync as writeFileSync5
 } from "fs";
-import { dirname as dirname6, join as join23 } from "path";
+import { dirname as dirname7, join as join23 } from "path";
 
 // src/hooks/create-lock.ts
 import { createHash as createHash5 } from "crypto";
@@ -15266,7 +15716,7 @@ function badPrefix(prefix) {
   return /[\\/]/.test(prefix) || prefix === "." || prefix === ".." ? `worktrees.prefix "${prefix}" must be part of a folder name, with no "/" or "\\"` : null;
 }
 function configuredFolder(mainCheckout, prefix, name) {
-  return join23(dirname6(mainCheckout), `${prefix}${name.replace(/[\\/]/g, "-")}`);
+  return join23(dirname7(mainCheckout), `${prefix}${name.replace(/[\\/]/g, "-")}`);
 }
 function subagentShape(repoRoot, name) {
   return { folder: join23(repoRoot, ".claude", "worktrees", name), branch: `worktree-${name}` };
@@ -15354,7 +15804,7 @@ function copyWorktreeInclude(source, target, env) {
   for (const path of ignored.stdout.toString().split("\x00")) {
     if (path === "" || existsSync24(join23(target, path)))
       continue;
-    mkdirSync8(dirname6(join23(target, path)), { recursive: true });
+    mkdirSync8(dirname7(join23(target, path)), { recursive: true });
     copyFileSync(join23(source, path), join23(target, path));
     copied.push(path);
   }
@@ -15395,7 +15845,7 @@ function reuseDecision(params) {
       why: `${branch} is the main checkout's branch; name a branch of its own for this work`
     };
   }
-  const found = others.find((worktree) => worktree.branch === branch) ?? others.find((worktree) => samePath2(worktree.path, folder));
+  const found = others.find((worktree) => worktree.branch === branch) ?? others.find((worktree) => samePath3(worktree.path, folder));
   if (found === undefined)
     return { kind: "create" };
   if (found.branch !== null && found.branch !== branch) {
@@ -15501,7 +15951,7 @@ function createForSubagent(context, name) {
   return withCreateLock(project.commonDir, branch, session, () => {
     const listed = listWorktrees(repo, env);
     if (existsSync24(folder)) {
-      if (listed.some((worktree) => samePath2(worktree.path, folder)))
+      if (listed.some((worktree) => samePath3(worktree.path, folder)))
         return folder;
       throw new Refusal(`${folder} exists and is not a worktree of this repo`);
     }
@@ -15702,7 +16152,7 @@ function removeWorktree(repo, mainCheckout, found, all, env, timeoutMs = REMOVE_
       why: `${found.path} is locked (\`git worktree unlock ${found.path}\` once it is safe)`
     };
   }
-  const inner = all.find((other) => other !== found && isInside(other.path, found.path) && !samePath2(other.path, found.path));
+  const inner = all.find((other) => other !== found && isInside(other.path, found.path) && !samePath3(other.path, found.path));
   if (inner !== undefined) {
     return { removed: false, why: `another worktree lives inside it: ${inner.path}` };
   }
@@ -15745,10 +16195,10 @@ function worktreeRemove(context) {
   const repo = project.mainCheckout ?? project.root;
   const all = listWorktrees(repo, env);
   const [main, ...others] = all;
-  if (main !== undefined && samePath2(main.path, path)) {
+  if (main !== undefined && samePath3(main.path, path)) {
     return { exitCode: 1, stderr: `worktree kept: ${path} is the main checkout` };
   }
-  const found = others.find((worktree) => samePath2(worktree.path, path));
+  const found = others.find((worktree) => samePath3(worktree.path, path));
   if (found === undefined) {
     if (existsSync25(path)) {
       return { exitCode: 1, stderr: `worktree kept: ${path} is not a worktree of this repo` };
@@ -15776,7 +16226,7 @@ function subagentStop(context) {
     return SILENT;
   const repo = project.mainCheckout ?? project.root;
   const all = listWorktrees(repo, env);
-  const found = all.slice(1).find((worktree) => samePath2(worktree.path, path));
+  const found = all.slice(1).find((worktree) => samePath3(worktree.path, path));
   if (found === undefined || found.branch === null)
     return SILENT;
   if (ownCommits(repo, found.branch, env) !== 0)
@@ -16025,7 +16475,7 @@ var GIT_ID = {
   GIT_COMMITTER_EMAIL: "live-check@example.com"
 };
 function proveIn(label, repo, expected, deps, env) {
-  const log = join26(dirname7(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
+  const log = join26(dirname8(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
   const session = deps.run([
     "claude",
     "-p",
@@ -16770,7 +17220,7 @@ function ccSmartDevKitImports(text) {
 function checkProjectImports(paths, cwd) {
   const short = (path) => tildify(path, paths.home);
   const imports = [];
-  for (let dir = cwd;; dir = dirname8(dir)) {
+  for (let dir = cwd;; dir = dirname9(dir)) {
     for (const name of PROJECT_MEMORY_FILES) {
       const from = join29(dir, name);
       if (from === join29(paths.claudeConfigDir, "CLAUDE.md") || !existsSync30(from))
@@ -16786,7 +17236,7 @@ function checkProjectImports(paths, cwd) {
         imports.push({ from, path, file });
       }
     }
-    if (dirname8(dir) === dir)
+    if (dirname9(dir) === dir)
       break;
   }
   if (imports.length === 0)
@@ -16827,7 +17277,7 @@ async function omnirouteCheck(paths, env, gateway) {
     },
     sleep: (ms) => Bun.sleep(ms),
     systemFolders: gateway.systemFolders,
-    systemd: gateway.systemd,
+    systemd: gateway.service === "systemd",
     which: gateway.machine.which
   });
   return line === null ? [] : [{ info: true, ok: true, text: line.text }];
@@ -18763,7 +19213,9 @@ function gatewayContext(action, print) {
       probe: portal.probe,
       readStdin: () => Promise.resolve(""),
       runner: portal.runner,
-      systemd: portal.systemd
+      service: portal.systemd ? "systemd" : "none",
+      account: null,
+      platform: process.platform
     }
   };
 }
@@ -21193,7 +21645,7 @@ ${PORTAL_USAGE}`);
         bundle: join34(folder, "dist", "router.js"),
         machine,
         runner,
-        systemd: ctx.systemd
+        service: ctx.systemd ? "systemd" : "none"
       },
       live: null,
       local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join34(folder, "dist")) },

@@ -456,7 +456,7 @@ function machine(fixture: FixtureOptions = {}) {
       yes: true,
       now: false,
       runner,
-      systemd: true,
+      service: "systemd",
       confirm: null,
       probe,
       ...overrides,
