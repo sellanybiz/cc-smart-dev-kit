@@ -562,7 +562,10 @@ function snapshot(home: string): Record<string, string> {
       // The stamp goes, and its counter (two backups in the same millisecond) stays: a run
       // that made one backup more is still a difference.
       .replaceAll(/(\d{8}T\d{9}Z)(-\d+)?/g, "STAMP$2");
-  const files: Record<string, string> = {};
+  /** The name a file is ordered by: the same, with the stamp left in it. */
+  const orderKey = (rel: string): string =>
+    rel.replaceAll(encodeURIComponent(home), "~").replaceAll(home, "~");
+  const found: { key: string; order: string; value: string }[] = [];
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
@@ -573,10 +576,27 @@ function snapshot(home: string): Record<string, string> {
         walk(path);
         continue;
       }
-      files[flatten(rel)] = flatten(readFileSync(path, "utf8"));
+      found.push({
+        key: flatten(rel),
+        order: orderKey(rel),
+        value: flatten(readFileSync(path, "utf8")),
+      });
     }
   };
   walk(home);
+  // Two backups of one file, made at different moments, carry different stamps and so are
+  // the same key once the stamp is gone — the old machine's backup and this run's, say.
+  // Which of them a plain map keeps would then be whichever `readdirSync` walked last: the
+  // folder's creation order on tmpfs, a name hash on ext4, which depends on the stamp and
+  // so changes with the clock. The oldest name keeps the plain key and the others are
+  // numbered, so the same run always reads the same on any machine.
+  const files: Record<string, string> = {};
+  const byName = found.sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : 0));
+  for (const entry of byName) {
+    let key = entry.key;
+    for (let n = 2; Object.hasOwn(files, key); n += 1) key = `${entry.key}#${String(n)}`;
+    files[key] = entry.value;
+  }
   return files;
 }
 

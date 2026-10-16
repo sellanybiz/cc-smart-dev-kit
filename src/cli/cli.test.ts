@@ -175,13 +175,22 @@ function setup(options: SetupOptions = {}) {
     chmodSync(join(fakeBin, name), 0o755);
   }
 
+  // bun, alone in a folder of the test's own: the fake `claude` runs it for its `mcp`
+  // helper. Never the host's bun folder: `setup` registers the `bunx` it finds beside it
+  // (`servers.ts`), and a runner installs bun with its `bunx` in the same folder
+  // (`~/.bun/bin`), so the output would depend on the machine. A test that wants `bunx`
+  // writes one into this folder itself.
+  const bunBin = join(home, "bun-bin");
+  mkdirSync(bunBin);
+  symlinkSync(process.execPath, join(bunBin, "bun"));
+
   // The CLI runs as its own process: it never reads the host. PATH holds the fakes, the
   // launcher's folder and bun's, nothing else; the host's facts are given (a Linux with no
   // os-release, so no package manager cc-smart-dev-kit knows, and no Warp app).
   const env: Record<string, string> = {
     HOME: home,
     CLAUDE_CONFIG_DIR: configDir,
-    PATH: `${fakeBin}:${join(home, ".local", "bin")}:${dirname(process.execPath)}`,
+    PATH: `${fakeBin}:${join(home, ".local", "bin")}:${bunBin}`,
     [TEST_HOST_VAR]: JSON.stringify({
       platform: "linux",
       arch: "x64",
@@ -244,6 +253,8 @@ function setup(options: SetupOptions = {}) {
     binDir: join(home, ".local", "bin"),
     launcher: join(home, ".local", "bin", "cc-smart-dev-kit"),
     fakeBin,
+    /** The folder on PATH that holds bun, and nothing else: a test may add its own `bunx`. */
+    bunBin,
     run,
     runAsync,
     gitCalls,
@@ -370,7 +381,11 @@ const SERENA_CONTEXT =
 const TAVILY_SKIPPED =
   "! tavily-websearch: skipped — no TAVILY_API_KEY in the environment, and no key file: put the key there (chmod 600) or set the variable, then run setup again";
 
-/** The `claude mcp add-json` lines a dry run prints, written by hand from `home`. */
+/**
+ * The `claude mcp add-json` lines a dry run prints, written by hand from `home`. These
+ * temp machines have no `bunx` anywhere on PATH, so the sequential-thinking registration
+ * keeps the bare name; a machine with one gets that `bunx`'s absolute path (§ MCP servers).
+ */
 function mcpDryRunLines(home: string): string[] {
   const launcher = join(home, ".local", "bin", "cc-smart-dev-kit");
   const context = join(
@@ -2294,6 +2309,32 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     expect(
       existsSync(join(home, ".local/share/cc-smart-dev-kit/serena/contexts/worktree.yml")),
     ).toBe(false);
+  });
+
+  test("a bunx on PATH: sequential-thinking is registered by its absolute path", () => {
+    // Claude Code may be started with a PATH that has no bun (the reason the launcher and
+    // the hooks' shim find bun themselves): a bare `bunx` would not start there. The
+    // machine's own `bunx`, as setup found it, is what the registration names.
+    const { bunBin, run, claudeCalls } = setup();
+    const bunx = join(bunBin, "bunx");
+    writeFileSync(bunx, "#!/bin/sh\nexit 0\n");
+    chmodSync(bunx, 0o755);
+    const result = run(["setup"]);
+    expect(result.exitCode).toBe(0);
+    expect(claudeCalls()).toContain(
+      `mcp add-json --scope user sequential-thinking {"args":["-y","@modelcontextprotocol/server-sequential-thinking@${MCP_VERSIONS.sequentialThinking}"],"command":"${bunx}"}`,
+    );
+  });
+
+  test("no bunx on the machine: sequential-thinking keeps the bare name", () => {
+    // Nothing to point at: the registration says `bunx`, and Claude Code's own PATH
+    // decides, as it would for `uvx` in the serena registration.
+    const { run, claudeCalls } = setup();
+    const result = run(["setup"]);
+    expect(result.exitCode).toBe(0);
+    expect(claudeCalls()).toContain(
+      `mcp add-json --scope user sequential-thinking {"args":["-y","@modelcontextprotocol/server-sequential-thinking@${MCP_VERSIONS.sequentialThinking}"],"command":"bunx"}`,
+    );
   });
 
   test("a Tavily key in a 0600 file: an owned secret in the settings, never printed, mode 600", () => {
