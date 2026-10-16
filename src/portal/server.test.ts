@@ -1925,6 +1925,8 @@ describe("the shape of the pages", () => {
     expect(PORTAL_CSS).toContain("ol.guide");
     // A box with no file name is one row, the Copy button beside the code, not above it.
     expect(PORTAL_CSS).toContain(".codebox.oneline { display: flex;");
+    // ...and on a phone the button goes under the code, so a short command is never cut.
+    expect(PORTAL_CSS).toContain(".codebox.oneline { flex-wrap: wrap; }");
   });
 
   test("a machine with no git says the fact in words, not the spawner's own", async () => {

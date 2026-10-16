@@ -472,6 +472,13 @@ footer.bottom .wrap {
 .codebox.oneline { display: flex; align-items: center; background: var(--code-bg); }
 .codebox.oneline pre { flex: 1 1 auto; min-width: 0; }
 .codebox.oneline .codehead { order: 2; flex: none; padding: 0 6px; background: transparent; border-bottom: 0; }
+/* On a phone the button would take the code's width and cut even a short command: the code
+   keeps the whole row and the button goes under it, at the right. */
+@media (max-width: 640px) {
+  .codebox.oneline { flex-wrap: wrap; }
+  .codebox.oneline pre { flex-basis: 100%; }
+  .codebox.oneline .codehead { width: 100%; justify-content: flex-end; padding: 0 6px 6px; }
+}
 .codehead code { font-size: 13px; }
 
 /* ── The Browser card's five steps ────────────────────────────────────────
