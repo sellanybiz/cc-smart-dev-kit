@@ -135,7 +135,9 @@ Each rule loads itself when you touch a file it covers.
 - `docs/jobs.md` — the heavy-job queue: how a job waits and runs, the kinds, the config,
   the shared view, and its limits.
 - `docs/windows-setup.md` — native Windows: the one path layout, the `.cmd` launcher, file
-  modes vs the profile's ACL, Git Bash, and what still has to be tested on Windows.
+  modes vs the profile's ACL, Git Bash, and what still has to be tested on Windows; with its
+  four companions: `docs/windows-hooks.md`, `docs/windows-notify.md`, `docs/windows-jobs.md`
+  and `docs/windows-gateway.md`.
 
 **Keep them true in the same change.** Change how a part works: update `docs/design.md`.
 Change a command or a `cc-smart-dev-kit.json` field: update `README.md`. Rely on a new Claude Code

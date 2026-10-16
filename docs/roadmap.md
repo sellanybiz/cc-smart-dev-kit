@@ -47,11 +47,21 @@ Done in this release:
 - **`worktrees.engine`** (`"plugin"` or `"own"`): a project that already runs its own
   worktree engine says so, and `doctor` expects no cc-smart-dev-kit hook lines there (a `·`
   line, never ✗), while warning about the double worktree when they are wired anyway.
+- **Native Windows** (`windows-setup.md` and the four other `windows-*.md` pages): every hook
+  in **shell form** through `bin/cc-smart-dev-kit-bun.sh`, a `.cmd` launcher beside the `sh`
+  one, the paths under `%USERPROFILE%`, the gateway as a per-user Scheduled Task, the job
+  queue's own memory reading, `win:` leases and `taskkill` end, the desktop toast, and a
+  Windows CI job that runs the hooks through Git Bash.
+- **The parallel-work instructions** (`plugin/instructions/core.md`, the `plan-task` and
+  `subagent-decision` skills): nothing waits for a merge, a release, a review or an answer it
+  does not need; a plan lists its phases in waves, and two phases that might change one file
+  are split instead of run in turn.
+- **Auto mode's safety checks, counted** (`usage`): the router counts the checks by day, who
+  answered each and the tokens their answers reported (`gateway.md` § The safety-check counts).
 
 Coming in 0.4.0 from other builders: the **Settings page** and the **Project card** in the
 portal (both call this release's functions), the **merge guard hook** (which decides a merge
-with `autoMergeAllowed`), the **alert settings** (which read `alerts`), and the **auto-mode
-safety checks** that run at the plan's usage.
+with `autoMergeAllowed`) and the **alert settings** (which read `alerts`).
 
 ## 1 — Foundation (done)
 
@@ -121,7 +131,8 @@ path against its own working folder).
 **Left in the projects that had them** (project values, not general): the dev-server probe
 (`isDevServerRunning`, which reads one project's `.dev-server.json` and ports) — the
 plugin's rule is a program running from the worktree or working in it; and the Windows
-shutdown log (`wevtutil qe System`), since the plugin is macOS and Linux for now.
+shutdown log (`wevtutil qe System`) — on every platform the sign is the time one, several
+sessions closed in the same moment before the machine started (`docs/windows-setup.md`).
 
 ## 5 — Instructions, skills, agents (done, 0.3.0)
 

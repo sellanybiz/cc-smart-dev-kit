@@ -59,9 +59,21 @@ describe("the Windows launcher script", () => {
 
   test("runs the installed cli.js with --no-env-file, and passes every argument through", () => {
     expect(script).toContain(
-      'rem --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.\n"%bun%" --no-env-file "%install_path%\\dist\\cli.js" %*',
+      'rem --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.\n',
     );
+    expect(script).toContain('"%bun%" --no-env-file %config% "%install_path%\\dist\\cli.js" %*');
     expect(script).toContain("exit /b %ERRORLEVEL%");
+  });
+
+  test("the plugin's own config, so the working folder's bunfig.toml never runs in the command", () => {
+    // The flag every other bun run of the plugin gets (`bun-config.ts`): bun would otherwise
+    // read the working folder's `bunfig.toml`, and a project's `preload` would run its own
+    // code inside the command. The config sits beside the CLI, in the version folder the
+    // lookup just found; a version folder without one (an older installed version) gets no
+    // flag at all, because bun refuses a config path that does not exist.
+    expect(script).toContain(
+      'if exist "%install_path%\\bunfig.toml" set "config=--config="%install_path%\\bunfig.toml""',
+    );
   });
 
   test("Claude Code's config folder, CLAUDE_CONFIG_DIR first, as the sh launcher does", () => {

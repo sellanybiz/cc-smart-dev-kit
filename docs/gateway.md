@@ -520,7 +520,7 @@ cannot send those cross-site without a CORS preflight, which the router never an
 | Config: backend keys, slots, aliases, port | `~/.config/cc-smart-dev-kit/gateway.json`, mode **600**. A file others can read is refused. Read again when it changes, so `gateway slot` is live. A bad edit keeps the last good config, with one error line. A command saves it atomically, inside the state lock, and keeps any field it does not know |
 | A setup that did not finish | `~/.claude/cc-smart-dev-kit/restart-pending` (the state folder): written before the copy and the unit, removed once the restarted router answers |
 | The router that runs | `~/.local/share/cc-smart-dev-kit/router.js`, a copy of the plugin's `dist/router.js` |
-| The service | `~/.config/systemd/user/cc-smart-dev-kit-router.service` |
+| The service | Linux: the systemd user unit `~/.config/systemd/user/cc-smart-dev-kit-router.service`. Windows: the per-user Scheduled Task `cc-smart-dev-kit-router`, from its definition `~/.local/share/cc-smart-dev-kit/router-task.xml` (`docs/windows-gateway.md`) |
 | The socket that holds the port | `~/.config/systemd/user/cc-smart-dev-kit-router.socket` (`ListenStream=127.0.0.1:<port>`) |
 | The router's inner socket | `$XDG_RUNTIME_DIR/cc-smart-dev-kit-router/router-<pid>.sock` (systemd makes the folder, mode 0700, and removes it when the unit stops) |
 | Health | `GET http://127.0.0.1:<port>/__cc-smart-dev-kit/health`: counts, resting targets, Claude models resting at their plan limit (`limited`), slots, `modelSlots`; never a key |
@@ -540,6 +540,12 @@ as two systemd user units:
   the router, opens the port and keeps it open);
 - **`cc-smart-dev-kit-router.service`** runs the copy. systemd hands it the open socket as file
   descriptor 3 (`LISTEN_FDS=1`, `LISTEN_PID` = the router).
+
+On Windows the same copy runs from a per-user **Scheduled Task**, `cc-smart-dev-kit-router`,
+which holds the port itself: there is no socket activation there, so a restart refuses
+requests for a moment (Claude Code retries them) and a stop cuts the answers in flight
+(`docs/windows-gateway.md`). `installRouter` is one flow for both, and no other code branches
+on the platform.
 
 ### Why a socket unit
 
@@ -745,7 +751,10 @@ nor as a key to remove.
    router's port too, but it can only be asked on a port already known.)
 
 `restore --now` does both at once, after the warning that every running Claude session
-fails until it restarts (asked, or `--yes`). Restore leaves `gateway.json`, which holds
+fails until it restarts (asked, or `--yes`). On Windows stage 2 stops the Scheduled Task
+(`Stop-ScheduledTask`), waits for the port the same way, then unregisters the task — an entry
+left behind would start the router at every logon (`docs/windows-gateway.md` § Commands).
+Restore leaves `gateway.json`, which holds
 the person's key; `doctor` then says, as information, "gateway.json kept; the gateway is
 not installed".
 
