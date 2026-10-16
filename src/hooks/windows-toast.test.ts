@@ -2,11 +2,13 @@
  * The Windows desktop alert (`windows-toast.ts`). The script cannot run here (which is not
  * Windows), so every test reads it back out of the command — the `-EncodedCommand` argument,
  * base64 of UTF-16LE — and asserts the text it holds. What matters most here: a person's
- * text cannot change the program, and cannot put itself on the command line.
+ * text cannot change the program, no character of it reaches the script, and the script
+ * decodes back exactly what went in.
  */
 import { describe, expect, test } from "bun:test";
 import {
-  powershellLiteral,
+  base64Literal,
+  decodedToastText,
   TOAST_SHELL,
   windowsToastArgv,
   windowsToastArgvFor,
@@ -20,6 +22,9 @@ function scriptOf(argv: string[]): string {
   return Buffer.from(argv[4] ?? "", "base64").toString("utf16le");
 }
 
+/** The four "smart" single quotes PowerShell's tokenizer reads as a quote as well. */
+const SMART_QUOTES = ["\u2018", "\u2019", "\u201A", "\u201B"];
+
 describe("the command", () => {
   test("PowerShell, no profile, and the whole script as one encoded argument", () => {
     const argv = windowsToastArgv(SHELL, "Claude finished · rel", "I finished the work.");
@@ -28,9 +33,8 @@ describe("the command", () => {
     // `scriptOf` reads argv[4] as base64 of UTF-16LE: if either changed, this text is garbage.
     const script = scriptOf(argv);
     expect(script).toStartWith(
-      "$ErrorActionPreference = 'Stop'\n$title = 'Claude finished · rel'\n",
+      "$ErrorActionPreference = 'Stop'\n$title = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('",
     );
-    expect(script).toContain("$body = 'I finished the work.'\n");
     expect(script).toContain(
       "$appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'\n",
     );
@@ -39,14 +43,19 @@ describe("the command", () => {
     );
     expect(script).toContain("$null = $texts.Item(0).AppendChild($xml.CreateTextNode($title))\n");
     expect(script).toContain("$null = $texts.Item(1).AppendChild($xml.CreateTextNode($body))\n");
+    // The title and the body are the ones given, read back the way the script reads them.
+    expect(decodedToastText(script, "title")).toBe("Claude finished · rel");
+    expect(decodedToastText(script, "body")).toBe("I finished the work.");
   });
 
-  test("no text of the alert is on the command line: it is inside the encoded script", () => {
+  test("no text of the alert is in the script or on the command line", () => {
     const argv = windowsToastArgv(SHELL, "Claude finished", "the 'answer' & more");
     // The base64 alphabet has no quote, no space: nothing here can start a new token.
     expect(argv.join(" ")).not.toContain("answer");
     expect(argv.join(" ")).not.toContain("'");
-    expect(scriptOf(argv)).toContain("$body = 'the ''answer'' & more'\n");
+    const script = scriptOf(argv);
+    expect(script).not.toContain("answer");
+    expect(decodedToastText(script, "body")).toBe("the 'answer' & more");
   });
 
   test("critical: the reminder scenario; plain: the ordinary toast", () => {
@@ -76,29 +85,35 @@ describe("the command", () => {
 });
 
 describe("what a person's text can and cannot do to the script", () => {
-  test("a quote is doubled: it cannot end the string, so no text can run", () => {
-    const argv = windowsToastArgv(SHELL, "it's", "x'; Remove-Item -Recurse -Force C:\\ ; '");
+  test("a smart quote cannot end the string, and none of the text reaches the script", () => {
+    // PowerShell's tokenizer reads U+2018, U+2019, U+201A and U+201B as a single quote too,
+    // and only `'` used to be doubled: `don’t` ended the string (no toast at all), and this
+    // body — text a model wrote after reading a web page — ran a program.
+    const body = "don’t ‘stop’ ‚there‛ ’; Start-Process calc; ’\nnew line 🎉";
+    const argv = windowsToastArgv(SHELL, "it’s", body);
     const script = scriptOf(argv);
-    expect(script).toContain("$title = 'it''s'\n");
-    expect(script).toContain("$body = 'x''; Remove-Item -Recurse -Force C:\\ ; '''\n");
+    for (const raw of ["don’t", "Start-Process", "new line", "🎉", "it’s"]) {
+      expect(script).not.toContain(raw);
+    }
+    for (const quote of SMART_QUOTES) expect(script).not.toContain(quote);
+    // What the script carries instead is the base64 alphabet: no quote to end a string with.
+    const carried = script.split("FromBase64String('")[1]?.split("'")[0] ?? "";
+    expect(carried).toMatch(/^[A-Za-z0-9+/=]*$/);
+    expect(decodedToastText(script, "title")).toBe("it’s");
+    expect(decodedToastText(script, "body")).toBe(body);
   });
 
-  test("a `$`, a backtick, a double quote and a line break stay inside the single quotes", () => {
-    const script = scriptOf(
-      windowsToastArgv(SHELL, 'a $env:USERNAME `whoami` "b"', "one\ntwo $(run)"),
-    );
-    // PowerShell substitutes nothing in a single-quoted string, and a line break in one does
-    // not end it: all of this is text, not code.
-    expect(script).toContain("$title = 'a $env:USERNAME `whoami` \"b\"'\n");
-    expect(script).toContain("$body = 'one\ntwo $(run)'\n");
+  test("a `$`, a backtick, a double quote and a line break are still only text", () => {
+    const body = 'one\ntwo $(run) `whoami` "quoted"';
+    const script = scriptOf(windowsToastArgv(SHELL, 'a $env:USERNAME `whoami` "b"', body));
+    expect(decodedToastText(script, "title")).toBe('a $env:USERNAME `whoami` "b"');
+    expect(decodedToastText(script, "body")).toBe(body);
   });
 
-  test("powershellLiteral: only the quote is escaped", () => {
-    expect(powershellLiteral("plain")).toBe("'plain'");
-    expect(powershellLiteral("a'b")).toBe("'a''b'");
-    expect(powershellLiteral("''")).toBe("''''''");
-    expect(powershellLiteral('$x `y` "z" \n')).toBe("'$x `y` \"z\" \n'");
-    expect(powershellLiteral("")).toBe("''");
+  test("base64Literal: the UTF-8 bytes, in an alphabet a quote cannot be built from", () => {
+    expect(base64Literal("plain")).toBe("'cGxhaW4='");
+    expect(base64Literal("’")).toBe("'4oCZ'");
+    expect(base64Literal("")).toBe("''");
   });
 
   test("windowsToastScript is what the command carries", () => {

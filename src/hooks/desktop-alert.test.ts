@@ -110,6 +110,98 @@ function closedLine(id: number, reason: number): string {
 /** The capabilities answer, and a `Notify` answer with id 42. */
 const BUS_ANSWERS = [{ stdout: "(['body', 'actions'],)\n" }, { stdout: "(uint32 42,)\n" }];
 
+/**
+ * A reader for the one shape this code writes — a single-quoted GVariant string — following
+ * GLib's "GVariant Text Format" § Strings. It is here so the round trip is checked on a
+ * machine without GLib's Python bindings; `readsWithGlib` below checks the same values
+ * against GLib's own parser where it is installed.
+ *
+ * It reads the two escapes `gvariantString` writes (`\\` and `\'`) and **nothing else**:
+ * any other backslash escape is the sign that the text is not the text that went in, so that
+ * too gives null.
+ */
+function readsGvariantString(text: string): null | string {
+  if (text.length < 2 || !text.startsWith("'") || !text.endsWith("'")) return null;
+  const inner = text.slice(1, -1);
+  let out = "";
+  for (let i = 0; i < inner.length; i += 1) {
+    const character = inner[i] ?? "";
+    if (character !== "\\") {
+      out += character;
+      continue;
+    }
+    const next = inner[i + 1];
+    if (next !== "\\" && next !== "'") return null;
+    out += next;
+    i += 1;
+  }
+  return out;
+}
+
+/**
+ * GLib's own parser, one answer per text: the decoded value, or null where GLib refuses the
+ * text. The texts go in as one JSON argument — never inside the Python source — and all of
+ * them are parsed in that one process.
+ */
+const GLIB_READER = [
+  "import json, sys",
+  "from gi.repository import GLib",
+  "answers = []",
+  "for text in json.loads(sys.argv[1]):",
+  "    try:",
+  "        value = GLib.Variant.parse(GLib.VariantType.new('s'), text, None, None)",
+  "        answers.append(value.unpack())",
+  "    except Exception:",
+  "        answers.append(None)",
+  "sys.stdout.write(json.dumps(answers))",
+].join("\n");
+
+/** True when this machine's Python has GLib: the real parser can be asked (else no test). */
+function hasGlib(): boolean {
+  try {
+    return (
+      Bun.spawnSync(["python3", "-I", "-c", "from gi.repository import GLib"], {
+        stderr: "ignore",
+        stdout: "ignore",
+      }).exitCode === 0
+    );
+  } catch {
+    // No python3 on this machine at all: there is no parser to ask.
+    return false;
+  }
+}
+
+/** GLib's answers for `texts` (null where it refuses one), or null when there is no GLib. */
+function glibReads(texts: string[]): null | (null | string)[] {
+  const result = Bun.spawnSync(["python3", "-I", "-c", GLIB_READER, JSON.stringify(texts)], {
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+  if (result.exitCode !== 0) return null;
+  const parsed: unknown = JSON.parse(result.stdout.toString());
+  if (!Array.isArray(parsed)) return null;
+  const answers: (null | string)[] = [];
+  for (const one of parsed) {
+    if (one !== null && typeof one !== "string") return null;
+    answers.push(one);
+  }
+  return answers;
+}
+
+/** The words the escaping must carry exactly: the three the doubled quote broke, and more. */
+const GVARIANT_TEXTS = [
+  "Claude's turn",
+  "C:\\new",
+  "a trailing backslash \\",
+  "don’t",
+  "a & b <tag>",
+  'a "quoted" word',
+  "line one\nline two",
+  "a\ttab",
+  "100% sure",
+  "🎉 é ünïcode",
+];
+
 describe("the windows the alert raises", () => {
   it("the terminal's own window id: windowactivate of that id", () => {
     const tools = desktopTools(toolsWhich(["xdotool"]));
@@ -227,10 +319,35 @@ describe("what the worker sends to the notification server", () => {
   });
 
   it("a quote or markup in the words cannot change the call", () => {
-    expect(gvariantString("it's <b>bold</b>")).toBe("'it''s <b>bold</b>'");
+    // The format has no doubled quote: `\` and `'` are escaped the C way, `\` first.
+    expect(gvariantString("it's <b>bold</b>")).toBe("'it\\'s <b>bold</b>'");
+    expect(gvariantString("C:\\new")).toBe("'C:\\\\new'");
+    expect(gvariantString("a trailing \\")).toBe("'a trailing \\\\'");
+    expect(gvariantString("plain")).toBe("'plain'");
+    expect(gvariantString("")).toBe("''");
     expect(escapedMarkup("a & b <tag>")).toBe("a &amp; b &lt;tag&gt;");
     const argv = notifyCallArgv("/usr/bin/gdbus", { ...ALERT, body: "a & b <tag>" }, true);
     expect(argv.at(-4)).toBe("'a &amp; b &lt;tag&gt;'");
+  });
+
+  it("the words come back exactly: a quote, a backslash, a control character, an emoji", () => {
+    for (const text of GVARIANT_TEXTS) {
+      expect(readsGvariantString(gvariantString(text))).toBe(text);
+    }
+  });
+
+  it.skipIf(!hasGlib())("GLib's own parser reads back exactly what went in", () => {
+    const answers = glibReads([
+      ...GVARIANT_TEXTS.map((text) => gvariantString(text)),
+      // What this code used to write, which is no escape in this format at all: GLib refuses
+      // the first whole ("8:expected end of input", the notification that never showed),
+      // reads the second as `C:` and a line break, and leaves the third unterminated.
+      "'Claude''s turn'",
+      "'C:\\new'",
+      "'trailing\\'",
+    ]);
+    expect(answers?.slice(0, GVARIANT_TEXTS.length)).toEqual(GVARIANT_TEXTS);
+    expect(answers?.slice(GVARIANT_TEXTS.length)).toEqual([null, "C:\new", null]);
   });
 
   it("the answers: the server's capabilities, the notification id, and the signals", () => {

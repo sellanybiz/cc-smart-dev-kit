@@ -19,6 +19,17 @@
  * `cmd.exe` too. The plugin lookup prints the folder into a temporary file and `set /p` reads
  * it back: a `for /f` over a command whose program path holds spaces (`C:\Program Files\…`)
  * is the classic `cmd` quoting trap.
+ *
+ * The second trap is a folder holding cmd's own characters: a `&` starts a second command, a
+ * `^` eats the character after it, `%name%` becomes a variable's value, and a `!` is a
+ * variable again under delayed expansion. So **every path is used inside double quotes** —
+ * Microsoft's `cmd` page: "You must use quotation marks around the following special
+ * characters: & < > [ ] | { } ^ = ; ! ' + , ` ~ [white space]" — and the one path that
+ * becomes a literal of the script's own text (the bun setup ran from) has its `%` doubled,
+ * which is a batch file's one way to write a literal `%` (ss64, "Escape Percents":
+ * `%%` "in a batch file", "at the command line … doubling a percent character is not needed
+ * and will not work"). `DisableDelayedExpansion` keeps a `!` in a path a `!`. The hooks'
+ * trampoline builds the same care for a command line (`src/hooks/detached.ts`).
  */
 import { join } from "node:path";
 import { PLUGIN_ID } from "../build-info";
@@ -53,16 +64,25 @@ const BAKED_LINE = /^set "baked_bun=(.*)"$/m;
  */
 export function cmdBakedBunPath(script: string): string | null {
   const match = BAKED_LINE.exec(script);
-  // A Windows path cannot hold a `"`, so the last one on the line is the closing quote.
-  return match?.[1]?.replace(/"$/, "") ?? null;
+  // A Windows path cannot hold a `"`, so the last one on the line is the closing quote; the
+  // `%%` the line carries is one `%` again (`cmdQuote`), so the path comes back as it was.
+  return match?.[1]?.replace(/"$/, "").replaceAll("%%", "%") ?? null;
 }
 
 /**
- * A path as it goes into `set "baked_bun=…"`: the quotes around the whole assignment keep
- * spaces in the path, and a `"` inside would end it early (a Windows path cannot hold one).
+ * A path as it goes into `set "baked_bun=…"`, where it is a **literal** of the script's own
+ * text. Two things must go:
+ *
+ * - a `"` would end the assignment early (a Windows path cannot hold one);
+ * - a `%` would be read as a variable name when cmd parses the line: `%name%` becomes that
+ *   variable's value, and a stray `%` is dropped. In a **batch file** — which this is —
+ *   `%%` is one literal `%` (ss64, "Escape Percents"); that is the one place doubling works.
+ *
+ * The quotes around the assignment keep a space and a `&` in the path; `cmdBakedBunPath`
+ * puts the doubling back.
  */
 function cmdQuote(value: string): string {
-  return value.replaceAll('"', "");
+  return value.replaceAll('"', "").replaceAll("%", "%%");
 }
 
 /**
@@ -77,7 +97,8 @@ export function launcherCmdScript(bunPath: string): string {
 rem cc-smart-dev-kit launcher for Windows, for cmd and PowerShell. Written by "cc-smart-dev-kit setup"; setup rewrites it, so do not edit it.
 rem It runs the cc-smart-dev-kit command from the installed version of the cc-smart-dev-kit plugin.
 rem Under Git Bash run the "cc-smart-dev-kit" file beside this one instead: Git Bash runs that one, not this.
-setlocal
+rem DisableDelayedExpansion: a "!" in a folder name stays a "!" whatever this machine's registry says.
+setlocal DisableDelayedExpansion
 set "baked_bun=${cmdQuote(bunPath)}"
 set "bun="
 if exist "%baked_bun%" set "bun=%baked_bun%"
@@ -85,7 +106,7 @@ if not defined bun if exist "%USERPROFILE%\\.bun\\bin\\bun.exe" set "bun=%USERPR
 if not defined bun if defined BUN_INSTALL if exist "%BUN_INSTALL%\\bin\\bun.exe" set "bun=%BUN_INSTALL%\\bin\\bun.exe"
 if not defined bun for %%I in (bun.exe) do set "bun=%%~$PATH:I"
 if defined bun goto found_bun
-echo cc-smart-dev-kit: bun not found (not at %baked_bun%, not on PATH). Install bun, then run: cc-smart-dev-kit setup 1>&2
+echo cc-smart-dev-kit: bun not found (not at "%baked_bun%", not on PATH). Install bun, then run: cc-smart-dev-kit setup 1>&2
 exit /b 1
 :found_bun
 set "config_dir=%CLAUDE_CONFIG_DIR%"
@@ -110,12 +131,17 @@ rem --config: the plugin's own empty config, beside the CLI in the same version 
 rem working folder's bunfig.toml (a project's preload) never runs inside the command. An
 rem installed version older than that file (0.2.x, until migrate replaces it) has none: bun
 rem refuses a config path that does not exist, so the flag is left out then.
-set "config="
-if exist "%install_path%\\${BUN_CONFIG_NAME}" set "config=--config="%install_path%\\${BUN_CONFIG_NAME}""
-"%bun%" --no-env-file %config% "%install_path%\\dist\\cli.js" %*
+rem The whole path, flag included, is one quoted argument: a "&" or a space in it must not
+rem split this line, and it cannot be built up in a variable first (its quotes would come
+rem back outside the quotes of the next line, where cmd reads them again).
+if not exist "%install_path%\\${BUN_CONFIG_NAME}" goto no_config
+"%bun%" --no-env-file "--config=%install_path%\\${BUN_CONFIG_NAME}" "%install_path%\\dist\\cli.js" %*
+exit /b %ERRORLEVEL%
+:no_config
+"%bun%" --no-env-file "%install_path%\\dist\\cli.js" %*
 exit /b %ERRORLEVEL%
 :missing_folder
-echo cc-smart-dev-kit: the cc-smart-dev-kit plugin folder is missing: %install_path%. Run: claude plugin install ${PLUGIN_ID} 1>&2
+echo cc-smart-dev-kit: the cc-smart-dev-kit plugin folder is missing: "%install_path%". Run: claude plugin install ${PLUGIN_ID} 1>&2
 exit /b 1
 :not_installed
 echo cc-smart-dev-kit: the cc-smart-dev-kit plugin is not installed. Run: claude plugin install ${PLUGIN_ID} 1>&2

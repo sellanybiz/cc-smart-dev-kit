@@ -73,7 +73,7 @@ the first time you use it.
 | `src/ports.ts` | The local ports cc-smart-dev-kit holds as locks, and why they stay below 32768. |
 | `src/hooks/` | The hooks: the frame every one runs in (`run.ts`), the guards, the notes, the StopFailure usage-limit alert, the project's own copies (`ownHooks`, `settings-hooks.ts`), and the worktree engine a project wires itself (`cc-smart-dev-kit hook <name>`; its lines in `project-wiring.ts`, its create lock in `create-lock.ts`); `specs.ts` lists them all, by who wires them. Each hook's entry is in `src/entries/`. |
 | `src/jobs/` | The heavy-job queue: kinds, memory readings, the lease store, the queue, the launch, `job <command>`, the classifier. |
-| `src/shell/` | The shell lexer: reads a Bash line as the commands it runs (quotes, here-docs, `bash -c`). |
+| `src/shell/` | The shell text: the lexer that reads a Bash line as the commands it runs (quotes, here-docs, `bash -c`), and the PowerShell single-quoted literal. |
 | `src/testing/` | Test helpers: temp folders, a clean git environment, a fake machine for setup, the guard that fails any test reaching the live router's port 20100. |
 | `plugin/` | What users get: `dist/` (built, committed), `bin/` (`cc-smart-dev-kit`, and `cc-smart-dev-kit-bun.sh`, which the hooks run through), `hooks/hooks.json`, `instructions/` (`setup` copies and imports them), `skills/`, `agents/`, `output-styles/`, the manifest. |
 | `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check), `check-duplicates.ts` (one home per rule in `plugin/`), `check-core-lines.ts` (the general instructions' line budget), `check-version-bump.ts` (CI: a `plugin/` change raises the version) and `windows-hook-smoke.sh` (the Windows CI job's hook proof, `docs/windows-hooks.md`). |

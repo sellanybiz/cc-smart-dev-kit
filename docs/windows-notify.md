@@ -29,12 +29,19 @@ usage-limit alert (`src/hooks/stop-failure.ts`) and the update hook all use it.
   person dismisses it and it reaches them with Focus Assist on.
 - **Sound.** None of ours: Windows plays the sound of its own notification. `playSound`
   stays Linux-only (it needs `paplay` and the freedesktop sounds).
-- **The text can never change the program.** The title and the body become PowerShell
-  **single-quoted** strings — inside those only `'` means anything, and it is doubled — and
-  the whole script travels as one `-EncodedCommand` argument (base64 of UTF-16LE), so no
-  character of the alert is ever on a command line a shell parses. In the toast XML they are
-  appended as text nodes (`CreateTextNode`), never XML source. `src/hooks/windows-toast.test.ts`
-  pins each of these (quotes, `$`, backticks, line breaks).
+- **The text can never change the program.** The title and the body become **base64 of their
+  UTF-8 bytes**, and the script decodes them itself
+  (`[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(…))`): no character of them is
+  part of the script's own source, and the base64 alphabet has no quote, no backslash and no
+  line break. A PowerShell **single-quoted** literal is *not* enough — the tokenizer reads five
+  characters as a single quote (`'`, U+2018, U+2019, U+201A, U+201B; `about_Quoting_Rules` §
+  Including quote characters in a string), and doubling only `'` let `don’t` end the string (no
+  toast at all) and `’; Start-Process calc; ’` run code that reached the alert through a model's
+  answer. The whole script still travels as one `-EncodedCommand` argument (base64 of UTF-16LE),
+  so no character of the alert is ever on a command line a shell parses. In the toast XML the
+  title and the body are appended as text nodes (`CreateTextNode`), never XML source.
+  `src/hooks/windows-toast.test.ts` pins each of these (a smart quote, an injection, `$`,
+  backticks, a line break, an emoji).
 - **It never blocks the hook.** The hook starts the toast and returns without waiting for it.
   On Windows that takes the trampoline below, because a plain detached child dies with its
   hook there; what is waited for there is the trampoline's own start (a few milliseconds),
@@ -58,14 +65,23 @@ nothing.
 So on Windows `src/hooks/detached.ts` starts them through
 
 ```
-cmd /c start "" /b <program> <args…>
+cmd /d /s /v:off /c "start "" /b "<program>" "<arg>" …"
 ```
 
 `""` is the window title `start` takes as its first quoted argument, `/b` starts without a
-new window, and the program breaks away from the job object. The trampoline itself is waited
-for (it returns at once), so the program is running before the hook returns; the program is
-never waited for. `windowsHide: true` keeps a console window from flashing. This is the
-workaround the Bun issue records as verified.
+new window, and the program breaks away from the job object. **The trampoline hands cmd.exe
+one line, and cmd.exe reads that line itself**, so every argument is wrapped in double quotes
+(a `&` would start a second command, a `^` would eat the next character, `%name%` would become
+a variable's value — inside double quotes too: Microsoft's `cmd` page for the special
+characters, and ss64's "Escape Percents" for the `%` nothing escapes at a command line). The
+whole line is one pair of quotes, which `/s` strips; `/d` keeps the registry's AutoRun command
+out of a hook; `/v:off` keeps a `!` in a path a `!` whatever the registry says; and the line
+is passed with `windowsVerbatimArguments`, so the spawner cannot quote it a second time. An
+argument cmd.exe has no way to carry — a `"`, a `%`, a line break, a NUL — is **not started at
+all**: one line on stderr says which argument and why, because a mangled line is worse than no
+line. The trampoline itself is waited for (it returns at once), so the program is running
+before the hook returns; the program is never waited for. `windowsHide: true` keeps a console
+window from flashing. This is the workaround the Bun issue records as verified.
 
 ## The background self-update
 
@@ -75,7 +91,7 @@ workaround the Bun issue records as verified.
 | System | argv |
 |---|---|
 | Linux, macOS | `<bun> <dist/update-check.js> --background` — unchanged |
-| Windows | `cmd /c start "" /b <bun.exe> --no-env-file <dist/update-check.js> --background` |
+| Windows | the same argv behind the trampoline above: `cmd /d /s /v:off /c "start "" /b "<bun.exe>" "--no-env-file" "<dist/update-check.js>" "--background""` |
 
 `--no-env-file` is Windows-only: the trampoline starts in the home folder, where Bun would
 otherwise load a `.env` of the person's into the check. Linux and macOS keep exactly the argv
@@ -123,3 +139,16 @@ the research supports it over OSC 777, and a guess here would be a wrong one.
    (`src/update/apply.ts`) needs the `cmd /c` treatment claude-mem's runner gives `bun.cmd`.
 7. **A hook whose PATH has no PowerShell**: the notifier should fall to the SSH-terminal
    route, and with no SSH stay silent rather than fail.
+8. **The trampoline line starts the right program** (the quoting, `src/hooks/detached.ts`):
+   with a bun at a path holding a space, a `&`, a `^`, a `!` and parentheses
+   (`C:\Program Files\Bun & Co\bun!.exe`), the background check runs with exactly those
+   arguments — not a second command, not a path with a character missing.
+9. **`windowsVerbatimArguments` really is honoured on Windows**: if Bun quoted that one line
+   again, every `"` in it would come back escaped and the line would be mangled. Three things
+   say it is honoured (Bun's own types: "no quoting or escaping of arguments is done on
+   Windows"; oven-sh/bun#29636's fix, which uses this option with `cmd /d /s /c` for the same
+   reason; the option's name in the 1.4.3 binary), and none of them is a run.
+10. **The `.cmd` launcher from an odd profile folder** (`src/setup/launcher-cmd.ts`): with
+    `%USERPROFILE%` holding a `&`, a `%` or a `!`, `cc-smart-dev-kit doctor` (from `cmd` and
+    from PowerShell) runs and reports its version — the paths are quoted, the baked bun's `%`
+    is doubled, and `setlocal DisableDelayedExpansion` holds the `!`.
