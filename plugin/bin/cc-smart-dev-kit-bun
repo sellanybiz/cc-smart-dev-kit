@@ -8,6 +8,11 @@
 #   4. bun on PATH.
 # Only shell built-ins, so it works with an empty PATH too.
 #
+# --no-env-file: bun would load the .env files of the working folder (the project) into the
+# hook, and a hook must see the environment Claude Code gave it — not a project's .env.local.
+# The launcher and bin/cc-smart-dev-kit do the same, and "cc-smart-dev-kit job run" refuses to
+# hand a job a folder's .env values.
+#
 # The first argument says what to do when no bun is found, and is never passed to bun:
 #   --missing=ask    the guards fail closed: one PreToolUse answer on stdout, asking the
 #                    person, and exit 0 (a hook never stops a session).
@@ -51,9 +56,9 @@ if [ -f "$launcher" ]; then
   done <"$launcher"
 fi
 for bun in "$baked" "${BUN_INSTALL:+$BUN_INSTALL/bin/bun}" "$HOME/.bun/bin/bun"; do
-  if [ -n "$bun" ] && [ -x "$bun" ]; then exec "$bun" "$@"; fi
+  if [ -n "$bun" ] && [ -x "$bun" ]; then exec "$bun" --no-env-file "$@"; fi
 done
-if bun=$(command -v bun 2>/dev/null) && [ -n "$bun" ]; then exec "$bun" "$@"; fi
+if bun=$(command -v bun 2>/dev/null) && [ -n "$bun" ]; then exec "$bun" --no-env-file "$@"; fi
 if [ "$mode" = "--missing=ask" ]; then
   printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"cc-smart-dev-kit cannot run its guard: bun was not found. Install bun or run cc-smart-dev-kit setup."}}'
   exit 0

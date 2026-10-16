@@ -41,8 +41,13 @@ private). On an older Bun only `doctor`, `restore`, `version` and `--help` run.
    version, so read it with `ls ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/`:
 
    ```sh
-   bun ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>/dist/cli.js setup
+   bun --no-env-file ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>/dist/cli.js setup
    ```
+
+   `--no-env-file` matters: Bun adds the `.env` files of the folder you run the command from,
+   so without it a project's `.env.local` (its `TAVILY_API_KEY`, say) would look like your
+   environment's to setup. The launcher, `plugin/bin/cc-smart-dev-kit` and the hooks' bun shim
+   all pass it for the same reason.
 
    Setup installs the launcher `~/.local/bin/cc-smart-dev-kit`, turns on auto-update for the
    plugin, registers the MCP servers for your user ([MCP servers](#mcp-servers)), installs
@@ -71,7 +76,7 @@ After that, use `cc-smart-dev-kit setup` to set up again (for example after an u
 | `cc-smart-dev-kit doctor [--live]` | Checks the install, the cc-smart-dev-kit files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below). Prints ✓ or ✗ for each check, `·` for information and `!` for a warning (neither is a failure), and exits with 1 when a check fails. `--live` also proves the hooks and the worktree engine on the Claude Code installed here (below); it never runs without the flag. |
 | `cc-smart-dev-kit hook <worktree-create\|worktree-remove\|subagent-stop>` | The worktree engine, for a project that wires it in its own `.claude/settings.json` (§ Worktrees). It reads the hook's input on stdin and answers as Claude Code expects. With no name, it prints the lines to paste. |
 | `cc-smart-dev-kit session-name <session id> <name>` | Names a Claude session after its task. A session runs it itself when the project turns on `sessionNames` (below). |
-| `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing. |
+| `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too, and the launcher when setup created it — so `cc-smart-dev-kit` may be off your PATH then, and the line it prints is the `bun --no-env-file …/dist/cli.js restore` form of [Install](#install) step 3, with your installed version) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing. |
 | `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version. `--check` only says whether a newer version exists (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
 | `cc-smart-dev-kit gateway <command>` | The optional AI gateway (below). |
 | `cc-smart-dev-kit browser mcp` | Starts the Playwright MCP server on the ONE Google Chrome every session shares, through a filter that shows this session only its own windows ([The shared browser](#the-shared-browser)). `setup` registers it as the `playwright` MCP server; you do not run it by hand. |
@@ -262,17 +267,40 @@ that version's names: its folders (`~/.config/anymodel`, `~/.claude/anymodel`,
 (`~/.local/bin/anymodel`), its router units (`anymodel-router`), the slots in
 `gateway.json`, and the old names in `settings.json` and `~/.claude/CLAUDE.md`.
 
-Install this version first. The `cc-smart-dev-kit` command does not exist on your machine
-yet — the old launcher `~/.local/bin/anymodel` is the only one there — so run `migrate`
-from the plugin folder, exactly as step 3 of [Install](#install) runs `setup`. Put the
-installed version in place of `<version>`: the install prints no version, so read it with
+Install this version first, and **name the marketplace in the install line**. While the old
+`anymodel` marketplace is added, a bare `claude plugin install cc-smart-dev-kit` installs
+the copy that comes from `anymodel` (`cc-smart-dev-kit@anymodel`), and removing that
+marketplace later takes its copy with it: `cc-smart-dev-kit@cc-smart-dev-kit` is the one to
+install.
+
+The `cc-smart-dev-kit` command does not exist on your machine yet — the old launcher
+`~/.local/bin/anymodel` is the only one there — so run `migrate` from the plugin folder,
+exactly as step 3 of [Install](#install) runs `setup`. Put the installed version in place of
+`<version>`: the install prints no version, so read it with
 `ls ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/`:
 
 ```sh
 claude plugin marketplace add <owner>/cc-smart-dev-kit
 claude plugin install cc-smart-dev-kit@cc-smart-dev-kit
-bun ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>/dist/cli.js migrate
+bun --no-env-file ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>/dist/cli.js migrate
 ```
+
+Add the marketplace by its **new** name, as the first line does. The old source is already
+added, and adding it again changes nothing at all — no new marketplace appears.
+
+Until the move, `claude plugin list` shows the old plugin as broken:
+
+```
+❯ anymodel@anymodel
+  Status: ✘ failed to load
+  Error: Plugin anymodel not found in marketplace anymodel
+```
+
+That is expected once 0.3.0 is on `main`: Claude Code refreshes the old marketplace by
+itself, the refreshed one lists `cc-smart-dev-kit`, and the old plugin's entry has nothing
+left to load. It is only the entry: the router keeps running from its own copy
+(`~/.local/share/anymodel/router.js`), so model traffic is unaffected until `migrate`
+replaces it, and `migrate`'s last step removes the old plugin.
 
 After that one run the launcher `~/.local/bin/cc-smart-dev-kit` is in place, and every
 later command uses it (`cc-smart-dev-kit migrate` for a run that has to be repeated).
@@ -329,9 +357,13 @@ plugin and are still running (their `sessions/` records, in the old state folder
 them): close them first, and start them again here — until then one of them may write the
 old folders again.
 
-The old plugin must be uninstalled when `migrate` is done (`claude plugin uninstall
+The old plugin goes **last**, after `migrate` (`claude plugin uninstall
 anymodel@anymodel`, `claude plugin marketplace remove anymodel`): two copies of the same
-hooks would otherwise run. One more thing: a judge target's test proof does not carry
+hooks would otherwise run, and removing a marketplace also deletes its plugins' saved data.
+That is why the order is add the new marketplace, install the new plugin, then `migrate`:
+`migrate`'s last step already uninstalls the old plugin when you say yes on a terminal, and
+the two `claude plugin` commands above are for a "no" (or no terminal). One more thing: a
+judge target's test proof does not carry
 over (the proof's own text changed with the name), so a fallback judge needs its test
 again: `cc-smart-dev-kit gateway slot judge <targets>`. Without it the judge is simply
 not used, and `doctor` says so. `migrate` prints that line when the old config had a
@@ -524,6 +556,17 @@ Five screens, each following the design the owner approved (2026-10-16):
 | **Health** | The router's counters, each backend and whether it answers, the targets resting, and its journal. Looks again every five seconds (Pause stops that, and a hidden tab is not reloaded at all); a look of its own does not count as activity, so an open Health tab cannot hold the portal up. |
 | **Machine** | Updates (installed, newest, last check, on hold, check now, install), the heavy-job queue, the companion plugins, the OmniRoute card, `doctor` (run again), the project's auto-mode rules, and the **Warp card**, which shows the install and remove commands to copy. |
 | **How this page stays private** | The security design in plain words, linked from the footer. |
+
+**Without a gateway config** (never set up, or one that cannot be read): Overview, Slots and
+Health show "The gateway is not set up", with the command that sets it up and a button to
+Machine. **Machine and the privacy page still work**, because neither needs the gateway:
+the updates, the heavy-job queue, the companions, `doctor` and the Warp card are all real
+there — `doctor` matters most on a machine that has no gateway, and its gateway line is
+information (`·`), never a failure. What does need the config says so in a short line
+instead of showing a made-up value: the header pill reads "Gateway not set up", the
+OmniRoute card's Backend line says "the gateway is not set up", a last card on Machine names
+the setup command, and the privacy page says that no router answers here rather than naming
+a port. A config that is there but broken is named as such, with its own error.
 
 **Everything it does is real**, and every action runs the same function the command line
 runs — the same checks, the same lock, the same words (`docs/design.md` § The portal). What

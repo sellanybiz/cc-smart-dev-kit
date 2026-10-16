@@ -23,10 +23,12 @@ import type { HealthProbe } from "../gateway/health";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import { cliPaths } from "./paths";
-import { runRestore } from "./restore";
+import { runRestore, stageOneDone } from "./restore";
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 const BUILT_ROUTER = join(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
+/** This repo's own CLI bundle: what stage 1 names as the second restore. */
+const BUILT_CLI = join(import.meta.dir, "..", "..", "plugin", "dist", "cli.js");
 /** A made-up backend key: it must never show in any output. */
 const PLANTED_KEY = "sk-planted-SECRET-0123456789abcdef";
 
@@ -241,6 +243,7 @@ function machine(options: { systemctl?: boolean } = {}) {
           ? await runRestore(paths, {
               yes: args.includes("--yes"),
               now: args.includes("--now"),
+              cliBundle: BUILT_CLI,
               runner,
               systemd: options.systemctl !== false,
               confirm: null,
@@ -472,7 +475,28 @@ describe("cc-smart-dev-kit gateway setup: the port", () => {
 
 describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
   const STAGE_1_KEYS =
-    "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_BASE_URL, env.ANTHROPIC_DEFAULT_HAIKU_MODEL, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, env.ANTHROPIC_DEFAULT_SONNET_MODEL, env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME; everything else kept";
+    "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_BASE_URL, env.ANTHROPIC_DEFAULT_HAIKU_MODEL, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, env.ANTHROPIC_DEFAULT_SONNET_MODEL, env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, env; everything else kept";
+
+  /**
+   * What stage 1 says when it removed the launcher: `cc-smart-dev-kit` is off the PATH, so it
+   * names the `bun --no-env-file …` form the README's install step uses.
+   */
+  const STAGE_1_AGAIN = `Restart every running Claude session (they still use the router), then run the second restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so \`cc-smart-dev-kit\` is not on your PATH any more: bun --no-env-file '${BUILT_CLI}' restore`;
+
+  test("stageOneDone: the command that works, with the launcher gone and with it still there", () => {
+    const home = tempDir("stage-one");
+    const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
+    // No launcher (setup created it, and the first restore removed it): the bun line.
+    expect(stageOneDone(paths, "/plugin/dist/cli.js")).toBe(
+      "Restart every running Claude session (they still use the router), then run the second restore again — this one removed the launcher (~/.local/bin/cc-smart-dev-kit), so `cc-smart-dev-kit` is not on your PATH any more: bun --no-env-file '/plugin/dist/cli.js' restore",
+    );
+    // A launcher of the person's own, put back by the restore: the plain command works.
+    mkdirSync(paths.binDir, { recursive: true });
+    writeFileSync(join(paths.binDir, "cc-smart-dev-kit"), "#!/bin/sh\n");
+    expect(stageOneDone(paths, "/plugin/dist/cli.js")).toBe(
+      "Restart every running Claude session (they still use the router), then run `cc-smart-dev-kit restore` again to stop and remove the router.",
+    );
+  });
 
   // Rewritten on purpose (it was "restore stops the router (after a yes), then removes the
   // copy, the unit and the env keys"): stopping the router while sessions still point at it
@@ -495,15 +519,14 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
     expect(lines[1]).toStartWith(
       "  (its state before this restore: ~/.claude/cc-smart-dev-kit/backups/",
     );
-    expect(lines[2]).toBe(
-      "Restart every running Claude session (they still use the router), then run `cc-smart-dev-kit restore` again to stop and remove the router.",
-    );
+    expect(lines[2]).toBe(STAGE_1_AGAIN);
     expect(lines[3]).toBe("");
     // The router keeps running: nothing was stopped, nothing asked of systemd.
     expect(m.calls().slice(before.length)).toBe("");
     expect(existsSync(m.paths.copy)).toBe(true);
     expect(existsSync(m.paths.unit)).toBe(true);
-    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus", env: {} });
+    // `env` went with its last key: the settings file before the gateway was set up.
+    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus" });
 
     // Stage 2: no gateway key left. Stopping a running router still asks first.
     const refused = await m.run(["restore"]);
@@ -591,9 +614,7 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
     expect(first.stdout).toContain(
       "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_DEFAULT_HAIKU_MODEL, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, env.ANTHROPIC_DEFAULT_SONNET_MODEL, env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME; everything else kept\n",
     );
-    expect(first.stdout).toContain(
-      "Restart every running Claude session (they still use the router), then run `cc-smart-dev-kit restore` again to stop and remove the router.\n",
-    );
+    expect(first.stdout).toContain(`${STAGE_1_AGAIN}\n`);
     expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({
       env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:19999" },
       model: "opus",
@@ -657,7 +678,8 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
     expect(m.probed).toEqual([`http://127.0.0.1:${server.port}/__cc-smart-dev-kit/health`]);
     expect(existsSync(m.paths.copy)).toBe(false);
     expect(existsSync(m.paths.unit)).toBe(false);
-    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus", env: {} });
+    // `env` went with its last key: the settings file as it was before the gateway wrote there.
+    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus" });
   });
 
   test("a port still held 15 s after the stop: restore fails clearly and restores nothing else", async () => {
@@ -828,7 +850,8 @@ describe("cc-smart-dev-kit gateway on / off", () => {
     expect(off.stdout.split("\n").at(-2)).toBe(
       "Restart each Claude session: removing a setting needs a restart.",
     );
-    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus", env: {} });
+    // `env` went with its last key: the settings file as it was before the gateway wrote there.
+    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus" });
   });
 
   test("a gateway key someone else set stops on: ForeignKeyError, nothing written", async () => {

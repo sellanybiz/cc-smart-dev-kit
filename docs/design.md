@@ -125,7 +125,11 @@ An optional local router between Claude Code and the model providers
 - Running sessions are taken to keep the router's address until they restart (one live
   look saw otherwise; `claude-code-contract.md`). So `restore` takes the gateway out in
   two stages: first the env keys (the router keeps running), then, after the sessions
-  restarted, the router (asked first). `restore --now` does both, with a warning. The
+  restarted, the router (asked first). Stage 1 also puts back the launcher, and when it had
+  created it the file is gone: the line it ends with then names the second run in full
+  (`stageOneDone`: `bun --no-env-file <this plugin's dist/cli.js> restore`, with the bundle
+  its entry passed in), because `cc-smart-dev-kit` is not on the PATH any more. `restore
+  --now` does both, with a warning. The
   stop never waits for the router's drain: `disable`, then one `stop --no-block` of the
   socket and the service together, then up to 15 s for the port to close.
 - The router bundle carries no version (`src/build-info/names.ts`), so a version bump
@@ -240,9 +244,15 @@ The guarantees:
 - **`restore`** removes what cc-smart-dev-kit added and keeps everything else: its own JSON
   keys and its Markdown block go; a whole file goes back to its **baseline** (the backup
   made at cc-smart-dev-kit's first change to it since the last restore), or is removed when
-  setup created it. It backs up each file before it changes it. With the gateway on, the
-  router's copy and unit wait for a second restore (§ The AI gateway). A restore with
-  nothing left changes nothing.
+  setup created it. An object cc-smart-dev-kit created that a removal empties (the `env` its
+  own keys went into) goes with its last key, so no `"env": {}` is left behind; an object the
+  person had stays, also when it is empty (`createdObjects`, from the baseline backup: a
+  baseline that is missing or unreadable proves nothing, and nothing is pruned). It backs up
+  each file before it changes it. With the gateway on, the
+  router's copy and unit wait for a second restore (§ The AI gateway), and its first stage
+  names the command that runs the second one — the `bun --no-env-file …/dist/cli.js restore`
+  line, when that stage removed the launcher and `cc-smart-dev-kit` is off the PATH. A
+  restore with nothing left changes nothing.
 
 Its state (`<stateDir>`) lives in `$CLAUDE_CONFIG_DIR/cc-smart-dev-kit/` (by default
 `~/.claude/cc-smart-dev-kit/`): `owned.json`, `owned-entries.json`, `changed.json`, the lock and `backups/`. The
@@ -290,6 +300,15 @@ each one follows them.
   the terminal question `setup` asks.
 - **What needs `sudo` is not run.** Installing or removing the Warp app shows the exact
   command to copy (the Machine page's Warp card, next to `doctor`'s own line for it).
+- **The gateway is optional, and the pages say so.** With no config to read, Overview, Slots
+  and Health draw one page: "The gateway is not set up", the command that sets it up, and a
+  button to Machine. Machine and the privacy page draw anyway — updates, the heavy-job queue,
+  the companions, `doctor` (its gateway line is information, never a failure), OmniRoute and
+  Warp all work without a gateway, and `doctor` matters most on a machine that has none. What
+  does need the config says so in a short line instead of an invented value: the header's
+  router pill, the OmniRoute card's Backend line, the card at the foot of Machine, and the
+  privacy page's sentence about the router. A config that is there but unreadable is named
+  with its own error (`configExists` tells the two cases apart).
 - **A bug in a page is never shown.** `Bun.serve` has an `error` handler (`development:
   false`) that answers the one line `Internal Server Error` with the usual security headers: a
   stack names the source file and the line, and holds this machine's paths.
@@ -734,6 +753,9 @@ spec, `specs.ts`):
   `~/.bun/bin/bun`, and PATH. With none it answers by its `--missing=` mode and exits 0: a
   PreToolUse guard passes `--missing=ask`, so it asks the person instead of letting the tool
   run (a guard fails closed); every other hook passes `--missing=quiet`, one line on stderr.
+  It starts bun with `--no-env-file`, like the launcher and `plugin/bin/cc-smart-dev-kit`:
+  bun would otherwise add the working folder's `.env` files to the hook, and a hook must see
+  the environment Claude Code gave it — the same rule `job run` refuses a job without.
   The baked line is
   single-quoted the way `shellQuote` writes it (each `'` as `'\''`), and the shim undoes
   exactly that, so a bun under a folder like `/home/o'brien` is found.

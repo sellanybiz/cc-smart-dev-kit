@@ -161,7 +161,19 @@ export function runPortal(ctx: PortalCommandContext, args: readonly string[]): n
     stateDir: ctx.paths.stateDir,
   });
   // The child holds this terminal's environment, so it reads the same paths this command did.
-  const argv = [ctx.bunPath, copy, "--plugin-dir", ctx.pluginDir, "--port", String(options.port)];
+  // `--no-env-file`: bun would add the .env files of the folder it was started in (the
+  // project) to the child, and the portal must read this terminal's environment, not a
+  // project's file — a `.env.local` naming HOME or CLAUDE_CONFIG_DIR would point it at other
+  // paths than the command that started it.
+  const argv = [
+    ctx.bunPath,
+    "--no-env-file",
+    copy,
+    "--plugin-dir",
+    ctx.pluginDir,
+    "--port",
+    String(options.port),
+  ];
   if (options.noOpen) argv.push("--no-open");
   return ctx.runChild(argv, { cwd: process.cwd(), env: ctx.env });
 }

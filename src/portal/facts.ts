@@ -48,8 +48,12 @@ import type { PortalContext } from "./context";
 export interface PortalFacts {
   /** The port the portal itself listens on. */
   portalPort: number;
-  /** The router: its port, and whether its health page answers. */
-  router: { port: number; up: boolean };
+  /**
+   * The router: its port, and whether its health page answers. **Null** when there is no
+   * gateway config to name one (never set up, or unreadable): the Machine page and the
+   * privacy page draw without it, and a page that needs it says so instead of showing a port.
+   */
+  router: null | { port: number; up: boolean };
   version: string;
 }
 
@@ -80,7 +84,9 @@ export function configExists(ctx: PortalContext): boolean {
 /** The shell's facts: the version, this portal's port, and whether the router answers. */
 export async function shellFacts(ctx: PortalContext, portalPort: number): Promise<PortalFacts> {
   const found = readConfig(ctx);
-  const port = "config" in found ? found.config.port : DEFAULT_PORT;
+  // No config to read: no port names a router, so no page claims one (and nothing is probed).
+  if ("error" in found) return { portalPort, router: null, version: VERSION };
+  const port = found.config.port;
   const health = await routerHealth(port, ctx.probe.fetch);
   return { portalPort, router: { port, up: !("error" in health) }, version: VERSION };
 }

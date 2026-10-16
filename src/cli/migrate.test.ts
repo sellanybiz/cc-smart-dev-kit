@@ -455,6 +455,7 @@ function machine(fixture: FixtureOptions = {}) {
     runRestore(paths, {
       yes: true,
       now: false,
+      cliBundle: join(import.meta.dir, "..", "..", "plugin", "dist", "cli.js"),
       runner,
       systemd: true,
       confirm: null,
@@ -1079,8 +1080,9 @@ describe("migrate — the later 0.3.0 development build", () => {
     await m.run({ yes: true });
     expect(await m.restore({ now: true })).toBe(0);
     const settings = readJson(m.settingsFile);
-    // Its keys are gone; the file, and everything else in it, stays.
-    expect(settings.env).toEqual({});
+    // Its keys are gone, and the `env` object setup made with them went too (the settings
+    // file here had none); the file, and everything else in it, stays.
+    expect(settings.env).toBeUndefined();
     expect(settings.model).toBe("opus");
     expect(settings.autoMode).toEqual({ environment: ["$defaults"] });
     expect(readFileSync(m.claudeMd, "utf8")).not.toContain("cc-smart-dev-kit:begin");

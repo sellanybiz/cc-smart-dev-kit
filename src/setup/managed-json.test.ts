@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
-import { applyManagedJson, ForeignKeyError, formatKeyPath } from "./managed-json";
+import { applyManagedJson, createdObjects, ForeignKeyError, formatKeyPath } from "./managed-json";
 import { restore } from "./restore";
 import { ConcurrentChangeError, listBackups, readChanged, writeManagedFile } from "./write";
 
@@ -172,6 +172,78 @@ describe("applyManagedJson", () => {
     expect(() => applyManagedJson({ file, stateDir, set: [[AUTO_UPDATE, true]] })).toThrow(
       `${file} is not valid JSON`,
     );
+  });
+});
+
+describe("applyManagedJson: an object cc-smart-dev-kit created goes with its last key", () => {
+  const TAVILY = ["env", "TAVILY_API_KEY"] as const;
+  const add = (file: string, stateDir: string) =>
+    applyManagedJson({ file, stateDir, set: [[TAVILY, "tvly-secret"]], secret: () => true });
+
+  test("the settings had no env: setup created it, and restore takes it with the key", () => {
+    const { file, stateDir } = setup({ model: "opus" });
+    add(file, stateDir);
+    expect(read(file)).toEqual({ env: { TAVILY_API_KEY: "tvly-secret" }, model: "opus" });
+
+    const result = applyManagedJson({
+      file,
+      stateDir,
+      remove: [TAVILY],
+      createdObject: createdObjects(stateDir, file),
+    });
+    expect(result.changes).toEqual([
+      { path: ["env", "TAVILY_API_KEY"], before: "tvly-secret", after: undefined },
+      { path: ["env"], before: {}, after: undefined },
+    ]);
+    // Exactly the file before setup's first change, with no empty `env` left behind.
+    expect(readFileSync(file, "utf8")).toBe(`${JSON.stringify({ model: "opus" }, null, 2)}\n`);
+    expect(read(join(stateDir, "owned.json"))).toEqual({});
+  });
+
+  test("the person had an env of their own, empty: the key goes, their object stays", () => {
+    const { file, stateDir } = setup({ env: {}, model: "opus" });
+    add(file, stateDir);
+    const result = applyManagedJson({
+      file,
+      stateDir,
+      remove: [TAVILY],
+      createdObject: createdObjects(stateDir, file),
+    });
+    expect(result.changes).toEqual([
+      { path: ["env", "TAVILY_API_KEY"], before: "tvly-secret", after: undefined },
+    ]);
+    expect(read(file)).toEqual({ env: {}, model: "opus" });
+  });
+
+  test("no createdObject: the emptied object stays, as before", () => {
+    const { file, stateDir } = setup({ model: "opus" });
+    add(file, stateDir);
+    applyManagedJson({ file, stateDir, remove: [TAVILY] });
+    expect(read(file)).toEqual({ env: {}, model: "opus" });
+  });
+
+  test("every object above the key goes, up to the file's own top", () => {
+    const { file, stateDir } = setup({ model: "opus" });
+    applyManagedJson({ file, stateDir, set: [[["a", "b", "c"], 1]] });
+    const result = applyManagedJson({
+      file,
+      stateDir,
+      remove: [["a", "b", "c"]],
+      createdObject: createdObjects(stateDir, file),
+    });
+    expect(result.changes.map((change) => change.path)).toEqual([
+      ["a", "b", "c"],
+      ["a", "b"],
+      ["a"],
+    ]);
+    expect(read(file)).toEqual({ model: "opus" });
+  });
+
+  test("nothing proves cc-smart-dev-kit created it: no record, so nothing is pruned", () => {
+    const { dir, file, stateDir } = setup({ model: "opus" });
+    add(file, stateDir);
+    // A state folder with no changed.json at all (an old one, or a hand-cleaned one).
+    expect(createdObjects(join(dir, "empty-state"), file)(["env"])).toBe(false);
   });
 });
 

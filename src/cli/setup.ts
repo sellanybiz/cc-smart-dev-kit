@@ -57,7 +57,13 @@ import {
 } from "../setup/instructions";
 import { installLauncher, LAUNCHER_NAME } from "../setup/launcher";
 import { withLock } from "../setup/lock";
-import { applyManagedJson, formatKeyPath, type KeyPath, ownedKeys } from "../setup/managed-json";
+import {
+  applyManagedJson,
+  createdObjects,
+  formatKeyPath,
+  type KeyPath,
+  ownedKeys,
+} from "../setup/managed-json";
 import { applyTmuxLine, TMUX_LINE, TMUX_NOW_COMMAND, tmuxServerRunning } from "../setup/tmux";
 import { atomicWrite, realTarget } from "../setup/write";
 import { type CliPaths, tildify } from "./paths";
@@ -222,6 +228,8 @@ function applySetup(
     secret: (path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH),
     set,
     ...(tavilyOwned ? { remove: [TAVILY_KEY_PATH] } : {}),
+    // An `env` setup created goes with its last key; one the person had stays.
+    createdObject: createdObjects(paths.stateDir, paths.settingsFile),
     dryRun,
   });
   for (const change of settings.changes) {

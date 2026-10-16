@@ -247,12 +247,13 @@ describe("doctor --live", () => {
     ]);
   });
 
-  test("liveHookCommand: the plugin under test, quoted for sh", () => {
+  test("liveHookCommand: the plugin under test, quoted for sh, and with no .env file loaded", () => {
     const command = liveHookCommand("/plugins/cc-smart-dev-kit's copy", "/usr/local/bin/bun");
     expect(command("worktree-create")).toBe(
-      "'/usr/local/bin/bun' '/plugins/cc-smart-dev-kit'\\''s copy/dist/cli.js' hook worktree-create",
+      "'/usr/local/bin/bun' --no-env-file '/plugins/cc-smart-dev-kit'\\''s copy/dist/cli.js' hook worktree-create",
     );
-    // Run through a real /bin/sh with a fake plugin folder: the quoting holds.
+    // Run through a real /bin/sh with a fake plugin folder: the quoting holds, and bun takes
+    // the flag itself (the hook's own argv is unchanged).
     const dir = tempDir("live-command");
     const plugin = join(dir, "plugin");
     mkdirSync(join(plugin, "dist"), { recursive: true });

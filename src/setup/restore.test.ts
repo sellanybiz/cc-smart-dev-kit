@@ -21,6 +21,9 @@ import { listBackups, readChanged, writeManagedFile } from "./write";
 
 const AUTO_UPDATE = ["extraKnownMarketplaces", "cc-smart-dev-kit", "autoUpdate"] as const;
 
+/** The path setup writes the Tavily key to: its own `env` object when the settings had none. */
+const TAVILY_KEY_PATH = ["env", "TAVILY_API_KEY"] as const;
+
 const ORIGINAL_SETTINGS = `${JSON.stringify(
   {
     model: "opus",
@@ -125,6 +128,55 @@ describe("restore: removes what cc-smart-dev-kit added, keeps the rest", () => {
     applyManagedJson({ file, stateDir, set: [[["statusLine"], { type: "command" }]] });
     restore(stateDir);
     expect(read(file)).toBe(ORIGINAL_SETTINGS);
+  });
+
+  test("an env setup itself created goes with the Tavily key: no `env: {}` is left behind", () => {
+    const { dir, stateDir } = setup();
+    const file = join(dir, "settings.json");
+    // The person's settings, without an `env`: setup's key makes that object.
+    writeFileSync(file, ORIGINAL_SETTINGS);
+    applyManagedJson({
+      file,
+      stateDir,
+      set: [[TAVILY_KEY_PATH, "tvly-secret"]],
+      secret: () => true,
+    });
+    expect(JSON.parse(read(file)).env).toEqual({ TAVILY_API_KEY: "tvly-secret" });
+
+    const [result] = restore(stateDir);
+    expect(result?.action).toBe("cleaned");
+    expect(result?.details).toEqual(["env.TAVILY_API_KEY", "env"]);
+    expect(read(file)).toBe(ORIGINAL_SETTINGS);
+  });
+
+  test("an env the person had, even empty, stays: only cc-smart-dev-kit's key goes", () => {
+    const { dir, stateDir } = setup();
+    const file = join(dir, "settings.json");
+    const original = `${JSON.stringify(
+      {
+        model: "opus",
+        env: {},
+        extraKnownMarketplaces: {
+          "cc-smart-dev-kit": {
+            source: { source: "github", repo: "example-org/cc-smart-dev-kit" },
+          },
+        },
+      },
+      null,
+      2,
+    )}\n`;
+    writeFileSync(file, original);
+    applyManagedJson({
+      file,
+      stateDir,
+      set: [[TAVILY_KEY_PATH, "tvly-secret"]],
+      secret: () => true,
+    });
+
+    const [result] = restore(stateDir);
+    expect(result?.action).toBe("cleaned");
+    expect(result?.details).toEqual(["env.TAVILY_API_KEY"]);
+    expect(read(file)).toBe(original);
   });
 
   test("a whole file changed twice goes back to the state before the first change, with its mode", () => {

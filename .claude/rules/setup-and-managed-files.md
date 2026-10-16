@@ -144,6 +144,11 @@ Each of them:
     cc-smart-dev-kit's first change to the file since the last restore. When setup created
     the file, it removes it.
   - A file setup created, with only an empty `{}` or empty text left, is removed.
+  - **An object cc-smart-dev-kit created goes with its last key.** A JSON object cc-smart-dev-kit
+    made for its own keys (the `env` a Tavily or a gateway key went into) is removed when a
+    restore empties it, so no `"env": {}` is left behind. An object the person had stays, also
+    when it is empty: `createdObjects` answers from the baseline backup (a missing or
+    unreadable baseline proves nothing, and nothing is pruned).
   - Each change makes a normal backup first, so a restore can be undone by hand.
   - A restored file is no longer tracked in `changed.json`, so a second `restore`
     changes nothing. When the baseline backup is missing, the file is left alone.

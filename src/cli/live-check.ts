@@ -87,9 +87,12 @@ export interface LiveDeps {
  * How a project's hooks run in the live check: the plugin folder this CLI belongs to, its
  * `dist/cli.js` run with `bunPath` (the bun running this CLI). The launcher is not used: it
  * always runs the *installed* version, which is not what `doctor --live` checks.
+ *
+ * `--no-env-file`, like every other run of this plugin's own bundles: a hook sees the
+ * environment it was given, never the working folder's `.env` files.
  */
 export function liveHookCommand(pluginDir: string, bunPath: string): (name: string) => string {
-  const command = `${shellQuote(bunPath)} ${shellQuote(join(pluginDir, "dist", "cli.js"))}`;
+  const command = `${shellQuote(bunPath)} --no-env-file ${shellQuote(join(pluginDir, "dist", "cli.js"))}`;
   return (name) => `${command} hook ${name}`;
 }
 

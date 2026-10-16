@@ -2367,9 +2367,10 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     const restored = run(["restore"]);
     expect(restored.exitCode).toBe(0);
     expect(`${restored.stdout}${restored.stderr}`).not.toContain("tvly-file-secret");
-    // The line names the key's PATH, never its value.
-    expect(restored.stdout).toContain("env.TAVILY_API_KEY; everything else kept");
-    expect(readJson(join(home, ".claude", "settings.json")).env?.TAVILY_API_KEY).toBeUndefined();
+    // The line names the key's PATH, never its value. The `env` object setup made for it goes
+    // with the key: this settings file had none of its own.
+    expect(restored.stdout).toContain("env.TAVILY_API_KEY, env; everything else kept");
+    expect(readJson(join(home, ".claude", "settings.json")).env).toBeUndefined();
   });
 
   test("a Tavily key the environment already has: nothing is written for it", () => {

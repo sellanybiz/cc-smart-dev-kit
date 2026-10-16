@@ -784,6 +784,39 @@ function deleteKey(data, path) {
   if (parent.found && isObject(parent.value) && leaf !== undefined)
     delete parent.value[leaf];
 }
+function deleteKeyAndEmptiedObjects(data, path, createdObject) {
+  deleteKey(data, path);
+  const removed = [];
+  for (let depth = path.length - 1;depth >= 1; depth -= 1) {
+    const parentPath = path.slice(0, depth);
+    const parent = getKey(data, parentPath);
+    if (!parent.found || !isObject(parent.value))
+      break;
+    if (Object.keys(parent.value).length > 0)
+      break;
+    if (createdObject?.(parentPath) !== true)
+      break;
+    deleteKey(data, parentPath);
+    removed.push(parentPath);
+  }
+  return removed;
+}
+function createdObjects(stateDir, file) {
+  const real = realTarget(file);
+  const entry = readChanged(stateDir)[real];
+  const baseline = entry === undefined ? undefined : listBackups(stateDir, real).find((backup) => backup.path === entry.baseline);
+  if (baseline === undefined)
+    return () => false;
+  if (baseline.absent)
+    return () => true;
+  let before;
+  try {
+    before = readJsonObject(baseline.path).data;
+  } catch {
+    return () => false;
+  }
+  return (path) => !getKey(before, path).found;
+}
 function applyManagedJson(options) {
   const file = realTarget(options.file);
   const snapshot = readOwned(options.stateDir);
@@ -847,8 +880,11 @@ function applyOnce(file, options, owned) {
     }
     if (!current.found)
       continue;
-    deleteKey(data, path);
+    const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
     changes.push({ path, before: current.value, after: undefined });
+    for (const parentPath of emptied) {
+      changes.push({ path: parentPath, before: {}, after: undefined });
+    }
   }
   const touched = (entry) => updated.some((record) => samePath(record.path, entry.path)) || dropped.some((path) => samePath(path, entry.path));
   const finalOwned = [...ownedHere.filter((entry) => !touched(entry)), ...updated];
@@ -1148,7 +1184,12 @@ function restorePartly(file, entry, stateDir) {
   if (entry.kinds.includes("json-keys")) {
     const keys = ownedKeys(stateDir, file);
     if (keys.length > 0) {
-      const result = applyManagedJson({ file, stateDir, remove: keys });
+      const result = applyManagedJson({
+        file,
+        stateDir,
+        remove: keys,
+        createdObject: createdObjects(stateDir, file)
+      });
       details.push(...result.changes.map((change) => formatKeyPath(change.path)));
       savedAs ??= result.backup;
     }

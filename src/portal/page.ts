@@ -43,9 +43,13 @@ export interface Shell {
 
 function header(shell: Shell, active: PageId): string {
   const { router } = shell.facts;
-  const state = router.up
-    ? `<span class="pill ok"><span aria-hidden="true">✓</span><span>Router running</span><span class="mono">127.0.0.1:${router.port}</span></span>`
-    : `<span class="pill bad"><span aria-hidden="true">✗</span><span>Router not answering</span><span class="mono">127.0.0.1:${router.port}</span></span>`;
+  // No router to name (no gateway config): a plain pill, never a port that nothing listens on.
+  let state = `<span class="pill plain"><span>Gateway not set up</span></span>`;
+  if (router?.up) {
+    state = `<span class="pill ok"><span aria-hidden="true">✓</span><span>Router running</span><span class="mono">127.0.0.1:${router.port}</span></span>`;
+  } else if (router !== null) {
+    state = `<span class="pill bad"><span aria-hidden="true">✗</span><span>Router not answering</span><span class="mono">127.0.0.1:${router.port}</span></span>`;
+  }
   const nav = PAGES.map(
     (page) =>
       `<a href="${page.href}"${page.id === active ? ' aria-current="page"' : ""}>${page.label}</a>`,

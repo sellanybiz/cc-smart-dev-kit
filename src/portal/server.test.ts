@@ -658,6 +658,88 @@ describe("every answer", () => {
       expect(page.body).toContain("The gateway is not set up.");
       expect(page.body).toContain("cc-smart-dev-kit gateway setup --backend-key-stdin omniroute");
       expect(page.body).toContain("Open Machine");
+      // A config that was never made is "not set up", not a file to read: no path, no error.
+      expect(page.body).not.toContain("The gateway config cannot be read");
+      // The header names no router port it cannot know.
+      expect(page.body).toContain("Gateway not set up");
+      expect(page.body).not.toContain("Router not answering");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("no gateway config: Machine and the privacy page render, and doctor says what is missing", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    // An OmniRoute is installed here, so its card shows its own table: the Backend line is
+    // the part of that card the config decides.
+    const world = await open({ backendPort: backend.port, omniroute: "3.9.9", withConfig: false });
+    try {
+      await world.enter();
+
+      // Machine is the page that must work exactly when there is no gateway: doctor first.
+      const machine = await world.call("/machine");
+      expect(machine.status).toBe(200);
+      expect(machine.body).toContain("<title>cc-smart-dev-kit — Machine</title>");
+      expect(machine.body).toContain("<h1>Machine</h1>");
+      for (const heading of [
+        "Updates",
+        "Heavy-job queue",
+        "Companions",
+        "Warp terminal",
+        "OmniRoute",
+        "Doctor",
+      ]) {
+        expect(machine.body).toContain(`${heading}</h2>`);
+      }
+      // Doctor's own line about the gateway is information (`·`), never a failure.
+      expect(machine.body).toContain("gateway: not set up (optional)");
+      // The one card that needs the config says so, with the command that fixes it.
+      expect(machine.body).toContain("<h2>The gateway is not set up</h2>");
+      expect(machine.body).toContain(
+        "cc-smart-dev-kit gateway setup --backend-key-stdin omniroute",
+      );
+      // The OmniRoute card's Backend line names no config it does not have, and never a port.
+      expect(machine.body).toContain(
+        '<span class="label">Backend</span><span class="value mono small">the gateway is not set up</span>',
+      );
+      expect(machine.body).not.toContain("Router not answering");
+
+      // The privacy page needs no gateway either, and invents no router port.
+      const privacy = await world.call("/privacy");
+      expect(privacy.status).toBe(200);
+      expect(privacy.body).toContain("<h1>How the portal stays private</h1>");
+      expect(privacy.body).toContain("no router answers here (the gateway is not set up)");
+      expect(privacy.body).not.toContain("the router on");
+
+      // Overview, Slots and Health do need it: they keep the page that says so, pointing here.
+      for (const path of ["/", "/slots", "/health"]) {
+        const page = await world.call(path);
+        expect(page.status).toBe(200);
+        expect(page.body).toContain("The gateway is not set up.");
+        expect(page.body).toContain('href="/machine"');
+      }
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("a gateway config that is there but unreadable: the config's own problem is named", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port, withConfig: false });
+    try {
+      // A `gateway.json` a hand edit left broken (mode 600: the mode is not the problem here).
+      mkdirSync(dirname(world.paths.gatewayConfigFile), { recursive: true });
+      writeFileSync(world.paths.gatewayConfigFile, "{ broken\n", { mode: 0o600 });
+      await world.enter();
+
+      const machine = await world.call("/machine");
+      expect(machine.status).toBe(200);
+      expect(machine.body).toContain("<h2>The gateway config cannot be read</h2>");
+      expect(machine.body).toContain("is not valid JSON. Fix it by hand.");
+      const overview = await world.call("/");
+      expect(overview.body).toContain("The gateway config cannot be read:");
     } finally {
       world.portal.stop();
       backend.stop();

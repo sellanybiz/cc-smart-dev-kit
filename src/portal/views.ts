@@ -430,6 +430,8 @@ export interface UpdateFacts {
 export interface MachineData {
   autoMode: null | { entries: string[]; from: string; settings: string };
   companions: CompanionRow[];
+  /** Why `gateway.json` cannot be used, when it is there but unreadable (never for a missing one). */
+  configError?: string;
   doctor: { at: number; checks: DoctorCheck[] } | null;
   jobs: null | { error: string; lines: string[] };
   omniroute: OmnirouteRow;
@@ -473,6 +475,10 @@ export function machinePage(shell: Shell, data: MachineData): string {
   const omniroute = data.omniroute;
   const install = omniroute.install;
   const previous = omniroute.previous;
+  // The config's own name for the affordable backend; without a gateway config, neither.
+  const backendLine =
+    omniroute.backend ??
+    (shell.facts.router === null ? "the gateway is not set up" : "(none in the config)");
   const omnirouteCard = `<section class="card pad">
 <div class="spread"><h2>OmniRoute</h2><code class="small">${COMMAND} omniroute status</code></div>
 ${
@@ -482,7 +488,7 @@ ${
 <div class="item"><span class="label">Installed</span><span class="value mono">${escapeHtml(install.version)}</span></div>
 <div class="item"><span class="label">Newest, 3 days old</span><span class="value mono">${omniroute.newestVersion === null ? "(not read)" : `${escapeHtml(omniroute.newestVersion)}${omniroute.state === "ok" ? ' <span class="ok">✓</span>' : ""}`}</span></div>
 <div class="item"><span class="label">Unit</span><span class="value mono">${omniroute.unit === null ? "(none)" : escapeHtml(omniroute.unit)}</span></div>
-<div class="item"><span class="label">Backend</span><span class="value mono small">${omniroute.backend === null ? "(none in the config)" : escapeHtml(omniroute.backend)}</span></div>
+<div class="item"><span class="label">Backend</span><span class="value mono small">${escapeHtml(backendLine)}</span></div>
 </div>
 ${omniroute.registryError === null ? "" : `<p class="notice">The npm registry could not be read: ${escapeHtml(omniroute.registryError)}</p>`}
 ${
@@ -591,16 +597,37 @@ ${command(`${COMMAND} setup --remove-warp`, "Copy the Warp remove command")}
 ${omnirouteCard}
 ${doctorCard}
 ${autoMode}
-${
-  shell.facts.router.up
-    ? ""
-    : `<section class="card bad">
-<h2 class="badmark">✗ The router is not answering</h2>
-<p class="muted">The gateway is set up, but nothing answers on 127.0.0.1:${shell.facts.router.port}. See the Health page for the log and the restart.</p>
-<a class="btn" href="/health">Open Health</a>
-</section>`
-}`;
+${gatewayCard(shell, data.configError)}`;
   return layout({ active: "machine", body, shell, title: "Machine" });
+}
+
+/**
+ * The card about the router. Without a gateway config there is none to report on: a short
+ * line says so, and points at the one command that sets it up. Everything above it on this
+ * page works without the gateway — which is why this page renders when the others cannot.
+ */
+function gatewayCard(shell: Shell, configError?: string): string {
+  const router = shell.facts.router;
+  if (router === null) {
+    const heading =
+      configError === undefined ? "The gateway is not set up" : "The gateway config cannot be read";
+    const error =
+      configError === undefined
+        ? ""
+        : `<div class="notice">Nothing that needs it works until it is fixed: <span class="mono wrap-any">${escapeHtml(configError)}</span>. Fix it by hand, or set the gateway up again in a terminal.</div>`;
+    return `<section class="card pad">
+<h2>${heading}</h2>
+${error}
+<p class="muted">Overview, Slots and Health need the gateway. Everything on this page works without it. Set it up in a terminal, then reload:</p>
+${command(`${COMMAND} gateway setup --backend-key-stdin omniroute < key-file`, "Copy the setup command")}
+</section>`;
+  }
+  if (router.up) return "";
+  return `<section class="card bad">
+<h2 class="badmark">✗ The router is not answering</h2>
+<p class="muted">The gateway is set up, but nothing answers on 127.0.0.1:${router.port}. See the Health page for the log and the restart.</p>
+<a class="btn" href="/health">Open Health</a>
+</section>`;
 }
 
 // ── How this page stays private ─────────────────────────────────────────────────
@@ -619,12 +646,18 @@ function privacyStep(n: number, title: string, cells: { text: string; tone?: str
 }
 
 /** The security page: the design in plain words, with this run's own numbers in it. */
-export function privacyPage(shell: Shell, options: { routerPort: number }): string {
+export function privacyPage(shell: Shell): string {
   const port = shell.facts.portalPort;
+  const router = shell.facts.router;
+  // Nothing to name when the gateway was never set up: the page says so instead of a port.
+  const routerLine =
+    router === null
+      ? ", and no router answers here (the gateway is not set up)"
+      : `, and the router on <span class="mono">127.0.0.1:${router.port}</span>`;
   const body = `<div class="pagehead">
 <div>
 <h1>How the portal stays private</h1>
-<p>This run listens on <span class="mono">127.0.0.1:${port}</span>, and the router on <span class="mono">127.0.0.1:${options.routerPort}</span>.</p>
+<p>This run listens on <span class="mono">127.0.0.1:${port}</span>${routerLine}.</p>
 </div>
 </div>
 

@@ -211,6 +211,8 @@ describe("restore of owned entries", () => {
     apply("/repo/a", ["In a."]);
     expect(readChanged(stateDir)[file]?.kinds).toEqual(["json-keys", "json-entries"]);
     restore(stateDir);
-    expect(read(file)).toEqual({ model: "opus", extraKnownMarketplaces: { m: {} } });
+    // `extraKnownMarketplaces.m` was setup's own object (the file had none), so it goes with
+    // the last key in it: nothing but the person's own settings is left.
+    expect(read(file)).toEqual({ model: "opus" });
   });
 });

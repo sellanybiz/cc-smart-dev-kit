@@ -2,7 +2,7 @@
 // src/entries/cli.ts
 import { existsSync as existsSync51, statSync as statSync18 } from "fs";
 import { uptime as uptime2 } from "os";
-import { basename as basename8, dirname as dirname13, join as join46, resolve as resolve10 } from "path";
+import { basename as basename8, dirname as dirname13, join as join47, resolve as resolve10 } from "path";
 
 // src/browser/check.ts
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
@@ -8796,6 +8796,39 @@ function deleteKey(data, path) {
   if (parent.found && isObject2(parent.value) && leaf !== undefined)
     delete parent.value[leaf];
 }
+function deleteKeyAndEmptiedObjects(data, path, createdObject) {
+  deleteKey(data, path);
+  const removed = [];
+  for (let depth = path.length - 1;depth >= 1; depth -= 1) {
+    const parentPath = path.slice(0, depth);
+    const parent = getKey(data, parentPath);
+    if (!parent.found || !isObject2(parent.value))
+      break;
+    if (Object.keys(parent.value).length > 0)
+      break;
+    if (createdObject?.(parentPath) !== true)
+      break;
+    deleteKey(data, parentPath);
+    removed.push(parentPath);
+  }
+  return removed;
+}
+function createdObjects(stateDir, file) {
+  const real = realTarget(file);
+  const entry = readChanged(stateDir)[real];
+  const baseline = entry === undefined ? undefined : listBackups(stateDir, real).find((backup) => backup.path === entry.baseline);
+  if (baseline === undefined)
+    return () => false;
+  if (baseline.absent)
+    return () => true;
+  let before;
+  try {
+    before = readJsonObject(baseline.path).data;
+  } catch {
+    return () => false;
+  }
+  return (path) => !getKey(before, path).found;
+}
 function applyManagedJson(options) {
   const file = realTarget(options.file);
   const snapshot = readOwned(options.stateDir);
@@ -8859,8 +8892,11 @@ function applyOnce(file, options, owned) {
     }
     if (!current.found)
       continue;
-    deleteKey(data, path);
+    const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
     changes.push({ path, before: current.value, after: undefined });
+    for (const parentPath of emptied) {
+      changes.push({ path: parentPath, before: {}, after: undefined });
+    }
   }
   const touched = (entry) => updated.some((record) => samePath(record.path, entry.path)) || dropped.some((path) => samePath(path, entry.path));
   const finalOwned = [...ownedHere.filter((entry) => !touched(entry)), ...updated];
@@ -10986,6 +11022,7 @@ function turnOff(options) {
     file: options.settingsFile,
     stateDir: options.stateDir,
     remove: GATEWAY_ENV_KEYS.map(envPath),
+    createdObject: createdObjects(options.stateDir, options.settingsFile),
     ...options.dryRun !== undefined && { dryRun: options.dryRun }
   });
   const foreign = result.skipped.map((skip) => skip.path[1]).filter((key) => key !== undefined && isJsonObject5(env) && Object.hasOwn(env, key));
@@ -14210,7 +14247,12 @@ function restorePartly(file, entry, stateDir) {
   if (entry.kinds.includes("json-keys")) {
     const keys = ownedKeys(stateDir, file);
     if (keys.length > 0) {
-      const result = applyManagedJson({ file, stateDir, remove: keys });
+      const result = applyManagedJson({
+        file,
+        stateDir,
+        remove: keys,
+        createdObject: createdObjects(stateDir, file)
+      });
       details.push(...result.changes.map((change) => formatKeyPath(change.path)));
       savedAs ??= result.backup;
     }
@@ -18869,7 +18911,7 @@ var SESSION_TIMEOUT_MS = 240000;
 var LIVE_TOOLS = "EnterWorktree,ExitWorktree,Bash";
 var LIVE_ALLOWED = "EnterWorktree,ExitWorktree,Bash(git status:*)";
 function liveHookCommand(pluginDir, bunPath) {
-  const command = `${shellQuote(bunPath)} ${shellQuote(join31(pluginDir, "dist", "cli.js"))}`;
+  const command = `${shellQuote(bunPath)} --no-env-file ${shellQuote(join31(pluginDir, "dist", "cli.js"))}`;
   return (name) => `${command} hook ${name}`;
 }
 function liveRecordFile(stateDir) {
@@ -20637,7 +20679,7 @@ function instructionsToSetup(paths, options) {
 
 // src/cli/restore.ts
 import { existsSync as existsSync38, rmSync as rmSync12 } from "fs";
-import { dirname as dirname11 } from "path";
+import { dirname as dirname11, join as join36 } from "path";
 function describe3(result, short) {
   const file = short(result.file);
   switch (result.action) {
@@ -20656,7 +20698,13 @@ function describe3(result, short) {
 var UNITS = `${UNIT_NAME} and ${SOCKET_NAME}`;
 var STOP_WARNING = "cc-smart-dev-kit-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.";
 var NOW_WARNING = `restore --now stops cc-smart-dev-kit-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
-var STAGE_ONE_DONE = `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
+function stageOneDone(paths, cliBundle) {
+  const launcher = join36(paths.binDir, LAUNCHER_NAME);
+  if (existsSync38(launcher)) {
+    return `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
+  }
+  return `Restart every running Claude session (they still use the router), then run the second restore again \u2014 this one removed the launcher (${tildify(launcher, paths.home)}), so \`${COMMAND}\` is not on your PATH any more: bun --no-env-file ${shellQuote(cliBundle)} restore`;
+}
 function askFirst(options, warning, question, again) {
   console.log(warning);
   if (options.yes)
@@ -20713,7 +20761,7 @@ async function runRestore(paths, options) {
       for (const line of removeMcp(paths, options, short).lines)
         console.log(line);
       forgetInstructionChoice(paths.stateDir, short);
-      console.log(STAGE_ONE_DONE);
+      console.log(stageOneDone(paths, options.cliBundle));
       return results.some((result) => result.action === "no-backup") ? 1 : 0;
     }, { waitMs: 1e4 });
   }
@@ -20783,18 +20831,18 @@ async function runRestore(paths, options) {
 
 // src/cli/setup.ts
 import { existsSync as existsSync40, readFileSync as readFileSync43 } from "fs";
-import { delimiter, join as join38 } from "path";
+import { delimiter, join as join39 } from "path";
 
 // src/mcp/serena-context.ts
 import { existsSync as existsSync39, readFileSync as readFileSync42 } from "fs";
-import { join as join36 } from "path";
+import { join as join37 } from "path";
 var SERENA_CONTEXT_NAME = "worktree.yml";
 function serenaFolder(bundleDir) {
-  const beside = join36(bundleDir, "..", "serena");
-  return existsSync39(beside) ? beside : join36(bundleDir, "..", "..", "plugin", "serena");
+  const beside = join37(bundleDir, "..", "serena");
+  return existsSync39(beside) ? beside : join37(bundleDir, "..", "..", "plugin", "serena");
 }
 function serenaContextSource(serena) {
-  return join36(serena, "contexts", SERENA_CONTEXT_NAME);
+  return join37(serena, "contexts", SERENA_CONTEXT_NAME);
 }
 function installSerenaContext(source, target, stateDir, dryRun) {
   if (!existsSync39(source))
@@ -20810,7 +20858,7 @@ function installSerenaContext(source, target, stateDir, dryRun) {
 }
 
 // src/setup/auto-mode.ts
-import { join as join37 } from "path";
+import { join as join38 } from "path";
 var AUTO_MODE_PATH = ["autoMode", "environment"];
 var AUTO_MODE_DEFAULTS = "$defaults";
 function autoModeSource(dir, which) {
@@ -20822,9 +20870,9 @@ function autoModeSource(dir, which) {
   const entries = project.config?.autoMode ?? [];
   let differsFrom = null;
   const main = project.mainCheckout;
-  const own = join37(project.root, ".claude", "cc-smart-dev-kit.json");
+  const own = join38(project.root, ".claude", "cc-smart-dev-kit.json");
   if (project.isWorktree && main !== null && project.configFile === own) {
-    const mainFile = join37(main, ".claude", "cc-smart-dev-kit.json");
+    const mainFile = join38(main, ".claude", "cc-smart-dev-kit.json");
     let mainEntries;
     try {
       mainEntries = loadCcSmartDevKitConfig(mainFile)?.autoMode ?? [];
@@ -20872,13 +20920,13 @@ function marketplaceKnown(settingsFile) {
 }
 var STATUSLINE_KEY = ["statusLine"];
 function statuslineDeclinedFile(stateDir) {
-  return join38(stateDir, "statusline-declined");
+  return join39(stateDir, "statusline-declined");
 }
 function shellWord2(path) {
   return /^[\w./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`;
 }
 function statuslineSetting(paths) {
-  return { command: `${shellWord2(join38(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+  return { command: `${shellWord2(join39(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 function hasStatusline(settingsFile) {
   if (!existsSync40(settingsFile))
@@ -20915,6 +20963,7 @@ function applySetup(paths, managed, dryRun, serenaSource) {
     secret: (path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH),
     set,
     ...tavilyOwned ? { remove: [TAVILY_KEY_PATH] } : {},
+    createdObject: createdObjects(paths.stateDir, paths.settingsFile),
     dryRun
   });
   for (const change of settings.changes) {
@@ -21184,7 +21233,7 @@ async function runSetup2(paths, options) {
   const liveServers = readUserServers(paths.userConfigFile);
   const mcpPlan = planMcpServers(mcpServers({
     bunx: machine.which("bunx") ?? "bunx",
-    launcher: join38(paths.binDir, LAUNCHER_NAME),
+    launcher: join39(paths.binDir, LAUNCHER_NAME),
     serenaContextFile: paths.serenaContextFile,
     tavily: tavily.source === "none" ? { key: false, reason: tavily.reason } : { key: true }
   }), records, liveServers).map((entry) => entry.name === "serena" && !managed.serena ? {
@@ -21373,7 +21422,7 @@ async function runStatusline(paths, readStdin, nowMs) {
 
 // src/update/apply.ts
 import { existsSync as existsSync41, readFileSync as readFileSync45 } from "fs";
-import { join as join39 } from "path";
+import { join as join40 } from "path";
 var CLAUDE_TIMEOUT_MS = 180000;
 var MARKETPLACE_REFRESH = ["plugin", "marketplace", "update", MARKETPLACE];
 var PLUGIN_UPDATE = ["plugin", "update", PLUGIN_ID, "--scope", "user"];
@@ -21412,7 +21461,7 @@ function routerNeedsSetup(paths) {
   const install = findUserInstall(paths.installedPluginsFile);
   if (install === null || !existsSync41(paths.routerCopy))
     return false;
-  const bundle = join39(install.installPath, "dist", "router.js");
+  const bundle = join40(install.installPath, "dist", "router.js");
   return existsSync41(bundle) && readFileSync45(bundle, "utf8") !== readFileSync45(paths.routerCopy, "utf8");
 }
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
@@ -21570,7 +21619,7 @@ ${UPDATE_USAGE}`);
 
 // src/cli/usage.ts
 import { existsSync as existsSync42, readdirSync as readdirSync10, readFileSync as readFileSync46, statSync as statSync13 } from "fs";
-import { basename as basename6, join as join40, resolve as resolve7 } from "path";
+import { basename as basename6, join as join41, resolve as resolve7 } from "path";
 function isJsonObject12(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -21653,7 +21702,7 @@ function count(into, replies) {
 function collectUsage(projectsDir, options) {
   const out = [];
   for (const project of entries(projectsDir).dirs) {
-    const folder = join40(projectsDir, project);
+    const folder = join41(projectsDir, project);
     const listed = entries(folder);
     const sessions = new Set([
       ...listed.files.filter((name) => name.endsWith(".jsonl")).map((name) => name.slice(0, -6)),
@@ -21669,18 +21718,18 @@ function collectUsage(projectsDir, options) {
         session,
         subagents: 0
       };
-      const own = readTranscript(join40(folder, `${session}.jsonl`), options.sinceMs, false);
+      const own = readTranscript(join41(folder, `${session}.jsonl`), options.sinceMs, false);
       usage.cwd = own.cwd;
       count(usage.main, own.replies);
-      const subagents = join40(folder, session, "subagents");
+      const subagents = join41(folder, session, "subagents");
       const metas = existsSync42(subagents) ? entries(subagents).files.filter((name) => name.endsWith(".meta.json")) : [];
       for (const name of metas) {
-        const transcript = join40(subagents, name.replace(/\.meta\.json$/, ".jsonl"));
-        const started = changedAt(join40(subagents, name));
+        const transcript = join41(subagents, name.replace(/\.meta\.json$/, ".jsonl"));
+        const started = changedAt(join41(subagents, name));
         const { cwd, replies } = readTranscript(transcript, options.sinceMs, true);
         if (replies.size === 0 && started < options.sinceMs)
           continue;
-        const meta = readJson2(join40(subagents, name));
+        const meta = readJson2(join41(subagents, name));
         usage.cwd ??= cwd;
         usage.subagents += 1;
         const launched = isJsonObject12(meta) && typeof meta.model === "string" ? meta.model : "inherited";
@@ -21783,7 +21832,7 @@ function runUsage(paths, args, nowMs) {
 Usage: cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>]`);
     return 2;
   }
-  const projectsDir = join40(paths.claudeConfigDir, "projects");
+  const projectsDir = join41(paths.claudeConfigDir, "projects");
   const sinceMs = nowMs - options.hours * 3600000;
   const sessions = collectUsage(projectsDir, { project: options.project, sinceMs });
   console.log(formatUsage(sessions, options.hours, projectsDir, paths.home, readAgentLaunches(agentLaunchesFile(paths.stateDir), sinceMs)));
@@ -21944,11 +21993,11 @@ function readProcStat(pid) {
 
 // src/jobs/config.ts
 import { existsSync as existsSync43, readFileSync as readFileSync48 } from "fs";
-import { isAbsolute as isAbsolute5, join as join41 } from "path";
+import { isAbsolute as isAbsolute5, join as join42 } from "path";
 function jobsPaths(home) {
   return {
-    configFile: join41(home, ".config", "cc-smart-dev-kit", "jobs.json"),
-    stateDir: join41(home, ".local", "share", "cc-smart-dev-kit", "jobs")
+    configFile: join42(home, ".config", "cc-smart-dev-kit", "jobs.json"),
+    stateDir: join42(home, ".local", "share", "cc-smart-dev-kit", "jobs")
   };
 }
 var DEFAULT_RESERVE_GB = 22;
@@ -22764,7 +22813,7 @@ import {
   utimesSync,
   writeFileSync as writeFileSync9
 } from "fs";
-import { join as join42 } from "path";
+import { join as join43 } from "path";
 var HEARTBEAT_MS = 5000;
 var UNSEEN_STALE_MS = 30000;
 var LOCK_STALE_MS = 30000;
@@ -22803,7 +22852,7 @@ function errorCode2(error) {
 }
 function writeWhole(file, text, token) {
   const dir = file.slice(0, file.lastIndexOf("/"));
-  const temp = join42(dir, `.${token}.tmp`);
+  const temp = join43(dir, `.${token}.tmp`);
   writeFileSync9(temp, text, { mode: FILE_MODE });
   try {
     chmodSync4(temp, FILE_MODE);
@@ -22825,8 +22874,8 @@ function leaseStore(options) {
     return holderIsGone(visible ? holder : null, lastSeenMs, UNSEEN_STALE_MS, startTimeOf);
   });
   const readStartTime = options.startTimeOf ?? processStartTime;
-  const leases = join42(options.dir, "leases");
-  const tickets = join42(options.dir, "tickets");
+  const leases = join43(options.dir, "leases");
+  const tickets = join43(options.dir, "tickets");
   const mine = new Map;
   const noted = new Set;
   let timer = null;
@@ -22890,7 +22939,7 @@ function leaseStore(options) {
     };
     const live = [];
     for (const name of names) {
-      const path = join42(folder, name);
+      const path = join43(folder, name);
       if (name.startsWith(".")) {
         if (name.endsWith(".tmp") || name.startsWith(".probe-"))
           removeLeftover(path);
@@ -22939,7 +22988,7 @@ function leaseStore(options) {
   };
   const write = (folder, gb, record, exclusive) => {
     const token = crypto.randomUUID();
-    const path = join42(folder, `${token}.json`);
+    const path = join43(folder, `${token}.json`);
     const text = JSON.stringify({
       store: 1,
       gb,
@@ -22996,7 +23045,7 @@ function leaseStore(options) {
   };
 }
 function readBudgetFile(dir) {
-  const file = join42(dir, "budget");
+  const file = join43(dir, "budget");
   let text;
   try {
     text = readFileSync50(file, "utf8");
@@ -23012,7 +23061,7 @@ function readBudgetFile(dir) {
 function readExclusiveNames(dir) {
   let text;
   try {
-    text = readFileSync50(join42(dir, "exclusive"), "utf8");
+    text = readFileSync50(join43(dir, "exclusive"), "utf8");
   } catch (error) {
     if (errorCode2(error) === "ENOENT")
       return new Set;
@@ -23121,7 +23170,7 @@ function openSharedStore(dir, options = {}) {
     return { note: `The shared folder ${dir} is left out: ${budget.problem}.` };
   }
   for (const folder of ["leases", "tickets"]) {
-    const path = join42(dir, folder);
+    const path = join43(dir, folder);
     let isFolder = false;
     try {
       isFolder = statSync14(path).isDirectory();
@@ -23129,7 +23178,7 @@ function openSharedStore(dir, options = {}) {
     if (!isFolder) {
       return { note: `The shared folder ${dir} is left out: ${path} is missing.` };
     }
-    const probe = join42(path, `.probe-${crypto.randomUUID()}`);
+    const probe = join43(path, `.probe-${crypto.randomUUID()}`);
     try {
       writeFileSync9(probe, "");
       unlinkSync5(probe);
@@ -23559,7 +23608,7 @@ function realMachine(env, confirm2) {
 
 // src/portal/command.ts
 import { existsSync as existsSync47, readFileSync as readFileSync52 } from "fs";
-import { join as join43 } from "path";
+import { join as join44 } from "path";
 var DEFAULT_PORTAL_PORT = 20150;
 var PORTAL_USAGE = `Usage: ${COMMAND} portal [--port <port>] [--no-open]
 
@@ -23624,7 +23673,7 @@ function runPortal(ctx, args) {
 ${PORTAL_USAGE}`);
     return 2;
   }
-  const bundle = join43(ctx.pluginDir, "dist", "portal.js");
+  const bundle = join44(ctx.pluginDir, "dist", "portal.js");
   if (!existsSync47(bundle)) {
     ctx.error(`the portal bundle is missing (${bundle}). This install is incomplete: run ${COMMAND} doctor, then reinstall the plugin.`);
     return 1;
@@ -23634,7 +23683,15 @@ ${PORTAL_USAGE}`);
     kind: "whole-file",
     stateDir: ctx.paths.stateDir
   });
-  const argv = [ctx.bunPath, copy, "--plugin-dir", ctx.pluginDir, "--port", String(options.port)];
+  const argv = [
+    ctx.bunPath,
+    "--no-env-file",
+    copy,
+    "--plugin-dir",
+    ctx.pluginDir,
+    "--port",
+    String(options.port)
+  ];
   if (options.noOpen)
     argv.push("--no-open");
   return ctx.runChild(argv, { cwd: process.cwd(), env: ctx.env });
@@ -23985,7 +24042,7 @@ import {
   writeFileSync as writeFileSync10
 } from "fs";
 import { platform } from "os";
-import { dirname as dirname12, join as join44, resolve as resolve8 } from "path";
+import { dirname as dirname12, join as join45, resolve as resolve8 } from "path";
 
 // src/sessions/saved-sessions.ts
 function projectFolderName(path) {
@@ -24157,10 +24214,10 @@ var TAIL_BYTES = 512 * 1024;
 var RESTORE_ALL = "claude_restore_all";
 function warpTabConfigDir(home, on = platform()) {
   if (on === "win32")
-    return join44(home, "AppData", "Roaming", "warp", "Warp", "data", "tab_configs");
+    return join45(home, "AppData", "Roaming", "warp", "Warp", "data", "tab_configs");
   if (on === "darwin")
-    return join44(home, ".warp", "tab_configs");
-  return join44(home, ".local", "share", "warp-terminal", "tab_configs");
+    return join45(home, ".warp", "tab_configs");
+  return join45(home, ".local", "share", "warp-terminal", "tab_configs");
 }
 function readTail(path, size) {
   const start = Math.max(0, size - TAIL_BYTES);
@@ -24180,10 +24237,10 @@ function savedSessions(projectsDir, mainCheckout, prefix, since) {
   for (const folder of readdirSync13(projectsDir)) {
     if (!belongsToRepo(folder, mainCheckout, prefix))
       continue;
-    for (const name of readdirSync13(join44(projectsDir, folder))) {
+    for (const name of readdirSync13(join45(projectsDir, folder))) {
       if (!name.endsWith(".jsonl"))
         continue;
-      const path = join44(projectsDir, folder, name);
+      const path = join45(projectsDir, folder, name);
       const stat = statSync16(path);
       if (!stat.isFile() || stat.mtimeMs < since)
         continue;
@@ -24205,14 +24262,14 @@ function saveWarpTabs(dir, sessions, mainCheckout, command) {
       continue;
     if (keep.has(name.slice(0, -".toml".length)))
       continue;
-    const path = join44(dir, name);
+    const path = join45(dir, name);
     if (readFileSync53(path, "utf8").startsWith(TAB_CONFIG_MARK))
       rmSync13(path);
   }
   for (const session of sessions) {
-    writeFileSync10(join44(dir, `${tabConfigName(session)}.toml`), warpTabConfig(session, mainCheckout));
+    writeFileSync10(join45(dir, `${tabConfigName(session)}.toml`), warpTabConfig(session, mainCheckout));
   }
-  writeFileSync10(join44(dir, `${RESTORE_ALL}.toml`), [
+  writeFileSync10(join45(dir, `${RESTORE_ALL}.toml`), [
     TAB_CONFIG_MARK,
     'name = "Claude \xB7 bring back the sessions a restart or a closed window stopped"',
     'title = "restore Claude sessions"',
@@ -24229,7 +24286,7 @@ function saveWarpTabs(dir, sessions, mainCheckout, command) {
 var HANDOVER_MS = 3000;
 var OPENED_AGAIN_MINUTES = 5;
 function openedMarkerFile(stateDir, id) {
-  return join44(stateDir, "sessions-opened", id);
+  return join45(stateDir, "sessions-opened", id);
 }
 function openedRecently(stateDir, id, now, minutes = OPENED_AGAIN_MINUTES) {
   const file = openedMarkerFile(stateDir, id);
@@ -24251,7 +24308,7 @@ function markOpened(stateDir, id, now) {
   for (const name of readdirSync13(dir)) {
     if (name === id || openedRecently(stateDir, name, now))
       continue;
-    rmSync13(join44(dir, name), { force: true });
+    rmSync13(join45(dir, name), { force: true });
   }
 }
 async function openOnDesktop(command, options, deps) {
@@ -24282,7 +24339,7 @@ async function runSessions(paths, options, deps, cwd = process.cwd()) {
       prefix = project.config?.worktrees?.prefix ?? "";
     }
   } catch {}
-  const projectsDir = join44(paths.claudeConfigDir, "projects");
+  const projectsDir = join45(paths.claudeConfigDir, "projects");
   const machineStartedAt = deps.now - deps.uptimeSeconds * 1000;
   const sessions = savedSessions(projectsDir, mainCheckout, prefix, deps.now - PIN_HOURS * 3600000);
   function openNow() {
@@ -24391,7 +24448,7 @@ import { basename as basename7, resolve as resolve9 } from "path";
 
 // src/worktrees/scan.ts
 import { existsSync as existsSync50, readdirSync as readdirSync15, statSync as statSync17 } from "fs";
-import { join as join45 } from "path";
+import { join as join46 } from "path";
 
 // src/worktrees/machine-facts.ts
 import { readdirSync as readdirSync14, readlinkSync as readlinkSync5 } from "fs";
@@ -24654,7 +24711,7 @@ function innerWorktreeOf(worktree, all) {
   const listed = all.find((other) => isInside(other.path, worktree) && !isInside(worktree, other.path));
   if (listed !== undefined)
     return listed.path;
-  const claudeOwn = join45(worktree, ".claude", "worktrees");
+  const claudeOwn = join46(worktree, ".claude", "worktrees");
   let entries;
   try {
     entries = readdirSync15(claudeOwn);
@@ -24662,7 +24719,7 @@ function innerWorktreeOf(worktree, all) {
     return null;
   }
   for (const entry of entries) {
-    const folder = join45(claudeOwn, entry);
+    const folder = join46(claudeOwn, entry);
     try {
       if (statSync17(folder).isDirectory() && readdirSync15(folder).length > 0)
         return folder;
@@ -24967,8 +25024,9 @@ Commands:
                      instructions block in ~/.claude/CLAUDE.md, the gateway config's
                      slots (with an alias for each old name, so running sessions keep
                      working), and the router units. On a 0.2.x machine this command does
-                     not exist yet: run the installed plugin's dist/cli.js with bun
-                     (README, Moving from anymodel).
+                     not exist yet: run the installed plugin's dist/cli.js with
+                     bun --no-env-file (README, Moving from anymodel: without the flag bun
+                     loads the working folder's .env files into the command).
                      It reads and checks everything, then asks every question, and writes
                      nothing before they are answered: a "no" leaves the machine as it
                      was. It then prints its steps and walks them; a step that fails keeps
@@ -25039,14 +25097,14 @@ The worktree engine is opt-in per project. To turn it on in a project, give its
 
 ${projectHookSettingsText()}`;
 function distBundle(name) {
-  const beside = join46(import.meta.dir, name);
-  return existsSync51(beside) ? beside : join46(import.meta.dir, "..", "..", "plugin", "dist", name);
+  const beside = join47(import.meta.dir, name);
+  return existsSync51(beside) ? beside : join47(import.meta.dir, "..", "..", "plugin", "dist", name);
 }
 function routerBundle() {
   return distBundle("router.js");
 }
 function pluginDir() {
-  return basename8(import.meta.dir) === "dist" ? dirname13(import.meta.dir) : join46(import.meta.dir, "..", "..", "plugin");
+  return basename8(import.meta.dir) === "dist" ? dirname13(import.meta.dir) : join47(import.meta.dir, "..", "..", "plugin");
 }
 var liveRunner = (argv, { cwd, env, timeoutMs }) => {
   try {
@@ -25190,7 +25248,7 @@ ${HELP}`);
         console.error(`Usage: cc-smart-dev-kit ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
         return 2;
       }
-      const launcher = join46(paths.binDir, LAUNCHER_NAME);
+      const launcher = join47(paths.binDir, LAUNCHER_NAME);
       if (runAlert(alert, process.platform, launcher, spawnRunner) === "no notifier") {
         console.error(`cc-smart-dev-kit: ${alert.title}. ${alert.body}`);
       }
@@ -25214,7 +25272,7 @@ ${HELP}`);
         },
         local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
         mcp: realMcpDoctorDeps(),
-        project: { cwd: process.cwd(), pluginHooksFile: join46(pluginDir(), "hooks", "hooks.json") },
+        project: { cwd: process.cwd(), pluginHooksFile: join47(pluginDir(), "hooks", "hooks.json") },
         live: rest.includes("--live") ? {
           pluginDir: pluginDir(),
           hookCommand: liveHookCommand(pluginDir(), process.execPath),
@@ -25258,6 +25316,7 @@ ${HELP}`);
         return 2;
       }
       return runRestore(paths, {
+        cliBundle: distBundle("cli.js"),
         claude: (argv) => {
           const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
           return {

@@ -90,11 +90,13 @@ describe("the portal command", () => {
     expect(readFileSync(machine.copy, "utf8")).toBe("// the portal bundle\n");
     // `--plugin-dir` is the whole point: the child runs from this copy, so a plugin path made
     // in it would resolve to `~/.local/share/…`, where the router bundle and the instructions
-    // are not. The child hears where the plugin really is.
+    // are not. The child hears where the plugin really is. `--no-env-file`: the copy reads
+    // this terminal's environment, never the project folder's `.env` files.
     expect(machine.spawned).toEqual([
       {
         argv: [
           "/opt/bun/bin/bun",
+          "--no-env-file",
           machine.copy,
           "--plugin-dir",
           machine.pluginDir,
@@ -118,6 +120,7 @@ describe("the portal command", () => {
     machine.run(["--no-open"]);
     expect(machine.spawned[0]?.argv).toEqual([
       "/opt/bun/bin/bun",
+      "--no-env-file",
       machine.copy,
       "--plugin-dir",
       machine.pluginDir,

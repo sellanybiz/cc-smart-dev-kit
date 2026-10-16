@@ -1,5 +1,5 @@
 import { existsSync, rmSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info";
 import { configuredPort } from "../gateway/commands";
 import { messageOf } from "../gateway/config";
@@ -16,6 +16,7 @@ import { ownedGatewayEnvKeys } from "../gateway/settings";
 import { forgetMcpServer, mcpRecordsFile } from "../mcp/records";
 import { removeMcpServers } from "../mcp/register";
 import { forgetInstructionsState } from "../setup/instructions";
+import { LAUNCHER_NAME, shellQuote } from "../setup/launcher";
 import { withLock } from "../setup/lock";
 import { type RestoreResult, restore } from "../setup/restore";
 import { readChanged, realTarget } from "../setup/write";
@@ -47,14 +48,27 @@ export const STOP_WARNING =
 /** Said before `restore --now`, and before the question. */
 export const NOW_WARNING = `restore --now stops cc-smart-dev-kit-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
 
-/** Said at the end of stage 1. */
-export const STAGE_ONE_DONE = `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
+/**
+ * Said at the end of stage 1. When this run removed the launcher (setup had created it), the
+ * second restore cannot be typed as `cc-smart-dev-kit restore` any more: the line then names
+ * the command that really works — the README's own `bun --no-env-file …/dist/cli.js restore`
+ * form, with this CLI's bundle (`RestoreOptions.cliBundle`).
+ */
+export function stageOneDone(paths: CliPaths, cliBundle: string): string {
+  const launcher = join(paths.binDir, LAUNCHER_NAME);
+  if (existsSync(launcher)) {
+    return `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
+  }
+  return `Restart every running Claude session (they still use the router), then run the second restore again — this one removed the launcher (${tildify(launcher, paths.home)}), so \`${COMMAND}\` is not on your PATH any more: bun --no-env-file ${shellQuote(cliBundle)} restore`;
+}
 
 export interface RestoreOptions {
   /** `--yes`: stop a running router without asking. */
   yes: boolean;
   /** `--now`: both stages at once, though running sessions still use the router. */
   now: boolean;
+  /** This CLI's own bundle (`plugin/dist/cli.js`): what stage 1 names as the second run. */
+  cliBundle: string;
   runner: Runner;
   systemd: boolean;
   /** Asks the person; null when there is no terminal. */
@@ -180,7 +194,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
         print(results, short);
         for (const line of removeMcp(paths, options, short).lines) console.log(line);
         forgetInstructionChoice(paths.stateDir, short);
-        console.log(STAGE_ONE_DONE);
+        console.log(stageOneDone(paths, options.cliBundle));
         return results.some((result) => result.action === "no-backup") ? 1 : 0;
       },
       { waitMs: 10_000 },

@@ -36,6 +36,7 @@ import {
   backendRows,
   claudeModels,
   companionRows,
+  configExists,
   limitFacts,
   type ModelRow,
   omnirouteRow,
@@ -70,6 +71,7 @@ import {
 import {
   expiredPage,
   healthPage,
+  type MachineData,
   machinePage,
   notSetUpPage,
   overviewPage,
@@ -272,6 +274,29 @@ export async function startPortal(
     }
   }
 
+  /** The Machine page's data. **No gateway config is needed for any of it**: updates, the
+   *  doctor pass, the heavy-job queue, the companions, OmniRoute and Warp all work without
+   *  one, and doctor matters most exactly then. */
+  async function machineData(): Promise<MachineData> {
+    await doctorOnce();
+    const updates = updateState(actionContext());
+    return {
+      autoMode: autoMode(),
+      companions: companionRows(ctx),
+      doctor: state.doctor,
+      jobs: await jobLines(actionContext()),
+      omniroute: await omnirouteRow(actionContext().omniroute, isOlder),
+      updates: {
+        heldSince: updates.heldSince,
+        installed: updates.installed,
+        last: updates.last,
+        newest: updates.last?.result === "up-to-date" ? updates.last.detail : null,
+        summary: summaryOf(updates.last),
+      },
+      warp: warpRow(ctx),
+    };
+  }
+
   /** The page route a path names, or null when no page lives there. */
   async function pageResponse(
     path: string,
@@ -280,7 +305,16 @@ export async function startPortal(
   ): Promise<Response> {
     const found = readConfig(ctx);
     if ("error" in found) {
-      return html(notSetUpPage(shell, { backends: [], configError: found.error }), extra);
+      // No config, or one that cannot be read. The Machine page draws anyway: every card on
+      // it works without the gateway, and `doctor` matters most on a machine that has none.
+      // A config file that is there but unusable names its own problem; a missing one is
+      // simply "not set up". Overview, Slots and Health need the config, so they keep the
+      // page that says so and points at Machine.
+      const error = configExists(ctx) ? { configError: found.error } : {};
+      if (path === "/machine") {
+        return html(machinePage(shell, { ...(await machineData()), ...error }), extra);
+      }
+      return html(notSetUpPage(shell, { backends: [], ...error }), extra);
     }
     const config = found.config;
     const router = await routerFacts(ctx, config.port);
@@ -333,28 +367,7 @@ export async function startPortal(
         extra,
       );
     }
-    if (path === "/machine") {
-      await doctorOnce();
-      const updates = updateState(actionContext());
-      return html(
-        machinePage(shell, {
-          autoMode: autoMode(),
-          companions: companionRows(ctx),
-          doctor: state.doctor,
-          jobs: await jobLines(actionContext()),
-          omniroute: await omnirouteRow(actionContext().omniroute, isOlder),
-          updates: {
-            heldSince: updates.heldSince,
-            installed: updates.installed,
-            last: updates.last,
-            newest: updates.last?.result === "up-to-date" ? updates.last.detail : null,
-            summary: summaryOf(updates.last),
-          },
-          warp: warpRow(ctx),
-        }),
-        extra,
-      );
-    }
+    if (path === "/machine") return html(machinePage(shell, await machineData()), extra);
     const limits = limitFacts(ctx);
     const dashboard = config.backends.omniroute?.baseUrl ?? null;
     return html(
@@ -481,7 +494,7 @@ export async function startPortal(
       facts: await shellFacts(ctx, port),
     };
     if (url.pathname === "/privacy") {
-      return html(privacyPage(shell, { routerPort: shell.facts.router.port }), {});
+      return html(privacyPage(shell), {});
     }
     if (!PAGES.has(url.pathname)) return expiredPageResponse();
     return pageResponse(url.pathname, shell, {});

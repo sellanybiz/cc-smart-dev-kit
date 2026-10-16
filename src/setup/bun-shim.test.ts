@@ -51,7 +51,7 @@ describe("the hooks' bun shim", () => {
     expect(runShim({ HOME: home, PATH: NO_BUN_PATH })).toEqual({
       exitCode: 0,
       stderr: "",
-      stdout: "baked /x/dist/update-check.js\n",
+      stdout: "baked --no-env-file /x/dist/update-check.js\n",
     });
   });
 
@@ -67,11 +67,15 @@ describe("the hooks' bun shim", () => {
     writeFileSync(join(home, ".local", "bin", "cc-smart-dev-kit"), launcherScript("/nowhere/bun"));
     const path = `${pathDir}:${NO_BUN_PATH}`;
     expect(runShim({ BUN_INSTALL: install, HOME: home, PATH: path }).stdout).toBe(
-      "bun-install /x/dist/update-check.js\n",
+      "bun-install --no-env-file /x/dist/update-check.js\n",
     );
-    expect(runShim({ HOME: home, PATH: path }).stdout).toBe("home-bun /x/dist/update-check.js\n");
+    expect(runShim({ HOME: home, PATH: path }).stdout).toBe(
+      "home-bun --no-env-file /x/dist/update-check.js\n",
+    );
     const bare = tempDir("shim");
-    expect(runShim({ HOME: bare, PATH: path }).stdout).toBe("path-bun /x/dist/update-check.js\n");
+    expect(runShim({ HOME: bare, PATH: path }).stdout).toBe(
+      "path-bun --no-env-file /x/dist/update-check.js\n",
+    );
   });
 
   test("no bun anywhere: one line on stderr, exit 0 (a hook never stops a session)", () => {

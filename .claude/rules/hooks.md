@@ -45,7 +45,9 @@ Every entry in `plugin/hooks/hooks.json` uses the exec form, never a shell strin
   may have no bun on PATH, and then the hook never runs (seen live). `plugin/bin/cc-smart-dev-kit-bun`
   finds bun where the launcher does (the bun baked into `~/.local/bin/cc-smart-dev-kit`,
   `$BUN_INSTALL/bin/bun`, `~/.bun/bin/bun`, then PATH); it uses only shell built-ins, so it
-  works with an empty PATH too. `src/hooks/bun-shim.test.ts` and `src/setup/bun-shim.test.ts`
+  works with an empty PATH too. **It starts bun with `--no-env-file`**, like the launcher and
+  `bin/cc-smart-dev-kit`: bun would otherwise add the working folder's `.env` files to the
+  hook, and a hook must see the environment Claude Code gave it. `src/hooks/bun-shim.test.ts` and `src/setup/bun-shim.test.ts`
   check the order and both modes.
 - **The shim's first argument says what to do when no bun is found**, and is never passed
   to bun: `--missing=ask` prints one PreToolUse answer on stdout, asking the person, and

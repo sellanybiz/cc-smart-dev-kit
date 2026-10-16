@@ -3,6 +3,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   atomicWrite,
+  listBackups,
+  readChanged,
   realTarget,
   retryOnConcurrentChange,
   type WriteResult,
@@ -57,6 +59,13 @@ export interface ManagedJsonOptions {
    * owned.json keeps only its hash, and a write that sets it leaves the file at mode 600.
    */
   secret?: (path: KeyPath) => boolean;
+  /**
+   * True for an object cc-smart-dev-kit created (the file, before cc-smart-dev-kit's first change,
+   * did not hold it). A removal that leaves such an object empty removes it too, so no
+   * `"env": {}` is left behind. Answers false for everything by default: an object the
+   * person had stays, even empty. `createdObjects` builds it from the baseline backup.
+   */
+  createdObject?: (path: KeyPath) => boolean;
   /** Tests only: runs after the read and before the write, to play another program's write. */
   onBeforeWrite?: () => void;
 }
@@ -233,6 +242,59 @@ export function deleteKey(data: JsonObject, path: KeyPath): void {
 }
 
 /**
+ * Deletes `path`, then each object above it that this deletion emptied **and** that
+ * cc-smart-dev-kit created (`createdObject`): the object a key lived in goes with its last
+ * key, up to the file's own top. An object the person had stays, even when it is empty now,
+ * and so does everything above a path cc-smart-dev-kit did not create. Returns the objects it
+ * removed, deepest first.
+ */
+export function deleteKeyAndEmptiedObjects(
+  data: JsonObject,
+  path: KeyPath,
+  createdObject?: (path: KeyPath) => boolean,
+): KeyPath[] {
+  deleteKey(data, path);
+  const removed: KeyPath[] = [];
+  // Up from the key's own object to the first segment: never the file's top level itself.
+  for (let depth = path.length - 1; depth >= 1; depth -= 1) {
+    const parentPath = path.slice(0, depth);
+    const parent = getKey(data, parentPath);
+    if (!parent.found || !isObject(parent.value)) break;
+    if (Object.keys(parent.value).length > 0) break;
+    if (createdObject?.(parentPath) !== true) break;
+    deleteKey(data, parentPath);
+    removed.push(parentPath);
+  }
+  return removed;
+}
+
+/**
+ * The objects in `file` cc-smart-dev-kit created, read from the baseline backup: the file just
+ * before cc-smart-dev-kit's first change. A key path the baseline does not hold was not there
+ * then, so cc-smart-dev-kit made it. A missing or unreadable baseline answers false for
+ * everything: nothing that may be the person's is ever pruned.
+ */
+export function createdObjects(stateDir: string, file: string): (path: KeyPath) => boolean {
+  const real = realTarget(file);
+  const entry = readChanged(stateDir)[real];
+  const baseline =
+    entry === undefined
+      ? undefined
+      : listBackups(stateDir, real).find((backup) => backup.path === entry.baseline);
+  if (baseline === undefined) return () => false;
+  // The file itself was not there before cc-smart-dev-kit: everything in it came from us.
+  if (baseline.absent) return () => true;
+  let before: JsonObject;
+  try {
+    before = readJsonObject(baseline.path).data;
+  } catch {
+    // A baseline that cannot be read as a JSON object proves nothing about the file.
+    return () => false;
+  }
+  return (path) => !getKey(before, path).found;
+}
+
+/**
  * Sets or removes the keys cc-smart-dev-kit owns in a JSON settings file.
  *
  * - Every other key stays as it is, and the file keeps its mode (a write that sets a
@@ -244,6 +306,8 @@ export function deleteKey(data: JsonObject, path: KeyPath): void {
  *   theirs. Setting it throws ForeignKeyError like any foreign key; removing it leaves it
  *   and gives up the ownership.
  * - A key that already has the wanted value but is not owned is left alone, unowned.
+ * - An object cc-smart-dev-kit created (`createdObject`) that a removal empties goes with its
+ *   last key; an object the person had stays as it is, also when it is empty.
  * - No change means no write: no backup, no new file.
  * - Just before the rename, the file is compared with the text we read. When another
  *   program (Claude Code) wrote it in between, nothing is written: we read again and redo
@@ -333,8 +397,12 @@ function applyOnce(
       continue;
     }
     if (!current.found) continue;
-    deleteKey(data, path);
+    const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
     changes.push({ path, before: current.value, after: undefined });
+    for (const parentPath of emptied) {
+      // The object went with its last key: it was cc-smart-dev-kit's, and it is empty now.
+      changes.push({ path: parentPath, before: {}, after: undefined });
+    }
   }
 
   const touched = (entry: OwnedRecord) =>

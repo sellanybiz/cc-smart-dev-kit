@@ -254,6 +254,21 @@ describe("Claude Code settings: on / off", () => {
     ]);
   });
 
+  it("off: an env our setup created goes with its last key; one the person had stays", () => {
+    // No `env` of the person's: `gateway setup` made that object, so `off` takes it back out.
+    const bare = seed({ model: "opus" });
+    turnOn({ settingsFile: bare.file, stateDir: bare.stateDir, port: 20100 });
+    expect(JSON.parse(readFileSync(bare.file, "utf8")).env).toEqual(ON_ENV);
+    turnOff({ settingsFile: bare.file, stateDir: bare.stateDir });
+    expect(JSON.parse(readFileSync(bare.file, "utf8"))).toEqual({ model: "opus" });
+
+    // An `env` that was there before us, even an empty one, is the person's and stays.
+    const theirs = seed({ env: {}, model: "opus" });
+    turnOn({ settingsFile: theirs.file, stateDir: theirs.stateDir, port: 20100 });
+    turnOff({ settingsFile: theirs.file, stateDir: theirs.stateDir });
+    expect(JSON.parse(readFileSync(theirs.file, "utf8"))).toEqual({ env: {}, model: "opus" });
+  });
+
   it("every write keeps its own backup; the first, with the earlier values, is never replaced", () => {
     const { file, stateDir } = seed();
     const first = readFileSync(file, "utf8");

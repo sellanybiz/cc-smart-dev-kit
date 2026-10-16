@@ -8,6 +8,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import {
   applyManagedJson,
+  createdObjects,
   ForeignKeyError,
   formatKeyPath,
   getKey,
@@ -225,6 +226,9 @@ export function turnOff(options: { settingsFile: string; stateDir: string; dryRu
     file: options.settingsFile,
     stateDir: options.stateDir,
     remove: GATEWAY_ENV_KEYS.map(envPath),
+    // Gateway setup created the `env` these keys live in, when the settings had none: an
+    // `env` this removal empties goes with them. One the person had stays.
+    createdObject: createdObjects(options.stateDir, options.settingsFile),
     ...(options.dryRun !== undefined && { dryRun: options.dryRun }),
   });
   const foreign = result.skipped

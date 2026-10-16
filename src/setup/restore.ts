@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, rmdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { removeAllOwnedEntries } from "./managed-entries";
-import { applyManagedJson, formatKeyPath, ownedKeys } from "./managed-json";
+import { applyManagedJson, createdObjects, formatKeyPath, ownedKeys } from "./managed-json";
 import { removeManagedLines } from "./managed-line";
 import { removeManagedMarkdown } from "./managed-markdown";
 import {
@@ -71,7 +71,14 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
   if (entry.kinds.includes("json-keys")) {
     const keys = ownedKeys(stateDir, file);
     if (keys.length > 0) {
-      const result = applyManagedJson({ file, stateDir, remove: keys });
+      // `createdObject`: an object cc-smart-dev-kit created and this removal emptied (the `env`
+      // its own keys made, say) goes with its last key; one the person had stays.
+      const result = applyManagedJson({
+        file,
+        stateDir,
+        remove: keys,
+        createdObject: createdObjects(stateDir, file),
+      });
       details.push(...result.changes.map((change) => formatKeyPath(change.path)));
       savedAs ??= result.backup;
     }

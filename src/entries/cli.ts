@@ -93,8 +93,9 @@ Commands:
                      instructions block in ~/.claude/CLAUDE.md, the gateway config's
                      slots (with an alias for each old name, so running sessions keep
                      working), and the router units. On a 0.2.x machine this command does
-                     not exist yet: run the installed plugin's dist/cli.js with bun
-                     (README, Moving from anymodel).
+                     not exist yet: run the installed plugin's dist/cli.js with
+                     bun --no-env-file (README, Moving from anymodel: without the flag bun
+                     loads the working folder's .env files into the command).
                      It reads and checks everything, then asks every question, and writes
                      nothing before they are answered: a "no" leaves the machine as it
                      was. It then prints its steps and walks them; a step that fails keeps
@@ -414,6 +415,8 @@ async function main(argv: string[]): Promise<number> {
         return 2;
       }
       return runRestore(paths, {
+        // What stage 1 names when it removed the launcher: the bundle a person runs then.
+        cliBundle: distBundle("cli.js"),
         claude: (argv) => {
           const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
           return {

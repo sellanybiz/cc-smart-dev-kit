@@ -52,13 +52,17 @@ describe("cc-smart-dev-kit-bun finds bun without PATH", () => {
       PATH: `${emptyPath}:${pathDir}`,
     };
 
-    expect(runShim(env)).toEqual({ exitCode: 0, stdout: "baked a b c\n", stderr: "" });
+    expect(runShim(env)).toEqual({
+      exitCode: 0,
+      stdout: "baked --no-env-file a b c\n",
+      stderr: "",
+    });
     rmSync(baked);
-    expect(runShim(env).stdout).toBe("bun-install a b c\n");
+    expect(runShim(env).stdout).toBe("bun-install --no-env-file a b c\n");
     rmSync(installed);
-    expect(runShim(env).stdout).toBe("home-bun a b c\n");
+    expect(runShim(env).stdout).toBe("home-bun --no-env-file a b c\n");
     rmSync(homeBun);
-    expect(runShim(env).stdout).toBe("path-bun a b c\n");
+    expect(runShim(env).stdout).toBe("path-bun --no-env-file a b c\n");
   });
 
   test("a launcher that is not ours, or BUN_INSTALL unset: those steps are skipped", () => {
@@ -69,7 +73,9 @@ describe("cc-smart-dev-kit-bun finds bun without PATH", () => {
       "#!/bin/sh\necho someone else's\n",
     );
     fakeBun(join(home, ".bun", "bin", "bun"), "home-bun");
-    expect(runShim({ HOME: home, PATH: tempDir("empty-path") }).stdout).toBe("home-bun a b c\n");
+    expect(runShim({ HOME: home, PATH: tempDir("empty-path") }).stdout).toBe(
+      "home-bun --no-env-file a b c\n",
+    );
   });
 
   test("a baked bun path with a ' in it is read as the launcher wrote it", () => {
@@ -80,7 +86,7 @@ describe("cc-smart-dev-kit-bun finds bun without PATH", () => {
     // Nothing else to fall back on: only the baked path can answer.
     expect(runShim({ HOME: home, PATH: tempDir("empty-path") })).toEqual({
       exitCode: 0,
-      stdout: "baked a b c\n",
+      stdout: "baked --no-env-file a b c\n",
       stderr: "",
     });
   });
@@ -123,14 +129,45 @@ describe("cc-smart-dev-kit-bun finds bun without PATH", () => {
     const home = tempDir("shim-home");
     fakeBun(join(home, ".bun", "bin", "bun"), "home-bun");
     const env = { HOME: home, PATH: tempDir("empty-path") };
-    expect(runShim(env, ["--missing=ask", "a", "b c"]).stdout).toBe("home-bun a b c\n");
-    expect(runShim(env, ["--missing=quiet", "a", "b c"]).stdout).toBe("home-bun a b c\n");
+    expect(runShim(env, ["--missing=ask", "a", "b c"]).stdout).toBe(
+      "home-bun --no-env-file a b c\n",
+    );
+    expect(runShim(env, ["--missing=quiet", "a", "b c"]).stdout).toBe(
+      "home-bun --no-env-file a b c\n",
+    );
     // With no mode, the first argument is the bundle and still reaches bun: quiet is the
     // default, so a hook that forgets one never blocks work.
-    expect(runShim(env, ["a", "b c"]).stdout).toBe("home-bun a b c\n");
+    expect(runShim(env, ["a", "b c"]).stdout).toBe("home-bun --no-env-file a b c\n");
     expect(
       runShim({ HOME: tempDir("shim-home"), PATH: tempDir("empty-path") }, ["a"]).exitCode,
     ).toBe(0);
+  });
+
+  test("--no-env-file: a project's .env.local never reaches the hook", () => {
+    // The reason the shim passes it: bun loads the working folder's .env files into the
+    // program it runs, and a hook must see the environment Claude Code gave it. Run for real
+    // (the bun running this test), in a folder that holds a .env.local.
+    const home = tempDir("shim-home");
+    const project = tempDir("shim-project");
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(
+      join(home, ".local", "bin", "cc-smart-dev-kit"),
+      launcherScript(process.execPath),
+    );
+    writeFileSync(join(project, ".env.local"), "CCSDK_FROM_DOTENV=yes\n");
+    const probe = join(project, "probe.js");
+    writeFileSync(
+      probe,
+      "console.log(JSON.stringify({ fromDotenv: process.env.CCSDK_FROM_DOTENV ?? null }));\n",
+    );
+    const result = Bun.spawnSync([SHIM, probe], {
+      cwd: project,
+      env: { HOME: home, PATH: tempDir("empty-path") },
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe('{"fromDotenv":null}\n');
   });
 
   test("a real hook bundle, as hooks.json runs it, with no bun on PATH: the guard answers", () => {

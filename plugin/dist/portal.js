@@ -6053,6 +6053,16 @@ function makePrivateDir(dir) {
   mkdirSync(dir, { recursive: true, mode: 448 });
   chmodSync(dir, 448);
 }
+function listBackups(stateDir, file) {
+  const dir = backupDir(stateDir, file);
+  if (!existsSync(dir))
+    return [];
+  const base = basename(realTarget(file));
+  return readdirSync(dir).map((name) => parseBackupName(base, name)).filter((backup) => backup !== null).sort((a, b) => a.stamp === b.stamp ? a.counter - b.counter : a.stamp < b.stamp ? -1 : 1).map((backup) => {
+    const path = join3(dir, backup.name);
+    return { path, absent: backup.absent, mode: backup.mode ?? fileMode(path) ?? 384 };
+  });
+}
 function copyNotExecutable(file, target) {
   const mode = fileMode(file) ?? 384;
   const safeMode = mode & ~73;
@@ -9132,6 +9142,39 @@ function deleteKey(data, path) {
   if (parent.found && isObject2(parent.value) && leaf !== undefined)
     delete parent.value[leaf];
 }
+function deleteKeyAndEmptiedObjects(data, path, createdObject) {
+  deleteKey(data, path);
+  const removed = [];
+  for (let depth = path.length - 1;depth >= 1; depth -= 1) {
+    const parentPath = path.slice(0, depth);
+    const parent = getKey(data, parentPath);
+    if (!parent.found || !isObject2(parent.value))
+      break;
+    if (Object.keys(parent.value).length > 0)
+      break;
+    if (createdObject?.(parentPath) !== true)
+      break;
+    deleteKey(data, parentPath);
+    removed.push(parentPath);
+  }
+  return removed;
+}
+function createdObjects(stateDir, file) {
+  const real = realTarget(file);
+  const entry = readChanged(stateDir)[real];
+  const baseline = entry === undefined ? undefined : listBackups(stateDir, real).find((backup) => backup.path === entry.baseline);
+  if (baseline === undefined)
+    return () => false;
+  if (baseline.absent)
+    return () => true;
+  let before;
+  try {
+    before = readJsonObject(baseline.path).data;
+  } catch {
+    return () => false;
+  }
+  return (path) => !getKey(before, path).found;
+}
 function applyManagedJson(options) {
   const file = realTarget(options.file);
   const snapshot = readOwned(options.stateDir);
@@ -9195,8 +9238,11 @@ function applyOnce(file, options, owned) {
     }
     if (!current.found)
       continue;
-    deleteKey(data, path);
+    const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
     changes.push({ path, before: current.value, after: undefined });
+    for (const parentPath of emptied) {
+      changes.push({ path: parentPath, before: {}, after: undefined });
+    }
   }
   const touched = (entry) => updated.some((record) => samePath(record.path, entry.path)) || dropped.some((path) => samePath(path, entry.path));
   const finalOwned = [...ownedHere.filter((entry) => !touched(entry)), ...updated];
@@ -10494,6 +10540,7 @@ function turnOff(options) {
     file: options.settingsFile,
     stateDir: options.stateDir,
     remove: GATEWAY_ENV_KEYS.map(envPath),
+    createdObject: createdObjects(options.stateDir, options.settingsFile),
     ...options.dryRun !== undefined && { dryRun: options.dryRun }
   });
   const foreign = result.skipped.map((skip) => skip.path[1]).filter((key) => key !== undefined && isJsonObject5(env) && Object.hasOwn(env, key));
@@ -19821,9 +19868,19 @@ function readConfig(ctx) {
     return { error: messageOf(error) };
   }
 }
+function configExists(ctx) {
+  try {
+    readFileSync40(ctx.paths.gatewayConfigFile);
+    return true;
+  } catch {
+    return false;
+  }
+}
 async function shellFacts(ctx, portalPort) {
   const found = readConfig(ctx);
-  const port = "config" in found ? found.config.port : DEFAULT_PORT;
+  if ("error" in found)
+    return { portalPort, router: null, version: VERSION };
+  const port = found.config.port;
   const health = await routerHealth(port, ctx.probe.fetch);
   return { portalPort, router: { port, up: !("error" in health) }, version: VERSION };
 }
@@ -20279,7 +20336,12 @@ var PAGES = [
 ];
 function header(shell, active) {
   const { router } = shell.facts;
-  const state = router.up ? `<span class="pill ok"><span aria-hidden="true">\u2713</span><span>Router running</span><span class="mono">127.0.0.1:${router.port}</span></span>` : `<span class="pill bad"><span aria-hidden="true">\u2717</span><span>Router not answering</span><span class="mono">127.0.0.1:${router.port}</span></span>`;
+  let state = `<span class="pill plain"><span>Gateway not set up</span></span>`;
+  if (router?.up) {
+    state = `<span class="pill ok"><span aria-hidden="true">\u2713</span><span>Router running</span><span class="mono">127.0.0.1:${router.port}</span></span>`;
+  } else if (router !== null) {
+    state = `<span class="pill bad"><span aria-hidden="true">\u2717</span><span>Router not answering</span><span class="mono">127.0.0.1:${router.port}</span></span>`;
+  }
   const nav = PAGES.map((page) => `<a href="${page.href}"${page.id === active ? ' aria-current="page"' : ""}>${page.label}</a>`).join("");
   return `<header class="top">
 <div class="wrap">
@@ -20661,13 +20723,14 @@ function machinePage(shell, data) {
   const omniroute = data.omniroute;
   const install = omniroute.install;
   const previous = omniroute.previous;
+  const backendLine = omniroute.backend ?? (shell.facts.router === null ? "the gateway is not set up" : "(none in the config)");
   const omnirouteCard = `<section class="card pad">
 <div class="spread"><h2>OmniRoute</h2><code class="small">${COMMAND} omniroute status</code></div>
 ${install === null ? `<p class="muted">Not installed here, so the affordable slots have no backend. Install it in your own terminal, then run <code>${COMMAND} gateway setup</code>:</p>${command(`bun add -g ${"omniroute"}`, "Copy the install command")}` : `<div class="kv">
 <div class="item"><span class="label">Installed</span><span class="value mono">${escapeHtml(install.version)}</span></div>
 <div class="item"><span class="label">Newest, 3 days old</span><span class="value mono">${omniroute.newestVersion === null ? "(not read)" : `${escapeHtml(omniroute.newestVersion)}${omniroute.state === "ok" ? ' <span class="ok">\u2713</span>' : ""}`}</span></div>
 <div class="item"><span class="label">Unit</span><span class="value mono">${omniroute.unit === null ? "(none)" : escapeHtml(omniroute.unit)}</span></div>
-<div class="item"><span class="label">Backend</span><span class="value mono small">${omniroute.backend === null ? "(none in the config)" : escapeHtml(omniroute.backend)}</span></div>
+<div class="item"><span class="label">Backend</span><span class="value mono small">${escapeHtml(backendLine)}</span></div>
 </div>
 ${omniroute.registryError === null ? "" : `<p class="notice">The npm registry could not be read: ${escapeHtml(omniroute.registryError)}</p>`}
 ${omniroute.unit === null ? `<p class="notice">No user unit runs OmniRoute here, so an update installs the new version but cannot restart it or check it: restart OmniRoute the way this machine runs it, then run <code>${COMMAND} omniroute status</code>.</p>` : `<p class="muted">The update restarts ${escapeHtml(omniroute.unit)}, so the gateway's slots fall to their next target while it comes back: Claude answers, on your own login. A version that does not answer is put back.</p>`}
@@ -20751,12 +20814,28 @@ ${command(`${COMMAND} setup --remove-warp`, "Copy the Warp remove command")}
 ${omnirouteCard}
 ${doctorCard}
 ${autoMode}
-${shell.facts.router.up ? "" : `<section class="card bad">
-<h2 class="badmark">\u2717 The router is not answering</h2>
-<p class="muted">The gateway is set up, but nothing answers on 127.0.0.1:${shell.facts.router.port}. See the Health page for the log and the restart.</p>
-<a class="btn" href="/health">Open Health</a>
-</section>`}`;
+${gatewayCard(shell, data.configError)}`;
   return layout({ active: "machine", body, shell, title: "Machine" });
+}
+function gatewayCard(shell, configError) {
+  const router = shell.facts.router;
+  if (router === null) {
+    const heading = configError === undefined ? "The gateway is not set up" : "The gateway config cannot be read";
+    const error = configError === undefined ? "" : `<div class="notice">Nothing that needs it works until it is fixed: <span class="mono wrap-any">${escapeHtml(configError)}</span>. Fix it by hand, or set the gateway up again in a terminal.</div>`;
+    return `<section class="card pad">
+<h2>${heading}</h2>
+${error}
+<p class="muted">Overview, Slots and Health need the gateway. Everything on this page works without it. Set it up in a terminal, then reload:</p>
+${command(`${COMMAND} gateway setup --backend-key-stdin omniroute < key-file`, "Copy the setup command")}
+</section>`;
+  }
+  if (router.up)
+    return "";
+  return `<section class="card bad">
+<h2 class="badmark">\u2717 The router is not answering</h2>
+<p class="muted">The gateway is set up, but nothing answers on 127.0.0.1:${router.port}. See the Health page for the log and the restart.</p>
+<a class="btn" href="/health">Open Health</a>
+</section>`;
 }
 function privacyStep(n, title, cells) {
   return `<section>
@@ -20764,12 +20843,14 @@ function privacyStep(n, title, cells) {
 <div class="grid cards">${cells.map((cell) => `<div class="card pad${cell.tone === undefined ? "" : ` ${cell.tone}`}"><span>${cell.text}</span></div>`).join("")}</div>
 </section>`;
 }
-function privacyPage(shell, options) {
+function privacyPage(shell) {
   const port = shell.facts.portalPort;
+  const router = shell.facts.router;
+  const routerLine = router === null ? ", and no router answers here (the gateway is not set up)" : `, and the router on <span class="mono">127.0.0.1:${router.port}</span>`;
   const body = `<div class="pagehead">
 <div>
 <h1>How the portal stays private</h1>
-<p>This run listens on <span class="mono">127.0.0.1:${port}</span>, and the router on <span class="mono">127.0.0.1:${options.routerPort}</span>.</p>
+<p>This run listens on <span class="mono">127.0.0.1:${port}</span>${routerLine}.</p>
 </div>
 </div>
 
@@ -20944,10 +21025,33 @@ async function startPortal(ctx, options) {
       return null;
     }
   }
+  async function machineData() {
+    await doctorOnce();
+    const updates = updateState(actionContext());
+    return {
+      autoMode: autoMode(),
+      companions: companionRows(ctx),
+      doctor: state.doctor,
+      jobs: await jobLines(actionContext()),
+      omniroute: await omnirouteRow(actionContext().omniroute, isOlder),
+      updates: {
+        heldSince: updates.heldSince,
+        installed: updates.installed,
+        last: updates.last,
+        newest: updates.last?.result === "up-to-date" ? updates.last.detail : null,
+        summary: summaryOf(updates.last)
+      },
+      warp: warpRow(ctx)
+    };
+  }
   async function pageResponse(path, shell, extra) {
     const found = readConfig(ctx);
     if ("error" in found) {
-      return html(notSetUpPage(shell, { backends: [], configError: found.error }), extra);
+      const error = configExists(ctx) ? { configError: found.error } : {};
+      if (path === "/machine") {
+        return html(machinePage(shell, { ...await machineData(), ...error }), extra);
+      }
+      return html(notSetUpPage(shell, { backends: [], ...error }), extra);
     }
     const config = found.config;
     const router = await routerFacts(ctx, config.port);
@@ -20988,25 +21092,8 @@ async function startPortal(ctx, options) {
         router
       }), extra);
     }
-    if (path === "/machine") {
-      await doctorOnce();
-      const updates = updateState(actionContext());
-      return html(machinePage(shell, {
-        autoMode: autoMode(),
-        companions: companionRows(ctx),
-        doctor: state.doctor,
-        jobs: await jobLines(actionContext()),
-        omniroute: await omnirouteRow(actionContext().omniroute, isOlder),
-        updates: {
-          heldSince: updates.heldSince,
-          installed: updates.installed,
-          last: updates.last,
-          newest: updates.last?.result === "up-to-date" ? updates.last.detail : null,
-          summary: summaryOf(updates.last)
-        },
-        warp: warpRow(ctx)
-      }), extra);
-    }
+    if (path === "/machine")
+      return html(machinePage(shell, await machineData()), extra);
     const limits = limitFacts(ctx);
     const dashboard = config.backends.omniroute?.baseUrl ?? null;
     return html(overviewPage(shell, {
@@ -21099,7 +21186,7 @@ async function startPortal(ctx, options) {
       facts: await shellFacts(ctx, port)
     };
     if (url.pathname === "/privacy") {
-      return html(privacyPage(shell, { routerPort: shell.facts.router.port }), {});
+      return html(privacyPage(shell), {});
     }
     if (!PAGES2.has(url.pathname))
       return expiredPageResponse();
