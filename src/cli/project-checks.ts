@@ -70,12 +70,16 @@ const OLD_NAME = "anymodel";
 /** The old launcher in a settings hook: `"$HOME/.local/bin/anymodel" hook …`. */
 const OLD_LAUNCHER = new RegExp(`(^|[\\s"'/])${OLD_NAME}(-bun)?(["'\\s]|$)`);
 
-/** A command with the plugin's old launcher written the new way, as the fix for it. */
+/**
+ * A command with the plugin's old launcher written the new way, as the fix for it. A command
+ * that named the hooks' old shim (`…/bin/anymodel-bun`) becomes the shim's own name today,
+ * `cc-smart-dev-kit-bun.sh` — the hooks run in shell form, and the file ends in `.sh`.
+ */
 export function renamedCommand(command: string): string {
   return command.replace(
     new RegExp(OLD_LAUNCHER.source, "g"),
     (_all, before: string, bun: string | undefined, after: string) =>
-      `${before}${COMMAND}${bun ?? ""}${after}`,
+      `${before}${COMMAND}${bun === undefined ? "" : "-bun.sh"}${after}`,
   );
 }
 

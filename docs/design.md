@@ -16,7 +16,12 @@ scope, or keep a service running. A setup command alone has no versions and no u
 channel. Together they get both. The cost is two places to look, so
 `cc-smart-dev-kit doctor` checks both (its list of checks: `README.md` § Commands).
 
-**macOS and Linux for now.** The launcher and `plugin/bin/` are POSIX `sh` scripts.
+**macOS, Linux and native Windows.** The launcher and `plugin/bin/` are POSIX `sh`
+scripts; on Windows they run through Git Bash, which Claude Code gives a shell-form hook
+and the Bash tool there. Windows gets a second launcher beside the `sh` one
+(`cc-smart-dev-kit.cmd`, for `cmd` and PowerShell), a Scheduled Task where Linux has the
+systemd units, and its own memory, lease and stop paths in the job queue: the five
+`windows-*.md` pages, and `docs/windows-setup.md` § The short version.
 
 ### Why a stable launcher
 
@@ -65,7 +70,7 @@ Where it is checked, each time against the Bun running the code (`Bun.version`):
   Bun ≥ 1.4.3; this is 1.4.2 (<path>). Upgrade this Bun, then run the command again.",
   except the ones that send no key and help the person out: `doctor`, `restore`,
   `version` and help (`src/cli/bun-check.ts`).
-- **The hooks' shim** (`plugin/bin/cc-smart-dev-kit-bun`), before it starts bun. A hook
+- **The hooks' shim** (`plugin/bin/cc-smart-dev-kit-bun.sh`), before it starts bun. A hook
   bundle has no check of its own, and an older Bun is not visibly broken: it drops
   `--no-env-file` without a word (measured on 1.2.23 and 1.3.0: the working folder's `.env`
   values reached the program), so the hook would run on guarantees the plugin does not have.
@@ -100,12 +105,14 @@ run its own code inside the plugin. So every bun the plugin starts in a person's
 gets `--no-env-file` and a `--config=` flag pointing at the plugin's own empty
 `bunfig.toml`:
 
-- the hook shim `plugin/bin/cc-smart-dev-kit-bun` and the CLI shim
+- the hook shim `plugin/bin/cc-smart-dev-kit-bun.sh` and the CLI shim
   `plugin/bin/cc-smart-dev-kit` (hand-written `sh`, so they spell both flags themselves);
-- the launcher `src/setup/launcher.ts` writes. Its lookup of the installed version runs in
-  the launcher's own folder instead: the plugin's config is inside the folder that lookup
-  has yet to find. It passes the config only when the installed version has one, since bun
-  refuses a config path that does not exist and a 0.2.x install has none;
+- the launcher scripts `src/setup/launcher.ts` (hand-written `sh`) and
+  `src/setup/launcher-cmd.ts` (hand-written `cmd`, for Windows) write. Their lookup of the
+  installed version runs in the launcher's own folder instead: the plugin's config is inside
+  the folder that lookup has yet to find. They pass the config only when the installed
+  version has one, since bun refuses a config path that does not exist and a 0.2.x install
+  has none;
 - the portal child, `doctor --live`'s hook command, the background self-update child and
   `browser check`'s two launchers, through `bunConfigArg` in `src/setup/bun-config.ts`;
 - the commands the README prints for a person to run from a folder of their own, and the
@@ -639,7 +646,7 @@ hand worked at once. So the plugin updates itself (the owner's decision, 2026-10
   bun's own start). It prints nothing, unless the last background check failed and no
   session was told yet: then one `systemMessage`, to an attended session only (Claude
   Code sets `CLAUDE_CODE_SESSION_ATTENDED=0` for the hooks of `claude -p`; such a session
-  neither shows it nor counts as told). It runs bun through `plugin/bin/cc-smart-dev-kit-bun`,
+  neither shows it nor counts as told). It runs bun through `plugin/bin/cc-smart-dev-kit-bun.sh`,
   which looks where the launcher does, so a Claude Code started with no bun on PATH
   still runs it.
 - **Claude Code's switches for updates are honoured.** While `DISABLE_AUTOUPDATER`,
@@ -798,8 +805,10 @@ The hooks live in `src/hooks/`. There are two kinds, by who wires them (`wiring`
 spec, `specs.ts`):
 
 - **The plugin's hooks** (`HOOKS`): each one a bundle (`src/entries/<name>.ts` →
-  `plugin/dist/<name>.js`), wired in exec form in `plugin/hooks/hooks.json`, so they run in
-  every project. They run through `plugin/bin/cc-smart-dev-kit-bun`, a small `sh` script that finds
+  `plugin/dist/<name>.js`), wired in **shell form** in `plugin/hooks/hooks.json` (no `args`;
+  the exec form it replaced cannot start on Windows — `.claude/rules/hooks.md`,
+  `docs/windows-hooks.md`), so they run in every project. They run through
+  `plugin/bin/cc-smart-dev-kit-bun.sh`, a small `sh` script that finds
   bun without PATH (Claude Code's hooks get the PATH it was started with, which may lack
   bun): the bun `cc-smart-dev-kit setup` baked into the launcher, then `$BUN_INSTALL/bin/bun`,
   `~/.bun/bin/bun`, and PATH. With none it answers by its `--missing=` mode and exits 0: a
@@ -1031,7 +1040,8 @@ session per event, never two.
 
 **The routes**, chosen per alert: **the desktop** — `notify-send` on Linux, and only with a
 `DISPLAY` (a session over SSH with no desktop has no bus to show anything on), `osascript` on
-macOS, plus the freedesktop sound through `paplay`; **the SSH terminal** — with no desktop
+macOS, a PowerShell toast on Windows (`src/hooks/windows-toast.ts`, `docs/windows-notify.md`),
+plus the freedesktop sound through `paplay`; **the SSH terminal** — with no desktop
 route and `SSH_CONNECTION` or `SSH_TTY` set, the same title and body as OSC 777
 (`ESC ] 777 ; notify ; <title> ; <body> BEL`), sanitised with `oneLine` (controls gone, one
 line, capped) and sent through the hook's `terminalSequence` output field (Claude Code 2.1.141
@@ -1092,7 +1102,10 @@ files, and the claude-mem start-folder note. **Ported in Phase 4, with the MCP s
 plugin registers:** the Serena root record (Serena's edits in the main-folder guard — the
 `serena-root` hook, above) and the Playwright output folder (the `playwright-output` hook).
 **Not ported:** the Windows helper that
-removes a worktree after the session lets go of it (the plugin is macOS and Linux for now);
+removes a worktree after the session lets go of it — the plugin removes one when its session
+asks (the WorktreeRemove hook) or by `cc-smart-dev-kit worktrees --clean`, and it moves the
+folder before it deletes it, so a program still using it makes the removal fail and touch
+nothing (`docs/windows-setup.md`);
 and, from the older notification script, the click on a notification raising the terminal
 window and picking its tab (xdotool, AT-SPI and a per-session DBus helper — one desktop's
 tools, not general), its 60-second auto-close (that notification server's own behaviour) and

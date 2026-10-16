@@ -12,8 +12,8 @@
  *     folders, else `bun.exe` on PATH (a hook's or a service's PATH can be short);
  *   - find the installed plugin folder from Claude Code's `installed_plugins.json` (the same
  *     lookup `findUserInstall()` does in TypeScript — change one, change the others);
- *   - run `dist/cli.js` with `--no-env-file` and hand it every argument, and return its exit
- *     code.
+ *   - run `dist/cli.js` with `--no-env-file` and the plugin's own empty config
+ *     (`bun-config.ts`), hand it every argument, and return its exit code.
  *
  * The script is plain `cmd` on purpose (no PowerShell, no Git Bash): it must work in a bare
  * `cmd.exe` too. The plugin lookup prints the folder into a temporary file and `set /p` reads
@@ -22,6 +22,7 @@
  */
 import { join } from "node:path";
 import { PLUGIN_ID } from "../build-info";
+import { BUN_CONFIG_NAME } from "./bun-config";
 import type { InstallLauncherOptions } from "./launcher";
 import { type WriteOutcome, writeManagedFile } from "./write";
 
@@ -105,7 +106,13 @@ del "%answer%" >nul 2>&1
 if not defined install_path goto not_installed
 if not exist "%install_path%\\dist\\cli.js" goto missing_folder
 rem --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.
-"%bun%" --no-env-file "%install_path%\\dist\\cli.js" %*
+rem --config: the plugin's own empty config, beside the CLI in the same version folder, so the
+rem working folder's bunfig.toml (a project's preload) never runs inside the command. An
+rem installed version older than that file (0.2.x, until migrate replaces it) has none: bun
+rem refuses a config path that does not exist, so the flag is left out then.
+set "config="
+if exist "%install_path%\\${BUN_CONFIG_NAME}" set "config=--config="%install_path%\\${BUN_CONFIG_NAME}""
+"%bun%" --no-env-file %config% "%install_path%\\dist\\cli.js" %*
 exit /b %ERRORLEVEL%
 :missing_folder
 echo cc-smart-dev-kit: the cc-smart-dev-kit plugin folder is missing: %install_path%. Run: claude plugin install ${PLUGIN_ID} 1>&2

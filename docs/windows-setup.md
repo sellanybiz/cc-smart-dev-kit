@@ -19,9 +19,9 @@ Windows yet.
 | The portal | Opens the person's browser with `cmd.exe /c start "" <url>`. |
 | `sessions` | Lists sessions and saves Warp tabs. `--open` brings sessions back in Warp tabs where Warp is there, else in **Windows Terminal** window each (`wt.exe`), else it says what to do by hand. |
 | `worktrees` | The scan and the removal are already Windows-aware (a PowerShell process scan, `hostPath`, move-before-delete). |
-| The gateway service | **Not on Windows.** `systemd` is Linux-only, and `gateway setup` refuses with that sentence rather than pretending. |
-| The heavy-job queue | Runs `plain` on Windows (no memory ceiling), and the live free-memory reading is Linux-only. |
-| Notifications | A desktop toast and the sound are Linux and macOS only for now; the terminal route (`terminalSequence`) is Claude Code's own and platform-neutral. |
+| The gateway service | A per-user **Scheduled Task**, `cc-smart-dev-kit-router`, instead of the systemd units: `gateway setup` writes its definition and registers it, `doctor` reads its state, `restore` stops and removes it. No socket activation and no journal (`windows-gateway.md`). |
+| The heavy-job queue | Runs each job as a plain child (no memory ceiling); the free memory comes from Windows itself (`os.freemem`, `windows-jobs.md`). |
+| Notifications | A desktop toast through PowerShell, and Windows plays the sound of its own notification; the terminal route (`terminalSequence`) is Claude Code's own and platform-neutral (`windows-notify.md`). |
 
 ## Where things live: one folder, three shells
 
@@ -63,7 +63,9 @@ runs as soon as `~/.local/bin` is on `PATH` there.
 `cmd.exe` and PowerShell cannot run a `sh` script, so `setup` writes a second launcher beside
 the first: `cc-smart-dev-kit.cmd`. Both do the same thing: find bun, find the user-scope
 plugin folder in `installed_plugins.json`, and run that version's `dist/cli.js` with
-`--no-env-file`, passing every argument through and returning its exit code. Git Bash keeps
+`--no-env-file` and the plugin's own empty `bunfig.toml` (a version folder with no such file
+gets no `--config` flag: bun refuses a config path that does not exist), passing every
+argument through and returning its exit code. Git Bash keeps
 using the `sh` file (it is what the project-wired hooks call), and nothing has to choose.
 
 Things the `.cmd` has to do differently, and why:
@@ -114,14 +116,15 @@ for Windows (`https://git-scm.com/download/win`) or to set the variable, because
 Claude Code falls back to PowerShell and a hook that needs bash errors **visibly** instead of
 running — which for a guard means the guard is not there.
 
-## Linux-only checks are information, never failures
+## What Windows has no answer for is information, never a failure
 
-`doctor` reports the parts a Windows machine simply does not have as `·` lines, not `✗`:
+`doctor` reports the one part a Windows machine simply does not have as a `·` line, not `✗`:
 
 - `tmux: not on Windows, so no passthrough line is managed there` (setup writes `~/.tmux.conf`
-  only where tmux is installed);
-- the gateway (`gateway setup` needs systemd, and says so);
-- the job queue's free-memory reading (`free memory cannot be read on this system`).
+  only where tmux is installed).
+
+The gateway and the heavy-job queue have Windows answers of their own (`windows-gateway.md`,
+`windows-jobs.md`), so `doctor` checks them there like anything else.
 
 ## Sessions, worktrees and the portal
 

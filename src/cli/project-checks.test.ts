@@ -208,8 +208,15 @@ describe("a project that used the old anymodel name", () => {
   });
 
   test("a launcher path is the old name; a word that merely holds it is not", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code's placeholder, filled in by Claude Code.
+    const pluginRoot = "${CLAUDE_PLUGIN_ROOT}";
     expect(renamedCommand('"$HOME/.local/bin/anymodel-bun" x')).toBe(
-      '"$HOME/.local/bin/cc-smart-dev-kit-bun" x',
+      '"$HOME/.local/bin/cc-smart-dev-kit-bun.sh" x',
+    );
+    // The plugin folder's own shim, as a project copied it out of hooks.json: the file is
+    // `cc-smart-dev-kit-bun.sh` now (the hooks are shell form).
+    expect(renamedCommand(`"${pluginRoot}/bin/anymodel-bun" x`)).toBe(
+      `"${pluginRoot}/bin/cc-smart-dev-kit-bun.sh" x`,
     );
     expect(renamedCommand("anymodel --version")).toBe("cc-smart-dev-kit --version");
     expect(renamedCommand("./note-anymodel.sh")).toBe("./note-anymodel.sh");

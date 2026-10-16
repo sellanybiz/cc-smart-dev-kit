@@ -8917,6 +8917,7 @@ function mcpChecks(paths, deps, env) {
 
 // src/setup/bun-config.ts
 import { basename as basename2, join as join5 } from "path";
+var BUN_CONFIG_NAME = "bunfig.toml";
 function pluginFolderBeside(importDir) {
   return basename2(importDir) === "dist" ? join5(importDir, "..") : join5(importDir, "..", "..", "plugin");
 }
@@ -13207,7 +13208,13 @@ del "%answer%" >nul 2>&1
 if not defined install_path goto not_installed
 if not exist "%install_path%\\dist\\cli.js" goto missing_folder
 rem --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.
-"%bun%" --no-env-file "%install_path%\\dist\\cli.js" %*
+rem --config: the plugin's own empty config, beside the CLI in the same version folder, so the
+rem working folder's bunfig.toml (a project's preload) never runs inside the command. An
+rem installed version older than that file (0.2.x, until migrate replaces it) has none: bun
+rem refuses a config path that does not exist, so the flag is left out then.
+set "config="
+if exist "%install_path%\\${BUN_CONFIG_NAME}" set "config=--config="%install_path%\\${BUN_CONFIG_NAME}""
+"%bun%" --no-env-file %config% "%install_path%\\dist\\cli.js" %*
 exit /b %ERRORLEVEL%
 :missing_folder
 echo cc-smart-dev-kit: the cc-smart-dev-kit plugin folder is missing: %install_path%. Run: claude plugin install ${PLUGIN_ID} 1>&2
@@ -17282,7 +17289,7 @@ var ENGINE_HINT = "Run `cc-smart-dev-kit hook` for the lines to paste (also in t
 var OLD_NAME = "anymodel";
 var OLD_LAUNCHER = new RegExp(`(^|[\\s"'/])${OLD_NAME}(-bun)?(["'\\s]|$)`);
 function renamedCommand(command) {
-  return command.replace(new RegExp(OLD_LAUNCHER.source, "g"), (_all, before, bun, after) => `${before}${COMMAND}${bun ?? ""}${after}`);
+  return command.replace(new RegExp(OLD_LAUNCHER.source, "g"), (_all, before, bun, after) => `${before}${COMMAND}${bun === undefined ? "" : "-bun.sh"}${after}`);
 }
 function oldNameLines(projectDir, sources, home) {
   const lines = [];

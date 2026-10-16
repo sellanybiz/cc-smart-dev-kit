@@ -1,5 +1,5 @@
 /**
- * `plugin/bin/cc-smart-dev-kit-bun`: the plugin's hooks run through it, so they work where PATH has
+ * `plugin/bin/cc-smart-dev-kit-bun.sh`: the plugin's hooks run through it, so they work where PATH has
  * no bun (Claude Code's hooks get the PATH Claude Code started with). It finds bun in a fixed
  * order and needs no other program, so every run here has a PATH with nothing on it.
  */
@@ -48,7 +48,7 @@ function runShim(env: Record<string, string>, args: string[] = ["a", "b c"], std
   };
 }
 
-describe("cc-smart-dev-kit-bun finds bun without PATH", () => {
+describe("cc-smart-dev-kit-bun.sh finds bun without PATH", () => {
   test("in order: the launcher's baked bun, $BUN_INSTALL/bin, ~/.bun/bin, then PATH", () => {
     const home = tempDir("shim-home");
     const emptyPath = tempDir("empty-path");

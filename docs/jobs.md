@@ -1,6 +1,8 @@
 # Heavy jobs: one queue for the whole machine
 
 `cc-smart-dev-kit job` makes heavy jobs wait for free memory instead of freezing the machine.
+The same queue runs on native Windows, where three things are different — the memory
+reading, a lease's start time and how a job's tree is ended: `windows-jobs.md`.
 
 A **heavy job** is a command that can use many gigabytes: a TypeScript type check, a
 type-aware lint, a test run, a production build, a container image build. When many
@@ -32,7 +34,7 @@ flowchart TD
     W -->|"yes"| P{"launch: auto, Linux:<br/>can systemd make a scope?"}
     P -->|"yes"| S["scope in cc-smart-dev-kit-heavy.slice<br/>+ choom 900"]
     P -->|"no, choom here"| C["choom 900 only"]
-    P -->|"no / macOS / launch: plain"| PL["plain run"]
+    P -->|"no / macOS / Windows /<br/>launch: plain"| PL["plain run"]
     S --> E["exit code passes through"]
     C --> E
     PL --> E
@@ -210,6 +212,10 @@ How a waiting job decides, every half second:
   kernel can drop (`inactive_file`). The smaller of the two views wins. A ceiling no lower
   than `MemTotal` changes nothing (some container systems already show it there).
 - **macOS:** `os.totalmem()` for the budget, and no live check.
+- **Windows:** `os.totalmem()` for the budget and `os.freemem()` for the live check: Windows
+  has no `/proc` and no cgroup, and it counts its standby cache as used, so the check waits
+  longer than it must — the safe side. `job status` says plainly that there is no memory
+  ceiling (`windows-jobs.md` § Memory).
 
 ## Where the state lives
 
@@ -225,7 +231,9 @@ Each budget is a folder of small files:
   `stateDir` in `jobs.json`.
 - **Each file names its writer:** the pid, that process's start time, the host name and
   the pid namespace. The record inside (who, what, where, since) is data for the waiting
-  lines, read as untrusted text; one that does not parse is "unknown".
+  lines, read as untrusted text; one that does not parse is "unknown". On Windows the
+  start time comes from PowerShell (the kernel's own creation time, stored as `win:<ticks>`),
+  and a start time this system cannot read counts as alive (`windows-jobs.md` § Leases).
 - **Stale files clean themselves up.** A file is stale when its writer is gone: its pid
   is dead, or alive with another start time (the pid was reused). This is the same judge
   as setup's lock (`holderIsGone` in `src/setup/lock.ts`). A stale file counts for
@@ -296,7 +304,7 @@ With `launch: auto` (the default), on Linux:
 |---|---|---|
 | scope | a systemd user manager answers | `systemd-run --user --scope --slice=cc-smart-dev-kit-heavy.slice -p OOMPolicy=kill -- choom -n 900 -- <command>` |
 | choom | no user manager (cron, a container, CI), or no scope can be made | `choom -n 900 -- <command>` |
-| plain | no `choom`, macOS, `launch: plain`, or a 0 GB run | the command as it is |
+| plain | no `choom`, macOS, Windows, `launch: plain`, or a 0 GB run | the command as it is |
 
 - **Probe first, never retry.** A scope that cannot be made makes `systemd-run` exit 1,
   the same code as a failed type check. So an empty scope (`-- true`) is tried first, and
@@ -331,6 +339,10 @@ With `launch: auto` (the default), on Linux:
   named, and the memory is given back anyway.
 - A dash in a slice name means nesting: `cc-smart-dev-kit-heavy.slice` sits inside
   `cc-smart-dev-kit.slice`. `jobs.json` can name another slice.
+- **Windows:** no memory group, no kill mark and no "killed for memory" line, so a job runs
+  as a plain child with its lease; stopping it (Ctrl+C at `job run`, or `job run` ended)
+  ends its whole process tree with `taskkill /PID <pid> /T /F`, because Windows has no
+  signals and no graceful stop (`windows-jobs.md` § Running a job).
 
 ## The environment
 
@@ -387,6 +399,10 @@ only through a kind's `{ "script": "<name>" }` rule.
   through `job run`.
 - **macOS:** no live check, no memory group, no kill mark, no network file system check:
   the queue only.
+- **Windows:** no memory ceiling, no kill mark, no "killed for memory" line and no network
+  file system check; `job run` watches the job's first process, so a worker left behind is
+  not seen and the memory is given back while it runs; and a holder whose start time cannot
+  be read counts as alive (`windows-jobs.md` § Limits).
 - **A paused writer on a shared folder** (a stopped container) longer than 30 seconds
   looks gone to the others until its next heartbeat writes its file again.
 - **A dead ticket from another pid namespace** (a container's `job run` killed with

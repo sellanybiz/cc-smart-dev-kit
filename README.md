@@ -10,7 +10,8 @@ from), named `cc-smart-dev-kit`.
 
 ## Install
 
-You need macOS or Linux (for now: the launcher and `bin/` are POSIX `sh` scripts),
+You need macOS, Linux or Windows (native Windows; the parts that are `sh` scripts run
+through Git Bash there — [Windows](#windows)),
 [Claude Code](https://code.claude.com), [Bun](https://bun.sh) 1.4.3 or later (an older
 Bun would send a backend's key through a proxy and would ignore the flags that keep a
 project's `.env` files and `bunfig.toml` out of the plugin; `bun --version` shows yours),
@@ -65,6 +66,69 @@ hooks do not run at all: the hook shim stops before starting one.
 
 After that, use `cc-smart-dev-kit setup` to set up again (for example after an update).
 
+## What's new in 0.4.0
+
+- **`cc-smart-dev-kit project init`** sets a project up: its `.claude/cc-smart-dev-kit.json`
+  and, unless the project runs an engine of its own, the worktree engine's three hook lines
+  ([`project init`](#project-init)).
+- **The workflow, and `cc-smart-dev-kit workflow`**: what cc-smart-dev-kit may do by itself
+  here — commit, push, open a pull request, merge. The project's committed file wins over
+  your own defaults, and `show` prints each value with where it came from
+  ([The workflow](#the-workflow)).
+- **A base per branch prefix** (`worktrees.bases`): a `hotfix/…` or `release/…` worktree
+  starts from the base that prefix names, not from the integration base
+  ([Worktrees](#worktrees)).
+- **`worktrees.engine: "own"`**: a project that runs its own worktree engine says so, and
+  `doctor` expects no cc-smart-dev-kit hook lines there ([A project's
+  `.claude/cc-smart-dev-kit.json`](#a-projects-claudecc-smart-dev-kitjson)).
+- **Windows**: native Windows, with Git Bash for the parts that are `sh` scripts — the
+  hooks, setup, the launcher, the gateway as a Scheduled Task, the job queue, the toasts
+  ([Windows](#windows)).
+- **`cc-smart-dev-kit usage`** also shows auto mode's safety checks, which the gateway's
+  router counted, by day, with the tokens each answer reported
+  ([The usage limit: the alert, the status line, and `usage`](#the-usage-limit-the-alert-the-status-line-and-usage)).
+- **The instructions work in parallel**: the plugin's general instructions tell Claude to
+  start every independent phase at once, and never to wait for a merge, a release, a review
+  or an answer it does not need ([Instructions, skills and agents](#instructions-skills-and-agents)).
+
+**After you update, run `cc-smart-dev-kit gateway setup` on every machine with the gateway.**
+The router changed in this release (it counts auto mode's safety checks, which `usage` reads),
+and that command puts the new copy in place. It asks before it restarts the router, because a
+restart cuts the answers in flight.
+
+## Windows
+
+The plugin runs on **native Windows** (not WSL). What it does there, and where Windows
+differs:
+
+| Part | On Windows |
+|---|---|
+| The `sh` parts | Need **Git Bash** (Git for Windows): Claude Code runs a shell-form hook and the Bash tool through it, and the plugin's own hooks are `sh` scripts. `doctor` finds it, or says `✗ Git Bash was not found`. |
+| The launcher | `~/.local/bin/cc-smart-dev-kit` for Git Bash, and `cc-smart-dev-kit.cmd` beside it for `cmd` and PowerShell. `setup` writes both. |
+| Every path | The same layout as Linux and macOS, under `%USERPROFILE%` (`%USERPROFILE%\.claude`, `…\.local\share\cc-smart-dev-kit`, `…\.config\cc-smart-dev-kit`). |
+| The gateway | A per-user **Scheduled Task** instead of the systemd units. A restart refuses requests for a moment (Claude Code retries them), and a stop cuts the answers in flight. |
+| The heavy-job queue | Runs each job as a plain child, with no memory ceiling, and reads the free memory Windows reports. |
+| Notifications | A desktop toast through PowerShell (Windows plays the toast's own sound); the terminal route is Claude Code's own. |
+| `sessions --open` | Warp tabs where Warp is there, else a Windows Terminal window each. |
+
+Five pages say how, and what still has to be tested there:
+
+- [docs/windows-setup.md](docs/windows-setup.md): the folders, the `.cmd` launcher, file modes
+  vs the profile's ACL, Git Bash, and the owed checks: the `.cmd` from `cmd` and PowerShell,
+  Git Bash end to end, Chrome, worktrees, `sessions --open`, file modes, paths and Ctrl+C.
+- [docs/windows-hooks.md](docs/windows-hooks.md): the hooks' shell form, the `.sh` first token,
+  and the owed run: a guard blocking in a real session with bun absent, and Git Bash missing on
+  purpose.
+- [docs/windows-notify.md](docs/windows-notify.md): the toast, the sound Windows plays with
+  it and the self-update trampoline, and the owed run: a toast from a hook, the reminder
+  toast, and `powershell` on a hook's PATH.
+- [docs/windows-jobs.md](docs/windows-jobs.md): the memory reading, the `win:` leases and the
+  `taskkill` end, and the owed run: two sessions on one queue, `job status`, a killed holder,
+  Ctrl+C and a worker left behind.
+- [docs/windows-gateway.md](docs/windows-gateway.md): the Scheduled Task, what Windows loses
+  (no socket activation, no journal), and the owed run: `gateway setup` without elevation, the
+  task's states in `doctor`, a restart, and `restore`.
+
 ## Commands
 
 | Command | What it does |
@@ -88,7 +152,7 @@ After that, use `cc-smart-dev-kit setup` to set up again (for example after an u
 | `cc-smart-dev-kit gateway <command>` | The optional AI gateway (below). |
 | `cc-smart-dev-kit browser mcp` | Starts the Playwright MCP server on the ONE Google Chrome every session shares, through a filter that shows this session only its own windows ([The shared browser](#the-shared-browser)). `setup` registers it as the `playwright` MCP server; you do not run it by hand. |
 | `cc-smart-dev-kit browser check [--headless] [--idle]` | Proves the shared browser end to end: two real sessions, each with a real Playwright, on one throwaway Chrome (a sign-in, tabs, popups, a screenshot, an upload, a download, `browser_close`). Exit 0 when every check passed. `--headless` opens no window; `--idle` adds a 150-second wait, to show a quiet session keeps its tabs. |
-| `cc-smart-dev-kit sessions [--open] [--dry-run]` | This project's Claude Code sessions of the last two days, by name and worktree, with the command that resumes each ([Sessions](#sessions)). With Warp installed it also saves a Warp tab for each. `--open` reopens every session that was open when the machine went down or its window closed (Warp tabs, or XFCE Terminal windows on Linux); `--dry-run` says what it would open and opens nothing. |
+| `cc-smart-dev-kit sessions [--open] [--dry-run]` | This project's Claude Code sessions of the last two days, by name and worktree, with the command that resumes each ([Sessions](#sessions)). With Warp installed it also saves a Warp tab for each. `--open` reopens every session that was open when the machine went down or its window closed (Warp tabs, or a terminal window each: XFCE Terminal on Linux, Windows Terminal on Windows); `--dry-run` says what it would open and opens nothing. |
 | `cc-smart-dev-kit worktrees [--clean] [--remove <path>] [--no-fetch]` | Every worktree of this repo: who works in it, and which are finished ([Worktrees](#worktrees)). `--clean` removes the finished ones with their branches; `--remove <path>` removes one now, for the session that has just finished in it, so without the one-hour wait; `--no-fetch` judges against `origin/<base>` as it is. `--clean` and `--remove` run in the main checkout only, one at a time. |
 | `cc-smart-dev-kit omniroute <status\|update\|rollback>` | The OmniRoute behind the gateway's affordable slots (below): what is installed, the newest npm release at least three days old, the user unit that runs it, and the backend that talks to it. `update` installs the newest such release, restarts its unit, checks the model path, and puts the old version back when the new one does not answer. `rollback` installs the version the last update replaced. `update` and `rollback` refuse to run inside a Claude Code session, and are never in the background. |
 | `cc-smart-dev-kit portal [--port <port>] [--no-open]` | The local portal (below): a page on this machine to see and change the gateway's settings, the updates, the heavy-job queue, the companions and the OmniRoute. It binds `127.0.0.1` only, prints a link with a one-time token, and stops after 30 minutes with no request. It refuses to run inside a Claude Code session: the portal is for you, not for Claude. |
@@ -110,7 +174,8 @@ hour**, in the background, and never makes the session wait or prints anything:
 2. When either is behind, it runs the same two commands as `cc-smart-dev-kit update`, in your
    home folder and without git variables like `GIT_DIR` that a session may carry, logs
    each step to `~/.claude/cc-smart-dev-kit/update.log`, and shows one desktop notification when
-   a new version was installed (`notify-send` on Linux, `osascript` on macOS): "cc-smart-dev-kit
+   a new version was installed (`notify-send` on Linux, `osascript` on macOS, a PowerShell
+   toast on Windows): "cc-smart-dev-kit
    X installed; restart Claude sessions to load it". When the new version's router
    differs from the one running, the notification adds the `cc-smart-dev-kit gateway setup` hint.
 
@@ -128,7 +193,7 @@ It honours Claude Code's own switches for updates: while `DISABLE_AUTOUPDATER`,
 environment or the `env` of `settings.json`) and `FORCE_AUTOUPDATE_PLUGINS` is not, it
 checks nothing and only records "skipped: <name> is set".
 
-The hook runs bun through `plugin/bin/cc-smart-dev-kit-bun`, which finds bun where the launcher
+The hook runs bun through `plugin/bin/cc-smart-dev-kit-bun.sh`, which finds bun where the launcher
 does (the bun `cc-smart-dev-kit setup` baked in, `$BUN_INSTALL/bin`, `~/.bun/bin`, then PATH), so
 it works when Claude Code was started with a PATH that has no bun. It starts bun with
 `--no-env-file` and the plugin's own empty config, so a hook sees the environment Claude Code
@@ -147,6 +212,10 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   update cc-smart-dev-kit";
 - the launcher matches the script setup would write for the `bun` baked into it, and
   that `bun` is executable;
+- on Windows, the second launcher and Git Bash: `~/.local/bin/cc-smart-dev-kit.cmd` is there,
+  is this version's and runs (through `cmd.exe`), Git Bash is found (the `✗` says to install
+  Git for Windows or to set `CLAUDE_CODE_GIT_BASH_PATH`; a `!` for a variable Claude Code
+  ignores), and `tmux: not on Windows` is a `·` line (§ Windows);
 - the instructions: the copy in `~/.claude/cc-smart-dev-kit/instructions/` is this plugin
   version's (its version stamp, and each file against the plugin's), and `~/.claude/CLAUDE.md`
   still holds the block that imports it. A ✗ says "Run: cc-smart-dev-kit setup". After
@@ -210,7 +279,8 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   cc@cc-agentic`, then `claude plugin marketplace remove cc-agentic`;
 - no gateway setup stopped half way: while one did, ✗ "a gateway setup did not finish;
   run: cc-smart-dev-kit gateway setup";
-- the gateway, when it is installed (the router copy or one of its units is there): the
+- the gateway, when it is installed (the router copy, or one of its units — on Windows, its
+  Scheduled Task — is there): the
   router service is active, the router copy is this plugin version's, the socket unit
   `cc-smart-dev-kit-router.socket` is there, listens on the config's port and is active (a
   router set up by an older version has none: ✗ "Run: cc-smart-dev-kit gateway setup"), the
@@ -413,8 +483,10 @@ one, with the name it becomes.
 
 A local router, `cc-smart-dev-kit-router`, lets Claude Code's `haiku` and `sonnet` subagents run on
 more affordable models (for example through OmniRoute and Ollama Cloud), while Claude models stay
-real Claude on your own login. No prompt text is ever changed. Linux only for now
-(systemd user units). How it works: [docs/gateway.md](docs/gateway.md).
+real Claude on your own login. No prompt text is ever changed. The service that keeps the
+router running is a systemd user unit on Linux and a per-user Scheduled Task on Windows
+(see [Windows](#windows)); macOS has neither, and `gateway setup` refuses there.
+How it works: [docs/gateway.md](docs/gateway.md).
 
 | Command | What it does |
 |---|---|
@@ -534,7 +606,8 @@ cc-smart-dev-kit omniroute rollback   # put back what the last update replaced
   set up). On Linux it offers "Use <target> until it resets", which runs the `slot opus`
   command above (the model, then Sonnet when only the Opus window ran out, then the worker
   slot's affordable targets), and "Wait"; after "Use", send a message in Claude Code to go on.
-  On macOS it names the command. It needs a desktop to show the alert on: where there is none
+  On macOS and Windows it names the command (a Windows toast has no action button).
+  It needs a desktop to show the alert on: where there is none
   (an SSH session, a headless machine) or the gateway was never set up, the `notify` hook
   announces the stopped turn instead. A short rate limit is not the plan's limit: Claude Code
   retries it, and the `notify` hook announces the turn only if it dies then.
@@ -889,7 +962,7 @@ The plugin's hooks run in every project. Most stay silent in a **project without
 `.claude/cc-smart-dev-kit.json`**; the three that are about your machine, not a project —
 `agent-guard`, `notify` and `playwright-output` — run there too (§ Notifications below). The plugin ships no worktree hook:
 Claude Code makes its own worktrees, unless a project turns on the worktree engine
-(§ Worktrees). Each hook runs through `bin/cc-smart-dev-kit-bun`, which finds bun even when your
+(§ Worktrees). Each hook runs through `bin/cc-smart-dev-kit-bun.sh`, which finds bun even when your
 PATH has none: the bun `cc-smart-dev-kit setup` saved in the launcher first, then
 `$BUN_INSTALL/bin/bun`, `~/.bun/bin/bun`, and bun on PATH. It starts bun with
 `--no-env-file` and the plugin's own empty `bunfig.toml`, so a hook never reads the working
@@ -1123,7 +1196,8 @@ last went down, or when their window closed**, and that nobody has resumed since
 
 On Linux without Warp, `--open` opens each session in an XFCE Terminal window of its own
 (through `systemd-run --user` where there is one, so the window takes the desktop session's
-environment and opens over SSH too). A session already running is never opened again
+environment and opens over SSH too). On Windows it opens a **Windows Terminal** window each
+(`wt.exe`) where Warp is not there. A session already running is never opened again
 (`~/.claude/sessions/<pid>.json` is how that is known), and one `--open` has just opened is
 left alone for the next few minutes too (a marker in `~/.claude/cc-smart-dev-kit/` — a resumed
 session takes a moment to write to its file, and a quick second run must not open a second
@@ -1440,7 +1514,11 @@ See `.claude/CLAUDE.md`. In short: `bun install`, change `src/`, `bun run build`
 
 - [Design](docs/design.md): how the parts fit, and why.
 - [The AI gateway](docs/gateway.md): the router, its slots, and the judge.
-- [Web search](docs/search.md): `cc-smart-dev-kit search`, its cost and its limits.- [Roadmap](docs/roadmap.md): the phases, done and ahead.
+- [Web search](docs/search.md): `cc-smart-dev-kit search`, its cost and its limits.
+- [Roadmap](docs/roadmap.md): the phases, done and ahead.
 - [Heavy jobs](docs/jobs.md): the machine-wide queue, its kinds, config and limits.
 - [Claude Code contract](docs/claude-code-contract.md): the Claude Code behaviour the
   plugin relies on, and the version it was last proved on.
+- Windows: [setup](docs/windows-setup.md), [hooks](docs/windows-hooks.md),
+  [notifications](docs/windows-notify.md), [heavy jobs](docs/windows-jobs.md),
+  [the gateway](docs/windows-gateway.md) ([Windows](#windows) above).
