@@ -131,8 +131,10 @@ esac
     expect(handler).toBeDefined();
     const command = (handler?.command ?? "").replaceAll(PLUGIN_ROOT, root);
     // The bundle the command names: a real file (the fake bun only prints its arguments,
-    // so nothing runs it), and what the shim must hand over as ONE argument.
-    const bundle = join(root, "dist", "update-check.js");
+    // so nothing runs it), and what the shim must hand over as ONE argument. Built the way
+    // the command builds it — `${CLAUDE_PLUGIN_ROOT}/dist/…` — so on Windows it is the
+    // folder's own `\` path, then `/dist/…`: exactly what bun gets there.
+    const bundle = `${root}/dist/update-check.js`;
     writeFileSync(bundle, "// the bundle the shim hands to bun\n");
     const run = Bun.spawnSync([SHELL, "-c", command], {
       // The shell, and the fake bun first: the shim is what that shell runs, and the shim
