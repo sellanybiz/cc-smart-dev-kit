@@ -13,7 +13,9 @@
  *   An existing worktree of that branch is entered again (unless another running session
  *   works in it). Otherwise an existing branch is checked out, or a new one is cut from
  *   `origin/<base>` right after `git fetch origin <base>`; a failed fetch refuses, because a
- *   new branch starts only from the latest base. Then the project's `setup` runs inside.
+ *   new branch starts only from the latest base. A branch named under a prefix of
+ *   `worktrees.bases` (`hotfix/`, `release/`) starts from that prefix's base instead
+ *   (`baseForBranch`). Then the project's `setup` runs inside.
  * - **A subagent's worktree** (`agent-<hex>`): what Claude Code would make for it,
  *   `<main checkout>/.claude/worktrees/<name>` on the branch `worktree-<name>`, from the
  *   base `worktree.baseRef` names: the remote's default branch (`"fresh"`, the default) or
@@ -115,6 +117,22 @@ export function badPrefix(prefix: string): string | null {
 /** The folder of a configured worktree: beside the main checkout. */
 export function configuredFolder(mainCheckout: string, prefix: string, name: string): string {
   return join(dirname(mainCheckout), `${prefix}${name.replace(/[\\/]/g, "-")}`);
+}
+
+type Worktrees = NonNullable<CcSmartDevKitConfig["worktrees"]>;
+
+/**
+ * The base a new worktree for `branch` starts from. `worktrees.bases` holds one base per
+ * branch-name prefix (`{"hotfix/": "main", "release/": "main"}`): the longest prefix that
+ * matches wins, so a `release/hotfix/` entry beats `release/`. Every other branch starts
+ * from `worktrees.base`.
+ */
+export function baseForBranch(worktrees: Worktrees, branch: string): string {
+  const bases = worktrees.bases ?? {};
+  const matched = Object.keys(bases)
+    .filter((prefix) => branch.startsWith(prefix))
+    .sort((a, b) => b.length - a.length)[0];
+  return matched === undefined ? worktrees.base : (bases[matched] ?? worktrees.base);
 }
 
 /**
@@ -367,8 +385,6 @@ export function reuseDecision(params: {
   return { kind: "reuse", folder: found.path };
 }
 
-type Worktrees = NonNullable<CcSmartDevKitConfig["worktrees"]>;
-
 function createConfigured(context: HookContext, name: string, worktrees: Worktrees): string {
   const { env, paths, project, input } = context;
   const main = project.mainCheckout;
@@ -376,6 +392,9 @@ function createConfigured(context: HookContext, name: string, worktrees: Worktre
   const prefixProblem = badPrefix(worktrees.prefix);
   if (prefixProblem !== null) throw new Refusal(prefixProblem);
   const branch = name;
+  // A branch named under a prefix of its own (a hotfix, a release) starts from that prefix's
+  // base, never from the integration base (`worktrees.bases`).
+  const base = baseForBranch(worktrees, branch);
   checkBranchName(main, branch, env);
   const folder = configuredFolder(main, worktrees.prefix, name);
   const session = typeof input.session_id === "string" ? input.session_id : null;
@@ -407,7 +426,7 @@ function createConfigured(context: HookContext, name: string, worktrees: Worktre
         throw new Refusal(`${folder} exists and is not a worktree of this repo`);
       const fetched = runGit(
         main,
-        ["fetch", "--quiet", "origin", worktrees.base],
+        ["fetch", "--quiet", "origin", base],
         noPromptEnv(env),
         BASE_FETCH_TIMEOUT_MS,
       );
@@ -423,22 +442,13 @@ function createConfigured(context: HookContext, name: string, worktrees: Worktre
       } else if (fetched.ok) {
         addWorktree(
           main,
-          [
-            "worktree",
-            "add",
-            "--quiet",
-            "--no-track",
-            "-b",
-            branch,
-            folder,
-            `origin/${worktrees.base}`,
-          ],
+          ["worktree", "add", "--quiet", "--no-track", "-b", branch, folder, `origin/${base}`],
           env,
           folder,
         );
       } else {
         throw new Refusal(
-          `\`git fetch origin ${worktrees.base}\` failed (${fetched.err || "no reason given"}): a new branch starts only from the latest ${worktrees.base}`,
+          `\`git fetch origin ${base}\` failed (${fetched.err || "no reason given"}): a new branch starts only from the latest ${base}`,
         );
       }
       copyWorktreeInclude(main, folder, env);

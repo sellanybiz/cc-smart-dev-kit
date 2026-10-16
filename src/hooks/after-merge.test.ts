@@ -157,11 +157,11 @@ describe("the hook", () => {
     return { ...env, PATH: `${bin}:${env.PATH ?? ""}`, GH_LOG: log };
   }
 
-  function project() {
+  function project(bases?: Record<string, string>) {
     const { repo } = makeClone();
     git(repo, "remote", "set-url", "origin", "git@github.com:example-org/app.git");
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      worktrees: { base: "main", prefix: "app-wt-" },
+      worktrees: { base: "main", prefix: "app-wt-", ...(bases === undefined ? {} : { bases }) },
     });
     const worktree = join(repo, "..", "app-wt-fix-a");
     git(repo, "worktree", "add", "-q", "-b", "fix/a", worktree);
@@ -211,6 +211,35 @@ describe("the hook", () => {
     const again = await runHook(afterMergeHook, ran(worktree, "gh pr merge --squash"), env);
     expect(again.stdout).toContain("Clear the worktree now");
     expect(again.stdout).not.toContain("Tell the other sessions");
+  });
+
+  test("the hook's message carries the caution when the project names other bases", async () => {
+    // A branch there goes into `dev`, not into this merge's base (`main`).
+    const { worktree } = project({ "hotfix/": "dev", "release/": "dev" });
+    const env = fakeGh(merged);
+    const result = await runHook(
+      afterMergeHook,
+      ran(join(worktree, "src"), "gh pr merge --squash"),
+      env,
+    );
+    const context = (
+      JSON.parse(result.stdout ?? "{}") as {
+        hookSpecificOutput?: { additionalContext?: string };
+      }
+    ).hookSpecificOutput?.additionalContext;
+    expect(context).toContain(
+      "One exception: a branch whose pull request goes into another base (hotfix/, release/) must NOT merge main in, because that would ship unreleased work. A branch there stays as it is.",
+    );
+  });
+
+  test("with no bases, or bases that all point at the same base: no caution", () => {
+    const pr = parsePullRequestView(JSON.stringify(merged));
+    if (pr === null) throw new Error("bad view");
+    expect(tellSessionsNote(pr, "main")).not.toContain("another base");
+    expect(tellSessionsNote(pr, "main", { "hotfix/": "main" })).not.toContain("another base");
+    expect(tellSessionsNote(pr, "main", { "hotfix/": "dev", "release/": "main" })).toContain(
+      "another base (hotfix/) must NOT merge main in",
+    );
   });
 
   test("the notes say exactly this", () => {

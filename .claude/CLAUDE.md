@@ -58,9 +58,10 @@ the first time you use it.
 |---|---|
 | `src/entries/*.ts` | One file per bundle. Each becomes `plugin/dist/<name>.js`. |
 | `src/build-info/` | The version and the marketplace source, baked in from `plugin.json` at build time; the fixed names, without the version, in `names.ts` (the router bundle uses those). |
-| `src/project/` | Finds the git project from a folder and reads its `.claude/cc-smart-dev-kit.json`. |
+| `src/project/` | Finds the git project from a folder and reads its `.claude/cc-smart-dev-kit.json`; `init.ts` plans and writes the two files `project init` makes. |
+| `src/workflow/` | The workflow: the settings it holds (`schema.ts`), the resolution order and the switches (`resolve.ts`), the one auto-merge decision (`auto-merge.ts`), the writers (`write.ts`), and the command (`commands.ts`). |
 | `src/setup/` | Safe changes to user files: managed keys, list entries and blocks, backups, atomic writes, the lock, the launcher, restore, marketplace access, the auto-mode block. |
-| `src/cli/` | The `cc-smart-dev-kit` commands: `setup`, `doctor` (and `--live`; its checks of the current folder's project in `project-checks.ts`), `hook`, `browser`, `sessions`, `worktrees`, `restore`, `migrate` (a machine still on 0.2.x's names), `update`, `session-name`, `statusline`, `usage`, `version`. |
+| `src/cli/` | The `cc-smart-dev-kit` commands: `setup`, `doctor` (and `--live`; its checks of the current folder's project in `project-checks.ts`), `project init` (the two files a project opts in with, `project-init.ts`), `workflow`, `hook`, `browser`, `sessions`, `worktrees`, `restore`, `migrate` (a machine still on 0.2.x's names), `update`, `session-name`, `statusline`, `usage`, `version`. |
 | `src/machine/` | Machine setup: the companion plugins, claude-mem's settings, Warp, `Machine` (the system, faked in tests), the host's platform (`host.ts`), and opening a URL on the person's desktop (`open-url.ts`). |
 | `src/gateway/` | The optional AI gateway: the router, its config and slots (the model slots, the judge test and its proof too), a model slot's fallback answer made safe for Claude (`fallback-answer.ts`), the limit state file, `gateway <command>`, its service (a socket unit and the router unit) and its doctor checks. |
 | `src/update/` | The self-update: the SessionStart hook's part, the detached background check, `cc-smart-dev-kit update`'s steps, and their state files. |

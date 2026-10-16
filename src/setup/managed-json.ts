@@ -104,6 +104,15 @@ function samePath(a: KeyPath, b: KeyPath): boolean {
   return a.length === b.length && a.every((segment, index) => segment === b[index]);
 }
 
+/**
+ * The indentation a JSON file uses, read from its own text: the first line that starts a key.
+ * Two spaces (Claude Code's own) when there is none. One home for this, so a writer that
+ * keeps a file's formatting reads the same rule.
+ */
+export function detectIndent(text: string): string {
+  return /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
+}
+
 /** The file's object, its indent, and the exact text read (null: no file), for the race check. */
 export function readJsonObject(file: string): {
   data: JsonObject;
@@ -121,8 +130,7 @@ export function readJsonObject(file: string): {
     throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);
   }
   if (!isObject(parsed)) throw new Error(`${file} must hold a JSON object.`);
-  const indent = /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
-  return { data: parsed, indent, text };
+  return { data: parsed, indent: detectIndent(text), text };
 }
 
 /** One entry of owned.json as a record: an older entry is only its path. */

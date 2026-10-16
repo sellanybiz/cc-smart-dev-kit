@@ -9,6 +9,7 @@ import { runDoctor } from "../cli/doctor";
 import { type LiveRunner, liveHookCommand } from "../cli/live-check";
 import { runMigrate } from "../cli/migrate";
 import { cliPaths } from "../cli/paths";
+import { runProjectInit } from "../cli/project-init";
 import { runRestore } from "../cli/restore";
 import { runSetup } from "../cli/setup";
 import { runStatusline } from "../cli/statusline";
@@ -31,11 +32,13 @@ import { serenaFolder } from "../mcp/serena-context";
 import { MCP_VERSIONS } from "../mcp/versions";
 import { runOmniroute } from "../omniroute/commands";
 import { runPortal } from "../portal/command";
+import { locateCheckout } from "../project/resolve";
 import { runSearch } from "../search/command";
 import { runSessions } from "../sessions/command";
 import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
 import { LAUNCHER_NAME } from "../setup/launcher";
+import { runWorkflow } from "../workflow/commands";
 import { runWorktrees } from "../worktrees/command";
 
 const HELP = `cc-smart-dev-kit ${VERSION} - set up and check the cc-smart-dev-kit plugin for Claude Code
@@ -71,6 +74,21 @@ Commands:
                      --live: also run two throwaway Claude Code sessions in temp repos,
                      to prove the hooks and the worktree engine on this Claude Code
                      (uses your login; a few cents). Records the version it passed on.
+  project init [--dry-run] [--yes] [flags]
+                     Set this project up: write .claude/cc-smart-dev-kit.json (the worktrees, the
+                     protected branches, the guards, and optionally the workflow policy)
+                     and, unless the project runs an engine of its own, the worktree
+                     engine's three lines in .claude/settings.json. It asks first, showing
+                     each default; every question has a flag, so a run with no terminal
+                     writes nothing unless --yes is given. It never commits.
+                     cc-smart-dev-kit project init --help lists the flags.
+  workflow [show] | set <setting> <value> [--project] | unset <setting> [--project]
+                     What cc-smart-dev-kit may do by itself here (commit, push, open a pull
+                     request, merge) and the switches that map onto settings which already
+                     exist. show (the default) prints each value with where it came from:
+                     the project's .claude/cc-smart-dev-kit.json, your own
+                     ~/.config/cc-smart-dev-kit/workflow.json, or the built-in default.
+                     set and unset write one value; --project writes the project's file.
   hook <worktree-create|worktree-remove|subagent-stop>
                      The worktree engine, for a project that wires it in its own
                      .claude/settings.json: reads the hook's input on stdin and answers
@@ -409,6 +427,53 @@ async function main(argv: string[]): Promise<number> {
       // Reads stdin, answers, and exits with the hook's code.
       return runHookEntry(spec);
     }
+    case "project": {
+      const [sub, ...flags] = rest;
+      if (sub !== "init") {
+        console.error(`Usage: ${COMMAND} project init [--dry-run] [--yes] [flags]\n\n${HELP}`);
+        return 2;
+      }
+      // `--help` works anywhere; the repo is resolved only for a run that would write.
+      let root = process.cwd();
+      if (!flags.includes("--help") && !flags.includes("-h")) {
+        try {
+          const checkout = locateCheckout(process.cwd(), { env: process.env });
+          if (checkout === null) {
+            console.error(`${COMMAND} project init: this folder is not in a git project`);
+            return 2;
+          }
+          root = checkout.root;
+        } catch (error) {
+          console.error(
+            `${COMMAND} project init: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          return 1;
+        }
+      }
+      return runProjectInit(flags, {
+        root,
+        env: process.env,
+        stateDir: paths.stateDir,
+        home: paths.home,
+        terminal:
+          process.stdin.isTTY && process.stdout.isTTY
+            ? {
+                confirm: (question) => confirm(question),
+                text: (question, fallback) => prompt(question, fallback) ?? fallback,
+              }
+            : null,
+        print: (line) => console.log(line),
+        error: (line) => console.error(line),
+      });
+    }
+    case "workflow":
+      return runWorkflow(rest, {
+        paths,
+        cwd: process.cwd(),
+        env: process.env,
+        print: (line) => console.log(line),
+        error: (line) => console.error(line),
+      });
     case "session-name": {
       const [sessionId, ...words] = rest;
       if (sessionId === undefined || words.length === 0) {

@@ -73,11 +73,14 @@ describe("resolveProject", () => {
           prefix: "app-wt-",
           setup: ["bun", "install"],
           guardMainFolder: true,
+          bases: { "hotfix/": "main", "release/": "main" },
+          engine: "own",
         },
         protectedBranches: ["main", "release"],
         sessionNames: true,
         instructions: true,
         autoMode: ["In my-app: never touch production."],
+        workflow: { autoCommit: true, alerts: { usagePercent: 70 } },
         ownHooks: ["git-guard", "after-merge"],
       }),
     );
@@ -88,11 +91,14 @@ describe("resolveProject", () => {
         prefix: "app-wt-",
         setup: ["bun", "install"],
         guardMainFolder: true,
+        bases: { "hotfix/": "main", "release/": "main" },
+        engine: "own",
       },
       protectedBranches: ["main", "release"],
       sessionNames: true,
       instructions: true,
       autoMode: ["In my-app: never touch production."],
+      workflow: { autoCommit: true, alerts: { usagePercent: 70 } },
       ownHooks: ["git-guard", "after-merge"],
     });
   });
@@ -108,6 +114,17 @@ describe("resolveProject", () => {
       { worktrees: { base: "dev", prefix: "x-", guardMainFolder: 1 } },
       "worktrees.guardMainFolder:",
     ],
+    [
+      { worktrees: { base: "dev", prefix: "x-", bases: { hotfix: "main" } } },
+      'worktrees.bases: "hotfix" must end with "/"',
+    ],
+    [
+      { worktrees: { base: "dev", prefix: "x-", bases: { "hotfix/": "" } } },
+      "worktrees.bases.hotfix/:",
+    ],
+    [{ worktrees: { base: "dev", prefix: "x-", engine: "mine" } }, "worktrees.engine:"],
+    [{ workflow: { autoCommit: "yes" } }, "workflow.autoCommit:"],
+    [{ workflow: { switches: { statusLine: true } } }, "workflow.switches:"],
   ])("the hook fields are checked: %j names %j", (content, field) => {
     const repo = makeRepo();
     const file = writeCcSmartDevKitJson(repo, JSON.stringify(content));

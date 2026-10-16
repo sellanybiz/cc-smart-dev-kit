@@ -22,6 +22,37 @@ command, its folders and its slots were `anymodel` in 0.2.x, and are
 `cc-smart-dev-kit` now. `cc-smart-dev-kit migrate` moves a machine that still has the
 old names (`README.md` § Moving from anymodel).
 
+## 0.4.0 — the workflow, and a project that sets itself up
+
+Done in this release:
+
+- **`cc-smart-dev-kit project init`** (`README.md` § `project init`): the two files a project
+  opts in with, asked question by question with the defaults read from the repo (the base
+  from `origin/HEAD`, the setup command from the lockfile, the protected branches from git
+  and `gh`), a flag for every question, the diff shown before anything is written, a backup
+  first, and a line saying to commit them. The worktree engine's three hook lines come from
+  the one home that owns them (`src/hooks/project-wiring.ts`).
+- **The workflow** (`design.md` § The workflow): what cc-smart-dev-kit may do by itself —
+  commit, push, open a pull request, merge — held by the project's committed file over the
+  person's own `~/.config/cc-smart-dev-kit/workflow.json` over the safe built-in defaults, each
+  value with where it came from. Read and written by `cc-smart-dev-kit workflow`; the four
+  `switches.*` are settings that already exist (the status line, `sessionNames`,
+  `jobs.route`, the update hold), so there is one truth for each. `autoMergeAllowed` is the
+  one decision that lets a merge happen without a person, and it refuses every base that is
+  not a plain integration base.
+- **A base branch per branch prefix** (`worktrees.bases`): a `hotfix/…` or `release/…`
+  worktree starts from the base that prefix names, not from the integration base, so
+  unreleased work never leaks into a released line; the after-merge note tells sessions on
+  those branches not to merge the integration base in.
+- **`worktrees.engine`** (`"plugin"` or `"own"`): a project that already runs its own
+  worktree engine says so, and `doctor` expects no cc-smart-dev-kit hook lines there (a `·`
+  line, never ✗), while warning about the double worktree when they are wired anyway.
+
+Coming in 0.4.0 from other builders: the **Settings page** and the **Project card** in the
+portal (both call this release's functions), the **merge guard hook** (which decides a merge
+with `autoMergeAllowed`), the **alert settings** (which read `alerts`), and the **auto-mode
+safety checks** that run at the plan's usage.
+
 ## 1 — Foundation (done)
 
 The repo, CI, the bundle step and its check, `claude plugin validate --strict`, the

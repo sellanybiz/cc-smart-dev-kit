@@ -49,6 +49,8 @@ export interface CliPaths extends RouterPaths {
   routerTaskFile: string;
   /** claude-mem's settings: `$CLAUDE_MEM_DATA_DIR/settings.json`, else `~/.claude-mem/settings.json`. */
   claudeMemSettingsFile: string;
+  /** This person's workflow defaults: `~/.config/cc-smart-dev-kit/workflow.json` (0600). */
+  workflowConfigFile: string;
   /** The socket unit that holds the router's port: `~/.config/systemd/user/cc-smart-dev-kit-router.socket`. */
   routerSocketFile: string;
   /** The notifier's settings: `~/.claude/cc-smart-dev-kit/notify.json`. */
@@ -138,6 +140,7 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
       "cc-smart-dev-kit-router.socket",
     ),
     notifyConfigFile: join(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
+    workflowConfigFile: join(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     tmuxConfFile: join(router.home, ".tmux.conf"),
     tavilyKeyFile: join(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),
   };
