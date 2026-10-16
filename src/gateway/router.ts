@@ -1,8 +1,8 @@
 /**
- * anymodel-router: the local AI gateway between Claude Code and the model providers.
+ * cc-smart-dev-kit-router: the local AI gateway between Claude Code and the model providers.
  *
  * WHY IT EXISTS
- *   Routine subagents (search, reading, routine code) can run on cheap models; reviews
+ *   Routine subagents (search, reading, routine code) can run on affordable models; reviews
  *   and judgment stay on Claude. Claude Code points `ANTHROPIC_BASE_URL` here with NO
  *   gateway token, so every request carries the person's OWN Claude login: the pattern
  *   Anthropic documents for gateways. That login must only ever reach Anthropic.
@@ -15,13 +15,13 @@
  *     and headers unchanged (only hop-by-hop headers, `host` and `content-length` are
  *     dropped). The answer streams back unbuffered, compressed bytes and all
  *     (`decompress: false`).
- *   - A slot key (`anymodel-scout`, `anymodel-worker`) → the slot's targets in order
- *     (`targets.ts`). A cheap backend gets only an allow-list of headers plus its own
+ *   - A slot key (`cc-smart-dev-kit-scout`, `cc-smart-dev-kit-worker`) → the slot's targets in order
+ *     (`targets.ts`). An affordable backend gets only an allow-list of headers plus its own
  *     key, and the body without `metadata` (it holds the account id). A `claude-…`
  *     target goes to Anthropic with `model` changed, and only the fields that target
  *     refuses translated (`requestForClaudeFallback`). It moves to the next target
  *     only before an answer reaches Claude Code: a network error, a status
- *     `fallbackKind` names, or (on a streaming request to a cheap backend that is not
+ *     `fallbackKind` names, or (on a streaming request to an affordable backend that is not
  *     the last target) no response headers or no first real event within
  *     `firstByteMs`, or an error event before the first real one. A target that
  *     answered 429 / 5xx rests a while (`cooldownSeconds`); the last target of a slot is
@@ -33,17 +33,17 @@
  *   - Auto mode's safety check (`isAutoModeGuard`, on the request as it came, so an old
  *     name in `aliases` is seen too) → Claude, always first: a `claude-…` check
  *     untouched, a slot-named one to that slot's Claude targets only, and one whose name
- *     leads to no Claude target (a cheap-only slot, or an alias to `<backend>:<model>`) to
- *     Anthropic as it was sent (`resolveRequestRoute`). The `anymodel-judge` slot, when
+ *     leads to no Claude target (an affordable-only slot, or an alias to `<backend>:<model>`) to
+ *     Anthropic as it was sent (`resolveRequestRoute`). The `cc-smart-dev-kit-judge` slot, when
  *     the person set one, answers only when Claude cannot (`judgeAsFallback`).
  *   - Every Claude answer's headers (never its body) say whether the plan's usage limit
  *     was reached; the router writes that to its state file, for the status line and the
  *     StopFailure alert (`limit-state.ts`).
- *   - No prompt text is ever changed. A cheap backend gets only the named format
+ *   - No prompt text is ever changed. An affordable backend gets only the named format
  *     translations below; a `claude-…` request reaches Anthropic as the bytes it came as.
- *   - A cheap backend never sees Claude Code's tool search: `toolSearchForBackend`.
- *   - A cheap backend gets "no reasoning" in a form it reads: `reasoningOffForBackend`.
- *   - A redirect from a cheap backend becomes a 502: Claude Code must never follow a
+ *   - An affordable backend never sees Claude Code's tool search: `toolSearchForBackend`.
+ *   - An affordable backend gets "no reasoning" in a form it reads: `reasoningOffForBackend`.
+ *   - A redirect from an affordable backend becomes a 502: Claude Code must never follow a
  *     `Location` it chose. Anthropic's own redirects pass as they are.
  *   - Only this machine: it binds 127.0.0.1, refuses a foreign `Host` and any `Origin`
  *     (a web page in a browser), and on `/v1/messages` wants JSON and an
@@ -65,7 +65,7 @@
  *     for the next router instead of being refused (`startRouter`, `./listen.ts`).
  *
  * `createRouter` is the handler, with everything it touches passed in, so the tests
- * drive it with fake upstreams. `startRouter` serves it (`anymodel gateway serve`, and
+ * drive it with fake upstreams. `startRouter` serves it (`cc-smart-dev-kit gateway serve`, and
  * the systemd unit through `src/entries/router.ts`). The design: docs/gateway.md.
  */
 
@@ -171,7 +171,7 @@ const UNSUPPORTED =
 const BAD_SIGNATURE = "Invalid `signature`";
 
 /** Path of the router's own health check, answered before anything is forwarded. */
-export const HEALTH_PATH = "/__anymodel/health";
+export const HEALTH_PATH = "/__cc-smart-dev-kit/health";
 
 const MESSAGES_PATH = "/v1/messages";
 const COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
@@ -190,7 +190,7 @@ const HOP_BY_HOP = new Set([
 ]);
 
 /**
- * The only client headers a cheap backend sees. Never `authorization`, `x-api-key`,
+ * The only client headers an affordable backend sees. Never `authorization`, `x-api-key`,
  * `cookie` or `anthropic-beta`: the first three carry the Claude login, the last
  * announces the OAuth capability.
  */
@@ -244,7 +244,7 @@ export function backendRequestHeaders(client: Headers, apiKey: string): Headers 
 }
 
 /**
- * `retry-after` as whole seconds. Claude Code reads an integer; a cheap backend may
+ * `retry-after` as whole seconds. Claude Code reads an integer; an affordable backend may
  * send a fraction or an HTTP date. Null when it is neither.
  */
 export function retryAfterSeconds(value: null | string, nowMs: number): null | number {
@@ -257,7 +257,7 @@ export function retryAfterSeconds(value: null | string, nowMs: number): null | n
   return Math.max(0, Math.ceil((at - nowMs) / 1000));
 }
 
-/** Response headers for the client; a cheap backend's `retry-after` made whole seconds. */
+/** Response headers for the client; an affordable backend's `retry-after` made whole seconds. */
 function responseHeaders(upstream: Headers, normalizeRetryAfterAt: null | number): Headers {
   const dropped = droppedHeaders(upstream);
   const out = new Headers();
@@ -278,7 +278,7 @@ function responseHeaders(upstream: Headers, normalizeRetryAfterAt: null | number
  *
  * OmniRoute commits to `200 text/event-stream` after about a second, sends comment
  * lines (`: …`) as heartbeats, and reports a failure in-band as `event: error`. So
- * for a cheap backend "before the first byte" means "before the first real event":
+ * for an affordable backend "before the first byte" means "before the first real event":
  * comments are skipped; `ping` carries no content and decides nothing either.
  */
 export function sseScanner(): { push(text: string): "error" | "event" | null } {
@@ -414,7 +414,7 @@ export function maskSecrets(text: string, known: readonly string[] = []): string
  * An outside error text as one line to show: anything like a key masked first
  * (`maskSecrets`, with the `known` secrets), then made one line of at most `max`
  * characters with no control character (`oneLine`). The router's log passes `ascii`;
- * `anymodel search` shows Unicode and marks a cut with `…`.
+ * `cc-smart-dev-kit search` shows Unicode and marks a cut with `…`.
  */
 export function maskedLine(
   text: string,
@@ -476,7 +476,7 @@ function decompressionFormat(encoding: string): Bun.CompressionFormat | null {
 }
 
 /**
- * Claude Code's tool search, made plain for a cheap backend.
+ * Claude Code's tool search, made plain for an affordable backend.
  *
  * With `ENABLE_TOOL_SEARCH=true` Claude Code marks most tools `defer_loading: true`
  * and, when its `ToolSearch` tool finds one, answers with a `tool_reference` block
@@ -488,7 +488,7 @@ function decompressionFormat(encoding: string): Bun.CompressionFormat | null {
  *     `defer_loading`; a tool that is not deferred stays as it is (`ToolSearch` too);
  *   - each `tool_reference` block becomes `{"type":"text","text":"Tool loaded: <name>"}`,
  *     the other blocks beside it kept.
- * The cheap model sees the core tools and `ToolSearch`; a tool it finds is a real
+ * The affordable model sees the core tools and `ToolSearch`; a tool it finds is a real
  * definition on its next turn — what Anthropic's server does. Nothing else changes.
  */
 export function toolSearchForBackend(body: Record<string, unknown>): Record<string, unknown> {
@@ -531,7 +531,7 @@ export function toolSearchForBackend(body: Record<string, unknown>): Record<stri
 }
 
 /**
- * "No reasoning", said so a cheap backend acts on it.
+ * "No reasoning", said so an affordable backend acts on it.
  *
  * Claude Code turns reasoning off with `thinking: {"type":"disabled"}` for short
  * background calls. OmniRoute translates that for an OpenAI-shaped provider such as
@@ -588,10 +588,10 @@ const ABOVE_HIGH = new Set(["max", "xhigh"]);
  * A slot request's body, made acceptable to the slot's `claude-…` target.
  *
  * Claude Code builds a request for the model name it sends. Under a slot name
- * (`anymodel-worker`) it knows nothing of the model behind it, so the body can carry a
+ * (`cc-smart-dev-kit-worker`) it knows nothing of the model behind it, so the body can carry a
  * field the Claude target refuses: Claude Sonnet 5.5 answers 400 to
  * `thinking: {type: "disabled"}`, which Claude Code sends to turn reasoning off for short
- * background calls. Without this, a slot that falls back to Claude after its cheap targets
+ * background calls. Without this, a slot that falls back to Claude after its affordable targets
  * fail answers 400 instead. So, for a target in `CLAUDE_TARGET_RULES` only, each refused
  * field gets the nearest value the target accepts:
  *   - `thinking: {type: "disabled"}` → `{type: "between_tools"}` (Sonnet 5.5; at effort
@@ -1051,7 +1051,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   }
 
   /**
-   * Hold a cheap backend's stream until its first real event (`sseScanner`). An
+   * Hold an affordable backend's stream until its first real event (`sseScanner`). An
    * error event, the end of the stream, or `deadlineAt` first → a failure, and the
    * next target is tried; nothing has reached the client yet. Otherwise the client
    * gets a stream that replays every byte read so far, then pipes the rest as it
@@ -1190,15 +1190,15 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       ? config.backends[target.backend]
       : undefined;
     if (backend === undefined) return { error: `backend "${target.backend}" is not in the config` };
-    // `metadata` carries the Claude account id; a cheap backend never sees it.
-    const cheapBody: Record<string, unknown> = {
+    // `metadata` carries the Claude account id; an affordable backend never sees it.
+    const affordableBody: Record<string, unknown> = {
       ...reasoningOffForBackend(toolSearchForBackend(body), { absentIsOff: guard }),
       model: target.model,
     };
-    delete cheapBody.metadata;
+    delete affordableBody.metadata;
     return {
       upstream: {
-        body: encoder.encode(JSON.stringify(cheapBody)),
+        body: encoder.encode(JSON.stringify(affordableBody)),
         headers: backendRequestHeaders(req.headers, backend.apiKey),
         // Only the path: a query like `?beta=true` is Anthropic's, not the backend's.
         method: "POST",
@@ -1289,7 +1289,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         continue;
       }
       // The header deadline guards only where it can help: a streaming request to a
-      // cheap backend with another target behind it. Anthropic, the last target and
+      // affordable backend with another target behind it. Anthropic, the last target and
       // a non-streaming answer (which may take minutes) wait as long as it takes;
       // the client hanging up still cancels them.
       // An auto-mode check gets the same deadline though it does not stream: a judge that
@@ -1343,7 +1343,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
             response: anthropicError(
               502,
               "api_error",
-              `anymodel-router: ${label} answered a redirect (${status}); not passed on`,
+              `cc-smart-dev-kit-router: ${label} answered a redirect (${status}); not passed on`,
             ),
             skipped,
             target: label,
@@ -1389,7 +1389,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       response: anthropicError(
         502,
         "api_error",
-        `anymodel-router: no target for ${name} answered (${failures.join("; ") || "no targets"})`,
+        `cc-smart-dev-kit-router: no target for ${name} answered (${failures.join("; ") || "no targets"})`,
       ),
       skipped,
       target: lastTarget === undefined ? "none" : formatTarget(lastTarget),
@@ -1409,7 +1409,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    * A Claude model with a model slot. First the model itself, with the bytes Claude Code
    * sent: whatever Anthropic answers goes back as it is (a short 429, a 5xx and a network
    * error included: Claude Code retries those itself), EXCEPT the plan's usage limit
-   * (`planUsageLimit`). Then the slot's other targets, in order (`chain`, with a cheap
+   * (`planUsageLimit`). Then the slot's other targets, in order (`chain`, with an affordable
    * backend's named translations), and the model rests until its reset (at most
    * `COOLDOWN_MAX_SEC`: then one request asks Anthropic again). One WARN when a fallback
    * starts; the state file says so for the status line.
@@ -1572,7 +1572,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       const type = (req.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
       if (type !== "application/json" || !req.headers.has("anthropic-version")) {
         return refusal(
-          "anymodel-router wants content-type: application/json and an anthropic-version header",
+          "cc-smart-dev-kit-router wants content-type: application/json and an anthropic-version header",
         );
       }
     }
@@ -1621,7 +1621,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           : anthropicError(
               502,
               "api_error",
-              `anymodel-router: Anthropic did not answer (${result.failure})`,
+              `cc-smart-dev-kit-router: Anthropic did not answer (${result.failure})`,
             );
       return { fallbacks: 0, response, skipped: 0, target: "anthropic" };
     };
@@ -1645,7 +1645,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
     if (typeof parsed.model === "string") model.name = parsed.model;
     // The safety check is recognised on the request as it came, an old name included: an
-    // alias may point at a cheap backend, and with the judge off the check stays on Claude.
+    // alias may point at an affordable backend, and with the judge off the check stays on Claude.
     const guard = isAutoModeGuard(parsed, config.aliases);
     // Then the old name, so the rest routes on the name it stands for; even the safety
     // check, whose newer form is sent under the sonnet name.
@@ -1707,7 +1707,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           response: anthropicError(
             400,
             "invalid_request_error",
-            `anymodel-router: "${decided.slot}" is not a slot in ${deps.configPath} (slots: ${slots.length > 0 ? slots.join(", ") : "none — run anymodel gateway setup"})`,
+            `cc-smart-dev-kit-router: "${decided.slot}" is not a slot in ${deps.configPath} (slots: ${slots.length > 0 ? slots.join(", ") : "none — run cc-smart-dev-kit gateway setup"})`,
           ),
           skipped: 0,
           target: "none",
@@ -1747,7 +1747,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
 
     const host = (req.headers.get("host") ?? "").toLowerCase();
     if (req.headers.has("origin") || !allowedHosts.has(host)) {
-      const outcome = refusal("anymodel-router accepts requests from this machine only");
+      const outcome = refusal("cc-smart-dev-kit-router accepts requests from this machine only");
       deps.log(line(outcome));
       return outcome.response;
     }
@@ -1777,7 +1777,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         response: anthropicError(
           500,
           "api_error",
-          "anymodel-router failed on this request; see its log",
+          "cc-smart-dev-kit-router failed on this request; see its log",
         ),
         skipped: 0,
         target: "none",
@@ -1790,9 +1790,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
 }
 
 /**
- * Serve the router on 127.0.0.1: `anymodel gateway serve`, and the systemd unit.
+ * Serve the router on 127.0.0.1: `cc-smart-dev-kit gateway serve`, and the systemd unit.
  *
- * Under the unit, systemd's `anymodel-router.socket` holds the port and passes it in
+ * Under the unit, systemd's `cc-smart-dev-kit-router.socket` holds the port and passes it in
  * (socket activation, `./listen.ts`): the router accepts on that socket and relays each
  * connection to its own server on a private unix socket. Started any other way (a
  * terminal, a unit without the socket), it binds the config's port itself.
@@ -1838,7 +1838,9 @@ export async function startRouter(
       idleTimeout: 0,
       port: configPort,
     });
-    log(`anymodel-router listening on http://127.0.0.1:${configPort} (config ${configPath})`);
+    log(
+      `cc-smart-dev-kit-router listening on http://127.0.0.1:${configPort} (config ${configPath})`,
+    );
     // systemd stops (and restarts) with SIGTERM. `stop(false)` stops taking new
     // connections and lets every answer in flight finish; its promise resolves once
     // the last connection has closed. The unit's TimeoutStopSec bounds the wait.
@@ -1860,13 +1862,13 @@ export async function startRouter(
   // the socket only through `gateway setup`, which writes it into the socket unit.
   if (relay.port !== configPort) {
     log(
-      `WARN the socket listens on port ${relay.port}, the config says ${configPort}: serving on ${relay.port}. Run: anymodel gateway setup`,
+      `WARN the socket listens on port ${relay.port}, the config says ${configPort}: serving on ${relay.port}. Run: cc-smart-dev-kit gateway setup`,
     );
   }
   const server = serveUnix(inner.path, handlerFor(relay.port));
   innerReady(inner.path);
   log(
-    `anymodel-router listening on http://127.0.0.1:${relay.port} (the socket systemd holds; config ${configPath})`,
+    `cc-smart-dev-kit-router listening on http://127.0.0.1:${relay.port} (the socket systemd holds; config ${configPath})`,
   );
   // On SIGTERM it stops accepting. systemd keeps the socket open, so a new connection
   // waits in its queue for the next router instead of being refused. A connection that

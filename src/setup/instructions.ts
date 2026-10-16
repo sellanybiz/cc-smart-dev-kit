@@ -16,11 +16,11 @@ import { atomicWrite, readChanged, realTarget, writeManagedFile } from "./write"
  * from the user's CLAUDE.md:
  *
  *   plugin/instructions/**.md  --copy-->  <stateDir>/instructions/**.md
- *   <config dir>/CLAUDE.md     <-- one anymodel block: `@<copy>/core.md`
+ *   <config dir>/CLAUDE.md     <-- one cc-smart-dev-kit block: `@<copy>/core.md`
  *
  * Why a copy: the plugin's own folder has the version in its name and goes away after an
  * update, so an import cannot point into it. Every file of the copy is a whole file
- * anymodel owns (`whole-file` in changed.json), so `restore` removes it.
+ * cc-smart-dev-kit owns (`whole-file` in changed.json), so `restore` removes it.
  *
  * Two small state files sit beside the copy, in the state folder (not in the copy, which
  * holds only what the plugin ships):
@@ -106,7 +106,7 @@ export interface InstructionsLine {
 /** The text between the block's markers. */
 export function instructionsBlockBody(importPath: string): string {
   return [
-    "<!-- Written by anymodel setup. `anymodel setup --no-instructions` takes it out. -->",
+    "<!-- Written by cc-smart-dev-kit setup. `cc-smart-dev-kit setup --no-instructions` takes it out. -->",
     `@${importPath}`,
   ].join("\n");
 }
@@ -141,14 +141,18 @@ function lineOf(result: RestoreResult, block: boolean): InstructionsLine | null 
     case "removed":
       return { mark: "-", file: result.file, what: "removed" };
     case "restored":
-      return { mark: "~", file: result.file, what: "back as it was before anymodel" };
+      return { mark: "~", file: result.file, what: "back as it was before cc-smart-dev-kit" };
     case "cleaned":
-      return { mark: "~", file: result.file, what: block ? "anymodel block removed" : "cleaned" };
+      return {
+        mark: "~",
+        file: result.file,
+        what: block ? "cc-smart-dev-kit block removed" : "cleaned",
+      };
     case "no-backup":
       return {
         mark: "!",
         file: result.file,
-        what: "the backup from before anymodel is missing; left alone",
+        what: "the backup from before cc-smart-dev-kit is missing; left alone",
       };
     case "unchanged":
       return null;
@@ -210,7 +214,7 @@ export function setInstructionsOptOut(
     if (optOut) {
       atomicWrite(
         file,
-        "Written by `anymodel setup --no-instructions`. While this file is here, setup leaves the instructions out. `anymodel setup --instructions` removes it.\n",
+        "Written by `cc-smart-dev-kit setup --no-instructions`. While this file is here, setup leaves the instructions out. `cc-smart-dev-kit setup --instructions` removes it.\n",
         0o644,
       );
     } else {
@@ -221,7 +225,7 @@ export function setInstructionsOptOut(
     ? {
         mark: "+",
         file,
-        what: "setup leaves the instructions out from now on (`anymodel setup --instructions` brings them back)",
+        what: "setup leaves the instructions out from now on (`cc-smart-dev-kit setup --instructions` brings them back)",
       }
     : { mark: "-", file, what: "removed: setup installs the instructions again" };
 }
@@ -238,7 +242,7 @@ export function forgetInstructionsState(stateDir: string): string | null {
   return had ? optOut : null;
 }
 
-/** Takes tracked copies out: removed when anymodel created them, else back to their baseline. */
+/** Takes tracked copies out: removed when cc-smart-dev-kit created them, else back to their baseline. */
 function removeCopies(files: string[], stateDir: string, dryRun: boolean): InstructionsLine[] {
   if (files.length === 0) return [];
   if (dryRun) {
@@ -249,7 +253,7 @@ function removeCopies(files: string[], stateDir: string, dryRun: boolean): Instr
         const entry = changed[file];
         return entry !== undefined && createdByUs(entry)
           ? { mark: "-", file, what: "removed" }
-          : { mark: "~", file, what: "back as it was before anymodel" };
+          : { mark: "~", file, what: "back as it was before cc-smart-dev-kit" };
       });
   }
   return restore(stateDir, { only: files })
@@ -341,13 +345,17 @@ export function installInstructions(
     dryRun,
   });
   if (block.outcome === "created") {
-    lines.push({ mark: "+", file: paths.claudeMd, what: "created, with the anymodel block" });
+    lines.push({
+      mark: "+",
+      file: paths.claudeMd,
+      what: "created, with the cc-smart-dev-kit block",
+    });
   } else if (block.outcome === "updated") {
     const had = before?.includes(BLOCK_BEGIN) ?? false;
     lines.push({
       mark: "~",
       file: paths.claudeMd,
-      what: had ? "anymodel block updated" : "anymodel block added",
+      what: had ? "cc-smart-dev-kit block updated" : "cc-smart-dev-kit block added",
     });
   }
   return lines;
@@ -355,7 +363,7 @@ export function installInstructions(
 
 /**
  * Takes the instructions out: first the block (so nothing imports a missing file), then the
- * managed copy. A CLAUDE.md that anymodel created, with nothing else in it, is removed.
+ * managed copy. A CLAUDE.md that cc-smart-dev-kit created, with nothing else in it, is removed.
  */
 export function removeInstructions(paths: InstructionsPaths, dryRun: boolean): InstructionsLine[] {
   const lines: InstructionsLine[] = [];
@@ -369,7 +377,7 @@ export function removeInstructions(paths: InstructionsPaths, dryRun: boolean): I
       lines.push(
         entry !== undefined && createdByUs(entry) && empty
           ? { mark: "-", file: claudeMd, what: "removed" }
-          : { mark: "~", file: claudeMd, what: "anymodel block removed" },
+          : { mark: "~", file: claudeMd, what: "cc-smart-dev-kit block removed" },
       );
     } else if (entry !== undefined) {
       for (const result of restore(paths.stateDir, { only: [claudeMd] })) {
@@ -379,7 +387,7 @@ export function removeInstructions(paths: InstructionsPaths, dryRun: boolean): I
     } else {
       // A block with no record (the state folder was cleared): take the block out only.
       removeManagedMarkdown({ file: claudeMd, stateDir: paths.stateDir });
-      lines.push({ mark: "~", file: claudeMd, what: "anymodel block removed" });
+      lines.push({ mark: "~", file: claudeMd, what: "cc-smart-dev-kit block removed" });
     }
   }
   lines.push(...removeCopies(trackedCopies(paths.target, paths.stateDir), paths.stateDir, dryRun));

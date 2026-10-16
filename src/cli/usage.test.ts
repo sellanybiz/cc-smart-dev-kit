@@ -1,5 +1,5 @@
 /**
- * `anymodel usage`: a fake `projects` folder in the shape Claude Code 2.1.300 writes. The
+ * `cc-smart-dev-kit usage`: a fake `projects` folder in the shape Claude Code 2.1.300 writes. The
  * fixtures hold message text; the report must never show it.
  */
 import { describe, expect, it } from "bun:test";

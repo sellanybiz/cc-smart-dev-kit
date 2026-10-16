@@ -1,9 +1,9 @@
 /**
  * `doctor`'s checks of the project in the folder it runs in:
  *
- * - **The worktree engine is wired as `anymodel.json` says.** With `worktrees`, the project's
+ * - **The worktree engine is wired as `cc-smart-dev-kit.json` says.** With `worktrees`, the project's
  *   settings must wire WorktreeCreate, WorktreeRemove and SubagentStop to
- *   `anymodel hook <name>`; wired without `worktrees`, every worktree would fail. Next to the
+ *   `cc-smart-dev-kit hook <name>`; wired without `worktrees`, every worktree would fail. Next to the
  *   engine, a second WorktreeCreate hook (the project's or the user's) would make a second
  *   worktree for each request (Claude Code runs both: `docs/claude-code-contract.md`).
  * - **The project's own copies of plugin hooks.** Each hook `ownHooks` lists is off here
@@ -22,7 +22,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { runsProjectHook } from "../hooks/project-wiring";
 import { projectSettingsFiles, type WiredHandler, wiredHandlers } from "../hooks/settings-hooks";
 import { MACHINE_WIDE_HOOKS, PROJECT_HOOKS } from "../hooks/specs";
-import { type AnymodelConfig, AnymodelConfigError } from "../project/config";
+import { type CcSmartDevKitConfig, CcSmartDevKitConfigError } from "../project/config";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { type CliPaths, tildify } from "./paths";
 
@@ -49,11 +49,11 @@ function shown(file: string, projectDir: string, home: string): string {
 }
 
 const ENGINE_HINT =
-  "Run `anymodel hook` for the lines to paste (also in the anymodel README, § Worktrees)";
+  "Run `cc-smart-dev-kit hook` for the lines to paste (also in the cc-smart-dev-kit README, § Worktrees)";
 
-/** The worktree engine's wiring against `worktrees` in anymodel.json. */
+/** The worktree engine's wiring against `worktrees` in cc-smart-dev-kit.json. */
 function engineLines(
-  config: AnymodelConfig | null,
+  config: CcSmartDevKitConfig | null,
   sources: string[],
   projectDir: string,
   paths: CliPaths,
@@ -72,13 +72,13 @@ function engineLines(
         ? { ok: true, text: `project: the worktree engine is wired (${wired.join(", ")})` }
         : {
             ok: false,
-            text: `project: "worktrees" is set in .claude/anymodel.json, but the project's settings do not wire ${missing.join(", ")} to anymodel hook${missing.includes("WorktreeCreate") ? ", so Claude Code makes its own worktrees" : ""}. ${ENGINE_HINT}`,
+            text: `project: "worktrees" is set in .claude/cc-smart-dev-kit.json, but the project's settings do not wire ${missing.join(", ")} to cc-smart-dev-kit hook${missing.includes("WorktreeCreate") ? ", so Claude Code makes its own worktrees" : ""}. ${ENGINE_HINT}`,
           },
     );
   } else if (wired.length > 0) {
     lines.push({
       ok: false,
-      text: `project: the project's settings wire ${wired.join(", ")} to anymodel hook, but ${config === null ? "there is no .claude/anymodel.json" : '.claude/anymodel.json has no "worktrees"'}, so each of them fails. Add "worktrees", or take the anymodel hook lines out`,
+      text: `project: the project's settings wire ${wired.join(", ")} to cc-smart-dev-kit hook, but ${config === null ? "there is no .claude/cc-smart-dev-kit.json" : '.claude/cc-smart-dev-kit.json has no "worktrees"'}, so each of them fails. Add "worktrees", or take the cc-smart-dev-kit hook lines out`,
     });
   }
   if (hooks.find((hook) => hook.event === "WorktreeCreate")?.wired === true) {
@@ -134,7 +134,7 @@ function onEvent(event: string, subjects: Array<string | null>): string {
  * each project hook that runs next to an unlisted plugin hook on the same event and tool.
  */
 function ownCopyLines(
-  config: AnymodelConfig,
+  config: CcSmartDevKitConfig,
   sources: string[],
   pluginHooksFile: string,
   projectDir: string,
@@ -162,12 +162,12 @@ function ownCopyLines(
         ? {
             ok: true,
             info: true,
-            text: `project: the plugin's ${name} is off here: .claude/anymodel.json lists it in ownHooks, so the project's own copy answers alone`,
+            text: `project: the plugin's ${name} is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone`,
           }
         : {
             ok: true,
             warn: true,
-            text: `project: .claude/anymodel.json lists ${name} in ownHooks, so the plugin's ${name} is off here, but the project's settings wire no hook on ${entries.map((hook) => onEvent(hook.event, hook.subjects)).join(", ") || "its event"}: nothing answers in its place. Take "${name}" out of ownHooks once the project's copy is gone`,
+            text: `project: .claude/cc-smart-dev-kit.json lists ${name} in ownHooks, so the plugin's ${name} is off here, but the project's settings wire no hook on ${entries.map((hook) => onEvent(hook.event, hook.subjects)).join(", ") || "its event"}: nothing answers in its place. Take "${name}" out of ownHooks once the project's copy is gone`,
           },
     );
   }
@@ -191,7 +191,7 @@ function ownCopyLines(
     lines.push({
       ok: true,
       warn: true,
-      text: `project: the plugin's ${hook.name} and the project's ${handler.command} (${shown(handler.file, projectDir, home)}) both run on ${onEvent(hook.event, subjects)}, so both may answer. If that is the project's own copy of ${hook.name}, list "${hook.name}" in ownHooks in .claude/anymodel.json until the copy is removed`,
+      text: `project: the plugin's ${hook.name} and the project's ${handler.command} (${shown(handler.file, projectDir, home)}) both run on ${onEvent(hook.event, subjects)}, so both may answer. If that is the project's own copy of ${hook.name}, list "${hook.name}" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed`,
     });
   }
   return lines;
@@ -220,15 +220,15 @@ export function projectChecks(
       ? env.CLAUDE_PROJECT_DIR
       : checkout.root;
   const sources = projectSettingsFiles(projectDir);
-  let config: AnymodelConfig | null;
+  let config: CcSmartDevKitConfig | null;
   try {
     config = loadProjectConfig(checkout).config;
   } catch (error) {
-    if (!(error instanceof AnymodelConfigError)) throw error;
+    if (!(error instanceof CcSmartDevKitConfigError)) throw error;
     return [{ ok: false, text: `project: ${error.message}` }];
   }
   const lines = engineLines(config, sources, projectDir, paths);
-  // Without anymodel.json every plugin hook is silent: nothing can answer twice.
+  // Without cc-smart-dev-kit.json every plugin hook is silent: nothing can answer twice.
   if (config !== null) {
     lines.push(...ownCopyLines(config, sources, pluginHooksFile, projectDir, paths.home));
   }

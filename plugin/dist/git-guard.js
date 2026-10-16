@@ -15,8 +15,8 @@ function routerPaths(env = process.env) {
   const home = homeDir(env);
   return {
     home,
-    gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json")
+    gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
+    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json")
   };
 }
 
@@ -31,12 +31,12 @@ function cliPaths(env = process.env) {
     installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
     knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
     binDir: join2(router.home, ".local", "bin"),
-    stateDir: join2(claudeConfigDir, "anymodel"),
-    routerCopy: join2(router.home, ".local", "share", "anymodel", "router.js"),
-    routerUnitFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.service"),
+    stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
+    routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    routerUnitFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
-    routerSocketFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.socket"),
-    notifyConfigFile: join2(claudeConfigDir, "anymodel", "notify.json"),
+    routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
+    notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf")
   };
 }
@@ -5885,15 +5885,15 @@ function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
 // src/build-info/names.ts
-var MARKETPLACE = "anymodel";
-var PLUGIN = "anymodel";
+var MARKETPLACE = "cc-smart-dev-kit";
+var PLUGIN = "cc-smart-dev-kit";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-var COMMAND = "anymodel";
+var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
   version: "0.3.0",
-  repo: "sellanybiz/anymodel",
+  repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
       name: "claude-mem",
@@ -6054,7 +6054,7 @@ var PLUGIN_HOOK_NAMES = [
   "worktree-leftovers",
   "session-name"
 ];
-var anymodelConfigSchema = strictObject({
+var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
     base: string2().min(1),
@@ -6070,18 +6070,18 @@ var anymodelConfigSchema = strictObject({
   ownHooks: array(_enum(PLUGIN_HOOK_NAMES)).optional()
 });
 
-class AnymodelConfigError extends Error {
-  name = "AnymodelConfigError";
+class CcSmartDevKitConfigError extends Error {
+  name = "CcSmartDevKitConfigError";
 }
 
-class AnymodelVersionError extends AnymodelConfigError {
-  name = "AnymodelVersionError";
+class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
+  name = "CcSmartDevKitVersionError";
 }
 function describeIssue(issue) {
   const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
   if (issue.code === "unrecognized_keys") {
     const keys = issue.keys.map((key) => field === "(top level)" ? key : `${field}.${key}`);
-    return `${keys.join(", ")}: unknown field (a newer anymodel may be needed)`;
+    return `${keys.join(", ")}: unknown field (a newer cc-smart-dev-kit may be needed)`;
   }
   return `${field}: ${issue.message}`;
 }
@@ -6092,7 +6092,7 @@ function checkRequires(file, raw, pluginVersion) {
   if (typeof requires !== "string" || !isValidRange(requires))
     return;
   if (!satisfiesRange(pluginVersion, requires)) {
-    throw new AnymodelVersionError(`${file}: this project needs anymodel ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
+    throw new CcSmartDevKitVersionError(`${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
   }
 }
 function readOwnHooks(file) {
@@ -6108,7 +6108,7 @@ function readOwnHooks(file) {
     return [];
   }
 }
-function loadAnymodelConfig(file, pluginVersion = VERSION) {
+function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
   if (!existsSync(file))
     return null;
   let raw;
@@ -6116,13 +6116,13 @@ function loadAnymodelConfig(file, pluginVersion = VERSION) {
     raw = JSON.parse(readFileSync(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new AnymodelConfigError(`Invalid ${file}: not valid JSON (${reason})`);
+    throw new CcSmartDevKitConfigError(`Invalid ${file}: not valid JSON (${reason})`);
   }
   checkRequires(file, raw, pluginVersion);
-  const parsed = anymodelConfigSchema.safeParse(raw);
+  const parsed = ccSmartDevKitConfigSchema.safeParse(raw);
   if (!parsed.success) {
     const issues = parsed.error.issues.map(describeIssue).join("; ");
-    throw new AnymodelConfigError(`Invalid ${file}: ${issues}`);
+    throw new CcSmartDevKitConfigError(`Invalid ${file}: ${issues}`);
   }
   return parsed.data;
 }
@@ -6231,21 +6231,21 @@ function locateCheckout(cwd, options = {}) {
 }
 function ownHooksOf(checkout) {
   const { root, mainCheckout } = checkout;
-  const own = readOwnHooks(join3(root, ".claude", "anymodel.json"));
+  const own = readOwnHooks(join3(root, ".claude", "cc-smart-dev-kit.json"));
   if (own !== null)
     return own;
   if (mainCheckout === null || mainCheckout === root)
     return [];
-  return readOwnHooks(join3(mainCheckout, ".claude", "anymodel.json")) ?? [];
+  return readOwnHooks(join3(mainCheckout, ".claude", "cc-smart-dev-kit.json")) ?? [];
 }
 function loadProjectConfig(checkout, pluginVersion) {
   const { root, mainCheckout } = checkout;
-  const own = join3(root, ".claude", "anymodel.json");
-  let config = loadAnymodelConfig(own, pluginVersion);
+  const own = join3(root, ".claude", "cc-smart-dev-kit.json");
+  let config = loadCcSmartDevKitConfig(own, pluginVersion);
   let configFile = config === null ? null : own;
   if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join3(mainCheckout, ".claude", "anymodel.json");
-    config = loadAnymodelConfig(main, pluginVersion);
+    const main = join3(mainCheckout, ".claude", "cc-smart-dev-kit.json");
+    config = loadCcSmartDevKitConfig(main, pluginVersion);
     configFile = config === null ? null : main;
   }
   return { ...checkout, config, configFile };
@@ -6288,7 +6288,7 @@ function addContext(event, text) {
 }
 
 // src/hooks/run.ts
-var HOOK_LOG_ENV = "ANYMODEL_HOOK_LOG";
+var HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -6298,7 +6298,7 @@ async function handleHook(spec, text, env) {
     if (input === null) {
       return {
         exitCode: spec.crashExitCode ?? 0,
-        stderr: `anymodel ${spec.name}: the hook input is not JSON`
+        stderr: `cc-smart-dev-kit ${spec.name}: the hook input is not JSON`
       };
     }
     const event = stringField(input.hook_event_name);
@@ -6323,7 +6323,7 @@ async function handleHook(spec, text, env) {
     try {
       project = loadProjectConfig(checkout);
     } catch (error) {
-      if (error instanceof AnymodelConfigError) {
+      if (error instanceof CcSmartDevKitConfigError) {
         return spec.onConfigProblem(error.message, input, event, checkout, context);
       }
       throw error;
@@ -6335,7 +6335,7 @@ async function handleHook(spec, text, env) {
   } catch (error) {
     return {
       exitCode: spec.crashExitCode ?? 0,
-      stderr: `anymodel ${spec.name}: ${errorMessage(error)}`
+      stderr: `cc-smart-dev-kit ${spec.name}: ${errorMessage(error)}`
     };
   }
 }
@@ -7465,7 +7465,7 @@ function quotableTitle(title) {
 function clearWorktreeNote(path, branch) {
   return [
     `That merged the pull request of this worktree's branch, ${branch}. Clear the worktree now, unless the user wants more work on this branch:`,
-    'ExitWorktree with action "remove" and discard_changes true. Claude Code cannot check a worktree outside the repo, so the anymodel hook does: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.',
+    'ExitWorktree with action "remove" and discard_changes true. Claude Code cannot check a worktree outside the repo, so the cc-smart-dev-kit hook does: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.',
     `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: git worktree remove "${path}", then git branch -d ${branch}.`
   ].join(`
 `);
@@ -7498,7 +7498,7 @@ function viewPullRequest(ref, repo, folder, env) {
 }
 function announcedFile(repo, number, env) {
   const key = createHash("sha256").update(repo).digest("hex").slice(0, 16);
-  return join5(env.TMPDIR || tmpdir(), "anymodel-merges", `${key}-${number}`);
+  return join5(env.TMPDIR || tmpdir(), "cc-smart-dev-kit-merges", `${key}-${number}`);
 }
 function afterMerge(context) {
   const { project, input, event, env, cwd } = context;
@@ -7552,7 +7552,7 @@ import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as sta
 
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
-var SLOT_KEY = /^anymodel-[a-z0-9][a-z0-9-]*$/;
+var SLOT_KEY = /^cc-smart-dev-kit-[a-z0-9][a-z0-9-]*$/;
 var CONTEXT_SUFFIX = /\[1m\]$/i;
 function isBackendName(name) {
   return BACKEND_NAME.test(name);
@@ -7585,10 +7585,10 @@ function parseTarget(text) {
   }
   return { target: { backend, kind: "backend", model } };
 }
-var JUDGE_SLOT = "anymodel-judge";
+var JUDGE_SLOT = "cc-smart-dev-kit-judge";
 var MODEL_SLOTS = {
-  "anymodel-fable": "fable",
-  "anymodel-opus": "opus"
+  "cc-smart-dev-kit-fable": "fable",
+  "cc-smart-dev-kit-opus": "opus"
 };
 var FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
 
@@ -7610,7 +7610,7 @@ var gatewayConfigSchema = looseObject({
   judgeTested: record(string2(), string2()).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
-  slots: record(string2().refine(isSlotKey, "a slot key is anymodel-<name>"), array(string2()).min(1)),
+  slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),
   timeouts: looseObject({ firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS) }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {
@@ -7736,12 +7736,12 @@ function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: "anymodel-scout[1m]",
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: `Cheap model for search and reading: the scout slot (${COMMAND} gateway slot scout \u2026)`,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (cheap)",
-    ANTHROPIC_DEFAULT_SONNET_MODEL: "anymodel-worker[1m]",
-    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: `Cheap model for routine code and docs: the worker slot (${COMMAND} gateway slot worker \u2026)`,
-    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (cheap)"
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: "cc-smart-dev-kit-scout[1m]",
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: `Affordable model for search and reading: the scout slot (${COMMAND} gateway slot scout \u2026)`,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (affordable)",
+    ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker[1m]",
+    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: `Affordable model for routine code and docs: the worker slot (${COMMAND} gateway slot worker \u2026)`,
+    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (affordable)"
   };
 }
 var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
@@ -7925,8 +7925,8 @@ var FABLE_REASONS = [
 ];
 var READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore", "Code Explorer"];
 var REVIEW_AGENTS = ["Reviewer"];
-var REVIEW_AGENTS_ENV = "ANYMODEL_AGENT_GUARD_REVIEW_AGENTS";
-var READ_ONLY_AGENTS_ENV = "ANYMODEL_AGENT_GUARD_READ_ONLY_AGENTS";
+var REVIEW_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS";
+var READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";
 function agentKey(type) {
   const base = type.includes(":") ? type.split(":").pop() ?? type : type;
   return base.trim().toLowerCase().replace(/[\s_-]+/g, "-");
@@ -8224,8 +8224,8 @@ function judgeLaunch(launch, ctx, env) {
   if (!real.claude) {
     if (ctx.gatewayOn && launch.effort?.toLowerCase() !== "max") {
       return deny(real, [
-        `This launch runs on ${real.model}, a cheap gateway slot.`,
-        'A cheap slot runs at effort `max` (its reasoning costs cents): pass `effort: "max"`.'
+        `This launch runs on ${real.model}, an affordable gateway slot.`,
+        'An affordable slot runs at effort `max` (its reasoning costs cents): pass `effort: "max"`.'
       ].join(`
 `));
     }
@@ -8747,7 +8747,7 @@ function editsMainFolder(file, mainCheckout, worktrees) {
 }
 function mainFolderRefusal(mainCheckout, base) {
   return [
-    `This file is in the main checkout (${mainCheckout}). This project keeps the main checkout on \`${base}\` and makes every change in a worktree (anymodel.json \`worktrees.guardMainFolder\`).`,
+    `This file is in the main checkout (${mainCheckout}). This project keeps the main checkout on \`${base}\` and makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).`,
     "Already working in a worktree? Edit the same file under that worktree's folder.",
     "Not in one yet: EnterWorktree, with the branch for this work as its `name`, makes one."
   ].join(`
@@ -8869,7 +8869,7 @@ function cleanSessionName(raw) {
   return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
 }
 function namesDir(env) {
-  return join8(env.TMPDIR || tmpdir2(), "anymodel-session-names");
+  return join8(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
 }
 function readName(file) {
   try {
@@ -9070,7 +9070,7 @@ function worktreeLeftovers(context) {
 
 // src/hooks/specs.ts
 function cannotCheck(what, message) {
-  return `anymodel cannot check ${what}: ${message}`;
+  return `cc-smart-dev-kit cannot check ${what}: ${message}`;
 }
 var gitGuardHook = {
   name: "git-guard",
@@ -9124,7 +9124,7 @@ var afterMergeHook = {
   wiring: "plugin",
   onConfigProblem: (message, input, event) => {
     const command = stringField(toolInput(input).command);
-    return command !== null && mergesPullRequest(command) ? addContext(event, `anymodel: ${message}`) : SILENT;
+    return command !== null && mergesPullRequest(command) ? addContext(event, `cc-smart-dev-kit: ${message}`) : SILENT;
   },
   run: afterMerge
 };
@@ -9132,14 +9132,14 @@ var worktreeLeftoversHook = {
   name: "worktree-leftovers",
   events: ["SessionStart"],
   wiring: "plugin",
-  onConfigProblem: (message, _input, event) => addContext(event, `anymodel: ${message}`),
+  onConfigProblem: (message, _input, event) => addContext(event, `cc-smart-dev-kit: ${message}`),
   run: worktreeLeftovers
 };
 var sessionNameHook = {
   name: "session-name",
   events: ["SessionStart", "UserPromptSubmit"],
   wiring: "plugin",
-  onConfigProblem: (message) => ({ stderr: `anymodel session-name: ${message}` }),
+  onConfigProblem: (message) => ({ stderr: `cc-smart-dev-kit session-name: ${message}` }),
   run: sessionName
 };
 var agentGuardHook = {

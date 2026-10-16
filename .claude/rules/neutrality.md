@@ -9,7 +9,7 @@ No company, project, organization, person, machine or team name goes anywhere in
 repo: code, docs, tests, fixtures, comments, rules, skills, command output, commit
 messages, branch names.
 
-- **Neutral examples only:** `example-org/anymodel`, `my-app`, `app-wt-`,
+- **Neutral examples only:** `example-org/cc-smart-dev-kit`, `my-app`, `app-wt-`,
   `test@example.com`, `/home/user`. Never a real repo, host name, user name or home path.
 - **Exception 1, the publisher:** the publisher metadata of the two manifests —
   `.claude-plugin/marketplace.json` (`owner`) and `plugin/.claude-plugin/plugin.json`
@@ -24,18 +24,18 @@ messages, branch names.
 - **The code never writes the publisher as text.** It reads the repository from
   `plugin.json` at build time (`src/build-info/`, a Bun macro) and uses
   `MARKETPLACE_SOURCE`. So the publisher reaches command output in one place, built
-  from the manifest: the CLI prints `claude plugin marketplace add <publisher>/anymodel`
+  from the manifest: the CLI prints `claude plugin marketplace add <publisher>/cc-smart-dev-kit`
   (for example when setup finds no marketplace). That is part of exception 1.
 
 ## Project details come from the project
 
 The plugin carries only general behaviour. Anything one project needs is a setting in
-that project's `.claude/anymodel.json` (`.claude/rules/anymodel-json.md`), or a file in its own
+that project's `.claude/cc-smart-dev-kit.json` (`.claude/rules/cc-smart-dev-kit-json.md`), or a file in its own
 `.claude/` folder that a general skill reads when it exists (for example, a review skill
-also follows the project's `.claude/anymodel/review.md`, and the project's text wins).
+also follows the project's `.claude/cc-smart-dev-kit/review.md`, and the project's text wins).
 
 So when a change seems to need a project's value — a branch name, a folder prefix, a
-command, a rule's wording — add an `anymodel.json` field or an extension point. Never write the
+command, a rule's wording — add a `cc-smart-dev-kit.json` field or an extension point. Never write the
 value into the plugin.
 
 ## What the check catches, and what it does not

@@ -9,7 +9,7 @@
  *
  * It holds the pid, the start time of that process and the session id, so a lock whose
  * process is gone (a crash, a killed session) is taken over instead of blocking every later
- * create. `src/setup/lock.ts` holds the same kind of lock for a whole `anymodel setup` run.
+ * create. `src/setup/lock.ts` holds the same kind of lock for a whole `cc-smart-dev-kit setup` run.
  */
 import { createHash } from "node:crypto";
 import { closeSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
@@ -19,7 +19,7 @@ import { processStartTime } from "../setup/lock";
 /** The lock file for one branch: the name is a hash, so a `/` in a branch cannot escape. */
 export function createLockFile(commonDir: string, branch: string): string {
   const key = createHash("sha256").update(branch).digest("hex").slice(0, 16);
-  return join(commonDir, `anymodel-create-${key}.lock`);
+  return join(commonDir, `cc-smart-dev-kit-create-${key}.lock`);
 }
 
 /** What the lock file says: who holds it. */
@@ -77,8 +77,8 @@ function stale(held: Held): boolean {
 function busy(file: string, held: Held | null): string {
   const who =
     held === null
-      ? "another anymodel process"
-      : `another anymodel process (pid ${held.pid}, session ${held.session ?? "unknown"}, started ${held.startedAt})`;
+      ? "another cc-smart-dev-kit process"
+      : `another cc-smart-dev-kit process (pid ${held.pid}, session ${held.session ?? "unknown"}, started ${held.startedAt})`;
   return `${who} is making the worktree for this branch right now. Wait for it, then ask again; if that process is gone, remove ${file}.`;
 }
 

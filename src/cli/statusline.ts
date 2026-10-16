@@ -1,5 +1,5 @@
 /**
- * `anymodel statusline`: one line for Claude Code's status bar.
+ * `cc-smart-dev-kit statusline`: one line for Claude Code's status bar.
  *
  * Claude Code runs the status line command after each reply and passes a JSON object on
  * stdin (docs/claude-code-contract.md). The usage numbers come from there:

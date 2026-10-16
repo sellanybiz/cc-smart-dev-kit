@@ -20,12 +20,12 @@ import { realTarget } from "../setup/write";
 import { companionState, companions, comparableVersion } from "./companions";
 
 /**
- * claude-mem (the memory plugin anymodel depends on) summarises every session, by default
- * with Claude Haiku on the person's own Claude login. When the anymodel gateway is set
- * up, setup points claude-mem at the gateway's cheap model instead, straight at its
+ * claude-mem (the memory plugin cc-smart-dev-kit depends on) summarises every session, by default
+ * with Claude Haiku on the person's own Claude login. When the cc-smart-dev-kit gateway is set
+ * up, setup points claude-mem at the gateway's affordable model instead, straight at its
  * backend (OmniRoute by default, which speaks OpenAI's format), with Claude Haiku as
- * claude-mem's quota fallback: while the cheap model is in a quota or rate-limit cooldown,
- * claude-mem sends its work to Claude, and hands it back once the cheap model answers
+ * claude-mem's quota fallback: while the affordable model is in a quota or rate-limit cooldown,
+ * claude-mem sends its work to Claude, and hands it back once the affordable model answers
  * again. It is not a fallback for a backend that is down or refuses the key (claude-mem
  * never routes around an authentication failure; its CHANGELOG, 13.29.0).
  *
@@ -33,7 +33,7 @@ import { companionState, companions, comparableVersion } from "./companions";
  * restore takes them out and claude-mem is back on its own defaults. claude-mem writes
  * every default into that file on its first run, so a key that holds claude-mem's own
  * default (`""`, or `claude` for the two providers) counts as "nobody chose it" and may be
- * taken. Any other value is the person's choice, also in a key anymodel set before and
+ * taken. Any other value is the person's choice, also in a key cc-smart-dev-kit set before and
  * the person changed since: then setup changes none of the keys.
  */
 
@@ -51,7 +51,7 @@ export const FALLBACK_PROVIDER = "claude";
 export const FALLBACK_MODEL = "claude-haiku-4-5-20251001";
 
 const API_KEY = "CLAUDE_MEM_OPENAI_COMPAT_API_KEY";
-/** The person's own pool of keys. Never set by anymodel; a pool there is their choice. */
+/** The person's own pool of keys. Never set by cc-smart-dev-kit; a pool there is their choice. */
 const API_KEY_POOL = "CLAUDE_MEM_OPENAI_COMPAT_API_KEYS";
 const PROVIDER = "CLAUDE_MEM_PROVIDER";
 
@@ -69,7 +69,7 @@ const UNCHOSEN: Readonly<Record<string, readonly string[]>> = {
 const unchosen = (path: KeyPath, value: unknown) =>
   typeof value === "string" && (UNCHOSEN[path.at(-1) ?? ""] ?? []).includes(value);
 
-/** The gateway's cheap model, as claude-mem reaches it. */
+/** The gateway's affordable model, as claude-mem reaches it. */
 export interface CheapTarget {
   /** The backend's name in gateway.json. */
   backend: string;
@@ -81,10 +81,10 @@ export interface CheapTarget {
 }
 
 /**
- * The first cheap target of the scout slot (else the worker slot) in gateway.json, or why
- * there is none. The scout is the cheapest slot, the one made for background work.
+ * The first affordable target of the scout slot (else the worker slot) in gateway.json, or why
+ * there is none. The scout is the most affordable slot, the one made for background work.
  */
-export function gatewayCheapTarget(
+export function gatewayAffordableTarget(
   gatewayConfigFile: string,
 ): { target: CheapTarget } | { reason: string } {
   if (!existsSync(gatewayConfigFile)) return { reason: "the gateway is not set up" };
@@ -94,7 +94,7 @@ export function gatewayCheapTarget(
   } catch (error) {
     return { reason: `gateway.json cannot be used (${messageOf(error)})` };
   }
-  for (const slot of ["anymodel-scout", "anymodel-worker"]) {
+  for (const slot of ["cc-smart-dev-kit-scout", "cc-smart-dev-kit-worker"]) {
     for (const text of config.slots[slot] ?? []) {
       const parsed = parseTarget(text);
       if ("error" in parsed || parsed.target.kind !== "backend") continue;
@@ -110,7 +110,7 @@ export function gatewayCheapTarget(
       };
     }
   }
-  return { reason: "no slot in gateway.json has a cheap target" };
+  return { reason: "no slot in gateway.json has an affordable target" };
 }
 
 export interface ClaudeMemPlan {
@@ -123,7 +123,7 @@ export interface ClaudeMemPlan {
  * What setup does for claude-mem:
  * - `plan`: the keys to set;
  * - `note`: a line that says why it does nothing (`null`: nothing to say: the gateway is
- *   not there, and claude-mem holds nothing of anymodel's);
+ *   not there, and claude-mem holds nothing of cc-smart-dev-kit's);
  * - `notInstalled`: claude-mem is not installed yet. Setup may install it (a companion
  *   step) and then plan again.
  */
@@ -148,13 +148,13 @@ export function claudeMemPlan(
   const at = (key: string): KeyPath => (nested ? ["env", key] : [key]);
   const records = ownedRecords(paths.stateDir, realTarget(file));
 
-  const cheap = gatewayCheapTarget(paths.gatewayConfigFile);
-  if ("reason" in cheap) {
-    // anymodel pointed claude-mem at a backend before, and there is no cheap model now.
+  const affordable = gatewayAffordableTarget(paths.gatewayConfigFile);
+  if ("reason" in affordable) {
+    // cc-smart-dev-kit pointed claude-mem at a backend before, and there is no affordable model now.
     const provider = getKey(data, at(PROVIDER));
     if (provider.found && ownership(records, at(PROVIDER), provider) === "ours") {
       return {
-        note: `! claude-mem still uses the backend anymodel set for it, but ${cheap.reason}. Run anymodel setup again once the gateway has a cheap model, or anymodel restore to put claude-mem back on its own defaults.`,
+        note: `! claude-mem still uses the backend cc-smart-dev-kit set for it, but ${affordable.reason}. Run cc-smart-dev-kit setup again once the gateway has an affordable model, or cc-smart-dev-kit restore to put claude-mem back on its own defaults.`,
       };
     }
     return { note: null };
@@ -168,16 +168,16 @@ export function claudeMemPlan(
     if (state === "outside-range" || state === "unknown-version") return { note: null };
     return left(
       version === null
-        ? `claude-mem's version ${install.version ?? "(none)"} is unknown, so anymodel cannot tell whether it has what they need (${CLAUDE_MEM_MIN_VERSION} or newer). Run: claude plugin update ${CLAUDE_MEM_ID}`
+        ? `claude-mem's version ${install.version ?? "(none)"} is unknown, so cc-smart-dev-kit cannot tell whether it has what they need (${CLAUDE_MEM_MIN_VERSION} or newer). Run: claude plugin update ${CLAUDE_MEM_ID}`
         : `claude-mem ${install.version} is older than ${CLAUDE_MEM_MIN_VERSION}, which brought what they need. Run: claude plugin update ${CLAUDE_MEM_ID}`,
     );
   }
 
   // claude-mem rewrites a file that holds only "env" flat on its next start, and drops
-  // any flat key written beside "env" then; a key anymodel wrote there would be lost.
+  // any flat key written beside "env" then; a key cc-smart-dev-kit wrote there would be lost.
   if (nested && Object.keys(data).every((key) => key === "env")) {
     return left(
-      `${short} is in claude-mem's old nested form, which claude-mem rewrites when it next starts. Start a Claude Code session, then run anymodel setup again.`,
+      `${short} is in claude-mem's old nested form, which claude-mem rewrites when it next starts. Start a Claude Code session, then run cc-smart-dev-kit setup again.`,
     );
   }
 
@@ -188,7 +188,7 @@ export function claudeMemPlan(
     };
   }
 
-  const target = cheap.target;
+  const target = affordable.target;
   const wanted: Record<string, string> = {
     [PROVIDER]: "openai-compatible",
     CLAUDE_MEM_OPENAI_COMPAT_PRESET: "custom",
@@ -200,7 +200,7 @@ export function claudeMemPlan(
   };
 
   // The person's own choice stands: one key set by them, and none of the keys change.
-  // A key anymodel set before and the person changed since is their choice too.
+  // A key cc-smart-dev-kit set before and the person changed since is their choice too.
   for (const [key, value] of Object.entries(wanted)) {
     const path = at(key);
     const current = getKey(data, path);
@@ -222,7 +222,7 @@ export function claudeMemPlan(
  * so claude-mem is never left on a key, a model or an address that does not work. The
  * key never appears in what it returns.
  */
-export async function checkCheapTarget(
+export async function checkAffordableTarget(
   target: CheapTarget,
   timeoutMs = 30_000,
 ): Promise<string | null> {

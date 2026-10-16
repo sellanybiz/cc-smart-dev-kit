@@ -1,5 +1,5 @@
 /**
- * A temp home right after `claude plugin install anymodel@anymodel`, and a fake machine
+ * A temp home right after `claude plugin install cc-smart-dev-kit@cc-smart-dev-kit`, and a fake machine
  * for `runSetup` run in the test's own process. Every command goes to a fake on a PATH of
  * its own (sudo, apt-get, dnf, rpm, brew, gpg, claude, dpkg-query): each logs its call,
  * and the fake `sudo` never runs what it is given. No test reaches a real package
@@ -71,9 +71,9 @@ export interface WorldOptions {
   existing?: string[];
   /** Fake bodies for commands, after the log line; default `exit 0`. */
   bins?: Record<string, string>;
-  /** Plugins installed besides anymodel and its companions. */
+  /** Plugins installed besides cc-smart-dev-kit and its companions. */
   plugins?: string[];
-  /** Marketplaces added besides anymodel and the companions'. */
+  /** Marketplaces added besides cc-smart-dev-kit and the companions'. */
   marketplaces?: string[];
   /** The real git on the fake PATH (for a real project). Default: no git. */
   git?: boolean;
@@ -90,7 +90,7 @@ export function world(options: WorldOptions = {}) {
   mkdirSync(join(configDir, "plugins"), { recursive: true });
   const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: configDir });
   const pluginIds = [
-    "anymodel@anymodel",
+    "cc-smart-dev-kit@cc-smart-dev-kit",
     "claude-mem@thedotmack",
     "frontend-design@claude-plugins-official",
     ...(options.plugins ?? []),
@@ -105,7 +105,7 @@ export function world(options: WorldOptions = {}) {
   }
   writeFileSync(paths.installedPluginsFile, JSON.stringify({ version: 2, plugins: installed }));
   const marketplaces = [
-    "anymodel",
+    "cc-smart-dev-kit",
     "thedotmack",
     "claude-plugins-official",
     ...(options.marketplaces ?? []),
@@ -119,7 +119,7 @@ export function world(options: WorldOptions = {}) {
     JSON.stringify({
       enabledPlugins: Object.fromEntries(pluginIds.map((id) => [id, true])),
       extraKnownMarketplaces: {
-        anymodel: { source: { source: "github", repo: "example-org/anymodel" } },
+        "cc-smart-dev-kit": { source: { source: "github", repo: "example-org/cc-smart-dev-kit" } },
       },
     }),
   );

@@ -19,7 +19,7 @@
  * at 7.7 to 8 GB, a framework production build at 9 + 3 GB, a type-aware lint of the
  * whole repo at 8.4 GB, a full test run at about 0.43 GB per worker. A coverage run was
  * not measured: 12 GB is a guess on the safe side. A project with other numbers sets its
- * own in `.claude/anymodel.json` (`jobs.kinds`).
+ * own in `.claude/cc-smart-dev-kit.json` (`jobs.kinds`).
  */
 
 import { z } from "zod";
@@ -72,7 +72,7 @@ export const kindSpecSchema = z.strictObject({
     .optional(),
   /** How the classifier finds this kind in a Bash command. None: never by itself. */
   match: z.array(matchRuleSchema).optional(),
-  /** One line for `anymodel job kinds`. */
+  /** One line for `cc-smart-dev-kit job kinds`. */
   about: z.string().min(1).optional(),
 });
 

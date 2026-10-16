@@ -20,10 +20,10 @@ export const PLUGIN_HOOK_NAMES = [
 ] as const;
 
 /**
- * The per-project opt-in file, `.claude/anymodel.json`.
+ * The per-project opt-in file, `.claude/cc-smart-dev-kit.json`.
  * Strict on purpose: a typo like `"worktree"` fails loudly instead of being ignored.
  */
-export const anymodelConfigSchema = z.strictObject({
+export const ccSmartDevKitConfigSchema = z.strictObject({
   /** The plugin versions this project needs, as a semver range (">=1.2"). */
   requires: z
     .string()
@@ -58,7 +58,7 @@ export const anymodelConfigSchema = z.strictObject({
   /**
    * Heavy jobs: the project's own kinds, over the defaults (`src/jobs/kinds.ts`).
    * `route: true` turns on the `job-route` hook: a heavy Bash command is sent through
-   * `anymodel job run` instead of running raw.
+   * `cc-smart-dev-kit job run` instead of running raw.
    */
   jobs: z.strictObject({ kinds: kindsSchema.optional(), route: z.boolean().optional() }).optional(),
   /**
@@ -69,29 +69,29 @@ export const anymodelConfigSchema = z.strictObject({
   ownHooks: z.array(z.enum(PLUGIN_HOOK_NAMES)).optional(),
 });
 
-export type AnymodelConfig = z.infer<typeof anymodelConfigSchema>;
+export type CcSmartDevKitConfig = z.infer<typeof ccSmartDevKitConfigSchema>;
 
-/** An anymodel.json that exists but cannot be used. The message names the file and the field. */
-export class AnymodelConfigError extends Error {
-  override name = "AnymodelConfigError";
+/** A cc-smart-dev-kit.json that exists but cannot be used. The message names the file and the field. */
+export class CcSmartDevKitConfigError extends Error {
+  override name = "CcSmartDevKitConfigError";
 }
 
 /** The project needs a newer (or other) version of the plugin than the one running. */
-export class AnymodelVersionError extends AnymodelConfigError {
-  override name = "AnymodelVersionError";
+export class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
+  override name = "CcSmartDevKitVersionError";
 }
 
 function describeIssue(issue: z.core.$ZodIssue): string {
   const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
   if (issue.code === "unrecognized_keys") {
     const keys = issue.keys.map((key) => (field === "(top level)" ? key : `${field}.${key}`));
-    return `${keys.join(", ")}: unknown field (a newer anymodel may be needed)`;
+    return `${keys.join(", ")}: unknown field (a newer cc-smart-dev-kit may be needed)`;
   }
   return `${field}: ${issue.message}`;
 }
 
 /**
- * Checks `requires` before anything else, reading only that field. A newer anymodel.json may hold
+ * Checks `requires` before anything else, reading only that field. A newer cc-smart-dev-kit.json may hold
  * fields this plugin does not know yet; the user must hear "update the plugin", not
  * "unknown field".
  */
@@ -101,15 +101,15 @@ function checkRequires(file: string, raw: unknown, pluginVersion: string): void 
   // A broken value is reported by the full check below.
   if (typeof requires !== "string" || !isValidRange(requires)) return;
   if (!satisfiesRange(pluginVersion, requires)) {
-    throw new AnymodelVersionError(
-      `${file}: this project needs anymodel ${requires}; you have ${pluginVersion}; ` +
+    throw new CcSmartDevKitVersionError(
+      `${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` +
         `run ${PLUGIN_UPDATE_COMMAND}`,
     );
   }
 }
 
 /**
- * The names `ownHooks` lists in one anymodel.json, read on their own, the way `requires` is:
+ * The names `ownHooks` lists in one cc-smart-dev-kit.json, read on their own, the way `requires` is:
  * a hook the project runs as its own copy stays silent even when the rest of the file needs
  * a newer plugin or is broken, so the person never gets two questions for one command.
  * Null when the file does not exist; empty when it cannot be read or lists nothing.
@@ -129,27 +129,27 @@ export function readOwnHooks(file: string): string[] | null {
 }
 
 /**
- * Reads and validates one anymodel.json: first `requires` against the plugin version, then the
- * whole file, strictly. Returns null when the file does not exist; throws AnymodelVersionError
- * when the plugin is too old, and AnymodelConfigError when the file is invalid.
+ * Reads and validates one cc-smart-dev-kit.json: first `requires` against the plugin version, then the
+ * whole file, strictly. Returns null when the file does not exist; throws CcSmartDevKitVersionError
+ * when the plugin is too old, and CcSmartDevKitConfigError when the file is invalid.
  */
-export function loadAnymodelConfig(
+export function loadCcSmartDevKitConfig(
   file: string,
   pluginVersion: string = VERSION,
-): AnymodelConfig | null {
+): CcSmartDevKitConfig | null {
   if (!existsSync(file)) return null;
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new AnymodelConfigError(`Invalid ${file}: not valid JSON (${reason})`);
+    throw new CcSmartDevKitConfigError(`Invalid ${file}: not valid JSON (${reason})`);
   }
   checkRequires(file, raw, pluginVersion);
-  const parsed = anymodelConfigSchema.safeParse(raw);
+  const parsed = ccSmartDevKitConfigSchema.safeParse(raw);
   if (!parsed.success) {
     const issues = parsed.error.issues.map(describeIssue).join("; ");
-    throw new AnymodelConfigError(`Invalid ${file}: ${issues}`);
+    throw new CcSmartDevKitConfigError(`Invalid ${file}: ${issues}`);
   }
   return parsed.data;
 }

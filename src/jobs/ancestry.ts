@@ -3,7 +3,7 @@
  *
  * WHY
  *   Some heavy commands start others: a project script that runs the type check, then
- *   the build, each through `anymodel job run`. The outer job already holds its
+ *   the build, each through `cc-smart-dev-kit job run`. The outer job already holds its
  *   gigabytes. If the inner one queued too, it could wait for memory the outer job holds,
  *   while the outer job waits for the inner one to end: neither would ever move. So an
  *   inner job runs its command directly: no queue, no new memory group (it already lives
@@ -15,7 +15,7 @@
  *   `/proc/<pid>/stat`, and looks for a process that holds a lease on this machine.
  *
  * Linux only. Elsewhere the check says "not nested": there, heavy jobs must not be nested
- * through `anymodel job run` (docs/jobs.md § Limits).
+ * through `cc-smart-dev-kit job run` (docs/jobs.md § Limits).
  */
 
 import { readFileSync } from "node:fs";

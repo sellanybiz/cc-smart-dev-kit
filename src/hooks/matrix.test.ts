@@ -1,15 +1,15 @@
 /**
  * Every hook through the same frame (`run.ts`), in a table:
- * - with no anymodel.json: every plugin hook silent; the worktree engine a project wires
+ * - with no cc-smart-dev-kit.json: every plugin hook silent; the worktree engine a project wires
  *   fails closed (it needs `worktrees`);
- * - the project's own copy: a plugin hook its anymodel.json lists in `ownHooks` is silent,
+ * - the project's own copy: a plugin hook its cc-smart-dev-kit.json lists in `ownHooks` is silent,
  *   even when the rest of the file is broken or too new; a project hook on the same event
  *   that is not listed silences nothing;
- * - `requires` not met (and a broken anymodel.json): each fails closed its own way;
+ * - `requires` not met (and a broken cc-smart-dev-kit.json): each fails closed its own way;
  * - the guard matrix: the plugin's hook on or off × the project's hook wired or not × listed
  *   in `ownHooks` or not × the project's `requires` met or not. Exactly one guard answers a
  *   destructive command when the project lists the copy it runs; two when it forgot to (what
- *   `anymodel doctor` warns about); none only when neither is installed.
+ *   `cc-smart-dev-kit doctor` warns about); none only when neither is installed.
  */
 import { describe, expect, test } from "bun:test";
 import { chmodSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
@@ -59,7 +59,7 @@ interface Case {
   /** What it says when `requires` is not met (null: silent but for one stderr line). */
   failsClosed: (result: HookResult) => void;
   /**
-   * A machine-wide hook (agent-guard): it runs with or without anymodel.json, and its answer
+   * A machine-wide hook (agent-guard): it runs with or without cc-smart-dev-kit.json, and its answer
    * does not depend on the project's file, so the shared rows below say so.
    */
   machineWide?: boolean;
@@ -67,7 +67,7 @@ interface Case {
 
 function project(config: unknown) {
   const { repo } = makeClone();
-  if (config !== undefined) writeClaudeFile(repo, "anymodel.json", config);
+  if (config !== undefined) writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
   return repo;
 }
 
@@ -97,7 +97,9 @@ const askLine = (result: HookResult) => {
   expect(result.exitCode ?? 0).toBe(0);
   const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
   expect(output.permissionDecision).toBe("ask");
-  expect(output.permissionDecisionReason).toEndWith("run claude plugin update anymodel@anymodel");
+  expect(output.permissionDecisionReason).toEndWith(
+    "run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit",
+  );
 };
 const denyLine = (result: HookResult) => {
   expect(result.exitCode ?? 0).toBe(0);
@@ -107,8 +109,8 @@ const denyLine = (result: HookResult) => {
 };
 const contextLine = (result: HookResult) => {
   const text: string = JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext;
-  expect(text).toStartWith("anymodel: ");
-  expect(text).toEndWith("run claude plugin update anymodel@anymodel");
+  expect(text).toStartWith("cc-smart-dev-kit: ");
+  expect(text).toEndWith("run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit");
   expect(text).not.toContain("\n");
 };
 
@@ -128,7 +130,7 @@ const CASES: Case[] = [
     failsClosed: (result) => {
       expect(result.exitCode).toBe(1);
       expect(result.stdout).toBeUndefined();
-      expect(result.stderr).toEndWith("run claude plugin update anymodel@anymodel");
+      expect(result.stderr).toEndWith("run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit");
     },
   },
   {
@@ -150,7 +152,7 @@ const CASES: Case[] = [
     },
     failsClosed: (result) => {
       expect(result.exitCode).toBe(1);
-      expect(result.stderr).toEndWith("run claude plugin update anymodel@anymodel");
+      expect(result.stderr).toEndWith("run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit");
     },
   },
   {
@@ -326,7 +328,7 @@ const CASES: Case[] = [
     }),
     failsClosed: (result) => {
       expect(result.stdout).toBeUndefined();
-      expect(result.stderr).toStartWith("anymodel session-name: ");
+      expect(result.stderr).toStartWith("cc-smart-dev-kit session-name: ");
     },
   },
 ];
@@ -353,7 +355,7 @@ function listing(c: Case, config: Record<string, unknown> = FULL_CONFIG) {
 const speaks = (result: HookResult) => result.stdout !== undefined || result.stderr !== undefined;
 
 describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
-  test("speaks with a full anymodel.json (the baseline the other rows silence)", async () => {
+  test("speaks with a full cc-smart-dev-kit.json (the baseline the other rows silence)", async () => {
     const { input, env } = c.setup(FULL_CONFIG);
     const result = await runHook(c.spec, input, env);
     expect(speaks(result)).toBe(true);
@@ -382,7 +384,7 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
     c.failsClosed(await runHook(c.spec, input, env));
   });
 
-  test("a broken anymodel.json: fails closed the same way, naming the file", async () => {
+  test("a broken cc-smart-dev-kit.json: fails closed the same way, naming the file", async () => {
     const { input, env } = c.setup({ worktree: {} });
     const result = await runHook(c.spec, input, env);
     if (c.machineWide === true) {
@@ -391,7 +393,7 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
       return;
     }
     const said = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-    expect(said).toContain("anymodel.json: worktree: unknown field");
+    expect(said).toContain("cc-smart-dev-kit.json: worktree: unknown field");
   });
 
   test("requires not met, and listed in ownHooks: a plugin hook stays silent (the project's copy runs), a project-wired one fails closed", async () => {
@@ -409,7 +411,7 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
   });
 });
 
-describe("no anymodel.json", () => {
+describe("no cc-smart-dev-kit.json", () => {
   test.each(
     CASES.filter((c) => c.spec.wiring === "plugin" && c.machineWide !== true).map(
       (c) => [c.spec.name, c] as const,
@@ -419,7 +421,7 @@ describe("no anymodel.json", () => {
     expect(await runHook(c.spec, input, env)).toEqual({});
   });
 
-  test("a machine-wide hook judges the same without anymodel.json (agent-guard)", async () => {
+  test("a machine-wide hook judges the same without cc-smart-dev-kit.json (agent-guard)", async () => {
     const c = CASES.find((one) => one.spec === agentGuardHook);
     if (c === undefined) throw new Error("no case");
     const { input, env } = c.setup(undefined);
@@ -427,8 +429,8 @@ describe("no anymodel.json", () => {
   });
 
   const NEEDS =
-    "this project wires the anymodel worktree hooks (anymodel hook ...), but has no .claude/anymodel.json. " +
-    'Add "worktrees" to .claude/anymodel.json, or take the three anymodel hook lines out of .claude/settings.json (the anymodel README, § Worktrees)';
+    "this project wires the cc-smart-dev-kit worktree hooks (cc-smart-dev-kit hook ...), but has no .claude/cc-smart-dev-kit.json. " +
+    'Add "worktrees" to .claude/cc-smart-dev-kit.json, or take the three cc-smart-dev-kit hook lines out of .claude/settings.json (the cc-smart-dev-kit README, § Worktrees)';
 
   test.each([
     [
@@ -492,7 +494,7 @@ test("an input that is not JSON, or for another event: nothing (and no crash)", 
   const { handleHook } = await import("./run");
   expect(await handleHook(gitGuardHook, "not json", hookEnv())).toEqual({
     exitCode: 0,
-    stderr: "anymodel git-guard: the hook input is not JSON",
+    stderr: "cc-smart-dev-kit git-guard: the hook input is not JSON",
   });
   expect(
     await handleHook(

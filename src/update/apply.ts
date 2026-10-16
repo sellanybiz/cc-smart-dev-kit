@@ -1,8 +1,8 @@
 /**
- * Installs a newer anymodel the way a person would: `claude plugin marketplace update
+ * Installs a newer cc-smart-dev-kit the way a person would: `claude plugin marketplace update
  * <marketplace>`, then, when the refreshed copy holds a newer version, `claude plugin
  * update <plugin>@<marketplace> --scope user`. Nothing else: it never restarts the router,
- * a service or a session. A new router version still needs `anymodel gateway setup`,
+ * a service or a session. A new router version still needs `cc-smart-dev-kit gateway setup`,
  * which asks first.
  */
 

@@ -18,20 +18,20 @@ import {
 export interface RestoreResult {
   file: string;
   /**
-   * - `restored`: a file anymodel owns whole is back as it was before anymodel.
-   * - `removed`: anymodel had created the file; it is gone again.
-   * - `cleaned`: anymodel's keys or block are out; everything else stayed.
-   * - `unchanged`: nothing of anymodel was left in it.
-   * - `no-backup`: the backup from before anymodel is missing; the file was left alone.
+   * - `restored`: a file cc-smart-dev-kit owns whole is back as it was before cc-smart-dev-kit.
+   * - `removed`: cc-smart-dev-kit had created the file; it is gone again.
+   * - `cleaned`: cc-smart-dev-kit's keys or block are out; everything else stayed.
+   * - `unchanged`: nothing of cc-smart-dev-kit was left in it.
+   * - `no-backup`: the backup from before cc-smart-dev-kit is missing; the file was left alone.
    */
   action: "restored" | "removed" | "cleaned" | "unchanged" | "no-backup";
-  /** What was taken out: key paths, or "the anymodel block". */
+  /** What was taken out: key paths, or "the cc-smart-dev-kit block". */
   details: string[];
   /** The backup of the file's state just before this restore changed it. */
   savedAs?: string;
 }
 
-/** The baseline is an `.absent` marker: the file did not exist before anymodel. */
+/** The baseline is an `.absent` marker: the file did not exist before cc-smart-dev-kit. */
 export function createdByUs(entry: ChangedEntry): boolean {
   return entry.baseline?.endsWith(ABSENT_SUFFIX) ?? false;
 }
@@ -83,18 +83,18 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
   }
   if (entry.kinds.includes("markdown-block")) {
     const result = removeManagedMarkdown({ file, stateDir });
-    if (result.outcome !== "unchanged") details.push("the anymodel block");
+    if (result.outcome !== "unchanged") details.push("the cc-smart-dev-kit block");
     savedAs ??= result.backup;
   }
   if (entry.kinds.includes("file-line")) {
-    // Only the exact lines anymodel added: a line the person changed or removed since
+    // Only the exact lines cc-smart-dev-kit added: a line the person changed or removed since
     // stays, and a file whose lines are all gone reports nothing.
     const result = removeManagedLines({ file, lines: entry.lines ?? [], stateDir });
     for (const line of result.removed) details.push(`the line ${JSON.stringify(line)}`);
     savedAs ??= result.backup;
   }
 
-  // anymodel created the file, and only an empty shell of ours is left: remove it.
+  // cc-smart-dev-kit created the file, and only an empty shell of ours is left: remove it.
   if (createdByUs(entry) && isEmpty(file)) {
     const backup = removeManagedFile(stateDir, file);
     return { file, action: "removed", details, savedAs: savedAs ?? backup };
@@ -104,15 +104,15 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
 }
 
 /**
- * Removes everything anymodel added, and keeps everything else:
- * - JSON files: the keys anymodel owns are removed while they still hold the value
- *   anymodel wrote (they did not exist before, or held a program's own default, because
- *   anymodel never overwrites a key someone chose). A key the person changed since stays,
- *   and so do keys others added. The list entries anymodel owns are taken out; other
+ * Removes everything cc-smart-dev-kit added, and keeps everything else:
+ * - JSON files: the keys cc-smart-dev-kit owns are removed while they still hold the value
+ *   cc-smart-dev-kit wrote (they did not exist before, or held a program's own default, because
+ *   cc-smart-dev-kit never overwrites a key someone chose). A key the person changed since stays,
+ *   and so do keys others added. The list entries cc-smart-dev-kit owns are taken out; other
  *   entries stay.
- * - Markdown files: the anymodel block is removed; the text around it stays.
- * - Files anymodel owns whole (the launcher): back to the state before anymodel's first
- *   change, or removed when anymodel created them.
+ * - Markdown files: the cc-smart-dev-kit block is removed; the text around it stays.
+ * - Files cc-smart-dev-kit owns whole (the launcher): back to the state before cc-smart-dev-kit's first
+ *   change, or removed when cc-smart-dev-kit created them.
  * Each change makes a backup first. Afterwards the file is no longer tracked, so a second
  * restore changes nothing.
  *

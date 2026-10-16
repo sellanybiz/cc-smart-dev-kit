@@ -6,7 +6,7 @@
  * was on (`autoUpdate: true`): 15 minutes after a session started, not even the
  * marketplace copy was refreshed (anthropics/claude-code#61854). The same two commands by
  * hand worked at once. The person chose this self-update, and accepted its trade-off: a
- * bad release reaches every machine within the hour. `anymodel update --hold` stops it on
+ * bad release reaches every machine within the hour. `cc-smart-dev-kit update --hold` stops it on
  * one machine, and Claude Code's own switches for updates stop it too (`./opt-out.ts`).
  *
  * What it never does: restart the router, a service or a session; change a permission;

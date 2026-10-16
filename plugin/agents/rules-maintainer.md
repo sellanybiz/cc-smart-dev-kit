@@ -2,7 +2,7 @@
 name: rules-maintainer
 description: Owns a phase that edits Claude's instruction files - the project's CLAUDE.md, its rules, skills, agents, and the doc that describes them - beyond a single small edit. Makes the edit, checks every instruction file on the same topic for duplicates and conflicts before and after, keeps one home per rule, and holds the size budgets. The caller passes the model and effort per launch.
 skills:
-  - anymodel:self-evolve
+  - cc-smart-dev-kit:self-evolve
 tools:
   - Read
   - Edit
@@ -28,8 +28,8 @@ end, run `git status --short` and check that only those files changed.
 ## The budgets and the routing
 
 The size budgets, where each kind of content belongs and what never goes in are in the
-`anymodel:self-evolve` skill — already in your context (this agent's `skills:` field loads it
-at start) — and in the project's add-on `.claude/anymodel/self-evolve.md`, which you read
+`cc-smart-dev-kit:self-evolve` skill — already in your context (this agent's `skills:` field loads it
+at start) — and in the project's add-on `.claude/cc-smart-dev-kit/self-evolve.md`, which you read
 yourself when it exists. **Follow them there** — a copy here would drift.
 
 - Before any edit, `wc -l` the file (without its frontmatter). Over the target: cut redundant

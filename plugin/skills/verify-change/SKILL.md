@@ -5,13 +5,13 @@ description: Use after editing code - the cheap loop after every batch of edits.
 
 # Verify A Change — The Cheap Loop
 
-**Project add-on:** `.claude/anymodel/verify-change.md` — read it first when it exists. Where
+**Project add-on:** `.claude/cc-smart-dev-kit/verify-change.md` — read it first when it exists. Where
 it differs, the add-on wins (`core.md`, top). It names the project's test, lint and
 type-check commands and what its git hooks run.
 
 Run this after every batch of edits, while you are still building. It is cheap, and it is
 where most mistakes die. The deeper pass — dimensions, edge cases, severity — is
-`/anymodel:review`, once per commit of finished work.
+`/cc-smart-dev-kit:review`, once per commit of finished work.
 
 ## 1. Read your own diff — `git diff`
 
@@ -41,7 +41,7 @@ with several callers:
   `Grep` for the text forms too — route strings, keys, event names;
 - run the type check once, to see every broken caller now.
 
-The full protocol — scope limits, renames, data — is `/anymodel:impact-analysis`.
+The full protocol — scope limits, renames, data — is `/cc-smart-dev-kit:impact-analysis`.
 
 ## 4. Run the checks the push will run — before you hand back
 
@@ -71,7 +71,7 @@ at a shared remote service.
 
 Once, when the plan's work is finished and its pull requests are open — not after every edit
 batch. First run every check you can yourself: the tests, the app in a browser (yourself or
-the `anymodel:ui-verifier`), the script with real input. Then list what you cannot judge
+the `cc-smart-dev-kit:ui-verifier`), the script with real input. Then list what you cannot judge
 alone:
 
 - a page behind their own login, or with their real data;

@@ -1,23 +1,23 @@
 /**
- * `anymodel doctor --live`: proves, on the Claude Code installed here, the hook behaviour
+ * `cc-smart-dev-kit doctor --live`: proves, on the Claude Code installed here, the hook behaviour
  * the plugin relies on (`docs/claude-code-contract.md`). It never runs by default: it
  * starts real Claude Code sessions, which use the person's login and cost a few cents.
  *
- * In a temp folder it makes two throwaway repos: one without anymodel.json, where Claude
+ * In a temp folder it makes two throwaway repos: one without cc-smart-dev-kit.json, where Claude
  * Code makes its own worktrees, and one that turned the worktree engine on (`worktrees` in
- * anymodel.json, and the three `anymodel hook` lines in its `.claude/settings.json`, exactly
+ * cc-smart-dev-kit.json, and the three `cc-smart-dev-kit hook` lines in its `.claude/settings.json`, exactly
  * as the README says, each running **the plugin being checked**: this CLI's own
  * `plugin/dist/cli.js` with the bun running it, never the installed launcher). It clones the
  * second from a local bare "origin". In each it runs one `claude -p` session with this
  * plugin (`--plugin-dir`), only the EnterWorktree, ExitWorktree and Bash tools, permission
  * for exactly those calls (no permission mode that skips the checks), and a tiny prompt:
  * enter a worktree, run `git status` there, leave it with "remove". Every hook run is logged
- * (`ANYMODEL_HOOK_LOG`), with what the hook's own parser read (`logFacts`), and the check
+ * (`CC_SMART_DEV_KIT_HOOK_LOG`), with what the hook's own parser read (`logFacts`), and the check
  * reads that log and git:
  *
  * - the plugin's hooks fired: SessionStart, and the git guard before the Bash call;
  * - the git guard read the command (its log names the programs it parsed: `git`);
- * - without anymodel.json: no WorktreeCreate hook ran, Claude Code made its own worktree,
+ * - without cc-smart-dev-kit.json: no WorktreeCreate hook ran, Claude Code made its own worktree,
  *   and the session worked in it (the git guard's `cwd`); ExitWorktree removed it;
  * - with the engine: its WorktreeCreate made the configured folder, through the plugin under
  *   test, and the session worked there; its WorktreeRemove removed the folder and the branch.
@@ -44,7 +44,7 @@ import { atomicWrite } from "../setup/write";
 import type { CliPaths } from "./paths";
 
 /** The worktree name the live sessions ask for. */
-export const LIVE_NAME = "anymodel-live-check";
+export const LIVE_NAME = "cc-smart-dev-kit-live-check";
 /** The prefix of the configured repo's worktrees. */
 const LIVE_PREFIX = "live-wt-";
 /** One live session may take this long. */
@@ -75,7 +75,7 @@ export interface LiveDeps {
   pluginDir: string;
   /**
    * How each project hook runs in the temp repo. The plugin under test, never the installed
-   * launcher `~/.local/bin/anymodel`: a live check proves this plugin, whatever version is
+   * launcher `~/.local/bin/cc-smart-dev-kit`: a live check proves this plugin, whatever version is
    * installed (`liveHookCommand`).
    */
   hookCommand: (name: string) => string;
@@ -153,9 +153,9 @@ function readLog(file: string): LoggedRun[] {
 }
 
 const GIT_ID = {
-  GIT_AUTHOR_NAME: "anymodel live check",
+  GIT_AUTHOR_NAME: "cc-smart-dev-kit live check",
   GIT_AUTHOR_EMAIL: "live-check@example.com",
-  GIT_COMMITTER_NAME: "anymodel live check",
+  GIT_COMMITTER_NAME: "cc-smart-dev-kit live check",
   GIT_COMMITTER_EMAIL: "live-check@example.com",
 };
 
@@ -292,14 +292,14 @@ export function runLiveCheck(
     ];
   }
   // The real path: a hook prints real paths (macOS puts the temp folder behind a link).
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "anymodel-live-")));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "cc-smart-dev-kit-live-")));
   try {
     const gitEnv = { ...env, ...GIT_ID };
     const git = (cwd: string, ...args: string[]) => {
       const result = deps.run(["git", ...args], { cwd, env: gitEnv, timeoutMs: 20_000 });
       if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.output}`);
     };
-    // Without anymodel.json: Claude Code's own worktrees.
+    // Without cc-smart-dev-kit.json: Claude Code's own worktrees.
     const plain = join(root, "plain");
     mkdirSync(plain);
     git(plain, "init", "-q", "-b", "main");
@@ -314,14 +314,14 @@ export function runLiveCheck(
     writeFileSync(join(configured, "README.md"), "live check\n");
     mkdirSync(join(configured, ".claude"));
     writeFileSync(
-      join(configured, ".claude", "anymodel.json"),
+      join(configured, ".claude", "cc-smart-dev-kit.json"),
       `${JSON.stringify({ worktrees: { base: "main", prefix: LIVE_PREFIX } })}\n`,
     );
     writeFileSync(
       join(configured, ".claude", "settings.json"),
       `${JSON.stringify(projectHookSettings(deps.hookCommand), null, 2)}\n`,
     );
-    git(configured, "add", "README.md", ".claude/anymodel.json", ".claude/settings.json");
+    git(configured, "add", "README.md", ".claude/cc-smart-dev-kit.json", ".claude/settings.json");
     git(configured, "commit", "-q", "-m", "first");
     git(configured, "push", "-q", "origin", "main");
 

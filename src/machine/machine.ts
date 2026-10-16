@@ -11,7 +11,7 @@ export interface Machine {
   run: Runner;
   /**
    * Runs a command on the person's terminal, so `sudo` can ask for the password there
-   * (anymodel never sees, stores or pipes it). Returns the exit code.
+   * (cc-smart-dev-kit never sees, stores or pipes it). Returns the exit code.
    */
   runOnTerminal: (argv: string[]) => number;
   /** The full path of a command on PATH, or null. */
@@ -42,7 +42,7 @@ const RUN_TIMEOUT_MS = 300_000;
  * (`platform`, `arch`, `osRelease`, `macApp`), so a test that runs the CLI as its own
  * process never reads the machine it runs on. Unset, the real values are used.
  */
-export const TEST_HOST_VAR = "ANYMODEL_TEST_HOST";
+export const TEST_HOST_VAR = "CC_SMART_DEV_KIT_TEST_HOST";
 
 interface HostFacts {
   platform: NodeJS.Platform;

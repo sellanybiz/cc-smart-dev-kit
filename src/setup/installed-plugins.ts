@@ -7,7 +7,7 @@ export interface PluginInstall {
 }
 
 /**
- * The user-scope install of a plugin (by default anymodel@anymodel) from Claude Code's
+ * The user-scope install of a plugin (by default cc-smart-dev-kit@cc-smart-dev-kit) from Claude Code's
  * `installed_plugins.json`,
  * or null when there is none. The launcher script repeats this lookup in plain JS
  * (it must work without this code) — keep the two in step.

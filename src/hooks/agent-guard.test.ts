@@ -1,8 +1,8 @@
 /**
  * The Agent guard (`agent-guard.ts`): which model a launch really runs on, and the owner's
- * verdict for each — a cheap slot at effort max, Claude Sonnet/Haiku free, Claude Opus only
+ * verdict for each — an affordable slot at effort max, Claude Sonnet/Haiku free, Claude Opus only
  * for a review or a reason line, Claude Fable only read-only with a reason and a person to
- * answer. Plus the record `anymodel usage` reads.
+ * answer. Plus the record `cc-smart-dev-kit usage` reads.
  */
 import { describe, expect, it } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -35,11 +35,11 @@ function configWithModelSlot(): GatewayConfig {
     aliases: {},
     anthropicBaseUrl: "https://api.anthropic.com",
     backends: { omniroute: { apiKey: "k", baseUrl: "http://127.0.0.1:9" } },
-    modelSlots: { [OPUS_ID]: "anymodel-opus" },
+    modelSlots: { [OPUS_ID]: "cc-smart-dev-kit-opus" },
     port: 20100,
     slots: {
-      "anymodel-opus": [OPUS_ID, "omniroute:glm-5.3-flash"],
-      "anymodel-worker": ["omniroute:glm-5.3-flash", "claude-sonnet-5-5"],
+      "cc-smart-dev-kit-opus": [OPUS_ID, "omniroute:glm-5.3-flash"],
+      "cc-smart-dev-kit-worker": ["omniroute:glm-5.3-flash", "claude-sonnet-5-5"],
     },
     timeouts: { firstByteMs: 60_000 },
     version: 1,
@@ -113,7 +113,7 @@ describe("which model a launch runs on", () => {
 
   it("a slot key, a backend target and a name nobody knows: not Claude", () => {
     const config = configWithModelSlot();
-    expect(resolveLaunchModel("anymodel-worker", config, NO_ENV)).toEqual({
+    expect(resolveLaunchModel("cc-smart-dev-kit-worker", config, NO_ENV)).toEqual({
       claude: false,
       family: null,
       model: "omniroute:glm-5.3-flash",
@@ -252,7 +252,7 @@ describe("the verdict", () => {
         effort: "xhigh",
         model: "opus",
         prompt: "review",
-        subagent_type: "anymodel:reviewer",
+        subagent_type: "cc-smart-dev-kit:reviewer",
       }).decision,
     ).toBe("allow");
     const max = verdict({
@@ -272,18 +272,21 @@ describe("the verdict", () => {
     expect(sonnet.why).toBe("");
   });
 
-  it("a cheap slot is allowed with the gateway off, and needs effort max with it on", () => {
+  it("an affordable slot is allowed with the gateway off, and needs effort max with it on", () => {
     const on: GuardContext = { ...CTX, config: configWithModelSlot(), gatewayOn: true };
-    const cheap = verdict({ effort: "high", model: "anymodel-worker", prompt: "build" }, on);
-    expect(cheap.decision).toBe("deny");
-    expect(cheap.reason).toContain("a cheap gateway slot");
-    expect(cheap.reason).toContain('pass `effort: "max"`');
-    expect(verdict({ effort: "max", model: "anymodel-worker", prompt: "build" }, on).decision).toBe(
-      "allow",
+    const affordable = verdict(
+      { effort: "high", model: "cc-smart-dev-kit-worker", prompt: "build" },
+      on,
     );
-    expect(verdict({ effort: "high", model: "anymodel-worker", prompt: "build" }).decision).toBe(
-      "allow",
-    );
+    expect(affordable.decision).toBe("deny");
+    expect(affordable.reason).toContain("an affordable gateway slot");
+    expect(affordable.reason).toContain('pass `effort: "max"`');
+    expect(
+      verdict({ effort: "max", model: "cc-smart-dev-kit-worker", prompt: "build" }, on).decision,
+    ).toBe("allow");
+    expect(
+      verdict({ effort: "high", model: "cc-smart-dev-kit-worker", prompt: "build" }).decision,
+    ).toBe("allow");
   });
 
   it("Fable: a read-only agent with a reason line asks the person; a builder is denied", () => {
@@ -341,10 +344,10 @@ describe("the verdict", () => {
         effort: "max",
         model: "fable",
         prompt: "Fable reason: plan - yes",
-        subagent_type: "anymodel:ui-verifier",
+        subagent_type: "cc-smart-dev-kit:ui-verifier",
       },
       CTX,
-      { ANYMODEL_AGENT_GUARD_READ_ONLY_AGENTS: "UI Verifier" },
+      { CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS: "UI Verifier" },
     );
     expect(readOnly.decision).toBe("ask");
     const review = verdict(
@@ -355,7 +358,7 @@ describe("the verdict", () => {
         subagent_type: "my-auditor",
       },
       CTX,
-      { ANYMODEL_AGENT_GUARD_REVIEW_AGENTS: "my-auditor" },
+      { CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS: "my-auditor" },
     );
     expect(review.decision).toBe("allow");
     expect(review.why).toBe("review");

@@ -5,7 +5,7 @@
  * A WorktreeCreate hook replaces Claude Code's own creation, for sessions and subagents
  * alike, and a hook that prints no folder makes the creation fail (proved live:
  * `docs/claude-code-contract.md`). So the plugin wires none: a project opts in by wiring
- * `anymodel hook worktree-create` in its own settings, and `worktrees` in its anymodel.json
+ * `cc-smart-dev-kit hook worktree-create` in its own settings, and `worktrees` in its cc-smart-dev-kit.json
  * (the frame refuses without it, `needsWorktrees`).
  *
  * - **A session's worktree:** the folder
@@ -34,7 +34,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import type { AnymodelConfig } from "../project/config";
+import type { CcSmartDevKitConfig } from "../project/config";
 import { gitEnv } from "../project/git-env";
 import { withCreateLock } from "./create-lock";
 import {
@@ -65,7 +65,7 @@ const DEFAULT_FETCH_TIMEOUT_MS = 5_000;
 /** Claude Code fetches the default branch when the repo was not fetched for a day. */
 const FETCH_AGE_MS = 24 * 60 * 60 * 1000;
 /** Written into a configured worktree's git folder once its setup finished. */
-export const SETUP_MARKER = "anymodel-setup-done";
+export const SETUP_MARKER = "cc-smart-dev-kit-setup-done";
 
 /** Claude Code names a subagent's worktree `agent-<hex>` (seen live). */
 export function isSubagentName(name: string): boolean {
@@ -367,7 +367,7 @@ export function reuseDecision(params: {
   return { kind: "reuse", folder: found.path };
 }
 
-type Worktrees = NonNullable<AnymodelConfig["worktrees"]>;
+type Worktrees = NonNullable<CcSmartDevKitConfig["worktrees"]>;
 
 function createConfigured(context: HookContext, name: string, worktrees: Worktrees): string {
   const { env, paths, project, input } = context;
@@ -499,7 +499,7 @@ export function worktreeCreate(context: HookContext): HookResult {
     if (problem !== null) throw new Refusal(problem);
     // The frame checked it (`needsWorktrees`); this only tells the type checker.
     const worktrees = context.project.config?.worktrees;
-    if (worktrees === undefined) throw new Refusal("no worktrees in .claude/anymodel.json");
+    if (worktrees === undefined) throw new Refusal("no worktrees in .claude/cc-smart-dev-kit.json");
     const folder = isSubagentName(name)
       ? createForSubagent(context, name)
       : createConfigured(context, name, worktrees);

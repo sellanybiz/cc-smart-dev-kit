@@ -71,7 +71,7 @@ export function toolInput(input: HookInput): Record<string, unknown> {
 
 /**
  * A PreToolUse decision. "deny": the reason goes to Claude. "ask": the person is asked, and
- * the reason is shown to them (Claude Code labels it `[plugin:anymodel]`).
+ * the reason is shown to them (Claude Code labels it `[plugin:cc-smart-dev-kit]`).
  */
 export function toolDecision(decision: "ask" | "deny", reason: string): HookResult {
   return {

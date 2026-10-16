@@ -77,7 +77,7 @@ function machine(env: Record<string, string> = {}, programs: string[] = ["notify
   return { bin, env: full, home, runtime };
 }
 
-/** The settings file the routes read: `~/.claude/anymodel/notify.json`. */
+/** The settings file the routes read: `~/.claude/cc-smart-dev-kit/notify.json`. */
 function writeConfig(env: Record<string, string>, config: unknown): void {
   const file = cliPaths(env).notifyConfigFile;
   mkdirSync(join(file, ".."), { recursive: true });
@@ -318,7 +318,7 @@ describe("what is notified, and with which words", () => {
 
   test("a mark older than ten minutes does not hide a later permission prompt", () => {
     const { env, runtime } = machine();
-    const mark = join(runtime, "anymodel-notify-asked-s-2");
+    const mark = join(runtime, "cc-smart-dev-kit-notify-asked-s-2");
     writeFileSync(mark, "1\n");
     const old = new Date(Date.now() - ASK_MARK_MS - 60_000);
     utimesSync(mark, old, old);
@@ -754,7 +754,7 @@ describe("the entry, as Claude Code runs it", () => {
       stderr: "pipe",
     });
     expect(result.exitCode).toBe(0);
-    expect(result.stderr.toString()).toBe("anymodel notify: the hook input is not JSON\n");
+    expect(result.stderr.toString()).toBe("cc-smart-dev-kit notify: the hook input is not JSON\n");
   });
 });
 

@@ -15,13 +15,13 @@ capturePrinted();
 const RULE = "In my-app: never touch the production database.";
 const QUESTION = "Write these auto-mode entries?";
 
-/** A git project with one commit and a `.claude/anymodel.json`. */
+/** A git project with one commit and a `.claude/cc-smart-dev-kit.json`. */
 function project(config: unknown): string {
   const dir = tempDir("project");
   git(dir, "init", "-q");
   git(dir, "commit", "--allow-empty", "-q", "-m", "first");
   mkdirSync(join(dir, ".claude"));
-  writeFileSync(join(dir, ".claude", "anymodel.json"), JSON.stringify(config));
+  writeFileSync(join(dir, ".claude", "cc-smart-dev-kit.json"), JSON.stringify(config));
   return dir;
 }
 
@@ -70,7 +70,9 @@ describe("setup on a terminal: the auto-mode entries", () => {
     expect(await w.setup({ project: repo })).toBe(0);
     expect(printed).toContain("  auto-mode entries left out (you said no)");
     expect(readJson(w.paths.settingsFile).autoMode).toBeUndefined();
-    expect(readJson(w.paths.settingsFile).extraKnownMarketplaces.anymodel.autoUpdate).toBe(true);
+    expect(
+      readJson(w.paths.settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate,
+    ).toBe(true);
   });
 
   test("the project changes its rules: the next setup shows and makes exactly that change", async () => {
@@ -78,7 +80,7 @@ describe("setup on a terminal: the auto-mode entries", () => {
     const w = world({ git: true });
     await w.setup({ project: repo, yes: true });
     writeFileSync(
-      join(repo, ".claude", "anymodel.json"),
+      join(repo, ".claude", "cc-smart-dev-kit.json"),
       JSON.stringify({ autoMode: [RULE, "In my-app: new rule."] }),
     );
     printed.length = 0;
@@ -153,14 +155,14 @@ describe("setup in a worktree: where the entries come from", () => {
     git(repo, "worktree", "add", "-q", "-b", "feature", worktree);
     mkdirSync(join(worktree, ".claude"), { recursive: true });
     writeFileSync(
-      join(worktree, ".claude", "anymodel.json"),
+      join(worktree, ".claude", "cc-smart-dev-kit.json"),
       JSON.stringify({ autoMode: ["In my-app: a rule only this branch has."] }),
     );
     const w = world({ git: true });
     await w.setup({ project: worktree });
     expect(printed.slice(0, 4)).toEqual([
-      `Auto mode: trust rules from ${worktree}/.claude/anymodel.json ("autoMode"), for autoMode.environment in ~/.claude/settings.json:`,
-      `  This worktree's file is not the same as the main checkout's (${repo}/.claude/anymodel.json). The rules below come from this worktree's file.`,
+      `Auto mode: trust rules from ${worktree}/.claude/cc-smart-dev-kit.json ("autoMode"), for autoMode.environment in ~/.claude/settings.json:`,
+      `  This worktree's file is not the same as the main checkout's (${repo}/.claude/cc-smart-dev-kit.json). The rules below come from this worktree's file.`,
       '  + "$defaults"',
       '  + "In my-app: a rule only this branch has."',
     ]);
@@ -173,7 +175,7 @@ describe("setup in a worktree: where the entries come from", () => {
     const w = world({ git: true });
     await w.setup({ project: worktree });
     expect(printed[0]).toBe(
-      `Auto mode: trust rules from ${repo}/.claude/anymodel.json ("autoMode"), for autoMode.environment in ~/.claude/settings.json:`,
+      `Auto mode: trust rules from ${repo}/.claude/cc-smart-dev-kit.json ("autoMode"), for autoMode.environment in ~/.claude/settings.json:`,
     );
     expect(printed[1]).toBe('  + "$defaults"');
   });
@@ -214,12 +216,12 @@ describe("every question comes first", () => {
     expect(w.calls()).toBe("");
     expect(order).toEqual([
       `asked: ${QUESTION}`,
-      "asked: Show anymodel's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?",
+      "asked: Show cc-smart-dev-kit's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?",
       "asked: Run these commands now?",
     ]);
     // The yes to the status line stands; the no to Warp takes only Warp out.
     const settings = readJson(w.paths.settingsFile);
-    expect(settings.statusLine.command).toEndWith("/.local/bin/anymodel statusline");
+    expect(settings.statusLine.command).toEndWith("/.local/bin/cc-smart-dev-kit statusline");
     expect(settings.autoMode).toEqual({ environment: ["$defaults", RULE] });
   });
 });

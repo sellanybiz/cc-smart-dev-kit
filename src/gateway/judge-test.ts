@@ -9,7 +9,7 @@
  *   - the same shape the router recognises (`isAutoModeGuard`): a system prompt that starts
  *     with `GUARD_PROMPT`, no tools, the action inside `<transcript>`, the newer form's
  *     `<block>yes` / `<block>no` answer and its `</block>` stop sequence, no thinking field;
- *   - the same translations the router gives a check on a cheap backend
+ *   - the same translations the router gives a check on an affordable backend
  *     (`reasoningOffForBackend` with `absentIsOff`), and the backend's own key, never a login.
  * What it is not: Claude Code's own prompt (its full text is Claude Code's; the plugin does not
  * copy it), its older `<severity>` form, a subtle case, or a prompt injection. It proves the

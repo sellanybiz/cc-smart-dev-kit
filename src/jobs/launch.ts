@@ -11,7 +11,7 @@
  *
  * THE THREE WAYS TO START A JOB (`chooseLaunch`), with `launch: auto` (the default)
  *   scope  Linux with a systemd user manager: `systemd-run --user --scope` puts the job in
- *          its own memory group inside a slice (`anymodel-heavy.slice`). The slice has a
+ *          its own memory group inside a slice (`cc-smart-dev-kit-heavy.slice`). The slice has a
  *          ceiling (`MemoryMax`, set before each launch): all heavy jobs together can
  *          never take the memory kept for everything else, and past it the kernel kills
  *          inside the slice only. `OOMPolicy=kill` ends the whole job when one of its

@@ -5,15 +5,15 @@ description: For projects that work one session per git worktree - starting a ta
 
 # Worktrees — The Steps
 
-**Project add-on:** `.claude/anymodel/worktree.md` — read it first when it exists. Where it
+**Project add-on:** `.claude/cc-smart-dev-kit/worktree.md` — read it first when it exists. Where it
 differs, the add-on wins (`core.md`, top). It names the project's own worktree commands and
 hooks.
 
 The rule — one worktree per session, the main checkout stays on the base branch, what every
 worktree still shares, when to message other sessions — is the opt-in instructions
 (`optin/worktrees.md`), which the project imports. This skill is the how. The project's
-values (`base`, `prefix`, `setup`) are in `.claude/anymodel.json`, field `worktrees`; the
-anymodel worktree engine reads them only where the project wired it in (§ Start a task,
+values (`base`, `prefix`, `setup`) are in `.claude/cc-smart-dev-kit.json`, field `worktrees`; the
+cc-smart-dev-kit worktree engine reads them only where the project wired it in (§ Start a task,
 step 2).
 
 ## Start a task
@@ -22,10 +22,10 @@ step 2).
 2. **`EnterWorktree` with the branch as its `name`.** Where it lands depends on the project.
    The plugin itself ships no worktree hook. **Not wired in:** Claude Code makes its own
    worktree, `.claude/worktrees/<name>` (or the project's own WorktreeCreate hook decides).
-   **Wired in:** the project's `.claude/settings.json` runs anymodel's worktree hooks
-   (`anymodel hook worktree-create`, `worktree-remove`, `subagent-stop`), and the anymodel
-   engine places the worktree by `worktrees` in `.claude/anymodel.json`. The exact lines to
-   paste are in README.md in the anymodel repository, § Worktrees.
+   **Wired in:** the project's `.claude/settings.json` runs cc-smart-dev-kit's worktree hooks
+   (`cc-smart-dev-kit hook worktree-create`, `worktree-remove`, `subagent-stop`), and the cc-smart-dev-kit
+   engine places the worktree by `worktrees` in `.claude/cc-smart-dev-kit.json`. The exact lines to
+   paste are in README.md in the cc-smart-dev-kit repository, § Worktrees.
 3. **Bring it up to date.** A worktree that already held the branch comes back as it was
    left. So after every `EnterWorktree`: `git fetch origin <base>`, then
    `git rev-list --count HEAD..origin/<base>`, and merge `origin/<base>` when it is behind —
@@ -53,7 +53,7 @@ runs the project's setup.
 
 ## Before you leave or remove a worktree
 
-1. **Wait for every agent you launched from it** (`/anymodel:subagent-decision` § While agents
+1. **Wait for every agent you launched from it** (`/cc-smart-dev-kit:subagent-decision` § While agents
    run).
 2. Stop your dev server and any `Monitor` working in it (`TaskStop`).
 3. Point the language-server tool back at the main checkout's absolute path. On Windows, a

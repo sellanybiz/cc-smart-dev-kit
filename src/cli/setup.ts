@@ -10,7 +10,7 @@ import { messageOf } from "../gateway/config";
 import {
   applyClaudeMem,
   type ClaudeMemPlan,
-  checkCheapTarget,
+  checkAffordableTarget,
   claudeMemPlan,
   shownClaudeMemValue,
 } from "../machine/claude-mem";
@@ -50,7 +50,7 @@ import { applyTmuxLine, TMUX_LINE, TMUX_NOW_COMMAND, tmuxServerRunning } from ".
 import { atomicWrite } from "../setup/write";
 import { type CliPaths, tildify } from "./paths";
 
-/** The key that turns on auto-update for the anymodel marketplace. Claude Code's install leaves it out. */
+/** The key that turns on auto-update for the cc-smart-dev-kit marketplace. Claude Code's install leaves it out. */
 export const AUTO_UPDATE_KEY: KeyPath = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
 
 export interface SetupOptions {
@@ -65,7 +65,7 @@ export interface SetupOptions {
   warp: boolean;
   /** Remove the Warp app, its package source and key, its shortcuts, and its plugin. */
   removeWarp: boolean;
-  /** The folder whose project's `.claude/anymodel.json` gives the auto-mode entries. */
+  /** The folder whose project's `.claude/cc-smart-dev-kit.json` gives the auto-mode entries. */
   project: string;
   machine: Machine;
   /**
@@ -84,7 +84,7 @@ function show(value: unknown): string {
   return value === undefined ? "(none)" : JSON.stringify(value);
 }
 
-/** True when settings.json knows the anymodel marketplace (written by `claude plugin install`). */
+/** True when settings.json knows the cc-smart-dev-kit marketplace (written by `claude plugin install`). */
 function marketplaceKnown(settingsFile: string): boolean {
   if (!existsSync(settingsFile)) return false;
   try {
@@ -198,7 +198,7 @@ function applySetup(
     }
     for (const entry of result.skipped) {
       info.push(
-        `  ${where}: ${JSON.stringify(entry)} is there already (not anymodel's); left alone`,
+        `  ${where}: ${JSON.stringify(entry)} is there already (not cc-smart-dev-kit's); left alone`,
       );
     }
   }
@@ -325,7 +325,7 @@ function askAutoMode(
   const { wanted, added, removed } = planned;
   if (added.length === 0 && removed.length === 0) return wanted;
   const short = (path: string) => tildify(path, paths.home);
-  const from = wanted.file ?? `${wanted.source}/.claude/anymodel.json`;
+  const from = wanted.file ?? `${wanted.source}/.claude/cc-smart-dev-kit.json`;
   console.log(
     `Auto mode: trust rules from ${short(from)} ("autoMode"), for ${formatKeyPath(AUTO_MODE_PATH)} in ${short(paths.settingsFile)}:`,
   );
@@ -338,7 +338,7 @@ function askAutoMode(
   for (const entry of removed) console.log(`  - ${JSON.stringify(entry)}`);
   if (options.machine.confirm === null) {
     notes.push(
-      "! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run anymodel setup in a terminal.",
+      "! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run cc-smart-dev-kit setup in a terminal.",
     );
     return null;
   }
@@ -368,7 +368,7 @@ function askStatusline(paths: CliPaths, machine: Machine, managed: Managed): boo
     return false;
   }
   managed.statusline = machine.confirm(
-    "Show anymodel's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?",
+    "Show cc-smart-dev-kit's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?",
   );
   return !managed.statusline;
 }
@@ -396,7 +396,7 @@ async function decideClaudeMem(
     );
     return planned.plan;
   }
-  const problem = await checkCheapTarget(planned.plan.target);
+  const problem = await checkAffordableTarget(planned.plan.target);
   if (problem !== null) {
     report.notes.push(`! claude-mem settings left alone: ${problem}`);
     return null;
@@ -440,7 +440,7 @@ function planWarp(paths: CliPaths, options: SetupOptions): WarpWork | { error: s
       info.push(
         machine.platform === "darwin"
           ? "! Warp was not installed with Homebrew: move Warp.app from Applications to the Bin by hand"
-          : `! Warp${version} was not installed by a package manager anymodel knows: remove it by hand`,
+          : `! Warp${version} was not installed by a package manager cc-smart-dev-kit knows: remove it by hand`,
       );
     }
     return {
@@ -552,9 +552,11 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   let warpYes = true;
   if (warp.commands.length > 0) {
     const what = options.removeWarp
-      ? "To remove Warp, anymodel runs these commands (sudo asks for your password)"
-      : "To install Warp from its signed source, anymodel runs these commands (sudo asks for your password)";
-    const rerun = options.removeWarp ? "anymodel setup --remove-warp" : "anymodel setup --warp";
+      ? "To remove Warp, cc-smart-dev-kit runs these commands (sudo asks for your password)"
+      : "To install Warp from its signed source, cc-smart-dev-kit runs these commands (sudo asks for your password)";
+    const rerun = options.removeWarp
+      ? "cc-smart-dev-kit setup --remove-warp"
+      : "cc-smart-dev-kit setup --warp";
     warpYes = askToRun(machine, what, warp.commands, rerun, report.notes);
   }
 
@@ -562,7 +564,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   if (warp.commands.length > 0 && warpYes) {
     try {
       if (warp.stage) await stageWarpFiles(machine, detectSystem(machine), paths);
-      const undo = options.removeWarp ? null : "anymodel setup --remove-warp";
+      const undo = options.removeWarp ? null : "cc-smart-dev-kit setup --remove-warp";
       warpDone = runOnTerminal(machine, warp.commands, undo, report.notes);
     } catch (error) {
       report.notes.push(`! ${messageOf(error)}. No Warp command was run.`);
@@ -595,7 +597,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       const shortcuts =
         warp.removeShortcuts && warpDone ? removeWarpDesktopEntries(paths, false) : [];
       const files = applySetup(paths, managed, false);
-      // anymodel's own state, like the lock: not a user file, so no backup.
+      // cc-smart-dev-kit's own state, like the lock: not a user file, so no backup.
       if (declined) atomicWrite(statuslineDeclinedFile(paths.stateDir), "no\n", 0o600);
       return { changes: [...shortcuts, ...files.changes], info: files.info, notes: files.notes };
     },
@@ -613,7 +615,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   const pathDirs = (process.env.PATH ?? "").split(delimiter);
   if (!pathDirs.includes(paths.binDir)) {
     console.log(
-      `Note: ${short(paths.binDir)} is not on your PATH. Add it, so the anymodel command works.`,
+      `Note: ${short(paths.binDir)} is not on your PATH. Add it, so the cc-smart-dev-kit command works.`,
     );
   }
   return ok ? 0 : 1;

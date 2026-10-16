@@ -5,7 +5,7 @@ description: Use when writing or changing frontend, React or Next.js code, data 
 
 # Performance And UX Budget
 
-**Project add-on:** `.claude/anymodel/performance-budget.md` — read it first when it exists.
+**Project add-on:** `.claude/cc-smart-dev-kit/performance-budget.md` — read it first when it exists.
 Where it differs, the add-on wins (`core.md`, top). It names the project's data-fetching
 library, cache, image component and any tighter targets.
 

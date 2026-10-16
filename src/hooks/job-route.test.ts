@@ -15,7 +15,7 @@ import {
 } from "./job-route";
 
 const KINDS = mergeKinds(undefined);
-const LAUNCHER = '"$HOME/.local/bin/anymodel"';
+const LAUNCHER = '"$HOME/.local/bin/cc-smart-dev-kit"';
 
 describe("which commands are routed", () => {
   it("a heavy command of a default kind is routed; a light one is not", () => {
@@ -45,10 +45,12 @@ describe("which commands are routed", () => {
 
   it("what is already queued stays as it is", () => {
     expect(runsJobRun(`${LAUNCHER} job run --kind tsc -- bun run tsc`)).toBe(true);
-    expect(runsJobRun("anymodel job run --kind tsc -- bun run tsc")).toBe(true);
-    expect(runsJobRun("~/.local/bin/anymodel job run --kind tsc -- bun run tsc")).toBe(true);
+    expect(runsJobRun("cc-smart-dev-kit job run --kind tsc -- bun run tsc")).toBe(true);
+    expect(runsJobRun("~/.local/bin/cc-smart-dev-kit job run --kind tsc -- bun run tsc")).toBe(
+      true,
+    );
     expect(runsJobRun(`sh -c "${LAUNCHER} job run --kind tsc -- bun run tsc"`)).toBe(true);
-    expect(runsJobRun("anymodel job status")).toBe(false);
+    expect(runsJobRun("cc-smart-dev-kit job status")).toBe(false);
     expect(runsJobRun("bun run tsc")).toBe(false);
     expect(routeHeavyCommand(`${LAUNCHER} job run --kind tsc -- bun run tsc`, KINDS)).toBeNull();
     // The line the guard is really for: it queues one heavy command AND runs another one the

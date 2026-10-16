@@ -1,10 +1,10 @@
 /**
  * How a project wires the worktree engine in its own `.claude/settings.json`: one handler per
- * project hook (`PROJECT_HOOKS`), each running `anymodel hook <name>` through the launcher.
+ * project hook (`PROJECT_HOOKS`), each running `cc-smart-dev-kit hook <name>` through the launcher.
  *
  * The command is a shell string with the launcher's full path under `$HOME`, not the bare
- * name `anymodel`: Claude Code's hook processes get the PATH Claude Code was started with,
- * and that may lack `~/.local/bin` (an IDE, a desktop launcher). `anymodel setup` always
+ * name `cc-smart-dev-kit`: Claude Code's hook processes get the PATH Claude Code was started with,
+ * and that may lack `~/.local/bin` (an IDE, a desktop launcher). `cc-smart-dev-kit setup` always
  * puts the launcher in `~/.local/bin`, and the launcher runs the bun setup baked into it, so
  * this works for every person who ran setup, whatever their PATH. The shell expands `$HOME`.
  *
@@ -56,8 +56,8 @@ export function projectHookSettingsText(): string {
 }
 
 /**
- * True when a wired command runs `anymodel hook <name>`: by the bare name, a path to the
- * launcher, or the plugin's own `bin/anymodel`.
+ * True when a wired command runs `cc-smart-dev-kit hook <name>`: by the bare name, a path to the
+ * launcher, or the plugin's own `bin/cc-smart-dev-kit`.
  */
 export function runsProjectHook(command: string, name: string): boolean {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

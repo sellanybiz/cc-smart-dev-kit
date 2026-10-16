@@ -1,7 +1,7 @@
 /**
- * The router as a long-running service: its copy in `~/.local/share/anymodel/router.js`,
- * its systemd user unit `anymodel-router.service`, and the socket unit
- * `anymodel-router.socket` that holds its port.
+ * The router as a long-running service: its copy in `~/.local/share/cc-smart-dev-kit/router.js`,
+ * its systemd user unit `cc-smart-dev-kit-router.service`, and the socket unit
+ * `cc-smart-dev-kit-router.socket` that holds its port.
  *
  * The copy, never the plugin's own `dist/router.js`: Claude Code deletes an old version
  * folder some time after an update, even under a running process. The three files go
@@ -30,24 +30,24 @@ import { atomicWrite, writeManagedFile } from "../setup/write";
 import { type HealthProbe, probeRouterPort, waitForRouter, waitWhileRouterAnswers } from "./health";
 
 /** The systemd user unit's name. */
-export const UNIT_NAME = "anymodel-router.service";
+export const UNIT_NAME = "cc-smart-dev-kit-router.service";
 
 /** The socket unit's name: it holds the router's port. */
-export const SOCKET_NAME = "anymodel-router.socket";
+export const SOCKET_NAME = "cc-smart-dev-kit-router.socket";
 
 /** What `install` says when nothing changed. */
 export const UP_TO_DATE = "router already up to date (no restart)";
 
 /** Said before a restart of a router that already has its socket, and before the question. */
 export const RESTART_WARNING =
-  "anymodel-router is running. A restart lets its answers in flight finish first (up to 120 s; a longer one is cut, and Claude Code retries it). New requests wait in its socket meanwhile; none fails.";
+  "cc-smart-dev-kit-router is running. A restart lets its answers in flight finish first (up to 120 s; a longer one is cut, and Claude Code retries it). New requests wait in its socket meanwhile; none fails.";
 
 /**
  * Said before the restart that moves a running router to its socket, and before the
  * question: the one restart that refuses new requests while the old router drains.
  */
 export const MOVE_WARNING =
-  "anymodel-router is running without its socket unit. This setup moves it to one, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
+  "cc-smart-dev-kit-router is running without its socket unit. This setup moves it to one, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
 
 /**
  * Said before the restart that opens the socket again: its unit file is there, but the
@@ -55,15 +55,15 @@ export const MOVE_WARNING =
  * start too often), so a running router holds the port itself.
  */
 export const SOCKET_STOPPED_WARNING =
-  "anymodel-router is running, but its socket is not open: the router holds the port itself. This setup opens the socket again, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
+  "cc-smart-dev-kit-router is running, but its socket is not open: the router holds the port itself. This setup opens the socket again, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
 
 /** Said before the restart that reopens the socket on a new port (the config's changed). */
 export const PORT_WARNING =
-  "anymodel-router is running, and its socket moves to a new port. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
+  "cc-smart-dev-kit-router is running, and its socket moves to a new port. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
 
 /** Said before the restart that reopens the socket on the same port: its unit file changed. */
 export const SOCKET_CHANGED_WARNING =
-  "anymodel-router is running, and its socket unit changed, so the socket closes and opens again. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
+  "cc-smart-dev-kit-router is running, and its socket unit changed, so the socket closes and opens again. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
 
 /** Every warning `installRouter` says before its question. */
 export const INSTALL_WARNINGS: readonly string[] = [
@@ -148,7 +148,7 @@ export function renderUnit(bunPath: string, copyPath: string, socketName = SOCKE
   return `# ${name}: the local AI gateway for Claude Code (127.0.0.1 only).
 # Written by \`${COMMAND} gateway setup\`; edits here are overwritten by the next setup.
 # It runs a copy of the router, never a file in the plugin's version folder.
-# Its config: ~/.config/anymodel/gateway.json. Its port: ${socketName}.
+# Its config: ~/.config/cc-smart-dev-kit/gateway.json. Its port: ${socketName}.
 
 [Unit]
 Description=${name}: local AI gateway for Claude Code (127.0.0.1 only)
@@ -341,7 +341,7 @@ export async function installRouter(options: InstallOptions): Promise<InstallRes
   if (active) {
     options.say(restartWarning(rebind, socketOpen, socketPlan, options.socketPath, options.port));
     if (!options.yes) {
-      const yes = options.confirm?.("Restart anymodel-router now?") ?? null;
+      const yes = options.confirm?.("Restart cc-smart-dev-kit-router now?") ?? null;
       if (yes !== true) {
         options.say(
           yes === null

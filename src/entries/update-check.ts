@@ -1,4 +1,4 @@
-// The SessionStart hook that keeps anymodel up to date (plugin/hooks/hooks.json), and,
+// The SessionStart hook that keeps cc-smart-dev-kit up to date (plugin/hooks/hooks.json), and,
 // with `--background`, the detached check it starts. The hook returns at once: it only
 // records the session, brings the instructions copy up to this version when it is behind
 // (the copy only, quietly), and starts the check when one is due (src/update/background.ts).

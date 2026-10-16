@@ -7,7 +7,7 @@
  *   lists the host, and the request carries a backend's key: a proxy would see it. A
  *   request to a remote backend, and every request to Anthropic, keep the environment's
  *   proxy settings: a company proxy in front of the internet is normal there.
- * - **`anymodel search --fetch` refuses a local or private address** (`privateHostKind`):
+ * - **`cc-smart-dev-kit search --fetch` refuses a local or private address** (`privateHostKind`):
  *   the URL goes to a third-party fetch provider, which cannot reach it, and the name
  *   would leave this machine for nothing.
  *
@@ -118,7 +118,7 @@ export function privateHostKind(hostname: string): null | string {
  * its host is this machine (`isLoopbackHost`): `{ proxy: false }`. `{}` for any other
  * host, which keeps the environment's proxy settings.
  *
- * Bun honours `proxy: false` from 1.4.3 on (oven-sh/bun#42692), so anymodel needs that
+ * Bun honours `proxy: false` from 1.4.3 on (oven-sh/bun#42692), so cc-smart-dev-kit needs that
  * Bun (`MIN_BUN`). An older Bun ignores it and sends the request to HTTP_PROXY.
  */
 export function directIfLoopback(url: string): { proxy?: false } {

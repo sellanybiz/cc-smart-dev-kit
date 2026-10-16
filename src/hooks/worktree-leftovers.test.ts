@@ -26,7 +26,9 @@ function makeIdle(worktree: string): void {
 
 function project() {
   const { repo } = makeClone();
-  writeClaudeFile(repo, "anymodel.json", { worktrees: { base: "main", prefix: "app-wt-" } });
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+    worktrees: { base: "main", prefix: "app-wt-" },
+  });
   const add = (name: string) => {
     const folder = join(repo, "..", `app-wt-${name}`);
     git(repo, "worktree", "add", "-q", "-b", name, folder, "origin/main");
@@ -86,7 +88,7 @@ describe("worktree-leftovers", () => {
     expect(leftoversNote("main", [], [])).toBeNull();
   });
 
-  test("without worktrees in anymodel.json: silent, even with finished worktrees", async () => {
+  test("without worktrees in cc-smart-dev-kit.json: silent, even with finished worktrees", async () => {
     const { repo } = makeClone();
     const folder = join(repo, "..", "wt");
     git(repo, "worktree", "add", "-q", "-b", "wt", folder, "origin/main");
@@ -94,13 +96,13 @@ describe("worktree-leftovers", () => {
     expect(await runHook(worktreeLeftoversHook, start(repo), hookEnv())).toEqual({});
   });
 
-  test("anymodel.json needs a newer plugin: one line", async () => {
+  test("cc-smart-dev-kit.json needs a newer plugin: one line", async () => {
     const { repo } = makeClone();
-    writeClaudeFile(repo, "anymodel.json", { requires: ">=99" });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=99" });
     const result = await runHook(worktreeLeftoversHook, start(repo), hookEnv());
     const text: string = JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext;
     expect(text.split("\n")).toHaveLength(1);
-    expect(text).toStartWith("anymodel: ");
-    expect(text).toEndWith("run claude plugin update anymodel@anymodel");
+    expect(text).toStartWith("cc-smart-dev-kit: ");
+    expect(text).toEndWith("run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit");
   });
 });

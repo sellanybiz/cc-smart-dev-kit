@@ -1,5 +1,5 @@
 /**
- * `anymodel statusline`: the line from Claude Code's status line input and the router's
+ * `cc-smart-dev-kit statusline`: the line from Claude Code's status line input and the router's
  * state file. Every expected line is written by hand; times are shown in UTC.
  */
 import { describe, expect, it } from "bun:test";
@@ -45,14 +45,14 @@ describe("statusline", () => {
   it("a model slot on its fallback, and the judge fallback", () => {
     const state: LimitState = {
       fallbacks: {
-        "anymodel-judge": {
+        "cc-smart-dev-kit-judge": {
           lastAt: NOW - 60_000,
           model: "claude-sonnet-5",
           resetsAt: null,
           since: NOW - 60_000,
           target: "ollama:deepseek-v4.1-flash",
         },
-        "anymodel-opus": {
+        "cc-smart-dev-kit-opus": {
           lastAt: NOW - 60_000,
           model: "claude-opus-5-5",
           resetsAt: AT_13,
@@ -71,7 +71,7 @@ describe("statusline", () => {
   it("a plan limit with no fallback; records past their reset or too old are not shown", () => {
     const state: LimitState = {
       fallbacks: {
-        "anymodel-fable": {
+        "cc-smart-dev-kit-fable": {
           lastAt: NOW - 3_600_000,
           model: "claude-fable-5-1",
           resetsAt: NOW / 1000 - 1,

@@ -1,5 +1,5 @@
 /**
- * `anymodel search`: a web search, or one page's text, through the gateway's OmniRoute
+ * `cc-smart-dev-kit search`: a web search, or one page's text, through the gateway's OmniRoute
  * backend.
  *
  * It reuses the gateway's own config reader (`src/gateway/config.ts`), so the address and
@@ -161,7 +161,7 @@ export interface SearchContext {
   paths: CliPaths;
 }
 
-/** Runs `anymodel search`; the exit code. */
+/** Runs `cc-smart-dev-kit search`; the exit code. */
 export async function runSearch(args: string[], ctx: SearchContext): Promise<number> {
   const parsed = parseSearchArgs(args);
   if ("error" in parsed) {

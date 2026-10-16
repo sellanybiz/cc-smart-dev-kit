@@ -1,5 +1,5 @@
 /**
- * `anymodel usage`: which models answered this machine's Claude Code sessions, main
+ * `cc-smart-dev-kit usage`: which models answered this machine's Claude Code sessions, main
  * sessions and subagents apart, read from Claude Code's own transcripts. Read only; it
  * prints counts and model names, never a word of a message.
  *
@@ -9,7 +9,7 @@
  * `agent-<id>.meta.json` that names how it was launched (`model`: `opus`, `sonnet`, `haiku`,
  * or none, which means it took the session's model). In a `.jsonl`, each line of
  * `type: "assistant"` is one content block of a reply: `message.id` names the reply,
- * `message.model` the model that wrote it (a cheap backend's own name when a slot answered,
+ * `message.model` the model that wrote it (an affordable backend's own name when a slot answered,
  * `glm-5.3-flash` say), `timestamp` when, `cwd` the folder. (docs/claude-code-contract.md)
  *
  * What it counts, in the window: per session, the main session's replies by model; the
@@ -304,12 +304,12 @@ export function usageOptions(
   return { hours, project };
 }
 
-/** Runs `anymodel usage`. */
+/** Runs `cc-smart-dev-kit usage`. */
 export function runUsage(paths: CliPaths, args: string[], nowMs: number): number {
   const options = usageOptions(args);
   if ("error" in options) {
     console.error(
-      `${options.error}\n\nUsage: anymodel usage [--hours <n>] [--project <folder or name>]`,
+      `${options.error}\n\nUsage: cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>]`,
     );
     return 2;
   }

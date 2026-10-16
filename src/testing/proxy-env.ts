@@ -39,7 +39,7 @@ export function fakeProxy(): { requests: string[]; stop(): void; url: string } {
 
 /**
  * Sets one variable, or removes it. `fetch` sees a `delete` from Bun 1.4.3 on (before,
- * it kept the old value: oven-sh/bun#42692), and anymodel needs that Bun (`MIN_BUN`).
+ * it kept the old value: oven-sh/bun#42692), and cc-smart-dev-kit needs that Bun (`MIN_BUN`).
  */
 function setVariable(name: string, value: string | undefined): void {
   if (value === undefined) delete process.env[name];

@@ -1,6 +1,6 @@
 /**
  * The background self-update's files, all in the state folder (`<stateDir>`, by default
- * `~/.claude/anymodel/`):
+ * `~/.claude/cc-smart-dev-kit/`):
  *
  *   update-hold         while it exists, the SessionStart hook checks nothing
  *   update-check.json   the last check: when, its result, and the detail
@@ -9,7 +9,7 @@
  *   update/lock         held by the one check or update that runs (`withLock`)
  *   sessions/<pid>.json the plugin version each running Claude session loaded
  *
- * None of them is a user's file: they are anymodel's own state, like the lock and the
+ * None of them is a user's file: they are cc-smart-dev-kit's own state, like the lock and the
  * records, so they are written directly (atomically where a reader may look).
  */
 

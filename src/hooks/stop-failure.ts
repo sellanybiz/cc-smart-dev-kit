@@ -17,13 +17,13 @@
  * opted in must not notice the plugin. A `gateway.json` that cannot be read still gives the
  * plain alert: it says what happened, with no action. It never blocks: the work that waits
  * (a notification with buttons that waits for a click) runs in a detached worker, started
- * through the launcher (`~/.local/bin/anymodel alert-worker …`), never from the plugin's
+ * through the launcher (`~/.local/bin/cc-smart-dev-kit alert-worker …`), never from the plugin's
  * version folder, which an update may delete while it waits. The hook itself exits at once.
  * Every error becomes one stderr line and exit 0.
  *
  * The alert:
  *   - Linux (`notify-send` with `--action`): "Use <target> until it resets" runs
- *     `anymodel gateway slot <opus|fable> <model>,<targets>`; "Wait" does nothing. The
+ *     `cc-smart-dev-kit gateway slot <opus|fable> <model>,<targets>`; "Wait" does nothing. The
  *     fallback then ends by itself: the router asks Claude again and goes back once it answers.
  *   - macOS: a plain notification that names the command.
  *   - Anything else: one stderr line.
@@ -90,7 +90,7 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The model slot (`anymodel-opus`) and family (`opus`) of a Claude model; null for none. */
+/** The model slot (`cc-smart-dev-kit-opus`) and family (`opus`) of a Claude model; null for none. */
 function slotOf(model: string): null | { family: string; slot: string } {
   for (const [slot, family] of Object.entries(MODEL_SLOTS)) {
     if (model.includes(`-${family}-`)) return { family, slot };
@@ -112,7 +112,7 @@ export function suggestedTargets(
   family: string,
   claim: null | string,
 ): null | string[] {
-  const backends = (config.slots["anymodel-worker"] ?? []).filter((text) => {
+  const backends = (config.slots["cc-smart-dev-kit-worker"] ?? []).filter((text) => {
     const parsed = parseTarget(text);
     return "target" in parsed && parsed.target.kind === "backend";
   });
@@ -184,7 +184,7 @@ export function planAlert(input: unknown, ctx: AlertContext): Alert | null {
   if (targets === null || !ctx.gatewayOn) {
     return {
       action: null,
-      body: `${head} To use a cheaper model until it resets: ${command}`,
+      body: `${head} To use a more affordable model until it resets: ${command}`,
       title,
     };
   }
@@ -193,7 +193,7 @@ export function planAlert(input: unknown, ctx: AlertContext): Alert | null {
       args: ["gateway", "slot", slot.family, targets.join(",")],
       label: `Use ${shortName(targets[1] ?? "")} until it resets`,
     },
-    body: `${head} A cheaper model until it resets: ${command} (Claude takes over again by itself once it answers).`,
+    body: `${head} A more affordable model until it resets: ${command} (Claude takes over again by itself once it answers).`,
     title,
   };
 }
@@ -297,7 +297,10 @@ function appleString(text: string): string {
 export function plainNotification(alert: Alert, platform: string): null | Run {
   const body = alert.body;
   if (platform === "linux") {
-    return { argv: ["notify-send", "--app-name=anymodel", alert.title, body], timeoutMs: 10_000 };
+    return {
+      argv: ["notify-send", "--app-name=cc-smart-dev-kit", alert.title, body],
+      timeoutMs: 10_000,
+    };
   }
   if (platform === "darwin") {
     return {
@@ -313,7 +316,7 @@ export function plainNotification(alert: Alert, platform: string): null | Run {
 }
 
 /**
- * The detached worker (`anymodel alert-worker`, run through the launcher): shows the alert
+ * The detached worker (`cc-smart-dev-kit alert-worker`, run through the launcher): shows the alert
  * and, on Linux with an action, waits for the click. "use" runs the slot command through
  * the launcher too (`launcher`, its path), so it is the installed version's at click time,
  * then says how it went. A `notify-send` without `--action` (an old one, or no
@@ -324,7 +327,7 @@ export function runAlert(alert: Alert, platform: string, launcher: string, run: 
     const asked = run({
       argv: [
         "notify-send",
-        "--app-name=anymodel",
+        "--app-name=cc-smart-dev-kit",
         `--action=use=${alert.action.label}`,
         "--action=wait=Wait",
         alert.title,
@@ -341,7 +344,7 @@ export function runAlert(alert: Alert, platform: string, launcher: string, run: 
       run({
         argv: [
           "notify-send",
-          "--app-name=anymodel",
+          "--app-name=cc-smart-dev-kit",
           done ? "Fallback on" : "Fallback not turned on",
           done
             ? `${alert.action.label.replace(/^Use /, "Using ")}: ${COMMAND} gateway status shows it. Send a message in Claude Code to go on now.`

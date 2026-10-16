@@ -1,9 +1,9 @@
 # The AI Gateway
 
-A small local program, **`anymodel-router`**, sits between Claude Code and the model
-providers. It lets routine subagents run on cheaper models while Claude models stay real
+A small local program, **`cc-smart-dev-kit-router`**, sits between Claude Code and the model
+providers. It lets routine subagents run on more affordable models while Claude models stay real
 Claude, on the person's own login. It is optional: nothing changes until a person runs
-`anymodel gateway setup` and then `anymodel gateway on`.
+`cc-smart-dev-kit gateway setup` and then `cc-smart-dev-kit gateway on`.
 
 How to use it, step by step: the `gateway` skill (`plugin/skills/gateway/SKILL.md`).
 The rules for changing it: `.claude/rules/gateway.md`.
@@ -17,18 +17,18 @@ The rules for changing it: `.claude/rules/gateway.md`.
   Anthropic **byte for byte**. An opt-in **model slot** (`gateway slot opus …`) keeps that,
   and lets a fallback answer only when Anthropic answers with the plan's usage limit
   (§ Model slots).
-- **The `haiku` and `sonnet` names** point at two **slots**, `anymodel-scout` and
-  `anymodel-worker`. A slot is a list of targets, tried in order; the last one is Claude,
-  so work does not stop when a cheap model fails.
+- **The `haiku` and `sonnet` names** point at two **slots**, `cc-smart-dev-kit-scout` and
+  `cc-smart-dev-kit-worker`. A slot is a list of targets, tried in order; the last one is Claude,
+  so work does not stop when an affordable model fails.
 - **Auto mode's safety check** is judged by Claude whenever Claude can answer it. The
-  opt-in `anymodel-judge` slot is a fallback only, for when Claude cannot; otherwise Claude
+  opt-in `cc-smart-dev-kit-judge` slot is a fallback only, for when Claude cannot; otherwise Claude
   Code asks the person (§ The judge slot).
 - The router writes the plan limits it sees to a small state file, which the status line
   and the usage-limit alert read (§ The limit state, the status line, the alert).
-- **No prompt text is ever changed.** A cheap backend gets two named format translations
-  and nothing else (§ What a cheap backend sees).
+- **No prompt text is ever changed.** An affordable backend gets two named format translations
+  and nothing else (§ What an affordable backend sees).
 - Only this machine can reach the router (§ Local only).
-- It runs as a systemd user unit from a copy in `~/.local/share/anymodel/`, behind a
+- It runs as a systemd user unit from a copy in `~/.local/share/cc-smart-dev-kit/`, behind a
   socket unit that holds its port, so a restart makes new requests wait instead of
   fail (§ The service). **Linux only for now.**
 
@@ -38,29 +38,29 @@ The rules for changing it: `.claude/rules/gateway.md`.
 flowchart TD
     CC["Claude Code<br/>own Claude login<br/>ANTHROPIC_BASE_URL = 127.0.0.1:20100"] --> AL{"name in the config's aliases?"}
     AL -->|"yes: use the slot or target it names"| R
-    AL -->|"no"| R["anymodel-router"]
+    AL -->|"no"| R["cc-smart-dev-kit-router"]
     R -->|"claude-* or unknown model, any other path"| A["api.anthropic.com<br/>bytes and headers unchanged"]
-    R -->|"claude-opus-5-5 with a model slot"| M["anymodel-opus:<br/>the model itself first, unchanged"]
+    R -->|"claude-opus-5-5 with a model slot"| M["cc-smart-dev-kit-opus:<br/>the model itself first, unchanged"]
     M --> A
     M -->|"only at the plan's usage limit"| O
-    R -->|"anymodel-scout / anymodel-worker"| S["slot targets, in order"]
+    R -->|"cc-smart-dev-kit-scout / cc-smart-dev-kit-worker"| S["slot targets, in order"]
     R -->|"safety check: Claude first"| A
-    A -.->|"check at the usage limit or 401, judge set"| J["anymodel-judge"]
+    A -.->|"check at the usage limit or 401, judge set"| J["cc-smart-dev-kit-judge"]
     R -->|"backend:model, no fallback"| O
-    S -->|"backend:model"| O["a cheap backend<br/>(OmniRoute, Ollama Cloud)"]
+    S -->|"backend:model"| O["an affordable backend<br/>(OmniRoute, Ollama Cloud)"]
     S -->|"claude-* (last)"| A
     J --> O
 ```
 
 - `claude-*` and any **unknown** model name go to Anthropic as they came. So does every
   path that is not `/v1/messages` or `/v1/messages/count_tokens`. The router never
-  guesses a cheap backend.
-- A **slot key** is a model name the router owns: `anymodel-<name>`. `gateway on` points
-  Claude Code's `haiku` at `anymodel-scout[1m]` and `sonnet` at `anymodel-worker[1m]`
+  guesses an affordable backend.
+- A **slot key** is a model name the router owns: `cc-smart-dev-kit-<name>`. `gateway on` points
+  Claude Code's `haiku` at `cc-smart-dev-kit-scout[1m]` and `sonnet` at `cc-smart-dev-kit-worker[1m]`
   (`[1m]`: Claude Code then assumes a 1M-token context; the router ignores the suffix).
 - A **target** is `claude-<id>` (Anthropic; `model` changes, and only the fields that
   model refuses: § What a Claude target sees) or `<backend>:<model>`
-  (a cheap backend, with its own key). `<backend>:<model>` as the model name itself is an
+  (an affordable backend, with its own key). `<backend>:<model>` as the model name itself is an
   ad-hoc try: that backend only, no fallback.
 - `opus` and `fable` are not remapped, so they stay real Claude. A model slot keys on the
   real id Claude Code sends (`claude-opus-5-5`), not on a name the router hands out.
@@ -71,15 +71,15 @@ flowchart TD
 
 | Slot | Claude Code name | Targets, in order |
 |---|---|---|
-| `anymodel-scout` | `haiku` | `omniroute:ollama-cloud/deepseek-v4.1-flash` → `omniroute:ollama-cloud/glm-5.3-flash` → `claude-sonnet-5-5` |
-| `anymodel-worker` | `sonnet` | the same three |
-| `anymodel-judge` | none: auto mode's safety check, only when Claude cannot answer it | **off** (no slot) |
-| `anymodel-opus` | `claude-opus-5-5`, only at the plan's usage limit | **off** (no slot, no `modelSlots`) |
-| `anymodel-fable` | `claude-fable-5-1`, only at the plan's usage limit | **off** |
+| `cc-smart-dev-kit-scout` | `haiku` | `omniroute:ollama-cloud/deepseek-v4.1-flash` → `omniroute:ollama-cloud/glm-5.3-flash` → `claude-sonnet-5-5` |
+| `cc-smart-dev-kit-worker` | `sonnet` | the same three |
+| `cc-smart-dev-kit-judge` | none: auto mode's safety check, only when Claude cannot answer it | **off** (no slot) |
+| `cc-smart-dev-kit-opus` | `claude-opus-5-5`, only at the plan's usage limit | **off** (no slot, no `modelSlots`) |
+| `cc-smart-dev-kit-fable` | `claude-fable-5-1`, only at the plan's usage limit | **off** |
 
 The last target is Claude Sonnet 5.5, not Haiku, because the slots announce a 1M-token
 context and Haiku has 200K. DeepSeek is first because almost every subagent token is a
-cached re-read, and its cached input is the cheapest (ollama.com/pricing). The live
+cached re-read, and its cached input is the most affordable (ollama.com/pricing). The live
 table is the config file; `gateway slot` changes it, `gateway models` lists what each
 backend offers.
 
@@ -91,11 +91,11 @@ requests, through the router.
 
 **The rule: safety is judged by Claude when Claude can answer; otherwise by a fallback
 judge the person chose and that passed the test; otherwise by the person, because Claude
-Code asks.** No config can send every check to a cheap model.
+Code asks.** No config can send every check to an affordable model.
 
 ```sh
-anymodel gateway slot judge omniroute:ollama-cloud/deepseek-v4.1-flash,omniroute:ollama-cloud/glm-5.3-flash
-anymodel gateway slot judge off
+cc-smart-dev-kit gateway slot judge omniroute:ollama-cloud/deepseek-v4.1-flash,omniroute:ollama-cloud/glm-5.3-flash
+cc-smart-dev-kit gateway slot judge off
 ```
 
 1. **Claude first, always.** A check takes exactly the way it takes with no judge
@@ -148,7 +148,7 @@ How close the test is to Claude Code's real check, and what it does not prove:
   `<severity>N` form is not tested.
 - **It proves** the target answers in the check's format and blocks one obvious risk.
   **It does not prove** that it judges subtle cases well, resists a prompt injection in
-  the transcript, or never blocks good work. A cheaper judge decides worse than Claude (in
+  the transcript, or never blocks good work. A more affordable judge decides worse than Claude (in
   an earlier test, one allowed a force push to the main branch that Claude blocked), and
   every judged check sends the conversation and the next action to its provider.
 
@@ -162,7 +162,7 @@ The way a check takes to Claude (with or without a judge):
 
 - a `claude-…` check goes to Anthropic byte for byte. A check sent under a slot name goes
   to that slot's `claude-…` target only, with only `model` changed (never translated:
-  § What a Claude target sees), never to a cheap model. A check whose name leads to no
+  § What a Claude target sees), never to an affordable model. A check whose name leads to no
   Claude target (a slot with none, or an alias to `<backend>:<model>`) goes to Anthropic
   exactly as Claude Code sent it, before any alias; Anthropic refuses the unknown name,
   and Claude Code retries the check on another Claude model.
@@ -174,17 +174,17 @@ The way a check takes to Claude (with or without a judge):
 
 The main session (Opus, say) sends its real model id, `claude-opus-5-5`, and goes to
 Anthropic byte for byte. When the person's plan runs out, Claude Code stops: "You've hit
-your limit · resets 1:49am". A **model slot** lets a cheaper model carry on until the
+your limit · resets 1:49am". A **model slot** lets a more affordable model carry on until the
 reset. It is **off by default**: with no `modelSlots` in the config, nothing changes.
 
 ```sh
-anymodel gateway slot opus claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash
-anymodel gateway slot fable claude-fable-5-1,omniroute:ollama-cloud/glm-5.3-flash
-anymodel gateway slot opus off
+cc-smart-dev-kit gateway slot opus claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash
+cc-smart-dev-kit gateway slot fable claude-fable-5-1,omniroute:ollama-cloud/glm-5.3-flash
+cc-smart-dev-kit gateway slot opus off
 ```
 
-This writes the slot (`anymodel-opus`, its first target the model itself) and
-`"modelSlots": {"claude-opus-5-5": "anymodel-opus"}`, keyed by the id Claude Code sends.
+This writes the slot (`cc-smart-dev-kit-opus`, its first target the model itself) and
+`"modelSlots": {"claude-opus-5-5": "cc-smart-dev-kit-opus"}`, keyed by the id Claude Code sends.
 The config refuses a model slot whose first target is not its own model, one with no
 target after it, and an id from another family (`slot opus claude-sonnet-5-5,…`).
 
@@ -198,7 +198,7 @@ target after it, and an id from another family (`slot opus claude-sonnet-5-5,…
   `rejected`). Claude Code 2.1.300 reads the same headers the same way
   (`docs/claude-code-contract.md` § Usage limits). A 429 without them is a short rate limit.
 - **The first target gets the bytes Claude Code sent**, headers and all. The next target
-  gets what any slot target gets: a cheap backend the named translations and its own key,
+  gets what any slot target gets: an affordable backend the named translations and its own key,
   never the login or `metadata`; a `claude-…` target `requestForClaudeFallback`.
 - **Opus rests** until its reset, at most 10 minutes (`COOLDOWN_MAX_SEC`), and at least
   60 s when the reset Anthropic named is already past (`LIMIT_REST_MIN_SEC`): during the
@@ -207,7 +207,7 @@ target after it, and an id from another family (`slot opus claude-sonnet-5-5,…
   ("its fallback is over"); a `count_tokens` answer never notes or ends a limit. This rest
   is apart from the cooldown of other slots: a short 429 to another slot's Opus target
   never moves the model slot.
-- **One WARN when a fallback starts:** `WARN anymodel-opus: claude-opus-5-5 is at its plan
+- **One WARN when a fallback starts:** `WARN cc-smart-dev-kit-opus: claude-opus-5-5 is at its plan
   usage limit (five_hour, resets …); answering from <target> until claude-opus-5-5
   answers again`. The state file says it too, for the status line, but only once the
   fallback answered below 400: a fallback that failed is not "active" (its WARN says
@@ -232,13 +232,13 @@ target after it, and an id from another family (`slot opus claude-sonnet-5-5,…
   no block gets one text block, "(The fallback model answered with thinking only.)",
   because Anthropic refuses an assistant message with no content, and an empty text block
   too; a `tool_use` id that Anthropic would refuse (it wants `^[a-zA-Z0-9_-]+$`) becomes
-  `toolu_anymodel_<24 hex of its SHA-256>`, the same every time. Claude Code answers a
+  `toolu_cc-smart-dev-kit_<24 hex of its SHA-256>`, the same every time. Claude Code answers a
   tool with the id it was given, so the history only ever holds the safe id, and nothing
   is mapped back. (OmniRoute 16.3.5 already makes OpenAI-shaped tool call ids safe; a
   backend that passes a provider's own ids through may not.) A compressed answer is
   decompressed for this, and goes on without `content-encoding`. Claude's own answers
   and every other route's answers are never touched. The log says so once per kind:
-  `anymodel-opus: <target>'s answers: thinking blocks removed (…)`.
+  `cc-smart-dev-kit-opus: <target>'s answers: thinking blocks removed (…)`.
 - **A WARN names a stuck conversation:** when Opus answers 400 "Invalid `signature`" after
   a fallback answered for it since the router started (a history from before this
   version, or the test switch), one WARN names the cause and the way out: `/rewind` in
@@ -246,23 +246,23 @@ target after it, and an id from another family (`slot opus claude-sonnet-5-5,…
   2.1.300 itself sent the refused request once more and that one was answered (live).
 - **A long or rich conversation may be more than the fallback takes.** Opus holds 1M
   tokens with `[1m]` (a GLM model, about 200k) and takes images, documents and server
-  tools a cheap backend may not. When the fallback answers 400 (or 413) and its reason
+  tools an affordable backend may not. When the fallback answers 400 (or 413) and its reason
   says the input is too long or names a kind of content it does not take, a WARN says
-  so: `WARN anymodel-opus: <target> refused this claude-opus-5-5 conversation (too long)
+  so: `WARN cc-smart-dev-kit-opus: <target> refused this claude-opus-5-5 conversation (too long)
   …: /compact it, start a new one, or wait for claude-opus-5-5's reset`.
 
 ## The limit state, the status line, the alert
 
-**The state file**, `~/.local/state/anymodel/gateway-state.json` (mode 600), written by
+**The state file**, `~/.local/state/cc-smart-dev-kit/gateway-state.json` (mode 600), written by
 the router in the background (never before an answer goes out; at most once a minute for
 a running fallback): the Claude models it last saw at the plan's limit (the window and its
 reset) and the slots answering from a fallback (the model slot, or the judge). Never a key,
 a header value or a word of a request. `limit-state.ts` reads it.
 
-**The status line** (`anymodel statusline`; `anymodel setup --statusline` sets it in
+**The status line** (`cc-smart-dev-kit statusline`; `cc-smart-dev-kit setup --statusline` sets it in
 Claude Code's `settings.json` as an owned key, or setup asks in a terminal when none is
 set, after its read-only pass and with its other questions, before anything runs, and
-never again after a "no", which it keeps in `~/.claude/anymodel/statusline-declined`;
+never again after a "no", which it keeps in `~/.claude/cc-smart-dev-kit/statusline-declined`;
 `--statusline` still sets it. A status line the person changed after setup set it is
 theirs: setup keeps it, and `restore` leaves it). Its parts: the model, a model slot on its fallback (`⚠ claude-opus-5-5 at its
 limit → <target> until 13:00`), `judge: fallback active (<target>)`, a limit with no
@@ -279,16 +279,16 @@ and for a short rate limit alike. The hook tells them apart by Claude Code's own
 ("You've hit your limit …" against "… (not your usage limit) …", which wins) or by a
 plan limit the router saw in the last two minutes. It acts only once the gateway is set
 up (`gateway.json` exists); a `gateway.json` that cannot be read still gives the plain
-alert, with no action, and says `anymodel doctor` tells why. Which model hit the limit:
+alert, with no action, and says `cc-smart-dev-kit doctor` tells why. Which model hit the limit:
 the session's own (the last `claude-…` model in the transcript the input's
 `transcript_path` names) when the state file has a limit for it; else the freshest limit
 of a model with a model slot (Opus, Fable). The hook starts a detached worker through the
-launcher (`~/.local/bin/anymodel alert-worker …`, so the half hour it may wait runs from
+launcher (`~/.local/bin/cc-smart-dev-kit alert-worker …`, so the half hour it may wait runs from
 the installed version, never from the hook's version folder) and exits at once; with no
 launcher, a plain notification with no action.
 
 - Linux: `notify-send` with two actions. "Use <target> until it resets" runs
-  `anymodel gateway slot opus <targets>` through the launcher, then a second notification
+  `cc-smart-dev-kit gateway slot opus <targets>` through the launcher, then a second notification
   says whether it worked ("… Send a message in Claude Code to go on now": Claude Code
   waits for the reset otherwise); "Wait" does nothing. A `notify-send` without `--action`
   gets a plain notification with the command.
@@ -302,7 +302,7 @@ launcher, a plain notification with no action.
 - In `claude -p`, Claude Code may exit before the hook finishes, and the hook is cut off
   (seen live, 2.1.300); in the interactive `claude` it runs to the end.
 
-**`anymodel usage`** is not part of the router: it reads Claude Code's transcripts
+**`cc-smart-dev-kit usage`** is not part of the router: it reads Claude Code's transcripts
 (`<config>/projects/*/<session>.jsonl`, `…/<session>/subagents/*.jsonl` and `.meta.json`)
 and reports, per session, the main session's replies by model and, apart, its subagents:
 how many, how each was launched, the model of each reply, and the share on Opus. A file
@@ -313,12 +313,12 @@ last changed before the window is not read.
 A config may map old model names to new ones:
 
 ```json
-{ "aliases": { "old-scout": "anymodel-scout", "old-model": "omniroute:glm-5.3-flash" } }
+{ "aliases": { "old-scout": "cc-smart-dev-kit-scout", "old-model": "omniroute:glm-5.3-flash" } }
 ```
 
 - The router resolves an alias **before** it routes. It recognises the safety check on
   the request as it came, so a check sent under an old name is still the check: with the
-  judge off it stays on Claude even when the alias points at a cheap backend (§ The judge
+  judge off it stays on Claude even when the alias points at an affordable backend (§ The judge
   slot). It logs each alias once per name.
 - An alias to a `claude-…` model goes to Anthropic with the body Claude Code built for
   the old name, so it gets the same translation as a slot's Claude target (§ What a
@@ -327,7 +327,10 @@ A config may map old model names to new ones:
   an alias is an error at load**, so there are no chains and no loops.
 - An alias cannot have a slot's name, a `claude-…` name, or `[1m]` on it.
 - **The plugin ships no aliases.** A project that moves from its own gateway writes them
-  in its migration, and removes them once every machine uses the new names.
+  in its migration, and removes them once every machine uses the new names. The one the
+  plugin writes itself is on a machine moving from 0.2.x's names: `migrate` adds an alias
+  from each of that version's slot names to this version's slot, so sessions that are
+  still running keep working until they restart (removing them is then a hand edit).
 
 ## Fallback rules
 
@@ -336,21 +339,21 @@ A request moves to the next target **only before any answer reaches Claude Code*
 | Target | Moves on when |
 |---|---|
 | Anthropic (`claude-*`) | status 408, 429, 500, 502, 503, 504, 529, a network error, or no response headers in time |
-| A cheap backend, not the last target | the same, **and any other non-2xx** (a 401 or 404 is a wrong key or model; a 400 can be one model refusing another's reasoning history), logged as a warning |
-| A cheap backend, streaming | an `event: error` before the first real event, a stream that ends first, or no real event before the deadline |
+| An affordable backend, not the last target | the same, **and any other non-2xx** (a 401 or 404 is a wrong key or model; a 400 can be one model refusing another's reasoning history), logged as a warning |
+| An affordable backend, streaming | an `event: error` before the first real event, a stream that ends first, or no real event before the deadline |
 
 - **The last target is always tried and its answer returned**, whatever it is.
 - **The stream hold.** OmniRoute answers `200` after about a second, then sends keep-alive
-  comments and reports failures inside the stream. So for a cheap backend that is not
+  comments and reports failures inside the stream. So for an affordable backend that is not
   last, the router holds the stream until the first real event, then replays it and pipes
   the rest chunk by chunk.
 - **Deadline:** `timeouts.firstByteMs`, 60 s by default.
 - **Cooldown.** A target that answered 429 rests for its `retry-after` (default 60 s); a
   408, 5xx, 529, network error or timeout rests `retry-after` or 30 s; at most 600 s, in
   memory. A resting target is skipped unless it is the last.
-- **`count_tokens`** has no fallback. When the first target is a cheap backend the answer
+- **`count_tokens`** has no fallback. When the first target is an affordable backend the answer
   is 404, and Claude Code estimates instead.
-- Errors the router makes use Anthropic's error shape. A cheap backend's `retry-after` is
+- Errors the router makes use Anthropic's error shape. An affordable backend's `retry-after` is
   rounded to whole seconds.
 - **The log names the reason.** When any target answers 4xx or 5xx to a model call
   (`/v1/messages` or `count_tokens`; Anthropic too, and a `claude-…` request sent straight
@@ -364,7 +367,7 @@ A request moves to the next target **only before any answer reaches Claude Code*
   or `-`, except a run with `__` (an MCP tool name) or a UUID. A masked value of 12 or
   more characters keeps its last four. Then it is made one line of printable ASCII
   (`maskedLine` in `router.ts`, and `oneLine` in `src/gateway/plain-text.ts`: the one
-  home for making outside text safe to print, which `anymodel search` uses too). The line
+  home for making outside text safe to print, which `cc-smart-dev-kit search` uses too). The line
   is written in the background, so the answer reaches Claude Code whole and at once; it
   can come after the request's own log line. A failed read gives one `WARN` line, not two.
 
@@ -373,7 +376,7 @@ A request moves to the next target **only before any answer reaches Claude Code*
 A slot's `claude-…` target (usually its last, the fallback), and an alias to a `claude-…`
 model (§ Aliases), gets the person's own login, every header as sent, and the body Claude
 Code built **for another name**: the slot's, or the old name's. Claude Code knows nothing
-of the model behind `anymodel-worker`, so that body can carry fields the Claude model
+of the model behind `cc-smart-dev-kit-worker`, so that body can carry fields the Claude model
 refuses with a 400. One named translation, `requestForClaudeFallback`, changes only those
 fields, to the nearest value the target accepts, and never `system`, a message or a
 tool. The rules come from Anthropic's migration guides
@@ -399,7 +402,7 @@ on a Claude target:
 
 - an assistant **prefill** (the conversation ending on an assistant turn), which a newer
   Claude model may refuse;
-- **thinking blocks a cheap model wrote** earlier in the same conversation, whose
+- **thinking blocks an affordable model wrote** earlier in the same conversation, whose
   signature a Claude model cannot check. (A model slot's fallback answers lose theirs
   before Claude Code stores them: § Model slots. A worker slot's answers do not.)
 
@@ -411,22 +414,22 @@ Two requests are never translated **for a Claude target**:
   `count_tokens`, a slot's Claude target or an alias to a `claude-…` model): auto mode
   stays exactly as Claude Code ships it, so a check reaches its Claude target with only
   `model` changed, every other byte as sent. Its newer form carries no field the table
-  would change, and Sonnet 5.5 took it (200). On the opt-in judge route to a cheap
+  would change, and Sonnet 5.5 took it (200). On the opt-in judge route to an affordable
   backend, the check gets that backend's named translations (`reasoningOffForBackend`,
-  `toolSearchForBackend`, § What a cheap backend sees), like every request to it.
+  `toolSearchForBackend`, § What an affordable backend sees), like every request to it.
 - A `claude-…` model that Claude Code sent itself: Claude Code built that body for that
   model, and it goes byte for byte.
 
-Why: on 2026-10-15 both cheap targets of the worker slot answered 503 and the fallback,
+Why: on 2026-10-15 both affordable targets of the worker slot answered 503 and the fallback,
 Claude Sonnet 5.5, answered 400 to one request. Its reason was not logged then, so which
 field it refused is not known; `thinking: disabled` is the one field Claude Code is known
-to send that Sonnet 5.5 refuses. Thinking blocks a cheap model wrote earlier in the same
+to send that Sonnet 5.5 refuses. Thinking blocks an affordable model wrote earlier in the same
 conversation are a second suspect the translation does not touch (it never changes a
 message); the next live case's `WARN` line will tell.
 
-## What a cheap backend sees
+## What an affordable backend sees
 
-The router builds a **new** request for a cheap backend:
+The router builds a **new** request for an affordable backend:
 
 - Headers: only `accept`, `anthropic-version`, `content-type`, `user-agent`,
   `x-claude-code-session-id`, plus the backend's own key as `Authorization`. Never
@@ -440,7 +443,7 @@ The router builds a **new** request for a cheap backend:
   remote backend, and Anthropic, keep the environment's proxy settings: HTTPS through a
   company proxy is normal there. `directIfLoopback` passes `proxy: false`, which Bun
   honours from 1.4.3 on (oven-sh/bun#42692); Bun 1.4.2 ignores it and sends the key to
-  `HTTP_PROXY` (measured). So anymodel needs Bun ≥ 1.4.3 (`MIN_BUN`,
+  `HTTP_PROXY` (measured). So cc-smart-dev-kit needs Bun ≥ 1.4.3 (`MIN_BUN`,
   `src/build-info/bun.ts`): the router does not start on an older Bun, `gateway setup`
   does not install it there, and `doctor` skips the gateway checks there
   (`src/gateway/proxy.test.ts`; `docs/design.md` § The Bun it needs).
@@ -477,14 +480,14 @@ cannot send those cross-site without a CORS preflight, which the router never an
 | What | Where |
 |---|---|
 | Source | `src/gateway/`: `router.ts`, `targets.ts`, `config.ts`, `limit-state.ts`, `judge-test.ts`, `fallback-answer.ts`, `backends.ts`, `settings.ts`, `health.ts`, `service.ts`, `commands.ts`, `doctor.ts`; the bundle entry `src/entries/router.ts`. The status line and `usage`: `src/cli/statusline.ts`, `src/cli/usage.ts`; the alert: `src/hooks/stop-failure.ts`, `src/entries/stop-failure.ts` |
-| Config: backend keys, slots, aliases, port | `~/.config/anymodel/gateway.json`, mode **600**. A file others can read is refused. Read again when it changes, so `gateway slot` is live. A bad edit keeps the last good config, with one error line. A command saves it atomically, inside the state lock, and keeps any field it does not know |
-| A setup that did not finish | `~/.claude/anymodel/restart-pending` (the state folder): written before the copy and the unit, removed once the restarted router answers |
-| The router that runs | `~/.local/share/anymodel/router.js`, a copy of the plugin's `dist/router.js` |
-| The service | `~/.config/systemd/user/anymodel-router.service` |
-| The socket that holds the port | `~/.config/systemd/user/anymodel-router.socket` (`ListenStream=127.0.0.1:<port>`) |
-| The router's inner socket | `$XDG_RUNTIME_DIR/anymodel-router/router-<pid>.sock` (systemd makes the folder, mode 0700, and removes it when the unit stops) |
-| Health | `GET http://127.0.0.1:<port>/__anymodel/health`: counts, resting targets, Claude models resting at their plan limit (`limited`), slots, `modelSlots`; never a key |
-| The limit state | `~/.local/state/anymodel/gateway-state.json`, mode 600, written by the router: plan limits seen, slots on a fallback. Read by `anymodel statusline` and the StopFailure hook |
+| Config: backend keys, slots, aliases, port | `~/.config/cc-smart-dev-kit/gateway.json`, mode **600**. A file others can read is refused. Read again when it changes, so `gateway slot` is live. A bad edit keeps the last good config, with one error line. A command saves it atomically, inside the state lock, and keeps any field it does not know |
+| A setup that did not finish | `~/.claude/cc-smart-dev-kit/restart-pending` (the state folder): written before the copy and the unit, removed once the restarted router answers |
+| The router that runs | `~/.local/share/cc-smart-dev-kit/router.js`, a copy of the plugin's `dist/router.js` |
+| The service | `~/.config/systemd/user/cc-smart-dev-kit-router.service` |
+| The socket that holds the port | `~/.config/systemd/user/cc-smart-dev-kit-router.socket` (`ListenStream=127.0.0.1:<port>`) |
+| The router's inner socket | `$XDG_RUNTIME_DIR/cc-smart-dev-kit-router/router-<pid>.sock` (systemd makes the folder, mode 0700, and removes it when the unit stops) |
+| Health | `GET http://127.0.0.1:<port>/__cc-smart-dev-kit/health`: counts, resting targets, Claude models resting at their plan limit (`limited`), slots, `modelSlots`; never a key |
+| The limit state | `~/.local/state/cc-smart-dev-kit/gateway-state.json`, mode 600, written by the router: plan limits seen, slots on a fallback. Read by `cc-smart-dev-kit statusline` and the StopFailure hook |
 
 With no good config the router still starts: both slots answer from `claude-sonnet-5-5`
 on the own login, and one error line names the file.
@@ -495,9 +498,9 @@ The plugin's version folder changes with each update, and Claude Code deletes an
 some time after an update, even under a running process. So the router runs from a copy,
 as two systemd user units:
 
-- **`anymodel-router.socket`** holds `127.0.0.1:<port>` (socket activation: systemd, not
+- **`cc-smart-dev-kit-router.socket`** holds `127.0.0.1:<port>` (socket activation: systemd, not
   the router, opens the port and keeps it open);
-- **`anymodel-router.service`** runs the copy. systemd hands it the open socket as file
+- **`cc-smart-dev-kit-router.service`** runs the copy. systemd hands it the open socket as file
   descriptor 3 (`LISTEN_FDS=1`, `LISTEN_PID` = the router).
 
 ### Why a socket unit
@@ -557,7 +560,7 @@ open), the router binds the config's port itself, as before.
    no answer (connection refused) means free, a 200 health answer with `ok: true` means
    this router. **Anything else stops setup** with "port N is used by another program (an
    older router? stop it first)", nothing written; except a port that gives no answer in
-   time while `anymodel-router.socket` is active: that is our socket with its router down
+   time while `cc-smart-dev-kit-router.socket` is active: that is our socket with its router down
    or restarting, and setup goes on;
 2. checks everything and writes nothing: the config, the copy, the two units;
 3. when the router is running and the copy or a unit changed (or an earlier setup did not
@@ -580,17 +583,17 @@ open), the router binds the config's port itself, as before.
 4. makes the config when there is none (the backend key comes on stdin, never argv);
 5. writes the **restart-pending marker**, then the copy and the two units, all through
    `src/setup/` (backup, record for `restore`, atomic write);
-6. runs `systemctl --user daemon-reload` and `enable anymodel-router.socket
-   anymodel-router.service`, then one of two ways:
-   - **the socket is open and its file did not change:** `restart anymodel-router.service`.
+6. runs `systemctl --user daemon-reload` and `enable cc-smart-dev-kit-router.socket
+   cc-smart-dev-kit-router.service`, then one of two ways:
+   - **the socket is open and its file did not change:** `restart cc-smart-dev-kit-router.service`.
      The socket stays open; `restart` returns once the old router has drained and the new
      one runs. The command runner's timeout is 180 s, longer than that drain;
    - **otherwise** (the move from the plain unit, a changed socket unit, a socket that is
-     not open): `stop --no-block anymodel-router.service` (the old router closes its own
-     port at SIGTERM), `stop anymodel-router.socket` when it was open, `reset-failed` of
+     not open): `stop --no-block cc-smart-dev-kit-router.service` (the old router closes its own
+     port at SIGTERM), `stop cc-smart-dev-kit-router.socket` when it was open, `reset-failed` of
      both (a unit that hit its start limit refuses a start within the limit's window
-     otherwise: seen live), then `start anymodel-router.socket`, then `start
-     anymodel-router.service`. systemd orders a stop
+     otherwise: seen live), then `start cc-smart-dev-kit-router.socket`, then `start
+     cc-smart-dev-kit-router.service`. systemd orders a stop
      before a start of units that are ordered against each other, so the socket's start
      waits until the old router has exited, and then binds a free port. **Two calls, the
      socket first:** started in one call, the service's start takes the place of its
@@ -604,17 +607,17 @@ open), the router binds the config's port itself, as before.
      the health wait below fails.
    Then it waits up to 5 s for the health page. It answers: the marker goes. It does not:
    setup fails with the unit's `is-active` state and the hint `journalctl --user -u
-   anymodel-router -n 30`, and the marker stays, so `doctor` shows ✗ "a gateway setup did
+   cc-smart-dev-kit-router -n 30`, and the marker stays, so `doctor` shows ✗ "a gateway setup did
    not finish" and the next `gateway setup` restarts again, even with the files up to
    date.
 
 With nothing changed, the socket open and no marker: only `enable --now` of both units.
 
 The service unit: the absolute path of the `bun` that ran setup on the copy, with
-`--no-env-file`; `Wants=` and `After=` the socket; `RuntimeDirectory=anymodel-router`
+`--no-env-file`; `Wants=` and `After=` the socket; `RuntimeDirectory=cc-smart-dev-kit-router`
 (0700); `Restart=always` (`RestartSec=2`) with a start limit, `StartLimitBurst=5` within
 `StartLimitIntervalSec=60`; `KillMode=mixed`, `TimeoutStopSec=120`;
-`WantedBy=default.target` and `Also=anymodel-router.socket`. The socket unit:
+`WantedBy=default.target` and `Also=cc-smart-dev-kit-router.socket`. The socket unit:
 `ListenStream=127.0.0.1:<port>`, `NoDelay=true`, `WantedBy=sockets.target`. User services
 run at boot only with linger on (`loginctl enable-linger $USER`, once, by the person).
 
@@ -668,16 +671,16 @@ and `gateway setup` opens both again. One crash is still retried after 2 s.
   gets its whole answer. The relay alone: a failed inner connection is logged, and a later
   server error is logged without a crash.
 
-### `anymodel restore`
+### `cc-smart-dev-kit restore`
 
 It undoes the service in **two stages** while the gateway is on. It assumes a
 running session keeps the `ANTHROPIC_BASE_URL` it started with, so that stopping the
 router while the env keys are there would make every running session fail. (One live
 look saw sessions pick up changed env keys at once: `claude-code-contract.md`. Until
 that is repeated, for removed keys too, the two stages stay.) "Still there" means a
-gateway env key that **still holds anymodel's value** (`ownedGatewayEnvKeys`: a key path
-in `owned.json` whose value in the file is the one anymodel wrote; a record from before
-values were kept counts as anymodel's, whatever the file holds). A key anymodel set and
+gateway env key that **still holds cc-smart-dev-kit's value** (`ownedGatewayEnvKeys`: a key path
+in `owned.json` whose value in the file is the one cc-smart-dev-kit wrote; a record from before
+values were kept counts as cc-smart-dev-kit's, whatever the file holds). A key cc-smart-dev-kit set and
 the person changed since is theirs: it counts neither as a reason to keep the router up,
 nor as a key to remove.
 
@@ -687,7 +690,7 @@ nor as a key to remove.
    A key the person changed stays in the file, and its ownership is given up with it.
 2. **Stage 2** (no such key left): it asks the service's state (`systemctl --user
    is-active`), disables both units, and stops both in **one** call, `systemctl --user stop
-   --no-block anymodel-router.socket anymodel-router.service` (asking first when it runs;
+   --no-block cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service` (asking first when it runs;
    `--yes` skips the question): in one call, no connection reopens the router in between.
    Then it asks the router's port (the config's) while this router answers there, for up
    to 15 s. The socket closes at once and the router closes its own copy at SIGTERM, so
@@ -698,7 +701,7 @@ nor as a key to remove.
    and goes on. This router still answering after 15 s stops restore with an error,
    nothing else restored. Then it removes the copy and the units, reloads systemd,
    clears the restart-pending marker, and removes the router's limit state
-   (`~/.local/state/anymodel/gateway-state.json`), so no status line or alert reads a
+   (`~/.local/state/cc-smart-dev-kit/gateway-state.json`), so no status line or alert reads a
    stale fallback from it. With an unusable `gateway.json` the port is
    unknown: the stop is sent, and nothing is waited for. (The health answer names the
    router's port too, but it can only be asked on a port already known.)
@@ -716,15 +719,15 @@ and `restore` remove exactly them):
 1. `ENABLE_TOOL_SEARCH` = `true`: behind a gateway, Claude Code otherwise sends every MCP
    tool definition on every turn (184K tokens of context on a first turn, against 70K).
 2. `ANTHROPIC_BASE_URL` = `http://127.0.0.1:<port>`
-3. `ANTHROPIC_DEFAULT_HAIKU_MODEL` = `anymodel-scout[1m]`, with `…_NAME` and `…_DESCRIPTION`
-4. `ANTHROPIC_DEFAULT_SONNET_MODEL` = `anymodel-worker[1m]`, with `…_NAME` and `…_DESCRIPTION`
+3. `ANTHROPIC_DEFAULT_HAIKU_MODEL` = `cc-smart-dev-kit-scout[1m]`, with `…_NAME` and `…_DESCRIPTION`
+4. `ANTHROPIC_DEFAULT_SONNET_MODEL` = `cc-smart-dev-kit-worker[1m]`, with `…_NAME` and `…_DESCRIPTION`
 
 It **never** writes `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` (they replace the
 person's own login), nor `CLAUDE_CODE_SUBAGENT_MODEL` or `…_FORCE` (an agent launched
-without a `model`, a reviewer say, would run on a cheap slot). `gateway status` warns
+without a `model`, a reviewer say, would run on an affordable slot). `gateway status` warns
 when one of them is set.
 
-A gateway key that exists and that `anymodel` did not set stops `gateway on`, and the
+A gateway key that exists and that `cc-smart-dev-kit` did not set stops `gateway on`, and the
 value is shown masked; nothing is overwritten. Remove it by hand first (a project moving
 from its own gateway does it in its migration). `ENABLE_TOOL_SEARCH` gets a word of its
 own in that message: many people set it themselves. `on` also refuses while the router
@@ -743,11 +746,11 @@ stop the router only after every session restarted.
 - When Claude Code changes the safety check's prompt, the router stops recognising it,
   and the check goes by its model name. The log shows it: the lines lose their
   `(safety check)` mark. So "Claude first, the judge only as a fallback" holds only while
-  the router knows the prompt: under a cheap slot's name, an unrecognised check goes to that slot's
+  the router knows the prompt: under an affordable slot's name, an unrecognised check goes to that slot's
   targets until the router is updated (`docs/roadmap.md` Phase 3: log an unknown check
   form loudly).
 - `gateway setup` takes "this router answers on the port" as success after a `restart`
-  under the socket. When another `anymodel-router` (a `gateway serve` in a terminal)
+  under the socket. When another `cc-smart-dev-kit-router` (a `gateway serve` in a terminal)
   answers there, it cannot tell the two apart. (On the way that opens the socket, the
   socket fails to bind instead, and setup says so.) Stop the other one first.
 - **The move to the socket unit refuses requests once.** The first `gateway setup` of a
@@ -760,8 +763,8 @@ stop the router only after every session restarted.
   than that.
 - **A router that cannot start.** While it crash-loops, requests wait in the open socket
   (about 10 s: 5 starts, 2 s apart). Then systemd gives it up and closes the socket, and
-  every request is refused at once until `anymodel gateway setup` (or `systemctl --user
-  reset-failed anymodel-router.socket anymodel-router` and a start of both) opens them
+  every request is refused at once until `cc-smart-dev-kit gateway setup` (or `systemctl --user
+  reset-failed cc-smart-dev-kit-router.socket cc-smart-dev-kit-router` and a start of both) opens them
   again. Nothing restarts it by itself after that: a person looks at why first.
 - **A connection that has sent nothing when the router restarts** gets half a second to
   send its request, then is closed. A client that connects and waits longer than that
@@ -779,35 +782,35 @@ stop the router only after every session restarted.
 - **Images:** OmniRoute leaves an image in a request only when its catalog marks the
   model vision-capable; otherwise another model describes the image and the slot's model
   answers from that caption. Check a new model's image support before it goes in a slot.
-- A cheap subagent's `ToolSearch` changes its tool list, so that backend's prompt cache
+- An affordable subagent's `ToolSearch` changes its tool list, so that backend's prompt cache
   restarts from that point. It costs a little and breaks nothing.
 
 ## Troubleshooting
 
-Start with `anymodel gateway status`, then `anymodel doctor`.
+Start with `cc-smart-dev-kit gateway status`, then `cc-smart-dev-kit doctor`.
 
 | Symptom | Check | Fix |
 |---|---|---|
-| Every Claude request fails | `gateway status`; `systemctl --user status anymodel-router.socket anymodel-router`; `journalctl --user -u anymodel-router` | Restart the unit. Still broken: `gateway off`, restart the sessions |
-| Every Claude request hangs | `doctor`: "the socket holds 127.0.0.1:N, but the router does not answer"; the socket is open but its router does not run: `systemctl --user status anymodel-router`, and why: `journalctl --user -u anymodel-router -n 30` | fix the cause, then `anymodel gateway setup` (it goes on although the port does not answer), or `systemctl --user restart anymodel-router`. A router that keeps failing stops being retried after 5 starts in 60 s, and the hang turns into the next row |
-| Every Claude request is refused at once, and the socket is `failed` | `doctor`: "the router failed to start again and again, so systemd closed its socket"; `systemctl --user show -p Result anymodel-router.socket` says `service-start-limit-hit`; why: `journalctl --user -u anymodel-router -n 30` | fix the cause, then `anymodel gateway setup` (it clears the start limit with `reset-failed` and opens both again) |
-| `gateway setup`: "… failed … Starting anymodel-router without its socket" | the socket could not open: `ss -ltnp` (another program on the port?), `journalctl --user -u anymodel-router.socket -n 30` | the router runs and binds the port itself, but its restarts refuse requests: free the port, then `anymodel gateway setup` again |
-| `doctor`: no socket unit, or it is not the one setup writes | a router set up by an older version, or `port` changed in `gateway.json` | `anymodel gateway setup` (the move refuses requests once, during the old router's drain) |
+| Every Claude request fails | `gateway status`; `systemctl --user status cc-smart-dev-kit-router.socket cc-smart-dev-kit-router`; `journalctl --user -u cc-smart-dev-kit-router` | Restart the unit. Still broken: `gateway off`, restart the sessions |
+| Every Claude request hangs | `doctor`: "the socket holds 127.0.0.1:N, but the router does not answer"; the socket is open but its router does not run: `systemctl --user status cc-smart-dev-kit-router`, and why: `journalctl --user -u cc-smart-dev-kit-router -n 30` | fix the cause, then `cc-smart-dev-kit gateway setup` (it goes on although the port does not answer), or `systemctl --user restart cc-smart-dev-kit-router`. A router that keeps failing stops being retried after 5 starts in 60 s, and the hang turns into the next row |
+| Every Claude request is refused at once, and the socket is `failed` | `doctor`: "the router failed to start again and again, so systemd closed its socket"; `systemctl --user show -p Result cc-smart-dev-kit-router.socket` says `service-start-limit-hit`; why: `journalctl --user -u cc-smart-dev-kit-router -n 30` | fix the cause, then `cc-smart-dev-kit gateway setup` (it clears the start limit with `reset-failed` and opens both again) |
+| `gateway setup`: "… failed … Starting cc-smart-dev-kit-router without its socket" | the socket could not open: `ss -ltnp` (another program on the port?), `journalctl --user -u cc-smart-dev-kit-router.socket -n 30` | the router runs and binds the port itself, but its restarts refuse requests: free the port, then `cc-smart-dev-kit gateway setup` again |
+| `doctor`: no socket unit, or it is not the one setup writes | a router set up by an older version, or `port` changed in `gateway.json` | `cc-smart-dev-kit gateway setup` (the move refuses requests once, during the old router's drain) |
 | Subagents are slow or answer from Claude | the log's `fallbacks=` and `skipped=`; the health page's `cooling` | the backend is down or busy; wait out the cooldown |
-| A slot request ends `→ claude-… 400` | the `WARN claude-… answered 400` line next to it (written just after it): Anthropic's reason | a field outside `messages`, `system` and `tools` that the Claude target refuses: add it to `requestForClaudeFallback`'s table (with a test and a contract row). A reason inside the messages (a prefill, a cheap model's thinking blocks) is not translated: § What a Claude target sees |
+| A slot request ends `→ claude-… 400` | the `WARN claude-… answered 400` line next to it (written just after it): Anthropic's reason | a field outside `messages`, `system` and `tools` that the Claude target refuses: add it to `requestForClaudeFallback`'s table (with a test and a contract row). A reason inside the messages (a prefill, an affordable model's thinking blocks) is not translated: § What a Claude target sees |
 | `403 … accepts requests from this machine only` | the caller sends `Origin` or a foreign `Host` | use `http://127.0.0.1:<port>` from a local program |
-| `no target for anymodel-… answered` | the error lists each target's failure | fix the first reason (key, model id, backend down) |
-| `"anymodel-…" is not a slot` | `gateway status` | `gateway slot`, or `gateway setup` |
-| Every `haiku` / `sonnet` call answers from Claude Sonnet | the log says the config cannot be used | `chmod 600 ~/.config/anymodel/gateway.json`; fix the JSON (read on the next request) |
+| `no target for cc-smart-dev-kit-… answered` | the error lists each target's failure | fix the first reason (key, model id, backend down) |
+| `"cc-smart-dev-kit-…" is not a slot` | `gateway status` | `gateway slot`, or `gateway setup` |
+| Every `haiku` / `sonnet` call answers from Claude Sonnet | the log says the config cannot be used | `chmod 600 ~/.config/cc-smart-dev-kit/gateway.json`; fix the JSON (read on the next request) |
 | `gateway on` stops: set by someone else | an older install's env keys | remove those keys by hand, then `gateway on` |
-| `doctor`: the router copy is not this version's | the plugin was updated | `anymodel gateway setup` (it asks before the restart) |
+| `doctor`: the router copy is not this version's | the plugin was updated | `cc-smart-dev-kit gateway setup` (it asks before the restart) |
 | `gateway setup`: `port N is used by another program` | `ss -ltnp` shows who holds it; often an older router | stop that program, or set another `port` in `gateway.json` |
-| `doctor`: `a gateway setup did not finish` | the router did not answer after setup's restart: `journalctl --user -u anymodel-router -n 30` | fix the cause, then `anymodel gateway setup` again |
+| `doctor`: `a gateway setup did not finish` | the router did not answer after setup's restart: `journalctl --user -u cc-smart-dev-kit-router -n 30` | fix the cause, then `cc-smart-dev-kit gateway setup` again |
 | Auto mode blocks good work while Claude is at its limit | the log's `(safety check) [judge fallback]` and `WARN safety check judged by` lines | `gateway slot judge off`: Claude Code then asks you instead |
 | `slot judge` says a target "did not block the test check" | the target let a force push to main run, or did not answer in the `<block>` format | pick another model; there is no way to skip the test |
-| Opus answers from a cheap model | the `WARN anymodel-opus: … is at its plan usage limit` line; `gateway status` shows "at its plan usage limit" | wait for the reset (the router asks Opus again every 10 minutes at most), or `gateway slot opus off` |
+| Opus answers from an affordable model | the `WARN cc-smart-dev-kit-opus: … is at its plan usage limit` line; `gateway status` shows "at its plan usage limit" | wait for the reset (the router asks Opus again every 10 minutes at most), or `gateway slot opus off` |
 | Opus answers 400 "Invalid `signature` in `thinking` block" after a fallback | the `WARN claude-opus-5-5 refused a thinking block's signature` line | `/rewind` in Claude Code to the message before the fallback answered, or a new session |
-| The Opus fallback answers 400 for a long or rich conversation | the `WARN anymodel-opus: … refused this … conversation` line | `/compact`, a new session, or wait for the reset |
-| A judge target is ignored ("has not passed the judge test") | `gateway status` marks it NOT TESTED; `doctor` fails | `anymodel gateway slot judge <targets>` tests and sets it |
+| The Opus fallback answers 400 for a long or rich conversation | the `WARN cc-smart-dev-kit-opus: … refused this … conversation` line | `/compact`, a new session, or wait for the reset |
+| A judge target is ignored ("has not passed the judge test") | `gateway status` marks it NOT TESTED; `doctor` fails | `cc-smart-dev-kit gateway slot judge <targets>` tests and sets it |
 | Claude answers 401 | a 401 may also be a login token that expired | sign in again in Claude Code (`/login`) when it keeps failing |
 | The status line shows nothing about usage | `rate_limits` is only in Claude Code's input for a Claude subscription, after the first answer | nothing to fix |

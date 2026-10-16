@@ -1,20 +1,20 @@
 # Web Search
 
-`anymodel search` searches the web, or reads one page's text, through the local gateway's
-OmniRoute backend — the same program and the same key the gateway's cheap models use. It
+`cc-smart-dev-kit search` searches the web, or reads one page's text, through the local gateway's
+OmniRoute backend — the same program and the same key the gateway's affordable models use. It
 is a command, not a service: nothing runs in the background, and Claude Code reaches it
 through the Bash tool (the `search` skill, `plugin/skills/search/SKILL.md`).
 
 ```sh
-anymodel search "bun runtime latest version"          # 5 results: title, URL, snippet
-anymodel search "bun runtime latest version" --max 3  # fewer
-anymodel search --fetch https://bun.sh/blog           # one page's text, in Markdown
-anymodel search "bun runtime" --json                  # OmniRoute's whole answer, uncut
+cc-smart-dev-kit search "bun runtime latest version"          # 5 results: title, URL, snippet
+cc-smart-dev-kit search "bun runtime latest version" --max 3  # fewer
+cc-smart-dev-kit search --fetch https://bun.sh/blog           # one page's text, in Markdown
+cc-smart-dev-kit search "bun runtime" --json                  # OmniRoute's whole answer, uncut
 ```
 
 ```mermaid
 flowchart LR
-    C["anymodel search"] -->|"key + address from<br/>~/.config/anymodel/gateway.json"| O["OmniRoute<br/>127.0.0.1:20128"]
+    C["cc-smart-dev-kit search"] -->|"key + address from<br/>~/.config/cc-smart-dev-kit/gateway.json"| O["OmniRoute<br/>127.0.0.1:20128"]
     O -->|"POST /v1/search"| P["a search provider<br/>(ollama-search, …)"]
     O -->|"POST /v1/web/fetch"| F["a web-fetch provider<br/>(jina-reader, …)"]
 ```
@@ -44,7 +44,7 @@ flowchart LR
   lists the host, and this request carries the key. So for a `baseUrl` on 127.0.0.0/8,
   `::1` or `localhost`, the request goes straight there (`directIfLoopback`,
   `src/gateway/hosts.ts`, the same rule the gateway uses for its own backend calls). It
-  passes `proxy: false`, which Bun honours from 1.4.3 on; so `anymodel search` does not
+  passes `proxy: false`, which Bun honours from 1.4.3 on; so `cc-smart-dev-kit search` does not
   run on an older Bun (`docs/design.md` § The Bun it needs).
 - **Web text never drives the terminal.** A title, a URL, a snippet, the provider's name
   and a page's text come from the web, and a terminal obeys control characters inside
@@ -70,7 +70,7 @@ OmniRoute, gateway 0.2.1:
 | Answer size | 298,340 bytes for 5 results — the snippets were whole pages (585 to 61,350 characters each) |
 | Cost | `usage.search_cost_usd: 0` — **$0.00 a search** |
 | The same query again | HTTP 200 in 42 ms, `cached: true`: OmniRoute keeps a query for 5 minutes (`cacheTTLMs`) |
-| `anymodel search "…" --max 3`, the built command | 886 ms from the shell for 3 results, the header reading `in 796 ms` |
+| `cc-smart-dev-kit search "…" --max 3`, the built command | 886 ms from the shell for 3 results, the header reading `in 796 ms` |
 | `--fetch https://example.com` | HTTP 400: "No credentials configured for any web-fetch provider…" (see § Limits) |
 
 Ollama's own pricing page (ollama.com/pricing, read 2026-10-15) prices models per token
@@ -81,8 +81,8 @@ provider would change that, and the command then prints `cost $0.00xx` in the he
 
 ## Limits
 
-- **It needs the gateway set up**: a `~/.config/anymodel/gateway.json` with an
-  `omniroute` backend (`anymodel gateway setup --backend-key-stdin omniroute`), and
+- **It needs the gateway set up**: a `~/.config/cc-smart-dev-kit/gateway.json` with an
+  `omniroute` backend (`cc-smart-dev-kit gateway setup --backend-key-stdin omniroute`), and
   OmniRoute answering. Without a config, with a config it cannot use, or without that
   backend, the command stops with what to do — exit code 1.
 - **`--fetch` needs a web-fetch provider key inside OmniRoute** — firecrawl,

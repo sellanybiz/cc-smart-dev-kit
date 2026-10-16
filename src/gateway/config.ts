@@ -1,11 +1,11 @@
 /**
- * The AI gateway's config file: `~/.config/anymodel/gateway.json`, one per machine.
+ * The AI gateway's config file: `~/.config/cc-smart-dev-kit/gateway.json`, one per machine.
  *
- * It holds the cheap backends' API keys, so only its owner may read it: a file whose mode
+ * It holds the affordable backends' API keys, so only its owner may read it: a file whose mode
  * lets the group or others read it is refused, never loaded. No Claude credential is ever
  * in it: Claude requests carry the person's own login.
  *
- * The router reads it again when the file changes, so `anymodel gateway slot` switches
+ * The router reads it again when the file changes, so `cc-smart-dev-kit gateway slot` switches
  * a slot live. A bad edit keeps the last good config, with one error line.
  *
  * Every function takes the file's path, so the tests run against a temp folder.
@@ -68,7 +68,7 @@ export const gatewayConfigSchema = z
      */
     judgeTested: z.record(z.string(), z.string()).optional(),
     /**
-     * Claude model ids that have a model slot: `{"claude-opus-5-5": "anymodel-opus"}`.
+     * Claude model ids that have a model slot: `{"claude-opus-5-5": "cc-smart-dev-kit-opus"}`.
      * Absent (the default): every `claude-…` request goes to Anthropic byte for byte. With
      * an entry, that model's requests go to the slot, whose first target is the model
      * itself; the next target answers only at the plan's usage limit (`targets.ts`).
@@ -77,7 +77,7 @@ export const gatewayConfigSchema = z
     modelSlots: z.record(z.string(), z.string()).optional(),
     port: z.int().min(1).max(65_535).default(DEFAULT_PORT),
     slots: z.record(
-      z.string().refine(isSlotKey, "a slot key is anymodel-<name>"),
+      z.string().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"),
       z.array(z.string()).min(1),
     ),
     timeouts: z
@@ -125,8 +125,8 @@ export const gatewayConfigSchema = z
 
 /**
  * Why a `modelSlots` entry cannot be used, or null when it can. The key is the Claude id
- * Claude Code sends (without `[1m]`); the slot is a model slot (`anymodel-opus`,
- * `anymodel-fable`) whose FIRST target is that same id, so a request that is not at its
+ * Claude Code sends (without `[1m]`); the slot is a model slot (`cc-smart-dev-kit-opus`,
+ * `cc-smart-dev-kit-fable`) whose FIRST target is that same id, so a request that is not at its
  * limit still reaches Anthropic byte for byte; and the slot has a target after it.
  */
 export function modelSlotError(
@@ -198,14 +198,16 @@ export type GatewayConfig = z.output<typeof gatewayConfigSchema>;
 
 /**
  * The judge test's version. Raise it when the test changes: every judge target then
- * counts as untested until `gateway slot judge` tests it again.
+ * counts as untested until `gateway slot judge` tests it again. At 2 since 0.3.0: the
+ * fixed phrase the proof is made from changed with the plugin's name, so every proof an
+ * earlier version wrote is invalid, and a target must be tested again.
  */
-export const JUDGE_TEST_VERSION = 1;
+export const JUDGE_TEST_VERSION = 2;
 
 /**
  * The proof that a judge target passed the judge test, as `gateway slot judge` writes it
- * into `judgeTested`: the first 32 hex characters of the SHA-256 of the test version, the
- * target and its backend's URL. Why in the config, and why a digest: the slot and its proof
+ * into `judgeTested`: the first 32 hex characters of the SHA-256 of a fixed phrase naming
+ * the test version, the target and its backend's URL. Why in the config, and why a digest: the slot and its proof
  * are saved in one atomic write, so they cannot drift apart; the router already reads that
  * file on each change; and a hand edit that adds a judge target, copies another target's
  * entry, or moves the backend gets no matching proof. It stops a mistake, not a person who
@@ -213,7 +215,7 @@ export const JUDGE_TEST_VERSION = 1;
  */
 export function judgeTestProof(target: string, backendUrl: string): string {
   return createHash("sha256")
-    .update(`anymodel judge test ${JUDGE_TEST_VERSION}\n${target}\n${backendUrl}`)
+    .update(`cc-smart-dev-kit judge test ${JUDGE_TEST_VERSION}\n${target}\n${backendUrl}`)
     .digest("hex")
     .slice(0, 32);
 }
@@ -304,7 +306,7 @@ export function saveConfig(path: string, config: GatewayConfig): void {
  * The config the router runs on while the file is missing or bad at start: no backends,
  * and both slots on Claude Sonnet 5.5 (1M context, like the `[1m]` the slot names
  * announce) on the person's own login. So every haiku / sonnet call still answers, only
- * not cheaply. Better than a service that crash-loops, or a 400 on every subagent, for
+ * not affordably. Better than a service that crash-loops, or a 400 on every subagent, for
  * every Claude Code session on the machine.
  */
 export function emptyConfig(): GatewayConfig {
@@ -314,8 +316,8 @@ export function emptyConfig(): GatewayConfig {
     backends: {},
     port: DEFAULT_PORT,
     slots: {
-      "anymodel-scout": [FALLBACK_SLOT_TARGET],
-      "anymodel-worker": [FALLBACK_SLOT_TARGET],
+      "cc-smart-dev-kit-scout": [FALLBACK_SLOT_TARGET],
+      "cc-smart-dev-kit-worker": [FALLBACK_SLOT_TARGET],
     },
     timeouts: { firstByteMs: DEFAULT_FIRST_BYTE_MS },
     version: 1,

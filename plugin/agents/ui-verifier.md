@@ -76,7 +76,7 @@ or the person tests it."
 ## The matrix
 
 The one home for the edge cases a browser can prove; the wider axes (data, timing, access,
-money, environment) are in the `anymodel:review` skill. Drive the brief's listed risks
+money, environment) are in the `cc-smart-dev-kit:review` skill. Drive the brief's listed risks
 **first**, and for each say whether you reproduced it. A case you could not reproduce is a
 result: report what you tried. Then run what applies, and name what you skipped.
 

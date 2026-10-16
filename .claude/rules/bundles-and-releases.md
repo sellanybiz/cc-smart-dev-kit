@@ -11,7 +11,7 @@ paths:
 ## Only `plugin/` reaches a machine
 
 Claude Code copies only `plugin/` into
-`~/.claude/plugins/cache/anymodel/anymodel/<version>/`. There is no install step there: no
+`~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>/`. There is no install step there: no
 `bun install`, no `node_modules`.
 
 - **Nothing in `plugin/` imports from outside it.** Every script in it is a bundle that
@@ -29,7 +29,7 @@ Claude Code copies only `plugin/` into
 - **Never run anything long-lived from the version folder.** Claude Code deletes an old
   one after an update: 14 days later, the docs say (not proved yet:
   `docs/claude-code-contract.md`). A long-running part runs from a copy in
-  `~/.local/share/anymodel/`: the router (`src/entries/router.ts` → `dist/router.js`,
+  `~/.local/share/cc-smart-dev-kit/`: the router (`src/entries/router.ts` → `dist/router.js`,
   copied by `gateway setup`), later the portal.
 
 ## Bundles are committed
@@ -46,9 +46,9 @@ the others, `router.js` included.
 - **Never edit `plugin/dist/*.js` by hand.** It is excluded from Biome and the
   neutrality check because it is built from `src/`.
 - **A new bundle is a new file in `src/entries/`.** A test file there is skipped.
-- `plugin/bin/anymodel` is written by hand. It finds `dist/cli.js` from its own
+- `plugin/bin/cc-smart-dev-kit` is written by hand. It finds `dist/cli.js` from its own
   location (`dirname "$0"`), because `CLAUDE_PLUGIN_ROOT` is not set in the Bash tool.
-- `plugin/bin/anymodel-bun` is written by hand too: the plugin's hooks run through it, so
+- `plugin/bin/cc-smart-dev-kit-bun` is written by hand too: the plugin's hooks run through it, so
   they find bun without PATH (`.claude/rules/hooks.md`). It reads the launcher's
   `baked_bun='…'` line, so a change to that line in `src/setup/launcher.ts` changes it too.
   Both shim tests run the real launcher script (`src/hooks/bun-shim.test.ts`,
@@ -74,7 +74,7 @@ the others, `router.js` included.
   (`scripts/check-version-bump.ts`). A change to `src/` that changes a bundle changes
   `plugin/dist/`, so it needs a bump too.
 - Use `VERSION`, `MARKETPLACE_SOURCE`, `PLUGIN_ID` and the command strings from
-  `src/build-info/`. Never write the version, the repository or `anymodel@anymodel` twice.
+  `src/build-info/`. Never write the version, the repository or `cc-smart-dev-kit@cc-smart-dev-kit` twice.
 
 ## Dependencies
 

@@ -11,7 +11,7 @@ import { projectChecks } from "./project-checks";
 const PLUGIN_HOOKS = join(import.meta.dir, "..", "..", "plugin", "hooks", "hooks.json");
 const ENGINE = { worktrees: { base: "main", prefix: "app-wt-" } };
 const HINT =
-  "Run `anymodel hook` for the lines to paste (also in the anymodel README, § Worktrees)";
+  "Run `cc-smart-dev-kit hook` for the lines to paste (also in the cc-smart-dev-kit README, § Worktrees)";
 
 function check(repo: string, env = hookEnv(), hooksFile = PLUGIN_HOOKS) {
   return projectChecks(repo, env, cliPaths(env), hooksFile).map(
@@ -43,7 +43,7 @@ describe("the worktree engine's wiring", () => {
 
   test("worktrees set, the three hooks wired as the README says: one ✓", () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", ENGINE);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", ENGINE);
     writeClaudeFile(repo, "settings.json", projectHookSettings());
     expect(check(repo)).toEqual([
       "✓ project: the worktree engine is wired (WorktreeCreate, WorktreeRemove, SubagentStop)",
@@ -52,38 +52,38 @@ describe("the worktree engine's wiring", () => {
 
   test("worktrees set, nothing wired: ✗, Claude Code makes its own worktrees, and how to wire them", () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", ENGINE);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", ENGINE);
     expect(check(repo)).toEqual([
-      `✗ project: "worktrees" is set in .claude/anymodel.json, but the project's settings do not wire WorktreeCreate, WorktreeRemove, SubagentStop to anymodel hook, so Claude Code makes its own worktrees. ${HINT}`,
+      `✗ project: "worktrees" is set in .claude/cc-smart-dev-kit.json, but the project's settings do not wire WorktreeCreate, WorktreeRemove, SubagentStop to cc-smart-dev-kit hook, so Claude Code makes its own worktrees. ${HINT}`,
     ]);
   });
 
   test("worktrees set, only WorktreeCreate wired (in settings.local.json): ✗ naming the other two", () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", ENGINE);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", ENGINE);
     writeClaudeFile(repo, "settings.local.json", {
       hooks: { WorktreeCreate: projectHookSettings().hooks.WorktreeCreate },
     });
     expect(check(repo)).toEqual([
-      `✗ project: "worktrees" is set in .claude/anymodel.json, but the project's settings do not wire WorktreeRemove, SubagentStop to anymodel hook. ${HINT}`,
+      `✗ project: "worktrees" is set in .claude/cc-smart-dev-kit.json, but the project's settings do not wire WorktreeRemove, SubagentStop to cc-smart-dev-kit hook. ${HINT}`,
     ]);
   });
 
-  test("wired, but no anymodel.json, or one without worktrees: ✗, each worktree would fail", () => {
+  test("wired, but no cc-smart-dev-kit.json, or one without worktrees: ✗, each worktree would fail", () => {
     const repo = makeRepo();
     wireOnly(repo, ["WorktreeCreate", "WorktreeRemove"]);
     expect(check(repo)).toEqual([
-      '✗ project: the project\'s settings wire WorktreeCreate, WorktreeRemove to anymodel hook, but there is no .claude/anymodel.json, so each of them fails. Add "worktrees", or take the anymodel hook lines out',
+      '✗ project: the project\'s settings wire WorktreeCreate, WorktreeRemove to cc-smart-dev-kit hook, but there is no .claude/cc-smart-dev-kit.json, so each of them fails. Add "worktrees", or take the cc-smart-dev-kit hook lines out',
     ]);
-    writeClaudeFile(repo, "anymodel.json", { sessionNames: true });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { sessionNames: true });
     expect(check(repo)).toEqual([
-      '✗ project: the project\'s settings wire WorktreeCreate, WorktreeRemove to anymodel hook, but .claude/anymodel.json has no "worktrees", so each of them fails. Add "worktrees", or take the anymodel hook lines out',
+      '✗ project: the project\'s settings wire WorktreeCreate, WorktreeRemove to cc-smart-dev-kit hook, but .claude/cc-smart-dev-kit.json has no "worktrees", so each of them fails. Add "worktrees", or take the cc-smart-dev-kit hook lines out',
     ]);
   });
 
   test("a second WorktreeCreate next to the engine, the project's or the user's: ✗ for each", () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", ENGINE);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", ENGINE);
     const settings = projectHookSettings();
     settings.hooks.WorktreeCreate?.push({
       hooks: [{ type: "command", command: "./make-worktree.sh", timeout: 60 }],
@@ -103,11 +103,11 @@ describe("the worktree engine's wiring", () => {
     ]);
   });
 
-  test("a broken anymodel.json: ✗ naming the file and field", () => {
+  test("a broken cc-smart-dev-kit.json: ✗ naming the file and field", () => {
     const repo = makeRepo();
-    const file = writeClaudeFile(repo, "anymodel.json", { worktree: {} });
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktree: {} });
     expect(check(repo)).toEqual([
-      `✗ project: Invalid ${file}: worktree: unknown field (a newer anymodel may be needed)`,
+      `✗ project: Invalid ${file}: worktree: unknown field (a newer cc-smart-dev-kit may be needed)`,
     ]);
   });
 });
@@ -122,11 +122,11 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     UserPromptSubmit: [{ hooks: [{ type: "command", command: "bun", args: ["p.ts"] }] }],
   };
   const both = (plugin: string, command: string, on: string) =>
-    `! project: the plugin's ${plugin} and the project's ${command} (.claude/settings.json) both run on ${on}, so both may answer. If that is the project's own copy of ${plugin}, list "${plugin}" in ownHooks in .claude/anymodel.json until the copy is removed`;
+    `! project: the plugin's ${plugin} and the project's ${command} (.claude/settings.json) both run on ${on}, so both may answer. If that is the project's own copy of ${plugin}, list "${plugin}" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed`;
 
   test("a project hook next to a plugin hook it does not list: one ! warning each, not a failure", () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", { sessionNames: true });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { sessionNames: true });
     wireOnly(repo, [], OTHERS);
     expect(check(repo)).toEqual([
       both("git-guard", "./guard.sh", "PreToolUse (Bash)"),
@@ -141,11 +141,11 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
 
   test("a listed hook: one · line, and no warning for its copy", () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", { ownHooks: ["git-guard", "session-name"] });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["git-guard", "session-name"] });
     wireOnly(repo, [], OTHERS);
     expect(check(repo)).toEqual([
-      "· project: the plugin's git-guard is off here: .claude/anymodel.json lists it in ownHooks, so the project's own copy answers alone",
-      "· project: the plugin's session-name is off here: .claude/anymodel.json lists it in ownHooks, so the project's own copy answers alone",
+      "· project: the plugin's git-guard is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
+      "· project: the plugin's session-name is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
       both("job-route", "./guard.sh", "PreToolUse (Bash)"),
       both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),
     ]);
@@ -153,19 +153,19 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
 
   test("a project hook on SessionStart: no warning for the machine-wide update-check", () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", {
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
       ownHooks: ["session-name", "worktree-leftovers"],
     });
     wireOnly(repo, [], { SessionStart: OTHERS.SessionStart });
     expect(check(repo)).toEqual([
-      "· project: the plugin's session-name is off here: .claude/anymodel.json lists it in ownHooks, so the project's own copy answers alone",
-      "· project: the plugin's worktree-leftovers is off here: .claude/anymodel.json lists it in ownHooks, so the project's own copy answers alone",
+      "· project: the plugin's session-name is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
+      "· project: the plugin's worktree-leftovers is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
     ]);
   });
 
   test("a project hook on the Agent event: no warning for the machine-wide agent-guard", () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", { sessionNames: true });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { sessionNames: true });
     wireOnly(repo, [], {
       PreToolUse: [
         {
@@ -181,15 +181,15 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
 
   test("a listed hook with no project hook left on its event: ! nothing answers in its place", () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", { ownHooks: ["main-folder-guard"] });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["main-folder-guard"] });
     expect(check(repo)).toEqual([
-      "! project: .claude/anymodel.json lists main-folder-guard in ownHooks, so the plugin's main-folder-guard is off here, but the project's settings wire no hook on PreToolUse (Edit, Write, NotebookEdit): nothing answers in its place. Take \"main-folder-guard\" out of ownHooks once the project's copy is gone",
+      "! project: .claude/cc-smart-dev-kit.json lists main-folder-guard in ownHooks, so the plugin's main-folder-guard is off here, but the project's settings wire no hook on PreToolUse (Edit, Write, NotebookEdit): nothing answers in its place. Take \"main-folder-guard\" out of ownHooks once the project's copy is gone",
     ]);
   });
 
   test("a project hook for every tool runs next to each plugin hook on that event, for all its tools", () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", { sessionNames: true });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { sessionNames: true });
     wireOnly(repo, [], {
       PostToolUse: [{ matcher: "*", hooks: [{ type: "command", command: "./log.sh" }] }],
     });
@@ -198,7 +198,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     ]);
   });
 
-  test("no anymodel.json: the plugin hooks are silent, so nothing can answer twice", () => {
+  test("no cc-smart-dev-kit.json: the plugin hooks are silent, so nothing can answer twice", () => {
     const repo = makeRepo();
     wireOnly(repo, [], OTHERS);
     expect(check(repo)).toEqual([]);
@@ -206,7 +206,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
 
   test("the settings of $CLAUDE_PROJECT_DIR, when set, not the checkout's", () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", { sessionNames: true });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { sessionNames: true });
     wireOnly(repo, [], OTHERS);
     const started = tempDir("project-dir");
     writeClaudeFile(started, "settings.json", {
@@ -220,7 +220,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
 
   test("an unknown name in ownHooks: ✗ naming the field", () => {
     const repo = makeRepo();
-    const file = writeClaudeFile(repo, "anymodel.json", { ownHooks: ["git-gaurd"] });
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["git-gaurd"] });
     const lines = check(repo);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toStartWith(`✗ project: Invalid ${file}: ownHooks.0: `);
@@ -228,7 +228,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
 
   test("the plugin's hooks.json cannot be read: ✗", () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", { sessionNames: true });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { sessionNames: true });
     const missing = join(tempDir("plugin"), "hooks.json");
     const lines = check(repo, hookEnv(), missing);
     expect(lines).toHaveLength(1);

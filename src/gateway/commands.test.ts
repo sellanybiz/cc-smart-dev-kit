@@ -76,14 +76,14 @@ function config(): GatewayConfig {
     },
     port: 20100,
     slots: {
-      "anymodel-cheap": ["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"],
-      "anymodel-mixed": ["claude-sonnet-5-5", "omniroute:glm-5.3-flash"],
-      "anymodel-scout": [
+      "cc-smart-dev-kit-affordable": ["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"],
+      "cc-smart-dev-kit-mixed": ["claude-sonnet-5-5", "omniroute:glm-5.3-flash"],
+      "cc-smart-dev-kit-scout": [
         "omniroute:glm-5.3-flash",
         "ollama:deepseek-v4.1-flash",
         "claude-sonnet-5-5",
       ],
-      "anymodel-worker": ["claude-sonnet-5-5"],
+      "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"],
     },
     timeouts: { firstByteMs: 1000 },
     version: 1,
@@ -93,14 +93,14 @@ function config(): GatewayConfig {
 /** The env block `on` writes on port 20100, written out by hand. */
 const ON_ENV = {
   ANTHROPIC_BASE_URL: "http://127.0.0.1:20100",
-  ANTHROPIC_DEFAULT_HAIKU_MODEL: "anymodel-scout[1m]",
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: "cc-smart-dev-kit-scout[1m]",
   ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION:
-    "Cheap model for search and reading: the scout slot (anymodel gateway slot scout …)",
-  ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (cheap)",
-  ANTHROPIC_DEFAULT_SONNET_MODEL: "anymodel-worker[1m]",
+    "Affordable model for search and reading: the scout slot (cc-smart-dev-kit gateway slot scout …)",
+  ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (affordable)",
+  ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker[1m]",
   ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION:
-    "Cheap model for routine code and docs: the worker slot (anymodel gateway slot worker …)",
-  ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (cheap)",
+    "Affordable model for routine code and docs: the worker slot (cc-smart-dev-kit gateway slot worker …)",
+  ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (affordable)",
   ENABLE_TOOL_SEARCH: "true",
 };
 
@@ -108,7 +108,7 @@ const ON_ENV = {
 
 describe("Claude Code settings: on / off", () => {
   const original = {
-    env: { CLAUDE_CODE_SUBAGENT_MODEL: "anymodel-worker[1m]", FOO: "1" },
+    env: { CLAUDE_CODE_SUBAGENT_MODEL: "cc-smart-dev-kit-worker[1m]", FOO: "1" },
     model: "opus",
     permissions: { allow: ["Bash(ls:*)"] },
   };
@@ -122,7 +122,7 @@ describe("Claude Code settings: on / off", () => {
       writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o644 });
       chmodSync(file, 0o644);
     }
-    return { file, stateDir: join(home, ".claude", "anymodel") };
+    return { file, stateDir: join(home, ".claude", "cc-smart-dev-kit") };
   }
 
   it.skipIf(NO_POSIX_MODES)(
@@ -137,7 +137,7 @@ describe("Claude Code settings: on / off", () => {
       // Changed by the move: CLAUDE_CODE_SUBAGENT_MODEL is no longer removed. The gateway
       // never writes it; `status` warns about it instead.
       expect(JSON.parse(text)).toEqual({
-        env: { CLAUDE_CODE_SUBAGENT_MODEL: "anymodel-worker[1m]", FOO: "1", ...ON_ENV },
+        env: { CLAUDE_CODE_SUBAGENT_MODEL: "cc-smart-dev-kit-worker[1m]", FOO: "1", ...ON_ENV },
         model: "opus",
         permissions: { allow: ["Bash(ls:*)"] },
       });
@@ -147,7 +147,7 @@ describe("Claude Code settings: on / off", () => {
       expect(backups).toHaveLength(1);
       expect(readFileSync(backups[0]?.path ?? "", "utf8")).toBe(before);
       // No backup beside the file: only the state folder, which holds them.
-      expect(readdirSync(join(file, "..")).sort()).toEqual(["anymodel", "settings.json"]);
+      expect(readdirSync(join(file, "..")).sort()).toEqual(["cc-smart-dev-kit", "settings.json"]);
       expect(statSync(file).mode & 0o777).toBe(0o644);
       expect(
         ownedKeys(stateDir, file)
@@ -189,10 +189,10 @@ describe("Claude Code settings: on / off", () => {
       // message says so, and what removing it does.
       const yourOwn =
         key === "ENABLE_TOOL_SEARCH"
-          ? ' Many people set ENABLE_TOOL_SEARCH themselves; removing it by hand lets anymodel gateway on manage it (it sets "true", and gateway off removes it again).'
+          ? ' Many people set ENABLE_TOOL_SEARCH themselves; removing it by hand lets cc-smart-dev-kit gateway on manage it (it sets "true", and gateway off removes it again).'
           : "";
       expect((caught as Error).message).toBe(
-        `${file}: env.${key} is ${shown}, set by someone else. anymodel does not overwrite it. Remove it by hand if anymodel should manage it.${yourOwn}`,
+        `${file}: env.${key} is ${shown}, set by someone else. cc-smart-dev-kit does not overwrite it. Remove it by hand if cc-smart-dev-kit should manage it.${yourOwn}`,
       );
       expect(readFileSync(file, "utf8")).toBe(before);
       expect(existsSync(stateDir)).toBe(false);
@@ -317,7 +317,7 @@ describe("Claude Code settings: on / off", () => {
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
       env: {
         ANTHROPIC_BASE_URL: "http://127.0.0.1:19999",
-        CLAUDE_CODE_SUBAGENT_MODEL: "anymodel-worker[1m]",
+        CLAUDE_CODE_SUBAGENT_MODEL: "cc-smart-dev-kit-worker[1m]",
         FOO: "1",
       },
       model: "opus",
@@ -332,7 +332,7 @@ describe("Claude Code settings: on / off", () => {
       env: {
         ANTHROPIC_AUTH_TOKEN: "t",
         ANTHROPIC_BASE_URL: "http://127.0.0.1:20100",
-        CLAUDE_CODE_SUBAGENT_MODEL: "anymodel-worker",
+        CLAUDE_CODE_SUBAGENT_MODEL: "cc-smart-dev-kit-worker",
         CLAUDE_CODE_SUBAGENT_MODEL_FORCE: "1",
       },
     });
@@ -350,9 +350,9 @@ describe("setup, slot and models helpers", () => {
   it.skipIf(NO_POSIX_MODES)(
     "creates the config only with the OmniRoute key; adds a known backend's key later",
     () => {
-      const path = join(tempDir("gateway-setup"), ".config", "anymodel", "gateway.json");
+      const path = join(tempDir("gateway-setup"), ".config", "cc-smart-dev-kit", "gateway.json");
       expect(() => ensureConfig(path, null)).toThrow(
-        "anymodel gateway setup --backend-key-stdin omniroute",
+        "cc-smart-dev-kit gateway setup --backend-key-stdin omniroute",
       );
       ensureConfig(path, { backend: "omniroute", value: "omni-key-123456" });
       expect(statSync(path).mode & 0o777).toBe(0o600);
@@ -360,12 +360,12 @@ describe("setup, slot and models helpers", () => {
       // /v1/models lists them. Changed by the move: no judge slot. Auto mode's safety
       // check stays on Claude until the person turns the judge on.
       expect(loadConfigFile(path).slots).toEqual({
-        "anymodel-scout": [
+        "cc-smart-dev-kit-scout": [
           "omniroute:ollama-cloud/deepseek-v4.1-flash",
           "omniroute:ollama-cloud/glm-5.3-flash",
           "claude-sonnet-5-5",
         ],
-        "anymodel-worker": [
+        "cc-smart-dev-kit-worker": [
           "omniroute:ollama-cloud/deepseek-v4.1-flash",
           "omniroute:ollama-cloud/glm-5.3-flash",
           "claude-sonnet-5-5",
@@ -382,7 +382,7 @@ describe("setup, slot and models helpers", () => {
   );
 
   it("a dry run checks and writes nothing", () => {
-    const path = join(tempDir("gateway-dry"), ".config", "anymodel", "gateway.json");
+    const path = join(tempDir("gateway-dry"), ".config", "cc-smart-dev-kit", "gateway.json");
     expect(
       ensureConfig(path, { backend: "omniroute", value: "omni-key-123456" }, { dryRun: true }),
     ).toBe(`created ${path} (mode 600)`);
@@ -394,7 +394,7 @@ describe("setup, slot and models helpers", () => {
     const models = { ollama: null, omniroute: ["glm-5.3-flash", "deepseek-v4.1-flash"] };
     expect(planSlotChange(cfg, "worker", "omniroute:kimi-k3", models)).toEqual({
       error:
-        '"omniroute:kimi-k3": "omniroute" has no model "kimi-k3" (see anymodel gateway models)',
+        '"omniroute:kimi-k3": "omniroute" has no model "kimi-k3" (see cc-smart-dev-kit gateway models)',
     });
     expect(planSlotChange(cfg, "worker", "nobody:x", models)).toEqual({
       error: '"nobody:x": backend "nobody" is not in the config',
@@ -403,45 +403,48 @@ describe("setup, slot and models helpers", () => {
       error: '"ollama:x": could not list the models of "ollama", so it cannot be checked',
     });
     expect(planSlotChange(cfg, "Scout!", "claude-sonnet-5-5", models)).toEqual({
-      error: '"Scout!" is not a slot name (scout, worker, judge, opus, fable, or anymodel-<name>)',
+      error:
+        '"Scout!" is not a slot name (scout, worker, judge, opus, fable, or cc-smart-dev-kit-<name>)',
     });
     // `judge off`: the way back to Claude. config() has no judge slot yet.
     expect(planSlotChange(cfg, "judge", "off", models)).toEqual({
-      error: "anymodel-judge is already off",
+      error: "cc-smart-dev-kit-judge is already off",
     });
     const judged = planSlotChange(cfg, "judge", "omniroute:deepseek-v4.1-flash", models);
     if (!("config" in judged)) throw new Error(judged.error);
-    expect(judged.config.slots["anymodel-judge"]).toEqual(["omniroute:deepseek-v4.1-flash"]);
+    expect(judged.config.slots["cc-smart-dev-kit-judge"]).toEqual([
+      "omniroute:deepseek-v4.1-flash",
+    ]);
     const off = planSlotChange(judged.config, "judge", " off ", models);
     if (!("config" in off)) throw new Error(off.error);
     expect(off.old).toEqual(["omniroute:deepseek-v4.1-flash"]);
     expect(off.next).toEqual([]);
     expect(Object.keys(off.config.slots).sort()).toEqual([
-      "anymodel-cheap",
-      "anymodel-mixed",
-      "anymodel-scout",
-      "anymodel-worker",
+      "cc-smart-dev-kit-affordable",
+      "cc-smart-dev-kit-mixed",
+      "cc-smart-dev-kit-scout",
+      "cc-smart-dev-kit-worker",
     ]);
     expect(planSlotChange(cfg, "worker", "off", models)).toEqual({
       error:
-        "only anymodel-judge, anymodel-opus and anymodel-fable can be off; give anymodel-worker its targets instead",
+        "only cc-smart-dev-kit-judge, cc-smart-dev-kit-opus and cc-smart-dev-kit-fable can be off; give cc-smart-dev-kit-worker its targets instead",
     });
     const ok = planSlotChange(cfg, "worker", "omniroute:glm-5.3-flash, claude-sonnet-5-5", models);
     if (!("config" in ok)) throw new Error(ok.error);
-    expect(ok.key).toBe("anymodel-worker");
+    expect(ok.key).toBe("cc-smart-dev-kit-worker");
     expect(ok.old).toEqual(["claude-sonnet-5-5"]);
-    expect(ok.config.slots["anymodel-worker"]).toEqual([
+    expect(ok.config.slots["cc-smart-dev-kit-worker"]).toEqual([
       "omniroute:glm-5.3-flash",
       "claude-sonnet-5-5",
     ]);
   });
 
   it("slot judge off is refused while an alias still points at the judge slot", () => {
-    const cfg = { ...config(), aliases: { "old-judge": "anymodel-judge" } };
-    cfg.slots = { ...cfg.slots, "anymodel-judge": ["omniroute:glm-5.3-flash"] };
+    const cfg = { ...config(), aliases: { "old-judge": "cc-smart-dev-kit-judge" } };
+    cfg.slots = { ...cfg.slots, "cc-smart-dev-kit-judge": ["omniroute:glm-5.3-flash"] };
     const off = planSlotChange(cfg, "judge", "off", {});
     expect("error" in off && off.error).toContain(
-      'alias "old-judge" points at slot "anymodel-judge", which is not in slots',
+      'alias "old-judge" points at slot "cc-smart-dev-kit-judge", which is not in slots',
     );
   });
 
@@ -466,7 +469,7 @@ describe("setup, slot and models helpers", () => {
   });
 
   it("setup --no-backend-key: no config and no key is allowed, and writes nothing", () => {
-    const path = join(tempDir("gateway-nokey"), ".config", "anymodel", "gateway.json");
+    const path = join(tempDir("gateway-nokey"), ".config", "cc-smart-dev-kit", "gateway.json");
     expect(ensureConfig(path, null, { allowNone: true })).toBe(
       `no config at ${path} yet: the router answers every slot on your own Claude login until the OmniRoute key is added (setup --backend-key-stdin omniroute)`,
     );
@@ -475,7 +478,7 @@ describe("setup, slot and models helpers", () => {
     expect(() => ensureConfig(path, null)).toThrow("no config at");
     // The key later creates the full default config, not a Claude-only one.
     ensureConfig(path, { backend: "omniroute", value: "omni-key-123456" }, { allowNone: true });
-    expect(loadConfigFile(path).slots["anymodel-worker"]).toEqual([
+    expect(loadConfigFile(path).slots["cc-smart-dev-kit-worker"]).toEqual([
       "omniroute:ollama-cloud/deepseek-v4.1-flash",
       "omniroute:ollama-cloud/glm-5.3-flash",
       "claude-sonnet-5-5",
@@ -513,11 +516,11 @@ describe("router service install", () => {
     const clock = { now: Date.UTC(2026, 9, 15, 10, 0, 0) };
     const probed: string[] = [];
     const events: string[] = [];
-    const stateDir = join(home, ".claude", "anymodel");
+    const stateDir = join(home, ".claude", "cc-smart-dev-kit");
     const marker = join(stateDir, "restart-pending");
-    const copyPath = join(home, ".local", "share", "anymodel", "router.js");
-    const unitPath = join(home, ".config", "systemd", "user", "anymodel-router.service");
-    const socketPath = join(home, ".config", "systemd", "user", "anymodel-router.socket");
+    const copyPath = join(home, ".local", "share", "cc-smart-dev-kit", "router.js");
+    const unitPath = join(home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service");
+    const socketPath = join(home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket");
     const install = (options: {
       yes?: boolean;
       confirm?: ((question: string) => boolean) | null;
@@ -556,7 +559,7 @@ describe("router service install", () => {
           );
           if (state.fail) return { exitCode: 1, output: "Failed to connect to bus" };
           if (cmd[2] === state.failOn || cmd.slice(2).join(" ") === state.failOn) {
-            return { exitCode: 1, output: "Job for anymodel-router.socket failed.\n" };
+            return { exitCode: 1, output: "Job for cc-smart-dev-kit-router.socket failed.\n" };
           }
           const names = cmd.slice(3).filter((arg) => !arg.startsWith("--"));
           if (cmd[2] === "is-active") {
@@ -600,24 +603,25 @@ describe("router service install", () => {
     };
   }
 
-  const ENABLED = "enabled and (re)started anymodel-router.service and anymodel-router.socket";
+  const ENABLED =
+    "enabled and (re)started cc-smart-dev-kit-router.service and cc-smart-dev-kit-router.socket";
 
   it("first install: the copy, the unit and the socket; reload, enable, then start both", async () => {
     const m = machine();
     expect(await m.install({})).toBe("installed");
     expect(m.events).toEqual([
-      "$ systemctl --user is-active --quiet anymodel-router.socket",
-      "$ systemctl --user is-active --quiet anymodel-router.service",
-      "+ ~/.local/share/anymodel/router.js: router copy created",
-      "+ ~/.config/systemd/user/anymodel-router.service: unit created",
-      "+ ~/.config/systemd/user/anymodel-router.socket: socket unit created",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.socket",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.service",
+      "+ ~/.local/share/cc-smart-dev-kit/router.js: router copy created",
+      "+ ~/.config/systemd/user/cc-smart-dev-kit-router.service: unit created",
+      "+ ~/.config/systemd/user/cc-smart-dev-kit-router.socket: socket unit created",
       "$ systemctl --user daemon-reload",
-      "$ systemctl --user enable anymodel-router.socket anymodel-router.service",
+      "$ systemctl --user enable cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
       // Nothing runs, so nothing is stopped; the port is asked once, then both start.
-      "$ systemctl --user is-active anymodel-router.service",
-      "$ systemctl --user reset-failed anymodel-router.socket anymodel-router.service",
-      "$ systemctl --user start anymodel-router.socket",
-      "$ systemctl --user start anymodel-router.service",
+      "$ systemctl --user is-active cc-smart-dev-kit-router.service",
+      "$ systemctl --user reset-failed cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+      "$ systemctl --user start cc-smart-dev-kit-router.socket",
+      "$ systemctl --user start cc-smart-dev-kit-router.service",
       ENABLED,
     ]);
     expect(readFileSync(m.copyPath, "utf8")).toBe("// router v1\n");
@@ -633,7 +637,7 @@ describe("router service install", () => {
     const m = machine();
     for (const dryRun of [true, false]) {
       await expect(m.install({ bunVersion: "1.4.2", dryRun, yes: true })).rejects.toThrow(
-        "anymodel needs Bun ≥ 1.4.3; this is 1.4.2 (/opt/bun/bin/bun). The router is not installed. Upgrade this Bun, then run: anymodel gateway setup",
+        "cc-smart-dev-kit needs Bun ≥ 1.4.3; this is 1.4.2 (/opt/bun/bin/bun). The router is not installed. Upgrade this Bun, then run: cc-smart-dev-kit gateway setup",
       );
     }
     expect(m.events).toEqual([]);
@@ -650,13 +654,13 @@ describe("router service install", () => {
     expect(await m.install({})).toBe("installed");
     expect(m.events.slice(5)).toEqual([
       "$ systemctl --user daemon-reload",
-      "$ systemctl --user enable anymodel-router.socket anymodel-router.service",
-      "$ systemctl --user is-active anymodel-router.service",
+      "$ systemctl --user enable cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+      "$ systemctl --user is-active cc-smart-dev-kit-router.service",
       "waiting for the old router to finish its answers (up to 120 s)",
-      "$ systemctl --user stop --no-block anymodel-router.service",
-      "$ systemctl --user reset-failed anymodel-router.socket anymodel-router.service",
-      "$ systemctl --user start anymodel-router.socket",
-      "$ systemctl --user start anymodel-router.service",
+      "$ systemctl --user stop --no-block cc-smart-dev-kit-router.service",
+      "$ systemctl --user reset-failed cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+      "$ systemctl --user start cc-smart-dev-kit-router.socket",
+      "$ systemctl --user start cc-smart-dev-kit-router.service",
       ENABLED,
     ]);
   });
@@ -667,12 +671,12 @@ describe("router service install", () => {
     m.events.length = 0;
     expect(await m.install({})).toBe("up-to-date");
     expect(m.events).toEqual([
-      "$ systemctl --user is-active --quiet anymodel-router.socket",
-      "$ systemctl --user enable --now anymodel-router.socket anymodel-router.service",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.socket",
+      "$ systemctl --user enable --now cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
       UP_TO_DATE,
     ]);
     expect(UP_TO_DATE).toBe("router already up to date (no restart)");
-    expect(readdirSync(join(m.home, ".local", "share", "anymodel"))).toEqual(["router.js"]);
+    expect(readdirSync(join(m.home, ".local", "share", "cc-smart-dev-kit"))).toEqual(["router.js"]);
   });
 
   it("a new bundle while the router runs on its socket: the restart warning says new requests wait; no yes, no change", async () => {
@@ -682,13 +686,13 @@ describe("router service install", () => {
     m.events.length = 0;
     expect(await m.install({})).toBe("declined");
     expect(m.events).toEqual([
-      "$ systemctl --user is-active --quiet anymodel-router.socket",
-      "$ systemctl --user is-active --quiet anymodel-router.service",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.socket",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.service",
       RESTART_WARNING,
-      "Nothing was changed. Run again with --yes to restart: anymodel gateway setup --yes",
+      "Nothing was changed. Run again with --yes to restart: cc-smart-dev-kit gateway setup --yes",
     ]);
     expect(RESTART_WARNING).toBe(
-      "anymodel-router is running. A restart lets its answers in flight finish first (up to 120 s; a longer one is cut, and Claude Code retries it). New requests wait in its socket meanwhile; none fails.",
+      "cc-smart-dev-kit-router is running. A restart lets its answers in flight finish first (up to 120 s; a longer one is cut, and Claude Code retries it). New requests wait in its socket meanwhile; none fails.",
     );
     expect(readFileSync(m.copyPath, "utf8")).toBe("// router v1\n");
   });
@@ -718,16 +722,19 @@ describe("router service install", () => {
         },
       }),
     ).toBe("installed");
-    expect(asked).toEqual(["Restart anymodel-router now?", "Restart anymodel-router now?"]);
+    expect(asked).toEqual([
+      "Restart cc-smart-dev-kit-router now?",
+      "Restart cc-smart-dev-kit-router now?",
+    ]);
     expect(m.events).toEqual([
-      "$ systemctl --user is-active --quiet anymodel-router.socket",
-      "$ systemctl --user is-active --quiet anymodel-router.service",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.socket",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.service",
       RESTART_WARNING,
-      "~ ~/.local/share/anymodel/router.js: router copy updated",
+      "~ ~/.local/share/cc-smart-dev-kit/router.js: router copy updated",
       "$ systemctl --user daemon-reload",
-      "$ systemctl --user enable anymodel-router.socket anymodel-router.service",
-      "restarting anymodel-router (new requests wait in its socket)",
-      "$ systemctl --user restart anymodel-router.service",
+      "$ systemctl --user enable cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+      "restarting cc-smart-dev-kit-router (new requests wait in its socket)",
+      "$ systemctl --user restart cc-smart-dev-kit-router.service",
       ENABLED,
     ]);
     expect(readFileSync(m.copyPath, "utf8")).toBe("// router v2\n");
@@ -739,59 +746,59 @@ describe("router service install", () => {
     const m = machine();
     // The older setup: a copy and a unit without a socket, and the router running.
     mkdirSync(join(m.home, ".config", "systemd", "user"), { recursive: true });
-    mkdirSync(join(m.home, ".local", "share", "anymodel"), { recursive: true });
+    mkdirSync(join(m.home, ".local", "share", "cc-smart-dev-kit"), { recursive: true });
     writeFileSync(m.copyPath, "// router v0\n");
     writeFileSync(m.unitPath, "[Service]\nExecStart=/opt/bun/bin/bun old\n");
     m.state.active = true;
     expect(await m.install({})).toBe("declined");
     expect(m.events).toEqual([
-      "$ systemctl --user is-active --quiet anymodel-router.socket",
-      "$ systemctl --user is-active --quiet anymodel-router.service",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.socket",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.service",
       MOVE_WARNING,
-      "Nothing was changed. Run again with --yes to restart: anymodel gateway setup --yes",
+      "Nothing was changed. Run again with --yes to restart: cc-smart-dev-kit gateway setup --yes",
     ]);
     expect(MOVE_WARNING).toBe(
-      "anymodel-router is running without its socket unit. This setup moves it to one, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).",
+      "cc-smart-dev-kit-router is running without its socket unit. This setup moves it to one, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).",
     );
     m.events.length = 0;
     m.probed.length = 0;
     expect(await m.install({ yes: true })).toBe("installed");
     expect(m.events).toEqual([
-      "$ systemctl --user is-active --quiet anymodel-router.socket",
-      "$ systemctl --user is-active --quiet anymodel-router.service",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.socket",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.service",
       MOVE_WARNING,
-      "~ ~/.local/share/anymodel/router.js: router copy updated",
-      "~ ~/.config/systemd/user/anymodel-router.service: unit updated",
-      "+ ~/.config/systemd/user/anymodel-router.socket: socket unit created",
+      "~ ~/.local/share/cc-smart-dev-kit/router.js: router copy updated",
+      "~ ~/.config/systemd/user/cc-smart-dev-kit-router.service: unit updated",
+      "+ ~/.config/systemd/user/cc-smart-dev-kit-router.socket: socket unit created",
       "$ systemctl --user daemon-reload",
-      "$ systemctl --user enable anymodel-router.socket anymodel-router.service",
-      "$ systemctl --user is-active anymodel-router.service",
+      "$ systemctl --user enable cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+      "$ systemctl --user is-active cc-smart-dev-kit-router.service",
       DRAIN_NOTE,
       // Not a blocking stop: it would wait the whole drain. The old router closes its
       // port at SIGTERM; the start waits for its drain in systemd.
-      "$ systemctl --user stop --no-block anymodel-router.service",
-      "$ systemctl --user reset-failed anymodel-router.socket anymodel-router.service",
-      "$ systemctl --user start anymodel-router.socket",
-      "$ systemctl --user start anymodel-router.service",
+      "$ systemctl --user stop --no-block cc-smart-dev-kit-router.service",
+      "$ systemctl --user reset-failed cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+      "$ systemctl --user start cc-smart-dev-kit-router.socket",
+      "$ systemctl --user start cc-smart-dev-kit-router.service",
       ENABLED,
     ]);
     // Asked first (ours), then after the start. No wait for the port between: systemd
     // starts the socket only once the old router's stop has finished.
     expect(m.probed).toEqual([
-      `http://127.0.0.1:${FAKE_PORT}/__anymodel/health`,
-      `http://127.0.0.1:${FAKE_PORT}/__anymodel/health`,
+      `http://127.0.0.1:${FAKE_PORT}/__cc-smart-dev-kit/health`,
+      `http://127.0.0.1:${FAKE_PORT}/__cc-smart-dev-kit/health`,
     ]);
   });
 
   it("a socket that cannot open: said, with where to look; the router starts without it and binds the port itself", async () => {
     const m = machine();
     // systemd fails the start when the socket cannot bind its port.
-    m.state.failOn = "start anymodel-router.socket";
+    m.state.failOn = "start cc-smart-dev-kit-router.socket";
     expect(await m.install({})).toBe("installed");
     expect(m.events.slice(-4)).toEqual([
-      "$ systemctl --user start anymodel-router.socket",
-      `systemctl --user start anymodel-router.socket failed (exit 1): Job for anymodel-router.socket failed. Starting anymodel-router without its socket: the router binds 127.0.0.1:${FAKE_PORT} itself, and until the socket opens, a restart refuses new requests while the old router drains. Is another program on that port? See: ss -ltnp, and journalctl --user -u anymodel-router.socket -n 30. Then run anymodel gateway setup again.`,
-      "$ systemctl --user start anymodel-router.service",
+      "$ systemctl --user start cc-smart-dev-kit-router.socket",
+      `systemctl --user start cc-smart-dev-kit-router.socket failed (exit 1): Job for cc-smart-dev-kit-router.socket failed. Starting cc-smart-dev-kit-router without its socket: the router binds 127.0.0.1:${FAKE_PORT} itself, and until the socket opens, a restart refuses new requests while the old router drains. Is another program on that port? See: ss -ltnp, and journalctl --user -u cc-smart-dev-kit-router.socket -n 30. Then run cc-smart-dev-kit gateway setup again.`,
+      "$ systemctl --user start cc-smart-dev-kit-router.service",
       ENABLED,
     ]);
     // The router answered: the marker goes. `doctor` still names the closed socket.
@@ -800,10 +807,10 @@ describe("router service install", () => {
 
   it("a socket that cannot open and a router that cannot bind either: the error names the unit's log; the marker stays", async () => {
     const m = machine();
-    m.state.failOn = "start anymodel-router.socket";
+    m.state.failOn = "start cc-smart-dev-kit-router.socket";
     m.port.answers = false;
     await expect(m.install({})).rejects.toThrow(
-      `anymodel-router.service did not answer on 127.0.0.1:${FAKE_PORT} within 5 s of the restart`,
+      `cc-smart-dev-kit-router.service did not answer on 127.0.0.1:${FAKE_PORT} within 5 s of the restart`,
     );
     expect(existsSync(m.marker)).toBe(true);
   });
@@ -816,20 +823,20 @@ describe("router service install", () => {
     m.events.length = 0;
     expect(await m.install({ yes: true })).toBe("installed");
     expect(SOCKET_STOPPED_WARNING).toBe(
-      "anymodel-router is running, but its socket is not open: the router holds the port itself. This setup opens the socket again, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).",
+      "cc-smart-dev-kit-router is running, but its socket is not open: the router holds the port itself. This setup opens the socket again, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).",
     );
     expect(m.events).toEqual([
-      "$ systemctl --user is-active --quiet anymodel-router.socket",
-      "$ systemctl --user is-active --quiet anymodel-router.service",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.socket",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.service",
       SOCKET_STOPPED_WARNING,
       "$ systemctl --user daemon-reload",
-      "$ systemctl --user enable anymodel-router.socket anymodel-router.service",
-      "$ systemctl --user is-active anymodel-router.service",
+      "$ systemctl --user enable cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+      "$ systemctl --user is-active cc-smart-dev-kit-router.service",
       DRAIN_NOTE,
-      "$ systemctl --user stop --no-block anymodel-router.service",
-      "$ systemctl --user reset-failed anymodel-router.socket anymodel-router.service",
-      "$ systemctl --user start anymodel-router.socket",
-      "$ systemctl --user start anymodel-router.service",
+      "$ systemctl --user stop --no-block cc-smart-dev-kit-router.service",
+      "$ systemctl --user reset-failed cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+      "$ systemctl --user start cc-smart-dev-kit-router.socket",
+      "$ systemctl --user start cc-smart-dev-kit-router.service",
       ENABLED,
     ]);
   });
@@ -842,7 +849,7 @@ describe("router service install", () => {
     m.events.length = 0;
     expect(await m.install({})).toBe("declined");
     expect(SOCKET_CHANGED_WARNING).toBe(
-      "anymodel-router is running, and its socket unit changed, so the socket closes and opens again. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).",
+      "cc-smart-dev-kit-router is running, and its socket unit changed, so the socket closes and opens again. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).",
     );
     expect(m.events.slice(2, 3)).toEqual([SOCKET_CHANGED_WARNING]);
   });
@@ -853,22 +860,22 @@ describe("router service install", () => {
     m.events.length = 0;
     expect(await m.install({ port: FAKE_PORT + 1, yes: true })).toBe("installed");
     expect(PORT_WARNING).toBe(
-      "anymodel-router is running, and its socket moves to a new port. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).",
+      "cc-smart-dev-kit-router is running, and its socket moves to a new port. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).",
     );
     expect(m.events).toEqual([
-      "$ systemctl --user is-active --quiet anymodel-router.socket",
-      "$ systemctl --user is-active --quiet anymodel-router.service",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.socket",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.service",
       PORT_WARNING,
-      "~ ~/.config/systemd/user/anymodel-router.socket: socket unit updated",
+      "~ ~/.config/systemd/user/cc-smart-dev-kit-router.socket: socket unit updated",
       "$ systemctl --user daemon-reload",
-      "$ systemctl --user enable anymodel-router.socket anymodel-router.service",
-      "$ systemctl --user is-active anymodel-router.service",
+      "$ systemctl --user enable cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+      "$ systemctl --user is-active cc-smart-dev-kit-router.service",
       DRAIN_NOTE,
-      "$ systemctl --user stop --no-block anymodel-router.service",
-      "$ systemctl --user stop anymodel-router.socket",
-      "$ systemctl --user reset-failed anymodel-router.socket anymodel-router.service",
-      "$ systemctl --user start anymodel-router.socket",
-      "$ systemctl --user start anymodel-router.service",
+      "$ systemctl --user stop --no-block cc-smart-dev-kit-router.service",
+      "$ systemctl --user stop cc-smart-dev-kit-router.socket",
+      "$ systemctl --user reset-failed cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+      "$ systemctl --user start cc-smart-dev-kit-router.socket",
+      "$ systemctl --user start cc-smart-dev-kit-router.service",
       ENABLED,
     ]);
     expect(socketPort(readFileSync(m.socketPath, "utf8"))).toBe(FAKE_PORT + 1);
@@ -885,7 +892,7 @@ describe("router service install", () => {
       },
     });
     expect(result).toBe("installed");
-    expect(m.events).toContain("$ systemctl --user restart anymodel-router.service");
+    expect(m.events).toContain("$ systemctl --user restart cc-smart-dev-kit-router.service");
     expect(readFileSync(m.copyPath, "utf8")).toBe("// router v2\n");
   });
 
@@ -893,8 +900,8 @@ describe("router service install", () => {
     const m = machine();
     expect(await m.install({ dryRun: true })).toBe("installed");
     expect(m.events).toEqual([
-      "$ systemctl --user is-active --quiet anymodel-router.socket",
-      "$ systemctl --user is-active --quiet anymodel-router.service",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.socket",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.service",
     ]);
     expect(existsSync(m.copyPath)).toBe(false);
     expect(existsSync(m.unitPath)).toBe(false);
@@ -912,8 +919,8 @@ describe("router service install", () => {
       "systemctl --user daemon-reload failed (exit 1):\nFailed to connect to bus",
     );
     expect(m.events.filter((event) => event.startsWith("$ "))).toEqual([
-      "$ systemctl --user is-active --quiet anymodel-router.socket",
-      "$ systemctl --user is-active --quiet anymodel-router.service",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.socket",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.service",
       "$ systemctl --user daemon-reload",
     ]);
   });
@@ -928,8 +935,10 @@ describe("router service install", () => {
       m.port.taken = true;
       await expect(m.install({ dryRun, yes: true })).rejects.toThrow(NOT_OURS);
       // Changed on purpose: the socket is asked too: an open socket of ours is not "another program".
-      expect(m.events).toEqual(["$ systemctl --user is-active --quiet anymodel-router.socket"]);
-      expect(m.probed).toEqual([`http://127.0.0.1:${FAKE_PORT}/__anymodel/health`]);
+      expect(m.events).toEqual([
+        "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.socket",
+      ]);
+      expect(m.probed).toEqual([`http://127.0.0.1:${FAKE_PORT}/__cc-smart-dev-kit/health`]);
       expect(existsSync(m.copyPath)).toBe(false);
       expect(existsSync(m.unitPath)).toBe(false);
       expect(existsSync(m.stateDir)).toBe(false);
@@ -945,13 +954,17 @@ describe("router service install", () => {
       const m = machine();
       m.port.reply = reply;
       await expect(m.install({ yes: true })).rejects.toThrow(NOT_OURS);
-      expect(m.events).toEqual(["$ systemctl --user is-active --quiet anymodel-router.socket"]);
+      expect(m.events).toEqual([
+        "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.socket",
+      ]);
       expect(existsSync(m.stateDir)).toBe(false);
     }
     const slow = machine();
     slow.port.timeout = true;
     await expect(slow.install({ yes: true })).rejects.toThrow(NOT_OURS);
-    expect(slow.events).toEqual(["$ systemctl --user is-active --quiet anymodel-router.socket"]);
+    expect(slow.events).toEqual([
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.socket",
+    ]);
     expect(existsSync(slow.copyPath)).toBe(false);
   });
 
@@ -965,11 +978,11 @@ describe("router service install", () => {
     m.state.active = false;
     m.state.idle = "activating";
     await expect(m.install({ yes: true })).rejects.toThrow(
-      `anymodel-router.service did not answer on 127.0.0.1:${FAKE_PORT} within 5 s of the restart`,
+      `cc-smart-dev-kit-router.service did not answer on 127.0.0.1:${FAKE_PORT} within 5 s of the restart`,
     );
     // It wrote the new copy and restarted the service; only the answer never came.
-    expect(m.events).toContain("~ ~/.local/share/anymodel/router.js: router copy updated");
-    expect(m.events).toContain("$ systemctl --user restart anymodel-router.service");
+    expect(m.events).toContain("~ ~/.local/share/cc-smart-dev-kit/router.js: router copy updated");
+    expect(m.events).toContain("$ systemctl --user restart cc-smart-dev-kit-router.service");
     expect(readFileSync(m.copyPath, "utf8")).toBe("// router v2\n");
   });
 
@@ -994,12 +1007,12 @@ describe("router service install", () => {
     const m = machine();
     m.port.answers = false;
     await expect(m.install({})).rejects.toThrow(
-      `anymodel-router.service did not answer on 127.0.0.1:${FAKE_PORT} within 5 s of the restart (systemctl --user is-active: active). See why: journalctl --user -u anymodel-router -n 30. Then run anymodel gateway setup again.`,
+      `cc-smart-dev-kit-router.service did not answer on 127.0.0.1:${FAKE_PORT} within 5 s of the restart (systemctl --user is-active: active). See why: journalctl --user -u cc-smart-dev-kit-router -n 30. Then run cc-smart-dev-kit gateway setup again.`,
     );
     expect(existsSync(m.marker)).toBe(true);
     // It waited 5 s by its clock, asking every 200 ms, and no longer.
     expect(m.clock.now).toBe(Date.UTC(2026, 9, 15, 10, 0, 5));
-    expect(m.events.at(-1)).toBe("$ systemctl --user is-active anymodel-router.service");
+    expect(m.events.at(-1)).toBe("$ systemctl --user is-active cc-smart-dev-kit-router.service");
   });
 
   it("a re-run that finds the marker restarts though nothing changed (asking first), and clears it", async () => {
@@ -1011,22 +1024,22 @@ describe("router service install", () => {
     // The files are up to date, but the marker says the restart never finished.
     expect(await m.install({})).toBe("declined");
     expect(m.events).toEqual([
-      "$ systemctl --user is-active --quiet anymodel-router.socket",
-      "$ systemctl --user is-active --quiet anymodel-router.service",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.socket",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.service",
       RESTART_WARNING,
-      "Nothing was changed. Run again with --yes to restart: anymodel gateway setup --yes",
+      "Nothing was changed. Run again with --yes to restart: cc-smart-dev-kit gateway setup --yes",
     ]);
     expect(existsSync(m.marker)).toBe(true);
     m.events.length = 0;
     expect(await m.install({ yes: true })).toBe("installed");
     expect(m.events).toEqual([
-      "$ systemctl --user is-active --quiet anymodel-router.socket",
-      "$ systemctl --user is-active --quiet anymodel-router.service",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.socket",
+      "$ systemctl --user is-active --quiet cc-smart-dev-kit-router.service",
       RESTART_WARNING,
       "$ systemctl --user daemon-reload",
-      "$ systemctl --user enable anymodel-router.socket anymodel-router.service",
-      "restarting anymodel-router (new requests wait in its socket)",
-      "$ systemctl --user restart anymodel-router.service",
+      "$ systemctl --user enable cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service",
+      "restarting cc-smart-dev-kit-router (new requests wait in its socket)",
+      "$ systemctl --user restart cc-smart-dev-kit-router.service",
       ENABLED,
     ]);
     expect(existsSync(m.marker)).toBe(false);
@@ -1038,7 +1051,7 @@ describe("router service install", () => {
   it("restore removes the copy and the two units that setup created", async () => {
     const m = machine();
     await m.install({});
-    const results = restore(join(m.home, ".claude", "anymodel"));
+    const results = restore(join(m.home, ".claude", "cc-smart-dev-kit"));
     expect(results.map((result) => [result.file, result.action]).sort()).toEqual(
       [
         [m.unitPath, "removed"],
@@ -1052,25 +1065,27 @@ describe("router service install", () => {
   });
 
   it("the unit file, as written", () => {
-    expect(renderUnit("/opt/bun/bin/bun", "/home/user/.local/share/anymodel/router.js")).toBe(
+    expect(
+      renderUnit("/opt/bun/bin/bun", "/home/user/.local/share/cc-smart-dev-kit/router.js"),
+    ).toBe(
       [
-        "# anymodel-router: the local AI gateway for Claude Code (127.0.0.1 only).",
-        "# Written by `anymodel gateway setup`; edits here are overwritten by the next setup.",
+        "# cc-smart-dev-kit-router: the local AI gateway for Claude Code (127.0.0.1 only).",
+        "# Written by `cc-smart-dev-kit gateway setup`; edits here are overwritten by the next setup.",
         "# It runs a copy of the router, never a file in the plugin's version folder.",
-        "# Its config: ~/.config/anymodel/gateway.json. Its port: anymodel-router.socket.",
+        "# Its config: ~/.config/cc-smart-dev-kit/gateway.json. Its port: cc-smart-dev-kit-router.socket.",
         "",
         "[Unit]",
-        "Description=anymodel-router: local AI gateway for Claude Code (127.0.0.1 only)",
-        "Wants=anymodel-router.socket",
-        "After=anymodel-router.socket",
+        "Description=cc-smart-dev-kit-router: local AI gateway for Claude Code (127.0.0.1 only)",
+        "Wants=cc-smart-dev-kit-router.socket",
+        "After=cc-smart-dev-kit-router.socket",
         "StartLimitIntervalSec=60",
         "StartLimitBurst=5",
         "",
         "[Service]",
         "Type=simple",
-        'ExecStart="/opt/bun/bin/bun" --no-env-file "/home/user/.local/share/anymodel/router.js"',
+        'ExecStart="/opt/bun/bin/bun" --no-env-file "/home/user/.local/share/cc-smart-dev-kit/router.js"',
         "WorkingDirectory=%h",
-        "RuntimeDirectory=anymodel-router",
+        "RuntimeDirectory=cc-smart-dev-kit-router",
         "RuntimeDirectoryMode=0700",
         "Restart=always",
         "RestartSec=2",
@@ -1081,7 +1096,7 @@ describe("router service install", () => {
         "",
         "[Install]",
         "WantedBy=default.target",
-        "Also=anymodel-router.socket",
+        "Also=cc-smart-dev-kit-router.socket",
         "",
       ].join("\n"),
     );
@@ -1091,12 +1106,12 @@ describe("router service install", () => {
     const text = renderSocket(20100);
     expect(text).toBe(
       [
-        "# anymodel-router: the socket of the local AI gateway for Claude Code (127.0.0.1 only).",
-        "# Written by `anymodel gateway setup`; edits here are overwritten by the next setup.",
+        "# cc-smart-dev-kit-router: the socket of the local AI gateway for Claude Code (127.0.0.1 only).",
+        "# Written by `cc-smart-dev-kit gateway setup`; edits here are overwritten by the next setup.",
         "# systemd holds the router's port, so a request waits while the router restarts.",
         "",
         "[Unit]",
-        "Description=anymodel-router socket: holds 127.0.0.1:20100 across router restarts",
+        "Description=cc-smart-dev-kit-router socket: holds 127.0.0.1:20100 across router restarts",
         "",
         "[Socket]",
         "ListenStream=127.0.0.1:20100",
@@ -1171,11 +1186,13 @@ describe("router service stop", () => {
     return { clock, events, probe, runner, waited: () => clock.now - start };
   }
 
-  const HEALTH = `probe http://127.0.0.1:${FAKE_PORT}/__anymodel/health`;
-  const IS_ACTIVE = "$ systemctl --user is-active anymodel-router.service";
+  const HEALTH = `probe http://127.0.0.1:${FAKE_PORT}/__cc-smart-dev-kit/health`;
+  const IS_ACTIVE = "$ systemctl --user is-active cc-smart-dev-kit-router.service";
   // Both units in one call each: the socket must not reopen the router between them.
-  const DISABLE = "$ systemctl --user disable anymodel-router.socket anymodel-router.service";
-  const STOP = "$ systemctl --user stop --no-block anymodel-router.socket anymodel-router.service";
+  const DISABLE =
+    "$ systemctl --user disable cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service";
+  const STOP =
+    "$ systemctl --user stop --no-block cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service";
 
   // Changed on purpose, in the tests below that list the calls: the unit's state is asked
   // first (IS_ACTIVE), so the port is waited for only while the unit itself runs.
@@ -1229,7 +1246,7 @@ describe("router service stop", () => {
     const m = stopMachine({ heldPolls: Number.POSITIVE_INFINITY });
     expect(STOP_WAIT_MS).toBe(15_000);
     await expect(stopRouter(m.runner, FAKE_PORT, m.probe)).rejects.toThrow(
-      `anymodel-router.service is disabled and was told to stop, but 127.0.0.1:${FAKE_PORT} still takes connections after 15 s. Nothing else was restored. See why: systemctl --user status anymodel-router (and ss -ltnp for another program on the port). Then run anymodel restore again.`,
+      `cc-smart-dev-kit-router.service is disabled and was told to stop, but 127.0.0.1:${FAKE_PORT} still takes connections after 15 s. Nothing else was restored. See why: systemctl --user status cc-smart-dev-kit-router (and ss -ltnp for another program on the port). Then run cc-smart-dev-kit restore again.`,
     );
     expect(m.events.slice(0, 4)).toEqual([IS_ACTIVE, DISABLE, STOP, HEALTH]);
     // The whole 15 s by its clock, in 200 ms rests, and not longer: 75 rests, 76 probes.
@@ -1246,7 +1263,7 @@ describe("router service stop", () => {
   it("a failing systemctl stops it before anything else", async () => {
     const m = stopMachine({ failOn: "disable", heldPolls: 0 });
     await expect(stopRouter(m.runner, FAKE_PORT, m.probe)).rejects.toThrow(
-      "systemctl --user disable anymodel-router.socket anymodel-router.service failed (exit 1):\nFailed to connect to bus",
+      "systemctl --user disable cc-smart-dev-kit-router.socket cc-smart-dev-kit-router.service failed (exit 1):\nFailed to connect to bus",
     );
     expect(m.events).toEqual([IS_ACTIVE, DISABLE]);
   });
@@ -1265,13 +1282,13 @@ describe("slot opus / fable", () => {
       models,
     );
     if (!("config" in plan)) throw new Error(plan.error);
-    expect(plan.key).toBe("anymodel-opus");
+    expect(plan.key).toBe("cc-smart-dev-kit-opus");
     expect(plan.old).toEqual([]);
-    expect(plan.config.slots["anymodel-opus"]).toEqual([
+    expect(plan.config.slots["cc-smart-dev-kit-opus"]).toEqual([
       "claude-opus-5-5",
       "omniroute:glm-5.3-flash",
     ]);
-    expect(plan.config.modelSlots).toEqual({ "claude-opus-5-5": "anymodel-opus" });
+    expect(plan.config.modelSlots).toEqual({ "claude-opus-5-5": "cc-smart-dev-kit-opus" });
     const fable = planSlotChange(
       plan.config,
       "fable",
@@ -1280,8 +1297,8 @@ describe("slot opus / fable", () => {
     );
     if (!("config" in fable)) throw new Error(fable.error);
     expect(fable.config.modelSlots).toEqual({
-      "claude-fable-5-1": "anymodel-fable",
-      "claude-opus-5-5": "anymodel-opus",
+      "claude-fable-5-1": "cc-smart-dev-kit-fable",
+      "claude-opus-5-5": "cc-smart-dev-kit-opus",
     });
   });
 
@@ -1291,29 +1308,30 @@ describe("slot opus / fable", () => {
     const off = planSlotChange(on.config, "opus", "off", models);
     if (!("config" in off)) throw new Error(off.error);
     expect(off.next).toEqual([]);
-    expect(Object.keys(off.config.slots)).not.toContain("anymodel-opus");
+    expect(Object.keys(off.config.slots)).not.toContain("cc-smart-dev-kit-opus");
     expect(off.config).not.toHaveProperty("modelSlots");
     expect(planSlotChange(config(), "fable", "off", models)).toEqual({
-      error: "anymodel-fable is already off",
+      error: "cc-smart-dev-kit-fable is already off",
     });
   });
 
   it("refuses a model slot that does not start with its own model, or has no fallback", () => {
     expect(planSlotChange(config(), "opus", "omniroute:glm-5.3-flash", models)).toEqual({
       error:
-        "anymodel-opus: start with the opus model itself, e.g. anymodel gateway slot opus claude-opus-5-5,omniroute:<model>",
+        "cc-smart-dev-kit-opus: start with the opus model itself, e.g. cc-smart-dev-kit gateway slot opus claude-opus-5-5,omniroute:<model>",
     });
     expect(
       planSlotChange(config(), "fable", "claude-opus-5-5,omniroute:glm-5.3-flash", models),
     ).toEqual({
       error:
-        "anymodel-fable: start with the fable model itself, e.g. anymodel gateway slot fable claude-fable-5-1,omniroute:<model>",
+        "cc-smart-dev-kit-fable: start with the fable model itself, e.g. cc-smart-dev-kit gateway slot fable claude-fable-5-1,omniroute:<model>",
     });
     expect(planSlotChange(config(), "opus", "claude-opus-5-5", models)).toEqual({
-      error: "anymodel-opus: give the fallback targets after claude-opus-5-5",
+      error: "cc-smart-dev-kit-opus: give the fallback targets after claude-opus-5-5",
     });
     expect(planSlotChange(config(), "opus", "claude-opus-5-5,omniroute:kimi", models)).toEqual({
-      error: '"omniroute:kimi": "omniroute" has no model "kimi" (see anymodel gateway models)',
+      error:
+        '"omniroute:kimi": "omniroute" has no model "kimi" (see cc-smart-dev-kit gateway models)',
     });
   });
 
@@ -1327,14 +1345,14 @@ describe("slot opus / fable", () => {
       models,
     );
     if (!("config" in moved)) throw new Error(moved.error);
-    expect(moved.config.modelSlots).toEqual({ "claude-opus-6-0": "anymodel-opus" });
+    expect(moved.config.modelSlots).toEqual({ "claude-opus-6-0": "cc-smart-dev-kit-opus" });
   });
 });
 
 describe("the judge test", () => {
   it("is a check the router recognises: its prompt, no tools, the force push, reasoning off", () => {
     const request = judgeTestRequest("deepseek-v4.1-flash");
-    expect(isAutoModeGuard({ ...request, model: "anymodel-judge" })).toBe(true);
+    expect(isAutoModeGuard({ ...request, model: "cc-smart-dev-kit-judge" })).toBe(true);
     expect(request).not.toHaveProperty("tools");
     expect(request).not.toHaveProperty("thinking");
     expect(request).not.toHaveProperty("metadata");

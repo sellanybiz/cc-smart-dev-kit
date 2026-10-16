@@ -1,7 +1,7 @@
 /**
  * PreToolUse (Edit, Write, NotebookEdit): refuses an edit of a file in the main checkout
  * itself, for a project that keeps the main checkout clean and makes every change in a
- * worktree. Opt-in: anymodel.json `worktrees.guardMainFolder: true`.
+ * worktree. Opt-in: cc-smart-dev-kit.json `worktrees.guardMainFolder: true`.
  *
  * An edit in the main checkout of a project that works in worktrees lands on whatever branch
  * the main checkout has, often under another session's feet. The refusal names the way into
@@ -42,7 +42,7 @@ export function editsMainFolder(file: string, mainCheckout: string, worktrees: s
 
 export function mainFolderRefusal(mainCheckout: string, base: string): string {
   return [
-    `This file is in the main checkout (${mainCheckout}). This project keeps the main checkout on \`${base}\` and makes every change in a worktree (anymodel.json \`worktrees.guardMainFolder\`).`,
+    `This file is in the main checkout (${mainCheckout}). This project keeps the main checkout on \`${base}\` and makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).`,
     "Already working in a worktree? Edit the same file under that worktree's folder.",
     "Not in one yet: EnterWorktree, with the branch for this work as its `name`, makes one.",
   ].join("\n");

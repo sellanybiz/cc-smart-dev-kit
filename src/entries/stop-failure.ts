@@ -2,7 +2,7 @@
 //
 // Reads the input on stdin, decides on an alert (`planAlert`), starts the detached worker
 // that shows it, and exits at once, printing nothing. The worker runs through the launcher
-// (`~/.local/bin/anymodel alert-worker <alert JSON>`), never from this file's version
+// (`~/.local/bin/cc-smart-dev-kit alert-worker <alert JSON>`), never from this file's version
 // folder: it may wait half an hour for a click, and an update may delete the folder
 // meanwhile. With no launcher (setup never ran), a plain notification with no action,
 // which ends at once, is started instead. The logic and its tests: src/hooks/stop-failure.ts.
@@ -25,7 +25,7 @@ function detached(argv: string[]): void {
   if (file === undefined) return;
   const child = spawn(file, args, { detached: true, stdio: "ignore" });
   child.on("error", (error) => {
-    console.error(`anymodel StopFailure: could not show the alert: ${error.message}`);
+    console.error(`cc-smart-dev-kit StopFailure: could not show the alert: ${error.message}`);
   });
   child.unref();
 }
@@ -35,7 +35,7 @@ async function hook(): Promise<void> {
   try {
     input = JSON.parse(await Bun.stdin.text());
   } catch {
-    console.error("anymodel StopFailure: the hook input is not JSON");
+    console.error("cc-smart-dev-kit StopFailure: the hook input is not JSON");
     return;
   }
   const paths = cliPaths();
@@ -47,7 +47,7 @@ async function hook(): Promise<void> {
     return;
   }
   const plain = plainNotification({ ...alert, action: null }, process.platform);
-  if (plain === null) console.error(`anymodel: ${alert.title}. ${alert.body}`);
+  if (plain === null) console.error(`cc-smart-dev-kit: ${alert.title}. ${alert.body}`);
   else detached(plain.argv);
 }
 
@@ -55,5 +55,7 @@ try {
   await hook();
 } catch (error) {
   // A bug here must never stop the person's work: one line, exit 0.
-  console.error(`anymodel StopFailure: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(
+    `cc-smart-dev-kit StopFailure: ${error instanceof Error ? error.message : String(error)}`,
+  );
 }

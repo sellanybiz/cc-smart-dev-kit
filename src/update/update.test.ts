@@ -1,6 +1,6 @@
 /**
  * The self-update: the SessionStart hook, the detached background check, and
- * `anymodel update`. Everything runs in a temp HOME and CLAUDE_CONFIG_DIR, with fakes first
+ * `cc-smart-dev-kit update`. Everything runs in a temp HOME and CLAUDE_CONFIG_DIR, with fakes first
  * on PATH for `git` (ls-remote, rev-parse, the shallow fetch), `claude` (the two plugin
  * commands) and the notifiers. Each fake logs its calls, so the tests assert them.
  * Nothing here reaches the network, the real ~/.claude or the real `claude`.
@@ -61,26 +61,32 @@ interface MachineOptions {
   env?: Record<string, string>;
 }
 
-/** A temp machine as `claude plugin install anymodel@anymodel` leaves it, with fakes on PATH. */
+/** A temp machine as `claude plugin install cc-smart-dev-kit@cc-smart-dev-kit` leaves it, with fakes on PATH. */
 function machine(options: MachineOptions = {}) {
   const home = tempDir("update");
   const configDir = join(home, ".claude");
   const plugins = join(configDir, "plugins");
-  const copy = join(plugins, "marketplaces", "anymodel");
-  const installPath = join(plugins, "cache", "anymodel", "anymodel", options.installed ?? "1.0.0");
+  const copy = join(plugins, "marketplaces", "cc-smart-dev-kit");
+  const installPath = join(
+    plugins,
+    "cache",
+    "cc-smart-dev-kit",
+    "cc-smart-dev-kit",
+    options.installed ?? "1.0.0",
+  );
   const newVersion = options.newVersion ?? "1.1.0";
   mkdirSync(join(copy, ".claude-plugin"), { recursive: true });
   mkdirSync(join(copy, "plugin", ".claude-plugin"), { recursive: true });
   mkdirSync(installPath, { recursive: true });
   const installed = (version: string) =>
     JSON.stringify({
-      plugins: { "anymodel@anymodel": [{ installPath, scope: "user", version }] },
+      plugins: { "cc-smart-dev-kit@cc-smart-dev-kit": [{ installPath, scope: "user", version }] },
       version: 2,
     });
-  const copyManifest = (version: string) => JSON.stringify({ name: "anymodel", version });
+  const copyManifest = (version: string) => JSON.stringify({ name: "cc-smart-dev-kit", version });
   const marketplaceJson = JSON.stringify({
-    name: "anymodel",
-    plugins: [{ name: "anymodel", source: "./plugin" }],
+    name: "cc-smart-dev-kit",
+    plugins: [{ name: "cc-smart-dev-kit", source: "./plugin" }],
   });
   writeFileSync(join(plugins, "installed_plugins.json"), installed(options.installed ?? "1.0.0"));
   writeFileSync(join(copy, ".claude-plugin", "marketplace.json"), marketplaceJson);
@@ -91,9 +97,9 @@ function machine(options: MachineOptions = {}) {
   writeFileSync(
     join(plugins, "known_marketplaces.json"),
     JSON.stringify({
-      anymodel: {
+      "cc-smart-dev-kit": {
         installLocation: copy,
-        source: { repo: "example-org/anymodel", source: "github" },
+        source: { repo: "example-org/cc-smart-dev-kit", source: "github" },
       },
     }),
   );
@@ -132,11 +138,11 @@ function machine(options: MachineOptions = {}) {
     `echo "cwd=$(pwd) GIT_DIR=\${GIT_DIR-unset} GIT_WORK_TREE=\${GIT_WORK_TREE-unset} GIT_INDEX_FILE=\${GIT_INDEX_FILE-unset}" >> ${q(join(fake, "claude-env.log"))}`,
     'case "$*" in',
     options.refreshFails !== undefined
-      ? `  "plugin marketplace update anymodel") echo ${q(options.refreshFails)} >&2; exit 1 ;;`
-      : `  "plugin marketplace update anymodel") sleep ${options.claudeSleeps ?? 0}; cp ${q(join(fake, "copy-after"))} ${q(join(copy, "plugin", ".claude-plugin", "plugin.json"))}; echo '${remoteHead}' > ${q(join(fake, "local-head"))}; echo refreshed ;;`,
+      ? `  "plugin marketplace update cc-smart-dev-kit") echo ${q(options.refreshFails)} >&2; exit 1 ;;`
+      : `  "plugin marketplace update cc-smart-dev-kit") sleep ${options.claudeSleeps ?? 0}; cp ${q(join(fake, "copy-after"))} ${q(join(copy, "plugin", ".claude-plugin", "plugin.json"))}; echo '${remoteHead}' > ${q(join(fake, "local-head"))}; echo refreshed ;;`,
     options.claudeFails === true
-      ? '  "plugin update anymodel@anymodel --scope user") echo "Failed to update: network" >&2; exit 1 ;;'
-      : `  "plugin update anymodel@anymodel --scope user") cp ${q(join(fake, "installed-after"))} ${q(join(plugins, "installed_plugins.json"))}; echo updated ;;`,
+      ? '  "plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user") echo "Failed to update: network" >&2; exit 1 ;;'
+      : `  "plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user") cp ${q(join(fake, "installed-after"))} ${q(join(plugins, "installed_plugins.json"))}; echo updated ;;`,
     "esac",
   ]);
   for (const notifier of ["notify-send", "osascript"]) {
@@ -193,7 +199,7 @@ function machine(options: MachineOptions = {}) {
   };
   const installedVersion = () =>
     JSON.parse(readFileSync(join(plugins, "installed_plugins.json"), "utf8")).plugins[
-      "anymodel@anymodel"
+      "cc-smart-dev-kit@cc-smart-dev-kit"
     ][0].version as string;
   return { cli, env, files, home, hook, installedVersion, paths, read, settled };
 }
@@ -211,18 +217,18 @@ describe("the SessionStart hook and the background check, end to end", () => {
     expect(last.result).toBe("updated");
     expect(last.detail).toBe("1.1.0 (was 1.0.0)");
     expect(m.read("claude.log")).toBe(
-      "plugin marketplace update anymodel\nplugin update anymodel@anymodel --scope user\n",
+      "plugin marketplace update cc-smart-dev-kit\nplugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user\n",
     );
     expect(m.installedVersion()).toBe("1.1.0");
     expect(m.read("notify.log")).toBe(
-      "notify-send anymodel anymodel 1.1.0 installed; restart Claude sessions to load it\n",
+      "notify-send cc-smart-dev-kit cc-smart-dev-kit 1.1.0 installed; restart Claude sessions to load it\n",
     );
     // git: the remote head (no password prompt), then the copy's head.
     expect(m.read("git.log")).toBe(
       [
         "config --get core.sshCommand",
-        "ls-remote git@github.com:example-org/anymodel.git HEAD",
-        `-C ${join(m.home, ".claude", "plugins", "marketplaces", "anymodel")} rev-parse HEAD`,
+        "ls-remote git@github.com:example-org/cc-smart-dev-kit.git HEAD",
+        `-C ${join(m.home, ".claude", "plugins", "marketplaces", "cc-smart-dev-kit")} rev-parse HEAD`,
         "",
       ].join("\n"),
     );
@@ -230,8 +236,8 @@ describe("the SessionStart hook and the background check, end to end", () => {
     expect(log).toBe(
       [
         "newer: installed 1.0.0, the marketplace copy 1.0.0, and the copy is behind the remote",
-        "run: claude plugin marketplace update anymodel",
-        "run: claude plugin update anymodel@anymodel --scope user",
+        "run: claude plugin marketplace update cc-smart-dev-kit",
+        "run: claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user",
         "updated: 1.1.0 (was 1.0.0)",
         "",
       ].join("\n"),
@@ -255,7 +261,7 @@ describe("the SessionStart hook and the background check, end to end", () => {
     expect((await m.settled()).result).toBe("updated");
     // The refresh runs first all the same: it is cheap, and the copy may be behind too.
     expect(m.read("claude.log")).toBe(
-      "plugin marketplace update anymodel\nplugin update anymodel@anymodel --scope user\n",
+      "plugin marketplace update cc-smart-dev-kit\nplugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user\n",
     );
   }, 30_000);
 
@@ -263,7 +269,7 @@ describe("the SessionStart hook and the background check, end to end", () => {
     const m = machine({ newVersion: "1.0.0", remoteHead: HEAD_B });
     await m.hook();
     expect(await m.settled()).toMatchObject({ detail: "1.0.0", result: "up-to-date" });
-    expect(m.read("claude.log")).toBe("plugin marketplace update anymodel\n");
+    expect(m.read("claude.log")).toBe("plugin marketplace update cc-smart-dev-kit\n");
     expect(m.read("notify.log")).toBe("");
   }, 30_000);
 
@@ -273,12 +279,12 @@ describe("the SessionStart hook and the background check, end to end", () => {
     const last = await m.settled();
     expect(last.result).toBe("failed");
     expect(last.detail).toBe(
-      "claude plugin update anymodel@anymodel --scope user failed (exit 1): Failed to update: network",
+      "claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user failed (exit 1): Failed to update: network",
     );
     expect(m.read("notify.log")).toBe("");
     const told = await m.hook();
     expect(JSON.parse(told.stdout)).toEqual({
-      systemMessage: `anymodel: the background update failed at ${last.at} (${last.detail}). The log: ~/.claude/anymodel/update.log. To try now: anymodel update`,
+      systemMessage: `cc-smart-dev-kit: the background update failed at ${last.at} (${last.detail}). The log: ~/.claude/cc-smart-dev-kit/update.log. To try now: cc-smart-dev-kit update`,
     });
     expect(told.stderr).toBe("");
     // Once: the next session is not told again.
@@ -292,7 +298,7 @@ describe("the SessionStart hook and the background check, end to end", () => {
     expect(last).toEqual({
       at: last.at,
       detail:
-        "cannot read the marketplace (git@github.com:example-org/anymodel.git: fatal: could not read from remote repository; https://github.com/example-org/anymodel.git: fatal: could not read from remote repository)",
+        "cannot read the marketplace (git@github.com:example-org/cc-smart-dev-kit.git: fatal: could not read from remote repository; https://github.com/example-org/cc-smart-dev-kit.git: fatal: could not read from remote repository)",
       result: "unreachable",
       since: last.at,
     });
@@ -320,14 +326,14 @@ describe("the SessionStart hook and the background check, end to end", () => {
   test("a failed command's output: every URL in it loses its credentials, in the record and the log", async () => {
     const m = machine({
       refreshFails:
-        "fatal: unable to access https://user:s3cret-token@git.example.com/org/anymodel.git/: Could not resolve host",
+        "fatal: unable to access https://user:s3cret-token@git.example.com/org/cc-smart-dev-kit.git/: Could not resolve host",
       remoteHead: HEAD_B,
     });
     await m.hook();
     const last = await m.settled();
     expect(last.result).toBe("failed");
     expect(last.detail).toBe(
-      "claude plugin marketplace update anymodel failed (exit 1): fatal: unable to access https://***@git.example.com/org/anymodel.git/: Could not resolve host",
+      "claude plugin marketplace update cc-smart-dev-kit failed (exit 1): fatal: unable to access https://***@git.example.com/org/cc-smart-dev-kit.git/: Could not resolve host",
     );
     expect(readFileSync(m.files.log, "utf8")).not.toContain("s3cret-token");
     expect(readFileSync(m.files.check, "utf8")).not.toContain("s3cret-token");
@@ -338,7 +344,7 @@ describe("the SessionStart hook and the background check, end to end", () => {
   test("Claude Code's own refresh holding git's index.lock: skipped, not failed; no session told", async () => {
     const m = machine({
       refreshFails:
-        "fatal: Unable to create '/home/u/.claude/plugins/marketplaces/anymodel/.git/index.lock': File exists.",
+        "fatal: Unable to create '/home/u/.claude/plugins/marketplaces/cc-smart-dev-kit/.git/index.lock': File exists.",
       remoteHead: HEAD_B,
     });
     await m.hook();
@@ -358,22 +364,25 @@ describe("the SessionStart hook and the background check, end to end", () => {
       ".claude",
       "plugins",
       "cache",
-      "anymodel",
-      "anymodel",
+      "cc-smart-dev-kit",
+      "cc-smart-dev-kit",
       "1.0.0",
     );
     mkdirSync(join(installPath, "dist"), { recursive: true });
     writeFileSync(join(installPath, "dist", "router.js"), "// router v2\n");
-    mkdirSync(join(m.home, ".local", "share", "anymodel"), { recursive: true });
-    writeFileSync(join(m.home, ".local", "share", "anymodel", "router.js"), "// router v1\n");
+    mkdirSync(join(m.home, ".local", "share", "cc-smart-dev-kit"), { recursive: true });
+    writeFileSync(
+      join(m.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+      "// router v1\n",
+    );
     await m.hook();
     expect(await m.settled()).toMatchObject({
       detail:
-        "1.1.0 (was 1.0.0); its router changed: to run it, anymodel gateway setup (it asks before the restart)",
+        "1.1.0 (was 1.0.0); its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart)",
       result: "updated",
     });
     expect(m.read("notify.log")).toBe(
-      "notify-send anymodel anymodel 1.1.0 installed; restart Claude sessions to load it; its router changed: to run it, anymodel gateway setup (it asks before the restart)\n",
+      "notify-send cc-smart-dev-kit cc-smart-dev-kit 1.1.0 installed; restart Claude sessions to load it; its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart)\n",
     );
   }, 30_000);
 
@@ -483,7 +492,7 @@ describe("a failure: when it counts, and who is told", () => {
     const failed = readLastCheck(m.files);
     expect(failed?.result).toBe("failed");
     expect(failed?.detail).toStartWith(
-      "cannot read the marketplace since 2026-10-15T10:00:00Z (git@github.com:example-org/anymodel.git: ",
+      "cannot read the marketplace since 2026-10-15T10:00:00Z (git@github.com:example-org/cc-smart-dev-kit.git: ",
     );
     const doctor = await m.cli(["doctor"]);
     expect(doctor.stdout).toContain(
@@ -512,7 +521,7 @@ describe("a failure: when it counts, and who is told", () => {
     });
     const doctor = await m.cli(["doctor"]);
     expect(doctor.stdout).toContain(
-      "· background update: last check 2026-10-15T11:00:00Z: cannot read the marketplace (x: offline), since 2026-10-15T10:00:00Z. It counts as a failure only after 24 h in a row. To look now: anymodel update --check\n",
+      "· background update: last check 2026-10-15T11:00:00Z: cannot read the marketplace (x: offline), since 2026-10-15T10:00:00Z. It counts as a failure only after 24 h in a row. To look now: cc-smart-dev-kit update --check\n",
     );
   }, 30_000);
 
@@ -526,7 +535,7 @@ describe("a failure: when it counts, and who is told", () => {
     const attended = { ...m.env, CLAUDE_CODE_SESSION_ATTENDED: "1" };
     expect(JSON.parse(hookHere(m, NOW, attended).answer)).toEqual({
       systemMessage:
-        "anymodel: the background update failed at 2026-10-15T09:00:00Z (boom). The log: ~/.claude/anymodel/update.log. To try now: anymodel update",
+        "cc-smart-dev-kit: the background update failed at 2026-10-15T09:00:00Z (boom). The log: ~/.claude/cc-smart-dev-kit/update.log. To try now: cc-smart-dev-kit update",
     });
     expect(hookHere(m, NOW, attended).answer).toBe("");
   });
@@ -597,7 +606,7 @@ describe("the throttle, the hold and the lock", () => {
     const m = machine();
     const held = await m.cli(["update", "--hold"]);
     expect(held.stdout).toBe(
-      "Background updates are on hold: a new Claude session no longer checks for a newer anymodel. To resume: anymodel update --resume\n",
+      "Background updates are on hold: a new Claude session no longer checks for a newer cc-smart-dev-kit. To resume: cc-smart-dev-kit update --resume\n",
     );
     expect(held.exitCode).toBe(0);
     expect(hookHere(m).started).toBe(0);
@@ -606,7 +615,7 @@ describe("the throttle, the hold and the lock", () => {
     );
     const resumed = await m.cli(["update", "--resume"]);
     expect(resumed.stdout).toBe(
-      "Background updates resume: a new Claude session checks for a newer anymodel, at most once an hour (~/.claude/anymodel/update.log).\n",
+      "Background updates resume: a new Claude session checks for a newer cc-smart-dev-kit, at most once an hour (~/.claude/cc-smart-dev-kit/update.log).\n",
     );
     expect(hookHere(m).started).toBe(1);
     expect((await m.cli(["update", "--resume"])).stdout).toBe(
@@ -627,18 +636,18 @@ describe("the throttle, the hold and the lock", () => {
     const held = await m.cli(["update", "--hold"]);
     expect(held.exitCode).toBe(0);
     expect(held.stdout).toBe(
-      "Background updates are on hold: a new Claude session no longer checks for a newer anymodel. To resume: anymodel update --resume\nA check is running now; it finishes.\n",
+      "Background updates are on hold: a new Claude session no longer checks for a newer cc-smart-dev-kit. To resume: cc-smart-dev-kit update --resume\nA check is running now; it finishes.\n",
     );
     expect(held.ms).toBeLessThan(5_000);
     const resumed = await m.cli(["update", "--resume"]);
     expect(resumed.stdout).toBe(
-      "Background updates resume: a new Claude session checks for a newer anymodel, at most once an hour (~/.claude/anymodel/update.log).\nA check is running now; it finishes.\n",
+      "Background updates resume: a new Claude session checks for a newer cc-smart-dev-kit, at most once an hour (~/.claude/cc-smart-dev-kit/update.log).\nA check is running now; it finishes.\n",
     );
     release();
     await Promise.all([update, setup]);
     // No check runs: only the answer.
     expect((await m.cli(["update", "--hold"])).stdout).toBe(
-      "Background updates are on hold: a new Claude session no longer checks for a newer anymodel. To resume: anymodel update --resume\n",
+      "Background updates are on hold: a new Claude session no longer checks for a newer cc-smart-dev-kit. To resume: cc-smart-dev-kit update --resume\n",
     );
   }, 30_000);
 
@@ -711,26 +720,26 @@ describe("the throttle, the hold and the lock", () => {
   });
 });
 
-describe("anymodel update", () => {
+describe("cc-smart-dev-kit update", () => {
   test("--check: the newest; a newer one in the copy; a newer one only at the remote (read without touching the copy)", async () => {
     expect((await machine().cli(["update", "--check"])).stdout).toBe(
-      "anymodel 1.0.0 is the newest version.\n",
+      "cc-smart-dev-kit 1.0.0 is the newest version.\n",
     );
     expect((await machine({ inCopy: "1.2.0" }).cli(["update", "--check"])).stdout).toBe(
-      "anymodel 1.2.0 is available (installed: 1.0.0). Run: anymodel update\n",
+      "cc-smart-dev-kit 1.2.0 is available (installed: 1.0.0). Run: cc-smart-dev-kit update\n",
     );
     const remote = machine({ remoteHead: HEAD_B, remoteVersion: "2.0.0" });
     expect((await remote.cli(["update", "--check"])).stdout).toBe(
-      "anymodel 2.0.0 is available (installed: 1.0.0). Run: anymodel update\n",
+      "cc-smart-dev-kit 2.0.0 is available (installed: 1.0.0). Run: cc-smart-dev-kit update\n",
     );
     // No claude command, and Claude Code's copy untouched.
     expect(remote.read("claude.log")).toBe("");
     expect(remote.read("git.log")).toContain(
-      "fetch -q --depth 1 --no-tags git@github.com:example-org/anymodel.git HEAD\n",
+      "fetch -q --depth 1 --no-tags git@github.com:example-org/cc-smart-dev-kit.git HEAD\n",
     );
     const docsOnly = machine({ remoteHead: HEAD_B, remoteVersion: "1.0.0" });
     expect((await docsOnly.cli(["update", "--check"])).stdout).toBe(
-      "anymodel 1.0.0 is the newest version (the marketplace has newer commits, with no new version).\n",
+      "cc-smart-dev-kit 1.0.0 is the newest version (the marketplace has newer commits, with no new version).\n",
     );
     const offline = await machine({ gitFails: true }).cli(["update", "--check"]);
     expect(offline.exitCode).toBe(1);
@@ -744,11 +753,11 @@ describe("anymodel update", () => {
     expect(run.exitCode).toBe(0);
     expect(run.stdout).toBe(
       [
-        "$ claude plugin marketplace update anymodel",
+        "$ claude plugin marketplace update cc-smart-dev-kit",
         "refreshed",
-        "$ claude plugin update anymodel@anymodel --scope user",
+        "$ claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user",
         "updated",
-        "anymodel 1.1.0 installed (was 1.0.0). Restart Claude sessions to load it.",
+        "cc-smart-dev-kit 1.1.0 installed (was 1.0.0). Restart Claude sessions to load it.",
         "",
       ].join("\n"),
     );
@@ -757,14 +766,14 @@ describe("anymodel update", () => {
       result: "updated",
     });
     // Nothing newer now.
-    expect((await m.cli(["update"])).stdout).toBe("anymodel 1.1.0 is up to date.\n");
+    expect((await m.cli(["update"])).stdout).toBe("cc-smart-dev-kit 1.1.0 is up to date.\n");
   }, 30_000);
 
   test("a wrong option: the usage, exit 2", async () => {
     const run = await machine().cli(["update", "--now"]);
     expect(run.exitCode).toBe(2);
     expect(run.stderr).toBe(
-      "Unknown option: --now\n\nUsage: anymodel update [--check | --hold | --resume]\n",
+      "Unknown option: --now\n\nUsage: cc-smart-dev-kit update [--check | --hold | --resume]\n",
     );
   }, 30_000);
 });
@@ -809,14 +818,14 @@ describe("running sessions and the version they loaded", () => {
       "✓ background update: last check 2026-10-15T10:00:00Z: installed 1.1.0 (was 1.0.0)\n",
     );
     expect(after.stdout).toContain(
-      "· 1 running Claude session loaded anymodel 1.0.0; 1.1.0 is installed. Restart it to load it.\n",
+      "· 1 running Claude session loaded cc-smart-dev-kit 1.0.0; 1.1.0 is installed. Restart it to load it.\n",
     );
     writeLastCheck(m.files, { at: "2026-10-15T11:00:00Z", detail: "boom", result: "failed" });
     writeFileSync(m.files.hold, "2026-10-15T11:30:00Z\n");
     const failed = await m.cli(["doctor"]);
     expect(failed.exitCode).toBe(1);
     expect(failed.stdout).toContain(
-      "· background updates are on hold (since 2026-10-15T11:30:00Z). To resume: anymodel update --resume\n✗ background update: the last check, 2026-10-15T11:00:00Z, failed: boom. The log: ~/.claude/anymodel/update.log. To try now: anymodel update\n",
+      "· background updates are on hold (since 2026-10-15T11:30:00Z). To resume: cc-smart-dev-kit update --resume\n✗ background update: the last check, 2026-10-15T11:00:00Z, failed: boom. The log: ~/.claude/cc-smart-dev-kit/update.log. To try now: cc-smart-dev-kit update\n",
     );
   }, 30_000);
 });
@@ -827,27 +836,27 @@ describe("the notification", () => {
 
   test("notify-send on Linux, osascript on macOS, nothing elsewhere or without the tool", () => {
     const text = installedText("1.2.3");
-    expect(text).toBe("anymodel 1.2.3 installed; restart Claude sessions to load it");
+    expect(text).toBe("cc-smart-dev-kit 1.2.3 installed; restart Claude sessions to load it");
     expect(notifyCommand(text, "linux", which(["notify-send"]))).toEqual([
       "/usr/bin/notify-send",
-      "anymodel",
+      "cc-smart-dev-kit",
       text,
     ]);
     expect(notifyCommand(text, "linux", which([]))).toBe(null);
     expect(notifyCommand(text, "darwin", which(["osascript"]))).toEqual([
       "/usr/bin/osascript",
       "-e",
-      'display notification "anymodel 1.2.3 installed; restart Claude sessions to load it" with title "anymodel"',
+      'display notification "cc-smart-dev-kit 1.2.3 installed; restart Claude sessions to load it" with title "cc-smart-dev-kit"',
     ]);
     expect(notifyCommand(text, "win32", which(["notify-send", "osascript"]))).toBe(null);
   });
 
   test("a version that is not plain text never reaches the notifier", () => {
     expect(installedText('1.0" & do shell script "x')).toBe(
-      "anymodel a new version installed; restart Claude sessions to load it",
+      "cc-smart-dev-kit a new version installed; restart Claude sessions to load it",
     );
     expect(installedText(null)).toBe(
-      "anymodel a new version installed; restart Claude sessions to load it",
+      "cc-smart-dev-kit a new version installed; restart Claude sessions to load it",
     );
   });
 

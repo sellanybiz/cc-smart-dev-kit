@@ -5,7 +5,7 @@ description: Use before using or recommending any external library, API or patte
 
 # Research Before You Build
 
-**Project add-on:** `.claude/anymodel/research-first.md` — read it first when it exists.
+**Project add-on:** `.claude/cc-smart-dev-kit/research-first.md` — read it first when it exists.
 Where it differs, the add-on wins (`core.md`, top). It names the project's research tools and
 any library it prefers or bans.
 

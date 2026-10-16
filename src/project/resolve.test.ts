@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { VERSION } from "../build-info";
 import { git, tempDir } from "../testing/temp";
-import { AnymodelConfigError, AnymodelVersionError } from "./config";
+import { CcSmartDevKitConfigError, CcSmartDevKitVersionError } from "./config";
 import { locateCheckout, ownHooksOf, resolveProject } from "./resolve";
 
 /** A repo with one commit, so `git worktree add` works. */
@@ -17,9 +17,9 @@ function makeRepo(): string {
   return repo;
 }
 
-function writeAnymodelJson(folder: string, content: string): string {
+function writeCcSmartDevKitJson(folder: string, content: string): string {
   mkdirSync(join(folder, ".claude"), { recursive: true });
-  const file = join(folder, ".claude", "anymodel.json");
+  const file = join(folder, ".claude", "cc-smart-dev-kit.json");
   writeFileSync(file, content);
   return file;
 }
@@ -58,13 +58,13 @@ describe("resolveProject", () => {
     expect(resolveProject(tempDir("nogit"))).toBeNull();
   });
 
-  test("no anymodel.json gives config null", () => {
+  test("no cc-smart-dev-kit.json gives config null", () => {
     expect(resolveProject(makeRepo())?.config).toBeNull();
   });
 
-  test("a valid anymodel.json is read with every field", () => {
+  test("a valid cc-smart-dev-kit.json is read with every field", () => {
     const repo = makeRepo();
-    writeAnymodelJson(
+    writeCcSmartDevKitJson(
       repo,
       JSON.stringify({
         requires: ">=1.2",
@@ -110,57 +110,66 @@ describe("resolveProject", () => {
     ],
   ])("the hook fields are checked: %j names %j", (content, field) => {
     const repo = makeRepo();
-    const file = writeAnymodelJson(repo, JSON.stringify(content));
+    const file = writeCcSmartDevKitJson(repo, JSON.stringify(content));
     expect(() => resolveProject(repo)).toThrow(`Invalid ${file}: ${field}`);
   });
 
-  test("a worktree without its own anymodel.json falls back to the main checkout's", () => {
+  test("a worktree without its own cc-smart-dev-kit.json falls back to the main checkout's", () => {
     const repo = makeRepo();
-    writeAnymodelJson(repo, JSON.stringify({ instructions: true }));
+    writeCcSmartDevKitJson(repo, JSON.stringify({ instructions: true }));
     const worktree = join(repo, "..", "wt-fallback");
     git(repo, "worktree", "add", "-q", "-b", "fallback", worktree);
     expect(resolveProject(worktree)?.config).toEqual({ instructions: true });
-    expect(resolveProject(worktree)?.configFile).toBe(join(repo, ".claude", "anymodel.json"));
+    expect(resolveProject(worktree)?.configFile).toBe(
+      join(repo, ".claude", "cc-smart-dev-kit.json"),
+    );
   });
 
-  test("a worktree's own anymodel.json wins over the main checkout's", () => {
+  test("a worktree's own cc-smart-dev-kit.json wins over the main checkout's", () => {
     const repo = makeRepo();
-    writeAnymodelJson(repo, JSON.stringify({ instructions: true }));
+    writeCcSmartDevKitJson(repo, JSON.stringify({ instructions: true }));
     const worktree = join(repo, "..", "wt-own");
     git(repo, "worktree", "add", "-q", "-b", "own", worktree);
-    writeAnymodelJson(worktree, JSON.stringify({ instructions: false }));
+    writeCcSmartDevKitJson(worktree, JSON.stringify({ instructions: false }));
     expect(resolveProject(worktree)?.config).toEqual({ instructions: false });
-    expect(resolveProject(worktree)?.configFile).toBe(join(worktree, ".claude", "anymodel.json"));
+    expect(resolveProject(worktree)?.configFile).toBe(
+      join(worktree, ".claude", "cc-smart-dev-kit.json"),
+    );
   });
 
-  test("an invalid anymodel.json throws an error that names the file and the field", () => {
+  test("an invalid cc-smart-dev-kit.json throws an error that names the file and the field", () => {
     const repo = makeRepo();
-    const file = writeAnymodelJson(repo, JSON.stringify({ worktrees: { base: 5, prefix: "x-" } }));
-    expect(() => resolveProject(repo)).toThrow(AnymodelConfigError);
+    const file = writeCcSmartDevKitJson(
+      repo,
+      JSON.stringify({ worktrees: { base: 5, prefix: "x-" } }),
+    );
+    expect(() => resolveProject(repo)).toThrow(CcSmartDevKitConfigError);
     expect(() => resolveProject(repo)).toThrow(`Invalid ${file}: worktrees.base:`);
   });
 
-  test("an unknown field in anymodel.json is named", () => {
+  test("an unknown field in cc-smart-dev-kit.json is named", () => {
     const repo = makeRepo();
-    writeAnymodelJson(repo, JSON.stringify({ worktree: { base: "dev", prefix: "x-" } }));
+    writeCcSmartDevKitJson(repo, JSON.stringify({ worktree: { base: "dev", prefix: "x-" } }));
     expect(() => resolveProject(repo)).toThrow("worktree: unknown field");
   });
 
   test("a plugin too old for `requires`: the update message, even with a field it does not know", () => {
     const repo = makeRepo();
-    const file = writeAnymodelJson(
+    const file = writeCcSmartDevKitJson(
       repo,
       JSON.stringify({ requires: ">=1.2", fieldFromTheFuture: true, instructions: true }),
     );
-    expect(() => resolveProject(repo, { pluginVersion: "1.1.0" })).toThrow(AnymodelVersionError);
     expect(() => resolveProject(repo, { pluginVersion: "1.1.0" })).toThrow(
-      `${file}: this project needs anymodel >=1.2; you have 1.1.0; run claude plugin update anymodel@anymodel`,
+      CcSmartDevKitVersionError,
+    );
+    expect(() => resolveProject(repo, { pluginVersion: "1.1.0" })).toThrow(
+      `${file}: this project needs cc-smart-dev-kit >=1.2; you have 1.1.0; run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit`,
     );
   });
 
   test("a plugin new enough for `requires`: then an unknown field is an error", () => {
     const repo = makeRepo();
-    writeAnymodelJson(repo, JSON.stringify({ requires: "^1.2", fieldFromTheFuture: true }));
+    writeCcSmartDevKitJson(repo, JSON.stringify({ requires: "^1.2", fieldFromTheFuture: true }));
     expect(() => resolveProject(repo, { pluginVersion: "1.4.0" })).toThrow(
       "fieldFromTheFuture: unknown field",
     );
@@ -170,13 +179,13 @@ describe("resolveProject", () => {
     } catch (caught) {
       error = caught;
     }
-    expect(error).toBeInstanceOf(AnymodelConfigError);
-    expect(error).not.toBeInstanceOf(AnymodelVersionError);
+    expect(error).toBeInstanceOf(CcSmartDevKitConfigError);
+    expect(error).not.toBeInstanceOf(CcSmartDevKitVersionError);
   });
 
   test("`requires` that is not a version range is a field error", () => {
     const repo = makeRepo();
-    const file = writeAnymodelJson(repo, JSON.stringify({ requires: "banana" }));
+    const file = writeCcSmartDevKitJson(repo, JSON.stringify({ requires: "banana" }));
     expect(() => resolveProject(repo, { pluginVersion: "1.0.0" })).toThrow(
       `Invalid ${file}: requires: not a valid version range`,
     );
@@ -184,21 +193,21 @@ describe("resolveProject", () => {
 
   test("by default, `requires` is checked against this build's version", () => {
     const repo = makeRepo();
-    writeAnymodelJson(repo, JSON.stringify({ requires: `>${VERSION}` }));
+    writeCcSmartDevKitJson(repo, JSON.stringify({ requires: `>${VERSION}` }));
     expect(() => resolveProject(repo)).toThrow(`you have ${VERSION};`);
-    writeAnymodelJson(repo, JSON.stringify({ requires: `>=${VERSION}` }));
+    writeCcSmartDevKitJson(repo, JSON.stringify({ requires: `>=${VERSION}` }));
     expect(resolveProject(repo)?.config).toEqual({ requires: `>=${VERSION}` });
   });
 
-  test("anymodel.json that is not JSON throws an error that names the file", () => {
+  test("cc-smart-dev-kit.json that is not JSON throws an error that names the file", () => {
     const repo = makeRepo();
-    const file = writeAnymodelJson(repo, "{ not json");
+    const file = writeCcSmartDevKitJson(repo, "{ not json");
     expect(() => resolveProject(repo)).toThrow(`Invalid ${file}: not valid JSON`);
   });
 
-  test("locateCheckout finds the checkout without reading anymodel.json, even a broken one", () => {
+  test("locateCheckout finds the checkout without reading cc-smart-dev-kit.json, even a broken one", () => {
     const repo = makeRepo();
-    writeAnymodelJson(repo, "{ not json");
+    writeCcSmartDevKitJson(repo, "{ not json");
     expect(locateCheckout(repo)).toEqual({
       root: repo,
       commonDir: join(repo, ".git"),
@@ -217,20 +226,20 @@ describe("resolveProject", () => {
     };
     expect(ownHooksOf(checkout())).toEqual([]);
     // Too new and with a field this plugin does not know: the list is still read.
-    writeAnymodelJson(
+    writeCcSmartDevKitJson(
       repo,
       JSON.stringify({ requires: ">=99", future: 1, ownHooks: ["git-guard", 5] }),
     );
     expect(ownHooksOf(checkout())).toEqual(["git-guard"]);
-    writeAnymodelJson(repo, "{ not json");
+    writeCcSmartDevKitJson(repo, "{ not json");
     expect(ownHooksOf(checkout())).toEqual([]);
-    writeAnymodelJson(repo, JSON.stringify({ ownHooks: ["message-guard"] }));
+    writeCcSmartDevKitJson(repo, JSON.stringify({ ownHooks: ["message-guard"] }));
     const worktree = join(repo, "..", "wt-own-hooks");
     git(repo, "worktree", "add", "-q", "-b", "own-hooks", worktree);
     const inWorktree = locateCheckout(worktree);
     if (inWorktree === null) throw new Error("no checkout");
     expect(ownHooksOf(inWorktree)).toEqual(["message-guard"]);
-    writeAnymodelJson(worktree, JSON.stringify({ sessionNames: true }));
+    writeCcSmartDevKitJson(worktree, JSON.stringify({ sessionNames: true }));
     expect(ownHooksOf(inWorktree)).toEqual([]);
   });
 

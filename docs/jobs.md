@@ -1,6 +1,6 @@
 # Heavy jobs: one queue for the whole machine
 
-`anymodel job` makes heavy jobs wait for free memory instead of freezing the machine.
+`cc-smart-dev-kit job` makes heavy jobs wait for free memory instead of freezing the machine.
 
 A **heavy job** is a command that can use many gigabytes: a TypeScript type check, a
 type-aware lint, a test run, a production build, a container image build. When many
@@ -9,28 +9,28 @@ The machine runs out of memory, and the kernel kills what it picks: often the de
 and every session with it. A rule like "one heavy job at a time" in each session does
 not help: nothing limits heavy jobs **across** sessions, agents and people.
 
-So each heavy job runs through `anymodel job run`. It reserves the gigabytes the job
+So each heavy job runs through `cc-smart-dev-kit job run`. It reserves the gigabytes the job
 needs, waits while they are not free, runs the job, and gives them back when the job ends.
 
 ```sh
-anymodel job run --kind tsc -- bunx tsc --noEmit
-anymodel job run --kind image:build --exclusive image -- docker buildx build .
-anymodel job status
-anymodel job kinds
+cc-smart-dev-kit job run --kind tsc -- bunx tsc --noEmit
+cc-smart-dev-kit job run --kind image:build --exclusive image -- docker buildx build .
+cc-smart-dev-kit job status
+cc-smart-dev-kit job kinds
 ```
 
 ## How a job runs
 
 ```mermaid
 flowchart TD
-    J["anymodel job run --kind K -- command"] --> N{"inside another heavy job?"}
+    J["cc-smart-dev-kit job run --kind K -- command"] --> N{"inside another heavy job?"}
     N -->|"yes"| D["run the command directly"]
     N -->|"no"| R["reserve GB: this machine first,<br/>then each shared folder"]
     R --> W{"oldest ticket, fair share,<br/>name free, GB free, live check ok?"}
     W -->|"no"| L["wait; say who holds the memory"]
     L --> W
     W -->|"yes"| P{"launch: auto, Linux:<br/>can systemd make a scope?"}
-    P -->|"yes"| S["scope in anymodel-heavy.slice<br/>+ choom 900"]
+    P -->|"yes"| S["scope in cc-smart-dev-kit-heavy.slice<br/>+ choom 900"]
     P -->|"no, choom here"| C["choom 900 only"]
     P -->|"no / macOS / launch: plain"| PL["plain run"]
     S --> E["exit code passes through"]
@@ -52,7 +52,7 @@ flowchart TD
    group (§ The launch). Elsewhere it runs as it is. Always in a process group of its own.
 4. **End.** `job run` ends with the job's exit code: the code itself, 128 + n for a job
    killed by signal n, 127 when the command cannot start, 2 for a wrong `job run` command
-   line or a config it cannot use (`jobs.json`, `anymodel.json`, a state folder it cannot
+   line or a config it cannot use (`jobs.json`, `cc-smart-dev-kit.json`, a state folder it cannot
    make): then the job never starts. Its stdin, stdout and stderr are the job's. SIGINT,
    SIGTERM and SIGHUP are sent on to the job's whole process group, each once (§ The
    launch). The lease is given back however the job ends, once no process of the job is
@@ -81,7 +81,7 @@ command already has it (or `--max-workers`): one worker per 0.5 GB reserved, at 
 one, at most `cores - 1` (the runners' own default). It is added before a `--`, where a
 runner would read it as a filter, and never to a shell line (`sh -c "…"`).
 
-**A project's own kinds.** `.claude/anymodel.json` can replace a kind or add one:
+**A project's own kinds.** `.claude/cc-smart-dev-kit.json` can replace a kind or add one:
 
 ```json
 {
@@ -112,16 +112,16 @@ there is. The fields:
 ## The route: `job-route`
 
 A heavy command typed by hand runs raw. A project can have it sent through the queue:
-`"jobs": { "route": true }` in its `.claude/anymodel.json`, and the plugin's `job-route`
+`"jobs": { "route": true }` in its `.claude/cc-smart-dev-kit.json`, and the plugin's `job-route`
 hook (PreToolUse on Bash, in `src/hooks/job-route.ts`) rewrites the call to
 
-    "$HOME/.local/bin/anymodel" job run --kind <kind> -- <command>
+    "$HOME/.local/bin/cc-smart-dev-kit" job run --kind <kind> -- <command>
 
 through the hook's `updatedInput` — byte for byte the same command, in the same folder —
 so the reservation, the waiting line and the workers come out the same as a person's own
 `job run`. One plain command goes in as its own argv words (`bunx vitest run src/a.test.ts`);
 anything else (a pipe, `&&`, a glob, an expansion) through `sh -c '<the line>'`, so the
-shell reads exactly what was written. A command already inside `anymodel job run` is left
+shell reads exactly what was written. A command already inside `cc-smart-dev-kit job run` is left
 alone. Off unless the project says so, because it changes the call; `ownHooks` silences it
 like any other plugin hook.
 
@@ -131,8 +131,8 @@ Some jobs must not run twice at once, whatever the memory: two container image b
 that share one build cache, a deploy. `--exclusive <name>` keeps a name to one job:
 
 ```sh
-anymodel job run --kind image:build --exclusive image -- docker buildx build .
-anymodel job run --exclusive deploy -- ./deploy.sh
+cc-smart-dev-kit job run --kind image:build --exclusive image -- docker buildx build .
+cc-smart-dev-kit job run --exclusive deploy -- ./deploy.sh
 ```
 
 - **With a kind, or alone.** `--kind` and `--exclusive` combine: the job needs the kind's
@@ -189,8 +189,8 @@ How a waiting job decides, every half second:
   waits, and who holds the rest (person, kind, command, folder, since when, pid).
 
 ```text
-[anymodel job] Heavy job waits for memory: bunx tsc --noEmit needs 8 GB. this machine: 2 of 32 GB free. Why: only 2 GB of this machine's budget is free.
-[anymodel job]   this machine: 28 GB held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 4242)
+[cc-smart-dev-kit job] Heavy job waits for memory: bunx tsc --noEmit needs 8 GB. this machine: 2 of 32 GB free. Why: only 2 GB of this machine's budget is free.
+[cc-smart-dev-kit job]   this machine: 28 GB held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 4242)
 ```
 
 ## Memory, in containers too
@@ -214,7 +214,7 @@ Each budget is a folder of small files:
 <folder>/lock                   held for a moment while a job takes memory
 ```
 
-- **This machine's folder** is per user: `~/.local/share/anymodel/jobs/` (mode 700), or
+- **This machine's folder** is per user: `~/.local/share/cc-smart-dev-kit/jobs/` (mode 700), or
   `stateDir` in `jobs.json`.
 - **Each file names its writer:** the pid, that process's start time, the host name and
   the pid namespace. The record inside (who, what, where, since) is data for the waiting
@@ -252,7 +252,7 @@ host (or several users) share the host's memory, so they can share a budget too:
 { "sharedDirs": ["/srv/heavy-jobs"] }
 ```
 
-in each one's `~/.config/anymodel/jobs.json`. The machine's own setup prepares the
+in each one's `~/.config/cc-smart-dev-kit/jobs.json`. The machine's own setup prepares the
 folder; the plugin never creates one, nor anything in it but its own lease, ticket and
 lock files:
 
@@ -287,7 +287,7 @@ With `launch: auto` (the default), on Linux:
 
 | Mode | When | What |
 |---|---|---|
-| scope | a systemd user manager answers | `systemd-run --user --scope --slice=anymodel-heavy.slice -p OOMPolicy=kill -- choom -n 900 -- <command>` |
+| scope | a systemd user manager answers | `systemd-run --user --scope --slice=cc-smart-dev-kit-heavy.slice -p OOMPolicy=kill -- choom -n 900 -- <command>` |
 | choom | no user manager (cron, a container, CI), or no scope can be made | `choom -n 900 -- <command>` |
 | plain | no `choom`, macOS, `launch: plain`, or a 0 GB run | the command as it is |
 
@@ -298,7 +298,7 @@ With `launch: auto` (the default), on Linux:
   user manager that does not answer never hangs `job run` (a probe that times out means
   no scope).
 - **The slice's ceiling.** Before each launch, `systemctl --user set-property --runtime
-  anymodel-heavy.slice MemoryMax=<budget>G MemorySwapMax=0`: all heavy jobs together can
+  cc-smart-dev-kit-heavy.slice MemoryMax=<budget>G MemorySwapMax=0`: all heavy jobs together can
   never take the memory kept for everything else, and past it the kernel kills inside the
   slice only. No swap for the slice: with swap, jobs over the ceiling would crawl through
   it instead of dying.
@@ -322,36 +322,36 @@ With `launch: auto` (the default), on Linux:
   get 2 seconds to end by themselves, then SIGTERM, then (5 seconds later) SIGKILL, and
   `job run` says so. It never hangs on them: what still runs 5 seconds after SIGKILL is
   named, and the memory is given back anyway.
-- A dash in a slice name means nesting: `anymodel-heavy.slice` sits inside
-  `anymodel.slice`. `jobs.json` can name another slice.
+- A dash in a slice name means nesting: `cc-smart-dev-kit-heavy.slice` sits inside
+  `cc-smart-dev-kit.slice`. `jobs.json` can name another slice.
 
 ## The environment
 
 The job gets exactly the environment `job run` was given. Bun loads the `.env` files of
 the working folder into a script's environment by itself, so the launchers start the CLI
 with `bun --no-env-file`. A `job run` started without it, in a folder with `.env` files,
-refuses (exit 2) and says to run `anymodel setup` (an older launcher).
+refuses (exit 2) and says to run `cc-smart-dev-kit setup` (an older launcher).
 
-## The machine config: `~/.config/anymodel/jobs.json`
+## The machine config: `~/.config/cc-smart-dev-kit/jobs.json`
 
 Optional. Unknown fields are an error that names the file and the field.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `stateDir` | `~/.local/share/anymodel/jobs` | This user's folder (an absolute path). |
+| `stateDir` | `~/.local/share/cc-smart-dev-kit/jobs` | This user's folder (an absolute path). |
 | `budgetGb` | memory − `reserveGb` | This machine's budget in GB. |
 | `reserveGb` | 22 | GB kept for what never queues. |
 | `sharedDirs` | none | Shared folders (§ The shared view), used in path order. |
 | `launch` | `auto` | `auto` or `plain` (§ The launch). |
-| `slice` | `anymodel-heavy.slice` | The systemd slice for `auto`. |
+| `slice` | `cc-smart-dev-kit-heavy.slice` | The systemd slice for `auto`. |
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `anymodel job run [--kind <kind>] [--gb <n>] [--exclusive <name>] -- <command…>` | Waits, runs, passes the job's stdio, exit code and signals through. `--kind`, `--exclusive`, or both. |
-| `anymodel job status` | The memory, this machine's budget, who holds and who waits here and on each shared folder. Stale files it finds are removed. A store it cannot read is one line saying so. |
-| `anymodel job kinds` | Every kind: its sizes, where it comes from (`default` or `project`) and its `about` line. Not its match rules: those are in `anymodel.json` and § Kinds. |
+| `cc-smart-dev-kit job run [--kind <kind>] [--gb <n>] [--exclusive <name>] -- <command…>` | Waits, runs, passes the job's stdio, exit code and signals through. `--kind`, `--exclusive`, or both. |
+| `cc-smart-dev-kit job status` | The memory, this machine's budget, who holds and who waits here and on each shared folder. Stale files it finds are removed. A store it cannot read is one line saying so. |
+| `cc-smart-dev-kit job kinds` | Every kind: its sizes, where it comes from (`default` or `project`) and its `about` line. Not its match rules: those are in `cc-smart-dev-kit.json` and § Kinds. |
 
 ## The classifier
 
@@ -370,7 +370,7 @@ only through a kind's `{ "script": "<name>" }` rule.
 - **A `job run` killed with SIGKILL** frees its lease at the next look, but its job keeps
   running, unaccounted. In its own process group, a kill of `job run`'s group does not
   reach it either. A scope's name shows it: `systemctl --user list-units
-  'anymodel-heavy-*'`.
+  'cc-smart-dev-kit-heavy-*'`.
 - **The job has no controlling terminal** (its own session): a job that asks a question
   on `/dev/tty` cannot, and Ctrl+Z stops `job run` only, not the job. Heavy jobs are
   builds and checks that ask nothing.

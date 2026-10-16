@@ -1,0 +1,5 @@
+#!/bin/sh
+# Runs the cc-smart-dev-kit command of this plugin version (on the Bash tool's PATH in Claude Code).
+# --no-env-file: bun would load the .env files of the working folder into the command, and
+# "cc-smart-dev-kit job run" must hand its job exactly the environment it was given.
+exec bun --no-env-file "$(dirname "$0")/../dist/cli.js" "$@"

@@ -5,7 +5,7 @@ description: Review your own finished change before you commit it, then get one 
 
 # Review — You Are The Reviewer
 
-**Project add-on:** `.claude/anymodel/review.md` — read it first when it exists. Where it
+**Project add-on:** `.claude/cc-smart-dev-kit/review.md` — read it first when it exists. Where it
 differs, the add-on wins (`core.md`, top).
 
 You wrote this code. Now read it as if a stranger wrote it and you must approve it with your
@@ -41,7 +41,7 @@ project has one, else `Grep`) and read them.
    guard the opposite just as hard (the core instructions' "best by default"): an interface
    with one implementation is a finding too.
 2. **Performance** — waterfalls, N+1 queries, bundle weight, re-renders, missing cache. Deep
-   detail: `/anymodel:performance-budget`.
+   detail: `/cc-smart-dev-kit:performance-budget`.
 3. **Pattern consistency** — does it match its sibling files? A new pattern needs a reason.
    If the old pattern is the wrong one, fix it across the plan's files (beyond them: the core
    instructions' one-plan rule).
@@ -62,7 +62,7 @@ project has one, else `Grep`) and read them.
    needed to trace them (request, user, tenant). Operations that may be retried are
    idempotent (safe to run twice).
 10. **Fix the class, inside the plan** — for every finding, search the files the plan changes
-    for the same pattern and fix every instance there (`/anymodel:impact-analysis` § Fix the
+    for the same pattern and fix every instance there (`/cc-smart-dev-kit:impact-analysis` § Fix the
     pattern).
 
 ## Edge-case axes
@@ -116,7 +116,7 @@ Bias upward when unsure. If everything is a Suggestion, say so plainly.
 ## Second opinion
 
 You cannot see your own blind spots. So after your own pass, for every change beyond a small
-fix, start **one** `anymodel:reviewer` agent (model and effort: the core instructions).
+fix, start **one** `cc-smart-dev-kit:reviewer` agent (model and effort: the core instructions).
 
 - **When** (the rule is in the core instructions § Review): phases built in parallel that
   ship together get one read, not one each. A phase built on another open pull request is a
@@ -126,7 +126,7 @@ fix, start **one** `anymodel:reviewer` agent (model and effort: the core instruc
   do, your own edge-case list, and whether the session pointed a language-server tool at this
   checkout.
 - **Not in your agent list** (the plugin is off, or the session started before it
-  existed)? Use `general-purpose`, paste the reviewer agent's instructions (the anymodel
+  existed)? Use `general-purpose`, paste the reviewer agent's instructions (the cc-smart-dev-kit
   plugin's `agents/reviewer.md`) into the brief, and say so.
 - **Its findings:** apply the evidence bar to each in the code. Fix only the confirmed ones
   inside the change set; your own pass then checks the fixes. What it lists under "Not

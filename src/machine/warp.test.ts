@@ -32,7 +32,7 @@ capturePrinted();
 
 const INSTALLED = "Package: warp-terminal\nStatus: install ok installed\nVersion: 0.2026.10.01\n";
 
-const STAGE = (home: string) => join(home, ".claude", "anymodel", "warp");
+const STAGE = (home: string) => join(home, ".claude", "cc-smart-dev-kit", "warp");
 const install = (from: string, to: string) =>
   `sudo install -D -o root -g root -m 644 ${from} ${to}`;
 const showKeys = (stage: string) =>
@@ -64,7 +64,7 @@ describe("setup --warp", () => {
     expect(existsSync(stage)).toBe(false);
     // The commands were shown before the question.
     expect(printed.slice(0, 5)).toEqual([
-      "To install Warp from its signed source, anymodel runs these commands (sudo asks for your password):",
+      "To install Warp from its signed source, cc-smart-dev-kit runs these commands (sudo asks for your password):",
       `  $ ${install(`${stage}/warpdotdev.gpg`, APT_KEY)}`,
       `  $ ${install(`${stage}/warpdotdev.sources`, APT_SOURCE)}`,
       "  $ sudo apt-get update",
@@ -140,11 +140,11 @@ describe("setup --warp", () => {
     expect(w.calls()).not.toContain("sudo");
     expect(w.calls()).not.toContain("claude plugin");
     expect(printed.join("\n")).toContain(
-      `! Warp's signing key changed: https://releases.warp.dev/linux/keys/warp.asc now holds the key ${other}, and anymodel expects ${WARP_FPR}. Nothing was installed.`,
+      `! Warp's signing key changed: https://releases.warp.dev/linux/keys/warp.asc now holds the key ${other}, and cc-smart-dev-kit expects ${WARP_FPR}. Nothing was installed.`,
     );
     expect(existsSync(STAGE(w.home))).toBe(false);
     // The launcher and auto-update do not depend on Warp.
-    expect(existsSync(join(w.home, ".local", "bin", "anymodel"))).toBe(true);
+    expect(existsSync(join(w.home, ".local", "bin", "cc-smart-dev-kit"))).toBe(true);
   });
 
   test("a key file with a second key in it is refused, even when the first is Warp's", async () => {
@@ -163,10 +163,10 @@ describe("setup --warp", () => {
     expect(await w.setup({ warp: true })).toBe(1);
     expect(w.calls()).toBe("");
     expect(printed).toContain(
-      "! Warp: no terminal, so these commands were not run. Run `anymodel setup --warp` in a terminal to run them.",
+      "! Warp: no terminal, so these commands were not run. Run `cc-smart-dev-kit setup --warp` in a terminal to run them.",
     );
     expect(printed).toContain("  $ sudo apt-get install -y warp-terminal");
-    expect(existsSync(join(w.home, ".local", "bin", "anymodel"))).toBe(true);
+    expect(existsSync(join(w.home, ".local", "bin", "cc-smart-dev-kit"))).toBe(true);
   });
 
   test("the person says no: no Warp command and no Warp plugin; exit 1", async () => {
@@ -196,7 +196,7 @@ describe("setup --warp", () => {
         `    $ ${install(`${stage}/warpdotdev.gpg`, APT_KEY)}`,
         `    $ ${install(`${stage}/warpdotdev.sources`, APT_SOURCE)}`,
         "    $ sudo apt-get update",
-        "  To undo them: anymodel setup --remove-warp",
+        "  To undo them: cc-smart-dev-kit setup --remove-warp",
       ].join("\n"),
     );
     expect(w.calls()).not.toContain("claude plugin");
@@ -241,7 +241,7 @@ describe("setup --warp", () => {
     );
   });
 
-  test("macOS without Homebrew, or a Linux anymodel does not know: a clear message with the link; nothing runs", async () => {
+  test("macOS without Homebrew, or a Linux cc-smart-dev-kit does not know: a clear message with the link; nothing runs", async () => {
     for (const w of [
       world({ platform: "darwin", os: "", bins: {} }),
       world({ os: ARCH_LINUX }),
@@ -351,7 +351,7 @@ describe("setup --remove-warp", () => {
     expect(w.calls()).toBe("");
     expect(existsSync(shortcut)).toBe(true);
     expect(printed).toContain(
-      "! Warp: no terminal, so these commands were not run. Run `anymodel setup --remove-warp` in a terminal to run them.",
+      "! Warp: no terminal, so these commands were not run. Run `cc-smart-dev-kit setup --remove-warp` in a terminal to run them.",
     );
   });
 
@@ -401,7 +401,7 @@ describe("doctor's Warp line", () => {
     expect(warpCheck(world().machine, world().paths)).toEqual({
       ok: true,
       info: true,
-      text: "Warp: not installed (optional: anymodel setup --warp)",
+      text: "Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
     });
 
     const both = world({
@@ -417,7 +417,7 @@ describe("doctor's Warp line", () => {
     expect(warpCheck(appOnly.machine, appOnly.paths)).toEqual({
       ok: true,
       info: true,
-      text: "Warp 0.2026.10.01 is installed, without its Claude plugin (optional: anymodel setup --warp)",
+      text: "Warp 0.2026.10.01 is installed, without its Claude plugin (optional: cc-smart-dev-kit setup --warp)",
     });
 
     const off = world({
@@ -436,7 +436,7 @@ describe("doctor's Warp line", () => {
     const pluginOnly = world({ plugins: ["warp@claude-code-warp"] });
     expect(warpCheck(pluginOnly.machine, pluginOnly.paths)).toEqual({
       ok: false,
-      text: "the Warp Claude plugin warp@claude-code-warp is installed, but the Warp app is not. Run: anymodel setup --remove-warp (or anymodel setup --warp)",
+      text: "the Warp Claude plugin warp@claude-code-warp is installed, but the Warp app is not. Run: cc-smart-dev-kit setup --remove-warp (or cc-smart-dev-kit setup --warp)",
     });
   });
 });

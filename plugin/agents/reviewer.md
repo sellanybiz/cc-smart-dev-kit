@@ -2,7 +2,7 @@
 name: reviewer
 description: The read-only second opinion on a change set before its first push, and the second read of a big plan. Attacks the change's edge cases, every workflow it meets, and whether the docs still match the code. Reports every finding with confidence and severity. Has no edit tools. The caller passes the model and effort per launch.
 skills:
-  - anymodel:review
+  - cc-smart-dev-kit:review
 tools:
   - Read
   - Grep
@@ -57,9 +57,9 @@ message other sessions or ask the person.
    checkout, else `Grep` — and read them. Never re-point Serena yourself. The bug usually sits
    between what changed and what did not. For a plan: check its claims against the real
    files.
-3. Attack, using the `anymodel:review` skill's lists — its edge-case axes and its severity
+3. Attack, using the `cc-smart-dev-kit:review` skill's lists — its edge-case axes and its severity
    scale. That skill is already in your context (this agent's `skills:` field loads it at
-   start); do not copy it here. The project's add-on, `.claude/anymodel/review.md`, you read
+   start); do not copy it here. The project's add-on, `.claude/cc-smart-dev-kit/review.md`, you read
    yourself when it exists:
    - **edge cases** — the axes, and what the author's list missed;
    - **every workflow the change meets** — a person using it, a teammate pulling the branch,

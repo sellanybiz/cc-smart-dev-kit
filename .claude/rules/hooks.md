@@ -18,10 +18,10 @@ the version it was proved on: `docs/claude-code-contract.md`.
 Each spec in `src/hooks/specs.ts` says who wires it (`wiring`):
 
 - **The plugin** (`HOOKS`, `wiring: "plugin"`): in `plugin/hooks/hooks.json`, so it runs in
-  every project. It stays silent in a project without `anymodel.json`, and in one whose
+  every project. It stays silent in a project without `cc-smart-dev-kit.json`, and in one whose
   `ownHooks` names it (§ The project's own copy).
 - **The project** (`PROJECT_HOOKS`, `wiring: "project"`): the project wires
-  `anymodel hook <name>` in its own `.claude/settings.json`, exactly as the README's
+  `cc-smart-dev-kit hook <name>` in its own `.claude/settings.json`, exactly as the README's
   § Worktrees shows (the lines come from `src/hooks/project-wiring.ts`; a test keeps the
   README the same). Today: the worktree engine (WorktreeCreate, WorktreeRemove,
   SubagentStop). No `ownHooks` step: the wiring is the project's opt-in.
@@ -38,12 +38,12 @@ handling. `entries.test.ts` fails on a worktree event in `hooks.json`.
 Every entry in `plugin/hooks/hooks.json` uses the exec form, never a shell string:
 
 ```json
-{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun", "args": ["${CLAUDE_PLUGIN_ROOT}/dist/<name>.js"], "timeout": 10 }
+{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun", "args": ["${CLAUDE_PLUGIN_ROOT}/dist/<name>.js"], "timeout": 10 }
 ```
 
 - **Never `"command": "bun"`.** Claude Code started from a desktop launcher or a service
-  may have no bun on PATH, and then the hook never runs (seen live). `plugin/bin/anymodel-bun`
-  finds bun where the launcher does (the bun baked into `~/.local/bin/anymodel`,
+  may have no bun on PATH, and then the hook never runs (seen live). `plugin/bin/cc-smart-dev-kit-bun`
+  finds bun where the launcher does (the bun baked into `~/.local/bin/cc-smart-dev-kit`,
   `$BUN_INSTALL/bin/bun`, `~/.bun/bin/bun`, then PATH); it uses only shell built-ins, so it
   works with an empty PATH too. `src/hooks/bun-shim.test.ts` and `src/setup/bun-shim.test.ts`
   check the order and both modes.
@@ -62,11 +62,11 @@ Every entry in `plugin/hooks/hooks.json` uses the exec form, never a shell strin
   entry, its `hooks.json` entry, and a row in `src/hooks/matrix.test.ts`. `entries.test.ts`
   fails when the four do not match.
 
-## The project's hooks: `anymodel hook <name>`
+## The project's hooks: `cc-smart-dev-kit hook <name>`
 
 - The command is a shell string with the launcher's full path:
-  `"$HOME/.local/bin/anymodel" hook <name>`. The shell fills in `$HOME`, so it works
-  whatever PATH Claude Code has; the launcher runs its baked bun. The bare name `anymodel`
+  `"$HOME/.local/bin/cc-smart-dev-kit" hook <name>`. The shell fills in `$HOME`, so it works
+  whatever PATH Claude Code has; the launcher runs its baked bun. The bare name `cc-smart-dev-kit`
   would need `~/.local/bin` on that PATH.
 - `src/entries/cli.ts` runs the spec through `runHookEntry`, the same frame and the same
   answers as a plugin hook's entry.
@@ -80,7 +80,7 @@ Every entry in `plugin/hooks/hooks.json` uses the exec form, never a shell strin
 
 1. **Read the input**; not JSON, another event, or a `cwd` outside git: nothing to do.
 2. **`ownHooks`** (below), for a plugin hook only.
-3. **Read `anymodel.json`**; broken, too new, or without what the hook `needs`: fail
+3. **Read `cc-smart-dev-kit.json`**; broken, too new, or without what the hook `needs`: fail
    closed (below).
 4. **Run.**
 
@@ -94,7 +94,7 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
 
 - Never `CLAUDE_PROJECT_DIR`: it stays at the folder the session started in.
 - Never `process.cwd()`.
-- Without a `.claude/anymodel.json`, every plugin hook stays silent. A project that never
+- Without a `.claude/cc-smart-dev-kit.json`, every plugin hook stays silent. A project that never
   opted in must not notice the plugin.
 - The engine makes a subagent's worktree in Claude Code's own shape:
   `<main checkout>/.claude/worktrees/agent-<hex>` on `worktree-agent-<hex>`, from the
@@ -109,7 +109,7 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
 
 Some hooks answer about the machine, not a project: `agent-guard` (the model a launch runs
 on) and `notify` (the alerts). `notify` is a `USER_HOOKS` bundle like `update-check`: it
-never enters the frame, reads no `anymodel.json`, and its opt-in is the machine. It alerts on
+never enters the frame, reads no `cc-smart-dev-kit.json`, and its opt-in is the machine. It alerts on
 `Notification`, `Stop`, `PreToolUse` on `AskUserQuestion|ExitPlanMode`, and `StopFailure`
 (other than `rate_limit`, which is the `stop-failure` hook's own alert), and clears its mark
 on `PostToolUse`, `PostToolUseFailure` and `UserPromptSubmit`. The route is the desktop
@@ -126,7 +126,7 @@ carries the **bare** sequence and a wrapped one is rejected whole
 `/dev/tty` write instead, wrapped for tmux there (`forTty`).
 
 `agent-guard` is a plugin hook (`HOOKS`) that is machine-wide all the same: it runs with or
-without `anymodel.json`, a broken or too new file does not change its answer, and a folder
+without `cc-smart-dev-kit.json`, a broken or too new file does not change its answer, and a folder
 that is not in git is judged the same way. The frame hands such a hook the input and the
 environment (`HookEnvContext`) where its checkout or config step does not apply, and the
 spec's `onConfigProblem` and `outsideGit` judge on. It is still in `PLUGIN_HOOK_NAMES`, so
@@ -138,17 +138,17 @@ own, before the file.
 ```
 
 `updatedInput` (PreToolUse only, proved live on 2.1.301) replaces the tool's input for that
-call: `job-route` uses it to send a heavy command through `anymodel job run`. The rewritten
+call: `job-route` uses it to send a heavy command through `cc-smart-dev-kit job run`. The rewritten
 command runs in the Bash tool's own shell, so it keeps the folder that shell is in (proved
 live: after a `cd`, the rewritten command ran in the new folder, not in the hook's `cwd`).
 
 ## A user-level hook
 
 A hook about the person, not a project (the StopFailure usage-limit alert) reads no
-`anymodel.json`. Its opt-in is the gateway: it acts only when `gateway.json` exists, so a
+`cc-smart-dev-kit.json`. Its opt-in is the gateway: it acts only when `gateway.json` exists, so a
 person who never set the gateway up does not notice it. It replaces nothing a project
 wires, so it has no `ownHooks` step. Work that waits (a notification with buttons) runs in a
-detached worker started through the launcher (`~/.local/bin/anymodel alert-worker …`),
+detached worker started through the launcher (`~/.local/bin/cc-smart-dev-kit alert-worker …`),
 never from the plugin's version folder, which an update may delete while it waits; the
 hook itself exits at once. A `claude -p` run may exit before the hook finishes and cut
 it off (seen live, 2.1.300): keep the hook's own work short.
@@ -157,7 +157,7 @@ it off (seen live, 2.1.300): keep the hook's own work short.
 
 A project may still have its own copy of a piece the plugin now ships (a guard, a note).
 Where both exist, **the project says which plugin hooks to keep quiet**: `ownHooks` in its
-`.claude/anymodel.json` lists them by name (`["git-guard"]`), and exactly those plugin hooks
+`.claude/cc-smart-dev-kit.json` lists them by name (`["git-guard"]`), and exactly those plugin hooks
 **exit 0 and print nothing**, so the project's copy runs alone.
 
 - It is explicit on purpose. A project hook on the same event is *not* enough to silence a
@@ -168,7 +168,7 @@ Where both exist, **the project says which plugin hooks to keep quiet**: `ownHoo
   `requires`), so it works even when the rest of the file is broken or needs a newer plugin.
 - The names are validated against the plugin's own (`PLUGIN_HOOK_NAMES` in
   `src/project/config.ts`; a test keeps them equal to `HOOKS`): a typo fails the strict parse.
-- `anymodel doctor`, run in a project, prints one `·` line per listed hook, **warns** (`!`)
+- `cc-smart-dev-kit doctor`, run in a project, prints one `·` line per listed hook, **warns** (`!`)
   when a listed hook's event has no project hook left to answer, and warns when a project
   hook runs next to a plugin hook the list does not name (both may answer).
 
@@ -177,10 +177,10 @@ it still has them → removes them → empties the list → raises `requires`. E
 `ownHooks` test (the matrix does it for all: a plugin hook listed there goes silent; one that
 is not listed still speaks).
 
-## Fail closed when `anymodel.json` cannot be used
+## Fail closed when `cc-smart-dev-kit.json` cannot be used
 
-When the project's `anymodel.json` needs a newer plugin (`AnymodelVersionError`), is
-broken (`AnymodelConfigError`), or lacks what a hook `needs` (the engine needs `worktrees`),
+When the project's `cc-smart-dev-kit.json` needs a newer plugin (`CcSmartDevKitVersionError`), is
+broken (`CcSmartDevKitConfigError`), or lacks what a hook `needs` (the engine needs `worktrees`),
 the hook cannot do what the project asked for. It never goes on as if there were no file;
 it fails closed in the way that suits its event, and the message (which names the update
 command, the file and field, or the missing field) reaches someone:
@@ -191,7 +191,7 @@ command, the file and field, or the missing field) reaches someone:
 | WorktreeCreate | failing: exit 1, the message on stderr; no worktree of any shape |
 | WorktreeRemove | keeping the worktree: exit 1, the message on stderr |
 | SubagentStop | keeping the worktree (exit 0: a subagent must finish) |
-| An informational hook | one line of context (`anymodel: <message>`); `after-merge` only after a merge, `session-name` only on stderr |
+| An informational hook | one line of context (`cc-smart-dev-kit: <message>`); `after-merge` only after a merge, `session-name` only on stderr |
 
 For a plugin hook `ownHooks` still comes first: a project that lists its own copy there keeps
 it running.
@@ -205,7 +205,7 @@ PreToolUse decision is JSON, and SessionStart's text goes into the session's con
   no "ok". A setup command's output goes to stderr.
 - Diagnostics go to stderr, one short line.
 - A hook that has nothing to do prints nothing.
-- `ANYMODEL_HOOK_LOG`, when set, gets one JSON line per run (`run.ts`: the hook, the event,
+- `CC_SMART_DEV_KIT_HOOK_LOG`, when set, gets one JSON line per run (`run.ts`: the hook, the event,
   the input's `cwd`, the exit code, stdout, and the spec's `logFacts`): what `doctor --live`
   reads. `logFacts` is for facts about what the hook's own parser read (the git guard logs
   the programs of the command line), so a live check proves a guard **answered**, not only
@@ -242,7 +242,7 @@ A bug in a hook must never stop a user's work.
 
 A SessionStart hook adds context, or refreshes managed files through `src/setup/` under its
 lock. It never restarts a service, never changes a permission, and never asks a question.
-Those happen only in a manual `anymodel setup` run that shows the change first. A start
+Those happen only in a manual `cc-smart-dev-kit setup` run that shows the change first. A start
 must stay quick: no fetch.
 
 The plugin's SessionStart hooks are the worktree-leftovers note, the session name, and the
@@ -252,7 +252,7 @@ also brings the managed instructions copy up to this version when it is behind
 `CLAUDE.md` block, never a question, one stderr line on failure.
 
 The self-update hook (`src/entries/update-check.ts`) is machine-wide, not a project's
-piece, so it has no `anymodel.json` and no `ownHooks` step. Its rules:
+piece, so it has no `cc-smart-dev-kit.json` and no `ownHooks` step. Its rules:
 
 - **Return at once.** No network and no lock in the hook: it starts the check in a
   detached process (`detached: true`, stdio all `"ignore"`, so no pipe keeps Claude Code
@@ -277,9 +277,9 @@ piece, so it has no `anymodel.json` and no `ownHooks` step. Its rules:
 
 Each hook is tested by running it with a JSON input (`runHook` in `src/testing/hooks.ts`,
 the same frame the entry uses), in a temp git repo (`testing.md`): with and without
-`anymodel.json`, in a worktree, with `ownHooks` listing it and with a project hook on the
-same event that is not listed, with `requires` not met, and with a broken `anymodel.json`.
+`cc-smart-dev-kit.json`, in a worktree, with `ownHooks` listing it and with a project hook on the
+same event that is not listed, with `requires` not met, and with a broken `cc-smart-dev-kit.json`.
 Assert stdout exactly. Each plugin entry also runs once as a subprocess with stdin
-(`entries.test.ts`); each project hook through `anymodel hook` (`src/cli/hook-commands.test.ts`),
+(`entries.test.ts`); each project hook through `cc-smart-dev-kit hook` (`src/cli/hook-commands.test.ts`),
 once through the exact line a project wires. The shim has its own tests
 (`src/hooks/bun-shim.test.ts`), and the create lock its own (`create-lock.test.ts`).

@@ -2,7 +2,7 @@
  * A model slot's fallback answer, made safe to keep in a Claude conversation.
  *
  * WHY (the owner's yes, 2026-10-15, for exactly this case)
- *   While Opus or Fable is at its plan's usage limit, a model slot answers from a cheaper
+ *   While Opus or Fable is at its plan's usage limit, a model slot answers from a more affordable
  *   target. Claude Code stores that answer in the conversation and sends it back on every
  *   later turn. Once the Claude model answers again, it checks the signature of every
  *   `thinking` block in the history. A block another model wrote (GLM through OmniRoute
@@ -44,11 +44,11 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
 
 /**
  * A `tool_use` id Anthropic accepts: the id itself when it already is one, else the same
- * one every time for the same id (`toolu_anymodel_` and 24 hex characters of its SHA-256).
+ * one every time for the same id (`toolu_cc-smart-dev-kit_` and 24 hex characters of its SHA-256).
  */
 export function safeToolUseId(id: string): string {
   if (TOOL_USE_ID.test(id)) return id;
-  return `toolu_anymodel_${createHash("sha256").update(id).digest("hex").slice(0, 24)}`;
+  return `toolu_cc-smart-dev-kit_${createHash("sha256").update(id).digest("hex").slice(0, 24)}`;
 }
 
 /** What `cleanFallbackMessage` changed, for the log. */

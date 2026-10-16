@@ -1,6 +1,6 @@
 /**
- * `anymodel search`'s client: web search, and one page's text, through the local
- * OmniRoute — the same backend the gateway uses for cheap models, with the same key.
+ * `cc-smart-dev-kit search`'s client: web search, and one page's text, through the local
+ * OmniRoute — the same backend the gateway uses for affordable models, with the same key.
  *
  * OmniRoute's API (read from its own `dist/docs/openapi.yaml` and route sources on
  * 2026-10-15, OmniRoute 3.8.51):
@@ -131,7 +131,7 @@ function reasonOf(text: string, backend: SearchBackend): string {
  * not 2xx, or when it was not JSON; else the answer.
  *
  * A redirect is **not** followed: the key would travel to whatever address the answer
- * names. The router refuses one from a cheap backend for the same reason
+ * names. The router refuses one from an affordable backend for the same reason
  * (`.claude/rules/gateway.md` § The login only ever reaches Anthropic); `manual` is what
  * makes the answer readable here instead of a bare fetch failure.
  */

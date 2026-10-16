@@ -1,7 +1,7 @@
 /**
  * Which machine a host is: this one, a private network, or the internet; and the fetch
  * options that keep a request to this machine away from a proxy. `privateHostKind` is
- * tested as a person meets it, through `anymodel search --fetch`
+ * tested as a person meets it, through `cc-smart-dev-kit search --fetch`
  * (src/search/command.test.ts); the proxy itself in proxy.test.ts.
  * Every expected value is written by hand.
  */

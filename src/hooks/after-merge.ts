@@ -1,7 +1,7 @@
 /**
  * PostToolUse and PostToolUseFailure (Bash, PowerShell): right after a session merges a pull
  * request with `gh pr merge`, for a project that works in worktrees (`worktrees` in
- * anymodel.json). The moment a merge lands is the moment two things are due, and both were
+ * cc-smart-dev-kit.json). The moment a merge lands is the moment two things are due, and both were
  * forgotten when they lived only in written rules:
  *
  * - **The worktree that was merged is finished.** When the session works in a worktree whose
@@ -200,7 +200,7 @@ function quotableTitle(title: string): string {
 export function clearWorktreeNote(path: string, branch: string): string {
   return [
     `That merged the pull request of this worktree's branch, ${branch}. Clear the worktree now, unless the user wants more work on this branch:`,
-    'ExitWorktree with action "remove" and discard_changes true. Claude Code cannot check a worktree outside the repo, so the anymodel hook does: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.',
+    'ExitWorktree with action "remove" and discard_changes true. Claude Code cannot check a worktree outside the repo, so the cc-smart-dev-kit hook does: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.',
     `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: git worktree remove "${path}", then git branch -d ${branch}.`,
   ].join("\n");
 }
@@ -247,7 +247,7 @@ function viewPullRequest(
 /** The file that records one announced pull request of one repo. */
 function announcedFile(repo: string, number: number, env: Env): string {
   const key = createHash("sha256").update(repo).digest("hex").slice(0, 16);
-  return join(env.TMPDIR || tmpdir(), "anymodel-merges", `${key}-${number}`);
+  return join(env.TMPDIR || tmpdir(), "cc-smart-dev-kit-merges", `${key}-${number}`);
 }
 
 export function afterMerge(context: HookContext): HookResult {

@@ -9,17 +9,17 @@ export interface CliPaths extends RouterPaths {
   knownMarketplacesFile: string;
   /** Where the launcher goes: `~/.local/bin`. */
   binDir: string;
-  /** anymodel's own state: lock, owned keys, changed files. */
+  /** cc-smart-dev-kit's own state: lock, owned keys, changed files. */
   stateDir: string;
-  /** The router's long-running copy: `~/.local/share/anymodel/router.js`. */
+  /** The router's long-running copy: `~/.local/share/cc-smart-dev-kit/router.js`. */
   routerCopy: string;
-  /** The router's systemd user unit: `~/.config/systemd/user/anymodel-router.service`. */
+  /** The router's systemd user unit: `~/.config/systemd/user/cc-smart-dev-kit-router.service`. */
   routerUnitFile: string;
   /** claude-mem's settings: `$CLAUDE_MEM_DATA_DIR/settings.json`, else `~/.claude-mem/settings.json`. */
   claudeMemSettingsFile: string;
-  /** The socket unit that holds the router's port: `~/.config/systemd/user/anymodel-router.socket`. */
+  /** The socket unit that holds the router's port: `~/.config/systemd/user/cc-smart-dev-kit-router.socket`. */
   routerSocketFile: string;
-  /** The notifier's settings: `~/.claude/anymodel/notify.json`. */
+  /** The notifier's settings: `~/.claude/cc-smart-dev-kit/notify.json`. */
   notifyConfigFile: string;
   /** tmux's own config: `~/.tmux.conf` (setup adds one managed line there). */
   tmuxConfFile: string;
@@ -40,12 +40,24 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     installedPluginsFile: join(claudeConfigDir, "plugins", "installed_plugins.json"),
     knownMarketplacesFile: join(claudeConfigDir, "plugins", "known_marketplaces.json"),
     binDir: join(router.home, ".local", "bin"),
-    stateDir: join(claudeConfigDir, "anymodel"),
-    routerCopy: join(router.home, ".local", "share", "anymodel", "router.js"),
-    routerUnitFile: join(router.home, ".config", "systemd", "user", "anymodel-router.service"),
+    stateDir: join(claudeConfigDir, "cc-smart-dev-kit"),
+    routerCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    routerUnitFile: join(
+      router.home,
+      ".config",
+      "systemd",
+      "user",
+      "cc-smart-dev-kit-router.service",
+    ),
     claudeMemSettingsFile: join(claudeMemDataDir(env, router.home), "settings.json"),
-    routerSocketFile: join(router.home, ".config", "systemd", "user", "anymodel-router.socket"),
-    notifyConfigFile: join(claudeConfigDir, "anymodel", "notify.json"),
+    routerSocketFile: join(
+      router.home,
+      ".config",
+      "systemd",
+      "user",
+      "cc-smart-dev-kit-router.socket",
+    ),
+    notifyConfigFile: join(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
     tmuxConfFile: join(router.home, ".tmux.conf"),
   };
 }

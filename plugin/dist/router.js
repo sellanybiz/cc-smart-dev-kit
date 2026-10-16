@@ -2,14 +2,14 @@
 // src/build-info/bun.ts
 var MIN_BUN = "1.4.3";
 function bunTooOld(version, path) {
-  return Bun.semver.order(version, MIN_BUN) < 0 ? `anymodel needs Bun \u2265 ${MIN_BUN}; this is ${version} (${path}).` : null;
+  return Bun.semver.order(version, MIN_BUN) < 0 ? `cc-smart-dev-kit needs Bun \u2265 ${MIN_BUN}; this is ${version} (${path}).` : null;
 }
 
 // src/build-info/names.ts
-var MARKETPLACE = "anymodel";
-var PLUGIN = "anymodel";
+var MARKETPLACE = "cc-smart-dev-kit";
+var PLUGIN = "cc-smart-dev-kit";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-var COMMAND = "anymodel";
+var COMMAND = "cc-smart-dev-kit";
 
 // src/gateway/paths.ts
 import { homedir } from "os";
@@ -21,8 +21,8 @@ function routerPaths(env = process.env) {
   const home = homeDir(env);
   return {
     home,
-    gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json")
+    gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
+    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json")
   };
 }
 
@@ -52,7 +52,7 @@ import { basename, dirname, join as join2, resolve } from "path";
 function writeTemp(file, content, mode) {
   const dir = dirname(file);
   mkdirSync(dir, { recursive: true });
-  const temp = join2(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
+  const temp = join2(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
   try {
     const fd = openSync(temp, "wx", mode);
     try {
@@ -5881,7 +5881,7 @@ function superRefine(fn, params) {
 }
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
-var SLOT_KEY = /^anymodel-[a-z0-9][a-z0-9-]*$/;
+var SLOT_KEY = /^cc-smart-dev-kit-[a-z0-9][a-z0-9-]*$/;
 var CONTEXT_SUFFIX = /\[1m\]$/i;
 function isBackendName(name) {
   return BACKEND_NAME.test(name);
@@ -5983,10 +5983,10 @@ function resolveRequestRoute(body, config, guard) {
   const claude = route.targets.filter((target) => target.kind === "anthropic");
   return claude.length > 0 ? { ...route, targets: claude } : { kind: "anthropic-as-sent" };
 }
-var JUDGE_SLOT = "anymodel-judge";
+var JUDGE_SLOT = "cc-smart-dev-kit-judge";
 var MODEL_SLOTS = {
-  "anymodel-fable": "fable",
-  "anymodel-opus": "opus"
+  "cc-smart-dev-kit-fable": "fable",
+  "cc-smart-dev-kit-opus": "opus"
 };
 function modelSlotFor(model, modelSlots) {
   if (typeof model !== "string" || !model.startsWith("claude-") || modelSlots === undefined) {
@@ -6054,7 +6054,7 @@ var gatewayConfigSchema = looseObject({
   judgeTested: record(string2(), string2()).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
-  slots: record(string2().refine(isSlotKey, "a slot key is anymodel-<name>"), array(string2()).min(1)),
+  slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),
   timeouts: looseObject({ firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS) }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {
@@ -6140,9 +6140,9 @@ function aliasError(name, to, config) {
   }
   return null;
 }
-var JUDGE_TEST_VERSION = 1;
+var JUDGE_TEST_VERSION = 2;
 function judgeTestProof(target, backendUrl) {
-  return createHash("sha256").update(`anymodel judge test ${JUDGE_TEST_VERSION}
+  return createHash("sha256").update(`cc-smart-dev-kit judge test ${JUDGE_TEST_VERSION}
 ${target}
 ${backendUrl}`).digest("hex").slice(0, 32);
 }
@@ -6194,8 +6194,8 @@ function emptyConfig() {
     backends: {},
     port: DEFAULT_PORT,
     slots: {
-      "anymodel-scout": [FALLBACK_SLOT_TARGET],
-      "anymodel-worker": [FALLBACK_SLOT_TARGET]
+      "cc-smart-dev-kit-scout": [FALLBACK_SLOT_TARGET],
+      "cc-smart-dev-kit-worker": [FALLBACK_SLOT_TARGET]
     },
     timeouts: { firstByteMs: DEFAULT_FIRST_BYTE_MS },
     version: 1
@@ -6253,7 +6253,7 @@ function isJsonObject(value) {
 function safeToolUseId(id) {
   if (TOOL_USE_ID.test(id))
     return id;
-  return `toolu_anymodel_${createHash2("sha256").update(id).digest("hex").slice(0, 24)}`;
+  return `toolu_cc-smart-dev-kit_${createHash2("sha256").update(id).digest("hex").slice(0, 24)}`;
 }
 function withSafeId(block, changes) {
   if (block.type !== "tool_use" || typeof block.id !== "string")
@@ -6583,7 +6583,7 @@ function inheritedListenFd(env, pid) {
   if (!Number.isInteger(fds) || fds < 1)
     return null;
   if (fds !== 1) {
-    throw new Error(`systemd passed ${fds} sockets (LISTEN_FDS); anymodel-router takes one`);
+    throw new Error(`systemd passed ${fds} sockets (LISTEN_FDS); cc-smart-dev-kit-router takes one`);
   }
   return SD_LISTEN_FDS_START;
 }
@@ -6594,7 +6594,7 @@ function innerSocketPath(env, pid) {
     rmSync(path, { force: true });
     return { cleanup: () => rmSync(path, { force: true }), path };
   }
-  const dir = mkdtempSync(join3(tmpdir(), "anymodel-router-"));
+  const dir = mkdtempSync(join3(tmpdir(), "cc-smart-dev-kit-router-"));
   return {
     cleanup: () => rmSync(dir, { force: true, recursive: true }),
     path: join3(dir, "router.sock")
@@ -6735,7 +6735,7 @@ var LIMIT_REST_MIN_SEC = 60;
 var TOO_LONG = /context|too long|too large|too many tokens|token limit|payload/i;
 var UNSUPPORTED = /unsupported|not supported|unknown (?:content|block|type)|invalid (?:content|block) type|image|document|server_tool|web_search|web_fetch|tool_reference/i;
 var BAD_SIGNATURE = "Invalid `signature`";
-var HEALTH_PATH = "/__anymodel/health";
+var HEALTH_PATH = "/__cc-smart-dev-kit/health";
 var MESSAGES_PATH = "/v1/messages";
 var COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
 var HOP_BY_HOP = new Set([
@@ -7376,14 +7376,14 @@ function createRouter(deps) {
     const backend = Object.hasOwn(config.backends, target.backend) ? config.backends[target.backend] : undefined;
     if (backend === undefined)
       return { error: `backend "${target.backend}" is not in the config` };
-    const cheapBody = {
+    const affordableBody = {
       ...reasoningOffForBackend(toolSearchForBackend(body), { absentIsOff: guard }),
       model: target.model
     };
-    delete cheapBody.metadata;
+    delete affordableBody.metadata;
     return {
       upstream: {
-        body: encoder.encode(JSON.stringify(cheapBody)),
+        body: encoder.encode(JSON.stringify(affordableBody)),
         headers: backendRequestHeaders(req.headers, backend.apiKey),
         method: "POST",
         url: `${backend.baseUrl}${url.pathname}`
@@ -7477,7 +7477,7 @@ function createRouter(deps) {
           logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${label} answered a redirect (${status}); refused`);
           return {
             fallbacks,
-            response: anthropicError(502, "api_error", `anymodel-router: ${label} answered a redirect (${status}); not passed on`),
+            response: anthropicError(502, "api_error", `cc-smart-dev-kit-router: ${label} answered a redirect (${status}); not passed on`),
             skipped,
             target: label
           };
@@ -7499,7 +7499,7 @@ function createRouter(deps) {
     const lastTarget = targets.at(-1);
     return {
       fallbacks,
-      response: anthropicError(502, "api_error", `anymodel-router: no target for ${name} answered (${failures.join("; ") || "no targets"})`),
+      response: anthropicError(502, "api_error", `cc-smart-dev-kit-router: no target for ${name} answered (${failures.join("; ") || "no targets"})`),
       skipped,
       target: lastTarget === undefined ? "none" : formatTarget(lastTarget)
     };
@@ -7616,7 +7616,7 @@ function createRouter(deps) {
     if (isMessages) {
       const type = (req.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
       if (type !== "application/json" || !req.headers.has("anthropic-version")) {
-        return refusal("anymodel-router wants content-type: application/json and an anthropic-version header");
+        return refusal("cc-smart-dev-kit-router wants content-type: application/json and an anthropic-version header");
       }
     }
     const sent = req.method === "GET" || req.method === "HEAD" || req.body === null ? null : new Uint8Array(await req.arrayBuffer());
@@ -7633,7 +7633,7 @@ function createRouter(deps) {
           deps.log(`WARN ${id} refused a thinking block's signature: this conversation holds a thinking block a fallback model wrote while ${id} was at its plan limit. Claude Code 2.1.300 sent the request once more and was answered (seen live); if the session stays stuck, /rewind in Claude Code to the message before the fallback answered, or start a new session`);
         });
       }
-      const response = "response" in result ? relay(result.response, null) : anthropicError(502, "api_error", `anymodel-router: Anthropic did not answer (${result.failure})`);
+      const response = "response" in result ? relay(result.response, null) : anthropicError(502, "api_error", `cc-smart-dev-kit-router: Anthropic did not answer (${result.failure})`);
       return { fallbacks: 0, response, skipped: 0, target: "anthropic" };
     };
     const direct = async (body = bytes, observed = null) => answerDirect(await send(req, anthropicUpstream(req, url, config, body), null), observed);
@@ -7688,7 +7688,7 @@ function createRouter(deps) {
         const slots = Object.keys(config.slots);
         return Promise.resolve({
           fallbacks: 0,
-          response: anthropicError(400, "invalid_request_error", `anymodel-router: "${decided.slot}" is not a slot in ${deps.configPath} (slots: ${slots.length > 0 ? slots.join(", ") : "none \u2014 run anymodel gateway setup"})`),
+          response: anthropicError(400, "invalid_request_error", `cc-smart-dev-kit-router: "${decided.slot}" is not a slot in ${deps.configPath} (slots: ${slots.length > 0 ? slots.join(", ") : "none \u2014 run cc-smart-dev-kit gateway setup"})`),
           skipped: 0,
           target: "none"
         });
@@ -7717,7 +7717,7 @@ function createRouter(deps) {
     const line = (outcome) => `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} \u2192 ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}`;
     const host = (req.headers.get("host") ?? "").toLowerCase();
     if (req.headers.has("origin") || !allowedHosts.has(host)) {
-      const outcome = refusal("anymodel-router accepts requests from this machine only");
+      const outcome = refusal("cc-smart-dev-kit-router accepts requests from this machine only");
       deps.log(line(outcome));
       return outcome.response;
     }
@@ -7742,7 +7742,7 @@ function createRouter(deps) {
       deps.log(`ERROR ${req.method} ${printable(url.pathname)}: ${messageOf(error)}`);
       outcome = {
         fallbacks: 0,
-        response: anthropicError(500, "api_error", "anymodel-router failed on this request; see its log"),
+        response: anthropicError(500, "api_error", "cc-smart-dev-kit-router failed on this request; see its log"),
         skipped: 0,
         target: "none"
       };
@@ -7778,7 +7778,7 @@ async function startRouter(configPath, statePath, env = process.env) {
       idleTimeout: 0,
       port: configPort
     });
-    log(`anymodel-router listening on http://127.0.0.1:${configPort} (config ${configPath})`);
+    log(`cc-smart-dev-kit-router listening on http://127.0.0.1:${configPort} (config ${configPath})`);
     process.once("SIGTERM", () => {
       log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
       exitWhenDone(server.stop(false), log, () => {});
@@ -7792,11 +7792,11 @@ async function startRouter(configPath, statePath, env = process.env) {
   });
   const relay = await listenOnFd(fd, ready, log);
   if (relay.port !== configPort) {
-    log(`WARN the socket listens on port ${relay.port}, the config says ${configPort}: serving on ${relay.port}. Run: anymodel gateway setup`);
+    log(`WARN the socket listens on port ${relay.port}, the config says ${configPort}: serving on ${relay.port}. Run: cc-smart-dev-kit gateway setup`);
   }
   const server = serveUnix(inner.path, handlerFor(relay.port));
   innerReady(inner.path);
-  log(`anymodel-router listening on http://127.0.0.1:${relay.port} (the socket systemd holds; config ${configPath})`);
+  log(`cc-smart-dev-kit-router listening on http://127.0.0.1:${relay.port} (the socket systemd holds; config ${configPath})`);
   process.once("SIGTERM", () => {
     log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting; new connections wait in the socket for the next router`);
     const drain = relay.drain();
@@ -7821,6 +7821,6 @@ if (tooOld === null) {
   const paths = routerPaths();
   await startRouter(paths.gatewayConfigFile, paths.gatewayStateFile);
 } else {
-  console.error(`anymodel-router: ${tooOld} Upgrade this Bun, then run: ${COMMAND} gateway setup (systemd gives up after 5 failed starts, so an upgrade alone is not enough: it clears that limit with reset-failed and starts the router again)`);
+  console.error(`cc-smart-dev-kit-router: ${tooOld} Upgrade this Bun, then run: ${COMMAND} gateway setup (systemd gives up after 5 failed starts, so an upgrade alone is not enough: it clears that limit with reset-failed and starts the router again)`);
   process.exitCode = 1;
 }

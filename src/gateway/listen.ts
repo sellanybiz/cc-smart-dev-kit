@@ -1,7 +1,7 @@
 /**
  * How the router takes the listening socket systemd holds for it (socket activation).
  *
- * `anymodel-router.socket` owns 127.0.0.1:<port>. systemd passes that socket to the router
+ * `cc-smart-dev-kit-router.socket` owns 127.0.0.1:<port>. systemd passes that socket to the router
  * as file descriptor 3, with `LISTEN_PID` and `LISTEN_FDS` set (sd_listen_fds(3)). While
  * the router restarts, the socket stays open, so a new connection waits in its queue for
  * the next router instead of being refused.
@@ -40,7 +40,9 @@ export function inheritedListenFd(
   const fds = Number(count);
   if (!Number.isInteger(fds) || fds < 1) return null;
   if (fds !== 1) {
-    throw new Error(`systemd passed ${fds} sockets (LISTEN_FDS); anymodel-router takes one`);
+    throw new Error(
+      `systemd passed ${fds} sockets (LISTEN_FDS); cc-smart-dev-kit-router takes one`,
+    );
   }
   return SD_LISTEN_FDS_START;
 }
@@ -62,7 +64,7 @@ export function innerSocketPath(
     return { cleanup: () => rmSync(path, { force: true }), path };
   }
   // mkdtemp makes the folder with mode 0700.
-  const dir = mkdtempSync(join(tmpdir(), "anymodel-router-"));
+  const dir = mkdtempSync(join(tmpdir(), "cc-smart-dev-kit-router-"));
   return {
     cleanup: () => rmSync(dir, { force: true, recursive: true }),
     path: join(dir, "router.sock"),

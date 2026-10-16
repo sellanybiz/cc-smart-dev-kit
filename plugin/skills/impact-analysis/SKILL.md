@@ -5,7 +5,7 @@ description: Use when changing anything used in two or more places - shared type
 
 # Impact Analysis — The Blast Radius
 
-**Project add-on:** `.claude/anymodel/impact-analysis.md` — read it first when it exists.
+**Project add-on:** `.claude/cc-smart-dev-kit/impact-analysis.md` — read it first when it exists.
 Where it differs, the add-on wins (`core.md`, top). It lists the project's shared artifacts
 and where their consumers hide.
 
@@ -15,7 +15,7 @@ exists in three.
 ## Before the change: find every consumer
 
 - **Symbols** (a function, type, class, hook, component): a language-server search where the
-  project has one (Serena's `find_referencing_symbols`, or `anymodel:code-explorer` for a
+  project has one (Serena's `find_referencing_symbols`, or `cc-smart-dev-kit:code-explorer` for a
   broad sweep) — it gives the enclosing function for each hit. It must point at **your**
   checkout: in a worktree, a language server still pointed at the main checkout misses every
   caller your branch added. Otherwise `Grep`.
@@ -48,7 +48,7 @@ patching each site.
 
 ## Edge cases hide in the blast radius
 
-Walk the edge-case axes of `/anymodel:review` against **each consumer**, not only the file
+Walk the edge-case axes of `/cc-smart-dev-kit:review` against **each consumer**, not only the file
 you edited. The three it catches most often:
 
 - a consumer that passes `null` or an empty list where the new code assumes a value;
@@ -72,10 +72,10 @@ A change is done only when every reference is updated:
 ## After the change
 
 1. Search again for every changed name: zero stale references.
-2. Run `/anymodel:verify-change` (the type check once, your diff, the tests).
+2. Run `/cc-smart-dev-kit:verify-change` (the type check once, your diff, the tests).
 3. Re-read each call site from the first trace: still correct?
 4. A database change: check its indexes and the project's access rules.
-5. New files: right folder and name (`/anymodel:extract-or-duplicate`).
+5. New files: right folder and name (`/cc-smart-dev-kit:extract-or-duplicate`).
 
 Creating something is changing something: search first, extend what exists, and design for
 the first two or three callers, not for a guessed tenth.

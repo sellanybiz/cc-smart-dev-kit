@@ -1,5 +1,5 @@
 /**
- * The plain output of `anymodel search`, and the cut that keeps it short.
+ * The plain output of `cc-smart-dev-kit search`, and the cut that keeps it short.
  *
  * Ollama's web search puts a whole page's text in each result's `snippet` (measured
  * 2026-10-15: 585 to 61,350 characters for five results), so a snippet is shown as one

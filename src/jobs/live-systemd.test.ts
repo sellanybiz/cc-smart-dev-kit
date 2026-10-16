@@ -1,14 +1,14 @@
 /**
  * The launch against the REAL systemd user manager of this machine: opt-in, skipped unless
- * `ANYMODEL_LIVE_SYSTEMD=1`. Everything else in the tests fakes systemd; these check what
+ * `CC_SMART_DEV_KIT_LIVE_SYSTEMD=1`. Everything else in the tests fakes systemd; these check what
  * the fakes assume: where a slice and a scope live under /sys/fs/cgroup, that a scope's
  * kill and its `cgroup.events` work, and that a job over the slice's ceiling is killed
  * and named "killed for memory".
  *
  * They start throwaway units in a throwaway slice (`amlive<random>-heavy.slice`), never
- * the real `anymodel-heavy.slice`, and stop and revert every one of them at the end.
+ * the real `cc-smart-dev-kit-heavy.slice`, and stop and revert every one of them at the end.
  *
- *   ANYMODEL_LIVE_SYSTEMD=1 bun test src/jobs/live-systemd.test.ts
+ *   CC_SMART_DEV_KIT_LIVE_SYSTEMD=1 bun test src/jobs/live-systemd.test.ts
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
@@ -18,7 +18,7 @@ import { realLaunchFacts, realScope, realSliceControl, spawnAndWait, unitName } 
 import { realReadText, userSliceCgroup } from "./memory";
 import { runJob } from "./run";
 
-const LIVE = process.env.ANYMODEL_LIVE_SYSTEMD === "1";
+const LIVE = process.env.CC_SMART_DEV_KIT_LIVE_SYSTEMD === "1";
 const uid = process.getuid?.() ?? -1;
 const prefix = `amlive${crypto.randomUUID().slice(0, 6)}`;
 const SLICE = `${prefix}-heavy.slice`;
@@ -53,7 +53,7 @@ afterAll(() => {
   if (existsSync(dropIns)) throw new Error(`live test drop-ins left behind: ${dropIns}`);
 });
 
-describe.if(LIVE)("the real systemd user manager (ANYMODEL_LIVE_SYSTEMD=1)", () => {
+describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=1)", () => {
   test("a scope lives where userSliceCgroup says; its kill and its cgroup.events work", async () => {
     const unit = unitName(SLICE, "tsc", process.pid, Date.now());
     const job = Bun.spawn(

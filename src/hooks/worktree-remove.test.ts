@@ -9,10 +9,12 @@ import { removeWorktree, subagentWorktreeOf } from "./worktree-remove";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 
-/** A repo that turned the worktree engine on: `worktrees` in its anymodel.json. */
+/** A repo that turned the worktree engine on: `worktrees` in its cc-smart-dev-kit.json. */
 function engineRepo(): string {
   const repo = makeRepo();
-  writeClaudeFile(repo, "anymodel.json", { worktrees: { base: "main", prefix: "app-wt-" } });
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+    worktrees: { base: "main", prefix: "app-wt-" },
+  });
   return repo;
 }
 
@@ -233,25 +235,25 @@ describe("WorktreeRemove", () => {
     expect(hasBranch(repo, "worktree-slow")).toBe(true);
   });
 
-  test('no "worktrees" in anymodel.json: kept, exit 1, the reason', async () => {
+  test('no "worktrees" in cc-smart-dev-kit.json: kept, exit 1, the reason', async () => {
     const repo = makeRepo();
     const folder = addWorktree(repo, "unwired");
     const result = await remove(folder);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toStartWith(
-      "worktree kept: this project wires the anymodel worktree hooks (anymodel hook ...), but has no .claude/anymodel.json.",
+      "worktree kept: this project wires the cc-smart-dev-kit worktree hooks (cc-smart-dev-kit hook ...), but has no .claude/cc-smart-dev-kit.json.",
     );
     expect(existsSync(folder)).toBe(true);
   });
 
-  test("anymodel.json needs a newer plugin: kept, exit 1, the update command", async () => {
+  test("cc-smart-dev-kit.json needs a newer plugin: kept, exit 1, the update command", async () => {
     const repo = engineRepo();
-    writeClaudeFile(repo, "anymodel.json", { requires: ">=99" });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=99" });
     const folder = addWorktree(repo, "versioned");
     const result = await remove(folder);
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("this project needs anymodel >=99");
-    expect(result.stderr).toEndWith("run claude plugin update anymodel@anymodel");
+    expect(result.stderr).toContain("this project needs cc-smart-dev-kit >=99");
+    expect(result.stderr).toEndWith("run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit");
     expect(existsSync(folder)).toBe(true);
   });
 });
@@ -320,14 +322,14 @@ describe("SubagentStop", () => {
     expect(await stop(engineRepo())).toEqual({});
   });
 
-  test('no "worktrees" in anymodel.json: kept, with the reason, and exit 0', async () => {
+  test('no "worktrees" in cc-smart-dev-kit.json: kept, with the reason, and exit 0', async () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", { sessionNames: true });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { sessionNames: true });
     const folder = addWorktree(repo, `agent-${AGENT}`);
     const result = await stop(folder);
     expect(result.exitCode ?? 0).toBe(0);
     expect(result.stderr).toStartWith(
-      'subagent worktree kept: this project wires the anymodel worktree hooks (anymodel hook ...), but its .claude/anymodel.json has no "worktrees".',
+      'subagent worktree kept: this project wires the cc-smart-dev-kit worktree hooks (cc-smart-dev-kit hook ...), but its .claude/cc-smart-dev-kit.json has no "worktrees".',
     );
     expect(existsSync(folder)).toBe(true);
   });
