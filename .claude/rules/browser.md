@@ -61,6 +61,9 @@ The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The b
 - `setup.test.ts` — the profile page, the pre-registration on macOS and Windows, the single
   managed write, `--dry-run`, and what `restore` takes back.
 - `doctor.test.ts` — every line, and that no line ever holds the token's value.
+- `legacy.test.ts` — what 0.3.0 left: the profile folder and the picker with the exact removal
+  command per platform, the old Chrome's pid (and not its `--type=` children), "could not check"
+  when the listing fails, and that the folder and its files are still there after doctor and setup.
 - `browser check` — the live proof against the real Chrome and the real extension, run by hand.
 - `src/hooks/playwright-output.test.ts` — a caller-named file goes into the output folder, an
   absolute path stays as it was, a `..` name is refused, and a server that is not the plugin's own

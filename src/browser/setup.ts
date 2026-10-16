@@ -10,7 +10,10 @@
  *   - macOS and Windows only: it pre-registers the extension for that user (the per-user
  *     External Extensions JSON, the HKCU `update_url` key). The person still clicks Enable;
  *     `restore` removes what was registered.
- *   - It NEVER installs or removes an extension, and it never deletes a Chrome profile.
+ *   - It NEVER installs or removes an extension, and it never deletes a Chrome profile — not the
+ *     `claude-code` one, and not the profile folder 0.3.0's shared browser left at
+ *     `<dataDir>/playwright`. That folder may hold sign-ins, so it is the person's to remove; the
+ *     lines say where it is and what to run (`legacy.ts`).
  *   - It writes ONE thing inside Chrome's own folder: the profile's DISPLAY name in `Local
  *     State`, and only while no Chrome runs on that user data folder (Chrome rewrites that file
  *     from memory while it runs). It goes through the managed-file helpers, so a backup is made
@@ -48,6 +51,7 @@ import {
   PLAYWRIGHT_EXTENSION_SETTINGS_URL,
   PLAYWRIGHT_EXTENSION_URL,
 } from "./chrome";
+import { legacyBrowserFacts, type ProcessReader } from "./legacy";
 import { clearBrowserToken, readBrowserToken, type TokenDeps } from "./token";
 
 /** The folders under the home where macOS keeps a user's extension pre-registrations. */
@@ -100,6 +104,11 @@ function writeBrowserSetupRecord(stateDir: string): void {
 export interface BrowserSetupDeps extends ChromeDeps, TokenDeps {
   home: string;
   platform: NodeJS.Platform;
+  /**
+   * Lists the running processes' command lines, for 0.3.0's leftovers (`legacy.ts`). Default:
+   * the real listing for `platform`, through `run`.
+   */
+  processes?: ProcessReader;
   /** Starts Chrome and does not wait for it (a window opening is the point). */
   spawnDetached: (argv: string[]) => void;
   /** Runs a command and captures its output: the Windows registry, through `reg`. */
@@ -321,6 +330,10 @@ export function browserSetup(
     profileDirName: CLAUDE_CODE_PROFILE,
     tokenSet: readBrowserToken(paths, deps).source === "file",
   };
+  // What 0.3.0 left (`legacy.ts`) first: it is the one thing here a person may have to act on,
+  // and it prints before the state of the `claude-code` profile this version uses. Information,
+  // never a question — setup never deletes a person's browser data.
+  info.push(...legacyBrowserInfo(paths, deps));
 
   const chrome = findChrome(deps);
   if (chrome === null) {
@@ -496,10 +509,13 @@ export function missingBrowserSteps(state: BrowserSetupState): number[] {
 }
 
 /**
- * The browser's part of `cc-smart-dev-kit setup`: the state, and the guide while something is
- * still missing. Read-only and host-free (`browserState`): setup never starts a browser, never
- * waits on a person, never fails over it, and prints the same lines on every machine. The line
- * that names the command is how a person gets the Chrome window opened.
+ * The browser's part of `cc-smart-dev-kit setup`: the state, the guide while something is still
+ * missing, and what 0.3.0 left (`legacy.ts`). Read-only for the state (`browserState`): setup
+ * never starts a browser, never waits on a person, never fails over it, and never deletes a
+ * person's browser data. The ONE fact that comes from this machine rather than from a file under
+ * the home folder is 0.3.0's own leftover — its profile folder, and the Chrome it may still have
+ * running — so that fact is printed as information, with the command that removes the folder for
+ * whoever wants it gone.
  */
 export function browserSetupReport(
   paths: CliPaths,
@@ -508,17 +524,28 @@ export function browserSetupReport(
   info: string[];
   notes: string[];
 } {
+  const legacy = legacyBrowserInfo(paths, deps);
   const state = browserState(paths, deps);
   const missing = missingBrowserSteps(state);
-  // Ready: nothing to say. Setup names what is missing, never what is fine — and it must never
-  // report the browser ready while the token is not saved, so the only line here is the one below.
-  if (missing.length === 0) return { info: [], notes: [] };
+  // Ready: nothing to say but what 0.3.0 left. Setup names what is missing, never what is fine —
+  // and it must never report the browser ready while the token is not saved, so the only other
+  // line here is the one below.
+  if (missing.length === 0) return { info: legacy, notes: [] };
   return {
     info: [
+      ...legacy,
       `  the browser is NOT ready: steps ${missing.join(", ")} of the guide below are still open`,
       ...browserGuideLines(browserGuide(state)),
       `  run \`${COMMAND} browser setup\`: it opens the Chrome window in the "${state.profileDirName}" profile and checks Chrome, the extension and the token`,
     ],
     notes: [],
   };
+}
+
+/**
+ * What 0.3.0 left, as the information lines setup prints: the same words `doctor`'s lines carry
+ * (one home for the sentence, `legacy.ts`), two-space indented like setup's other information.
+ */
+function legacyBrowserInfo(paths: CliPaths, deps: BrowserSetupDeps): string[] {
+  return legacyBrowserFacts(paths, deps).map((fact) => `  ${fact.text}`);
 }

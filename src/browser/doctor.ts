@@ -25,6 +25,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import type { CliPaths } from "../cli/paths";
+import type { Runner } from "../gateway/service";
+import type { Machine } from "../machine/machine";
 import {
   allowsFileUrls,
   type ChromeDeps,
@@ -39,6 +41,7 @@ import {
   PLAYWRIGHT_EXTENSION_SETTINGS_URL,
   PLAYWRIGHT_EXTENSION_URL,
 } from "./chrome";
+import { legacyBrowserFacts, type ProcessReader } from "./legacy";
 import { readBrowserToken, type TokenDeps } from "./token";
 
 export interface BrowserCheck {
@@ -56,12 +59,24 @@ export interface BrowserCheck {
 export interface BrowserDoctorDeps extends ChromeDeps, TokenDeps {
   home: string;
   platform: NodeJS.Platform;
+  /**
+   * Lists the running processes' command lines, for 0.3.0's leftovers (`legacy.ts`). Default:
+   * the real listing for `platform`, through `run`.
+   */
+  processes?: ProcessReader;
+  /** Runs a command and captures its output: macOS's `ps`, Windows' PowerShell. */
+  run?: Runner;
 }
 
 /** The command that makes a profile, opens the Web Store page and prints the guide. */
 const SETUP_COMMAND = `${COMMAND} browser setup`;
 /** The command that asks for the token. */
 const TOKEN_COMMAND = `${COMMAND} browser token`;
+
+/** One browser line: `section: "browser"` is what the portal draws the Browser card from. */
+function line(check: Omit<BrowserCheck, "section">): BrowserCheck {
+  return { ...check, section: "browser" };
+}
 
 /**
  * The machine's own deps, built from a `Machine` and the CLI's paths — one home for both
@@ -70,7 +85,7 @@ const TOKEN_COMMAND = `${COMMAND} browser token`;
  * points at a temp folder.
  */
 export function realBrowserDoctorDeps(
-  machine: { exists: (path: string) => boolean; platform: NodeJS.Platform },
+  machine: Pick<Machine, "exists" | "platform" | "run">,
   home: string,
 ): BrowserDoctorDeps {
   return {
@@ -91,18 +106,24 @@ export function realBrowserDoctorDeps(
         return null;
       }
     },
+    run: machine.run,
   };
 }
 
 /**
  * The browser's lines. `section: "browser"` marks them so the portal can draw exactly these on
  * the Browser card, and leave them out of the Doctor card's list — one home for each line.
+ *
+ * The prerequisites first, then what version 0.3.0 left (`legacyChecks`). The leftovers are
+ * reported even when the `claude-code` profile is not there yet, which is the usual state of a
+ * machine that has just upgraded: that profile is the new setup's own, and it is made later.
  */
 export function browserChecks(paths: CliPaths, deps: BrowserDoctorDeps): BrowserCheck[] {
-  const line = (check: Omit<BrowserCheck, "section">): BrowserCheck => ({
-    ...check,
-    section: "browser",
-  });
+  return [...prerequisiteChecks(paths, deps), ...legacyChecks(paths, deps)];
+}
+
+/** The prerequisites: Chrome, the `claude-code` profile, its extension, the token. */
+function prerequisiteChecks(paths: CliPaths, deps: BrowserDoctorDeps): BrowserCheck[] {
   const chrome = findChrome(deps);
   if (chrome === null) {
     return [
@@ -215,4 +236,18 @@ export function browserChecks(paths: CliPaths, deps: BrowserDoctorDeps): Browser
   // they already say whether the live server is the plugin's own launcher, so these lines stop at
   // the browser's own prerequisites — one home for each fact.
   return checks;
+}
+
+/**
+ * What 0.3.0 left behind (`legacy.ts`): its shared profile still on disk (a warning — it may hold
+ * sign-ins, and deleting it is the person's own call), the old detached Chrome while it still
+ * runs (`!`, its debug port is open to every program on this machine), and `·` when the process
+ * list could not be read, so the answer is unknown rather than "nothing is running".
+ */
+function legacyChecks(paths: CliPaths, deps: BrowserDoctorDeps): BrowserCheck[] {
+  return legacyBrowserFacts(paths, deps).map((fact) =>
+    fact.kind === "warn"
+      ? line({ ok: true, text: fact.text, warn: true })
+      : line({ info: true, ok: true, text: fact.text }),
+  );
 }

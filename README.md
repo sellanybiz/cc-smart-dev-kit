@@ -95,15 +95,46 @@ After that, use `cc-smart-dev-kit setup` to set up again (for example after an u
   `browser token` saves the token its status page shows — and `browser mcp` refuses to start
   without that token, so nothing ever waits for an approval click ([The
   browser](#the-browser)). The plugin's own shared Chrome, its profile and the tab filter are
-  gone;
+  gone; the profile folder 0.3.0 left stays on disk, `doctor` names it and the command that
+  deletes it, and nothing here deletes it for you.
 - **The instructions work in parallel**: the plugin's general instructions tell Claude to
   start every independent phase at once, and never to wait for a merge, a release, a review
   or an answer it does not need ([Instructions, skills and agents](#instructions-skills-and-agents)).
+- **The merge guard, and the review record** ([The workflow](#the-workflow)): the `merge-guard`
+  hook asks you before a `gh pr merge` your policy does not allow, and `workflow show` says
+  whether the commit here has a recorded review.
+- **The effort rule** ([The hooks](#the-hooks)): `agent-guard` allows a subagent only at
+  `high`, `xhigh` or `max` — `low`, `medium` or a level it does not know is refused, as
+  before a launch with no model or no effort. An affordable slot still runs at `max`; a
+  review runs at `xhigh`, never `max`.
+- **The alert settings** ([Notifications](#notifications)): `alerts.events` says which moments
+  alert, `alerts.sound` adds the platform's sound, and `alerts.usagePercent` is the plan share
+  the status line warns from.
+- **The Linux desktop extras of the alerts** ([Notifications](#notifications)): a click
+  raises the session's window, the alert moves to the notification centre after a minute, one
+  alert per session is on screen, and XFCE's Do Not Disturb keeps an ordinary alert quiet —
+  each only where its tool is installed.
+- **The portal's Settings page, its Project card and its Browser card** ([The
+  portal](#the-portal)): the workflow settings with where each value comes from, the project's
+  two files planned and written from the form, and the browser's state with the button that
+  runs `browser setup`.
+- **"Dynamic, not hard-coded"** ([Instructions, skills and agents](#instructions-skills-and-agents)):
+  the instructions tell Claude to read every value — a name, a path, a port, a URL, a version,
+  a branch, a list — from the one place that owns it, never from a copy in the text.
 
 **After you update, run `cc-smart-dev-kit gateway setup` on every machine with the gateway.**
 The router changed in this release (it counts auto mode's safety checks, which `usage` reads),
 and that command puts the new copy in place. It asks before it restarts the router, because a
 restart cuts the answers in flight.
+
+**The browser needs its two steps too** ([The browser](#the-browser)): the `playwright` server
+refuses to start until `cc-smart-dev-kit browser setup` has made the `claude-code` profile and
+`cc-smart-dev-kit browser token` has saved the token from the extension's status page. A machine
+that ran 0.3.0 also still has its old shared profile at
+`~/.local/share/cc-smart-dev-kit/playwright`, and possibly the Chrome 0.3.0 started: nothing uses
+either now, and `doctor` names both — where the folder is, the command that deletes it, and the
+pid of that Chrome, whose debug port any program on your machine can drive. Neither is deleted
+for you: the folder may hold sign-ins, so that call is yours.
 
 ## Windows
 
@@ -161,7 +192,7 @@ Five pages say how, and what still has to be tested there:
 | `cc-smart-dev-kit gateway <command>` | The optional AI gateway (below). |
 | `cc-smart-dev-kit browser mcp` | Starts the Playwright MCP server on **your own Google Chrome**, through the Playwright extension, in the profile `claude-code` ([The browser](#the-browser)). `setup` registers it as the `playwright` MCP server; you do not run it by hand. **It refuses to start without the token**: without one the extension would ask you to approve every connection. |
 | `cc-smart-dev-kit browser setup [--dry-run]` | Finds Chrome, opens the Playwright extension's Web Store page in the `claude-code` profile (Chrome makes that profile on that launch, if it is not there yet), pre-registers the extension for your user on macOS and Windows, and prints the steps that are left for you. It never installs or removes an extension, and never deletes a profile. `--dry-run` prints the same lines and runs and writes nothing. |
-| `cc-smart-dev-kit browser token [--clear]` | Saves the token the extension's status page shows — paste the whole line (its Copy button copies `PLAYWRIGHT_MCP_EXTENSION_TOKEN=…`), and it is not echoed while you type. It is written to `~/.config/cc-smart-dev-kit/playwright-extension.token`, mode 600, and is never printed again. `--clear` removes it. |
+| `cc-smart-dev-kit browser token [--clear]` | Saves the token the extension's status page shows — paste the whole line (its Copy button copies `PLAYWRIGHT_MCP_EXTENSION_TOKEN=…`), and it is not echoed while you type. It is written to `~/.config/cc-smart-dev-kit/playwright-extension.token` (mode 600 on Linux and macOS; on Windows your profile's own permissions keep it yours), and is never printed again. `--clear` removes it. |
 | `cc-smart-dev-kit browser check` | Proves the browser end to end on your own Chrome: a real connection with **no approval page**, a `file://` page (which needs "Allow access to file URLs"), screenshots (one the server names, one a caller names), an upload, a download, and `browser_close`. Exit 0 when every check passed. It opens that Chrome window once, and the tabs of its connection stay behind. |
 | `cc-smart-dev-kit sessions [--open] [--dry-run]` | This project's Claude Code sessions of the last two days, by name and worktree, with the command that resumes each ([Sessions](#sessions)). With Warp installed it also saves a Warp tab for each. `--open` reopens every session that was open when the machine went down or its window closed (Warp tabs, or a terminal window each: XFCE Terminal on Linux, Windows Terminal on Windows); `--dry-run` says what it would open and opens nothing. |
 | `cc-smart-dev-kit worktrees [--clean] [--remove <path>] [--no-fetch]` | Every worktree of this repo: who works in it, and which are finished ([Worktrees](#worktrees)). `--clean` removes the finished ones with their branches; `--remove <path>` removes one now, for the session that has just finished in it, so without the one-hour wait; `--no-fetch` judges against `origin/<base>` as it is. `--clean` and `--remove` run in the main checkout only, one at a time. |
@@ -1170,10 +1201,11 @@ ready while the token is missing; it is read-only there, so the one command that
 is `browser setup`.
 
 Where the token lives, and where it does not: `~/.config/cc-smart-dev-kit/playwright-extension.token`,
-mode 600, readable by you alone; the launcher puts it in the Playwright MCP child's **environment**,
-never in a command line (`argv` is world-readable in `/proc`) and never in `~/.claude.json`. No
-command, page or log ever prints its value: the portal's Browser card shows a masked field and says
-"a token is set".
+mode 600 on Linux and macOS, readable by you alone (on Windows a file mode says nothing: your user
+profile's own permissions keep it yours); the launcher puts it in the Playwright MCP child's
+**environment**, never in a command line (`argv` is world-readable in `/proc`) and never in
+`~/.claude.json`. No command, page or log ever prints its value: the portal's Browser card shows a
+masked field and says "a token is set".
 
 A token that no longer matches the extension — you pressed "Generate new token", or reinstalled the
 extension — does **not** fall back to the approval page: the extension answers the connect page with
@@ -1198,6 +1230,12 @@ deadline with a message naming the profile and the variable. Copy the token agai
   its own and never deletes one. The single thing it may write inside Chrome's own folder is the
   profile's **display name** in `Local State`, and only while no Chrome is running on that user data
   folder (`restore` puts that one name back; every other byte of that file is left as it is).
+- **What 0.3.0 left is left alone.** 0.3.0 kept its shared profile at
+  `~/.local/share/cc-smart-dev-kit/playwright` (with its file picker beside it) and started a
+  **detached** Chrome on that folder. Nothing here reads or deletes either — the folder may hold
+  sign-ins, so removing it is your call. `doctor` names the folder and the exact command that
+  deletes it, and, while that old Chrome still runs, names its pid: its debug port has no
+  password, so any program on this machine can drive that signed-in browser until it is closed.
 - **`cc-smart-dev-kit restore`** removes the token file and the pre-registration it added on macOS
   and Windows, and **never touches the `claude-code` profile or the extension** — those are your
   browser's data. It prints a line saying so.
