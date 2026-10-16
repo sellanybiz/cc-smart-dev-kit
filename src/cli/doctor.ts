@@ -1,5 +1,6 @@
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { type BrowserDoctorDeps, browserChecks } from "../browser/doctor";
 import {
   bunTooOld,
   COMMAND,
@@ -75,6 +76,12 @@ export interface Check {
   info?: boolean;
   /** A warning: printed with `!`, never a failure. */
   warn?: boolean;
+  /**
+   * Which part of the report the line belongs to. Only the browser's lines carry it, because the
+   * portal draws those on the Browser card and leaves them out of the Doctor card's list: one
+   * home per line, and the same words a person reads in `cc-smart-dev-kit doctor`.
+   */
+  section?: "browser";
   text: string;
 }
 
@@ -829,6 +836,12 @@ export interface DoctorProject {
 export interface DoctorOptions {
   /** The Bun running doctor (through the launcher, the bun baked into it). */
   bun: DoctorBun;
+  /**
+   * The browser's own checks (`src/browser/doctor.ts`): Chrome, the `claude-code` profile, the
+   * Playwright extension in it, the token, and the registration. A test hands in a temp home;
+   * null or left out: no browser lines.
+   */
+  browser?: BrowserDoctorDeps | null;
   gateway: DoctorGateway;
   /** Where the plugin's instructions are, and the folder doctor was started in. */
   local: DoctorLocal;
@@ -850,7 +863,7 @@ export interface DoctorOptions {
 export async function doctorChecks(
   paths: CliPaths,
   env: Env,
-  { bun, gateway, local, mcp, project, live }: DoctorOptions,
+  { browser, bun, gateway, local, mcp, project, live }: DoctorOptions,
 ): Promise<Check[]> {
   const settings = readSettings(paths.settingsFile);
   const runtime = checkBun(bun, paths);
@@ -878,6 +891,7 @@ export async function doctorChecks(
     ...companionChecks(paths),
     claudeMemCheck(paths),
     ...(mcpDeps === null ? [] : mcpChecks(paths, mcpDeps, env)),
+    ...(browser == null ? [] : browserChecks(paths, browser)),
     warpCheck(gateway.machine, paths),
     ...checkTmux(paths, env, gateway.machine),
     ...checkDesktopExtras(gateway.machine.platform, env, gateway.machine),

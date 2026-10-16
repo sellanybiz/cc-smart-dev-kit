@@ -18,6 +18,7 @@
  */
 
 import { join } from "node:path";
+import { realBrowserDoctorDeps } from "../browser/doctor";
 import { VERSION } from "../build-info";
 import type { DoctorOptions } from "../cli/doctor";
 import { cliPaths, tildify } from "../cli/paths";
@@ -110,6 +111,7 @@ async function main(argv: string[]): Promise<number> {
     if ("error" in found) return found;
     const { folder } = found;
     return {
+      browser: realBrowserDoctorDeps(machine, ctx.paths.home),
       bun: { path: process.execPath, version: Bun.version },
       gateway: {
         bundle: join(folder, "dist", "router.js"),

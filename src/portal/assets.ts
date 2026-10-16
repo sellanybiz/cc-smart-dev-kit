@@ -858,6 +858,25 @@ export const PORTAL_JS = `(function () {
     if (cancel) cancel.addEventListener("click", function () { location.reload(); });
   }
 
+  // ── The Browser card: the token field ───────────────────────────────────
+  // The token is read from the field, sent once to the same writer the command line uses, and
+  // cleared from the page: no answer, no page and no log ever carries the value back.
+  var tokenSave = document.querySelector("[data-token-save]");
+  if (tokenSave) {
+    tokenSave.addEventListener("click", function () {
+      var input = document.querySelector("[data-token-input]");
+      var out = document.querySelector("[data-out-for='browser.token']");
+      var value = input ? input.value : "";
+      busy(tokenSave, true);
+      post("/api/browser.token", { token: value }).then(function (data) {
+        busy(tokenSave, false);
+        say(out, !!data.ok, data.lines);
+        if (input) input.value = "";
+        if (data.ok) setTimeout(function () { location.reload(); }, 900);
+      });
+    });
+  }
+
   // ── The Slots page ──────────────────────────────────────────────────────
   var slotsRoot = document.querySelector("[data-slots]");
   if (slotsRoot) {

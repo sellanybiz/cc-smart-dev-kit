@@ -18,6 +18,13 @@
 
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import {
+  type BrowserGuide,
+  type BrowserSetupState,
+  browserGuide,
+  browserSetup,
+  realBrowserSetupDeps,
+} from "../browser/setup";
 import { VERSION } from "../build-info";
 import { listModels } from "../gateway/backends";
 import {
@@ -638,6 +645,29 @@ export interface OmnirouteRow {
   /** The word for the state: `ok`, `behind`, `unknown`. */
   state: "behind" | "ok" | "unknown";
   unit: null | string;
+}
+
+/**
+ * What the Machine page's Browser card shows. The guide and the state come from the same module
+ * `browser setup` prints from (`src/browser/setup.ts`), so the card can never describe a different
+ * browser than the command does; the check lines beside them are doctor's own (`section: "browser"`).
+ */
+export interface BrowserCardData {
+  /** The whole guide, structured: the card draws its numbered steps. */
+  guide: BrowserGuide;
+  /** `!` lines: what could not be read or done on this machine. */
+  notes: string[];
+  state: BrowserSetupState;
+}
+
+export function browserCardData(ctx: PortalContext): BrowserCardData {
+  const result = browserSetup(ctx.paths, realBrowserSetupDeps(ctx.machine, ctx.paths.home), {
+    apply: false,
+  });
+  const state = result.state;
+  // A browser-less machine's note is the same sentence as the check line above it: the check
+  // lines win, so the note is left out then (one home per sentence, on the page too).
+  return { guide: browserGuide(state), notes: result.ok ? result.notes : [], state };
 }
 
 /**

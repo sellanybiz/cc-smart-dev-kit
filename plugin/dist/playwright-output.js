@@ -55,9 +55,8 @@ function cliPaths(env = process.env) {
     binDir: join2(router.home, ".local", "bin"),
     stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
     dataDir: join2(router.home, ".local", "share", "cc-smart-dev-kit"),
-    browserProfileDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright"),
     browserOutputDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
-    browserPickerFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-picker.js"),
+    browserTokenFile: join2(router.home, ".config", "cc-smart-dev-kit", "playwright-extension.token"),
     serenaContextFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "serena", "contexts", "worktree.yml"),
     routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
     routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
@@ -229,7 +228,7 @@ function climbsOut(filename) {
   return filename.split(/[\\/]+/).includes("..");
 }
 function outsideReason(filename, outputDir) {
-  return `This call names a file outside the shared browser's output folder ("filename": ${JSON.stringify(filename)} \u2014 a path with ".." in it). ` + `Files the shared browser saves live in ${outputDir}. Name the file with a relative name (it lands there), or use an absolute path inside that folder.`;
+  return `This call names a file outside the browser's output folder ("filename": ${JSON.stringify(filename)} \u2014 a path with ".." in it). ` + `Files the browser saves live in ${outputDir}. Name the file with a relative name (it lands there), or use an absolute path inside that folder.`;
 }
 function rewrittenAnswer(input, filename) {
   return {

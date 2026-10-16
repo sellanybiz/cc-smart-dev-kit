@@ -31,10 +31,10 @@
  */
 import type { Server } from "node:net";
 import { basename, resolve } from "node:path";
-import { holdPort } from "../browser/hold-port";
 import type { CliPaths } from "../cli/paths";
 import { runGit, samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
+import { holdPort } from "../machine/hold-port";
 import { LOCK_PORTS } from "../ports";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import {

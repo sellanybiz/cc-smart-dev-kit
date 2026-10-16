@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { browserSetupReport, realBrowserSetupDeps } from "../browser/setup";
 import {
   MARKETPLACE,
   MARKETPLACE_ADD_COMMAND,
@@ -696,6 +697,14 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     const result = machine.run(argv);
     return { ok: result.exitCode === 0, out: result.output };
   };
+
+  // The browser: read-only, and never blocking. Setup prints where the browser's own setup stands
+  // — including the guide, when steps are still open — and names `browser setup` for the one step
+  // that opens a Chrome window. Nothing here starts Chrome, asks a question, or fails setup: a
+  // browser that is not ready is reported, never waited for.
+  const browser = browserSetupReport(paths, realBrowserSetupDeps(machine, paths.home));
+  report.info.push(...browser.info);
+  report.notes.push(...browser.notes);
 
   // A read-only pass: a key the user set (autoUpdate: false) throws ForeignKeyError here,
   // before anything is asked, written or run, the launcher and the state folder included.

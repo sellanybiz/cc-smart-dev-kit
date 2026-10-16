@@ -42,9 +42,33 @@ interface SetupOptions {
   companions?: boolean;
   /** A fake `claude` on PATH that logs each call. Default: true. */
   claude?: boolean;
+  /**
+   * A ready browser for this world (default: true): the Chrome profile `claude-code` with the
+   * Playwright extension in it, the file-URL switch on, a saved token, and the `playwright`
+   * registration as setup leaves it. false models the machine that has not done the browser's
+   * steps yet, where the browser's own lines are ✗ and `doctor` exits 1 — the state
+   * `src/browser/`'s own tests cover line by line.
+   */
+  browser?: boolean;
+  /**
+   * System paths that exist on the test's machine (`host.exists`). Empty by default: no Chrome,
+   * no Warp app — never whatever the machine running the test happens to have.
+   */
+  existing?: string[];
   /** The fake git first on PATH. Default: true. false: the real git (a real project). */
   fakeGit?: boolean;
 }
+
+/** The Chrome this world claims is installed, when `browser: true` asks for a ready browser. */
+const CHROME_ON_PATH = "/usr/bin/google-chrome";
+
+/** Where Chrome keeps its profiles under a home folder, on Linux. */
+function browserChromeDir(home: string): string {
+  return join(home, ".config", "google-chrome");
+}
+
+/** The Playwright extension's id, for the profile this world writes. */
+const PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
 
 /** The companions' marketplaces, as Claude Code lists them once added. */
 const COMPANION_MARKETPLACES = {
@@ -189,11 +213,30 @@ function setup(options: SetupOptions = {}) {
   // The CLI runs as its own process: it never reads the host. PATH holds the fakes, the
   // launcher's folder and bun's, nothing else; the host's facts are given (a Linux with no
   // os-release, so no package manager cc-smart-dev-kit knows, and no Warp app).
+  // `browser: true`: the browser as it is once its steps are done. The Chrome EXECUTABLE is a
+  // path this world claims exists (`host.exists` is the whole truth there), the profile and the
+  // token are real files under the temp home, and the token has the extension's own shape.
+  const paths_ = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: configDir });
+  const browserFiles: string[] = [];
+  if (options.browser !== false) {
+    const chrome = join(browserChromeDir(home), "claude-code");
+    mkdirSync(join(chrome, "Extensions", PLAYWRIGHT_EXTENSION_ID, "0.4.0"), { recursive: true });
+    writeFileSync(
+      join(chrome, "Preferences"),
+      JSON.stringify({
+        extensions: { settings: { [PLAYWRIGHT_EXTENSION_ID]: { newAllowFileAccess: true } } },
+      }),
+    );
+    mkdirSync(dirname(paths_.browserTokenFile), { recursive: true, mode: 0o700 });
+    writeFileSync(paths_.browserTokenFile, `${"A".repeat(40)}_-b\n`, { mode: 0o600 });
+    browserFiles.push(CHROME_ON_PATH, chrome, paths_.browserTokenFile);
+  }
   const env: Record<string, string> = {
     HOME: home,
     CLAUDE_CONFIG_DIR: configDir,
     PATH: `${fakeBin}:${join(home, ".local", "bin")}:${bunBin}`,
     [TEST_HOST_VAR]: JSON.stringify({
+      existing: [...(options.existing ?? []), ...browserFiles],
       platform: "linux",
       arch: "x64",
       osRelease: null,
@@ -328,6 +371,7 @@ function noHostMachine(home: string, confirm: Machine["confirm"]): Machine {
   return {
     run: () => ({ exitCode: 1, output: "" }),
     runOnTerminal: () => 1,
+    spawnDetached: () => undefined,
     which: () => null,
     confirm,
     platform: "linux",
@@ -808,6 +852,14 @@ describe("cc-smart-dev-kit doctor", () => {
         ...MCP_DOCTOR_OK,
         // Tavily is optional: without a key its server is skipped, never a failure.
         tavilyDoctorSkipped(home),
+        // The browser's own lines. This world's Chrome is the path it claims (host.exists is
+        // the whole truth there), and the profile, the extension and the token are its own.
+        `✓ Google Chrome is at ${CHROME_ON_PATH}`,
+        `✓ the Chrome profile "claude-code" is at ${join(browserChromeDir(home), "claude-code")} (found by its folder)`,
+        "✓ the Playwright extension 0.4.0 is installed in that profile",
+        "✓ no other extension is in that profile",
+        "✓ that profile lets the extension open file:// pages",
+        `✓ the browser token is set (${join(home, ".config", "cc-smart-dev-kit", "playwright-extension.token")}, mode 600)`,
         // Warp is optional too.
         "· Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
         // The gateway is optional: never set up is information, not a failure.
@@ -1013,8 +1065,33 @@ describe("cc-smart-dev-kit doctor", () => {
     const { home, run } = setup();
     const macApp = join(home, "Applications", "Warp.app");
     mkdirSync(macApp, { recursive: true });
+    // The browser as macOS keeps it, so `doctor` reads this world and never the host's Chrome.
+    const macChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    const macProfile = join(
+      home,
+      "Library",
+      "Application Support",
+      "Google",
+      "Chrome",
+      "claude-code",
+    );
+    mkdirSync(join(macProfile, "Extensions", PLAYWRIGHT_EXTENSION_ID, "0.4.0"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(macProfile, "Preferences"),
+      JSON.stringify({
+        extensions: { settings: { [PLAYWRIGHT_EXTENSION_ID]: { newAllowFileAccess: true } } },
+      }),
+    );
     const host = {
       [TEST_HOST_VAR]: JSON.stringify({
+        existing: [
+          macApp,
+          macChrome,
+          macProfile,
+          join(home, ".config", "cc-smart-dev-kit", "playwright-extension.token"),
+        ],
         platform: "darwin",
         arch: "arm64",
         osRelease: null,

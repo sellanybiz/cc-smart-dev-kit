@@ -2,7 +2,17 @@ import { existsSync, statSync } from "node:fs";
 import { uptime } from "node:os";
 import { join, resolve } from "node:path";
 import { browserCheckCommand, runBrowserCheck } from "../browser/check";
-import { installPicker, runBrowserMcp } from "../browser/launcher";
+import { realBrowserDoctorDeps } from "../browser/doctor";
+import { runBrowserMcp } from "../browser/launcher";
+import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
+import {
+  canHideInput,
+  clearBrowserToken,
+  parseBrowserToken,
+  readSecretLine,
+  readTokenFromStdin,
+  writeBrowserToken,
+} from "../browser/token";
 import { COMMAND, VERSION } from "../build-info";
 import { oldBunRefusal } from "../cli/bun-check";
 import { runDoctor } from "../cli/doctor";
@@ -36,7 +46,6 @@ import { realMemoryFacts } from "../jobs/memory";
 import { realMachine } from "../machine/machine";
 import { realMcpDoctorDeps } from "../mcp/doctor";
 import { serenaFolder } from "../mcp/serena-context";
-import { MCP_VERSIONS } from "../mcp/versions";
 import { runOmniroute } from "../omniroute/commands";
 import { runPortal } from "../portal/command";
 import { locateCheckout } from "../project/resolve";
@@ -145,11 +154,15 @@ Commands:
                      it again. Nothing restarts: restart the sessions to load it.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
                      cc-smart-dev-kit gateway --help lists them.
-  browser <command>  The shared browser. cc-smart-dev-kit browser mcp starts the Playwright
-                     MCP server on the ONE Chrome every session shares, through a filter that
-                     shows this session only its own windows (setup registers it as the
-                     "playwright" MCP server). browser check runs two real sessions on one
-                     throwaway Chrome and proves it end to end (--headless: no window).
+  browser <command>  The browser. cc-smart-dev-kit browser mcp starts the Playwright MCP
+                     server on YOUR OWN Chrome, through the Playwright extension, in the
+                     profile "claude-code" (setup registers it as the "playwright" MCP
+                     server). browser setup finds Chrome, makes that profile and prints the
+                     five steps that are left for you. browser token saves the extension's
+                     token, pasted from its status page: it is REQUIRED, because without it
+                     the extension would ask you to approve every connection. browser check
+                     proves a real connection, a file:// page, screenshots, an upload and a
+                     download end to end (it opens that Chrome window once).
   sessions [--open] [--dry-run]
                      This project's Claude Code sessions of the last two days, by name and
                      worktree, with the command that resumes each. --open reopens every
@@ -451,6 +464,7 @@ async function main(argv: string[]): Promise<number> {
         return 2;
       }
       return runDoctor(paths, process.env, {
+        browser: realBrowserDoctorDeps(realMachine(process.env, null), paths.home),
         bun: { path: process.execPath, version: Bun.version },
         gateway: {
           bundle: routerBundle(),
@@ -590,16 +604,15 @@ async function main(argv: string[]): Promise<number> {
       return runUpdate(paths, process.env, rest);
     case "browser": {
       const [sub, ...extra] = rest;
+      const machine = realMachine(process.env, null);
+      const browserDeps = realBrowserSetupDeps(machine, paths.home);
       if (sub === "mcp") {
         // Runs until the MCP exits. Nothing here may write to stdout: it IS the MCP stream.
         return await runBrowserMcp(paths, extra, {
-          installPicker,
           log: (line) => console.error(`[cc-smart-dev-kit-browser] ${line}`),
-          package: `@playwright/mcp@${MCP_VERSIONS.playwright}`,
-          pickerBundle: distBundle("browser-picker.js"),
           spawn: (argv, options) => {
-            // The launcher's own variables (the tab filter's endpoint) go on top of this
-            // process's environment: the MCP must find bun and everything else as usual.
+            // The token goes on top of this process's environment: the MCP must find bun and
+            // everything else as usual.
             const child = Bun.spawn(argv, {
               env: { ...process.env, ...options.env },
               stdio: [options.stdio, options.stdio, options.stdio],
@@ -609,23 +622,87 @@ async function main(argv: string[]): Promise<number> {
           which: (command) => Bun.which(command),
         });
       }
-      if (sub === "check") {
-        const unknown = extra.filter((arg) => arg !== "--headless" && arg !== "--idle");
+      if (sub === "setup") {
+        const unknown = extra.filter((arg) => arg !== "--dry-run");
         if (unknown.length > 0) {
           console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
           return 2;
         }
-        // Two real launchers (this CLI), each with a real Playwright MCP, on one Chrome.
-        const result = await runBrowserCheck(extra, {
+        const apply = !extra.includes("--dry-run");
+        const result = browserSetup(paths, browserDeps, { apply });
+        const lines = [
+          ...(result.changes.length > 0 ? result.changes : ["Nothing to change."]),
+          ...result.info,
+          ...result.notes,
+          ...result.guide,
+        ];
+        console.log(lines.join("\n"));
+        if (!apply) console.log("Dry run: nothing was written or run.");
+        return result.ok ? 0 : 1;
+      }
+      if (sub === "token") {
+        const unknown = extra.filter((arg) => arg !== "--clear");
+        if (unknown.length > 0) {
+          console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+          return 2;
+        }
+        if (extra.includes("--clear")) {
+          const removed = clearBrowserToken(paths);
+          console.log(
+            removed === null
+              ? `  nothing to remove: there is no token file at ${paths.browserTokenFile}`
+              : `- ${paths.browserTokenFile}: removed`,
+          );
+          return 0;
+        }
+        const hide = canHideInput(process.stdin);
+        const pasted = await readTokenFromStdin(
+          {
+            isTTY: hide,
+            readAll: () => Bun.stdin.text(),
+            ...(hide ? { readSecret: () => readSecretLine(process.stdin) } : {}),
+          },
+          (line) => console.log(line),
+        ).catch((error: unknown) => {
+          console.error(
+            `${error instanceof Error ? error.message : String(error)}. Save the token to a file and pipe it in (\`${COMMAND} browser token < token.txt\`), or paste it in the portal's Browser card (\`${COMMAND} portal\`).`,
+          );
+          return null;
+        });
+        if (pasted === null) {
+          console.error("Nothing was saved (Ctrl+C).");
+          return 130;
+        }
+        const parsed = parseBrowserToken(pasted);
+        if (!parsed.ok) {
+          console.error(`The token was not saved: ${parsed.why}.`);
+          return 1;
+        }
+        writeBrowserToken(paths, parsed.token);
+        // The token itself is never printed, only the file it went to.
+        console.log(`+ ${paths.browserTokenFile}: the browser token is set (mode 600)`);
+        console.log("Start a new Claude session (or restart the running one) to use it.");
+        return 0;
+      }
+      if (sub === "check") {
+        if (extra.length > 0) {
+          console.error(`Unknown option: ${extra.join(" ")}\n\n${HELP}`);
+          return 2;
+        }
+        // One real launcher (this CLI) with a real Playwright MCP, on the person's own Chrome
+        // through the Playwright extension. It opens a window in the claude-code profile.
+        const result = await runBrowserCheck({
           check: (name, ok, why) =>
             console.log(
               `${ok ? "✓" : "✗"} ${name}${ok || why === undefined ? "" : ` — ${why.slice(0, 400)}`}`,
             ),
-          // Each launcher is this CLI again, with the two flags every run of the plugin's
-          // own bundles gets (the hook shim, `doctor --live`): the working folder's `.env`
-          // files and its `bunfig.toml` stay out of it.
+          // The launcher is this CLI again, with the two flags every run of the plugin's own
+          // bundles gets (the hook shim, `doctor --live`): the working folder's `.env` files and
+          // its `bunfig.toml` stay out of it.
           cli: browserCheckCommand(process.execPath, process.argv[1] ?? "", pluginDir()),
           log: (line) => console.error(line),
+          machine: browserDeps,
+          paths,
         });
         console.log(
           result.failed === 0
@@ -634,7 +711,7 @@ async function main(argv: string[]): Promise<number> {
         );
         return result.failed === 0 ? 0 : 1;
       }
-      console.error(`Usage: ${COMMAND} browser <mcp|check> [options]\n\n${HELP}`);
+      console.error(`Usage: ${COMMAND} browser <mcp|setup|token|check> [options]\n\n${HELP}`);
       return 2;
     }
     case "sessions": {

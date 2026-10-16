@@ -10,8 +10,8 @@
  *   folders. Registered for the user, the names stay and the servers stay.
  *
  * WHAT THE PLUGIN REGISTERS
- *   - `playwright`: the shared browser (`browser/launcher.ts`), so every session drives one
- *     Chrome and sees only its own windows.
+ *   - `playwright`: the browser (`browser/launcher.ts`): the Playwright MCP server on the
+ *     person's own Chrome, through the Playwright extension, in the profile `claude-code`.
  *   - `serena`: code intelligence, started with the plugin's own context, which allows
  *     `activate_project` so a session can point Serena at its worktree.
  *   - `sequential-thinking`: the general reasoning server.

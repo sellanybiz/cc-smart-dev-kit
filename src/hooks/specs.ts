@@ -24,8 +24,8 @@
  * one has them: `src/workflow/alerts.ts`) —
  * `stop-failure` (the usage-limit alert), `update-check` (the background self-update and the
  * instructions copy), `notify` (the alerts: desktop, SSH terminal, Warp; `notify.ts`) and
- * `playwright-output` (a caller-named screenshot goes into the shared browser's output
- * folder, `playwright-output.ts`).
+ * `playwright-output` (a caller-named screenshot goes into the browser's output folder,
+ * `playwright-output.ts`).
  * A project wires these itself, as `cc-smart-dev-kit hook <name>` (`PROJECT_HOOKS`): the worktree
  * engine. A plugin WorktreeCreate would replace Claude Code's own worktrees in every
  * project, so the engine is opt-in (`docs/design.md` § The worktree engine). Each needs

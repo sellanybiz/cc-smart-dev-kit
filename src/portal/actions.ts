@@ -18,6 +18,8 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
+import { parseBrowserToken, writeBrowserToken } from "../browser/token";
 import { type Check, checkLine, type DoctorOptions, doctorChecks } from "../cli/doctor";
 import type { CliPaths } from "../cli/paths";
 import { runUpdate } from "../cli/update";
@@ -866,8 +868,58 @@ async function projectWrite(
   }
 }
 
-// ── The door ────────────────────────────────────────────────────────────────────
+/**
+ * The Browser card's setup button: the same steps `cc-smart-dev-kit browser setup` runs, through
+ * the same module — Chrome is opened on the extension's Web Store page in the `claude-code`
+ * profile, and anything that is left for the person is printed. The portal never installs an
+ * extension and never writes inside Chrome's own folder by itself.
+ */
+async function browserSetupAction(action: ActionContext): Promise<ActionResult> {
+  try {
+    const result = browserSetup(
+      action.portal.paths,
+      realBrowserSetupDeps(action.portal.machine, action.portal.paths.home),
+      { apply: true },
+    );
+    return {
+      lines: [
+        ...(result.changes.length > 0 ? result.changes : ["Nothing to change."]),
+        ...result.info,
+        ...result.notes,
+        ...result.guide,
+      ],
+      ok: result.ok,
+    };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
 
+/**
+ * The Browser card's token field: the same writer `cc-smart-dev-kit browser token` uses
+ * (`writeBrowserToken`), so a token saved here and one saved in a terminal are the same file,
+ * mode 600. The value is checked first (the extension's own shape), and **never printed back**:
+ * the answer says the token is set, and nothing of it reaches the page, a line or a log.
+ */
+function browserTokenAction(action: ActionContext, body: Record<string, unknown>): ActionResult {
+  const pasted = typeof body.token === "string" ? body.token : "";
+  const parsed = parseBrowserToken(pasted);
+  if (!parsed.ok) return { lines: [`The token was not saved: ${parsed.why}.`], ok: false };
+  try {
+    writeBrowserToken(action.portal.paths, parsed.token);
+    return {
+      lines: [
+        `+ ${action.portal.paths.browserTokenFile}: the browser token is set (mode 600)`,
+        "Start a new Claude session (or restart the running one) to use it.",
+      ],
+      ok: true,
+    };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+
+// ── The door ────────────────────────────────────────────────────────────────────
 /**
  * Runs one action. `body` is the page's JSON, already parsed; nothing here trusts it — every
  * value is checked, and a value a command would refuse is refused here too.
@@ -901,6 +953,10 @@ export async function runAction(
           return { lines: [`"${which}" is not a switch.`], ok: false };
       }
     }
+    case "browser.setup":
+      return browserSetupAction(action);
+    case "browser.token":
+      return browserTokenAction(action, body);
     case "update.check":
       return updateCheck(action);
     case "update.install":
