@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import { browserSetupReport, realBrowserSetupDeps } from "../browser/setup";
 import {
   MARKETPLACE,
@@ -102,6 +102,13 @@ export interface SetupOptions {
   statusline: boolean;
   /** The environment: the Tavily key may come from it (`TAVILY_API_KEY`). */
   env: Record<string, string | undefined>;
+  /**
+   * `--tavily-key-stdin`: the Tavily key, which arrived on stdin. setup writes it to the key
+   * file a person may write by hand (mode 0600, the plugin's own atomic writer) and then
+   * treats it as a key from that file, so a later setup keeps it. Never an argument: a
+   * command line is readable in `/proc` and lands in the shell's history.
+   */
+  tavilyKeyStdin: null | string;
 }
 
 function show(value: unknown): string {
@@ -176,6 +183,8 @@ interface Managed {
   serena: boolean;
   /** The Tavily key to write into the settings as an owned secret, or null. */
   tavilyKey: null | string;
+  /** The Tavily key that arrived on stdin, to write to the key file first, or null. */
+  tavilyKeyFile: null | string;
   /** Add tmux's passthrough line (`tmux` is installed, so the person uses tmux). */
   tmuxLine: boolean;
 }
@@ -222,6 +231,19 @@ function applySetup(
       const mark = cmd.outcome === "created" ? "+" : "~";
       changes.push(`${mark} ${short(cmd.path)}: launcher ${cmd.outcome}`);
     }
+  }
+
+  // The Tavily key that came on stdin goes to the key file a person may write by hand: the
+  // one home of that key, mode 0600, written atomically. From then on setup reads the key
+  // from there, so a later run keeps it, and `restore` leaves the file (it is the person's
+  // key, not a settings key setup owns).
+  if (managed.tavilyKeyFile !== null) {
+    const mark = existsSync(paths.tavilyKeyFile) ? "~" : "+";
+    if (!dryRun) {
+      mkdirSync(dirname(paths.tavilyKeyFile), { mode: 0o700, recursive: true });
+      atomicWrite(paths.tavilyKeyFile, `${managed.tavilyKeyFile}\n`, 0o600);
+    }
+    changes.push(`${mark} ${short(paths.tavilyKeyFile)}: the Tavily key (a secret, mode 600)`);
   }
 
   const set: (readonly [KeyPath, unknown])[] = [[AUTO_UPDATE_KEY, true]];
@@ -636,10 +658,14 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       `  tmux is running: run \`${TMUX_NOW_COMMAND}\` to apply the line now (a restart works too)`,
     );
   }
-  // The Tavily key: from the environment (nothing to write), from the key file (an owned
-  // secret key in the settings, so Claude Code's "${TAVILY_API_KEY}" gets it), or missing
-  // (the server is skipped, with the plan's note). A key is never printed.
-  const tavily = readTavilyKey(paths, options.env);
+  // The Tavily key: from the environment (nothing to write), from `--tavily-key-stdin` or
+  // from the key file (an owned secret key in the settings, so Claude Code's
+  // "${TAVILY_API_KEY}" gets it), or missing (the server is skipped, with the plan's note).
+  // A key is never printed.
+  const tavily =
+    options.tavilyKeyStdin === null
+      ? readTavilyKey(paths, options.env)
+      : { source: "file" as const, value: options.tavilyKeyStdin };
   const serenaSource = serenaContextSource(options.serenaSource);
   const managed: Managed = {
     claudeMem: claudeMem === "not-installed" ? null : claudeMem,
@@ -651,6 +677,8 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     serena: existsSync(serenaSource),
     statusline: options.statusline,
     tavilyKey: tavily.source === "file" ? tavily.value : null,
+    // A key from stdin is written to the key file first: the one home of that key.
+    tavilyKeyFile: options.tavilyKeyStdin,
     tmuxLine,
   };
 

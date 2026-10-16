@@ -79,6 +79,9 @@ Commands:
                      (default: this folder). --warp: install the Warp terminal (the
                      commands are shown and asked; sudo asks for your password) and its
                      Claude plugin. --remove-warp: take them out again.
+                     --tavily-key-stdin: the Tavily key on stdin (never an argument);
+                     setup writes it to the key file it reads a key from, mode 600
+                     (README § MCP servers).
                      --no-instructions takes the instructions out and keeps them out: a
                      later plain setup leaves them out too. --instructions brings them
                      back. restore forgets the choice.
@@ -365,6 +368,7 @@ async function main(argv: string[]): Promise<number> {
         "--no-instructions",
         "--instructions",
         "--statusline",
+        "--tavily-key-stdin",
       ];
       let project = process.cwd();
       const unknown: string[] = [];
@@ -400,8 +404,18 @@ async function main(argv: string[]): Promise<number> {
         console.error(`--project: ${project} is not a folder`);
         return 2;
       }
+      // The Tavily key on stdin, never an argument (a command line is readable in `/proc`
+      // and lands in the shell's history). Read before anything else is planned, so the
+      // plan and a real run say the same thing.
+      let tavilyKeyStdin: null | string = null;
+      if (rest.includes("--tavily-key-stdin")) {
+        const value = (await Bun.stdin.text()).trim();
+        if (value === "") throw new Error("no key on stdin");
+        tavilyKeyStdin = value;
+      }
       return runSetup(paths, {
         dryRun: rest.includes("--dry-run"),
+        tavilyKeyStdin,
         env: process.env,
         yes: rest.includes("--yes"),
         warp: rest.includes("--warp"),

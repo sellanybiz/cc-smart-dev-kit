@@ -253,7 +253,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "0.4.1",
+  version: "0.4.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -1924,7 +1924,7 @@ function oldBunRefusal(command, version, path) {
 
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync44, readFileSync as readFileSync49 } from "fs";
-import { dirname as dirname13, join as join44 } from "path";
+import { dirname as dirname14, join as join44 } from "path";
 
 // src/gateway/doctor.ts
 import { existsSync as existsSync12, readFileSync as readFileSync14 } from "fs";
@@ -15808,7 +15808,7 @@ function checkGitBash(platform, env, facts) {
 // src/cli/live-check.ts
 import {
   existsSync as existsSync41,
-  mkdirSync as mkdirSync15,
+  mkdirSync as mkdirSync16,
   mkdtempSync as mkdtempSync4,
   readFileSync as readFileSync46,
   realpathSync as realpathSync5,
@@ -15816,7 +15816,7 @@ import {
   writeFileSync as writeFileSync10
 } from "fs";
 import { tmpdir as tmpdir6 } from "os";
-import { dirname as dirname12, join as join41 } from "path";
+import { dirname as dirname13, join as join41 } from "path";
 
 // src/hooks/specs.ts
 import { existsSync as existsSync40 } from "fs";
@@ -19499,8 +19499,8 @@ function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
 import { existsSync as existsSync36, readFileSync as readFileSync39 } from "fs";
 
 // src/cli/setup.ts
-import { existsSync as existsSync35, readFileSync as readFileSync38 } from "fs";
-import { delimiter, join as join34 } from "path";
+import { existsSync as existsSync35, mkdirSync as mkdirSync13, readFileSync as readFileSync38 } from "fs";
+import { delimiter, dirname as dirname10, join as join34 } from "path";
 
 // src/mcp/serena-context.ts
 import { existsSync as existsSync32, readFileSync as readFileSync36 } from "fs";
@@ -19843,6 +19843,15 @@ function applySetup(paths, managed, dryRun, serenaSource, platform) {
       changes.push(`${mark} ${short(cmd.path)}: launcher ${cmd.outcome}`);
     }
   }
+  if (managed.tavilyKeyFile !== null) {
+    const mark = existsSync35(paths.tavilyKeyFile) ? "~" : "+";
+    if (!dryRun) {
+      mkdirSync13(dirname10(paths.tavilyKeyFile), { mode: 448, recursive: true });
+      atomicWrite(paths.tavilyKeyFile, `${managed.tavilyKeyFile}
+`, 384);
+    }
+    changes.push(`${mark} ${short(paths.tavilyKeyFile)}: the Tavily key (a secret, mode 600)`);
+  }
   const set = [[AUTO_UPDATE_KEY, true]];
   if (managed.statusline)
     set.push([STATUSLINE_KEY, statuslineSetting(paths)]);
@@ -20102,7 +20111,7 @@ async function runSetup(paths, options) {
   if (tmuxLine && tmuxServerRunning(machine.run)) {
     report.info.push(`  tmux is running: run \`${TMUX_NOW_COMMAND}\` to apply the line now (a restart works too)`);
   }
-  const tavily = readTavilyKey(paths, options.env);
+  const tavily = options.tavilyKeyStdin === null ? readTavilyKey(paths, options.env) : { source: "file", value: options.tavilyKeyStdin };
   const serenaSource = serenaContextSource(options.serenaSource);
   const managed = {
     claudeMem: claudeMem === "not-installed" ? null : claudeMem,
@@ -20114,6 +20123,7 @@ async function runSetup(paths, options) {
     serena: existsSync35(serenaSource),
     statusline: options.statusline,
     tavilyKey: tavily.source === "file" ? tavily.value : null,
+    tavilyKeyFile: options.tavilyKeyStdin,
     tmuxLine
   };
   let records = {};
@@ -20356,8 +20366,8 @@ function resolveWorkflow(paths, projectConfig) {
 
 // src/workflow/reviews.ts
 import { createHash as createHash5 } from "crypto";
-import { mkdirSync as mkdirSync13, readFileSync as readFileSync40 } from "fs";
-import { dirname as dirname10, join as join35 } from "path";
+import { mkdirSync as mkdirSync14, readFileSync as readFileSync40 } from "fs";
+import { dirname as dirname11, join as join35 } from "path";
 var REVIEWS_KEPT = 50;
 var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
 function repoKey(repo) {
@@ -20395,7 +20405,7 @@ function recordReview(file, sha, atMs) {
   for (const [commit, time] of Object.entries(record).sort(([, a], [, b]) => b.localeCompare(a)).slice(0, REVIEWS_KEPT)) {
     kept[commit] = time;
   }
-  mkdirSync13(dirname10(file), { mode: 448, recursive: true });
+  mkdirSync14(dirname11(file), { mode: 448, recursive: true });
   atomicWrite(file, `${JSON.stringify(kept, null, 2)}
 `, 384);
   return { added: true, at };
@@ -20950,13 +20960,13 @@ function reviewRecord(context) {
 import {
   copyFileSync,
   existsSync as existsSync39,
-  mkdirSync as mkdirSync14,
+  mkdirSync as mkdirSync15,
   readdirSync as readdirSync13,
   readFileSync as readFileSync44,
   statSync as statSync11,
   writeFileSync as writeFileSync9
 } from "fs";
-import { dirname as dirname11, join as join39 } from "path";
+import { dirname as dirname12, join as join39 } from "path";
 
 // src/hooks/create-lock.ts
 import { createHash as createHash6 } from "crypto";
@@ -21086,7 +21096,7 @@ function badPrefix(prefix) {
   return /[\\/]/.test(prefix) || prefix === "." || prefix === ".." ? `worktrees.prefix "${prefix}" must be part of a folder name, with no "/" or "\\"` : null;
 }
 function configuredFolder(mainCheckout, prefix, name) {
-  return join39(dirname11(mainCheckout), `${prefix}${name.replace(/[\\/]/g, "-")}`);
+  return join39(dirname12(mainCheckout), `${prefix}${name.replace(/[\\/]/g, "-")}`);
 }
 function baseForBranch(worktrees, branch) {
   const bases = worktrees.bases ?? {};
@@ -21179,7 +21189,7 @@ function copyWorktreeInclude(source, target, env) {
   for (const path of ignored.stdout.toString().split("\x00")) {
     if (path === "" || existsSync39(join39(target, path)))
       continue;
-    mkdirSync14(dirname11(join39(target, path)), { recursive: true });
+    mkdirSync15(dirname12(join39(target, path)), { recursive: true });
     copyFileSync(join39(source, path), join39(target, path));
     copied.push(path);
   }
@@ -21875,7 +21885,7 @@ var GIT_ID = {
   GIT_COMMITTER_EMAIL: "live-check@example.com"
 };
 function proveIn(label, repo, expected, deps, env) {
-  const log = join41(dirname12(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
+  const log = join41(dirname13(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
   const session = deps.run([
     "claude",
     "-p",
@@ -21956,7 +21966,7 @@ function runLiveCheck(paths, env, deps) {
         throw new Error(`git ${args.join(" ")} failed: ${result.output}`);
     };
     const plain = join41(root, "plain");
-    mkdirSync15(plain);
+    mkdirSync16(plain);
     git(plain, "init", "-q", "-b", "main");
     writeFileSync10(join41(plain, "README.md"), `live check
 `);
@@ -21968,7 +21978,7 @@ function runLiveCheck(paths, env, deps) {
     git(root, "clone", "-q", origin, configured);
     writeFileSync10(join41(configured, "README.md"), `live check
 `);
-    mkdirSync15(join41(configured, ".claude"));
+    mkdirSync16(join41(configured, ".claude"));
     writeFileSync10(join41(configured, ".claude", "cc-smart-dev-kit.json"), `${JSON.stringify({ worktrees: { base: "main", prefix: LIVE_PREFIX } })}
 `);
     writeFileSync10(join41(configured, ".claude", "settings.json"), `${JSON.stringify(projectHookSettings(deps.hookCommand), null, 2)}
@@ -21989,7 +21999,7 @@ function runLiveCheck(paths, env, deps) {
       }, deps, env)
     ].map((line) => ({ ...line, text: `live, ${line.text}` }));
     if (lines.every((line) => line.ok)) {
-      mkdirSync15(paths.stateDir, { recursive: true, mode: 448 });
+      mkdirSync16(paths.stateDir, { recursive: true, mode: 448 });
       const record = {
         claudeCode: version,
         plugin: VERSION,
@@ -22677,7 +22687,7 @@ function ccSmartDevKitImports(text) {
 function checkProjectImports(paths, cwd) {
   const short = (path) => tildify(path, paths.home);
   const imports = [];
-  for (let dir = cwd;; dir = dirname13(dir)) {
+  for (let dir = cwd;; dir = dirname14(dir)) {
     for (const name of PROJECT_MEMORY_FILES) {
       const from = join44(dir, name);
       if (from === join44(paths.claudeConfigDir, "CLAUDE.md") || !existsSync44(from))
@@ -22693,7 +22703,7 @@ function checkProjectImports(paths, cwd) {
         imports.push({ from, path, file });
       }
     }
-    if (dirname13(dir) === dir)
+    if (dirname14(dir) === dir)
       break;
   }
   if (imports.length === 0)
@@ -22852,7 +22862,7 @@ async function runDoctor(paths, env, options) {
 
 // src/cli/migrate.ts
 import { existsSync as existsSync45, readdirSync as readdirSync14, readFileSync as readFileSync50, renameSync as renameSync3, rmSync as rmSync11, statSync as statSync13 } from "fs";
-import { basename as basename6, dirname as dirname14, join as join45 } from "path";
+import { basename as basename6, dirname as dirname15, join as join45 } from "path";
 var OLD = {
   name: "anymodel",
   pluginId: "anymodel@anymodel",
@@ -22878,7 +22888,7 @@ function oldGatewayEnv(port) {
 }
 function migrateUnits(paths, overrides = {}) {
   return {
-    dir: overrides.dir ?? dirname14(paths.routerUnitFile),
+    dir: overrides.dir ?? dirname15(paths.routerUnitFile),
     oldUnit: overrides.oldUnit ?? OLD.unit,
     oldSocket: overrides.oldSocket ?? OLD.socket,
     unit: overrides.unit ?? basename6(paths.routerUnitFile),
@@ -24322,7 +24332,7 @@ ${PROJECT_INIT_USAGE}`);
 
 // src/cli/restore.ts
 import { existsSync as existsSync48, rmSync as rmSync12 } from "fs";
-import { dirname as dirname15, join as join48 } from "path";
+import { dirname as dirname16, join as join48 } from "path";
 function describe2(result, short) {
   const file = short(result.file);
   switch (result.action) {
@@ -24346,7 +24356,7 @@ function stageOneDone(paths, cliBundle, bunPath = process.execPath) {
   if (existsSync48(launcher)) {
     return `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
   }
-  const bunfig = bunConfigPath(dirname15(dirname15(cliBundle)));
+  const bunfig = bunConfigPath(dirname16(dirname16(cliBundle)));
   const flags = [shellQuote("--no-env-file"), shellQuote(`--config=${bunfig}`)].join(" ");
   return `Restart every running Claude session (they still use the router), then run restore again \u2014 this one removed the launcher (${tildify(launcher, paths.home)}), so \`${COMMAND}\` is not on your PATH any more: ${shellQuote(bunPath)} ${flags} ${shellQuote(cliBundle)} restore`;
 }
@@ -25120,7 +25130,7 @@ function runtimeDir(env) {
 }
 
 // src/jobs/commands.ts
-import { mkdirSync as mkdirSync17, readdirSync as readdirSync17, statSync as statSync16 } from "fs";
+import { mkdirSync as mkdirSync18, readdirSync as readdirSync17, statSync as statSync16 } from "fs";
 import { availableParallelism, hostname as hostname3 } from "os";
 
 // src/jobs/ancestry.ts
@@ -26055,7 +26065,7 @@ async function runJob(request, deps) {
 import {
   chmodSync as chmodSync3,
   existsSync as existsSync52,
-  mkdirSync as mkdirSync16,
+  mkdirSync as mkdirSync17,
   readdirSync as readdirSync16,
   readFileSync as readFileSync57,
   realpathSync as realpathSync6,
@@ -26250,7 +26260,7 @@ function leaseStore(options) {
       record
     });
     if (!options.shared)
-      mkdirSync16(folder, { recursive: true });
+      mkdirSync17(folder, { recursive: true });
     writeWhole(path, text, token);
     hold(path, text);
     return { path, token };
@@ -26485,7 +26495,7 @@ function machineBudget(config, memory) {
 function openStores(ctx, config, onNote) {
   const dir = config.stateDir ?? jobsPaths(ctx.paths.home).stateDir;
   try {
-    mkdirSync17(dir, { recursive: true, mode: 448 });
+    mkdirSync18(dir, { recursive: true, mode: 448 });
   } catch (error) {
     const code = error.code ?? String(error);
     throw new JobsConfigError(`The state folder ${dir} cannot be made (${code}).`);
@@ -27296,7 +27306,7 @@ ${USAGE4}`);
 import {
   closeSync as closeSync6,
   existsSync as existsSync56,
-  mkdirSync as mkdirSync18,
+  mkdirSync as mkdirSync19,
   openSync as openSync6,
   readdirSync as readdirSync18,
   readFileSync as readFileSync60,
@@ -27306,7 +27316,7 @@ import {
   writeFileSync as writeFileSync12
 } from "fs";
 import { platform } from "os";
-import { dirname as dirname16, join as join53, resolve as resolve8 } from "path";
+import { dirname as dirname17, join as join53, resolve as resolve8 } from "path";
 
 // src/machine/open-url.ts
 function openUrlCandidates(on, url) {
@@ -27539,7 +27549,7 @@ function savedSessions(projectsDir, mainCheckout, prefix, since) {
   return sessions.sort((a, b) => b.lastWrite - a.lastWrite);
 }
 function saveWarpTabs(dir, sessions, mainCheckout, command) {
-  mkdirSync18(dir, { recursive: true });
+  mkdirSync19(dir, { recursive: true });
   const keep = new Set([RESTORE_ALL, ...sessions.map((session) => tabConfigName(session))]);
   for (const name of readdirSync18(dir)) {
     if (!name.startsWith("claude_") || !name.endsWith(".toml"))
@@ -27588,7 +27598,7 @@ function openedRecently(stateDir, id, now, minutes = OPENED_AGAIN_MINUTES) {
 function markOpened(stateDir, id, now) {
   atomicWrite(openedMarkerFile(stateDir, id), `${new Date(now).toISOString()}
 `, 384);
-  const dir = dirname16(openedMarkerFile(stateDir, id));
+  const dir = dirname17(openedMarkerFile(stateDir, id));
   for (const name of readdirSync18(dir)) {
     if (name === id || openedRecently(stateDir, name, now))
       continue;
@@ -27665,7 +27675,7 @@ async function runSessions(paths, options, deps, cwd = process.cwd()) {
   const reopenIn = pickReopenTerminal({
     hasProgram: (name) => deps.which(name) !== null,
     platform: deps.platform,
-    warpDataFolder: existsSync56(dirname16(tabDir))
+    warpDataFolder: existsSync56(dirname17(tabDir))
   });
   if (reopenIn === "warp") {
     saveWarpTabs(tabDir, sessions, mainCheckout, deps.command);
@@ -27731,8 +27741,8 @@ ${tabDir}
 }
 
 // src/workflow/write.ts
-import { mkdirSync as mkdirSync19 } from "fs";
-import { dirname as dirname17 } from "path";
+import { mkdirSync as mkdirSync20 } from "fs";
+import { dirname as dirname18 } from "path";
 function unknownKey(key) {
   return new Error(`Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS.join(", ")}`);
 }
@@ -27814,7 +27824,7 @@ function writePersonalSetting(paths, key, value) {
   const shown = tildify(file, paths.home);
   if (Bun.deepEquals(before, data, true))
     return shownNothing(shown, wanted, value);
-  mkdirSync19(dirname17(file), { mode: 448, recursive: true });
+  mkdirSync20(dirname18(file), { mode: 448, recursive: true });
   atomicWrite(file, `${JSON.stringify(data, null, indent)}
 `, 384);
   return shownWrite(shown, wanted, value, text === null);
@@ -28676,6 +28686,9 @@ Commands:
                      (default: this folder). --warp: install the Warp terminal (the
                      commands are shown and asked; sudo asks for your password) and its
                      Claude plugin. --remove-warp: take them out again.
+                     --tavily-key-stdin: the Tavily key on stdin (never an argument);
+                     setup writes it to the key file it reads a key from, mode 600
+                     (README \xA7 MCP servers).
                      --no-instructions takes the instructions out and keeps them out: a
                      later plain setup leaves them out too. --instructions brings them
                      back. restore forgets the choice.
@@ -28916,7 +28929,8 @@ async function main(argv) {
         "--remove-warp",
         "--no-instructions",
         "--instructions",
-        "--statusline"
+        "--statusline",
+        "--tavily-key-stdin"
       ];
       let project = process.cwd();
       const unknown = [];
@@ -28960,8 +28974,16 @@ ${HELP}`);
         console.error(`--project: ${project} is not a folder`);
         return 2;
       }
+      let tavilyKeyStdin = null;
+      if (rest.includes("--tavily-key-stdin")) {
+        const value = (await Bun.stdin.text()).trim();
+        if (value === "")
+          throw new Error("no key on stdin");
+        tavilyKeyStdin = value;
+      }
       return runSetup(paths, {
         dryRun: rest.includes("--dry-run"),
+        tavilyKeyStdin,
         env: process.env,
         yes: rest.includes("--yes"),
         warp: rest.includes("--warp"),

@@ -65,6 +65,19 @@ jobs:
           src/mcp/mcp.test.ts
           src/gateway/gateway.test.ts
 
+      - name: install.ps1 in a fake world (pwsh)
+        # The one-command installer, on the shell a Windows person runs it with: the test
+        # starts install.ps1 as its own process, with a temp HOME and fakes for `claude`,
+        # `bun`, `gh` and git (the same shape scripts/install.test.ts proves install.sh with).
+        # Nothing here reaches the network, a real Claude Code, or the person's own profile.
+        run: pwsh -NoProfile -File scripts/install-windows-smoke.ps1
+
+      - name: install.ps1 in a fake world (Windows PowerShell 5.1)
+        # The same cases under the PowerShell a Windows machine ships: install.ps1 must work
+        # on 5.1 too, and this is the only place that proves it.
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-windows-smoke.ps1
+
       - name: A hook bundle runs through the shim in Git Bash
         # The whole hook path on Windows, with no person: Git Bash runs the shim, the shim
         # finds bun.exe, the bundle answers the hook input, and — with bun taken away — the
