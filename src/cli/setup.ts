@@ -29,13 +29,14 @@ import {
   warpPluginSteps,
   warpRemoveCommands,
 } from "../machine/warp";
-import { readMcpRecords } from "../mcp/records";
+import { type McpRecord, markMcpServerPending, readMcpRecords } from "../mcp/records";
 import {
   applyMcpServers,
   type ClaudeRun,
   planMcpServers,
   readUserServers,
   recordApplied,
+  unreadableUserConfigNote,
 } from "../mcp/register";
 import { installSerenaContext, serenaContextSource } from "../mcp/serena-context";
 import { mcpServers } from "../mcp/servers";
@@ -56,9 +57,9 @@ import {
 } from "../setup/instructions";
 import { installLauncher, LAUNCHER_NAME } from "../setup/launcher";
 import { withLock } from "../setup/lock";
-import { applyManagedJson, formatKeyPath, type KeyPath } from "../setup/managed-json";
+import { applyManagedJson, formatKeyPath, type KeyPath, ownedKeys } from "../setup/managed-json";
 import { applyTmuxLine, TMUX_LINE, TMUX_NOW_COMMAND, tmuxServerRunning } from "../setup/tmux";
-import { atomicWrite } from "../setup/write";
+import { atomicWrite, realTarget } from "../setup/write";
 import { type CliPaths, tildify } from "./paths";
 
 /** The key that turns on auto-update for the cc-smart-dev-kit marketplace. Claude Code's install leaves it out. */
@@ -103,10 +104,12 @@ function show(value: unknown): string {
 export const TAVILY_KEY_PATH: KeyPath = ["env", TAVILY_ENV_KEY];
 
 /**
- * A value as setup prints it: the Tavily key is never shown, only that it is one.
+ * A value as setup prints it: the Tavily key is never shown, only that it is one (and
+ * `(none)` when it is gone).
  */
 function shownValue(path: KeyPath, value: unknown): string {
-  return formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH) ? "(a secret)" : show(value);
+  if (formatKeyPath(path) !== formatKeyPath(TAVILY_KEY_PATH)) return show(value);
+  return value === undefined ? "(none)" : "(a secret)";
 }
 
 /** True when settings.json knows the cc-smart-dev-kit marketplace (written by `claude plugin install`). */
@@ -202,6 +205,15 @@ function applySetup(
   const set: (readonly [KeyPath, unknown])[] = [[AUTO_UPDATE_KEY, true]];
   if (managed.statusline) set.push([STATUSLINE_KEY, statuslineSetting(paths)]);
   if (managed.tavilyKey !== null) set.push([TAVILY_KEY_PATH, managed.tavilyKey]);
+  // The key's source moved: the environment has it now (or there is no key at all), so the
+  // key cc-smart-dev-kit wrote into the settings goes — the person's environment must not be
+  // shadowed by a stale copy. Only while the key still holds what cc-smart-dev-kit wrote:
+  // one the person changed is theirs (`applyManagedJson`).
+  const tavilyOwned =
+    managed.tavilyKey === null &&
+    ownedKeys(paths.stateDir, realTarget(paths.settingsFile)).some(
+      (path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH),
+    );
   const settings = applyManagedJson({
     file: paths.settingsFile,
     stateDir: paths.stateDir,
@@ -209,6 +221,7 @@ function applySetup(
     // and the settings file is left at mode 600.
     secret: (path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH),
     set,
+    ...(tavilyOwned ? { remove: [TAVILY_KEY_PATH] } : {}),
     dryRun,
   });
   for (const change of settings.changes) {
@@ -585,8 +598,9 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   };
 
   // The MCP servers: what setup registered last time, what Claude Code holds now, and what to
-  // do about each. A server of the person's own is never taken over (`register.ts`).
-  let records: Record<string, { json: string }> = {};
+  // do about each. A server of the person's own is never taken over (`register.ts`); when
+  // Claude Code's own config cannot be read, nothing is touched at all.
+  let records: Record<string, McpRecord> = {};
   try {
     records = readMcpRecords(paths.stateDir);
   } catch (error) {
@@ -594,6 +608,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       `! the MCP servers cc-smart-dev-kit registered cannot be read back (${messageOf(error)}): they are registered again`,
     );
   }
+  const liveServers = readUserServers(paths.userConfigFile);
   const mcpPlan = planMcpServers(
     mcpServers({
       bunx: machine.which("bunx") ?? "bunx",
@@ -602,7 +617,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       tavily: tavily.source === "none" ? { key: false, reason: tavily.reason } : { key: true },
     }),
     records,
-    readUserServers(paths.userConfigFile),
+    liveServers,
   ).map((entry) =>
     // A registration that names a context file which is not in place would replace a Serena
     // that starts with one that does not: the existing registration is left as it is.
@@ -615,6 +630,12 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
         }
       : entry,
   );
+  // One line, not one per server: nothing was added, removed, updated or forgotten.
+  if (liveServers === null) {
+    report.notes.push(
+      unreadableUserConfigNote(short(paths.userConfigFile), Object.keys(records).sort()),
+    );
+  }
   const claudeRun: ClaudeRun = (argv) => {
     const result = machine.run(argv);
     return { ok: result.exitCode === 0, out: result.output };
@@ -625,7 +646,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   const planned = applySetup(paths, managed, true, serenaSource);
 
   if (options.dryRun) {
-    const wouldRegister = applyMcpServers(mcpPlan, claudeRun, machine.which, true);
+    const wouldRegister = applyMcpServers(mcpPlan, claudeRun, machine.which, true, () => {});
     const changes = [
       ...warp.commands.map((command) => `$ ${showCommand(command)}`),
       ...claudeSteps.map((step) => step.line),
@@ -685,8 +706,12 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   for (const line of steps.lines) (line.startsWith("!") ? report.notes : report.changes).push(line);
   if (!steps.ok) ok = false;
 
-  // The MCP servers, at user scope, through Claude Code's own `claude mcp` commands.
-  const applied = applyMcpServers(mcpPlan, claudeRun, machine.which, false);
+  // The MCP servers, at user scope, through Claude Code's own `claude mcp` commands. An
+  // update marks its record before its own `remove` runs, so a crash in between is known
+  // the next time (`markMcpServerPending`).
+  const applied = applyMcpServers(mcpPlan, claudeRun, machine.which, false, (name) => {
+    markMcpServerPending(paths.stateDir, name);
+  });
   report.changes.push(...applied.changes);
   report.notes.push(...applied.notes);
   if (!applied.ok) ok = false;

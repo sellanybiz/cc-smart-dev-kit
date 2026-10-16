@@ -9089,8 +9089,18 @@ var SERENA_EDIT_TOOLS = new Set([
   "mcp__serena__replace_content",
   "mcp__serena__rename_symbol",
   "mcp__serena__safe_delete_symbol",
-  "mcp__serena__replace_in_files"
+  "mcp__serena__replace_in_files",
+  ...["write_memory", "rename_memory", "edit_memory", "delete_memory"].map((tool) => `mcp__serena__${tool}`)
 ]);
+var SERENA_MEMORY_TOOLS = new Set([
+  "mcp__serena__write_memory",
+  "mcp__serena__rename_memory",
+  "mcp__serena__edit_memory",
+  "mcp__serena__delete_memory"
+]);
+function memoryNameKeys(tool) {
+  return tool.endsWith("rename_memory") ? ["old_name", "new_name"] : ["memory_name"];
+}
 function editedFile(input, cwd) {
   const fields = toolInput(input);
   const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
@@ -9103,9 +9113,17 @@ function serenaEditedFile(input, record, projectDir) {
   if (tool === null || !SERENA_EDIT_TOOLS.has(tool))
     return null;
   const fields = toolInput(input);
-  const relative = stringField(fields.relative_path) ?? (tool.endsWith("replace_in_files") ? "" : null);
-  if (relative === null)
-    return null;
+  let relative;
+  if (SERENA_MEMORY_TOOLS.has(tool)) {
+    const named = memoryNameKeys(tool).map((key) => stringField(fields[key])).filter((name) => name !== null && !name.startsWith("global/"));
+    if (named.length === 0)
+      return null;
+    relative = "";
+  } else {
+    relative = stringField(fields.relative_path) ?? (tool.endsWith("replace_in_files") ? "" : null);
+    if (relative === null)
+      return null;
+  }
   if (record?.kind === "unknown")
     return { unplaceable: true };
   const root = record?.kind === "path" ? record.path : projectDir;
@@ -9422,7 +9440,7 @@ function leftoversNote(base, finished, gone) {
   if (finished.length > 0) {
     const names = finished.map((worktree) => basename3(worktree.path)).join(", ");
     const count = finished.length === 1 ? "1 finished worktree is" : `${finished.length} finished worktrees are`;
-    parts.push(`${count} left in this repo: ${names}. Each has every commit on origin/${base}, nothing uncommitted, no running session, and no git use for an hour. ` + "Tell the user, and when they agree, remove each in the main checkout: `git worktree remove <folder>`, then `git branch -d <branch>`.");
+    parts.push(`${count} left in this repo: ${names}. Each has every commit on origin/${base}, nothing uncommitted, no running session, and no git use for an hour. ` + "Tell the user, and when they agree, clear them in the main checkout with `cc-smart-dev-kit worktrees --clean` \u2014 it judges each one again, Docker containers and running programs included, before it removes anything.");
   }
   if (gone.length > 0) {
     parts.push(`${gone.length === 1 ? "1 worktree is still listed, but its folder is gone" : `${gone.length} worktrees are still listed, but their folders are gone`}: ${gone.map((worktree) => worktree.path).join(", ")}. \`git worktree prune\` in the main checkout forgets ${gone.length === 1 ? "it" : "them"}.`);

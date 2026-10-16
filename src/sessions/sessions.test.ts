@@ -7,7 +7,14 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { tempDir } from "../testing/temp";
-import { runSessions, savedSessions, warpTabConfigDir } from "./command";
+import {
+  markOpened,
+  OPENED_AGAIN_MINUTES,
+  openedMarkerFile,
+  runSessions,
+  savedSessions,
+  warpTabConfigDir,
+} from "./command";
 import {
   belongsToRepo,
   closedWithWindow,
@@ -412,5 +419,126 @@ describe("the sessions command", () => {
     ).toEqual(["recent"]);
     // A session whose name is missing entirely (a one-shot run) is left out too.
     expect(existsSync(w.folder)).toBe(true);
+  });
+
+  test("a file whose name is not a session id is left out: the id goes into a shell command", () => {
+    const now = 100 * 3_600_000;
+    const w = world([
+      {
+        id: "aaaaaaaa-1111-2222-3333-444444444444",
+        tail: line({ agentName: "real", type: "agent-name" }),
+        writtenAt: now - 1000,
+      },
+      // A file name is not a promise about its content: `weird; rm -rf ~` is a title, but the
+      // id would be pasted into `claude --resume <id>` in a Warp tab.
+      {
+        id: "weird;-rm-rf-~",
+        tail: line({ agentName: "not a session", type: "agent-name" }),
+        writtenAt: now - 1000,
+      },
+    ]);
+    expect(
+      savedSessions(
+        join(w.paths.claudeConfigDir, "projects"),
+        w.project,
+        "app-wt-",
+        now - 48 * 3_600_000,
+      ).map((read) => read.id),
+    ).toEqual(["aaaaaaaa-1111-2222-3333-444444444444"]);
+  });
+
+  test("--open twice in a row: the second run opens nothing, and says so", async () => {
+    const now = 100 * 3_600_000;
+    const startedAt = now - 3600 * 1000;
+    const id = "aaaaaaaa-1111-2222-3333-444444444444";
+    const w = world([
+      {
+        id,
+        tail: line({ agentName: "Fix the login bug", cwd: "/work/my-app", type: "agent-name" }),
+        // Killed at the restart: the first `--open` brings it back.
+        writtenAt: startedAt - 1000,
+      },
+    ]);
+    const { deps: fake, opened } = deps({
+      which: (command) => (command === "xfce4-terminal" ? "/usr/bin/xfce4-terminal" : null),
+    });
+    const out: string[] = [];
+    const print = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      out.push(args.join(" "));
+    });
+    try {
+      expect(await runSessions(w.paths, { dryRun: false, open: true }, fake, w.project)).toBe(0);
+      expect(opened).toHaveLength(1);
+      // A resumed session has not written to its file yet, so it still looks stopped: the
+      // marker `--open` wrote is what keeps the second run from opening a second copy.
+      out.length = 0;
+      expect(await runSessions(w.paths, { dryRun: false, open: true }, fake, w.project)).toBe(0);
+    } finally {
+      print.mockRestore();
+    }
+    expect(opened).toHaveLength(1);
+    expect(out.join("\n")).toContain("Nothing to bring back");
+    // The marker holds the time it was opened, and a dry run adds none.
+    expect(readFileSync(openedMarkerFile(w.paths.stateDir, id), "utf8")).toBe(
+      `${new Date(fake.now).toISOString()}\n`,
+    );
+
+    // After the window it is opened again — the session may really have died since.
+    const later = deps({
+      now: fake.now + (OPENED_AGAIN_MINUTES + 1) * 60_000,
+      which: (command) => (command === "xfce4-terminal" ? "/usr/bin/xfce4-terminal" : null),
+    });
+    const printAgain = spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      expect(await runSessions(w.paths, { dryRun: false, open: true }, later.deps, w.project)).toBe(
+        0,
+      );
+    } finally {
+      printAgain.mockRestore();
+    }
+    expect(later.opened).toHaveLength(1);
+  });
+
+  test("the opened markers are short-lived: an old one goes when a new one is written", () => {
+    const stateDir = tempDir("sessions-markers");
+    const first = "aaaaaaaa-1111-2222-3333-444444444444";
+    const second = "bbbbbbbb-1111-2222-3333-444444444444";
+    const now = 100 * 3_600_000;
+    markOpened(stateDir, first, now);
+    expect(readFileSync(openedMarkerFile(stateDir, first), "utf8")).toBe(
+      `${new Date(now).toISOString()}\n`,
+    );
+    markOpened(stateDir, second, now + (OPENED_AGAIN_MINUTES + 1) * 60_000);
+    expect(existsSync(openedMarkerFile(stateDir, first))).toBe(false);
+    expect(existsSync(openedMarkerFile(stateDir, second))).toBe(true);
+  });
+
+  test("--open marks nothing for a window that could not be opened", async () => {
+    const now = 100 * 3_600_000;
+    const startedAt = now - 3600 * 1000;
+    const id = "aaaaaaaa-1111-2222-3333-444444444444";
+    const w = world([
+      {
+        id,
+        tail: line({ agentName: "Fix the login bug", cwd: "/work/my-app", type: "agent-name" }),
+        writtenAt: startedAt - 1000,
+      },
+    ]);
+    const { deps: fake, opened } = deps({
+      // The window opens nothing: the command hands the window to the terminal and exits 1.
+      spawnDetached: (argv: string[]) => {
+        opened.push(argv);
+        return { exited: Promise.resolve(1) };
+      },
+      which: (command) => (command === "xfce4-terminal" ? "/usr/bin/xfce4-terminal" : null),
+    });
+    const print = spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      expect(await runSessions(w.paths, { dryRun: false, open: true }, fake, w.project)).toBe(0);
+    } finally {
+      print.mockRestore();
+    }
+    expect(opened).toHaveLength(1);
+    expect(existsSync(openedMarkerFile(w.paths.stateDir, id))).toBe(false);
   });
 });

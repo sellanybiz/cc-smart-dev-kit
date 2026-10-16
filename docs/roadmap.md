@@ -68,7 +68,9 @@ affordable models to subagent slots, and an opt-in judge for auto mode's safety 
 
 - The Playwright MCP server with one Chrome for every session (`design.md` § The shared
   browser): one profile in the data folder, a tab filter per session so each sees only its
-  own windows, and `browser check` as the end-to-end proof on a throwaway profile.
+  own windows, and `browser check` as the end-to-end proof on a throwaway profile. The
+  filter's endpoint carries a private token (any other path refused, and the token reaches the
+  MCP in its environment, never in `argv`), and the profile and output folders are owner-only.
 - Serena, with the plugin's own context (project switching on, so a session can point it at
   its worktree) installed in the data folder.
 - `setup` registers the general MCP servers at user scope, so tool names stay

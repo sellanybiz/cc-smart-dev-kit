@@ -6,8 +6,8 @@
  * nothing here reads the host.
  */
 import { describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
@@ -163,6 +163,31 @@ describe("the machine's facts", () => {
     expect(hostPath("/work/app", false)).toBe("/work/app");
   });
 
+  test("a worktree reached through a symlink: the physical path counts as inside it, both ways", () => {
+    const root = tempDir("worktrees-link");
+    const real = join(root, "real", "app-wt-x");
+    mkdirSync(real, { recursive: true });
+    const link = join(root, "link");
+    symlinkSync(join(root, "real"), link);
+    const linked = join(link, "app-wt-x");
+    // `/proc/<pid>/cwd` holds the physical path, while a worktree may be listed through a
+    // link (and the other way round: a session started with `cd <link>/…`).
+    expect(
+      programsInside([{ cwd: real, path: "/usr/bin/bun dev", pid: 3 }], linked, false),
+    ).toEqual(["bun"]);
+    expect(
+      programsInside([{ cwd: linked, path: "/usr/bin/bun dev", pid: 3 }], real, false),
+    ).toEqual(["bun"]);
+    // A command line written from the physical path counts too.
+    expect(programsInside([{ path: `${real}/server.ts`, pid: 4 }], linked, false)).toEqual([
+      "server.ts",
+    ]);
+    expect(containersUsing(linked, [{ name: "db", sources: [real] }], false)).toEqual(["db"]);
+    expect(containersUsing(real, [{ name: "db", sources: [linked] }], false)).toEqual(["db"]);
+    // A folder that holds none of it stays out.
+    expect(containersUsing(linked, [{ name: "x", sources: [root] }], false)).toEqual([]);
+  });
+
   test("the programs using a worktree: started from it, or working in it", () => {
     const lines = [
       `1 /usr/bin/bun /work/app-wt-x/server.ts`,
@@ -303,6 +328,29 @@ describe("scanning and removing, against a real repo", () => {
     expect(scanned[1]?.state).toBe("gone");
   });
 
+  test("a session that reached the worktree through a symlink keeps it", async () => {
+    const { main, worktree } = repo();
+    const link = join(dirname(worktree), "app-wt-link");
+    symlinkSync(worktree, link);
+    const scanned = scanWorktrees(main, {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env,
+      // Claude Code records the folder the session was started in, which may be the linked
+      // one while git lists the physical one.
+      facts: {
+        containers: [],
+        programs: [],
+        sessions: [{ cwd: link, name: "Fix the login bug", pid: 1, sessionId: "s" }],
+      },
+      idleLimit: 0,
+    });
+    expect(scanned[1]?.state).toEqual({
+      finished: false,
+      why: 'Claude session "Fix the login bug" works in it',
+    });
+  });
+
   test("an unknown base branch is refused, not guessed", () => {
     const { main } = repo();
     expect(() =>
@@ -423,5 +471,127 @@ describe("the worktrees command", () => {
     expect(out.join("\n")).toContain(`removing ${worktree} …`);
     expect(out.join("\n")).toContain("deleted branch fix/login");
     expect(existsSync(worktree)).toBe(false);
+  });
+
+  test("`--remove <path>` exits 1 when the removal was kept, and says why", async () => {
+    const { main, worktree } = repo();
+    writeFileSync(join(worktree, "notes.local.md"), "mine\n");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    const out: string[] = [];
+    const logged = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      out.push(args.join(" "));
+    });
+    try {
+      expect(
+        await runWorktrees(
+          paths,
+          { clean: false, noFetch: true, remove: worktree },
+          cleanGitEnv(),
+          main,
+        ),
+      ).toBe(1);
+    } finally {
+      logged.mockRestore();
+    }
+    expect(out.join("\n")).toContain("uncommitted changes");
+    expect(existsSync(worktree)).toBe(true);
+  });
+
+  test("`--remove <path>` exits 1 while a program works in it", async () => {
+    const { main, worktree } = repo();
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    const child = Bun.spawn(["sleep", "30"], {
+      cwd: worktree,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    const out: string[] = [];
+    const logged = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      out.push(args.join(" "));
+    });
+    try {
+      // The scan reads this machine's own processes: the sleep below works in the worktree.
+      expect(
+        await runWorktrees(
+          paths,
+          { clean: false, noFetch: true, remove: worktree },
+          cleanGitEnv(),
+          main,
+        ),
+      ).toBe(1);
+    } finally {
+      logged.mockRestore();
+      child.kill();
+    }
+    expect(out.join("\n")).toContain("a program runs from its files: sleep");
+    expect(existsSync(worktree)).toBe(true);
+  });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "`--remove <path>` exits 1 when the move worked and git could not delete the folder",
+    async () => {
+      const { main, worktree } = repo();
+      // A folder git cannot delete: the move aside works, the removal then fails, and the
+      // worktree is left parked. Nothing may report that as a removal.
+      mkdirSync(join(worktree, "locked"));
+      writeFileSync(join(worktree, "locked", "f.txt"), "x\n");
+      git(worktree, "add", ".");
+      git(worktree, "commit", "-q", "-m", "a file in a folder that cannot be deleted");
+      git(main, "merge", "--ff-only", "fix/login");
+      git(main, "push", "-q", "origin", "main");
+      chmodSync(join(worktree, "locked"), 0o555);
+      const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+      const out: string[] = [];
+      const logged = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+        out.push(args.join(" "));
+      });
+      try {
+        expect(
+          await runWorktrees(
+            paths,
+            { clean: false, noFetch: true, remove: worktree },
+            cleanGitEnv(),
+            main,
+          ),
+        ).toBe(1);
+      } finally {
+        logged.mockRestore();
+        // Leave nothing unreadable behind, for the temp folder's own cleanup.
+        for (const name of readdirSync(dirname(worktree))) {
+          if (!name.startsWith("app-wt-fix-login")) continue;
+          try {
+            chmodSync(join(dirname(worktree), name, "locked"), 0o755);
+          } catch {
+            // Already gone.
+          }
+        }
+      }
+      expect(out.join("\n")).toContain("then could not remove it");
+      expect(existsSync(worktree)).toBe(false);
+    },
+  );
+
+  test("a worktree whose folder is gone: the line says to lock one on a disk that is not connected", async () => {
+    const { main, worktree } = repo();
+    Bun.spawnSync(["rm", "-rf", worktree]);
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    const out: string[] = [];
+    const logged = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      out.push(args.join(" "));
+    });
+    try {
+      expect(
+        await runWorktrees(
+          paths,
+          { clean: false, noFetch: true, remove: worktree },
+          cleanGitEnv(),
+          main,
+        ),
+      ).toBe(0);
+    } finally {
+      logged.mockRestore();
+    }
+    expect(out.join("\n")).toContain(
+      `forgot ${worktree} (its folder was already gone). A worktree on a disk that is not connected reads the same way: lock one there (\`git worktree lock "${worktree}"\`) and prune leaves it alone.`,
+    );
   });
 });

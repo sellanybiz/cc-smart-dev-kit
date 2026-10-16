@@ -1,6 +1,6 @@
 // @bun
 // src/entries/cli.ts
-import { existsSync as existsSync48, statSync as statSync17 } from "fs";
+import { existsSync as existsSync48, statSync as statSync18 } from "fs";
 import { uptime as uptime2 } from "os";
 import { basename as basename8, dirname as dirname12, join as join44, resolve as resolve10 } from "path";
 
@@ -531,6 +531,9 @@ function removeManagedFile(stateDir, file) {
   unlinkSync(file);
   return backup;
 }
+
+// src/browser/cdp-tab-filter-server.ts
+import { randomBytes } from "crypto";
 
 // src/browser/cdp-tab-filter.ts
 var FILTER_COMMAND_ID_START = 1e9;
@@ -1134,12 +1137,19 @@ function closeReason(reason) {
 function serveTabFilter(options) {
   const connections = new Set;
   const bySocket = new Map;
+  const token = randomBytes(16).toString("hex");
+  const path = `/${token}`;
   const server = Bun.serve({
     fetch(request, self) {
       const origin = request.headers.get("origin");
       if (origin !== null) {
         options.log(`tab filter: refused a connection from a web page (${origin})`);
         return new Response("connections from web pages are refused", { status: 403 });
+      }
+      const asked = new URL(request.url).pathname;
+      if (asked !== path) {
+        options.log(`tab filter: refused a connection to ${asked === "/" ? "the root path" : "another path"} (this port serves one session's own endpoint)`);
+        return new Response("this port serves one session's endpoint only", { status: 403 });
       }
       if (self.upgrade(request, { data: undefined }))
         return;
@@ -1182,7 +1192,7 @@ function serveTabFilter(options) {
         connection.terminate();
       await stopped;
     },
-    endpoint: `ws://127.0.0.1:${String(server.port)}/`
+    endpoint: `ws://127.0.0.1:${String(server.port)}${path}`
   };
 }
 
@@ -1271,7 +1281,6 @@ class FilteredConnection {
       return;
     const upstream = new WebSocket(url, { perMessageDeflate: false });
     this.upstream = upstream;
-    const failure = "the shared Chrome closed the connection";
     upstream.onopen = () => {
       for (const message of this.waitingForBrowser.splice(0))
         upstream.send(message);
@@ -1283,7 +1292,8 @@ class FilteredConnection {
       this.waitingForCloses?.done();
       if (this.closing)
         return;
-      this.refuse(failure === "the shared Chrome closed the connection" ? `${failure} (code ${String(event.code)}${event.reason === "" ? "" : `: ${event.reason}`})` : failure);
+      const details = `code ${String(event.code)}${event.reason === "" ? "" : `: ${event.reason}`}`;
+      this.refuse(`the shared Chrome closed the connection (${details})`);
     };
   }
   refuse(reason) {
@@ -1311,6 +1321,7 @@ function toText(data) {
 // src/browser/shared-browser.ts
 import { execFileSync, spawn } from "child_process";
 import {
+  chmodSync as chmodSync2,
   closeSync as closeSync2,
   existsSync as existsSync3,
   mkdirSync as mkdirSync2,
@@ -1318,6 +1329,7 @@ import {
   readFileSync as readFileSync3,
   readlinkSync as readlinkSync2,
   rmSync as rmSync2,
+  statSync as statSync2,
   unlinkSync as unlinkSync2
 } from "fs";
 import { request } from "http";
@@ -1477,6 +1489,18 @@ function errorCode(err) {
 }
 function seconds(ms) {
   return String(ms / 1000);
+}
+function ensurePrivateDir(dir, log) {
+  if (existsSync3(dir)) {
+    const mode = statSync2(dir).mode & 511;
+    if ((mode & 63) === 0)
+      return;
+    chmodSync2(dir, 448);
+    log(`${dir} was readable by other users (mode ${mode.toString(8)}): made it yours only (700)`);
+    return;
+  }
+  mkdirSync2(dir, { recursive: true, mode: 448 });
+  chmodSync2(dir, 448);
 }
 function pause(ms) {
   return new Promise((done) => {
@@ -1739,7 +1763,7 @@ async function ensureSharedBrowser(options) {
     if (started !== null)
       return started.url;
     claimProfile(profileDir, platform, system, log);
-    mkdirSync2(profileDir, { recursive: true });
+    ensurePrivateDir(profileDir, log);
     rmSync2(join3(profileDir, ACTIVE_PORT_FILE), { force: true });
     log(`starting Chrome (${executable}) on ${profileDir}`);
     const chrome = spawnChrome(executable, [...chromeArgs(profileDir), ...options.extraArgs ?? []], profileDir);
@@ -1788,6 +1812,7 @@ function browserMcpOptions(paths, argv) {
 async function runBrowserMcp(paths, argv, deps) {
   const options = browserMcpOptions(paths, argv);
   (deps.installPicker ?? installPicker)(paths.browserPickerFile, deps.pickerBundle);
+  ensurePrivateDir(options.outputDir, deps.log);
   const filter = (deps.serve ?? serveTabFilter)({
     browserEndpoint: () => ensureSharedBrowser({
       ...options.headless ? { extraArgs: ["--headless=new"] } : {},
@@ -1805,7 +1830,6 @@ async function runBrowserMcp(paths, argv, deps) {
     ...argvHead,
     "-y",
     deps.package,
-    `--cdp-endpoint=${filter.endpoint}`,
     ...idleArgs,
     `--output-dir=${options.outputDir}`,
     `--output-max-size=${String(OUTPUT_MAX_BYTES)}`,
@@ -1813,7 +1837,10 @@ async function runBrowserMcp(paths, argv, deps) {
     "--allow-unrestricted-file-access",
     `--init-page=${paths.browserPickerFile}`,
     ...options.mcpArgs
-  ], { stdio: "inherit" });
+  ], {
+    env: { PLAYWRIGHT_MCP_CDP_ENDPOINT: filter.endpoint },
+    stdio: "inherit"
+  });
   const stop = async (signal) => {
     await filter.close();
     child.kill(signal);
@@ -1955,7 +1982,7 @@ function tildify(path, home) {
 
 // src/gateway/config.ts
 import { createHash } from "crypto";
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync5, statSync as statSync2 } from "fs";
+import { mkdirSync as mkdirSync3, readFileSync as readFileSync5, statSync as statSync3 } from "fs";
 import { dirname as dirname2 } from "path";
 
 // node_modules/zod/v4/core/util.js
@@ -8095,7 +8122,7 @@ function parseConfig(raw) {
 function loadConfigFile(path) {
   let mode;
   try {
-    mode = statSync2(path).mode;
+    mode = statSync3(path).mode;
   } catch (error) {
     throw new ConfigError(`cannot read ${path}: ${messageOf(error)}`, { cause: error });
   }
@@ -8137,7 +8164,7 @@ function emptyConfig() {
     version: 1
   };
 }
-var REAL_WATCH_DEPS = { load: loadConfigFile, stat: statSync2 };
+var REAL_WATCH_DEPS = { load: loadConfigFile, stat: statSync3 };
 function watchConfig(path, log, deps = REAL_WATCH_DEPS) {
   let current = emptyConfig();
   let good = false;
@@ -8330,7 +8357,7 @@ import {
   openSync as openSync3,
   readFileSync as readFileSync6,
   readlinkSync as readlinkSync3,
-  statSync as statSync3,
+  statSync as statSync4,
   unlinkSync as unlinkSync3,
   writeSync
 } from "fs";
@@ -8416,7 +8443,7 @@ function parseLock(text) {
 function readHeld(file) {
   let stat;
   try {
-    stat = statSync3(file);
+    stat = statSync4(file);
   } catch (error) {
     if (error.code === "ENOENT")
       return null;
@@ -12107,7 +12134,7 @@ function claudeMemAdvice(paths) {
 }
 
 // src/machine/warp.ts
-import { chmodSync as chmodSync2, existsSync as existsSync14, mkdirSync as mkdirSync6, readFileSync as readFileSync15, rmSync as rmSync5, writeFileSync as writeFileSync3 } from "fs";
+import { chmodSync as chmodSync3, existsSync as existsSync14, mkdirSync as mkdirSync6, readFileSync as readFileSync15, rmSync as rmSync5, writeFileSync as writeFileSync3 } from "fs";
 import { join as join12 } from "path";
 var WARP_PLUGIN_ID = "warp@claude-code-warp";
 var WARP_MARKETPLACE = "claude-code-warp";
@@ -12295,7 +12322,7 @@ async function stageWarpFiles(machine, system, paths) {
   const stage = warpStageDir(paths);
   rmSync5(stage, { recursive: true, force: true });
   mkdirSync6(stage, { recursive: true, mode: 448 });
-  chmodSync2(stage, 448);
+  chmodSync3(stage, 448);
   if (system.kind !== "apt" && system.kind !== "dnf")
     return;
   if (machine.which("gpg") === null) {
@@ -12469,18 +12496,75 @@ function clearWarpStage(paths) {
 // src/mcp/register.ts
 import { readFileSync as readFileSync17 } from "fs";
 
+// src/setup/launcher.ts
+import { join as join13 } from "path";
+var LAUNCHER_NAME = "cc-smart-dev-kit";
+var FIND_INSTALL_JS = [
+  "const f=process.argv[process.argv.length-1];",
+  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
+  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+function bakedBunPath(script) {
+  const match = /^baked_bun=('(?:[^']|'\\'')*')$/m.exec(script);
+  if (!match?.[1])
+    return null;
+  return match[1].slice(1, -1).replaceAll("'\\''", "'");
+}
+function launcherScript(bunPath) {
+  return `#!/bin/sh
+# cc-smart-dev-kit launcher. Written by "cc-smart-dev-kit setup"; setup rewrites it, so do not edit it.
+# It runs the cc-smart-dev-kit command from the installed version of the cc-smart-dev-kit plugin.
+fail() {
+  echo "cc-smart-dev-kit: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
+  exit 1
+}
+baked_bun=${shellQuote(bunPath)}
+if [ -x "$baked_bun" ]; then
+  bun="$baked_bun"
+elif command -v bun >/dev/null 2>&1; then
+  bun=$(command -v bun)
+else
+  echo "cc-smart-dev-kit: bun not found (not at $baked_bun, not on PATH). Install bun, then run: cc-smart-dev-kit setup" >&2
+  exit 1
+fi
+config_dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+installed="$config_dir/plugins/installed_plugins.json"
+[ -f "$installed" ] || fail "the cc-smart-dev-kit plugin is not installed."
+install_path=$("$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the cc-smart-dev-kit plugin is not installed."
+[ -n "$install_path" ] || fail "the cc-smart-dev-kit plugin is not installed."
+[ -f "$install_path/dist/cli.js" ] || fail "the cc-smart-dev-kit plugin folder is missing: $install_path."
+# --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.
+exec "$bun" --no-env-file "$install_path/dist/cli.js" "$@"
+`;
+}
+function installLauncher(binDir, options) {
+  const path = join13(binDir, LAUNCHER_NAME);
+  const { outcome } = writeManagedFile(path, launcherScript(options.bunPath), {
+    stateDir: options.stateDir,
+    kind: "whole-file",
+    mode: 493,
+    ...options.dryRun !== undefined && { dryRun: options.dryRun }
+  });
+  return { path, outcome };
+}
+
 // src/mcp/records.ts
 import { existsSync as existsSync15, readFileSync as readFileSync16 } from "fs";
-import { join as join13 } from "path";
+import { join as join14 } from "path";
 var RECORD_FILE = "mcp-servers.json";
 function mcpRecordsFile(stateDir) {
-  return join13(stateDir, RECORD_FILE);
+  return join14(stateDir, RECORD_FILE);
 }
 function isRecord(value) {
   if (typeof value !== "object" || value === null)
     return false;
-  const { at, json } = value;
-  return typeof json === "string" && typeof at === "string";
+  const { at, json, pending } = value;
+  return typeof json === "string" && typeof at === "string" && (pending === undefined || typeof pending === "boolean");
 }
 function readMcpRecords(stateDir, file = mcpRecordsFile(stateDir)) {
   if (!existsSync15(file))
@@ -12507,6 +12591,14 @@ function forgetMcpServer(stateDir, name, file = mcpRecordsFile(stateDir)) {
   if (!(name in servers))
     return;
   delete servers[name];
+  writeRecords(stateDir, servers, file);
+}
+function markMcpServerPending(stateDir, name, file = mcpRecordsFile(stateDir)) {
+  const servers = readMcpRecords(stateDir, file);
+  const record = servers[name];
+  if (record === undefined || record.pending === true)
+    return;
+  servers[name] = { ...record, pending: true };
   writeRecords(stateDir, servers, file);
 }
 
@@ -12551,34 +12643,69 @@ function deepEqual(a, b) {
     return false;
   return keys.every((key) => (key in right) && deepEqual(left[key], right[key]));
 }
+function addCommand(name, json) {
+  return `claude mcp add-json --scope user ${name} ${shellQuote(json)}`;
+}
+function unreadableUserConfigNote(file, names) {
+  const kept = [...names].sort();
+  const which = kept.length === 0 ? "no MCP server is touched" : `the MCP servers cc-smart-dev-kit registered stay as they are: ${kept.join(", ")}`;
+  return `! cannot read ${file}: nothing changed \u2014 ${which}`;
+}
+function changedByPersonNote(name) {
+  return `! ${name} is registered with a config cc-smart-dev-kit did not write: left alone, and no longer ` + `managed (restore keeps it). To hand it back: claude mcp remove ${name} --scope user, then setup`;
+}
+function registeredByOthersNote(name) {
+  return `! ${name} is registered already, and not by cc-smart-dev-kit: left alone. ` + `To let setup manage it: claude mcp remove ${name} --scope user`;
+}
+function goneNote(name, registeredJson) {
+  return `\xB7 MCP server ${name} is not registered any more: the record was forgotten. ` + `To add it back: ${addCommand(name, registeredJson)}`;
+}
 function planMcpServers(servers, records, live) {
+  if (live === null) {
+    return servers.map((server) => ({ action: "keep", json: "", name: server.name, note: null }));
+  }
   return servers.map((server) => {
     const { name, json } = server;
-    if (server.skipped !== undefined) {
-      return { name, json: "", action: "skip", note: `! ${name}: skipped \u2014 ${server.skipped}` };
-    }
     const recorded = records[name];
-    const current = live === null ? undefined : live[name];
-    if (recorded === undefined) {
-      if (current !== undefined) {
+    const current = live[name];
+    const skipNote = server.skipped === undefined ? null : `! ${name}: skipped \u2014 ${server.skipped}`;
+    if (server.skipped !== undefined) {
+      if (recorded === undefined) {
+        return { action: "skip", json, name, note: skipNote };
+      }
+      if (current !== undefined && sameConfig(recorded.json, current)) {
+        return { action: "remove", json: "", name, note: skipNote };
+      }
+      if (current === undefined) {
         return {
+          action: "gone",
+          forget: true,
+          json: "",
           name,
-          json,
-          action: "foreign",
-          note: `! ${name} is registered already, and not by cc-smart-dev-kit: left alone. ` + `To let setup manage it: claude mcp remove ${name} --scope user`
+          note: `\xB7 MCP server ${name} is not registered any more: the record was forgotten`
         };
       }
-      return { name, json, action: "add", note: null };
+      return { action: "foreign", forget: true, json, name, note: skipNote };
+    }
+    if (recorded === undefined) {
+      return current !== undefined ? { action: "foreign", json, name, note: registeredByOthersNote(name) } : { action: "add", json, name, note: null };
+    }
+    if (current === undefined) {
+      return recorded.pending === true ? { action: "add", json, name, note: null } : { action: "gone", forget: true, json: "", name, note: goneNote(name, recorded.json) };
+    }
+    if (recorded.pending === true) {
+      if (sameConfig(recorded.json, current)) {
+        return { action: "update", json, name, note: null };
+      }
+      if (sameConfig(json, current)) {
+        return { action: "keep", clearPending: true, json, name, note: null };
+      }
+      return { action: "foreign", forget: true, json, name, note: changedByPersonNote(name) };
     }
     if (sameConfig(recorded.json, current)) {
-      return recorded.json === json ? { name, json, action: "keep", note: null } : { name, json, action: "update", note: null };
+      return recorded.json === json ? { action: "keep", json, name, note: null } : { action: "update", json, name, note: null };
     }
-    return {
-      name,
-      json,
-      action: "foreign",
-      note: `! ${name} is registered with a config cc-smart-dev-kit did not write: left alone, and no longer ` + `managed (restore keeps it). To hand it back: claude mcp remove ${name} --scope user, then setup`
-    };
+    return { action: "foreign", forget: true, json, name, note: changedByPersonNote(name) };
   });
 }
 function line(argv) {
@@ -12588,6 +12715,8 @@ function commands(entry) {
   switch (entry.action) {
     case "add":
       return [["claude", "mcp", "add-json", "--scope", "user", entry.name, entry.json]];
+    case "remove":
+      return [["claude", "mcp", "remove", entry.name, "--scope", "user"]];
     case "update":
       return [
         ["claude", "mcp", "remove", entry.name, "--scope", "user"],
@@ -12597,7 +12726,7 @@ function commands(entry) {
       return [];
   }
 }
-function applyMcpServers(plan, run, which, dryRun) {
+function applyMcpServers(plan, run, which, dryRun, markPending) {
   const result = {
     changes: [],
     forgotten: [],
@@ -12609,11 +12738,15 @@ function applyMcpServers(plan, run, which, dryRun) {
   for (const entry of plan) {
     if (entry.note !== null)
       result.notes.push(entry.note);
-    if (entry.action === "foreign" && entry.note !== null)
+    if (entry.forget === true)
       result.forgotten.push(entry.name);
     const argvList = commands(entry);
-    if (argvList.length === 0)
+    if (argvList.length === 0) {
+      if (entry.clearPending === true && !dryRun) {
+        result.registered.push({ json: entry.json, name: entry.name });
+      }
       continue;
+    }
     if (dryRun) {
       result.wouldRun.push(...argvList.map(line));
       continue;
@@ -12623,6 +12756,8 @@ function applyMcpServers(plan, run, which, dryRun) {
       result.notes.push(`! The claude command is not on PATH, so ${entry.name} was not registered. Run it once it is.`);
       continue;
     }
+    if (entry.action === "update")
+      markPending(entry.name);
     let failed = false;
     for (const argv of argvList) {
       const outcome = run(argv);
@@ -12637,6 +12772,11 @@ function applyMcpServers(plan, run, which, dryRun) {
     }
     if (failed)
       continue;
+    if (entry.action === "remove") {
+      result.changes.push(`- MCP server ${entry.name} removed from your user config`);
+      result.forgotten.push(entry.name);
+      continue;
+    }
     const verb = entry.action === "add" ? "+" : "~";
     result.changes.push(`${verb} MCP server ${entry.name} ${entry.action === "add" ? "registered" : "updated"} for your user`);
     result.registered.push({ json: entry.json, name: entry.name });
@@ -12661,8 +12801,13 @@ function removeMcpServers(paths, run, which, dryRun, stateDir = paths.stateDir) 
     return result;
   }
   const live = readUserServers(paths.userConfigFile);
+  if (live === null) {
+    result.kept.push(...Object.keys(records).sort());
+    result.notes.push(unreadableUserConfigNote(tildify(paths.userConfigFile, paths.home), Object.keys(records)));
+    return result;
+  }
   for (const [name, record] of Object.entries(records)) {
-    const current = live?.[name];
+    const current = live[name];
     if (current === undefined) {
       result.notes.push(`  MCP server ${name} is not registered any more; nothing to remove`);
       result.forgotten.push(name);
@@ -12769,7 +12914,7 @@ function mcpServers(context) {
 }
 
 // src/mcp/tavily.ts
-import { existsSync as existsSync16, readFileSync as readFileSync18, statSync as statSync4 } from "fs";
+import { existsSync as existsSync16, readFileSync as readFileSync18, statSync as statSync5 } from "fs";
 var TAVILY_ENV_KEY = "TAVILY_API_KEY";
 function isPrivate(mode) {
   return (mode & 63) === 0;
@@ -12786,7 +12931,7 @@ function readTavilyKey(paths, env) {
   let mode;
   let text;
   try {
-    mode = statSync4(paths.tavilyKeyFile).mode & 4095;
+    mode = statSync5(paths.tavilyKeyFile).mode & 4095;
     text = readFileSync18(paths.tavilyKeyFile, "utf8");
   } catch (error) {
     return {
@@ -12876,7 +13021,7 @@ function mcpChecks(paths, deps, env) {
 
 // src/setup/instructions.ts
 import { existsSync as existsSync21, readdirSync as readdirSync3, readFileSync as readFileSync23, rmSync as rmSync6 } from "fs";
-import { join as join15, relative, sep } from "path";
+import { join as join16, relative, sep } from "path";
 
 // src/setup/managed-markdown.ts
 import { existsSync as existsSync17, readFileSync as readFileSync19 } from "fs";
@@ -12968,7 +13113,7 @@ import { dirname as dirname4 } from "path";
 
 // src/setup/managed-entries.ts
 import { existsSync as existsSync18, readFileSync as readFileSync20 } from "fs";
-import { join as join14 } from "path";
+import { join as join15 } from "path";
 var OWNED_ENTRIES_FILE = "owned-entries.json";
 var ANCHOR_SOURCE = "";
 function pathKey(path) {
@@ -12978,7 +13123,7 @@ function isOwnedEntry(value) {
   return isObject2(value) && typeof value.entry === "string" && typeof value.source === "string";
 }
 function readOwnedEntries(stateDir) {
-  const file = join14(stateDir, OWNED_ENTRIES_FILE);
+  const file = join15(stateDir, OWNED_ENTRIES_FILE);
   if (!existsSync18(file))
     return {};
   const parsed = JSON.parse(readFileSync20(file, "utf8"));
@@ -12989,7 +13134,7 @@ function readOwnedEntries(stateDir) {
   return parsed;
 }
 function writeOwnedEntries(stateDir, state) {
-  atomicWrite(join14(stateDir, OWNED_ENTRIES_FILE), `${JSON.stringify(state, null, 2)}
+  atomicWrite(join15(stateDir, OWNED_ENTRIES_FILE), `${JSON.stringify(state, null, 2)}
 `, 384);
 }
 function withRecords(state, file, key, records) {
@@ -13291,10 +13436,10 @@ function removeEmptyFolders(file, stateDir) {
 // src/setup/instructions.ts
 var ALWAYS_ON_FILE = "core.md";
 function optOutFile(stateDir) {
-  return join15(stateDir, "no-instructions");
+  return join16(stateDir, "no-instructions");
 }
 function versionStampFile(stateDir) {
-  return join15(stateDir, "instructions-version");
+  return join16(stateDir, "instructions-version");
 }
 function instructionsOptedOut(stateDir) {
   return existsSync21(optOutFile(stateDir));
@@ -13307,18 +13452,18 @@ function readVersionStamp(stateDir) {
   return version === "" ? null : version;
 }
 function instructionsPaths(paths, source) {
-  const target = join15(paths.stateDir, "instructions");
+  const target = join16(paths.stateDir, "instructions");
   return {
     source,
     target,
-    claudeMd: join15(paths.claudeConfigDir, "CLAUDE.md"),
+    claudeMd: join16(paths.claudeConfigDir, "CLAUDE.md"),
     stateDir: paths.stateDir,
-    importPath: tildify(join15(target, ALWAYS_ON_FILE), paths.home)
+    importPath: tildify(join16(target, ALWAYS_ON_FILE), paths.home)
   };
 }
 function instructionsFolder(bundleDir) {
-  const beside = join15(bundleDir, "..", "instructions");
-  return existsSync21(beside) ? beside : join15(bundleDir, "..", "..", "plugin", "instructions");
+  const beside = join16(bundleDir, "..", "instructions");
+  return existsSync21(beside) ? beside : join16(bundleDir, "..", "..", "plugin", "instructions");
 }
 function instructionsBlockBody(importPath) {
   return [
@@ -13331,7 +13476,7 @@ function listInstructionFiles(source) {
   if (!existsSync21(source)) {
     throw new Error(`The plugin's instructions folder is missing: ${source}. Reinstall the plugin.`);
   }
-  const files = readdirSync3(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative(source, join15(entry.parentPath, entry.name)).split(sep).join("/")).sort();
+  const files = readdirSync3(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative(source, join16(entry.parentPath, entry.name)).split(sep).join("/")).sort();
   if (!files.includes(ALWAYS_ON_FILE)) {
     throw new Error(`The plugin's instructions folder has no ${ALWAYS_ON_FILE}: ${source}. Reinstall the plugin.`);
   }
@@ -13377,15 +13522,15 @@ function copyDifferences(paths) {
   const files = listInstructionFiles(paths.source);
   const out = [];
   for (const name of files) {
-    const copy = join15(paths.target, name);
+    const copy = join16(paths.target, name);
     if (!existsSync21(copy))
       out.push(`${name} is missing`);
-    else if (readFileSync23(copy, "utf8") !== readFileSync23(join15(paths.source, name), "utf8")) {
+    else if (readFileSync23(copy, "utf8") !== readFileSync23(join16(paths.source, name), "utf8")) {
       out.push(`${name} differs`);
     }
   }
   const root = `${realTarget(paths.target)}/`;
-  const wanted = new Set(files.map((name) => realTarget(join15(paths.target, name))));
+  const wanted = new Set(files.map((name) => realTarget(join16(paths.target, name))));
   for (const file of trackedCopies(paths.target, paths.stateDir)) {
     if (!wanted.has(file) && existsSync21(file)) {
       out.push(`${file.slice(root.length)} is not shipped any more`);
@@ -13434,9 +13579,9 @@ function installCopy(paths, dryRun, version) {
   const files = listInstructionFiles(paths.source);
   const wanted = new Set;
   for (const name of files) {
-    const file = join15(paths.target, name);
+    const file = join16(paths.target, name);
     wanted.add(realTarget(file));
-    const result = writeManagedFile(file, readFileSync23(join15(paths.source, name), "utf8"), {
+    const result = writeManagedFile(file, readFileSync23(join16(paths.source, name), "utf8"), {
       stateDir: paths.stateDir,
       kind: "whole-file",
       mode: 420,
@@ -13510,63 +13655,6 @@ function removeInstructions(paths, dryRun) {
   if (!dryRun)
     rmSync6(versionStampFile(paths.stateDir), { force: true });
   return lines;
-}
-
-// src/setup/launcher.ts
-import { join as join16 } from "path";
-var LAUNCHER_NAME = "cc-smart-dev-kit";
-var FIND_INSTALL_JS = [
-  "const f=process.argv[process.argv.length-1];",
-  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
-  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
-  "if(!e)process.exit(1);",
-  "process.stdout.write(e.installPath);"
-].join("");
-function shellQuote(value) {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-function bakedBunPath(script) {
-  const match = /^baked_bun=('(?:[^']|'\\'')*')$/m.exec(script);
-  if (!match?.[1])
-    return null;
-  return match[1].slice(1, -1).replaceAll("'\\''", "'");
-}
-function launcherScript(bunPath) {
-  return `#!/bin/sh
-# cc-smart-dev-kit launcher. Written by "cc-smart-dev-kit setup"; setup rewrites it, so do not edit it.
-# It runs the cc-smart-dev-kit command from the installed version of the cc-smart-dev-kit plugin.
-fail() {
-  echo "cc-smart-dev-kit: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
-  exit 1
-}
-baked_bun=${shellQuote(bunPath)}
-if [ -x "$baked_bun" ]; then
-  bun="$baked_bun"
-elif command -v bun >/dev/null 2>&1; then
-  bun=$(command -v bun)
-else
-  echo "cc-smart-dev-kit: bun not found (not at $baked_bun, not on PATH). Install bun, then run: cc-smart-dev-kit setup" >&2
-  exit 1
-fi
-config_dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-installed="$config_dir/plugins/installed_plugins.json"
-[ -f "$installed" ] || fail "the cc-smart-dev-kit plugin is not installed."
-install_path=$("$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the cc-smart-dev-kit plugin is not installed."
-[ -n "$install_path" ] || fail "the cc-smart-dev-kit plugin is not installed."
-[ -f "$install_path/dist/cli.js" ] || fail "the cc-smart-dev-kit plugin folder is missing: $install_path."
-# --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.
-exec "$bun" --no-env-file "$install_path/dist/cli.js" "$@"
-`;
-}
-function installLauncher(binDir, options) {
-  const path = join16(binDir, LAUNCHER_NAME);
-  const { outcome } = writeManagedFile(path, launcherScript(options.bunPath), {
-    stateDir: options.stateDir,
-    kind: "whole-file",
-    mode: 493,
-    ...options.dryRun !== undefined && { dryRun: options.dryRun }
-  });
-  return { path, outcome };
 }
 
 // src/setup/tmux.ts
@@ -13776,7 +13864,7 @@ import {
   readdirSync as readdirSync4,
   readFileSync as readFileSync25,
   rmSync as rmSync8,
-  statSync as statSync5,
+  statSync as statSync6,
   writeFileSync as writeFileSync4
 } from "fs";
 import { join as join18 } from "path";
@@ -16439,7 +16527,7 @@ function routeFacts(input) {
 import { isAbsolute as isAbsolute3, resolve as resolve5 } from "path";
 
 // src/hooks/serena-root.ts
-import { readFileSync as readFileSync27, rmSync as rmSync9, statSync as statSync6 } from "fs";
+import { readFileSync as readFileSync27, rmSync as rmSync9, statSync as statSync7 } from "fs";
 import { isAbsolute as isAbsolute2, join as join22, resolve as resolve4 } from "path";
 var SERENA_ACTIVATE_TOOL = "mcp__serena__activate_project";
 var SERENA_ROOT_DIR = "serena-root";
@@ -16494,7 +16582,7 @@ function activatedRoot(toolResponse) {
 }
 function isFolder(path) {
   try {
-    return isAbsolute2(path) && statSync6(path).isDirectory();
+    return isAbsolute2(path) && statSync7(path).isDirectory();
   } catch {
     return false;
   }
@@ -16556,8 +16644,18 @@ var SERENA_EDIT_TOOLS = new Set([
   "mcp__serena__replace_content",
   "mcp__serena__rename_symbol",
   "mcp__serena__safe_delete_symbol",
-  "mcp__serena__replace_in_files"
+  "mcp__serena__replace_in_files",
+  ...["write_memory", "rename_memory", "edit_memory", "delete_memory"].map((tool) => `mcp__serena__${tool}`)
 ]);
+var SERENA_MEMORY_TOOLS = new Set([
+  "mcp__serena__write_memory",
+  "mcp__serena__rename_memory",
+  "mcp__serena__edit_memory",
+  "mcp__serena__delete_memory"
+]);
+function memoryNameKeys(tool) {
+  return tool.endsWith("rename_memory") ? ["old_name", "new_name"] : ["memory_name"];
+}
 function editedFile(input, cwd) {
   const fields = toolInput(input);
   const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
@@ -16570,9 +16668,17 @@ function serenaEditedFile(input, record, projectDir) {
   if (tool === null || !SERENA_EDIT_TOOLS.has(tool))
     return null;
   const fields = toolInput(input);
-  const relative = stringField(fields.relative_path) ?? (tool.endsWith("replace_in_files") ? "" : null);
-  if (relative === null)
-    return null;
+  let relative;
+  if (SERENA_MEMORY_TOOLS.has(tool)) {
+    const named = memoryNameKeys(tool).map((key) => stringField(fields[key])).filter((name) => name !== null && !name.startsWith("global/"));
+    if (named.length === 0)
+      return null;
+    relative = "";
+  } else {
+    relative = stringField(fields.relative_path) ?? (tool.endsWith("replace_in_files") ? "" : null);
+    if (relative === null)
+      return null;
+  }
   if (record?.kind === "unknown")
     return { unplaceable: true };
   const root = record?.kind === "path" ? record.path : projectDir;
@@ -16628,7 +16734,7 @@ function mainFolderGuard(context) {
 }
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync24, readdirSync as readdirSync5, readFileSync as readFileSync28, statSync as statSync7 } from "fs";
+import { existsSync as existsSync24, readdirSync as readdirSync5, readFileSync as readFileSync28, statSync as statSync8 } from "fs";
 import { uptime } from "os";
 import { join as join23 } from "path";
 function parseSessionRecord(json) {
@@ -16666,7 +16772,7 @@ function liveSessions(claudeConfigDir) {
       continue;
     let text;
     try {
-      if (statSync7(join23(dir, file)).mtimeMs < bootedAt)
+      if (statSync8(join23(dir, file)).mtimeMs < bootedAt)
         continue;
       text = readFileSync28(join23(dir, file), "utf8");
     } catch {
@@ -16798,7 +16904,7 @@ import {
   mkdirSync as mkdirSync10,
   readdirSync as readdirSync6,
   readFileSync as readFileSync31,
-  statSync as statSync8,
+  statSync as statSync9,
   writeFileSync as writeFileSync7
 } from "fs";
 import { dirname as dirname6, join as join26 } from "path";
@@ -16973,7 +17079,7 @@ function fetchedRecently(commonDir) {
   } catch {}
   return [join26(commonDir, "FETCH_HEAD"), ...linked].some((file) => {
     try {
-      return Date.now() - statSync8(file).mtimeMs < FETCH_AGE_MS;
+      return Date.now() - statSync9(file).mtimeMs < FETCH_AGE_MS;
     } catch {
       return false;
     }
@@ -17202,7 +17308,7 @@ function worktreeCreate(context) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { readFileSync as readFileSync33, statSync as statSync9 } from "fs";
+import { readFileSync as readFileSync33, statSync as statSync10 } from "fs";
 import { basename as basename4, isAbsolute as isAbsolute4, join as join28, resolve as resolve6 } from "path";
 
 // src/hooks/local-files.ts
@@ -17276,7 +17382,7 @@ function idleMinutes(worktree, now) {
   let last = 0;
   for (const file of ["index", "HEAD", join28("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync9(join28(admin, file)).mtimeMs);
+      last = Math.max(last, statSync10(join28(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? 0 : (now - last) / 60000;
@@ -17287,7 +17393,7 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
   if (listed.prunable)
     return "gone";
   try {
-    statSync9(listed.path);
+    statSync10(listed.path);
   } catch {
     return "gone";
   }
@@ -17307,7 +17413,7 @@ function leftoversNote(base, finished, gone) {
   if (finished.length > 0) {
     const names = finished.map((worktree) => basename4(worktree.path)).join(", ");
     const count = finished.length === 1 ? "1 finished worktree is" : `${finished.length} finished worktrees are`;
-    parts.push(`${count} left in this repo: ${names}. Each has every commit on origin/${base}, nothing uncommitted, no running session, and no git use for an hour. ` + "Tell the user, and when they agree, remove each in the main checkout: `git worktree remove <folder>`, then `git branch -d <branch>`.");
+    parts.push(`${count} left in this repo: ${names}. Each has every commit on origin/${base}, nothing uncommitted, no running session, and no git use for an hour. ` + "Tell the user, and when they agree, clear them in the main checkout with `cc-smart-dev-kit worktrees --clean` \u2014 it judges each one again, Docker containers and running programs included, before it removes anything.");
   }
   if (gone.length > 0) {
     parts.push(`${gone.length === 1 ? "1 worktree is still listed, but its folder is gone" : `${gone.length} worktrees are still listed, but their folders are gone`}: ${gone.map((worktree) => worktree.path).join(", ")}. \`git worktree prune\` in the main checkout forgets ${gone.length === 1 ? "it" : "them"}.`);
@@ -17740,7 +17846,7 @@ function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
 }
 
 // src/project/resolve.ts
-import { existsSync as existsSync30, realpathSync as realpathSync3, statSync as statSync10 } from "fs";
+import { existsSync as existsSync30, realpathSync as realpathSync3, statSync as statSync11 } from "fs";
 import { join as join29 } from "path";
 var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
@@ -17791,7 +17897,7 @@ function findMainCheckout(git, cwd) {
   return realpathSync3(path);
 }
 function locateCheckout(cwd, options = {}) {
-  if (!existsSync30(cwd) || !statSync10(cwd).isDirectory()) {
+  if (!existsSync30(cwd) || !statSync11(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
   const git = gitIn(cwd, gitEnv(options.env ?? process.env));
@@ -18824,7 +18930,7 @@ async function runDoctor(paths, env, { bun, gateway, local, mcp, project, live }
 }
 
 // src/cli/migrate.ts
-import { existsSync as existsSync35, readdirSync as readdirSync8, readFileSync as readFileSync39, renameSync as renameSync3, rmSync as rmSync11, statSync as statSync11 } from "fs";
+import { existsSync as existsSync35, readdirSync as readdirSync8, readFileSync as readFileSync39, renameSync as renameSync3, rmSync as rmSync11, statSync as statSync12 } from "fs";
 import { basename as basename5, dirname as dirname9, join as join34 } from "path";
 var OLD = {
   name: "anymodel",
@@ -19099,7 +19205,7 @@ function absorbStateFolder(from, to, dryRun) {
         renameSync3(source, target);
       continue;
     }
-    if (statSync11(source).isDirectory() && statSync11(target).isDirectory()) {
+    if (statSync12(source).isDirectory() && statSync12(target).isDirectory()) {
       moved += absorbStateFolder(source, target, dryRun);
       if (!dryRun)
         rmSync11(source, { recursive: true, force: true });
@@ -19202,7 +19308,7 @@ function settingsChanges(settingsFile, stateDir, oldEnv, newEnv) {
   return { set, kept };
 }
 function readOldConfig(file) {
-  const mode = statSync11(file).mode;
+  const mode = statSync12(file).mode;
   if ((mode & 63) !== 0) {
     throw new ConfigError(`${file} can be read by other users (mode ${(mode & 511).toString(8)}); it holds API keys. Run: chmod 600 ${file}`);
   }
@@ -19270,7 +19376,7 @@ function rewriteLimitState(file, stateDir, renamer, dryRun) {
   if (changed === 0)
     return 0;
   if (!dryRun) {
-    const mode = statSync11(file).mode & 4095;
+    const mode = statSync12(file).mode & 4095;
     backupFile(stateDir, file);
     atomicWrite(file, `${JSON.stringify({ ...parsed, fallbacks }, null, 2)}
 `, mode);
@@ -19885,7 +19991,9 @@ function show2(value) {
 }
 var TAVILY_KEY_PATH = ["env", TAVILY_ENV_KEY];
 function shownValue2(path, value) {
-  return formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH) ? "(a secret)" : show2(value);
+  if (formatKeyPath(path) !== formatKeyPath(TAVILY_KEY_PATH))
+    return show2(value);
+  return value === undefined ? "(none)" : "(a secret)";
 }
 function marketplaceKnown(settingsFile) {
   if (!existsSync38(settingsFile))
@@ -19936,11 +20044,13 @@ function applySetup(paths, managed, dryRun, serenaSource) {
     set.push([STATUSLINE_KEY, statuslineSetting(paths)]);
   if (managed.tavilyKey !== null)
     set.push([TAVILY_KEY_PATH, managed.tavilyKey]);
+  const tavilyOwned = managed.tavilyKey === null && ownedKeys(paths.stateDir, realTarget(paths.settingsFile)).some((path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH));
   const settings = applyManagedJson({
     file: paths.settingsFile,
     stateDir: paths.stateDir,
     secret: (path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH),
     set,
+    ...tavilyOwned ? { remove: [TAVILY_KEY_PATH] } : {},
     dryRun
   });
   for (const change of settings.changes) {
@@ -20196,24 +20306,28 @@ async function runSetup2(paths, options) {
   } catch (error) {
     report.notes.push(`! the MCP servers cc-smart-dev-kit registered cannot be read back (${messageOf(error)}): they are registered again`);
   }
+  const liveServers = readUserServers(paths.userConfigFile);
   const mcpPlan = planMcpServers(mcpServers({
     bunx: machine.which("bunx") ?? "bunx",
     launcher: join37(paths.binDir, LAUNCHER_NAME),
     serenaContextFile: paths.serenaContextFile,
     tavily: tavily.source === "none" ? { key: false, reason: tavily.reason } : { key: true }
-  }), records, readUserServers(paths.userConfigFile)).map((entry) => entry.name === "serena" && !managed.serena ? {
+  }), records, liveServers).map((entry) => entry.name === "serena" && !managed.serena ? {
     ...entry,
     action: "skip",
     json: "",
     note: "! serena: the plugin's context file is missing, so your existing registration is left as it is"
   } : entry);
+  if (liveServers === null) {
+    report.notes.push(unreadableUserConfigNote(short(paths.userConfigFile), Object.keys(records).sort()));
+  }
   const claudeRun = (argv) => {
     const result = machine.run(argv);
     return { ok: result.exitCode === 0, out: result.output };
   };
   const planned = applySetup(paths, managed, true, serenaSource);
   if (options.dryRun) {
-    const wouldRegister = applyMcpServers(mcpPlan, claudeRun, machine.which, true);
+    const wouldRegister = applyMcpServers(mcpPlan, claudeRun, machine.which, true, () => {});
     const changes = [
       ...warp.commands.map((command) => `$ ${showCommand(command)}`),
       ...claudeSteps.map((step) => step.line),
@@ -20264,7 +20378,9 @@ async function runSetup2(paths, options) {
     (line.startsWith("!") ? report.notes : report.changes).push(line);
   if (!steps.ok)
     ok = false;
-  const applied = applyMcpServers(mcpPlan, claudeRun, machine.which, false);
+  const applied = applyMcpServers(mcpPlan, claudeRun, machine.which, false, (name) => {
+    markMcpServerPending(paths.stateDir, name);
+  });
   report.changes.push(...applied.changes);
   report.notes.push(...applied.notes);
   if (!applied.ok)
@@ -20566,7 +20682,7 @@ ${UPDATE_USAGE}`);
 }
 
 // src/cli/usage.ts
-import { existsSync as existsSync40, readdirSync as readdirSync9, readFileSync as readFileSync44, statSync as statSync12 } from "fs";
+import { existsSync as existsSync40, readdirSync as readdirSync9, readFileSync as readFileSync44, statSync as statSync13 } from "fs";
 import { basename as basename6, join as join39, resolve as resolve7 } from "path";
 function isJsonObject11(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -20584,7 +20700,7 @@ function entries(path) {
 }
 function changedAt(path) {
   try {
-    return statSync12(path).mtimeMs;
+    return statSync13(path).mtimeMs;
   } catch {
     return Number.NEGATIVE_INFINITY;
   }
@@ -20891,7 +21007,7 @@ function runAlert(alert, platform, launcher, run) {
 }
 
 // src/jobs/commands.ts
-import { mkdirSync as mkdirSync13, readdirSync as readdirSync11, statSync as statSync14 } from "fs";
+import { mkdirSync as mkdirSync13, readdirSync as readdirSync11, statSync as statSync15 } from "fs";
 import { availableParallelism, hostname as hostname3 } from "os";
 
 // src/jobs/ancestry.ts
@@ -21748,7 +21864,7 @@ async function runJob(request, deps) {
 
 // src/jobs/store.ts
 import {
-  chmodSync as chmodSync3,
+  chmodSync as chmodSync4,
   existsSync as existsSync43,
   mkdirSync as mkdirSync12,
   readdirSync as readdirSync10,
@@ -21756,7 +21872,7 @@ import {
   realpathSync as realpathSync5,
   renameSync as renameSync4,
   statfsSync,
-  statSync as statSync13,
+  statSync as statSync14,
   unlinkSync as unlinkSync5,
   utimesSync,
   writeFileSync as writeFileSync9
@@ -21803,7 +21919,7 @@ function writeWhole(file, text, token) {
   const temp = join41(dir, `.${token}.tmp`);
   writeFileSync9(temp, text, { mode: FILE_MODE });
   try {
-    chmodSync3(temp, FILE_MODE);
+    chmodSync4(temp, FILE_MODE);
     renameSync4(temp, file);
   } catch (error) {
     removeQuietly(temp);
@@ -21865,7 +21981,7 @@ function leaseStore(options) {
   };
   const removeLeftover = (path) => {
     try {
-      if (Date.now() - statSync13(path).mtimeMs > LEFTOVER_MS)
+      if (Date.now() - statSync14(path).mtimeMs > LEFTOVER_MS)
         removeQuietly(path);
     } catch {}
   };
@@ -21898,7 +22014,7 @@ function leaseStore(options) {
       let text;
       let mtimeMs;
       try {
-        mtimeMs = statSync13(path).mtimeMs;
+        mtimeMs = statSync14(path).mtimeMs;
       } catch (error) {
         if (errorCode2(error) === "ENOENT")
           continue;
@@ -22121,7 +22237,7 @@ function openSharedStore(dir, options = {}) {
     const path = join41(dir, folder);
     let isFolder = false;
     try {
-      isFolder = statSync13(path).isDirectory();
+      isFolder = statSync14(path).isDirectory();
     } catch {}
     if (!isFolder) {
       return { note: `The shared folder ${dir} is left out: ${path} is missing.` };
@@ -22224,7 +22340,7 @@ function envFilesIn(dir) {
 function isFileIn(cwd) {
   return (path) => {
     try {
-      return statSync14(path.startsWith("/") ? path : `${cwd}/${path}`).isFile();
+      return statSync15(path.startsWith("/") ? path : `${cwd}/${path}`).isFile();
     } catch {
       return false;
     }
@@ -22895,7 +23011,7 @@ import {
   readFileSync as readFileSync50,
   readSync as readSync2,
   rmSync as rmSync13,
-  statSync as statSync15,
+  statSync as statSync16,
   writeFileSync as writeFileSync10
 } from "fs";
 import { platform } from "os";
@@ -23098,14 +23214,14 @@ function savedSessions(projectsDir, mainCheckout, prefix, since) {
       if (!name.endsWith(".jsonl"))
         continue;
       const path = join42(projectsDir, folder, name);
-      const stat = statSync15(path);
+      const stat = statSync16(path);
       if (!stat.isFile() || stat.mtimeMs < since)
         continue;
       const session = describeSession(readTail(path, stat.size), {
         id: name.slice(0, -".jsonl".length),
         lastWrite: stat.mtimeMs
       });
-      if (session.name !== null)
+      if (session.name !== null && isSessionId2(session.id))
         sessions.push(session);
     }
   }
@@ -23141,6 +23257,33 @@ function saveWarpTabs(dir, sessions, mainCheckout, command) {
 `));
 }
 var HANDOVER_MS = 3000;
+var OPENED_AGAIN_MINUTES = 5;
+function openedMarkerFile(stateDir, id) {
+  return join42(stateDir, "sessions-opened", id);
+}
+function openedRecently(stateDir, id, now, minutes = OPENED_AGAIN_MINUTES) {
+  const file = openedMarkerFile(stateDir, id);
+  if (!existsSync46(file))
+    return false;
+  let text;
+  try {
+    text = readFileSync50(file, "utf8").trim();
+  } catch {
+    return false;
+  }
+  const at = Date.parse(text);
+  return !Number.isNaN(at) && now - at < minutes * 60000;
+}
+function markOpened(stateDir, id, now) {
+  atomicWrite(openedMarkerFile(stateDir, id), `${new Date(now).toISOString()}
+`, 384);
+  const dir = dirname11(openedMarkerFile(stateDir, id));
+  for (const name of readdirSync12(dir)) {
+    if (name === id || openedRecently(stateDir, name, now))
+      continue;
+    rmSync13(join42(dir, name), { force: true });
+  }
+}
 async function openOnDesktop(command, options, deps) {
   const launch = desktopLaunch(command, {
     outlivesCommand: options.outlivesCommand,
@@ -23180,7 +23323,7 @@ async function runSessions(paths, options, deps, cwd = process.cwd()) {
     }
   }
   const running = openNow();
-  const toOpen = running === null ? [] : sessionsToReopen(sessions, running, machineStartedAt, RESTORE_HOURS);
+  const toOpen = running === null ? [] : sessionsToReopen(sessions, running, machineStartedAt, RESTORE_HOURS).filter((session) => !openedRecently(paths.stateDir, session.id, deps.now));
   const withWindow = new Set(running === null ? [] : closedWithWindow(sessions.filter((session) => !running.has(session.id)), machineStartedAt));
   const stopped = new Set(running === null ? [] : stoppedByRestart(sessions.filter((session) => !running.has(session.id)), machineStartedAt, RESTORE_HOURS));
   if (sessions.length === 0) {
@@ -23263,6 +23406,8 @@ ${tabDir}
       opened = argv !== null && await openOnDesktop(argv, { outlivesCommand: false }, deps);
     }
     failed ||= !opened;
+    if (opened)
+      markOpened(paths.stateDir, session.id, deps.now);
     console.log(`${opened ? "Opened" : "Could NOT open"}: ${sessionLabel(session)}`);
   }
   if (failed) {
@@ -23275,7 +23420,7 @@ ${tabDir}
 import { basename as basename7, resolve as resolve9 } from "path";
 
 // src/worktrees/scan.ts
-import { existsSync as existsSync47, readdirSync as readdirSync14, statSync as statSync16 } from "fs";
+import { existsSync as existsSync47, readdirSync as readdirSync14, statSync as statSync17 } from "fs";
 import { join as join43 } from "path";
 
 // src/worktrees/machine-facts.ts
@@ -23324,7 +23469,8 @@ function hostPath(source, windows) {
   return `${drive[1].toUpperCase()}:${drive[2] ?? "/"}`;
 }
 function containersUsing(worktree, containers, ignoreCase = IGNORE_CASE) {
-  return containers.filter((container) => container.sources.some((source) => isInside(hostPath(source, ignoreCase), worktree, ignoreCase))).map((container) => container.name);
+  const real = realPath(worktree);
+  return containers.filter((container) => container.sources.some((source) => isInside(realPath(hostPath(source, ignoreCase)), real, ignoreCase))).map((container) => container.name);
 }
 function parsePrograms(lines) {
   const programs = [];
@@ -23370,10 +23516,12 @@ function mentions(line, folder) {
 }
 function programsInside(programs, worktree, ignoreCase = IGNORE_CASE) {
   const ours = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
+  const real = realPath(worktree);
+  const forms = real === worktree ? [worktree] : [worktree, real];
   const names = new Set;
   for (const program of programs) {
-    const named = program.path !== null && mentions(program.path, worktree);
-    const working = program.cwd !== undefined && isInside(program.cwd, worktree, ignoreCase);
+    const named = program.path !== null && forms.some((form) => mentions(program.path ?? "", form));
+    const working = program.cwd !== undefined && isInside(realPath(program.cwd), real, ignoreCase);
     if (!named && !working)
       continue;
     const file = (program.path ?? "").split(/[\s"'`]/)[0] ?? "";
@@ -23546,7 +23694,7 @@ function innerWorktreeOf(worktree, all) {
   for (const entry of entries) {
     const folder = join43(claudeOwn, entry);
     try {
-      if (statSync16(folder).isDirectory() && readdirSync14(folder).length > 0)
+      if (statSync17(folder).isDirectory() && readdirSync14(folder).length > 0)
         return folder;
     } catch {}
   }
@@ -23590,7 +23738,7 @@ function scanWorktrees(repo, options) {
       });
       continue;
     }
-    const session = sessions.find((one) => isInside(one.cwd, listed.path));
+    const session = sessions.find((one) => isInside(realPath(one.cwd), realPath(listed.path)));
     const facts = {
       aheadOfBase: Number(ahead.out),
       base,
@@ -23690,6 +23838,9 @@ function show3(scanned) {
 function canGo(worktree) {
   return worktree.state === "gone" || typeof worktree.state === "object" && worktree.state.finished;
 }
+function forgottenLine(path) {
+  return `forgot ${path} (its folder was already gone). A worktree on a disk that is not connected reads ` + `the same way: lock one there (\`git worktree lock "${path}"\`) and prune leaves it alone.`;
+}
 async function holdCleanLock() {
   const hold = await holdPort(LOCK_PORTS.worktreesClean);
   return "held" in hold ? hold.held : null;
@@ -23738,7 +23889,7 @@ async function runWorktrees(paths, options, env, cwd = process.cwd()) {
       }
       if (found.state === "gone") {
         pruneWorktrees(repo, env);
-        console.log(`forgot ${found.listed.path} (its folder was already gone)`);
+        console.log(forgottenLine(found.listed.path));
         if (found.listed.branch !== null) {
           console.log(deleteMergedBranch(repo, base, found.listed.branch, env));
         }
@@ -23746,9 +23897,10 @@ async function runWorktrees(paths, options, env, cwd = process.cwd()) {
       }
       if (typeof found.state === "object" && found.state.finished) {
         console.log(`removing ${found.listed.path} \u2026`);
-        for (const said of removeWorktree2(repo, found.listed, env, base).said)
+        const removal = removeWorktree2(repo, found.listed, env, base);
+        for (const said of removal.said)
           console.log(said);
-        return 0;
+        return removal.status === "removed" ? 0 : 1;
       }
       console.log(`Kept ${found.listed.path}: ${describe4(found).replace(/^kept: /, "")}.`);
       return 1;
@@ -23774,7 +23926,7 @@ async function runWorktrees(paths, options, env, cwd = process.cwd()) {
     for (const worktree of going) {
       if (worktree.state !== "gone")
         continue;
-      console.log(`forgot ${worktree.listed.path} (its folder was already gone)`);
+      console.log(forgottenLine(worktree.listed.path));
       if (worktree.listed.branch !== null) {
         console.log(`  ${deleteMergedBranch(repo, base, worktree.listed.branch, env)}`);
       }
@@ -24014,7 +24166,7 @@ ${HELP}`);
 ${HELP}`);
         return 2;
       }
-      if (!existsSync48(project) || !statSync17(project).isDirectory()) {
+      if (!existsSync48(project) || !statSync18(project).isDirectory()) {
         console.error(`--project: ${project} is not a folder`);
         return 2;
       }
@@ -24181,7 +24333,10 @@ ${HELP}`);
           package: `@playwright/mcp@${MCP_VERSIONS.playwright}`,
           pickerBundle: distBundle("browser-picker.js"),
           spawn: (argv, options) => {
-            const child = Bun.spawn(argv, { stdio: [options.stdio, options.stdio, options.stdio] });
+            const child = Bun.spawn(argv, {
+              env: { ...process.env, ...options.env },
+              stdio: [options.stdio, options.stdio, options.stdio]
+            });
             return { exited: child.exited, kill: (signal) => child.kill(signal) };
           },
           which: (command) => Bun.which(command)

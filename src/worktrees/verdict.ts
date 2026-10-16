@@ -20,6 +20,13 @@
  *
  * The functions here take plain values and touch no disk, so they can be tested.
  * `scan.ts` gathers the facts and removes; `command.ts` is the command.
+ *
+ * ONE OTHER JUDGMENT NAMES THE SAME QUESTIONS: `judgeWorktree`
+ * (`src/hooks/worktree-leftovers.ts`), for the SessionStart note. It checks the same things
+ * EXCEPT the machine's facts (Docker containers, running programs) — a session start must
+ * stay quick, and listing those can wait seconds. The two agree on everything else, and the
+ * difference is safe because the note removes nothing: it sends the person to
+ * `cc-smart-dev-kit worktrees --clean`, which judges every worktree again, here.
  */
 
 /** What is known about one worktree before anyone asks git what is in it. */

@@ -452,7 +452,12 @@ async function main(argv: string[]): Promise<number> {
           package: `@playwright/mcp@${MCP_VERSIONS.playwright}`,
           pickerBundle: distBundle("browser-picker.js"),
           spawn: (argv, options) => {
-            const child = Bun.spawn(argv, { stdio: [options.stdio, options.stdio, options.stdio] });
+            // The launcher's own variables (the tab filter's endpoint) go on top of this
+            // process's environment: the MCP must find bun and everything else as usual.
+            const child = Bun.spawn(argv, {
+              env: { ...process.env, ...options.env },
+              stdio: [options.stdio, options.stdio, options.stdio],
+            });
             return { exited: child.exited, kill: (signal) => child.kill(signal) };
           },
           which: (command) => Bun.which(command),

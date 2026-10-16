@@ -772,18 +772,33 @@ folder, and a login copied into a second browser does not survive (a site that r
 token logs an old copy out everywhere). One browser has one cookie jar, so the token is
 refreshed once, for everyone.
 
+**One OS user per machine.** The profile and the output folder are made readable by their
+owner only (0700), and an older folder others could read is tightened the next time the
+browser starts. That keeps other OS users out of the signed-in cookies — but two doors
+stay open, because the shared browser is machine-wide by design: Chrome's own debug port
+speaks over 127.0.0.1 with no authentication and hands its WebSocket URL to any local
+process of any user (`/json/version`), so anyone who can run a program on this machine can
+drive the shared browser; and the start-lock port is shared the same way, so another user's
+program holding it stops the launcher with a clear message. A second person needs their own
+account on their own machine.
+
 - The first session that needs the browser starts it, detached, so it outlives that session;
   every later session finds it. Two sessions starting at the same moment cannot start two
   Chromes: the starter holds a port as a lock, and the other waits for the browser it brings
   up. The system frees that port however the starter ends, so the lock can never go stale.
 - The launcher (`cc-smart-dev-kit browser mcp`, registered as the `playwright` MCP server)
   opens a **tab filter** on a free local port and points the Playwright MCP at it
-  (`--cdp-endpoint`). Stock Playwright, attached to a running Chrome, adopts EVERY tab in it
-  (microsoft/playwright#42961, no fix upstream) — the filter is what makes a session see only
-  the pages it opened and the popups those opened. It also turns downloads on in the shared
-  browser, which Playwright does not do over CDP, and refuses the browser-wide commands that
-  would reach every session (`Browser.crash`, `Network.clearBrowserCookies`, a cookie clear,
-  `Fetch.enable` on the browser's own session). It never raises a window on your desktop.
+  (`PLAYWRIGHT_MCP_CDP_ENDPOINT`, in the MCP's environment). Stock Playwright, attached to a
+  running Chrome, adopts EVERY tab in it (microsoft/playwright#42961, no fix upstream) — the
+  filter is what makes a session see only the pages it opened and the popups those opened. It
+  also turns downloads on in the shared browser, which Playwright does not do over CDP, and
+  refuses the browser-wide commands that would reach every session (`Browser.crash`,
+  `Network.clearBrowserCookies`, a cookie clear, `Fetch.enable` on the browser's own session).
+  It never raises a window on your desktop. The filter's endpoint carries a **random token**,
+  and any connection to another path — a web page's, a port scan's — is refused; the token
+  travels in an environment variable, never in a command line, which every user on the machine
+  can read (`/proc`). It stops anything that does not know the token; it does not stop a
+  process of your own user, which can read that environment.
 - When the MCP lets go — `browser_close`, ten idle minutes with no browser call, or the
   session ending — the filter closes **this session's** windows. The shared Chrome and its
   logins stay.
@@ -793,7 +808,11 @@ refreshed once, for everyone.
   the MCP would put that one beside the project's files — it resolves a caller-named path
   against the folder it runs in — so the `playwright-output` hook rewrites it into that
   folder first. A path a session gives in full is left as it is: a caller who named a place
-  meant it.
+  meant it. A relative name with `..` in it is refused: the launcher passes
+  `--allow-unrestricted-file-access` (a session's files live in its worktree, outside the
+  folder the server was started in), so nothing else would stop it. The hook acts only while
+  the live `playwright` server is the one setup registered — a `playwright` of your own keeps
+  its own output folder and this hook keeps out of it.
 - **A person's click opens the file picker.** While Claude is acting, the MCP holds the
   picker and waits for `browser_file_upload`; the rest of the time (and two seconds after a
   call) the interception is off, so a click in that window opens the normal picker. The file
@@ -828,7 +847,9 @@ folders. Registered for the user, the names stay and the servers stay.
   copies into the `env` of your `settings.json` as a secret key cc-smart-dev-kit owns (masked in
   output, kept as a hash in `owned.json`, and the settings file left at mode 600). Without a
   key the server is skipped, and setup says so. A key file others can read, or an empty one,
-  is refused with the command that fixes it — never with the key in it.
+  is refused with the command that fixes it — never with the key in it. When the key moves to
+  your environment (or goes away), the copy setup wrote is removed with it, and a Tavily server
+  setup had registered is taken back — never a stale registration left behind.
 - Versions are **pinned** (`src/mcp/versions.ts`): a server started as `@latest` asks the
   registry on every session start and installs whatever was published a minute ago, and
   re-resolving a dependency tree makes the start slow enough to fail inside Claude Code's
@@ -841,7 +862,8 @@ folders. Registered for the user, the names stay and the servers stay.
 - **`restore` takes exactly those back**: each server that still holds what setup registered
   is removed (`claude mcp remove <name> --scope user`), the record goes
   (`~/.claude/cc-smart-dev-kit/mcp-servers.json`), and so do Serena's context file and the
-  Tavily `env` key. A server you re-pointed stays.
+  Tavily `env` key. A server you re-pointed — or removed yourself — stays, and setup says so
+  with the exact command that adds it back (a server you removed is never registered again).
 - `doctor` checks each one: registered at user scope, and it starts (`claude mcp get`, which
   starts it once). A server registered somewhere else — a project's `.mcp.json`, or the local
   scope — is a ✗ naming what wins over yours. No Tavily key is a `·` line, never a failure.
@@ -873,8 +895,11 @@ last went down, or when their window closed**, and that nobody has resumed since
 On Linux without Warp, `--open` opens each session in an XFCE Terminal window of its own
 (through `systemd-run --user` where there is one, so the window takes the desktop session's
 environment and opens over SSH too). A session already running is never opened again
-(`~/.claude/sessions/<pid>.json` is how that is known), and with neither terminal it prints
-the resume command for each. `--dry-run` says what it would open and opens nothing.
+(`~/.claude/sessions/<pid>.json` is how that is known), and one `--open` has just opened is
+left alone for the next few minutes too (a marker in `~/.claude/cc-smart-dev-kit/` — a resumed
+session takes a moment to write to its file, and a quick second run must not open a second
+copy of it). With neither terminal it prints the resume command for each. `--dry-run` says
+what it would open and opens nothing.
 
 ## Worktrees
 
@@ -978,6 +1003,13 @@ of its commits is on the base). `--remove <path>` removes one now — for a sess
 just finished in it, so without the one-hour wait. Both run in the main checkout only (a
 session working in a worktree leaves it first) and one at a time; a second run says so and
 does nothing. A worktree whose folder is gone is named, and `git worktree prune` forgets it.
+
+**A worktree on a removable disk (a USB drive, a network share): lock it** —
+`git worktree lock <folder>`. A LOCKED worktree is never taken, so a folder that is simply
+not connected costs nothing. An UNLOCKED one whose folder is missing reads as gone, and
+`--clean` prunes it (`git worktree prune` forgets it for good: when the disk comes back, git
+sees an ordinary folder) and deletes its branch when the base holds every commit on it. Its
+`forgot …` line says to lock it next time.
 
 The base branch comes from the project's `cc-smart-dev-kit.json` `worktrees.base`; without that
 file (or without the field) the remote's default branch (`origin/HEAD`), else `main`, with

@@ -259,4 +259,41 @@ describe("the tab filter's socket", () => {
       await filter.close();
     }
   });
+
+  test("the endpoint carries a random token; every other path is refused, and the token stays out of the log", async () => {
+    const chrome = fakeChrome();
+    const log: string[] = [];
+    const filter = filterOn(chrome, log);
+    const endpoint = new URL(filter.endpoint);
+    const token = endpoint.pathname;
+    // 128 random bits: a scan cannot find the endpoint, and a web page cannot read it.
+    expect(token).toMatch(/^\/[0-9a-f]{32}$/);
+    try {
+      // Every filter mints its own token: nothing can be guessed or reused.
+      const other = filterOn(chrome);
+      expect(new URL(other.endpoint).pathname).not.toBe(token);
+      await other.close();
+
+      for (const path of ["/", "/abc", `${token}x`]) {
+        const refused = new WebSocket(`ws://127.0.0.1:${endpoint.port}${path}`);
+        const outcome = await new Promise<string>((done) => {
+          refused.onopen = () => done("opened");
+          refused.onclose = () => done("refused");
+          refused.onerror = () => done("refused");
+          setTimeout(() => done("timeout"), 3000);
+        });
+        expect(outcome).toBe("refused");
+      }
+      expect(log.join("\n")).toContain("this port serves one session's own endpoint");
+      // The refused path is named; the token — the secret — never is.
+      expect(log.join("\n")).not.toContain(token.slice(1));
+
+      // The session's own endpoint still works.
+      const a = await client(filter.endpoint);
+      expect((await a.call("Target.getTargets")).result).toEqual({ targetInfos: [] });
+    } finally {
+      await filter.close();
+      chrome.stop();
+    }
+  });
 });

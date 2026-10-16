@@ -241,7 +241,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["main-folder-guard"] });
     expect(check(repo)).toEqual([
-      "! project: .claude/cc-smart-dev-kit.json lists main-folder-guard in ownHooks, so the plugin's main-folder-guard is off here, but the project's settings wire no hook on PreToolUse (Edit, Write, NotebookEdit, mcp__serena__(replace_symbol_body, insert_after_symbol, insert_before_symbol, replace_content, rename_symbol, safe_delete_symbol, replace_in_files)): nothing answers in its place. Take \"main-folder-guard\" out of ownHooks once the project's copy is gone",
+      "! project: .claude/cc-smart-dev-kit.json lists main-folder-guard in ownHooks, so the plugin's main-folder-guard is off here, but the project's settings wire no hook on PreToolUse (Edit, Write, NotebookEdit, mcp__serena__(replace_symbol_body, insert_after_symbol, insert_before_symbol, replace_content, rename_symbol, safe_delete_symbol, replace_in_files, write_memory, rename_memory, edit_memory, delete_memory)): nothing answers in its place. Take \"main-folder-guard\" out of ownHooks once the project's copy is gone",
     ]);
   });
 

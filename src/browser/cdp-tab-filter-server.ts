@@ -1,10 +1,21 @@
 /**
  * The tab filter's socket. One session's launcher listens on a free local port; its
- * Playwright MCP connects there (`--cdp-endpoint=ws://127.0.0.1:<port>/`). For each
- * connection it opens one connection to the shared Chrome and passes every message both
- * ways through a `CdpTabFilter` of its own (`cdp-tab-filter.ts`). When the connection
+ * Playwright MCP connects there (`PLAYWRIGHT_MCP_CDP_ENDPOINT=ws://127.0.0.1:<port>/<token>`).
+ * For each connection it opens one connection to the shared Chrome and passes every message
+ * both ways through a `CdpTabFilter` of its own (`cdp-tab-filter.ts`). When the connection
  * ends — `browser_close`, the MCP's idle timeout, the session's exit — the session's pages
  * close; the shared Chrome and its logins stay.
+ *
+ * WHY THE TOKEN, AND WHAT IT DOES NOT STOP
+ *   The URL carries a random token, and every request to any other path is refused. That
+ *   stops a web page (any page the shared browser — or any browser — has open, for any user)
+ *   and a blind port scan from driving the shared browser through this port: without the
+ *   token, `ws://127.0.0.1:<port>/` was a session-less way in, and the Origin check alone
+ *   did not cover a non-browser client. It does NOT stop a local process that can read the
+ *   session's environment (the same user's processes), and it cannot: the MCP has to learn
+ *   the URL somehow. What it does stop is everything that does not know the token — so the
+ *   token never reaches argv (the launcher passes it as an environment variable), where every
+ *   user on the machine could read it from `/proc`.
  *
  * Bun's own WebSocket serves both ends: `Bun.serve` for Playwright, `new WebSocket` for
  * Chrome. A message limit can be set only on the server side, which is the side Playwright
@@ -12,8 +23,10 @@
  * measurement (`docs/claude-code-contract.md` § Bun). So no WebSocket package is needed,
  * and the plugin keeps its one runtime dependency.
  *
- * 🔴 Never write to stdout here: the launcher's stdout IS the MCP protocol stream.
+ * 🔴 Never write to stdout here: the launcher's stdout IS the MCP protocol stream. The token
+ * is part of the endpoint URL: never log it.
  */
+import { randomBytes } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 
 import { CdpTabFilter, type FilterOutput } from "./cdp-tab-filter";
@@ -64,7 +77,11 @@ export interface TabFilterServerOptions {
 export interface TabFilterServer {
   /** Stops listening, closes every connection's own pages (waiting up to 3 s for Chrome) and the connections. */
   close: () => Promise<void>;
-  /** `ws://127.0.0.1:<port>/` — what `--cdp-endpoint` takes. */
+  /**
+   * `ws://127.0.0.1:<port>/<token>` — what the MCP's `PLAYWRIGHT_MCP_CDP_ENDPOINT` takes. The
+   * token is a secret: whoever knows it can drive this session's browser connection while the
+   * session runs. Never log it, and never put it on a command line (`/proc`).
+   */
   endpoint: string;
 }
 
@@ -72,6 +89,10 @@ export interface TabFilterServer {
 export function serveTabFilter(options: TabFilterServerOptions): TabFilterServer {
   const connections = new Set<FilteredConnection>();
   const bySocket = new Map<ServerWebSocket<undefined>, FilteredConnection>();
+  // The path every connection must carry. 128 random bits: nothing can guess it, and no
+  // web page can read it (it is not in any page, cookie or file a browser can reach).
+  const token = randomBytes(16).toString("hex");
+  const path = `/${token}`;
 
   const server = Bun.serve({
     fetch(request, self) {
@@ -82,6 +103,16 @@ export function serveTabFilter(options: TabFilterServerOptions): TabFilterServer
       if (origin !== null) {
         options.log(`tab filter: refused a connection from a web page (${origin})`);
         return new Response("connections from web pages are refused", { status: 403 });
+      }
+      // Anything without this session's token is not its MCP: a scan, another local
+      // program, or a page that got past the Origin check. The refused path is logged; the
+      // token itself never is.
+      const asked = new URL(request.url).pathname;
+      if (asked !== path) {
+        options.log(
+          `tab filter: refused a connection to ${asked === "/" ? "the root path" : "another path"} (this port serves one session's own endpoint)`,
+        );
+        return new Response("this port serves one session's endpoint only", { status: 403 });
       }
       if (self.upgrade(request, { data: undefined })) return undefined;
       return new Response("this port speaks WebSocket only", { status: 426 });
@@ -130,7 +161,7 @@ export function serveTabFilter(options: TabFilterServerOptions): TabFilterServer
       for (const connection of connections) connection.terminate();
       await stopped;
     },
-    endpoint: `ws://127.0.0.1:${String(server.port)}/`,
+    endpoint: `ws://127.0.0.1:${String(server.port)}${path}`,
   };
 }
 
@@ -233,7 +264,6 @@ class FilteredConnection {
 
     const upstream = new WebSocket(url, { perMessageDeflate: false });
     this.upstream = upstream;
-    const failure = "the shared Chrome closed the connection";
     upstream.onopen = () => {
       for (const message of this.waitingForBrowser.splice(0)) upstream.send(message);
     };
@@ -243,11 +273,8 @@ class FilteredConnection {
     upstream.onclose = (event) => {
       this.waitingForCloses?.done(); // no more answers can come
       if (this.closing) return;
-      this.refuse(
-        failure === "the shared Chrome closed the connection"
-          ? `${failure} (code ${String(event.code)}${event.reason === "" ? "" : `: ${event.reason}`})`
-          : failure,
-      );
+      const details = `code ${String(event.code)}${event.reason === "" ? "" : `: ${event.reason}`}`;
+      this.refuse(`the shared Chrome closed the connection (${details})`);
     };
   }
 

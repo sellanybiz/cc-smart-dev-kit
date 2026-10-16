@@ -365,4 +365,83 @@ describe("the main-folder guard on a Serena edit", () => {
     ).toEqual({});
     expect(existsSync(outside)).toBe(false);
   });
+
+  test("a memory write lands in the active project: refused at the main checkout, and it passes in the worktree", async () => {
+    const { env, repo, worktree } = guarded(null, undefined);
+    writeSerenaRoot(cliPaths(env), SESSION, { kind: "path", path: repo });
+    const write = serenaEditInput(repo, "write_memory", {
+      content: "how this repo works",
+      memory_name: "style/promises",
+    });
+    const refused = await runHook(mainFolderGuardHook, write, env);
+    expect(outputOf(refused).permissionDecision).toBe("deny");
+    expect(outputOf(refused).permissionDecisionReason).toContain(
+      "A Serena edit lands in the project Serena has active, and that is the main checkout",
+    );
+
+    // Serena pointed at the worktree: the memory file lands there, and passes.
+    writeSerenaRoot(cliPaths(env), SESSION, { kind: "path", path: worktree });
+    expect(await runHook(mainFolderGuardHook, write, env)).toEqual({});
+  });
+
+  test("the other memory tools too: edit, rename and delete are judged by the active project", async () => {
+    const { env, repo } = guarded(null, undefined);
+    writeSerenaRoot(cliPaths(env), SESSION, { kind: "path", path: repo });
+    for (const [tool, toolInput] of [
+      ["edit_memory", { memory_name: "style", needle: "a", repl: "b", mode: "literal" }],
+      ["rename_memory", { old_name: "style", new_name: "style/promises" }],
+      ["delete_memory", { memory_name: "style" }],
+    ] as const) {
+      const result = await runHook(
+        mainFolderGuardHook,
+        serenaEditInput(repo, tool, toolInput),
+        env,
+      );
+      expect(outputOf(result).permissionDecision).toBe("deny");
+    }
+  });
+
+  test("a memory whose every name is under global/ writes elsewhere: left alone", async () => {
+    const { env, repo } = guarded(null, undefined);
+    writeSerenaRoot(cliPaths(env), SESSION, { kind: "path", path: repo });
+    // `global/` memories live in a machine-wide folder, not in the project.
+    expect(
+      await runHook(
+        mainFolderGuardHook,
+        serenaEditInput(repo, "write_memory", { content: "x", memory_name: "global/style" }),
+        env,
+      ),
+    ).toEqual({});
+    // A rename out of global/ INTO the project writes a project file: judged.
+    expect(
+      outputOf(
+        await runHook(
+          mainFolderGuardHook,
+          serenaEditInput(repo, "rename_memory", {
+            new_name: "style",
+            old_name: "global/style",
+          }),
+          env,
+        ),
+      ).permissionDecision,
+    ).toBe("deny");
+    // A call with no memory name at all has no file to place: left alone (Serena fails it).
+    expect(
+      await runHook(
+        mainFolderGuardHook,
+        serenaEditInput(repo, "write_memory", { content: "x" }),
+        env,
+      ),
+    ).toEqual({});
+  });
+
+  test("with no record, a memory write cannot be placed: the guard asks, never passes", async () => {
+    const { env, repo } = guarded(null, undefined);
+    const asked = await runHook(
+      mainFolderGuardHook,
+      serenaEditInput(repo, "write_memory", { content: "x", memory_name: "style" }),
+      env,
+    );
+    expect(outputOf(asked).permissionDecision).toBe("ask");
+  });
 });

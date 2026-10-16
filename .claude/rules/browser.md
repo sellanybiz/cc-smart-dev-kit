@@ -34,10 +34,22 @@ on, each proved: `docs/claude-code-contract.md` § The shared browser.
   throw into the MCP — anything that fails goes to its one warning line. It is copied beside
   the profile, never run from the plugin's version folder (an update deletes that folder while
   a session's MCP runs).
+- **The profile and the output folder are the person's alone** (`ensurePrivateDir`): made 0700,
+  and an existing looser one is tightened with a line saying so. They hold signed-in cookies
+  and pages of signed-in sessions. This keeps OTHER OS USERS out; it does not make the browser
+  a per-user thing — Chrome's own debug port and the start-lock port stay reachable by any
+  local process (design.md § The shared browser carries the full statement).
+- **The tab filter's endpoint carries a token, and the token never goes on a command line.**
+  Everything but the session's own path is refused. The MCP reads
+  `PLAYWRIGHT_MCP_CDP_ENDPOINT` from its environment: `--cdp-endpoint` in `argv` would show
+  the token to every user on the machine through `/proc`. Never log the endpoint.
 - **Where a browser file lands is one question with one home**: the launcher's
   `--output-dir` for what the MCP names itself, and the `playwright-output` hook for what a
   CALLER names (the MCP resolves that against its own working folder — proved live on 0.0.83).
   A second rewrite, or a `.gitignore` guess at screenshot names, is the bug the hook exists for.
+  The hook acts only while the live `playwright` registration is the plugin's own and refuses
+  a relative `filename` with a `..` segment (`--allow-unrestricted-file-access` means nothing
+  else does), and answers nothing on any other server of that name.
 - **A lock is a port** (`src/ports.ts`, `hold-port.ts`): the system frees it however the holder
   ends, so it can never go stale, and a new port goes into that table with its reason.
 
@@ -46,9 +58,11 @@ on, each proved: `docs/claude-code-contract.md` § The shared browser.
 - `cdp-tab-filter.test.ts` — the filter's rules, message by message.
 - `cdp-tab-filter-server.test.ts` — two sessions on one fake Chrome, over real WebSockets:
   each sees only its own page, a session that lets go closes only its own, a web page's
-  connection is refused.
+  connection is refused, a connection to any other path is refused (the token), and the
+  token stays out of the launcher's log.
 - `browser check` — the same against the real Playwright and the real Chrome, on a throwaway
   profile.
 - `src/hooks/playwright-output.test.ts` — a caller-named file goes into the output folder, an
-  absolute path stays as it was. Run it after moving the `@playwright/mcp` pin, and before a release that touches
+  absolute path stays as it was, a `..` name is refused, and a server that is not the plugin's
+  own is left alone. Run it after moving the `@playwright/mcp` pin, and before a release that touches
   `src/browser/`.

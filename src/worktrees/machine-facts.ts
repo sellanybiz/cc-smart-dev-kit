@@ -26,7 +26,7 @@
  */
 import { readdirSync, readlinkSync } from "node:fs";
 import { platform } from "node:os";
-import { IGNORE_CASE, isInside } from "../hooks/git";
+import { IGNORE_CASE, isInside, realPath } from "../hooks/git";
 
 /** How long one docker command may take. Docker Desktop that is still starting can hang. */
 const DOCKER_TIMEOUT_MS = 5000;
@@ -107,16 +107,21 @@ export function hostPath(source: string, windows: boolean): string {
  * takes their files away, and Docker cannot start them again. A container that mounts a
  * folder ABOVE the worktree does not count: its mount survives, and counting it would keep
  * every worktree under that folder for good.
+ *
+ * Both sides are compared as REAL paths: a worktree may be reached through a symlink — `git
+ * worktree list` prints the path it was made with — while Docker reports the physical one,
+ * and the comparison must see them as one place.
  */
 export function containersUsing(
   worktree: string,
   containers: ContainerMounts[],
   ignoreCase = IGNORE_CASE,
 ): string[] {
+  const real = realPath(worktree);
   return containers
     .filter((container) =>
       container.sources.some((source) =>
-        isInside(hostPath(source, ignoreCase), worktree, ignoreCase),
+        isInside(realPath(hostPath(source, ignoreCase)), real, ignoreCase),
       ),
     )
     .map((container) => container.name);
@@ -174,6 +179,11 @@ export function mentions(line: string, folder: string): boolean {
  * The programs that use `worktree`: one started from a file inside it (its command line names
  * it), or one whose working folder is inside it (Linux), each once, sorted by name. The tools
  * this scan runs itself are left out.
+ *
+ * A worktree can be reached through a symlink: `git worktree list` prints the path it was made
+ * with, while `/proc/<pid>/cwd` — and a command line written from it — holds the physical one.
+ * So the working folder is compared as a real path on both sides, and a command line is
+ * matched against BOTH forms of the worktree.
  */
 export function programsInside(
   programs: RunningProgram[],
@@ -181,10 +191,12 @@ export function programsInside(
   ignoreCase = IGNORE_CASE,
 ): string[] {
   const ours = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
+  const real = realPath(worktree);
+  const forms = real === worktree ? [worktree] : [worktree, real];
   const names = new Set<string>();
   for (const program of programs) {
-    const named = program.path !== null && mentions(program.path, worktree);
-    const working = program.cwd !== undefined && isInside(program.cwd, worktree, ignoreCase);
+    const named = program.path !== null && forms.some((form) => mentions(program.path ?? "", form));
+    const working = program.cwd !== undefined && isInside(realPath(program.cwd), real, ignoreCase);
     if (!named && !working) continue;
     const file = (program.path ?? "").split(/[\s"'`]/)[0] ?? "";
     const base = file.replace(/^.*[\\/]/, "");

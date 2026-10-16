@@ -4,8 +4,9 @@
  * The registrations themselves live in Claude Code's own user config, and only `claude mcp
  * add-json` / `remove` may change them. This record is cc-smart-dev-kit's own state
  * (`<stateDir>/mcp-servers.json`, like `owned.json` and `changed.json`): the name, the exact
- * JSON it was registered with, and when. `restore` removes a server only while it still
- * holds what setup registered — one the person re-pointed is theirs, and stays.
+ * JSON it was registered with, when, and whether an update is in flight (`pending`).
+ * `restore` removes a server only while it still holds what setup registered — one the
+ * person re-pointed is theirs, and stays.
  *
  * No key or token ever reaches this file: the registrations carry `${TAVILY_API_KEY}` as
  * text, and the key itself lives in the settings or the environment (`tavily.ts`).
@@ -20,6 +21,13 @@ export interface McpRecord {
   json: string;
   /** When it was registered (ISO time), for a person reading the file. */
   at: string;
+  /**
+   * An update (`claude mcp remove`, then `add-json`) is in flight. The mark is written
+   * BEFORE the remove runs and cleared only after the add succeeds, so an interrupted update
+   * is told from a server the person took away: a server that is registered no more WHILE
+   * this is set is the plugin's own half-finished work, and setup registers it again.
+   */
+  pending?: boolean;
 }
 
 const RECORD_FILE = "mcp-servers.json";
@@ -30,8 +38,12 @@ export function mcpRecordsFile(stateDir: string): string {
 
 function isRecord(value: unknown): value is McpRecord {
   if (typeof value !== "object" || value === null) return false;
-  const { at, json } = value as Partial<McpRecord>;
-  return typeof json === "string" && typeof at === "string";
+  const { at, json, pending } = value as Partial<McpRecord>;
+  return (
+    typeof json === "string" &&
+    typeof at === "string" &&
+    (pending === undefined || typeof pending === "boolean")
+  );
 }
 
 /** The servers setup registered. Throws on a file that does not read. */
@@ -79,5 +91,23 @@ export function forgetMcpServer(
   const servers = readMcpRecords(stateDir, file);
   if (!(name in servers)) return;
   delete servers[name];
+  writeRecords(stateDir, servers, file);
+}
+
+/**
+ * Mark `name`'s record pending: an update is about to run `claude mcp remove` for it. Called
+ * before that command runs, so a crash between the remove and the add is known the next time
+ * (`register.ts` registers the server again). The record's json and at stay as they were: the
+ * json is what is registered until the add succeeds.
+ */
+export function markMcpServerPending(
+  stateDir: string,
+  name: string,
+  file = mcpRecordsFile(stateDir),
+): void {
+  const servers = readMcpRecords(stateDir, file);
+  const record = servers[name];
+  if (record === undefined || record.pending === true) return;
+  servers[name] = { ...record, pending: true };
   writeRecords(stateDir, servers, file);
 }

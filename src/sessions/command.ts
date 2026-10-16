@@ -48,11 +48,13 @@ import { dirname, join, resolve } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { liveSessions } from "../hooks/sessions";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
+import { atomicWrite } from "../setup/write";
 import {
   belongsToRepo,
   closedWithWindow,
   describeSession,
   desktopLaunch,
+  isSessionId,
   pickReopenTerminal,
   type SavedSession,
   sessionLabel,
@@ -114,7 +116,10 @@ export function savedSessions(
         lastWrite: stat.mtimeMs,
       });
       // A session Claude never titled is a one-shot run (`claude -p`), not one to come back to.
-      if (session.name !== null) sessions.push(session);
+      // The id must be a session id (letters, digits and dashes): it goes into a shell command
+      // (`warpTabConfig`, xfceTerminalCommand) and names `--open`'s marker file, and a file
+      // name on disk is not a promise about its content.
+      if (session.name !== null && isSessionId(session.id)) sessions.push(session);
     }
   }
   return sessions.sort((a, b) => b.lastWrite - a.lastWrite);
@@ -160,6 +165,54 @@ export function saveWarpTabs(
 
 /** Up to this long a Warp link waits for the Warp the first one started to come up. */
 const HANDOVER_MS = 3000;
+
+/**
+ * How long after `--open` opened a session another run leaves it alone. A resumed session
+ * takes a moment to write to its own file — and to appear in Claude Code's running-session
+ * records — so a second `--open` right after the first would open a second copy of it.
+ */
+export const OPENED_AGAIN_MINUTES = 5;
+
+/** Where `--open` records what it opened: `<stateDir>/sessions-opened/<session id>`. */
+export function openedMarkerFile(stateDir: string, id: string): string {
+  return join(stateDir, "sessions-opened", id);
+}
+
+/**
+ * Did `--open` open this session in the last `minutes`? The marker holds the time it was
+ * opened; one that does not read, or is older than the window, does not count.
+ */
+export function openedRecently(
+  stateDir: string,
+  id: string,
+  now: number,
+  minutes = OPENED_AGAIN_MINUTES,
+): boolean {
+  const file = openedMarkerFile(stateDir, id);
+  if (!existsSync(file)) return false;
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8").trim();
+  } catch {
+    // A marker that cannot be read is no proof of anything: open the session.
+    return false;
+  }
+  const at = Date.parse(text);
+  return !Number.isNaN(at) && now - at < minutes * 60_000;
+}
+
+/** Record that `--open` opened this session, so a quick second run skips it. */
+export function markOpened(stateDir: string, id: string, now: number): void {
+  atomicWrite(openedMarkerFile(stateDir, id), `${new Date(now).toISOString()}\n`, 0o600);
+  // The markers are short-lived: this session's old one was just replaced, and another
+  // session's is past its window by now. Removing them keeps one small file per session
+  // opened in the last few minutes, and nothing for good.
+  const dir = dirname(openedMarkerFile(stateDir, id));
+  for (const name of readdirSync(dir)) {
+    if (name === id || openedRecently(stateDir, name, now)) continue;
+    rmSync(join(dir, name), { force: true });
+  }
+}
 
 export interface SessionsDeps {
   /** Runs a command and says whether it worked; the opener never reads a terminal. */
@@ -263,8 +316,14 @@ export async function runSessions(
     }
   }
   const running = openNow();
+  // A session this command opened a moment ago is left out: it is running now, or starting,
+  // and opening it again starts a second copy of it.
   const toOpen =
-    running === null ? [] : sessionsToReopen(sessions, running, machineStartedAt, RESTORE_HOURS);
+    running === null
+      ? []
+      : sessionsToReopen(sessions, running, machineStartedAt, RESTORE_HOURS).filter(
+          (session) => !openedRecently(paths.stateDir, session.id, deps.now),
+        );
   const withWindow = new Set(
     running === null
       ? []
@@ -380,6 +439,8 @@ export async function runSessions(
       opened = argv !== null && (await openOnDesktop(argv, { outlivesCommand: false }, deps));
     }
     failed ||= !opened;
+    // Only what really opened is marked: a failed window has to be openable again right away.
+    if (opened) markOpened(paths.stateDir, session.id, deps.now);
     console.log(`${opened ? "Opened" : "Could NOT open"}: ${sessionLabel(session)}`);
   }
   if (failed) {

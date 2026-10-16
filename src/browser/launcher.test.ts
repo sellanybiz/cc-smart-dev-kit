@@ -3,7 +3,7 @@
  * and the Playwright MCP it starts against the shared Chrome through the filter.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { tempDir } from "../testing/temp";
@@ -82,13 +82,14 @@ describe("runBrowserMcp", () => {
     const pickerBundle = join(home, "picker.js");
     writeFileSync(pickerBundle, "export default 1;\n");
     const spawned: string[][] = [];
+    const envs: Record<string, string>[] = [];
     let closed = 0;
     const filter: TabFilterServer = {
       close: () => {
         closed += 1;
         return Promise.resolve();
       },
-      endpoint: "ws://127.0.0.1:5555/",
+      endpoint: "ws://127.0.0.1:5555/abc123",
     };
     let exitNow: ((code: number) => void) | undefined;
     const running = runBrowserMcp(paths(home), ["--headless", "--caps=vision"], {
@@ -102,8 +103,9 @@ describe("runBrowserMcp", () => {
         );
         return filter;
       },
-      spawn: (argv) => {
+      spawn: (argv, options) => {
         spawned.push(argv);
+        envs.push(options.env);
         return {
           exited: new Promise<number>((done) => {
             exitNow = done;
@@ -121,7 +123,6 @@ describe("runBrowserMcp", () => {
       "/usr/local/bin/bunx",
       "-y",
       "@playwright/mcp@1.2.3",
-      "--cdp-endpoint=ws://127.0.0.1:5555/",
       `--idle-timeout=${String(10 * 60 * 1000)}`,
       `--output-dir=${join(home, ".local/share/cc-smart-dev-kit/playwright-output")}`,
       `--output-max-size=${String(200 * 1024 * 1024)}`,
@@ -130,6 +131,14 @@ describe("runBrowserMcp", () => {
       `--init-page=${join(home, ".local/share/cc-smart-dev-kit/playwright-picker.js")}`,
       "--caps=vision",
     ]);
+    // The endpoint — token and all — travels in the environment, never in argv: argv is
+    // readable by every user on the machine (`/proc`).
+    expect(envs).toEqual([{ PLAYWRIGHT_MCP_CDP_ENDPOINT: "ws://127.0.0.1:5555/abc123" }]);
+    expect(spawned[0]?.some((arg) => arg.includes("cdp-endpoint"))).toBe(false);
+    // Everything the browser saves goes to an owner-only folder.
+    expect(
+      statSync(join(home, ".local/share/cc-smart-dev-kit/playwright-output")).mode & 0o777,
+    ).toBe(0o700);
     expect(closed).toBe(0);
     // An `--idle-timeout` from the registered arguments wins over the launcher's own.
     (exitNow as unknown as (code: number) => void)(0);
@@ -149,7 +158,7 @@ describe("runBrowserMcp", () => {
       log: () => undefined,
       package: "@playwright/mcp@1.2.3",
       pickerBundle: join(home, "picker.js"),
-      serve: () => ({ close: () => Promise.resolve(), endpoint: "ws://127.0.0.1:1/" }),
+      serve: () => ({ close: () => Promise.resolve(), endpoint: "ws://127.0.0.1:1/abc" }),
       spawn: (argv) => {
         spawned.push(argv);
         return {

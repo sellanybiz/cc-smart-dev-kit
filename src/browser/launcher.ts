@@ -4,9 +4,11 @@
  *
  * WHAT IT STARTS
  *   1. A tab filter on a free local port (`cdp-tab-filter-server.ts`), which is what the MCP
- *      is pointed at (`--cdp-endpoint`). The MCP connects on its first browser call; the
- *      filter then makes sure the shared Chrome runs — starting it, detached, when no session
- *      has (`shared-browser.ts`) — and passes every message through.
+ *      is pointed at — through `PLAYWRIGHT_MCP_CDP_ENDPOINT` in its environment, never an
+ *      argument: the endpoint carries a token, and `argv` is readable by every user on the
+ *      machine. The MCP connects on its first browser call; the filter then makes sure the
+ *      shared Chrome runs — starting it, detached, when no session has (`shared-browser.ts`)
+ *      — and passes every message through.
  *   2. The Playwright MCP itself, at the pinned version (`src/mcp/versions.ts`), through
  *      `bunx`. Its stdout is the MCP protocol stream, and this process hands it straight on:
  *      NOTHING here may write to stdout.
@@ -43,7 +45,7 @@ import type { CliPaths } from "../cli/paths";
 import { LOCK_PORTS } from "../ports";
 import { atomicWrite } from "../setup/write";
 import { serveTabFilter, type TabFilterServer } from "./cdp-tab-filter-server";
-import { ensureSharedBrowser } from "./shared-browser";
+import { ensurePrivateDir, ensureSharedBrowser } from "./shared-browser";
 
 /** Oldest files are deleted once the output folder grows past this (the MCP's own limit). */
 const OUTPUT_MAX_BYTES = 200 * 1024 * 1024;
@@ -80,8 +82,12 @@ export interface BrowserMcpDeps {
   package: string;
   /** The bundle holding the init page (`plugin/dist/browser-picker.js`). */
   pickerBundle: string;
-  /** Starts the MCP. Its stdout is this process's stdout. */
-  spawn: (argv: string[], options: { stdio: "inherit" }) => McpChild;
+  /**
+   * Starts the MCP. Its stdout is this process's stdout. `env` is added to the child's own
+   * environment (the caller merges it over the current one) — the CDP endpoint travels there,
+   * never in `argv`, which every user on the machine can read from `/proc`.
+   */
+  spawn: (argv: string[], options: { env: Record<string, string>; stdio: "inherit" }) => McpChild;
   /** Writes the init page beside the profile. */
   installPicker?: (target: string, source: string) => void;
   log: (line: string) => void;
@@ -146,6 +152,9 @@ export async function runBrowserMcp(
 ): Promise<number> {
   const options = browserMcpOptions(paths, argv);
   (deps.installPicker ?? installPicker)(paths.browserPickerFile, deps.pickerBundle);
+  // Everything the browser saves goes here, and it can hold a page of a signed-in session:
+  // its owner only, like the profile.
+  ensurePrivateDir(options.outputDir, deps.log);
 
   const filter: TabFilterServer = (deps.serve ?? serveTabFilter)({
     browserEndpoint: () =>
@@ -169,7 +178,6 @@ export async function runBrowserMcp(
       ...argvHead,
       "-y",
       deps.package,
-      `--cdp-endpoint=${filter.endpoint}`,
       ...idleArgs,
       `--output-dir=${options.outputDir}`,
       `--output-max-size=${String(OUTPUT_MAX_BYTES)}`,
@@ -184,7 +192,13 @@ export async function runBrowserMcp(
       `--init-page=${paths.browserPickerFile}`,
       ...options.mcpArgs,
     ],
-    { stdio: "inherit" },
+    {
+      // The tab filter's own endpoint, token and all. An environment variable, never an
+      // argument: `--cdp-endpoint` in argv would show the token to every user on the machine
+      // (`/proc/<pid>/cmdline` is world-readable).
+      env: { PLAYWRIGHT_MCP_CDP_ENDPOINT: filter.endpoint },
+      stdio: "inherit",
+    },
   );
 
   /** Close this session's windows first, then hand the signal on. */

@@ -2324,6 +2324,53 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     });
   });
 
+  test("the key moves to the environment: the copy cc-smart-dev-kit wrote is removed", () => {
+    const { configDir, home, run } = setup();
+    const keyFile = join(configDir, "cc-smart-dev-kit", "tavily.key");
+    mkdirSync(join(configDir, "cc-smart-dev-kit"), { recursive: true });
+    writeFileSync(keyFile, "tvly-file-secret\n", { mode: 0o600 });
+    expect(run(["setup"]).exitCode).toBe(0);
+    expect(readJson(join(home, ".claude", "settings.json")).env.TAVILY_API_KEY).toBe(
+      "tvly-file-secret",
+    );
+
+    // The person sets the key in their environment instead: the stale copy in the settings
+    // goes (its value is never printed), and the server stays registered.
+    const again = run(["setup"], { TAVILY_API_KEY: "tvly-from-environment" });
+    expect(again.exitCode).toBe(0);
+    expect(again.stdout).toContain(
+      "~ ~/.claude/settings.json: env.TAVILY_API_KEY: (a secret) -> (none)",
+    );
+    expect(`${again.stdout}${again.stderr}`).not.toContain("tvly-file-secret");
+    expect(readJson(join(home, ".claude", "settings.json")).env?.TAVILY_API_KEY).toBeUndefined();
+    expect(readJson(join(configDir, ".claude.json")).mcpServers["tavily-websearch"]).toBeDefined();
+  });
+
+  test("no key at all any more: the recorded Tavily server is unregistered too", () => {
+    const { configDir, home, run } = setup();
+    const keyFile = join(configDir, "cc-smart-dev-kit", "tavily.key");
+    mkdirSync(join(configDir, "cc-smart-dev-kit"), { recursive: true });
+    writeFileSync(keyFile, "tvly-file-secret\n", { mode: 0o600 });
+    expect(run(["setup"]).exitCode).toBe(0);
+    expect(readJson(join(configDir, ".claude.json")).mcpServers["tavily-websearch"]).toBeDefined();
+
+    // The key file goes, and the environment has none: the server goes back, and so does the
+    // copy of the key in the settings.
+    rmSync(keyFile);
+    const again = run(["setup"]);
+    expect(again.exitCode).toBe(0);
+    expect(again.stdout).toContain("- MCP server tavily-websearch removed from your user config\n");
+    expect(again.stdout).toContain(TAVILY_SKIPPED);
+    expect(
+      readJson(join(configDir, ".claude.json")).mcpServers["tavily-websearch"],
+    ).toBeUndefined();
+    expect(readJson(join(home, ".claude", "settings.json")).env?.TAVILY_API_KEY).toBeUndefined();
+    // Its record went with it: restore has nothing of it left to take back.
+    expect(
+      readJson(join(configDir, "cc-smart-dev-kit", "mcp-servers.json")).servers["tavily-websearch"],
+    ).toBeUndefined();
+  });
+
   test("a key file others can read is refused, naming the file and never its content", () => {
     const { configDir, run } = setup();
     const keyFile = join(configDir, "cc-smart-dev-kit", "tavily.key");

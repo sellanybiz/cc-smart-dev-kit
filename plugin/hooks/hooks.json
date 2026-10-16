@@ -37,7 +37,7 @@
         ]
       },
       {
-        "matcher": "Edit|Write|NotebookEdit|mcp__serena__(replace_symbol_body|insert_after_symbol|insert_before_symbol|replace_content|rename_symbol|safe_delete_symbol|replace_in_files)",
+        "matcher": "Edit|Write|NotebookEdit|mcp__serena__(replace_symbol_body|insert_after_symbol|insert_before_symbol|replace_content|rename_symbol|safe_delete_symbol|replace_in_files|write_memory|rename_memory|edit_memory|delete_memory)",
         "hooks": [
           {
             "type": "command",

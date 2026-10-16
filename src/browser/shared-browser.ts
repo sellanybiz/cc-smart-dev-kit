@@ -8,6 +8,21 @@
  * `<dataDir>/playwright`, and sign in once. The first session that needs the browser starts
  * it; it runs DETACHED, so it outlives that session; every later session finds it.
  *
+ * WHO ELSE ON THIS MACHINE CAN REACH IT
+ *   The profile and the output folder are made owner-only (0700), and an existing one looser
+ *   than that is tightened. That keeps OTHER OS USERS out of the signed-in cookies, but the
+ *   shared browser is a machine-wide thing by design, and two doors stay open whatever this
+ *   file does:
+ *   - Chrome's own debug port talks over 127.0.0.1 with no authentication, and `/json/version`
+ *     hands out the browser's WebSocket URL to ANY local process of ANY user. Anyone who can
+ *     run a program on this machine can drive the shared browser.
+ *   - The start lock is a port (`LOCK_PORTS.browserStart`), shared the same way: another
+ *     local process can hold it, and the launcher then says so and stops.
+ *   README § The shared browser says the same in plain words: one OS user per machine — a
+ *   second person needs their own account on their own machine, not a shared one.
+ *   The tab filter's own port is the exception: its endpoint carries a random token and
+ *   refuses every other path (`cdp-tab-filter-server.ts`).
+ *
  * HOW IT IS FOUND
  *   Chrome is started with `--remote-debugging-port=0`: it picks a free port and writes
  *   `DevToolsActivePort` into the profile folder — line 1 the port, line 2 the browser's
@@ -38,6 +53,7 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import {
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -45,6 +61,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  statSync,
   unlinkSync,
 } from "node:fs";
 import { request } from "node:http";
@@ -263,6 +280,27 @@ function errorCode(err: unknown): string | undefined {
 /** A length of time as a person reads it: 20 s, 0.3 s. */
 function seconds(ms: number): string {
   return String(ms / 1000);
+}
+
+/**
+ * Makes `dir` exist, readable by its owner only (0700). An existing folder that others can
+ * read or write is tightened, with one line saying so — the profile holds signed-in cookies
+ * and the output folder holds pages of signed-in sessions, and both used to be made with the
+ * default mode (0755 and a umask away from world-readable).
+ *
+ * The mode is chmod'ed after the create: `mkdir`'s own mode is masked by the process's umask,
+ * and this must hold whatever that is.
+ */
+export function ensurePrivateDir(dir: string, log: (line: string) => void): void {
+  if (existsSync(dir)) {
+    const mode = statSync(dir).mode & 0o777;
+    if ((mode & 0o077) === 0) return;
+    chmodSync(dir, 0o700);
+    log(`${dir} was readable by other users (mode ${mode.toString(8)}): made it yours only (700)`);
+    return;
+  }
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
 }
 
 /** A pause between two looks at something that changes by itself. Always bounded by a
@@ -714,7 +752,7 @@ export async function ensureSharedBrowser(options: SharedBrowserOptions): Promis
 
     claimProfile(profileDir, platform, system, log);
 
-    mkdirSync(profileDir, { recursive: true });
+    ensurePrivateDir(profileDir, log);
     // The last Chrome's file: its port may be reused, and it would pass for the new one.
     rmSync(join(profileDir, ACTIVE_PORT_FILE), { force: true });
 

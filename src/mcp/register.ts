@@ -8,19 +8,35 @@
  *   - registered with exactly the JSON setup recorded: nothing at all.
  *   - registered with the JSON setup recorded, and that JSON has changed (a new pin): remove,
  *     then add again — `add-json` refuses a name that exists ("MCP server <name> already
- *     exists in user config", exit 1, seen live).
+ *     exists in user config", exit 1, seen live). The update marks the record `pending`
+ *     before the remove, and the mark is cleared only after the add succeeds.
+ *   - not registered, with a record marked `pending`: setup's own update was interrupted
+ *     between the remove and the add, so the server is registered again.
+ *   - not registered, with a record NOT marked pending: the person removed it. The record is
+ *     forgotten, the server is not registered again, and one `·` line says how to add it back.
  *   - registered with something else, and not ours: LEFT ALONE, with a note — a server of the
  *     person's own is never taken over, the rule `src/setup/` follows for keys too.
  *   - registered with our record, but the file now holds a different config: the person
  *     changed it, so it is theirs: the record is forgotten, and restore leaves it.
+ *   - a server the plugin no longer wants (Tavily without a key), still registered with our
+ *     record: taken back (`claude mcp remove`), and the record goes.
+ *
+ * WHEN CLAUDE CODE'S OWN CONFIG CANNOT BE READ
+ *   Nothing is touched on any path: no server is added, removed, updated or forgotten, every
+ *   record stays, and one line says `cannot read <file>: nothing changed`. Reading "not
+ *   registered" out of a file that did not read would drop the record of a server that IS
+ *   registered, and the plugin's servers would then stay registered with nothing tracking them.
  *
  * WHAT RESTORE DOES
  *   For each recorded server still holding the JSON setup registered: `claude mcp remove
- *   <name> --scope user`. Then the record goes. A server the person re-pointed stays.
+ *   <name> --scope user`. Then the record goes. A server the person re-pointed stays. When
+ *   the user config cannot be read, every record stays and one line says so.
  */
 import { readFileSync } from "node:fs";
 import type { CliPaths } from "../cli/paths";
-import { forgetMcpServer, readMcpRecords, recordMcpServer } from "./records";
+import { tildify } from "../cli/paths";
+import { shellQuote } from "../setup/launcher";
+import { forgetMcpServer, type McpRecord, readMcpRecords, recordMcpServer } from "./records";
 import type { McpServer, ServerName } from "./servers";
 
 /** Runs one `claude` command. A test hands in a fake; the CLI passes `Bun.spawnSync`. */
@@ -82,56 +98,136 @@ function deepEqual(a: unknown, b: unknown): boolean {
 
 export interface McpPlanEntry {
   name: ServerName;
-  /** The JSON to register, for `add` and `update`. Empty for `skip`. */
+  /** The JSON to register, for `add` and `update`. Empty for the other actions. */
   json: string;
-  action: "add" | "foreign" | "keep" | "skip" | "update";
-  /** A note for setup's output (`!`): the server is left alone or skipped. */
+  action: "add" | "foreign" | "gone" | "keep" | "remove" | "skip" | "update";
+  /** A line setup prints as it is: `!` a warning, `·` information. */
   note: string | null;
+  /**
+   * Drop this server's record: it is not cc-smart-dev-kit's any more (the person re-pointed or
+   * removed it), or the plugin does not want it any more.
+   */
+  forget?: true;
+  /**
+   * A `keep` whose record is marked `pending`: the interrupted update's `add-json` had in fact
+   * succeeded, so the record is written again without the mark.
+   */
+  clearPending?: true;
+}
+
+/** The command that registers `name` with `json` again — the one setup itself runs. */
+export function addCommand(name: string, json: string): string {
+  return `claude mcp add-json --scope user ${name} ${shellQuote(json)}`;
 }
 
 /**
- * What setup does about each server. `live` is what Claude Code holds now (null: it could
- * not be read, so nothing is taken over — every server that is not ours is left alone).
+ * The one line setup and restore print when Claude Code's own config cannot be read:
+ * nothing was added, removed, updated or forgotten. `names` are the records that stay.
+ */
+export function unreadableUserConfigNote(file: string, names: readonly string[]): string {
+  const kept = [...names].sort();
+  const which =
+    kept.length === 0
+      ? "no MCP server is touched"
+      : `the MCP servers cc-smart-dev-kit registered stay as they are: ${kept.join(", ")}`;
+  return `! cannot read ${file}: nothing changed — ${which}`;
+}
+
+/** The note for a server that is registered with a config cc-smart-dev-kit did not write. */
+function changedByPersonNote(name: string): string {
+  return (
+    `! ${name} is registered with a config cc-smart-dev-kit did not write: left alone, and no longer ` +
+    `managed (restore keeps it). To hand it back: claude mcp remove ${name} --scope user, then setup`
+  );
+}
+
+/** The note for a server that is registered already, and not by cc-smart-dev-kit. */
+export function registeredByOthersNote(name: string): string {
+  return (
+    `! ${name} is registered already, and not by cc-smart-dev-kit: left alone. ` +
+    `To let setup manage it: claude mcp remove ${name} --scope user`
+  );
+}
+
+/** The `·` line for a recorded server the person removed: gone, and how to bring it back. */
+function goneNote(name: string, registeredJson: string): string {
+  return (
+    `· MCP server ${name} is not registered any more: the record was forgotten. ` +
+    `To add it back: ${addCommand(name, registeredJson)}`
+  );
+}
+
+/**
+ * What setup does about each server. `live` is what Claude Code holds now. Null: it could not
+ * be read, so nothing is touched — every record stays, nothing is added or forgotten, and the
+ * caller prints `unreadableUserConfigNote` (one line, not one per server).
  */
 export function planMcpServers(
   servers: readonly McpServer[],
-  records: Record<string, { json: string }>,
+  records: Record<string, McpRecord>,
   live: Record<string, unknown> | null,
 ): McpPlanEntry[] {
+  if (live === null) {
+    return servers.map((server) => ({ action: "keep", json: "", name: server.name, note: null }));
+  }
   return servers.map((server) => {
     const { name, json } = server;
-    if (server.skipped !== undefined) {
-      return { name, json: "", action: "skip", note: `! ${name}: skipped — ${server.skipped}` };
-    }
     const recorded = records[name];
-    const current = live === null ? undefined : live[name];
-    if (recorded === undefined) {
-      if (current !== undefined) {
+    const current = live[name];
+    const skipNote = server.skipped === undefined ? null : `! ${name}: skipped — ${server.skipped}`;
+    if (server.skipped !== undefined) {
+      // The plugin does not want this server (a key the machine does not have). A record
+      // still holding a registration of ours is taken back; anything else is left alone.
+      if (recorded === undefined) {
+        return { action: "skip", json, name, note: skipNote };
+      }
+      if (current !== undefined && sameConfig(recorded.json, current)) {
+        return { action: "remove", json: "", name, note: skipNote };
+      }
+      if (current === undefined) {
         return {
+          action: "gone",
+          forget: true,
+          json: "",
           name,
-          json,
-          action: "foreign",
-          note:
-            `! ${name} is registered already, and not by cc-smart-dev-kit: left alone. ` +
-            `To let setup manage it: claude mcp remove ${name} --scope user`,
+          note: `· MCP server ${name} is not registered any more: the record was forgotten`,
         };
       }
-      return { name, json, action: "add", note: null };
+      // Something of the person's is registered under this name now: it is theirs.
+      return { action: "foreign", forget: true, json, name, note: skipNote };
+    }
+    if (recorded === undefined) {
+      return current !== undefined
+        ? { action: "foreign", json, name, note: registeredByOthersNote(name) }
+        : { action: "add", json, name, note: null };
+    }
+    if (current === undefined) {
+      return recorded.pending === true
+        ? // Setup's own update stopped between its remove and its add: finish it.
+          { action: "add", json, name, note: null }
+        : // The person removed it: theirs to keep away, and the record goes with one `·` line.
+          { action: "gone", forget: true, json: "", name, note: goneNote(name, recorded.json) };
+    }
+    if (recorded.pending === true) {
+      if (sameConfig(recorded.json, current)) {
+        // The update's remove never ran (or failed): run the whole update again.
+        return { action: "update", json, name, note: null };
+      }
+      if (sameConfig(json, current)) {
+        // The update's add succeeded and only the record write did not land: keep it, and
+        // clear the mark.
+        return { action: "keep", clearPending: true, json, name, note: null };
+      }
+      // Someone else wrote it while the update was in flight: theirs.
+      return { action: "foreign", forget: true, json, name, note: changedByPersonNote(name) };
     }
     if (sameConfig(recorded.json, current)) {
       return recorded.json === json
-        ? { name, json, action: "keep", note: null }
-        : { name, json, action: "update", note: null };
+        ? { action: "keep", json, name, note: null }
+        : { action: "update", json, name, note: null };
     }
-    // Ours by record, something else in the file: the person changed it (or removed it).
-    return {
-      name,
-      json,
-      action: "foreign",
-      note:
-        `! ${name} is registered with a config cc-smart-dev-kit did not write: left alone, and no longer ` +
-        `managed (restore keeps it). To hand it back: claude mcp remove ${name} --scope user, then setup`,
-    };
+    // Ours by record, something else in the file: the person changed it.
+    return { action: "foreign", forget: true, json, name, note: changedByPersonNote(name) };
   });
 }
 
@@ -144,6 +240,8 @@ function commands(entry: McpPlanEntry): string[][] {
   switch (entry.action) {
     case "add":
       return [["claude", "mcp", "add-json", "--scope", "user", entry.name, entry.json]];
+    case "remove":
+      return [["claude", "mcp", "remove", entry.name, "--scope", "user"]];
     case "update":
       return [
         ["claude", "mcp", "remove", entry.name, "--scope", "user"],
@@ -155,13 +253,13 @@ function commands(entry: McpPlanEntry): string[][] {
 }
 
 export interface McpApplyResult {
-  /** One `+` line per registration, or `!` when a command failed. */
+  /** One `+`, `~` or `-` line per registration change, or `!` when a command failed. */
   changes: string[];
   notes: string[];
   ok: boolean;
   /** What to record as registered now (the caller writes it inside its lock). */
   registered: { json: string; name: string }[];
-  /** Servers whose record must be forgotten: the person changed them. */
+  /** Servers whose record must be forgotten: the person changed them, or they are gone. */
   forgotten: string[];
   /** The commands a dry run would have run, as `$` lines. */
   wouldRun: string[];
@@ -170,12 +268,17 @@ export interface McpApplyResult {
 /**
  * Runs the plan with `claude`. `ok` is false when a command failed, or when `claude` is not
  * on PATH (`which` returns null: nothing is run).
+ *
+ * `markPending` is called before an update's own `claude mcp remove` runs, so an interrupted
+ * update is known the next time (`records.ts` `markMcpServerPending`); a dry run never calls
+ * it. Every other write is the caller's, after this returns.
  */
 export function applyMcpServers(
   plan: readonly McpPlanEntry[],
   run: ClaudeRun,
   which: (command: string) => null | string,
   dryRun: boolean,
+  markPending: (name: string) => void,
 ): McpApplyResult {
   const result: McpApplyResult = {
     changes: [],
@@ -187,9 +290,15 @@ export function applyMcpServers(
   };
   for (const entry of plan) {
     if (entry.note !== null) result.notes.push(entry.note);
-    if (entry.action === "foreign" && entry.note !== null) result.forgotten.push(entry.name);
+    if (entry.forget === true) result.forgotten.push(entry.name);
     const argvList = commands(entry);
-    if (argvList.length === 0) continue;
+    if (argvList.length === 0) {
+      // The mark an interrupted update left, cleared: the record is written again below.
+      if (entry.clearPending === true && !dryRun) {
+        result.registered.push({ json: entry.json, name: entry.name });
+      }
+      continue;
+    }
     if (dryRun) {
       result.wouldRun.push(...argvList.map(line));
       continue;
@@ -201,6 +310,7 @@ export function applyMcpServers(
       );
       continue;
     }
+    if (entry.action === "update") markPending(entry.name);
     let failed = false;
     for (const argv of argvList) {
       const outcome = run(argv);
@@ -213,6 +323,11 @@ export function applyMcpServers(
       }
     }
     if (failed) continue;
+    if (entry.action === "remove") {
+      result.changes.push(`- MCP server ${entry.name} removed from your user config`);
+      result.forgotten.push(entry.name);
+      continue;
+    }
     const verb = entry.action === "add" ? "+" : "~";
     result.changes.push(
       `${verb} MCP server ${entry.name} ${entry.action === "add" ? "registered" : "updated"} for your user`,
@@ -246,7 +361,9 @@ export interface McpRemoval {
 /**
  * Takes back exactly what setup registered: each recorded server that still holds the JSON
  * setup wrote leaves the user config. A server the person re-pointed, or that is gone
- * already, is left alone (its record goes).
+ * already, is left alone (its record goes). When Claude Code's own config cannot be read,
+ * nothing is removed and nothing is forgotten: every record stays, so a later restore can
+ * still take the servers back, and one line says so.
  */
 export function removeMcpServers(
   paths: CliPaths,
@@ -256,7 +373,7 @@ export function removeMcpServers(
   stateDir: string = paths.stateDir,
 ): McpRemoval {
   const result: McpRemoval = { forgotten: [], kept: [], notes: [], removed: [], wouldRun: [] };
-  let records: Record<string, { json: string }>;
+  let records: Record<string, McpRecord>;
   try {
     records = readMcpRecords(stateDir);
   } catch (error) {
@@ -268,10 +385,19 @@ export function removeMcpServers(
     return result;
   }
   const live = readUserServers(paths.userConfigFile);
+  if (live === null) {
+    result.kept.push(...Object.keys(records).sort());
+    result.notes.push(
+      unreadableUserConfigNote(tildify(paths.userConfigFile, paths.home), Object.keys(records)),
+    );
+    return result;
+  }
   for (const [name, record] of Object.entries(records)) {
-    const current = live?.[name];
+    const current = live[name];
     if (current === undefined) {
-      // Gone already: nothing to remove, and nothing left to track.
+      // Gone already: nothing to remove, and nothing left to track. (A record still marked
+      // `pending` is setup's own interrupted update, but restore has nothing to take back
+      // either way: the server is not registered.)
       result.notes.push(`  MCP server ${name} is not registered any more; nothing to remove`);
       result.forgotten.push(name);
       continue;

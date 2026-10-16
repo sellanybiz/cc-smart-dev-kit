@@ -7,7 +7,16 @@
  * lock files, the profile claim — runs for real, without the real binary.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
@@ -313,6 +322,60 @@ describe("the Chrome we start", () => {
       if ("held" in again) again.held.close();
       expect(readFileSync(join(profile, "DevToolsActivePort"), "utf8")).toContain("fake-uuid");
       expect(existsSync(join(profile, "DevToolsActivePort"))).toBe(true);
+    } finally {
+      chrome.stop();
+    }
+  });
+
+  test("the profile folder is owner-only: a new one is 0700, and a loose one is tightened, saying so", async () => {
+    const home = tempDir("browser");
+    const profile = join(home, "data", "playwright");
+    // A profile made by an older version, with the default mode: group and other can read it.
+    mkdirSync(profile, { recursive: true });
+    chmodSync(profile, 0o755);
+    writeFileSync(join(profile, "Cookies"), "a signed-in session\n");
+    const logs: string[] = [];
+    let chrome: { stop: () => void } = { stop: () => undefined };
+    try {
+      await ensureSharedBrowser({
+        launchTimeoutMs: 2000,
+        lockPort: 0,
+        log: (line) => logs.push(line),
+        pathExists: () => true,
+        profileDir: profile,
+        spawnChrome: () => {
+          const started = fakeChrome(profile);
+          chrome = started;
+          return { exited: new Promise(() => undefined), pid: started.pid };
+        },
+      });
+      // Tightened to its owner only, and the line says what it was.
+      expect(statSync(profile).mode & 0o777).toBe(0o700);
+      expect(logs.join("\n")).toContain(
+        `${profile} was readable by other users (mode 755): made it yours only (700)`,
+      );
+    } finally {
+      chrome.stop();
+    }
+
+    // A folder that is fresh: created 0700, with nothing said.
+    const fresh = join(home, "fresh", "playwright");
+    try {
+      await ensureSharedBrowser({
+        launchTimeoutMs: 2000,
+        lockPort: 0,
+        log: (line) => logs.push(line),
+        pathExists: () => true,
+        profileDir: fresh,
+        spawnChrome: () => {
+          const started = fakeChrome(fresh);
+          chrome = started;
+          return { exited: new Promise(() => undefined), pid: started.pid };
+        },
+      });
+      expect(statSync(fresh).mode & 0o777).toBe(0o700);
+      // Nothing was said about it: only the loose folder got a line.
+      expect(logs.filter((line) => line.includes("was readable by other users"))).toHaveLength(1);
     } finally {
       chrome.stop();
     }

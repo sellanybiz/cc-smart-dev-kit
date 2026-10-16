@@ -14,7 +14,10 @@
  *   `relative_path`, relative to SERENA'S ACTIVE PROJECT — which is not the folder the session
  *   works in: Serena starts at the folder the session started in, and moves when a session
  *   points it at its worktree (`mcp__serena__activate_project`). That folder is what
- *   `serena-root.ts` records for the session. With no record Serena is still at the folder the
+ *   `serena-root.ts` records for the session. Serena's MEMORY tools (`write_memory`,
+ *   `rename_memory`, `edit_memory`, `delete_memory`) name no path at all — they write under
+ *   the active project folder — so they are placed by that folder the same way
+ *   (`SERENA_MEMORY_TOOLS`). With no record Serena is still at the folder the
  *   session started in — `CLAUDE_PROJECT_DIR`, which Claude Code keeps at that folder also
  *   inside a worktree. A record that says "unknown", and no `CLAUDE_PROJECT_DIR` either, means
  *   the file cannot be placed: the guard ASKS rather than letting it through.
@@ -49,7 +52,31 @@ export const SERENA_EDIT_TOOLS: ReadonlySet<string> = new Set([
   "mcp__serena__rename_symbol",
   "mcp__serena__safe_delete_symbol",
   "mcp__serena__replace_in_files",
+  ...["write_memory", "rename_memory", "edit_memory", "delete_memory"].map(
+    (tool) => `mcp__serena__${tool}`,
+  ),
 ]);
+
+/**
+ * Serena's MEMORY tools (`SERENA_EDIT_TOOLS` includes them): they write
+ * `<active project>/.serena/memories/`, and their calls carry a memory NAME, never a file
+ * path — so their target is the folder Serena has active, the same folder a Serena edit is
+ * placed by. A name starting with `global/` writes to a machine-wide folder instead, which is
+ * none of this guard's business. Serena's other memory tools need no entry here: `read_memory`
+ * and `list_memories` only read, and `onboarding` (at the pinned commit) returns instructions
+ * for writing memories — it writes no file itself.
+ */
+export const SERENA_MEMORY_TOOLS: ReadonlySet<string> = new Set([
+  "mcp__serena__write_memory",
+  "mcp__serena__rename_memory",
+  "mcp__serena__edit_memory",
+  "mcp__serena__delete_memory",
+]);
+
+/** The memory-name fields a call carries: `memory_name`, or `old_name`/`new_name` for a rename. */
+function memoryNameKeys(tool: string): string[] {
+  return tool.endsWith("rename_memory") ? ["old_name", "new_name"] : ["memory_name"];
+}
 
 /**
  * The file an edit is about, as an absolute real path (`realPath`: a link on the way to it
@@ -72,6 +99,11 @@ export type SerenaEdit = { file: string } | { unplaceable: true };
  * `record` is this session's Serena root (`readSerenaRoot`): a folder when the session pointed
  * Serena somewhere, "unknown" when that cannot be read back, undefined when there is no record
  * — and then Serena is still at `projectDir`, the folder the session started in.
+ *
+ * A MEMORY tool (`SERENA_MEMORY_TOOLS`) names no path at all: its file lives under the active
+ * project folder (`.serena/memories/`), so that folder is what comes back. A call whose every
+ * memory name starts with `global/` writes to a machine-wide folder instead, and is left alone;
+ * the same goes for a call that names no memory at all (it fails in Serena, not here).
  */
 export function serenaEditedFile(
   input: HookInput,
@@ -81,9 +113,19 @@ export function serenaEditedFile(
   const tool = stringField(input.tool_name);
   if (tool === null || !SERENA_EDIT_TOOLS.has(tool)) return null;
   const fields = toolInput(input);
-  const relative =
-    stringField(fields.relative_path) ?? (tool.endsWith("replace_in_files") ? "" : null);
-  if (relative === null) return null;
+  let relative: null | string;
+  if (SERENA_MEMORY_TOOLS.has(tool)) {
+    const named = memoryNameKeys(tool)
+      .map((key) => stringField(fields[key]))
+      .filter((name): name is string => name !== null && !name.startsWith("global/"));
+    if (named.length === 0) return null;
+    // The name is not a path: the file is somewhere under the active project folder, and that
+    // folder is the whole of what this guard judges.
+    relative = "";
+  } else {
+    relative = stringField(fields.relative_path) ?? (tool.endsWith("replace_in_files") ? "" : null);
+    if (relative === null) return null;
+  }
   if (record?.kind === "unknown") return { unplaceable: true };
   const root = record?.kind === "path" ? record.path : projectDir;
   if (root === null || !isAbsolute(root)) return { unplaceable: true };

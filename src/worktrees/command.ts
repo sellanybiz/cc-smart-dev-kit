@@ -97,6 +97,18 @@ function canGo(worktree: ScannedWorktree): boolean {
   );
 }
 
+/**
+ * Said when a worktree whose folder is gone is forgotten. `git worktree prune` cannot tell a
+ * folder that was deleted from one on a disk that is not connected — and a LOCKED worktree is
+ * never pruned, so the line says how to be sure next time.
+ */
+export function forgottenLine(path: string): string {
+  return (
+    `forgot ${path} (its folder was already gone). A worktree on a disk that is not connected reads ` +
+    `the same way: lock one there (\`git worktree lock "${path}"\`) and prune leaves it alone.`
+  );
+}
+
 /** The lock, or null when another run holds it. */
 async function holdCleanLock(): Promise<null | Server> {
   const hold = await holdPort(LOCK_PORTS.worktreesClean);
@@ -164,7 +176,7 @@ export async function runWorktrees(
       }
       if (found.state === "gone") {
         pruneWorktrees(repo, env);
-        console.log(`forgot ${found.listed.path} (its folder was already gone)`);
+        console.log(forgottenLine(found.listed.path));
         if (found.listed.branch !== null) {
           console.log(deleteMergedBranch(repo, base, found.listed.branch, env));
         }
@@ -172,8 +184,11 @@ export async function runWorktrees(
       }
       if (typeof found.state === "object" && found.state.finished) {
         console.log(`removing ${found.listed.path} …`);
-        for (const said of removeWorktree(repo, found.listed, env, base).said) console.log(said);
-        return 0;
+        const removal = removeWorktree(repo, found.listed, env, base);
+        for (const said of removal.said) console.log(said);
+        // Exit 1 unless it really went: "held" (something uses it), "kept" (something in it
+        // is changed) and "failed" (git could not finish) all leave it a worktree still.
+        return removal.status === "removed" ? 0 : 1;
       }
       console.log(`Kept ${found.listed.path}: ${describe(found).replace(/^kept: /, "")}.`);
       return 1;
@@ -203,7 +218,7 @@ export async function runWorktrees(
     pruneWorktrees(repo, env);
     for (const worktree of going) {
       if (worktree.state !== "gone") continue;
-      console.log(`forgot ${worktree.listed.path} (its folder was already gone)`);
+      console.log(forgottenLine(worktree.listed.path));
       if (worktree.listed.branch !== null) {
         console.log(`  ${deleteMergedBranch(repo, base, worktree.listed.branch, env)}`);
       }

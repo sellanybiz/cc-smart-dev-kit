@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { tempDir } from "../testing/temp";
-import { readMcpRecords, recordMcpServer } from "./records";
+import { markMcpServerPending, readMcpRecords, recordMcpServer } from "./records";
 import {
   applyMcpServers,
   type ClaudeRun,
@@ -19,6 +19,7 @@ import {
   recordApplied,
   removeMcpServers,
   sameConfig,
+  unreadableUserConfigNote,
 } from "./register";
 import {
   installSerenaContext,
@@ -72,6 +73,12 @@ const context = (home: string) => ({
   serenaContextFile: join(home, "serena", "worktree.yml"),
   tavily: { key: true } as const,
 });
+
+/**
+ * `applyMcpServers`'s `markPending` for the tests that do not watch the pending mark. The
+ * tests that do pass their own, and read the record file inside the fake `claude`.
+ */
+const noPending = (): void => {};
 
 describe("the servers the plugin registers", () => {
   test("the four general servers, pinned and at user scope; the browser runs the launcher", () => {
@@ -138,7 +145,7 @@ describe("what setup registers, and what it leaves alone", () => {
     const plan = planMcpServers(servers, {}, readUserServers(fake.paths.userConfigFile));
     expect(plan.map((entry) => entry.action)).toEqual(["add", "add", "add", "add"]);
 
-    const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false);
+    const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
     expect(applied.ok).toBe(true);
     expect(applied.changes).toEqual([
       "+ MCP server playwright registered for your user",
@@ -168,7 +175,9 @@ describe("what setup registers, and what it leaves alone", () => {
       readUserServers(fake.paths.userConfigFile),
     );
     expect(again.map((entry) => entry.action)).toEqual(["keep", "keep", "keep", "keep"]);
-    expect(applyMcpServers(again, fake.run, () => "/usr/bin/claude", false).changes).toEqual([]);
+    expect(
+      applyMcpServers(again, fake.run, () => "/usr/bin/claude", false, noPending).changes,
+    ).toEqual([]);
   });
 
   test("a new pin: the server is removed and added again (add-json refuses a name that exists)", () => {
@@ -180,6 +189,7 @@ describe("what setup registers, and what it leaves alone", () => {
       fake.run,
       () => "/usr/bin/claude",
       false,
+      noPending,
     );
     recordApplied(fake.paths.stateDir, first, "2026-10-16T00:00:00.000Z");
 
@@ -195,7 +205,7 @@ describe("what setup registers, and what it leaves alone", () => {
       readUserServers(fake.paths.userConfigFile),
     );
     expect(plan[2]?.action).toBe("update");
-    const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false);
+    const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
     expect(applied.changes).toEqual(["~ MCP server sequential-thinking updated for your user"]);
     expect(
       sameConfig(
@@ -221,7 +231,9 @@ describe("what setup registers, and what it leaves alone", () => {
     expect(plan[0]?.action).toBe("foreign");
     expect(plan[0]?.note).toContain("registered already, and not by cc-smart-dev-kit: left alone");
     // The three others are registered as usual; the person's own `playwright` is untouched.
-    expect(applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false).changes).toEqual([
+    expect(
+      applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending).changes,
+    ).toEqual([
       "+ MCP server serena registered for your user",
       "+ MCP server sequential-thinking registered for your user",
       "+ MCP server tavily-websearch registered for your user",
@@ -248,7 +260,7 @@ describe("what setup registers, and what it leaves alone", () => {
     );
     expect(plan[0]?.action).toBe("foreign");
     expect(plan[0]?.note).toContain("no longer managed (restore keeps it)");
-    const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false);
+    const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
     recordApplied(fake.paths.stateDir, applied, "now");
     expect(readMcpRecords(fake.paths.stateDir).playwright).toBeUndefined();
   });
@@ -261,7 +273,7 @@ describe("what setup registers, and what it leaves alone", () => {
       {},
       readUserServers(fake.paths.userConfigFile),
     );
-    const applied = applyMcpServers(plan, fake.run, () => null, false);
+    const applied = applyMcpServers(plan, fake.run, () => null, false, noPending);
     expect(applied.ok).toBe(false);
     expect(fake.calls).toEqual([]);
     expect(applied.notes[0]).toBe(
@@ -277,12 +289,253 @@ describe("what setup registers, and what it leaves alone", () => {
       {},
       readUserServers(fake.paths.userConfigFile),
     );
-    const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", true);
+    const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", true, noPending);
     expect(applied.wouldRun[0]).toBe(
       `$ claude mcp add-json --scope user playwright ${mcpServers(context(home))[0]?.json ?? ""}`,
     );
     expect(fake.calls).toEqual([]);
     expect(applied.registered).toEqual([]);
+  });
+
+  test("an unreadable Claude Code config: nothing runs, every record stays, one line says so", () => {
+    const home = tempDir("mcp-unreadable");
+    const fake = fakeClaude(home);
+    const servers = mcpServers(context(home));
+    const applied = applyMcpServers(
+      planMcpServers(servers, {}, readUserServers(fake.paths.userConfigFile)),
+      fake.run,
+      () => "/usr/bin/claude",
+      false,
+      noPending,
+    );
+    recordApplied(fake.paths.stateDir, applied, "then");
+    const records = readMcpRecords(fake.paths.stateDir);
+    // Claude Code's file is there, but does not read: a half-written one.
+    writeFileSync(fake.paths.userConfigFile, "{ half a file");
+    const callsBefore = fake.calls.length;
+
+    const live = readUserServers(fake.paths.userConfigFile);
+    expect(live).toBeNull();
+    const plan = planMcpServers(servers, records, live);
+    expect(plan.map((entry) => entry.action)).toEqual(["keep", "keep", "keep", "keep"]);
+    expect(plan.every((entry) => entry.forget === undefined)).toBe(true);
+    const again = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
+    expect(again.changes).toEqual([]);
+    expect(again.forgotten).toEqual([]);
+    expect(again.registered).toEqual([]);
+    expect(fake.calls).toHaveLength(callsBefore);
+    recordApplied(fake.paths.stateDir, again, "later");
+    expect(readMcpRecords(fake.paths.stateDir)).toEqual(records);
+    // The one line the caller prints, with every kept name.
+    expect(unreadableUserConfigNote("~/.claude.json", Object.keys(records))).toBe(
+      "! cannot read ~/.claude.json: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: playwright, sequential-thinking, serena, tavily-websearch",
+    );
+  });
+
+  test("an update marks the record pending before its remove, and clears it after its add", () => {
+    const home = tempDir("mcp-pending");
+    const fake = fakeClaude(home);
+    const servers = mcpServers(context(home));
+    const first = applyMcpServers(
+      planMcpServers(servers, {}, readUserServers(fake.paths.userConfigFile)),
+      fake.run,
+      () => "/usr/bin/claude",
+      false,
+      noPending,
+    );
+    recordApplied(fake.paths.stateDir, first, "then");
+    // The pin moved: sequential-thinking's JSON changed.
+    const moved = servers.map((server) =>
+      server.name === "sequential-thinking"
+        ? { ...server, json: JSON.stringify({ args: ["-y", "...@2.0.0"], command: "bunx" }) }
+        : server,
+    );
+    const seen: (boolean | undefined)[] = [];
+    const run: ClaudeRun = (argv) => {
+      const record = () => readMcpRecords(fake.paths.stateDir)["sequential-thinking"]?.pending;
+      if (argv[2] === "remove" && argv[3] === "sequential-thinking") seen.push(record());
+      const outcome = fake.run(argv);
+      if (argv[2] === "add-json" && argv[5] === "sequential-thinking") seen.push(record());
+      return outcome;
+    };
+    const plan = planMcpServers(
+      moved,
+      readMcpRecords(fake.paths.stateDir),
+      readUserServers(fake.paths.userConfigFile),
+    );
+    expect(plan[2]?.action).toBe("update");
+    const applied = applyMcpServers(
+      plan,
+      run,
+      () => "/usr/bin/claude",
+      false,
+      (name) => {
+        markMcpServerPending(fake.paths.stateDir, name);
+      },
+    );
+    // Pending while the remove runs AND while the add runs: the mark is written before the
+    // remove, and cleared only after the add.
+    expect(seen).toEqual([true, true]);
+    recordApplied(fake.paths.stateDir, applied, "later");
+    expect(readMcpRecords(fake.paths.stateDir)["sequential-thinking"]).toEqual({
+      at: "later",
+      json: moved[2]?.json ?? "",
+    });
+  });
+
+  test("a record still pending, its server gone: setup finishes its own update", () => {
+    const home = tempDir("mcp-pending");
+    const fake = fakeClaude(home);
+    const servers = mcpServers(context(home));
+    const first = applyMcpServers(
+      planMcpServers(servers, {}, readUserServers(fake.paths.userConfigFile)),
+      fake.run,
+      () => "/usr/bin/claude",
+      false,
+      noPending,
+    );
+    recordApplied(fake.paths.stateDir, first, "then");
+    // An update whose remove ran, then the process died before the add.
+    markMcpServerPending(fake.paths.stateDir, "playwright");
+    const live = readUserServers(fake.paths.userConfigFile) ?? {};
+    delete live.playwright;
+    writeFileSync(fake.paths.userConfigFile, JSON.stringify({ mcpServers: live }));
+
+    const plan = planMcpServers(
+      servers,
+      readMcpRecords(fake.paths.stateDir),
+      readUserServers(fake.paths.userConfigFile),
+    );
+    expect(plan[0]?.action).toBe("add");
+    const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
+    expect(applied.changes).toEqual(["+ MCP server playwright registered for your user"]);
+    expect(readUserServers(fake.paths.userConfigFile)?.playwright).toEqual(
+      JSON.parse(servers[0]?.json ?? "{}"),
+    );
+    recordApplied(fake.paths.stateDir, applied, "later");
+    expect(readMcpRecords(fake.paths.stateDir).playwright).toEqual({
+      at: "later",
+      json: servers[0]?.json ?? "",
+    });
+  });
+
+  test("a server the person removed: the record goes, nothing runs, one line adds it back", () => {
+    const home = tempDir("mcp-removed");
+    const fake = fakeClaude(home);
+    const servers = mcpServers(context(home));
+    const first = applyMcpServers(
+      planMcpServers(servers, {}, readUserServers(fake.paths.userConfigFile)),
+      fake.run,
+      () => "/usr/bin/claude",
+      false,
+      noPending,
+    );
+    recordApplied(fake.paths.stateDir, first, "then");
+    const live = readUserServers(fake.paths.userConfigFile) ?? {};
+    delete live.playwright;
+    writeFileSync(fake.paths.userConfigFile, JSON.stringify({ mcpServers: live }));
+    const callsBefore = fake.calls.length;
+
+    const plan = planMcpServers(
+      servers,
+      readMcpRecords(fake.paths.stateDir),
+      readUserServers(fake.paths.userConfigFile),
+    );
+    expect(plan[0]?.action).toBe("gone");
+    expect(plan[0]?.forget).toBe(true);
+    expect(plan[0]?.note).toBe(
+      "· MCP server playwright is not registered any more: the record was forgotten. " +
+        `To add it back: claude mcp add-json --scope user playwright '${servers[0]?.json ?? ""}'`,
+    );
+    const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
+    expect(applied.changes).toEqual([]);
+    expect(applied.forgotten).toEqual(["playwright"]);
+    expect(fake.calls).toHaveLength(callsBefore);
+    recordApplied(fake.paths.stateDir, applied, "later");
+    expect(readMcpRecords(fake.paths.stateDir).playwright).toBeUndefined();
+  });
+
+  test("a pending update whose add DID land: kept, and the mark cleared", () => {
+    const home = tempDir("mcp-pending");
+    const fake = fakeClaude(home);
+    const servers = mcpServers(context(home));
+    const first = applyMcpServers(
+      planMcpServers(servers, {}, readUserServers(fake.paths.userConfigFile)),
+      fake.run,
+      () => "/usr/bin/claude",
+      false,
+      noPending,
+    );
+    recordApplied(fake.paths.stateDir, first, "then");
+    const moved = servers.map((server) =>
+      server.name === "sequential-thinking"
+        ? { ...server, json: JSON.stringify({ args: ["-y", "...@2.0.0"], command: "bunx" }) }
+        : server,
+    );
+    markMcpServerPending(fake.paths.stateDir, "sequential-thinking");
+    // The add ran, the process died before the record was written.
+    const live = readUserServers(fake.paths.userConfigFile) ?? {};
+    writeFileSync(
+      fake.paths.userConfigFile,
+      JSON.stringify({
+        mcpServers: { ...live, "sequential-thinking": JSON.parse(moved[2]?.json ?? "{}") },
+      }),
+    );
+
+    const plan = planMcpServers(
+      moved,
+      readMcpRecords(fake.paths.stateDir),
+      readUserServers(fake.paths.userConfigFile),
+    );
+    expect(plan[2]?.action).toBe("keep");
+    expect(plan[2]?.clearPending).toBe(true);
+    const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
+    expect(applied.changes).toEqual([]);
+    recordApplied(fake.paths.stateDir, applied, "later");
+    expect(readMcpRecords(fake.paths.stateDir)["sequential-thinking"]).toEqual({
+      at: "later",
+      json: moved[2]?.json ?? "",
+    });
+  });
+
+  test("no Tavily key now: a recorded server of ours is taken back", () => {
+    const home = tempDir("mcp-tavily");
+    const fake = fakeClaude(home);
+    const servers = mcpServers(context(home));
+    const first = applyMcpServers(
+      planMcpServers(servers, {}, readUserServers(fake.paths.userConfigFile)),
+      fake.run,
+      () => "/usr/bin/claude",
+      false,
+      noPending,
+    );
+    recordApplied(fake.paths.stateDir, first, "then");
+
+    const withoutKey = servers.map((server) =>
+      server.name === "tavily-websearch"
+        ? {
+            json: "",
+            name: server.name,
+            skipped: "no TAVILY_API_KEY in the environment, and no key file",
+          }
+        : server,
+    );
+    const plan = planMcpServers(
+      withoutKey,
+      readMcpRecords(fake.paths.stateDir),
+      readUserServers(fake.paths.userConfigFile),
+    );
+    expect(plan[3]?.action).toBe("remove");
+    const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
+    expect(applied.changes).toEqual([
+      "- MCP server tavily-websearch removed from your user config",
+    ]);
+    expect(applied.notes).toEqual([
+      "! tavily-websearch: skipped — no TAVILY_API_KEY in the environment, and no key file",
+    ]);
+    recordApplied(fake.paths.stateDir, applied, "later");
+    expect(readUserServers(fake.paths.userConfigFile)?.["tavily-websearch"]).toBeUndefined();
+    expect(readMcpRecords(fake.paths.stateDir)["tavily-websearch"]).toBeUndefined();
   });
 });
 
@@ -296,6 +549,7 @@ describe("restore: exactly what setup registered", () => {
       fake.run,
       () => "/usr/bin/claude",
       false,
+      noPending,
     );
     recordApplied(fake.paths.stateDir, applied, "then");
     // The person re-points one of them (serena) at something of their own.
@@ -334,6 +588,7 @@ describe("restore: exactly what setup registered", () => {
       fake.run,
       () => "/usr/bin/claude",
       false,
+      noPending,
     );
     recordApplied(fake.paths.stateDir, applied, "then");
     const removal = removeMcpServers(fake.paths, fake.run, () => null, false);
@@ -350,6 +605,37 @@ describe("restore: exactly what setup registered", () => {
     expect(removal).toEqual({ forgotten: [], kept: [], notes: [], removed: [], wouldRun: [] });
     expect(fake.calls).toEqual([]);
     expect(existsSync(fake.paths.userConfigFile)).toBe(false);
+  });
+
+  test("an unreadable Claude Code config: nothing is removed, and every record stays", () => {
+    const home = tempDir("mcp-restore-unreadable");
+    const fake = fakeClaude(home);
+    const servers = mcpServers(context(home));
+    const applied = applyMcpServers(
+      planMcpServers(servers, {}, readUserServers(fake.paths.userConfigFile)),
+      fake.run,
+      () => "/usr/bin/claude",
+      false,
+      noPending,
+    );
+    recordApplied(fake.paths.stateDir, applied, "then");
+    writeFileSync(fake.paths.userConfigFile, "{ half a file");
+    const callsBefore = fake.calls.length;
+
+    const removal = removeMcpServers(fake.paths, fake.run, () => "/usr/bin/claude", false);
+    expect(removal.removed).toEqual([]);
+    expect(removal.forgotten).toEqual([]);
+    expect(removal.kept).toEqual([
+      "playwright",
+      "sequential-thinking",
+      "serena",
+      "tavily-websearch",
+    ]);
+    expect(removal.notes).toEqual([
+      "! cannot read ~/.claude/.claude.json: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: playwright, sequential-thinking, serena, tavily-websearch",
+    ]);
+    expect(fake.calls).toHaveLength(callsBefore);
+    expect(Object.keys(readMcpRecords(fake.paths.stateDir))).toHaveLength(4);
   });
 });
 

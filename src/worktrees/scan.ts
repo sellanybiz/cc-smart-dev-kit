@@ -1,11 +1,20 @@
 /**
  * Gathering the facts `verdict.ts` judges, removing a finished worktree, and keeping the main
- * checkout on the base branch after a merge. Used by `worktrees` (`command.ts`) and by the
- * plugin's hooks that keep sessions from leaving worktrees behind.
+ * checkout on the base branch after a merge. Used by `worktrees` (`command.ts`); the project
+ * hooks that keep sessions from leaving worktrees behind judge through
+ * `hooks/worktree-leftovers.ts`, which names the questions again in its own words and says
+ * there why it leaves the machine's facts out.
  */
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { hasChanges, isInside, type ListedWorktree, listWorktrees, runGit } from "../hooks/git";
+import {
+  hasChanges,
+  isInside,
+  type ListedWorktree,
+  listWorktrees,
+  realPath,
+  runGit,
+} from "../hooks/git";
 import { localFiles } from "../hooks/local-files";
 import type { Env } from "../hooks/run";
 import { liveSessions, type SessionRecord } from "../hooks/sessions";
@@ -140,7 +149,13 @@ export function scanWorktrees(repo: string, options: ScanOptions): ScannedWorktr
       });
       continue;
     }
-    const session = sessions.find((one) => isInside(one.cwd, listed.path));
+    // The session's own folder, and the worktree, as real paths: `git worktree list` prints
+    // the path the worktree was made with, while a session record holds the physical one when
+    // the repo is reached through a symlink.
+    // The session's own folder, and the worktree, as real paths: `git worktree list` prints
+    // the path the worktree was made with, while a session record holds the physical one when
+    // the repo is reached through a symlink.
+    const session = sessions.find((one) => isInside(realPath(one.cwd), realPath(listed.path)));
     const facts: WorktreeFacts = {
       aheadOfBase: Number(ahead.out),
       base,
@@ -228,39 +243,6 @@ export function removeWorktree(
   const said = [`removed ${listed.path}`];
   if (listed.branch !== null) said.push(deleteBranch(repo, listed.branch));
   return { said, status: "removed" };
-}
-
-/** The commits on a branch that no other branch, local or remote, has. Null when git cannot tell. */
-export function ownCommits(repo: string, branch: string, env: Env): null | number {
-  const own = runGit(
-    repo,
-    [
-      "rev-list",
-      "--count",
-      `refs/heads/${branch}`,
-      "--not",
-      `--exclude=${branch}`,
-      "--branches",
-      "--remotes",
-    ],
-    env,
-  );
-  return own.ok && /^\d+$/.test(own.out) ? Number(own.out) : null;
-}
-
-/**
- * Deletes a branch when every commit on it is also on another branch, so nothing is lost. A
- * subagent's branch is cut from whatever its session had checked out, which may not be on the
- * base yet — `deleteMergedBranch` would keep every one of those.
- */
-export function deleteCopiedBranch(repo: string, branch: string, env: Env): string {
-  const own = ownCommits(repo, branch, env);
-  if (own === null) {
-    return `kept branch ${branch}: git could not compare it with the other branches`;
-  }
-  if (own > 0) return `kept branch ${branch}: it has commits no other branch has`;
-  const deleted = runGit(repo, ["branch", "-D", branch], env);
-  return deleted.ok ? `deleted branch ${branch}` : `kept branch ${branch}: ${deleted.err}`;
 }
 
 /**
