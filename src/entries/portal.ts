@@ -24,6 +24,7 @@ import { cliPaths, tildify } from "../cli/paths";
 import { realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
 import { realMachine } from "../machine/machine";
+import { openUrlOnDesktop } from "../machine/open-url";
 import { realMcpDoctorDeps } from "../mcp/doctor";
 import { claudeCodeRefusal, PORTAL_USAGE, parsePortalChildArgs } from "../portal/command";
 import type { PortalContext } from "../portal/context";
@@ -50,28 +51,22 @@ const runner: Runner = (cmd) => {
   }
 };
 
-/** Opens a URL in the person's own browser. Never waits, and never fails the portal. */
+/**
+ * Opens a URL in the person's own browser. Never waits, and never fails the portal.
+ * Which program opens it, per platform: `open-url.ts` (one home for that rule, with
+ * `sessions`). On Windows that is `cmd.exe /c start "" <url>` — there is no `xdg-open` there.
+ */
 function openBrowser(
   platform: NodeJS.Platform,
   url: string,
   which: (name: string) => null | string,
 ): void {
-  const candidates =
-    platform === "darwin"
-      ? [["open", url]]
-      : [
-          ["xdg-open", url],
-          ["gio", "open", url],
-        ];
-  for (const argv of candidates) {
-    if (which(argv[0] ?? "") === null) continue;
-    try {
+  openUrlOnDesktop(platform, url, {
+    which,
+    spawn: (argv) => {
       Bun.spawn(argv, { stderr: "ignore", stdin: "ignore", stdout: "ignore" });
-      return;
-    } catch {
-      // Try the next one; the link is printed either way.
-    }
-  }
+    },
+  });
 }
 
 /** The plugin's own folder beside this bundle: `plugin/`, beside `dist/`, or the repo's when run from source. */

@@ -16,6 +16,7 @@ import { type Machine, TEST_HOST_VAR } from "../machine/machine";
 import { MCP_VERSIONS } from "../mcp/versions";
 import { versionStampFile } from "../setup/instructions";
 import { installLauncher } from "../setup/launcher";
+import { installLauncherCmd } from "../setup/launcher-cmd";
 import { listBackups } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
@@ -2478,5 +2479,167 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain('$ claude mcp add-json --scope user playwright {"command":"');
     expect(existsSync(join(configDir, ".claude.json"))).toBe(false);
+  });
+});
+
+describe("cc-smart-dev-kit on Windows: the launcher, Git Bash, and what doctor says", () => {
+  /**
+   * The host facts a Windows machine gives the CLI: the same shape as the Linux ones above,
+   * with `platform: "win32"`. The platform decides the launcher's `.cmd` twin, doctor's Git
+   * Bash check and the PATH note — everything else is the same temp home.
+   */
+  function windowsHost(extra: Record<string, string> = {}): Record<string, string> {
+    return {
+      [TEST_HOST_VAR]: JSON.stringify({
+        platform: "win32",
+        arch: "x64",
+        osRelease: null,
+        macApp: "C:\\no-such-Warp.app",
+      }),
+      ...extra,
+    };
+  }
+
+  test("setup writes the .cmd twin beside the sh launcher, as one managed file", () => {
+    const { binDir, run } = setup();
+    const result = run(["setup"], windowsHost());
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("+ ~/.local/bin/cc-smart-dev-kit: launcher created");
+    expect(result.stdout).toContain("+ ~/.local/bin/cc-smart-dev-kit.cmd: launcher created");
+    const cmd = join(binDir, "cc-smart-dev-kit.cmd");
+    expect(existsSync(cmd)).toBe(true);
+    // It bakes the bun that ran setup, and runs the installed cli.js.
+    expect(readFileSync(cmd, "utf8")).toContain(`set "baked_bun=${process.execPath}"`);
+    // A second setup changes nothing.
+    expect(run(["setup"], windowsHost()).stdout).toContain(
+      "Nothing to change. Setup is up to date.",
+    );
+  });
+
+  test("off Windows setup writes no .cmd, and Linux output is untouched", () => {
+    const { binDir, run } = setup();
+    const result = run(["setup"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain("cc-smart-dev-kit.cmd");
+    expect(existsSync(join(binDir, "cc-smart-dev-kit.cmd"))).toBe(false);
+  });
+
+  test("restore removes the .cmd too", () => {
+    const { binDir, run } = setup();
+    run(["setup"], windowsHost());
+    const cmd = join(binDir, "cc-smart-dev-kit.cmd");
+    expect(existsSync(cmd)).toBe(true);
+    const result = run(["restore"]);
+    expect(result.stdout).toContain(
+      "- ~/.local/bin/cc-smart-dev-kit.cmd: removed (cc-smart-dev-kit had created it)",
+    );
+    expect(existsSync(cmd)).toBe(false);
+    expect(existsSync(join(binDir, "cc-smart-dev-kit"))).toBe(false);
+  });
+
+  test("the PATH note names the Windows folder and where to add it", () => {
+    const { binDir, fakeBin, run } = setup();
+    // A PATH without the launcher's folder: what a fresh Windows machine has.
+    const result = run(["setup"], windowsHost({ PATH: fakeBin }));
+    expect(existsSync(join(binDir, "cc-smart-dev-kit.cmd"))).toBe(true);
+    expect(result.stdout).toContain(
+      `Note: ${binDir} is not on your PATH. Add it there (Windows Settings → System → About → Advanced system settings → Environment Variables → Path for your account), then open a new terminal, so the cc-smart-dev-kit command works.`,
+    );
+  });
+
+  test("doctor on Windows: no Git Bash and no .cmd are ✗, each saying what to run", () => {
+    const { binDir, run } = setup();
+    run(["setup"], windowsHost());
+    // The .cmd is gone (a person removed it, or an older setup never wrote one).
+    rmSync(join(binDir, "cc-smart-dev-kit.cmd"));
+    const result = run(["doctor"], windowsHost());
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain(
+      "✗ no Windows launcher at ~/.local/bin/cc-smart-dev-kit.cmd, so cmd and PowerShell cannot run cc-smart-dev-kit (Git Bash runs ~/.local/bin/cc-smart-dev-kit). Run: cc-smart-dev-kit setup",
+    );
+    // The sh launcher is still checked, and is in place: Git Bash runs it.
+    expect(result.stdout).toContain(
+      "✓ the launcher ~/.local/bin/cc-smart-dev-kit is in place (Git Bash runs it)",
+    );
+    expect(result.stdout).toContain("✗ Git Bash was not found");
+    expect(result.stdout).toContain("Install Git for Windows (https://git-scm.com/download/win)");
+    // The Linux-only parts are information, never a failure.
+    expect(result.stdout).toContain(
+      "· tmux: not on Windows, so no passthrough line is managed there",
+    );
+  });
+
+  test("doctor on Windows with no launcher at all names the sh one first", () => {
+    const { run } = setup();
+    const result = run(["doctor"], windowsHost());
+    expect(result.stdout).toContain(
+      "✗ no launcher at ~/.local/bin/cc-smart-dev-kit. Run: cc-smart-dev-kit setup",
+    );
+  });
+
+  test("doctor on Windows: a .cmd baked with a bun that is gone is ✗ with the setup command", () => {
+    const { binDir, stateDir, run } = setup();
+    run(["setup"], windowsHost());
+    const gone = join(tempDir("gone"), "bun.exe");
+    installLauncherCmd(binDir, { stateDir, bunPath: gone });
+    const result = run(["doctor"], windowsHost());
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain(
+      `✗ the Windows launcher's bun ${gone} is missing or not executable. Run: cc-smart-dev-kit setup`,
+    );
+  });
+
+  test("doctor on Windows asks whether the bun is there, not whether it has an execute bit", () => {
+    const { binDir, stateDir, run } = setup();
+    run(["setup"], windowsHost());
+    // A bun with no execute bit. On Windows a mode means nothing — an `.exe` runs by being
+    // there — so this is a working bun there and the launchers are fine. (The same file
+    // would be "not executable" on Linux, which is the check that must not run on Windows.)
+    const bun = join(tempDir("bun"), "bun.exe");
+    writeFileSync(bun, "not really bun\n", { mode: 0o600 });
+    installLauncher(binDir, { stateDir, bunPath: bun });
+    installLauncherCmd(binDir, { stateDir, bunPath: bun });
+    chmodSync(join(binDir, "cc-smart-dev-kit"), 0o755);
+    const result = run(["doctor"], windowsHost());
+    expect(result.stdout).toContain(
+      "✓ the launcher ~/.local/bin/cc-smart-dev-kit is in place (Git Bash runs it)",
+    );
+    expect(result.stdout).not.toContain("missing or not executable");
+  });
+
+  test("doctor on Windows after setup: the .cmd runs through cmd.exe, Git Bash found by the variable", () => {
+    const { fakeBin, run } = setup();
+    // A fake `cmd.exe`, so the launcher's run is exercised without a Windows machine. It
+    // logs its arguments, which is what proves doctor starts the .cmd through cmd.exe.
+    const log = join(fakeBin, "cmd-calls.log");
+    const fakeCmd = join(fakeBin, "cmd.exe");
+    writeFileSync(fakeCmd, `#!/bin/sh\necho "$*" >> ${JSON.stringify(log)}\necho ${VERSION}\n`);
+    chmodSync(fakeCmd, 0o755);
+    // Git Bash where CLAUDE_CODE_GIT_BASH_PATH says it is (Claude Code accepts bash.exe).
+    const bash = join(fakeBin, "bash.exe");
+    writeFileSync(bash, "#!/bin/sh\nexit 0\n");
+    chmodSync(bash, 0o755);
+
+    run(["setup"], windowsHost());
+    const result = run(["doctor"], windowsHost({ CLAUDE_CODE_GIT_BASH_PATH: bash }));
+    expect(result.stdout).toContain(
+      "✓ the launcher ~/.local/bin/cc-smart-dev-kit is in place (Git Bash runs it)",
+    );
+    expect(result.stdout).toContain(
+      `✓ the Windows launcher ~/.local/bin/cc-smart-dev-kit.cmd runs ${VERSION}`,
+    );
+    expect(result.stdout).toContain(
+      `✓ Git Bash is at ${bash}, which the hooks and the Bash tool run through`,
+    );
+    expect(readFileSync(log, "utf8")).toContain("cc-smart-dev-kit.cmd version");
+  });
+
+  test("doctor off Windows knows nothing of Git Bash or a .cmd", () => {
+    const { run } = setup();
+    run(["setup"]);
+    const result = run(["doctor"]);
+    expect(result.stdout).not.toContain("Git Bash");
+    expect(result.stdout).not.toContain(".cmd");
+    expect(result.stdout).not.toContain("tmux: not on Windows");
   });
 });

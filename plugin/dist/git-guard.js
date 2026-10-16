@@ -8,8 +8,24 @@ import { join as join2 } from "path";
 // src/gateway/paths.ts
 import { homedir } from "os";
 import { join } from "path";
+
+// src/machine/host.ts
+var TEST_HOST_VAR = "CC_SMART_DEV_KIT_TEST_HOST";
+function hostPlatform(env = process.env) {
+  const text = env[TEST_HOST_VAR];
+  if (!text)
+    return process.platform;
+  const given = JSON.parse(text);
+  return given.platform ?? process.platform;
+}
+
+// src/gateway/paths.ts
 function homeDir(env = process.env) {
-  return env.HOME || homedir();
+  if (env.HOME)
+    return env.HOME;
+  if (hostPlatform(env) === "win32" && env.USERPROFILE)
+    return env.USERPROFILE;
+  return homedir();
 }
 function routerPaths(env = process.env) {
   const home = homeDir(env);
@@ -7570,7 +7586,6 @@ import { mkdirSync as mkdirSync3, readFileSync as readFileSync3, statSync as sta
 
 // src/setup/write.ts
 import {
-  chmodSync,
   closeSync,
   existsSync as existsSync4,
   fsyncSync,
@@ -7587,6 +7602,25 @@ import {
   writeFileSync as writeFileSync2
 } from "fs";
 import { basename as basename2, dirname as dirname2, join as join6, resolve as resolve2 } from "path";
+
+// src/setup/file-mode.ts
+import { chmodSync, fchmodSync } from "fs";
+function failureIsFatal(platform) {
+  return platform !== "win32";
+}
+function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
+  try {
+    if (typeof fileOrFd === "number")
+      fchmodSync(fileOrFd, mode);
+    else
+      chmodSync(fileOrFd, mode);
+  } catch (error) {
+    if (failureIsFatal(platform))
+      throw error;
+  }
+}
+
+// src/setup/write.ts
 function writeTemp(file, content, mode) {
   const dir = dirname2(file);
   mkdirSync2(dir, { recursive: true });
@@ -7599,7 +7633,7 @@ function writeTemp(file, content, mode) {
     } finally {
       closeSync(fd);
     }
-    chmodSync(temp, mode);
+    setFileMode(temp, mode);
   } catch (error) {
     if (existsSync4(temp))
       unlinkSync(temp);

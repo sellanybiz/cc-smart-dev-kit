@@ -61,7 +61,7 @@ the first time you use it.
 | `src/project/` | Finds the git project from a folder and reads its `.claude/cc-smart-dev-kit.json`. |
 | `src/setup/` | Safe changes to user files: managed keys, list entries and blocks, backups, atomic writes, the lock, the launcher, restore, marketplace access, the auto-mode block. |
 | `src/cli/` | The `cc-smart-dev-kit` commands: `setup`, `doctor` (and `--live`; its checks of the current folder's project in `project-checks.ts`), `hook`, `browser`, `sessions`, `worktrees`, `restore`, `migrate` (a machine still on 0.2.x's names), `update`, `session-name`, `statusline`, `usage`, `version`. |
-| `src/machine/` | Machine setup: the companion plugins, claude-mem's settings, Warp, and `Machine` (the system, faked in tests). |
+| `src/machine/` | Machine setup: the companion plugins, claude-mem's settings, Warp, `Machine` (the system, faked in tests), the host's platform (`host.ts`), and opening a URL on the person's desktop (`open-url.ts`). |
 | `src/gateway/` | The optional AI gateway: the router, its config and slots (the model slots, the judge test and its proof too), a model slot's fallback answer made safe for Claude (`fallback-answer.ts`), the limit state file, `gateway <command>`, its service (a socket unit and the router unit) and its doctor checks. |
 | `src/update/` | The self-update: the SessionStart hook's part, the detached background check, `cc-smart-dev-kit update`'s steps, and their state files. |
 | `src/search/` | The `cc-smart-dev-kit search` command: web search and one page's text through the gateway's OmniRoute backend. |
@@ -132,6 +132,8 @@ Each rule loads itself when you touch a file it covers.
 - `docs/search.md` — `cc-smart-dev-kit search`: how it works, what a search costs, and its limits.
 - `docs/jobs.md` — the heavy-job queue: how a job waits and runs, the kinds, the config,
   the shared view, and its limits.
+- `docs/windows-setup.md` — native Windows: the one path layout, the `.cmd` launcher, file
+  modes vs the profile's ACL, Git Bash, and what still has to be tested on Windows.
 
 **Keep them true in the same change.** Change how a part works: update `docs/design.md`.
 Change a command or a `cc-smart-dev-kit.json` field: update `README.md`. Rely on a new Claude Code
