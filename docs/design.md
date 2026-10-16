@@ -1340,7 +1340,8 @@ filter that made each session's windows its own.
   person to approve every connection, in a page, and waits without a deadline; the owner's rule
   is that the plugin never runs that way, so `browser mcp` exits non-zero with one stderr line
   (which Claude Code shows as the server's error) and starts nothing. The token lives in
-  `~/.config/cc-smart-dev-kit/playwright-extension.token`, mode 0600, and goes into the MCP
+  `~/.config/cc-smart-dev-kit/playwright-extension.token` (mode 0600; on Windows the profile's
+  ACL, `isOwnerOnly`), and goes into the MCP
   child's ENVIRONMENT only: `argv` is world-readable in `/proc`, and `~/.claude.json` holds no
   secret. A wrong token does not fall back to an approval page: the extension answers the connect
   page with *Invalid token provided.*, and the MCP fails after its own 30-second deadline with a
@@ -1397,6 +1398,19 @@ filter that made each session's windows its own.
   makes before it connects — so neither ever starts Chrome. The portal draws them on a Browser card
   (with the guide, a setup button and a masked token field) and leaves them out of the Doctor
   card's list, so no line appears twice on one page.
+- **0.3.0's leftovers are reported, never touched** (`browser/legacy.ts`). The upgrade leaves two
+  things behind: the old shared profile folder `<dataDir>/playwright` (which may hold sign-ins) and
+  the detached Chrome 0.3.0 started on it, whose debug port is unauthenticated on 127.0.0.1. The
+  plugin never deletes a person's browser data (owner, 2026-10-16), so `doctor` prints a `!` line
+  with the profile's path and the exact command that removes it (`rm -rf` on macOS and Linux,
+  PowerShell's `Remove-Item` on Windows, `~` only where a shell takes it), and a `!` line naming
+  the old Chrome's pid when it still runs — its child processes carry the same `--user-data-dir`
+  and a `--type=` switch, so only the browser process is named. Detection is read only and per
+  platform (Linux's `/proc/<pid>/cmdline`, macOS's `ps -ww -axo pid=,command=`, a read-only
+  PowerShell `Get-CimInstance Win32_Process`; never `wmic`), it runs only where a trace of 0.3.0's
+  browser is there (its folder or its picker file), and a listing that cannot be read is a `·`
+  "could not check" — never a claim that nothing runs. `cc-smart-dev-kit setup` prints the same
+  facts as information, and never asks a question about them.
 - **Nothing in `src/browser/` reads the environment.** The home folder, the platform and every
   file call are arguments (`ChromeDeps`), so a test points them at a temp world
   (`src/testing/chrome-world.ts`) and never touches the real `~/.config`. The Chrome executable and

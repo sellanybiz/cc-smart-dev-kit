@@ -5,12 +5,13 @@
  * back. No Chrome is started anywhere in this file: `spawnDetached` records the call.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { readChanged } from "../setup/write";
-import { chromeWorld, writeWorldToken } from "../testing/chrome-world";
+import { type ChromeWorld, chromeWorld, writeWorldToken } from "../testing/chrome-world";
 import { PLAYWRIGHT_EXTENSION_SETTINGS_URL, PLAYWRIGHT_EXTENSION_URL } from "./chrome";
+import { legacyBrowserPaths } from "./legacy";
 import {
   browserRestoreLines,
   browserSetup,
@@ -284,5 +285,81 @@ describe("the one write inside Chrome's own folder", () => {
     expect(statSync(localState).mode & 0o777).toBe(mode);
     // The plugin never deletes Chrome's files.
     rmSync(join(world.userDataDir, "Local State"), { force: true });
+  });
+});
+
+/** 0.3.0's profile folder with a cookie in it, and its picker beside it. */
+function leftover(world: ChromeWorld): { picker: string; profile: string } {
+  const { picker, profile } = legacyBrowserPaths(world.paths);
+  mkdirSync(profile, { recursive: true });
+  writeFileSync(join(profile, "Cookies"), "a signed-in cookie");
+  writeFileSync(picker, "// 0.3.0's init page\n");
+  return { picker, profile };
+}
+
+/** Nothing here may ever delete or change what 0.3.0 left: it may hold the person's sign-ins. */
+function untouched(profile: string, picker: string): void {
+  expect(readFileSync(join(profile, "Cookies"), "utf8")).toBe("a signed-in cookie");
+  expect(readFileSync(picker, "utf8")).toBe("// 0.3.0's init page\n");
+}
+
+describe("what 0.3.0 left behind", () => {
+  test("browser setup prints it as information, changes nothing, and deletes nothing", () => {
+    const world = chromeWorld();
+    const { picker, profile } = leftover(world);
+    const result = browserSetup(
+      world.paths,
+      { ...world.deps, processes: () => [] },
+      {
+        apply: true,
+      },
+    );
+    const info = result.info.join("\n");
+    expect(info).toContain("0.3.0 shared browser's profile is still at");
+    expect(info).toContain("Delete them yourself when you no longer need the sign-ins");
+    // It is information: no question, no note, and no change line mentions it.
+    expect(result.notes.join("\n")).not.toContain("0.3.0");
+    expect(result.changes.join("\n")).not.toContain(profile);
+    untouched(profile, picker);
+  });
+
+  test("cc-smart-dev-kit setup prints the same lines, and still says the browser is ready", () => {
+    const world = chromeWorld();
+    world.withProfile({ fileUrls: true });
+    writeWorldToken(world);
+    const { picker, profile } = leftover(world);
+    const report = browserSetupReport(world.paths, { ...world.deps, processes: () => [] });
+    expect(report.notes).toEqual([]);
+    expect(report.info.join("\n")).toContain("0.3.0 shared browser's profile is still at");
+    // 0.4.0's own setup is complete, so nothing about it is printed: one home for each line.
+    expect(report.info.join("\n")).not.toContain("NOT ready");
+    untouched(profile, picker);
+  });
+
+  test("the old Chrome while it still runs is named by setup too", () => {
+    const world = chromeWorld();
+    const { picker, profile } = leftover(world);
+    const report = browserSetupReport(world.paths, {
+      ...world.deps,
+      processes: () => [
+        { command: `/opt/google/chrome/chrome --user-data-dir=${profile} about:blank`, pid: 4321 },
+      ],
+    });
+    expect(report.info.join("\n")).toContain("the 0.3.0 shared Chrome is still running");
+    expect(report.info.join("\n")).toContain("pid 4321");
+    expect(report.info.join("\n")).toContain("Its debug port has no password");
+    untouched(profile, picker);
+  });
+
+  test("a machine that never ran 0.3.0's browser says nothing at all", () => {
+    const world = chromeWorld();
+    const result = browserSetup(
+      world.paths,
+      { ...world.deps, processes: () => [] },
+      {
+        apply: false,
+      },
+    );
+    expect(result.info.join("\n")).not.toContain("0.3.0");
   });
 });

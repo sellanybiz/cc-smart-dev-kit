@@ -83,7 +83,9 @@ Done in this release:
   `claude-code`, with the Playwright extension's token required — `browser setup`, `browser token`
   and `browser check` are new, the plugin's own shared Chrome, its profile folder, the tab filter
   and the file-picker bundle are gone, and `doctor` and the portal's Machine page report the
-  browser's own state.
+  browser's own state. What 0.3.0 left — the profile folder `<dataDir>/playwright` and the Chrome
+  it may still have running — is reported by `doctor` (with the command that deletes the folder,
+  which is the person's own call, and the pid of that Chrome) and is never deleted or used.
 
 ## 1 — Foundation (done)
 

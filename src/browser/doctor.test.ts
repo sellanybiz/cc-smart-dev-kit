@@ -1,12 +1,17 @@
 /**
  * The browser's lines in `doctor` (`doctor.ts`): Chrome, the `claude-code` profile, the extension in
  * it, other extensions, the file-URL switch, the token — and the one thing every line must never
- * carry: the token's value. All of it is file checks; nothing here starts Chrome.
+ * carry: the token's value. All of it is file checks; nothing here starts Chrome. The last group
+ * is what version 0.3.0 left behind (`legacy.ts`), which nothing here deletes either.
  */
 import { describe, expect, test } from "bun:test";
-import { chromeWorld, writeWorldToken } from "../testing/chrome-world";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tildify } from "../cli/paths";
+import { type ChromeWorld, chromeWorld, writeWorldToken } from "../testing/chrome-world";
 import { PLAYWRIGHT_EXTENSION_SETTINGS_URL, PLAYWRIGHT_EXTENSION_URL } from "./chrome";
 import { browserChecks } from "./doctor";
+import { legacyBrowserPaths } from "./legacy";
 
 const texts = (checks: ReturnType<typeof browserChecks>) =>
   checks.map((check) => check.text).join("\n");
@@ -96,7 +101,7 @@ describe("browserChecks", () => {
     expect(missing?.text).toContain("browser token");
     expect(missing?.text).toContain("browser setup");
 
-    const token = "A".repeat(40) + "_-b";
+    const token = `${"A".repeat(40)}_-b`;
     writeWorldToken(world, token);
     const checks = browserChecks(world.paths, world.deps);
     const set = checks.find((check) => check.text.includes("the browser token is set"));
@@ -117,5 +122,100 @@ describe("browserChecks", () => {
     const line = checks.find((check) => check.text.includes("token"));
     expect(line?.ok).toBe(false);
     expect(line?.text).toContain("readable by others");
+  });
+});
+
+/** 0.3.0's profile folder with a cookie in it: the sign-ins the lines warn about. */
+function leftover(world: ChromeWorld): { picker: string; profile: string } {
+  const { picker, profile } = legacyBrowserPaths(world.paths);
+  mkdirSync(profile, { recursive: true });
+  writeFileSync(join(profile, "Cookies"), "a signed-in cookie");
+  writeFileSync(picker, "// 0.3.0's init page\n");
+  return { picker, profile };
+}
+
+/** Nothing here may ever delete or change what 0.3.0 left. */
+function untouched(profile: string, picker: string): void {
+  expect(readFileSync(join(profile, "Cookies"), "utf8")).toBe("a signed-in cookie");
+  expect(readFileSync(picker, "utf8")).toBe("// 0.3.0's init page\n");
+}
+
+describe("what 0.3.0 left behind", () => {
+  test("the old shared profile: a warning naming the paths and the command that removes them", () => {
+    const world = chromeWorld();
+    world.withProfile({ fileUrls: true });
+    writeWorldToken(world);
+    const { picker, profile } = leftover(world);
+    const checks = browserChecks(world.paths, { ...world.deps, processes: () => [] });
+    const line = checks.find((check) => check.text.includes("0.3.0 shared browser's profile"));
+    expect(line?.warn).toBe(true);
+    expect(line?.ok).toBe(true); // a warning is never a failure: doctor still exits 0
+    expect(line?.section).toBe("browser");
+    expect(line?.text).toContain(
+      `is still at ${tildify(profile, world.home)} and may hold sign-ins`,
+    );
+    expect(line?.text).toContain(`its file picker is at ${tildify(picker, world.home)}`);
+    expect(line?.text).toContain(
+      `rm -rf ${tildify(profile, world.home)} ${tildify(picker, world.home)}`,
+    );
+    expect(line?.text).toContain("Delete them yourself when you no longer need the sign-ins");
+    untouched(profile, picker);
+  });
+
+  test("the line is there on a machine that has not made the claude-code profile yet", () => {
+    // The usual state just after an upgrade: 0.3.0's leftovers, and none of 0.4.0's setup.
+    const world = chromeWorld();
+    const { picker, profile } = leftover(world);
+    const checks = browserChecks(world.paths, { ...world.deps, processes: () => [] });
+    expect(checks.some((check) => check.ok === false)).toBe(true); // no profile yet: ✗
+    expect(checks.some((check) => check.text.includes("0.3.0 shared browser's profile"))).toBe(
+      true,
+    );
+    untouched(profile, picker);
+  });
+
+  test("the old Chrome still running: a warning naming the pid", () => {
+    const world = chromeWorld();
+    world.withProfile({ fileUrls: true });
+    writeWorldToken(world);
+    const { picker, profile } = leftover(world);
+    const checks = browserChecks(world.paths, {
+      ...world.deps,
+      processes: () => [
+        { command: `/opt/google/chrome/chrome --user-data-dir=${profile} about:blank`, pid: 1234 },
+        {
+          command: `/opt/google/chrome/chrome --type=renderer --user-data-dir=${profile}`,
+          pid: 1235,
+        },
+      ],
+    });
+    const line = checks.find((check) => check.text.includes("still running"));
+    expect(line?.warn).toBe(true);
+    expect(line?.ok).toBe(true);
+    expect(line?.text).toContain("pid 1234");
+    expect(line?.text).not.toContain("1235");
+    expect(line?.text).toContain("Its debug port has no password");
+    untouched(profile, picker);
+  });
+
+  test("a process list that could not be read: '·' information, never a claim of none", () => {
+    const world = chromeWorld();
+    const { picker, profile } = leftover(world);
+    const checks = browserChecks(world.paths, { ...world.deps, processes: () => null });
+    const line = checks.find((check) => check.text.includes("process list"));
+    expect(line?.info).toBe(true);
+    expect(line?.ok).toBe(true); // information, never a failure
+    expect(line?.text).toContain("is unknown");
+    expect(line?.text).not.toContain("nothing is running");
+    untouched(profile, picker);
+  });
+
+  test("no trace of 0.3.0: not one line", () => {
+    const world = chromeWorld();
+    world.withProfile({ fileUrls: true });
+    writeWorldToken(world);
+    const checks = browserChecks(world.paths, { ...world.deps, processes: () => [] });
+    expect(texts(checks)).not.toContain("0.3.0");
+    expect(existsSync(legacyBrowserPaths(world.paths).profile)).toBe(false);
   });
 });
