@@ -1,17 +1,20 @@
 # install.ps1 in a fake world, on a real Windows machine: the proof the Windows CI job runs
-# (the way scripts/windows-hook-smoke.sh proves the hooks there). `bash scripts/…` cannot be
-# used for the PowerShell installer, and PowerShell is what a Windows person runs it with:
-# pwsh starts install.ps1 as its own process, with a temp HOME, fakes for the four programs
-# it calls, and a file whose lines are the answers.
+# (the way scripts/windows-hook-smoke.sh proves the hooks there). The cases are the ones
+# scripts/install.test.ts proves for install.sh: a fresh machine, a second run, an
+# old-anymodel machine, a half-moved machine, a machine with only the old plugin, a refusal
+# inside a Claude Code session, an old Bun answered no, no repository argument, -DryRun, the
+# secrets, and the exit code 3 a doctor [x] gives.
 #
-# The cases are the ones the Linux and macOS test (scripts/install.test.ts) proves for
-# install.sh: a fresh machine, an old-anymodel machine, a second run, inside a Claude Code
-# session, an old Bun with a no, no repository argument, -DryRun, and what only the person
-# has. One case is not here: the browser's token, which the plugin's own command reads from
-# the console — a fake cannot consume that, so the Linux test proves it (its fd is a file).
+# The fakes are `.cmd` files and nothing else, so a fake that reads stdin (the keys, the
+# browser's token) reads the very stdin the installer piped to it. They log every argument
+# and answer the way the real programs do: the fake `claude` writes the same records Claude
+# Code writes, the fake `bun` runs the plugin's commands as far as a fake can (the launcher,
+# doctor's own [x] while the browser's token is missing), and the fake `git` and `gh` just
+# log. Nothing here reaches the network, a real Claude Code, or the person's own profile:
+# every world is a temp folder under $env:TEMP.
 #
-# Nothing here reaches the network, a real Claude Code, or the person's own profile: the
-# fakes answer every call, and the world is a temp folder under $env:TEMP.
+# Run it with `pwsh -NoProfile -File scripts/install-windows-smoke.ps1`; windows.yml runs it
+# under pwsh AND under Windows PowerShell 5.1, because install.ps1 must work in both.
 param()
 
 $ErrorActionPreference = "Stop"
@@ -29,8 +32,10 @@ function Stop-Smoke([string]$Message) {
 $root = Split-Path -Parent $PSScriptRoot
 $install = Join-Path $root "install.ps1"
 if (-not (Test-Path $install)) { Stop-Smoke "install.ps1 is not at the repo root" }
-$pwsh = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
-if ([string]::IsNullOrEmpty($pwsh)) { Stop-Smoke "pwsh is not on PATH" }
+# The shell install.ps1 is started with: pwsh when this runs under pwsh, Windows PowerShell
+# otherwise -- so the same file is proved in both.
+$shell = (Get-Process -Id $PID).Path
+if ([string]::IsNullOrEmpty($shell)) { Stop-Smoke "cannot find the PowerShell running this test" }
 $repo = "example-org/cc-smart-dev-kit"
 $marketplaceVersion = "0.4.2"
 
@@ -40,121 +45,204 @@ $marketplaceVersion = "0.4.2"
 $minBun = [regex]::Match((Get-Content -Raw $install), '(?m)^\$MinBun = "([^"]+)"').Groups[1].Value
 if ([string]::IsNullOrEmpty($minBun)) { Stop-Smoke "install.ps1 has no `$MinBun line" }
 
-# ─── the fakes ─────────────────────────────────────────────────────────────────────────
-# One .ps1 per program with a .cmd trampoline beside it: PowerShell's Get-Command finds the
-# .cmd, and the logic stays readable PowerShell. Each logs its arguments, and the ones the
-# plugin reads a secret from read their stdin (and log only its shape).
+# --- the fakes -------------------------------------------------------------------------
+# One .cmd per program. Each logs its arguments; the ones the plugin reads a secret from read
+# their own stdin (and log only its shape). The JSON work is done by a `powershell -Command`
+# child that takes its values from the environment, so no quoting can go wrong and no child
+# touches the installer's stdin.
 function Write-Fakes([string]$Dir, [string]$Log) {
-  $bun = @'
-$log = $env:FAKE_LOG
-Add-Content -Path $log -Value ("bun " + ($args -join " "))
-$joined = $args -join " "
-if ($args[0] -eq "--version") {
-  if (Test-Path $env:FAKE_BUN_UPGRADED) { Get-Content $env:FAKE_BUN_UPGRADED } else { Write-Output $env:FAKE_BUN_VERSION }
-  exit 0
-}
-if ($args[0] -eq "upgrade") { Set-Content -Path $env:FAKE_BUN_UPGRADED -Value $env:FAKE_BUN_UPGRADE_TO; exit 0 }
-try { $null = [Console]::In } catch { }
-if ($joined -like "*browser token*") {
-  $line = ""
-  try { $line = [Console]::In.ReadLine() } catch { }
-  if ($null -eq $line) { $line = "" }
-  Add-Content -Path $log -Value ("stdin-" + $line.Length + "-chars")
-}
-if ($joined -like "*--backend-key-stdin*" -or $joined -like "*--tavily-key-stdin*") {
-  $all = ""
-  try { $all = [Console]::In.ReadToEnd() } catch { }
-  if ($null -eq $all) { $all = "" }
-  if ($all.Trim().Length -gt 0) { Add-Content -Path $log -Value "stdin-nonempty" } else { Add-Content -Path $log -Value "stdin-empty" }
-}
-if ($joined -like "*dist/cli.js setup*") {
-  $bin = Join-Path $env:HOME ".local\bin"
-  New-Item -ItemType Directory -Force -Path $bin | Out-Null
-  Set-Content -Path (Join-Path $bin "cc-smart-dev-kit.cmd") -Value ("@echo off`r`necho launcher %*>> `"" + $env:FAKE_LOG + "`"`r`nexit /b 0`r`n")
-}
-exit 0
-'@
+  $json = 'powershell -NoProfile -Command'
 
-  $claude = @'
-$log = $env:FAKE_LOG
-Add-Content -Path $log -Value ("claude " + ($args -join " "))
-if ($args[0] -eq "plugin" -and $args[1] -eq "marketplace" -and $args[2] -eq "add") {
-  $name = "cc-smart-dev-kit"
-  if ($args[3] -like "*claude-mem*") { $name = "thedotmack" }
-  if ($args[3] -like "*claude-plugins-official*") { $name = "claude-plugins-official" }
-  $dir = Join-Path $env:CLAUDE_CONFIG_DIR ("plugins\marketplaces\" + $name)
-  New-Item -ItemType Directory -Force -Path (Join-Path $dir "plugin\.claude-plugin") | Out-Null
-  if ($args[3] -like "*cc-smart-dev-kit*") {
-    Set-Content -Path (Join-Path $dir "plugin\.claude-plugin\plugin.json") -Value ('{"name":"cc-smart-dev-kit","version":"' + $env:FAKE_MARKETPLACE_VERSION + '"}')
+  $claude = @"
+@echo off
+setlocal enabledelayedexpansion
+echo claude %*>> "$Log"
+if "%1"=="plugin" if "%2"=="marketplace" if "%3"=="add" (
+  set "name=cc-smart-dev-kit"
+  echo %4| findstr /C:"claude-mem" >nul && set "name=thedotmack"
+  echo %4| findstr /C:"claude-plugins-official" >nul && set "name=claude-plugins-official"
+  set "FAKE_NAME=!name!"
+  set "FAKE_SOURCE=%4"
+  set "FAKE_DIR=%CLAUDE_CONFIG_DIR%\plugins\marketplaces\!name!"
+  mkdir "!FAKE_DIR!\plugin\.claude-plugin" 2>nul
+  if "!name!"=="cc-smart-dev-kit" >"!FAKE_DIR!\plugin\.claude-plugin\plugin.json" echo {"name":"cc-smart-dev-kit","version":"$marketplaceVersion"}
+  $json "`$f=Join-Path `$env:CLAUDE_CONFIG_DIR 'plugins\known_marketplaces.json'; `$d=@{}; if (Test-Path `$f) { foreach (`$p in (Get-Content -Raw `$f | ConvertFrom-Json).PSObject.Properties) { `$d[`$p.Name]=`$p.Value } }; `$d[`$env:FAKE_NAME]=@{source=@{source='github';repo=`$env:FAKE_SOURCE};installLocation=`$env:FAKE_DIR}; New-Item -ItemType Directory -Force -Path (Split-Path -Path `$f) | Out-Null; (`$d | ConvertTo-Json -Depth 6) | Set-Content -Path `$f"
+  endlocal
+  exit /b 0
+)
+if "%1"=="plugin" if "%2"=="marketplace" if "%3"=="remove" (
+  set "FAKE_NAME=%4"
+  $json "`$f=Join-Path `$env:CLAUDE_CONFIG_DIR 'plugins\known_marketplaces.json'; `$d=@{}; if (Test-Path `$f) { foreach (`$p in (Get-Content -Raw `$f | ConvertFrom-Json).PSObject.Properties) { `$d[`$p.Name]=`$p.Value } }; `$d.Remove(`$env:FAKE_NAME); (`$d | ConvertTo-Json -Depth 6) | Set-Content -Path `$f"
+  exit /b 0
+)
+if "%1"=="plugin" if "%2"=="install" goto :install
+if "%1"=="plugin" if "%2"=="update" goto :install
+if "%1"=="plugin" if "%2"=="uninstall" (
+  set "FAKE_ID=%3"
+  $json "`$f=Join-Path `$env:CLAUDE_CONFIG_DIR 'plugins\installed_plugins.json'; `$d=@{version=2;plugins=@{}}; if (Test-Path `$f) { `$e=Get-Content -Raw `$f | ConvertFrom-Json; foreach (`$p in `$e.plugins.PSObject.Properties) { `$d.plugins[`$p.Name]=`$p.Value } }; `$d.plugins.Remove(`$env:FAKE_ID); (`$d | ConvertTo-Json -Depth 8) | Set-Content -Path `$f"
+  exit /b 0
+)
+exit /b 0
+
+:install
+set "FAKE_DIR=%CLAUDE_CONFIG_DIR%\plugins\cache\cc-smart-dev-kit\cc-smart-dev-kit\$marketplaceVersion"
+mkdir "%FAKE_DIR%\dist" 2>nul
+>"%FAKE_DIR%\dist\cli.js" echo await import("the plugin");
+>"%FAKE_DIR%\bunfig.toml" echo {}
+$json "`$f=Join-Path `$env:CLAUDE_CONFIG_DIR 'plugins\installed_plugins.json'; `$d=@{version=2;plugins=@{}}; if (Test-Path `$f) { `$e=Get-Content -Raw `$f | ConvertFrom-Json; foreach (`$p in `$e.plugins.PSObject.Properties) { `$d.plugins[`$p.Name]=`$p.Value } }; `$d.plugins['cc-smart-dev-kit@cc-smart-dev-kit']=@(@{scope='user';installPath=`$env:FAKE_DIR;version=`$env:FAKE_MARKETPLACE_VERSION}); New-Item -ItemType Directory -Force -Path (Split-Path -Path `$f) | Out-Null; (`$d | ConvertTo-Json -Depth 8) | Set-Content -Path `$f"
+$json "`$f=Join-Path `$env:CLAUDE_CONFIG_DIR 'settings.json'; `$d=@{}; if (Test-Path `$f) { `$d=Get-Content -Raw `$f | ConvertFrom-Json }; `$d | Add-Member -Force -NotePropertyName enabledPlugins -NotePropertyValue @{'cc-smart-dev-kit@cc-smart-dev-kit'=`$true}; (`$d | ConvertTo-Json -Depth 8) | Set-Content -Path `$f"
+exit /b 0
+"@
+
+  $bun = @"
+@echo off
+setlocal enabledelayedexpansion
+echo bun %*>> "$Log"
+if "%1"=="--version" (
+  if exist "$Log.upgraded" (type "$Log.upgraded") else (echo %FAKE_BUN_VERSION%)
+  exit /b 0
+)
+if "%1"=="upgrade" (
+  >"$Log.upgraded" echo %FAKE_BUN_UPGRADE_TO%
+  exit /b 0
+)
+set "FAKE_ALL=%*"
+echo !FAKE_ALL! | findstr /C:"browser token" >nul
+if not errorlevel 1 (
+  set "secret="
+  set /p secret=
+  call :length "!secret!" len
+  >>"$Log" echo stdin-!len!-chars
+  if not exist "%USERPROFILE%\.config\cc-smart-dev-kit" mkdir "%USERPROFILE%\.config\cc-smart-dev-kit"
+  >"%USERPROFILE%\.config\cc-smart-dev-kit\playwright-extension.token" echo !secret!
+)
+echo !FAKE_ALL! | findstr /C:"--backend-key-stdin" >nul
+if not errorlevel 1 (
+  call :readall
+  exit /b 0
+)
+echo !FAKE_ALL! | findstr /C:"--tavily-key-stdin" >nul
+if not errorlevel 1 (
+  call :readall
+  exit /b 0
+)
+echo !FAKE_ALL! | findstr /C:"dist/cli.js setup" >nul
+if not errorlevel 1 (
+  rem The real setup writes the launcher; this one copies the template the test made. It
+  rem does what the real launcher does: it runs the plugin's own CLI.
+  mkdir "%USERPROFILE%\.local\bin" 2>nul
+  copy /y "%FAKE_LAUNCHER%" "%USERPROFILE%\.local\bin\cc-smart-dev-kit.cmd" >nul
+)
+echo !FAKE_ALL! | findstr /C:"dist/cli.js doctor" >nul
+if not errorlevel 1 (
+  if exist "%USERPROFILE%\.config\cc-smart-dev-kit\playwright-extension.token" (
+    echo [ok] the browser token is set
+    exit /b 0
+  )
+  echo [x] the browser token is not set, so the browser cannot connect (no token file): run: cc-smart-dev-kit browser setup, then cc-smart-dev-kit browser token
+  exit /b 1
+)
+exit /b 0
+
+:readall
+rem Every line of stdin, counted, never printed: the key is a secret.
+set "count=0"
+for /f "delims=" %%L in ('findstr "^"') do set /a count+=1
+if !count! gtr 0 (>>"$Log" echo stdin-nonempty) else (>>"$Log" echo stdin-empty)
+exit /b 0
+
+:length
+set "text=%~1"
+set "len=0"
+:lengthloop
+if not "!text!"=="" (
+  set "text=!text:~1!"
+  set /a len+=1
+  goto :lengthloop
+)
+exit /b 0
+"@
+
+  $git = @"
+@echo off
+echo git %*>> "$Log"
+if "%FAKE_GIT_FAILS%"=="yes" exit /b 128
+exit /b 0
+"@
+
+  $gh = @"
+@echo off
+echo gh %*>> "$Log"
+exit /b 0
+"@
+
+  foreach ($pair in @(@("claude", $claude), @("bun", $bun), @("git", $git), @("gh", $gh))) {
+    Set-Content -Path (Join-Path $Dir ($pair[0] + ".cmd")) -Value $pair[1]
   }
-  $file = Join-Path $env:CLAUDE_CONFIG_DIR "plugins\known_marketplaces.json"
-  $data = @{}
-  if (Test-Path $file) { foreach ($p in (Get-Content -Raw $file | ConvertFrom-Json).PSObject.Properties) { $data[$p.Name] = $p.Value } }
-  $data[$name] = @{ source = @{ source = "github"; repo = $args[3] }; installLocation = $dir }
-  $data | ConvertTo-Json -Depth 6 | Set-Content -Path $file
-}
-if ($args[0] -eq "plugin" -and $args[1] -eq "install") {
-  $dir = Join-Path $env:CLAUDE_CONFIG_DIR ("plugins\cache\cc-smart-dev-kit\cc-smart-dev-kit\" + $env:FAKE_MARKETPLACE_VERSION)
-  New-Item -ItemType Directory -Force -Path (Join-Path $dir "dist") | Out-Null
-  Set-Content -Path (Join-Path $dir "dist\cli.js") -Value 'await import("the plugin");'
-  Set-Content -Path (Join-Path $dir "bunfig.toml") -Value "{}"
-  $file = Join-Path $env:CLAUDE_CONFIG_DIR "plugins\installed_plugins.json"
-  $data = @{ version = 2; plugins = @{} }
-  if (Test-Path $file) {
-    $existing = Get-Content -Raw $file | ConvertFrom-Json
-    foreach ($p in $existing.plugins.PSObject.Properties) { $data.plugins[$p.Name] = $p.Value }
-  }
-  $data.plugins["cc-smart-dev-kit@cc-smart-dev-kit"] = @(@{ scope = "user"; installPath = $dir; version = $env:FAKE_MARKETPLACE_VERSION })
-  $data | ConvertTo-Json -Depth 6 | Set-Content -Path $file
-}
-exit 0
-'@
-
-  $git = @'
-Add-Content -Path $env:FAKE_LOG -Value ("git " + ($args -join " "))
-if ($env:FAKE_GIT_FAILS -eq "yes") { exit 128 }
-exit 0
-'@
-
-  $gh = @'
-Add-Content -Path $env:FAKE_LOG -Value ("gh " + ($args -join " "))
-exit 0
-'@
-
-  foreach ($pair in @(@("bun", $bun), @("claude", $claude), @("git", $git), @("gh", $gh))) {
-    Set-Content -Path (Join-Path $Dir ($pair[0] + ".ps1")) -Value $pair[1]
-    Set-Content -Path (Join-Path $Dir ($pair[0] + ".cmd")) -Value ("@powershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0" + $pair[0] + ".ps1`" %*`r`nexit /b %errorlevel%`r`n")
-  }
 }
 
-# ─── one world ──────────────────────────────────────────────────────────────────────────
+# --- one world -------------------------------------------------------------------------
 function New-World([string]$Name, [hashtable]$Options = @{}) {
   $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("cc-smart-dev-kit-install-" + $Name + "-" + [Guid]::NewGuid().ToString("N"))
-  $home = Join-Path $dir "home"
-  $bin = Join-Path $home "bin"
-  $log = Join-Path $home "calls.log"
+  $worldHome = Join-Path $dir "home"
+  $bin = Join-Path $worldHome "bin"
+  $log = Join-Path $worldHome "calls.log"
   New-Item -ItemType Directory -Force -Path $bin | Out-Null
   Set-Content -Path $log -Value ""
   Write-Fakes -Dir $bin -Log $log
-  if ($Options["NoBun"] -eq $true) {
-    Remove-Item -Path (Join-Path $bin "bun.cmd"), (Join-Path $bin "bun.ps1") -Force
+  $configDir = Join-Path $worldHome ".claude"
+  if ($Options.ContainsKey("InstalledVersion")) {
+    $pluginDir = Join-Path $configDir ("plugins\cache\cc-smart-dev-kit\cc-smart-dev-kit\" + $Options["InstalledVersion"])
+    New-Item -ItemType Directory -Force -Path (Join-Path $pluginDir "dist") | Out-Null
+    Set-Content -Path (Join-Path $pluginDir "dist\cli.js") -Value 'await import("the plugin");'
+    Set-Content -Path (Join-Path $pluginDir "bunfig.toml") -Value "{}"
+    $plugins = [ordered]@{ "cc-smart-dev-kit@cc-smart-dev-kit" = @(@{ scope = "user"; installPath = $pluginDir; version = $Options["InstalledVersion"] }) }
+    if ($Options["OldPlugin"] -eq $true) {
+      $plugins["anymodel@anymodel"] = @(@{ scope = "user"; installPath = "C:\nowhere"; version = "0.2.1" })
+    }
+    New-Item -ItemType Directory -Force -Path (Join-Path $configDir "plugins") | Out-Null
+    Set-Content -Path (Join-Path $configDir "plugins\installed_plugins.json") -Value ((@{ version = 2; plugins = $plugins } | ConvertTo-Json -Depth 8))
+    Set-Content -Path (Join-Path $configDir "settings.json") -Value ((@{ enabledPlugins = @{ "cc-smart-dev-kit@cc-smart-dev-kit" = $true } } | ConvertTo-Json -Depth 8))
   }
-  $answers = Join-Path $home "answers"
+  if ($Options["OldMarketplace"] -eq $true) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $configDir "plugins") | Out-Null
+    Set-Content -Path (Join-Path $configDir "plugins\known_marketplaces.json") -Value ((@{ anymodel = @{ source = @{ source = "github"; repo = "example-org/anymodel" }; installLocation = "C:\old" } } | ConvertTo-Json -Depth 8))
+  }
+  if ($Options["ProgressFile"] -eq $true) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $configDir "cc-smart-dev-kit") | Out-Null
+    Set-Content -Path (Join-Path $configDir "cc-smart-dev-kit\migrate-progress.json") -Value '{"done":["folders"],"version":1}'
+  }
+  if ($Options["RouterCopy"] -eq $true) {
+    $copy = Join-Path $worldHome ".local\share\cc-smart-dev-kit\router.js"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $copy) | Out-Null
+    Set-Content -Path $copy -Value "// the router"
+  }
+  # The launcher the fake setup copies into place: the same thing the real one does, run the
+  # plugin's own CLI with the arguments it was given.
+  $template = Join-Path $dir "launcher.cmd"
+  Set-Content -Path $template -Value (@(
+      "@echo off",
+      "echo launcher %*>> `"$log`"",
+      "call bun %*",
+      "exit /b %errorlevel%"
+    ))
+  $answers = Join-Path $worldHome "answers"
   $answerLines = @()
   if ($Options.ContainsKey("Answers")) { $answerLines = $Options["Answers"] }
   Set-Content -Path $answers -Value ($answerLines -join "`r`n")
   return @{
-    dir = $dir; home = $home; bin = $bin; log = $log; answers = $answers
+    dir = $dir; home = $worldHome; bin = $bin; log = $log
     env = @{
-      HOME = $home
-      CLAUDE_CONFIG_DIR = Join-Path $home ".claude"
+      HOME = $worldHome
+      USERPROFILE = $worldHome
+      CLAUDE_CONFIG_DIR = $configDir
       PATH = $bin + ";" + $env:PATH
       CC_SMART_DEV_KIT_INSTALL_TTY = $answers
       FAKE_LOG = $log
-      FAKE_BUN_VERSION = $(if ($Options.ContainsKey("BunVersion")) { $Options["BunVersion"] } else { $minBun })
-      FAKE_BUN_UPGRADED = Join-Path $home "bun-upgraded"
-      FAKE_BUN_UPGRADE_TO = $minBun
+      FAKE_LAUNCHER = $template
       FAKE_MARKETPLACE_VERSION = $marketplaceVersion
+      FAKE_BUN_VERSION = $(if ($Options.ContainsKey("BunVersion")) { $Options["BunVersion"] } else { $minBun })
+      FAKE_BUN_UPGRADE_TO = $minBun
       FAKE_GIT_FAILS = $(if ($Options.ContainsKey("GitFails")) { $Options["GitFails"] } else { "no" })
     }
   }
@@ -173,7 +261,7 @@ function Invoke-Install($World, [string[]]$Arguments, [hashtable]$Extra = @{}) {
     [Environment]::SetEnvironmentVariable($key, [string]$Extra[$key], "Process")
   }
   try {
-    $out = & $pwsh -NoProfile -File $install @Arguments 2>&1 | Out-String
+    $out = & $shell -NoProfile -ExecutionPolicy Bypass -File $install @Arguments 2>&1 | Out-String
     $code = $LASTEXITCODE
   } finally {
     foreach ($key in $applied.Keys) { [Environment]::SetEnvironmentVariable($key, $applied[$key], "Process") }
@@ -197,115 +285,171 @@ function Assert-Code([string]$What, $Result, [int]$Expected) {
   }
 }
 
-$world = $null
 $passed = 0
+$names = @()
 try {
-  # 1. A fresh machine: the three marketplaces, the plugin, setup, doctor.
-  $world = New-World "fresh" @{ Answers = @("n", "n", "n") }
+  # 1. A fresh machine, the browser done: the marketplaces, the plugin, migrate, setup,
+  #    doctor, exit 0.
+  $world = New-World "fresh" @{ Answers = @("y", "y", ("A" * 43), "n", "n") }
   $result = Invoke-Install $world @($repo)
   Assert-Code "a fresh machine" $result 0
-  Assert-Contains "a fresh machine" $result.out "✓ 1/8 not inside a Claude Code session"
-  Assert-Contains "a fresh machine" $result.out "✓ 3/8 Bun $minBun is new enough (the plugin needs $minBun or newer)"
-  Assert-Contains "a fresh machine" $result.out "✓ 4/8 marketplaces added: $repo, thedotmack/claude-mem, anthropics/claude-plugins-official"
-  Assert-Contains "a fresh machine" $result.out "✓ 5/8 the plugin is installed ($marketplaceVersion)"
-  Assert-Contains "a fresh machine" $result.out "✓ 6/8 setup finished (a new machine)"
-  Assert-Contains "a fresh machine" $result.out "✓ 8/8 doctor: every check passed"
+  Assert-Contains "a fresh machine" $result.out "[ok] 1/8 not inside a Claude Code session"
+  Assert-Contains "a fresh machine" $result.out "[ok] 3/8 Bun $minBun is new enough (the plugin needs $minBun or newer)"
+  Assert-Contains "a fresh machine" $result.out "[ok] 4/8 marketplaces added: $repo, thedotmack/claude-mem, anthropics/claude-plugins-official"
+  Assert-Contains "a fresh machine" $result.out "[ok] 5/8 the plugin is installed ($marketplaceVersion)"
+  Assert-Contains "a fresh machine" $result.out "[ok] 6/8 migrate finished (nothing to move on a machine without the old anymodel names)"
+  Assert-Contains "a fresh machine" $result.out "[ok] 6/8 setup finished"
+  Assert-Contains "a fresh machine" $result.out "[ok] 7/8 the browser's token is saved"
+  Assert-Contains "a fresh machine" $result.out "[ok] 8/8 doctor: every check passed"
   $calls = Get-Calls $world
-  $expected = @(
-    "claude plugin marketplace add $repo",
-    "claude plugin marketplace add thedotmack/claude-mem",
-    "claude plugin marketplace add anthropics/claude-plugins-official",
-    "claude plugin install cc-smart-dev-kit@cc-smart-dev-kit --scope user"
-  )
-  foreach ($call in $expected) {
+  foreach ($call in @("claude plugin marketplace add $repo", "claude plugin marketplace add thedotmack/claude-mem", "claude plugin marketplace add anthropics/claude-plugins-official", "claude plugin install cc-smart-dev-kit@cc-smart-dev-kit --scope user")) {
     if ($calls -notcontains $call) { Stop-Smoke "a fresh machine: `"$call`" was not called; the log is:`n$($calls -join "`n")" }
   }
-  if (-not ($calls | Where-Object { $_ -like "bun --no-env-file --config=*dist\cli.js setup" })) {
-    Stop-Smoke "a fresh machine: setup was not run through the plugin's own bundle; the log is:`n$($calls -join "`n")"
+  if (-not ($calls | Where-Object { $_ -like "bun --no-env-file --config=*dist/cli.js migrate" })) {
+    Stop-Smoke "a fresh machine: migrate was not run through the plugin's own bundle; the log is:`n$($calls -join "`n")"
+  }
+  if (-not ($calls | Where-Object { $_ -like "bun --no-env-file --config=*dist/cli.js setup" })) {
+    Stop-Smoke "a fresh machine: setup was not run through the plugin's own bundle"
   }
   if ($calls -notcontains "launcher doctor") { Stop-Smoke "a fresh machine: doctor did not run through the launcher" }
   $passed++
+  $names += "a fresh machine"
 
   # 2. A second run does only what is missing.
   $before = (Get-Calls $world).Count
   $again = Invoke-Install $world @($repo)
   Assert-Code "a second run" $again 0
-  Assert-Contains "a second run" $again.out "✓ 4/8 all three marketplaces are already added"
-  Assert-Contains "a second run" $again.out "✓ 5/8 the plugin is installed, at the marketplace's version ($marketplaceVersion)"
+  Assert-Contains "a second run" $again.out "[ok] 4/8 all three marketplaces are already added"
+  Assert-Contains "a second run" $again.out "[ok] 5/8 the plugin is installed, at the marketplace's version ($marketplaceVersion)"
   $second = @(Get-Calls $world | Select-Object -Skip $before)
-  if ($second | Where-Object { $_ -like "*marketplace add*" -or $_ -like "*plugin install*" }) {
+  if ($second | Where-Object { $_ -like "*marketplace add*" -or $_ -like "*plugin install*" -or $_ -like "*plugin update*" }) {
     Stop-Smoke "a second run added a marketplace or reinstalled the plugin:`n$($second -join "`n")"
   }
   $passed++
+  $names += "a second run"
 
-  # 3. An old-anymodel machine: migrate, never setup.
-  $old = New-World "old" @{ Answers = @("n", "n", "n") }
-  New-Item -ItemType Directory -Force -Path (Join-Path $old.home ".config\anymodel") | Out-Null
+  # 3. The browser skipped: doctor's [x] is what is left, and the exit code is 3.
+  $skipped = New-World "skipped" @{ Answers = @("n", "n", "n") }
+  $result = Invoke-Install $skipped @($repo)
+  Assert-Code "the browser skipped" $result 3
+  Assert-Contains "the browser skipped" $result.out "[x] 8/8 doctor found what is left"
+  Assert-Contains "the browser skipped" $result.out "the browser token is not set, so the browser cannot connect"
+  Assert-Contains "the browser skipped" $result.out "What is left:"
+  Assert-Contains "the browser skipped" $result.out "the browser: "
+  $passed++
+  $names += "the exit code 3"
+
+  # 4. An old-anymodel machine: migrate, then setup -- and the old plugin is asked about.
+  $old = New-World "old" @{ Answers = @("y", "y", ("A" * 43), "n", "n", "n"); OldMarketplace = $true; InstalledVersion = $marketplaceVersion; OldPlugin = $true }
   $result = Invoke-Install $old @($repo)
   Assert-Code "an old anymodel machine" $result 0
-  Assert-Contains "an old anymodel machine" $result.out "✓ 6/8 migrate finished (this machine still has the old anymodel names)"
-  $calls = Get-Calls $old
-  if ($calls | Where-Object { $_ -like "*dist\cli.js setup" }) { Stop-Smoke "an old anymodel machine ran setup" }
+  Assert-Contains "an old anymodel machine" $result.out "[ok] 6/8 migrate finished"
+  Assert-Contains "an old anymodel machine" $result.out "[ok] 6/8 setup finished"
+  Assert-Contains "an old anymodel machine" $result.out "The old anymodel plugin is still installed. Remove it, and the old anymodel marketplace with it?"
+  Assert-Contains "an old anymodel machine" $result.out "[ok] 6/8 the old anymodel plugin and marketplace are removed"
+  $calls = (Get-Calls $old) -join "`n"
+  if ($calls -notmatch "claude plugin uninstall anymodel@anymodel --scope user") { Stop-Smoke "an old anymodel machine: the old plugin was not uninstalled" }
+  if ($calls -notmatch "claude plugin marketplace remove anymodel") { Stop-Smoke "an old anymodel machine: the old marketplace was not removed" }
   $passed++
+  $names += "an old anymodel machine"
 
-  # 4. Inside a Claude Code session: refused, exit 2, nothing runs.
+  # 5. The old plugin left in place: one line, and it is in what is left.
+  $kept = New-World "kept" @{ Answers = @("y", "y", ("A" * 43), "n", "n", "n"); InstalledVersion = $marketplaceVersion; OldPlugin = $true }
+  $result = Invoke-Install $kept @($repo)
+  Assert-Code "the old plugin left" $result 0
+  Assert-Contains "the old plugin left" $result.out "the old anymodel plugin was left in place"
+  Assert-Contains "the old plugin left" $result.out "- the old anymodel plugin: claude plugin uninstall anymodel@anymodel"
+  if ((Get-Calls $kept) -match "plugin uninstall") { Stop-Smoke "the old plugin left: it was uninstalled anyway" }
+  $passed++
+  $names += "the old plugin left in place"
+
+  # 6. A half-moved machine: its progress file makes migrate run again, then setup.
+  $half = New-World "half" @{ Answers = @("y", "y", ("A" * 43), "n", "n"); ProgressFile = $true }
+  $result = Invoke-Install $half @($repo)
+  Assert-Code "a half-moved machine" $result 0
+  Assert-Contains "a half-moved machine" $result.out "[ok] 6/8 migrate finished"
+  Assert-Contains "a half-moved machine" $result.out "[ok] 6/8 setup finished"
+  $passed++
+  $names += "a half-moved machine"
+
+  # 7. The gateway's restart: a router is on disk, and the person says yes.
+  $router = New-World "router" @{ Answers = @("y", "y", ("A" * 43), "y", "y", "omniroute-key-abc123", "n"); RouterCopy = $true }
+  $result = Invoke-Install $router @($repo)
+  Assert-Code "the router restart" $result 0
+  Assert-Contains "the router restart" $result.out "A router is already installed here: setup restarts it"
+  if (-not ((Get-Calls $router) | Where-Object { $_ -like "*gateway setup --backend-key-stdin omniroute --yes" })) {
+    Stop-Smoke "the router restart: --yes did not reach gateway setup; the log is:`n$((Get-Calls $router) -join "`n")"
+  }
+  $passed++
+  $names += "the gateway's restart"
+
+  # 8. Inside a Claude Code session: refused, exit 2, nothing runs.
   $inside = New-World "inside" @{ Answers = @("n") }
   $result = Invoke-Install $inside @($repo) @{ CLAUDECODE = "1" }
   Assert-Code "inside a Claude Code session" $result 2
   Assert-Contains "inside a Claude Code session" $result.out "cannot run inside a Claude Code session"
   if ((Get-Calls $inside).Count -ne 0) { Stop-Smoke "inside a Claude Code session something ran: $((Get-Calls $inside) -join ", ")" }
   $passed++
+  $names += "inside a Claude Code session"
 
-  # 5. An old Bun, and the person says no: stopped, exit 2.
+  # 9. An old Bun, and the person says no: stopped, exit 2.
   $oldBun = New-World "old-bun" @{ BunVersion = "1.2.0"; Answers = @("n") }
   $result = Invoke-Install $oldBun @($repo)
   Assert-Code "an old Bun, no" $result 2
-  Assert-Contains "an old Bun, no" $result.out "✗ Bun is still 1.2.0: cc-smart-dev-kit needs Bun $minBun or newer"
+  Assert-Contains "an old Bun, no" $result.out "[x] Bun is still 1.2.0: cc-smart-dev-kit needs Bun $minBun or newer"
   if ((Get-Calls $oldBun) -contains "bun upgrade") { Stop-Smoke "an old Bun, no: bun upgrade ran anyway" }
   $passed++
+  $names += "an old Bun answered no"
 
-  # 6. No repository argument: one usage line, exit 2.
+  # 10. No repository argument: one usage line, exit 2.
   $empty = New-World "usage"
   $result = Invoke-Install $empty @() @{ CC_SMART_DEV_KIT_REPO = "" }
   Assert-Code "no repository argument" $result 2
-  Assert-Contains "no repository argument" $result.out "usage: .\install.ps1 <owner>/<repo>"
+  Assert-Contains "no repository argument" $result.out "usage: powershell -File install.ps1 <owner>/<repo>"
   if ((Get-Calls $empty).Count -ne 0) { Stop-Smoke "no repository argument: something ran" }
   $passed++
+  $names += "no repository argument"
 
-  # 7. -DryRun prints the plan and changes nothing.
+  # 11. -DryRun prints the plan and changes nothing.
   $dry = New-World "dry"
   $result = Invoke-Install $dry @("-DryRun", $repo)
   Assert-Code "-DryRun" $result 0
   Assert-Contains "-DryRun" $result.out "cc-smart-dev-kit installer: dry run, the plan for this machine. Nothing is changed."
   Assert-Contains "-DryRun" $result.out "Dry run: nothing was written, nothing ran, and no network was reached."
   $calls = Get-Calls $dry
-  if ($calls | Where-Object { $_ -like "claude *" -or $_ -like "git *" -or $_ -like "*dist\cli.js*" }) {
+  if ($calls | Where-Object { $_ -like "claude *" -or $_ -like "git *" -or $_ -like "*dist/cli.js*" }) {
     Stop-Smoke "-DryRun ran something:`n$($calls -join "`n")"
   }
   if (Test-Path (Join-Path $dry.env.CLAUDE_CONFIG_DIR "plugins\known_marketplaces.json")) {
     Stop-Smoke "-DryRun wrote a marketplace record"
   }
   $passed++
+  $names += "-DryRun"
 
-  # 8. The two keys the person has: on stdin, never in an argument, never printed.
-  $secrets = New-World "secrets" @{ Answers = @("n", "y", "omniroute-key-abc123", "y", "tvly-key-abc123") }
+  # 12. The two keys the person has: on stdin, never in an argument, never printed.
+  $secrets = New-World "secrets" @{ Answers = @("y", "y", ("A" * 43), "y", "omniroute-key-abc123", "y", "tvly-key-abc123") }
   $result = Invoke-Install $secrets @($repo)
   Assert-Code "the secrets" $result 0
-  Assert-Contains "the secrets" $result.out "✓ 7/8 the gateway is set up"
-  Assert-Contains "the secrets" $result.out "✓ 7/8 the Tavily key is saved"
+  Assert-Contains "the secrets" $result.out "[ok] 7/8 the gateway is set up"
+  Assert-Contains "the secrets" $result.out "[ok] 7/8 the Tavily key is saved"
   $calls = Get-Calls $secrets
   if (($calls | Where-Object { $_ -eq "stdin-nonempty" }).Count -ne 2) {
     Stop-Smoke "the secrets: a key did not reach its command on stdin:`n$($calls -join "`n")"
   }
-  foreach ($secret in @("omniroute-key-abc123", "tvly-key-abc123")) {
+  if (-not ($calls | Where-Object { $_ -like "stdin-43-chars" })) {
+    Stop-Smoke "the secrets: the token did not reach `browser token` on stdin"
+  }
+  foreach ($secret in @("omniroute-key-abc123", "tvly-key-abc123", ("A" * 43))) {
     if (($calls -join "`n").Contains($secret)) { Stop-Smoke "a secret is in a fake's arguments: $secret" }
     if ($result.out.Contains($secret)) { Stop-Smoke "a secret was printed: $secret" }
   }
   $passed++
+  $names += "the secrets"
 } finally {
   Get-ChildItem -Path ([System.IO.Path]::GetTempPath()) -Filter "cc-smart-dev-kit-install-*" -Directory -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-Write-Output "windows-install-smoke: $passed cases passed"
+Write-Output "windows-install-smoke: $passed cases passed ($shell)"
+foreach ($name in $names) { Write-Output "  - $name" }
 exit 0

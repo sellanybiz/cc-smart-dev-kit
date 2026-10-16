@@ -127,12 +127,28 @@ plugin runs needs anything a bunfig would give it, and `src/hooks/bun-shim.test.
 ## The installer
 
 `install.sh` (macOS and Linux) and `install.ps1` (native Windows) are **the one command**
-that takes a machine from nothing to a working plugin: the marketplaces, the plugin
-install, the first `setup` (or `migrate`, when the old `anymodel` names are still there),
-the three secrets only a person has, and `doctor` at the end. Each step prints one line and
-is skipped when it is already done, so a second run only fixes what is missing. A step that
-fails stops with the exact command that retries it, and the run goes on from there next
-time. Exit codes: 0 done, 1 failed, 2 refused.
+that takes a machine from nothing to a working plugin: the marketplaces, the plugin install,
+`migrate` and then `setup`, the three secrets only a person has, and `doctor` at the end.
+Each step prints one line and is skipped when it is already done, so a second run only fixes
+what is missing. A step that fails stops with the exact command that retries it, and the run
+goes on from there next time.
+
+**Exit codes.** 0: every step the installer ran succeeded and `doctor` is all `✓`. 3:
+installed, with items left — `doctor` shows `✗` (the browser's token was skipped, say) — and
+the run ends with the list of what is left, each item with the exact line that finishes it.
+1: a step failed. 2: refused, and a refusal always comes before the first write, so the
+machine is exactly as it was.
+
+**`migrate` on every machine, then `setup`.** The installer does not guess whether a machine
+needs the move: `migrate` decides that itself (`oldPiecesPresent` in `src/cli/migrate.ts`
+counts the old folders, the launcher, a half-finished move's progress file, the old names in
+the gateway config and `CLAUDE.md`) and prints "Nothing to move." with exit 0 on a machine
+that needs none (proved by running the real CLI in a temp HOME). `setup` follows it on every
+machine, because the move installs neither the instructions nor the launcher. The old
+`anymodel` plugin, if `migrate`'s own question left it installed, is asked about after both:
+one question, then `claude plugin uninstall anymodel@anymodel` and `claude plugin marketplace
+remove anymodel` — last, because removing a marketplace uninstalls the plugins installed
+from it.
 
 Four decisions are worth naming:
 
@@ -160,7 +176,21 @@ Four decisions are worth naming:
 - **It refuses inside a Claude Code session** (`CLAUDECODE`, the same test `migrate` uses):
   the run may replace the router that session's own model traffic goes through. `--dry-run`
   prints the plan for the machine and changes nothing — no `claude` command, no setup, no
-  network; it still reads the machine's local facts, so the plan is about *this* machine.
+  network; it still reads the machine's local facts, so the plan is about *this* machine —
+  and without Bun it says it cannot read what is already installed.
+- **Every child that does not ask the person reads nothing**: `claude plugin …`, `bun
+  upgrade`, the Bun installer and `doctor` get `/dev/null` as their stdin (PowerShell hands a
+  child the console, never the pipeline), so none of them can eat an answer meant for a
+  question. The commands that do ask — `migrate`, `setup`, `browser setup`, `browser token` —
+  get the terminal.
+- **A half-downloaded script does nothing.** `install.sh` puts the whole run inside `main()`
+  and calls it on the last line: bash runs the statements it has read before it reaches a
+  syntax error, so a file that stops in the middle would otherwise have run the first steps.
+  PowerShell parses a whole file before it runs a statement, so a truncated `install.ps1`
+  stops at the parse error by itself. `scripts/install.test.ts` proves the bash half.
+- **`install.ps1` is pure ASCII** (`[ok]`, `[x]`, `-`, `...`): a Windows console in another
+  code page shows `✓` or `·` as mojibake. `install.sh` keeps its marks; a test checks the two
+  PowerShell files byte by byte.
 
 What the installers do **not** own: the plugin's version (it comes from
 `plugin/.claude-plugin/plugin.json`), the marketplace's name (from
@@ -169,8 +199,11 @@ What the installers do **not** own: the plugin's version (it comes from
 it, the way CI's setup-bun comment says a test keeps its number equal).
 
 The two scripts are proved by `scripts/install.test.ts` (bash, in a fake world: a temp HOME
-and fakes for `claude`, `bun`, `git`, `gh` and `curl` on PATH) and
-`scripts/install-windows-smoke.ps1` (pwsh, on the Windows CI runner, the same shape).
+and fakes for `claude`, `bun`, `git`, `gh`, `curl` and `uname` on PATH — the fake `doctor`
+fails while the browser's token is missing, the way the real one does, which is what the
+exit-3 path is proved against) and `scripts/install-windows-smoke.ps1` (on the Windows CI
+runner, under pwsh AND under Windows PowerShell 5.1, with `.cmd` fakes and nothing else, so a
+fake that reads a secret reads the very stdin the installer piped to it).
 
 ## The AI gateway
 

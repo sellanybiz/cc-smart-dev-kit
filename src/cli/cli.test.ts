@@ -2420,11 +2420,15 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
 
   test("usage shows the safety checks the router counted, today first", () => {
     const { home, run } = setup();
-    // The router's file, as it writes it. Its days are the machine's own calendar days
-    // (proved in `src/gateway/safety-checks.test.ts`), so today's key comes from the clock.
+    // The router's file, as it writes it. Its days are calendar days in the machine's own
+    // zone (proved in `src/gateway/safety-checks.test.ts`), so today's key comes from the
+    // clock — and BOTH sides of this test pin the SAME zone: the CLI is started with
+    // TZ=Etc/UTC below, and the key is computed in Etc/UTC here. Without that, the test
+    // compares two different days for as long as the machine's zone is ahead of UTC (seen
+    // on a machine at UTC+5 after midnight there).
     const file = join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json");
     mkdirSync(dirname(file), { recursive: true });
-    const today = localDay(Date.now());
+    const today = localDay(Date.now(), "Etc/UTC");
     writeFileSync(
       file,
       `${JSON.stringify(
@@ -2442,7 +2446,7 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
         2,
       )}\n`,
     );
-    const result = run(["usage", "--hours", "1"]);
+    const result = run(["usage", "--hours", "1"], { TZ: "Etc/UTC" });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.split("\n").slice(-4)).toEqual([
       "Auto mode's safety checks the router counted on this machine:",

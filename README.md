@@ -11,10 +11,11 @@ from), named `cc-smart-dev-kit`.
 ## Install
 
 **One command installs the plugin.** It checks the machine, installs or upgrades
-[Bun](https://bun.sh) when it is missing or older than 1.4.3, adds the three marketplaces,
-installs the plugin, runs its first setup (or the move from `anymodel`, on a machine that
-still has the old names), asks for the three things only you have — the browser's token,
-the gateway's key, the Tavily key — and ends with `doctor`. It asks before it installs or
+[Bun](https://bun.sh) 1.4.3 or later when it is missing or older, adds the three marketplaces,
+installs the plugin, runs `migrate` and then `setup` (the move is a no-op on a machine
+without the old names), asks for the three things only you have — the browser's token,
+the gateway's key, the Tavily key — and ends with `doctor` and, when something is left,
+the list of what is left. It asks before it installs or
 upgrades anything, it prints the exact command that retries a step that failed, and running
 it again goes on from there.
 
@@ -33,20 +34,27 @@ A public fork can be installed from the raw URL instead:
 curl -fsSL https://raw.githubusercontent.com/<owner>/cc-smart-dev-kit/main/install.sh | bash -s -- <owner>/cc-smart-dev-kit
 ```
 
-On native Windows the same installer is `install.ps1`, for PowerShell 5.1 and `pwsh` — the
-same steps and the same words:
+On native Windows the same installer is `install.ps1`, for PowerShell 5.1 and `pwsh`, with
+the same steps, the same words and the same exit codes. It is downloaded to a temp file and
+run as **that file**, so the exit codes are real and a refusal never closes your window:
 
 ```powershell
-& ([scriptblock]::Create((gh api repos/<owner>/cc-smart-dev-kit/contents/install.ps1 -H "Accept: application/vnd.github.raw" | Out-String))) <owner>/cc-smart-dev-kit
+$f = Join-Path $env:TEMP "cc-smart-dev-kit-install.ps1"
+gh api repos/<owner>/cc-smart-dev-kit/contents/install.ps1 -H "Accept: application/vnd.github.raw" | Set-Content -Path $f
+powershell -NoProfile -ExecutionPolicy Bypass -File $f <owner>/cc-smart-dev-kit
+Remove-Item $f
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/<owner>/cc-smart-dev-kit/main/install.ps1))) <owner>/cc-smart-dev-kit
+$f = Join-Path $env:TEMP "cc-smart-dev-kit-install.ps1"
+irm https://raw.githubusercontent.com/<owner>/cc-smart-dev-kit/main/install.ps1 | Set-Content -Path $f
+powershell -NoProfile -ExecutionPolicy Bypass -File $f <owner>/cc-smart-dev-kit
+Remove-Item $f
 ```
 
-Started that way the script runs inside your PowerShell session, so a refusal (exit 2) ends
-that window: its last lines say why. `pwsh -File install.ps1 <owner>/cc-smart-dev-kit`, from
-a copy of the file, gives you the exit code instead and leaves your session alone.
+(`pwsh -File` in place of `powershell -File` runs the same file under PowerShell 7. From a
+folder with the script in it, `powershell -NoProfile -ExecutionPolicy Bypass -File
+.\install.ps1 <owner>/cc-smart-dev-kit` is the same run.)
 
 - **Run it in your own terminal.** Every question reads the terminal, never the pipe the
   script arrived on, and the installer refuses to run inside a Claude Code session: it may
@@ -55,22 +63,35 @@ a copy of the file, gives you the exit code instead and leaves your session alon
   no command that writes, no network.
 - It never writes a secret file and never puts a secret on a command line: each key goes to
   the plugin's own command on stdin, and that command owns the file.
-- Exit codes: 0 done, 1 a step failed (the line names the command that retries it), 2
-  refused (inside a Claude Code session, a question answered no, or no terminal).
+- Exit codes:
+
+  | Code | What it means |
+  |---|---|
+  | 0 | done: every step the installer ran succeeded, and `doctor` is all ✓ |
+  | 3 | installed, with items left: `doctor` shows ✗ (the browser's token was skipped, say) — the list at the end names each item and the line that finishes it |
+  | 1 | a step failed: the line names the exact command that retries it |
+  | 2 | refused: inside a Claude Code session, a question answered no, or no terminal to ask on |
 
 What you need first: macOS, Linux or Windows (native Windows; the parts that are `sh`
 scripts run through Git Bash there — [Windows](#windows)),
 [Claude Code](https://code.claude.com) on your PATH, and read access to this repo with git
 (an SSH key, or a git credential helper when the repo is private — `gh auth login`, then
 `gh auth setup-git`). The installer checks all three and says how to fix what is missing.
-On a Bun older than 1.4.3 only `doctor`, `restore`, `version` and `--help` run, and the
-hooks do not run at all: the hook shim stops before starting one (an older Bun would also
-send a backend's key through a proxy, and would ignore the flags that keep a project's
-`.env` files and `bunfig.toml` out of the plugin).
+Bun is the one thing it installs for you, after asking.
+
+**[Bun](https://bun.sh) 1.4.3 or later** is needed by everything the plugin runs — the
+by-hand steps below and the plugin itself. An older Bun would send a backend's key through
+a proxy and would ignore the flags that keep a project's `.env` files and `bunfig.toml` out
+of the plugin, so on one only `doctor`, `restore`, `version` and `--help` run, and the hooks
+do not run at all: the hook shim stops before starting one.
 
 ### By hand
 
-The same install, step by step, for a machine where you would rather run it yourself.
+The same install, step by step, for a machine where you would rather run it yourself — the
+one-liner above is the same thing with the checks, the questions and the retries built in.
+You need [Bun](https://bun.sh) **1.4.3 or later** first (`bun --version`; `curl -fsSL
+https://bun.sh/install | bash`, or Bun's PowerShell installer on Windows), because every
+step below runs the plugin through it.
 
 1. Add the marketplace. `<owner>/cc-smart-dev-kit` is where this repo lives: the `repository`
    field of `plugin/.claude-plugin/plugin.json`. Add the marketplaces of the two
@@ -125,14 +146,23 @@ After that, use `cc-smart-dev-kit setup` to set up again (for example after an u
 ## What's new in 0.4.2
 
 - **One command installs the plugin** ([Install](#install)): `install.sh` for macOS and
-  Linux, `install.ps1` for native Windows, the same steps and the same words. Each step
-  prints one line and is skipped when it is already done, so a second run only fixes what is
-  missing. It asks before it installs or upgrades Bun, asks for the browser's token, the
-  gateway's key and the Tavily key (each skippable, never echoed, never printed), and ends
-  with `doctor`. `--dry-run` prints the plan for this machine and changes nothing. A step
-  that fails stops with the exact command that retries it; running the installer again goes
-  on from there. It refuses inside a Claude Code session, and it never writes a secret file
-  or passes a secret on a command line: each key reaches the plugin's own command on stdin.
+  Linux, `install.ps1` for native Windows, the same steps, the same words and the same exit
+  codes. Each step prints one line and is skipped when it is already done, so a second run
+  only fixes what is missing. It asks before it installs or upgrades Bun, asks for the
+  browser's token, the gateway's key and the Tavily key (each skippable, never echoed, never
+  printed), and ends with `doctor` and — when something is left — the list of what is left,
+  each item with the exact line that finishes it. `--dry-run` prints the plan for this
+  machine and changes nothing. A step that fails stops with the command that retries it;
+  running the installer again goes on from there. It refuses inside a Claude Code session,
+  and it never writes a secret file or passes a secret on a command line: each key reaches
+  the plugin's own command on stdin. Exit codes: 0 done, 3 installed with items left, 1 a
+  step failed, 2 refused.
+- **The move runs on every machine, and `setup` always follows it** ([Moving from
+  anymodel](#moving-from-anymodel)): `migrate` decides by itself what to move and says
+  "Nothing to move." on a machine without the old names, so the installer no longer guesses
+  for it — and the old `anymodel` plugin, when it is still installed, is asked about
+  afterwards. `setup` then installs the instructions and the launcher, which the move alone
+  does not.
 - **`cc-smart-dev-kit setup --tavily-key-stdin`** ([MCP servers](#mcp-servers)): the Tavily
   key on stdin, never an argument. setup writes it to the key file it reads a key from
   (`~/.claude/cc-smart-dev-kit/tavily.key`, mode 600, through the same atomic writer as the
@@ -509,11 +539,12 @@ that version's names: its folders (`~/.config/anymodel`, `~/.claude/anymodel`,
 (`~/.local/bin/anymodel`), its router units (`anymodel-router`), the slots in
 `gateway.json`, and the old names in `settings.json` and `~/.claude/CLAUDE.md`.
 
-**The [one command](#install) does the move.** It sees a machine that still has the old
-names, adds the marketplaces, installs this version, and runs `migrate` instead of `setup` —
-then asks for the same three things only you have. Run it in your own terminal: `migrate`
-refuses inside a Claude Code session, because it replaces the router that session's own model
-traffic goes through, and it says to restart your sessions afterwards.
+**The [one command](#install) does the move.** It adds the marketplaces, installs this
+version, runs `migrate` (which decides by itself what to move, and says "Nothing to move."
+on a machine without the old names), then runs `setup` — and asks about the old plugin if it
+is still installed. Run it in your own terminal: `migrate` refuses inside a Claude Code
+session, because it replaces the router that session's own model traffic goes through, and
+it says to restart your sessions afterwards.
 
 **Name the marketplace in the install line** either way. While the old `anymodel` marketplace
 is added, a bare `claude plugin install cc-smart-dev-kit` installs the copy that comes from
