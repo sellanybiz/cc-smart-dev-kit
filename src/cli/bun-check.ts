@@ -3,7 +3,7 @@ import { bunTooOld, COMMAND } from "../build-info";
 /**
  * The commands that run on any Bun. None of them sends a backend key, and each helps a
  * person whose Bun is too old: `doctor` names it as its first ✗ (and skips the gateway
- * checks, which send the key), `restore` removes anymodel, and help and version print.
+ * checks, which send the key), `restore` removes cc-smart-dev-kit, and help and version print.
  * Every other command stops at once (`oldBunRefusal`).
  */
 const RUNS_ON_ANY_BUN = new Set<string | undefined>([

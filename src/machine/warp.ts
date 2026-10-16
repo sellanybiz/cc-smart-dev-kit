@@ -14,7 +14,7 @@ import type { Machine } from "./machine";
  * both out again.
  *
  * Every command that needs root runs in front of the person, after they saw the exact
- * list and said yes, on their terminal: `sudo` asks for the password itself. anymodel
+ * list and said yes, on their terminal: `sudo` asks for the password itself. cc-smart-dev-kit
  * never sees, stores or pipes a password, and never runs a downloaded script.
  */
 
@@ -38,7 +38,7 @@ const PACKAGE = "warp-terminal";
  * `<apt trustedparts>/warpdotdev.gpg` on every install and upgrade, and the source to
  * `<apt sourceparts>/warpdotdev.sources` (deb822) when neither that nor `warpdotdev.list`
  * is there; its purge removes all three. With apt's default folders those are the paths
- * below, so anymodel writes the same files with the same text, and apt never sees two
+ * below, so cc-smart-dev-kit writes the same files with the same text, and apt never sees two
  * Warp sources or two Signed-By values.
  */
 export const APT_KEY = "/etc/apt/trusted.gpg.d/warpdotdev.gpg";
@@ -67,7 +67,7 @@ Signed-By: ${APT_KEY}
 /**
  * The architectures Warp's apt repository has packages for, as its Packages files name
  * them: `amd64` and `arm64` (read 2026-10-16, `.../dists/stable/main/binary-<arch>/Packages`).
- * Each package's postinst writes its OWN architecture into the source line, so anymodel
+ * Each package's postinst writes its OWN architecture into the source line, so cc-smart-dev-kit
  * writes the one this machine runs on.
  */
 export type AptArch = "amd64" | "arm64";
@@ -115,7 +115,7 @@ export function detectSystem(machine: Machine): WarpSystem {
   if (machine.platform !== "linux") {
     return {
       kind: "none",
-      reason: `anymodel installs Warp on Linux and macOS only. Download it: ${WARP_DOWNLOAD_URL}`,
+      reason: `cc-smart-dev-kit installs Warp on Linux and macOS only. Download it: ${WARP_DOWNLOAD_URL}`,
     };
   }
   const words = osWords(machine.osRelease());
@@ -148,7 +148,7 @@ export function detectSystem(machine: Machine): WarpSystem {
   }
   return {
     kind: "none",
-    reason: `anymodel installs Warp with apt (Debian, Ubuntu), dnf (Fedora) or Homebrew (macOS). Download it: ${WARP_DOWNLOAD_URL}`,
+    reason: `cc-smart-dev-kit installs Warp with apt (Debian, Ubuntu), dnf (Fedora) or Homebrew (macOS). Download it: ${WARP_DOWNLOAD_URL}`,
   };
 }
 
@@ -201,7 +201,7 @@ export function detectWarpApp(machine: Machine, system: WarpSystem): WarpApp {
   }
 }
 
-/** Where `setup --warp` puts the files it hands to `sudo install`: anymodel's own state folder. */
+/** Where `setup --warp` puts the files it hands to `sudo install`: cc-smart-dev-kit's own state folder. */
 export function warpStageDir(paths: CliPaths): string {
   return join(paths.stateDir, "warp");
 }
@@ -307,8 +307,8 @@ export async function stageWarpFiles(
   if (fingerprint !== WARP_KEY_FINGERPRINT) {
     throw new Error(
       `Warp's signing key changed: ${WARP_KEY_URL} now holds the key ${fingerprint || "(none)"}, ` +
-        `and anymodel expects ${WARP_KEY_FINGERPRINT}. Nothing was installed. ` +
-        `If Warp really changed its key, an anymodel update brings the new one; until then, install Warp by hand: ${WARP_DOWNLOAD_URL}`,
+        `and cc-smart-dev-kit expects ${WARP_KEY_FINGERPRINT}. Nothing was installed. ` +
+        `If Warp really changed its key, a cc-smart-dev-kit update brings the new one; until then, install Warp by hand: ${WARP_DOWNLOAD_URL}`,
     );
   }
   if (system.kind === "apt") {
@@ -473,19 +473,23 @@ export function warpCheck(
   const plugin = findUserInstall(paths.installedPluginsFile, WARP_PLUGIN_ID) !== null;
   const version = app.version === null ? "" : ` ${app.version}`;
   if (!app.installed && !plugin) {
-    return { ok: true, info: true, text: "Warp: not installed (optional: anymodel setup --warp)" };
+    return {
+      ok: true,
+      info: true,
+      text: "Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
+    };
   }
   if (!app.installed) {
     return {
       ok: false,
-      text: `the Warp Claude plugin ${WARP_PLUGIN_ID} is installed, but the Warp app is not. Run: anymodel setup --remove-warp (or anymodel setup --warp)`,
+      text: `the Warp Claude plugin ${WARP_PLUGIN_ID} is installed, but the Warp app is not. Run: cc-smart-dev-kit setup --remove-warp (or cc-smart-dev-kit setup --warp)`,
     };
   }
   if (!plugin) {
     return {
       ok: true,
       info: true,
-      text: `Warp${version} is installed, without its Claude plugin (optional: anymodel setup --warp)`,
+      text: `Warp${version} is installed, without its Claude plugin (optional: cc-smart-dev-kit setup --warp)`,
     };
   }
   if (!pluginEnabled(paths, WARP_PLUGIN_ID)) {

@@ -1,5 +1,5 @@
 {
-  "name": "anymodel",
+  "name": "cc-smart-dev-kit",
   "owner": { "name": "SellAnyBiz" },
   "metadata": {
     "description": "Use any model with Claude Code: a local gateway, plus hooks, skills, agents and machine setup, for any project."
@@ -7,7 +7,7 @@
   "allowCrossMarketplaceDependenciesOn": ["thedotmack", "claude-plugins-official"],
   "plugins": [
     {
-      "name": "anymodel",
+      "name": "cc-smart-dev-kit",
       "source": "./plugin",
       "description": "Use any model with Claude Code: a gateway, hooks, skills, agents and machine setup."
     }

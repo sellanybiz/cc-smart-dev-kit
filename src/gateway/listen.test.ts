@@ -1,6 +1,6 @@
 /**
  * Socket activation: the router serves on a listening socket it inherited as file
- * descriptor 3, the way systemd's `anymodel-router.socket` hands it over.
+ * descriptor 3, the way systemd's `cc-smart-dev-kit-router.socket` hands it over.
  *
  * The end-to-end tests start the router's real entry under `systemd-socket-activate`
  * (systemd's own tool for this: it opens the socket, then runs the program with
@@ -40,7 +40,7 @@ describe("which socket systemd passed", () => {
 
   test("more than one socket: an error, never a guess", () => {
     expect(() => inheritedListenFd({ LISTEN_FDS: "2", LISTEN_PID: "4242" }, 4242)).toThrow(
-      "systemd passed 2 sockets (LISTEN_FDS); anymodel-router takes one",
+      "systemd passed 2 sockets (LISTEN_FDS); cc-smart-dev-kit-router takes one",
     );
   });
 });
@@ -64,7 +64,7 @@ function freePort(): number {
 }
 
 /**
- * A fake cheap backend: `/v1/messages` answers a stream that sends its first event at
+ * A fake affordable backend: `/v1/messages` answers a stream that sends its first event at
  * once, then nothing for `silentMs`, then the last event.
  */
 function slowBackend(silentMs: number) {
@@ -116,14 +116,14 @@ async function readUntil(stream: ReadableStream<Uint8Array>, done: (text: string
  */
 async function activatedRouter(port: number, configPort: number, backendPort: number) {
   const home = tempDir("listen");
-  const config = join(home, ".config", "anymodel", "gateway.json");
-  mkdirSync(join(home, ".config", "anymodel"), { recursive: true });
+  const config = join(home, ".config", "cc-smart-dev-kit", "gateway.json");
+  mkdirSync(join(home, ".config", "cc-smart-dev-kit"), { recursive: true });
   writeFileSync(
     config,
     JSON.stringify({
       backends: { fake: { apiKey: "fake-key", baseUrl: `http://127.0.0.1:${backendPort}` } },
       port: configPort,
-      slots: { "anymodel-worker": ["fake:m"] },
+      slots: { "cc-smart-dev-kit-worker": ["fake:m"] },
       version: 1,
     }),
     { mode: 0o600 },
@@ -155,7 +155,7 @@ const MESSAGE = {
   body: JSON.stringify({
     max_tokens: 10,
     messages: [{ content: "hi", role: "user" }],
-    model: "anymodel-worker",
+    model: "cc-smart-dev-kit-worker",
     stream: true,
   }),
   headers: { "anthropic-version": "2023-06-01", "content-type": "application/json" },
@@ -168,10 +168,10 @@ describe.skipIf(ACTIVATE === null)("the router on a socket systemd passed (fd 3)
     const backend = slowBackend(50);
     const router = await activatedRouter(port, port, backend);
     // The first connection starts the router; it waited in the socket meanwhile.
-    const health = await fetch(`http://127.0.0.1:${port}/__anymodel/health`);
+    const health = await fetch(`http://127.0.0.1:${port}/__cc-smart-dev-kit/health`);
     expect(await health.json()).toMatchObject({ ok: true, port, requests: 0 });
     expect(await router.firstLine()).toBe(
-      `anymodel-router listening on http://127.0.0.1:${port} (the socket systemd holds; config ${router.config})\n`,
+      `cc-smart-dev-kit-router listening on http://127.0.0.1:${port} (the socket systemd holds; config ${router.config})\n`,
     );
     const answer = await fetch(`http://127.0.0.1:${port}/v1/messages`, MESSAGE);
     expect(answer.status).toBe(200);
@@ -179,7 +179,7 @@ describe.skipIf(ACTIVATE === null)("the router on a socket systemd passed (fd 3)
       'event: message_start\ndata: {"type":"message_start"}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n',
     );
     // The local-only guard still holds behind the relay: a foreign Host is refused.
-    const foreign = await fetch(`http://127.0.0.1:${port}/__anymodel/health`, {
+    const foreign = await fetch(`http://127.0.0.1:${port}/__cc-smart-dev-kit/health`, {
       headers: { host: `example.com:${port}` },
     });
     expect(foreign.status).toBe(403);
@@ -189,12 +189,12 @@ describe.skipIf(ACTIVATE === null)("the router on a socket systemd passed (fd 3)
     const port = freePort();
     const backend = slowBackend(0);
     const router = await activatedRouter(port, port + 1, backend);
-    const health = await fetch(`http://127.0.0.1:${port}/__anymodel/health`);
+    const health = await fetch(`http://127.0.0.1:${port}/__cc-smart-dev-kit/health`);
     expect(health.status).toBe(200);
     expect(await health.json()).toMatchObject({ ok: true, port });
     // Its first line is the warning; the "listening" line may come in the same read.
     expect(await router.firstLine()).toStartWith(
-      `WARN the socket listens on port ${port}, the config says ${port + 1}: serving on ${port}. Run: anymodel gateway setup\n`,
+      `WARN the socket listens on port ${port}, the config says ${port + 1}: serving on ${port}. Run: cc-smart-dev-kit gateway setup\n`,
     );
   }, 20_000);
 
@@ -260,7 +260,7 @@ function readUntilText(socket: net.Socket, done: (text: string) => boolean): Pro
 }
 
 const healthRequest = (port: number, extra = "") =>
-  `GET /__anymodel/health HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n${extra}\r\n`;
+  `GET /__cc-smart-dev-kit/health HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n${extra}\r\n`;
 
 /**
  * Asks the health page on a new connection, closed after the answer. The router accepts
@@ -269,7 +269,7 @@ const healthRequest = (port: number, extra = "") =>
  * router under a socket unit).
  */
 async function acceptedBefore(port: number): Promise<void> {
-  const health = await fetch(`http://127.0.0.1:${port}/__anymodel/health`, {
+  const health = await fetch(`http://127.0.0.1:${port}/__cc-smart-dev-kit/health`, {
     headers: { connection: "close" },
   });
   expect(health.status).toBe(200);

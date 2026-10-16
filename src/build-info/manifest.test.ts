@@ -7,16 +7,16 @@ import { parseRepository, readBuildInfo } from "./manifest";
 
 describe("parseRepository", () => {
   test.each([
-    ["https://github.com/example-org/anymodel", "example-org/anymodel"],
-    ["https://github.com/example-org/anymodel.git", "example-org/anymodel"],
-    ["https://git.example.com/example-org/anymodel/", "example-org/anymodel"],
-    ["git@github.com:example-org/anymodel.git", "example-org/anymodel"],
-    ["example-org/anymodel", "example-org/anymodel"],
+    ["https://github.com/example-org/cc-smart-dev-kit", "example-org/cc-smart-dev-kit"],
+    ["https://github.com/example-org/cc-smart-dev-kit.git", "example-org/cc-smart-dev-kit"],
+    ["https://git.example.com/example-org/cc-smart-dev-kit/", "example-org/cc-smart-dev-kit"],
+    ["git@github.com:example-org/cc-smart-dev-kit.git", "example-org/cc-smart-dev-kit"],
+    ["example-org/cc-smart-dev-kit", "example-org/cc-smart-dev-kit"],
   ])("%p gives %p", (url, expected) => {
     expect(parseRepository(url)).toBe(expected);
   });
 
-  test.each(["", "anymodel", "https://github.com/only-owner", "https://host/a/b/c"])(
+  test.each(["", "cc-smart-dev-kit", "https://github.com/only-owner", "https://host/a/b/c"])(
     "%p throws",
     (url) => {
       expect(() => parseRepository(url)).toThrow("Cannot read <owner>/<name>");
@@ -39,7 +39,7 @@ describe("the router bundle", () => {
     expect(router).not.toContain('"repo"');
     expect(router).not.toContain("repo:");
     // It does hold the command name it prints, from build-info/names.
-    expect(router).toContain('var COMMAND = "anymodel";');
+    expect(router).toContain('var COMMAND = "cc-smart-dev-kit";');
   });
 
   test("holds the router's own paths only, never the command's: a CLI path edit leaves it as it is", () => {
@@ -78,7 +78,7 @@ describe("readBuildInfo: dependencies", () => {
     writeFileSync(file, JSON.stringify(manifest));
     return file;
   };
-  const base = { version: "1.0.0", repository: "example-org/anymodel" };
+  const base = { version: "1.0.0", repository: "example-org/cc-smart-dev-kit" };
 
   test("reads each name, marketplace and range; none means an empty list", () => {
     expect(readBuildInfo(write(base)).dependencies).toEqual([]);

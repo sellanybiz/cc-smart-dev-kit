@@ -5,7 +5,7 @@ description: Use when the person states a project fact, a correction, a preferen
 
 # Where Knowledge Goes
 
-**Project add-on:** `.claude/anymodel/memory-routing.md` — read it first when it exists.
+**Project add-on:** `.claude/cc-smart-dev-kit/memory-routing.md` — read it first when it exists.
 Where it differs, the add-on wins (`core.md`, top). It names the project's memory tool
 (Claude Code's auto memory, or a memory plugin) and any home it does not use.
 
@@ -39,7 +39,7 @@ person, or the whole team — and by **how fast it goes stale**.
 
 **The test before you write a rule:** "Is this an instruction to follow next time?" Current
 state, dated history or rollout status is not a rule. New rules, and where they fit:
-`/anymodel:self-evolve`.
+`/cc-smart-dev-kit:self-evolve`.
 
 ## Saving to memory
 
@@ -67,5 +67,5 @@ act on it or tell the person. "The memory says X exists" is not "X exists now".
 
 A compaction keeps a summary, not the detail. So write state down as it changes: every ask
 goes on the to-do list when it arrives, and moves to doing, done or dropped (with why) the
-moment that changes. Multi-step work also keeps its plan file live (`/anymodel:plan-task`).
+moment that changes. Multi-step work also keeps its plan file live (`/cc-smart-dev-kit:plan-task`).
 After a compaction or a resume, read both back before you act.

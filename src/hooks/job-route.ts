@@ -1,6 +1,6 @@
 /**
  * The `job-route` hook: PreToolUse on Bash, for a project that turned it on
- * (`"jobs": { "route": true }` in `.claude/anymodel.json`). A heavy command — one of the
+ * (`"jobs": { "route": true }` in `.claude/cc-smart-dev-kit.json`). A heavy command — one of the
  * project's heavy-job kinds (`classifyHeavyCommand`, `src/jobs/`) — is sent through the
  * machine's queue instead of running raw: several sessions running builds, type checks and
  * test runs at once run the machine out of memory.
@@ -10,14 +10,14 @@
  *
  * Two ways to send it, and the hook uses the first its Claude Code supports:
  *   - **rewrite** (`updatedInput`, proved live on 2.1.301): the call runs
- *     `anymodel job run --kind <kind> -- <command>` instead, byte for byte the same command.
+ *     `cc-smart-dev-kit job run --kind <kind> -- <command>` instead, byte for byte the same command.
  *   - **deny**: the same command line, named in the reason, for the session to run.
  *
  * The command is passed through as argv words when it is one plain command
  * (`bun run test:run x.ts`), and through `/bin/sh -c <quoted line>` otherwise (`a && b`,
  * a pipe, an expansion): a shell string the shell runs exactly as it would have.
  *
- * A command already inside `anymodel job run` stays as it is (the queue would nest), and
+ * A command already inside `cc-smart-dev-kit job run` stays as it is (the queue would nest), and
  * anything the hook cannot read lets the call through.
  */
 import { COMMAND } from "../build-info/names";
@@ -67,7 +67,7 @@ function shellWord(word: string): string {
 }
 
 /**
- * The command that runs `command` through the queue: `anymodel job run --kind <kind> -- …`.
+ * The command that runs `command` through the queue: `cc-smart-dev-kit job run --kind <kind> -- …`.
  * One plain command goes in as its own words; anything else through `/bin/sh -c`, so the
  * shell reads exactly the line the person wrote.
  */
@@ -77,7 +77,7 @@ export function jobRunCommand(kind: string, command: string): string {
   return `${LAUNCHER_IN_SHELL} job run --kind ${kind} -- ${inner}`;
 }
 
-/** True when the line already runs `anymodel job run` (that queue must not nest). */
+/** True when the line already runs `cc-smart-dev-kit job run` (that queue must not nest). */
 export function runsJobRun(command: string): boolean {
   return shellSegments(command).some((segment) => {
     const words = wordsOf(segment);
@@ -91,7 +91,7 @@ export function runsJobRun(command: string): boolean {
   });
 }
 
-/** `anymodel job run …`, whatever path the launcher is named by. */
+/** `cc-smart-dev-kit job run …`, whatever path the launcher is named by. */
 function isJobRun(program: string, args: string[]): boolean {
   const base = (program.split(/[\\/]/).pop() ?? program).replace(/\.(cmd|exe|ps1|bat)$/, "");
   return base === COMMAND && args[0] === "job" && args[1] === "run";

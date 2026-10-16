@@ -9,16 +9,16 @@ import {
   writeManagedFile,
 } from "./write";
 
-/** A key inside a JSON file, as its path of segments: ["extraKnownMarketplaces", "anymodel", "autoUpdate"]. */
+/** A key inside a JSON file, as its path of segments: ["extraKnownMarketplaces", "cc-smart-dev-kit", "autoUpdate"]. */
 export type KeyPath = readonly string[];
 
-/** The keys anymodel owns, per file: `<stateDir>/owned.json`. */
+/** The keys cc-smart-dev-kit owns, per file: `<stateDir>/owned.json`. */
 const OWNED_FILE = "owned.json";
 
 export type JsonObject = Record<string, unknown>;
 
 /**
- * One key anymodel owns, and the value it wrote there: `value`, or, for a secret, only
+ * One key cc-smart-dev-kit owns, and the value it wrote there: `value`, or, for a secret, only
  * `sha256` (the SHA-256 of the value as JSON), never the secret itself. A record with
  * neither comes from an owned.json written before values were kept, or is the claim made
  * just before a write: it counts as owned whatever the key holds, as before.
@@ -43,12 +43,12 @@ export interface ManagedJsonOptions {
   stateDir: string;
   /** Keys to set, with their values. */
   set?: ReadonlyArray<readonly [KeyPath, unknown]>;
-  /** Keys to remove. Only keys anymodel owns, and that still hold its value, are removed. */
+  /** Keys to remove. Only keys cc-smart-dev-kit owns, and that still hold its value, are removed. */
   remove?: readonly KeyPath[];
   dryRun?: boolean;
   /**
    * A value that means "nobody chose this yet" (a program's own default, written into the
-   * file by that program): such a key is not someone else's, so anymodel may take it.
+   * file by that program): such a key is not someone else's, so cc-smart-dev-kit may take it.
    * Restore then removes it, and the program falls back to its default again.
    */
   unchosen?: (path: KeyPath, value: unknown) => boolean;
@@ -71,12 +71,12 @@ export interface ManagedJsonResult {
   backup: string | null;
 }
 
-/** Thrown when a change would overwrite a key anymodel does not own. Nothing is written. */
+/** Thrown when a change would overwrite a key cc-smart-dev-kit does not own. Nothing is written. */
 export class ForeignKeyError extends Error {
   override name = "ForeignKeyError";
 }
 
-/** `extraKnownMarketplaces.anymodel.autoUpdate`; a segment that is not a name: `env["my-key"]` */
+/** `extraKnownMarketplaces.cc-smart-dev-kit.autoUpdate`; a segment that is not a name: `env["my-key"]` */
 export function formatKeyPath(path: KeyPath): string {
   return path
     .map((segment, index) => {
@@ -150,12 +150,12 @@ function writeOwned(stateDir: string, owned: OwnedState): void {
   atomicWrite(join(stateDir, OWNED_FILE), `${JSON.stringify(owned, null, 2)}\n`, 0o600);
 }
 
-/** The keys anymodel owns in `file` (its real path), from owned.json. */
+/** The keys cc-smart-dev-kit owns in `file` (its real path), from owned.json. */
 export function ownedKeys(stateDir: string, file: string): KeyPath[] {
   return ownedRecords(stateDir, file).map((record) => record.path);
 }
 
-/** The keys anymodel owns in `file` (its real path), with the value it wrote. */
+/** The keys cc-smart-dev-kit owns in `file` (its real path), with the value it wrote. */
 export function ownedRecords(stateDir: string, file: string): OwnedRecord[] {
   return readOwned(stateDir)[file] ?? [];
 }
@@ -164,17 +164,17 @@ function hashOf(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-/** The record anymodel keeps for a key it just wrote: the value, or only its hash. */
+/** The record cc-smart-dev-kit keeps for a key it just wrote: the value, or only its hash. */
 function recordOf(path: KeyPath, value: unknown, secret: boolean): OwnedRecord {
   return secret ? { path: [...path], sha256: hashOf(value) } : { path: [...path], value };
 }
 
 /**
  * Whose key is it now?
- * - `none`: anymodel does not own it.
- * - `ours`: anymodel owns it, and it holds what anymodel wrote: the recorded value, a
+ * - `none`: cc-smart-dev-kit does not own it.
+ * - `ours`: cc-smart-dev-kit owns it, and it holds what cc-smart-dev-kit wrote: the recorded value, a
  *   program's own default (`unchosen`), or nothing at all; or the record keeps no value.
- * - `changed`: anymodel owned it, but it holds another value now: the person's choice.
+ * - `changed`: cc-smart-dev-kit owned it, but it holds another value now: the person's choice.
  */
 export function ownership(
   records: readonly OwnedRecord[],
@@ -229,13 +229,13 @@ export function deleteKey(data: JsonObject, path: KeyPath): void {
 }
 
 /**
- * Sets or removes the keys anymodel owns in a JSON settings file.
+ * Sets or removes the keys cc-smart-dev-kit owns in a JSON settings file.
  *
  * - Every other key stays as it is, and the file keeps its mode (a write that sets a
  *   `secret` key leaves it at 600).
  * - A key that exists with another value and is not owned is never overwritten:
  *   the call throws ForeignKeyError and writes nothing.
- * - An owned key keeps the value anymodel wrote, in owned.json. When the key holds
+ * - An owned key keeps the value cc-smart-dev-kit wrote, in owned.json. When the key holds
  *   another value now (and not a program's own default), the person changed it: it is
  *   theirs. Setting it throws ForeignKeyError like any foreign key; removing it leaves it
  *   and gives up the ownership.
@@ -283,7 +283,10 @@ function applyOnce(
         skipped.push({ path, reason: "already set by someone else; left alone" });
       } else if (whose === "changed") {
         // The person set it to this value themselves: it is theirs now.
-        skipped.push({ path, reason: "set by you since; left alone, no longer anymodel's" });
+        skipped.push({
+          path,
+          reason: "set by you since; left alone, no longer cc-smart-dev-kit's",
+        });
         dropped.push(path);
       } else {
         // Ours: keep the value in the record (an older record, or a program's default, has none).
@@ -293,14 +296,14 @@ function applyOnce(
     }
     if (current.found && whose === "changed") {
       throw new ForeignKeyError(
-        `${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}: it was changed after anymodel set it, so it is your choice now. ` +
-          "anymodel does not overwrite it. Remove it by hand if anymodel should manage it again.",
+        `${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}: it was changed after cc-smart-dev-kit set it, so it is your choice now. ` +
+          "cc-smart-dev-kit does not overwrite it. Remove it by hand if cc-smart-dev-kit should manage it again.",
       );
     }
     if (current.found && whose === "none" && !options.unchosen?.(path, current.value)) {
       throw new ForeignKeyError(
         `${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}, set by someone else. ` +
-          "anymodel does not overwrite it. Remove it by hand if anymodel should manage it.",
+          "cc-smart-dev-kit does not overwrite it. Remove it by hand if cc-smart-dev-kit should manage it.",
       );
     }
     setKey(data, path, value);
@@ -312,12 +315,12 @@ function applyOnce(
     const current = getKey(data, path);
     const whose = ownership(ownedHere, path, current);
     if (whose === "none") {
-      skipped.push({ path, reason: "not owned by anymodel; left alone" });
+      skipped.push({ path, reason: "not owned by cc-smart-dev-kit; left alone" });
       continue;
     }
     dropped.push(path);
     if (whose === "changed") {
-      skipped.push({ path, reason: "changed since anymodel set it; left alone" });
+      skipped.push({ path, reason: "changed since cc-smart-dev-kit set it; left alone" });
       continue;
     }
     if (!current.found) continue;

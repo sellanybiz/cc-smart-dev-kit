@@ -3,9 +3,9 @@ paths:
   - "src/project/**"
 ---
 
-# The `.claude/anymodel.json` Contract
+# The `.claude/cc-smart-dev-kit.json` Contract
 
-`anymodel.json` is how a project opts in to the plugin and gives its own details. Projects
+`cc-smart-dev-kit.json` is how a project opts in to the plugin and gives its own details. Projects
 write it by hand and keep it in their repo for years, so it is a public contract:
 changing it breaks other people's projects.
 
@@ -16,8 +16,8 @@ reads (`env` is the environment git runs with, so a test can put a fake git firs
 PATH). It is two steps a hook calls apart: `locateCheckout()` (git only; the `ownHooks`
 read needs it even when the file is broken), then `loadProjectConfig()`, which reads:
 
-1. `<checkout root>/.claude/anymodel.json` — a linked worktree's own file wins;
-2. else `<main checkout>/.claude/anymodel.json`;
+1. `<checkout root>/.claude/cc-smart-dev-kit.json` — a linked worktree's own file wins;
+2. else `<main checkout>/.claude/cc-smart-dev-kit.json`;
 3. else none: `config` is `null`, and the plugin does Claude Code's default behaviour.
 
 Outside git, or in a bare repo, it returns `null`. It drops the `GIT_*` variables that
@@ -30,7 +30,7 @@ a clear error that says what is wrong.
 | Field | Type | Meaning |
 |---|---|---|
 | `requires` | version range, npm syntax (`">=0.1"`) | The plugin versions this project needs. |
-| `worktrees` | object | Turns on the plugin hooks that work with worktrees, and is what the worktree engine needs. The engine also needs the project to wire `anymodel hook <name>` in its own settings (README § Worktrees); wired without `worktrees`, each engine hook fails closed (`needsWorktrees` in `src/hooks/specs.ts`), never falls back to another shape. |
+| `worktrees` | object | Turns on the plugin hooks that work with worktrees, and is what the worktree engine needs. The engine also needs the project to wire `cc-smart-dev-kit hook <name>` in its own settings (README § Worktrees); wired without `worktrees`, each engine hook fails closed (`needsWorktrees` in `src/hooks/specs.ts`), never falls back to another shape. |
 | `worktrees.base` | string | The branch new worktrees start from (`origin/<base>`, freshly fetched); also the base the after-merge and leftovers hooks compare with. |
 | `worktrees.prefix` | string | The folder-name prefix of a worktree beside the repo. No `/` or `\` (the hook refuses one). |
 | `worktrees.setup` | string array (argv) | A command run inside a new worktree, e.g. `["bun", "install"]`. |
@@ -41,9 +41,9 @@ a clear error that says what is wrong.
 | `instructions` | boolean | Turns on the opt-in instructions for this project. Not acted on yet: since Phase 5 a project loads them with its own import line (`README.md`). |
 | `autoMode` | string array | Auto-mode rules `setup` copies into the user's `autoMode.environment` (`src/setup/auto-mode.ts`). Used now. |
 | `jobs.kinds` | object: kind name to kind | The project's heavy-job kinds over the defaults (`src/jobs/kinds.ts`, `docs/jobs.md`). Used now. |
-| `jobs.route` | boolean | `true`: the `job-route` hook sends a heavy Bash command through `anymodel job run` instead of running it raw (`src/hooks/job-route.ts`, `docs/jobs.md` § The route). Off when left out. Used now. |
+| `jobs.route` | boolean | `true`: the `job-route` hook sends a heavy Bash command through `cc-smart-dev-kit job run` instead of running it raw (`src/hooks/job-route.ts`, `docs/jobs.md` § The route). Off when left out. Used now. |
 
-The schema is `anymodelConfigSchema` in `src/project/config.ts` (zod). The README shows an
+The schema is `ccSmartDevKitConfigSchema` in `src/project/config.ts` (zod). The README shows an
 example; keep it in step.
 
 `worktrees.guardMainFolder`, `protectedBranches`, `sessionNames` and `ownHooks` came with the
@@ -55,7 +55,7 @@ even then.
 ## `requires` first, then the strict parse
 
 1. Read only `requires`. When the running plugin is outside the range, throw
-   `AnymodelVersionError`, whose message names the update command.
+   `CcSmartDevKitVersionError`, whose message names the update command.
 2. Then parse the whole file strictly: an unknown field (`"worktree"`) is an error,
    never ignored.
 
@@ -65,7 +65,7 @@ every change, and keep its test.
 
 - Ranges are checked by `isValidRange()` before `Bun.semver`: Bun treats a range it
   cannot read as "any version", so a typo would pass.
-- Every error names the file, and the field when there is one (`AnymodelConfigError`).
+- Every error names the file, and the field when there is one (`CcSmartDevKitConfigError`).
 
 ## Changing the contract
 

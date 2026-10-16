@@ -186,8 +186,8 @@ describe("userSliceCgroup and sliceBytes", () => {
   // A dash in a slice name is nesting: the flat path never exists, and the live check
   // would never see the heavy jobs' memory.
   test("nests at every dash, and leaves a dashless slice at the top", () => {
-    expect(userSliceCgroup(1000, "anymodel-heavy.slice")).toBe(
-      "/user.slice/user-1000.slice/user@1000.service/anymodel.slice/anymodel-heavy.slice",
+    expect(userSliceCgroup(1000, "cc-smart-dev-kit-heavy.slice")).toBe(
+      "/user.slice/user-1000.slice/user@1000.service/cc.slice/cc-smart.slice/cc-smart-dev.slice/cc-smart-dev-kit.slice/cc-smart-dev-kit-heavy.slice",
     );
     expect(userSliceCgroup(7, "solo.slice")).toBe(
       "/user.slice/user-7.slice/user@7.service/solo.slice",
@@ -196,8 +196,10 @@ describe("userSliceCgroup and sliceBytes", () => {
 
   test("reads the slice's memory.current, or null", () => {
     const path =
-      "/sys/fs/cgroup/user.slice/user-7.slice/user@7.service/anymodel.slice/anymodel-heavy.slice/memory.current";
-    expect(sliceBytes(facts({ [path]: "4096\n" }).read, 7, "anymodel-heavy.slice")).toBe(4096);
-    expect(sliceBytes(facts({}).read, 7, "anymodel-heavy.slice")).toBeNull();
+      "/sys/fs/cgroup/user.slice/user-7.slice/user@7.service/cc.slice/cc-smart.slice/cc-smart-dev.slice/cc-smart-dev-kit.slice/cc-smart-dev-kit-heavy.slice/memory.current";
+    expect(sliceBytes(facts({ [path]: "4096\n" }).read, 7, "cc-smart-dev-kit-heavy.slice")).toBe(
+      4096,
+    );
+    expect(sliceBytes(facts({}).read, 7, "cc-smart-dev-kit-heavy.slice")).toBeNull();
   });
 });

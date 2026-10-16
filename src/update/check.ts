@@ -1,5 +1,5 @@
 /**
- * Is there a newer anymodel? Two looks, cheapest first:
+ * Is there a newer cc-smart-dev-kit? Two looks, cheapest first:
  *
  *   1. The marketplace's remote head (`git ls-remote <source> <ref or HEAD>`, which needs
  *      no gh and never asks for a password) against the head of Claude Code's local copy
@@ -11,7 +11,7 @@
  *
  * A marketplace that is not a git repo (a folder, a URL) gets only the second look.
  * `remotePluginVersion` reads the version in the remote head itself, for
- * `anymodel update --check`, without touching Claude Code's copy.
+ * `cc-smart-dev-kit update --check`, without touching Claude Code's copy.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -146,7 +146,7 @@ export function remotePluginVersion(
   baseEnv: Env,
 ): { detail: string; ok: false } | { ok: true; version: string } {
   const env = gitAccessEnv(gitEnv(baseEnv));
-  const dir = mkdtempSync(join(tmpdir(), "anymodel-update-check-"));
+  const dir = mkdtempSync(join(tmpdir(), "cc-smart-dev-kit-update-check-"));
   const git = (args: string[]) => {
     const result = Bun.spawnSync(["git", ...args], {
       env,

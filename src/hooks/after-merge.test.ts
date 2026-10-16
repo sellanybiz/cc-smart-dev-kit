@@ -160,7 +160,9 @@ describe("the hook", () => {
   function project() {
     const { repo } = makeClone();
     git(repo, "remote", "set-url", "origin", "git@github.com:example-org/app.git");
-    writeClaudeFile(repo, "anymodel.json", { worktrees: { base: "main", prefix: "app-wt-" } });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", prefix: "app-wt-" },
+    });
     const worktree = join(repo, "..", "app-wt-fix-a");
     git(repo, "worktree", "add", "-q", "-b", "fix/a", worktree);
     mkdirSync(join(worktree, "src"));
@@ -225,7 +227,7 @@ describe("the hook", () => {
     expect(clearWorktreeNote("/code/app-wt-fix-a", "fix/a")).toBe(
       [
         "That merged the pull request of this worktree's branch, fix/a. Clear the worktree now, unless the user wants more work on this branch:",
-        'ExitWorktree with action "remove" and discard_changes true. Claude Code cannot check a worktree outside the repo, so the anymodel hook does: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.',
+        'ExitWorktree with action "remove" and discard_changes true. Claude Code cannot check a worktree outside the repo, so the cc-smart-dev-kit hook does: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.',
         'If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: git worktree remove "/code/app-wt-fix-a", then git branch -d fix/a.',
       ].join("\n"),
     );
@@ -250,18 +252,18 @@ describe("the hook", () => {
     ).toEqual({});
   });
 
-  test("without worktrees in anymodel.json: silent", async () => {
+  test("without worktrees in cc-smart-dev-kit.json: silent", async () => {
     const { repo } = makeClone();
     expect(await runHook(afterMergeHook, ran(repo, "gh pr merge"), fakeGh(merged))).toEqual({});
   });
 
-  test("anymodel.json needs a newer plugin: one line, only after a merge", async () => {
+  test("cc-smart-dev-kit.json needs a newer plugin: one line, only after a merge", async () => {
     const { repo } = makeClone();
-    const file = writeClaudeFile(repo, "anymodel.json", { requires: ">=99" });
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=99" });
     const result = await runHook(afterMergeHook, ran(repo, "gh pr merge"), fakeGh(merged));
     expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toMatch(
       new RegExp(
-        `^anymodel: ${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: this project needs anymodel >=99; you have [0-9.]+; run claude plugin update anymodel@anymodel$`,
+        `^cc-smart-dev-kit: ${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: this project needs cc-smart-dev-kit >=99; you have [0-9.]+; run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit$`,
       ),
     );
     expect(await runHook(afterMergeHook, ran(repo, "ls"), fakeGh(merged))).toEqual({});

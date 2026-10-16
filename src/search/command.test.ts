@@ -1,5 +1,5 @@
 /**
- * `anymodel search` as a person runs it: a temp HOME, a gateway config pointing at a fake
+ * `cc-smart-dev-kit search` as a person runs it: a temp HOME, a gateway config pointing at a fake
  * OmniRoute on a free port of this test, and the expected output written by hand.
  *
  * The command reads the config file (mode 600) and the key inside it, so every test plants
@@ -71,7 +71,7 @@ function machine(
   options: { backends?: Record<string, unknown>; mode?: number } = {},
 ): { configFile: string; home: string; paths: CliPaths } {
   const home = tempDir("search-command");
-  const folder = join(home, ".config", "anymodel");
+  const folder = join(home, ".config", "cc-smart-dev-kit");
   const configFile = join(folder, "gateway.json");
   if (baseUrl !== null) {
     mkdirSync(folder, { recursive: true, mode: 0o700 });
@@ -82,7 +82,10 @@ function machine(
         omniroute: { apiKey: PLANTED_KEY, baseUrl },
       },
       port: 20999,
-      slots: { "anymodel-scout": ["claude-sonnet-5-5"], "anymodel-worker": ["claude-sonnet-5-5"] },
+      slots: {
+        "cc-smart-dev-kit-scout": ["claude-sonnet-5-5"],
+        "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"],
+      },
       timeouts: { firstByteMs: 60000 },
       version: 1,
     };
@@ -385,7 +388,7 @@ describe("when it cannot search", () => {
     expect(result.stdout).toBe("");
     expect(result.stderr).toBe(
       `the gateway is not set up: ${configFile} does not exist.\n` +
-        "Search goes through the gateway's OmniRoute backend. Set it up with: anymodel gateway setup --backend-key-stdin omniroute\n",
+        "Search goes through the gateway's OmniRoute backend. Set it up with: cc-smart-dev-kit gateway setup --backend-key-stdin omniroute\n",
     );
   });
 
@@ -397,7 +400,7 @@ describe("when it cannot search", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toBe(
       `the gateway has no "omniroute" backend: ${configFile} names ollama.\n` +
-        "Search goes through OmniRoute. Add it with: anymodel gateway setup --backend-key-stdin omniroute\n",
+        "Search goes through OmniRoute. Add it with: cc-smart-dev-kit gateway setup --backend-key-stdin omniroute\n",
     );
   });
 
@@ -576,7 +579,7 @@ describe("the key", () => {
 });
 
 describe("the entry", () => {
-  it("`anymodel search` runs it, from the same config, with the port guard on", async () => {
+  it("`cc-smart-dev-kit search` runs it, from the same config, with the port guard on", async () => {
     const fake = fakeOmniRoute(() => Response.json(SEARCH_ANSWER));
     const { home, paths } = machine(fake.baseUrl);
     // The live-router guard runs in the CLI too: no test may reach port 20100.

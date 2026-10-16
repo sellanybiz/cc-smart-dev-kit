@@ -1,5 +1,5 @@
 /**
- * `plugin/bin/anymodel-bun`: the plugin's hooks run through it, so they work where PATH has
+ * `plugin/bin/cc-smart-dev-kit-bun`: the plugin's hooks run through it, so they work where PATH has
  * no bun (Claude Code's hooks get the PATH Claude Code started with). It finds bun in a fixed
  * order and needs no other program, so every run here has a PATH with nothing on it.
  */
@@ -11,7 +11,7 @@ import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 
 const ROOT = join(import.meta.dir, "..", "..");
-const SHIM = join(ROOT, "plugin", "bin", "anymodel-bun");
+const SHIM = join(ROOT, "plugin", "bin", "cc-smart-dev-kit-bun");
 
 /** A fake bun that says which one it is, and its arguments. */
 function fakeBun(path: string, label: string): string {
@@ -35,7 +35,7 @@ function runShim(env: Record<string, string>, args: string[] = ["a", "b c"], std
   };
 }
 
-describe("anymodel-bun finds bun without PATH", () => {
+describe("cc-smart-dev-kit-bun finds bun without PATH", () => {
   test("in order: the launcher's baked bun, $BUN_INSTALL/bin, ~/.bun/bin, then PATH", () => {
     const home = tempDir("shim-home");
     const emptyPath = tempDir("empty-path");
@@ -45,7 +45,7 @@ describe("anymodel-bun finds bun without PATH", () => {
     const homeBun = fakeBun(join(home, ".bun", "bin", "bun"), "home-bun");
     fakeBun(join(pathDir, "bun"), "path-bun");
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
-    writeFileSync(join(home, ".local", "bin", "anymodel"), launcherScript(baked));
+    writeFileSync(join(home, ".local", "bin", "cc-smart-dev-kit"), launcherScript(baked));
     const env = {
       HOME: home,
       BUN_INSTALL: join(installed, "..", ".."),
@@ -64,7 +64,10 @@ describe("anymodel-bun finds bun without PATH", () => {
   test("a launcher that is not ours, or BUN_INSTALL unset: those steps are skipped", () => {
     const home = tempDir("shim-home");
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
-    writeFileSync(join(home, ".local", "bin", "anymodel"), "#!/bin/sh\necho someone else's\n");
+    writeFileSync(
+      join(home, ".local", "bin", "cc-smart-dev-kit"),
+      "#!/bin/sh\necho someone else's\n",
+    );
     fakeBun(join(home, ".bun", "bin", "bun"), "home-bun");
     expect(runShim({ HOME: home, PATH: tempDir("empty-path") }).stdout).toBe("home-bun a b c\n");
   });
@@ -73,7 +76,7 @@ describe("anymodel-bun finds bun without PATH", () => {
     const home = tempDir("shim-home");
     const baked = fakeBun(join(tempDir("baked-quote"), "o'brien bun"), "baked");
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
-    writeFileSync(join(home, ".local", "bin", "anymodel"), launcherScript(baked));
+    writeFileSync(join(home, ".local", "bin", "cc-smart-dev-kit"), launcherScript(baked));
     // Nothing else to fall back on: only the baked path can answer.
     expect(runShim({ HOME: home, PATH: tempDir("empty-path") })).toEqual({
       exitCode: 0,
@@ -93,7 +96,7 @@ describe("anymodel-bun finds bun without PATH", () => {
       exitCode: 0,
       stdout: "",
       stderr:
-        "anymodel: bun not found (not in ~/.local/bin/anymodel, $BUN_INSTALL/bin, ~/.bun/bin or PATH), so the hook did not run. Install bun, then run: anymodel setup\n",
+        "cc-smart-dev-kit: bun not found (not in ~/.local/bin/cc-smart-dev-kit, $BUN_INSTALL/bin, ~/.bun/bin or PATH), so the hook did not run. Install bun, then run: cc-smart-dev-kit setup\n",
     });
   });
 
@@ -111,7 +114,7 @@ describe("anymodel-bun finds bun without PATH", () => {
         hookEventName: "PreToolUse",
         permissionDecision: "ask",
         permissionDecisionReason:
-          "anymodel cannot run its guard: bun was not found. Install bun or run anymodel setup.",
+          "cc-smart-dev-kit cannot run its guard: bun was not found. Install bun or run cc-smart-dev-kit setup.",
       },
     });
   });
@@ -132,11 +135,11 @@ describe("anymodel-bun finds bun without PATH", () => {
 
   test("a real hook bundle, as hooks.json runs it, with no bun on PATH: the guard answers", () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", {});
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
     const env = hookEnv();
     mkdirSync(join(env.HOME ?? "", ".local", "bin"), { recursive: true });
     writeFileSync(
-      join(env.HOME ?? "", ".local", "bin", "anymodel"),
+      join(env.HOME ?? "", ".local", "bin", "cc-smart-dev-kit"),
       launcherScript(process.execPath),
     );
     // git for the guard, and nothing that holds bun.

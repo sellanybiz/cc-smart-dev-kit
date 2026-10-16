@@ -1,8 +1,8 @@
 /**
  * The plugin's hooks as Claude Code runs them: `plugin/hooks/hooks.json` names each bundle in
- * exec form, through the bun shim `bin/anymodel-bun`, and each `src/entries/<name>.ts` reads
+ * exec form, through the bun shim `bin/cc-smart-dev-kit-bun`, and each `src/entries/<name>.ts` reads
  * its JSON on stdin and answers on stdout. (The worktree engine a project wires itself runs
- * as `anymodel hook <name>`: `src/cli/hook-commands.test.ts`.)
+ * as `cc-smart-dev-kit hook <name>`: `src/cli/hook-commands.test.ts`.)
  */
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
@@ -47,7 +47,7 @@ describe("hooks.json", () => {
     for (const { event, handler } of wired) {
       expect(handler.type).toBe("command");
       // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code's placeholder, filled in by Claude Code.
-      expect(handler.command).toBe("${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun");
+      expect(handler.command).toBe("${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun");
       const bundle = (handler.args?.[1] ?? "").replace(/^.*\/dist\/|\.js$/g, "");
       expect(handler.args).toEqual([
         event === "PreToolUse" && GUARD_BUNDLES.has(bundle) ? "--missing=ask" : "--missing=quiet",
@@ -112,7 +112,7 @@ describe("hooks.json", () => {
 describe("the entries, run as Claude Code runs them", () => {
   test("the git guard: a PreToolUse ask, exactly; the run is logged with its cwd", () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", {});
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
     const log = join(tempDir("log"), "hooks.log");
     const run = runEntry(
       "git-guard",
@@ -154,7 +154,7 @@ describe("the entries, run as Claude Code runs them", () => {
       expect(run).toEqual({
         exitCode,
         stdout: "",
-        stderr: `anymodel ${name}: the hook input is not JSON\n`,
+        stderr: `cc-smart-dev-kit ${name}: the hook input is not JSON\n`,
       });
     },
   );

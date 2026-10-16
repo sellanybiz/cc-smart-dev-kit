@@ -1,11 +1,11 @@
 /**
- * The hooks a Claude Code settings file wires: what `anymodel doctor` reads to check a
+ * The hooks a Claude Code settings file wires: what `cc-smart-dev-kit doctor` reads to check a
  * project's wiring (the worktree engine's lines, and a project hook that runs next to a
  * plugin hook on the same event and tool).
  *
  * No hook reads these files: what Claude Code loaded for a session is not knowable from a
  * hook (a worktree's settings may differ from the ones the session started with), so a
- * plugin hook steps aside only for what the project's anymodel.json says (`ownHooks`).
+ * plugin hook steps aside only for what the project's cc-smart-dev-kit.json says (`ownHooks`).
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";

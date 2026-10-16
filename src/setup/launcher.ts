@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { PLUGIN_ID } from "../build-info";
 import { type WriteOutcome, writeManagedFile } from "./write";
 
-export const LAUNCHER_NAME = "anymodel";
+export const LAUNCHER_NAME = "cc-smart-dev-kit";
 
 /**
  * Finds the user-scope install of the plugin in installed_plugins.json (the last argument)
@@ -41,10 +41,10 @@ export function bakedBunPath(script: string): string | null {
  */
 export function launcherScript(bunPath: string): string {
   return `#!/bin/sh
-# anymodel launcher. Written by "anymodel setup"; setup rewrites it, so do not edit it.
-# It runs the anymodel command from the installed version of the anymodel plugin.
+# cc-smart-dev-kit launcher. Written by "cc-smart-dev-kit setup"; setup rewrites it, so do not edit it.
+# It runs the cc-smart-dev-kit command from the installed version of the cc-smart-dev-kit plugin.
 fail() {
-  echo "anymodel: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
+  echo "cc-smart-dev-kit: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
   exit 1
 }
 baked_bun=${shellQuote(bunPath)}
@@ -53,16 +53,16 @@ if [ -x "$baked_bun" ]; then
 elif command -v bun >/dev/null 2>&1; then
   bun=$(command -v bun)
 else
-  echo "anymodel: bun not found (not at $baked_bun, not on PATH). Install bun, then run: anymodel setup" >&2
+  echo "cc-smart-dev-kit: bun not found (not at $baked_bun, not on PATH). Install bun, then run: cc-smart-dev-kit setup" >&2
   exit 1
 fi
 config_dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 installed="$config_dir/plugins/installed_plugins.json"
-[ -f "$installed" ] || fail "the anymodel plugin is not installed."
-install_path=$("$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the anymodel plugin is not installed."
-[ -n "$install_path" ] || fail "the anymodel plugin is not installed."
-[ -f "$install_path/dist/cli.js" ] || fail "the anymodel plugin folder is missing: $install_path."
-# --no-env-file: "anymodel job run" hands its job exactly the environment it was given.
+[ -f "$installed" ] || fail "the cc-smart-dev-kit plugin is not installed."
+install_path=$("$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the cc-smart-dev-kit plugin is not installed."
+[ -n "$install_path" ] || fail "the cc-smart-dev-kit plugin is not installed."
+[ -f "$install_path/dist/cli.js" ] || fail "the cc-smart-dev-kit plugin folder is missing: $install_path."
+# --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.
 exec "$bun" --no-env-file "$install_path/dist/cli.js" "$@"
 `;
 }
@@ -74,7 +74,7 @@ export interface InstallLauncherOptions {
   dryRun?: boolean;
 }
 
-/** Writes `<binDir>/anymodel` (mode 755), with a backup when it changes. */
+/** Writes `<binDir>/cc-smart-dev-kit` (mode 755), with a backup when it changes. */
 export function installLauncher(
   binDir: string,
   options: InstallLauncherOptions,

@@ -4,7 +4,7 @@ import { bunTooOld } from "../build-info/bun";
 import { installPortGuard, removeSubprocessLog, takeViolations } from "./port-guard";
 import { removeTempDirs } from "./temp";
 
-// The tests need the Bun anymodel needs: on an older one the proxy tests fail, and the CLI
+// The tests need the Bun cc-smart-dev-kit needs: on an older one the proxy tests fail, and the CLI
 // they start refuses to run. One clear line instead of a page of failures: exit, because
 // a throw here is reported once per test file.
 const tooOld = bunTooOld(Bun.version, process.execPath);

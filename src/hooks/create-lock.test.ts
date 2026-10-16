@@ -53,7 +53,7 @@ describe("withCreateLock", () => {
         expect(error).toBeInstanceOf(CreateBusyError);
         const file = createLockFile(dir, "fix/x");
         expect((error as Error).message).toBe(
-          `another anymodel process (pid ${process.pid}, session session-a, started ${JSON.parse(readFileSync(file, "utf8")).startedAt}) ` +
+          `another cc-smart-dev-kit process (pid ${process.pid}, session session-a, started ${JSON.parse(readFileSync(file, "utf8")).startedAt}) ` +
             `is making the worktree for this branch right now. Wait for it, then ask again; if that process is gone, remove ${file}.`,
         );
       }
@@ -101,7 +101,7 @@ describe("withCreateLock", () => {
   test("the file name is a hash: a branch name cannot escape the git dir", () => {
     const file = createLockFile("/repo/.git", "../../etc/passwd");
     expect(dirname(file)).toBe("/repo/.git");
-    expect(file).toMatch(/\/anymodel-create-[0-9a-f]{16}\.lock$/);
+    expect(file).toMatch(/\/cc-smart-dev-kit-create-[0-9a-f]{16}\.lock$/);
     expect(createLockFile("/repo/.git", "fix/x")).not.toBe(createLockFile("/repo/.git", "fix/y"));
   });
 });

@@ -5,7 +5,7 @@ description: Use before any non-trivial change - more than two files, a design t
 
 # Plan The Task
 
-**Project add-on:** `.claude/anymodel/plan-task.md` — read it first when it exists. Where it
+**Project add-on:** `.claude/cc-smart-dev-kit/plan-task.md` — read it first when it exists. Where it
 differs, the add-on wins (`core.md`, top). It names where plans live and the template to
 copy.
 
@@ -15,7 +15,7 @@ build → keep it live → archive.**
 The plan is a **file**, not only chat: it survives a compaction, a restart and a hand-off.
 Where it lives: the add-on file says; else `.claude/plans/<YYYY-MM-DD>-<slug>.md`.
 
-**No plan file** for a small fix (`/anymodel:review` defines it) or a change of two files or
+**No plan file** for a small fix (`/cc-smart-dev-kit:review` defines it) or a change of two files or
 fewer whose design is settled — the task is the plan. Its separable pieces still go to
 subagents.
 
@@ -23,11 +23,11 @@ subagents.
 
 A plan built on memory is worse than no plan. Gather the facts, then plan from them:
 
-- **Research** — `/anymodel:research-first` for every library, API or pattern.
+- **Research** — `/cc-smart-dev-kit:research-first` for every library, API or pattern.
 - **Prior art** for new work — how others already solve it: what to copy, what to skip, what
   fits this codebase. Look at the live product when the user experience matters.
 - **The code** — the files that change and the patterns to match.
-- **Impact** — every consumer of shared code you will touch (`/anymodel:impact-analysis`).
+- **Impact** — every consumer of shared code you will touch (`/cc-smart-dev-kit:impact-analysis`).
 
 Write the findings into the plan's **Research** and **Code exploration** sections.
 
@@ -54,7 +54,7 @@ Answer seven questions; they are the plan's sections:
 1. **Goal** — the real outcome, not the literal request.
 2. **Files to change.**
 3. **Patterns to follow** — from step 1.
-4. **Edge cases** — walk the axes in `/anymodel:review` and write down every one this change
+4. **Edge cases** — walk the axes in `/cc-smart-dev-kit:review` and write down every one this change
    can hit: what triggers it and what the plan does about it. An axis that cannot apply gets
    one line. Findings that reshape the design go into the approach, not a footnote.
 5. **What could break** — the consumers of every shared symbol.
@@ -67,7 +67,7 @@ The built-in `Plan` agent is read-only: it returns the text, and you write the f
 ## 4. Self-check, then approval
 
 Re-read the plan as a skeptic: a simpler path, an unverified assumption, an edge case waved
-away? For a big or risky plan, ask a second read from `anymodel:reviewer` (a read of the
+away? For a big or risky plan, ask a second read from `cc-smart-dev-kit:reviewer` (a read of the
 plan, not of a change set). When the plan adds UI or a new architecture, show it — a diagram
 or a mockup — rather than only describing it.
 
@@ -95,7 +95,7 @@ list.
   rebuilding as you go.
 
 Brief each owner with its phase, its files, the patterns, its done-check and its limits
-(`/anymodel:subagent-decision` § How to brief). Check each hand-back yourself: read
+(`/cc-smart-dev-kit:subagent-decision` § How to brief). Check each hand-back yourself: read
 `git diff -- <its files>` in full, run its tests, confirm nothing changed outside its list.
 That read is your own review pass for those files. While other owners still write, stage by
 path, never `git add -A`. You tick the plan, integrate, commit and own the result.
@@ -115,7 +115,7 @@ path, never `git add -A`. You tick the plan, integrate, commit and own the resul
   on half-built work. The one reason to stop early is a blocking question, asked with
   `AskUserQuestion`. A part that turns out blocked: finish everything else, then say what you
   left out and why.
-- **End of a phase:** commit it as `/anymodel:commit` allows (by default only when the person
+- **End of a phase:** commit it as `/cc-smart-dev-kit:commit` allows (by default only when the person
   asks; it also says when to push and ask for merges), write one progress line in the plan,
   and start the next phase.
 - **End of the plan:** a short summary (what shipped, what broke, what you left out), then

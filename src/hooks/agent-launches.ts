@@ -1,14 +1,14 @@
 /**
  * The Opus and Fable launches the Agent guard allowed, one JSON line each, in
- * `<stateDir>/agent-launches.jsonl` — the record `anymodel usage` lists (count, reasons).
+ * `<stateDir>/agent-launches.jsonl` — the record `cc-smart-dev-kit usage` lists (count, reasons).
  *
- * Why a file: the guard's answer reaches Claude and the hook log (`ANYMODEL_HOOK_LOG`, which
+ * Why a file: the guard's answer reaches Claude and the hook log (`CC_SMART_DEV_KIT_HOOK_LOG`, which
  * is a check's log, not the person's), and an Opus or Fable launch spends the person's own
  * plan usage. The record is what makes "how much Opus did the agents really use, and why"
  * answerable. It holds no message text: the model, the reason line's word, the agent type and
  * the folder.
  *
- * The file is anymodel's own state (`paths.stateDir`), appended by the hook with one short
+ * The file is cc-smart-dev-kit's own state (`paths.stateDir`), appended by the hook with one short
  * line. A file that cannot be written or read never fails a hook: the record is information.
  */
 
@@ -139,7 +139,7 @@ function reasonWord(reason: string): string {
 }
 
 /**
- * `anymodel usage`'s lines for the record: how many Opus and Fable launches, and why. Empty
+ * `cc-smart-dev-kit usage`'s lines for the record: how many Opus and Fable launches, and why. Empty
  * when there were none (an older machine has no file at all).
  */
 export function formatAgentLaunches(launches: AgentLaunch[]): string[] {

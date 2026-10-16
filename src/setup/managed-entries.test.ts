@@ -183,7 +183,7 @@ describe("restore of owned entries", () => {
     expect(restore(stateDir)).toEqual([]);
   });
 
-  test("a list anymodel created goes whole, with the anchor and the empty autoMode", () => {
+  test("a list cc-smart-dev-kit created goes whole, with the anchor and the empty autoMode", () => {
     const { file, stateDir, apply } = setup();
     apply("/repo/a", ["In a.", "In a, two."]);
     restore(stateDir);

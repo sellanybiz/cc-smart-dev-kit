@@ -14,7 +14,7 @@ import {
   safeToolUseId,
 } from "./fallback-answer";
 
-const SAFE_ID = "toolu_anymodel_9d4d98f9adde8d726e98af64";
+const SAFE_ID = "toolu_cc-smart-dev-kit_9d4d98f9adde8d726e98af64";
 
 /** One event as an Anthropic stream writes it. */
 function sse(name: string, data: Record<string, unknown>): string {
@@ -117,7 +117,7 @@ describe("a whole answer", () => {
     expect(safeToolUseId("toolu_01ABC-x_9")).toBe("toolu_01ABC-x_9");
     expect(safeToolUseId("functions.Read:0")).toBe(SAFE_ID);
     expect(safeToolUseId("functions.Read:0")).toBe(SAFE_ID);
-    expect(safeToolUseId("")).toMatch(/^toolu_anymodel_[0-9a-f]{24}$/);
+    expect(safeToolUseId("")).toMatch(/^toolu_cc-smart-dev-kit_[0-9a-f]{24}$/);
   });
 });
 

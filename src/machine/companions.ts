@@ -7,10 +7,10 @@ import { findUserInstall } from "../setup/installed-plugins";
 import type { Machine } from "./machine";
 
 /**
- * The companion plugins: the other plugins anymodel depends on (plugin.json's
+ * The companion plugins: the other plugins cc-smart-dev-kit depends on (plugin.json's
  * `dependencies`). Claude Code installs a dependency only from a marketplace the person
- * has added; without it, `claude plugin install anymodel@anymodel` still succeeds, and
- * anymodel then does not load (seen live: `docs/claude-code-contract.md`). So setup adds
+ * has added; without it, `claude plugin install cc-smart-dev-kit@cc-smart-dev-kit` still succeeds, and
+ * cc-smart-dev-kit then does not load (seen live: `docs/claude-code-contract.md`). So setup adds
  * each missing marketplace, which also installs the missing dependency.
  */
 
@@ -38,7 +38,7 @@ export function companions(dependencies: readonly Dependency[] = DEPENDENCIES): 
     const source = MARKETPLACE_SOURCES[dependency.marketplace];
     if (source === undefined) {
       throw new Error(
-        `plugin.json depends on ${dependency.name}@${dependency.marketplace}, but anymodel does not know where the ${dependency.marketplace} marketplace comes from (MARKETPLACE_SOURCES)`,
+        `plugin.json depends on ${dependency.name}@${dependency.marketplace}, but cc-smart-dev-kit does not know where the ${dependency.marketplace} marketplace comes from (MARKETPLACE_SOURCES)`,
       );
     }
     return {
@@ -154,12 +154,12 @@ export function companionPlan(
         break;
       case "off":
         notes.push(
-          `! ${companion.id} is turned off, and anymodel does not load without it. Run: claude plugin enable ${companion.id}`,
+          `! ${companion.id} is turned off, and cc-smart-dev-kit does not load without it. Run: claude plugin enable ${companion.id}`,
         );
         break;
       case "outside-range":
         notes.push(
-          `! ${companion.id} ${state.version ?? "(no version)"} is outside ${companion.range}, and anymodel does not load with it. Run: claude plugin update ${companion.id}`,
+          `! ${companion.id} ${state.version ?? "(no version)"} is outside ${companion.range}, and cc-smart-dev-kit does not load with it. Run: claude plugin update ${companion.id}`,
         );
         break;
       case "unknown-version":
@@ -198,7 +198,7 @@ export function runCompanionSteps(
 
 /** A companion whose recorded version is a commit id, not a version number. */
 function unknownVersionText(companion: Companion, version: string | null): string {
-  return `${companion.id} ${version ?? "(no version)"}: its version is unknown (not a version number), so anymodel cannot check it against ${companion.range}. Run: claude plugin update ${companion.id}`;
+  return `${companion.id} ${version ?? "(no version)"}: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against ${companion.range}. Run: claude plugin update ${companion.id}`;
 }
 
 /** One doctor line per companion. */
@@ -216,17 +216,17 @@ function companionCheck(paths: CliPaths, companion: Companion): { ok: boolean; t
       case "no-marketplace":
         return {
           ok: false,
-          text: `the ${companion.marketplace} marketplace is not added, so ${companion.id} is missing and anymodel does not load. Run: anymodel setup`,
+          text: `the ${companion.marketplace} marketplace is not added, so ${companion.id} is missing and cc-smart-dev-kit does not load. Run: cc-smart-dev-kit setup`,
         };
       case "not-installed":
         return {
           ok: false,
-          text: `${companion.id} is not installed, and anymodel does not load without it. Run: anymodel setup`,
+          text: `${companion.id} is not installed, and cc-smart-dev-kit does not load without it. Run: cc-smart-dev-kit setup`,
         };
       case "off":
         return {
           ok: false,
-          text: `${companion.id} is turned off, and anymodel does not load without it. Run: claude plugin enable ${companion.id}`,
+          text: `${companion.id} is turned off, and cc-smart-dev-kit does not load without it. Run: claude plugin enable ${companion.id}`,
         };
       case "outside-range":
         return {

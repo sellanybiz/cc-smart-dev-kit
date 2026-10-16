@@ -15,8 +15,8 @@ function routerPaths(env = process.env) {
   const home = homeDir(env);
   return {
     home,
-    gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json")
+    gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
+    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json")
   };
 }
 
@@ -31,12 +31,12 @@ function cliPaths(env = process.env) {
     installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
     knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
     binDir: join2(router.home, ".local", "bin"),
-    stateDir: join2(claudeConfigDir, "anymodel"),
-    routerCopy: join2(router.home, ".local", "share", "anymodel", "router.js"),
-    routerUnitFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.service"),
+    stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
+    routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    routerUnitFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
-    routerSocketFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.socket"),
-    notifyConfigFile: join2(claudeConfigDir, "anymodel", "notify.json"),
+    routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
+    notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf")
   };
 }
@@ -77,15 +77,15 @@ function oneLine(text, max, options = {}) {
 }
 
 // src/build-info/names.ts
-var MARKETPLACE = "anymodel";
-var PLUGIN = "anymodel";
+var MARKETPLACE = "cc-smart-dev-kit";
+var PLUGIN = "cc-smart-dev-kit";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-var COMMAND = "anymodel";
+var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
   version: "0.3.0",
-  repo: "sellanybiz/anymodel",
+  repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
       name: "claude-mem",
@@ -488,11 +488,11 @@ var spawnNotify = (argv) => {
   try {
     const child = spawn(file, args, { detached: true, stdio: "ignore" });
     child.on("error", (error) => {
-      console.error(`anymodel notify: could not show the notification: ${error.message}`);
+      console.error(`cc-smart-dev-kit notify: could not show the notification: ${error.message}`);
     });
     child.unref();
   } catch (error) {
-    console.error(`anymodel notify: ${error instanceof Error ? error.message : error}`);
+    console.error(`cc-smart-dev-kit notify: ${error instanceof Error ? error.message : error}`);
   }
 };
 function desktopCommand(alert, deps) {
@@ -517,8 +517,8 @@ function notifyHook(input, event, deps) {
     return SILENT;
   const session = sessionKey(input.session_id);
   const dir = runtimeDir(deps.env);
-  const mark = join3(dir, `anymodel-notify-asked-${session}`);
-  const failed = join3(dir, `anymodel-notify-failed-${session}`);
+  const mark = join3(dir, `cc-smart-dev-kit-notify-asked-${session}`);
+  const failed = join3(dir, `cc-smart-dev-kit-notify-failed-${session}`);
   if (WAIT_END_EVENTS.includes(event)) {
     forget(mark);
     return SILENT;
@@ -584,7 +584,7 @@ async function hook() {
   try {
     input = JSON.parse(await Bun.stdin.text());
   } catch {
-    console.error("anymodel notify: the hook input is not JSON");
+    console.error("cc-smart-dev-kit notify: the hook input is not JSON");
     return;
   }
   const event = typeof input === "object" && input !== null && !Array.isArray(input) ? input.hook_event_name : undefined;
@@ -607,5 +607,5 @@ async function hook() {
 try {
   await hook();
 } catch (error) {
-  console.error(`anymodel notify: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`cc-smart-dev-kit notify: ${error instanceof Error ? error.message : String(error)}`);
 }

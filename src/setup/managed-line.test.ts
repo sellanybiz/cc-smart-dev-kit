@@ -96,7 +96,7 @@ describe("removeManagedLines", () => {
     expect(read(file)).toBe("set -g allow-passthrough on\nset -g mouse on\n");
   });
 
-  test("restore takes the line out; a file anymodel created with only the line is removed", () => {
+  test("restore takes the line out; a file cc-smart-dev-kit created with only the line is removed", () => {
     const kept = setup("set -g mouse on\n");
     applyManagedLine({ file: kept.file, line: LINE, stateDir: kept.stateDir });
     expect(restore(kept.stateDir)).toEqual([

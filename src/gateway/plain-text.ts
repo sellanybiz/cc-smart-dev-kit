@@ -1,7 +1,7 @@
 /**
  * Text from outside — an upstream's error answer, a web page, a search result — made safe
  * to print on a terminal or in one log line. The one home for this: the router's log
- * (`router.ts`) and `anymodel search` (`src/search/`) both use it.
+ * (`router.ts`) and `cc-smart-dev-kit search` (`src/search/`) both use it.
  *
  * A terminal obeys control characters inside text: ESC starts a sequence that can write
  * the clipboard (OSC 52), hide text, move the cursor or clear the screen; a C1 control

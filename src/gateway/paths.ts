@@ -20,11 +20,11 @@ function homeDir(env: Record<string, string | undefined> = process.env): string 
 /** The two paths the router reads; `src/cli/paths.ts` adds the command's own. */
 export interface RouterPaths {
   home: string;
-  /** The gateway's config, with the backend keys: `~/.config/anymodel/gateway.json`. */
+  /** The gateway's config, with the backend keys: `~/.config/cc-smart-dev-kit/gateway.json`. */
   gatewayConfigFile: string;
   /**
    * The router's limit state (plan limits seen, model slots on a fallback), which the status
-   * line and the StopFailure hook read: `~/.local/state/anymodel/gateway-state.json`.
+   * line and the StopFailure hook read: `~/.local/state/cc-smart-dev-kit/gateway-state.json`.
    */
   gatewayStateFile: string;
 }
@@ -36,7 +36,7 @@ export function routerPaths(env: Record<string, string | undefined> = process.en
   const home = homeDir(env);
   return {
     home,
-    gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json"),
+    gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
+    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
   };
 }

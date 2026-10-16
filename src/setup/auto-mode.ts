@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { loadAnymodelConfig } from "../project/config";
+import { loadCcSmartDevKitConfig } from "../project/config";
 import { resolveProject } from "../project/resolve";
 import { applyManagedEntries, type ManagedEntriesResult } from "./managed-entries";
 
@@ -7,10 +7,10 @@ import { applyManagedEntries, type ManagedEntriesResult } from "./managed-entrie
  * The auto-mode block. Claude Code's auto mode reads its `autoMode` settings only from
  * the user's settings (and managed settings, and `--settings`), never from a project's
  * `.claude/settings.json`: a repo could otherwise grant itself trust. So a project that
- * wants auto mode to know its rules lists them in its `.claude/anymodel.json`
+ * wants auto mode to know its rules lists them in its `.claude/cc-smart-dev-kit.json`
  * (`autoMode`), and `setup`, run in that project, copies them into the user's
  * `autoMode.environment`, after the person saw them and said yes. The project owns the
- * wording; anymodel only copies it, and owns each copied entry, never the list.
+ * wording; cc-smart-dev-kit only copies it, and owns each copied entry, never the list.
  */
 
 /** Where the entries go in the user's settings.json. */
@@ -25,10 +25,10 @@ export interface AutoModeSource {
   /** The project's main checkout: one source for all its worktrees. */
   source: string;
   entries: string[];
-  /** The anymodel.json the entries come from; null when the project has none. */
+  /** The cc-smart-dev-kit.json the entries come from; null when the project has none. */
   file: string | null;
   /**
-   * In a worktree with its own anymodel.json: the main checkout's file, when its
+   * In a worktree with its own cc-smart-dev-kit.json: the main checkout's file, when its
    * `autoMode` says something else (or it cannot be read). Null otherwise.
    */
   differsFrom: string | null;
@@ -38,7 +38,7 @@ export interface AutoModeSource {
  * The project in `dir` and the auto-mode entries it asks for. Null outside git (no
  * project, nothing to copy). A project with no `autoMode` asks for none: the entries
  * setup copied from it before then go. Throws what `resolveProject` throws: an invalid
- * or too-new anymodel.json, git older than 2.31, a worktree whose main checkout is gone.
+ * or too-new cc-smart-dev-kit.json, git older than 2.31, a worktree whose main checkout is gone.
  */
 export function autoModeSource(
   dir: string,
@@ -51,12 +51,12 @@ export function autoModeSource(
   const entries = project.config?.autoMode ?? [];
   let differsFrom: string | null = null;
   const main = project.mainCheckout;
-  const own = join(project.root, ".claude", "anymodel.json");
+  const own = join(project.root, ".claude", "cc-smart-dev-kit.json");
   if (project.isWorktree && main !== null && project.configFile === own) {
-    const mainFile = join(main, ".claude", "anymodel.json");
+    const mainFile = join(main, ".claude", "cc-smart-dev-kit.json");
     let mainEntries: string[] | null;
     try {
-      mainEntries = loadAnymodelConfig(mainFile)?.autoMode ?? [];
+      mainEntries = loadCcSmartDevKitConfig(mainFile)?.autoMode ?? [];
     } catch {
       mainEntries = null;
     }

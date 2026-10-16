@@ -28,7 +28,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          # MIN_BUN in src/build-info/bun.ts: the oldest Bun anymodel runs on. A test keeps them equal.
+          # MIN_BUN in src/build-info/bun.ts: the oldest Bun cc-smart-dev-kit runs on. A test keeps them equal.
           bun-version: 1.4.3
 
       - name: Install dependencies

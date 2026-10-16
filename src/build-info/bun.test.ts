@@ -7,10 +7,13 @@ const ROOT = join(import.meta.dir, "..", "..");
 
 describe("bunTooOld", () => {
   test.each([
-    ["1.4.2", "anymodel needs Bun ≥ 1.4.3; this is 1.4.2 (/opt/bun/bin/bun)."],
-    ["1.3.14", "anymodel needs Bun ≥ 1.4.3; this is 1.3.14 (/opt/bun/bin/bun)."],
+    ["1.4.2", "cc-smart-dev-kit needs Bun ≥ 1.4.3; this is 1.4.2 (/opt/bun/bin/bun)."],
+    ["1.3.14", "cc-smart-dev-kit needs Bun ≥ 1.4.3; this is 1.3.14 (/opt/bun/bin/bun)."],
     // A pre-release of 1.4.3 may be older than the fix.
-    ["1.4.3-canary.1", "anymodel needs Bun ≥ 1.4.3; this is 1.4.3-canary.1 (/opt/bun/bin/bun)."],
+    [
+      "1.4.3-canary.1",
+      "cc-smart-dev-kit needs Bun ≥ 1.4.3; this is 1.4.3-canary.1 (/opt/bun/bin/bun).",
+    ],
   ])("%p is too old", (version, message) => {
     expect(bunTooOld(version, "/opt/bun/bin/bun")).toBe(message);
   });
@@ -25,7 +28,7 @@ describe("bunTooOld", () => {
 
 describe("the one number", () => {
   test("is 1.4.3, the first Bun whose fetch honours `proxy: false`", () => {
-    // Written by hand: raise it only for a new fix anymodel needs, and say which.
+    // Written by hand: raise it only for a new fix cc-smart-dev-kit needs, and say which.
     expect(MIN_BUN).toBe("1.4.3");
   });
 

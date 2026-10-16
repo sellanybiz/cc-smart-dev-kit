@@ -46,7 +46,7 @@ describe("names", () => {
 describe("the hook", () => {
   function setup(sessionNames = true) {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", { sessionNames });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { sessionNames });
     return { repo, env: hookEnv() };
   }
   const start = (cwd: string) => ({
@@ -68,12 +68,12 @@ describe("the hook", () => {
       stdout: JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "SessionStart",
-          additionalContext: `This session has no name yet. Name it once, as soon as its main task is clear: people and other sessions find it by this name in ListAgents and /resume. Run: anymodel session-name ${SESSION} "<the task, in a few words>"`,
+          additionalContext: `This session has no name yet. Name it once, as soon as its main task is clear: people and other sessions find it by this name in ListAgents and /resume. Run: cc-smart-dev-kit session-name ${SESSION} "<the task, in a few words>"`,
         },
       }),
     });
     expect(namingNote(SESSION, "Fix login")).toBe(
-      `This session is named "Fix login" after its main task. Keep it; rename it only if the name no longer describes the main task: anymodel session-name ${SESSION} "<the task, in a few words>"`,
+      `This session is named "Fix login" after its main task. Keep it; rename it only if the name no longer describes the main task: cc-smart-dev-kit session-name ${SESSION} "<the task, in a few words>"`,
     );
   });
 
@@ -90,7 +90,7 @@ describe("the hook", () => {
     expect(await runHook(sessionNameHook, prompt(repo), env)).toEqual({});
   });
 
-  test("off unless anymodel.json turns it on", async () => {
+  test("off unless cc-smart-dev-kit.json turns it on", async () => {
     const { repo, env } = setup(false);
     expect(await runHook(sessionNameHook, start(repo), env)).toEqual({});
     expect(await runHook(sessionNameHook, start(makeRepo("plain")), env)).toEqual({});

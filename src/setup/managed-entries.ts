@@ -14,9 +14,9 @@ import {
 import { atomicWrite, realTarget, retryOnConcurrentChange, writeManagedFile } from "./write";
 
 /**
- * Entries anymodel owns inside a JSON list of strings, such as `autoMode.environment` in
- * `settings.json`. A list is shared: the person, other tools and anymodel all add to it.
- * So anymodel owns single entries, never the whole list.
+ * Entries cc-smart-dev-kit owns inside a JSON list of strings, such as `autoMode.environment` in
+ * `settings.json`. A list is shared: the person, other tools and cc-smart-dev-kit all add to it.
+ * So cc-smart-dev-kit owns single entries, never the whole list.
  *
  * Who wants an entry is its **source** (for the auto-mode block: a project's folder).
  * One entry can be wanted by several sources; it leaves the list only when the last
@@ -27,7 +27,7 @@ import { atomicWrite, realTarget, retryOnConcurrentChange, writeManagedFile } fr
  */
 const OWNED_ENTRIES_FILE = "owned-entries.json";
 
-/** The source of the anchor entry: anymodel put it there when it created the list. */
+/** The source of the anchor entry: cc-smart-dev-kit put it there when it created the list. */
 const ANCHOR_SOURCE = "";
 
 interface OwnedEntry {
@@ -46,9 +46,9 @@ export interface ManagedEntriesOptions {
   /** Every entry this source wants now. An owned entry of this source that is not here goes. */
   entries: readonly string[];
   /**
-   * An entry put first when anymodel creates the list (auto mode's `"$defaults"`, which
-   * keeps Claude Code's built-in entries). It is anymodel's, and it goes only with the
-   * list: when no entry but anymodel's anchor is left.
+   * An entry put first when cc-smart-dev-kit creates the list (auto mode's `"$defaults"`, which
+   * keeps Claude Code's built-in entries). It is cc-smart-dev-kit's, and it goes only with the
+   * list: when no entry but cc-smart-dev-kit's anchor is left.
    */
   anchor?: string;
   dryRun?: boolean;
@@ -118,7 +118,7 @@ function withRecords(
   return next;
 }
 
-/** The entries anymodel owns in `file` (its real path), per key path, with their sources. */
+/** The entries cc-smart-dev-kit owns in `file` (its real path), per key path, with their sources. */
 export function ownedEntries(stateDir: string, file: string): Record<string, OwnedEntry[]> {
   return readOwnedEntries(stateDir)[file] ?? {};
 }
@@ -159,7 +159,7 @@ function applyOnce(
     !(Array.isArray(current.value) && current.value.every((item) => typeof item === "string"))
   ) {
     throw new ForeignKeyError(
-      `${file}: ${formatKeyPath(path)} is not a list of strings. anymodel does not change it.`,
+      `${file}: ${formatKeyPath(path)} is not a list of strings. cc-smart-dev-kit does not change it.`,
     );
   }
   const list: string[] = current.found ? [...(current.value as string[])] : [];
@@ -180,8 +180,8 @@ function applyOnce(
     for (const entry of wanted) {
       const ownedHere = kept.some((r) => r.entry === entry && r.source === plan.source);
       if (ownedHere) continue;
-      const ownedByAnymodel = kept.some((r) => r.entry === entry);
-      if (list.includes(entry) && !ownedByAnymodel) {
+      const ownedByCcSmartDevKit = kept.some((r) => r.entry === entry);
+      if (list.includes(entry) && !ownedByCcSmartDevKit) {
         skipped.push(entry);
         continue;
       }
@@ -224,7 +224,7 @@ function applyOnce(
       kept.push(anchorRecord);
     }
     // On restore with other entries left, the anchor stays in the list (they rely on it),
-    // and anymodel no longer claims it: the list is the person's now.
+    // and cc-smart-dev-kit no longer claims it: the list is the person's now.
   }
 
   const listChanged = added.length > 0 || removed.length > 0;
@@ -281,7 +281,7 @@ function applyOnce(
  * - an entry this source owns but no longer wants is taken out, unless another source
  *   still owns it;
  * - no other entry is ever touched, and their order stays.
- * When anymodel creates the list, `anchor` comes first; it goes with the list.
+ * When cc-smart-dev-kit creates the list, `anchor` comes first; it goes with the list.
  * Same write path as `applyManagedJson`: a backup, the record for restore, the race check.
  */
 export function applyManagedEntries(options: ManagedEntriesOptions): ManagedEntriesResult {
@@ -302,7 +302,7 @@ export function applyManagedEntries(options: ManagedEntriesOptions): ManagedEntr
   );
 }
 
-/** Restore: takes every entry anymodel owns out of `file`, for every source. */
+/** Restore: takes every entry cc-smart-dev-kit owns out of `file`, for every source. */
 export function removeAllOwnedEntries(
   stateDir: string,
   file: string,

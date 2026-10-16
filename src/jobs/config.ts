@@ -1,5 +1,5 @@
 /**
- * The machine's own settings for heavy jobs: `~/.config/anymodel/jobs.json`. Optional;
+ * The machine's own settings for heavy jobs: `~/.config/cc-smart-dev-kit/jobs.json`. Optional;
  * without it every default holds. A machine's own setup writes it (for example, to point
  * every container on a host at one shared folder); the plugin names no machine.
  *
@@ -11,7 +11,7 @@
  * }
  * ```
  *
- * A project's kinds come from its `.claude/anymodel.json` (`jobs.kinds`), not from here:
+ * A project's kinds come from its `.claude/cc-smart-dev-kit.json` (`jobs.kinds`), not from here:
  * the project knows its tools, the machine knows its memory.
  */
 
@@ -20,22 +20,22 @@ import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 
 /**
- * The machine's heavy-job settings, `~/.config/anymodel/jobs.json`, and this user's
- * leases, `~/.local/share/anymodel/jobs`. From the home folder the caller passes, so a
+ * The machine's heavy-job settings, `~/.config/cc-smart-dev-kit/jobs.json`, and this user's
+ * leases, `~/.local/share/cc-smart-dev-kit/jobs`. From the home folder the caller passes, so a
  * test points them at a temp folder. (Not in `cliPaths()` itself: only the jobs code
  * reads these.)
  */
 export function jobsPaths(home: string): { configFile: string; stateDir: string } {
   return {
-    configFile: join(home, ".config", "anymodel", "jobs.json"),
-    stateDir: join(home, ".local", "share", "anymodel", "jobs"),
+    configFile: join(home, ".config", "cc-smart-dev-kit", "jobs.json"),
+    stateDir: join(home, ".local", "share", "cc-smart-dev-kit", "jobs"),
   };
 }
 
 /** GB kept for what never queues: the desktop, Claude sessions, MCP and dev servers, a DB. */
 export const DEFAULT_RESERVE_GB = 22;
-/** The systemd slice heavy jobs run in. A dash nests: it sits inside `anymodel.slice`. */
-export const DEFAULT_SLICE = "anymodel-heavy.slice";
+/** The systemd slice heavy jobs run in. A dash nests: it sits inside `cc-smart-dev-kit.slice`. */
+export const DEFAULT_SLICE = "cc-smart-dev-kit-heavy.slice";
 
 const absolutePath = z
   .string()
@@ -43,7 +43,7 @@ const absolutePath = z
   .refine((path) => isAbsolute(path), "must be an absolute path");
 
 export const jobsMachineConfigSchema = z.strictObject({
-  /** Where this user's leases live. Default: `~/.local/share/anymodel/jobs`. */
+  /** Where this user's leases live. Default: `~/.local/share/cc-smart-dev-kit/jobs`. */
   stateDir: absolutePath.optional(),
   /** This machine's heavy-job budget in GB, instead of its memory less `reserveGb`. */
   budgetGb: z.number().int().min(1).optional(),
@@ -59,7 +59,7 @@ export const jobsMachineConfigSchema = z.strictObject({
    * die first if memory still runs out (when the system allows). `plain`: run it as it is.
    */
   launch: z.enum(["auto", "plain"]).optional(),
-  /** The systemd slice for `launch: auto`. Default: `anymodel-heavy.slice`. */
+  /** The systemd slice for `launch: auto`. Default: `cc-smart-dev-kit-heavy.slice`. */
   slice: z
     .string()
     .regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice")

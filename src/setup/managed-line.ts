@@ -1,6 +1,6 @@
 /**
  * One managed line in a text file: setup adds an exact line at the end, and restore takes
- * out exactly the lines anymodel added (recorded in `changed.json`), keeping everything
+ * out exactly the lines cc-smart-dev-kit added (recorded in `changed.json`), keeping everything
  * else — the person's own lines, their order, and any line they edited since. The other
  * managed kinds: `managed-json.ts`, `managed-entries.ts`, `managed-markdown.ts`.
  *
@@ -12,7 +12,7 @@ import { realTarget, retryOnConcurrentChange, type WriteOutcome, writeManagedFil
 
 export interface ManagedLineOptions {
   file: string;
-  /** The exact line anymodel adds (compared as the whole line, without trimming). */
+  /** The exact line cc-smart-dev-kit adds (compared as the whole line, without trimming). */
   line: string;
   stateDir: string;
   dryRun?: boolean;
@@ -74,7 +74,7 @@ function writeRendered(
 /**
  * Puts the line at the end of the file, when it is not there already. A file that already
  * has the exact line (the person's own, or an earlier setup) is left alone and nothing is
- * claimed: restore never takes out a line anymodel did not add.
+ * claimed: restore never takes out a line cc-smart-dev-kit did not add.
  */
 export function applyManagedLine(options: ManagedLineOptions): ManagedLineResult {
   return writeRendered(
@@ -89,7 +89,7 @@ export function applyManagedLine(options: ManagedLineOptions): ManagedLineResult
 }
 
 /**
- * Takes the lines anymodel added out again, keeping every other line. A line the person
+ * Takes the lines cc-smart-dev-kit added out again, keeping every other line. A line the person
  * changed or removed since is not there to remove: nothing happens for it.
  */
 export function removeManagedLines(options: {

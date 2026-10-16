@@ -1,6 +1,6 @@
 /**
  * SessionStart (startup, resume): tells a starting session which worktrees of its repo are
- * finished and can go, for a project that works in worktrees (`worktrees` in anymodel.json).
+ * finished and can go, for a project that works in worktrees (`worktrees` in cc-smart-dev-kit.json).
  *
  * The after-merge note covers a merge made in a session. It cannot cover a pull request
  * merged somewhere else, or a session that ended or crashed first, so finished worktrees

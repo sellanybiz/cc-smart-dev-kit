@@ -6,7 +6,7 @@ const created: string[] = [];
 
 /** A fresh temp folder (real path, no symlinks), removed after each test. */
 export function tempDir(label = "test"): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), `anymodel-${label}-`)));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), `cc-smart-dev-kit-${label}-`)));
   created.push(dir);
   return dir;
 }

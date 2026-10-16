@@ -34,10 +34,10 @@ const V1 = "1.0.0";
 const V2 = "1.1.0";
 
 const BLOCK = [
-  "<!-- anymodel:begin -->",
-  "<!-- Written by anymodel setup. `anymodel setup --no-instructions` takes it out. -->",
-  "@~/.claude/anymodel/instructions/core.md",
-  "<!-- anymodel:end -->",
+  "<!-- cc-smart-dev-kit:begin -->",
+  "<!-- Written by cc-smart-dev-kit setup. `cc-smart-dev-kit setup --no-instructions` takes it out. -->",
+  "@~/.claude/cc-smart-dev-kit/instructions/core.md",
+  "<!-- cc-smart-dev-kit:end -->",
 ].join("\n");
 
 /** A plugin source folder with an always-on file and one opt-in file, and an empty config folder. */
@@ -50,13 +50,13 @@ function setup() {
   writeFileSync(join(source, "notes.txt"), "not an instruction\n");
   const configDir = join(dir, "home", ".claude");
   mkdirSync(configDir, { recursive: true });
-  const stateDir = join(configDir, "anymodel");
+  const stateDir = join(configDir, "cc-smart-dev-kit");
   const paths: InstructionsPaths = {
     source,
     target: join(stateDir, "instructions"),
     claudeMd: join(configDir, "CLAUDE.md"),
     stateDir,
-    importPath: "~/.claude/anymodel/instructions/core.md",
+    importPath: "~/.claude/cc-smart-dev-kit/instructions/core.md",
   };
   return { dir, source, stateDir, paths };
 }
@@ -89,9 +89,9 @@ describe("installInstructions", () => {
     const { dir, paths } = setup();
     const result = installInstructions(paths, false, V1);
     expect(lines(result, dir)).toEqual([
-      "+ home/.claude/anymodel/instructions/core.md: created",
-      "+ home/.claude/anymodel/instructions/optin/worktrees.md: created",
-      "+ home/.claude/CLAUDE.md: created, with the anymodel block",
+      "+ home/.claude/cc-smart-dev-kit/instructions/core.md: created",
+      "+ home/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md: created",
+      "+ home/.claude/CLAUDE.md: created, with the cc-smart-dev-kit block",
     ]);
     expect(read(join(paths.target, "core.md"))).toBe("# Core\n");
     expect(read(join(paths.target, "optin", "worktrees.md"))).toBe("# Worktrees\n");
@@ -104,7 +104,7 @@ describe("installInstructions", () => {
     const { paths } = setup();
     writeFileSync(paths.claudeMd, "# Mine\n\nAlways answer in French.\n");
     const result = installInstructions(paths, false, V1);
-    expect(result.at(-1)?.what).toBe("anymodel block added");
+    expect(result.at(-1)?.what).toBe("cc-smart-dev-kit block added");
     expect(read(paths.claudeMd)).toBe(`# Mine\n\nAlways answer in French.\n\n${BLOCK}\n`);
   });
 
@@ -124,8 +124,8 @@ describe("installInstructions", () => {
     rmSync(join(source, "optin"), { recursive: true });
     const result = installInstructions(paths, false, V1);
     expect(lines(result, dir)).toEqual([
-      "~ home/.claude/anymodel/instructions/core.md: updated",
-      "- home/.claude/anymodel/instructions/optin/worktrees.md: removed (the plugin no longer ships it)",
+      "~ home/.claude/cc-smart-dev-kit/instructions/core.md: updated",
+      "- home/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md: removed (the plugin no longer ships it)",
     ]);
     expect(read(join(paths.target, "core.md"))).toBe("# Core, version two\n");
     expect(existsSync(join(paths.target, "optin"))).toBe(false);
@@ -136,7 +136,7 @@ describe("installInstructions", () => {
     installInstructions(paths, false, V1);
     writeFileSync(join(paths.target, "core.md"), "# Edited by hand\n");
     expect(lines(installInstructions(paths, false, V1), dir)).toEqual([
-      "~ home/.claude/anymodel/instructions/core.md: updated",
+      "~ home/.claude/cc-smart-dev-kit/instructions/core.md: updated",
     ]);
     expect(read(join(paths.target, "core.md"))).toBe("# Core\n");
   });
@@ -145,10 +145,10 @@ describe("installInstructions", () => {
     const { paths } = setup();
     writeFileSync(
       paths.claudeMd,
-      "Mine\n\n<!-- anymodel:begin -->\n@~/old/path.md\n<!-- anymodel:end -->\n\nAfter\n",
+      "Mine\n\n<!-- cc-smart-dev-kit:begin -->\n@~/old/path.md\n<!-- cc-smart-dev-kit:end -->\n\nAfter\n",
     );
     const result = installInstructions(paths, false, V1);
-    expect(result.at(-1)?.what).toBe("anymodel block updated");
+    expect(result.at(-1)?.what).toBe("cc-smart-dev-kit block updated");
     expect(read(paths.claudeMd)).toBe(`Mine\n\n${BLOCK}\n\nAfter\n`);
   });
 
@@ -157,9 +157,9 @@ describe("installInstructions", () => {
     writeFileSync(paths.claudeMd, "Mine\n");
     const result = installInstructions(paths, true, V1);
     expect(lines(result, dir)).toEqual([
-      "+ home/.claude/anymodel/instructions/core.md: created",
-      "+ home/.claude/anymodel/instructions/optin/worktrees.md: created",
-      "~ home/.claude/CLAUDE.md: anymodel block added",
+      "+ home/.claude/cc-smart-dev-kit/instructions/core.md: created",
+      "+ home/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md: created",
+      "~ home/.claude/CLAUDE.md: cc-smart-dev-kit block added",
     ]);
     expect(existsSync(stateDir)).toBe(false);
     expect(read(paths.claudeMd)).toBe("Mine\n");
@@ -173,9 +173,9 @@ describe("removeInstructions", () => {
     installInstructions(paths, false, V1);
     const result = removeInstructions(paths, false);
     expect(lines(result, dir)).toEqual([
-      "~ home/.claude/CLAUDE.md: anymodel block removed",
-      "- home/.claude/anymodel/instructions/core.md: removed",
-      "- home/.claude/anymodel/instructions/optin/worktrees.md: removed",
+      "~ home/.claude/CLAUDE.md: cc-smart-dev-kit block removed",
+      "- home/.claude/cc-smart-dev-kit/instructions/core.md: removed",
+      "- home/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md: removed",
     ]);
     expect(read(paths.claudeMd)).toBe("# Mine\n");
     expect(existsSync(paths.target)).toBe(false);
@@ -197,8 +197,8 @@ describe("removeInstructions", () => {
     const before = read(paths.claudeMd);
     expect(lines(removeInstructions(paths, true), dir)).toEqual([
       "- home/.claude/CLAUDE.md: removed",
-      "- home/.claude/anymodel/instructions/core.md: removed",
-      "- home/.claude/anymodel/instructions/optin/worktrees.md: removed",
+      "- home/.claude/cc-smart-dev-kit/instructions/core.md: removed",
+      "- home/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md: removed",
     ]);
     expect(read(paths.claudeMd)).toBe(before);
     expect(existsSync(join(paths.target, "core.md"))).toBe(true);
@@ -215,7 +215,7 @@ describe("removeInstructions", () => {
     const { dir, paths } = setup();
     writeFileSync(paths.claudeMd, `# Mine\n\n${BLOCK}\n`);
     expect(lines(removeInstructions(paths, false), dir)).toEqual([
-      "~ home/.claude/CLAUDE.md: anymodel block removed",
+      "~ home/.claude/CLAUDE.md: cc-smart-dev-kit block removed",
     ]);
     expect(read(paths.claudeMd)).toBe("# Mine\n");
   });
@@ -236,7 +236,7 @@ describe("restore takes the instructions out too", () => {
 describe("instructionsBlockBody", () => {
   test("a comment that says how to take it out, then the import line", () => {
     expect(instructionsBlockBody("/abs/core.md")).toBe(
-      "<!-- Written by anymodel setup. `anymodel setup --no-instructions` takes it out. -->\n@/abs/core.md",
+      "<!-- Written by cc-smart-dev-kit setup. `cc-smart-dev-kit setup --no-instructions` takes it out. -->\n@/abs/core.md",
     );
   });
 });
@@ -284,7 +284,9 @@ describe("refreshInstructionsCopy", () => {
     writeFileSync(paths.claudeMd, "# Mine\n");
     writeFileSync(join(source, "core.md"), "# Core, version two\n");
     const result = await refreshInstructionsCopy(paths, V2);
-    expect(lines(result, dir)).toEqual(["~ home/.claude/anymodel/instructions/core.md: updated"]);
+    expect(lines(result, dir)).toEqual([
+      "~ home/.claude/cc-smart-dev-kit/instructions/core.md: updated",
+    ]);
     expect(read(join(paths.target, "core.md"))).toBe("# Core, version two\n");
     expect(read(paths.claudeMd)).toBe("# Mine\n");
     expect(readVersionStamp(stateDir)).toBe("1.1.0");
@@ -313,7 +315,9 @@ describe("refreshInstructionsCopy", () => {
     installInstructions(paths, false, V1);
     writeFileSync(join(source, "core.md"), "# Core, version two\n");
     const result = await refreshInstructionsCopy(paths, V2, { dryRun: true });
-    expect(lines(result, dir)).toEqual(["~ home/.claude/anymodel/instructions/core.md: updated"]);
+    expect(lines(result, dir)).toEqual([
+      "~ home/.claude/cc-smart-dev-kit/instructions/core.md: updated",
+    ]);
     expect(read(join(paths.target, "core.md"))).toBe("# Core\n");
     expect(readVersionStamp(stateDir)).toBe("1.0.0");
   });
@@ -325,14 +329,14 @@ describe("setInstructionsOptOut and forgetInstructionsState", () => {
     const show = (line: ReturnType<typeof setInstructionsOptOut>) =>
       line === null ? null : lines([line], dir)[0];
     expect(show(setInstructionsOptOut(stateDir, true, true))).toBe(
-      "+ home/.claude/anymodel/no-instructions: setup leaves the instructions out from now on (`anymodel setup --instructions` brings them back)",
+      "+ home/.claude/cc-smart-dev-kit/no-instructions: setup leaves the instructions out from now on (`cc-smart-dev-kit setup --instructions` brings them back)",
     );
     expect(existsSync(stateDir)).toBe(false);
     setInstructionsOptOut(stateDir, true, false);
     expect(instructionsOptedOut(stateDir)).toBe(true);
     expect(setInstructionsOptOut(stateDir, true, false)).toBeNull();
     expect(show(setInstructionsOptOut(stateDir, false, false))).toBe(
-      "- home/.claude/anymodel/no-instructions: removed: setup installs the instructions again",
+      "- home/.claude/cc-smart-dev-kit/no-instructions: removed: setup installs the instructions again",
     );
     expect(instructionsOptedOut(stateDir)).toBe(false);
     expect(setInstructionsOptOut(stateDir, false, false)).toBeNull();

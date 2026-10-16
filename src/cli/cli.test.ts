@@ -18,7 +18,7 @@ import { installLauncher } from "../setup/launcher";
 import { listBackups } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
-import { anymodelImports, runDoctor } from "./doctor";
+import { ccSmartDevKitImports, runDoctor } from "./doctor";
 import { cliPaths } from "./paths";
 import { type SetupOptions as RunSetupOptions, runSetup } from "./setup";
 
@@ -27,7 +27,7 @@ const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 interface SetupOptions {
   marketplace?: boolean;
   gitOk?: boolean;
-  /** The marketplace source in known_marketplaces.json. Default: github example-org/anymodel. */
+  /** The marketplace source in known_marketplaces.json. Default: github example-org/cc-smart-dev-kit. */
   source?: Record<string, string>;
   /** The version in the marketplace's local copy. Default: VERSION. null: no manifest there. */
   marketplaceVersion?: string | null;
@@ -51,18 +51,18 @@ const COMPANION_MARKETPLACES = {
   },
 };
 
-/** A temp HOME as it looks right after `claude plugin install anymodel@anymodel`. */
+/** A temp HOME as it looks right after `claude plugin install cc-smart-dev-kit@cc-smart-dev-kit`. */
 function setup(options: SetupOptions = {}) {
   const home = tempDir("cli");
   const configDir = join(home, ".claude");
-  const stateDir = join(configDir, "anymodel");
+  const stateDir = join(configDir, "cc-smart-dev-kit");
   const settingsFile = join(configDir, "settings.json");
   mkdirSync(configDir, { recursive: true });
   const companions = options.companions !== false;
   const settings: Record<string, unknown> = {
     model: "opus",
     enabledPlugins: {
-      "anymodel@anymodel": true,
+      "cc-smart-dev-kit@cc-smart-dev-kit": true,
       ...(companions && {
         "claude-mem@thedotmack": true,
         "frontend-design@claude-plugins-official": true,
@@ -71,17 +71,24 @@ function setup(options: SetupOptions = {}) {
   };
   if (options.marketplace !== false) {
     settings.extraKnownMarketplaces = {
-      anymodel: { source: { source: "github", repo: "example-org/anymodel" } },
+      "cc-smart-dev-kit": { source: { source: "github", repo: "example-org/cc-smart-dev-kit" } },
     };
   }
   writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
 
   // The installed plugin: its dist/cli.js is this CLI's source, so the launcher runs real code.
-  const installPath = join(configDir, "plugins", "cache", "anymodel", "anymodel", VERSION);
+  const installPath = join(
+    configDir,
+    "plugins",
+    "cache",
+    "cc-smart-dev-kit",
+    "cc-smart-dev-kit",
+    VERSION,
+  );
   mkdirSync(join(installPath, "dist"), { recursive: true });
   writeFileSync(join(installPath, "dist", "cli.js"), `await import(${JSON.stringify(CLI)});\n`);
   const plugins: Record<string, unknown> = {
-    "anymodel@anymodel": [{ scope: "user", installPath, version: VERSION }],
+    "cc-smart-dev-kit@cc-smart-dev-kit": [{ scope: "user", installPath, version: VERSION }],
   };
   if (companions) {
     const memPath = join(configDir, "plugins", "cache", "thedotmack", "claude-mem", "13.39.0");
@@ -101,21 +108,21 @@ function setup(options: SetupOptions = {}) {
   );
 
   // Claude Code's local copy of the marketplace, with the plugin's manifest in it.
-  const installLocation = join(configDir, "plugins", "marketplaces", "anymodel");
+  const installLocation = join(configDir, "plugins", "marketplaces", "cc-smart-dev-kit");
   const marketplaceVersion =
     options.marketplaceVersion === undefined ? VERSION : options.marketplaceVersion;
   if (marketplaceVersion !== null) {
     mkdirSync(join(installLocation, "plugin", ".claude-plugin"), { recursive: true });
     writeFileSync(
       join(installLocation, "plugin", ".claude-plugin", "plugin.json"),
-      JSON.stringify({ name: "anymodel", version: marketplaceVersion }),
+      JSON.stringify({ name: "cc-smart-dev-kit", version: marketplaceVersion }),
     );
   }
   writeFileSync(
     join(configDir, "plugins", "known_marketplaces.json"),
     JSON.stringify({
-      anymodel: {
-        source: options.source ?? { source: "github", repo: "example-org/anymodel" },
+      "cc-smart-dev-kit": {
+        source: options.source ?? { source: "github", repo: "example-org/cc-smart-dev-kit" },
         installLocation,
       },
       ...(companions && COMPANION_MARKETPLACES),
@@ -161,7 +168,7 @@ function setup(options: SetupOptions = {}) {
 
   // The CLI runs as its own process: it never reads the host. PATH holds the fakes, the
   // launcher's folder and bun's, nothing else; the host's facts are given (a Linux with no
-  // os-release, so no package manager anymodel knows, and no Warp app).
+  // os-release, so no package manager cc-smart-dev-kit knows, and no Warp app).
   const env: Record<string, string> = {
     HOME: home,
     CLAUDE_CONFIG_DIR: configDir,
@@ -216,7 +223,7 @@ function setup(options: SetupOptions = {}) {
     stateDir,
     settingsFile,
     binDir: join(home, ".local", "bin"),
-    launcher: join(home, ".local", "bin", "anymodel"),
+    launcher: join(home, ".local", "bin", "cc-smart-dev-kit"),
     fakeBin,
     run,
     runAsync,
@@ -228,7 +235,7 @@ function setup(options: SetupOptions = {}) {
 const readJson = (file: string) => JSON.parse(readFileSync(file, "utf8"));
 
 /**
- * For setup or doctor run in this process: a Linux with no package manager anymodel knows,
+ * For setup or doctor run in this process: a Linux with no package manager cc-smart-dev-kit knows,
  * no Warp app and no command on PATH, so nothing of the host this test runs on is read.
  */
 function noHostMachine(home: string, confirm: Machine["confirm"]): Machine {
@@ -246,7 +253,7 @@ function noHostMachine(home: string, confirm: Machine["confirm"]): Machine {
   };
 }
 
-/** Plain `anymodel setup` in this process, in `home`, asking with `confirm`. */
+/** Plain `cc-smart-dev-kit setup` in this process, in `home`, asking with `confirm`. */
 function setupOptions(
   home: string,
   confirm: Machine["confirm"],
@@ -268,32 +275,32 @@ function setupOptions(
 
 /** What a first setup prints for the instructions: the plugin's real files, then the block. */
 const INSTRUCTIONS_CREATED = [
-  "+ ~/.claude/anymodel/instructions/core.md: created",
-  "+ ~/.claude/anymodel/instructions/optin/worktrees.md: created",
-  "+ ~/.claude/CLAUDE.md: created, with the anymodel block",
+  "+ ~/.claude/cc-smart-dev-kit/instructions/core.md: created",
+  "+ ~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md: created",
+  "+ ~/.claude/CLAUDE.md: created, with the cc-smart-dev-kit block",
 ];
 
 /** The block setup writes into ~/.claude/CLAUDE.md. */
 const BLOCK = [
-  "<!-- anymodel:begin -->",
-  "<!-- Written by anymodel setup. `anymodel setup --no-instructions` takes it out. -->",
-  "@~/.claude/anymodel/instructions/core.md",
-  "<!-- anymodel:end -->",
+  "<!-- cc-smart-dev-kit:begin -->",
+  "<!-- Written by cc-smart-dev-kit setup. `cc-smart-dev-kit setup --no-instructions` takes it out. -->",
+  "@~/.claude/cc-smart-dev-kit/instructions/core.md",
+  "<!-- cc-smart-dev-kit:end -->",
 ].join("\n");
 
 const PLUGIN_INSTRUCTIONS = join(import.meta.dir, "..", "..", "plugin", "instructions");
 
 /** What setup prints when it stores `--no-instructions`, and when `--instructions` clears it. */
 const OPT_OUT_STORED =
-  "+ ~/.claude/anymodel/no-instructions: setup leaves the instructions out from now on (`anymodel setup --instructions` brings them back)";
+  "+ ~/.claude/cc-smart-dev-kit/no-instructions: setup leaves the instructions out from now on (`cc-smart-dev-kit setup --instructions` brings them back)";
 const OPT_OUT_CLEARED =
-  "- ~/.claude/anymodel/no-instructions: removed: setup installs the instructions again";
+  "- ~/.claude/cc-smart-dev-kit/no-instructions: removed: setup installs the instructions again";
 
 /** doctor's line for instructions that are in place. */
 const INSTRUCTIONS_OK =
-  "✓ the instructions copy ~/.claude/anymodel/instructions/ is this version's, and ~/.claude/CLAUDE.md imports it";
+  "✓ the instructions copy ~/.claude/cc-smart-dev-kit/instructions/ is this version's, and ~/.claude/CLAUDE.md imports it";
 
-describe("anymodel setup", () => {
+describe("cc-smart-dev-kit setup", () => {
   test("installs the launcher and turns on auto-update, keeping the other settings", () => {
     const { settingsFile, launcher, run, claudeCalls } = setup();
     const result = run(["setup"]);
@@ -302,10 +309,10 @@ describe("anymodel setup", () => {
     expect(claudeCalls()).toBe("");
     expect(result.stdout).toBe(
       [
-        "+ ~/.local/bin/anymodel: launcher created",
-        "~ ~/.claude/settings.json: extraKnownMarketplaces.anymodel.autoUpdate: (none) -> true",
+        "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
+        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
         ...INSTRUCTIONS_CREATED,
-        "Done. Each changed file has a backup in ~/.claude/anymodel/backups/.",
+        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
       ].join("\n"),
     );
@@ -313,13 +320,13 @@ describe("anymodel setup", () => {
     expect(readJson(settingsFile)).toEqual({
       model: "opus",
       enabledPlugins: {
-        "anymodel@anymodel": true,
+        "cc-smart-dev-kit@cc-smart-dev-kit": true,
         "claude-mem@thedotmack": true,
         "frontend-design@claude-plugins-official": true,
       },
       extraKnownMarketplaces: {
-        anymodel: {
-          source: { source: "github", repo: "example-org/anymodel" },
+        "cc-smart-dev-kit": {
+          source: { source: "github", repo: "example-org/cc-smart-dev-kit" },
           autoUpdate: true,
         },
       },
@@ -330,10 +337,10 @@ describe("anymodel setup", () => {
     const { configDir, stateDir, settingsFile, binDir, run } = setup();
     run(["setup"]);
     expect(listBackups(stateDir, settingsFile)).toHaveLength(1);
-    expect(readdirSync(binDir)).toEqual(["anymodel"]);
+    expect(readdirSync(binDir)).toEqual(["cc-smart-dev-kit"]);
     expect(readdirSync(configDir).sort()).toEqual([
       "CLAUDE.md",
-      "anymodel",
+      "cc-smart-dev-kit",
       "plugins",
       "settings.json",
     ]);
@@ -355,8 +362,8 @@ describe("anymodel setup", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
       [
-        "+ ~/.local/bin/anymodel: launcher created",
-        "~ ~/.claude/settings.json: extraKnownMarketplaces.anymodel.autoUpdate: (none) -> true",
+        "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
+        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
         ...INSTRUCTIONS_CREATED,
         "Dry run: nothing was written or run.",
         "",
@@ -370,13 +377,13 @@ describe("anymodel setup", () => {
   test("a key the user set (autoUpdate: false) fails before anything is written", () => {
     const { stateDir, settingsFile, launcher, run } = setup();
     const settings = readJson(settingsFile);
-    settings.extraKnownMarketplaces.anymodel.autoUpdate = false;
+    settings.extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate = false;
     writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
     const before = readFileSync(settingsFile, "utf8");
     const result = run(["setup"]);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain(
-      "extraKnownMarketplaces.anymodel.autoUpdate is false, set by someone else.",
+      'extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate is false, set by someone else.',
     );
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
     expect(existsSync(launcher)).toBe(false);
@@ -387,30 +394,34 @@ describe("anymodel setup", () => {
     const { settingsFile, launcher, run } = setup();
     run(["setup"]);
     const settings = readJson(settingsFile);
-    settings.extraKnownMarketplaces.anymodel.autoUpdate = false;
+    settings.extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate = false;
     writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
     const result = run(["setup"]);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain(
-      "extraKnownMarketplaces.anymodel.autoUpdate is false: it was changed after anymodel set it, so it is your choice now.",
+      'extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate is false: it was changed after cc-smart-dev-kit set it, so it is your choice now.',
     );
-    expect(readJson(settingsFile).extraKnownMarketplaces.anymodel.autoUpdate).toBe(false);
+    expect(readJson(settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(
+      false,
+    );
     expect(run(["restore"]).exitCode).toBe(0);
-    expect(readJson(settingsFile).extraKnownMarketplaces.anymodel.autoUpdate).toBe(false);
+    expect(readJson(settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(
+      false,
+    );
     expect(existsSync(launcher)).toBe(false);
   });
 
   test("nothing to change, with a line of information: 'Nothing to change' first, and no 'Done'", () => {
     const { settingsFile, run } = setup();
     run(["setup"]);
-    // The person's own auto-update key, with the value anymodel wants: not anymodel's.
-    const ownedFile = join(dirname(settingsFile), "anymodel", "owned.json");
+    // The person's own auto-update key, with the value cc-smart-dev-kit wants: not cc-smart-dev-kit's.
+    const ownedFile = join(dirname(settingsFile), "cc-smart-dev-kit", "owned.json");
     writeFileSync(ownedFile, "{}\n");
     const result = run(["setup"]);
     expect(result.stdout).toBe(
       [
         "Nothing to change. Setup is up to date.",
-        "  ~/.claude/settings.json: extraKnownMarketplaces.anymodel.autoUpdate: already set by someone else; left alone",
+        '  ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: already set by someone else; left alone',
         "",
       ].join("\n"),
     );
@@ -421,7 +432,7 @@ describe("anymodel setup", () => {
     expect(run(["setup"]).stdout).not.toContain("Note:");
     const withoutBin = run(["setup"], { PATH: process.env.PATH ?? "" });
     expect(withoutBin.stdout).toContain(
-      "Note: ~/.local/bin is not on your PATH. Add it, so the anymodel command works.",
+      "Note: ~/.local/bin is not on your PATH. Add it, so the cc-smart-dev-kit command works.",
     );
   });
 
@@ -446,14 +457,14 @@ describe("anymodel setup", () => {
   });
 });
 
-describe("anymodel setup: the instructions", () => {
+describe("cc-smart-dev-kit setup: the instructions", () => {
   test("a copy of the plugin's files, imported by a block after the user's own text", () => {
     const { configDir, stateDir, run } = setup();
     const claudeMd = join(configDir, "CLAUDE.md");
     writeFileSync(claudeMd, "# My notes\n\nAnswer in short sentences.\n");
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("~ ~/.claude/CLAUDE.md: anymodel block added\n");
+    expect(result.stdout).toContain("~ ~/.claude/CLAUDE.md: cc-smart-dev-kit block added\n");
     expect(readFileSync(claudeMd, "utf8")).toBe(
       `# My notes\n\nAnswer in short sentences.\n\n${BLOCK}\n`,
     );
@@ -473,8 +484,8 @@ describe("anymodel setup: the instructions", () => {
     const result = run(["setup"]);
     expect(result.stdout).toBe(
       [
-        "~ ~/.claude/anymodel/instructions/core.md: updated",
-        "Done. Each changed file has a backup in ~/.claude/anymodel/backups/.",
+        "~ ~/.claude/cc-smart-dev-kit/instructions/core.md: updated",
+        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
       ].join("\n"),
     );
@@ -486,10 +497,10 @@ describe("anymodel setup: the instructions", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
       [
-        "+ ~/.local/bin/anymodel: launcher created",
-        "~ ~/.claude/settings.json: extraKnownMarketplaces.anymodel.autoUpdate: (none) -> true",
+        "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
+        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
         OPT_OUT_STORED,
-        "Done. Each changed file has a backup in ~/.claude/anymodel/backups/.",
+        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
       ].join("\n"),
     );
@@ -505,9 +516,9 @@ describe("anymodel setup: the instructions", () => {
     const dry = run(["setup", "--no-instructions", "--dry-run"]);
     const expected = [
       OPT_OUT_STORED,
-      "~ ~/.claude/CLAUDE.md: anymodel block removed",
-      "- ~/.claude/anymodel/instructions/core.md: removed",
-      "- ~/.claude/anymodel/instructions/optin/worktrees.md: removed",
+      "~ ~/.claude/CLAUDE.md: cc-smart-dev-kit block removed",
+      "- ~/.claude/cc-smart-dev-kit/instructions/core.md: removed",
+      "- ~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md: removed",
     ];
     expect(dry.stdout).toBe([...expected, "Dry run: nothing was written or run.", ""].join("\n"));
     expect(readFileSync(claudeMd, "utf8")).toContain(BLOCK);
@@ -517,7 +528,7 @@ describe("anymodel setup: the instructions", () => {
     expect(result.stdout).toBe(
       [
         ...expected,
-        "Done. Each changed file has a backup in ~/.claude/anymodel/backups/.",
+        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
       ].join("\n"),
     );
@@ -535,7 +546,7 @@ describe("anymodel setup: the instructions", () => {
     run(["setup"]);
     const result = run(["restore"]);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("~ ~/.claude/CLAUDE.md: removed the anymodel block");
+    expect(result.stdout).toContain("~ ~/.claude/CLAUDE.md: removed the cc-smart-dev-kit block");
     expect(readFileSync(claudeMd, "utf8")).toBe("# My notes\n");
     expect(existsSync(join(stateDir, "instructions"))).toBe(false);
   });
@@ -566,7 +577,7 @@ describe("anymodel setup: the instructions", () => {
       [
         OPT_OUT_CLEARED,
         ...INSTRUCTIONS_CREATED,
-        "Done. Each changed file has a backup in ~/.claude/anymodel/backups/.",
+        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
       ].join("\n"),
     );
@@ -587,7 +598,7 @@ describe("anymodel setup: the instructions", () => {
     const result = run(["restore"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain(
-      "- ~/.claude/anymodel/no-instructions: removed (your --no-instructions choice; the next setup installs the instructions)\n",
+      "- ~/.claude/cc-smart-dev-kit/no-instructions: removed (your --no-instructions choice; the next setup installs the instructions)\n",
     );
     expect(existsSync(join(stateDir, "no-instructions"))).toBe(false);
     expect(run(["setup"]).stdout).toContain(INSTRUCTIONS_CREATED.join("\n"));
@@ -608,7 +619,7 @@ describe("anymodel setup: the instructions", () => {
   });
 });
 
-describe("anymodel doctor", () => {
+describe("cc-smart-dev-kit doctor", () => {
   test("all green after setup, through the launcher; git reads the marketplace over SSH", () => {
     const { run, gitCalls } = setup();
     run(["setup"]);
@@ -618,23 +629,23 @@ describe("anymodel doctor", () => {
     expect(result.stdout).toBe(
       [
         // The bun running the tests: the preload stops one older than 1.4.3.
-        `✓ Bun ${Bun.version} at ${process.execPath} (anymodel needs ≥ 1.4.3)`,
-        `✓ anymodel@anymodel ${VERSION} is installed at ~/.claude/plugins/cache/anymodel/anymodel/${VERSION}`,
+        `✓ Bun ${Bun.version} at ${process.execPath} (cc-smart-dev-kit needs ≥ 1.4.3)`,
+        `✓ cc-smart-dev-kit@cc-smart-dev-kit ${VERSION} is installed at ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/${VERSION}`,
         `✓ the installed version ${VERSION} is not behind the marketplace`,
-        `✓ the launcher ~/.local/bin/anymodel runs anymodel ${VERSION}`,
+        `✓ the launcher ~/.local/bin/cc-smart-dev-kit runs cc-smart-dev-kit ${VERSION}`,
         INSTRUCTIONS_OK,
-        "✓ can read the marketplace at git@github.com:example-org/anymodel.git",
+        "✓ can read the marketplace at git@github.com:example-org/cc-smart-dev-kit.git",
         "✓ plugin auto-update is on",
         "✓ plugin updates are not switched off",
         // The self-update has not checked yet: information, not a failure.
         "· background update: no check yet (a new Claude session checks, at most once an hour)",
-        "✓ no other enabled plugin is named anymodel",
+        "✓ no other enabled plugin is named cc-smart-dev-kit",
         "✓ claude-mem@thedotmack 13.39.0 is installed and on",
         "✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
         // Warp is optional too.
-        "· Warp: not installed (optional: anymodel setup --warp)",
+        "· Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
         // The gateway is optional: never set up is information, not a failure.
-        "· gateway: not set up (optional). To use it: anymodel gateway setup",
+        "· gateway: not set up (optional). To use it: cc-smart-dev-kit gateway setup",
         "",
       ].join("\n"),
     );
@@ -644,7 +655,7 @@ describe("anymodel doctor", () => {
     expect(gitCalls().slice(afterSetup)).toBe(
       [
         "config --get core.sshCommand | prompt=0 | ssh=",
-        "ls-remote git@github.com:example-org/anymodel.git HEAD | prompt=0 | ssh=ssh -o BatchMode=yes -o ConnectTimeout=8",
+        "ls-remote git@github.com:example-org/cc-smart-dev-kit.git HEAD | prompt=0 | ssh=ssh -o BatchMode=yes -o ConnectTimeout=8",
         "rev-parse --path-format=absolute --show-toplevel --absolute-git-dir --git-common-dir | prompt= | ssh=",
         "",
       ].join("\n"),
@@ -664,7 +675,7 @@ describe("anymodel doctor", () => {
     const result = run(["doctor"], { TMUX: "/tmp/tmux-1001/default,1234,0" });
     expect(result.exitCode).toBe(0); // information, never a failure
     expect(result.stdout).toContain(
-      '· ~/.tmux.conf has no "set -g allow-passthrough all" line, so tmux drops an alert from a pane. To add it: anymodel setup\n',
+      '· ~/.tmux.conf has no "set -g allow-passthrough all" line, so tmux drops an alert from a pane. To add it: cc-smart-dev-kit setup\n',
     );
     expect(result.stdout).toContain(
       "· tmux: alerts are not passed through (its allow-passthrough is not all). To apply it now: tmux set -g allow-passthrough all (a restart works too); it needs tmux 3.3 or newer\n",
@@ -682,7 +693,7 @@ describe("anymodel doctor", () => {
         .stdout.split("\n")
         .filter((line) => line.includes("tmux")),
     ).toEqual([
-      '· ~/.tmux.conf has no "set -g allow-passthrough all" line, so tmux drops an alert from a pane. To add it: anymodel setup',
+      '· ~/.tmux.conf has no "set -g allow-passthrough all" line, so tmux drops an alert from a pane. To add it: cc-smart-dev-kit setup',
     ]);
   });
 
@@ -697,9 +708,9 @@ describe("anymodel doctor", () => {
     writeFileSync(
       join(configDir, "plugins", "known_marketplaces.json"),
       JSON.stringify({
-        anymodel: {
+        "cc-smart-dev-kit": {
           source: { source: "directory", path: marketplace },
-          installLocation: join(configDir, "plugins", "marketplaces", "anymodel"),
+          installLocation: join(configDir, "plugins", "marketplaces", "cc-smart-dev-kit"),
         },
       }),
     );
@@ -714,7 +725,7 @@ describe("anymodel doctor", () => {
       },
     });
     const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: configDir });
-    mkdirSync(join(home, ".config", "anymodel"), { recursive: true });
+    mkdirSync(join(home, ".config", "cc-smart-dev-kit"), { recursive: true });
     writeFileSync(
       paths.gatewayConfigFile,
       JSON.stringify({
@@ -722,7 +733,7 @@ describe("anymodel doctor", () => {
           omniroute: { apiKey: "omni_SENTINEL_123456", baseUrl: `http://127.0.0.1:${fake.port}` },
         },
         port: fake.port,
-        slots: { "anymodel-scout": ["omniroute:m1"] },
+        slots: { "cc-smart-dev-kit-scout": ["omniroute:m1"] },
         version: 1,
       }),
       { mode: 0o600 },
@@ -760,19 +771,19 @@ describe("anymodel doctor", () => {
       fake.stop(true);
     }
     expect(out).toEqual([
-      "✗ anymodel needs Bun ≥ 1.4.3; this is 1.4.2 (/opt/bun/bin/bun). Upgrade this Bun, then run: anymodel doctor",
-      `✓ anymodel@anymodel ${VERSION} is installed at ~/.claude/plugins/cache/anymodel/anymodel/${VERSION}`,
+      "✗ cc-smart-dev-kit needs Bun ≥ 1.4.3; this is 1.4.2 (/opt/bun/bin/bun). Upgrade this Bun, then run: cc-smart-dev-kit doctor",
+      `✓ cc-smart-dev-kit@cc-smart-dev-kit ${VERSION} is installed at ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/${VERSION}`,
       `✓ the installed version ${VERSION} is not behind the marketplace`,
-      "✗ no launcher at ~/.local/bin/anymodel. Run: anymodel setup",
-      "✗ the instructions are not installed in ~/.claude/anymodel/instructions/. Run: anymodel setup",
+      "✗ no launcher at ~/.local/bin/cc-smart-dev-kit. Run: cc-smart-dev-kit setup",
+      "✗ the instructions are not installed in ~/.claude/cc-smart-dev-kit/instructions/. Run: cc-smart-dev-kit setup",
       "✓ the marketplace folder ~/marketplace exists",
-      "✗ plugin auto-update is off in ~/.claude/settings.json. Run: anymodel setup",
+      "✗ plugin auto-update is off in ~/.claude/settings.json. Run: cc-smart-dev-kit setup",
       "✓ plugin updates are not switched off",
       "· background update: no check yet (a new Claude session checks, at most once an hour)",
-      "✓ no other enabled plugin is named anymodel",
+      "✓ no other enabled plugin is named cc-smart-dev-kit",
       "✓ claude-mem@thedotmack 13.39.0 is installed and on",
       "✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
-      "· Warp: not installed (optional: anymodel setup --warp)",
+      "· Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
       "· gateway: not checked on this Bun (its checks send the backend key)",
     ]);
     expect(exitCode).toBe(1);
@@ -797,7 +808,7 @@ describe("anymodel doctor", () => {
     expect(claudeCalls()).toBe("");
     const result = run(["doctor"], host);
     expect(result.stdout).toContain(
-      "· Warp is installed, without its Claude plugin (optional: anymodel setup --warp)\n",
+      "· Warp is installed, without its Claude plugin (optional: cc-smart-dev-kit setup --warp)\n",
     );
     expect(result.exitCode).toBe(0);
   });
@@ -809,8 +820,8 @@ describe("anymodel doctor", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
       "✗ cannot read the marketplace (" +
-        "git@github.com:example-org/anymodel.git: fatal: unable to access 'https://***@git.example.com/r.git/': 403; " +
-        "https://github.com/example-org/anymodel.git: fatal: unable to access 'https://***@git.example.com/r.git/': 403). " +
+        "git@github.com:example-org/cc-smart-dev-kit.git: fatal: unable to access 'https://***@git.example.com/r.git/': 403; " +
+        "https://github.com/example-org/cc-smart-dev-kit.git: fatal: unable to access 'https://***@git.example.com/r.git/': 403). " +
         "Check your git access: an SSH key, or a git credential helper.",
     );
     expect(gitCalls().match(/ls-remote/g)).toHaveLength(2);
@@ -837,7 +848,7 @@ describe("anymodel doctor", () => {
     writeFileSync(join(configDir, "plugins", "known_marketplaces.json"), "{}");
     const result = run(["doctor"]);
     expect(result.stdout).toContain(
-      `✗ the anymodel marketplace is not added. Run: claude plugin marketplace add ${MARKETPLACE_SOURCE}\n`,
+      `✗ the cc-smart-dev-kit marketplace is not added. Run: claude plugin marketplace add ${MARKETPLACE_SOURCE}\n`,
     );
   });
 
@@ -847,7 +858,7 @@ describe("anymodel doctor", () => {
     const result = run(["doctor"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      `✗ installed ${VERSION}, marketplace has 99.0.0. Run: claude plugin update anymodel@anymodel\n`,
+      `✗ installed ${VERSION}, marketplace has 99.0.0. Run: claude plugin update cc-smart-dev-kit@cc-smart-dev-kit\n`,
     );
   });
 
@@ -857,8 +868,8 @@ describe("anymodel doctor", () => {
     const result = run(["doctor"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      "✗ cannot read the version in ~/.claude/plugins/marketplaces/anymodel/plugin/.claude-plugin/plugin.json. " +
-        "Run: claude plugin marketplace update anymodel\n",
+      "✗ cannot read the version in ~/.claude/plugins/marketplaces/cc-smart-dev-kit/plugin/.claude-plugin/plugin.json. " +
+        "Run: claude plugin marketplace update cc-smart-dev-kit\n",
     );
   });
 
@@ -902,7 +913,7 @@ describe("anymodel doctor", () => {
     installLauncher(binDir, { stateDir, bunPath: otherBun });
     const result = run(["doctor"]);
     expect(result.stdout).toContain(
-      `✓ the launcher ~/.local/bin/anymodel runs anymodel ${VERSION}\n`,
+      `✓ the launcher ~/.local/bin/cc-smart-dev-kit runs cc-smart-dev-kit ${VERSION}\n`,
     );
   });
 
@@ -914,7 +925,7 @@ describe("anymodel doctor", () => {
     const result = run(["doctor"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      `✗ the launcher's bun ${gone} is missing or not executable. Run: anymodel setup\n`,
+      `✗ the launcher's bun ${gone} is missing or not executable. Run: cc-smart-dev-kit setup\n`,
     );
   });
 
@@ -923,7 +934,7 @@ describe("anymodel doctor", () => {
     run(["setup"]);
     writeFileSync(launcher, `${readFileSync(launcher, "utf8")}# edited\n`);
     expect(run(["doctor"]).stdout).toContain(
-      "✗ the launcher ~/.local/bin/anymodel is out of date. Run: anymodel setup\n",
+      "✗ the launcher ~/.local/bin/cc-smart-dev-kit is out of date. Run: cc-smart-dev-kit setup\n",
     );
   });
 
@@ -931,7 +942,7 @@ describe("anymodel doctor", () => {
     const { run } = setup();
     const result = run(["doctor"]);
     expect(result.exitCode).toBe(1);
-    expect(result.stdout).toContain("✗ no launcher at ~/.local/bin/anymodel");
+    expect(result.stdout).toContain("✗ no launcher at ~/.local/bin/cc-smart-dev-kit");
     expect(result.stdout).toContain("✗ plugin auto-update is off");
   });
 
@@ -940,7 +951,7 @@ describe("anymodel doctor", () => {
     rmSync(join(configDir, "plugins", "installed_plugins.json"));
     const result = run(["doctor"]);
     expect(result.stdout).toContain(
-      "✗ the anymodel@anymodel plugin is not installed. Run: claude plugin install anymodel@anymodel\n",
+      "✗ the cc-smart-dev-kit@cc-smart-dev-kit plugin is not installed. Run: claude plugin install cc-smart-dev-kit@cc-smart-dev-kit\n",
     );
     expect(result.stdout).not.toContain("marketplace has");
     expect(result.stdout).not.toContain("not behind");
@@ -1022,21 +1033,21 @@ describe("anymodel doctor", () => {
     expect(run(["doctor"]).stdout).not.toContain("cc-agentic");
   });
 
-  test("another plugin named anymodel is enabled: ✗, exit 1", () => {
+  test("another plugin named cc-smart-dev-kit is enabled: ✗, exit 1", () => {
     const { settingsFile, run } = setup();
     run(["setup"]);
     const settings = readJson(settingsFile);
-    settings.enabledPlugins["anymodel@someone-else"] = true;
+    settings.enabledPlugins["cc-smart-dev-kit@someone-else"] = true;
     writeFileSync(settingsFile, JSON.stringify(settings));
     const result = run(["doctor"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      "✗ another plugin named anymodel is enabled: anymodel@someone-else",
+      "✗ another plugin named cc-smart-dev-kit is enabled: cc-smart-dev-kit@someone-else",
     );
   });
 });
 
-describe("anymodel doctor: the instructions", () => {
+describe("cc-smart-dev-kit doctor: the instructions", () => {
   /** doctor's lines, without the ones for other checks. */
   const instructionLines = (stdout: string) =>
     stdout.split("\n").filter((line) => /instructions|CLAUDE\.md/.test(line));
@@ -1046,7 +1057,7 @@ describe("anymodel doctor: the instructions", () => {
     run(["setup", "--no-instructions"]);
     const result = run(["doctor"]);
     expect(instructionLines(result.stdout)).toEqual([
-      "· instructions: left out (anymodel setup --no-instructions). To add them: anymodel setup --instructions",
+      "· instructions: left out (cc-smart-dev-kit setup --no-instructions). To add them: cc-smart-dev-kit setup --instructions",
     ]);
     expect(result.exitCode).toBe(0);
   });
@@ -1054,7 +1065,7 @@ describe("anymodel doctor: the instructions", () => {
   test("never installed: ✗ with the setup command", () => {
     const { run } = setup();
     expect(instructionLines(run(["doctor"]).stdout)).toEqual([
-      "✗ the instructions are not installed in ~/.claude/anymodel/instructions/. Run: anymodel setup",
+      "✗ the instructions are not installed in ~/.claude/cc-smart-dev-kit/instructions/. Run: cc-smart-dev-kit setup",
     ]);
   });
 
@@ -1064,7 +1075,7 @@ describe("anymodel doctor: the instructions", () => {
     writeFileSync(join(stateDir, "instructions", "core.md"), "# Edited by hand\n");
     const result = run(["doctor"]);
     expect(instructionLines(result.stdout)).toEqual([
-      "✗ the instructions copy ~/.claude/anymodel/instructions/ is not this plugin version's (core.md differs). Run: anymodel setup",
+      "✗ the instructions copy ~/.claude/cc-smart-dev-kit/instructions/ is not this plugin version's (core.md differs). Run: cc-smart-dev-kit setup",
     ]);
     expect(result.exitCode).toBe(1);
   });
@@ -1075,7 +1086,7 @@ describe("anymodel doctor: the instructions", () => {
     writeFileSync(versionStampFile(stateDir), "0.0.1\n");
     const result = run(["doctor"]);
     expect(instructionLines(result.stdout)).toEqual([
-      "✗ the instructions copy ~/.claude/anymodel/instructions/ is not this plugin version's (written by 0.0.1). Run: anymodel setup",
+      "✗ the instructions copy ~/.claude/cc-smart-dev-kit/instructions/ is not this plugin version's (written by 0.0.1). Run: cc-smart-dev-kit setup",
     ]);
     expect(result.exitCode).toBe(1);
   });
@@ -1085,12 +1096,12 @@ describe("anymodel doctor: the instructions", () => {
     run(["setup"]);
     writeFileSync(join(configDir, "CLAUDE.md"), "# Mine\n");
     expect(instructionLines(run(["doctor"]).stdout)).toEqual([
-      "✗ ~/.claude/CLAUDE.md does not import the instructions (its anymodel block is missing or changed). Run: anymodel setup",
+      "✗ ~/.claude/CLAUDE.md does not import the instructions (its cc-smart-dev-kit block is missing or changed). Run: cc-smart-dev-kit setup",
     ]);
   });
 });
 
-describe("anymodel doctor: a project's imports of anymodel files", () => {
+describe("cc-smart-dev-kit doctor: a project's imports of cc-smart-dev-kit files", () => {
   /** A project folder in the temp HOME whose CLAUDE.md (or .claude/CLAUDE.md) holds `text`. */
   function project(home: string, text: string, where = "CLAUDE.md") {
     const dir = join(home, "my-app");
@@ -1104,13 +1115,16 @@ describe("anymodel doctor: a project's imports of anymodel files", () => {
   const projectLines = (stdout: string) =>
     stdout.split("\n").filter((line) => line.includes("imports ~/"));
 
-  test("an imported anymodel file that is there: ✓", () => {
+  test("an imported cc-smart-dev-kit file that is there: ✓", () => {
     const { home, run } = setup();
     run(["setup"]);
-    const cwd = project(home, "# My app\n\n@~/.claude/anymodel/instructions/optin/worktrees.md\n");
+    const cwd = project(
+      home,
+      "# My app\n\n@~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md\n",
+    );
     const result = run(["doctor"], {}, cwd);
     expect(projectLines(result.stdout)).toEqual([
-      "✓ the project's CLAUDE.md imports ~/.claude/anymodel/instructions/optin/worktrees.md, and it is there",
+      "✓ the project's CLAUDE.md imports ~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md, and it is there",
     ]);
     expect(result.exitCode).toBe(0);
   });
@@ -1119,12 +1133,12 @@ describe("anymodel doctor: a project's imports of anymodel files", () => {
     const { home, run } = setup();
     const cwd = project(
       home,
-      "@~/.claude/anymodel/instructions/optin/worktrees.md\n",
+      "@~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md\n",
       join(".claude", "CLAUDE.md"),
     );
     const result = run(["doctor"], {}, cwd);
     expect(projectLines(result.stdout)).toEqual([
-      "✗ ~/my-app/.claude/CLAUDE.md imports ~/.claude/anymodel/instructions/optin/worktrees.md, which is missing: it loads nothing. Run: anymodel setup",
+      "✗ ~/my-app/.claude/CLAUDE.md imports ~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md, which is missing: it loads nothing. Run: cc-smart-dev-kit setup",
     ]);
     expect(result.exitCode).toBe(1);
   });
@@ -1132,15 +1146,15 @@ describe("anymodel doctor: a project's imports of anymodel files", () => {
   test("missing after --no-instructions: information, with the command to add them", () => {
     const { home, run } = setup();
     run(["setup", "--no-instructions"]);
-    const cwd = project(home, "@~/.claude/anymodel/instructions/optin/worktrees.md\n");
+    const cwd = project(home, "@~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md\n");
     const result = run(["doctor"], {}, cwd);
     expect(projectLines(result.stdout)).toEqual([
-      "· ~/my-app/CLAUDE.md imports ~/.claude/anymodel/instructions/optin/worktrees.md, which is missing: it loads nothing while the instructions are left out here. To add them: anymodel setup --instructions",
+      "· ~/my-app/CLAUDE.md imports ~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md, which is missing: it loads nothing while the instructions are left out here. To add them: cc-smart-dev-kit setup --instructions",
     ]);
     expect(result.exitCode).toBe(0);
   });
 
-  test("no anymodel import: no line", () => {
+  test("no cc-smart-dev-kit import: no line", () => {
     const { home, run } = setup();
     run(["setup"]);
     const cwd = project(home, "# My app\n\n@docs/rules.md\n");
@@ -1148,27 +1162,27 @@ describe("anymodel doctor: a project's imports of anymodel files", () => {
   });
 });
 
-describe("anymodelImports", () => {
-  test("@~/ and @/ paths into an anymodel instructions copy, outside code", () => {
+describe("ccSmartDevKitImports", () => {
+  test("@~/ and @/ paths into a cc-smart-dev-kit instructions copy, outside code", () => {
     const fence = "`".repeat(3);
     const text = [
-      "@~/.claude/anymodel/instructions/optin/worktrees.md",
-      "See @/home/user/.claude/anymodel/instructions/core.md for more.",
-      "@docs/rules.md and @~/notes.md are not anymodel's.",
-      "In code: `see @~/.claude/anymodel/instructions/a.md` is not an import.",
-      "an@~/.claude/anymodel/instructions/b.md is not one either",
+      "@~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md",
+      "See @/home/user/.claude/cc-smart-dev-kit/instructions/core.md for more.",
+      "@docs/rules.md and @~/notes.md are not cc-smart-dev-kit's.",
+      "In code: `see @~/.claude/cc-smart-dev-kit/instructions/a.md` is not an import.",
+      "an@~/.claude/cc-smart-dev-kit/instructions/b.md is not one either",
       fence,
-      "@~/.claude/anymodel/instructions/c.md",
+      "@~/.claude/cc-smart-dev-kit/instructions/c.md",
       fence,
     ].join("\n");
-    expect(anymodelImports(text)).toEqual([
-      "~/.claude/anymodel/instructions/optin/worktrees.md",
-      "/home/user/.claude/anymodel/instructions/core.md",
+    expect(ccSmartDevKitImports(text)).toEqual([
+      "~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md",
+      "/home/user/.claude/cc-smart-dev-kit/instructions/core.md",
     ]);
   });
 });
 
-describe("anymodel setup: the companion plugins", () => {
+describe("cc-smart-dev-kit setup: the companion plugins", () => {
   test("their marketplaces are not added: setup adds each, which installs the plugin", () => {
     const { run, claudeCalls, launcher } = setup({ companions: false });
     const result = run(["setup"]);
@@ -1177,10 +1191,10 @@ describe("anymodel setup: the companion plugins", () => {
       [
         "+ marketplace thedotmack (thedotmack/claude-mem), which installs claude-mem@thedotmack",
         "+ marketplace claude-plugins-official (anthropics/claude-plugins-official), which installs frontend-design@claude-plugins-official",
-        "+ ~/.local/bin/anymodel: launcher created",
-        "~ ~/.claude/settings.json: extraKnownMarketplaces.anymodel.autoUpdate: (none) -> true",
+        "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
+        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
         ...INSTRUCTIONS_CREATED,
-        "Done. Each changed file has a backup in ~/.claude/anymodel/backups/.",
+        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
       ].join("\n"),
     );
@@ -1214,7 +1228,7 @@ describe("anymodel setup: the companion plugins", () => {
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain(
-      "! claude-mem@thedotmack is turned off, and anymodel does not load without it. Run: claude plugin enable claude-mem@thedotmack\n",
+      "! claude-mem@thedotmack is turned off, and cc-smart-dev-kit does not load without it. Run: claude plugin enable claude-mem@thedotmack\n",
     );
     expect(claudeCalls()).toBe("");
     expect(readJson(settingsFile).enabledPlugins["claude-mem@thedotmack"]).toBe(false);
@@ -1253,18 +1267,18 @@ describe("anymodel setup: the companion plugins", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toBe(
       [
-        "+ ~/.local/bin/anymodel: launcher created",
-        "~ ~/.claude/settings.json: extraKnownMarketplaces.anymodel.autoUpdate: (none) -> true",
+        "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
+        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
         ...INSTRUCTIONS_CREATED,
         "! The claude command is not on PATH, so setup skipped these steps. Run them once it is:",
         "  $ claude plugin marketplace add thedotmack/claude-mem",
         "  $ claude plugin marketplace add anthropics/claude-plugins-official",
-        "Done. Each changed file has a backup in ~/.claude/anymodel/backups/.",
+        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
       ].join("\n"),
     );
     expect(existsSync(launcher)).toBe(true);
-    expect(readJson(settingsFile).extraKnownMarketplaces.anymodel.autoUpdate).toBe(true);
+    expect(readJson(settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(true);
   });
 
   test("the first run: claude-mem comes with its marketplace, and is pointed at the gateway in the same run", async () => {
@@ -1299,19 +1313,19 @@ describe("anymodel setup: the companion plugins", () => {
     );
     expect(
       readJson(join(home, ".claude-mem", "settings.json")).CLAUDE_MEM_OPENAI_COMPAT_MODEL,
-    ).toBe(CHEAP_MODEL);
+    ).toBe(AFFORDABLE_MODEL);
   });
 });
 
-describe("anymodel doctor: the companion plugins", () => {
+describe("cc-smart-dev-kit doctor: the companion plugins", () => {
   test("not added, turned off, or outside the range: one ✗ each, with what to run", () => {
     const missing = setup({ companions: false });
     missing.run(["setup"]);
     const none = missing.run(["doctor"]);
     expect(none.exitCode).toBe(1);
     expect(none.stdout).toContain(
-      "✗ the thedotmack marketplace is not added, so claude-mem@thedotmack is missing and anymodel does not load. Run: anymodel setup\n" +
-        "✗ the claude-plugins-official marketplace is not added, so frontend-design@claude-plugins-official is missing and anymodel does not load. Run: anymodel setup\n",
+      "✗ the thedotmack marketplace is not added, so claude-mem@thedotmack is missing and cc-smart-dev-kit does not load. Run: cc-smart-dev-kit setup\n" +
+        "✗ the claude-plugins-official marketplace is not added, so frontend-design@claude-plugins-official is missing and cc-smart-dev-kit does not load. Run: cc-smart-dev-kit setup\n",
     );
 
     const { configDir, settingsFile, run } = setup();
@@ -1327,7 +1341,7 @@ describe("anymodel doctor: the companion plugins", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
       "✗ claude-mem@thedotmack 13.28.0 is outside >=13.29.0. Run: claude plugin update claude-mem@thedotmack\n" +
-        "✗ frontend-design@claude-plugins-official is turned off, and anymodel does not load without it. Run: claude plugin enable frontend-design@claude-plugins-official\n",
+        "✗ frontend-design@claude-plugins-official is turned off, and cc-smart-dev-kit does not load without it. Run: claude plugin enable frontend-design@claude-plugins-official\n",
     );
   });
 
@@ -1350,7 +1364,7 @@ describe("anymodel doctor: the companion plugins", () => {
     plugins.plugins["claude-mem@thedotmack"][0].version = "8713c5b11005";
     writeFileSync(installed, JSON.stringify(plugins));
     const unknown =
-      "claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so anymodel cannot check it against >=13.29.0. Run: claude plugin update claude-mem@thedotmack";
+      "claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against >=13.29.0. Run: claude plugin update claude-mem@thedotmack";
     expect(run(["doctor"]).stdout).toContain(`✗ ${unknown}\n`);
     // With the gateway there, claude-mem's own check would say it again: it does not.
     writeGatewayConfig(home, "http://127.0.0.1:9");
@@ -1376,19 +1390,19 @@ describe("anymodel doctor: the companion plugins", () => {
   });
 });
 
-/** A git project with a `.claude/anymodel.json`. */
+/** A git project with a `.claude/cc-smart-dev-kit.json`. */
 function project(config: unknown): string {
   const dir = tempDir("project");
   git(dir, "init", "-q");
   mkdirSync(join(dir, ".claude"));
-  writeFileSync(join(dir, ".claude", "anymodel.json"), JSON.stringify(config));
+  writeFileSync(join(dir, ".claude", "cc-smart-dev-kit.json"), JSON.stringify(config));
   return dir;
 }
 
 /** The real git, with no config of the machine's. */
 const GIT_ENV = { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
 
-describe("anymodel setup: the auto-mode block", () => {
+describe("cc-smart-dev-kit setup: the auto-mode block", () => {
   const RULE = "In my-app: never touch the production database.";
 
   test("no terminal, also with --yes: the entries are shown, left out, and not written", () => {
@@ -1399,14 +1413,14 @@ describe("anymodel setup: the auto-mode block", () => {
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toStartWith(
         [
-          `Auto mode: trust rules from ${repo}/.claude/anymodel.json ("autoMode"), for autoMode.environment in ~/.claude/settings.json:`,
+          `Auto mode: trust rules from ${repo}/.claude/cc-smart-dev-kit.json ("autoMode"), for autoMode.environment in ~/.claude/settings.json:`,
           '  + "$defaults"',
           `  + ${JSON.stringify(RULE)}`,
           "",
         ].join("\n"),
       );
       expect(result.stdout).toContain(
-        "! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run anymodel setup in a terminal.\n",
+        "! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run cc-smart-dev-kit setup in a terminal.\n",
       );
       expect(readJson(settingsFile).autoMode).toBeUndefined();
     }
@@ -1424,12 +1438,12 @@ describe("anymodel setup: the auto-mode block", () => {
     expect(existsSync(stateDir)).toBe(false);
   });
 
-  test("an invalid or too-new anymodel.json leaves only the auto-mode entries out: the rest of setup is done", () => {
+  test("an invalid or too-new cc-smart-dev-kit.json leaves only the auto-mode entries out: the rest of setup is done", () => {
     const cases: Array<[unknown, (file: string) => string]> = [
       [{ autoMode: "not a list" }, (file) => `Invalid ${file}: autoMode:`],
       [
         { requires: ">=999.0.0" },
-        (file) => `${file}: this project needs anymodel >=999.0.0; you have ${VERSION};`,
+        (file) => `${file}: this project needs cc-smart-dev-kit >=999.0.0; you have ${VERSION};`,
       ],
     ];
     for (const [config, reason] of cases) {
@@ -1437,9 +1451,9 @@ describe("anymodel setup: the auto-mode block", () => {
       const { launcher, run } = setup({ fakeGit: false });
       const result = run(["setup"], GIT_ENV, repo);
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toStartWith("+ ~/.local/bin/anymodel: launcher created\n");
+      expect(result.stdout).toStartWith("+ ~/.local/bin/cc-smart-dev-kit: launcher created\n");
       expect(result.stdout).toContain(
-        `! auto-mode entries left out: ${reason(`${repo}/.claude/anymodel.json`)}`,
+        `! auto-mode entries left out: ${reason(`${repo}/.claude/cc-smart-dev-kit.json`)}`,
       );
       expect(existsSync(launcher)).toBe(true);
     }
@@ -1495,7 +1509,7 @@ afterEach(() => {
 
 /** A made-up backend key: it must never show in any output. */
 const PLANTED_KEY = "sk-planted-SECRET-0123456789abcdef";
-const CHEAP_MODEL = "ollama-cloud/deepseek-v4.1-flash";
+const AFFORDABLE_MODEL = "ollama-cloud/deepseek-v4.1-flash";
 
 /**
  * A fake OpenAI-style backend: `POST /v1/chat/completions` answers one token; any other
@@ -1522,14 +1536,14 @@ function fakeBackend(status = 200, body: unknown = { error: { message: "no" } })
 
 /** The one request setup sends to check the backend, as the fake backend logs it. */
 const CHAT_CHECK = `POST /v1/chat/completions Bearer ${PLANTED_KEY} ${JSON.stringify({
-  model: CHEAP_MODEL,
+  model: AFFORDABLE_MODEL,
   messages: [{ role: "user", content: "Say OK." }],
   max_tokens: 1,
 })}`;
 
 /** gateway.json with the omniroute backend at `url`, as `gateway setup` makes it. */
 function writeGatewayConfig(home: string, url: string) {
-  const file = join(home, ".config", "anymodel", "gateway.json");
+  const file = join(home, ".config", "cc-smart-dev-kit", "gateway.json");
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(
     file,
@@ -1537,8 +1551,8 @@ function writeGatewayConfig(home: string, url: string) {
       version: 1,
       backends: { omniroute: { apiKey: PLANTED_KEY, baseUrl: url } },
       slots: {
-        "anymodel-scout": [`omniroute:${CHEAP_MODEL}`, "claude-sonnet-5-5"],
-        "anymodel-worker": [`omniroute:${CHEAP_MODEL}`, "claude-sonnet-5-5"],
+        "cc-smart-dev-kit-scout": [`omniroute:${AFFORDABLE_MODEL}`, "claude-sonnet-5-5"],
+        "cc-smart-dev-kit-worker": [`omniroute:${AFFORDABLE_MODEL}`, "claude-sonnet-5-5"],
       },
     }),
     { mode: 0o600 },
@@ -1565,8 +1579,8 @@ function writeClaudeMem(home: string, settings: unknown): string {
   return file;
 }
 
-describe("anymodel setup: claude-mem on the gateway's cheap model", () => {
-  test("claude-mem's defaults become the cheap model, with Claude Haiku as the fallback; the key never shows; restore takes them out", async () => {
+describe("cc-smart-dev-kit setup: claude-mem on the gateway's affordable model", () => {
+  test("claude-mem's defaults become the affordable model, with Claude Haiku as the fallback; the key never shows; restore takes them out", async () => {
     const { home, run, runAsync } = setup();
     const backend = fakeBackend();
     writeGatewayConfig(home, backend.url);
@@ -1578,7 +1592,7 @@ describe("anymodel setup: claude-mem on the gateway's cheap model", () => {
         '~ ~/.claude-mem/settings.json: CLAUDE_MEM_PROVIDER: "claude" -> "openai-compatible"',
         '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_PRESET: "" -> "custom"',
         `~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: "" -> "${backend.url}/v1"`,
-        `~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_MODEL: "" -> "${CHEAP_MODEL}"`,
+        `~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_MODEL: "" -> "${AFFORDABLE_MODEL}"`,
         '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "" -> "••••cdef"',
         '~ ~/.claude-mem/settings.json: CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "" -> "claude-haiku-4-5-20251001"',
         "",
@@ -1593,7 +1607,7 @@ describe("anymodel setup: claude-mem on the gateway's cheap model", () => {
       CLAUDE_MEM_OPENAI_COMPAT_PRESET: "custom",
       CLAUDE_MEM_OPENAI_COMPAT_API_KEY: PLANTED_KEY,
       CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: `${backend.url}/v1`,
-      CLAUDE_MEM_OPENAI_COMPAT_MODEL: CHEAP_MODEL,
+      CLAUDE_MEM_OPENAI_COMPAT_MODEL: AFFORDABLE_MODEL,
       CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "claude-haiku-4-5-20251001",
     });
     expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -1664,7 +1678,7 @@ describe("anymodel setup: claude-mem on the gateway's cheap model", () => {
       CLAUDE_MEM_PROVIDER: "openai-compatible",
       CLAUDE_MEM_OPENAI_COMPAT_PRESET: "custom",
       CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: `${backend.url}/v1`,
-      CLAUDE_MEM_OPENAI_COMPAT_MODEL: CHEAP_MODEL,
+      CLAUDE_MEM_OPENAI_COMPAT_MODEL: AFFORDABLE_MODEL,
       CLAUDE_MEM_OPENAI_COMPAT_API_KEY: PLANTED_KEY,
       CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "claude",
       CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "claude-haiku-4-5-20251001",
@@ -1696,7 +1710,7 @@ describe("anymodel setup: claude-mem on the gateway's cheap model", () => {
     const before = readFileSync(file, "utf8");
     const result = run(["setup"]);
     expect(result.stdout).toContain(
-      "! claude-mem@thedotmack 13.28.0 is outside >=13.29.0, and anymodel does not load with it. Run: claude plugin update claude-mem@thedotmack\n",
+      "! claude-mem@thedotmack 13.28.0 is outside >=13.29.0, and cc-smart-dev-kit does not load with it. Run: claude plugin update claude-mem@thedotmack\n",
     );
     expect(result.stdout.match(/13\.28\.0/g)).toHaveLength(1);
     expect(readFileSync(file, "utf8")).toBe(before);
@@ -1712,12 +1726,12 @@ describe("anymodel setup: claude-mem on the gateway's cheap model", () => {
       [
         404,
         { error: { code: "model_not_found", message: "The model does not exist" } },
-        `! claude-mem settings left alone: omniroute does not serve the model ${CHEAP_MODEL} (HTTP 404)\n`,
+        `! claude-mem settings left alone: omniroute does not serve the model ${AFFORDABLE_MODEL} (HTTP 404)\n`,
       ],
       [
         500,
         { error: { message: `upstream rejected ${PLANTED_KEY}` } },
-        `! claude-mem settings left alone: omniroute answered HTTP 500 to a one-token chat request for ${CHEAP_MODEL} at URL/v1/chat/completions\n`,
+        `! claude-mem settings left alone: omniroute answered HTTP 500 to a one-token chat request for ${AFFORDABLE_MODEL} at URL/v1/chat/completions\n`,
       ],
     ];
     for (const [status, body, note] of cases) {
@@ -1749,7 +1763,7 @@ describe("anymodel setup: claude-mem on the gateway's cheap model", () => {
     expect(backend.seen).toEqual([]);
   });
 
-  test("a key anymodel set and the person changed since is theirs: setup leaves all seven, restore leaves theirs", async () => {
+  test("a key cc-smart-dev-kit set and the person changed since is theirs: setup leaves all seven, restore leaves theirs", async () => {
     const { home, run, runAsync } = setup();
     const backend = fakeBackend();
     writeGatewayConfig(home, backend.url);
@@ -1773,13 +1787,13 @@ describe("anymodel setup: claude-mem on the gateway's cheap model", () => {
     });
   });
 
-  test("the gateway's backend key changed: anymodel updates the key it set, after the check", async () => {
+  test("the gateway's backend key changed: cc-smart-dev-kit updates the key it set, after the check", async () => {
     const { home, runAsync } = setup();
     const backend = fakeBackend();
     writeGatewayConfig(home, backend.url);
     const file = writeClaudeMem(home, SEEDED);
     await runAsync(["setup"]);
-    const gateway = join(home, ".config", "anymodel", "gateway.json");
+    const gateway = join(home, ".config", "cc-smart-dev-kit", "gateway.json");
     const config = readJson(gateway);
     config.backends.omniroute.apiKey = "sk-rotated-SECRET-9999999999999999";
     writeFileSync(gateway, JSON.stringify(config));
@@ -1792,16 +1806,16 @@ describe("anymodel setup: claude-mem on the gateway's cheap model", () => {
     );
   });
 
-  test("anymodel's keys are there, but the gateway has no cheap model any more: a note that says how to fix it", async () => {
+  test("cc-smart-dev-kit's keys are there, but the gateway has no affordable model any more: a note that says how to fix it", async () => {
     const { home, run, runAsync } = setup();
     writeGatewayConfig(home, fakeBackend().url);
     writeClaudeMem(home, SEEDED);
     await runAsync(["setup"]);
-    rmSync(join(home, ".config", "anymodel", "gateway.json"));
+    rmSync(join(home, ".config", "cc-smart-dev-kit", "gateway.json"));
     expect(run(["setup"]).stdout).toBe(
       [
         "Nothing to change. Setup is up to date.",
-        "! claude-mem still uses the backend anymodel set for it, but the gateway is not set up. Run anymodel setup again once the gateway has a cheap model, or anymodel restore to put claude-mem back on its own defaults.",
+        "! claude-mem still uses the backend cc-smart-dev-kit set for it, but the gateway is not set up. Run cc-smart-dev-kit setup again once the gateway has an affordable model, or cc-smart-dev-kit restore to put claude-mem back on its own defaults.",
         "",
       ].join("\n"),
     );
@@ -1841,7 +1855,7 @@ describe("anymodel setup: claude-mem on the gateway's cheap model", () => {
     const before = readFileSync(file, "utf8");
     const result = run(["setup"]);
     expect(result.stdout).toContain(
-      "! claude-mem settings left alone: ~/.claude-mem/settings.json is in claude-mem's old nested form, which claude-mem rewrites when it next starts. Start a Claude Code session, then run anymodel setup again.\n",
+      "! claude-mem settings left alone: ~/.claude-mem/settings.json is in claude-mem's old nested form, which claude-mem rewrites when it next starts. Start a Claude Code session, then run cc-smart-dev-kit setup again.\n",
     );
     expect(readFileSync(file, "utf8")).toBe(before);
   });
@@ -1855,7 +1869,7 @@ describe("anymodel setup: claude-mem on the gateway's cheap model", () => {
   });
 });
 
-describe("anymodel setup: options", () => {
+describe("cc-smart-dev-kit setup: options", () => {
   test("--warp and --remove-warp together, a --project with no folder, or one that is not there: exit 2", () => {
     const { run } = setup();
     expect(run(["setup", "--warp", "--remove-warp"]).exitCode).toBe(2);
@@ -1864,9 +1878,9 @@ describe("anymodel setup: options", () => {
   });
 });
 
-describe("anymodel version and help", () => {
+describe("cc-smart-dev-kit version and help", () => {
   test("version prints the plugin version", () => {
-    expect(setup().run(["version"]).stdout).toBe(`anymodel ${VERSION}\n`);
+    expect(setup().run(["version"]).stdout).toBe(`cc-smart-dev-kit ${VERSION}\n`);
   });
 
   test("an unknown command prints help and exits 2", () => {
@@ -1876,7 +1890,7 @@ describe("anymodel version and help", () => {
   });
 });
 
-describe("anymodel setup --statusline, statusline and usage", () => {
+describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
   test("--statusline sets the status line as an owned key; restore removes it", () => {
     const { settingsFile, run } = setup();
     const result = run(["setup", "--statusline"]);
@@ -1887,7 +1901,7 @@ describe("anymodel setup --statusline, statusline and usage", () => {
     );
     const line = readJson(settingsFile).statusLine;
     expect(line.type).toBe("command");
-    expect(line.command).toEndWith("/.local/bin/anymodel statusline");
+    expect(line.command).toEndWith("/.local/bin/cc-smart-dev-kit statusline");
     expect(run(["restore", "--yes"]).exitCode).toBe(0);
     expect(readJson(settingsFile)).not.toHaveProperty("statusLine");
   });
@@ -1910,7 +1924,10 @@ describe("anymodel setup --statusline, statusline and usage", () => {
         JSON.stringify({
           ...settings,
           extraKnownMarketplaces: {
-            anymodel: { ...settings.extraKnownMarketplaces.anymodel, autoUpdate: false },
+            "cc-smart-dev-kit": {
+              ...settings.extraKnownMarketplaces["cc-smart-dev-kit"],
+              autoUpdate: false,
+            },
           },
         }),
       );
@@ -1932,7 +1949,7 @@ describe("anymodel setup --statusline, statusline and usage", () => {
       expect(await runSetup(paths, setupOptions(home, say(false), { statusline: true }))).toBe(0);
       expect(asked).toHaveLength(1);
       expect(readJson(settingsFile).statusLine.command).toEndWith(
-        "/.local/bin/anymodel statusline",
+        "/.local/bin/cc-smart-dev-kit statusline",
       );
     } finally {
       quiet.mockRestore();
@@ -1977,12 +1994,12 @@ describe("anymodel setup --statusline, statusline and usage", () => {
     const { home, configDir } = setup();
     const guard = subprocessGuard();
     const now = Math.floor(Date.now() / 1000);
-    mkdirSync(join(home, ".local", "state", "anymodel"), { recursive: true });
+    mkdirSync(join(home, ".local", "state", "cc-smart-dev-kit"), { recursive: true });
     writeFileSync(
-      join(home, ".local", "state", "anymodel", "gateway-state.json"),
+      join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
       JSON.stringify({
         fallbacks: {
-          "anymodel-judge": {
+          "cc-smart-dev-kit-judge": {
             lastAt: Date.now(),
             model: "claude-sonnet-5",
             resetsAt: null,

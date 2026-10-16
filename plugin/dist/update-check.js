@@ -1,14 +1,14 @@
 // @bun
 // src/build-info/names.ts
-var MARKETPLACE = "anymodel";
-var PLUGIN = "anymodel";
+var MARKETPLACE = "cc-smart-dev-kit";
+var PLUGIN = "cc-smart-dev-kit";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-var COMMAND = "anymodel";
+var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
   version: "0.3.0",
-  repo: "sellanybiz/anymodel",
+  repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
       name: "claude-mem",
@@ -41,8 +41,8 @@ function routerPaths(env = process.env) {
   const home = homeDir(env);
   return {
     home,
-    gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json")
+    gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
+    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json")
   };
 }
 
@@ -57,12 +57,12 @@ function cliPaths(env = process.env) {
     installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
     knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
     binDir: join2(router.home, ".local", "bin"),
-    stateDir: join2(claudeConfigDir, "anymodel"),
-    routerCopy: join2(router.home, ".local", "share", "anymodel", "router.js"),
-    routerUnitFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.service"),
+    stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
+    routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    routerUnitFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
-    routerSocketFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.socket"),
-    notifyConfigFile: join2(claudeConfigDir, "anymodel", "notify.json"),
+    routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
+    notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf")
   };
 }
@@ -291,7 +291,7 @@ async function withLock(stateDir, fn, options = {}) {
       const info = held.info;
       const where = info && info.host !== hostname() ? ` on ${info.host || "another host"}` : "";
       const who = info ? `process ${info.pid}${where}` : "another run";
-      throw new LockBusyError(`anymodel is busy: ${who} holds ${file}. Wait for it to finish, then try again.`);
+      throw new LockBusyError(`cc-smart-dev-kit is busy: ${who} holds ${file}. Wait for it to finish, then try again.`);
     }
     await Bun.sleep(100);
   }
@@ -326,7 +326,7 @@ import {
 } from "fs";
 import { basename, dirname, join as join4, resolve } from "path";
 var BACKUPS_DIR = "backups";
-var BACKUP_INFIX = ".bak-anymodel-";
+var BACKUP_INFIX = ".bak-cc-smart-dev-kit-";
 var ABSENT_SUFFIX = ".absent";
 var CHANGED_FILE = "changed.json";
 var MAX_LINKS = 40;
@@ -363,7 +363,7 @@ function fileMode(file) {
 function writeTemp(file, content, mode) {
   const dir = dirname(file);
   mkdirSync2(dir, { recursive: true });
-  const temp = join4(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
+  const temp = join4(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
   try {
     const fd = openSync2(temp, "wx", mode);
     try {
@@ -524,7 +524,7 @@ function retryOnConcurrentChange(file, fn, attempts = 3) {
     } catch (error) {
       if (!(error instanceof ConcurrentChangeError) || attempt >= attempts) {
         if (error instanceof ConcurrentChangeError) {
-          throw new ConcurrentChangeError(`${file} kept changing while anymodel tried to update it (${attempts} tries). ` + "Close the program that writes it (for example Claude Code), then run again.");
+          throw new ConcurrentChangeError(`${file} kept changing while cc-smart-dev-kit tried to update it (${attempts} tries). ` + "Close the program that writes it (for example Claude Code), then run again.");
         }
         throw error;
       }
@@ -540,7 +540,7 @@ function writeManagedFile(file, content, options) {
   const current = currentMode === null ? null : readFileSync2(target, "utf8");
   const checkUnchanged = (now) => {
     if (options.expectedContent !== undefined && now !== options.expectedContent) {
-      throw new ConcurrentChangeError(`${target} changed after anymodel read it.`);
+      throw new ConcurrentChangeError(`${target} changed after cc-smart-dev-kit read it.`);
     }
   };
   if (!options.dryRun)
@@ -573,8 +573,8 @@ function removeManagedFile(stateDir, file) {
 }
 
 // src/setup/managed-markdown.ts
-var BLOCK_BEGIN = "<!-- anymodel:begin -->";
-var BLOCK_END = "<!-- anymodel:end -->";
+var BLOCK_BEGIN = "<!-- cc-smart-dev-kit:begin -->";
+var BLOCK_END = "<!-- cc-smart-dev-kit:end -->";
 function countOf(text, marker) {
   return text.split(marker).length - 1;
 }
@@ -586,7 +586,7 @@ function findBlock(current, file) {
   const start = current.indexOf(BLOCK_BEGIN);
   const end = current.indexOf(BLOCK_END);
   if (begins !== 1 || ends !== 1 || end < start) {
-    throw new Error(`${file} has a broken anymodel block (${begins} begin and ${ends} end markers). ` + "Fix it by hand: keep one begin marker and one end marker after it.");
+    throw new Error(`${file} has a broken cc-smart-dev-kit block (${begins} begin and ${ends} end markers). ` + "Fix it by hand: keep one begin marker and one end marker after it.");
   }
   return { start, end: end + BLOCK_END.length };
 }
@@ -796,7 +796,10 @@ function applyOnce(file, options, owned) {
       if (whose === "none") {
         skipped.push({ path, reason: "already set by someone else; left alone" });
       } else if (whose === "changed") {
-        skipped.push({ path, reason: "set by you since; left alone, no longer anymodel's" });
+        skipped.push({
+          path,
+          reason: "set by you since; left alone, no longer cc-smart-dev-kit's"
+        });
         dropped.push(path);
       } else {
         updated.push(recordOf(path, value, isSecret(path)));
@@ -804,10 +807,10 @@ function applyOnce(file, options, owned) {
       continue;
     }
     if (current.found && whose === "changed") {
-      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}: it was changed after anymodel set it, so it is your choice now. ` + "anymodel does not overwrite it. Remove it by hand if anymodel should manage it again.");
+      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}: it was changed after cc-smart-dev-kit set it, so it is your choice now. ` + "cc-smart-dev-kit does not overwrite it. Remove it by hand if cc-smart-dev-kit should manage it again.");
     }
     if (current.found && whose === "none" && !options.unchosen?.(path, current.value)) {
-      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}, set by someone else. ` + "anymodel does not overwrite it. Remove it by hand if anymodel should manage it.");
+      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}, set by someone else. ` + "cc-smart-dev-kit does not overwrite it. Remove it by hand if cc-smart-dev-kit should manage it.");
     }
     setKey(data, path, value);
     changes.push({ path, before: current.found ? current.value : undefined, after: value });
@@ -817,12 +820,12 @@ function applyOnce(file, options, owned) {
     const current = getKey(data, path);
     const whose = ownership(ownedHere, path, current);
     if (whose === "none") {
-      skipped.push({ path, reason: "not owned by anymodel; left alone" });
+      skipped.push({ path, reason: "not owned by cc-smart-dev-kit; left alone" });
       continue;
     }
     dropped.push(path);
     if (whose === "changed") {
-      skipped.push({ path, reason: "changed since anymodel set it; left alone" });
+      skipped.push({ path, reason: "changed since cc-smart-dev-kit set it; left alone" });
       continue;
     }
     if (!current.found)
@@ -936,7 +939,7 @@ function applyOnce2(file, options, plan, snapshot) {
   const { data, indent, text } = readJsonObject(file);
   const current = getKey(data, path);
   if (current.found && !(Array.isArray(current.value) && current.value.every((item) => typeof item === "string"))) {
-    throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is not a list of strings. anymodel does not change it.`);
+    throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is not a list of strings. cc-smart-dev-kit does not change it.`);
   }
   const list = current.found ? [...current.value] : [];
   const records = [...snapshot[file]?.[key] ?? []];
@@ -954,8 +957,8 @@ function applyOnce2(file, options, plan, snapshot) {
       const ownedHere = kept.some((r) => r.entry === entry && r.source === plan.source);
       if (ownedHere)
         continue;
-      const ownedByAnymodel = kept.some((r) => r.entry === entry);
-      if (list.includes(entry) && !ownedByAnymodel) {
+      const ownedByCcSmartDevKit = kept.some((r) => r.entry === entry);
+      if (list.includes(entry) && !ownedByCcSmartDevKit) {
         skipped.push(entry);
         continue;
       }
@@ -1141,7 +1144,7 @@ function restorePartly(file, entry, stateDir) {
   if (entry.kinds.includes("markdown-block")) {
     const result = removeManagedMarkdown({ file, stateDir });
     if (result.outcome !== "unchanged")
-      details.push("the anymodel block");
+      details.push("the cc-smart-dev-kit block");
     savedAs ??= result.backup;
   }
   if (entry.kinds.includes("file-line")) {
@@ -1231,14 +1234,18 @@ function lineOf(result, block) {
     case "removed":
       return { mark: "-", file: result.file, what: "removed" };
     case "restored":
-      return { mark: "~", file: result.file, what: "back as it was before anymodel" };
+      return { mark: "~", file: result.file, what: "back as it was before cc-smart-dev-kit" };
     case "cleaned":
-      return { mark: "~", file: result.file, what: block ? "anymodel block removed" : "cleaned" };
+      return {
+        mark: "~",
+        file: result.file,
+        what: block ? "cc-smart-dev-kit block removed" : "cleaned"
+      };
     case "no-backup":
       return {
         mark: "!",
         file: result.file,
-        what: "the backup from before anymodel is missing; left alone"
+        what: "the backup from before cc-smart-dev-kit is missing; left alone"
       };
     case "unchanged":
       return null;
@@ -1261,7 +1268,7 @@ function removeCopies(files, stateDir, dryRun) {
     const changed = readChanged(stateDir);
     return files.filter((file) => existsSync7(file)).map((file) => {
       const entry = changed[file];
-      return entry !== undefined && createdByUs(entry) ? { mark: "-", file, what: "removed" } : { mark: "~", file, what: "back as it was before anymodel" };
+      return entry !== undefined && createdByUs(entry) ? { mark: "-", file, what: "removed" } : { mark: "~", file, what: "back as it was before cc-smart-dev-kit" };
     });
   }
   return restore(stateDir, { only: files }).map((result) => lineOf(result, false)).filter((line) => line !== null);

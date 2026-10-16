@@ -50,8 +50,8 @@ function config(extra: Partial<GatewayConfig> = {}): GatewayConfig {
     backends: { omniroute: { apiKey: "omni-key-123456", baseUrl: "http://omni.test" } },
     port: 20199,
     slots: {
-      "anymodel-scout": ["omniroute:ollama-cloud/deepseek-v4.1-flash", "claude-sonnet-5-5"],
-      "anymodel-worker": ["omniroute:ollama-cloud/glm-5.3-flash", "claude-sonnet-5-5"],
+      "cc-smart-dev-kit-scout": ["omniroute:ollama-cloud/deepseek-v4.1-flash", "claude-sonnet-5-5"],
+      "cc-smart-dev-kit-worker": ["omniroute:ollama-cloud/glm-5.3-flash", "claude-sonnet-5-5"],
     },
     timeouts: { firstByteMs: 60_000 },
     version: 1,
@@ -59,12 +59,12 @@ function config(extra: Partial<GatewayConfig> = {}): GatewayConfig {
   };
 }
 
-/** A worker slot with two cheap targets and Claude last. */
-function twoCheap(): GatewayConfig {
+/** A worker slot with two affordable targets and Claude last. */
+function twoAffordable(): GatewayConfig {
   return config({
     slots: {
       ...config().slots,
-      "anymodel-worker": [
+      "cc-smart-dev-kit-worker": [
         "omniroute:ollama-cloud/deepseek-v4.1-flash",
         "omniroute:ollama-cloud/glm-5.3-flash",
         "claude-sonnet-5-5",
@@ -95,13 +95,13 @@ function ctx(extra: Partial<AlertContext> = {}): AlertContext {
 }
 
 describe("which stops get an alert", () => {
-  it("the plan limit on Opus: an alert that offers the Opus slot with the worker's cheap model", () => {
+  it("the plan limit on Opus: an alert that offers the Opus slot with the worker's affordable model", () => {
     expect(planAlert(AT_LIMIT, ctx())).toEqual({
       action: {
         args: ["gateway", "slot", "opus", "claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash"],
         label: "Use glm-5.3-flash until it resets",
       },
-      body: "claude-opus-5-5: five_hour, resets 13:00. A cheaper model until it resets: anymodel gateway slot opus claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash (Claude takes over again by itself once it answers).",
+      body: "claude-opus-5-5: five_hour, resets 13:00. A more affordable model until it resets: cc-smart-dev-kit gateway slot opus claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash (Claude takes over again by itself once it answers).",
       title: "Claude usage limit reached",
     });
   });
@@ -121,7 +121,7 @@ describe("which stops get an alert", () => {
   it("a gateway.json that cannot be read: the plain alert, no action", () => {
     expect(planAlert(AT_LIMIT, ctx({ config: null }))).toEqual({
       action: null,
-      body: "claude-opus-5-5: five_hour, resets 13:00. Claude Code continues by itself after the reset. The gateway config cannot be read, so no fallback is offered: anymodel doctor says why.",
+      body: "claude-opus-5-5: five_hour, resets 13:00. Claude Code continues by itself after the reset. The gateway config cannot be read, so no fallback is offered: cc-smart-dev-kit doctor says why.",
       title: "Claude usage limit reached",
     });
   });
@@ -145,26 +145,26 @@ describe("which stops get an alert", () => {
       )?.action,
     ).toBeNull();
     const on = config({
-      modelSlots: { "claude-opus-5-5": "anymodel-opus" },
+      modelSlots: { "claude-opus-5-5": "cc-smart-dev-kit-opus" },
       slots: {
         ...config().slots,
-        "anymodel-opus": ["claude-opus-5-5", "omniroute:ollama-cloud/glm-5.3-flash"],
+        "cc-smart-dev-kit-opus": ["claude-opus-5-5", "omniroute:ollama-cloud/glm-5.3-flash"],
       },
     });
     expect(planAlert(AT_LIMIT, ctx({ config: on }))).toEqual({
       action: null,
-      body: "claude-opus-5-5: five_hour, resets 13:00. The anymodel-opus fallback is on, yet this turn stopped: check anymodel gateway status.",
+      body: "claude-opus-5-5: five_hour, resets 13:00. The cc-smart-dev-kit-opus fallback is on, yet this turn stopped: check cc-smart-dev-kit gateway status.",
       title: "Claude usage limit reached",
     });
     expect(planAlert(AT_LIMIT, ctx({ gatewayOn: false }))).toEqual({
       action: null,
-      body: "claude-opus-5-5: five_hour, resets 13:00. To use a cheaper model until it resets: anymodel gateway slot opus claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash",
+      body: "claude-opus-5-5: five_hour, resets 13:00. To use a more affordable model until it resets: cc-smart-dev-kit gateway slot opus claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash",
       title: "Claude usage limit reached",
     });
   });
 
-  it("an account-wide limit offers every cheap target of the worker slot, in order", () => {
-    expect(planAlert(AT_LIMIT, ctx({ config: twoCheap() }))?.action).toEqual({
+  it("an account-wide limit offers every affordable target of the worker slot, in order", () => {
+    expect(planAlert(AT_LIMIT, ctx({ config: twoAffordable() }))?.action).toEqual({
       args: [
         "gateway",
         "slot",
@@ -175,7 +175,7 @@ describe("which stops get an alert", () => {
     });
   });
 
-  it("an Opus-only limit (seven_day_opus) offers Sonnet first, then the cheap targets", () => {
+  it("an Opus-only limit (seven_day_opus) offers Sonnet first, then the affordable targets", () => {
     const opusOnly: LimitState = {
       fallbacks: {},
       limits: {
@@ -183,7 +183,7 @@ describe("which stops get an alert", () => {
       },
       version: 1,
     };
-    expect(planAlert(AT_LIMIT, ctx({ config: twoCheap(), state: opusOnly }))).toEqual({
+    expect(planAlert(AT_LIMIT, ctx({ config: twoAffordable(), state: opusOnly }))).toEqual({
       action: {
         args: [
           "gateway",
@@ -193,7 +193,7 @@ describe("which stops get an alert", () => {
         ],
         label: "Use claude-sonnet-5-5 until it resets",
       },
-      body: "claude-opus-5-5: seven_day_opus, resets 13:00. A cheaper model until it resets: anymodel gateway slot opus claude-opus-5-5,claude-sonnet-5-5,omniroute:ollama-cloud/deepseek-v4.1-flash,omniroute:ollama-cloud/glm-5.3-flash (Claude takes over again by itself once it answers).",
+      body: "claude-opus-5-5: seven_day_opus, resets 13:00. A more affordable model until it resets: cc-smart-dev-kit gateway slot opus claude-opus-5-5,claude-sonnet-5-5,omniroute:ollama-cloud/deepseek-v4.1-flash,omniroute:ollama-cloud/glm-5.3-flash (Claude takes over again by itself once it answers).",
       title: "Claude usage limit reached",
     });
   });
@@ -236,7 +236,7 @@ describe("which stops get an alert", () => {
   it("readAlertContext: the session model from the input's transcript_path; a broken gateway.json is still set up", () => {
     const home = tempDir("alert-context");
     const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
-    mkdirSync(join(home, ".config", "anymodel"), { recursive: true });
+    mkdirSync(join(home, ".config", "cc-smart-dev-kit"), { recursive: true });
     writeFileSync(paths.gatewayConfigFile, "{not json", { mode: 0o600 });
     const transcript = join(home, "session.jsonl");
     writeFileSync(
@@ -264,7 +264,7 @@ describe("the worker shows it", () => {
     body: "body text",
     title: "Claude usage limit reached",
   };
-  const LAUNCHER = "/home/user/.local/bin/anymodel";
+  const LAUNCHER = "/home/user/.local/bin/cc-smart-dev-kit";
 
   function fakeRunner(answers: { exitCode: null | number; stdout: string; timedOut?: boolean }[]) {
     const runs: Run[] = [];
@@ -289,7 +289,7 @@ describe("the worker shows it", () => {
     expect(fake.runs.map((run) => run.argv)).toEqual([
       [
         "notify-send",
-        "--app-name=anymodel",
+        "--app-name=cc-smart-dev-kit",
         "--action=use=Use m1 until it resets",
         "--action=wait=Wait",
         "Claude usage limit reached",
@@ -298,9 +298,9 @@ describe("the worker shows it", () => {
       [LAUNCHER, "gateway", "slot", "opus", "claude-opus-5-5,omniroute:m1"],
       [
         "notify-send",
-        "--app-name=anymodel",
+        "--app-name=cc-smart-dev-kit",
         "Fallback on",
-        "Using m1 until it resets: anymodel gateway status shows it. Send a message in Claude Code to go on now.",
+        "Using m1 until it resets: cc-smart-dev-kit gateway status shows it. Send a message in Claude Code to go on now.",
       ],
     ]);
   });
@@ -322,9 +322,9 @@ describe("the worker shows it", () => {
     expect(runAlert(ALERT, "linux", LAUNCHER, fake.run)).toBe("use failed");
     expect(fake.runs.at(-1)?.argv).toEqual([
       "notify-send",
-      "--app-name=anymodel",
+      "--app-name=cc-smart-dev-kit",
       "Fallback not turned on",
-      "Run it yourself to see why: anymodel gateway slot opus claude-opus-5-5,omniroute:m1",
+      "Run it yourself to see why: cc-smart-dev-kit gateway slot opus claude-opus-5-5,omniroute:m1",
     ]);
   });
 
@@ -336,7 +336,7 @@ describe("the worker shows it", () => {
     expect(runAlert(ALERT, "linux", LAUNCHER, old.run)).toBe("shown");
     expect(old.runs[1]?.argv).toEqual([
       "notify-send",
-      "--app-name=anymodel",
+      "--app-name=cc-smart-dev-kit",
       "Claude usage limit reached",
       "body text",
     ]);
@@ -377,9 +377,9 @@ describe("the hook as Claude Code runs it", () => {
     const claudeDir = join(home, ".claude");
     mkdirSync(claudeDir, { recursive: true });
     if (gateway !== "none") {
-      mkdirSync(join(home, ".config", "anymodel"), { recursive: true });
+      mkdirSync(join(home, ".config", "cc-smart-dev-kit"), { recursive: true });
       writeFileSync(
-        join(home, ".config", "anymodel", "gateway.json"),
+        join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
         gateway === "ok" ? JSON.stringify(config()) : "{not json",
         { mode: 0o600 },
       );
@@ -388,10 +388,10 @@ describe("the hook as Claude Code runs it", () => {
         JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20199" } }),
       );
     }
-    mkdirSync(join(home, ".local", "state", "anymodel"), { recursive: true });
+    mkdirSync(join(home, ".local", "state", "cc-smart-dev-kit"), { recursive: true });
     const seen = Date.now() - 5_000;
     writeFileSync(
-      join(home, ".local", "state", "anymodel", "gateway-state.json"),
+      join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
       JSON.stringify({
         fallbacks: {},
         limits: {
@@ -417,8 +417,11 @@ describe("the hook as Claude Code runs it", () => {
     if (launcher) {
       mkdirSync(join(home, ".local", "bin"), { recursive: true });
       const words = [process.execPath, ...guard.args, CLI].map((word) => `'${word}'`).join(" ");
-      writeFileSync(join(home, ".local", "bin", "anymodel"), `#!/bin/sh\nexec ${words} "$@"\n`);
-      chmodSync(join(home, ".local", "bin", "anymodel"), 0o755);
+      writeFileSync(
+        join(home, ".local", "bin", "cc-smart-dev-kit"),
+        `#!/bin/sh\nexec ${words} "$@"\n`,
+      );
+      chmodSync(join(home, ".local", "bin", "cc-smart-dev-kit"), 0o755);
     }
     const run = (input: unknown) =>
       Bun.spawnSync([process.execPath, ...guard.args, ENTRY], {
@@ -447,7 +450,7 @@ describe("the hook as Claude Code runs it", () => {
     expect(result.stderr.toString()).toBe("");
     const lines = (await waitFor(m.log)).split("\n");
     expect(lines.slice(0, 4)).toEqual([
-      "--app-name=anymodel",
+      "--app-name=cc-smart-dev-kit",
       "--action=use=Use glm-5.3-flash until it resets",
       "--action=wait=Wait",
       "Claude usage limit reached",
@@ -458,18 +461,24 @@ describe("the hook as Claude Code runs it", () => {
     const m = machine("ok", false);
     expect(m.run(AT_LIMIT).exitCode).toBe(0);
     const lines = (await waitFor(m.log)).split("\n");
-    expect(lines.slice(0, 2)).toEqual(["--app-name=anymodel", "Claude usage limit reached"]);
+    expect(lines.slice(0, 2)).toEqual([
+      "--app-name=cc-smart-dev-kit",
+      "Claude usage limit reached",
+    ]);
   });
 
   it("a gateway.json that is not JSON: still the plain alert", async () => {
     const m = machine("broken");
     expect(m.run(AT_LIMIT).exitCode).toBe(0);
     const lines = (await waitFor(m.log)).split("\n");
-    expect(lines.slice(0, 2)).toEqual(["--app-name=anymodel", "Claude usage limit reached"]);
+    expect(lines.slice(0, 2)).toEqual([
+      "--app-name=cc-smart-dev-kit",
+      "Claude usage limit reached",
+    ]);
     // The reset time is the machine's clock: only the start and the end are fixed.
     expect(lines[2]).toStartWith("claude-opus-5-5: five_hour, resets ");
     expect(lines[2]).toEndWith(
-      "Claude Code continues by itself after the reset. The gateway config cannot be read, so no fallback is offered: anymodel doctor says why.",
+      "Claude Code continues by itself after the reset. The gateway config cannot be read, so no fallback is offered: cc-smart-dev-kit doctor says why.",
     );
   });
 

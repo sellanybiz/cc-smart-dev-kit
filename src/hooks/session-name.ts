@@ -1,13 +1,13 @@
 /**
  * SessionStart and UserPromptSubmit: a session names itself once, after its task. Opt-in:
- * anymodel.json `sessionNames: true`.
+ * cc-smart-dev-kit.json `sessionNames: true`.
  *
  * People and other sessions find a session by its name (ListAgents, SendMessage, /resume,
  * the terminal title). Claude Code's own names (the folder, or a title from the first
  * prompt) say little about the work. The session knows its task, so it names itself:
  *
  * - SessionStart (startup, resume, compact): a note with the session's id and the command
- *   that names it, `anymodel session-name <id> "<task>"`, which writes the name to a small
+ *   that names it, `cc-smart-dev-kit session-name <id> "<task>"`, which writes the name to a small
  *   file in the system's temp folder.
  * - UserPromptSubmit: when that name differs from the one this hook last set, the answer
  *   carries `sessionTitle` (the same rename as /rename). So a name the person gives with
@@ -49,9 +49,9 @@ export function cleanSessionName(raw: string): string | null {
   return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
 }
 
-/** The folder of the name files: `<temp>/anymodel-session-names`. */
+/** The folder of the name files: `<temp>/cc-smart-dev-kit-session-names`. */
 export function namesDir(env: Env): string {
-  return join(env.TMPDIR || tmpdir(), "anymodel-session-names");
+  return join(env.TMPDIR || tmpdir(), "cc-smart-dev-kit-session-names");
 }
 
 function readName(file: string): string | null {
@@ -70,7 +70,7 @@ function writeAtomic(file: string, text: string): void {
 }
 
 /**
- * `anymodel session-name <id> <name…>`: records the name a session chose. Returns the
+ * `cc-smart-dev-kit session-name <id> <name…>`: records the name a session chose. Returns the
  * name kept, or throws with what is wrong.
  */
 export function recordSessionName(sessionId: string, raw: string, env: Env): string {

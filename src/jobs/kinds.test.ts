@@ -3,7 +3,7 @@
  * written by hand: a wrong one admits too much, or makes every small run wait as a big one.
  */
 import { describe, expect, test } from "bun:test";
-import { anymodelConfigSchema } from "../project/config";
+import { ccSmartDevKitConfigSchema } from "../project/config";
 import {
   DEFAULT_KINDS,
   type KindSpec,
@@ -135,8 +135,8 @@ describe("the kinds a project sees", () => {
     expect(mergeKinds(undefined)).toEqual(DEFAULT_KINDS);
   });
 
-  test("anymodel.json accepts jobs.kinds, strictly", () => {
-    const ok = anymodelConfigSchema.safeParse({
+  test("cc-smart-dev-kit.json accepts jobs.kinds, strictly", () => {
+    const ok = ccSmartDevKitConfigSchema.safeParse({
       jobs: { kinds: { e2e: { gb: 6, match: [{ script: "e2e" }, { tool: "playwright" }] } } },
     });
     expect(ok.success).toBe(true);
@@ -148,7 +148,7 @@ describe("the kinds a project sees", () => {
       { jobs: { kinds: { e2e: { gb: 2, size: 3 } } } },
       { jobs: { kinds: { e2e: { gb: 2, match: [{ tool: "x", script: "y" }] } } } },
     ]) {
-      expect(anymodelConfigSchema.safeParse(bad).success).toBe(false);
+      expect(ccSmartDevKitConfigSchema.safeParse(bad).success).toBe(false);
     }
     expect(kindsSchema.safeParse(DEFAULT_KINDS).success).toBe(true);
   });

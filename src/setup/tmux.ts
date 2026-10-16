@@ -1,5 +1,5 @@
 /**
- * tmux and the alerts: the one line anymodel manages in the person's `~/.tmux.conf`.
+ * tmux and the alerts: the one line cc-smart-dev-kit manages in the person's `~/.tmux.conf`.
  *
  * A program in a tmux pane cannot write to the terminal beyond tmux with a plain escape
  * sequence: tmux parses it itself and drops it. It reaches the outer terminal only inside
@@ -8,7 +8,7 @@
  * too (`on` passes it through only while the pane is visible; owner, 2026-10-16). tmux 3.3
  * or newer has the option; on older tmux there is none to set.
  *
- * So `anymodel setup` writes this line when tmux is installed (only then), keeps the
+ * So `cc-smart-dev-kit setup` writes this line when tmux is installed (only then), keeps the
  * person's own lines and order, and never touches a running server itself: when one is
  * running, setup prints the `tmux set -g …` command to apply it now. `restore` takes the
  * line out again (`applyManagedLine` remembers exactly what it added).

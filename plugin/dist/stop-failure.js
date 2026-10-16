@@ -17,8 +17,8 @@ function routerPaths(env = process.env) {
   const home = homeDir(env);
   return {
     home,
-    gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json")
+    gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
+    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json")
   };
 }
 
@@ -33,12 +33,12 @@ function cliPaths(env = process.env) {
     installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
     knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
     binDir: join2(router.home, ".local", "bin"),
-    stateDir: join2(claudeConfigDir, "anymodel"),
-    routerCopy: join2(router.home, ".local", "share", "anymodel", "router.js"),
-    routerUnitFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.service"),
+    stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
+    routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    routerUnitFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
-    routerSocketFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.socket"),
-    notifyConfigFile: join2(claudeConfigDir, "anymodel", "notify.json"),
+    routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
+    notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf")
   };
 }
@@ -55,10 +55,10 @@ function claudeMemDataDir(env, home) {
 import { existsSync as existsSync2, readFileSync as readFileSync3 } from "fs";
 
 // src/build-info/names.ts
-var MARKETPLACE = "anymodel";
-var PLUGIN = "anymodel";
+var MARKETPLACE = "cc-smart-dev-kit";
+var PLUGIN = "cc-smart-dev-kit";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-var COMMAND = "anymodel";
+var COMMAND = "cc-smart-dev-kit";
 
 // src/gateway/config.ts
 import { mkdirSync, readFileSync, statSync } from "fs";
@@ -5859,7 +5859,7 @@ function superRefine(fn, params) {
 }
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
-var SLOT_KEY = /^anymodel-[a-z0-9][a-z0-9-]*$/;
+var SLOT_KEY = /^cc-smart-dev-kit-[a-z0-9][a-z0-9-]*$/;
 var CONTEXT_SUFFIX = /\[1m\]$/i;
 function isBackendName(name) {
   return BACKEND_NAME.test(name);
@@ -5892,10 +5892,10 @@ function parseTarget(text) {
   }
   return { target: { backend, kind: "backend", model } };
 }
-var JUDGE_SLOT = "anymodel-judge";
+var JUDGE_SLOT = "cc-smart-dev-kit-judge";
 var MODEL_SLOTS = {
-  "anymodel-fable": "fable",
-  "anymodel-opus": "opus"
+  "cc-smart-dev-kit-fable": "fable",
+  "cc-smart-dev-kit-opus": "opus"
 };
 var FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
 
@@ -5917,7 +5917,7 @@ var gatewayConfigSchema = looseObject({
   judgeTested: record(string2(), string2()).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
-  slots: record(string2().refine(isSlotKey, "a slot key is anymodel-<name>"), array(string2()).min(1)),
+  slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),
   timeouts: looseObject({ firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS) }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {
@@ -6104,7 +6104,7 @@ import { existsSync, readFileSync as readFileSync2 } from "fs";
 // src/build-info/index.ts
 var info = {
   version: "0.3.0",
-  repo: "sellanybiz/anymodel",
+  repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
       name: "claude-mem",
@@ -6129,12 +6129,12 @@ function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: "anymodel-scout[1m]",
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: `Cheap model for search and reading: the scout slot (${COMMAND} gateway slot scout \u2026)`,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (cheap)",
-    ANTHROPIC_DEFAULT_SONNET_MODEL: "anymodel-worker[1m]",
-    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: `Cheap model for routine code and docs: the worker slot (${COMMAND} gateway slot worker \u2026)`,
-    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (cheap)"
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: "cc-smart-dev-kit-scout[1m]",
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: `Affordable model for search and reading: the scout slot (${COMMAND} gateway slot scout \u2026)`,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (affordable)",
+    ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker[1m]",
+    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: `Affordable model for routine code and docs: the worker slot (${COMMAND} gateway slot worker \u2026)`,
+    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (affordable)"
   };
 }
 var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
@@ -6250,7 +6250,7 @@ function slotOf(model) {
   return null;
 }
 function suggestedTargets(config, model, family, claim) {
-  const backends = (config.slots["anymodel-worker"] ?? []).filter((text) => {
+  const backends = (config.slots["cc-smart-dev-kit-worker"] ?? []).filter((text) => {
     const parsed = parseTarget(text);
     return "target" in parsed && parsed.target.kind === "backend";
   });
@@ -6309,7 +6309,7 @@ function planAlert(input, ctx) {
   if (targets === null || !ctx.gatewayOn) {
     return {
       action: null,
-      body: `${head} To use a cheaper model until it resets: ${command}`,
+      body: `${head} To use a more affordable model until it resets: ${command}`,
       title
     };
   }
@@ -6318,7 +6318,7 @@ function planAlert(input, ctx) {
       args: ["gateway", "slot", slot.family, targets.join(",")],
       label: `Use ${shortName(targets[1] ?? "")} until it resets`
     },
-    body: `${head} A cheaper model until it resets: ${command} (Claude takes over again by itself once it answers).`,
+    body: `${head} A more affordable model until it resets: ${command} (Claude takes over again by itself once it answers).`,
     title
   };
 }
@@ -6355,7 +6355,10 @@ function appleString(text) {
 function plainNotification(alert, platform) {
   const body = alert.body;
   if (platform === "linux") {
-    return { argv: ["notify-send", "--app-name=anymodel", alert.title, body], timeoutMs: 1e4 };
+    return {
+      argv: ["notify-send", "--app-name=cc-smart-dev-kit", alert.title, body],
+      timeoutMs: 1e4
+    };
   }
   if (platform === "darwin") {
     return {
@@ -6371,7 +6374,7 @@ function plainNotification(alert, platform) {
 }
 
 // src/setup/launcher.ts
-var LAUNCHER_NAME = "anymodel";
+var LAUNCHER_NAME = "cc-smart-dev-kit";
 var FIND_INSTALL_JS = [
   "const f=process.argv[process.argv.length-1];",
   'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
@@ -6387,7 +6390,7 @@ function detached(argv) {
     return;
   const child = spawn(file, args, { detached: true, stdio: "ignore" });
   child.on("error", (error) => {
-    console.error(`anymodel StopFailure: could not show the alert: ${error.message}`);
+    console.error(`cc-smart-dev-kit StopFailure: could not show the alert: ${error.message}`);
   });
   child.unref();
 }
@@ -6396,7 +6399,7 @@ async function hook() {
   try {
     input = JSON.parse(await Bun.stdin.text());
   } catch {
-    console.error("anymodel StopFailure: the hook input is not JSON");
+    console.error("cc-smart-dev-kit StopFailure: the hook input is not JSON");
     return;
   }
   const paths = cliPaths();
@@ -6410,12 +6413,12 @@ async function hook() {
   }
   const plain = plainNotification({ ...alert, action: null }, process.platform);
   if (plain === null)
-    console.error(`anymodel: ${alert.title}. ${alert.body}`);
+    console.error(`cc-smart-dev-kit: ${alert.title}. ${alert.body}`);
   else
     detached(plain.argv);
 }
 try {
   await hook();
 } catch (error) {
-  console.error(`anymodel StopFailure: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`cc-smart-dev-kit StopFailure: ${error instanceof Error ? error.message : String(error)}`);
 }

@@ -1,5 +1,5 @@
 // The notifier hook: plugin/dist/notify.js, on Notification, Stop, PreToolUse and the events
-// around a question (plugin/hooks/hooks.json). It reads no anymodel.json: it is about the
+// around a question (plugin/hooks/hooks.json). It reads no cc-smart-dev-kit.json: it is about the
 // machine — a notifier on PATH, an SSH session, Warp, whose own plugin notifies — never about
 // a project, so it does not enter the frame. The logic and its tests: src/hooks/notify.ts.
 
@@ -28,7 +28,7 @@ async function hook(): Promise<void> {
   try {
     input = JSON.parse(await Bun.stdin.text());
   } catch {
-    console.error("anymodel notify: the hook input is not JSON");
+    console.error("cc-smart-dev-kit notify: the hook input is not JSON");
     return;
   }
   const event =
@@ -56,5 +56,7 @@ try {
   await hook();
 } catch (error) {
   // A notifier must never stop the person's work: one line, exit 0.
-  console.error(`anymodel notify: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(
+    `cc-smart-dev-kit notify: ${error instanceof Error ? error.message : String(error)}`,
+  );
 }

@@ -18,7 +18,7 @@ machine. How it works and why: `docs/gateway.md`. The Claude Code behaviour it r
 Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
 
 - **Never edit prompt text**: not the system prompt, not a message, not a tool result's
-  words, not auto mode's safety-check prompt. Not to "help" a cheap model either.
+  words, not auto mode's safety-check prompt. Not to "help" an affordable model either.
 - **Never switch on an output style, and never add `--append-system-prompt`** or any other
   way of adding words to what a model is told.
 - A request routed to Anthropic goes **byte for byte** (only hop-by-hop headers, `host`
@@ -28,9 +28,9 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
   migration guides). Never `system`, a message or a tool.
   **Auto mode's safety check is never translated for a Claude target**, on any route: it
   reaches it with only `model` changed (the router skips the translation when `guard` is
-  set). On the opt-in judge route to a cheap backend, the check gets that backend's named
+  set). On the opt-in judge route to an affordable backend, the check gets that backend's named
   translations (`reasoningOffForBackend`, `toolSearchForBackend`), like any request there.
-- A cheap backend gets only the **named format translations**: `toolSearchForBackend`
+- An affordable backend gets only the **named format translations**: `toolSearchForBackend`
   (tool search made plain) and `reasoningOffForBackend` ("no reasoning" in a form the
   backend reads). **A new translation, or a new row in a translation's table, needs its
   own named, tested function or test, plus a row in `docs/claude-code-contract.md`** naming
@@ -45,11 +45,11 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
 
 ## The login only ever reaches Anthropic
 
-- A cheap backend gets the allow-listed headers and its own key, and a body without
+- An affordable backend gets the allow-listed headers and its own key, and a body without
   `metadata`. Never `authorization`, `x-api-key`, `cookie` or `anthropic-beta`.
 - `anthropicBaseUrl` accepts only Anthropic's own URL. A test injects a fake through the
   router's deps, never through the config.
-- A redirect from a cheap backend becomes a 502.
+- A redirect from an affordable backend becomes a 502.
 - A `claude-…` name is never an alias, and never routed anywhere but Anthropic.
 
 ## The judge is a fallback, never the first judge
@@ -59,7 +59,7 @@ person chose and that passed the test; otherwise by the person, because Claude C
 
 - **Claude first, always.** A safety check takes the way it takes with no judge
   (`judgeAsFallback` calls that way first). No config, flag or alias may send every check
-  to a cheap model; do not bring that mode back.
+  to an affordable model; do not bring that mode back.
 - **The judge only when Claude cannot answer:** `planUsageLimit` (the plan's usage limit),
   a 401, or a request with no login. Never on a short 429, a 5xx or any other answer:
   those reach Claude Code as they are. Never for `count_tokens`.
@@ -71,12 +71,12 @@ person chose and that passed the test; otherwise by the person, because Claude C
   matching proof**, ignores any other with one WARN, and doctor fails on it. Raise
   `JUDGE_TEST_VERSION` when the test changes.
 - **Loud:** one WARN per judged check, naming the target; the state file says so.
-- Docs and the skill name the trade-off: a cheaper judge can block good work, a weak one
+- Docs and the skill name the trade-off: a more affordable judge can block good work, a weak one
   can let a risky command through, and the test proves one obvious case only.
 
 ## Model slots: only at the plan's usage limit
 
-`anymodel-opus` / `anymodel-fable` (`modelSlots`, keyed by the real Claude id):
+`cc-smart-dev-kit-opus` / `cc-smart-dev-kit-fable` (`modelSlots`, keyed by the real Claude id):
 
 - **Off by default.** With no `modelSlots`, a `claude-…` request goes byte for byte.
 - The slot's first target is the model itself and gets **the bytes Claude Code sent**.
@@ -121,9 +121,9 @@ person chose and that passed the test; otherwise by the person, because Claude C
 
 ## The service
 
-- The unit runs the copy in `~/.local/share/anymodel/`, with the absolute bun path,
+- The unit runs the copy in `~/.local/share/cc-smart-dev-kit/`, with the absolute bun path,
   never a file under `${CLAUDE_PLUGIN_ROOT}`.
-- **The port belongs to `anymodel-router.socket`**, never to the router alone: systemd
+- **The port belongs to `cc-smart-dev-kit-router.socket`**, never to the router alone: systemd
   holds it across restarts and passes it as fd 3 (`src/gateway/listen.ts`). Keep the
   router able to serve both ways (inherited socket, or its own bind for `gateway serve`),
   and keep `idleTimeout: 0` on its inner unix server (`listen.test.ts` fails without it).
@@ -148,7 +148,7 @@ person chose and that passed the test; otherwise by the person, because Claude C
   refuses requests for one drain, and the warning names the real cause (`restartWarning`:
   the move, a stopped socket, a new port, a changed socket unit).
 - Stopping the router while running sessions still point at it makes each of them fail.
-  So `restore` stops it only once no gateway env key that still holds anymodel's value is
+  So `restore` stops it only once no gateway env key that still holds cc-smart-dev-kit's value is
   left (its stage 2; a key the person changed since is theirs, and does not hold it back),
   and asks first; `--now` does it at once, after saying every session fails until it
   restarts.
@@ -172,8 +172,9 @@ person chose and that passed the test; otherwise by the person, because Claude C
 
 ## Names
 
-Slots `anymodel-scout`, `anymodel-worker`, `anymodel-judge`, and the model slots
-`anymodel-opus`, `anymodel-fable`; the limit state `~/.local/state/anymodel/gateway-state.json`; config
-`~/.config/anymodel/gateway.json`; unit and log name `anymodel-router`; health path
-`/__anymodel/health`. A project's old names reach the new ones through the config's
-`aliases` map, which its own migration writes; the plugin ships no aliases.
+Slots `cc-smart-dev-kit-scout`, `cc-smart-dev-kit-worker`, `cc-smart-dev-kit-judge`, and the model slots
+`cc-smart-dev-kit-opus`, `cc-smart-dev-kit-fable`; the limit state `~/.local/state/cc-smart-dev-kit/gateway-state.json`; config
+`~/.config/cc-smart-dev-kit/gateway.json`; unit and log name `cc-smart-dev-kit-router`; health path
+`/__cc-smart-dev-kit/health`. A project's old names reach the new ones through the config's
+`aliases` map, which its own migration writes; the plugin ships none, and writes them on
+a machine that moves only in `migrate` (0.2.x's names, `src/cli/migrate.ts`).

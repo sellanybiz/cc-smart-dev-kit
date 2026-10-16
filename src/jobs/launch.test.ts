@@ -37,7 +37,7 @@ import {
 } from "./launch";
 import { type JobDeps, type JobRequest, runJob } from "./run";
 
-const SLICE = "anymodel-heavy.slice";
+const SLICE = "cc-smart-dev-kit-heavy.slice";
 
 function facts(overrides: Partial<LaunchFacts>, ok: (withOomPolicy: boolean) => boolean) {
   const probes: boolean[] = [];
@@ -115,10 +115,10 @@ describe("the argv of each launch", () => {
       "--scope",
       "--quiet",
       "--collect",
-      "--slice=anymodel-heavy.slice",
+      "--slice=cc-smart-dev-kit-heavy.slice",
       "-p",
       "OOMPolicy=kill",
-      "--unit=anymodel-heavy-test-coverage-4242-zzz.scope",
+      "--unit=cc-smart-dev-kit-heavy-test-coverage-4242-zzz.scope",
       "--",
       "choom",
       "-n",
@@ -138,8 +138,8 @@ describe("the argv of each launch", () => {
       "--scope",
       "--quiet",
       "--collect",
-      "--slice=anymodel-heavy.slice",
-      "--unit=anymodel-heavy-tsc-4242-zzz.scope",
+      "--slice=cc-smart-dev-kit-heavy.slice",
+      "--unit=cc-smart-dev-kit-heavy-tsc-4242-zzz.scope",
       "--",
       "choom",
       "-n",
@@ -171,7 +171,7 @@ describe("the argv of each launch", () => {
       "--scope",
       "--quiet",
       "--collect",
-      "--slice=anymodel-heavy.slice",
+      "--slice=cc-smart-dev-kit-heavy.slice",
       "-p",
       "OOMPolicy=kill",
       "--",
@@ -183,17 +183,19 @@ describe("the argv of each launch", () => {
       "--scope",
       "--quiet",
       "--collect",
-      "--slice=anymodel-heavy.slice",
+      "--slice=cc-smart-dev-kit-heavy.slice",
       "--",
       "true",
     ]);
   });
 
   test("unit names carry no colon, and the start time in base 36", () => {
-    expect(unitName(SLICE, "lint:typed", 7, 46_655)).toBe("anymodel-heavy-lint-typed-7-zzz.scope");
+    expect(unitName(SLICE, "lint:typed", 7, 46_655)).toBe(
+      "cc-smart-dev-kit-heavy-lint-typed-7-zzz.scope",
+    );
     expect(unitName("jobs.slice", "image:build", 8, 36)).toBe("jobs-image-build-8-10.scope");
     // A job with a name only (`--exclusive`) has no kind.
-    expect(unitName(SLICE, "", 7, 36)).toBe("anymodel-heavy-job-7-10.scope");
+    expect(unitName(SLICE, "", 7, 36)).toBe("cc-smart-dev-kit-heavy-job-7-10.scope");
     // A `job run` killed with SIGKILL can leave its scope; a new one with its pid must not
     // collide with it ("unit exists": exit 1, read as a failure).
     expect(unitName(SLICE, "tsc", 99, 1000)).not.toBe(unitName(SLICE, "tsc", 99, 1001));
@@ -205,7 +207,7 @@ describe("the argv of each launch", () => {
       "--user",
       "set-property",
       "--runtime",
-      "anymodel-heavy.slice",
+      "cc-smart-dev-kit-heavy.slice",
       "MemoryMax=40G",
       "MemorySwapMax=0",
     ]);
@@ -311,11 +313,11 @@ describe("spawnAndWait: real children", () => {
   test("returns 127 for a command that does not exist, and says why", async () => {
     const said: string[] = [];
     expect(
-      await spawnAndWait(["anymodel-no-such-command-xyz"], new EventEmitter(), (line) =>
+      await spawnAndWait(["cc-smart-dev-kit-no-such-command-xyz"], new EventEmitter(), (line) =>
         said.push(line),
       ),
     ).toBe(127);
-    expect(said).toEqual(["could not start anymodel-no-such-command-xyz: ENOENT"]);
+    expect(said).toEqual(["could not start cc-smart-dev-kit-no-such-command-xyz: ENOENT"]);
   });
 
   test("sends SIGTERM on to the child, and lets go of its listeners after", async () => {
@@ -457,7 +459,7 @@ describe("systemd probes never hang", () => {
       const started = Date.now();
       expect(realLaunchFacts(SLICE, 200).probeScope(true)).toBe(false);
       expect(realSliceControl(() => null, 200).setMemoryMax(SLICE, "8G")).toBe(false);
-      realScope(SLICE, "anymodel-heavy-tsc-1-a.scope", () => null, 200)?.kill("SIGTERM");
+      realScope(SLICE, "cc-smart-dev-kit-heavy-tsc-1-a.scope", () => null, 200)?.kill("SIGTERM");
       expect(Date.now() - started).toBeLessThan(3_000);
     } finally {
       restore();
@@ -567,10 +569,10 @@ describe("runJob", () => {
     expect(r.events).toEqual([
       "acquire test:run 8 GB pid 4242 in /home/user/app-wt-x: vitest run src/a.test.ts",
       "probe",
-      "set anymodel-heavy.slice MemoryMax=40G",
-      "read /sys/fs/cgroup/user.slice/x/anymodel-heavy.slice/memory.events",
-      "run in anymodel-heavy-test-run-4242-zzz.scope",
-      "read /sys/fs/cgroup/user.slice/x/anymodel-heavy.slice/memory.events",
+      "set cc-smart-dev-kit-heavy.slice MemoryMax=40G",
+      "read /sys/fs/cgroup/user.slice/x/cc-smart-dev-kit-heavy.slice/memory.events",
+      "run in cc-smart-dev-kit-heavy-test-run-4242-zzz.scope",
+      "read /sys/fs/cgroup/user.slice/x/cc-smart-dev-kit-heavy.slice/memory.events",
       "release",
     ]);
     expect(r.runs).toEqual([
@@ -580,10 +582,10 @@ describe("runJob", () => {
         "--scope",
         "--quiet",
         "--collect",
-        "--slice=anymodel-heavy.slice",
+        "--slice=cc-smart-dev-kit-heavy.slice",
         "-p",
         "OOMPolicy=kill",
-        "--unit=anymodel-heavy-test-run-4242-zzz.scope",
+        "--unit=cc-smart-dev-kit-heavy-test-run-4242-zzz.scope",
         "--",
         "choom",
         "-n",
@@ -610,7 +612,7 @@ describe("runJob", () => {
     const r = recorder();
     expect(await runJob(request, deps(r, { code: 1, oom: [2, 3], limitHits: [4, 5] }))).toBe(1);
     expect(r.said[1]).toBe(
-      "killed for memory: the heavy jobs running here together went over anymodel-heavy.slice's ceiling, and the kernel stopped the largest. Run it again when fewer heavy jobs run (exit code 1).",
+      "killed for memory: the heavy jobs running here together went over cc-smart-dev-kit-heavy.slice's ceiling, and the kernel stopped the largest. Run it again when fewer heavy jobs run (exit code 1).",
     );
   });
 
@@ -739,7 +741,7 @@ describe("runJob", () => {
     );
     expect(r.runs[0]?.[0]).toBe("systemd-run");
     expect(r.said).toContain(
-      "could not set anymodel-heavy.slice MemoryMax=40G: the job runs without the slice's ceiling",
+      "could not set cc-smart-dev-kit-heavy.slice MemoryMax=40G: the job runs without the slice's ceiling",
     );
   });
 

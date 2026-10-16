@@ -5,7 +5,7 @@
  * It asks before:
  * - a force-push (`--force`, `-f`, `--force-with-lease`, `--force-if-includes`, a `+`
  *   refspec; not a `--dry-run`); any of these abbreviated the way git accepts (`--forc`);
- * - a push to a protected branch (anymodel.json `protectedBranches`, default `main`):
+ * - a push to a protected branch (cc-smart-dev-kit.json `protectedBranches`, default `main`):
  *   named, or sent by a bare `git push` / `HEAD` from a folder on that branch (the folder
  *   follows a `cd` / `Set-Location` earlier on the line); `git push --all` / `--mirror`;
  * - a branch deleted on the remote (`git push origin :x`, `git push -d origin x`);
@@ -15,7 +15,7 @@
  *   `--staged`;
  * - `git branch -D` (deletes a branch that may not be merged);
  * - `git stash clear`, and `git stash drop` with no stash named: they throw away work;
- * - when the project works in worktrees (`worktrees` in anymodel.json): a bare `git stash`
+ * - when the project works in worktrees (`worktrees` in cc-smart-dev-kit.json): a bare `git stash`
  *   or `git stash pop`, because every worktree shares one stash.
  *
  * "ask", never "deny": the person may mean it, and a hook cannot tell. Every command of a
@@ -44,7 +44,7 @@ import {
   wordsOf,
 } from "./shell-command";
 
-/** The branches asked about when anymodel.json names none. */
+/** The branches asked about when cc-smart-dev-kit.json names none. */
 export const DEFAULT_PROTECTED_BRANCHES = ["main"];
 
 export interface GuardOptions {

@@ -51,7 +51,7 @@ interface Held {
   size: number;
 }
 
-/** Another anymodel run holds the lock. */
+/** Another cc-smart-dev-kit run holds the lock. */
 export class LockBusyError extends Error {
   override name = "LockBusyError";
 }
@@ -333,7 +333,7 @@ export async function withLock<T>(
       const where = info && info.host !== hostname() ? ` on ${info.host || "another host"}` : "";
       const who = info ? `process ${info.pid}${where}` : "another run";
       throw new LockBusyError(
-        `anymodel is busy: ${who} holds ${file}. Wait for it to finish, then try again.`,
+        `cc-smart-dev-kit is busy: ${who} holds ${file}. Wait for it to finish, then try again.`,
       );
     }
     await Bun.sleep(100);

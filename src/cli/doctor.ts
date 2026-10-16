@@ -131,19 +131,22 @@ function checkLauncher(paths: CliPaths): Check {
   const launcher = join(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
   if (!existsSync(launcher))
-    return { ok: false, text: `no launcher at ${where}. Run: anymodel setup` };
+    return { ok: false, text: `no launcher at ${where}. Run: cc-smart-dev-kit setup` };
   if (!isExecutable(launcher)) {
-    return { ok: false, text: `the launcher ${where} is not executable. Run: anymodel setup` };
+    return {
+      ok: false,
+      text: `the launcher ${where} is not executable. Run: cc-smart-dev-kit setup`,
+    };
   }
   const script = readFileSync(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
-    return { ok: false, text: `the launcher ${where} is out of date. Run: anymodel setup` };
+    return { ok: false, text: `the launcher ${where} is out of date. Run: cc-smart-dev-kit setup` };
   }
   if (!isExecutable(bun)) {
     return {
       ok: false,
-      text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: anymodel setup`,
+      text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-smart-dev-kit setup`,
     };
   }
   const result = run([launcher, "version"]);
@@ -245,13 +248,13 @@ function checkAutoUpdate(settings: Record<string, unknown> | null, paths: CliPat
     ? { ok: true, text: "plugin auto-update is on" }
     : {
         ok: false,
-        text: `plugin auto-update is off in ${tildify(paths.settingsFile, paths.home)}. Run: anymodel setup`,
+        text: `plugin auto-update is off in ${tildify(paths.settingsFile, paths.home)}. Run: cc-smart-dev-kit setup`,
       };
 }
 
 /**
  * Updates must not be switched off: each of UPDATE_BLOCKING_VARS (`src/update/opt-out.ts`)
- * also stops plugin updates, Claude Code's and anymodel's background update alike, unless
+ * also stops plugin updates, Claude Code's and cc-smart-dev-kit's background update alike, unless
  * FORCE_AUTOUPDATE_PLUGINS is set too. Claude Code reads them from its environment and
  * from the `env` of settings.json, so doctor looks in both.
  */
@@ -444,7 +447,7 @@ function checkOldPlugin(settings: Record<string, unknown> | null, paths: CliPath
 }
 
 /**
- * The instructions: installed, this plugin version's, and imported by the anymodel block. The
+ * The instructions: installed, this plugin version's, and imported by the cc-smart-dev-kit block. The
  * copy is compared two ways: its version stamp (`instructionsNeedRefresh`, the same test the
  * refresh after an update uses) and its files against the plugin's. A stored
  * `--no-instructions` is information, never a failure.
@@ -457,13 +460,13 @@ function checkInstructions(paths: CliPaths, source: string): Check {
     return {
       ok: true,
       info: true,
-      text: "instructions: left out (anymodel setup --no-instructions). To add them: anymodel setup --instructions",
+      text: "instructions: left out (cc-smart-dev-kit setup --no-instructions). To add them: cc-smart-dev-kit setup --instructions",
     };
   }
   if (!copyInstalled(where)) {
     return {
       ok: false,
-      text: `the instructions are not installed in ${copy}. Run: anymodel setup`,
+      text: `the instructions are not installed in ${copy}. Run: cc-smart-dev-kit setup`,
     };
   }
   const why = copyDifferences(where);
@@ -473,14 +476,14 @@ function checkInstructions(paths: CliPaths, source: string): Check {
   if (why.length > 0) {
     return {
       ok: false,
-      text: `the instructions copy ${copy} is not this plugin version's (${why.join("; ")}). Run: anymodel setup`,
+      text: `the instructions copy ${copy} is not this plugin version's (${why.join("; ")}). Run: cc-smart-dev-kit setup`,
     };
   }
   const text = existsSync(where.claudeMd) ? readFileSync(where.claudeMd, "utf8") : "";
   if (!text.includes(instructionsBlockBody(where.importPath))) {
     return {
       ok: false,
-      text: `${claudeMd} does not import the instructions (its anymodel block is missing or changed). Run: anymodel setup`,
+      text: `${claudeMd} does not import the instructions (its cc-smart-dev-kit block is missing or changed). Run: cc-smart-dev-kit setup`,
     };
   }
   return {
@@ -502,7 +505,7 @@ function checkLiveRecord(paths: CliPaths): Check | null {
     return {
       ok: true,
       info: true,
-      text: `the live check last passed on Claude Code ${record.claudeCode}; this machine has ${now}. Run: anymodel doctor --live`,
+      text: `the live check last passed on Claude Code ${record.claudeCode}; this machine has ${now}. Run: cc-smart-dev-kit doctor --live`,
     };
   }
   return {
@@ -516,11 +519,11 @@ function checkLiveRecord(paths: CliPaths): Check | null {
 const PROJECT_MEMORY_FILES = ["CLAUDE.md", join(".claude", "CLAUDE.md"), "CLAUDE.local.md"];
 
 /**
- * The `@~/…` or `@/…` imports of a CLAUDE.md that point into an anymodel instructions copy
- * (a path with `/anymodel/instructions/` in it), outside code. Claude Code does not read an
+ * The `@~/…` or `@/…` imports of a CLAUDE.md that point into a cc-smart-dev-kit instructions copy
+ * (a path with `/cc-smart-dev-kit/instructions/` in it), outside code. Claude Code does not read an
  * import inside a code span or a fenced block, so neither does this.
  */
-export function anymodelImports(text: string): string[] {
+export function ccSmartDevKitImports(text: string): string[] {
   const found: string[] = [];
   let inFence = false;
   for (const line of text.split("\n")) {
@@ -532,17 +535,17 @@ export function anymodelImports(text: string): string[] {
     const outsideCode = line.replace(/`[^`]*`/g, " ");
     for (const match of outsideCode.matchAll(/(?:^|\s)@((?:~\/|\/)\S+)/g)) {
       const path = match[1] ?? "";
-      if (path.includes("/anymodel/instructions/")) found.push(path);
+      if (path.includes("/cc-smart-dev-kit/instructions/")) found.push(path);
     }
   }
   return found;
 }
 
 /**
- * The project's CLAUDE.md imports an anymodel file that is missing: it loads nothing, with
+ * The project's CLAUDE.md imports a cc-smart-dev-kit file that is missing: it loads nothing, with
  * no error from Claude Code. Claude Code reads the memory files of the current folder and
  * every folder above it, so doctor looks in the same places. No line when none of them
- * imports an anymodel file. A missing file is `·` information when the person chose
+ * imports a cc-smart-dev-kit file. A missing file is `·` information when the person chose
  * `--no-instructions` (the project wants them, this machine left them out), else ✗.
  */
 function checkProjectImports(paths: CliPaths, cwd: string): Check | null {
@@ -559,7 +562,7 @@ function checkProjectImports(paths: CliPaths, cwd: string): Check | null {
       } catch {
         continue;
       }
-      for (const path of anymodelImports(text)) {
+      for (const path of ccSmartDevKitImports(text)) {
         const file = path.startsWith("~/") ? join(paths.home, path.slice(2)) : path;
         imports.push({ from, path, file });
       }
@@ -577,12 +580,12 @@ function checkProjectImports(paths: CliPaths, cwd: string): Check | null {
     return {
       ok: true,
       info: true,
-      text: `${list}, which is missing: it loads nothing while the instructions are left out here. To add them: anymodel setup --instructions`,
+      text: `${list}, which is missing: it loads nothing while the instructions are left out here. To add them: cc-smart-dev-kit setup --instructions`,
     };
   }
   return {
     ok: false,
-    text: `${list}, which is missing: it loads nothing. Run: anymodel setup`,
+    text: `${list}, which is missing: it loads nothing. Run: cc-smart-dev-kit setup`,
   };
 }
 
@@ -603,7 +606,7 @@ function claudeMemCheck(paths: CliPaths): Check | null {
 /**
  * tmux: an alert from a pane reaches the terminal the person is looking at only with tmux
  * 3.3 or newer and its passthrough allowed (`all`, so a window the person is not looking at
- * works too), which is why `anymodel setup` writes one managed line into `~/.tmux.conf` and
+ * works too), which is why `cc-smart-dev-kit setup` writes one managed line into `~/.tmux.conf` and
  * `restore` takes it out. Both lines are information (`·`), never failures: tmux is
  * optional, and so is this.
  */
@@ -650,7 +653,7 @@ function checkBun(bun: DoctorBun, paths: CliPaths): Check {
   const where = tildify(bun.path, paths.home);
   const tooOld = bunTooOld(bun.version, where);
   return tooOld === null
-    ? { ok: true, text: `Bun ${bun.version} at ${where} (anymodel needs ≥ ${MIN_BUN})` }
+    ? { ok: true, text: `Bun ${bun.version} at ${where} (cc-smart-dev-kit needs ≥ ${MIN_BUN})` }
     : { ok: false, text: `${tooOld} Upgrade this Bun, then run: ${COMMAND} doctor` };
 }
 

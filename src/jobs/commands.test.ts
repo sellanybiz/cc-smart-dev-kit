@@ -1,5 +1,5 @@
 /**
- * `anymodel job …` run as the real CLI, in a temp HOME. Each test writes a `jobs.json`
+ * `cc-smart-dev-kit job …` run as the real CLI, in a temp HOME. Each test writes a `jobs.json`
  * with `launch: plain`, so no test ever starts a systemd scope or touches a slice, and
  * with a fixed `budgetGb`, so no test depends on this machine's memory. The jobs are small
  * `sh` scripts.
@@ -32,12 +32,12 @@ interface Machine {
 function machine(config: Record<string, unknown> = {}): Machine {
   const home = tempDir("jobs-home");
   const cwd = tempDir("jobs-work");
-  mkdirSync(join(home, ".config", "anymodel"), { recursive: true });
+  mkdirSync(join(home, ".config", "cc-smart-dev-kit"), { recursive: true });
   writeFileSync(
-    join(home, ".config", "anymodel", "jobs.json"),
+    join(home, ".config", "cc-smart-dev-kit", "jobs.json"),
     JSON.stringify({ launch: "plain", budgetGb: 10, ...config }),
   );
-  const state = join(home, ".local", "share", "anymodel", "jobs");
+  const state = join(home, ".local", "share", "cc-smart-dev-kit", "jobs");
   return { home, cwd, leases: join(state, "leases"), tickets: join(state, "tickets") };
 }
 
@@ -155,10 +155,11 @@ describe("job run: the job's output, input and exit code pass through", () => {
 
   test("127 and one line for a command that does not exist", () => {
     const m = machine();
-    expect(cli(m, ["run", "--kind", "tsc", "--", "anymodel-no-such-command-xyz"])).toEqual({
+    expect(cli(m, ["run", "--kind", "tsc", "--", "cc-smart-dev-kit-no-such-command-xyz"])).toEqual({
       code: 127,
       stdout: "",
-      stderr: "[anymodel job] could not start anymodel-no-such-command-xyz: ENOENT\n",
+      stderr:
+        "[cc-smart-dev-kit job] could not start cc-smart-dev-kit-no-such-command-xyz: ENOENT\n",
     });
   });
 });
@@ -222,7 +223,9 @@ describe("job run: the lease", () => {
     const planted = plantLease(m.leases, holder.pid, 10, Date.now());
     const child = start(m, ["run", "--kind", "tsc", "--", "echo", "never"]);
     const err = await readUntil(child.stderr, "Why:");
-    expect(err).toContain("[anymodel job] Heavy job waits for memory: echo never needs 8 GB.");
+    expect(err).toContain(
+      "[cc-smart-dev-kit job] Heavy job waits for memory: echo never needs 8 GB.",
+    );
     expect(jsonFiles(m.tickets)).toHaveLength(1);
     child.kill("SIGINT");
     expect(await child.exited).toBe(130);
@@ -243,7 +246,7 @@ describe("job run: the lease", () => {
     expect(jsonFiles(m.leases)).toHaveLength(1);
     const status = cli(m, ["status"]);
     expect(status.stdout).toContain(
-      "This machine (~/.local/share/anymodel/jobs): 10 of 10 GB free\n",
+      "This machine (~/.local/share/cc-smart-dev-kit/jobs): 10 of 10 GB free\n",
     );
     expect(jsonFiles(m.leases)).toEqual([]);
     // And the memory is free for the next job at once.
@@ -276,23 +279,26 @@ describe("job run: what it refuses", () => {
   test("a wrong command line: exit 2 and the usage", () => {
     const m = machine();
     for (const [args, line] of [
-      [["run", "--", "true"], "[anymodel job] --kind <kind> or --exclusive <name> is required"],
+      [
+        ["run", "--", "true"],
+        "[cc-smart-dev-kit job] --kind <kind> or --exclusive <name> is required",
+      ],
       [
         ["run", "--exclusive", "my image", "--", "true"],
-        "[anymodel job] --exclusive takes a name: letters, digits, . _ : -, at most 64 characters",
+        "[cc-smart-dev-kit job] --exclusive takes a name: letters, digits, . _ : -, at most 64 characters",
       ],
-      [["run", "--kind", "tsc", "true"], "[anymodel job] put -- before the command"],
-      [["run", "--kind", "tsc", "--"], "[anymodel job] no command after --"],
+      [["run", "--kind", "tsc", "true"], "[cc-smart-dev-kit job] put -- before the command"],
+      [["run", "--kind", "tsc", "--"], "[cc-smart-dev-kit job] no command after --"],
       [
         ["run", "--kind", "tsc", "--gb", "two", "--", "true"],
-        "[anymodel job] --gb takes a whole number of GB",
+        "[cc-smart-dev-kit job] --gb takes a whole number of GB",
       ],
-      [["run", "--size", "2", "--", "true"], "[anymodel job] unknown option: --size"],
+      [["run", "--size", "2", "--", "true"], "[cc-smart-dev-kit job] unknown option: --size"],
     ] as const) {
       const result = cli(m, [...args]);
       expect(result.code).toBe(2);
       expect(result.stderr.split("\n")[0]).toBe(line);
-      expect(result.stderr).toContain("Usage: anymodel job <command>");
+      expect(result.stderr).toContain("Usage: cc-smart-dev-kit job <command>");
     }
   });
 
@@ -302,17 +308,17 @@ describe("job run: what it refuses", () => {
       code: 2,
       stdout: "",
       stderr:
-        '[anymodel job] unknown kind "lint": one of tsc, lint:typed, test:coverage, test:run, build, image:build\n',
+        '[cc-smart-dev-kit job] unknown kind "lint": one of tsc, lint:typed, test:coverage, test:run, build, image:build\n',
     });
   });
 
   test("a folder with .env files when bun would load them: exit 2; with --no-env-file the job never sees them", () => {
     const m = machine();
-    writeFileSync(join(m.cwd, ".env"), "ANYMODEL_ENV_PROBE=from-dotenv\n");
+    writeFileSync(join(m.cwd, ".env"), "CC_SMART_DEV_KIT_ENV_PROBE=from-dotenv\n");
     const refused = cli(m, ["run", "--kind", "tsc", "--", "true"], { envFile: true });
     expect(refused.code).toBe(2);
     expect(refused.stderr).toBe(
-      '[anymodel job] this folder has .env, and bun was started without --no-env-file: the job would get their values. Run "anymodel setup" to update the launcher, then try again.\n',
+      '[cc-smart-dev-kit job] this folder has .env, and bun was started without --no-env-file: the job would get their values. Run "cc-smart-dev-kit setup" to update the launcher, then try again.\n',
     );
     const clean = cli(m, [
       "run",
@@ -321,7 +327,7 @@ describe("job run: what it refuses", () => {
       "--",
       "sh",
       "-c",
-      "printenv ANYMODEL_ENV_PROBE || echo unset",
+      "printenv CC_SMART_DEV_KIT_ENV_PROBE || echo unset",
     ]);
     expect(clean).toEqual({ code: 0, stdout: "unset\n", stderr: "" });
   });
@@ -333,27 +339,27 @@ describe("job run: what it refuses", () => {
     expect(result.code).toBe(2);
     expect(result.stdout).toBe("");
     expect(result.stderr).toStartWith(
-      `[anymodel job] Invalid ${join(m.home, ".config", "anymodel", "jobs.json")}: launch: `,
+      `[cc-smart-dev-kit job] Invalid ${join(m.home, ".config", "cc-smart-dev-kit", "jobs.json")}: launch: `,
     );
   });
 
-  test("a broken anymodel.json, or a state folder that cannot be made: exit 2", () => {
+  test("a broken cc-smart-dev-kit.json, or a state folder that cannot be made: exit 2", () => {
     const m = machine();
     git(m.cwd, "init", "-q");
     mkdirSync(join(m.cwd, ".claude"));
-    writeFileSync(join(m.cwd, ".claude", "anymodel.json"), "{ not json");
+    writeFileSync(join(m.cwd, ".claude", "cc-smart-dev-kit.json"), "{ not json");
     const broken = cli(m, ["run", "--kind", "tsc", "--", "sh", "-c", "echo ran"]);
     expect(broken.code).toBe(2);
     expect(broken.stdout).toBe("");
-    expect(broken.stderr).toStartWith("[anymodel job] ");
+    expect(broken.stderr).toStartWith("[cc-smart-dev-kit job] ");
 
-    const blocked = machine({ stateDir: "/proc/anymodel-no-such-folder" });
+    const blocked = machine({ stateDir: "/proc/cc-smart-dev-kit-no-such-folder" });
     const result = cli(blocked, ["run", "--kind", "tsc", "--", "sh", "-c", "echo ran"]);
     expect(result).toEqual({
       code: 2,
       stdout: "",
       stderr:
-        "[anymodel job] The state folder /proc/anymodel-no-such-folder cannot be made (ENOENT).\n",
+        "[cc-smart-dev-kit job] The state folder /proc/cc-smart-dev-kit-no-such-folder cannot be made (ENOENT).\n",
     });
   });
 });
@@ -378,7 +384,7 @@ describe("job run --exclusive", () => {
     const second = start(m, ["run", "--exclusive", "image", "--", "echo", "second"]);
     const err = await readUntil(second.stderr, "Why:");
     expect(err).toContain(
-      "[anymodel job] Heavy job waits for memory: echo second needs 0 GB and the turn for --exclusive image.",
+      "[cc-smart-dev-kit job] Heavy job waits for memory: echo second needs 0 GB and the turn for --exclusive image.",
     );
     expect(err).toContain(
       "Why: another job with --exclusive image holds this machine's turn for that name.",
@@ -434,7 +440,7 @@ describe("job status", () => {
     expect(lines[0]).toStartWith("Memory: ");
     expect(lines.slice(1)).toEqual([
       "Budget for heavy jobs here: 10 GB (set in jobs.json).",
-      "This machine (~/.local/share/anymodel/jobs): 2 of 10 GB free",
+      "This machine (~/.local/share/cc-smart-dev-kit/jobs): 2 of 10 GB free",
       `  this machine: 8 GB held by ${hostname()}: build, next build in /home/user/app, since 2026-10-11 09:05 (pid ${holder.pid})`,
       `Shared folder ${shared}: 30 of 30 GB free`,
       "  nothing held, nobody waits",
@@ -467,7 +473,7 @@ describe("job status", () => {
         const result = cli(m, ["status"]);
         expect(result.code).toBe(0);
         expect(result.stdout).toContain(
-          `This machine (~/.local/share/anymodel/jobs): cannot be read (EACCES: permission denied, scandir '${m.leases}')\n`,
+          `This machine (~/.local/share/cc-smart-dev-kit/jobs): cannot be read (EACCES: permission denied, scandir '${m.leases}')\n`,
         );
         expect(result.stdout).toContain(`Shared folder ${shared}: 30 of 30 GB free\n`);
       } finally {
@@ -483,7 +489,7 @@ describe("job kinds", () => {
     git(m.cwd, "init", "-q");
     mkdirSync(join(m.cwd, ".claude"));
     writeFileSync(
-      join(m.cwd, ".claude", "anymodel.json"),
+      join(m.cwd, ".claude", "cc-smart-dev-kit.json"),
       JSON.stringify({ jobs: { kinds: { e2e: { gb: 3, about: "End-to-end tests." } } } }),
     );
     const result = cli(m, ["kinds"]);

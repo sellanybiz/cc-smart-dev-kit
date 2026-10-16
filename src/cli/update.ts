@@ -1,5 +1,5 @@
 /**
- * `anymodel update`: the self-update by hand.
+ * `cc-smart-dev-kit update`: the self-update by hand.
  *
  *   update            check now and install a newer version, in this terminal, with the
  *                     output of each `claude plugin` command
@@ -184,7 +184,7 @@ async function updateNow(paths: CliPaths, env: Env, now: () => number): Promise<
   );
 }
 
-/** `anymodel update [--check | --hold | --resume]`; the exit code. */
+/** `cc-smart-dev-kit update [--check | --hold | --resume]`; the exit code. */
 export async function runUpdate(
   paths: CliPaths,
   env: Env,

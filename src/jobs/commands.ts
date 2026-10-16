@@ -1,5 +1,5 @@
 /**
- * `anymodel job <command>`: the machine-wide queue for heavy jobs.
+ * `cc-smart-dev-kit job <command>`: the machine-wide queue for heavy jobs.
  *
  *   run     waits until the memory for the job is free, runs it, and passes its stdio,
  *           exit code and signals through.
@@ -83,7 +83,7 @@ export interface JobContext {
   now?: () => number;
 }
 
-const PREFIX = "[anymodel job]";
+const PREFIX = "[cc-smart-dev-kit job]";
 
 /** The stores this machine uses: its own, then each shared folder, in that order. */
 interface OpenedStores {
@@ -240,7 +240,7 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
     return 2;
   }
   const say = (line: string) => ctx.say(`${PREFIX} ${line}`);
-  // A config this run cannot use (jobs.json, anymodel.json, the state folder) ends it
+  // A config this run cannot use (jobs.json, cc-smart-dev-kit.json, the state folder) ends it
   // before anything starts, as a wrong command line does: exit 2, never the job's code.
   let config: JobsMachineConfig;
   let kinds: Kinds;

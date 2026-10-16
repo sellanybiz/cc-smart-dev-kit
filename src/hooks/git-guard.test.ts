@@ -4,7 +4,7 @@
  * switched off. Every expected answer is written by hand.
  *
  * Most tests read the questions directly (`guardQuestions`); the hook itself, with
- * `ownHooks` and anymodel.json, is tested at the end and in `matrix.test.ts`.
+ * `ownHooks` and cc-smart-dev-kit.json, is tested at the end and in `matrix.test.ts`.
  */
 import { afterAll, beforeAll, describe, expect, test as it } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -22,7 +22,7 @@ let onDev = ""; // a repo with `dev` checked out
 let onFeature = ""; // a repo with `fix/devtools` checked out
 
 beforeAll(() => {
-  base = realpathSync(mkdtempSync(join(tmpdir(), "anymodel-guard-")));
+  base = realpathSync(mkdtempSync(join(tmpdir(), "cc-smart-dev-kit-guard-")));
   neutral = join(base, "plain");
   onDev = join(base, "on-dev");
   onFeature = join(base, "on-feature");
@@ -616,7 +616,7 @@ describe("harmless forms do not ask", () => {
   });
 });
 
-describe("runsGit: what the guard asks about when it cannot read anymodel.json", () => {
+describe("runsGit: what the guard asks about when it cannot read cc-smart-dev-kit.json", () => {
   it.each([
     ["git status", true],
     ["cd x && git log", true],
@@ -637,9 +637,9 @@ describe("the hook", () => {
     tool_input: { command },
   });
 
-  it("asks, as a PreToolUse decision, in a project with anymodel.json", async () => {
+  it("asks, as a PreToolUse decision, in a project with cc-smart-dev-kit.json", async () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", { protectedBranches: ["release"] });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { protectedBranches: ["release"] });
     const result = await runHook(gitGuardHook, input(repo, "git push origin release"), hookEnv());
     expect(result).toEqual({
       stdout: JSON.stringify({
@@ -653,23 +653,23 @@ describe("the hook", () => {
     });
   });
 
-  it("stays silent without anymodel.json, whatever the command", async () => {
+  it("stays silent without cc-smart-dev-kit.json, whatever the command", async () => {
     const repo = makeRepo();
     expect(await runHook(gitGuardHook, input(repo, "git push -f origin main"), hookEnv())).toEqual(
       {},
     );
   });
 
-  it("stays silent when anymodel.json lists it in ownHooks (the project runs its own copy)", async () => {
+  it("stays silent when cc-smart-dev-kit.json lists it in ownHooks (the project runs its own copy)", async () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", { ownHooks: ["git-guard"] });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["git-guard"] });
     wireProjectHook(repo, "PreToolUse", "Bash|PowerShell");
     expect(await runHook(gitGuardHook, input(repo, "git push -f"), hookEnv())).toEqual({});
   });
 
   it("still asks when a project hook on Bash is not listed in ownHooks (a logger must not silence it)", async () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", { ownHooks: ["session-name"] });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["session-name"] });
     wireProjectHook(repo, "PreToolUse", "Bash|PowerShell");
     wireProjectHook(repo, "PreToolUse", "Bash", "settings.local.json");
     const result = await runHook(gitGuardHook, input(repo, "git push -f"), hookEnv());

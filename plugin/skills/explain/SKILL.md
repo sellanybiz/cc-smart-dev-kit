@@ -5,7 +5,7 @@ description: Use when someone wants to UNDERSTAND something, not change code - a
 
 # Explain It Simply
 
-**Project add-on:** `.claude/anymodel/explain.md` — read it first when it exists. Where it
+**Project add-on:** `.claude/cc-smart-dev-kit/explain.md` — read it first when it exists. Where it
 differs, the add-on wins (`core.md`, top). It gives the project's own words for its parts,
 and who the readers usually are.
 

@@ -91,10 +91,10 @@ function fakeClaude(mode: "play" | "nothing" | "keep" | "stay") {
   // `bun`: the CLI refuses a Bun older than 1.4.3, and PATH's bun may be another one.
   mkdirSync(join(home, ".local", "bin"), { recursive: true });
   writeFileSync(
-    join(home, ".local", "bin", "anymodel"),
+    join(home, ".local", "bin", "cc-smart-dev-kit"),
     `#!/bin/sh\nexec "${process.execPath}" ${guard.args.join(" ")} "${join(ENTRIES, "cli.ts")}" "$@"\n`,
   );
-  chmodSync(join(home, ".local", "bin", "anymodel"), 0o755);
+  chmodSync(join(home, ".local", "bin", "cc-smart-dev-kit"), 0o755);
   const calls = join(bin, "calls.log");
   const env: Record<string, string> = {
     ...cleanGitEnv(),
@@ -130,8 +130,8 @@ function fakeClaude(mode: "play" | "nothing" | "keep" | "stay") {
   // What production passes: this plugin under test, never the installed launcher. Here that
   // is this repo's CLI, through the launcher file the fake HOME holds.
   const deps: LiveDeps = {
-    pluginDir: "/plugins/anymodel",
-    hookCommand: (name) => `${join(home, ".local", "bin", "anymodel")} hook ${name}`,
+    pluginDir: "/plugins/cc-smart-dev-kit",
+    hookCommand: (name) => `${join(home, ".local", "bin", "cc-smart-dev-kit")} hook ${name}`,
     run,
   };
   return { env, run, calls, settings, paths: cliPaths(env), deps };
@@ -186,7 +186,7 @@ describe("doctor --live", () => {
       expect(session.slice(0, -1)).toEqual([
         "-p",
         "--plugin-dir",
-        "/plugins/anymodel",
+        "/plugins/cc-smart-dev-kit",
         "--tools",
         "EnterWorktree,ExitWorktree,Bash",
         "--allowedTools",
@@ -248,9 +248,9 @@ describe("doctor --live", () => {
   });
 
   test("liveHookCommand: the plugin under test, quoted for sh", () => {
-    const command = liveHookCommand("/plugins/anymodel's copy", "/usr/local/bin/bun");
+    const command = liveHookCommand("/plugins/cc-smart-dev-kit's copy", "/usr/local/bin/bun");
     expect(command("worktree-create")).toBe(
-      "'/usr/local/bin/bun' '/plugins/anymodel'\\''s copy/dist/cli.js' hook worktree-create",
+      "'/usr/local/bin/bun' '/plugins/cc-smart-dev-kit'\\''s copy/dist/cli.js' hook worktree-create",
     );
     // Run through a real /bin/sh with a fake plugin folder: the quoting holds.
     const dir = tempDir("live-command");

@@ -1,20 +1,20 @@
-# Worktrees And Parallel Sessions (anymodel, opt-in)
+# Worktrees And Parallel Sessions (cc-smart-dev-kit, opt-in)
 
 This project runs several Claude Code sessions at once on one machine, each in its own git
 worktree (a second checkout of the repo, on its own branch, in its own folder). It loaded
 this file with its own import line. The steps — entering, leaving and clearing a worktree,
-finding a lost session — are the `/anymodel:worktree` skill.
+finding a lost session — are the `/cc-smart-dev-kit:worktree` skill.
 
-The project's values come from its `.claude/anymodel.json`, `worktrees` field: `base` (the
+The project's values come from its `.claude/cc-smart-dev-kit.json`, `worktrees` field: `base` (the
 branch new work starts from and pull requests go into), `prefix` (the folder name of a
 worktree beside the repo) and `setup` (the command a new worktree runs). The project's own
-`CLAUDE.md`, rules and `.claude/anymodel/worktree.md` win where they say more.
+`CLAUDE.md`, rules and `.claude/cc-smart-dev-kit/worktree.md` win where they say more.
 
-**Where a worktree lands.** The anymodel plugin adds no worktree hook to every project.
-Unless this project wired anymodel's worktree hooks into its own `.claude/settings.json`,
+**Where a worktree lands.** The cc-smart-dev-kit plugin adds no worktree hook to every project.
+Unless this project wired cc-smart-dev-kit's worktree hooks into its own `.claude/settings.json`,
 `EnterWorktree` uses Claude Code's own `.claude/worktrees/<name>`, and `prefix` and `setup`
-are not applied. Wired in, the anymodel engine follows the `worktrees` field. How to wire it:
-README.md in the anymodel repository, § Worktrees.
+are not applied. Wired in, the cc-smart-dev-kit engine follows the `worktrees` field. How to wire it:
+README.md in the cc-smart-dev-kit repository, § Worktrees.
 
 ## One session, one worktree, one branch
 
@@ -34,7 +34,7 @@ worktree, `git status`, the linter and the tests describe your change alone.
 |---|---|
 | Local services (a database, a cache, containers) | A reset or a schema change from one worktree hits every session. Tell the others before you do one; prefer the step that only adds. |
 | Dev servers | Each worktree runs its own, often on another port. Use the address yours printed; never assume the default port, which may be another branch's server. Stop yours when you are done. |
-| The browser (a shared Playwright profile) | One login for every session (`/anymodel:ui-verify` § 4). A check that needs two accounts at once does not fit. |
+| The browser (a shared Playwright profile) | One login for every session (`/cc-smart-dev-kit:ui-verify` § 4). A check that needs two accounts at once does not fit. |
 | The git stash | Never a bare `git stash` or `stash pop`: you may pop another session's work. Use a WIP commit, or `stash push -u -m <tag>`, then `stash apply <sha>`. |
 | The machine's memory and CPU | Two heavy jobs (a full build, a full test run, a type check of a big repo) at once can stall every session. Never start two yourself at once. |
 

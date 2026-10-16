@@ -39,9 +39,9 @@ function create(cwd: string, name: string, env = hookEnv()) {
 const head = (folder: string, ref = "HEAD") => git(folder, "rev-parse", ref).trim();
 const branchOf = (folder: string) => git(folder, "symbolic-ref", "--short", "HEAD").trim();
 
-/** Turns the worktree engine on in `repo`: `worktrees` in its anymodel.json. */
+/** Turns the worktree engine on in `repo`: `worktrees` in its cc-smart-dev-kit.json. */
 function optIn(repo: string, setup?: string[]): void {
-  writeClaudeFile(repo, "anymodel.json", {
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", {
     worktrees: { base: "main", prefix: "app-wt-", ...(setup === undefined ? {} : { setup }) },
   });
 }
@@ -305,11 +305,11 @@ describe("a session's worktree", () => {
   });
 
   test("a setup command that does not exist: exit 1 with the reason", async () => {
-    const { repo } = configured(["no-such-command-anymodel"]);
+    const { repo } = configured(["no-such-command-cc-smart-dev-kit"]);
     const result = await create(repo, "fix/c");
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toStartWith(
-      "worktree not created: the setup command `no-such-command-anymodel` could not start:",
+      "worktree not created: the setup command `no-such-command-cc-smart-dev-kit` could not start:",
     );
   });
 
@@ -354,7 +354,9 @@ describe("a session's worktree", () => {
 
   test("a prefix with a / is refused", async () => {
     const { repo } = makeClone();
-    writeClaudeFile(repo, "anymodel.json", { worktrees: { base: "main", prefix: "../x-" } });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", prefix: "../x-" },
+    });
     expect((await create(repo, "fix/d")).stderr).toBe(
       'worktree not created: worktrees.prefix "../x-" must be part of a folder name, with no "/" or "\\"',
     );
@@ -413,7 +415,9 @@ describe("the create lock: one creation of a branch at a time", () => {
     const file = hold(join(repo, ".git"), "fix/busy");
     const result = await create(repo, "fix/busy");
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toStartWith("worktree not created: another anymodel process (pid ");
+    expect(result.stderr).toStartWith(
+      "worktree not created: another cc-smart-dev-kit process (pid ",
+    );
     expect(result.stderr).toContain("is making the worktree for this branch right now.");
     expect(result.stderr).toContain(`if that process is gone, remove ${file}`);
     expect(existsSync(join(dirname(repo), "app-wt-fix-busy"))).toBe(false);
@@ -477,27 +481,27 @@ describe("the freshness of a fetch", () => {
 });
 
 describe("the frame", () => {
-  test("no anymodel.json: exit 1 with the reason, no worktree of any shape", async () => {
+  test("no cc-smart-dev-kit.json: exit 1 with the reason, no worktree of any shape", async () => {
     const repo = makeRepo();
     for (const name of ["fix/x", AGENT]) {
       expect(await create(repo, name)).toEqual({
         exitCode: 1,
         stderr:
-          "worktree not created: this project wires the anymodel worktree hooks (anymodel hook ...), but has no .claude/anymodel.json. " +
-          'Add "worktrees" to .claude/anymodel.json, or take the three anymodel hook lines out of .claude/settings.json (the anymodel README, § Worktrees)',
+          "worktree not created: this project wires the cc-smart-dev-kit worktree hooks (cc-smart-dev-kit hook ...), but has no .claude/cc-smart-dev-kit.json. " +
+          'Add "worktrees" to .claude/cc-smart-dev-kit.json, or take the three cc-smart-dev-kit hook lines out of .claude/settings.json (the cc-smart-dev-kit README, § Worktrees)',
       });
     }
     expect(existsSync(join(repo, ".claude", "worktrees"))).toBe(false);
     expect(git(repo, "worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(1);
   });
 
-  test('an anymodel.json without "worktrees": exit 1 with the reason', async () => {
+  test('a cc-smart-dev-kit.json without "worktrees": exit 1 with the reason', async () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", { sessionNames: true });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { sessionNames: true });
     const result = await create(repo, AGENT);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toStartWith(
-      'worktree not created: this project wires the anymodel worktree hooks (anymodel hook ...), but its .claude/anymodel.json has no "worktrees". ',
+      'worktree not created: this project wires the cc-smart-dev-kit worktree hooks (cc-smart-dev-kit hook ...), but its .claude/cc-smart-dev-kit.json has no "worktrees". ',
     );
     expect(existsSync(join(repo, ".claude", "worktrees"))).toBe(false);
   });
@@ -515,25 +519,25 @@ describe("the frame", () => {
     });
   });
 
-  test("anymodel.json needs a newer plugin: exit 1 with the update command, no worktree", async () => {
+  test("cc-smart-dev-kit.json needs a newer plugin: exit 1 with the update command, no worktree", async () => {
     const repo = makeRepo();
-    const file = writeClaudeFile(repo, "anymodel.json", { requires: ">=99" });
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=99" });
     const result = await create(repo, "x");
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toMatch(
       new RegExp(
-        `^worktree not created: ${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: this project needs anymodel >=99; you have [0-9.]+; run claude plugin update anymodel@anymodel$`,
+        `^worktree not created: ${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: this project needs cc-smart-dev-kit >=99; you have [0-9.]+; run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit$`,
       ),
     );
     expect(existsSync(join(repo, ".claude", "worktrees", "x"))).toBe(false);
   });
 
-  test("a broken anymodel.json: exit 1, naming the file", async () => {
+  test("a broken cc-smart-dev-kit.json: exit 1, naming the file", async () => {
     const repo = makeRepo();
-    const file = writeClaudeFile(repo, "anymodel.json", { worktree: {} });
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktree: {} });
     expect(await create(repo, "x")).toEqual({
       exitCode: 1,
-      stderr: `worktree not created: Invalid ${file}: worktree: unknown field (a newer anymodel may be needed)`,
+      stderr: `worktree not created: Invalid ${file}: worktree: unknown field (a newer cc-smart-dev-kit may be needed)`,
     });
   });
 

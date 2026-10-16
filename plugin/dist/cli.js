@@ -1,24 +1,24 @@
 // @bun
 // src/entries/cli.ts
-import { existsSync as existsSync39, statSync as statSync12 } from "fs";
-import { basename as basename6, dirname as dirname9, join as join34, resolve as resolve7 } from "path";
+import { existsSync as existsSync40, statSync as statSync13 } from "fs";
+import { basename as basename7, dirname as dirname9, join as join35, resolve as resolve7 } from "path";
 
 // src/build-info/names.ts
-var MARKETPLACE = "anymodel";
-var PLUGIN = "anymodel";
+var MARKETPLACE = "cc-smart-dev-kit";
+var PLUGIN = "cc-smart-dev-kit";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-var COMMAND = "anymodel";
+var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/bun.ts
 var MIN_BUN = "1.4.3";
 function bunTooOld(version, path) {
-  return Bun.semver.order(version, MIN_BUN) < 0 ? `anymodel needs Bun \u2265 ${MIN_BUN}; this is ${version} (${path}).` : null;
+  return Bun.semver.order(version, MIN_BUN) < 0 ? `cc-smart-dev-kit needs Bun \u2265 ${MIN_BUN}; this is ${version} (${path}).` : null;
 }
 
 // src/build-info/index.ts
 var info = {
   version: "0.3.0",
-  repo: "sellanybiz/anymodel",
+  repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
       name: "claude-mem",
@@ -76,8 +76,8 @@ function routerPaths(env = process.env) {
   const home = homeDir(env);
   return {
     home,
-    gatewayConfigFile: join(home, ".config", "anymodel", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "anymodel", "gateway-state.json")
+    gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
+    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json")
   };
 }
 
@@ -92,12 +92,12 @@ function cliPaths(env = process.env) {
     installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
     knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
     binDir: join2(router.home, ".local", "bin"),
-    stateDir: join2(claudeConfigDir, "anymodel"),
-    routerCopy: join2(router.home, ".local", "share", "anymodel", "router.js"),
-    routerUnitFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.service"),
+    stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
+    routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    routerUnitFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
-    routerSocketFile: join2(router.home, ".config", "systemd", "user", "anymodel-router.socket"),
-    notifyConfigFile: join2(claudeConfigDir, "anymodel", "notify.json"),
+    routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
+    notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf")
   };
 }
@@ -5978,7 +5978,7 @@ import {
 } from "fs";
 import { basename, dirname, join as join3, resolve } from "path";
 var BACKUPS_DIR = "backups";
-var BACKUP_INFIX = ".bak-anymodel-";
+var BACKUP_INFIX = ".bak-cc-smart-dev-kit-";
 var ABSENT_SUFFIX = ".absent";
 var CHANGED_FILE = "changed.json";
 var MAX_LINKS = 40;
@@ -6015,7 +6015,7 @@ function fileMode(file) {
 function writeTemp(file, content, mode) {
   const dir = dirname(file);
   mkdirSync(dir, { recursive: true });
-  const temp = join3(dir, `.${basename(file)}.anymodel-tmp-${process.pid}-${crypto.randomUUID()}`);
+  const temp = join3(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
   try {
     const fd = openSync(temp, "wx", mode);
     try {
@@ -6176,7 +6176,7 @@ function retryOnConcurrentChange(file, fn, attempts = 3) {
     } catch (error) {
       if (!(error instanceof ConcurrentChangeError) || attempt >= attempts) {
         if (error instanceof ConcurrentChangeError) {
-          throw new ConcurrentChangeError(`${file} kept changing while anymodel tried to update it (${attempts} tries). ` + "Close the program that writes it (for example Claude Code), then run again.");
+          throw new ConcurrentChangeError(`${file} kept changing while cc-smart-dev-kit tried to update it (${attempts} tries). ` + "Close the program that writes it (for example Claude Code), then run again.");
         }
         throw error;
       }
@@ -6192,7 +6192,7 @@ function writeManagedFile(file, content, options) {
   const current = currentMode === null ? null : readFileSync(target, "utf8");
   const checkUnchanged = (now) => {
     if (options.expectedContent !== undefined && now !== options.expectedContent) {
-      throw new ConcurrentChangeError(`${target} changed after anymodel read it.`);
+      throw new ConcurrentChangeError(`${target} changed after cc-smart-dev-kit read it.`);
     }
   };
   if (!options.dryRun)
@@ -6226,8 +6226,8 @@ function removeManagedFile(stateDir, file) {
 
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
-var SLOT_PREFIX = "anymodel-";
-var SLOT_KEY = /^anymodel-[a-z0-9][a-z0-9-]*$/;
+var SLOT_PREFIX = "cc-smart-dev-kit-";
+var SLOT_KEY = /^cc-smart-dev-kit-[a-z0-9][a-z0-9-]*$/;
 var CONTEXT_SUFFIX = /\[1m\]$/i;
 function isBackendName(name) {
   return BACKEND_NAME.test(name);
@@ -6333,10 +6333,10 @@ function resolveRequestRoute(body, config, guard) {
   const claude = route.targets.filter((target) => target.kind === "anthropic");
   return claude.length > 0 ? { ...route, targets: claude } : { kind: "anthropic-as-sent" };
 }
-var JUDGE_SLOT = "anymodel-judge";
+var JUDGE_SLOT = "cc-smart-dev-kit-judge";
 var MODEL_SLOTS = {
-  "anymodel-fable": "fable",
-  "anymodel-opus": "opus"
+  "cc-smart-dev-kit-fable": "fable",
+  "cc-smart-dev-kit-opus": "opus"
 };
 function isModelSlot(slot) {
   return Object.hasOwn(MODEL_SLOTS, slot);
@@ -6407,7 +6407,7 @@ var gatewayConfigSchema = looseObject({
   judgeTested: record(string2(), string2()).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
-  slots: record(string2().refine(isSlotKey, "a slot key is anymodel-<name>"), array(string2()).min(1)),
+  slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),
   timeouts: looseObject({ firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS) }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {
@@ -6493,9 +6493,9 @@ function aliasError(name, to, config) {
   }
   return null;
 }
-var JUDGE_TEST_VERSION = 1;
+var JUDGE_TEST_VERSION = 2;
 function judgeTestProof(target, backendUrl) {
-  return createHash("sha256").update(`anymodel judge test ${JUDGE_TEST_VERSION}
+  return createHash("sha256").update(`cc-smart-dev-kit judge test ${JUDGE_TEST_VERSION}
 ${target}
 ${backendUrl}`).digest("hex").slice(0, 32);
 }
@@ -6556,8 +6556,8 @@ function emptyConfig() {
     backends: {},
     port: DEFAULT_PORT,
     slots: {
-      "anymodel-scout": [FALLBACK_SLOT_TARGET],
-      "anymodel-worker": [FALLBACK_SLOT_TARGET]
+      "cc-smart-dev-kit-scout": [FALLBACK_SLOT_TARGET],
+      "cc-smart-dev-kit-worker": [FALLBACK_SLOT_TARGET]
     },
     timeouts: { firstByteMs: DEFAULT_FIRST_BYTE_MS },
     version: 1
@@ -6965,7 +6965,7 @@ async function withLock(stateDir, fn, options = {}) {
       const info = held.info;
       const where = info && info.host !== hostname() ? ` on ${info.host || "another host"}` : "";
       const who = info ? `process ${info.pid}${where}` : "another run";
-      throw new LockBusyError(`anymodel is busy: ${who} holds ${file}. Wait for it to finish, then try again.`);
+      throw new LockBusyError(`cc-smart-dev-kit is busy: ${who} holds ${file}. Wait for it to finish, then try again.`);
     }
     await Bun.sleep(100);
   }
@@ -7134,7 +7134,10 @@ function applyOnce(file, options, owned) {
       if (whose === "none") {
         skipped.push({ path, reason: "already set by someone else; left alone" });
       } else if (whose === "changed") {
-        skipped.push({ path, reason: "set by you since; left alone, no longer anymodel's" });
+        skipped.push({
+          path,
+          reason: "set by you since; left alone, no longer cc-smart-dev-kit's"
+        });
         dropped.push(path);
       } else {
         updated.push(recordOf(path, value, isSecret(path)));
@@ -7142,10 +7145,10 @@ function applyOnce(file, options, owned) {
       continue;
     }
     if (current.found && whose === "changed") {
-      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}: it was changed after anymodel set it, so it is your choice now. ` + "anymodel does not overwrite it. Remove it by hand if anymodel should manage it again.");
+      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}: it was changed after cc-smart-dev-kit set it, so it is your choice now. ` + "cc-smart-dev-kit does not overwrite it. Remove it by hand if cc-smart-dev-kit should manage it again.");
     }
     if (current.found && whose === "none" && !options.unchosen?.(path, current.value)) {
-      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}, set by someone else. ` + "anymodel does not overwrite it. Remove it by hand if anymodel should manage it.");
+      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}, set by someone else. ` + "cc-smart-dev-kit does not overwrite it. Remove it by hand if cc-smart-dev-kit should manage it.");
     }
     setKey(data, path, value);
     changes.push({ path, before: current.found ? current.value : undefined, after: value });
@@ -7155,12 +7158,12 @@ function applyOnce(file, options, owned) {
     const current = getKey(data, path);
     const whose = ownership(ownedHere, path, current);
     if (whose === "none") {
-      skipped.push({ path, reason: "not owned by anymodel; left alone" });
+      skipped.push({ path, reason: "not owned by cc-smart-dev-kit; left alone" });
       continue;
     }
     dropped.push(path);
     if (whose === "changed") {
-      skipped.push({ path, reason: "changed since anymodel set it; left alone" });
+      skipped.push({ path, reason: "changed since cc-smart-dev-kit set it; left alone" });
       continue;
     }
     if (!current.found)
@@ -7234,7 +7237,7 @@ function isJsonObject2(value) {
 function safeToolUseId(id) {
   if (TOOL_USE_ID.test(id))
     return id;
-  return `toolu_anymodel_${createHash3("sha256").update(id).digest("hex").slice(0, 24)}`;
+  return `toolu_cc-smart-dev-kit_${createHash3("sha256").update(id).digest("hex").slice(0, 24)}`;
 }
 function withSafeId(block, changes) {
   if (block.type !== "tool_use" || typeof block.id !== "string")
@@ -7544,7 +7547,7 @@ function inheritedListenFd(env, pid) {
   if (!Number.isInteger(fds) || fds < 1)
     return null;
   if (fds !== 1) {
-    throw new Error(`systemd passed ${fds} sockets (LISTEN_FDS); anymodel-router takes one`);
+    throw new Error(`systemd passed ${fds} sockets (LISTEN_FDS); cc-smart-dev-kit-router takes one`);
   }
   return SD_LISTEN_FDS_START;
 }
@@ -7555,7 +7558,7 @@ function innerSocketPath(env, pid) {
     rmSync(path, { force: true });
     return { cleanup: () => rmSync(path, { force: true }), path };
   }
-  const dir = mkdtempSync(join6(tmpdir(), "anymodel-router-"));
+  const dir = mkdtempSync(join6(tmpdir(), "cc-smart-dev-kit-router-"));
   return {
     cleanup: () => rmSync(dir, { force: true, recursive: true }),
     path: join6(dir, "router.sock")
@@ -7699,7 +7702,7 @@ var LIMIT_REST_MIN_SEC = 60;
 var TOO_LONG = /context|too long|too large|too many tokens|token limit|payload/i;
 var UNSUPPORTED = /unsupported|not supported|unknown (?:content|block|type)|invalid (?:content|block) type|image|document|server_tool|web_search|web_fetch|tool_reference/i;
 var BAD_SIGNATURE = "Invalid `signature`";
-var HEALTH_PATH = "/__anymodel/health";
+var HEALTH_PATH = "/__cc-smart-dev-kit/health";
 var MESSAGES_PATH = "/v1/messages";
 var COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
 var HOP_BY_HOP = new Set([
@@ -8340,14 +8343,14 @@ function createRouter(deps) {
     const backend = Object.hasOwn(config.backends, target.backend) ? config.backends[target.backend] : undefined;
     if (backend === undefined)
       return { error: `backend "${target.backend}" is not in the config` };
-    const cheapBody = {
+    const affordableBody = {
       ...reasoningOffForBackend(toolSearchForBackend(body), { absentIsOff: guard }),
       model: target.model
     };
-    delete cheapBody.metadata;
+    delete affordableBody.metadata;
     return {
       upstream: {
-        body: encoder.encode(JSON.stringify(cheapBody)),
+        body: encoder.encode(JSON.stringify(affordableBody)),
         headers: backendRequestHeaders(req.headers, backend.apiKey),
         method: "POST",
         url: `${backend.baseUrl}${url.pathname}`
@@ -8441,7 +8444,7 @@ function createRouter(deps) {
           logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${label} answered a redirect (${status}); refused`);
           return {
             fallbacks,
-            response: anthropicError(502, "api_error", `anymodel-router: ${label} answered a redirect (${status}); not passed on`),
+            response: anthropicError(502, "api_error", `cc-smart-dev-kit-router: ${label} answered a redirect (${status}); not passed on`),
             skipped,
             target: label
           };
@@ -8463,7 +8466,7 @@ function createRouter(deps) {
     const lastTarget = targets.at(-1);
     return {
       fallbacks,
-      response: anthropicError(502, "api_error", `anymodel-router: no target for ${name} answered (${failures.join("; ") || "no targets"})`),
+      response: anthropicError(502, "api_error", `cc-smart-dev-kit-router: no target for ${name} answered (${failures.join("; ") || "no targets"})`),
       skipped,
       target: lastTarget === undefined ? "none" : formatTarget(lastTarget)
     };
@@ -8580,7 +8583,7 @@ function createRouter(deps) {
     if (isMessages) {
       const type = (req.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
       if (type !== "application/json" || !req.headers.has("anthropic-version")) {
-        return refusal("anymodel-router wants content-type: application/json and an anthropic-version header");
+        return refusal("cc-smart-dev-kit-router wants content-type: application/json and an anthropic-version header");
       }
     }
     const sent = req.method === "GET" || req.method === "HEAD" || req.body === null ? null : new Uint8Array(await req.arrayBuffer());
@@ -8597,7 +8600,7 @@ function createRouter(deps) {
           deps.log(`WARN ${id} refused a thinking block's signature: this conversation holds a thinking block a fallback model wrote while ${id} was at its plan limit. Claude Code 2.1.300 sent the request once more and was answered (seen live); if the session stays stuck, /rewind in Claude Code to the message before the fallback answered, or start a new session`);
         });
       }
-      const response = "response" in result ? relay(result.response, null) : anthropicError(502, "api_error", `anymodel-router: Anthropic did not answer (${result.failure})`);
+      const response = "response" in result ? relay(result.response, null) : anthropicError(502, "api_error", `cc-smart-dev-kit-router: Anthropic did not answer (${result.failure})`);
       return { fallbacks: 0, response, skipped: 0, target: "anthropic" };
     };
     const direct = async (body = bytes, observed = null) => answerDirect(await send(req, anthropicUpstream(req, url, config, body), null), observed);
@@ -8652,7 +8655,7 @@ function createRouter(deps) {
         const slots = Object.keys(config.slots);
         return Promise.resolve({
           fallbacks: 0,
-          response: anthropicError(400, "invalid_request_error", `anymodel-router: "${decided.slot}" is not a slot in ${deps.configPath} (slots: ${slots.length > 0 ? slots.join(", ") : "none \u2014 run anymodel gateway setup"})`),
+          response: anthropicError(400, "invalid_request_error", `cc-smart-dev-kit-router: "${decided.slot}" is not a slot in ${deps.configPath} (slots: ${slots.length > 0 ? slots.join(", ") : "none \u2014 run cc-smart-dev-kit gateway setup"})`),
           skipped: 0,
           target: "none"
         });
@@ -8681,7 +8684,7 @@ function createRouter(deps) {
     const line = (outcome) => `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} \u2192 ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}`;
     const host = (req.headers.get("host") ?? "").toLowerCase();
     if (req.headers.has("origin") || !allowedHosts.has(host)) {
-      const outcome = refusal("anymodel-router accepts requests from this machine only");
+      const outcome = refusal("cc-smart-dev-kit-router accepts requests from this machine only");
       deps.log(line(outcome));
       return outcome.response;
     }
@@ -8706,7 +8709,7 @@ function createRouter(deps) {
       deps.log(`ERROR ${req.method} ${printable(url.pathname)}: ${messageOf(error)}`);
       outcome = {
         fallbacks: 0,
-        response: anthropicError(500, "api_error", "anymodel-router failed on this request; see its log"),
+        response: anthropicError(500, "api_error", "cc-smart-dev-kit-router failed on this request; see its log"),
         skipped: 0,
         target: "none"
       };
@@ -8742,7 +8745,7 @@ async function startRouter(configPath, statePath, env = process.env) {
       idleTimeout: 0,
       port: configPort
     });
-    log(`anymodel-router listening on http://127.0.0.1:${configPort} (config ${configPath})`);
+    log(`cc-smart-dev-kit-router listening on http://127.0.0.1:${configPort} (config ${configPath})`);
     process.once("SIGTERM", () => {
       log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
       exitWhenDone(server.stop(false), log, () => {});
@@ -8756,11 +8759,11 @@ async function startRouter(configPath, statePath, env = process.env) {
   });
   const relay = await listenOnFd(fd, ready, log);
   if (relay.port !== configPort) {
-    log(`WARN the socket listens on port ${relay.port}, the config says ${configPort}: serving on ${relay.port}. Run: anymodel gateway setup`);
+    log(`WARN the socket listens on port ${relay.port}, the config says ${configPort}: serving on ${relay.port}. Run: cc-smart-dev-kit gateway setup`);
   }
   const server = serveUnix(inner.path, handlerFor(relay.port));
   innerReady(inner.path);
-  log(`anymodel-router listening on http://127.0.0.1:${relay.port} (the socket systemd holds; config ${configPath})`);
+  log(`cc-smart-dev-kit-router listening on http://127.0.0.1:${relay.port} (the socket systemd holds; config ${configPath})`);
   process.once("SIGTERM", () => {
     log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting; new connections wait in the socket for the next router`);
     const drain = relay.drain();
@@ -8937,14 +8940,14 @@ async function testJudgeTarget(baseUrl, apiKey, model, fetchImpl = fetch) {
 // src/gateway/service.ts
 import { existsSync as existsSync3, readFileSync as readFileSync5, rmSync as rmSync2 } from "fs";
 import { basename as basename2, join as join7 } from "path";
-var UNIT_NAME = "anymodel-router.service";
-var SOCKET_NAME = "anymodel-router.socket";
+var UNIT_NAME = "cc-smart-dev-kit-router.service";
+var SOCKET_NAME = "cc-smart-dev-kit-router.socket";
 var UP_TO_DATE = "router already up to date (no restart)";
-var RESTART_WARNING = "anymodel-router is running. A restart lets its answers in flight finish first (up to 120 s; a longer one is cut, and Claude Code retries it). New requests wait in its socket meanwhile; none fails.";
-var MOVE_WARNING = "anymodel-router is running without its socket unit. This setup moves it to one, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
-var SOCKET_STOPPED_WARNING = "anymodel-router is running, but its socket is not open: the router holds the port itself. This setup opens the socket again, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
-var PORT_WARNING = "anymodel-router is running, and its socket moves to a new port. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
-var SOCKET_CHANGED_WARNING = "anymodel-router is running, and its socket unit changed, so the socket closes and opens again. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
+var RESTART_WARNING = "cc-smart-dev-kit-router is running. A restart lets its answers in flight finish first (up to 120 s; a longer one is cut, and Claude Code retries it). New requests wait in its socket meanwhile; none fails.";
+var MOVE_WARNING = "cc-smart-dev-kit-router is running without its socket unit. This setup moves it to one, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
+var SOCKET_STOPPED_WARNING = "cc-smart-dev-kit-router is running, but its socket is not open: the router holds the port itself. This setup opens the socket again, so later restarts refuse no request. This restart cannot: until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
+var PORT_WARNING = "cc-smart-dev-kit-router is running, and its socket moves to a new port. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
+var SOCKET_CHANGED_WARNING = "cc-smart-dev-kit-router is running, and its socket unit changed, so the socket closes and opens again. Until the old router has finished its answers in flight (up to 120 s), new requests fail (Claude Code retries them).";
 var INSTALL_WARNINGS = [
   RESTART_WARNING,
   MOVE_WARNING,
@@ -8987,7 +8990,7 @@ function renderUnit(bunPath, copyPath, socketName = SOCKET_NAME) {
   return `# ${name}: the local AI gateway for Claude Code (127.0.0.1 only).
 # Written by \`${COMMAND} gateway setup\`; edits here are overwritten by the next setup.
 # It runs a copy of the router, never a file in the plugin's version folder.
-# Its config: ~/.config/anymodel/gateway.json. Its port: ${socketName}.
+# Its config: ~/.config/cc-smart-dev-kit/gateway.json. Its port: ${socketName}.
 
 [Unit]
 Description=${name}: local AI gateway for Claude Code (127.0.0.1 only)
@@ -9085,7 +9088,7 @@ async function installRouter(options) {
   if (active) {
     options.say(restartWarning(rebind, socketOpen, socketPlan, options.socketPath, options.port));
     if (!options.yes) {
-      const yes = options.confirm?.("Restart anymodel-router now?") ?? null;
+      const yes = options.confirm?.("Restart cc-smart-dev-kit-router now?") ?? null;
       if (yes !== true) {
         options.say(yes === null ? `Nothing was changed. Run again with --yes to restart: ${COMMAND} gateway setup --yes` : "Nothing was changed.");
         return "declined";
@@ -9159,12 +9162,12 @@ function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: "anymodel-scout[1m]",
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: `Cheap model for search and reading: the scout slot (${COMMAND} gateway slot scout \u2026)`,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (cheap)",
-    ANTHROPIC_DEFAULT_SONNET_MODEL: "anymodel-worker[1m]",
-    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: `Cheap model for routine code and docs: the worker slot (${COMMAND} gateway slot worker \u2026)`,
-    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (cheap)"
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: "cc-smart-dev-kit-scout[1m]",
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: `Affordable model for search and reading: the scout slot (${COMMAND} gateway slot scout \u2026)`,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (affordable)",
+    ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker[1m]",
+    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: `Affordable model for routine code and docs: the worker slot (${COMMAND} gateway slot worker \u2026)`,
+    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (affordable)"
   };
 }
 var FORBIDDEN_ENV_KEYS = [
@@ -9306,12 +9309,12 @@ function defaultConfig(omnirouteKey) {
     backends: { omniroute: { apiKey: omnirouteKey, baseUrl: "http://127.0.0.1:20128" } },
     port: DEFAULT_PORT,
     slots: {
-      "anymodel-scout": [
+      "cc-smart-dev-kit-scout": [
         "omniroute:ollama-cloud/deepseek-v4.1-flash",
         "omniroute:ollama-cloud/glm-5.3-flash",
         "claude-sonnet-5-5"
       ],
-      "anymodel-worker": [
+      "cc-smart-dev-kit-worker": [
         "omniroute:ollama-cloud/deepseek-v4.1-flash",
         "omniroute:ollama-cloud/glm-5.3-flash",
         "claude-sonnet-5-5"
@@ -9356,7 +9359,7 @@ function planSlotChange(current, slotArg, targetsText, modelsByBackend) {
   const key = slotKeyFromArg(slotArg);
   if (key === null) {
     return {
-      error: `"${slotArg}" is not a slot name (scout, worker, judge, opus, fable, or anymodel-<name>)`
+      error: `"${slotArg}" is not a slot name (scout, worker, judge, opus, fable, or cc-smart-dev-kit-<name>)`
     };
   }
   const { judgeTested: _proofs, ...withoutProofs } = current;
@@ -9370,7 +9373,7 @@ function planSlotChange(current, slotArg, targetsText, modelsByBackend) {
   if (targetsText.trim() === "off") {
     if (key !== JUDGE_SLOT && !model) {
       return {
-        error: `only ${JUDGE_SLOT}, anymodel-opus and anymodel-fable can be off; give ${key} its targets instead`
+        error: `only ${JUDGE_SLOT}, cc-smart-dev-kit-opus and cc-smart-dev-kit-fable can be off; give ${key} its targets instead`
       };
     }
     if (!Object.hasOwn(config.slots, key))
@@ -9546,7 +9549,7 @@ async function commandSlot(ctx, args) {
 }
 function printOverrides(report) {
   if (report.subagentOverrides.length > 0) {
-    console.log(`  WARN ${report.subagentOverrides.join(", ")} set: every agent launched without a model runs on it, with the gateway possibly a cheap slot. Remove it by hand unless you want that.`);
+    console.log(`  WARN ${report.subagentOverrides.join(", ")} set: every agent launched without a model runs on it, with the gateway possibly an affordable slot. Remove it by hand unless you want that.`);
   }
   if (report.loginOverrides.length > 0) {
     console.log(`  WARN ${report.loginOverrides.join(", ")} set: that replaces your own Claude login. Remove it for the gateway.`);
@@ -9691,7 +9694,7 @@ async function commandOn(ctx) {
     console.log(changeLines(result, paths.home).join(`
 `));
     console.log(`Done. The changed file has a backup in ${tildify(paths.stateDir, paths.home)}/backups/.`);
-    console.log("Every Claude Code session on this machine, in every folder, uses the gateway from now on: its haiku / sonnet work (background titles and summaries too) goes to the cheap slots.");
+    console.log("Every Claude Code session on this machine, in every folder, uses the gateway from now on: its haiku / sonnet work (background titles and summaries too) goes to the affordable slots.");
   }
   printOverrides(settingsReport(paths.settingsFile));
   return 0;
@@ -9846,7 +9849,7 @@ async function gatewayChecks(options) {
     checks.push({
       ok: true,
       warn: true,
-      text: `slot ${slot} falls back to ${costly.join(", ")}: a cheap slot that answers on Claude Opus or Fable spends your own plan usage. To change it: ${COMMAND} gateway slot ${slot} <targets>`
+      text: `slot ${slot} falls back to ${costly.join(", ")}: an affordable slot that answers on Claude Opus or Fable spends your own plan usage. To change it: ${COMMAND} gateway slot ${slot} <targets>`
     });
   }
   if (!Object.hasOwn(config.slots, JUDGE_SLOT)) {
@@ -10167,7 +10170,7 @@ function companions(dependencies = DEPENDENCIES) {
   return dependencies.map((dependency) => {
     const source = MARKETPLACE_SOURCES[dependency.marketplace];
     if (source === undefined) {
-      throw new Error(`plugin.json depends on ${dependency.name}@${dependency.marketplace}, but anymodel does not know where the ${dependency.marketplace} marketplace comes from (MARKETPLACE_SOURCES)`);
+      throw new Error(`plugin.json depends on ${dependency.name}@${dependency.marketplace}, but cc-smart-dev-kit does not know where the ${dependency.marketplace} marketplace comes from (MARKETPLACE_SOURCES)`);
     }
     return {
       id: `${dependency.name}@${dependency.marketplace}`,
@@ -10239,10 +10242,10 @@ function companionPlan(paths, list = companions()) {
         });
         break;
       case "off":
-        notes.push(`! ${companion.id} is turned off, and anymodel does not load without it. Run: claude plugin enable ${companion.id}`);
+        notes.push(`! ${companion.id} is turned off, and cc-smart-dev-kit does not load without it. Run: claude plugin enable ${companion.id}`);
         break;
       case "outside-range":
-        notes.push(`! ${companion.id} ${state.version ?? "(no version)"} is outside ${companion.range}, and anymodel does not load with it. Run: claude plugin update ${companion.id}`);
+        notes.push(`! ${companion.id} ${state.version ?? "(no version)"} is outside ${companion.range}, and cc-smart-dev-kit does not load with it. Run: claude plugin update ${companion.id}`);
         break;
       case "unknown-version":
         notes.push(`! ${unknownVersionText(companion, state.version)}`);
@@ -10270,7 +10273,7 @@ function runCompanionSteps(steps, machine) {
   return { lines, ok };
 }
 function unknownVersionText(companion, version) {
-  return `${companion.id} ${version ?? "(no version)"}: its version is unknown (not a version number), so anymodel cannot check it against ${companion.range}. Run: claude plugin update ${companion.id}`;
+  return `${companion.id} ${version ?? "(no version)"}: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against ${companion.range}. Run: claude plugin update ${companion.id}`;
 }
 function companionChecks(paths, list = companions()) {
   return list.map((companion) => companionCheck(paths, companion));
@@ -10282,17 +10285,17 @@ function companionCheck(paths, companion) {
       case "no-marketplace":
         return {
           ok: false,
-          text: `the ${companion.marketplace} marketplace is not added, so ${companion.id} is missing and anymodel does not load. Run: anymodel setup`
+          text: `the ${companion.marketplace} marketplace is not added, so ${companion.id} is missing and cc-smart-dev-kit does not load. Run: cc-smart-dev-kit setup`
         };
       case "not-installed":
         return {
           ok: false,
-          text: `${companion.id} is not installed, and anymodel does not load without it. Run: anymodel setup`
+          text: `${companion.id} is not installed, and cc-smart-dev-kit does not load without it. Run: cc-smart-dev-kit setup`
         };
       case "off":
         return {
           ok: false,
-          text: `${companion.id} is turned off, and anymodel does not load without it. Run: claude plugin enable ${companion.id}`
+          text: `${companion.id} is turned off, and cc-smart-dev-kit does not load without it. Run: claude plugin enable ${companion.id}`
         };
       case "outside-range":
         return {
@@ -10329,7 +10332,7 @@ var UNCHOSEN = {
   CLAUDE_MEM_QUOTA_FALLBACK_MODEL: [""]
 };
 var unchosen = (path, value) => typeof value === "string" && (UNCHOSEN[path.at(-1) ?? ""] ?? []).includes(value);
-function gatewayCheapTarget(gatewayConfigFile) {
+function gatewayAffordableTarget(gatewayConfigFile) {
   if (!existsSync10(gatewayConfigFile))
     return { reason: "the gateway is not set up" };
   let config;
@@ -10338,7 +10341,7 @@ function gatewayCheapTarget(gatewayConfigFile) {
   } catch (error) {
     return { reason: `gateway.json cannot be used (${messageOf(error)})` };
   }
-  for (const slot of ["anymodel-scout", "anymodel-worker"]) {
+  for (const slot of ["cc-smart-dev-kit-scout", "cc-smart-dev-kit-worker"]) {
     for (const text of config.slots[slot] ?? []) {
       const parsed = parseTarget(text);
       if ("error" in parsed || parsed.target.kind !== "backend")
@@ -10356,7 +10359,7 @@ function gatewayCheapTarget(gatewayConfigFile) {
       };
     }
   }
-  return { reason: "no slot in gateway.json has a cheap target" };
+  return { reason: "no slot in gateway.json has an affordable target" };
 }
 function claudeMemPlan(paths) {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
@@ -10375,12 +10378,12 @@ function claudeMemPlan(paths) {
   const nested = isObject2(env) && Object.keys(env).some((key) => key.startsWith("CLAUDE_MEM_"));
   const at = (key) => nested ? ["env", key] : [key];
   const records = ownedRecords(paths.stateDir, realTarget(file));
-  const cheap = gatewayCheapTarget(paths.gatewayConfigFile);
-  if ("reason" in cheap) {
+  const affordable = gatewayAffordableTarget(paths.gatewayConfigFile);
+  if ("reason" in affordable) {
     const provider = getKey(data, at(PROVIDER));
     if (provider.found && ownership(records, at(PROVIDER), provider) === "ours") {
       return {
-        note: `! claude-mem still uses the backend anymodel set for it, but ${cheap.reason}. Run anymodel setup again once the gateway has a cheap model, or anymodel restore to put claude-mem back on its own defaults.`
+        note: `! claude-mem still uses the backend cc-smart-dev-kit set for it, but ${affordable.reason}. Run cc-smart-dev-kit setup again once the gateway has an affordable model, or cc-smart-dev-kit restore to put claude-mem back on its own defaults.`
       };
     }
     return { note: null };
@@ -10391,10 +10394,10 @@ function claudeMemPlan(paths) {
     const state = companion === undefined ? null : companionState(paths, companion).kind;
     if (state === "outside-range" || state === "unknown-version")
       return { note: null };
-    return left(version === null ? `claude-mem's version ${install.version ?? "(none)"} is unknown, so anymodel cannot tell whether it has what they need (${CLAUDE_MEM_MIN_VERSION} or newer). Run: claude plugin update ${CLAUDE_MEM_ID}` : `claude-mem ${install.version} is older than ${CLAUDE_MEM_MIN_VERSION}, which brought what they need. Run: claude plugin update ${CLAUDE_MEM_ID}`);
+    return left(version === null ? `claude-mem's version ${install.version ?? "(none)"} is unknown, so cc-smart-dev-kit cannot tell whether it has what they need (${CLAUDE_MEM_MIN_VERSION} or newer). Run: claude plugin update ${CLAUDE_MEM_ID}` : `claude-mem ${install.version} is older than ${CLAUDE_MEM_MIN_VERSION}, which brought what they need. Run: claude plugin update ${CLAUDE_MEM_ID}`);
   }
   if (nested && Object.keys(data).every((key) => key === "env")) {
-    return left(`${short} is in claude-mem's old nested form, which claude-mem rewrites when it next starts. Start a Claude Code session, then run anymodel setup again.`);
+    return left(`${short} is in claude-mem's old nested form, which claude-mem rewrites when it next starts. Start a Claude Code session, then run cc-smart-dev-kit setup again.`);
   }
   const pool = getKey(data, at(API_KEY_POOL));
   if (pool.found && typeof pool.value === "string" && pool.value.trim() !== "") {
@@ -10402,7 +10405,7 @@ function claudeMemPlan(paths) {
       note: `  claude-mem settings left alone: ${API_KEY_POOL} holds your own keys in ${short} (your choice)`
     };
   }
-  const target = cheap.target;
+  const target = affordable.target;
   const wanted = {
     [PROVIDER]: "openai-compatible",
     CLAUDE_MEM_OPENAI_COMPAT_PRESET: "custom",
@@ -10427,7 +10430,7 @@ function claudeMemPlan(paths) {
   }
   return { plan: { set: Object.entries(wanted).map(([key, value]) => [at(key), value]), target } };
 }
-async function checkCheapTarget(target, timeoutMs = 30000) {
+async function checkAffordableTarget(target, timeoutMs = 30000) {
   const url = `${target.baseUrl}/chat/completions`;
   const where = redactUrl(url);
   const hide = (text) => target.apiKey === "" ? text : text.replaceAll(target.apiKey, maskKey(target.apiKey));
@@ -10558,7 +10561,7 @@ function detectSystem(machine) {
   if (machine.platform !== "linux") {
     return {
       kind: "none",
-      reason: `anymodel installs Warp on Linux and macOS only. Download it: ${WARP_DOWNLOAD_URL}`
+      reason: `cc-smart-dev-kit installs Warp on Linux and macOS only. Download it: ${WARP_DOWNLOAD_URL}`
     };
   }
   const words = osWords(machine.osRelease());
@@ -10589,7 +10592,7 @@ function detectSystem(machine) {
   }
   return {
     kind: "none",
-    reason: `anymodel installs Warp with apt (Debian, Ubuntu), dnf (Fedora) or Homebrew (macOS). Download it: ${WARP_DOWNLOAD_URL}`
+    reason: `cc-smart-dev-kit installs Warp with apt (Debian, Ubuntu), dnf (Fedora) or Homebrew (macOS). Download it: ${WARP_DOWNLOAD_URL}`
   };
 }
 function detectWarpApp(machine, system) {
@@ -10697,7 +10700,7 @@ async function stageWarpFiles(machine, system, paths) {
   writeFileSync2(key, await machine.fetchText(WARP_KEY_URL), { mode: 420 });
   const fingerprint = keyFingerprint(machine, stage, key);
   if (fingerprint !== WARP_KEY_FINGERPRINT) {
-    throw new Error(`Warp's signing key changed: ${WARP_KEY_URL} now holds the key ${fingerprint || "(none)"}, ` + `and anymodel expects ${WARP_KEY_FINGERPRINT}. Nothing was installed. ` + `If Warp really changed its key, an anymodel update brings the new one; until then, install Warp by hand: ${WARP_DOWNLOAD_URL}`);
+    throw new Error(`Warp's signing key changed: ${WARP_KEY_URL} now holds the key ${fingerprint || "(none)"}, ` + `and cc-smart-dev-kit expects ${WARP_KEY_FINGERPRINT}. Nothing was installed. ` + `If Warp really changed its key, a cc-smart-dev-kit update brings the new one; until then, install Warp by hand: ${WARP_DOWNLOAD_URL}`);
   }
   if (system.kind === "apt") {
     const dearmor = machine.run([
@@ -10822,19 +10825,23 @@ function warpCheck(machine, paths) {
   const plugin = findUserInstall(paths.installedPluginsFile, WARP_PLUGIN_ID) !== null;
   const version = app.version === null ? "" : ` ${app.version}`;
   if (!app.installed && !plugin) {
-    return { ok: true, info: true, text: "Warp: not installed (optional: anymodel setup --warp)" };
+    return {
+      ok: true,
+      info: true,
+      text: "Warp: not installed (optional: cc-smart-dev-kit setup --warp)"
+    };
   }
   if (!app.installed) {
     return {
       ok: false,
-      text: `the Warp Claude plugin ${WARP_PLUGIN_ID} is installed, but the Warp app is not. Run: anymodel setup --remove-warp (or anymodel setup --warp)`
+      text: `the Warp Claude plugin ${WARP_PLUGIN_ID} is installed, but the Warp app is not. Run: cc-smart-dev-kit setup --remove-warp (or cc-smart-dev-kit setup --warp)`
     };
   }
   if (!plugin) {
     return {
       ok: true,
       info: true,
-      text: `Warp${version} is installed, without its Claude plugin (optional: anymodel setup --warp)`
+      text: `Warp${version} is installed, without its Claude plugin (optional: cc-smart-dev-kit setup --warp)`
     };
   }
   if (!pluginEnabled(paths, WARP_PLUGIN_ID)) {
@@ -10860,8 +10867,8 @@ import { join as join11, relative, sep } from "path";
 
 // src/setup/managed-markdown.ts
 import { existsSync as existsSync12, readFileSync as readFileSync13 } from "fs";
-var BLOCK_BEGIN = "<!-- anymodel:begin -->";
-var BLOCK_END = "<!-- anymodel:end -->";
+var BLOCK_BEGIN = "<!-- cc-smart-dev-kit:begin -->";
+var BLOCK_END = "<!-- cc-smart-dev-kit:end -->";
 function countOf(text, marker) {
   return text.split(marker).length - 1;
 }
@@ -10873,7 +10880,7 @@ function findBlock(current, file) {
   const start = current.indexOf(BLOCK_BEGIN);
   const end = current.indexOf(BLOCK_END);
   if (begins !== 1 || ends !== 1 || end < start) {
-    throw new Error(`${file} has a broken anymodel block (${begins} begin and ${ends} end markers). ` + "Fix it by hand: keep one begin marker and one end marker after it.");
+    throw new Error(`${file} has a broken cc-smart-dev-kit block (${begins} begin and ${ends} end markers). ` + "Fix it by hand: keep one begin marker and one end marker after it.");
   }
   return { start, end: end + BLOCK_END.length };
 }
@@ -11003,7 +11010,7 @@ function applyOnce2(file, options, plan, snapshot) {
   const { data, indent, text } = readJsonObject(file);
   const current = getKey(data, path);
   if (current.found && !(Array.isArray(current.value) && current.value.every((item) => typeof item === "string"))) {
-    throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is not a list of strings. anymodel does not change it.`);
+    throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is not a list of strings. cc-smart-dev-kit does not change it.`);
   }
   const list = current.found ? [...current.value] : [];
   const records = [...snapshot[file]?.[key] ?? []];
@@ -11021,8 +11028,8 @@ function applyOnce2(file, options, plan, snapshot) {
       const ownedHere = kept.some((r) => r.entry === entry && r.source === plan.source);
       if (ownedHere)
         continue;
-      const ownedByAnymodel = kept.some((r) => r.entry === entry);
-      if (list.includes(entry) && !ownedByAnymodel) {
+      const ownedByCcSmartDevKit = kept.some((r) => r.entry === entry);
+      if (list.includes(entry) && !ownedByCcSmartDevKit) {
         skipped.push(entry);
         continue;
       }
@@ -11229,7 +11236,7 @@ function restorePartly(file, entry, stateDir) {
   if (entry.kinds.includes("markdown-block")) {
     const result = removeManagedMarkdown({ file, stateDir });
     if (result.outcome !== "unchanged")
-      details.push("the anymodel block");
+      details.push("the cc-smart-dev-kit block");
     savedAs ??= result.backup;
   }
   if (entry.kinds.includes("file-line")) {
@@ -11302,7 +11309,7 @@ function instructionsFolder(bundleDir) {
 }
 function instructionsBlockBody(importPath) {
   return [
-    "<!-- Written by anymodel setup. `anymodel setup --no-instructions` takes it out. -->",
+    "<!-- Written by cc-smart-dev-kit setup. `cc-smart-dev-kit setup --no-instructions` takes it out. -->",
     `@${importPath}`
   ].join(`
 `);
@@ -11326,14 +11333,18 @@ function lineOf(result, block) {
     case "removed":
       return { mark: "-", file: result.file, what: "removed" };
     case "restored":
-      return { mark: "~", file: result.file, what: "back as it was before anymodel" };
+      return { mark: "~", file: result.file, what: "back as it was before cc-smart-dev-kit" };
     case "cleaned":
-      return { mark: "~", file: result.file, what: block ? "anymodel block removed" : "cleaned" };
+      return {
+        mark: "~",
+        file: result.file,
+        what: block ? "cc-smart-dev-kit block removed" : "cleaned"
+      };
     case "no-backup":
       return {
         mark: "!",
         file: result.file,
-        what: "the backup from before anymodel is missing; left alone"
+        what: "the backup from before cc-smart-dev-kit is missing; left alone"
       };
     case "unchanged":
       return null;
@@ -11375,7 +11386,7 @@ function setInstructionsOptOut(stateDir, optOut, dryRun) {
     return null;
   if (!dryRun) {
     if (optOut) {
-      atomicWrite(file, "Written by `anymodel setup --no-instructions`. While this file is here, setup leaves the instructions out. `anymodel setup --instructions` removes it.\n", 420);
+      atomicWrite(file, "Written by `cc-smart-dev-kit setup --no-instructions`. While this file is here, setup leaves the instructions out. `cc-smart-dev-kit setup --instructions` removes it.\n", 420);
     } else {
       rmSync4(file, { force: true });
     }
@@ -11383,7 +11394,7 @@ function setInstructionsOptOut(stateDir, optOut, dryRun) {
   return optOut ? {
     mark: "+",
     file,
-    what: "setup leaves the instructions out from now on (`anymodel setup --instructions` brings them back)"
+    what: "setup leaves the instructions out from now on (`cc-smart-dev-kit setup --instructions` brings them back)"
   } : { mark: "-", file, what: "removed: setup installs the instructions again" };
 }
 function forgetInstructionsState(stateDir) {
@@ -11400,7 +11411,7 @@ function removeCopies(files, stateDir, dryRun) {
     const changed = readChanged(stateDir);
     return files.filter((file) => existsSync16(file)).map((file) => {
       const entry = changed[file];
-      return entry !== undefined && createdByUs(entry) ? { mark: "-", file, what: "removed" } : { mark: "~", file, what: "back as it was before anymodel" };
+      return entry !== undefined && createdByUs(entry) ? { mark: "-", file, what: "removed" } : { mark: "~", file, what: "back as it was before cc-smart-dev-kit" };
     });
   }
   return restore(stateDir, { only: files }).map((result) => lineOf(result, false)).filter((line) => line !== null);
@@ -11447,13 +11458,17 @@ function installInstructions(paths, dryRun, version) {
     dryRun
   });
   if (block.outcome === "created") {
-    lines.push({ mark: "+", file: paths.claudeMd, what: "created, with the anymodel block" });
+    lines.push({
+      mark: "+",
+      file: paths.claudeMd,
+      what: "created, with the cc-smart-dev-kit block"
+    });
   } else if (block.outcome === "updated") {
     const had = before?.includes(BLOCK_BEGIN) ?? false;
     lines.push({
       mark: "~",
       file: paths.claudeMd,
-      what: had ? "anymodel block updated" : "anymodel block added"
+      what: had ? "cc-smart-dev-kit block updated" : "cc-smart-dev-kit block added"
     });
   }
   return lines;
@@ -11466,7 +11481,7 @@ function removeInstructions(paths, dryRun) {
   if (text?.includes(BLOCK_BEGIN)) {
     if (dryRun) {
       const empty = renderWithoutBlock(text, claudeMd).trim() === "";
-      lines.push(entry !== undefined && createdByUs(entry) && empty ? { mark: "-", file: claudeMd, what: "removed" } : { mark: "~", file: claudeMd, what: "anymodel block removed" });
+      lines.push(entry !== undefined && createdByUs(entry) && empty ? { mark: "-", file: claudeMd, what: "removed" } : { mark: "~", file: claudeMd, what: "cc-smart-dev-kit block removed" });
     } else if (entry !== undefined) {
       for (const result of restore(paths.stateDir, { only: [claudeMd] })) {
         const line = lineOf(result, true);
@@ -11475,7 +11490,7 @@ function removeInstructions(paths, dryRun) {
       }
     } else {
       removeManagedMarkdown({ file: claudeMd, stateDir: paths.stateDir });
-      lines.push({ mark: "~", file: claudeMd, what: "anymodel block removed" });
+      lines.push({ mark: "~", file: claudeMd, what: "cc-smart-dev-kit block removed" });
     }
   }
   lines.push(...removeCopies(trackedCopies(paths.target, paths.stateDir), paths.stateDir, dryRun));
@@ -11486,7 +11501,7 @@ function removeInstructions(paths, dryRun) {
 
 // src/setup/launcher.ts
 import { join as join12 } from "path";
-var LAUNCHER_NAME = "anymodel";
+var LAUNCHER_NAME = "cc-smart-dev-kit";
 var FIND_INSTALL_JS = [
   "const f=process.argv[process.argv.length-1];",
   'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
@@ -11505,10 +11520,10 @@ function bakedBunPath(script) {
 }
 function launcherScript(bunPath) {
   return `#!/bin/sh
-# anymodel launcher. Written by "anymodel setup"; setup rewrites it, so do not edit it.
-# It runs the anymodel command from the installed version of the anymodel plugin.
+# cc-smart-dev-kit launcher. Written by "cc-smart-dev-kit setup"; setup rewrites it, so do not edit it.
+# It runs the cc-smart-dev-kit command from the installed version of the cc-smart-dev-kit plugin.
 fail() {
-  echo "anymodel: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
+  echo "cc-smart-dev-kit: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
   exit 1
 }
 baked_bun=${shellQuote(bunPath)}
@@ -11517,16 +11532,16 @@ if [ -x "$baked_bun" ]; then
 elif command -v bun >/dev/null 2>&1; then
   bun=$(command -v bun)
 else
-  echo "anymodel: bun not found (not at $baked_bun, not on PATH). Install bun, then run: anymodel setup" >&2
+  echo "cc-smart-dev-kit: bun not found (not at $baked_bun, not on PATH). Install bun, then run: cc-smart-dev-kit setup" >&2
   exit 1
 fi
 config_dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 installed="$config_dir/plugins/installed_plugins.json"
-[ -f "$installed" ] || fail "the anymodel plugin is not installed."
-install_path=$("$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the anymodel plugin is not installed."
-[ -n "$install_path" ] || fail "the anymodel plugin is not installed."
-[ -f "$install_path/dist/cli.js" ] || fail "the anymodel plugin folder is missing: $install_path."
-# --no-env-file: "anymodel job run" hands its job exactly the environment it was given.
+[ -f "$installed" ] || fail "the cc-smart-dev-kit plugin is not installed."
+install_path=$("$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the cc-smart-dev-kit plugin is not installed."
+[ -n "$install_path" ] || fail "the cc-smart-dev-kit plugin is not installed."
+[ -f "$install_path/dist/cli.js" ] || fail "the cc-smart-dev-kit plugin folder is missing: $install_path."
+# --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.
 exec "$bun" --no-env-file "$install_path/dist/cli.js" "$@"
 `;
 }
@@ -11675,7 +11690,7 @@ function checkForUpdate(paths, env) {
 }
 function remotePluginVersion(url, ref, baseEnv) {
   const env = gitAccessEnv(gitEnv(baseEnv));
-  const dir = mkdtempSync2(join13(tmpdir2(), "anymodel-update-check-"));
+  const dir = mkdtempSync2(join13(tmpdir2(), "cc-smart-dev-kit-update-check-"));
   const git = (args) => {
     const result = Bun.spawnSync(["git", ...args], {
       env,
@@ -13193,7 +13208,7 @@ function quotableTitle(title) {
 function clearWorktreeNote(path, branch) {
   return [
     `That merged the pull request of this worktree's branch, ${branch}. Clear the worktree now, unless the user wants more work on this branch:`,
-    'ExitWorktree with action "remove" and discard_changes true. Claude Code cannot check a worktree outside the repo, so the anymodel hook does: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.',
+    'ExitWorktree with action "remove" and discard_changes true. Claude Code cannot check a worktree outside the repo, so the cc-smart-dev-kit hook does: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.',
     `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: git worktree remove "${path}", then git branch -d ${branch}.`
   ].join(`
 `);
@@ -13226,7 +13241,7 @@ function viewPullRequest(ref, repo, folder, env) {
 }
 function announcedFile(repo, number, env) {
   const key = createHash4("sha256").update(repo).digest("hex").slice(0, 16);
-  return join16(env.TMPDIR || tmpdir3(), "anymodel-merges", `${key}-${number}`);
+  return join16(env.TMPDIR || tmpdir3(), "cc-smart-dev-kit-merges", `${key}-${number}`);
 }
 function afterMerge(context) {
   const { project, input, event, env, cwd } = context;
@@ -13442,8 +13457,8 @@ var FABLE_REASONS = [
 ];
 var READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore", "Code Explorer"];
 var REVIEW_AGENTS = ["Reviewer"];
-var REVIEW_AGENTS_ENV = "ANYMODEL_AGENT_GUARD_REVIEW_AGENTS";
-var READ_ONLY_AGENTS_ENV = "ANYMODEL_AGENT_GUARD_READ_ONLY_AGENTS";
+var REVIEW_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS";
+var READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";
 function agentKey(type) {
   const base = type.includes(":") ? type.split(":").pop() ?? type : type;
   return base.trim().toLowerCase().replace(/[\s_-]+/g, "-");
@@ -13741,8 +13756,8 @@ function judgeLaunch(launch, ctx, env) {
   if (!real.claude) {
     if (ctx.gatewayOn && launch.effort?.toLowerCase() !== "max") {
       return deny(real, [
-        `This launch runs on ${real.model}, a cheap gateway slot.`,
-        'A cheap slot runs at effort `max` (its reasoning costs cents): pass `effort: "max"`.'
+        `This launch runs on ${real.model}, an affordable gateway slot.`,
+        'An affordable slot runs at effort `max` (its reasoning costs cents): pass `effort: "max"`.'
       ].join(`
 `));
     }
@@ -14252,7 +14267,7 @@ function editsMainFolder(file, mainCheckout, worktrees) {
 }
 function mainFolderRefusal(mainCheckout, base) {
   return [
-    `This file is in the main checkout (${mainCheckout}). This project keeps the main checkout on \`${base}\` and makes every change in a worktree (anymodel.json \`worktrees.guardMainFolder\`).`,
+    `This file is in the main checkout (${mainCheckout}). This project keeps the main checkout on \`${base}\` and makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).`,
     "Already working in a worktree? Edit the same file under that worktree's folder.",
     "Not in one yet: EnterWorktree, with the branch for this work as its `name`, makes one."
   ].join(`
@@ -14374,7 +14389,7 @@ function cleanSessionName(raw) {
   return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
 }
 function namesDir(env) {
-  return join19(env.TMPDIR || tmpdir4(), "anymodel-session-names");
+  return join19(env.TMPDIR || tmpdir4(), "cc-smart-dev-kit-session-names");
 }
 function readName(file) {
   try {
@@ -14453,7 +14468,7 @@ import { closeSync as closeSync4, openSync as openSync4, readFileSync as readFil
 import { join as join20 } from "path";
 function createLockFile(commonDir, branch) {
   const key = createHash5("sha256").update(branch).digest("hex").slice(0, 16);
-  return join20(commonDir, `anymodel-create-${key}.lock`);
+  return join20(commonDir, `cc-smart-dev-kit-create-${key}.lock`);
 }
 
 class CreateBusyError extends Error {
@@ -14490,7 +14505,7 @@ function stale(held) {
   return now !== null && now !== held.startTime;
 }
 function busy(file, held) {
-  const who = held === null ? "another anymodel process" : `another anymodel process (pid ${held.pid}, session ${held.session ?? "unknown"}, started ${held.startedAt})`;
+  const who = held === null ? "another cc-smart-dev-kit process" : `another cc-smart-dev-kit process (pid ${held.pid}, session ${held.session ?? "unknown"}, started ${held.startedAt})`;
   return `${who} is making the worktree for this branch right now. Wait for it, then ask again; if that process is gone, remove ${file}.`;
 }
 function take(file, mine) {
@@ -14542,7 +14557,7 @@ var ADD_TIMEOUT_MS = 500000;
 var BASE_FETCH_TIMEOUT_MS = 30000;
 var DEFAULT_FETCH_TIMEOUT_MS = 5000;
 var FETCH_AGE_MS = 24 * 60 * 60 * 1000;
-var SETUP_MARKER = "anymodel-setup-done";
+var SETUP_MARKER = "cc-smart-dev-kit-setup-done";
 function isSubagentName(name) {
   return /^agent-[0-9a-f]+$/.test(name);
 }
@@ -14836,7 +14851,7 @@ function worktreeCreate(context) {
       throw new Refusal(problem);
     const worktrees = context.project.config?.worktrees;
     if (worktrees === undefined)
-      throw new Refusal("no worktrees in .claude/anymodel.json");
+      throw new Refusal("no worktrees in .claude/cc-smart-dev-kit.json");
     const folder = isSubagentName(name) ? createForSubagent(context, name) : createConfigured(context, name, worktrees);
     return { stdout: folder };
   } catch (error) {
@@ -15096,13 +15111,13 @@ function subagentStop(context) {
 
 // src/hooks/specs.ts
 function cannotCheck(what, message) {
-  return `anymodel cannot check ${what}: ${message}`;
+  return `cc-smart-dev-kit cannot check ${what}: ${message}`;
 }
 function needsWorktrees(config) {
   if (config?.worktrees !== undefined)
     return null;
-  const lacks = config === null ? "has no .claude/anymodel.json" : 'its .claude/anymodel.json has no "worktrees"';
-  return `this project wires the anymodel worktree hooks (anymodel hook ...), but ${lacks}. ` + 'Add "worktrees" to .claude/anymodel.json, or take the three anymodel hook lines out of ' + ".claude/settings.json (the anymodel README, \xA7 Worktrees)";
+  const lacks = config === null ? "has no .claude/cc-smart-dev-kit.json" : 'its .claude/cc-smart-dev-kit.json has no "worktrees"';
+  return `this project wires the cc-smart-dev-kit worktree hooks (cc-smart-dev-kit hook ...), but ${lacks}. ` + 'Add "worktrees" to .claude/cc-smart-dev-kit.json, or take the three cc-smart-dev-kit hook lines out of ' + ".claude/settings.json (the cc-smart-dev-kit README, \xA7 Worktrees)";
 }
 var worktreeCreateHook = {
   name: "worktree-create",
@@ -15187,7 +15202,7 @@ var afterMergeHook = {
   wiring: "plugin",
   onConfigProblem: (message, input, event) => {
     const command = stringField(toolInput(input).command);
-    return command !== null && mergesPullRequest(command) ? addContext(event, `anymodel: ${message}`) : SILENT;
+    return command !== null && mergesPullRequest(command) ? addContext(event, `cc-smart-dev-kit: ${message}`) : SILENT;
   },
   run: afterMerge
 };
@@ -15195,14 +15210,14 @@ var worktreeLeftoversHook = {
   name: "worktree-leftovers",
   events: ["SessionStart"],
   wiring: "plugin",
-  onConfigProblem: (message, _input, event) => addContext(event, `anymodel: ${message}`),
+  onConfigProblem: (message, _input, event) => addContext(event, `cc-smart-dev-kit: ${message}`),
   run: worktreeLeftovers
 };
 var sessionNameHook = {
   name: "session-name",
   events: ["SessionStart", "UserPromptSubmit"],
   wiring: "plugin",
-  onConfigProblem: (message) => ({ stderr: `anymodel session-name: ${message}` }),
+  onConfigProblem: (message) => ({ stderr: `cc-smart-dev-kit session-name: ${message}` }),
   run: sessionName
 };
 var agentGuardHook = {
@@ -15292,7 +15307,7 @@ var PLUGIN_HOOK_NAMES = [
   "worktree-leftovers",
   "session-name"
 ];
-var anymodelConfigSchema = strictObject({
+var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
     base: string2().min(1),
@@ -15308,18 +15323,18 @@ var anymodelConfigSchema = strictObject({
   ownHooks: array(_enum(PLUGIN_HOOK_NAMES)).optional()
 });
 
-class AnymodelConfigError extends Error {
-  name = "AnymodelConfigError";
+class CcSmartDevKitConfigError extends Error {
+  name = "CcSmartDevKitConfigError";
 }
 
-class AnymodelVersionError extends AnymodelConfigError {
-  name = "AnymodelVersionError";
+class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
+  name = "CcSmartDevKitVersionError";
 }
 function describeIssue(issue) {
   const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
   if (issue.code === "unrecognized_keys") {
     const keys = issue.keys.map((key) => field === "(top level)" ? key : `${field}.${key}`);
-    return `${keys.join(", ")}: unknown field (a newer anymodel may be needed)`;
+    return `${keys.join(", ")}: unknown field (a newer cc-smart-dev-kit may be needed)`;
   }
   return `${field}: ${issue.message}`;
 }
@@ -15330,7 +15345,7 @@ function checkRequires(file, raw, pluginVersion) {
   if (typeof requires !== "string" || !isValidRange(requires))
     return;
   if (!satisfiesRange(pluginVersion, requires)) {
-    throw new AnymodelVersionError(`${file}: this project needs anymodel ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
+    throw new CcSmartDevKitVersionError(`${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
   }
 }
 function readOwnHooks(file) {
@@ -15346,7 +15361,7 @@ function readOwnHooks(file) {
     return [];
   }
 }
-function loadAnymodelConfig(file, pluginVersion = VERSION) {
+function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
   if (!existsSync24(file))
     return null;
   let raw;
@@ -15354,13 +15369,13 @@ function loadAnymodelConfig(file, pluginVersion = VERSION) {
     raw = JSON.parse(readFileSync27(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new AnymodelConfigError(`Invalid ${file}: not valid JSON (${reason})`);
+    throw new CcSmartDevKitConfigError(`Invalid ${file}: not valid JSON (${reason})`);
   }
   checkRequires(file, raw, pluginVersion);
-  const parsed = anymodelConfigSchema.safeParse(raw);
+  const parsed = ccSmartDevKitConfigSchema.safeParse(raw);
   if (!parsed.success) {
     const issues = parsed.error.issues.map(describeIssue).join("; ");
-    throw new AnymodelConfigError(`Invalid ${file}: ${issues}`);
+    throw new CcSmartDevKitConfigError(`Invalid ${file}: ${issues}`);
   }
   return parsed.data;
 }
@@ -15447,21 +15462,21 @@ function locateCheckout(cwd, options = {}) {
 }
 function ownHooksOf(checkout) {
   const { root, mainCheckout } = checkout;
-  const own = readOwnHooks(join24(root, ".claude", "anymodel.json"));
+  const own = readOwnHooks(join24(root, ".claude", "cc-smart-dev-kit.json"));
   if (own !== null)
     return own;
   if (mainCheckout === null || mainCheckout === root)
     return [];
-  return readOwnHooks(join24(mainCheckout, ".claude", "anymodel.json")) ?? [];
+  return readOwnHooks(join24(mainCheckout, ".claude", "cc-smart-dev-kit.json")) ?? [];
 }
 function loadProjectConfig(checkout, pluginVersion) {
   const { root, mainCheckout } = checkout;
-  const own = join24(root, ".claude", "anymodel.json");
-  let config = loadAnymodelConfig(own, pluginVersion);
+  const own = join24(root, ".claude", "cc-smart-dev-kit.json");
+  let config = loadCcSmartDevKitConfig(own, pluginVersion);
   let configFile = config === null ? null : own;
   if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join24(mainCheckout, ".claude", "anymodel.json");
-    config = loadAnymodelConfig(main, pluginVersion);
+    const main = join24(mainCheckout, ".claude", "cc-smart-dev-kit.json");
+    config = loadCcSmartDevKitConfig(main, pluginVersion);
     configFile = config === null ? null : main;
   }
   return { ...checkout, config, configFile };
@@ -15472,7 +15487,7 @@ function resolveProject(cwd, options = {}) {
 }
 
 // src/hooks/run.ts
-var HOOK_LOG_ENV = "ANYMODEL_HOOK_LOG";
+var HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -15482,7 +15497,7 @@ async function handleHook(spec, text, env) {
     if (input === null) {
       return {
         exitCode: spec.crashExitCode ?? 0,
-        stderr: `anymodel ${spec.name}: the hook input is not JSON`
+        stderr: `cc-smart-dev-kit ${spec.name}: the hook input is not JSON`
       };
     }
     const event = stringField(input.hook_event_name);
@@ -15507,7 +15522,7 @@ async function handleHook(spec, text, env) {
     try {
       project = loadProjectConfig(checkout);
     } catch (error) {
-      if (error instanceof AnymodelConfigError) {
+      if (error instanceof CcSmartDevKitConfigError) {
         return spec.onConfigProblem(error.message, input, event, checkout, context);
       }
       throw error;
@@ -15519,7 +15534,7 @@ async function handleHook(spec, text, env) {
   } catch (error) {
     return {
       exitCode: spec.crashExitCode ?? 0,
-      stderr: `anymodel ${spec.name}: ${errorMessage(error)}`
+      stderr: `cc-smart-dev-kit ${spec.name}: ${errorMessage(error)}`
     };
   }
 }
@@ -15554,7 +15569,7 @@ async function runHookEntry(spec) {
 }
 
 // src/cli/live-check.ts
-var LIVE_NAME = "anymodel-live-check";
+var LIVE_NAME = "cc-smart-dev-kit-live-check";
 var LIVE_PREFIX = "live-wt-";
 var SESSION_TIMEOUT_MS = 240000;
 var LIVE_TOOLS = "EnterWorktree,ExitWorktree,Bash";
@@ -15591,9 +15606,9 @@ function readLog(file) {
   });
 }
 var GIT_ID = {
-  GIT_AUTHOR_NAME: "anymodel live check",
+  GIT_AUTHOR_NAME: "cc-smart-dev-kit live check",
   GIT_AUTHOR_EMAIL: "live-check@example.com",
-  GIT_COMMITTER_NAME: "anymodel live check",
+  GIT_COMMITTER_NAME: "cc-smart-dev-kit live check",
   GIT_COMMITTER_EMAIL: "live-check@example.com"
 };
 function proveIn(label, repo, expected, deps, env) {
@@ -15669,7 +15684,7 @@ function runLiveCheck(paths, env, deps) {
       { ok: false, text: "live: `claude --version` gave no version: is Claude Code installed?" }
     ];
   }
-  const root = realpathSync4(mkdtempSync3(join25(tmpdir5(), "anymodel-live-")));
+  const root = realpathSync4(mkdtempSync3(join25(tmpdir5(), "cc-smart-dev-kit-live-")));
   try {
     const gitEnv = { ...env, ...GIT_ID };
     const git = (cwd, ...args) => {
@@ -15691,11 +15706,11 @@ function runLiveCheck(paths, env, deps) {
     writeFileSync7(join25(configured, "README.md"), `live check
 `);
     mkdirSync10(join25(configured, ".claude"));
-    writeFileSync7(join25(configured, ".claude", "anymodel.json"), `${JSON.stringify({ worktrees: { base: "main", prefix: LIVE_PREFIX } })}
+    writeFileSync7(join25(configured, ".claude", "cc-smart-dev-kit.json"), `${JSON.stringify({ worktrees: { base: "main", prefix: LIVE_PREFIX } })}
 `);
     writeFileSync7(join25(configured, ".claude", "settings.json"), `${JSON.stringify(projectHookSettings(deps.hookCommand), null, 2)}
 `);
-    git(configured, "add", "README.md", ".claude/anymodel.json", ".claude/settings.json");
+    git(configured, "add", "README.md", ".claude/cc-smart-dev-kit.json", ".claude/settings.json");
     git(configured, "commit", "-q", "-m", "first");
     git(configured, "push", "-q", "origin", "main");
     const lines = [
@@ -15798,7 +15813,7 @@ function message(error) {
 function shown(file, projectDir, home) {
   return file.startsWith(`${projectDir}/`) ? file.slice(projectDir.length + 1) : tildify(file, home);
 }
-var ENGINE_HINT = "Run `anymodel hook` for the lines to paste (also in the anymodel README, \xA7 Worktrees)";
+var ENGINE_HINT = "Run `cc-smart-dev-kit hook` for the lines to paste (also in the cc-smart-dev-kit README, \xA7 Worktrees)";
 function engineLines(config, sources, projectDir, paths) {
   const hooks = PROJECT_HOOKS.map((spec) => {
     const event = spec.events[0] ?? "";
@@ -15811,12 +15826,12 @@ function engineLines(config, sources, projectDir, paths) {
   if (config?.worktrees !== undefined) {
     lines.push(missing.length === 0 ? { ok: true, text: `project: the worktree engine is wired (${wired.join(", ")})` } : {
       ok: false,
-      text: `project: "worktrees" is set in .claude/anymodel.json, but the project's settings do not wire ${missing.join(", ")} to anymodel hook${missing.includes("WorktreeCreate") ? ", so Claude Code makes its own worktrees" : ""}. ${ENGINE_HINT}`
+      text: `project: "worktrees" is set in .claude/cc-smart-dev-kit.json, but the project's settings do not wire ${missing.join(", ")} to cc-smart-dev-kit hook${missing.includes("WorktreeCreate") ? ", so Claude Code makes its own worktrees" : ""}. ${ENGINE_HINT}`
     });
   } else if (wired.length > 0) {
     lines.push({
       ok: false,
-      text: `project: the project's settings wire ${wired.join(", ")} to anymodel hook, but ${config === null ? "there is no .claude/anymodel.json" : '.claude/anymodel.json has no "worktrees"'}, so each of them fails. Add "worktrees", or take the anymodel hook lines out`
+      text: `project: the project's settings wire ${wired.join(", ")} to cc-smart-dev-kit hook, but ${config === null ? "there is no .claude/cc-smart-dev-kit.json" : '.claude/cc-smart-dev-kit.json has no "worktrees"'}, so each of them fails. Add "worktrees", or take the cc-smart-dev-kit hook lines out`
     });
   }
   if (hooks.find((hook) => hook.event === "WorktreeCreate")?.wired === true) {
@@ -15861,11 +15876,11 @@ function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
     lines.push(replaced ? {
       ok: true,
       info: true,
-      text: `project: the plugin's ${name} is off here: .claude/anymodel.json lists it in ownHooks, so the project's own copy answers alone`
+      text: `project: the plugin's ${name} is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone`
     } : {
       ok: true,
       warn: true,
-      text: `project: .claude/anymodel.json lists ${name} in ownHooks, so the plugin's ${name} is off here, but the project's settings wire no hook on ${entries.map((hook) => onEvent(hook.event, hook.subjects)).join(", ") || "its event"}: nothing answers in its place. Take "${name}" out of ownHooks once the project's copy is gone`
+      text: `project: .claude/cc-smart-dev-kit.json lists ${name} in ownHooks, so the plugin's ${name} is off here, but the project's settings wire no hook on ${entries.map((hook) => onEvent(hook.event, hook.subjects)).join(", ") || "its event"}: nothing answers in its place. Take "${name}" out of ownHooks once the project's copy is gone`
     });
   }
   const found = new Map;
@@ -15888,7 +15903,7 @@ function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
     lines.push({
       ok: true,
       warn: true,
-      text: `project: the plugin's ${hook.name} and the project's ${handler.command} (${shown(handler.file, projectDir, home)}) both run on ${onEvent(hook.event, subjects)}, so both may answer. If that is the project's own copy of ${hook.name}, list "${hook.name}" in ownHooks in .claude/anymodel.json until the copy is removed`
+      text: `project: the plugin's ${hook.name} and the project's ${handler.command} (${shown(handler.file, projectDir, home)}) both run on ${onEvent(hook.event, subjects)}, so both may answer. If that is the project's own copy of ${hook.name}, list "${hook.name}" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed`
     });
   }
   return lines;
@@ -15911,7 +15926,7 @@ function projectChecks(cwd, env, paths, pluginHooksFile) {
   try {
     config = loadProjectConfig(checkout).config;
   } catch (error) {
-    if (!(error instanceof AnymodelConfigError))
+    if (!(error instanceof CcSmartDevKitConfigError))
       throw error;
     return [{ ok: false, text: `project: ${error.message}` }];
   }
@@ -15975,19 +15990,22 @@ function checkLauncher(paths) {
   const launcher = join27(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
   if (!existsSync29(launcher))
-    return { ok: false, text: `no launcher at ${where}. Run: anymodel setup` };
+    return { ok: false, text: `no launcher at ${where}. Run: cc-smart-dev-kit setup` };
   if (!isExecutable(launcher)) {
-    return { ok: false, text: `the launcher ${where} is not executable. Run: anymodel setup` };
+    return {
+      ok: false,
+      text: `the launcher ${where} is not executable. Run: cc-smart-dev-kit setup`
+    };
   }
   const script = readFileSync31(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
-    return { ok: false, text: `the launcher ${where} is out of date. Run: anymodel setup` };
+    return { ok: false, text: `the launcher ${where} is out of date. Run: cc-smart-dev-kit setup` };
   }
   if (!isExecutable(bun)) {
     return {
       ok: false,
-      text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: anymodel setup`
+      text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-smart-dev-kit setup`
     };
   }
   const result = run2([launcher, "version"]);
@@ -16069,7 +16087,7 @@ function checkAutoUpdate(settings, paths) {
   const marketplaces = settings?.extraKnownMarketplaces;
   return marketplaces?.[MARKETPLACE]?.autoUpdate === true ? { ok: true, text: "plugin auto-update is on" } : {
     ok: false,
-    text: `plugin auto-update is off in ${tildify(paths.settingsFile, paths.home)}. Run: anymodel setup`
+    text: `plugin auto-update is off in ${tildify(paths.settingsFile, paths.home)}. Run: cc-smart-dev-kit setup`
   };
 }
 function checkUpdatesNotOff(settings, env, paths) {
@@ -16220,13 +16238,13 @@ function checkInstructions(paths, source) {
     return {
       ok: true,
       info: true,
-      text: "instructions: left out (anymodel setup --no-instructions). To add them: anymodel setup --instructions"
+      text: "instructions: left out (cc-smart-dev-kit setup --no-instructions). To add them: cc-smart-dev-kit setup --instructions"
     };
   }
   if (!copyInstalled(where)) {
     return {
       ok: false,
-      text: `the instructions are not installed in ${copy}. Run: anymodel setup`
+      text: `the instructions are not installed in ${copy}. Run: cc-smart-dev-kit setup`
     };
   }
   const why = copyDifferences(where);
@@ -16236,14 +16254,14 @@ function checkInstructions(paths, source) {
   if (why.length > 0) {
     return {
       ok: false,
-      text: `the instructions copy ${copy} is not this plugin version's (${why.join("; ")}). Run: anymodel setup`
+      text: `the instructions copy ${copy} is not this plugin version's (${why.join("; ")}). Run: cc-smart-dev-kit setup`
     };
   }
   const text = existsSync29(where.claudeMd) ? readFileSync31(where.claudeMd, "utf8") : "";
   if (!text.includes(instructionsBlockBody(where.importPath))) {
     return {
       ok: false,
-      text: `${claudeMd} does not import the instructions (its anymodel block is missing or changed). Run: anymodel setup`
+      text: `${claudeMd} does not import the instructions (its cc-smart-dev-kit block is missing or changed). Run: cc-smart-dev-kit setup`
     };
   }
   return {
@@ -16260,7 +16278,7 @@ function checkLiveRecord(paths) {
     return {
       ok: true,
       info: true,
-      text: `the live check last passed on Claude Code ${record.claudeCode}; this machine has ${now}. Run: anymodel doctor --live`
+      text: `the live check last passed on Claude Code ${record.claudeCode}; this machine has ${now}. Run: cc-smart-dev-kit doctor --live`
     };
   }
   return {
@@ -16270,7 +16288,7 @@ function checkLiveRecord(paths) {
   };
 }
 var PROJECT_MEMORY_FILES = ["CLAUDE.md", join27(".claude", "CLAUDE.md"), "CLAUDE.local.md"];
-function anymodelImports(text) {
+function ccSmartDevKitImports(text) {
   const found = [];
   let inFence = false;
   for (const line of text.split(`
@@ -16284,7 +16302,7 @@ function anymodelImports(text) {
     const outsideCode = line.replace(/`[^`]*`/g, " ");
     for (const match of outsideCode.matchAll(/(?:^|\s)@((?:~\/|\/)\S+)/g)) {
       const path = match[1] ?? "";
-      if (path.includes("/anymodel/instructions/"))
+      if (path.includes("/cc-smart-dev-kit/instructions/"))
         found.push(path);
     }
   }
@@ -16304,7 +16322,7 @@ function checkProjectImports(paths, cwd) {
       } catch {
         continue;
       }
-      for (const path of anymodelImports(text)) {
+      for (const path of ccSmartDevKitImports(text)) {
         const file = path.startsWith("~/") ? join27(paths.home, path.slice(2)) : path;
         imports.push({ from, path, file });
       }
@@ -16324,12 +16342,12 @@ function checkProjectImports(paths, cwd) {
     return {
       ok: true,
       info: true,
-      text: `${list}, which is missing: it loads nothing while the instructions are left out here. To add them: anymodel setup --instructions`
+      text: `${list}, which is missing: it loads nothing while the instructions are left out here. To add them: cc-smart-dev-kit setup --instructions`
     };
   }
   return {
     ok: false,
-    text: `${list}, which is missing: it loads nothing. Run: anymodel setup`
+    text: `${list}, which is missing: it loads nothing. Run: cc-smart-dev-kit setup`
   };
 }
 function claudeMemCheck(paths) {
@@ -16360,7 +16378,7 @@ function checkTmux(paths, env, machine) {
 function checkBun(bun, paths) {
   const where = tildify(bun.path, paths.home);
   const tooOld = bunTooOld(bun.version, where);
-  return tooOld === null ? { ok: true, text: `Bun ${bun.version} at ${where} (anymodel needs \u2265 ${MIN_BUN})` } : { ok: false, text: `${tooOld} Upgrade this Bun, then run: ${COMMAND} doctor` };
+  return tooOld === null ? { ok: true, text: `Bun ${bun.version} at ${where} (cc-smart-dev-kit needs \u2265 ${MIN_BUN})` } : { ok: false, text: `${tooOld} Upgrade this Bun, then run: ${COMMAND} doctor` };
 }
 async function runDoctor(paths, env, { bun, gateway, local, project, live }) {
   const settings = readSettings2(paths.settingsFile);
@@ -16398,26 +16416,519 @@ async function runDoctor(paths, env, { bun, gateway, local, project, live }) {
   return checks.every((check) => check.ok) ? 0 : 1;
 }
 
+// src/cli/migrate.ts
+import { existsSync as existsSync30, readdirSync as readdirSync8, readFileSync as readFileSync32, renameSync as renameSync3, rmSync as rmSync8, statSync as statSync9 } from "fs";
+import { basename as basename5, join as join28 } from "path";
+var OLD = {
+  name: "anymodel",
+  pluginId: "anymodel@anymodel",
+  marketplace: "anymodel",
+  unit: "anymodel-router.service",
+  socket: "anymodel-router.socket",
+  blockBegin: "<!-- anymodel:begin -->",
+  blockEnd: "<!-- anymodel:end -->",
+  backupInfix: ".bak-anymodel-"
+};
+function oldGatewayEnv(port) {
+  return {
+    ENABLE_TOOL_SEARCH: "true",
+    ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: "anymodel-scout[1m]",
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: "Cheap model for search and reading: the scout slot (anymodel gateway slot scout \u2026)",
+    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (cheap)",
+    ANTHROPIC_DEFAULT_SONNET_MODEL: "anymodel-worker[1m]",
+    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: "Cheap model for routine code and docs: the worker slot (anymodel gateway slot worker \u2026)",
+    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (cheap)"
+  };
+}
+function migratePaths(paths) {
+  const systemd = join28(paths.home, ".config", "systemd", "user");
+  return {
+    oldConfigDir: join28(paths.home, ".config", OLD.name),
+    oldStateDir: join28(paths.claudeConfigDir, OLD.name),
+    stateDir: paths.stateDir,
+    oldShareDir: join28(paths.home, ".local", "share", OLD.name),
+    oldStateHomeDir: join28(paths.home, ".local", "state", OLD.name),
+    oldLauncher: join28(paths.binDir, OLD.name),
+    launcher: join28(paths.binDir, LAUNCHER_NAME),
+    oldUnitFile: join28(systemd, OLD.unit),
+    oldSocketFile: join28(systemd, OLD.socket)
+  };
+}
+function renamedSegment(segment) {
+  if (segment === OLD.name)
+    return COMMAND;
+  if (segment.startsWith(`${OLD.name}-`))
+    return `${COMMAND}${segment.slice(OLD.name.length)}`;
+  return segment;
+}
+function renamedPath(path) {
+  return path.split("/").map(renamedSegment).join("/");
+}
+function renamedBackupName(name) {
+  const at = name.indexOf(OLD.backupInfix);
+  if (at === -1)
+    return name;
+  const base = name.slice(0, at);
+  const rest = name.slice(at + OLD.backupInfix.length);
+  return `${renamedSegment(base)}${BACKUP_INFIX}${rest}`;
+}
+function say(mark, path, what) {
+  if (path === null)
+    console.log(`${mark === " " ? "  " : `${mark} `}${what}`);
+  else
+    console.log(`${mark} ${path}: ${what}`);
+}
+function installCommands() {
+  return [
+    `claude plugin marketplace add ${MARKETPLACE_SOURCE}`,
+    `claude plugin install ${PLUGIN_ID}`
+  ];
+}
+function oldPiecesPresent(old) {
+  return [
+    old.oldConfigDir,
+    old.oldStateDir,
+    old.oldShareDir,
+    old.oldStateHomeDir,
+    old.oldLauncher,
+    old.oldUnitFile,
+    old.oldSocketFile
+  ].some((path) => existsSync30(path));
+}
+function folderPairs(paths, old) {
+  return [
+    {
+      from: old.oldConfigDir,
+      to: join28(paths.home, ".config", COMMAND),
+      what: "the gateway config, and the machine's job settings"
+    },
+    { from: old.oldStateDir, to: old.stateDir, what: "the state folder: records and backups" },
+    {
+      from: old.oldShareDir,
+      to: join28(paths.home, ".local", "share", COMMAND),
+      what: "the router's copy, and the heavy jobs' state"
+    },
+    {
+      from: old.oldStateHomeDir,
+      to: join28(paths.home, ".local", "state", COMMAND),
+      what: "the router's limit state"
+    }
+  ];
+}
+function blockedTargets(paths, old) {
+  const blocked = [];
+  for (const { from, to } of folderPairs(paths, old)) {
+    if (existsSync30(from) && existsSync30(to)) {
+      blocked.push(`${to} is already there: ${from} cannot be moved onto it, and two folders are never merged by themselves. Move or remove one of them by hand, then run again.`);
+    }
+  }
+  if (existsSync30(old.oldLauncher) && existsSync30(old.launcher)) {
+    blocked.push(`${old.launcher} is already there: ${old.oldLauncher} cannot be moved onto it. Remove the old launcher by hand, then run again.`);
+  }
+  return blocked;
+}
+function move(from, to, dryRun) {
+  if (!existsSync30(from))
+    return false;
+  if (!dryRun)
+    renameSync3(from, to);
+  return true;
+}
+function rewriteStateFolder(stateDir, dryRun) {
+  let files = 0;
+  let backups = 0;
+  const rewriteJson = (name, rewrite) => {
+    const file = join28(stateDir, name);
+    if (!existsSync30(file))
+      return;
+    const text = readFileSync32(file, "utf8");
+    const next = `${JSON.stringify(rewrite(JSON.parse(text)), null, 2)}
+`;
+    if (next === text)
+      return;
+    files += 1;
+    if (dryRun)
+      return;
+    backupFile(stateDir, file);
+    atomicWrite(file, next, 384);
+  };
+  rewriteJson("owned.json", (parsed) => isObject2(parsed) ? Object.fromEntries(Object.entries(parsed).map(([file, records]) => [renamedPath(file), records])) : parsed);
+  rewriteJson("owned-entries.json", (parsed) => isObject2(parsed) ? Object.fromEntries(Object.entries(parsed).map(([file, lists]) => [renamedPath(file), lists])) : parsed);
+  rewriteJson("changed.json", (parsed) => {
+    const changed = parsed?.files;
+    if (!isObject2(changed))
+      return parsed;
+    return {
+      ...parsed,
+      files: Object.fromEntries(Object.entries(changed).map(([file, entry]) => [
+        renamedPath(file),
+        isObject2(entry) && typeof entry.baseline === "string" ? {
+          ...entry,
+          baseline: join28(backupDir(stateDir, renamedPath(file)), renamedBackupName(basename5(entry.baseline)))
+        } : entry
+      ]))
+    };
+  });
+  const backupsDir = join28(stateDir, "backups");
+  if (!existsSync30(backupsDir))
+    return { files, backups };
+  for (const folder of readdirSync8(backupsDir)) {
+    const folderPath = join28(backupsDir, folder);
+    for (const name of readdirSync8(folderPath)) {
+      const renamed = renamedBackupName(name);
+      if (renamed === name)
+        continue;
+      backups += 1;
+      if (!dryRun)
+        renameSync3(join28(folderPath, name), join28(folderPath, renamed));
+    }
+    const renamedFolder = encodeURIComponent(renamedPath(decodeURIComponent(folder)));
+    if (renamedFolder === folder)
+      continue;
+    backups += 1;
+    if (dryRun)
+      continue;
+    const target = join28(backupsDir, renamedFolder);
+    if (existsSync30(target)) {
+      for (const name of readdirSync8(folderPath))
+        renameSync3(join28(folderPath, name), join28(target, name));
+      rmSync8(folderPath, { recursive: true, force: true });
+    } else {
+      renameSync3(folderPath, target);
+    }
+  }
+  return { files, backups };
+}
+function settingsChanges(settingsFile, stateDir, oldEnv, newEnv) {
+  const set = [];
+  const kept = [];
+  if (!existsSync30(settingsFile))
+    return { set, kept };
+  const parsed = JSON.parse(readFileSync32(settingsFile, "utf8"));
+  const settings = isObject2(parsed) ? parsed : {};
+  const records = ownedRecords(stateDir, realTarget(settingsFile));
+  for (const key of Object.keys(newEnv)) {
+    const path = ["env", key];
+    const current = getKey(settings, path);
+    if (ownership(records, path, current) === "ours") {
+      const oldValue = oldEnv[key] ?? "";
+      const newValue = newEnv[key] ?? "";
+      if (oldValue !== newValue)
+        set.push([key, newValue]);
+      continue;
+    }
+    if (current.found && typeof current.value === "string" && current.value.includes(OLD.name)) {
+      kept.push(key);
+    }
+  }
+  return { set, kept };
+}
+function readOldConfig(file) {
+  const mode = statSync9(file).mode;
+  if ((mode & 63) !== 0) {
+    throw new ConfigError(`${file} can be read by other users (mode ${(mode & 511).toString(8)}); it holds API keys. Run: chmod 600 ${file}`);
+  }
+  try {
+    const parsed = JSON.parse(readFileSync32(file, "utf8"));
+    if (!isObject2(parsed))
+      throw new Error("not an object");
+    return parsed;
+  } catch {
+    throw new ConfigError(`${file} is not valid JSON. Fix it by hand.`);
+  }
+}
+function rewriteGatewayConfig(config) {
+  const renamed = [];
+  const slots = {};
+  const oldSlots = isObject2(config.slots) ? config.slots : {};
+  for (const [slot, targets] of Object.entries(oldSlots)) {
+    const next = renamedSegment(slot);
+    slots[next] = targets;
+    if (next !== slot)
+      renamed.push([slot, next]);
+  }
+  const aliases = isObject2(config.aliases) ? { ...config.aliases } : {};
+  for (const [oldSlot, next] of renamed)
+    aliases[oldSlot] = next;
+  const modelSlots = isObject2(config.modelSlots) ? Object.fromEntries(Object.entries(config.modelSlots).map(([model, slot]) => [
+    model,
+    typeof slot === "string" ? renamedSegment(slot) : slot
+  ])) : undefined;
+  if (renamed.length === 0)
+    return null;
+  return {
+    config: { ...config, aliases, slots, ...modelSlots !== undefined && { modelSlots } },
+    slots: renamed.map(([slot]) => slot),
+    aliases: renamed
+  };
+}
+function oldConfigPort(config) {
+  const port = config.port;
+  return typeof port === "number" && Number.isInteger(port) ? port : DEFAULT_PORT;
+}
+function rewriteLimitState(file, stateDir, dryRun) {
+  if (!existsSync30(file))
+    return 0;
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync32(file, "utf8"));
+  } catch {
+    return 0;
+  }
+  if (!isObject2(parsed) || !isObject2(parsed.fallbacks))
+    return 0;
+  let changed = 0;
+  const fallbacks = {};
+  for (const [slot, record] of Object.entries(parsed.fallbacks)) {
+    const renamed = renamedSegment(slot);
+    if (renamed !== slot)
+      changed += 1;
+    fallbacks[renamed] = record;
+  }
+  if (changed === 0)
+    return 0;
+  if (!dryRun) {
+    const mode = statSync9(file).mode & 4095;
+    backupFile(stateDir, file);
+    atomicWrite(file, `${JSON.stringify({ ...parsed, fallbacks }, null, 2)}
+`, mode);
+  }
+  return changed;
+}
+function migrateInstructions(paths, options) {
+  const lines = [];
+  const claudeMd = join28(paths.claudeConfigDir, "CLAUDE.md");
+  if (instructionsOptedOut(paths.stateDir)) {
+    lines.push({
+      mark: " ",
+      file: claudeMd,
+      what: "your --no-instructions choice carries over; nothing installed"
+    });
+    return lines;
+  }
+  const text = existsSync30(claudeMd) ? readFileSync32(claudeMd, "utf8") : null;
+  if (text === null || !text.includes(OLD.blockBegin))
+    return lines;
+  const block = text.replaceAll(OLD.blockBegin, BLOCK_BEGIN).replaceAll(OLD.blockEnd, BLOCK_END);
+  const result = writeManagedFile(claudeMd, block, {
+    stateDir: paths.stateDir,
+    kind: "markdown-block",
+    expectedContent: text,
+    ...options.dryRun && { dryRun: true }
+  });
+  if (result.outcome !== "unchanged") {
+    lines.push({
+      mark: "~",
+      file: claudeMd,
+      what: "the instructions block now carries this version's markers"
+    });
+  }
+  const instructions = instructionsPaths(paths, options.instructionsSource);
+  for (const line of installInstructions(instructions, options.dryRun, VERSION)) {
+    lines.push({ mark: line.mark, file: line.file, what: line.what });
+  }
+  return lines;
+}
+async function migrateRouter(paths, old, options, port) {
+  const short = (path) => tildify(path, paths.home);
+  if (!existsSync30(old.oldUnitFile) && !existsSync30(old.oldSocketFile))
+    return 0;
+  if (!options.systemd) {
+    say("!", null, `the old router units are there, but this machine has no systemd: remove ${short(old.oldUnitFile)} and ${short(old.oldSocketFile)} by hand, then run ${COMMAND} gateway setup`);
+    return 0;
+  }
+  if (options.dryRun) {
+    say("~", short(paths.routerUnitFile), `would be written, and ${OLD.unit} and ${OLD.socket} stopped, disabled and removed`);
+    return 0;
+  }
+  if (unitActive(options.runner, basename5(old.oldUnitFile)) || unitActive(options.runner, basename5(old.oldSocketFile))) {
+    console.log(`
+${OLD.unit} is running. This replaces it: until the new router answers, requests from running Claude sessions fail (up to 120 s; Claude Code retries them).`);
+    const yes = options.yes ? true : options.confirm?.(`Stop ${OLD.unit} and start ${UNIT_NAME}?`) ?? null;
+    if (yes !== true) {
+      say("!", null, `the old router was left as it is. Run again with --yes to replace it`);
+      return 0;
+    }
+  }
+  const stopped = await stopRouter(options.runner, port, options.probe, {
+    socket: basename5(old.oldSocketFile),
+    unit: basename5(old.oldUnitFile)
+  });
+  if (stopped.kind === "other") {
+    say(" ", null, `port ${String(port)} answers, but not as this router (${stopped.detail}); not waiting for it`);
+  }
+  say("-", `${OLD.unit}, ${OLD.socket}`, stopped.kind === "closed" ? `disabled and stopped (port ${String(port)} closed; answers in flight finish in the background)` : "disabled and stopped");
+  await installRouter({
+    bunPath: options.bunPath,
+    bunVersion: options.bunVersion,
+    bundle: options.bundle,
+    copyPath: paths.routerCopy,
+    unitPath: paths.routerUnitFile,
+    socketPath: paths.routerSocketFile,
+    home: paths.home,
+    stateDir: paths.stateDir,
+    port,
+    probe: options.probe,
+    runner: options.runner,
+    say: (line) => console.log(`  ${line}`),
+    yes: true,
+    confirm: null
+  });
+  rmSync8(old.oldUnitFile, { force: true });
+  rmSync8(old.oldSocketFile, { force: true });
+  say("-", `${short(old.oldUnitFile)}, ${short(old.oldSocketFile)}`, "removed (this version's units are in their place)");
+  return 0;
+}
+function migrateOldPlugin(options) {
+  const commands = [
+    `claude plugin uninstall ${OLD.pluginId}`,
+    `claude plugin marketplace remove ${OLD.marketplace}`
+  ];
+  console.log(`
+The old plugin is still installed, and its hooks would run beside these.`);
+  console.log("Take it out:");
+  for (const command of commands)
+    console.log(`  ${command}`);
+  if (options.dryRun)
+    return;
+  if (options.confirm?.("Uninstall the old plugin now?") !== true)
+    return;
+  for (const command of commands) {
+    const result = options.runner(command.split(" "));
+    const first = result.output.trim().split(`
+`)[0] ?? "";
+    console.log(result.exitCode === 0 ? `- ${command}: done` : `! ${command}: failed (exit ${String(result.exitCode)}): ${first}`);
+  }
+}
+async function runMigrate(paths, options) {
+  const short = (path) => tildify(path, paths.home);
+  const old = migratePaths(paths);
+  if (options.env.CLAUDECODE !== undefined) {
+    console.error(`${COMMAND} migrate cannot run inside a Claude Code session: it replaces the router this session's own model traffic goes through. Run it in your own terminal, then restart your sessions.`);
+    return 1;
+  }
+  if (!oldPiecesPresent(old)) {
+    console.log("Nothing to move.");
+    return 0;
+  }
+  if (findUserInstall(paths.installedPluginsFile) === null) {
+    console.error(`${PLUGIN_ID} is not installed yet, and migrate needs it: its files are what the old ones are moved into. Install it first:`);
+    for (const command of installCommands())
+      console.error(`  ${command}`);
+    return 1;
+  }
+  const blocked = blockedTargets(paths, old);
+  if (blocked.length > 0) {
+    for (const line of blocked)
+      console.error(line);
+    return 1;
+  }
+  const configFile = existsSync30(paths.gatewayConfigFile) ? paths.gatewayConfigFile : existsSync30(join28(old.oldConfigDir, "gateway.json")) ? join28(old.oldConfigDir, "gateway.json") : null;
+  const rawConfig = configFile === null ? null : readOldConfig(configFile);
+  const port = rawConfig === null ? DEFAULT_PORT : oldConfigPort(rawConfig);
+  console.log(`Moving this machine from the old ${OLD.name} names to ${COMMAND} ${VERSION}.
+`);
+  for (const { from, to, what } of folderPairs(paths, old)) {
+    if (!move(from, to, options.dryRun))
+      continue;
+    say("+", short(to), `moved from ${short(from)} (${what})`);
+  }
+  const stateDirNow = options.dryRun ? old.oldStateDir : old.stateDir;
+  if (existsSync30(stateDirNow)) {
+    const written = rewriteStateFolder(stateDirNow, options.dryRun);
+    if (written.files > 0 || written.backups > 0) {
+      say("~", short(old.stateDir), `${String(written.files)} record file(s) and ${String(written.backups)} backup name(s) now name this version's files`);
+    }
+  }
+  if (move(old.oldLauncher, old.launcher, options.dryRun)) {
+    say("~", short(old.launcher), `moved from ${short(old.oldLauncher)}`);
+  }
+  if (rawConfig !== null) {
+    const rewrite = rewriteGatewayConfig(rawConfig);
+    if (rewrite !== null) {
+      const parsed = parseConfig(rewrite.config);
+      if ("error" in parsed) {
+        throw new ConfigError(`${configFile ?? ""} is not a valid gateway config:
+${parsed.error}`);
+      }
+      say("~", short(paths.gatewayConfigFile), `${String(rewrite.slots.length)} slot(s) renamed, and an alias added for ${rewrite.aliases.map(([name]) => name).join(", ")}, so sessions that are still running keep working`);
+      if (!options.dryRun) {
+        backupFile(paths.stateDir, paths.gatewayConfigFile);
+        saveConfig(paths.gatewayConfigFile, parsed.config);
+      }
+    }
+  }
+  const fallbacks = rewriteLimitState(paths.gatewayStateFile, paths.stateDir, options.dryRun);
+  if (fallbacks > 0) {
+    say("~", short(paths.gatewayStateFile), `${String(fallbacks)} fallback record(s) renamed`);
+  }
+  const migrateFiles = async () => {
+    const oldEnv = oldGatewayEnv(port);
+    const newEnv = gatewayEnv(port);
+    const changes = settingsChanges(paths.settingsFile, paths.stateDir, oldEnv, newEnv);
+    if (changes.set.length > 0) {
+      const result = applyManagedJson({
+        file: paths.settingsFile,
+        stateDir: paths.stateDir,
+        set: changes.set.map(([key, value]) => [["env", key], value]),
+        ...options.dryRun && { dryRun: true }
+      });
+      if (result.changes.length > 0) {
+        say("~", short(paths.settingsFile), `${String(result.changes.length)} gateway key(s) now name this version's slots and words`);
+      }
+    } else if (existsSync30(paths.settingsFile)) {
+      say(" ", null, `${short(paths.settingsFile)}: no gateway key of the old setup's is left to change`);
+    }
+    for (const key of changes.kept) {
+      say("!", null, `env.${key} still names an old slot, and it is not this plugin's to change (you set it, or its record is gone): it keeps working, because the router's config now has an alias for every old slot name. Write this version's name in ${short(paths.settingsFile)} when you want it.`);
+    }
+    for (const line of migrateInstructions(paths, options)) {
+      say(line.mark, line.file, line.what);
+    }
+    if (existsSync30(old.launcher)) {
+      const { outcome } = installLauncher(paths.binDir, {
+        stateDir: paths.stateDir,
+        bunPath: options.bunPath,
+        ...options.dryRun && { dryRun: true }
+      });
+      if (outcome !== "unchanged") {
+        say("~", short(old.launcher), `written for this version (${outcome})`);
+      }
+    }
+  };
+  if (options.dryRun)
+    await migrateFiles();
+  else
+    await withLock(paths.stateDir, migrateFiles, { waitMs: 1e4 });
+  await migrateRouter(paths, old, options, port);
+  migrateOldPlugin(options);
+  console.log(options.dryRun ? `
+Dry run: nothing was written, run or stopped.` : `
+Done. Restart every running Claude session: until then they still hold the old names (the router's aliases keep them working).`);
+  return 0;
+}
+
 // src/cli/restore.ts
-import { existsSync as existsSync30, rmSync as rmSync8 } from "fs";
+import { existsSync as existsSync31, rmSync as rmSync9 } from "fs";
 function describe2(result, short) {
   const file = short(result.file);
   switch (result.action) {
     case "restored":
-      return `~ ${file}: back as it was before anymodel`;
+      return `~ ${file}: back as it was before cc-smart-dev-kit`;
     case "removed":
-      return `- ${file}: removed (anymodel had created it)`;
+      return `- ${file}: removed (cc-smart-dev-kit had created it)`;
     case "cleaned":
       return `~ ${file}: removed ${result.details.join(", ")}; everything else kept`;
     case "unchanged":
-      return `  ${file}: nothing of anymodel left in it`;
+      return `  ${file}: nothing of cc-smart-dev-kit left in it`;
     case "no-backup":
-      return `! ${file}: the backup from before anymodel is missing; left alone`;
+      return `! ${file}: the backup from before cc-smart-dev-kit is missing; left alone`;
   }
 }
 var UNITS = `${UNIT_NAME} and ${SOCKET_NAME}`;
-var STOP_WARNING = "anymodel-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.";
-var NOW_WARNING = `restore --now stops anymodel-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
+var STOP_WARNING = "cc-smart-dev-kit-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.";
+var NOW_WARNING = `restore --now stops cc-smart-dev-kit-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
 var STAGE_ONE_DONE = `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
 function askFirst(options, warning, question, again) {
   console.log(warning);
@@ -16465,11 +16976,11 @@ async function runRestore(paths, options) {
     }, { waitMs: 1e4 });
   }
   if (sessionsUseRouter) {
-    if (!askFirst(options, NOW_WARNING, "Stop anymodel-router and restore everything now?", `to do it now: ${COMMAND} restore --now --yes`)) {
+    if (!askFirst(options, NOW_WARNING, "Stop cc-smart-dev-kit-router and restore everything now?", `to do it now: ${COMMAND} restore --now --yes`)) {
       return 1;
     }
   } else if (unitTracked && unitActive(options.runner)) {
-    if (!askFirst(options, STOP_WARNING, "Stop anymodel-router and restore?", `to stop it: ${COMMAND} restore --yes`)) {
+    if (!askFirst(options, STOP_WARNING, "Stop cc-smart-dev-kit-router and restore?", `to stop it: ${COMMAND} restore --yes`)) {
       return 1;
     }
   }
@@ -16503,10 +17014,10 @@ async function runRestore(paths, options) {
     const results = restore(paths.stateDir);
     if (unitTracked)
       options.runner(["systemctl", "--user", "daemon-reload"]);
-    rmSync8(restartPendingFile(paths.stateDir), { force: true });
-    const stateGone = routerTracked && existsSync30(paths.gatewayStateFile);
+    rmSync9(restartPendingFile(paths.stateDir), { force: true });
+    const stateGone = routerTracked && existsSync31(paths.gatewayStateFile);
     if (stateGone)
-      rmSync8(paths.gatewayStateFile, { force: true });
+      rmSync9(paths.gatewayStateFile, { force: true });
     print(results, short);
     if (stateGone) {
       console.log(`- ${short(paths.gatewayStateFile)}: removed (the router's limit state)`);
@@ -16514,7 +17025,7 @@ async function runRestore(paths, options) {
     const forgot = forgetInstructionChoice(paths.stateDir, short);
     if (results.length === 0 && !stateGone) {
       if (!forgot)
-        console.log("Nothing to restore: anymodel has nothing in any file.");
+        console.log("Nothing to restore: cc-smart-dev-kit has nothing in any file.");
       return 0;
     }
     return results.some((result) => result.action === "no-backup") ? 1 : 0;
@@ -16522,11 +17033,11 @@ async function runRestore(paths, options) {
 }
 
 // src/cli/setup.ts
-import { existsSync as existsSync31, readFileSync as readFileSync32 } from "fs";
-import { delimiter, join as join29 } from "path";
+import { existsSync as existsSync32, readFileSync as readFileSync33 } from "fs";
+import { delimiter, join as join30 } from "path";
 
 // src/setup/auto-mode.ts
-import { join as join28 } from "path";
+import { join as join29 } from "path";
 var AUTO_MODE_PATH = ["autoMode", "environment"];
 var AUTO_MODE_DEFAULTS = "$defaults";
 function autoModeSource(dir, which) {
@@ -16538,12 +17049,12 @@ function autoModeSource(dir, which) {
   const entries = project.config?.autoMode ?? [];
   let differsFrom = null;
   const main = project.mainCheckout;
-  const own = join28(project.root, ".claude", "anymodel.json");
+  const own = join29(project.root, ".claude", "cc-smart-dev-kit.json");
   if (project.isWorktree && main !== null && project.configFile === own) {
-    const mainFile = join28(main, ".claude", "anymodel.json");
+    const mainFile = join29(main, ".claude", "cc-smart-dev-kit.json");
     let mainEntries;
     try {
-      mainEntries = loadAnymodelConfig(mainFile)?.autoMode ?? [];
+      mainEntries = loadCcSmartDevKitConfig(mainFile)?.autoMode ?? [];
     } catch {
       mainEntries = null;
     }
@@ -16570,10 +17081,10 @@ function show2(value) {
   return value === undefined ? "(none)" : JSON.stringify(value);
 }
 function marketplaceKnown(settingsFile) {
-  if (!existsSync31(settingsFile))
+  if (!existsSync32(settingsFile))
     return false;
   try {
-    const settings = JSON.parse(readFileSync32(settingsFile, "utf8"));
+    const settings = JSON.parse(readFileSync33(settingsFile, "utf8"));
     const entry = settings.extraKnownMarketplaces?.[MARKETPLACE];
     return typeof entry === "object" && entry !== null;
   } catch {
@@ -16582,19 +17093,19 @@ function marketplaceKnown(settingsFile) {
 }
 var STATUSLINE_KEY = ["statusLine"];
 function statuslineDeclinedFile(stateDir) {
-  return join29(stateDir, "statusline-declined");
+  return join30(stateDir, "statusline-declined");
 }
 function shellWord2(path) {
   return /^[\w./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`;
 }
 function statuslineSetting(paths) {
-  return { command: `${shellWord2(join29(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+  return { command: `${shellWord2(join30(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 function hasStatusline(settingsFile) {
-  if (!existsSync31(settingsFile))
+  if (!existsSync32(settingsFile))
     return false;
   try {
-    const settings = JSON.parse(readFileSync32(settingsFile, "utf8"));
+    const settings = JSON.parse(readFileSync33(settingsFile, "utf8"));
     return Object.hasOwn(settings, "statusLine");
   } catch {
     return false;
@@ -16637,7 +17148,7 @@ function applySetup(paths, managed, dryRun) {
       changes.push(`~ ${where}: removed ${JSON.stringify(entry)}`);
     }
     for (const entry of result.skipped) {
-      info.push(`  ${where}: ${JSON.stringify(entry)} is there already (not anymodel's); left alone`);
+      info.push(`  ${where}: ${JSON.stringify(entry)} is there already (not cc-smart-dev-kit's); left alone`);
     }
   }
   if (managed.claudeMem !== null) {
@@ -16712,7 +17223,7 @@ function askAutoMode(paths, options, planned, notes) {
   if (added.length === 0 && removed.length === 0)
     return wanted;
   const short = (path) => tildify(path, paths.home);
-  const from = wanted.file ?? `${wanted.source}/.claude/anymodel.json`;
+  const from = wanted.file ?? `${wanted.source}/.claude/cc-smart-dev-kit.json`;
   console.log(`Auto mode: trust rules from ${short(from)} ("autoMode"), for ${formatKeyPath(AUTO_MODE_PATH)} in ${short(paths.settingsFile)}:`);
   if (wanted.differsFrom !== null) {
     console.log(`  This worktree's file is not the same as the main checkout's (${short(wanted.differsFrom)}). The rules below come from this worktree's file.`);
@@ -16722,7 +17233,7 @@ function askAutoMode(paths, options, planned, notes) {
   for (const entry of removed)
     console.log(`  - ${JSON.stringify(entry)}`);
   if (options.machine.confirm === null) {
-    notes.push("! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run anymodel setup in a terminal.");
+    notes.push("! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run cc-smart-dev-kit setup in a terminal.");
     return null;
   }
   if (options.yes)
@@ -16734,10 +17245,10 @@ function askAutoMode(paths, options, planned, notes) {
   return wanted;
 }
 function askStatusline(paths, machine, managed) {
-  if (managed.statusline || machine.confirm === null || hasStatusline(paths.settingsFile) || existsSync31(statuslineDeclinedFile(paths.stateDir))) {
+  if (managed.statusline || machine.confirm === null || hasStatusline(paths.settingsFile) || existsSync32(statuslineDeclinedFile(paths.stateDir))) {
     return false;
   }
-  managed.statusline = machine.confirm("Show anymodel's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?");
+  managed.statusline = machine.confirm("Show cc-smart-dev-kit's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?");
   return !managed.statusline;
 }
 async function decideClaudeMem(paths, dryRun, report) {
@@ -16755,7 +17266,7 @@ async function decideClaudeMem(paths, dryRun, report) {
     report.info.push(`  claude-mem: would check ${planned.plan.target.backend} (one chat request) before writing its settings`);
     return planned.plan;
   }
-  const problem = await checkCheapTarget(planned.plan.target);
+  const problem = await checkAffordableTarget(planned.plan.target);
   if (problem !== null) {
     report.notes.push(`! claude-mem settings left alone: ${problem}`);
     return null;
@@ -16781,7 +17292,7 @@ function planWarp(paths, options) {
     const info = [];
     const packageManagerRemovesIt = system.kind === "apt" || system.kind === "dnf" || system.kind === "brew" && app.viaBrew;
     if (app.installed && !packageManagerRemovesIt) {
-      info.push(machine.platform === "darwin" ? "! Warp was not installed with Homebrew: move Warp.app from Applications to the Bin by hand" : `! Warp${version} was not installed by a package manager anymodel knows: remove it by hand`);
+      info.push(machine.platform === "darwin" ? "! Warp was not installed with Homebrew: move Warp.app from Applications to the Bin by hand" : `! Warp${version} was not installed by a package manager cc-smart-dev-kit knows: remove it by hand`);
     }
     return {
       ...NO_WARP,
@@ -16868,8 +17379,8 @@ async function runSetup2(paths, options) {
   const declined = askStatusline(paths, machine, managed);
   let warpYes = true;
   if (warp.commands.length > 0) {
-    const what = options.removeWarp ? "To remove Warp, anymodel runs these commands (sudo asks for your password)" : "To install Warp from its signed source, anymodel runs these commands (sudo asks for your password)";
-    const rerun = options.removeWarp ? "anymodel setup --remove-warp" : "anymodel setup --warp";
+    const what = options.removeWarp ? "To remove Warp, cc-smart-dev-kit runs these commands (sudo asks for your password)" : "To install Warp from its signed source, cc-smart-dev-kit runs these commands (sudo asks for your password)";
+    const rerun = options.removeWarp ? "cc-smart-dev-kit setup --remove-warp" : "cc-smart-dev-kit setup --warp";
     warpYes = askToRun(machine, what, warp.commands, rerun, report.notes);
   }
   let warpDone = warpYes;
@@ -16877,7 +17388,7 @@ async function runSetup2(paths, options) {
     try {
       if (warp.stage)
         await stageWarpFiles(machine, detectSystem(machine), paths);
-      const undo = options.removeWarp ? null : "anymodel setup --remove-warp";
+      const undo = options.removeWarp ? null : "cc-smart-dev-kit setup --remove-warp";
       warpDone = runOnTerminal(machine, warp.commands, undo, report.notes);
     } catch (error) {
       report.notes.push(`! ${messageOf(error)}. No Warp command was run.`);
@@ -16920,7 +17431,7 @@ async function runSetup2(paths, options) {
   }
   const pathDirs = (process.env.PATH ?? "").split(delimiter);
   if (!pathDirs.includes(paths.binDir)) {
-    console.log(`Note: ${short(paths.binDir)} is not on your PATH. Add it, so the anymodel command works.`);
+    console.log(`Note: ${short(paths.binDir)} is not on your PATH. Add it, so the cc-smart-dev-kit command works.`);
   }
   return ok ? 0 : 1;
 }
@@ -16935,7 +17446,7 @@ function printReport(report, nothing) {
 }
 
 // src/cli/statusline.ts
-import { readFileSync as readFileSync33 } from "fs";
+import { readFileSync as readFileSync34 } from "fs";
 var WARN_PERCENT = 85;
 function isJsonObject10(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -16995,7 +17506,7 @@ async function runStatusline(paths, readStdin, nowMs) {
   }
   let state = null;
   try {
-    state = parseLimitState(readFileSync33(paths.gatewayStateFile, "utf8"));
+    state = parseLimitState(readFileSync34(paths.gatewayStateFile, "utf8"));
   } catch {
     state = null;
   }
@@ -17004,8 +17515,8 @@ async function runStatusline(paths, readStdin, nowMs) {
 }
 
 // src/update/apply.ts
-import { existsSync as existsSync32, readFileSync as readFileSync34 } from "fs";
-import { join as join30 } from "path";
+import { existsSync as existsSync33, readFileSync as readFileSync35 } from "fs";
+import { join as join31 } from "path";
 var CLAUDE_TIMEOUT_MS = 180000;
 var MARKETPLACE_REFRESH = ["plugin", "marketplace", "update", MARKETPLACE];
 var PLUGIN_UPDATE = ["plugin", "update", PLUGIN_ID, "--scope", "user"];
@@ -17042,10 +17553,10 @@ function applyUpdate(paths, claude, run, say) {
 }
 function routerNeedsSetup(paths) {
   const install = findUserInstall(paths.installedPluginsFile);
-  if (install === null || !existsSync32(paths.routerCopy))
+  if (install === null || !existsSync33(paths.routerCopy))
     return false;
-  const bundle = join30(install.installPath, "dist", "router.js");
-  return existsSync32(bundle) && readFileSync34(bundle, "utf8") !== readFileSync34(paths.routerCopy, "utf8");
+  const bundle = join31(install.installPath, "dist", "router.js");
+  return existsSync33(bundle) && readFileSync35(bundle, "utf8") !== readFileSync35(paths.routerCopy, "utf8");
 }
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
 function commandContext(env, home) {
@@ -17194,14 +17705,14 @@ ${UPDATE_USAGE}`);
 }
 
 // src/cli/usage.ts
-import { existsSync as existsSync33, readdirSync as readdirSync8, readFileSync as readFileSync35, statSync as statSync9 } from "fs";
-import { basename as basename5, join as join31, resolve as resolve6 } from "path";
+import { existsSync as existsSync34, readdirSync as readdirSync9, readFileSync as readFileSync36, statSync as statSync10 } from "fs";
+import { basename as basename6, join as join32, resolve as resolve6 } from "path";
 function isJsonObject11(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function entries(path) {
   try {
-    const all = readdirSync8(path, { withFileTypes: true });
+    const all = readdirSync9(path, { withFileTypes: true });
     return {
       dirs: all.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort(),
       files: all.filter((entry) => entry.isFile()).map((entry) => entry.name).sort()
@@ -17212,14 +17723,14 @@ function entries(path) {
 }
 function changedAt(path) {
   try {
-    return statSync9(path).mtimeMs;
+    return statSync10(path).mtimeMs;
   } catch {
     return Number.NEGATIVE_INFINITY;
   }
 }
 function readJson2(path) {
   try {
-    return JSON.parse(readFileSync35(path, "utf8"));
+    return JSON.parse(readFileSync36(path, "utf8"));
   } catch {
     return null;
   }
@@ -17231,7 +17742,7 @@ function readTranscript(path, sinceMs, sidechains) {
     return { cwd, replies };
   let text;
   try {
-    text = readFileSync35(path, "utf8");
+    text = readFileSync36(path, "utf8");
   } catch {
     return { cwd, replies };
   }
@@ -17269,7 +17780,7 @@ function matches(project, folder, cwd) {
     return true;
   if (cwd === null)
     return false;
-  return cwd === resolve6(project) || basename5(cwd) === project;
+  return cwd === resolve6(project) || basename6(cwd) === project;
 }
 function count(into, replies) {
   for (const model of replies.values())
@@ -17278,7 +17789,7 @@ function count(into, replies) {
 function collectUsage(projectsDir, options) {
   const out = [];
   for (const project of entries(projectsDir).dirs) {
-    const folder = join31(projectsDir, project);
+    const folder = join32(projectsDir, project);
     const listed = entries(folder);
     const sessions = new Set([
       ...listed.files.filter((name) => name.endsWith(".jsonl")).map((name) => name.slice(0, -6)),
@@ -17294,18 +17805,18 @@ function collectUsage(projectsDir, options) {
         session,
         subagents: 0
       };
-      const own = readTranscript(join31(folder, `${session}.jsonl`), options.sinceMs, false);
+      const own = readTranscript(join32(folder, `${session}.jsonl`), options.sinceMs, false);
       usage.cwd = own.cwd;
       count(usage.main, own.replies);
-      const subagents = join31(folder, session, "subagents");
-      const metas = existsSync33(subagents) ? entries(subagents).files.filter((name) => name.endsWith(".meta.json")) : [];
+      const subagents = join32(folder, session, "subagents");
+      const metas = existsSync34(subagents) ? entries(subagents).files.filter((name) => name.endsWith(".meta.json")) : [];
       for (const name of metas) {
-        const transcript = join31(subagents, name.replace(/\.meta\.json$/, ".jsonl"));
-        const started = changedAt(join31(subagents, name));
+        const transcript = join32(subagents, name.replace(/\.meta\.json$/, ".jsonl"));
+        const started = changedAt(join32(subagents, name));
         const { cwd, replies } = readTranscript(transcript, options.sinceMs, true);
         if (replies.size === 0 && started < options.sinceMs)
           continue;
-        const meta = readJson2(join31(subagents, name));
+        const meta = readJson2(join32(subagents, name));
         usage.cwd ??= cwd;
         usage.subagents += 1;
         const launched = isJsonObject11(meta) && typeof meta.model === "string" ? meta.model : "inherited";
@@ -17405,10 +17916,10 @@ function runUsage(paths, args, nowMs) {
   if ("error" in options) {
     console.error(`${options.error}
 
-Usage: anymodel usage [--hours <n>] [--project <folder or name>]`);
+Usage: cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>]`);
     return 2;
   }
-  const projectsDir = join31(paths.claudeConfigDir, "projects");
+  const projectsDir = join32(paths.claudeConfigDir, "projects");
   const sinceMs = nowMs - options.hours * 3600000;
   const sessions = collectUsage(projectsDir, { project: options.project, sinceMs });
   console.log(formatUsage(sessions, options.hours, projectsDir, paths.home, readAgentLaunches(agentLaunchesFile(paths.stateDir), sinceMs)));
@@ -17462,7 +17973,10 @@ function appleString(text) {
 function plainNotification(alert, platform) {
   const body = alert.body;
   if (platform === "linux") {
-    return { argv: ["notify-send", "--app-name=anymodel", alert.title, body], timeoutMs: 1e4 };
+    return {
+      argv: ["notify-send", "--app-name=cc-smart-dev-kit", alert.title, body],
+      timeoutMs: 1e4
+    };
   }
   if (platform === "darwin") {
     return {
@@ -17481,7 +17995,7 @@ function runAlert(alert, platform, launcher, run) {
     const asked = run({
       argv: [
         "notify-send",
-        "--app-name=anymodel",
+        "--app-name=cc-smart-dev-kit",
         `--action=use=${alert.action.label}`,
         "--action=wait=Wait",
         alert.title,
@@ -17499,7 +18013,7 @@ function runAlert(alert, platform, launcher, run) {
       run({
         argv: [
           "notify-send",
-          "--app-name=anymodel",
+          "--app-name=cc-smart-dev-kit",
           done ? "Fallback on" : "Fallback not turned on",
           done ? `${alert.action.label.replace(/^Use /, "Using ")}: ${COMMAND} gateway status shows it. Send a message in Claude Code to go on now.` : `Run it yourself to see why: ${COMMAND} ${alert.action.args.join(" ")}`
         ],
@@ -17516,11 +18030,11 @@ function runAlert(alert, platform, launcher, run) {
 }
 
 // src/jobs/commands.ts
-import { mkdirSync as mkdirSync12, readdirSync as readdirSync10, statSync as statSync11 } from "fs";
+import { mkdirSync as mkdirSync12, readdirSync as readdirSync11, statSync as statSync12 } from "fs";
 import { availableParallelism, hostname as hostname2 } from "os";
 
 // src/jobs/ancestry.ts
-import { readFileSync as readFileSync36 } from "fs";
+import { readFileSync as readFileSync37 } from "fs";
 var MAX_DEPTH = 128;
 function parentPidFromStat(stat) {
   const end = stat.lastIndexOf(")");
@@ -17558,23 +18072,23 @@ async function isInsideHeavyJob(facts) {
 }
 function readProcStat(pid) {
   try {
-    return readFileSync36(`/proc/${String(pid)}/stat`, "utf8");
+    return readFileSync37(`/proc/${String(pid)}/stat`, "utf8");
   } catch {
     return null;
   }
 }
 
 // src/jobs/config.ts
-import { existsSync as existsSync34, readFileSync as readFileSync37 } from "fs";
-import { isAbsolute as isAbsolute4, join as join32 } from "path";
+import { existsSync as existsSync35, readFileSync as readFileSync38 } from "fs";
+import { isAbsolute as isAbsolute4, join as join33 } from "path";
 function jobsPaths(home) {
   return {
-    configFile: join32(home, ".config", "anymodel", "jobs.json"),
-    stateDir: join32(home, ".local", "share", "anymodel", "jobs")
+    configFile: join33(home, ".config", "cc-smart-dev-kit", "jobs.json"),
+    stateDir: join33(home, ".local", "share", "cc-smart-dev-kit", "jobs")
   };
 }
 var DEFAULT_RESERVE_GB = 22;
-var DEFAULT_SLICE = "anymodel-heavy.slice";
+var DEFAULT_SLICE = "cc-smart-dev-kit-heavy.slice";
 var absolutePath = string2().min(1).refine((path) => isAbsolute4(path), "must be an absolute path");
 var jobsMachineConfigSchema = strictObject({
   stateDir: absolutePath.optional(),
@@ -17589,11 +18103,11 @@ class JobsConfigError extends Error {
   name = "JobsConfigError";
 }
 function loadJobsConfig(file) {
-  if (!existsSync34(file))
+  if (!existsSync35(file))
     return {};
   let raw;
   try {
-    raw = JSON.parse(readFileSync37(file, "utf8"));
+    raw = JSON.parse(readFileSync38(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new JobsConfigError(`Invalid ${file}: not valid JSON (${reason})`);
@@ -17611,16 +18125,16 @@ function loadJobsConfig(file) {
 
 // src/jobs/launch.ts
 import { spawn, spawnSync } from "child_process";
-import { existsSync as existsSync35 } from "fs";
+import { existsSync as existsSync36 } from "fs";
 import { constants as constants2 } from "os";
 
 // src/jobs/memory.ts
-import { readFileSync as readFileSync38 } from "fs";
+import { readFileSync as readFileSync39 } from "fs";
 import { totalmem } from "os";
 var GIB = 1024 ** 3;
 var realReadText = (path) => {
   try {
-    return readFileSync38(path, "utf8");
+    return readFileSync39(path, "utf8");
   } catch {
     return null;
   }
@@ -17926,7 +18440,7 @@ function realLaunchFacts(slice, timeoutMs = SYSTEMD_TIMEOUT_MS) {
   const linux = process.platform === "linux";
   return {
     platform: process.platform,
-    hasUserRuntimeDir: uid !== undefined && existsSync35(`/run/user/${String(uid)}`),
+    hasUserRuntimeDir: uid !== undefined && existsSync36(`/run/user/${String(uid)}`),
     hasSystemdRun: linux && canRun("systemd-run", timeoutMs),
     hasChoom: linux && canRun("choom", timeoutMs),
     probeScope: (withOomPolicy) => exitsZero(probeArgv(slice, withOomPolicy), timeoutMs)
@@ -18374,19 +18888,19 @@ async function runJob(request, deps) {
 // src/jobs/store.ts
 import {
   chmodSync as chmodSync3,
-  existsSync as existsSync36,
+  existsSync as existsSync37,
   mkdirSync as mkdirSync11,
-  readdirSync as readdirSync9,
-  readFileSync as readFileSync39,
+  readdirSync as readdirSync10,
+  readFileSync as readFileSync40,
   realpathSync as realpathSync5,
-  renameSync as renameSync3,
+  renameSync as renameSync4,
   statfsSync,
-  statSync as statSync10,
+  statSync as statSync11,
   unlinkSync as unlinkSync4,
   utimesSync,
   writeFileSync as writeFileSync8
 } from "fs";
-import { join as join33 } from "path";
+import { join as join34 } from "path";
 var HEARTBEAT_MS = 5000;
 var UNSEEN_STALE_MS = 30000;
 var LOCK_STALE_MS = 30000;
@@ -18425,11 +18939,11 @@ function errorCode(error) {
 }
 function writeWhole(file, text, token) {
   const dir = file.slice(0, file.lastIndexOf("/"));
-  const temp = join33(dir, `.${token}.tmp`);
+  const temp = join34(dir, `.${token}.tmp`);
   writeFileSync8(temp, text, { mode: FILE_MODE });
   try {
     chmodSync3(temp, FILE_MODE);
-    renameSync3(temp, file);
+    renameSync4(temp, file);
   } catch (error) {
     removeQuietly(temp);
     throw error;
@@ -18447,8 +18961,8 @@ function leaseStore(options) {
     return holderIsGone(visible ? holder : null, lastSeenMs, UNSEEN_STALE_MS, startTimeOf);
   });
   const readStartTime = options.startTimeOf ?? processStartTime;
-  const leases = join33(options.dir, "leases");
-  const tickets = join33(options.dir, "tickets");
+  const leases = join34(options.dir, "leases");
+  const tickets = join34(options.dir, "tickets");
   const mine = new Map;
   const noted = new Set;
   let timer = null;
@@ -18490,14 +19004,14 @@ function leaseStore(options) {
   };
   const removeLeftover = (path) => {
     try {
-      if (Date.now() - statSync10(path).mtimeMs > LEFTOVER_MS)
+      if (Date.now() - statSync11(path).mtimeMs > LEFTOVER_MS)
         removeQuietly(path);
     } catch {}
   };
   const readLive = (folder) => {
     let names;
     try {
-      names = readdirSync9(folder);
+      names = readdirSync10(folder);
     } catch (error) {
       if (errorCode(error) === "ENOENT")
         return [];
@@ -18512,7 +19026,7 @@ function leaseStore(options) {
     };
     const live = [];
     for (const name of names) {
-      const path = join33(folder, name);
+      const path = join34(folder, name);
       if (name.startsWith(".")) {
         if (name.endsWith(".tmp") || name.startsWith(".probe-"))
           removeLeftover(path);
@@ -18523,7 +19037,7 @@ function leaseStore(options) {
       let text;
       let mtimeMs;
       try {
-        mtimeMs = statSync10(path).mtimeMs;
+        mtimeMs = statSync11(path).mtimeMs;
       } catch (error) {
         if (errorCode(error) === "ENOENT")
           continue;
@@ -18531,7 +19045,7 @@ function leaseStore(options) {
       }
       let unreadable = null;
       try {
-        text = readFileSync39(path, "utf8");
+        text = readFileSync40(path, "utf8");
       } catch (error) {
         const code = errorCode(error);
         if (code === "ENOENT")
@@ -18561,7 +19075,7 @@ function leaseStore(options) {
   };
   const write = (folder, gb, record, exclusive) => {
     const token = crypto.randomUUID();
-    const path = join33(folder, `${token}.json`);
+    const path = join34(folder, `${token}.json`);
     const text = JSON.stringify({
       store: 1,
       gb,
@@ -18618,10 +19132,10 @@ function leaseStore(options) {
   };
 }
 function readBudgetFile(dir) {
-  const file = join33(dir, "budget");
+  const file = join34(dir, "budget");
   let text;
   try {
-    text = readFileSync39(file, "utf8");
+    text = readFileSync40(file, "utf8");
   } catch (error) {
     return { problem: `${file} cannot be read (${errorCode(error) ?? String(error)})` };
   }
@@ -18634,7 +19148,7 @@ function readBudgetFile(dir) {
 function readExclusiveNames(dir) {
   let text;
   try {
-    text = readFileSync39(join33(dir, "exclusive"), "utf8");
+    text = readFileSync40(join34(dir, "exclusive"), "utf8");
   } catch (error) {
     if (errorCode(error) === "ENOENT")
       return new Set;
@@ -18702,7 +19216,7 @@ var realSharedFolderFacts = {
   },
   mountinfo: () => {
     try {
-      return readFileSync39("/proc/self/mountinfo", "utf8");
+      return readFileSync40("/proc/self/mountinfo", "utf8");
     } catch {
       return null;
     }
@@ -18729,7 +19243,7 @@ function networkFileSystem(dir, facts) {
   return subtype !== null && NETWORK_FUSE.has(subtype) ? `fuse.${subtype}` : null;
 }
 function openSharedStore(dir, options = {}) {
-  if (!existsSync36(dir)) {
+  if (!existsSync37(dir)) {
     return { note: `The shared folder ${dir} is missing: this job runs without its budget.` };
   }
   const network = networkFileSystem(dir, options.facts ?? realSharedFolderFacts);
@@ -18743,15 +19257,15 @@ function openSharedStore(dir, options = {}) {
     return { note: `The shared folder ${dir} is left out: ${budget.problem}.` };
   }
   for (const folder of ["leases", "tickets"]) {
-    const path = join33(dir, folder);
+    const path = join34(dir, folder);
     let isFolder = false;
     try {
-      isFolder = statSync10(path).isDirectory();
+      isFolder = statSync11(path).isDirectory();
     } catch {}
     if (!isFolder) {
       return { note: `The shared folder ${dir} is left out: ${path} is missing.` };
     }
-    const probe = join33(path, `.probe-${crypto.randomUUID()}`);
+    const probe = join34(path, `.probe-${crypto.randomUUID()}`);
     try {
       writeFileSync8(probe, "");
       unlinkSync4(probe);
@@ -18790,7 +19304,7 @@ Commands:
   kinds          The kinds of heavy job, and what each reserves.
 
 How it works: docs/jobs.md in the plugin's repo.`;
-var PREFIX = "[anymodel job]";
+var PREFIX = "[cc-smart-dev-kit job]";
 function machineBudget(config, memory) {
   if (config.budgetGb !== undefined)
     return { gb: config.budgetGb, why: "set in jobs.json" };
@@ -18841,7 +19355,7 @@ function openStores(ctx, config, onNote) {
 }
 function envFilesIn(dir) {
   try {
-    return readdirSync10(dir).filter((name) => /^\.env(\..+)?$/.test(name));
+    return readdirSync11(dir).filter((name) => /^\.env(\..+)?$/.test(name));
   } catch {
     return [];
   }
@@ -18849,7 +19363,7 @@ function envFilesIn(dir) {
 function isFileIn(cwd) {
   return (path) => {
     try {
-      return statSync11(path.startsWith("/") ? path : `${cwd}/${path}`).isFile();
+      return statSync12(path.startsWith("/") ? path : `${cwd}/${path}`).isFile();
     } catch {
       return false;
     }
@@ -19099,14 +19613,14 @@ ${USAGE2}`);
 }
 
 // src/machine/machine.ts
-import { existsSync as existsSync37, readFileSync as readFileSync40 } from "fs";
+import { existsSync as existsSync38, readFileSync as readFileSync41 } from "fs";
 var RUN_TIMEOUT_MS = 300000;
-var TEST_HOST_VAR = "ANYMODEL_TEST_HOST";
+var TEST_HOST_VAR = "CC_SMART_DEV_KIT_TEST_HOST";
 function hostFacts(env) {
   const real = {
     platform: process.platform,
     arch: process.arch,
-    osRelease: () => existsSync37("/etc/os-release") ? readFileSync40("/etc/os-release", "utf8") : null,
+    osRelease: () => existsSync38("/etc/os-release") ? readFileSync41("/etc/os-release", "utf8") : null,
     macApp: "/Applications/Warp.app"
   };
   const text = env[TEST_HOST_VAR];
@@ -19154,7 +19668,7 @@ function realMachine(env, confirm2) {
     arch: host.arch,
     osRelease: host.osRelease,
     macApp: host.macApp,
-    exists: (path) => existsSync37(path),
+    exists: (path) => existsSync38(path),
     fetchText: async (url) => {
       let at = url;
       for (let hop = 0;hop <= 5; hop += 1) {
@@ -19180,7 +19694,7 @@ function realMachine(env, confirm2) {
 }
 
 // src/search/command.ts
-import { existsSync as existsSync38 } from "fs";
+import { existsSync as existsSync39 } from "fs";
 
 // src/search/client.ts
 var REQUEST_TIMEOUT_MS = 30000;
@@ -19454,7 +19968,7 @@ function parseSearchArgs(args) {
   return parsed;
 }
 function searchBackend(configFile) {
-  if (!existsSync38(configFile)) {
+  if (!existsSync39(configFile)) {
     return {
       error: `the gateway is not set up: ${configFile} does not exist.
 ` + `Search goes through the gateway's OmniRoute backend. Set it up with: ${COMMAND} gateway setup --backend-key-stdin omniroute`
@@ -19511,23 +20025,23 @@ ${USAGE3}`);
 }
 
 // src/entries/cli.ts
-var HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
+var HELP = `cc-smart-dev-kit ${VERSION} - set up and check the cc-smart-dev-kit plugin for Claude Code
 
-Usage: anymodel <command> [options]
+Usage: cc-smart-dev-kit <command> [options]
 
 Commands:
   setup [--dry-run] [--yes] [--project <dir>] [--warp | --remove-warp]
         [--no-instructions | --instructions] [--statusline]
                      Install the launcher in ~/.local/bin, turn on plugin auto-update,
                      install the plugin's instructions for Claude (a copy in
-                     ~/.claude/anymodel/instructions/, imported by a block in
+                     ~/.claude/cc-smart-dev-kit/instructions/, imported by a block in
                      ~/.claude/CLAUDE.md), add the companion plugins' marketplaces, point
-                     claude-mem at the gateway's cheap model (when both are there), and
+                     claude-mem at the gateway's affordable model (when both are there), and
                      copy the project's auto-mode entries into your settings. The entries
                      are trust rules: they are shown and asked on a terminal (--yes:
                      shown, not asked); with no terminal they are left out, also with
                      --yes.
-                     --project <dir>: the project to read .claude/anymodel.json from
+                     --project <dir>: the project to read .claude/cc-smart-dev-kit.json from
                      (default: this folder). --warp: install the Warp terminal (the
                      commands are shown and asked; sudo asks for your password) and its
                      Claude plugin. --remove-warp: take them out again.
@@ -19535,10 +20049,10 @@ Commands:
                      later plain setup leaves them out too. --instructions brings them
                      back. restore forgets the choice.
                      --statusline also sets Claude Code's status line to
-                     "anymodel statusline" (asked when run in a terminal).
+                     "cc-smart-dev-kit statusline" (asked when run in a terminal).
                      --dry-run prints what would change, and writes, runs and checks
                      nothing.
-  doctor [--live]    Check the install, the anymodel files the current project's CLAUDE.md
+  doctor [--live]    Check the install, the cc-smart-dev-kit files the current project's CLAUDE.md
                      imports, and the project of the current folder. Exit code 1 when a
                      check fails.
                      --live: also run two throwaway Claude Code sessions in temp repos,
@@ -19551,7 +20065,7 @@ Commands:
   session-name <session id> <name>
                      Name a Claude session after its task (for the session-name hook).
   restore [--yes] [--now]
-                     Remove what anymodel added, and keep everything else: its settings
+                     Remove what cc-smart-dev-kit added, and keep everything else: its settings
                      keys and entries (claude-mem's settings, the auto-mode entries), its
                      Markdown blocks, and the files it created (the launcher, the
                      instructions, the router copy and units). Each changed file gets a
@@ -19561,16 +20075,26 @@ Commands:
                      them, again to stop and remove the router (it asks; --yes: without
                      asking). --now: both at once, and every running session fails until
                      it restarts.
+  migrate [--dry-run] [--yes]
+                     Move a machine that still has this plugin's old "anymodel" names:
+                     its folders, its state folder's records and backups, the settings
+                     keys the old setup owned (the slots' names and words), the
+                     instructions block in ~/.claude/CLAUDE.md, the gateway config's
+                     slots (with an alias for each old name, so running sessions keep
+                     working), and the router units. Refuses to run inside a Claude Code
+                     session: run it in your own terminal, then restart your sessions.
+                     --yes: no questions (the router is replaced without asking). The old
+                     plugin is uninstalled only after a terminal yes.
   update [--check | --hold | --resume]
-                     Install a newer anymodel now, with the output of each step.
+                     Install a newer cc-smart-dev-kit now, with the output of each step.
                      --check: only say whether a newer version exists. A new Claude
                      session checks by itself, at most once an hour, and installs it in
                      the background; --hold stops that on this machine, --resume starts
                      it again. Nothing restarts: restart the sessions to load it.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
-                     anymodel gateway --help lists them.
+                     cc-smart-dev-kit gateway --help lists them.
   job <command>      The queue for heavy jobs (type checks, test runs, builds):
-                     run, status, kinds. anymodel job --help lists them.
+                     run, status, kinds. cc-smart-dev-kit job --help lists them.
   search "<query>" [--max <n>] [--json]
   search --fetch <url> [--json]
                      Search the web through the gateway (OmniRoute, Ollama's web search):
@@ -19592,16 +20116,16 @@ Paths follow HOME and CLAUDE_CONFIG_DIR.`;
 var HOOK_HELP = `Usage: ${COMMAND} hook <${PROJECT_HOOKS.map((spec) => spec.name).join("|")}>
 
 The worktree engine is opt-in per project. To turn it on in a project, give its
-.claude/anymodel.json a "worktrees" field, and paste these hooks into its
+.claude/cc-smart-dev-kit.json a "worktrees" field, and paste these hooks into its
 .claude/settings.json (merge them with any "hooks" it has):
 
 ${projectHookSettingsText()}`;
 function routerBundle() {
-  const beside = join34(import.meta.dir, "router.js");
-  return existsSync39(beside) ? beside : join34(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
+  const beside = join35(import.meta.dir, "router.js");
+  return existsSync40(beside) ? beside : join35(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
 }
 function pluginDir() {
-  return basename6(import.meta.dir) === "dist" ? dirname9(import.meta.dir) : join34(import.meta.dir, "..", "..", "plugin");
+  return basename7(import.meta.dir) === "dist" ? dirname9(import.meta.dir) : join35(import.meta.dir, "..", "..", "plugin");
 }
 var liveRunner = (argv, { cwd, env, timeoutMs }) => {
   try {
@@ -19700,7 +20224,7 @@ ${HELP}`);
 ${HELP}`);
         return 2;
       }
-      if (!existsSync39(project) || !statSync12(project).isDirectory()) {
+      if (!existsSync40(project) || !statSync13(project).isDirectory()) {
         console.error(`--project: ${project} is not a folder`);
         return 2;
       }
@@ -19723,12 +20247,12 @@ ${HELP}`);
     case ALERT_WORKER_COMMAND: {
       const alert = rest.length === 1 ? parseAlert(rest[0] ?? "") : null;
       if (alert === null) {
-        console.error(`Usage: anymodel ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
+        console.error(`Usage: cc-smart-dev-kit ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
         return 2;
       }
-      const launcher = join34(paths.binDir, LAUNCHER_NAME);
+      const launcher = join35(paths.binDir, LAUNCHER_NAME);
       if (runAlert(alert, process.platform, launcher, spawnRunner) === "no notifier") {
-        console.error(`anymodel: ${alert.title}. ${alert.body}`);
+        console.error(`cc-smart-dev-kit: ${alert.title}. ${alert.body}`);
       }
       return 0;
     }
@@ -19749,7 +20273,7 @@ ${HELP}`);
           machine: realMachine(process.env, null)
         },
         local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
-        project: { cwd: process.cwd(), pluginHooksFile: join34(pluginDir(), "hooks", "hooks.json") },
+        project: { cwd: process.cwd(), pluginHooksFile: join35(pluginDir(), "hooks", "hooks.json") },
         live: rest.includes("--live") ? {
           pluginDir: pluginDir(),
           hookCommand: liveHookCommand(pluginDir(), process.execPath),
@@ -19801,6 +20325,28 @@ ${HELP}`);
         probe: realProbe()
       });
     }
+    case "migrate": {
+      const unknown = rest.filter((arg) => arg !== "--dry-run" && arg !== "--yes");
+      if (unknown.length > 0) {
+        console.error(`Unknown option: ${unknown.join(" ")}
+
+${HELP}`);
+        return 2;
+      }
+      return runMigrate(paths, {
+        dryRun: rest.includes("--dry-run"),
+        yes: rest.includes("--yes"),
+        bunPath: process.execPath,
+        bunVersion: Bun.version,
+        bundle: routerBundle(),
+        instructionsSource: instructionsFolder(import.meta.dir),
+        runner,
+        systemd,
+        confirm: ask,
+        probe: realProbe(),
+        env: process.env
+      });
+    }
     case "update":
       return runUpdate(paths, process.env, rest);
     case "gateway":
@@ -19818,7 +20364,7 @@ ${HELP}`);
       });
     case "version":
     case "--version":
-      console.log(`anymodel ${VERSION}`);
+      console.log(`cc-smart-dev-kit ${VERSION}`);
       return 0;
     case undefined:
     case "help":
@@ -19836,6 +20382,6 @@ ${HELP}`);
 try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
-  console.error(`anymodel: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`cc-smart-dev-kit: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 }

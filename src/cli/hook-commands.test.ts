@@ -46,7 +46,7 @@ const SETTINGS = `{
         "hooks": [
           {
             "type": "command",
-            "command": "\\"$HOME/.local/bin/anymodel\\" hook worktree-create",
+            "command": "\\"$HOME/.local/bin/cc-smart-dev-kit\\" hook worktree-create",
             "timeout": 600
           }
         ]
@@ -57,7 +57,7 @@ const SETTINGS = `{
         "hooks": [
           {
             "type": "command",
-            "command": "\\"$HOME/.local/bin/anymodel\\" hook worktree-remove",
+            "command": "\\"$HOME/.local/bin/cc-smart-dev-kit\\" hook worktree-remove",
             "timeout": 60
           }
         ]
@@ -68,7 +68,7 @@ const SETTINGS = `{
         "hooks": [
           {
             "type": "command",
-            "command": "\\"$HOME/.local/bin/anymodel\\" hook subagent-stop",
+            "command": "\\"$HOME/.local/bin/cc-smart-dev-kit\\" hook subagent-stop",
             "timeout": 60
           }
         ]
@@ -80,19 +80,21 @@ const SETTINGS = `{
 /** A clone with the worktree engine turned on. */
 function engineClone(): string {
   const { repo } = makeClone();
-  writeClaudeFile(repo, "anymodel.json", { worktrees: { base: "main", prefix: "app-wt-" } });
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+    worktrees: { base: "main", prefix: "app-wt-" },
+  });
   return repo;
 }
 
-describe("anymodel hook", () => {
+describe("cc-smart-dev-kit hook", () => {
   test("no name: the lines to paste, exit 0", () => {
     const run = cli(["hook"]);
     expect(run.exitCode).toBe(0);
     expect(run.stdout).toBe(
-      `Usage: anymodel hook <worktree-create|worktree-remove|subagent-stop>
+      `Usage: cc-smart-dev-kit hook <worktree-create|worktree-remove|subagent-stop>
 
 The worktree engine is opt-in per project. To turn it on in a project, give its
-.claude/anymodel.json a "worktrees" field, and paste these hooks into its
+.claude/cc-smart-dev-kit.json a "worktrees" field, and paste these hooks into its
 .claude/settings.json (merge them with any "hooks" it has):
 
 ${SETTINGS}
@@ -110,7 +112,7 @@ ${SETTINGS}
     const run = cli(["hook", "git-guard"]);
     expect(run.exitCode).toBe(2);
     expect(run.stdout).toBe("");
-    expect(run.stderr).toStartWith("Unknown hook: git-guard\n\nUsage: anymodel hook <");
+    expect(run.stderr).toStartWith("Unknown hook: git-guard\n\nUsage: cc-smart-dev-kit hook <");
   });
 
   test("worktree-create: the folder on stdout and nothing else, exit 0", () => {
@@ -130,7 +132,7 @@ ${SETTINGS}
     });
   });
 
-  test("worktree-create without worktrees in anymodel.json: exit 1, the reason, no folder", () => {
+  test("worktree-create without worktrees in cc-smart-dev-kit.json: exit 1, the reason, no folder", () => {
     const repo = makeRepo();
     const run = cli(["hook", "worktree-create"], {
       stdin: JSON.stringify({ hook_event_name: "WorktreeCreate", cwd: repo, name: "fix/x" }),
@@ -138,8 +140,8 @@ ${SETTINGS}
     expect(run.exitCode).toBe(1);
     expect(run.stdout).toBe("");
     expect(run.stderr).toBe(
-      "worktree not created: this project wires the anymodel worktree hooks (anymodel hook ...), but has no .claude/anymodel.json. " +
-        'Add "worktrees" to .claude/anymodel.json, or take the three anymodel hook lines out of .claude/settings.json (the anymodel README, § Worktrees)\n',
+      "worktree not created: this project wires the cc-smart-dev-kit worktree hooks (cc-smart-dev-kit hook ...), but has no .claude/cc-smart-dev-kit.json. " +
+        'Add "worktrees" to .claude/cc-smart-dev-kit.json, or take the three cc-smart-dev-kit hook lines out of .claude/settings.json (the cc-smart-dev-kit README, § Worktrees)\n',
     );
   });
 
@@ -164,7 +166,7 @@ ${SETTINGS}
     expect(cli(["hook", "worktree-remove"], { stdin: "nope" })).toMatchObject({
       exitCode: 1,
       stdout: "",
-      stderr: "anymodel worktree-remove: the hook input is not JSON\n",
+      stderr: "cc-smart-dev-kit worktree-remove: the hook input is not JSON\n",
     });
   });
 
@@ -172,7 +174,7 @@ ${SETTINGS}
     expect(cli(["hook", "subagent-stop"], { stdin: "nope" })).toMatchObject({
       exitCode: 0,
       stdout: "",
-      stderr: "anymodel subagent-stop: the hook input is not JSON\n",
+      stderr: "cc-smart-dev-kit subagent-stop: the hook input is not JSON\n",
     });
   });
 
@@ -181,7 +183,14 @@ ${SETTINGS}
     const home = tempDir("wired-home");
     const configDir = join(home, ".claude");
     // The installed plugin: its dist/cli.js runs this repo's CLI, with the port guard.
-    const installPath = join(configDir, "plugins", "cache", "anymodel", "anymodel", VERSION);
+    const installPath = join(
+      configDir,
+      "plugins",
+      "cache",
+      "cc-smart-dev-kit",
+      "cc-smart-dev-kit",
+      VERSION,
+    );
     mkdirSync(join(installPath, "dist"), { recursive: true });
     const guard = subprocessGuard();
     writeFileSync(
@@ -196,9 +205,13 @@ ${SETTINGS}
       }),
     );
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
-    writeFileSync(join(home, ".local", "bin", "anymodel"), launcherScript(process.execPath), {
-      mode: 0o755,
-    });
+    writeFileSync(
+      join(home, ".local", "bin", "cc-smart-dev-kit"),
+      launcherScript(process.execPath),
+      {
+        mode: 0o755,
+      },
+    );
     const run = Bun.spawnSync(["/bin/sh", "-c", projectHookCommand("worktree-create")], {
       cwd: repo,
       env: {
@@ -220,25 +233,25 @@ ${SETTINGS}
   });
 });
 
-describe("anymodel session-name", () => {
+describe("cc-smart-dev-kit session-name", () => {
   test("records the name the session chose, cleaned", () => {
     const run = cli(["session-name", SESSION, "Fix", "the", "login\tpage"]);
     expect(run.exitCode).toBe(0);
     expect(run.stdout).toBe(
       'This session will be named "Fix the login page" from the next prompt.\n',
     );
-    expect(readFileSync(join(run.home, "anymodel-session-names", `${SESSION}.name`), "utf8")).toBe(
-      "Fix the login page",
-    );
+    expect(
+      readFileSync(join(run.home, "cc-smart-dev-kit-session-names", `${SESSION}.name`), "utf8"),
+    ).toBe("Fix the login page");
   });
 
   test("no name: usage, exit 2; a bad id: the reason, exit 1", () => {
     const usage = cli(["session-name", SESSION]);
     expect(usage.exitCode).toBe(2);
-    expect(usage.stderr).toStartWith("Usage: anymodel session-name <session id> <name>");
+    expect(usage.stderr).toStartWith("Usage: cc-smart-dev-kit session-name <session id> <name>");
     const bad = cli(["session-name", "../x", "name"]);
     expect(bad.exitCode).toBe(1);
-    expect(bad.stderr).toBe('anymodel: "../x" is not a session id\n');
+    expect(bad.stderr).toBe('cc-smart-dev-kit: "../x" is not a session id\n');
   });
 });
 
@@ -250,16 +263,18 @@ test("doctor refuses an option it does not know", () => {
 
 test("doctor checks the project of the folder it runs in, against the plugin's own hooks", () => {
   const repo = makeRepo();
-  writeClaudeFile(repo, "anymodel.json", { worktrees: { base: "main", prefix: "app-wt-" } });
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+    worktrees: { base: "main", prefix: "app-wt-" },
+  });
   writeClaudeFile(repo, "settings.json", {
     hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "./g.sh" }] }] },
   });
   const run = cli(["doctor"], { cwd: repo });
   expect(run.exitCode).toBe(1);
   expect(run.stdout).toContain(
-    `✗ project: "worktrees" is set in .claude/anymodel.json, but the project's settings do not wire WorktreeCreate, WorktreeRemove, SubagentStop to anymodel hook, so Claude Code makes its own worktrees. Run \`anymodel hook\` for the lines to paste (also in the anymodel README, § Worktrees)\n`,
+    `✗ project: "worktrees" is set in .claude/cc-smart-dev-kit.json, but the project's settings do not wire WorktreeCreate, WorktreeRemove, SubagentStop to cc-smart-dev-kit hook, so Claude Code makes its own worktrees. Run \`cc-smart-dev-kit hook\` for the lines to paste (also in the cc-smart-dev-kit README, § Worktrees)\n`,
   );
   expect(run.stdout).toContain(
-    `! project: the plugin's git-guard and the project's ./g.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of git-guard, list "git-guard" in ownHooks in .claude/anymodel.json until the copy is removed\n`,
+    `! project: the plugin's git-guard and the project's ./g.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of git-guard, list "git-guard" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed\n`,
   );
 });

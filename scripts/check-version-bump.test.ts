@@ -11,7 +11,7 @@ function write(repo: string, file: string, content: string): void {
   writeFileSync(join(repo, file), content);
 }
 
-const manifest = (version: string) => `${JSON.stringify({ name: "anymodel", version })}\n`;
+const manifest = (version: string) => `${JSON.stringify({ name: "cc-smart-dev-kit", version })}\n`;
 
 /** A repo whose `main` has a plugin at 1.0.0, and a branch `feature` checked out from it. */
 function makeRepo(): string {

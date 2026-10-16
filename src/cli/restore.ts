@@ -22,15 +22,15 @@ function describe(result: RestoreResult, short: (path: string) => string): strin
   const file = short(result.file);
   switch (result.action) {
     case "restored":
-      return `~ ${file}: back as it was before anymodel`;
+      return `~ ${file}: back as it was before cc-smart-dev-kit`;
     case "removed":
-      return `- ${file}: removed (anymodel had created it)`;
+      return `- ${file}: removed (cc-smart-dev-kit had created it)`;
     case "cleaned":
       return `~ ${file}: removed ${result.details.join(", ")}; everything else kept`;
     case "unchanged":
-      return `  ${file}: nothing of anymodel left in it`;
+      return `  ${file}: nothing of cc-smart-dev-kit left in it`;
     case "no-backup":
-      return `! ${file}: the backup from before anymodel is missing; left alone`;
+      return `! ${file}: the backup from before cc-smart-dev-kit is missing; left alone`;
   }
 }
 
@@ -39,10 +39,10 @@ const UNITS = `${UNIT_NAME} and ${SOCKET_NAME}`;
 
 /** Said before restore stops a running router, and before the question. */
 export const STOP_WARNING =
-  "anymodel-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.";
+  "cc-smart-dev-kit-router is running. Stopping it cuts the answers in flight in running Claude sessions on this machine.";
 
 /** Said before `restore --now`, and before the question. */
-export const NOW_WARNING = `restore --now stops anymodel-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
+export const NOW_WARNING = `restore --now stops cc-smart-dev-kit-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
 
 /** Said at the end of stage 1. */
 export const STAGE_ONE_DONE = `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
@@ -102,12 +102,12 @@ function forgetInstructionChoice(stateDir: string, short: (path: string) => stri
 
 /**
  * Restore also undoes the router service when `gateway setup` installed it. Running Claude
- * sessions read `ANTHROPIC_BASE_URL` at start, so while anymodel's gateway env keys are in
+ * sessions read `ANTHROPIC_BASE_URL` at start, so while cc-smart-dev-kit's gateway env keys are in
  * the settings they still send every request to the router; stopping it would make each of
- * them fail. (A key anymodel set and the person changed since is theirs, and does not count
- * here: `ownedGatewayEnvKeys` keeps only the keys that still hold anymodel's value.) So,
+ * them fail. (A key cc-smart-dev-kit set and the person changed since is theirs, and does not count
+ * here: `ownedGatewayEnvKeys` keeps only the keys that still hold cc-smart-dev-kit's value.) So,
  * with the router installed:
- *   - stage 1, while anymodel's gateway env keys are there: everything is restored but the
+ *   - stage 1, while cc-smart-dev-kit's gateway env keys are there: everything is restored but the
  *     router's copy and units, and the router keeps running. It says to restart the
  *     sessions and run `restore` again.
  *   - stage 2, with no such key left: it disables and stops the unit and its socket (asking first when it
@@ -153,7 +153,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       !askFirst(
         options,
         NOW_WARNING,
-        "Stop anymodel-router and restore everything now?",
+        "Stop cc-smart-dev-kit-router and restore everything now?",
         `to do it now: ${COMMAND} restore --now --yes`,
       )
     ) {
@@ -164,7 +164,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       !askFirst(
         options,
         STOP_WARNING,
-        "Stop anymodel-router and restore?",
+        "Stop cc-smart-dev-kit-router and restore?",
         `to stop it: ${COMMAND} restore --yes`,
       )
     ) {
@@ -223,7 +223,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       }
       const forgot = forgetInstructionChoice(paths.stateDir, short);
       if (results.length === 0 && !stateGone) {
-        if (!forgot) console.log("Nothing to restore: anymodel has nothing in any file.");
+        if (!forgot) console.log("Nothing to restore: cc-smart-dev-kit has nothing in any file.");
         return 0;
       }
       return results.some((result) => result.action === "no-backup") ? 1 : 0;

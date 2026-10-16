@@ -47,7 +47,7 @@ describe("editsMainFolder", () => {
 describe("the main-folder guard", () => {
   function guarded(guardMainFolder = true) {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", {
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
       worktrees: { base: "main", prefix: "app-wt-", guardMainFolder },
     });
     const worktree = join(repo, "..", "app-wt-fix");
@@ -70,7 +70,7 @@ describe("the main-folder guard", () => {
     ).toEqual(deny(mainFolderRefusal(repo, "main")));
     expect(mainFolderRefusal("/code/app", "main")).toBe(
       [
-        "This file is in the main checkout (/code/app). This project keeps the main checkout on `main` and makes every change in a worktree (anymodel.json `worktrees.guardMainFolder`).",
+        "This file is in the main checkout (/code/app). This project keeps the main checkout on `main` and makes every change in a worktree (cc-smart-dev-kit.json `worktrees.guardMainFolder`).",
         "Already working in a worktree? Edit the same file under that worktree's folder.",
         "Not in one yet: EnterWorktree, with the branch for this work as its `name`, makes one.",
       ].join("\n"),
@@ -108,9 +108,9 @@ describe("the main-folder guard", () => {
     );
   });
 
-  test("anymodel.json lists it in ownHooks (the project runs its own copy): silent", async () => {
+  test("cc-smart-dev-kit.json lists it in ownHooks (the project runs its own copy): silent", async () => {
     const { repo } = guarded();
-    writeClaudeFile(repo, "anymodel.json", {
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
       worktrees: { base: "main", prefix: "app-wt-", guardMainFolder: true },
       ownHooks: ["main-folder-guard"],
     });
@@ -120,15 +120,15 @@ describe("the main-folder guard", () => {
     );
   });
 
-  test("anymodel.json needs a newer plugin: it asks before an edit in the repo, not outside", async () => {
+  test("cc-smart-dev-kit.json needs a newer plugin: it asks before an edit in the repo, not outside", async () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", { requires: ">=99" });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=99" });
     const inside = await runHook(mainFolderGuardHook, edit(repo, join(repo, "a.ts")), hookEnv());
     expect(inside.stdout).toContain('"permissionDecision":"ask"');
     expect(inside.stdout).toContain(
-      "anymodel cannot check whether this edit belongs in a worktree",
+      "cc-smart-dev-kit cannot check whether this edit belongs in a worktree",
     );
-    expect(inside.stdout).toContain("run claude plugin update anymodel@anymodel");
+    expect(inside.stdout).toContain("run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit");
     expect(
       await runHook(mainFolderGuardHook, edit(repo, join(tempDir("x"), "a.ts")), hookEnv()),
     ).toEqual({});
@@ -179,7 +179,7 @@ describe("the message guard", () => {
 
   test("a message to a session of another project is denied, naming its folder", async () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", {});
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
     const env = hookEnv();
     const elsewhere = tempDir("elsewhere");
     writeSessionRecord(env, { sessionId: "x", cwd: elsewhere, name: "other project" });
@@ -193,9 +193,9 @@ describe("the message guard", () => {
     );
   });
 
-  test("a session of this repo, an unknown name, or no anymodel.json: through", async () => {
+  test("a session of this repo, an unknown name, or no cc-smart-dev-kit.json: through", async () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", {});
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
     const env = hookEnv();
     writeSessionRecord(env, { sessionId: "x", cwd: join(repo, "src"), name: "ours" });
     expect(await runHook(messageGuardHook, send(repo, "ours"), env)).toEqual({});
@@ -208,7 +208,7 @@ describe("the message guard", () => {
 
   test("a running session's record that cannot be read: through (fails open)", async () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", {});
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
     const env = hookEnv();
     const dir = join(env.CLAUDE_CONFIG_DIR ?? "", "sessions");
     Bun.spawnSync(["mkdir", "-p", dir]);
@@ -218,7 +218,7 @@ describe("the message guard", () => {
 
   test("a session reached through a symlink is still in this repo (no refusal)", async () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", {});
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
     const env = hookEnv();
     const link = join(tempDir("link"), "app");
     symlinkSync(repo, link);
@@ -228,7 +228,7 @@ describe("the message guard", () => {
 
   test("another project reached through a symlink is still refused", async () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "anymodel.json", {});
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
     const env = hookEnv();
     const elsewhere = tempDir("elsewhere");
     const link = join(tempDir("link-elsewhere"), "other");

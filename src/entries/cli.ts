@@ -4,6 +4,7 @@ import { COMMAND, VERSION } from "../build-info";
 import { oldBunRefusal } from "../cli/bun-check";
 import { runDoctor } from "../cli/doctor";
 import { type LiveRunner, liveHookCommand } from "../cli/live-check";
+import { runMigrate } from "../cli/migrate";
 import { cliPaths } from "../cli/paths";
 import { runRestore } from "../cli/restore";
 import { runSetup } from "../cli/setup";
@@ -25,23 +26,23 @@ import { runSearch } from "../search/command";
 import { instructionsFolder } from "../setup/instructions";
 import { LAUNCHER_NAME } from "../setup/launcher";
 
-const HELP = `anymodel ${VERSION} - set up and check the anymodel plugin for Claude Code
+const HELP = `cc-smart-dev-kit ${VERSION} - set up and check the cc-smart-dev-kit plugin for Claude Code
 
-Usage: anymodel <command> [options]
+Usage: cc-smart-dev-kit <command> [options]
 
 Commands:
   setup [--dry-run] [--yes] [--project <dir>] [--warp | --remove-warp]
         [--no-instructions | --instructions] [--statusline]
                      Install the launcher in ~/.local/bin, turn on plugin auto-update,
                      install the plugin's instructions for Claude (a copy in
-                     ~/.claude/anymodel/instructions/, imported by a block in
+                     ~/.claude/cc-smart-dev-kit/instructions/, imported by a block in
                      ~/.claude/CLAUDE.md), add the companion plugins' marketplaces, point
-                     claude-mem at the gateway's cheap model (when both are there), and
+                     claude-mem at the gateway's affordable model (when both are there), and
                      copy the project's auto-mode entries into your settings. The entries
                      are trust rules: they are shown and asked on a terminal (--yes:
                      shown, not asked); with no terminal they are left out, also with
                      --yes.
-                     --project <dir>: the project to read .claude/anymodel.json from
+                     --project <dir>: the project to read .claude/cc-smart-dev-kit.json from
                      (default: this folder). --warp: install the Warp terminal (the
                      commands are shown and asked; sudo asks for your password) and its
                      Claude plugin. --remove-warp: take them out again.
@@ -49,10 +50,10 @@ Commands:
                      later plain setup leaves them out too. --instructions brings them
                      back. restore forgets the choice.
                      --statusline also sets Claude Code's status line to
-                     "anymodel statusline" (asked when run in a terminal).
+                     "cc-smart-dev-kit statusline" (asked when run in a terminal).
                      --dry-run prints what would change, and writes, runs and checks
                      nothing.
-  doctor [--live]    Check the install, the anymodel files the current project's CLAUDE.md
+  doctor [--live]    Check the install, the cc-smart-dev-kit files the current project's CLAUDE.md
                      imports, and the project of the current folder. Exit code 1 when a
                      check fails.
                      --live: also run two throwaway Claude Code sessions in temp repos,
@@ -65,7 +66,7 @@ Commands:
   session-name <session id> <name>
                      Name a Claude session after its task (for the session-name hook).
   restore [--yes] [--now]
-                     Remove what anymodel added, and keep everything else: its settings
+                     Remove what cc-smart-dev-kit added, and keep everything else: its settings
                      keys and entries (claude-mem's settings, the auto-mode entries), its
                      Markdown blocks, and the files it created (the launcher, the
                      instructions, the router copy and units). Each changed file gets a
@@ -75,16 +76,26 @@ Commands:
                      them, again to stop and remove the router (it asks; --yes: without
                      asking). --now: both at once, and every running session fails until
                      it restarts.
+  migrate [--dry-run] [--yes]
+                     Move a machine that still has this plugin's old "anymodel" names:
+                     its folders, its state folder's records and backups, the settings
+                     keys the old setup owned (the slots' names and words), the
+                     instructions block in ~/.claude/CLAUDE.md, the gateway config's
+                     slots (with an alias for each old name, so running sessions keep
+                     working), and the router units. Refuses to run inside a Claude Code
+                     session: run it in your own terminal, then restart your sessions.
+                     --yes: no questions (the router is replaced without asking). The old
+                     plugin is uninstalled only after a terminal yes.
   update [--check | --hold | --resume]
-                     Install a newer anymodel now, with the output of each step.
+                     Install a newer cc-smart-dev-kit now, with the output of each step.
                      --check: only say whether a newer version exists. A new Claude
                      session checks by itself, at most once an hour, and installs it in
                      the background; --hold stops that on this machine, --resume starts
                      it again. Nothing restarts: restart the sessions to load it.
   gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
-                     anymodel gateway --help lists them.
+                     cc-smart-dev-kit gateway --help lists them.
   job <command>      The queue for heavy jobs (type checks, test runs, builds):
-                     run, status, kinds. anymodel job --help lists them.
+                     run, status, kinds. cc-smart-dev-kit job --help lists them.
   search "<query>" [--max <n>] [--json]
   search --fetch <url> [--json]
                      Search the web through the gateway (OmniRoute, Ollama's web search):
@@ -107,7 +118,7 @@ Paths follow HOME and CLAUDE_CONFIG_DIR.`;
 const HOOK_HELP = `Usage: ${COMMAND} hook <${PROJECT_HOOKS.map((spec) => spec.name).join("|")}>
 
 The worktree engine is opt-in per project. To turn it on in a project, give its
-.claude/anymodel.json a "worktrees" field, and paste these hooks into its
+.claude/cc-smart-dev-kit.json a "worktrees" field, and paste these hooks into its
 .claude/settings.json (merge them with any "hooks" it has):
 
 ${projectHookSettingsText()}`;
@@ -268,12 +279,14 @@ async function main(argv: string[]): Promise<number> {
       // version folder (src/entries/stop-failure.ts).
       const alert = rest.length === 1 ? parseAlert(rest[0] ?? "") : null;
       if (alert === null) {
-        console.error(`Usage: anymodel ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
+        console.error(
+          `Usage: cc-smart-dev-kit ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`,
+        );
         return 2;
       }
       const launcher = join(paths.binDir, LAUNCHER_NAME);
       if (runAlert(alert, process.platform, launcher, spawnRunner) === "no notifier") {
-        console.error(`anymodel: ${alert.title}. ${alert.body}`);
+        console.error(`cc-smart-dev-kit: ${alert.title}. ${alert.body}`);
       }
       return 0;
     }
@@ -341,6 +354,26 @@ async function main(argv: string[]): Promise<number> {
         probe: realProbe(),
       });
     }
+    case "migrate": {
+      const unknown = rest.filter((arg) => arg !== "--dry-run" && arg !== "--yes");
+      if (unknown.length > 0) {
+        console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+        return 2;
+      }
+      return runMigrate(paths, {
+        dryRun: rest.includes("--dry-run"),
+        yes: rest.includes("--yes"),
+        bunPath: process.execPath,
+        bunVersion: Bun.version,
+        bundle: routerBundle(),
+        instructionsSource: instructionsFolder(import.meta.dir),
+        runner,
+        systemd,
+        confirm: ask,
+        probe: realProbe(),
+        env: process.env,
+      });
+    }
     case "update":
       return runUpdate(paths, process.env, rest);
     case "gateway":
@@ -358,7 +391,7 @@ async function main(argv: string[]): Promise<number> {
       });
     case "version":
     case "--version":
-      console.log(`anymodel ${VERSION}`);
+      console.log(`cc-smart-dev-kit ${VERSION}`);
       return 0;
     case undefined:
     case "help":
@@ -375,6 +408,6 @@ async function main(argv: string[]): Promise<number> {
 try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
-  console.error(`anymodel: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`cc-smart-dev-kit: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 }

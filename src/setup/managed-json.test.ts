@@ -15,15 +15,15 @@ import { applyManagedJson, ForeignKeyError, formatKeyPath } from "./managed-json
 import { restore } from "./restore";
 import { ConcurrentChangeError, listBackups, readChanged, writeManagedFile } from "./write";
 
-const AUTO_UPDATE = ["extraKnownMarketplaces", "anymodel", "autoUpdate"] as const;
+const AUTO_UPDATE = ["extraKnownMarketplaces", "cc-smart-dev-kit", "autoUpdate"] as const;
 
 /** A settings.json as `claude plugin install` leaves it, plus a few keys of the user. */
 const USER_SETTINGS = {
   model: "opus",
   env: { FOO: "bar" },
-  enabledPlugins: { "anymodel@anymodel": true },
+  enabledPlugins: { "cc-smart-dev-kit@cc-smart-dev-kit": true },
   extraKnownMarketplaces: {
-    anymodel: { source: { source: "github", repo: "example-org/anymodel" } },
+    "cc-smart-dev-kit": { source: { source: "github", repo: "example-org/cc-smart-dev-kit" } },
   },
 };
 
@@ -44,9 +44,9 @@ describe("applyManagedJson", () => {
     const result = applyManagedJson({ file, stateDir, set: [[AUTO_UPDATE, true]] });
     expect(result.written).toBe(true);
     expect(result.changes).toEqual([{ path: AUTO_UPDATE, before: undefined, after: true }]);
-    expect(read(file).extraKnownMarketplaces["anymodel"].autoUpdate).toBe(true);
+    expect(read(file).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(true);
     expect(read(join(stateDir, "owned.json"))).toEqual({
-      [file]: [{ path: ["extraKnownMarketplaces", "anymodel", "autoUpdate"], value: true }],
+      [file]: [{ path: ["extraKnownMarketplaces", "cc-smart-dev-kit", "autoUpdate"], value: true }],
     });
   });
 
@@ -83,10 +83,10 @@ describe("applyManagedJson", () => {
     expect(read(file)).toEqual({
       model: "opus",
       env: { FOO: "bar" },
-      enabledPlugins: { "anymodel@anymodel": true },
+      enabledPlugins: { "cc-smart-dev-kit@cc-smart-dev-kit": true },
       extraKnownMarketplaces: {
-        anymodel: {
-          source: { source: "github", repo: "example-org/anymodel" },
+        "cc-smart-dev-kit": {
+          source: { source: "github", repo: "example-org/cc-smart-dev-kit" },
           autoUpdate: true,
         },
       },
@@ -105,13 +105,13 @@ describe("applyManagedJson", () => {
     const link = join(dir, "linked-settings.json");
     symlinkSync(file, link);
     applyManagedJson({ file: link, stateDir, set: [[AUTO_UPDATE, true]] });
-    expect(read(file).extraKnownMarketplaces["anymodel"].autoUpdate).toBe(true);
+    expect(read(file).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(true);
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
   });
 
   test("refuses to overwrite a key it does not own, and writes nothing", () => {
     const { file, stateDir } = setup({
-      extraKnownMarketplaces: { anymodel: { autoUpdate: false } },
+      extraKnownMarketplaces: { "cc-smart-dev-kit": { autoUpdate: false } },
     });
     const before = readFileSync(file, "utf8");
     expect(() => applyManagedJson({ file, stateDir, set: [[AUTO_UPDATE, true]] })).toThrow(
@@ -123,7 +123,7 @@ describe("applyManagedJson", () => {
 
   test("leaves a foreign key that already has the wanted value alone, and does not own it", () => {
     const { file, stateDir } = setup({
-      extraKnownMarketplaces: { anymodel: { autoUpdate: true } },
+      extraKnownMarketplaces: { "cc-smart-dev-kit": { autoUpdate: true } },
     });
     const result = applyManagedJson({ file, stateDir, set: [[AUTO_UPDATE, true]] });
     expect(result.written).toBe(false);
@@ -132,7 +132,7 @@ describe("applyManagedJson", () => {
     ]);
     // Not owned, so a removal keeps it.
     applyManagedJson({ file, stateDir, remove: [AUTO_UPDATE] });
-    expect(read(file).extraKnownMarketplaces["anymodel"].autoUpdate).toBe(true);
+    expect(read(file).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(true);
   });
 
   test("updates a key it owns to a new value", () => {
@@ -175,29 +175,29 @@ describe("applyManagedJson", () => {
   });
 });
 
-describe("applyManagedJson: an owned key remembers the value anymodel wrote", () => {
+describe("applyManagedJson: an owned key remembers the value cc-smart-dev-kit wrote", () => {
   test("the person changes an owned key: it is theirs; setup does not overwrite it, restore leaves it and lets it go", () => {
     const { file, stateDir } = setup();
     applyManagedJson({ file, stateDir, set: [[AUTO_UPDATE, true]] });
     const settings = read(file);
-    settings.extraKnownMarketplaces.anymodel.autoUpdate = false;
+    settings.extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate = false;
     writeFileSync(file, JSON.stringify(settings, null, 2));
     const before = readFileSync(file, "utf8");
     expect(() => applyManagedJson({ file, stateDir, set: [[AUTO_UPDATE, true]] })).toThrow(
-      `${file}: extraKnownMarketplaces.anymodel.autoUpdate is false: it was changed after anymodel set it, so it is your choice now.`,
+      `${file}: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate is false: it was changed after cc-smart-dev-kit set it, so it is your choice now.`,
     );
     expect(readFileSync(file, "utf8")).toBe(before);
 
     const result = applyManagedJson({ file, stateDir, remove: [AUTO_UPDATE] });
     expect(result.changes).toEqual([]);
     expect(result.skipped).toEqual([
-      { path: AUTO_UPDATE, reason: "changed since anymodel set it; left alone" },
+      { path: AUTO_UPDATE, reason: "changed since cc-smart-dev-kit set it; left alone" },
     ]);
-    expect(read(file).extraKnownMarketplaces.anymodel.autoUpdate).toBe(false);
+    expect(read(file).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(false);
     expect(read(join(stateDir, "owned.json"))).toEqual({});
   });
 
-  test("restore removes an owned key only while it holds anymodel's value", () => {
+  test("restore removes an owned key only while it holds cc-smart-dev-kit's value", () => {
     const { file, stateDir } = setup();
     applyManagedJson({
       file,
@@ -214,14 +214,14 @@ describe("applyManagedJson: an owned key remembers the value anymodel wrote", ()
       expect.objectContaining({
         file,
         action: "cleaned",
-        details: ["extraKnownMarketplaces.anymodel.autoUpdate"],
+        details: ['extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate'],
       }),
     ]);
     expect(read(file).statusLine).toBe("mine");
-    expect(read(file).extraKnownMarketplaces.anymodel.autoUpdate).toBeUndefined();
+    expect(read(file).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBeUndefined();
   });
 
-  test("a program's own default in an owned key is still anymodel's to set", () => {
+  test("a program's own default in an owned key is still cc-smart-dev-kit's to set", () => {
     const { file, stateDir } = setup({});
     const unchosen = (_path: readonly string[], value: unknown) => value === "";
     applyManagedJson({ file, stateDir, set: [[["provider"], "cheap"]], unchosen });
@@ -270,7 +270,7 @@ describe("applyManagedJson: an owned key remembers the value anymodel wrote", ()
     ]);
     writeFileSync(file, JSON.stringify({ other: 1, API_KEY: "sk-their-own-0000000000" }));
     expect(() => applyManagedJson({ file, stateDir, set: [[["API_KEY"], key]], secret })).toThrow(
-      "API_KEY is a secret: it was changed after anymodel set it",
+      "API_KEY is a secret: it was changed after cc-smart-dev-kit set it",
     );
   });
 });
@@ -295,7 +295,7 @@ describe("applyManagedJson when another program writes the file at the same time
     expect(calls).toBe(2);
     expect(result.written).toBe(true);
     expect(read(file).permissions).toEqual({ allow: ["Bash(ls:*)"] });
-    expect(read(file).extraKnownMarketplaces["anymodel"].autoUpdate).toBe(true);
+    expect(read(file).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(true);
   });
 
   test("a file that keeps changing: a clear error after 3 tries, and only the other writes", () => {
@@ -313,7 +313,7 @@ describe("applyManagedJson when another program writes the file at the same time
       }),
     ).toThrow(ConcurrentChangeError);
     expect(calls).toBe(3);
-    expect(read(file).extraKnownMarketplaces["anymodel"].autoUpdate).toBeUndefined();
+    expect(read(file).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBeUndefined();
     expect(read(file).k3).toBe(3);
     // After the last failed try, owned.json is as it was before the first: no claim left.
     expect(read(join(stateDir, "owned.json"))).toEqual({});
@@ -321,7 +321,7 @@ describe("applyManagedJson when another program writes the file at the same time
 
   test("another program sets the key itself in between: the retry refuses it and does not claim it", () => {
     const { file, stateDir } = setup();
-    // anymodel already owns another key in this file; that claim must survive.
+    // cc-smart-dev-kit already owns another key in this file; that claim must survive.
     applyManagedJson({ file, stateDir, set: [[["statusLine"], "ours"]] });
     const ownedBefore = read(join(stateDir, "owned.json"));
     expect(ownedBefore).toEqual({ [file]: [{ path: ["statusLine"], value: "ours" }] });
@@ -336,13 +336,13 @@ describe("applyManagedJson when another program writes the file at the same time
           if (calls > 1) return;
           // The user turns auto-update off by hand, right between our read and our write.
           const settings = read(file);
-          settings.extraKnownMarketplaces["anymodel"].autoUpdate = false;
+          settings.extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate = false;
           writeFileSync(file, JSON.stringify(settings, null, 2));
         },
       }),
     ).toThrow(ForeignKeyError);
     expect(calls).toBe(1);
-    expect(read(file).extraKnownMarketplaces["anymodel"].autoUpdate).toBe(false);
+    expect(read(file).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(false);
     expect(read(join(stateDir, "owned.json"))).toEqual(ownedBefore);
   });
 });
@@ -422,8 +422,8 @@ describe("writeManagedFile with expectedContent", () => {
 
 describe("formatKeyPath", () => {
   test("a name segment gets a dot; any other segment gets brackets and quotes", () => {
-    expect(formatKeyPath(["extraKnownMarketplaces", "anymodel", "autoUpdate"])).toBe(
-      "extraKnownMarketplaces.anymodel.autoUpdate",
+    expect(formatKeyPath(["extraKnownMarketplaces", "cc-smart-dev-kit", "autoUpdate"])).toBe(
+      'extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate',
     );
     expect(formatKeyPath(["extraKnownMarketplaces", "my-marketplace", "autoUpdate"])).toBe(
       'extraKnownMarketplaces["my-marketplace"].autoUpdate',

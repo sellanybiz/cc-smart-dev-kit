@@ -1,11 +1,11 @@
 ---
 name: subagent-decision
-description: Use when about to read more than three files, run multi-step research, search or audit the codebase, verify UI, or split work for agents. Picks the agent for each job - Explore, Plan, general-purpose, the anymodel reviewer, code-explorer, ui-verifier, rules-maintainer, or yourself - and says how to brief it, especially a cheap model. Trigger phrases - "find where", "search the codebase", "audit", "look into", "split this up", "delegate".
+description: Use when about to read more than three files, run multi-step research, search or audit the codebase, verify UI, or split work for agents. Picks the agent for each job - Explore, Plan, general-purpose, the cc-smart-dev-kit reviewer, code-explorer, ui-verifier, rules-maintainer, or yourself - and says how to brief it, especially an affordable model. Trigger phrases - "find where", "search the codebase", "audit", "look into", "split this up", "delegate".
 ---
 
 # Which Agent, And How To Brief It
 
-**Project add-on:** `.claude/anymodel/subagent-decision.md` — read it first when it exists.
+**Project add-on:** `.claude/cc-smart-dev-kit/subagent-decision.md` — read it first when it exists.
 Where it differs, the add-on wins (`core.md`, top). A project with its own agents lists them
 there.
 
@@ -18,13 +18,13 @@ gets, are in the core instructions (§ Subagents).
 
 | Task | Agent |
 |---|---|
-| Symbol questions — callers, references, definitions, rename impact — across many files | `anymodel:code-explorer` (needs the Serena MCP server); one lookup: the language-server tool yourself |
+| Symbol questions — callers, references, definitions, rename impact — across many files | `cc-smart-dev-kit:code-explorer` (needs the Serena MCP server); one lookup: the language-server tool yourself |
 | Text-shaped searches — strings, comments, TODOs, "every file that mentions X" | `Explore` (built-in, read-only); say how thorough |
 | A plan for non-trivial work | `Plan` (built-in, read-only); it returns the text, you write the file |
 | A phase of a plan; any job that both explores and edits | `general-purpose` |
-| The second opinion on a change set, or a second read of a big plan | `anymodel:reviewer` (read-only) — `/anymodel:review` § Second opinion |
-| Driving the running app in a browser | `anymodel:ui-verifier` (needs the Playwright MCP server) — `/anymodel:ui-verify` |
-| Edits to instruction files: rules, skills, agents, `CLAUDE.md` | `anymodel:rules-maintainer` |
+| The second opinion on a change set, or a second read of a big plan | `cc-smart-dev-kit:reviewer` (read-only) — `/cc-smart-dev-kit:review` § Second opinion |
+| Driving the running app in a browser | `cc-smart-dev-kit:ui-verifier` (needs the Playwright MCP server) — `/cc-smart-dev-kit:ui-verify` |
+| Edits to instruction files: rules, skills, agents, `CLAUDE.md` | `cc-smart-dev-kit:rules-maintainer` |
 | Questions about Claude Code, the Agent SDK or the API | `claude-code-guide` (built-in) |
 
 Review is your own job first: an agent is a second reader, never a substitute for your pass.
@@ -49,9 +49,9 @@ A subagent has none of your conversation. Treat it as a smart colleague who just
 - `Explore` and `Plan` load no `CLAUDE.md`: restate every constraint they must respect.
 - Independent agents start in one message, with several calls.
 
-### Briefing a cheap model
+### Briefing an affordable model
 
-A cheap slot (`haiku`, `sonnet` while the gateway is on) reasons less than Claude, so carry
+An affordable slot (`haiku`, `sonnet` while the gateway is on) reasons less than Claude, so carry
 the judgment for it in the brief:
 
 - **One job, small scope.** A big phase becomes two or three agents, each with one clear
@@ -63,8 +63,8 @@ the judgment for it in the brief:
 - **A done-check it can run**, and the evidence to report: what it ran and what it saw.
 - **A UI check:** the named key screenshots it saved and the measured value per check —
   never a design verdict.
-- **Its limits in words** — a cheap model follows written limits less reliably than Claude.
-- Two failed tries at the same job → hand it to `opus`; never a third cheap try.
+- **Its limits in words** — an affordable model follows written limits less reliably than Claude.
+- Two failed tries at the same job → hand it to `opus`; never a third affordable try.
 
 ## While agents run
 

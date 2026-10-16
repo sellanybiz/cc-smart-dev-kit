@@ -1,6 +1,6 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { type AnymodelConfig, loadAnymodelConfig, readOwnHooks } from "./config";
+import { type CcSmartDevKitConfig, loadCcSmartDevKitConfig, readOwnHooks } from "./config";
 import { gitEnv } from "./git-env";
 
 export interface Project {
@@ -12,8 +12,8 @@ export interface Project {
   isWorktree: boolean;
   /** The main checkout's folder, or null for a bare repo. */
   mainCheckout: string | null;
-  /** `<root>/.claude/anymodel.json`, else `<mainCheckout>/.claude/anymodel.json`, else null. */
-  config: AnymodelConfig | null;
+  /** `<root>/.claude/cc-smart-dev-kit.json`, else `<mainCheckout>/.claude/cc-smart-dev-kit.json`, else null. */
+  config: CcSmartDevKitConfig | null;
   /** The file `config` was read from; null when there is none. */
   configFile: string | null;
 }
@@ -83,14 +83,14 @@ function findMainCheckout(git: Git, cwd: string): string | null {
   return realpathSync(path);
 }
 
-/** Where a checkout is, without its anymodel.json: what a hook needs before it reads the file. */
+/** Where a checkout is, without its cc-smart-dev-kit.json: what a hook needs before it reads the file. */
 export type Checkout = Omit<Project, "config" | "configFile">;
 
 /**
- * Finds the git checkout `cwd` is in, reading no anymodel.json. Returns null outside git or
+ * Finds the git checkout `cwd` is in, reading no cc-smart-dev-kit.json. Returns null outside git or
  * in a bare repo. Throws when git is older than 2.31 or the main checkout is missing.
  * A hook calls it first, then `ownHooksOf`, so a hook the project runs as its own copy stays
- * silent even when the anymodel.json is broken.
+ * silent even when the cc-smart-dev-kit.json is broken.
  */
 export function locateCheckout(cwd: string, options: ResolveOptions = {}): Checkout | null {
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
@@ -127,40 +127,40 @@ export function locateCheckout(cwd: string, options: ResolveOptions = {}): Check
 
 /**
  * The plugin hooks the project runs as its own copy (`ownHooks`), read on their own from the
- * same anymodel.json `loadProjectConfig` reads. Never throws: empty when there is no file,
+ * same cc-smart-dev-kit.json `loadProjectConfig` reads. Never throws: empty when there is no file,
  * or it cannot be read.
  */
 export function ownHooksOf(checkout: Checkout): string[] {
   const { root, mainCheckout } = checkout;
-  const own = readOwnHooks(join(root, ".claude", "anymodel.json"));
+  const own = readOwnHooks(join(root, ".claude", "cc-smart-dev-kit.json"));
   if (own !== null) return own;
   if (mainCheckout === null || mainCheckout === root) return [];
-  return readOwnHooks(join(mainCheckout, ".claude", "anymodel.json")) ?? [];
+  return readOwnHooks(join(mainCheckout, ".claude", "cc-smart-dev-kit.json")) ?? [];
 }
 
 /**
- * Reads the anymodel.json of a located checkout: its own, else the main checkout's, and the
- * file it came from. Throws AnymodelVersionError when the project needs another plugin
- * version, and AnymodelConfigError when an anymodel.json is invalid.
+ * Reads the cc-smart-dev-kit.json of a located checkout: its own, else the main checkout's, and the
+ * file it came from. Throws CcSmartDevKitVersionError when the project needs another plugin
+ * version, and CcSmartDevKitConfigError when a cc-smart-dev-kit.json is invalid.
  */
 export function loadProjectConfig(checkout: Checkout, pluginVersion?: string): Project {
   const { root, mainCheckout } = checkout;
-  const own = join(root, ".claude", "anymodel.json");
-  let config = loadAnymodelConfig(own, pluginVersion);
+  const own = join(root, ".claude", "cc-smart-dev-kit.json");
+  let config = loadCcSmartDevKitConfig(own, pluginVersion);
   let configFile = config === null ? null : own;
   if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join(mainCheckout, ".claude", "anymodel.json");
-    config = loadAnymodelConfig(main, pluginVersion);
+    const main = join(mainCheckout, ".claude", "cc-smart-dev-kit.json");
+    config = loadCcSmartDevKitConfig(main, pluginVersion);
     configFile = config === null ? null : main;
   }
   return { ...checkout, config, configFile };
 }
 
 /**
- * Finds the git project `cwd` is in, and its anymodel.json.
+ * Finds the git project `cwd` is in, and its cc-smart-dev-kit.json.
  * Returns null outside git. Throws when git is older than 2.31 or the main checkout is
- * missing, AnymodelVersionError when the project needs another plugin version, and AnymodelConfigError
- * when an anymodel.json is invalid.
+ * missing, CcSmartDevKitVersionError when the project needs another plugin version, and CcSmartDevKitConfigError
+ * when a cc-smart-dev-kit.json is invalid.
  */
 export function resolveProject(cwd: string, options: ResolveOptions = {}): Project | null {
   const checkout = locateCheckout(cwd, options);

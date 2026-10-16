@@ -1,6 +1,6 @@
 /**
- * `plugin/bin/anymodel-bun`: how the plugin's hooks find bun where PATH has none. It looks
- * where the launcher does: the bun baked into `~/.local/bin/anymodel`, then
+ * `plugin/bin/cc-smart-dev-kit-bun`: how the plugin's hooks find bun where PATH has none. It looks
+ * where the launcher does: the bun baked into `~/.local/bin/cc-smart-dev-kit`, then
  * `$BUN_INSTALL/bin/bun`, then `~/.bun/bin/bun`, then PATH. Each test runs the real shim
  * with a temp HOME and a PATH of its own; each fake bun is a script that says which one
  * ran, with its arguments.
@@ -13,7 +13,7 @@ import { tempDir } from "../testing/temp";
 import { launcherScript } from "./launcher";
 
 const PLUGIN = join(import.meta.dir, "..", "..", "plugin");
-const SHIM = join(PLUGIN, "bin", "anymodel-bun");
+const SHIM = join(PLUGIN, "bin", "cc-smart-dev-kit-bun");
 /** sh and the tools a shell script needs, without any bun. */
 const NO_BUN_PATH = "/usr/bin:/bin";
 
@@ -45,7 +45,7 @@ describe("the hooks' bun shim", () => {
     // A folder name with a space: the launcher quotes it, the shim reads it back.
     const baked = fakeBun(join(home, "opt", "bun dir", "bun"), "baked");
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
-    writeFileSync(join(home, ".local", "bin", "anymodel"), launcherScript(baked));
+    writeFileSync(join(home, ".local", "bin", "cc-smart-dev-kit"), launcherScript(baked));
     // Found too, but later in the order.
     fakeBun(join(home, ".bun", "bin", "bun"), "home-bun");
     expect(runShim({ HOME: home, PATH: NO_BUN_PATH })).toEqual({
@@ -64,7 +64,7 @@ describe("the hooks' bun shim", () => {
     fakeBun(join(pathDir, "bun"), "path-bun");
     // A launcher whose baked bun no longer exists.
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
-    writeFileSync(join(home, ".local", "bin", "anymodel"), launcherScript("/nowhere/bun"));
+    writeFileSync(join(home, ".local", "bin", "cc-smart-dev-kit"), launcherScript("/nowhere/bun"));
     const path = `${pathDir}:${NO_BUN_PATH}`;
     expect(runShim({ BUN_INSTALL: install, HOME: home, PATH: path }).stdout).toBe(
       "bun-install /x/dist/update-check.js\n",
@@ -79,7 +79,7 @@ describe("the hooks' bun shim", () => {
     expect(runShim({ HOME: home, PATH: NO_BUN_PATH })).toEqual({
       exitCode: 0,
       stderr:
-        "anymodel: bun not found (not in ~/.local/bin/anymodel, $BUN_INSTALL/bin, ~/.bun/bin or PATH), so the hook did not run. Install bun, then run: anymodel setup\n",
+        "cc-smart-dev-kit: bun not found (not in ~/.local/bin/cc-smart-dev-kit, $BUN_INSTALL/bin, ~/.bun/bin or PATH), so the hook did not run. Install bun, then run: cc-smart-dev-kit setup\n",
       stdout: "",
     });
   });
@@ -87,7 +87,10 @@ describe("the hooks' bun shim", () => {
   test("the real bun, found through the launcher with no bun on PATH, runs the hook's bundle", () => {
     const home = tempDir("shim");
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
-    writeFileSync(join(home, ".local", "bin", "anymodel"), launcherScript(process.execPath));
+    writeFileSync(
+      join(home, ".local", "bin", "cc-smart-dev-kit"),
+      launcherScript(process.execPath),
+    );
     const script = join(home, "hello.js");
     writeFileSync(script, 'console.log("ran on", typeof Bun === "object" ? "bun" : "?");\n');
     const result = Bun.spawnSync([SHIM, script], {

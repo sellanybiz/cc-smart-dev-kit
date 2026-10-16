@@ -7,7 +7,7 @@ paths:
 
 # Setup And Managed Files
 
-`anymodel setup` changes files that belong to the user: `~/.claude/settings.json`,
+`cc-smart-dev-kit setup` changes files that belong to the user: `~/.claude/settings.json`,
 `~/.claude/CLAUDE.md` (one block that imports the instructions' copy), the launcher. A
 mistake there breaks someone's Claude Code.
 So every change to a user's file goes through `src/setup/`, and nothing else writes one.
@@ -18,7 +18,7 @@ So every change to a user's file goes through `src/setup/`, and nothing else wri
 |---|---|---|
 | JSON settings | `applyManagedJson` | single keys, listed in `owned.json` |
 | A JSON list of strings (`autoMode.environment`) | `applyManagedEntries` | single entries, each with its source, listed in `owned-entries.json` |
-| Markdown | `applyManagedMarkdown` | one block between `<!-- anymodel:begin -->` and `<!-- anymodel:end -->` |
+| Markdown | `applyManagedMarkdown` | one block between `<!-- cc-smart-dev-kit:begin -->` and `<!-- cc-smart-dev-kit:end -->` |
 | Exact lines in a text file the person owns (`~/.tmux.conf`) | `applyManagedLine` / `removeManagedLines` (`managed-line.ts`) | the exact lines it added, listed as `lines` in `changed.json` (`file-line`) |
 | A file it owns whole (the launcher) | `writeManagedFile` | the whole file |
 
@@ -64,9 +64,9 @@ Each of them:
 
 - A JSON key that exists with another value and is not in `owned.json` is **never
   overwritten**: `ForeignKeyError`, and nothing is written. The user removes it by hand
-  if anymodel should manage it.
+  if cc-smart-dev-kit should manage it.
 - A key that already has the wanted value but is not ours stays unowned.
-- **An owned key remembers the value anymodel wrote** (`owned.json`: `{ path, value }`,
+- **An owned key remembers the value cc-smart-dev-kit wrote** (`owned.json`: `{ path, value }`,
   or `{ path, sha256 }` for a `secret`, never the secret itself). When it holds another
   value now, and not an `unchosen` one, the person changed it: it is theirs. Setting it
   throws `ForeignKeyError` like any foreign key; removing it (restore) leaves it and
@@ -96,8 +96,8 @@ Each of them:
 
 ## State, lock and paths
 
-- **State (`<stateDir>`):** `$CLAUDE_CONFIG_DIR/anymodel/` (by default
-  `~/.claude/anymodel/`): `owned.json`, `owned-entries.json`, `changed.json`, the `lock`, and `backups/`
+- **State (`<stateDir>`):** `$CLAUDE_CONFIG_DIR/cc-smart-dev-kit/` (by default
+  `~/.claude/cc-smart-dev-kit/`): `owned.json`, `owned-entries.json`, `changed.json`, the `lock`, and `backups/`
   (mode 0700). Beside them, the instructions' two state files: `no-instructions` (a stored
   `setup --no-instructions`, honoured by every later setup and by the copy's refresh) and
   `instructions-version` (the version that wrote the copy). `restore` removes both.
@@ -113,7 +113,7 @@ Each of them:
   place. A waiting run tries for up to 10 seconds, then says who holds it.
 - **Paths come from `cliPaths()`,** which follows `HOME` and `CLAUDE_CONFIG_DIR`. Never
   call `homedir()` or write `~/.claude` anywhere else: tests point these at a temp folder.
-- **One launcher, many config folders.** The launcher `~/.local/bin/anymodel` is
+- **One launcher, many config folders.** The launcher `~/.local/bin/cc-smart-dev-kit` is
   shared by every config folder; the state (lock, records, backups) is per config folder.
   So a `restore` under one `CLAUDE_CONFIG_DIR` can remove a launcher another one relies
   on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
@@ -126,8 +126,8 @@ Each of them:
   is tested with it.
   Setup always runs this read-only pass first, outside the lock, also without
   `--dry-run`: a key the user set stops it before anything is written.
-- **`restore`** removes everything anymodel added and keeps everything else:
-  - JSON settings: removes only the keys in `owned.json` that still hold anymodel's
+- **`restore`** removes everything cc-smart-dev-kit added and keeps everything else:
+  - JSON settings: removes only the keys in `owned.json` that still hold cc-smart-dev-kit's
     value. A key the person changed since stays. Foreign keys stay, also ones added
     after setup.
   - JSON lists: removes only the entries in `owned-entries.json`. The anchor stays when
@@ -141,7 +141,7 @@ Each of them:
     not there to remove. A line they wrote themselves is never claimed, so restore keeps
     it (the tmux line, `src/setup/tmux.ts`).
   - Files owned whole (the launcher): puts back the **baseline**, the backup made at
-    anymodel's first change to the file since the last restore. When setup created
+    cc-smart-dev-kit's first change to the file since the last restore. When setup created
     the file, it removes it.
   - A file setup created, with only an empty `{}` or empty text left, is removed.
   - Each change makes a normal backup first, so a restore can be undone by hand.
@@ -152,7 +152,7 @@ Each of them:
   copy or unit is in `changed.json`), `restore` works in two stages, because running
   sessions are taken to keep pointing at the router until they restart (one live look
   saw otherwise: `docs/claude-code-contract.md`; the stages stay until it is repeated):
-  - **stage 1**, while anymodel's gateway env keys are in `settings.json`
+  - **stage 1**, while cc-smart-dev-kit's gateway env keys are in `settings.json`
     (`ownedGatewayEnvKeys`): it restores everything except the router's files
     (`restore(stateDir, { except })`, which leaves them tracked) and says to restart
     every running session, then run `restore` again. Nothing stops, nothing is asked.
@@ -171,7 +171,7 @@ Each of them:
 
 ## The launcher
 
-`~/.local/bin/anymodel` is a small POSIX `sh` script that reads Claude Code's
+`~/.local/bin/cc-smart-dev-kit` is a small POSIX `sh` script that reads Claude Code's
 `installed_plugins.json` and runs `dist/cli.js` of the installed version. It stays
 valid across updates.
 
@@ -183,7 +183,7 @@ valid across updates.
 
 ## What setup may do, and when
 
-- Restarts and permission changes happen only in a manual run (`anymodel setup`,
+- Restarts and permission changes happen only in a manual run (`cc-smart-dev-kit setup`,
   `gateway setup`, `restore`) that shows the change first. A restart or stop of a running
   service says what it cuts, and asks: `confirm()` on a terminal; with no terminal, it
   stops and changes nothing unless `--yes` was given. The SessionStart hook only starts
@@ -200,7 +200,7 @@ valid across updates.
   on a terminal. `--yes` never skips that question. With no terminal, or a "no", those
   commands (and Warp's plugin and shortcuts, which go with them) are left out, the rest
   of setup is done, and setup exits 1. `sudo` asks for the password itself:
-  anymodel never sees, stores or pipes one, and never runs a downloaded script (no
+  cc-smart-dev-kit never sees, stores or pipes one, and never runs a downloaded script (no
   `curl | sh`). Files root needs are made in `<stateDir>/warp/` and put in place with
   `sudo install` (or `rpm --import` from there); that folder is removed after the run.
   Warp's signing key is downloaded over HTTPS only (each redirect too) and must hold
@@ -208,11 +208,11 @@ valid across updates.
 - **Trust rules always need a person at a terminal.** The auto-mode entries are shown as
   `+` / `-` lines, then asked; `--yes` skips the question only on a terminal. With no
   terminal they are left out whatever the flags, and setup says so. A project setup
-  cannot read (invalid or too-new `anymodel.json`, old git, a missing main checkout)
+  cannot read (invalid or too-new `cc-smart-dev-kit.json`, old git, a missing main checkout)
   leaves only these entries out, with a `!` note.
 - **Every question comes first.** All questions are asked before anything runs or is
   written. A "no" to one drops only what depends on it.
-- **`claude plugin …` steps run only when a person runs `anymodel setup`**; nothing in
+- **`claude plugin …` steps run only when a person runs `cc-smart-dev-kit setup`**; nothing in
   the background (hooks, the self-update) ever runs setup. They run only for what is
   missing (a companion's marketplace or plugin; Warp's plugin, only with `--warp`). It
   never turns on a plugin the person turned off; it says what to run. Without `claude` on
@@ -221,7 +221,7 @@ valid across updates.
   terminal question, the platform, `/etc/os-release`, the Warp app's path, file checks
   and downloads. A test in the same process hands in a fake one, with fake commands on a
   PATH of its own; a test that runs the CLI as its own process gives the host's facts in
-  `ANYMODEL_TEST_HOST` and a PATH of fakes, so it never reads the machine it runs on.
+  `CC_SMART_DEV_KIT_TEST_HOST` and a PATH of fakes, so it never reads the machine it runs on.
 
 ## Command output
 
@@ -229,7 +229,7 @@ valid across updates.
   for the home folder (`tildify`); then information lines (two spaces: what it left
   alone); then notes (`!`). With no change it prints "Nothing to change. Setup is up to
   date." first; information may follow. "Done. Each changed file has a backup in
-  ~/.claude/anymodel/backups/." (the state folder's `backups/`) comes only when a file
+  ~/.claude/cc-smart-dev-kit/backups/." (the state folder's `backups/`) comes only when a file
   was written.
 - `doctor` prints one `✓` or `✗` line per check. A `✗` line says what to run. A part
   the person may leave out (the gateway, never set up; Warp, with or without its plugin)

@@ -1,5 +1,5 @@
 {
-  "description": "anymodel: git, edit, message and agent guards, notifications (a finished turn, a question, a plan, a permission prompt, a stopped turn; on the desktop, in an SSH terminal as OSC 777, or left to Warp's own plugin), notes after a merge and at session start, session names, the usage-limit alert and the background update check. Each hook stays silent while the project wires its own for the same event.",
+  "description": "cc-smart-dev-kit: git, edit, message and agent guards, notifications (a finished turn, a question, a plan, a permission prompt, a stopped turn; on the desktop, in an SSH terminal as OSC 777, or left to Warp's own plugin), notes after a merge and at session start, session names, the usage-limit alert and the background update check. Each hook stays silent while the project wires its own for the same event.",
   "hooks": {
     "StopFailure": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/stop-failure.js"],
             "timeout": 10
           }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"],
             "timeout": 10
           }
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/git-guard.js"],
             "timeout": 10
           }
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/main-folder-guard.js"],
             "timeout": 10
           }
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/message-guard.js"],
             "timeout": 10
           }
@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/job-route.js"],
             "timeout": 10
           }
@@ -74,7 +74,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=ask", "${CLAUDE_PLUGIN_ROOT}/dist/agent-guard.js"],
             "timeout": 10
           }
@@ -85,7 +85,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"],
             "timeout": 10
           }
@@ -98,7 +98,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"],
             "timeout": 10
           }
@@ -110,7 +110,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"],
             "timeout": 10
           }
@@ -123,7 +123,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/after-merge.js"],
             "timeout": 30
           }
@@ -134,7 +134,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"],
             "timeout": 10
           }
@@ -147,7 +147,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/after-merge.js"],
             "timeout": 30
           }
@@ -158,7 +158,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"],
             "timeout": 10
           }
@@ -171,7 +171,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/worktree-leftovers.js"],
             "timeout": 30
           }
@@ -182,7 +182,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/session-name.js"],
             "timeout": 10
           }
@@ -192,7 +192,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/update-check.js"],
             "timeout": 10
           }
@@ -204,7 +204,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/session-name.js"],
             "timeout": 10
           }
@@ -214,7 +214,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/anymodel-bun",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun",
             "args": ["--missing=quiet", "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"],
             "timeout": 10
           }

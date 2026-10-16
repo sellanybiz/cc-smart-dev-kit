@@ -109,7 +109,7 @@ export async function gatewayChecks(options: {
   let config: ReturnType<typeof loadConfigFile>;
   if (!existsSync(paths.gatewayConfigFile)) {
     // Set up with --no-backend-key: the router runs `emptyConfig()` on the default port,
-    // every slot on Claude. Nothing is wrong; it is only not cheap yet.
+    // every slot on Claude. Nothing is wrong; it is only not affordable yet.
     config = emptyConfig();
     checks.push({
       ok: true,
@@ -155,7 +155,7 @@ export async function gatewayChecks(options: {
     const first = config.slots[slot]?.[0] ?? "(none)";
     checks.push({ ok: true, info: true, text: `slot ${slot}: first target ${first}` });
   }
-  // A cheap slot that falls back to Claude Opus or Fable spends the person's own plan usage
+  // An affordable slot that falls back to Claude Opus or Fable spends the person's own plan usage
   // without saying so (the Agent guard allows those models only for reviews and reasons):
   // a warning, not a failure. The model slots are left out: their own first target IS the
   // Claude model, which is what they are for.
@@ -171,7 +171,7 @@ export async function gatewayChecks(options: {
     checks.push({
       ok: true,
       warn: true,
-      text: `slot ${slot} falls back to ${costly.join(", ")}: a cheap slot that answers on Claude Opus or Fable spends your own plan usage. To change it: ${COMMAND} gateway slot ${slot} <targets>`,
+      text: `slot ${slot} falls back to ${costly.join(", ")}: an affordable slot that answers on Claude Opus or Fable spends your own plan usage. To change it: ${COMMAND} gateway slot ${slot} <targets>`,
     });
   }
   if (!Object.hasOwn(config.slots, JUDGE_SLOT)) {

@@ -9,7 +9,7 @@ describe("oldBunRefusal", () => {
     "on an older Bun, %p stops with the reason and the next step",
     (command) => {
       expect(oldBunRefusal(command, OLD, BUN)).toBe(
-        "anymodel: anymodel needs Bun ≥ 1.4.3; this is 1.4.2 (/opt/bun/bin/bun). Upgrade this Bun, then run the command again.",
+        "cc-smart-dev-kit: cc-smart-dev-kit needs Bun ≥ 1.4.3; this is 1.4.2 (/opt/bun/bin/bun). Upgrade this Bun, then run the command again.",
       );
     },
   );

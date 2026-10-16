@@ -10,7 +10,7 @@
  * (`setup.ts`) installs it in the test process and fails the test that made the call,
  * even when the code under test catches the error (a health check does). A CLI test runs
  * its subprocess with `--preload` of `port-guard-preload.ts`, which installs it there too:
- * a call is written to the log file `ANYMODEL_TEST_PORT_GUARD_LOG` names, and the
+ * a call is written to the log file `CC_SMART_DEV_KIT_TEST_PORT_GUARD_LOG` names, and the
  * subprocess exits with `GUARD_EXIT_CODE`.
  */
 import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -21,7 +21,7 @@ import { join } from "node:path";
 export const GUARDED_PORTS: readonly number[] = [20100];
 
 /** The environment variable that names the subprocess log of guarded calls. */
-export const GUARD_LOG_ENV = "ANYMODEL_TEST_PORT_GUARD_LOG";
+export const GUARD_LOG_ENV = "CC_SMART_DEV_KIT_TEST_PORT_GUARD_LOG";
 
 /** A subprocess that tried a guarded port exits with this code. */
 export const GUARD_EXIT_CODE = 97;
@@ -56,7 +56,10 @@ let subprocessLog: null | string = null;
  * path (`[process.execPath, ...args, script, ...]`), `env` into its environment.
  */
 export function subprocessGuard(): { args: string[]; env: Record<string, string> } {
-  subprocessLog ??= join(tmpdir(), `anymodel-port-guard-${process.pid}-${crypto.randomUUID()}.log`);
+  subprocessLog ??= join(
+    tmpdir(),
+    `cc-smart-dev-kit-port-guard-${process.pid}-${crypto.randomUUID()}.log`,
+  );
   return {
     args: ["--preload", join(import.meta.dir, "port-guard-preload.ts")],
     env: { [GUARD_LOG_ENV]: subprocessLog },

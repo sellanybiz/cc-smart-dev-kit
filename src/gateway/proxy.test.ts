@@ -2,7 +2,7 @@
  * A backend on this machine is reached straight, never through a proxy: the request
  * carries the backend's key, and a proxy from HTTP_PROXY / HTTPS_PROXY / ALL_PROXY would
  * see it. The gateway's two calls that carry a key are tested here: the model list
- * (`listModels`) and the router's forward to a cheap backend: once with every proxy
+ * (`listModels`) and the router's forward to an affordable backend: once with every proxy
  * variable set (HTTP_PROXY is the one an `http://` backend meets), once with ALL_PROXY
  * alone (the fallback Bun uses when HTTP_PROXY is unset). `proxy: false` does it, with no
  * NO_PROXY help: Bun 1.4.3 and later (`MIN_BUN`). On Bun 1.4.2 both tests fail.
@@ -93,13 +93,13 @@ describe.each([
       anthropicBaseUrl: "https://api.anthropic.com",
       backends: { omniroute: { apiKey: KEY, baseUrl: backend.baseUrl } },
       port: ROUTER_PORT,
-      slots: { "anymodel-scout": ["omniroute:m1"] },
+      slots: { "cc-smart-dev-kit-scout": ["omniroute:m1"] },
       timeouts: { firstByteMs: 5000 },
       version: 1,
     };
     const logs: string[] = [];
     const handle = createRouter({
-      configPath: "/home/user/.config/anymodel/gateway.json",
+      configPath: "/home/user/.config/cc-smart-dev-kit/gateway.json",
       // The real fetch, as `startRouter` passes it: what it does with a proxy is the test.
       fetch: (url, init) => fetch(url, init),
       getConfig: () => config,
@@ -116,7 +116,7 @@ describe.each([
             body: JSON.stringify({
               max_tokens: 16,
               messages: [{ content: "hi", role: "user" }],
-              model: "anymodel-scout",
+              model: "cc-smart-dev-kit-scout",
             }),
             headers: {
               "anthropic-version": "2023-06-01",

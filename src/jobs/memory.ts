@@ -161,8 +161,8 @@ export function machineBudgetGb(totalBytes: number, reserveGb: number, largestGb
 
 /**
  * The cgroup path (under `/sys/fs/cgroup`) of a slice of user `uid`'s systemd manager.
- * systemd reads every dash in a slice name as nesting: `anymodel-heavy.slice` sits inside
- * `anymodel.slice`. One home for that rule, so the launcher and the live check agree.
+ * systemd reads every dash in a slice name as nesting: `cc-smart-dev-kit-heavy.slice` sits inside
+ * `cc-smart-dev-kit.slice`. One home for that rule, so the launcher and the live check agree.
  */
 export function userSliceCgroup(uid: number, slice: string): string {
   const parts = slice.replace(/\.slice$/, "").split("-");

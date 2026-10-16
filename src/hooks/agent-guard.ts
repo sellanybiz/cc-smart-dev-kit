@@ -2,18 +2,18 @@
  * The `agent-guard` hook: PreToolUse on the Agent tool (and the older name `Task`), and on the
  * `Workflow` tool, whose script's `agent(...)` launches are read and judged (`WorkflowLaunch`).
  *
- * **Machine-wide.** It runs with or without `.claude/anymodel.json` (like `update-check`), and
+ * **Machine-wide.** It runs with or without `.claude/cc-smart-dev-kit.json` (like `update-check`), and
  * its answer never depends on the project's file: it is about the model a launch runs on. A
  * project that runs its own Agent guard lists `"agent-guard"` in `ownHooks` and this one stays
  * silent there. It is wired with `--missing=ask`: a guard fails closed.
  *
  * **Why.** An Agent call with no `model` runs on whatever model the session has; an Opus or
- * Fable launch spends the person's own plan usage; and a cheap gateway slot works well only at
+ * Fable launch spends the person's own plan usage; and an affordable gateway slot works well only at
  * effort `max`. The owner's decisions (2026-10-16):
  *
  * | The model behind the launch | The verdict |
  * |---|---|
- * | a cheap slot / a backend `<backend>:<model>` / any non-Claude name | allow; with the gateway on, its effort must be `max`, else deny |
+ * | an affordable slot / a backend `<backend>:<model>` / any non-Claude name | allow; with the gateway on, its effort must be `max`, else deny |
  * | Claude Sonnet or Haiku | allow (Claude effort levels, nothing forced) |
  * | Claude Opus | a review agent (or one ending `:reviewer`): allow, no question (still refused at effort `max`); anything else with a prompt line `Opus reason: <one of OPUS_REASONS>`: **ask** (the person approves each one, and sees the reason); without that line: deny |
  * | Claude Fable | only a read-only agent type, with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: then **ask**; a builder type, no reason line, or an unattended session (`claude -p`): deny |
@@ -31,7 +31,7 @@
  * `transcript_path` (`lastClaudeModel`), else `ANTHROPIC_MODEL`; unknowable → Claude Opus.
  *
  * Every Opus or Fable launch is recorded with its reason (`agent-launches.ts`), and
- * `anymodel usage` lists them. Anything the guard cannot work out lets the call through.
+ * `cc-smart-dev-kit usage` lists them. Anything the guard cannot work out lets the call through.
  */
 
 import type { CliPaths } from "../cli/paths";
@@ -100,8 +100,8 @@ export const READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore", "Code Explorer"]
 export const REVIEW_AGENTS = ["Reviewer"] as const;
 
 /** The environment variables a person may extend those two lists with (comma-separated). */
-export const REVIEW_AGENTS_ENV = "ANYMODEL_AGENT_GUARD_REVIEW_AGENTS";
-export const READ_ONLY_AGENTS_ENV = "ANYMODEL_AGENT_GUARD_READ_ONLY_AGENTS";
+export const REVIEW_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS";
+export const READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";
 
 /** A subagent type as a list compares it: after any `plugin:`, `-`/`_`/space as one `-`. */
 function agentKey(type: string): string {
@@ -163,7 +163,7 @@ function resolveName(text: string, config: GatewayConfig | null): LaunchModel {
   if ("target" in parsed && parsed.target.kind === "backend") {
     return { claude: false, family: null, model: text };
   }
-  // A name the router does not know: not a Claude model, so the cheap-slot rule applies.
+  // A name the router does not know: not a Claude model, so the affordable-slot rule applies.
   return { claude: false, family: null, model: text };
 }
 
@@ -547,8 +547,8 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
       return deny(
         real,
         [
-          `This launch runs on ${real.model}, a cheap gateway slot.`,
-          'A cheap slot runs at effort `max` (its reasoning costs cents): pass `effort: "max"`.',
+          `This launch runs on ${real.model}, an affordable gateway slot.`,
+          'An affordable slot runs at effort `max` (its reasoning costs cents): pass `effort: "max"`.',
         ].join("\n"),
       );
     }
@@ -660,7 +660,7 @@ export function readGuardContext(paths: CliPaths, input: HookInput, env: Env): G
 /**
  * The facts the hook log carries (`logFacts`), so `doctor --live` can prove what the guard
  * judged — an Opus or Fable launch and its reason included. Only a hook whose log is on
- * (`ANYMODEL_HOOK_LOG`) runs this.
+ * (`CC_SMART_DEV_KIT_HOOK_LOG`) runs this.
  */
 export function guardFacts(input: HookInput, context: HookEnvContext): Record<string, unknown> {
   const guard = readGuardContext(context.paths, input, context.env);

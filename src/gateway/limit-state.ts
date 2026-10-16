@@ -1,12 +1,12 @@
 /**
- * The router's limit state file: `~/.local/state/anymodel/gateway-state.json`.
+ * The router's limit state file: `~/.local/state/cc-smart-dev-kit/gateway-state.json`.
  *
- * The router writes it; `anymodel statusline` and the StopFailure hook read it. It says two
+ * The router writes it; `cc-smart-dev-kit statusline` and the StopFailure hook read it. It says two
  * things, and never a key, a header value or a word of a request:
  *   - `limits`: the Claude models Anthropic last answered with the plan's usage limit
  *     (`planUsageLimit`), with the window that ran out and when it resets. A model is removed
  *     once Anthropic answers it again.
- *   - `fallbacks`: the model slots (`anymodel-opus`, `anymodel-fable`) answering from a
+ *   - `fallbacks`: the model slots (`cc-smart-dev-kit-opus`, `cc-smart-dev-kit-fable`) answering from a
  *     fallback target now, because their model is at its limit.
  *
  * Why a file: when a request is refused for the limit, Claude Code's status line gets no new

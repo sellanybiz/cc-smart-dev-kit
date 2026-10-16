@@ -1,6 +1,6 @@
 /**
  * The notifier hook: an alert when Claude needs the person, and when a turn ends or dies.
- * Machine-wide (`USER_HOOKS`): it reads no `anymodel.json`, and its opt-in is the machine.
+ * Machine-wide (`USER_HOOKS`): it reads no `cc-smart-dev-kit.json`, and its opt-in is the machine.
  *
  * Wired for one handler per event (`plugin/hooks/hooks.json`), so one alert per event:
  *   - `Notification`, matcher `permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input|worker_permission_prompt`
@@ -38,7 +38,7 @@
  * not looking at, so those stay ours (owner, 2026-10-11). Over plain SSH Warp's variables
  * are not forwarded, so the session gets our alert.
  *
- * Every setting: `~/.claude/anymodel/notify.json` (`readNotifyConfig`). A hook's output is
+ * Every setting: `~/.claude/cc-smart-dev-kit/notify.json` (`readNotifyConfig`). A hook's output is
  * read only for the `terminalSequence` field here; every error is one short stderr line and
  * exit 0 — a notifier must never stop a session.
  */
@@ -426,7 +426,7 @@ export function notifySequence(title: string, body: string): string {
  * A sequence inside tmux's passthrough wrapper: `ESC Ptmux;` + the sequence with every ESC
  * doubled + `ESC \`. tmux forwards a wrapped sequence from a pane to the terminal beyond it
  * (a plain OSC 777 from a pane is dropped), and only while `allow-passthrough` allows it
- * (`all`: even from a window the person is not looking at, which `anymodel setup` writes
+ * (`all`: even from a window the person is not looking at, which `cc-smart-dev-kit setup` writes
  * into `~/.tmux.conf`).
  *
  * This wrapper is for the `/dev/tty` route only. A `terminalSequence` in the hook's answer
@@ -447,7 +447,7 @@ export function forTty(sequence: string, env: Env): string {
   return (env.TMUX ?? "") === "" ? sequence : tmuxPassthrough(sequence);
 }
 
-/** The notifier's settings, from `~/.claude/anymodel/notify.json`. */
+/** The notifier's settings, from `~/.claude/cc-smart-dev-kit/notify.json`. */
 export interface NotifyConfig {
   /** Play the freedesktop sound with a desktop notification. Default: on. */
   desktopSound: boolean;
@@ -489,11 +489,11 @@ export const spawnNotify: NotifyRunner = (argv) => {
   try {
     const child = spawn(file, args, { detached: true, stdio: "ignore" });
     child.on("error", (error) => {
-      console.error(`anymodel notify: could not show the notification: ${error.message}`);
+      console.error(`cc-smart-dev-kit notify: could not show the notification: ${error.message}`);
     });
     child.unref();
   } catch (error) {
-    console.error(`anymodel notify: ${error instanceof Error ? error.message : error}`);
+    console.error(`cc-smart-dev-kit notify: ${error instanceof Error ? error.message : error}`);
   }
 };
 
@@ -546,8 +546,8 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
 
   const session = sessionKey(input.session_id);
   const dir = runtimeDir(deps.env);
-  const mark = join(dir, `anymodel-notify-asked-${session}`);
-  const failed = join(dir, `anymodel-notify-failed-${session}`);
+  const mark = join(dir, `cc-smart-dev-kit-notify-asked-${session}`);
+  const failed = join(dir, `cc-smart-dev-kit-notify-failed-${session}`);
   if ((WAIT_END_EVENTS as readonly string[]).includes(event)) {
     // The wait that had a question or a plan at its centre is over: its mark goes, so the
     // next one starts clean. Nothing is shown for these events.

@@ -5,7 +5,7 @@ description: Use when the person gives a correction, sets a new convention, or a
 
 # Keep The Instructions Sharp And Small
 
-**Project add-on:** `.claude/anymodel/self-evolve.md` — read it first when it exists. Where
+**Project add-on:** `.claude/cc-smart-dev-kit/self-evolve.md` — read it first when it exists. Where
 it differs, the add-on wins (`core.md`, top). It names the project's own budgets and where
 its instruction files live.
 
@@ -23,7 +23,7 @@ order:
    lists and architecture overviews can be read; pitfalls, reasons and conventions that
    differ from a tool's defaults cannot.
 3. **Is it an instruction to follow next time?** No → it is not a rule; route it
-   (`/anymodel:memory-routing`).
+   (`/cc-smart-dev-kit:memory-routing`).
 4. **Does it follow Anthropic's current guidance for Claude Code, and leave Claude at least
    as capable as without it?** A rule that bans a useful tool, forces a ritual, filters what a
    reviewer reports, or steers thinking the model does well on its own makes the work worse:
@@ -81,7 +81,7 @@ in the wrong place: move it and leave a pointer.
 ## Editing safely
 
 One small edit: do it yourself. A phase or an edit across several instruction files: the
-`anymodel:rules-maintainer` agent owns it, conflict check included.
+`cc-smart-dev-kit:rules-maintainer` agent owns it, conflict check included.
 
 1. Read the file. Make the smallest change that works. Check the budget.
 2. **One home per rule.** Search every instruction file for the topic's key words. The rule

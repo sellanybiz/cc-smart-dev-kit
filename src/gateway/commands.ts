@@ -1,5 +1,5 @@
 /**
- * `anymodel gateway <command>`: serve the router, see it, switch its slots, install it,
+ * `cc-smart-dev-kit gateway <command>`: serve the router, see it, switch its slots, install it,
  * and turn it on or off for Claude Code.
  *
  *   serve     runs the router in this terminal (the systemd unit runs the copy instead).
@@ -114,11 +114,12 @@ export const KNOWN_BACKENDS: Record<string, string> = {
  * The slot table a new config gets; `gateway slot` changes it. DeepSeek first in each:
  * almost every subagent token is a cached re-read, and its cached input costs less than
  * GLM's (ollama.com/pricing). The ids are the ones OmniRoute's `/v1/models` lists, so
- * `gateway slot` can check them. No aliases: a project's own migration writes those.
+ * `gateway slot` can check them. No aliases: a project's own migration writes those, and
+ * `migrate` writes the ones a machine moving from 0.2.x's slot names needs.
  *
  * No judge slot and no model slots: auto mode's safety checks stay on Claude, untouched,
  * and with no fallback judge Claude Code asks the person when Claude cannot answer. The
- * person may set a fallback judge (`gateway slot judge <targets>`, tested first): a cheaper
+ * person may set a fallback judge (`gateway slot judge <targets>`, tested first): a more affordable
  * judge can block good work, and a weak one can let a risky command through.
  */
 export function defaultConfig(omnirouteKey: string): GatewayConfig {
@@ -128,12 +129,12 @@ export function defaultConfig(omnirouteKey: string): GatewayConfig {
     backends: { omniroute: { apiKey: omnirouteKey, baseUrl: "http://127.0.0.1:20128" } },
     port: DEFAULT_PORT,
     slots: {
-      "anymodel-scout": [
+      "cc-smart-dev-kit-scout": [
         "omniroute:ollama-cloud/deepseek-v4.1-flash",
         "omniroute:ollama-cloud/glm-5.3-flash",
         "claude-sonnet-5-5",
       ],
-      "anymodel-worker": [
+      "cc-smart-dev-kit-worker": [
         "omniroute:ollama-cloud/deepseek-v4.1-flash",
         "omniroute:ollama-cloud/glm-5.3-flash",
         "claude-sonnet-5-5",
@@ -223,7 +224,7 @@ export function planSlotChange(
   const key = slotKeyFromArg(slotArg);
   if (key === null) {
     return {
-      error: `"${slotArg}" is not a slot name (scout, worker, judge, opus, fable, or anymodel-<name>)`,
+      error: `"${slotArg}" is not a slot name (scout, worker, judge, opus, fable, or cc-smart-dev-kit-<name>)`,
     };
   }
   const { judgeTested: _proofs, ...withoutProofs } = current;
@@ -241,7 +242,7 @@ export function planSlotChange(
   if (targetsText.trim() === "off") {
     if (key !== JUDGE_SLOT && !model) {
       return {
-        error: `only ${JUDGE_SLOT}, anymodel-opus and anymodel-fable can be off; give ${key} its targets instead`,
+        error: `only ${JUDGE_SLOT}, cc-smart-dev-kit-opus and cc-smart-dev-kit-fable can be off; give ${key} its targets instead`,
       };
     }
     if (!Object.hasOwn(config.slots, key)) return { error: `${key} is already off` };
@@ -463,7 +464,7 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
 function printOverrides(report: ReturnType<typeof settingsReport>): void {
   if (report.subagentOverrides.length > 0) {
     console.log(
-      `  WARN ${report.subagentOverrides.join(", ")} set: every agent launched without a model runs on it, with the gateway possibly a cheap slot. Remove it by hand unless you want that.`,
+      `  WARN ${report.subagentOverrides.join(", ")} set: every agent launched without a model runs on it, with the gateway possibly an affordable slot. Remove it by hand unless you want that.`,
     );
   }
   if (report.loginOverrides.length > 0) {
@@ -638,7 +639,7 @@ async function commandOn(ctx: GatewayContext): Promise<number> {
       `Done. The changed file has a backup in ${tildify(paths.stateDir, paths.home)}/backups/.`,
     );
     console.log(
-      "Every Claude Code session on this machine, in every folder, uses the gateway from now on: its haiku / sonnet work (background titles and summaries too) goes to the cheap slots.",
+      "Every Claude Code session on this machine, in every folder, uses the gateway from now on: its haiku / sonnet work (background titles and summaries too) goes to the affordable slots.",
     );
   }
   printOverrides(settingsReport(paths.settingsFile));
