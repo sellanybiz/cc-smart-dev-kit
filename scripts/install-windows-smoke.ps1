@@ -355,7 +355,23 @@ try {
   $passed++
   $names.Add("-DryRun")
 
-  # 12. The two keys the person has: on stdin, never in an argument, never printed.
+  # 12. A gateway with no key yet: the slots answer on Claude until one is added. This is the
+  #     only case that runs a command through `$null |` (a command that must read nothing),
+  #     and the only one that reaches `gateway setup --no-backend-key`.
+  $noKey = New-World "no-key" @{ Answers = @("y", "y", ("A" * 43), "y", "", "n") }
+  $result = Invoke-Install $noKey @($repo)
+  Assert-Code "a gateway with no key" $result 0 $noKey
+  Assert-Contains "a gateway with no key" $result.out "[ok] 7/8 the gateway is set up"
+  if (-not (Test-Called $noKey "gateway setup --no-backend-key")) {
+    Stop-Smoke "a gateway with no key: setup did not run; the log is:`n$((Get-Calls $noKey) -join "`n")"
+  }
+  if ((Get-Calls $noKey) | Where-Object { $_ -like "*--backend-key-stdin*" }) {
+    Stop-Smoke "a gateway with no key: the key path ran anyway"
+  }
+  $passed++
+  $names.Add("a gateway with no key")
+
+  # 13. The two keys the person has: on stdin, never in an argument, never printed.
   $secrets = New-World "secrets" @{ Answers = @("y", "y", ("A" * 43), "y", "omniroute-key-abc123", "y", "tvly-key-abc123") }
   $result = Invoke-Install $secrets @($repo)
   Assert-Code "the secrets" $result 0 $secrets
