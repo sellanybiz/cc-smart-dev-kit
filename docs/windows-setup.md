@@ -32,7 +32,8 @@ Windows yet.
 | Claude Code's folder | `%USERPROFILE%\.claude` |
 | The launcher | `%USERPROFILE%\.local\bin\cc-smart-dev-kit` and `…\.cmd` |
 | State (lock, records, backups) | `%USERPROFILE%\.claude\cc-smart-dev-kit` |
-| Data (router copy, portal copy, Chrome profile) | `%USERPROFILE%\.local\share\cc-smart-dev-kit` |
+| Data (router copy, portal copy, the browser's output) | `%USERPROFILE%\.local\share\cc-smart-dev-kit` |
+| The extension's token | `%USERPROFILE%\.config\cc-smart-dev-kit\playwright-extension.token` (mode 600) |
 | The gateway's config | `%USERPROFILE%\.config\cc-smart-dev-kit\gateway.json` |
 
 Why, and what it costs:
@@ -42,9 +43,10 @@ Why, and what it costs:
   read the same paths in `doctor` output and in a doc, and they agree.
 - **`%APPDATA%` and `%LOCALAPPDATA%` are not used** for the plugin's own files. Doing that
   would need every path to come through one resolver that also knows those variables, and it
-  would split Git Bash (`$HOME\.config`) from the CLI — two homes for one rule. The two
-  places that *do* read `AppData` are folders belonging to **other** programs (Chrome's
-  profile, Warp's tab configs), and both build it from the home folder on purpose.
+  would split Git Bash (`$HOME\.config`) from the CLI — two homes for one rule. The places that
+  *do* read `AppData` are folders belonging to **other** programs (Chrome's own user data, where
+  the `claude-code` profile lives, and Warp's tab configs), and they build it from the home
+  folder on purpose.
 - **Cost, stated plainly:** a hidden `.local`, `.config` folder in a Windows profile looks
   unusual, and a person browsing their profile will not expect it. The alternative costs
   more than it is worth (above).
@@ -164,8 +166,11 @@ Nothing below has been run on Windows yet. Each one is a live check, not a unit 
 3. **The `.cmd` from PowerShell and from `cmd`**: `cc-smart-dev-kit setup`, then `doctor`, then
    `version`. It must find bun, find the plugin folder, and pass arguments and the exit code
    through. Research live test 3.
-4. **Chrome**: `browser check --headless` end to end on the one shared Chrome — the `lockfile`
-   detection, which has no `SingletonLock` on Windows. Research live test 8.
+4. **Chrome**: `browser setup`, then `browser check`, on the person's own Chrome through the
+   Playwright extension in the `claude-code` profile: the `%LOCALAPPDATA%` profile path, the
+   Windows `lockfile` check (there is no `SingletonLock` there), the HKCU pre-registration and
+   its Enable click, and the Web Store install. Research live test 8, and the owed list in
+   README § The browser.
 5. **`worktrees --clean`**: a finished worktree with a running program in it, and one without —
    the PowerShell process scan, `hostPath`, and "a folder in use cannot be renamed". Research
    live test 9.

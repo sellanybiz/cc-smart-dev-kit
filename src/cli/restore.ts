@@ -1,5 +1,10 @@
 import { existsSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
+import {
+  type BrowserSetupRecord,
+  browserRestoreLines,
+  readBrowserSetupRecord,
+} from "../browser/setup";
 import { COMMAND } from "../build-info";
 import { configuredPort, routerService } from "../gateway/commands";
 import { messageOf } from "../gateway/config";
@@ -163,6 +168,31 @@ function removeMcp(
 }
 
 /**
+ * The browser's own part: the token file, and the extension pre-registration setup added on
+ * Windows (`browserRestoreLines`). The macOS pre-registration is a managed file, so `restore`
+ * handles it above.
+ *
+ * **Chrome's `claude-code` profile and the installed extension are never touched**, and the lines
+ * say so: they are the person's browser data, not cc-smart-dev-kit's. The profile's display name in
+ * `Local State` is the one exception — it is a managed change, so `restore` puts it back, and every
+ * other byte of that file is left as it is.
+ */
+function removeBrowser(
+  paths: CliPaths,
+  record: BrowserSetupRecord,
+  runner: Runner,
+): { lines: string[] } {
+  const done = browserRestoreLines(paths, { record, run: (argv) => runner(argv) });
+  const lines = [...done.lines];
+  if (done.profileTouched) {
+    lines.push(
+      "  Chrome's \"claude-code\" profile and the Playwright extension stay exactly as they are: they are your browser's, not cc-smart-dev-kit's.",
+    );
+  }
+  return { lines };
+}
+
+/**
  * Restore takes the instructions out, so their two state files go too: the version stamp,
  * and the stored `setup --no-instructions` (a setup after a restore starts fresh). Prints a
  * line when a stored choice was forgotten; true when it was.
@@ -197,6 +227,9 @@ function forgetInstructionChoice(stateDir: string, short: (path: string) => stri
 export async function runRestore(paths: CliPaths, options: RestoreOptions): Promise<number> {
   const short = (path: string) => tildify(path, paths.home);
   const changed = readChanged(paths.stateDir);
+  // The browser's record is read BEFORE `restore` runs: the record file is a managed file, so
+  // restore takes it back, and what it says is what the browser's own cleanup has to undo.
+  const browserRecord = readBrowserSetupRecord(paths.stateDir);
   const routerFiles = [
     realTarget(paths.routerCopy),
     realTarget(paths.routerUnitFile),
@@ -228,6 +261,9 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
         const results = restore(paths.stateDir, { except: routerFiles });
         print(results, short);
         for (const line of removeMcp(paths, options, short).lines) console.log(line);
+        for (const line of removeBrowser(paths, browserRecord, options.runner).lines) {
+          console.log(line);
+        }
         forgetInstructionChoice(paths.stateDir, short);
         console.log(stageOneDone(paths, options.cliBundle));
         return results.some((result) => result.action === "no-backup") ? 1 : 0;
@@ -313,6 +349,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       if (definitionTracked) service.forget(options.runner);
       // The MCP servers setup registered, and the record of them.
       const mcp = removeMcp(paths, options, short);
+      const browser = removeBrowser(paths, browserRecord, options.runner);
       // The router is gone: a setup that did not finish has nothing left to finish.
       rmSync(restartPendingFile(paths.stateDir), { force: true });
       // So is its limit state: no status line or alert may read a stale fallback from it.
@@ -323,8 +360,14 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
         console.log(`- ${short(paths.gatewayStateFile)}: removed (the router's limit state)`);
       }
       for (const line of mcp.lines) console.log(line);
+      for (const line of browser.lines) console.log(line);
       const forgot = forgetInstructionChoice(paths.stateDir, short);
-      if (results.length === 0 && !stateGone && mcp.lines.length === 0) {
+      if (
+        results.length === 0 &&
+        !stateGone &&
+        mcp.lines.length === 0 &&
+        browser.lines.length === 0
+      ) {
         if (!forgot) console.log("Nothing to restore: cc-smart-dev-kit has nothing in any file.");
         return 0;
       }

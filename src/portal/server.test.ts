@@ -9,8 +9,9 @@
  * Each security rule is one test, and each was watched failing with its rule broken.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { realBrowserDoctorDeps } from "../browser/doctor";
 import { cliPaths } from "../cli/paths";
 import { saveConfig } from "../gateway/config";
 import type { Machine } from "../machine/machine";
@@ -82,6 +83,7 @@ function worldMachine(): Machine {
     platform: "linux",
     run: (argv) => ({ exitCode: 0, output: `ran ${argv.join(" ")}` }),
     runOnTerminal: () => 0,
+    spawnDetached: () => undefined,
     which: () => null,
   };
 }
@@ -169,13 +171,17 @@ async function open(options: {
   const machine: Machine = {
     arch: "x64",
     confirm: null,
-    exists: () => false,
+    // Real existence, under this test's temp home: the browser's card reads Chrome's profile
+    // folder and the token file through it, and every path it builds starts at `home`. The
+    // Chrome CANDIDATES are system paths — read-only checks, nothing is opened.
+    exists: (path) => existsSync(path),
     fetchText: async () => "",
     macApp: "/Applications/Warp.app",
     osRelease: () => 'NAME="Ubuntu"\n',
     platform: "linux",
     run: (argv) => ({ exitCode: 0, output: `ran ${argv.join(" ")}` }),
     runOnTerminal: () => 0,
+    spawnDetached: () => undefined,
     which: () => null,
   };
   const ctx: PortalContext = {
@@ -228,6 +234,7 @@ async function open(options: {
     doctor:
       options.doctor ??
       (() => ({
+        browser: realBrowserDoctorDeps(machine, paths.home),
         bun: { path: process.execPath, version: Bun.version },
         gateway: {
           bundle: join(pluginFolder, "dist", "router.js"),
@@ -2211,6 +2218,119 @@ describe("the real workflow module", () => {
     } finally {
       world.portal.stop();
       backend.stop();
+    }
+  });
+});
+
+// ── The Browser card ────────────────────────────────────────────────────────────
+
+describe("the browser card", () => {
+  test("it carries the guide, the setup button, a masked token field, and doctor's own lines", async () => {
+    const world = await open({ backendPort: 0, withConfig: false });
+    try {
+      await world.enter();
+      const page = await world.call("/machine");
+      expect(page.status).toBe(200);
+      expect(page.body).toContain('id="browser"');
+      expect(page.body).toContain("Set up the browser");
+      expect(page.body).toContain('data-action="browser.setup"');
+      // The field is masked, and it starts empty: the stored token is never on a page.
+      expect(page.body).toContain('type="password"');
+      expect(page.body).toContain("data-token-input");
+      expect(page.body).toContain("data-token-save");
+      // The same words as `browser setup`: the steps, and the address to switch file URLs on.
+      expect(page.body).toContain("Allow access to file URLs");
+      expect(page.body).toContain("chrome://extensions/?id=");
+      expect(page.body).toContain("browser token");
+      // Doctor's browser lines are here (this machine has a Chrome, but not the profile yet),
+      // and NOT repeated in the Doctor card's list.
+      expect(page.body).toContain("the Chrome profile &quot;claude-code&quot; is not in");
+      expect(
+        (page.body.match(/the Chrome profile &quot;claude-code&quot; is not in/g) ?? []).length,
+      ).toBe(1);
+    } finally {
+      world.portal.stop();
+    }
+  });
+
+  test("saving a token writes the same file the command writes, and never echoes it", async () => {
+    const world = await open({ backendPort: 0, withConfig: false });
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      const token = `${"A".repeat(40)}_-b`;
+      const saved = await world.post(
+        "browser.token",
+        { token: `PLAYWRIGHT_MCP_EXTENSION_TOKEN=${token}` },
+        csrf,
+      );
+      expect(saved.status).toBe(200);
+      expect(JSON.parse(saved.body)).toEqual({
+        lines: [
+          `+ ${world.paths.browserTokenFile}: the browser token is set (mode 600)`,
+          "Start a new Claude session (or restart the running one) to use it.",
+        ],
+        ok: true,
+      });
+      expect(saved.body).not.toContain(token);
+      expect(readFileSync(world.paths.browserTokenFile, "utf8")).toBe(`${token}\n`);
+      expect(statSync(world.paths.browserTokenFile).mode & 0o777).toBe(0o600);
+
+      // The page says a token is set, and still holds no value.
+      const page = await world.call("/machine");
+      expect(page.body).toContain("a token is set");
+      expect(page.body).not.toContain(token);
+    } finally {
+      world.portal.stop();
+    }
+  });
+
+  test("a token that is not the extension's is refused, and nothing is written", async () => {
+    const world = await open({ backendPort: 0, withConfig: false });
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      const refused = await world.post("browser.token", { token: "half-a-token" }, csrf);
+      // A refused action answers 400, with its own lines — the same shape as every action.
+      expect(refused.status).toBe(400);
+      const answer = JSON.parse(refused.body) as { lines: string[]; ok: boolean };
+      expect(answer.ok).toBe(false);
+      expect(answer.lines[0]).toContain("not saved");
+      expect(answer.lines[0]).toContain("43");
+      expect(existsSync(world.paths.browserTokenFile)).toBe(false);
+    } finally {
+      world.portal.stop();
+    }
+  });
+
+  test("the setup button runs browser setup in the profile, and prints the steps that are left", async () => {
+    const world = await open({ backendPort: 0, withConfig: false });
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      const ran = await world.post("browser.setup", {}, csrf);
+      const answer = JSON.parse(ran.body) as { lines: string[]; ok: boolean };
+      const lines = answer.lines.join("\n");
+      // Chrome is opened on the Web Store page in the claude-code profile (the fake machine
+      // records the call and starts nothing), and the guide follows.
+      expect(lines).toContain("--profile-directory=claude-code");
+      expect(lines).toContain("--new-window");
+      expect(lines).toContain("Allow access to file URLs");
+      expect(lines).toContain("browser token");
+    } finally {
+      world.portal.stop();
+    }
+  });
+
+  test("the card is behind the same door as everything else", async () => {
+    const world = await open({ backendPort: 0, withConfig: false });
+    try {
+      // No session: the action is refused, and nothing is written.
+      const refused = await world.call("/api/browser.token", { body: { token: "A".repeat(43) } });
+      expect(refused.status).toBe(403);
+      expect(existsSync(world.paths.browserTokenFile)).toBe(false);
+    } finally {
+      world.portal.stop();
     }
   });
 });

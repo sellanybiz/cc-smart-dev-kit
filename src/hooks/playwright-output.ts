@@ -1,6 +1,6 @@
 /**
  * PreToolUse on `mcp__playwright__*`: a screenshot or snapshot the caller names by a relative
- * `filename` is put in the shared browser's output folder.
+ * `filename` is put in the browser's output folder.
  *
  * WHY IT EXISTS
  *   Playwright MCP has two rules for where a file lands. A file it names itself
@@ -39,7 +39,7 @@
  *   named a place meant it.
  *
  * A `USER_HOOKS` bundle: it never enters the frame, reads no cc-smart-dev-kit.json and takes no
- * `ownHooks` — it is about the machine's shared browser, like `notify` is about its alerts.
+ * `ownHooks` — it is about the machine's browser, like `notify` is about its alerts.
  * Wired from `plugin/hooks/hooks.json` → PreToolUse (matcher `mcp__playwright__.*`).
  */
 import { isAbsolute, resolve, sep } from "node:path";
@@ -74,8 +74,8 @@ export function climbsOut(filename: string): boolean {
 /** The reason a climbing name is refused, shown to Claude. */
 export function outsideReason(filename: string, outputDir: string): string {
   return (
-    `This call names a file outside the shared browser's output folder ("filename": ${JSON.stringify(filename)} — a path with ".." in it). ` +
-    `Files the shared browser saves live in ${outputDir}. Name the file with a relative name (it lands there), or use an absolute path inside that folder.`
+    `This call names a file outside the browser's output folder ("filename": ${JSON.stringify(filename)} — a path with ".." in it). ` +
+    `Files the browser saves live in ${outputDir}. Name the file with a relative name (it lands there), or use an absolute path inside that folder.`
   );
 }
 

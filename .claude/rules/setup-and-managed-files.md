@@ -96,6 +96,11 @@ Each of them:
 
 ## State, lock and paths
 
+- **The browser's one write inside Chrome's own folder** is the `claude-code` profile's display
+  name in `Local State`, through `applyManagedJson` (`json-keys`), and only while no Chrome runs
+  on that user data folder — Chrome rewrites that file from memory. `restore` puts it back like
+  any other key; nothing else of Chrome's is written, and no command deletes a profile or an
+  extension (`.claude/rules/browser.md`).
 - **State (`<stateDir>`):** `$CLAUDE_CONFIG_DIR/cc-smart-dev-kit/` (by default
   `~/.claude/cc-smart-dev-kit/`): `owned.json`, `owned-entries.json`, `changed.json`, the `lock`, and `backups/`
   (mode 0700). Beside them, the instructions' two state files: `no-instructions` (a stored

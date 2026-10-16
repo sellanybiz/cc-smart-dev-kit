@@ -31,7 +31,10 @@ A test never reaches the network or a real tool it does not test (`git ls-remote
 
 `src/cli/cli.test.ts` does this for `git`. `src/testing/fake-machine.ts` builds a temp home
 and a fake `Machine` (fake sudo, apt-get, dnf, rpm, brew, gpg, claude; a terminal that
-answers what the test says) for `runSetup` in the test's own process.
+answers what the test says) for `runSetup` in the test's own process. `src/testing/chrome-world.ts`
+builds a temp home with a Chrome profile in it — a fake executable, a recorder where a real run
+would start one, and a fake Windows registry — so a test about the browser never reads or starts
+the real Chrome, and never touches the real `~/.config/google-chrome`.
 
 **Never the host.** A test that runs the CLI as its own process gives it a PATH of fakes
 (plus bun's folder, and git alone when it needs the real one), never the host's PATH,

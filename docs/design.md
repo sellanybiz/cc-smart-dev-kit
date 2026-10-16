@@ -972,7 +972,7 @@ worktrees).
 | `git-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks before a force-push (git's abbreviations included: `--forc`), a push to a protected branch (`protectedBranches`, default `main`), `push --all`/`--mirror`, a branch deleted on the remote (`git push origin :x`, `-d`/`--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that discards changes, `branch -D`, `stash clear` and an unnamed `stash drop`, and (with `worktrees`) a bare `git stash` / `stash pop`. One shell lexer (`shell-command.ts`) reads each command of a line; quoted text, here-docs and comments are data, and shell keywords, wrappers (`timeout 60 git push -f`, `env -i sudo -u me …`, `xargs …`), the here-doc a shell reads as its script, and the text piped into one are read through. Known limits: a git alias, `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file. "Ask", never "deny": the person may mean it. |
 | `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit, Serena's edit tools) | `worktrees.guardMainFolder` | Denies an edit of a file in the main checkout itself, with the way into a worktree. A Serena edit names its file relative to the folder Serena has ACTIVE, so it is placed by `serena-root`'s record (else by `CLAUDE_PROJECT_DIR`, the folder the session started in); a file it cannot place is an `ask`, never a pass. |
 | `serena-root` | PreToolUse, PostToolUse (`mcp__serena__activate_project`), SessionStart | `worktrees.guardMainFolder` | Records which folder Serena edits for this session (`<stateDir>/serena-root/<session id>.txt`): "unknown" from the moment an activation is allowed until Serena's own answer names the folder, so the record is only ever a folder Serena confirmed — and the guard ASKS while it is unknown. It refuses an activation that names a project by NAME or a folder outside this repo and its worktrees. On a broken cc-smart-dev-kit.json it records nothing and says so. |
-| `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the shared browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
+| `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
 | `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists | Denies a message to a session that works outside this repo (from Claude Code's session records). |
 | `agent-guard` | PreToolUse (Agent, Task) | **machine-wide** | The model a launch really runs on, and the owner's model rules (2026-10-16): no `model`/no `effort` → deny; an affordable slot needs `effort: "max"`; Opus only for a review or with an `Opus reason:` word; Fable only read-only, with a `Fable reason:` word, as an **ask** (never build). Every Opus/Fable launch is recorded with its reason. § The Agent guard. |
 | `job-route` | PreToolUse (Bash) | `jobs.route` | A heavy command is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301). § The job route. |
@@ -1242,68 +1242,91 @@ The worktree engine is not part of the switch, because the project wires it itse
 with its own worktree hooks moves by replacing those lines with the engine's, in one commit
 (README § Worktrees). `cc-smart-dev-kit doctor` reports a second WorktreeCreate left behind.
 
-## The shared browser
+## The browser
 
-One Google Chrome for the whole machine (`src/browser/`, rules in `.claude/rules/browser.md`):
+The Playwright MCP server (`src/browser/`, rules in `.claude/rules/browser.md`) drives **the
+person's own Google Chrome**, through the **Playwright extension**, in ONE Chrome profile of its
+own named `claude-code`. The owner decided this (2026-10-16), replacing 0.3.0's shared browser:
+the plugin starts no Chrome, keeps no profile folder of its own, and no longer carries the tab
+filter that made each session's windows its own.
 
-- **One profile**, `~/.local/share/cc-smart-dev-kit/playwright`, in the plugin's data folder:
-  the folder that outlives a plugin version. Sign in there once and every session — now, and
-  after an update — is signed in. A login copied into a second browser does not survive
-  (a site that rotates its refresh token logs an old copy out everywhere), which is why the
-  plugin never gives a session a profile of its own.
-- **One OS user per machine, and that is by design** (`shared-browser.ts`,
-  `cdp-tab-filter-server.ts`; README § The shared browser says the same in plain words). The
-  profile and the output folder are made 0700, and an existing looser one is tightened (with
-  one line saying so), which keeps other OS users out of the signed-in cookies. Two doors
-  stay open: Chrome's debug port answers on 127.0.0.1 with no authentication and
-  `/json/version` hands its WebSocket URL to any local process of any user, and the start-lock
-  port is shared the same way. A second person needs their own account on their own machine.
-  The tab filter's port is the one door that closes: its endpoint carries a random token,
-  every other path and every connection with an `Origin` is refused, and the token reaches the
-  MCP in an environment variable — never in `argv`, which every user can read from `/proc`.
-  It stops a web page and a blind scan; it cannot stop a process of the same user, which can
-  read that environment.
-- **The launcher** (`cc-smart-dev-kit browser mcp`, registered as the `playwright` MCP server)
-  starts the pinned `@playwright/mcp` with `PLAYWRIGHT_MCP_CDP_ENDPOINT` pointing at a **tab
-  filter** it opens on a free local port. Stock Playwright, attached to a running Chrome,
-  adopts every page in it (microsoft/playwright#42961, no fix upstream); the filter decides
-  what one session sees, and is also what closes that session's windows when its client goes.
-- **The filter is a pure module** (`cdp-tab-filter.ts`) with a socket layer over it
-  (`cdp-tab-filter-server.ts`): one instance per connection, so command ids and session ids
-  pass through unchanged. Its rules, and why each exists, are in the file's header; the
-  refusals (browser-wide commands, a cookie clear, raising a window) name why in words a
-  person reads. Downloads are turned on in the shared context, which Playwright does not do
-  over CDP.
-- **The socket layer runs on Bun's own WebSocket**, server and client. A message limit can be
-  set on the server side only, and the client side carried a 30 MB message in a live
-  measurement (`claude-code-contract.md` § Bun) — so no WebSocket package is needed and the
-  plugin keeps its one runtime dependency.
+- **Extension mode is the only mode.** `browser mcp` runs the pinned `@playwright/mcp` with
+  `--extension --browser=chrome --profile-dir-name=claude-code`; Playwright itself connects to
+  the running Chrome (`cdpRelay.ts` opens the connect page, starting Chrome when it is not
+  running). The registration is unchanged — `{"command": <launcher>, "args": ["browser","mcp"]}`
+  — because the mode is the launcher's own business and every setting reaches the MCP through
+  its environment or `argv`.
+- **The token is required, and there is no approval mode.** Without a token the extension asks a
+  person to approve every connection, in a page, and waits without a deadline; the owner's rule
+  is that the plugin never runs that way, so `browser mcp` exits non-zero with one stderr line
+  (which Claude Code shows as the server's error) and starts nothing. The token lives in
+  `~/.config/cc-smart-dev-kit/playwright-extension.token`, mode 0600, and goes into the MCP
+  child's ENVIRONMENT only: `argv` is world-readable in `/proc`, and `~/.claude.json` holds no
+  secret. A wrong token does not fall back to an approval page: the extension answers the connect
+  page with *Invalid token provided.*, and the MCP fails after its own 30-second deadline with a
+  message naming the profile and the variable. Nothing retries.
+- **The token is pasted by the person, and that is deliberate.** It is generated inside the
+  extension and kept in its own `localStorage`; Playwright's own tests read it off the status
+  page. Reading it out of the profile's LevelDB is unsupported, breaks silently, and is not done
+  (README § The browser, owed check 3). The status page's Copy button copies the whole line
+  (`PLAYWRIGHT_MCP_EXTENSION_TOKEN=…`), so both the line and the bare token are accepted, and the
+  shape (43 URL-safe characters: 32 random bytes, base64, URL-safe) is checked at paste time — a
+  half-copied token is refused at once instead of turning into a 30-second wait later.
+- **What the person gains, and what it costs.** They watch the work in a real Chrome window and
+  can take the page over; there is no browser of ours to keep alive. The costs are upstream and
+  neither is planned to change: every connection brings that window to the front and switches its
+  active tab (microsoft/playwright#42343), and a second extension in that profile breaks the
+  session (microsoft/playwright#43230, open — `doctor` warns by name). There is no headless mode:
+  a machine with no desktop cannot use the browser at all.
+- **The profile is the person's.** `browser setup` finds Chrome per OS (`chrome.ts`), makes the
+  `claude-code` profile by opening the extension's Web Store page in it, and pre-registers the
+  extension for that user on macOS and Windows (the per-user External Extensions JSON, the HKCU
+  `update_url` key) — the person still clicks **Add to Chrome** and **Enable**. The ONE write the
+  plugin makes inside Chrome's own folder is the profile's display name in `Local State`, and only
+  while no Chrome runs on that user data folder (Chrome rewrites that file from memory); it goes
+  through `applyManagedJson`, so a backup is made and `restore` puts it back. Every other byte of
+  Chrome's files is read only, and `restore` never deletes a profile or touches the extension: it
+  removes the token file and the pre-registration, and says so.
+- **The file-URL switch is checked, never set.** A `file://` page needs the profile's "Allow
+  access to file URLs" for the extension AND `--allow-unrestricted-file-access` for the MCP (which
+  blocks `file://` navigation by default). Chrome keeps the switch per extension as
+  `extensions.settings.<id>.newAllowFileAccess` in the profile's `Preferences`/`Secure
+  Preferences` (`extension_prefs.cc`); those files are hash-signed, so `allowsFileUrls` only reads
+  them, `doctor` says ✗ with the exact page to open, and `browser check` proves it by loading a
+  local page.
 - **Where a named file goes.** `@playwright/mcp` resolves a file the CALLER names
-  (`filename: "home-dark.png"`) against the folder the MCP process was started in — proved
-  live on 0.0.83 — so a named screenshot would land beside the project's files. The
-  `playwright-output` hook (PreToolUse on `mcp__playwright__.*`) rewrites a relative name
-  into `browserOutputDir` first, with `updatedInput`, and REFUSES a relative name with a `..`
-  segment (the launcher's `--allow-unrestricted-file-access` means the server itself no longer
-  stops one, and that switch is what lets the server take an absolute path from any worktree);
-  an absolute path is left as the caller wrote it. The hook answers only while the live
-  `playwright` registration is the one setup recorded — a `playwright` of the person's own has
-  its own output folder, and a hook that rewrote its files would be the bug.
-- **The file picker** (`picker.ts`): the MCP loads it for every tab (`--init-page`), and it
-  holds the picker for Claude only while a browser call is running (plus two seconds), so a
-  person's click opens the normal picker. It reads one private field of playwright-core, says
-  so once and changes nothing when that field is gone, and never throws into the MCP. It is
-  built as its own bundle (`src/entries/browser-picker.ts`) and written beside the profile:
-  a path inside the plugin's version folder is deleted by an update while a session's MCP is
-  still running, and the MCP loads that file again for every tab.
-- **Nothing here reads the environment.** The profile, the output folder and the lock port are
-  arguments, so a test points them at a temp folder; `browser check` passes a throwaway
-  profile and its own free lock port, so the profile a person signed in to is never touched.
-- **`browser check`** is the end-to-end proof: two real launchers, each with a real Playwright
-  MCP, on one throwaway Chrome — a sign-in in one session counting in the other, tabs at the
-  same moment, popups, a full-page screenshot, an upload through the held picker, a download,
-  `browser_close` closing only that session's windows, and the Chrome outliving both. It runs
-  after a pin move, and before a release that touches `src/browser/`; the unit tests keep the
-  filter's rules, and only this checks them against the real pair.
+  (`filename: "home-dark.png"`) against the folder the MCP process was started in — proved live on
+  0.0.83 — so a named screenshot would land beside the project's files. The `playwright-output`
+  hook (PreToolUse on `mcp__playwright__.*`) rewrites a relative name into `browserOutputDir`
+  first, with `updatedInput`, and REFUSES a relative name with a `..` segment (the launcher's
+  `--allow-unrestricted-file-access` means the server itself no longer stops one, and that switch
+  is what lets the server take an absolute path from any worktree); an absolute path is left as the
+  caller wrote it. The hook answers only while the live `playwright` registration is the one setup
+  recorded — a `playwright` of the person's own has its own output folder, and a hook that rewrote
+  its files would be the bug.
+- **`cc-smart-dev-kit setup`'s part is read-only and host-free** (`browserSetupReport`): it reads
+  the profile and the token under the home folder (never Chrome's executable — that is a host
+  fact `doctor` and `browser setup` report by name), prints the state and, while a step is open,
+  the same guide `browser setup` prints. It never starts Chrome, never asks, never blocks, and
+  never reports the browser ready while the token is missing.
+- **`doctor` and the portal read the same lines** (`browser/doctor.ts`, `section: "browser"`):
+  Chrome found, the `claude-code` profile, the extension in it and its version, any OTHER
+  extension, the file-URL switch, and the token file (never its value). The `playwright`
+  server's registration and start stay `mcpChecks`' own lines (`mcp/doctor.ts`) — one home for
+  that fact. These are file checks — the same ones Playwright
+  makes before it connects — so neither ever starts Chrome. The portal draws them on a Browser card
+  (with the guide, a setup button and a masked token field) and leaves them out of the Doctor
+  card's list, so no line appears twice on one page.
+- **Nothing in `src/browser/` reads the environment.** The home folder, the platform and every
+  file call are arguments (`ChromeDeps`), so a test points them at a temp world
+  (`src/testing/chrome-world.ts`) and never touches the real `~/.config`. The Chrome executable and
+  the Windows registry are fakes there; the files under the temp home are real, because the managed
+  writers read and write the file itself.
+- **`browser check` is the live proof**: one real launcher and one real MCP against the person's
+  Chrome — a connection with no approval page, a `file://` page, a screenshot the server names and
+  one a caller names, an upload, a download, and `browser_close`. Its prerequisites (Chrome,
+  profile, extension, token) are checked first, so a missing piece is one clear line instead of a
+  30-second wait; what it opens and what stays behind is printed before it starts.
 
 ## Sessions and worktrees
 
@@ -1341,7 +1364,7 @@ hook matcher and agent tool list that names `mcp__<server>__*`; and a server fro
 file or the "local" scope is stopped by Claude Code as soon as the session's folder changes,
 which every session that works in a worktree does. Registered for the user, the names stay.
 
-- **Four servers**: `playwright` (the shared browser above), `serena` (with the plugin's own
+- **Four servers**: `playwright` (the browser above), `serena` (with the plugin's own
   context, so a session can point Serena at its worktree), `sequential-thinking`, and
   `tavily-websearch`. Each version is pinned in `src/mcp/versions.ts`; the file's header says
   why, and how to move one. A project's own servers stay in that project.

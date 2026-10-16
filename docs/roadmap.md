@@ -8,7 +8,7 @@ parts fit: `design.md`.
 | 1 | Foundation | Done |
 | 2 | The AI gateway | Done |
 | 3 | Hooks and `doctor --live` | Done (0.3.0) |
-| 4 | Shared browser, Serena, MCP registration, session tools | Done (0.3.0) |
+| 4 | Shared browser, Serena, MCP registration, session tools | Done (0.3.0; the browser replaced in 0.4.0) |
 | 5 | Instructions, skills, agents | Done (0.3.0) |
 | 6 | Notifications, claude-mem settings, the auto-mode block | Done (0.3.0) |
 | 7 | Opus and Fable slots, the usage-limit alert | Done (0.3.0) |
@@ -58,6 +58,12 @@ Done in this release:
   are split instead of run in turn.
 - **Auto mode's safety checks, counted** (`usage`): the router counts the checks by day, who
   answered each and the tokens their answers reported (`gateway.md` § The safety-check counts).
+- **The browser drives your own Chrome** (`design.md` § The browser, `README.md` § The browser):
+  the Playwright MCP server runs in extension mode, in a Chrome profile of its own named
+  `claude-code`, with the Playwright extension's token required — `browser setup`, `browser token`
+  and `browser check` are new, the plugin's own shared Chrome, its profile folder, the tab filter
+  and the file-picker bundle are gone, and `doctor` and the portal's Machine page report the
+  browser's own state.
 
 Coming in 0.4.0 from other builders: the **Settings page** and the **Project card** in the
 portal (both call this release's functions), the **merge guard hook** (which decides a merge
@@ -107,11 +113,14 @@ affordable models to subagent slots, and an opt-in judge for auto mode's safety 
 
 ## 4 — Shared browser, Serena, MCP, session tools (done, 0.3.0)
 
-- The Playwright MCP server with one Chrome for every session (`design.md` § The shared
-  browser): one profile in the data folder, a tab filter per session so each sees only its
-  own windows, and `browser check` as the end-to-end proof on a throwaway profile. The
-  filter's endpoint carries a private token (any other path refused, and the token reaches the
-  MCP in its environment, never in `argv`), and the profile and output folders are owner-only.
+- The Playwright MCP server with one Chrome for every session, as 0.3.0 shipped it: one profile
+  in the plugin's data folder, a tab filter per session so each saw only its own windows, the
+  filter's endpoint carrying a private token (any other path refused, the token in the MCP's
+  environment, never in `argv`), owner-only profile and output folders, and `browser check` as
+  the end-to-end proof on a throwaway profile. **0.4.0 replaced all of it** with the person's own
+  Chrome through the Playwright extension (`design.md` § The browser): the plugin's own browser,
+  the profile in the data folder, the tab filter and the picker bundle are gone, and the browser
+  refuses to run without the extension's token.
 - Serena, with the plugin's own context (project switching on, so a session can point it at
   its worktree) installed in the data folder.
 - `setup` registers the general MCP servers at user scope, so tool names stay
@@ -124,7 +133,7 @@ affordable models to subagent slots, and an opt-in judge for auto mode's safety 
 The two project pieces that belonged to those servers came with them: the **Serena root
 record** (`serena-root`, so the main-folder guard can place a Serena edit and refuses an
 activation that names a project by name or a folder outside the repo) and the **Playwright
-output hook** (`playwright-output`: a file the caller names goes into the shared browser's
+output hook** (`playwright-output`: a file the caller names goes into the browser's
 output folder — proved live on the pinned `@playwright/mcp`, which resolves a caller-named
 path against its own working folder).
 

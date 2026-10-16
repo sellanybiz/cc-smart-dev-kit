@@ -22,6 +22,7 @@ import { JUDGE_SLOT } from "../gateway/targets";
 import type { LastCheck } from "../update/state";
 import {
   type BackendRow,
+  type BrowserCardData,
   type CompanionRow,
   type FallbackRow,
   type LimitRow,
@@ -564,6 +565,8 @@ export interface UpdateFacts {
 
 export interface MachineData {
   autoMode: null | { entries: string[]; from: string; settings: string };
+  /** The browser's own card: the guide, its state, and doctor's browser lines. */
+  browser: BrowserCardData;
   companions: CompanionRow[];
   /** Why `gateway.json` cannot be used, when it is there but unreadable (never for a missing one). */
   configError?: string;
@@ -780,6 +783,65 @@ ${
 </div>`;
 }
 
+/**
+ * One check line, as the Doctor card and the Browser card both draw it: the mark, then the words.
+ * Nothing here is invented; the words are `doctor`'s own (`checkLine` prints the same ones).
+ */
+function checkItem(check: DoctorCheck): string {
+  return `<li class="${check.ok ? "" : "fail"}"><span class="mark ${check.ok ? "ok" : "badmark"}" aria-hidden="true">${check.warn === true ? "!" : check.info === true ? "·" : check.ok ? "✓" : "✗"}</span><span class="wrap-any">${escapeHtml(check.text)}</span></li>`;
+}
+
+/**
+ * The Browser card on Machine: doctor's browser lines, the steps a person follows, a button that
+ * runs `browser setup` (it opens the Web Store page in the `claude-code` profile), and the token
+ * field. **The stored token is never on the page**: the field starts empty, a save answers "the
+ * token is set", and no answer ever echoes the value.
+ */
+function browserCard(data: BrowserCardData, checks: DoctorCheck[]): string {
+  const state = data.state;
+  const ready = state.extensionInstalled && state.fileUrls === true && state.tokenSet;
+  const lines =
+    checks.length === 0
+      ? '<p class="muted">Open this page again to see the checks.</p>'
+      : `<ul class="checks">${checks.map(checkItem).join("")}</ul>`;
+  const steps = `<ol class="checks">${data.guide.steps
+    .map(
+      (step) =>
+        `<li class="small wrap-any">${escapeHtml(step.text)}${step.done ? ' <span class="ok">✓ done</span>' : ""}${
+          step.detail === undefined
+            ? ""
+            : `<br><code class="mono wrap-any">${escapeHtml(step.detail)}</code>`
+        }</li>`,
+    )
+    .join("")}</ol>`;
+  const notes = [...data.guide.notes, ...data.notes.map((note) => note.replace(/^!\s*/, ""))];
+  return `<section class="card pad" id="browser">
+<div class="spread">
+<div>
+<h2>Browser</h2>
+<p class="small muted">The Playwright MCP server drives YOUR Chrome, through the Playwright extension, in a profile of its own named <span class="mono">${escapeHtml(state.profileDirName)}</span>. ${ready ? "It is set up." : "It is NOT ready yet."} The same lines as <code>${COMMAND} doctor</code>.</p>
+</div>
+<button type="button" class="btn primary" data-action="browser.setup" data-confirm="Open the Playwright extension's page in the ${escapeHtml(state.profileDirName)} Chrome profile? Chrome comes to the front; nothing is installed without your click." data-reload>Set up the browser</button>
+</div>
+<div data-out-for="browser.setup" role="status"></div>
+${lines}
+<p class="small muted">${escapeHtml(data.guide.intro)}</p>
+${steps}
+${notes.map((note) => `<p class="small muted wrap-any">${escapeHtml(note)}</p>`).join("")}
+<div class="fields">
+<div class="field">
+<label for="browser-token">The extension's token</label>
+<input id="browser-token" type="password" autocomplete="off" data-token-input placeholder="${state.tokenSet ? "a token is set — paste a new one to replace it" : "paste PLAYWRIGHT_MCP_EXTENSION_TOKEN=…"}">
+</div>
+</div>
+<div class="row">
+<button type="button" class="btn strong" data-token-save>Save the token</button>
+</div>
+<p class="small muted">It is written to the same file <code>${COMMAND} browser token</code> writes (mode 600), and it is never shown again, printed, or logged anywhere. Without it the extension would ask you to approve every connection, so the plugin refuses to start.</p>
+<div data-out-for="browser.token" role="status"></div>
+</section>`;
+}
+
 export function machinePage(shell: Shell, data: MachineData): string {
   const omniroute = data.omniroute;
   const install = omniroute.install;
@@ -826,24 +888,25 @@ ${
 </section>`;
 
   const doctor = data.doctor;
-  const failed = doctor === null ? 0 : doctor.checks.filter((check) => !check.ok).length;
+  // The browser's own lines are drawn on the Browser card above (the same words, one home): this
+  // list is everything else, so no line appears twice on one page.
+  const doctorChecks =
+    doctor === null ? [] : doctor.checks.filter((check) => check.section !== "browser");
+  const browserChecks =
+    doctor === null ? [] : doctor.checks.filter((check) => check.section === "browser");
+  const failed = doctorChecks.filter((check) => !check.ok).length;
   const doctorCard = `<section class="card pad">
 <div class="spread">
 <div>
 <h2>Doctor</h2>
-<p class="small muted">The same checks as <code>${COMMAND} doctor</code>.${doctor === null ? " Not run yet." : ` Ran at ${escapeHtml(clockFrom(doctor.at))}. ${failed === 0 ? "Every check passed." : `${doctor.checks.length - failed} passed, ${failed} to fix.`}`}</p>
+<p class="small muted">The same checks as <code>${COMMAND} doctor</code>, without the browser's own, which are on the Browser card above.${doctor === null ? " Not run yet." : ` Ran at ${escapeHtml(clockFrom(doctor.at))}. ${failed === 0 ? "Every check passed." : `${doctorChecks.length - failed} passed, ${failed} to fix.`}`}</p>
 </div>
 <button type="button" class="btn primary" data-action="doctor.run" data-reload>Run again</button>
 </div>
 ${
   doctor === null
     ? '<p class="muted">Open this page again once it has run.</p>'
-    : `<ul class="checks">${doctor.checks
-        .map(
-          (check) =>
-            `<li class="${check.ok ? "" : "fail"}"><span class="mark ${check.ok ? "ok" : "badmark"}" aria-hidden="true">${check.warn === true ? "!" : check.info === true ? "·" : check.ok ? "✓" : "✗"}</span><span class="wrap-any">${escapeHtml(check.text)}</span></li>`,
-        )
-        .join("")}</ul>`
+    : `<ul class="checks">${doctorChecks.map(checkItem).join("")}</ul>`
 }
 <div data-out-for="doctor.run" role="status"></div>
 </section>`;
@@ -906,6 +969,7 @@ ${command(`${COMMAND} setup --remove-warp`, "Copy the Warp remove command")}
 </section>
 
 ${omnirouteCard}
+${browserCard(data.browser, browserChecks)}
 ${doctorCard}
 ${autoMode}
 ${gatewayCard(shell, data.configError)}`;

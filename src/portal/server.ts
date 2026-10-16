@@ -34,6 +34,7 @@ import { PORTAL_CSS, PORTAL_ICON, PORTAL_JS, THEME_JS } from "./assets";
 import type { PortalContext } from "./context";
 import {
   backendRows,
+  browserCardData,
   type ConfigRead,
   claudeModels,
   companionRows,
@@ -317,6 +318,7 @@ export async function startPortal(
     const updates = updateState(actionContext());
     return {
       autoMode: autoMode(),
+      browser: browserCardData(ctx),
       companions: companionRows(ctx),
       doctor: state.doctor,
       jobs: await jobLines(actionContext()),

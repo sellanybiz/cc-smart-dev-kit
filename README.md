@@ -58,11 +58,14 @@ hooks do not run at all: the hook shim stops before starting one.
    Setup installs the launcher `~/.local/bin/cc-smart-dev-kit`, turns on auto-update for the
    plugin, registers the MCP servers for your user ([MCP servers](#mcp-servers)), installs
    the plugin's general instructions for Claude (§ Instructions, skills
-   and agents), and adds any companion marketplace that is missing. Add `--dry-run` to see
-   the changes first; it writes and runs nothing at all. Add `--no-instructions` to leave
-   the instructions out (setup remembers that choice).
+   and agents), adds any companion marketplace that is missing, and prints the [browser](#the-browser)'s
+   own steps while they are still open (the browser needs the Playwright extension in a Chrome
+   profile of its own, and its token — `browser setup` does the machine's half of that). Add
+   `--dry-run` to see the changes first; it writes and runs nothing at all. Add
+   `--no-instructions` to leave the instructions out (setup remembers that choice).
 
-4. Restart Claude Code.
+4. Restart Claude Code. Finish the browser's steps if setup printed them
+   ([The browser](#the-browser)); without the token, the browser tools do not work.
 
 After that, use `cc-smart-dev-kit setup` to set up again (for example after an update).
 
@@ -87,6 +90,12 @@ After that, use `cc-smart-dev-kit setup` to set up again (for example after an u
 - **`cc-smart-dev-kit usage`** also shows auto mode's safety checks, which the gateway's
   router counted, by day, with the tokens each answer reported
   ([The usage limit: the alert, the status line, and `usage`](#the-usage-limit-the-alert-the-status-line-and-usage)).
+- **The browser drives your own Chrome**, through the Playwright extension, in a profile of its
+  own named `claude-code`: `cc-smart-dev-kit browser setup` makes it and prints the steps,
+  `browser token` saves the token its status page shows — and `browser mcp` refuses to start
+  without that token, so nothing ever waits for an approval click ([The
+  browser](#the-browser)). The plugin's own shared Chrome, its profile and the tab filter are
+  gone;
 - **The instructions work in parallel**: the plugin's general instructions tell Claude to
   start every independent phase at once, and never to wait for a merge, a release, a review
   or an answer it does not need ([Instructions, skills and agents](#instructions-skills-and-agents)).
@@ -150,8 +159,10 @@ Five pages say how, and what still has to be tested there:
 | `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too, and the launcher when setup created it — so `cc-smart-dev-kit` may be off your PATH then, and the line it prints is the `bun --no-env-file --config=… …/dist/cli.js restore` form of [Install](#install) step 3, with the bun running the restore, its own absolute path, and your installed version) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing. |
 | `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version. `--check` only says whether a newer version exists (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
 | `cc-smart-dev-kit gateway <command>` | The optional AI gateway (below). |
-| `cc-smart-dev-kit browser mcp` | Starts the Playwright MCP server on the ONE Google Chrome every session shares, through a filter that shows this session only its own windows ([The shared browser](#the-shared-browser)). `setup` registers it as the `playwright` MCP server; you do not run it by hand. |
-| `cc-smart-dev-kit browser check [--headless] [--idle]` | Proves the shared browser end to end: two real sessions, each with a real Playwright, on one throwaway Chrome (a sign-in, tabs, popups, a screenshot, an upload, a download, `browser_close`). Exit 0 when every check passed. `--headless` opens no window; `--idle` adds a 150-second wait, to show a quiet session keeps its tabs. |
+| `cc-smart-dev-kit browser mcp` | Starts the Playwright MCP server on **your own Google Chrome**, through the Playwright extension, in the profile `claude-code` ([The browser](#the-browser)). `setup` registers it as the `playwright` MCP server; you do not run it by hand. **It refuses to start without the token**: without one the extension would ask you to approve every connection. |
+| `cc-smart-dev-kit browser setup [--dry-run]` | Finds Chrome, opens the Playwright extension's Web Store page in the `claude-code` profile (Chrome makes that profile on that launch, if it is not there yet), pre-registers the extension for your user on macOS and Windows, and prints the steps that are left for you. It never installs or removes an extension, and never deletes a profile. `--dry-run` prints the same lines and runs and writes nothing. |
+| `cc-smart-dev-kit browser token [--clear]` | Saves the token the extension's status page shows — paste the whole line (its Copy button copies `PLAYWRIGHT_MCP_EXTENSION_TOKEN=…`), and it is not echoed while you type. It is written to `~/.config/cc-smart-dev-kit/playwright-extension.token`, mode 600, and is never printed again. `--clear` removes it. |
+| `cc-smart-dev-kit browser check` | Proves the browser end to end on your own Chrome: a real connection with **no approval page**, a `file://` page (which needs "Allow access to file URLs"), screenshots (one the server names, one a caller names), an upload, a download, and `browser_close`. Exit 0 when every check passed. It opens that Chrome window once, and the tabs of its connection stay behind. |
 | `cc-smart-dev-kit sessions [--open] [--dry-run]` | This project's Claude Code sessions of the last two days, by name and worktree, with the command that resumes each ([Sessions](#sessions)). With Warp installed it also saves a Warp tab for each. `--open` reopens every session that was open when the machine went down or its window closed (Warp tabs, or a terminal window each: XFCE Terminal on Linux, Windows Terminal on Windows); `--dry-run` says what it would open and opens nothing. |
 | `cc-smart-dev-kit worktrees [--clean] [--remove <path>] [--no-fetch]` | Every worktree of this repo: who works in it, and which are finished ([Worktrees](#worktrees)). `--clean` removes the finished ones with their branches; `--remove <path>` removes one now, for the session that has just finished in it, so without the one-hour wait; `--no-fetch` judges against `origin/<base>` as it is. `--clean` and `--remove` run in the main checkout only, one at a time. |
 | `cc-smart-dev-kit omniroute <status\|update\|rollback>` | The OmniRoute behind the gateway's affordable slots (below): what is installed, the newest npm release at least three days old, the user unit that runs it, and the backend that talks to it. `update` installs the newest such release, restarts its unit, checks the model path, and puts the old version back when the new one does not answer. `rollback` installs the version the last update replaced. `update` and `rollback` refuse to run inside a Claude Code session, and are never in the background. |
@@ -254,7 +265,14 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
 - Warp: the app and its version, and its Claude plugin. Not installed, or installed
   without its plugin (or with it turned off), is information (`·`): Warp is optional.
   ✗ only for the plugin without the app;
-- the MCP servers setup registers (the `playwright` shared browser, `serena`,
+- the browser: Google Chrome is installed, the `claude-code` Chrome profile is there, the
+  Playwright extension is installed in it and it is the ONLY extension there (a second one
+  breaks a browser session: microsoft/playwright#43230, open — a `!` line names it), the profile
+  lets the extension open `file://` pages, and the extension's token is saved. A ✗ names the
+  command or the click that fixes it; without the token nothing runs at all
+  ([The browser](#the-browser)). Whether the `playwright` server is registered and starts is the
+  MCP servers' own line, just below;
+- the MCP servers setup registers (the `playwright` browser, `serena`,
   `sequential-thinking`, `tavily-websearch`): each is registered at user scope and starts
   (`claude mcp get`, which starts it once). ✗ when one is missing ("Run: cc-smart-dev-kit setup")
   or when another copy of it wins — a project's `.mcp.json`, or the local scope — naming
@@ -669,7 +687,7 @@ Six screens, each following the design the owner approved (2026-10-16):
 | **Overview** | The plan limits the router saw and the slots answering from a fallback; every slot's chain; the three switches (the gateway, your own judge, the opus and fable fallback); the latest warnings. |
 | **Slots** | A chain per slot, built from the backends' live model lists. **Test each target** — one tiny chat to each affordable model, and the force-push test for a judge — then **Save**, after a confirmation that every running Claude session uses it from its next request. Save is held off for the **judge** slot until every backend target has blocked the force-push test; the command line's own rule, said in the judge note. |
 | **Health** | The router's counters, each backend and whether it answers, the targets resting, and its journal. Looks again every five seconds (Pause stops that, and a hidden tab is not reloaded at all); a look of its own does not count as activity, so an open Health tab cannot hold the portal up. |
-| **Machine** | Updates (installed, newest, last check, on hold, check now, install), the heavy-job queue, the companion plugins, the OmniRoute card, `doctor` (run again), the project's auto-mode rules, the **Project card** (below), and the **Warp card**, which shows the install and remove commands to copy. |
+| **Machine** | Updates (installed, newest, last check, on hold, check now, install), the heavy-job queue, the companion plugins, the OmniRoute card, the **Browser card** (the browser's own `doctor` lines, the five steps, a button that runs `browser setup` — it opens the extension's page in your `claude-code` profile — and a masked field that saves the token: the stored value is never on the page), `doctor` (run again, without the browser's lines, which are on that card), the project's auto-mode rules, the **Project card** (below), and the **Warp card**, which shows the install and remove commands to copy. |
 | **Settings** | Every workflow setting, one row each: what Claude does after a finished step (auto commit, auto push, the pull request, the auto-merge rule, the merge method, the branch and the worktree), the alerts (which events, the sound, the usage-limit percentage), and the switches (the status line, the session names, the heavy-job queue, the update hold). Each row says where its value comes from — `yours`, `this project` or `default` — and a row the project sets is read-only here, with a link to the Project card. |
 | **How this page stays private** | The security design in plain words, linked from the footer. |
 
@@ -999,7 +1017,7 @@ guard fails closed), and every other hook writes one line on stderr and the sess
 | `git-guard` | before a Bash or PowerShell command | Asks you before a force-push, a push to a protected branch (`protectedBranches`), `push --all` / `--mirror`, a branch deleted on the remote (`git push origin :x`, `--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that throws changes away, `branch -D`, `stash clear` and an unnamed `stash drop` (they throw work away), and (with `worktrees`) a bare `git stash` or `stash pop`: every worktree shares one stash. Text in quotes, here-docs and comments is not a command; a shell keyword, a wrapper (`timeout 60 git push -f`, `sudo -u me …`), a here-doc fed to `sh`, and the text piped into `sh` are read through. Git's own abbreviations count (`--forc` is `--force`). Not read: a git alias (`-c alias.x=…`, or one of your own), `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file, and a branch it cannot name. |
 | `main-folder-guard` | before Edit, Write, NotebookEdit, and Serena's edit tools | With `worktrees.guardMainFolder`: refuses an edit of a file in the main checkout itself, and says how to get into a worktree. A Serena edit is placed by the folder Serena has active, which `serena-root` records for the session; a folder it cannot work out, it asks about rather than letting the edit through. |
 | `serena-root` | `mcp__serena__activate_project` (before and after the call), and a session start | Records which folder Serena edits for this session (`worktrees.guardMainFolder`), so the guard above can place a Serena edit: from the moment an activation is allowed the record says "unknown" until Serena's own answer names the folder, so the guard asks rather than trusting a folder Serena may not be on. It refuses an activation that names a project by name, or a folder outside this repo and its worktrees. At a session start it forgets the record (`startup`) or distrusts it (`resume`, `clear`, `fork`). |
-| `playwright-output` | before every `mcp__playwright__*` call | Puts a screenshot or snapshot the caller names by a relative `filename` into the shared browser's output folder instead of the folder the session runs in (`@playwright/mcp` resolves a caller-named file against the process's own folder). |
+| `playwright-output` | before every `mcp__playwright__*` call | Puts a screenshot or snapshot the caller names by a relative `filename` into the browser's output folder instead of the folder the session runs in (`@playwright/mcp` resolves a caller-named file against the process's own folder). |
 | `message-guard` | before SendMessage | Refuses a message to a session that works outside this repo (ListAgents lists every session on the machine). |
 | `agent-guard` | before an Agent launch | **Machine-wide** (it runs with or without `.claude/cc-smart-dev-kit.json`): it resolves the model the launch really runs on and holds the model rules. A launch with no `model` or no `effort` is refused (it would inherit the session's, which nobody chose); an affordable gateway slot needs `effort: "max"`, and only a slot key or a `<backend>:<model>` target counts as affordable — a name no rule knows (`best`, `opusplan`, `default`, …) is judged like Opus; Claude Opus is allowed for a review agent, and any other Opus launch needs an `Opus reason: <word>` line and asks you to approve it (in `claude -p`, with nobody to answer, it is refused; a review is not); Claude Fable only for a read-only agent with a `Fable reason: <word> - <why>` line, and Claude Code then asks you to approve each one. A fork runs on the session's model and needs no `model`; an unknown session model counts as Opus. A **Workflow** call is judged the same way, from the `agent(...)` options in its script — a launch whose `model` is built at run time is refused, never guessed, and a script that hands `agent` around (`const run = agent; run(…)`, `agent?.(…)`) or builds a call's options at run time (a `...spread`, a computed key) is refused whole — because (proved live) a workflow's agents run inside the tool and pass no hook of their own. Every Opus or Fable launch is recorded, and `cc-smart-dev-kit usage` lists them with why. |
 | `job-route` | before a Bash command | With `"jobs": { "route": true }`: a heavy command (the project's own [kinds](docs/jobs.md#kinds)) is sent through the machine's queue — rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>`, byte for byte the same command. A command already inside `cc-smart-dev-kit job run` is left as it is. |
@@ -1085,71 +1103,125 @@ to apply it now (a restart works too) and never changes the running server itsel
 running server does not pass alerts through. Without it, an alert still arrives in a
 terminal that is not tmux, and a session in tmux gets none.
 
-## The shared browser
+## The browser
 
-Every Claude session drives the **same Google Chrome**, on one profile folder,
-`~/.local/share/cc-smart-dev-kit/playwright`. Sign in there once and every session — now and
-after a restart — is signed in. Each session works in windows of its own and never sees
-another session's.
+Claude Code's browser tools (`mcp__playwright__*`) drive **your own Google Chrome**, through the
+**Playwright extension**, in ONE profile of its own named **`claude-code`**. You watch the work in
+that window, and you can take the page over.
 
-Why one browser and not one per session: Chrome lets exactly one process open a profile
-folder, and a login copied into a second browser does not survive (a site that refreshes its
-token logs an old copy out everywhere). One browser has one cookie jar, so the token is
-refreshed once, for everyone.
+Why your Chrome and not a browser of its own: you see what Claude does, you can sign in once in
+that profile, and there is no second browser of ours to keep alive. The costs, both upstream and
+neither planned to change:
 
-**One OS user per machine.** The profile and the output folder are made readable by their
-owner only (0700), and an older folder others could read is tightened the next time the
-browser starts. That keeps other OS users out of the signed-in cookies — but two doors
-stay open, because the shared browser is machine-wide by design: Chrome's own debug port
-speaks over 127.0.0.1 with no authentication and hands its WebSocket URL to any local
-process of any user (`/json/version`), so anyone who can run a program on this machine can
-drive the shared browser; and the start-lock port is shared the same way, so another user's
-program holding it stops the launcher with a clear message. A second person needs their own
-account on their own machine.
+- **Every connection brings the `claude-code` window to the front and switches its active tab**
+  (microsoft/playwright#42343, closed as not planned). Nothing here can stop that.
+- **The `claude-code` profile must hold the Playwright extension and nothing else.** A second
+  extension that injects a frame into pages breaks the session (microsoft/playwright#43230, open).
+  `doctor` names any other extension in that profile; `browser setup` says the same.
+- **There is no headless mode.** A machine with no desktop cannot use the browser at all.
 
-- The first session that needs the browser starts it, detached, so it outlives that session;
-  every later session finds it. Two sessions starting at the same moment cannot start two
-  Chromes: the starter holds a port as a lock, and the other waits for the browser it brings
-  up. The system frees that port however the starter ends, so the lock can never go stale.
-- The launcher (`cc-smart-dev-kit browser mcp`, registered as the `playwright` MCP server)
-  opens a **tab filter** on a free local port and points the Playwright MCP at it
-  (`PLAYWRIGHT_MCP_CDP_ENDPOINT`, in the MCP's environment). Stock Playwright, attached to a
-  running Chrome, adopts EVERY tab in it (microsoft/playwright#42961, no fix upstream) — the
-  filter is what makes a session see only the pages it opened and the popups those opened. It
-  also turns downloads on in the shared browser, which Playwright does not do over CDP, and
-  refuses the browser-wide commands that would reach every session (`Browser.crash`,
-  `Network.clearBrowserCookies`, a cookie clear, `Fetch.enable` on the browser's own session).
-  It never raises a window on your desktop. The filter's endpoint carries a **random token**,
-  and any connection to another path — a web page's, a port scan's — is refused; the token
-  travels in an environment variable, never in a command line, which every user on the machine
-  can read (`/proc`). It stops anything that does not know the token; it does not stop a
-  process of your own user, which can read that environment.
-- When the MCP lets go — `browser_close`, ten idle minutes with no browser call, or the
-  session ending — the filter closes **this session's** windows. The shared Chrome and its
-  logins stay.
-- Everything the browser saves (screenshots, page snapshots, console and network logs,
-  downloads) goes to one folder, `~/.local/share/cc-smart-dev-kit/playwright-output/`, kept
-  under 200 MB by the MCP itself. A file a session NAMES (`filename: "home-dark.png"`) too:
-  the MCP would put that one beside the project's files — it resolves a caller-named path
-  against the folder it runs in — so the `playwright-output` hook rewrites it into that
-  folder first. A path a session gives in full is left as it is: a caller who named a place
-  meant it. A relative name with `..` in it is refused: the launcher passes
-  `--allow-unrestricted-file-access` (a session's files live in its worktree, outside the
-  folder the server was started in), so nothing else would stop it. The hook acts only while
-  the live `playwright` server is the one setup registered — a `playwright` of your own keeps
-  its own output folder and this hook keeps out of it.
-- **A person's click opens the file picker.** While Claude is acting, the MCP holds the
-  picker and waits for `browser_file_upload`; the rest of the time (and two seconds after a
-  call) the interception is off, so a click in that window opens the normal picker. The file
-  that does it is written beside the profile and passed as `--init-page`; it reads one
-  private field of the playwright-core inside the pinned `@playwright/mcp`, and without it
-  every picker stays held for Claude (it says so once in the MCP log).
-- The tool names stay `mcp__playwright__*`: the server is registered for your user, not
+**The token is required, and there is no approval mode.** The extension normally asks you, in a
+page, to approve every connection. The plugin never runs that way: `browser mcp` refuses to start
+until the token is saved, and says which command adds it. The token is what the extension's status
+page shows; it is generated inside the extension, stored in the profile's own extension storage, and
+nothing outside Chrome can read it — that is why you copy it once, by hand:
+
+1. `cc-smart-dev-kit browser setup` — it finds Chrome, makes the `claude-code` profile, opens the
+   Playwright extension's page in it, and prints the steps.
+2. In that window: **Add to Chrome**, then **Add extension**. That profile only.
+3. Open `chrome://extensions/?id=mmlmfjhmonkocbjadbfplnigmagldckm` in that window (paste it: Chrome
+   does not open `chrome://` addresses from a command line) and switch on **Allow access to file
+   URLs** — without it the extension cannot open a local file.
+4. Pin the extension, click its icon, and press **Copy** next to `PLAYWRIGHT_MCP_EXTENSION_TOKEN=…`
+   — the button copies the whole line.
+5. `cc-smart-dev-kit browser token` — paste it (it is not echoed), or use the portal's Browser card
+   (`cc-smart-dev-kit portal`, § The portal). Then start a new Claude session.
+
+`cc-smart-dev-kit setup` prints the same state and the same steps, and never reports the browser
+ready while the token is missing; it is read-only there, so the one command that opens the window
+is `browser setup`.
+
+Where the token lives, and where it does not: `~/.config/cc-smart-dev-kit/playwright-extension.token`,
+mode 600, readable by you alone; the launcher puts it in the Playwright MCP child's **environment**,
+never in a command line (`argv` is world-readable in `/proc`) and never in `~/.claude.json`. No
+command, page or log ever prints its value: the portal's Browser card shows a masked field and says
+"a token is set".
+
+A token that no longer matches the extension — you pressed "Generate new token", or reinstalled the
+extension — does **not** fall back to the approval page: the extension answers the connect page with
+*Invalid token provided.*, and the session's browser call then fails after the MCP's own 30-second
+deadline with a message naming the profile and the variable. Copy the token again and run
+`cc-smart-dev-kit browser token`.
+
+- **Each session gets its own tab group** in that profile (`Playwright · claude-code`, then `(2)`,
+  `(3)` … since Playwright v1.63), and sees only the tabs in it. A tab you drag out of the group is
+  no longer Claude's.
+- **Everything the browser saves** (screenshots, page snapshots, console and network logs,
+  downloads) goes to `~/.local/share/cc-smart-dev-kit/playwright-output/`, kept under 200 MB by the
+  MCP itself and readable by you alone. A file a session NAMES (`filename: "home-dark.png"`) too:
+  the MCP resolves that against the folder it runs in — the project's own folder — so the
+  `playwright-output` hook rewrites a relative name into that output folder first, and refuses a
+  relative name with a `..` in it. A path a session gives in full is left as it is. The hook acts
+  only while the live `playwright` server is the one setup registered.
+- **`browser check`** proves all of it on your real Chrome: a connection with no approval page, a
+  `file://` page, a screenshot the server names and one a caller names, an upload through the MCP's
+  file-upload tool, a download, and `browser_close`. Run it when the browser misbehaves.
+- **Nothing here is a second browser.** The plugin starts no Chrome of its own, keeps no profile of
+  its own and never deletes one. The single thing it may write inside Chrome's own folder is the
+  profile's **display name** in `Local State`, and only while no Chrome is running on that user data
+  folder (`restore` puts that one name back; every other byte of that file is left as it is).
+- **`cc-smart-dev-kit restore`** removes the token file and the pre-registration it added on macOS
+  and Windows, and **never touches the `claude-code` profile or the extension** — those are your
+  browser's data. It prints a line saying so.
+- **The tool names stay `mcp__playwright__*`**: the server is registered for your user, not
   served from the plugin (a plugin-served server would rename every tool).
 
-`cc-smart-dev-kit browser check` proves all of it end to end with two real sessions on one
-throwaway Chrome. Run it after moving the pinned `@playwright/mcp`, or when the browser
-misbehaves; the profile you signed in to is never touched.
+### Still owed: the live checks
+
+Everything below needs a real Chrome with the real extension, so it is run by hand, on each
+platform, and none of it has been run yet. The pinned `@playwright/mcp` is 0.0.83 and the Web
+Store extension is 0.4.0 at the time of writing.
+
+1. **Linux, end to end**: `browser setup`, the Web Store install in the `claude-code` profile,
+   the token, then `browser check` — and it must pass with **no approval page** (that is the
+   whole point of the token). Then two Claude sessions at once: each gets its own tab group
+   (`Playwright · claude-code`, `(2)`), neither sees the other's tabs, and Chrome comes to the
+   front when each connects. After a session lets go, its tab group stays behind.
+2. **A wrong token**: generate a new token in the extension, keep the old one in the file, and
+   run a browser call. Expected, from the source: the connect page shows *Invalid token
+   provided.*, no approval page appears, and the call fails after about 30 s with the MCP's own
+   message. Nothing should retry or open a second page.
+3. **The token off disk**: whether the plugin could read `auth-token` out of the profile's
+   `Local Storage/leveldb/` for a signed-in profile, and whether that survives a Chrome restart.
+   If it does not, pasting stays the only way (which is what the guide says today). This is
+   Playwright's own advice too: its tests read the token off the status page.
+4. **Profile creation and naming**: `--profile-directory=claude-code --new-window <url>` making
+   the profile folder while Chrome is ALREADY running on another profile; whether the window
+   really opens in that profile; and the display name — the `Local State` write (Chrome closed)
+   against Chrome's own **Customize profile** rename. Also whether Chrome opens a `chrome://`
+   address given on a command line (the guide tells you to paste it, which works either way).
+5. **The profile page, from a command line, per platform**: the exact `--profile-directory` and
+   `--new-window` behaviour on macOS (a Chrome already running) and on Windows (Git Bash,
+   PowerShell and `cmd` quoting of the guide's commands).
+6. **`--output-dir` in extension mode is unproved**: `browser check` covers a screenshot the
+   server names and one a caller names, an upload (`browser_file_upload`, with no picker bundle
+   of ours any more) and a download — read the folder it reports each time.
+7. **macOS**: the whole path, plus the per-user External Extensions JSON (`~/Library/Application
+   Support/Google/Chrome/External Extensions/<id>.json`) and whether macOS 27 still honours it,
+   and the Space switch side of the focus steal.
+8. **Windows**: `%LOCALAPPDATA%\Google\Chrome\User Data\claude-code`, the HKCU
+   `Software\Google\Chrome\Extensions\<id>` key and the Enable confirmation, and the
+   `lockfile` question ("is Chrome running") — the same owed item as `docs/windows-setup.md` § 4.
+9. **Chrome version drift**: the pin (0.0.83) against a NEWER Web Store extension than 0.4.0, and
+   what `doctor` reads as its version then (`<profile>/Extensions/<id>/<version>/`).
+10. **Edge** (`--browser=msedge`) if it is ever supported: Playwright maps a user data dir for it,
+    but the plugin's own discovery and guide say Google Chrome only, and Brave/Chromium have no
+    channel mapping at all.
+11. **`doctor` must not open a page.** Its MCP check runs `claude mcp get playwright`, which starts
+    the launcher once. With the token saved, the MCP must answer `initialize` and its tool list
+    WITHOUT connecting to Chrome (the connect page is opened on the first browser call) — watch
+    that no window comes to the front and no `connect.html` tab appears. Without a token the
+    launcher exits before starting anything, which is why the check reports a failure then.
 
 ## MCP servers
 
@@ -1162,7 +1234,7 @@ folders. Registered for the user, the names stay and the servers stay.
 
 | Server | What it is |
 |---|---|
-| `playwright` | The shared browser ([The shared browser](#the-shared-browser)): the launcher, `browser mcp`. |
+| `playwright` | The browser ([The browser](#the-browser)): the launcher, `browser mcp`, on your own Chrome through the Playwright extension. |
 | `serena` | [Serena](https://github.com/oraios/serena) code intelligence, at a pinned commit, started with the plugin's own context (installed as `~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml`): Serena's `claude-code` context with project switching on, so `activate_project` is listed and a session can point Serena at its worktree. |
 | `sequential-thinking` | `@modelcontextprotocol/server-sequential-thinking`, at a pinned version, through `bunx`. |
 | `tavily-websearch` | [Tavily](https://tavily.com)'s remote web-search server (`https://mcp.tavily.com/mcp/`). Its key is **never** written into a registration or printed: the header carries `Bearer ${TAVILY_API_KEY}`, which Claude Code fills in from its own environment at connect time. |

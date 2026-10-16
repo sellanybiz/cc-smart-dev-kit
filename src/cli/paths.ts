@@ -20,12 +20,13 @@ export interface CliPaths extends RouterPaths {
   stateDir: string;
   /** What outlives a plugin version: `~/.local/share/cc-smart-dev-kit`. */
   dataDir: string;
-  /** The shared Chrome's profile, one for the whole machine: `<dataDir>/playwright`. */
-  browserProfileDir: string;
   /** Everything the browser saves: screenshots, snapshots, downloads (`<dataDir>/playwright-output`). */
   browserOutputDir: string;
-  /** The init page the Playwright MCP loads for every tab: `<dataDir>/playwright-picker.js`. */
-  browserPickerFile: string;
+  /**
+   * The Playwright extension's token, mode 0600: it is what connects the MCP to the person's own
+   * Chrome without an approval page (`src/browser/token.ts`).
+   */
+  browserTokenFile: string;
   /** The Serena context the plugin starts Serena with: `<dataDir>/serena/contexts/worktree.yml`. */
   serenaContextFile: string;
   /** The router's long-running copy: `~/.local/share/cc-smart-dev-kit/router.js`. */
@@ -101,14 +102,12 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     binDir: join(router.home, ".local", "bin"),
     stateDir: join(claudeConfigDir, "cc-smart-dev-kit"),
     dataDir: join(router.home, ".local", "share", "cc-smart-dev-kit"),
-    browserProfileDir: join(router.home, ".local", "share", "cc-smart-dev-kit", "playwright"),
     browserOutputDir: join(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
-    browserPickerFile: join(
+    browserTokenFile: join(
       router.home,
-      ".local",
-      "share",
+      ".config",
       "cc-smart-dev-kit",
-      "playwright-picker.js",
+      "playwright-extension.token",
     ),
     serenaContextFile: join(
       router.home,

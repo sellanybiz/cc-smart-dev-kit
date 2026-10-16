@@ -17,6 +17,12 @@ export interface Machine {
    * (cc-smart-dev-kit never sees, stores or pipes it). Returns the exit code.
    */
   runOnTerminal: (argv: string[]) => number;
+  /**
+   * Starts a program and does not wait for it: the person's own Chrome, opened on a page
+   * (`browser setup`). A window coming to the front is the point, so its output is not captured
+   * and it never blocks the caller.
+   */
+  spawnDetached: (argv: string[]) => void;
   /** The full path of a command on PATH, or null. */
   which: (command: string) => string | null;
   /** Asks the person on the terminal; null when there is no terminal. */
@@ -42,19 +48,26 @@ const RUN_TIMEOUT_MS = 300_000;
 
 /**
  * Tests only: a JSON object in this variable stands in for the host's facts
- * (`platform`, `arch`, `osRelease`, `macApp`), so a test that runs the CLI as its own
+ * (`platform`, `arch`, `osRelease`, `macApp`, `existing`), so a test that runs the CLI as its own
  * process never reads the machine it runs on. Unset, the real values are used.
  * (`TEST_HOST_VAR` itself lives in `host.ts`, so the platform has one home.)
+ *
+ * `existing`, when given, is the WHOLE truth about what is on this machine: a path is there
+ * exactly when it is in that list, and nothing else is (`exists` below). That is what makes a
+ * test about a program the plugin looks for — the browser's Chrome, the Warp app — the same on
+ * every machine, including one where the real Chrome sits in a standard place.
  */
 interface HostFacts {
   platform: NodeJS.Platform;
   arch: string;
   osRelease: () => string | null;
   macApp: string;
+  exists: (path: string) => boolean;
 }
 
 function hostFacts(env: Record<string, string | undefined>): HostFacts {
   const real: HostFacts = {
+    exists: (path) => existsSync(path),
     platform: hostPlatform(env),
     arch: process.arch,
     osRelease: () =>
@@ -68,8 +81,11 @@ function hostFacts(env: Record<string, string | undefined>): HostFacts {
     arch: string;
     osRelease: string | null;
     macApp: string;
+    existing: string[];
   }>;
   return {
+    exists:
+      given.existing === undefined ? real.exists : (path) => (given.existing ?? []).includes(path),
     platform: given.platform ?? real.platform,
     arch: given.arch ?? real.arch,
     osRelease: given.osRelease !== undefined ? () => given.osRelease ?? null : real.osRelease,
@@ -112,13 +128,22 @@ export function realMachine(
         return 127;
       }
     },
+    spawnDetached: (argv) => {
+      try {
+        // Its own process group and no pipes to this process: the window outlives the command.
+        Bun.spawn(argv, { detached: true, env, stdio: ["ignore", "ignore", "ignore"] }).unref();
+      } catch {
+        // A program that cannot start is not this command's failure: the caller's own note
+        // (and the guide it prints) says what to open by hand.
+      }
+    },
     which: (command) => Bun.which(command, { PATH }),
     confirm,
     platform: host.platform,
     arch: host.arch,
     osRelease: host.osRelease,
     macApp: host.macApp,
-    exists: (path) => existsSync(path),
+    exists: host.exists,
     fetchText: async (url) => {
       // Redirects are followed one at a time, so no step of the way leaves HTTPS: what
       // comes back is a signing key.
