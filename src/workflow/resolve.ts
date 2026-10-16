@@ -113,6 +113,47 @@ function sourceOf(personal: Workflow, project: Workflow, key: WorkflowKey): Work
   return workflowValue(personal, key) !== undefined ? "personal" : "default";
 }
 
+/** The alerts of two workflow objects: the project's over the person's, field by field. */
+function alertsFrom(personal: Workflow, project: Workflow): ResolvedWorkflow["alerts"] {
+  const merged = mergeWorkflows(personal, project);
+  const alerts = merged.alerts ?? {};
+  const of = <T>(key: WorkflowKey, value: T): ResolvedValue<T> => ({
+    value,
+    source: sourceOf(personal, project, key),
+  });
+  return {
+    events: of("alerts.events", alerts.events ?? workflowDefaults.alerts.events),
+    sound: of("alerts.sound", alerts.sound ?? workflowDefaults.alerts.sound),
+    usagePercent: of(
+      "alerts.usagePercent",
+      alerts.usagePercent ?? workflowDefaults.alerts.usagePercent,
+    ),
+  };
+}
+
+/**
+ * The **alerts** on their own, resolved: what a hook and the status line read
+ * (`src/workflow/alerts.ts`). It is the same resolution as `resolveWorkflow` — the project
+ * over the person over the built-in default — without the switches, which a hook has no use
+ * for. Throws `WorkflowConfigError` for a broken personal file, like `resolveWorkflow`.
+ */
+export function resolveAlerts(
+  paths: CliPaths,
+  projectConfig: CcSmartDevKitConfig | null,
+): ResolvedWorkflow["alerts"] {
+  const personal = loadWorkflow(personalWorkflowFile(paths));
+  return alertsFrom(personal, projectConfig?.workflow ?? {});
+}
+
+/** Every alert setting at its built-in default: what a hook falls back to, never throwing. */
+export function defaultAlerts(): ResolvedWorkflow["alerts"] {
+  return {
+    events: { value: [...workflowDefaults.alerts.events], source: "default" },
+    sound: { value: workflowDefaults.alerts.sound, source: "default" },
+    usagePercent: { value: workflowDefaults.alerts.usagePercent, source: "default" },
+  };
+}
+
 /** A `statusLine` someone else set: not cc-smart-dev-kit's, so the switch reads as off. */
 function statusLineIsOurs(paths: CliPaths): boolean {
   try {
@@ -151,7 +192,6 @@ export function resolveWorkflow(
     value,
     source: sourceOf(personal, project, key),
   });
-  const alerts = merged.alerts ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
     autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
@@ -167,14 +207,8 @@ export function resolveWorkflow(
       "clearWorktreeAfterMerge",
       merged.clearWorktreeAfterMerge ?? workflowDefaults.clearWorktreeAfterMerge,
     ),
-    alerts: {
-      events: of("alerts.events", alerts.events ?? workflowDefaults.alerts.events),
-      sound: of("alerts.sound", alerts.sound ?? workflowDefaults.alerts.sound),
-      usagePercent: of(
-        "alerts.usagePercent",
-        alerts.usagePercent ?? workflowDefaults.alerts.usagePercent,
-      ),
-    },
+    // One home with `resolveAlerts` (below): the alerts are resolved the same way here.
+    alerts: alertsFrom(personal, project),
     switches: {
       statusLine: statusLineIsOurs(paths) ? current(true, "personal") : current(false, "default"),
       sessionNames: projectFlag(projectConfig?.sessionNames),

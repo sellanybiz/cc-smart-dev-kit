@@ -1,11 +1,12 @@
 /** `cc-smart-dev-kit workflow`: what `show` prints, and where `set` and `unset` write. */
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { cliPaths } from "../cli/paths";
+import { cliPaths, tildify } from "../cli/paths";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
-import { tempDir } from "../testing/temp";
+import { git, tempDir } from "../testing/temp";
 import { runWorkflow, type WorkflowContext } from "./commands";
 import { personalWorkflowFile } from "./resolve";
 import { writePersonalSetting, writeProjectSetting } from "./write";
@@ -58,6 +59,7 @@ describe("workflow show", () => {
       "switches.sessionNames = false (default)",
       "switches.jobRoute = false (default)",
       "switches.updateHold = false (default)",
+      "review-done = no (this folder is not in a git project)",
       "no project settings here: this folder is not in a git project",
     ]);
   });
@@ -323,6 +325,101 @@ describe("workflow set and unset", () => {
     const run = context(tempDir("not-git"));
     expect(runWorkflow(["write", "autoCommit", "true"], run.context)).toBe(2);
     expect(run.errors[0]).toContain("Unknown workflow command: write");
+  });
+});
+
+describe("workflow review-done", () => {
+  /** The record file of a repo, named by hand the way the module names it. */
+  function recordFile(env: Record<string, string>, repo: string): string {
+    return join(
+      cliPaths(env).stateDir,
+      "reviews",
+      `${createHash("sha256").update(repo).digest("hex").slice(0, 16)}.json`,
+    );
+  }
+
+  test("HEAD is recorded: the file holds the full sha, 0600, and says so", () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    const run = context(repo, env);
+    expect(runWorkflow(["review-done"], run.context)).toBe(0);
+    const file = recordFile(env, repo);
+    expect(run.lines).toEqual([
+      `+ ${tildify(file, env.HOME ?? "")}: the review of ${head.slice(0, 7)} is recorded`,
+    ]);
+    expect(Object.keys(JSON.parse(readFileSync(file, "utf8")) as object)).toEqual([head]);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  test("show says whether the commit here has one", () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    const before = context(repo, env);
+    runWorkflow(["show"], before.context);
+    expect(before.lines).toContain(`review-done = no (HEAD ${head.slice(0, 7)})`);
+    runWorkflow(["review-done"], context(repo, env).context);
+    const after = context(repo, env);
+    runWorkflow(["show"], after.context);
+    expect(after.lines).toContain(`review-done = yes (HEAD ${head.slice(0, 7)})`);
+    expect(after.lines).not.toContain(`review-done = no (HEAD ${head.slice(0, 7)})`);
+  });
+
+  test("--sha records an earlier commit; a second call says it was already recorded", () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    const first = git(repo, "rev-parse", "HEAD").trim();
+    writeFileSync(join(repo, "second.txt"), "second\n");
+    git(repo, "add", "second.txt");
+    git(repo, "commit", "-q", "-m", "second");
+    const run = context(repo, env);
+    expect(runWorkflow(["review-done", "--sha", first.slice(0, 7)], run.context)).toBe(0);
+    expect(run.lines[0]).toContain(`the review of ${first.slice(0, 7)} is recorded`);
+    const again = context(repo, env);
+    expect(runWorkflow(["review-done", "--sha", first], again.context)).toBe(0);
+    expect(again.lines[0]).toContain("was already recorded");
+    // HEAD itself (the second commit) is not recorded: only the commit asked for.
+    const shown = context(repo, env);
+    runWorkflow(["show"], shown.context);
+    expect(shown.lines.some((line) => line.startsWith("review-done = no (HEAD "))).toBe(true);
+  });
+
+  test("a commit nothing names: exit 1, nothing written", () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    const run = context(repo, env);
+    expect(runWorkflow(["review-done", "--sha", "no-such-commit"], run.context)).toBe(1);
+    expect(run.errors[0]).toContain("no-such-commit is not a commit in this repository");
+    expect(existsSync(recordFile(env, repo))).toBe(false);
+  });
+
+  test("outside a git project, and with a bad flag: nothing is written", () => {
+    const outside = context(tempDir("not-git"));
+    expect(runWorkflow(["review-done"], outside.context)).toBe(1);
+    expect(outside.errors[0]).toContain("this folder is not in a git project");
+    const env = hookEnv();
+    const repo = makeRepo();
+    const bad = context(repo, env);
+    expect(runWorkflow(["review-done", "--sha"], bad.context)).toBe(2);
+    expect(bad.errors[0]).toContain("--sha needs a commit");
+    const unknown = context(repo, env);
+    expect(runWorkflow(["review-done", "--now"], unknown.context)).toBe(2);
+    expect(unknown.errors[0]).toContain("Unknown option: --now");
+  });
+
+  test("a worktree records into the repository's own file", () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    const worktree = join(repo, "..", "app-wt-review");
+    git(repo, "worktree", "add", "-q", "-b", "review-branch", worktree);
+    const head = git(worktree, "rev-parse", "HEAD").trim();
+    const run = context(worktree, env);
+    expect(runWorkflow(["review-done"], run.context)).toBe(0);
+    expect(existsSync(recordFile(env, repo))).toBe(true);
+    expect(Object.keys(JSON.parse(readFileSync(recordFile(env, repo), "utf8")) as object)).toEqual([
+      head,
+    ]);
   });
 });
 

@@ -141,7 +141,9 @@ registration is the one setup recorded; a server of the person's own is left alo
 and the browser is the machine's —
 and, like `notify` and `update-check`, it is a `USER_HOOKS` bundle: no frame, no
 `cc-smart-dev-kit.json`, no `ownHooks`. `notify` is a `USER_HOOKS` bundle like `update-check`: it
-never enters the frame, reads no `cc-smart-dev-kit.json`, and its opt-in is the machine. It alerts on
+never enters the frame, needs no `cc-smart-dev-kit.json`, and its opt-in is the machine. (The one
+thing it reads from a project that has one is its `workflow.alerts` settings — which moments
+alert, and whether a sound goes with them — through `src/workflow/alerts.ts`.) It alerts on
 `Notification`, `Stop`, `PreToolUse` on `AskUserQuestion|ExitPlanMode`, and `StopFailure`
 (`rate_limit` only where the `stop-failure` hook will not show its own alert —
 `stopFailureWillAlert`: no desktop, no gateway set up, or a short rate limit), and clears its mark
@@ -253,7 +255,9 @@ PreToolUse decision is JSON, and SessionStart's text goes into the session's con
 - Every child process and network call inside a hook has its own timeout, shorter than
   the hook's (a `git fetch` 5 or 30 s, `gh` 10 s, the setup command 540 s of 600,
   `git worktree add` 500 s, `git worktree remove` 50 s).
-- PreToolUse runs before every matching tool call: keep it fast, with no network. Every git
+- PreToolUse runs before every matching tool call: keep it fast. No network, except where
+  the guard's question *is* about the network — the merge guard's read-only `gh` calls (10 s
+  each, against its own 30 s, and only for a command that really asks for a merge). Every git
   call in a guard takes `GUARD_GIT_TIMEOUT_MS` (5 s) or less, against the hook's own 10 s.
 - A long job (installing packages in a new worktree) gets the long timeout; a guard
   gets a short one.

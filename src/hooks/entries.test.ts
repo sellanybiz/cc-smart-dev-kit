@@ -19,6 +19,7 @@ import { hookEnv, makeRepo, runEntry, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { SERENA_EDIT_TOOLS } from "./main-folder-guard";
+import { GH_TIMEOUT_MS } from "./merge-guard";
 import { HOOK_LOG_ENV } from "./run";
 import { GUARD_BUNDLES, HOOKS, USER_HOOKS } from "./specs";
 import { ADD_TIMEOUT_MS, SETUP_TIMEOUT_MS } from "./worktree-create";
@@ -196,6 +197,8 @@ esac
   });
 
   test("every git call inside a hook stays well inside that hook's own timeout", () => {
+    // The merge guard: two `gh` calls of its own timeout, inside the 30 s hooks.json gives it.
+    expect(GH_TIMEOUT_MS).toBeLessThan(30_000 / 2);
     // The project's own hooks: the worktree engine (`project-wiring.ts`).
     expect(GUARD_GIT_TIMEOUT_MS).toBeLessThan(10_000); // git-guard, main-folder-guard, message-guard
     expect(RESOLVE_GIT_TIMEOUT_MS).toBeLessThan(10_000); // the frame's project lookup, in every hook

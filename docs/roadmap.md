@@ -58,10 +58,20 @@ Done in this release:
   are split instead of run in turn.
 - **Auto mode's safety checks, counted** (`usage`): the router counts the checks by day, who
   answered each and the tokens their answers reported (`gateway.md` § The safety-check counts).
-
-Coming in 0.4.0 from other builders: the **Settings page** and the **Project card** in the
-portal (both call this release's functions), the **merge guard hook** (which decides a merge
-with `autoMergeAllowed`) and the **alert settings** (which read `alerts`).
+- **The merge guard** (`design.md` § The workflow): the `merge-guard` hook asks the person
+  before a `gh pr merge` its policy does not allow, and lets one through with no question only
+  when `autoMerge` allows it, every required check is green, and the head commit's review is
+  recorded. **The review record**: `cc-smart-dev-kit workflow review-done` writes it, and
+  `workflow show` says whether the commit here has one.
+- **The alert settings** (`alerts.events`, `alerts.sound`, `alerts.usagePercent`): the two
+  alert hooks and the status line read them — which moments alert, a sound where the platform
+  has one, and the plan share the status line warns from.
+- **The skills follow the workflow**: the commit, pull-request, review and worktree skills,
+  and the general instructions, read `cc-smart-dev-kit workflow show`, so one policy — not an
+  older hard-coded default — says when a step goes by itself.
+- **The portal's Settings page and Project card**: the workflow settings with where each
+  value comes from (yours, this project, default), and the project's two files planned and
+  written from the form (`project init`'s own functions), never committed.
 
 ## 1 — Foundation (done)
 

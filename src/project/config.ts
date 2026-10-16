@@ -11,6 +11,7 @@ import { isValidRange, satisfiesRange } from "./version-range";
  */
 export const PLUGIN_HOOK_NAMES = [
   "git-guard",
+  "merge-guard",
   "main-folder-guard",
   "serena-root",
   "message-guard",

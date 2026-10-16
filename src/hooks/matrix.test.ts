@@ -33,6 +33,7 @@ import {
   HOOKS,
   jobRouteHook,
   mainFolderGuardHook,
+  mergeGuardHook,
   messageGuardHook,
   PROJECT_HOOKS,
   serenaRootHook,
@@ -190,6 +191,21 @@ const CASES: Case[] = [
         cwd: project(config),
         tool_name: "Bash",
         tool_input: { command: "git push --force" },
+      },
+      env: hookEnv(),
+    }),
+    failsClosed: askLine,
+  },
+  {
+    spec: mergeGuardHook,
+    own: { event: "PreToolUse", matcher: "Bash|PowerShell" },
+    setup: (config) => ({
+      input: {
+        hook_event_name: "PreToolUse",
+        session_id: SESSION,
+        cwd: project(config),
+        tool_name: "Bash",
+        tool_input: { command: "gh pr merge 7" },
       },
       env: hookEnv(),
     }),
@@ -482,7 +498,7 @@ describe("no cc-smart-dev-kit.json", () => {
 
 describe("the guard matrix", () => {
   const guards = CASES.filter((c) =>
-    [gitGuardHook, mainFolderGuardHook, messageGuardHook].includes(c.spec),
+    [gitGuardHook, mergeGuardHook, mainFolderGuardHook, messageGuardHook].includes(c.spec),
   );
 
   // [plugin installed, project wires its own, listed in ownHooks, requires met, guards that answer]

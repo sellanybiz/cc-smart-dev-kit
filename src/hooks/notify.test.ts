@@ -10,7 +10,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
@@ -908,6 +908,202 @@ describe("the entry, as Claude Code runs it", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stderr.toString()).toBe("cc-smart-dev-kit notify: the hook input is not JSON\n");
+  });
+});
+
+describe("the workflow's alert settings", () => {
+  /** The person's own workflow file, written where the hook reads it: `alerts` set as given. */
+  function writeAlerts(env: Record<string, string>, alerts: unknown): void {
+    const file = cliPaths(env).workflowConfigFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ alerts }, null, 2)}\n`);
+  }
+
+  /** The input and event of one of the four alert moments, at a folder that is no project. */
+  function moment(
+    which: "failed" | "finished" | "needs-you" | "question",
+    home: string,
+    /** The session: a `StopFailure` alerts once per error per session, so a second run needs a new one. */
+    session = "s-1",
+  ): { event: string; input: Record<string, unknown> } {
+    if (which === "needs-you") {
+      return {
+        event: "Notification",
+        input: {
+          cwd: join(home, "rel-ssh"),
+          hook_event_name: "Notification",
+          message: "Claude needs your permission to use Bash",
+          notification_type: "permission_prompt",
+          session_id: session,
+        },
+      };
+    }
+    if (which === "question") {
+      return {
+        event: "PreToolUse",
+        input: {
+          cwd: join(home, "rel-ssh"),
+          hook_event_name: "PreToolUse",
+          session_id: session,
+          tool_input: { questions: [{ question: "Which branch?", type: "text" }] },
+          tool_name: "AskUserQuestion",
+        },
+      };
+    }
+    if (which === "failed") {
+      return {
+        event: "StopFailure",
+        input: {
+          cwd: join(home, "rel-ssh"),
+          error: "server_error",
+          hook_event_name: "StopFailure",
+          last_assistant_message: "The turn ended with an error",
+          session_id: session,
+        },
+      };
+    }
+    return { event: "Stop", input: stopInput(home) };
+  }
+
+  test.each([
+    ["needs-you", "permission_prompt"],
+    ["question", "AskUserQuestion"],
+    ["finished", "Stop"],
+    ["failed", "StopFailure"],
+  ] as const)("%s: shown when it is in alerts.events", (kind) => {
+    const all = ["needs-you", "question", "finished", "failed"];
+    const { env } = machine();
+    // Every moment but this one: only this moment is left to alert.
+    writeAlerts(env, { events: all.filter((event) => event !== kind) });
+    const { event, input } = moment(kind, env.HOME);
+    const off = setup(env);
+    expect(notifyHook(input, event, off.deps)).toEqual({});
+    expect(off.runs).toEqual([]);
+
+    writeAlerts(env, { events: all });
+    const on = setup(env);
+    const second = moment(kind, env.HOME, "s-2");
+    notifyHook(second.input, event, on.deps);
+    // The desktop route runs the notifier and stays silent itself, so the alert is the run.
+    expect(on.runs.length).toBeGreaterThan(0);
+  });
+
+  test("a question left out: the permission prompt that follows it still alerts", () => {
+    const { env } = machine();
+    writeAlerts(env, { events: ["needs-you", "finished", "failed"] });
+    const question = setup(env);
+    expect(notifyHook(moment("question", env.HOME).input, "PreToolUse", question.deps)).toEqual({});
+    expect(question.runs).toEqual([]);
+    // Six seconds later Claude Code raises the permission prompt for the same wait: the
+    // question's mark went with its suppressed alert, so this one is shown.
+    const prompt = setup(env);
+    notifyHook(
+      {
+        cwd: join(env.HOME, "rel-ssh"),
+        hook_event_name: "Notification",
+        message: "Claude needs your permission to use AskUserQuestion",
+        notification_type: "permission_prompt",
+        session_id: "s-1",
+      },
+      "Notification",
+      prompt.deps,
+    );
+    expect(prompt.runs.length).toBe(2);
+  });
+
+  test("alerts.events off for every moment: nothing is shown, and no file is needed", () => {
+    const { env } = machine();
+    writeAlerts(env, { events: ["finished"] });
+    const { deps, runs } = setup(env);
+    expect(notifyHook(moment("needs-you", env.HOME).input, "Notification", deps)).toEqual({});
+    expect(runs).toEqual([]);
+  });
+
+  test("a broken workflow file: today's alert, and one line on stderr", () => {
+    const { env } = machine();
+    const file = cliPaths(env).workflowConfigFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "{ not json");
+    const { deps, runs } = setup(env);
+    const result = notifyHook(stopInput(env.HOME), "Stop", deps);
+    expect(runs.length).toBe(2); // the sound and the notification, as always
+    expect(result.stderr).toStartWith(
+      "cc-smart-dev-kit: the alerts fall back to the built-in defaults (Invalid ",
+    );
+    expect(result.stdout).toBeUndefined();
+  });
+
+  test("alerts.sound on: the Linux players, paplay first and canberra-gtk-play without it", () => {
+    const withPaplay = machine();
+    writeAlerts(withPaplay.env, { sound: true });
+    writeConfig(withPaplay.env, { desktopSound: false });
+    const first = setup(withPaplay.env);
+    notifyHook(stopInput(withPaplay.env.HOME), "Stop", first.deps);
+    expect(first.runs).toEqual([
+      [join(withPaplay.bin, "paplay"), "/usr/share/sounds/freedesktop/stereo/service-logout.oga"],
+      [
+        join(withPaplay.bin, "notify-send"),
+        "Claude finished · rel-ssh",
+        "Claude finished its turn.",
+      ],
+    ]);
+
+    const noPaplay = machine({}, ["notify-send", "canberra-gtk-play"]);
+    writeAlerts(noPaplay.env, { sound: true });
+    writeConfig(noPaplay.env, { desktopSound: false });
+    const second = setup(noPaplay.env);
+    notifyHook(stopInput(noPaplay.env.HOME), "Stop", second.deps);
+    expect(second.runs[0]).toEqual([
+      join(noPaplay.bin, "canberra-gtk-play"),
+      "-i",
+      "service-logout",
+    ]);
+  });
+
+  test("alerts.sound on, macOS: afplay of the moment's system sound", () => {
+    const { bin, env } = machine({}, ["osascript", "afplay"]);
+    writeAlerts(env, { sound: true });
+    // notify.json's own sound off, so only `alerts.sound` can be the reason afplay runs.
+    writeConfig(env, { desktopSound: false });
+    const { deps, runs } = setup(env, { platform: "darwin" });
+    notifyHook(stopInput(env.HOME), "Stop", deps);
+    expect(runs[0]).toEqual([join(bin, "afplay"), "/System/Library/Sounds/Pop.aiff"]);
+    expect(runs[1]?.[0]).toBe(join(bin, "osascript"));
+  });
+
+  test("alerts.sound on, Windows: the toast's own sound, nothing else started", () => {
+    const { bin, env } = machine({}, ["powershell"]);
+    writeAlerts(env, { sound: true });
+    const { deps, runs } = setup(env, { platform: "win32" });
+    notifyHook(stopInput(env.HOME), "Stop", deps);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.[0]).toBe(join(bin, "powershell"));
+  });
+
+  test("alerts.sound on, over SSH: the terminal bell, where notify.json's sshBell is off", () => {
+    const { env } = machine({
+      CLAUDE_CODE_VERSION: "2.1.301",
+      DISPLAY: "",
+      SSH_CONNECTION: "10.0.0.2 51000",
+    });
+    writeAlerts(env, { sound: true });
+    const { deps } = setup(env);
+    const result = notifyHook(stopInput(env.HOME), "Stop", deps);
+    expect(result.stdout).toEndWith('Claude finished its turn.\\u0007\\u0007"}');
+  });
+
+  test("alerts.sound off: the alert, the freedesktop sound as always, and no afplay", () => {
+    const { env } = machine({}, ["notify-send", "paplay", "canberra-gtk-play", "afplay"]);
+    writeAlerts(env, { sound: false });
+    const linux = setup(env);
+    notifyHook(stopInput(env.HOME), "Stop", linux.deps);
+    // notify.json's desktopSound is on by default: the freedesktop sound, then the alert.
+    expect(linux.runs).toHaveLength(2);
+    expect(linux.runs[0]?.[1]).toBe("/usr/share/sounds/freedesktop/stereo/service-logout.oga");
+
+    const darwin = setup(env, { platform: "darwin" });
+    notifyHook(stopInput(env.HOME), "Stop", darwin.deps);
+    expect(darwin.runs).toEqual([]);
   });
 });
 

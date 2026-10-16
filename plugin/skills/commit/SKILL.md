@@ -1,6 +1,6 @@
 ---
 name: commit
-description: Stage, write the message and commit - and when to push, open the pull request and merge. By default you commit and push only when the person asks; a project's add-on can hand you its own branch's commits, pushes and pull request. A merge always waits for the person's yes. Use when the person says commit, and at the end of each finished, reviewed phase.
+description: Stage, write the message and commit - and when to push, open the pull request and merge. `cc-smart-dev-kit workflow show` holds the project's answer: with nothing set, none of it happens unasked. A merge follows the merge guard. Use when the person says commit, and at the end of each finished, reviewed phase.
 ---
 
 # Commit, Push, Merge
@@ -9,27 +9,35 @@ description: Stage, write the message and commit - and when to push, open the pu
 differs, the add-on wins (`core.md`, top). It names the project's base branch, protected
 branches, message style and owner rules.
 
-## When to commit, push and merge
+**The project's workflow is the switch** for the four things below. Read it once before the
+first of them — `cc-smart-dev-kit workflow show` prints every value, with where it came from —
+and follow it for the branch you are on. Nothing in it set: the safe default holds, and none
+of the four happens until the person asks (or the add-on says otherwise).
 
-**By default, commit and push only when the person asks** — Claude Code's own default. At the
-end of a finished, reviewed phase, say in one line that it is ready to commit, and carry on.
+| `workflow show` | What you do |
+|---|---|
+| `autoCommit = false` | Commit when the person asks. At the end of a finished, reviewed phase, say in one line that it is ready, and carry on. |
+| `autoCommit = true` | Commit each finished, reviewed phase with no question. Never commit half-built work. |
+| `autoPush = false` | Push when the person asks. |
+| `autoPush = true` | Push your own branch once the change set is complete. **Never straight to the base or main branch:** the git guard asks there, and work reaches them through a pull request. |
+| `openPr = "off"` | Open a pull request only when the person asks. |
+| `openPr = "draft"` | Open it as a draft; a person marks it ready. |
+| `openPr = "ready"` | Open it ready for review. |
+| `reviewBeforePush = true` | The one premium review has run before the first push, and is recorded (`/cc-smart-dev-kit:review` § Second opinion). |
+| `mergeMethod` | `merge`, `squash` or `rebase`: how a merge is made. |
+| `deleteBranch` | Whether the branch goes once its pull request merged. |
 
-**A project can hand you more.** Its add-on, `.claude/cc-smart-dev-kit/commit.md`, turns it on with a
-line such as: "Commit and push your own branch without asking, and open its pull request."
-With that line, the commit, the push and the pull request below are your call, with no
-question. Either way, a merge waits for the person.
+**A merge is the one step a hook guards.** With `autoMerge` off, or a pull request whose base
+is not the project's integration base, or a check not green, or no recorded review of its head
+commit, the merge guard asks the person before `gh pr merge` runs. Where `autoMerge` is on and
+everything is in place, it lets the merge through with no question — and `mergeMethod` and
+`deleteBranch` still say how. **Either way, never wait for a merge:** open the pull request and
+move on; with the whole plan done, ask once, listing every open pull request with its checks
+and the merge order.
 
-- **Only on your own branch.** Never commit or push straight to the base branch or the main
-  branch: every change reaches them through a pull request.
-- **Commit** (when asked, or when the add-on allows it) each finished phase once its tests
-  are green and your own review pass (`/cc-smart-dev-kit:review`) is done. Never commit half-built
-  work.
-- **Push and open the pull request** (the same condition) when the change set is complete
-  and the second opinion has read it, or it is a small fix that skips it. Not after each
-  commit.
-- **Merge only after the person says yes** — and never wait for that: open the pull request
-  and move on. When the whole plan is done, ask once, listing every open pull request with
-  its checks and the merge order.
+- **Commit and push only your own branch**, never the base or main branch directly.
+- **Push and open the pull request** when the change set is complete and the second opinion
+  has read it, or it is a small fix that skips it. Not after each commit.
 - **Always the person's word, every time:** anything into the main branch or production, a
   force-push or any rewrite of pushed history, `reset --hard`, `clean -f`, deleting or
   renaming a branch that is not merged, and shipping a Warning without its fix. A yes covers
@@ -70,7 +78,9 @@ land together?
 
 ## Pushing
 
-Push when the change set is complete and the second opinion has read it. Run the push (its
-hooks may be slow) and any CI watch in the background; write the pull request body while it
-runs (`/cc-smart-dev-kit:pull-request`). Open the pull request only after the push succeeded, then
-watch CI in the background. A re-push after a hook, CI or review fix needs nothing more.
+Push when the change set is complete and the second opinion has read it — as `autoPush` says,
+or when the person asks. Run the push (its hooks may be slow) and any CI watch in the
+background; write the pull request body while it runs (`/cc-smart-dev-kit:pull-request`). Open the
+pull request only after the push succeeded, and as `openPr` says: a draft a person marks ready,
+ready for review, or none at all. Then watch CI in the background. A re-push after a hook, CI
+or review fix needs nothing more.

@@ -31,9 +31,11 @@ import { invocationOf, MAX_NESTING, nestedCommand, shellSteps, wordsOf } from ".
 
 /**
  * The arguments of every `gh pr merge` the command runs, one list each: a command of the
- * line itself, or the inner command of a `bash -c '…'`, `eval`, … (three levels deep).
+ * line itself, or the inner command of a `bash -c '…'`, `eval`, … (three levels deep). The
+ * one reader of a merge command line: `mergesPullRequest` (what the after-merge note asks),
+ * `requestsMerge` (what the merge guard asks) and `mergeTarget` all read this.
  */
-function mergeRuns(command: string, depth = 0): string[][] {
+export function pullRequestMerges(command: string, depth = 0): string[][] {
   const runs: string[][] = [];
   for (const step of shellSteps(command, { joinLines: true })) {
     const invocation = invocationOf(wordsOf(step.text));
@@ -41,17 +43,30 @@ function mergeRuns(command: string, depth = 0): string[][] {
     const { args, program } = invocation;
     if (program === "gh" && args[0] === "pr" && args[1] === "merge") runs.push(args.slice(2));
     const inner = nestedCommand(program, args, step.pipedFrom);
-    if (inner !== undefined && depth < MAX_NESTING) runs.push(...mergeRuns(inner, depth + 1));
+    if (inner !== undefined && depth < MAX_NESTING)
+      runs.push(...pullRequestMerges(inner, depth + 1));
   }
   return runs;
 }
 
-/** `--auto` only arms a merge for later, `--disable-auto` disarms one: neither merges now. */
-const isArmingFlag = (word: string) => /^--(?:auto|disable-auto)(?:=|$)/.test(word);
+/** `--auto` arms a merge for later; `--disable-auto` takes an armed one back. */
+const isAutoFlag = (word: string) => /^--auto(?:=|$)/.test(word);
+const isDisableAutoFlag = (word: string) => /^--disable-auto(?:=|$)/.test(word);
+const isArmingFlag = (word: string) => isAutoFlag(word) || isDisableAutoFlag(word);
 
-/** Did this shell command merge a pull request just now? */
+/** Did this shell command merge a pull request just now? (An `--auto` only arms it for later.) */
 export function mergesPullRequest(command: string): boolean {
-  return mergeRuns(command).some((words) => !words.some(isArmingFlag));
+  return pullRequestMerges(command).some((words) => !words.some(isArmingFlag));
+}
+
+/**
+ * Did this shell command ask GitHub to merge a pull request — now, or with `--auto` for
+ * later, once the checks pass? What the merge guard watches: an armed merge lands with
+ * nobody watching, so it is judged like a merge. A `--disable-auto` only takes an armed one
+ * back, so it is not.
+ */
+export function requestsMerge(command: string): boolean {
+  return pullRequestMerges(command).some((words) => !words.some(isDisableAutoFlag));
 }
 
 /** `gh pr merge` flags that take a value, so the value is not taken for the pull request. */
@@ -75,7 +90,7 @@ const MERGE_FLAGS_WITH_VALUE = new Set([
  * `--repo` / `-R` it names. Null when the command runs no `gh pr merge`.
  */
 export function mergeTarget(command: string): { ref: string | null; repo: string | null } | null {
-  const runs = mergeRuns(command);
+  const runs = pullRequestMerges(command);
   const words = runs.find((run) => !run.some(isArmingFlag)) ?? runs[0];
   if (words === undefined) return null;
   let ref: string | null = null;

@@ -2231,6 +2231,31 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
     );
   });
 
+  test("statusline warns at the workflow's own alerts.usagePercent, not a fixed 85", () => {
+    const { home, configDir } = setup();
+    const guard = subprocessGuard();
+    const now = Math.floor(Date.now() / 1000);
+    mkdirSync(join(home, ".config", "cc-smart-dev-kit"), { recursive: true });
+    writeFileSync(
+      join(home, ".config", "cc-smart-dev-kit", "workflow.json"),
+      `${JSON.stringify({ alerts: { usagePercent: 40 } })}\n`,
+    );
+    const result = Bun.spawnSync([process.execPath, ...guard.args, CLI, "statusline"], {
+      env: { CLAUDE_CONFIG_DIR: configDir, HOME: home, PATH: process.env.PATH ?? "", ...guard.env },
+      stdin: new Blob([
+        JSON.stringify({
+          model: { display_name: "Opus 5.5" },
+          rate_limits: { five_hour: { resets_at: now + 3600, used_percentage: 40 } },
+        }),
+      ]),
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toStartWith("Opus 5.5 · ⚠ 5h 40% (resets ");
+    expect(result.stderr.toString()).toBe("");
+  });
+
   test("usage reads the projects folder; a wrong option exits 2", () => {
     const { configDir, run } = setup();
     const folder = join(configDir, "projects", "-home-user-my-app", "session-1", "subagents");

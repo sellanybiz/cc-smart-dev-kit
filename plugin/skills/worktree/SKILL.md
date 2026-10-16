@@ -62,7 +62,10 @@ runs the project's setup.
 
 ## Clear it after the merge
 
-In the same turn as the merge, unless the person wants more work on that branch:
+**The workflow says who clears it.** `cc-smart-dev-kit workflow show` prints
+`clearWorktreeAfterMerge`: with it on, clear the worktree in the same turn as the merge, unless
+the person wants more work on that branch. Left off — the default — say in one line that the
+worktree looks finished, give these steps, and let the person decide.
 
 - **Finished** means: every commit is on `origin/<base>`, nothing is uncommitted, no local
   file that cannot be rebuilt, no running session, server or process uses it. Then remove it:
