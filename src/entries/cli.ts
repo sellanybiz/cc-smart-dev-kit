@@ -82,8 +82,15 @@ Commands:
                      keys the old setup owned (the slots' names and words), the
                      instructions block in ~/.claude/CLAUDE.md, the gateway config's
                      slots (with an alias for each old name, so running sessions keep
-                     working), and the router units. Refuses to run inside a Claude Code
-                     session: run it in your own terminal, then restart your sessions.
+                     working), and the router units. On a 0.2.x machine this command does
+                     not exist yet: run the installed plugin's dist/cli.js with bun
+                     (README, Moving from anymodel).
+                     It reads and checks everything, then asks every question, and writes
+                     nothing before they are answered: a "no" leaves the machine as it
+                     was. It then prints its steps and walks them; a step that fails keeps
+                     what the steps before it did, and running it again goes on from there.
+                     Refuses to run inside a Claude Code session: run it in your own
+                     terminal, then restart your sessions.
                      --yes: no questions (the router is replaced without asking). The old
                      plugin is uninstalled only after a terminal yes.
   update [--check | --hold | --resume]

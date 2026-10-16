@@ -103,32 +103,39 @@ export function shownValue(value: unknown): string {
 
 /**
  * The gateway env keys cc-smart-dev-kit owns in the settings file AND still holds the value cc-smart-dev-kit
- * wrote: a key the person changed since is theirs (the record has a value, and the file holds
- * another one), and `restore` leaves it. A record with no value (an `owned.json` from before
- * values were kept, or the claim written just before a write) counts as ours, whatever the
- * key holds. While there is one, running Claude sessions may still send every request to the
- * router.
+ * wrote: a key the person changed or removed since is theirs (the record holds a value, and
+ * the file holds another one, or no key at all), and `restore` leaves it. A record with no
+ * value (an `owned.json` from before values were kept, or the claim written just before a
+ * write) counts as ours, whatever the key holds. While there is one, running Claude sessions
+ * may still send every request to the router.
  */
 export function ownedGatewayEnvKeys(settingsFile: string, stateDir: string): string[] {
-  const records = ownedRecords(stateDir, realTarget(settingsFile));
   const settings = currentSettings(settingsFile);
+  if (settings === null) {
+    // Unreadable (restore reports the file's own error a moment later): every gateway key
+    // cc-smart-dev-kit recorded counts as still in use. The conservative answer for the one
+    // caller: it decides whether a running router may be stopped at once, and a key that is
+    // there but cannot be read must keep every session working.
+    const owned = ownedKeys(stateDir, realTarget(settingsFile));
+    return GATEWAY_ENV_KEYS.filter((key) =>
+      owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key),
+    );
+  }
+  const records = ownedRecords(stateDir, realTarget(settingsFile));
   return GATEWAY_ENV_KEYS.filter(
     (key) => ownership(records, envPath(key), getKey(settings, envPath(key))) === "ours",
   );
 }
 
 /**
- * The settings file's object as it is now, for the ownership check above. `{}` when there
- * is no file, or it cannot be read as JSON: no key is found then, and every owned key
- * counts as cc-smart-dev-kit's. That is the conservative answer for the one caller that has a
- * broken file in front of it (`restore`), which reports the file's own error a moment
- * later.
+ * The settings file's object as it is now, for the ownership check above, or null when it
+ * cannot be read (not JSON, not an object, an `env` that is not one).
  */
-function currentSettings(settingsFile: string): Record<string, unknown> {
+function currentSettings(settingsFile: string): null | Record<string, unknown> {
   try {
     return readSettings(settingsFile);
   } catch {
-    return {};
+    return null;
   }
 }
 

@@ -75,7 +75,7 @@ After that, use `cc-smart-dev-kit setup` to set up again (for example after an u
 | `cc-smart-dev-kit gateway <command>` | The optional AI gateway (below). |
 | `cc-smart-dev-kit search "<query>" [--max <n>] [--json]`<br>`cc-smart-dev-kit search --fetch <url> [--json]` | Searches the web through the gateway's OmniRoute backend (Ollama's web search among its providers), or reads one page's text with `--fetch`. Prints each result's title, its URL and a short snippet. `--max` asks for 1 to 50 results. The query, or the URL, goes to that search or fetch provider on the internet; `--fetch` refuses a local or private address. Needs the gateway set up (below). |
 | `cc-smart-dev-kit job <command>` | The machine-wide queue for heavy jobs (below). |
-| `cc-smart-dev-kit migrate [--dry-run] [--yes]` | Moves a machine that still has the plugin's old `anymodel` names ([Moving from anymodel](#moving-from-anymodel)). `--dry-run` prints every step and writes, runs and stops nothing. `--yes` answers the router question without asking; the old plugin is uninstalled only after a yes on a terminal. Refuses to run inside a Claude Code session: it replaces the router that session's own model traffic goes through. |
+| `cc-smart-dev-kit migrate [--dry-run] [--yes]` | Moves a machine that still has the plugin's old `anymodel` names ([Moving from anymodel](#moving-from-anymodel)). It reads and checks everything, asks every question, and writes nothing before they are answered: a "no" leaves the machine as it was. Then it prints its steps and walks them; a step that fails keeps what the steps before it did, and the next run goes on from there. `--dry-run` prints that plan and writes, runs and stops nothing. `--yes` answers the router question without asking; the old plugin is uninstalled only after a yes on a terminal, and only when it is still installed. Refuses to run inside a Claude Code session: it replaces the router that session's own model traffic goes through. On a 0.2.x machine the command does not exist yet: run the plugin's `dist/cli.js` with bun (the section above has the line). |
 | `cc-smart-dev-kit version` | Prints the version. |
 
 ### The background update
@@ -237,13 +237,24 @@ that version's names: its folders (`~/.config/anymodel`, `~/.claude/anymodel`,
 (`~/.local/bin/anymodel`), its router units (`anymodel-router`), the slots in
 `gateway.json`, and the old names in `settings.json` and `~/.claude/CLAUDE.md`.
 
-Install this version first, then run one command in your own terminal:
+Install this version first. The `cc-smart-dev-kit` command does not exist on your machine
+yet — the old launcher `~/.local/bin/anymodel` is the only one there — so run `migrate`
+from the plugin folder, exactly as step 3 of [Install](#install) runs `setup`. Put the
+version `claude plugin install` printed in place of `<version>`
+(`ls ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/` shows it too):
 
 ```sh
 claude plugin marketplace add <owner>/cc-smart-dev-kit
 claude plugin install cc-smart-dev-kit@cc-smart-dev-kit
-cc-smart-dev-kit migrate
+bun ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>/dist/cli.js migrate
 ```
+
+After that one run the launcher `~/.local/bin/cc-smart-dev-kit` is in place, and every
+later command uses it (`cc-smart-dev-kit migrate` for a run that has to be repeated).
+
+Run it in your own terminal: it refuses inside a Claude Code session (it replaces the
+router that session's own model traffic goes through), and it says to restart your
+sessions afterwards.
 
 `migrate` moves every folder, rewrites the state folder's records and backups (so
 `restore` still undoes what the old setup added), gives the settings keys the old setup
@@ -251,26 +262,47 @@ owned this version's value (the slots' names, and the words of their description
 rewrites the instructions block in `~/.claude/CLAUDE.md` to the new markers and import
 path (and refreshes the copy), renames the gateway config's slots — and adds an `alias`
 for each old slot name, so Claude sessions that are still running keep working until
-they restart — replaces the `anymodel-router` units with this version's, and then tells
-you to uninstall the old plugin (it does it after a yes on a terminal). Each changed
-file gets a backup first, and every step is printed; `--dry-run` prints them and writes,
-runs and stops nothing. A second run says "Nothing to move.".
+they restart; an alias of a project's own that pointed at an old slot is pointed at the
+renamed one — replaces the `anymodel-router` units with this version's, and then tells
+you to uninstall the old plugin (it does it after a yes on a terminal, and only when it
+is still installed). Each changed file gets a backup first, and every step is printed.
+
+The order matters, and it is fixed: it reads and checks everything (the plugin install,
+the folders, the gateway config through its schema, the settings, the records), then
+**asks every question**, and writes nothing before they are answered — so a "no" to the
+router question, or a run with no terminal to ask on and no `--yes`, leaves the machine
+exactly as it was. It then prints the steps it will do and walks them in order: the
+folders, the state folder's records and backups, the gateway config, the limit state, the
+settings, the instructions, the launcher, the router, the old plugin. A step that fails
+says which one, keeps everything the steps before it did, and the next run goes on from
+there — each step is safe to repeat, and each finished step is recorded in
+`~/.claude/cc-smart-dev-kit/migrate-progress.json` while the move is unfinished.
+`--dry-run` prints that same plan, the same changes, and the question it would ask, and
+writes, runs and stops nothing. A second run after a finished one says "Nothing to move.".
 
 Two things it refuses, on purpose:
 
-- **It does not run inside a Claude Code session** (it replaces the router that
-  session's own model traffic goes through). Run it in a terminal, then restart your
-  sessions.
+- **It does not run inside a Claude Code session.** Run it in a terminal, then restart
+  your sessions.
 - **It stops before writing anything when a target folder is already there** — say, a
   `~/.config/cc-smart-dev-kit` you already made. Move or remove one of them by hand, then
-  run it again; it never merges two folders by itself.
+  run it again; it never merges two folders by itself. The one exception is its own state
+  folder `~/.claude/cc-smart-dev-kit` when it holds nothing but what a Claude session's
+  start wrote there (its `sessions/` record, an update check, the update log): the move
+  goes into it. Anything else in it, and it says which folder holds what, and stops.
+
+Before it moves anything it also warns you about Claude sessions that started with the old
+plugin and are still running (their `sessions/` records, in the old state folder, name
+them): close them first, and start them again here — until then one of them may write the
+old folders again.
 
 The old plugin must be uninstalled when `migrate` is done (`claude plugin uninstall
 anymodel@anymodel`, `claude plugin marketplace remove anymodel`): two copies of the same
 hooks would otherwise run. One more thing: a judge target's test proof does not carry
 over (the proof's own text changed with the name), so a fallback judge needs its test
 again: `cc-smart-dev-kit gateway slot judge <targets>`. Without it the judge is simply
-not used, and `doctor` says so.
+not used, and `doctor` says so. `migrate` prints that line when the old config had a
+tested judge.
 
 ## The AI gateway (optional)
 

@@ -729,7 +729,7 @@ function ownership(records, path, current, unchosen) {
   if (record === undefined)
     return "none";
   if (!current.found)
-    return "ours";
+    return "changed";
   if (record.sha256 !== undefined) {
     if (hashOf(current.value) === record.sha256)
       return "ours";
@@ -825,7 +825,10 @@ function applyOnce(file, options, owned) {
     }
     dropped.push(path);
     if (whose === "changed") {
-      skipped.push({ path, reason: "changed since cc-smart-dev-kit set it; left alone" });
+      skipped.push({
+        path,
+        reason: current.found ? "changed since cc-smart-dev-kit set it; left alone" : "not in the file any more (removed since cc-smart-dev-kit set it); left alone"
+      });
       continue;
     }
     if (!current.found)

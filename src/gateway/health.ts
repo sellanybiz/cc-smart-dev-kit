@@ -34,8 +34,8 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function healthUrl(port: number): string {
-  return `http://127.0.0.1:${port}${HEALTH_PATH}`;
+function healthUrl(port: number, path: string = HEALTH_PATH): string {
+  return `http://127.0.0.1:${port}${path}`;
 }
 
 /** The router's own health answer, with a short timeout; the reason in words when there is none. */
@@ -69,15 +69,19 @@ function isConnectionRefused(error: unknown): boolean {
  *   - `free`: the connection was refused, nothing listens;
  *   - `ours`: the health page answered 200 with `ok: true`, this router;
  *   - `other`: anything else (another program, an older router, no answer in time).
+ *
+ * `path` is the health page asked: the default is this version's. `migrate` asks the old
+ * router's page (`/__anymodel/health`), which is the only one an old router answers.
  */
 export async function probeRouterPort(
   port: number,
   fetchImpl: HealthFetch,
   timeoutMs = 2_000,
+  path: string = HEALTH_PATH,
 ): Promise<{ state: "free" } | { state: "ours" } | { detail: string; state: "other" }> {
   let response: Response;
   try {
-    response = await fetchImpl(healthUrl(port), { signal: AbortSignal.timeout(timeoutMs) });
+    response = await fetchImpl(healthUrl(port, path), { signal: AbortSignal.timeout(timeoutMs) });
   } catch (error) {
     if (isConnectionRefused(error)) return { state: "free" };
     return { detail: messageOf(error), state: "other" };
@@ -100,7 +104,7 @@ export async function probeRouterPort(
 
 /**
  * Waits while this router still answers on `port`, for up to `waitMs` by the probe's
- * clock. How it ends:
+ * clock, asking `path` (the default: this version's health page). How it ends:
  *   - `free`: nothing listens any more (a connection is refused). A stopping router closes
  *     its port at once and drains the answers in flight after that, so a free port means
  *     it takes no new request;
@@ -112,10 +116,11 @@ export async function waitWhileRouterAnswers(
   port: number,
   probe: HealthProbe,
   waitMs: number,
+  path: string = HEALTH_PATH,
 ): Promise<{ state: "free" } | { detail: string; state: "other" } | { state: "held" }> {
   const deadline = probe.now() + waitMs;
   for (;;) {
-    const result = await probeRouterPort(port, probe.fetch, 1_000);
+    const result = await probeRouterPort(port, probe.fetch, 1_000, path);
     if (result.state !== "ours") return result;
     if (probe.now() >= deadline) return { state: "held" };
     await probe.sleep(200);
