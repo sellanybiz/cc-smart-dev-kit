@@ -3,3 +3,5 @@ node_modules/
 .DS_Store
 # Claude Code worktrees: each is a checkout of its own, never part of this repo.
 .claude/worktrees/
+# Claude Code's personal settings for this repo: one person's, never committed.
+.claude/settings.local.json
