@@ -25,8 +25,14 @@ The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The b
   (`PLAYWRIGHT_MCP_EXTENSION_TOKEN`), and is never printed, logged or written into
   `~/.claude.json`. A wrong token shows "Invalid token provided." in the browser and then the
   MCP's own 30-second deadline: never retry it in a loop that pops pages.
-- **The profile is the person's own Chrome, and it is one profile per machine** —
-  `--profile-dir-name=claude-code`, never a per-project or per-session one. Nothing here starts,
+- **Google Chrome only, never a Chromium** (`chromeCandidates`): the MCP's `--browser=chrome`
+  drives Google Chrome and its own profile folder, so a Chromium found here would be a ✓ for a
+  browser the MCP never drives.
+- **The profile is the person's own Chrome, and it is one profile per machine** — the
+  `claude-code` profile, never a per-project or per-session one. **Which profile is one question
+  with one home** (`claudeCodeProfileOn`): the launcher passes its FOLDER name to
+  `--profile-dir-name` (a profile named in Chrome's own dialog lives in `Profile 2`), so `doctor`
+  and the MCP never name two different profiles. Nothing here starts,
   stops or deletes a Chrome profile. The plugin's writes inside Chrome's own folder are the
   profile's display name, in the TWO places Chrome reads it — `Local State`'s
   `profile.info_cache.<dir>.name`, and the profile's own `Preferences` → `profile.name` — only
@@ -57,6 +63,10 @@ The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The b
   which is why `doctor` warns by name and `browser setup` says so.
 - **Nothing reads the environment** in `src/browser/`: the home folder, the platform and every
   file call are arguments, so a test points them at a temp folder (`src/testing/chrome-world.ts`).
+- **The MCP child starts in the output folder, never the session's** (the spawn's `cwd`): the
+  `bunx` child and the bun that runs the package take no `--config=` / `--no-env-file`, so in a
+  project's folder they would run its `bunfig.toml` preload and read its `.env`, with the token
+  in their environment. `launcher.test.ts` proves it with a planted preload.
 - **Where a browser file lands is one question with one home**: the launcher's `--output-dir` for
   what the MCP names itself, and the `playwright-output` hook for what a CALLER names (the MCP
   resolves that against its own working folder — proved live on 0.0.83). The hook refuses a
@@ -71,8 +81,9 @@ The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The b
 
 ## What the tests must keep true
 
-- `launcher.test.ts` — the exact argv, the token in the child's environment and never in `argv`,
-  and that a missing, unreadable or wrong-shaped token starts nothing.
+- `launcher.test.ts` — the exact argv (the found profile's folder name), the token in the
+  child's environment and never in `argv`, the child's working folder (a planted `bunfig.toml`
+  preload never runs), and that a missing, unreadable or wrong-shaped token starts nothing.
 - `token.test.ts` — the extension's own shape (43 URL-safe characters, with or without the
   `PLAYWRIGHT_MCP_EXTENSION_TOKEN=` line the Copy button includes), the 0600 file, and the
   no-echo terminal read.

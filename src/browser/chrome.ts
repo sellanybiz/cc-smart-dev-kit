@@ -34,7 +34,7 @@
 
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { hostname } from "node:os";
-import { join, win32 } from "node:path";
+import { join, posix, win32 } from "node:path";
 
 /** The Playwright extension's Chrome Web Store id (also its manifest `key`). */
 export const PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
@@ -106,10 +106,19 @@ function readdirIn(deps: ChromeDeps): (dir: string) => string[] {
   );
 }
 
-/** Where Google Chrome is installed on this platform, in the order they are tried. */
+/**
+ * Where Google Chrome is installed on this platform, in the order they are tried.
+ *
+ * Google Chrome only, never Chromium: the MCP runs with `--browser=chrome`, which drives Google
+ * Chrome and its profile folder (`chromeUserDataDir`). A Chromium keeps its profiles in another
+ * folder (a snap one in yet another), so finding one here made `doctor` report a Chrome the MCP
+ * never drives.
+ */
 export function chromeCandidates(platform: NodeJS.Platform, home: string): string[] {
   if (platform === "darwin") {
-    return ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"];
+    const app = "Google Chrome.app/Contents/MacOS/Google Chrome";
+    // The machine-wide app, then one the person dragged into their own Applications folder.
+    return [`/Applications/${app}`, posix.join(home, "Applications", app)];
   }
   if (platform === "win32") {
     return [
@@ -119,14 +128,7 @@ export function chromeCandidates(platform: NodeJS.Platform, home: string): strin
       win32.join(home, "AppData", "Local", "Google", "Chrome", "Application", "chrome.exe"),
     ];
   }
-  return [
-    "/opt/google/chrome/chrome",
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/snap/bin/chromium",
-  ];
+  return ["/opt/google/chrome/chrome", "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"];
 }
 
 /** The Google Chrome executable on this machine, or `null` when none is installed. */
@@ -142,8 +144,7 @@ export function findChrome(deps: ChromeDeps = {}): null | string {
  * three Playwright maps a browser channel to (`defaultUserDataDirForChannel`).
  *
  * `null` where this plugin knows of none. A Chromium or Brave install keeps its own folder, and
- * a person who runs one of those has to pass `--user-data-dir` to the MCP themselves; the plugin
- * supports Google Chrome and Edge first.
+ * the plugin does not look for either (`chromeCandidates`): it supports Google Chrome.
  */
 export function chromeUserDataDir(platform: NodeJS.Platform, home: string): null | string {
   if (platform === "darwin")
@@ -231,6 +232,19 @@ export function findClaudeCodeProfile(
     };
   }
   return null;
+}
+
+/**
+ * The `claude-code` profile of this machine's Chrome, or `null`: Chrome's profile folder for the
+ * platform, then the profile in it (`findClaudeCodeProfile`). One home for the question, so the
+ * launcher (which tells the MCP the profile's folder name), `doctor` and `browser setup` can never
+ * name two different profiles.
+ */
+export function claudeCodeProfileOn(
+  deps: ChromeDeps & { home: string; platform: NodeJS.Platform },
+): ChromeProfile | null {
+  const userDataDir = chromeUserDataDir(deps.platform, deps.home);
+  return userDataDir === null ? null : findClaudeCodeProfile(userDataDir, deps);
 }
 
 /**

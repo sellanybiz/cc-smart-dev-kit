@@ -16,11 +16,12 @@
  */
 
 import type { Check } from "../cli/doctor";
-import { autoModeSource } from "../setup/auto-mode";
+import { backendAddress } from "../gateway/settings";
 import { isOlder } from "../update/check";
 import {
   type ActionContext,
   type ActionResult,
+  autoModeChange,
   type DoctorSource,
   jobLines,
   type PortalMemory,
@@ -58,6 +59,7 @@ import {
   CSRF_HEADER,
   cookieName,
   cookieValue,
+  type FetchMetadata,
   networkAllowed,
   secretsMatch,
   securityHeaders,
@@ -293,15 +295,23 @@ export async function startPortal(
     await state.doctorRun;
   }
 
-  /** The project's auto-mode rules, for the Machine page; a broken config says so. */
-  function autoMode(): { entries: string[]; from: string; settings: string } | null {
+  /**
+   * The project's auto-mode change, for the Machine page: the `+` / `-` lines and the hash the
+   * write sends back (`autoModeChange`). Null outside a project, and for a project that asks
+   * for none and never did.
+   */
+  function autoMode(): MachineData["autoMode"] {
     try {
-      const wanted = autoModeSource(options.cwd, ctx.which);
-      if (wanted === null || wanted.entries.length === 0) return null;
+      const change = autoModeChange(actionContext());
+      if (change === null) return null;
+      if (change.wanted.entries.length === 0 && change.removed.length === 0) return null;
       return {
-        entries: wanted.entries,
-        from: wanted.file ?? wanted.source,
-        settings: ctx.paths.settingsFile,
+        added: change.added,
+        differsFrom: change.differsFrom,
+        from: change.from,
+        hash: change.hash,
+        removed: change.removed,
+        settings: change.settings,
       };
     } catch {
       // A project setup cannot read (a broken or too-new cc-smart-dev-kit.json) is `doctor`'s
@@ -420,11 +430,13 @@ export async function startPortal(
       return html(settingsPage(shell, settingsData(ctx, options.cwd, workflow)), extra);
     }
     const limits = limitFacts(ctx);
-    const dashboard = config.backends.omniroute?.baseUrl ?? null;
+    // The address with no credential in it: a `user:pass@` or a `?key=` would be in the page.
+    const omniroute = config.backends.omniroute;
+    const dashboard = omniroute === undefined ? null : backendAddress(omniroute.baseUrl);
     return html(
       overviewPage(shell, {
         backends: await backendRows(ctx, config),
-        dashboardUrl: dashboard === null ? null : `${dashboard.replace(/\/$/, "")}/`,
+        dashboardUrl: dashboard === null ? null : `${dashboard}/`,
         fallbacks: limits.fallbacks,
         limits: limits.limits,
         limitsRead: limits.read,
@@ -441,15 +453,20 @@ export async function startPortal(
     const url = new URL(request.url);
     const method = request.method.toUpperCase();
     const token = url.searchParams.get("t");
+    const fetchMeta: FetchMetadata = {
+      mode: request.headers.get("sec-fetch-mode"),
+      site: request.headers.get("sec-fetch-site"),
+    };
 
-    // The two rules that hold for every request. Then the stylesheet and the two scripts,
-    // which carry nothing of the machine and are what a page needs to draw at all — a browser
-    // asks for them in the same breath as the page, and one of them sets the theme before the
+    // The rules that hold for every request. Then the stylesheet and the two scripts, which
+    // carry nothing of the machine and are what a page needs to draw at all — a browser asks
+    // for them in the same breath as the page, and one of them sets the theme before the
     // first paint.
     const network = networkAllowed(
       request.headers.get("host"),
       request.headers.get("origin"),
       port,
+      fetchMeta,
     );
     if (network !== null) return refused();
     if (method === "GET" && url.pathname.startsWith("/assets/")) {
@@ -473,6 +490,7 @@ export async function startPortal(
       cookie: cookieValue(request.headers.get("cookie"), cookieName(port)),
       csrf: request.headers.get(CSRF_HEADER),
       expectedCsrf: state.session.csrf,
+      fetchMeta,
       host: request.headers.get("host"),
       method,
       origin: request.headers.get("origin"),

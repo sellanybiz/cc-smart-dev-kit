@@ -650,11 +650,13 @@ async function main(argv: string[]): Promise<number> {
       if (sub === "mcp") {
         // Runs until the MCP exits. Nothing here may write to stdout: it IS the MCP stream.
         return await runBrowserMcp(paths, extra, {
+          chrome: browserDeps,
           log: (line) => console.error(`[cc-smart-dev-kit-browser] ${line}`),
           spawn: (argv, options) => {
             // The token goes on top of this process's environment: the MCP must find bun and
-            // everything else as usual.
+            // everything else as usual. The folder is the launcher's choice, never this one's.
             const child = Bun.spawn(argv, {
+              cwd: options.cwd,
               env: { ...process.env, ...options.env },
               stdio: [options.stdio, options.stdio, options.stdio],
             });

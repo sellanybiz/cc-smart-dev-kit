@@ -115,6 +115,9 @@ gets `--no-env-file` and a `--config=` flag pointing at the plugin's own empty
   has none;
 - the portal child, `doctor --live`'s hook command, the background self-update child and
   `browser check`'s two launchers, through `bunConfigArg` in `src/setup/bun-config.ts`;
+- not flags but a folder: the browser's MCP child (`bunx @playwright/mcp`, and the bun that runs
+  the package) takes no bun flags, so it starts in the browser's own output folder instead
+  (§ The browser);
 - the commands the README prints for a person to run from a folder of their own, and the
   line `restore` prints when it removed the launcher (`stageOneDone`).
 
@@ -599,7 +602,13 @@ not a network read.
    rebinding stops.
 2. **`Origin`, when present, ours**: `http://127.0.0.1:<port>` or `http://localhost:<port>`.
    On a POST it must be present at all: a browser sends `Origin` on every POST, so one
-   without it did not come from a page of this portal.
+   without it did not come from a page of this portal. **And no other page's load**
+   (`fetchSiteAllowed`): anything that is not a navigation (`Sec-Fetch-Mode: navigate`) must
+   carry `Sec-Fetch-Site: same-origin` (our own page) or `none` (typed, a bookmark). A page on
+   another `127.0.0.1` port is the SAME site — a cookie has no port — so its `<img src>` carried
+   the session cookie past `SameSite=Strict` and was served. A request with no `Sec-Fetch-Site`
+   at all is not from a browser that sends it (every current one does); the other rules judge
+   it. The stylesheet and the scripts are behind this rule too.
 3. **A session, or the one-time token**: `GET /?t=<token>` with the token made at start
    exchanges it for the cookie; every other request needs the cookie.
 4. **A POST carries the CSRF token** that came with a page of ours (`x-ccsdk-csrf`), compared
@@ -633,7 +642,20 @@ stack. The stylesheet and the two scripts are served by the portal itself and ne
 
 **Keys never reach the page.** Every backend's key goes through `maskKey`, which shows its last
 four characters and nothing else (`••••a1b2`; a key shorter than 12 characters shows `••••`), and
-a whole key is never in a page, a JSON answer or a log line.
+a whole key is never in a page, a JSON answer or a log line. A backend's address is shown and
+linked (the OmniRoute dashboard) only as `backendAddress` gives it (`src/gateway/settings.ts`):
+no user name, password, query or fragment, where a credential can ride. A backend's own error
+text — a model list's parse error, a chat's error body, the judge test's detail — goes through
+`shownDetail` (`facts.ts`: every URL redacted, the backend's key and anything shaped like one
+masked, one line) before a page or an action's answer holds it: a backend can echo the key it
+was sent.
+
+**The auto-mode trust rules are written only as shown.** The Machine page's card is the
+command line's own dry run (`autoModeChange` in `actions.ts`): `+` for a rule that goes in, `-`
+for one the project dropped, and `setup`'s note when a worktree's file differs from the main
+checkout's. Its button carries the hash of that change, and `automode.apply` plans it again
+under setup's lock and writes nothing when the hash differs: the portal runs in a folder a
+session can write, and a rule added after the page was drawn would otherwise be trusted unread.
 
 **It stops after 30 minutes with no request** (`session.ts`): the link and the cookie are
 dead, and the process exits. A portal left open on an unlocked screen is a way into every
@@ -1650,11 +1672,32 @@ the plugin starts no Chrome, keeps no profile folder of its own, and no longer c
 filter that made each session's windows its own.
 
 - **Extension mode is the only mode.** `browser mcp` runs the pinned `@playwright/mcp` with
-  `--extension --browser=chrome --profile-dir-name=claude-code`; Playwright itself connects to
-  the running Chrome (`cdpRelay.ts` opens the connect page, starting Chrome when it is not
-  running). The registration is unchanged — `{"command": <launcher>, "args": ["browser","mcp"]}`
-  — because the mode is the launcher's own business and every setting reaches the MCP through
-  its environment or `argv`.
+  `--extension --browser=chrome --profile-dir-name=<the profile's folder>`; Playwright itself
+  connects to the running Chrome (`cdpRelay.ts` opens the connect page, starting Chrome when it
+  is not running). The registration is unchanged — `{"command": <launcher>, "args":
+  ["browser","mcp"]}` — because the mode is the launcher's own business and every setting
+  reaches the MCP through its environment or `argv`.
+- **One answer to "which profile".** `claudeCodeProfileOn` (`chrome.ts`) finds the `claude-code`
+  profile — its folder, else the folder `Local State` names `claude-code` (Chrome's own "Add
+  profile" makes `Profile 2`) — and the launcher, `doctor`, `browser setup` and the portal all
+  ask it. The launcher passes that FOLDER name to `--profile-dir-name`; it once always passed
+  `claude-code`, so a profile named in Chrome's dialog showed ✓ in `doctor` and failed in the
+  MCP. With no profile yet it passes `claude-code`, and the MCP's own error names it.
+- **Google Chrome only.** `chromeCandidates` lists Google Chrome's own places (and a macOS
+  `~/Applications` copy), never a Chromium: the MCP's `--browser=chrome` drives Google Chrome
+  and its profile folder, while a Chromium keeps its profiles elsewhere (a snap one in yet
+  another place), so a Chromium found here was reported as "Google Chrome" for a browser the
+  MCP never drives. Pairing each Chromium with its own folder and channel would mean a second
+  launch mode nobody has proved; dropping it keeps `doctor` and the MCP looking at the same
+  browser.
+- **The MCP runs in the browser's output folder**, never in the session's. Claude Code starts the
+  launcher in the session's folder, and bun reads the working folder's `bunfig.toml` (its
+  `preload`) and `.env` for every bun it starts — bunx looks in its `node_modules` first too. The
+  launcher itself runs with the plugin's two flags (§ The two flags), but the `bunx` child it
+  starts, and the bun that runs the package, would not: the process that holds the token ran the
+  project's own preload (proved with a planted one, `launcher.test.ts`). So the child starts in
+  `cliPaths().browserOutputDir`, which the launcher has just made private. A relative upload
+  path is then read from that folder; a session gives full paths.
 - **Every outcome of `browser token` is decided in one place** (`savePastedToken`,
   `src/browser/token.ts`): saved (0), Ctrl+C (130), a shape that is not the token (1), and a read
   that FAILED (1, with its own reason and the two ways in). The CLI used to map every failure to

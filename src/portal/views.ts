@@ -594,8 +594,18 @@ export interface UpdateFacts {
   summary: string;
 }
 
+/** The auto-mode card's data: the change writing the rules makes, and the hash it carries. */
+export interface AutoModeCardData {
+  added: string[];
+  differsFrom: null | string;
+  from: string;
+  hash: string;
+  removed: string[];
+  settings: string;
+}
+
 export interface MachineData {
-  autoMode: null | { entries: string[]; from: string; settings: string };
+  autoMode: AutoModeCardData | null;
   /** The browser's own card: the guide, its state, and doctor's browser lines. */
   browser: BrowserCardData;
   companions: CompanionRow[];
@@ -666,9 +676,10 @@ function guardRow(options: {
   name: string;
   on: boolean;
 }): string {
+  const id = escapeHtml(options.id);
   return `<div class="setrow">
-<div class="col g2 fill1"><span id="${options.id}" class="bold">${escapeHtml(options.label)}</span><span class="small muted">${escapeHtml(options.help)}</span></div>
-<button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${options.id}" class="switch" data-form-switch="${options.name}"><span class="track" aria-hidden="true"><span class="knob"></span></span><span data-switch-label>${options.on ? "On" : "Off"}</span></button>
+<div class="col g2 fill1"><span id="${id}" class="bold">${escapeHtml(options.label)}</span><span class="small muted">${escapeHtml(options.help)}</span></div>
+<button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${id}" class="switch" data-form-switch="${escapeHtml(options.name)}"><span class="track" aria-hidden="true"><span class="knob"></span></span><span data-switch-label>${options.on ? "On" : "Off"}</span></button>
 </div>`;
 }
 
@@ -918,6 +929,34 @@ function tokenFileWords(platform: NodeJS.Platform): string {
     : "mode 600: readable only by you";
 }
 
+/**
+ * The auto-mode card: the rules as the change writing them makes, in the command line's own
+ * `+` / `-` lines (`cc-smart-dev-kit setup`), the worktree note when its file is not the main
+ * checkout's, and a button that sends back the hash of exactly this change — the write refuses
+ * any other (`automode.apply`). Nothing to change: it says so, and offers no button.
+ */
+export function autoModeCard(change: AutoModeCardData): string {
+  const lines = [
+    ...change.added.map((entry) => ["+", entry] as const),
+    ...change.removed.map((entry) => ["-", entry] as const),
+  ];
+  const worktree =
+    change.differsFrom === null
+      ? ""
+      : `\n<p class="warncolor">This worktree's file is not the same as the main checkout's (<span class="mono">${escapeHtml(change.differsFrom)}</span>). The rules below come from this worktree's file.</p>`;
+  const action =
+    lines.length === 0
+      ? `<p class="muted">Your user settings already hold these rules.</p>`
+      : `<ul class="checks">${lines.map(([mark, entry]) => `<li><span class="mark">${mark}</span><span class="wrap-any">${escapeHtml(entry)}</span></li>`).join("")}</ul>
+<div class="row"><button type="button" class="btn primary" data-action="automode.apply" data-body="${escapeHtml(JSON.stringify({ confirm: true, shownHash: change.hash }))}" data-confirm="Write these trust rules into Claude Code's user settings? Auto mode will treat them as true." data-reload>Write them</button></div>
+<div data-out-for="automode.apply" role="status"></div>`;
+  return `<section class="card pad">
+<h2>Auto mode: trust rules</h2>
+<p class="muted">These come from <span class="mono">${escapeHtml(change.from)}</span> and go into <span class="mono">${escapeHtml(change.settings)}</span>, the only place Claude Code's auto mode reads them from. They are trust rules: read them before you say yes.</p>${worktree}
+${action}
+</section>`;
+}
+
 export function machinePage(shell: Shell, data: MachineData): string {
   const omniroute = data.omniroute;
   const install = omniroute.install;
@@ -987,16 +1026,7 @@ ${
 <div data-out-for="doctor.run" role="status"></div>
 </section>`;
 
-  const autoMode =
-    data.autoMode === null
-      ? ""
-      : `<section class="card pad">
-<h2>Auto mode: trust rules</h2>
-<p class="muted">These come from <span class="mono">${escapeHtml(data.autoMode.from)}</span> and go into <span class="mono">${escapeHtml(data.autoMode.settings)}</span>, the only place Claude Code's auto mode reads them from. They are trust rules: read them before you say yes.</p>
-<ul class="checks">${data.autoMode.entries.map((entry) => `<li><span class="mark">+</span><span class="wrap-any">${escapeHtml(entry)}</span></li>`).join("")}</ul>
-<div class="row"><button type="button" class="btn primary" data-action="automode.apply" data-body="${escapeHtml(JSON.stringify({ confirm: true }))}" data-confirm="Write these trust rules into Claude Code's user settings? Auto mode will treat them as true." data-reload>Write them</button></div>
-<div data-out-for="automode.apply" role="status"></div>
-</section>`;
+  const autoMode = data.autoMode === null ? "" : autoModeCard(data.autoMode);
 
   const body = `<div class="pagehead">
 <div>

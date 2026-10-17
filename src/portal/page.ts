@@ -162,10 +162,11 @@ export function switchButton(options: {
   const confirm =
     options.confirm === undefined ? "" : ` data-confirm="${escapeHtml(options.confirm)}"`;
   const inside = `<span class="track" aria-hidden="true"><span class="knob"></span></span><span data-switch-label>${options.on ? "On" : "Off"}</span>`;
+  const id = escapeHtml(options.id);
   if (options.disabled === true) {
-    return `<button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${options.id}" class="switch" disabled>${inside}</button>`;
+    return `<button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${id}" class="switch" disabled>${inside}</button>`;
   }
-  return `<button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${options.id}" class="switch" data-action="${options.action}"${body}${confirm}${options.reload === true ? " data-reload" : ""} data-toggle>${inside}</button>`;
+  return `<button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${id}" class="switch" data-action="${escapeHtml(options.action)}"${body}${confirm}${options.reload === true ? " data-reload" : ""} data-toggle>${inside}</button>`;
 }
 
 /** One `✓` / `✗` / `·` / `!` line of a list like doctor's. */

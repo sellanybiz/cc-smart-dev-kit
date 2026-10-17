@@ -26,7 +26,7 @@ function pluginFolderBeside(importDir) {
 // src/browser/chrome.ts
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readlinkSync } from "fs";
 import { hostname } from "os";
-import { join as join2, win32 } from "path";
+import { join as join2, posix, win32 } from "path";
 var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
 var PLAYWRIGHT_EXTENSION_URL = `https://chromewebstore.google.com/detail/playwright-extension/${PLAYWRIGHT_EXTENSION_ID}`;
 var PLAYWRIGHT_EXTENSION_SETTINGS_URL = `chrome://extensions/?id=${PLAYWRIGHT_EXTENSION_ID}`;
@@ -55,7 +55,8 @@ function readdirIn(deps) {
 }
 function chromeCandidates(platform, home) {
   if (platform === "darwin") {
-    return ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"];
+    const app = "Google Chrome.app/Contents/MacOS/Google Chrome";
+    return [`/Applications/${app}`, posix.join(home, "Applications", app)];
   }
   if (platform === "win32") {
     return [
@@ -64,14 +65,7 @@ function chromeCandidates(platform, home) {
       win32.join(home, "AppData", "Local", "Google", "Chrome", "Application", "chrome.exe")
     ];
   }
-  return [
-    "/opt/google/chrome/chrome",
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/snap/bin/chromium"
-  ];
+  return ["/opt/google/chrome/chrome", "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"];
 }
 function findChrome(deps = {}) {
   const exists = existsIn(deps);
@@ -128,6 +122,10 @@ function findClaudeCodeProfile(userDataDir, deps = {}) {
     };
   }
   return null;
+}
+function claudeCodeProfileOn(deps) {
+  const userDataDir = chromeUserDataDir(deps.platform, deps.home);
+  return userDataDir === null ? null : findClaudeCodeProfile(userDataDir, deps);
 }
 function profileNameIn(profileDir, deps = {}) {
   const text = readFileIn(deps)(join2(profileDir, "Preferences"));
@@ -1372,7 +1370,6 @@ var TAVILY_MCP_URL = "https://mcp.tavily.com/mcp/";
 
 // src/browser/launcher.ts
 var OUTPUT_MAX_BYTES = 200 * 1024 * 1024;
-var PROFILE_DIR_NAME = "claude-code";
 var OWN_OPTIONS = {
   output: "--output-dir="
 };
@@ -1385,14 +1382,14 @@ function browserMcpOptions(paths, argv) {
     outputDir: ownOption(argv, OWN_OPTIONS.output) ?? paths.browserOutputDir
   };
 }
-function browserMcpArgv(head, options, packageName) {
+function browserMcpArgv(head, options, packageName, profileDirName) {
   return [
     ...head,
     "-y",
     packageName,
     "--extension",
     "--browser=chrome",
-    `--profile-dir-name=${PROFILE_DIR_NAME}`,
+    `--profile-dir-name=${profileDirName}`,
     `--output-dir=${options.outputDir}`,
     `--output-max-size=${String(OUTPUT_MAX_BYTES)}`,
     "--file-paths=absolute",
@@ -1414,7 +1411,9 @@ async function runBrowserMcp(paths, argv, deps) {
   const bunx = deps.which("bunx");
   const head = bunx === null ? [process.execPath, "x"] : [bunx];
   const packageName = deps.package ?? `@playwright/mcp@${MCP_VERSIONS.playwright}`;
-  const child = deps.spawn(browserMcpArgv(head, options, packageName), {
+  const profileDirName = claudeCodeProfileOn(deps.chrome)?.dirName ?? CLAUDE_CODE_PROFILE;
+  const child = deps.spawn(browserMcpArgv(head, options, packageName, profileDirName), {
+    cwd: options.outputDir,
     env: { [BROWSER_TOKEN_ENV]: token.value },
     stdio: "inherit"
   });
@@ -1988,8 +1987,7 @@ function browserSetup(paths, deps, options) {
   return { changes, guide: browserGuideLines(browserGuide(state)), info, notes, ok: true, state };
 }
 function browserState(paths, deps) {
-  const userDataDir = chromeUserDataDir(deps.platform, deps.home);
-  const profile = userDataDir === null ? null : findClaudeCodeProfile(userDataDir, deps);
+  const profile = claudeCodeProfileOn(deps);
   const token = readBrowserToken(paths, deps);
   return {
     extensionInstalled: profile !== null && isExtensionInstalledInProfile(profile.dir, deps),
@@ -11528,18 +11526,22 @@ function readSettings(path) {
 function maskKey(key) {
   return key.length >= 12 ? `\u2022\u2022\u2022\u2022${key.slice(-4)}` : "\u2022\u2022\u2022\u2022";
 }
-function shownBackendUrl(baseUrl, apiKey) {
-  const masked = maskKey(apiKey);
+function backendAddress(baseUrl) {
   try {
     const url = new URL(baseUrl);
-    if (url.username !== "" || url.password !== "") {
-      url.username = "";
-      url.password = "";
-    }
-    return `${url.href.replace(/\/$/, "")} (key ${masked})`;
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.href.replace(/\/$/, "");
   } catch {
-    return `(key ${masked})`;
+    return null;
   }
+}
+function shownBackendUrl(baseUrl, apiKey) {
+  const masked = maskKey(apiKey);
+  const address = backendAddress(baseUrl);
+  return address === null ? `(key ${masked})` : `${address} (key ${masked})`;
 }
 function shownValue(value) {
   const text = typeof value === "string" ? value : JSON.stringify(value);
@@ -30132,9 +30134,11 @@ ${HELP}`);
       const browserDeps = realBrowserSetupDeps(machine, paths.home);
       if (sub === "mcp") {
         return await runBrowserMcp(paths, extra, {
+          chrome: browserDeps,
           log: (line) => console.error(`[cc-smart-dev-kit-browser] ${line}`),
           spawn: (argv, options) => {
             const child = Bun.spawn(argv, {
+              cwd: options.cwd,
               env: { ...process.env, ...options.env },
               stdio: [options.stdio, options.stdio, options.stdio]
             });
