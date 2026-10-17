@@ -3,6 +3,9 @@ paths:
   - "src/setup/**"
   - "src/cli/**"
   - "src/machine/**"
+  - "src/mcp/**"
+  - "src/update/**"
+  - "src/workflow/write.ts"
 ---
 
 # Setup And Managed Files
@@ -29,8 +32,9 @@ Each of them:
 - **Writes in this order** (`writeManagedFile`):
   1. makes the backup;
   2. records the change in `changed.json` (the file, and the kind: `json-keys`,
-     `markdown-block` or `whole-file`), so `restore` knows what to undo. The first
-     time, that backup becomes the file's baseline. The record needs the backup's path,
+     `json-entries`, `markdown-block`, `file-line` or `whole-file`), so `restore` knows
+     what to undo. The first time, that backup becomes the file's baseline. The record
+     needs the backup's path,
      so the backup comes first. The record comes before the write, so a crash right
      after the rename never leaves a change that `restore` cannot see;
   3. writes a temp file in the same folder, and fsyncs it;

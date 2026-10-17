@@ -1,6 +1,7 @@
 ---
 paths:
   - "src/gateway/**"
+  - "src/search/**"
   - "src/entries/router.ts"
   - "plugin/skills/gateway/**"
   - "docs/gateway.md"

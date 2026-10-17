@@ -36,7 +36,8 @@ Claude Code copies only `plugin/` into
   one after an update: 14 days later, the docs say (not proved yet:
   `docs/claude-code-contract.md`). A long-running part runs from a copy in
   `~/.local/share/cc-smart-dev-kit/`: the router (`src/entries/router.ts` → `dist/router.js`,
-  copied by `gateway setup`), later the portal.
+  copied by `gateway setup`) and the portal (`src/entries/portal.ts` → `dist/portal.js`,
+  copied by `portal` through `writeManagedFile`, so `restore` removes it).
 
 ## Bundles are committed
 
@@ -82,6 +83,20 @@ the others, `router.js` included.
   `plugin/dist/`, so it needs a bump too.
 - Use `VERSION`, `MARKETPLACE_SOURCE`, `PLUGIN_ID` and the command strings from
   `src/build-info/`. Never write the version, the repository or `cc-smart-dev-kit@cc-smart-dev-kit` twice.
+
+## The names before this one
+
+Two older names exist, and a command or a check still knows each. Keep both in mind when
+you touch a check that names a plugin, a launcher or a folder.
+
+- **`cc` in the marketplace `cc-agentic`** (before 0.2.0; the plugin id was
+  `cc@cc-agentic`). `doctor` fails while such a plugin is still enabled, and its line is
+  the order to leave that state (`README.md` § Commands).
+- **`anymodel`** (0.2.x): every folder, the launcher, the router units and the gateway's
+  slots said it. `cc-smart-dev-kit migrate` moves such a machine
+  (`src/cli/migrate.ts`; the person's page is `README.md` § Moving from anymodel). It
+  decides by itself what to move, so the installer runs it on every machine and it is a
+  no-op where there is nothing to move.
 
 ## Dependencies
 
