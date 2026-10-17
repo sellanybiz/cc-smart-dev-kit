@@ -15,8 +15,10 @@ exactly where a copied value can slip in. The general rule for every project is 
 
 ## One source per value
 
-- **The plugin's own names** come from `src/build-info.ts` (`COMMAND`, `PLUGIN`, `VERSION`),
-  never a typed `cc-smart-dev-kit` in code or command output. A test reads the same constant.
+- **The plugin's own names** come from `src/build-info/` (`COMMAND`, `PLUGIN`, `VERSION`),
+  and a test reads the same constant. **New code and command output build a name from
+  those**, never type `cc-smart-dev-kit`; a string already there is not rewritten in a
+  sweep, it changes when the code around it changes.
 - **Paths** come from `cliPaths()` / the gateway's paths module — never a typed
   `~/.config/…` or `~/.local/share/…` in code; docs show the path once per section.
 - **Ports, timeouts, budgets and limits** are one named constant (or a config default) each.

@@ -1,7 +1,22 @@
 ---
 paths:
   - "src/hooks/**"
-  - "src/entries/**"
+  - "src/entries/after-merge.ts"
+  - "src/entries/agent-guard.ts"
+  - "src/entries/fable-session.ts"
+  - "src/entries/git-guard.ts"
+  - "src/entries/job-route.ts"
+  - "src/entries/main-folder-guard.ts"
+  - "src/entries/merge-guard.ts"
+  - "src/entries/message-guard.ts"
+  - "src/entries/notify.ts"
+  - "src/entries/playwright-output.ts"
+  - "src/entries/review-record.ts"
+  - "src/entries/serena-root.ts"
+  - "src/entries/session-name.ts"
+  - "src/entries/stop-failure.ts"
+  - "src/entries/update-check.ts"
+  - "src/entries/worktree-leftovers.ts"
   - "plugin/hooks/**"
   - "plugin/bin/**"
 ---
@@ -11,7 +26,8 @@ paths:
 A hook is a program Claude Code runs at a fixed moment (a session starts, a tool is
 about to run, a worktree is made). This is the contract the hooks follow; how they fit
 together is `docs/design.md` § The hooks. The Claude Code behaviour behind each point, and
-the version it was proved on: `docs/claude-code-contract.md`.
+the version it was proved on: `docs/claude-code-contract.md`. The `paths:` list names the
+hook entries only: `cli.ts`, `router.ts` and `portal.ts` are other bundles.
 
 ## Two kinds: who wires it
 
@@ -299,8 +315,9 @@ lock. It never restarts a service, never changes a permission, and never asks a 
 Those happen only in a manual `cc-smart-dev-kit setup` run that shows the change first. A start
 must stay quick: no fetch.
 
-The plugin's SessionStart hooks are the worktree-leftovers note, the session name, the
-Fable-session note (`fable-session`, machine-wide) and the
+The plugin's SessionStart hooks are the Serena-root record (`serena-root`, opt-in with the
+guard it serves), the worktree-leftovers note, the session name, the Fable-session note
+(`fable-session`, machine-wide) and the
 background self-update (`src/update/`, the owner's decision of 2026-10-15). `update-check`
 also brings the managed instructions copy up to this version when it is behind
 (`refreshInstructionsAtSessionStart`): the copy only, under the state lock, never the

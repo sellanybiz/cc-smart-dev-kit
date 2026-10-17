@@ -1,6 +1,8 @@
 ---
 paths:
+  - "src/jobs/kinds.ts"
   - "src/project/**"
+  - "src/workflow/schema.ts"
 ---
 
 # The `.claude/cc-smart-dev-kit.json` Contract

@@ -1,8 +1,9 @@
 ---
 paths:
   - "src/browser/**"
+  - "src/hooks/playwright-output*"
+  - "src/mcp/**"
   - "src/testing/chrome-world.ts"
-  - "plugin/serena/**"
 ---
 
 # The Browser
