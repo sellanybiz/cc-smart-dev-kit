@@ -21,6 +21,9 @@ in this turn.
   rebinding stops.
 - **A foreign `Origin` is 403**, on any method; **a POST without one is 403 too** (a browser
   always sends one for a POST).
+- **No other page's load** (`fetchSiteAllowed`): anything but a navigation needs
+  `Sec-Fetch-Site` `same-origin` or `none`, the assets too. A page on another `127.0.0.1` port
+  is the same site (a cookie has no port), so `SameSite=Strict` alone let its `<img>` in.
 - **The one-time token works once**, on a GET, and becomes the session cookie. Nothing else
   hands out a session. A GET that passes the `Host` and `Origin` checks but holds no session
   gets `expiredPage()` (403, and it holds no machine fact); a `Host` or `Origin` refusal stays
@@ -41,9 +44,10 @@ in this turn.
     box that should be closed stays open;
   - **nothing from the internet** — no web font, no CDN. A local font stack.
 - **A key never reaches a page.** Every backend key goes through `maskKey`; no page, JSON
-  answer or log line ever holds a whole key. The test
-  `src/portal/server.test.ts` › "a key is never sent to a page" runs every page with a
-  planted key; add a new page to it.
+  answer or log line ever holds a whole key. A backend's address goes through `backendAddress`
+  (no userinfo, query or fragment), and a backend's own error text through `shownDetail`. The
+  test `src/portal/server.test.ts` › "a key is never sent to a page" runs every page with a
+  planted key and a password in the backend's address; add a new page to it.
 - **It stops after 30 minutes with no request**, and the process exits. A portal that stays up
   is a way into every session on the machine. A page's own reload is not the person asking:
   the Health page asks with `?auto=1`, and the server serves it without touching the idle
@@ -69,7 +73,9 @@ in this turn.
   the action passes `--yes`. A new action that restarts or rewrites something gets its own
   confirmation, in the design's words.
 - **Never run what needs `sudo`**: show the exact command to copy. Writing the auto-mode trust
-  rules needs an explicit confirmation on the page.
+  rules needs an explicit confirmation on the page, and is written only as shown: the card is
+  `setup`'s own `+` / `-` dry run, its button carries that change's hash (`autoModeChange`), and
+  the write plans again under the lock and refuses a different one.
 - **It refuses inside a Claude Code session** (`CLAUDECODE`), in the command and again in the
   bundle the child runs. Never remove either.
 - **Never a number the machine cannot give.** Claude Code's usage percentages are not written

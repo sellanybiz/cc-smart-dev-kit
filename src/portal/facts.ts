@@ -45,6 +45,7 @@ import {
   type LimitRecord,
   parseLimitState,
 } from "../gateway/limit-state";
+import { maskedLine } from "../gateway/router";
 import { UNIT_NAME } from "../gateway/service";
 import { settingsReport, shownBackendUrl } from "../gateway/settings";
 import { FAMILY_SLOTS, JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";
@@ -54,6 +55,7 @@ import { type OmnirouteContext, omnirouteFacts } from "../omniroute/commands";
 import type { GlobalInstall } from "../omniroute/install";
 import type { CcSmartDevKitConfig } from "../project/config";
 import { resolveProject } from "../project/resolve";
+import { redactUrlsIn } from "../setup/marketplace-access";
 import type { PortalContext } from "./context";
 import { type SettingsRow, settingsRows } from "./settings";
 import type {
@@ -443,6 +445,18 @@ export interface BackendRow {
   why: null | string;
 }
 
+/** How long a backend's own error text on a page may be (the router's log keeps as much). */
+const DETAIL_MAX = 300;
+
+/**
+ * A backend's own error text, as a page may hold it: one line, every URL without its
+ * credentials, and the backend's key (and anything else that looks like one) masked. A backend
+ * can echo the key it was sent, and a parser's message quotes what it could not read.
+ */
+export function shownDetail(text: string, keys: readonly string[]): string {
+  return maskedLine(redactUrlsIn(text), keys, DETAIL_MAX);
+}
+
 /** Each backend's model list, timed, with its key masked and never sent to a page. */
 export async function backendRows(
   ctx: PortalContext,
@@ -457,7 +471,14 @@ export async function backendRows(
     const ms = ctx.now() - started;
     const url = shownBackendUrl(backend.baseUrl, backend.apiKey);
     if ("error" in listed) {
-      rows.push({ models: [], ms: null, name, state: "failed", url, why: listed.error });
+      rows.push({
+        models: [],
+        ms: null,
+        name,
+        state: "failed",
+        url,
+        why: shownDetail(listed.error, [backend.apiKey]),
+      });
       continue;
     }
     if (listed.status !== 200) {

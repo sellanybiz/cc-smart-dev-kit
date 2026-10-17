@@ -43,6 +43,7 @@ import {
   chromeCandidates,
   chromeMayBeRunning,
   chromeUserDataDir,
+  claudeCodeProfileOn,
   findChrome,
   findClaudeCodeProfile,
   isExtensionInstalledInProfile,
@@ -506,8 +507,7 @@ export function browserSetup(
  * same on every machine.
  */
 export function browserState(paths: CliPaths, deps: BrowserSetupDeps): BrowserSetupState {
-  const userDataDir = chromeUserDataDir(deps.platform, deps.home);
-  const profile = userDataDir === null ? null : findClaudeCodeProfile(userDataDir, deps);
+  const profile = claudeCodeProfileOn(deps);
   const token = readBrowserToken(paths, deps);
   return {
     extensionInstalled: profile !== null && isExtensionInstalledInProfile(profile.dir, deps),

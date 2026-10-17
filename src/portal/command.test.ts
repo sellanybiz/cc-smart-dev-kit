@@ -190,13 +190,22 @@ describe("the portal command", () => {
     // (`chrome.ts`, read-only), the decision itself, and the line printed instead.
     const source = readFileSync(join(import.meta.dir, "..", "entries", "portal.ts"), "utf8");
     expect(source).toContain("claudeCodeProfileHere(machine, paths.home)");
-    expect(source).toContain("findClaudeCodeProfile(userDataDir,");
+    // The one profile lookup `doctor` and the browser's launcher use too.
+    expect(source).toContain("claudeCodeProfileOn(realBrowserDoctorDeps(machine, home))");
     expect(source).toContain(
       "mayAutoOpen({ claudeCodeProfile: profileHere, noOpen: options.noOpen })",
     );
     expect(source).toContain("console.log(openYourselfLine());");
     // And the old promise — an unconditional open — is gone.
     expect(source).not.toContain("if (!options.noOpen) ctx.openBrowser(portal.url);");
+  });
+
+  test("PB hunch 1: the browser is opened detached, so Ctrl+C on the portal never closes it", () => {
+    // `xdg-open` may start the browser as its own child. Started in this terminal's process
+    // group, the Ctrl+C that stops the portal reached that browser too.
+    const source = readFileSync(join(import.meta.dir, "..", "entries", "portal.ts"), "utf8");
+    expect(source).toContain("spawn: machine.spawnDetached,");
+    expect(source).not.toContain("Bun.spawn(");
   });
 
   test("every word about it says which profile, and what the portal itself does", () => {

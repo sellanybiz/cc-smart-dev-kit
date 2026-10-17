@@ -1194,11 +1194,19 @@ runs — the same checks, the same lock, the same words (`docs/design.md` § The
 needs `sudo` is not run: the Machine page's Warp card shows `cc-smart-dev-kit setup --warp`
 and `--remove-warp` as commands to copy, and never runs them.
 Writing the auto-mode trust rules needs an explicit confirmation on the page, which stands in
-for the terminal question the command line asks.
+for the terminal question the command line asks. The card shows the change exactly as
+`cc-smart-dev-kit setup` prints it — `+` for a rule that goes in, `-` for one the project no
+longer asks for, and the note when a worktree's file is not the main checkout's — and the
+button carries the hash of what the page showed: a rule added to the project's file after the
+page was drawn makes the write refuse ("read them again") instead of trusting a rule nobody
+read. With nothing to change, the card says so and offers no button.
 
 **How it stays private.** It binds `127.0.0.1` and nothing else; the `Host` header must be
 exactly `127.0.0.1:<port>` or `localhost:<port>` (that is where a DNS-rebinding page stops);
-a foreign `Origin` is refused; the one-time token in the link is exchanged on the first load
+a foreign `Origin` is refused; anything but a page load needs the browser's `Sec-Fetch-Site`
+to say `same-origin` or `none`, so another page — even one on another `127.0.0.1` port, which
+a browser counts as the same site — cannot load the portal's pages or files into its own; the
+one-time token in the link is exchanged on the first load
 for an `HttpOnly`, `SameSite=Strict` session cookie whose name carries the portal's own port
 (`ccsdk_portal_<port>` — a cookie has no port, and a browser sends every `127.0.0.1` cookie to
 every port on it, so two portals on two ports hold their own sessions), and the URL is cleaned;
@@ -1208,7 +1216,9 @@ a portal that stopped) gets the page that says so, in 403, and it holds no fact 
 machine; a `Host` or `Origin` that is not ours stays the one word, "Forbidden". A strict
 `Content-Security-Policy` allows no inline script and nothing from the internet — no web
 font, no CDN. A backend key never reaches the page: it shows as `••••a1b2`, its last four
-characters and nothing else (`maskKey`). And the portal
+characters and nothing else (`maskKey`); a backend's address is shown, and linked, without a
+user name, password, query or fragment; and a backend's own error text is masked before a page
+or an answer holds it (a backend can echo the key it was sent). And the portal
 stops itself after 30 minutes with no request, so a page left open on an unlocked screen does
 not stay a way in.
 
@@ -1600,6 +1610,14 @@ Claude Code's browser tools (`mcp__playwright__*`) drive **your own Google Chrom
 **Playwright extension**, in ONE profile of its own named **`claude-code`**. You watch the work in
 that window, and you can take the page over.
 
+**Google Chrome only.** The MCP drives Google Chrome (`--browser=chrome`) and its own profile
+folder (`~/.config/google-chrome` on Linux), so the plugin looks for Google Chrome alone — in
+`/opt/google/chrome`, `/usr/bin` and, on macOS, `/Applications` or your own `~/Applications`. A
+Chromium keeps its profiles elsewhere, so it is not reported as Chrome. A profile you made in
+Chrome's own **Add profile** dialog and named `claude-code` (its folder is then `Profile 2` or
+similar) is found by that name, and the MCP is told that same folder, so `doctor` and the
+browser can never disagree about which profile it is.
+
 Why your Chrome and not a browser of its own: you see what Claude does, you can sign in once in
 that profile, and there is no second browser of ours to keep alive. The costs, both upstream and
 neither planned to change:
@@ -1668,10 +1686,14 @@ deadline with a message naming the profile and the variable. Copy the token agai
 - **Everything the browser saves** (screenshots, page snapshots, console and network logs,
   downloads) goes to `~/.local/share/cc-smart-dev-kit/playwright-output/`, kept under 200 MB by the
   MCP itself and readable by you alone. A file a session NAMES (`filename: "home-dark.png"`) too:
-  the MCP resolves that against the folder it runs in — the project's own folder — so the
-  `playwright-output` hook rewrites a relative name into that output folder first, and refuses a
-  relative name with a `..` in it. A path a session gives in full is left as it is. The hook acts
+  the `playwright-output` hook rewrites a relative name into that output folder first, and refuses
+  a relative name with a `..` in it. A path a session gives in full is left as it is. The hook acts
   only while the live `playwright` server is the one setup registered.
+- **The MCP runs in that output folder, never in your project's.** Claude Code starts
+  `browser mcp` in the session's folder; bun reads the working folder's `bunfig.toml` (its
+  `preload`) and `.env` for every bun it starts, and bunx looks in its `node_modules` first, so
+  in a project's folder the process that holds the token would run the project's own code. Give
+  a file to upload by its full path: a relative one is read from the output folder.
 - **`browser check`** proves all of it on your real Chrome: a connection with no approval page, a
   `file://` page, a screenshot the server names and one a caller names, an upload through the MCP's
   file-upload tool, a download, and `browser_close`. Run it when the browser misbehaves.
@@ -1731,7 +1753,12 @@ Store extension is 0.4.0 at the time of writing.
    what `doctor` reads as its version then (`<profile>/Extensions/<id>/<version>/`).
 10. **Edge** (`--browser=msedge`) if it is ever supported: Playwright maps a user data dir for it,
     but the plugin's own discovery and guide say Google Chrome only, and Brave/Chromium have no
-    channel mapping at all.
+    channel mapping at all (the plugin no longer looks for a Chromium).
+12. **Uploads from the output folder**: the MCP now runs in the output folder, so a relative
+    upload path is read from there. Check that `browser check`'s upload (a full path) still
+    passes, and that a session that names a file relative to its project gets a clear error.
+13. **A profile Chrome's own dialog made** (`Profile 2`, named `claude-code` in Chrome): the MCP
+    is told `--profile-dir-name=Profile 2` and must connect to that profile.
 11. **`doctor` must not open a page.** Its MCP check runs `claude mcp get playwright`, which starts
     the launcher once. With the token saved, the MCP must answer `initialize` and its tool list
     WITHOUT connecting to Chrome (the connect page is opened on the first browser call) — watch

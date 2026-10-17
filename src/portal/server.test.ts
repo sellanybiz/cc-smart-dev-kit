@@ -23,9 +23,11 @@ import { type DoctorSource, portalOmnirouteContext } from "./actions";
 import { PORTAL_CSS, PORTAL_JS, THEME_JS } from "./assets";
 import type { PortalContext } from "./context";
 import { omnirouteRow } from "./facts";
+import { switchButton } from "./page";
 import type { PluginFolder } from "./plugin-folder";
 import { startPortal } from "./server";
 import { IDLE_MS } from "./session";
+import { autoModeCard } from "./views";
 import { type ProjectInitAnswers, type WorkflowAdapter, workflowAdapter } from "./workflow-adapter";
 
 /** The key planted in the config: no page may ever hold it. */
@@ -98,6 +100,11 @@ const registry = (): Response =>
 /** A portal on a free port, with a temp home, a temp project and a fake backend. */
 async function open(options: {
   backendPort: number;
+  /**
+   * A user name and password in the backend's address (`user:pass@`): a URL can carry a
+   * credential there, and no page may show it.
+   */
+  backendUserinfo?: string;
   /** A doctor source of this test's own, for the cases a real folder cannot produce. */
   doctor?: DoctorSource;
   idleMs?: number;
@@ -126,6 +133,8 @@ async function open(options: {
   noGit?: boolean;
   /** True where the test's machine has systemd (the router restart needs it). */
   systemd?: boolean;
+  /** True: the portal finds git on its PATH (the real one), and nothing else. */
+  gitOnPath?: boolean;
   /**
    * The router's journal lines this machine's `journalctl --user -u cc-smart-dev-kit-router -o
    * json` answers, OLDEST FIRST as the real one prints them. One minute apart, from 09:00 UTC.
@@ -174,7 +183,12 @@ async function open(options: {
     saveConfig(paths.gatewayConfigFile, {
       aliases: {},
       anthropicBaseUrl: "https://api.anthropic.com",
-      backends: { omniroute: { apiKey: KEY, baseUrl: `http://127.0.0.1:${options.backendPort}` } },
+      backends: {
+        omniroute: {
+          apiKey: KEY,
+          baseUrl: `http://${options.backendUserinfo === undefined ? "" : `${options.backendUserinfo}@`}127.0.0.1:${options.backendPort}`,
+        },
+      },
       port: 20_199,
       slots: {
         "cc-smart-dev-kit-scout": ["omniroute:glm-5.3-flash", "claude-sonnet-5-5"],
@@ -259,7 +273,9 @@ async function open(options: {
     // No system folders of the host: a real `/usr/lib/node_modules/omniroute` is not this test.
     systemFolders: [],
     systemd: options.systemd === true,
-    which: () => null,
+    // No program on PATH, unless the test needs git itself (the auto-mode rules are read
+    // from the project's checkout).
+    which: (name) => (options.gitOnPath === true && name === "git" ? Bun.which("git") : null),
   };
   const portal = await startPortal(ctx, {
     cwd,
@@ -388,6 +404,45 @@ describe("the door", () => {
       expect((await world.call("/assets/portal.js")).status).toBe(200);
       expect((await world.call("/assets/theme.js")).status).toBe(200);
       expect((await world.call("/assets/anything.js")).status).toBe(403);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("PB-9: another page cannot load anything of the portal's", async () => {
+    // A cookie has no port, so a page on another 127.0.0.1 port is the SAME site, and its
+    // `<img src>` carried the portal's cookie past `SameSite=Strict` and was served. A browser
+    // says where a request comes from in `Sec-Fetch-Site`.
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      // The first load may come from anywhere the person clicked (another site's link,
+      // `cross-site`; a terminal, `none`). It is a navigation.
+      const first = await world.call(`/?t=${world.token()}`, {
+        headers: { "sec-fetch-mode": "navigate", "sec-fetch-site": "cross-site" },
+      });
+      expect(first.status).toBe(200);
+      const sub = (site: string) => ({ "sec-fetch-mode": "no-cors", "sec-fetch-site": site });
+      for (const site of ["same-site", "cross-site"]) {
+        expect((await world.call("/", { headers: sub(site) })).status).toBe(403);
+        expect((await world.call("/assets/portal.css", { headers: sub(site) })).status).toBe(403);
+      }
+      // The portal's own page asks same-origin; a typed address or a bookmark asks with none;
+      // a request with no such header is not from a browser that sends it.
+      expect((await world.call("/assets/portal.css", { headers: sub("same-origin") })).status).toBe(
+        200,
+      );
+      expect((await world.call("/", { headers: sub("none") })).status).toBe(200);
+      expect((await world.call("/")).status).toBe(200);
+      // A link the person follows from another page is a navigation, and it is served.
+      expect(
+        (
+          await world.call("/", {
+            headers: { "sec-fetch-mode": "navigate", "sec-fetch-site": "same-site" },
+          })
+        ).status,
+      ).toBe(200);
     } finally {
       world.portal.stop();
       backend.stop();
@@ -635,16 +690,26 @@ describe("every answer", () => {
 
   test("a key is never sent to a page", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
-    // With an OmniRoute installed, so its own card and its own facts are drawn too.
-    const world = await open({ backendPort: backend.port, omniroute: "3.8.51" });
+    // With an OmniRoute installed, so its own card and its own facts are drawn too — and a
+    // password in the backend's address (PB-7): the Overview's dashboard link took it raw.
+    const world = await open({
+      backendPort: backend.port,
+      backendUserinfo: "planted-user:PLANTED_PASSWORD",
+      omniroute: "3.8.51",
+    });
     try {
       const first = await world.enter();
       for (const path of ["/", "/slots", "/health", "/machine", "/settings", "/privacy"]) {
         const page = await world.call(path);
         expect(page.body).not.toContain(KEY);
-        // The masked form may appear; the whole key never does.
+        // The masked form may appear; the whole key never does, nor the address's password.
         expect(page.body).not.toContain("PLANTED");
+        expect(page.body).not.toContain("planted-user");
       }
+      // PB-7: the dashboard link is still there, at the address without its credential.
+      expect((await world.call("/")).body).toContain(
+        `href="http://127.0.0.1:${backend.port}/" rel="noreferrer">OmniRoute dashboard`,
+      );
       expect(first.body).not.toContain(KEY);
       // A JSON action answer holds none either: the testing action reads the backend with
       // that key and answers details about it.
@@ -661,6 +726,55 @@ describe("every answer", () => {
     } finally {
       world.portal.stop();
       backend.stop();
+    }
+  });
+
+  test("PB hunch 3: a backend's own error text is masked before a page or an answer holds it", async () => {
+    // A backend that echoes the key it was sent: in a model list that is not JSON (the parser's
+    // message quotes it), and in a chat's error body. Both reached a page as they came.
+    let echo: "chat" | "models" = "models";
+    const server = Bun.serve({
+      fetch: (request) => {
+        const url = new URL(request.url);
+        if (url.pathname === "/v1/models") {
+          if (echo === "models") return new Response(`${KEY} is not a key of ours`);
+          return Response.json({ data: [{ id: "glm-5.3-flash" }] });
+        }
+        return new Response(`{"error":"bad key ${KEY}"}`, { status: 500 });
+      },
+      hostname: "127.0.0.1",
+      port: 0,
+    });
+    const world = await open({ backendPort: server.port ?? 0 });
+    try {
+      await world.enter();
+      for (const path of ["/slots", "/health"]) {
+        const page = await world.call(path);
+        // The reason is still there for the person to act on, without the key in it.
+        expect(page.body).toContain("JSON Parse error");
+        expect(page.body).not.toContain(KEY);
+        expect(page.body).not.toContain("PLANTED");
+      }
+      expect((await world.call("/")).body).not.toContain("PLANTED");
+      const csrf = await world.csrfOf();
+      const listed = await world.post(
+        "slot.test",
+        { slot: "worker", targets: ["omniroute:glm-5.3-flash"] },
+        csrf,
+      );
+      expect(listed.body).toContain("JSON Parse error");
+      expect(listed.body).not.toContain("PLANTED");
+      echo = "chat";
+      const chatted = await world.post(
+        "slot.test",
+        { slot: "worker", targets: ["omniroute:glm-5.3-flash"] },
+        csrf,
+      );
+      expect(chatted.body).toContain("answered HTTP 500");
+      expect(chatted.body).not.toContain("PLANTED");
+    } finally {
+      world.portal.stop();
+      server.stop(true);
     }
   });
 
@@ -1817,6 +1931,102 @@ describe("the actions", () => {
       world.portal.stop();
       backend.stop();
     }
+  });
+
+  test("PB-3: the trust rules are written only as shown", async () => {
+    // The page drew the rules, and the click re-read the project's file: a rule added in
+    // between (by a session, in the folder the portal runs in) was written without anyone
+    // seeing it. The write now carries the hash of what the page showed.
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const config = (rules: string[]) => `${JSON.stringify({ autoMode: rules }, null, 2)}\n`;
+    const world = await open({
+      backendPort: backend.port,
+      gitOnPath: true,
+      projectFiles: { config: config(["Rule one"]) },
+    });
+    const projectFile = join(world.cwd, ".claude", "cc-smart-dev-kit.json");
+    /** The write button's body, as the page's script sends it. */
+    const shownBody = (page: string): unknown => {
+      const found = /data-action="automode\.apply" data-body="([^"]+)"/.exec(page)?.[1] ?? "";
+      return JSON.parse(found.replaceAll("&quot;", '"'));
+    };
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      const first = await world.call("/machine");
+      // The CLI's own lines: `+` for a rule that goes in.
+      expect(first.body).toContain(
+        '<span class="mark">+</span><span class="wrap-any">Rule one</span>',
+      );
+      const body = shownBody(first.body);
+      // A rule added after the page was drawn: the old click writes nothing.
+      writeFileSync(projectFile, config(["Rule one", "Rule two"]));
+      const stale = await world.post("automode.apply", body, csrf);
+      expect(JSON.parse(stale.body)).toEqual({
+        lines: [
+          "The trust rules changed since this page showed them, so nothing was written. Read them again on the page, then write them.",
+        ],
+        ok: false,
+      });
+      expect(existsSync(world.paths.settingsFile)).toBe(false);
+      // A hand-made POST with no hash at all writes nothing either.
+      const bare = await world.post("automode.apply", { confirm: true }, csrf);
+      expect(JSON.parse(bare.body).ok).toBe(false);
+      expect(existsSync(world.paths.settingsFile)).toBe(false);
+      // What the page shows now is what gets written.
+      const second = await world.call("/machine");
+      expect(second.body).toContain('<span class="wrap-any">Rule two</span>');
+      const written = await world.post("automode.apply", shownBody(second.body), csrf);
+      expect(JSON.parse(written.body).ok).toBe(true);
+      const settings = JSON.parse(readFileSync(world.paths.settingsFile, "utf8"));
+      expect(settings.autoMode.environment).toEqual(["$defaults", "Rule one", "Rule two"]);
+      // A rule the project drops is shown as the `-` line the command line prints, and goes.
+      writeFileSync(projectFile, config(["Rule two"]));
+      const third = await world.call("/machine");
+      expect(third.body).toContain(
+        '<span class="mark">-</span><span class="wrap-any">Rule one</span>',
+      );
+      expect(
+        JSON.parse((await world.post("automode.apply", shownBody(third.body), csrf)).body).ok,
+      ).toBe(true);
+      expect(
+        JSON.parse(readFileSync(world.paths.settingsFile, "utf8")).autoMode.environment,
+      ).toEqual(["$defaults", "Rule two"]);
+      // Nothing left to change: the card says so, and offers no button.
+      const done = await world.call("/machine");
+      expect(done.body).not.toContain('data-action="automode.apply"');
+      expect(done.body).toContain("Your user settings already hold these rules.");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("PB improvement 1: a switch's id and action are escaped like every other value", () => {
+    // Every caller passes a fixed word today; the helper must not rely on that.
+    const odd = '"><img src=x>';
+    for (const disabled of [false, true]) {
+      const html = switchButton({ action: odd, disabled, id: odd, label: "x", on: false });
+      expect(html).not.toContain(odd);
+      expect(html).toContain('aria-labelledby="&quot;&gt;&lt;img src=x&gt;"');
+    }
+    expect(switchButton({ action: odd, id: "a", label: "x", on: true })).toContain(
+      'data-action="&quot;&gt;&lt;img src=x&gt;"',
+    );
+  });
+
+  test("PB-3: the card says when a worktree's rules are not the main checkout's", () => {
+    const card = autoModeCard({
+      added: ["Rule one"],
+      differsFrom: "/home/user/my-app/.claude/cc-smart-dev-kit.json",
+      from: "/home/user/my-app-wt-1/.claude/cc-smart-dev-kit.json",
+      hash: "h",
+      removed: [],
+      settings: "/home/user/.claude/settings.json",
+    });
+    expect(card).toContain(
+      "This worktree's file is not the same as the main checkout's (<span class=\"mono\">/home/user/my-app/.claude/cc-smart-dev-kit.json</span>). The rules below come from this worktree's file.",
+    );
   });
 
   test("a project's own folder is where the auto-mode rules come from", async () => {

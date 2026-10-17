@@ -110,22 +110,33 @@ export function maskKey(key: string): string {
 }
 
 /**
- * A backend's address as a person reads it: the URL without any credentials in it, then its
- * key in the masked form. One home, because two callers show it — `omniroute status` and the
- * portal's pages — and neither may print a whole key.
+ * A backend's address with nothing secret left in it: no user name or password, no query and
+ * no fragment — a key can ride in any of them (`?key=…`), and the router never needs one there:
+ * it adds its paths to the address. Null when the text is not a URL, so nothing of it is shown.
+ * What a page may show or link to (the OmniRoute dashboard), without its last slash.
+ */
+export function backendAddress(baseUrl: string): null | string {
+  try {
+    const url = new URL(baseUrl);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.href.replace(/\/$/, "");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A backend's address as a person reads it: `backendAddress`, then its key in the masked form.
+ * One home, because two callers show it — `omniroute status` and the portal's pages — and
+ * neither may print a whole key.
  */
 export function shownBackendUrl(baseUrl: string, apiKey: string): string {
   const masked = maskKey(apiKey);
-  try {
-    const url = new URL(baseUrl);
-    if (url.username !== "" || url.password !== "") {
-      url.username = "";
-      url.password = "";
-    }
-    return `${url.href.replace(/\/$/, "")} (key ${masked})`;
-  } catch {
-    return `(key ${masked})`;
-  }
+  const address = backendAddress(baseUrl);
+  return address === null ? `(key ${masked})` : `${address} (key ${masked})`;
 }
 
 /** A settings value as output may show it: anything that looks like a key or a credential is masked. */

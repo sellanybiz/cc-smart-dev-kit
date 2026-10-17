@@ -51,9 +51,6 @@ describe("findChrome", () => {
       "/opt/google/chrome/chrome",
       "/usr/bin/google-chrome",
       "/usr/bin/google-chrome-stable",
-      "/usr/bin/chromium",
-      "/usr/bin/chromium-browser",
-      "/snap/bin/chromium",
     ]);
     expect(findChrome({ exists: () => false, home: "/home/user", platform: "linux" })).toBeNull();
     expect(
@@ -63,8 +60,10 @@ describe("findChrome", () => {
         platform: "linux",
       }),
     ).toBe("/usr/bin/google-chrome-stable");
+    // macOS: the machine-wide app, then one dragged into the person's own Applications folder.
     expect(chromeCandidates("darwin", "/Users/user")).toEqual([
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Users/user/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     ]);
     // Windows: the two machine-wide installs, then a Chrome installed for one user.
     expect(chromeCandidates("win32", "C:\\Users\\user")).toEqual([
@@ -72,6 +71,22 @@ describe("findChrome", () => {
       "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
       "C:\\Users\\user\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe",
     ]);
+  });
+});
+
+describe("PB-6: Google Chrome only", () => {
+  test("PB-6: a Chromium is never reported as Chrome", () => {
+    // The MCP runs with `--browser=chrome`, which drives Google Chrome and its own profile
+    // folder (`~/.config/google-chrome`). A Chromium keeps its profiles elsewhere, so a doctor
+    // line that called it "Google Chrome" was a ✓ for a browser the MCP never uses.
+    const chromiums = ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/snap/bin/chromium"];
+    expect(
+      findChrome({
+        exists: (path) => chromiums.includes(path),
+        home: "/home/user",
+        platform: "linux",
+      }),
+    ).toBeNull();
   });
 });
 
