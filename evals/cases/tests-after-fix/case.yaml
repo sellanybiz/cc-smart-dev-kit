@@ -1,0 +1,25 @@
+schema_version: "1.1"
+name: tests-after-fix
+description: >-
+  After an edit, run the tests it touches before handing back (verify-change).
+tags: [gate, verify]
+plugins: ["../../.under-test/plugin", "../../harness"]
+execution:
+  max_turns: 15
+  allowed_tools: [Read, Glob, Grep, Skill, Edit, Bash]
+  prompt: |
+    The tests in this project fail. Fix the bug in math.js.
+context:
+  scaffold_script: scaffold.sh
+graders:
+  - name: tests-run-after-edit
+    type: regex
+    pattern: '"name":"(?:Edit|Write)"[\s\S]*"name":"Bash","input":\{"command":"[^"]*(?:node|npm|test)'
+    target: 'trace'
+  - name: bug-fixed
+    type: regex
+    pattern: 'a - b'
+    match: 'not_contains'
+    target:
+      source: file
+      path: math.js

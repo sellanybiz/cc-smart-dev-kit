@@ -1,0 +1,24 @@
+schema_version: "1.1"
+name: explain-plain-words
+description: >-
+  The explain skill teaches in plain words, with an analogy, for someone who is not a
+  programmer.
+tags: [judge, trigger]
+plugins: ["../../.under-test/plugin", "../../harness"]
+execution:
+  max_turns: 4
+  allowed_tools: [Skill]
+  prompt: |
+    Explain what a race condition is. I'm not a programmer.
+graders:
+  - name: fires-explain
+    type: tool_used
+    tool: 'Skill'
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?explain"'
+  - name: plain-words
+    type: llm
+    criteria: |
+      PASS if the reply uses plain, short sentences, explains every technical word it uses, and gives
+      a real-life analogy.
+      FAIL if it leaves technical words unexplained, gives no analogy, or reads like a reference
+      manual.

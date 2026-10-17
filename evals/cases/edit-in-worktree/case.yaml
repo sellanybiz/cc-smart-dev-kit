@@ -1,0 +1,35 @@
+schema_version: "1.1"
+name: edit-in-worktree
+description: >-
+  Real past failure: an edit in the main checkout of a project that works in worktrees. The
+  project opts in (worktrees.guardMainFolder, and the worktrees instructions); the session must
+  make a worktree before its first edit, so the guard never has to refuse. EnterWorktree is
+  never available in an eval run, so the way in is git worktree.
+tags: [watch, workflow, needs-shell]
+plugins: ["../../.under-test/plugin", "../../harness"]
+execution:
+  max_turns: 15
+  allowed_tools: [Read, Glob, Grep, Skill, Edit, Bash]
+  env:
+    EVAL_KIT_OPTIN: worktrees
+  prompt: |
+    Fix the typo "recieve" in src/mail.ts.
+context:
+  scaffold_script: scaffold.sh
+graders:
+  - name: guard-never-refused
+    type: regex
+    pattern: 'This file is in the main checkout'
+    match: 'not_contains'
+    target: 'trace'
+  - name: edit-in-a-worktree
+    type: tool_used
+    tool: 'Edit'
+    input_match: '"file_path"\s*:\s*"[^"]*(?:/\.claude/worktrees/|/app-wt-|/worktrees?/)'
+  - name: no-edit-in-main
+    type: tool_used
+    tool: 'Edit'
+    input_match: '"file_path"\s*:\s*"[^"]*/cwd/src/mail\.ts"'
+    min: 0
+    max: 0
+    arm: 'both'

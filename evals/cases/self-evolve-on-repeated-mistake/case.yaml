@@ -1,0 +1,17 @@
+schema_version: "1.1"
+name: self-evolve-on-repeated-mistake
+description: >-
+  A mistake that repeats, with a request to make it a rule, is self-evolve's trigger. Finding:
+  IN-21, IN-26.
+tags: [watch, trigger]
+plugins: ["../../.under-test/plugin", "../../harness"]
+execution:
+  max_turns: 10
+  allowed_tools: [Read, Glob, Grep, Skill, Edit, Write]
+  prompt: |
+    This is the third time you said you were done without running the linter first. Make it a rule so it stops happening.
+graders:
+  - name: fires-self-evolve
+    type: tool_used
+    tool: 'Skill'
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?self-evolve"'

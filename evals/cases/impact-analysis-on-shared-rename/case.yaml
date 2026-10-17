@@ -1,0 +1,46 @@
+schema_version: "1.1"
+name: impact-analysis-on-shared-rename
+description: >-
+  A field of a shared type used in three files: impact-analysis traces every consumer, and every
+  one is updated.
+tags: [watch, trigger]
+plugins: ["../../.under-test/plugin", "../../harness"]
+execution:
+  max_turns: 20
+  allowed_tools: [Read, Glob, Grep, Skill, Edit]
+  prompt: |
+    Rename the email field of the User type to emailAddress.
+context:
+  scaffold_script: scaffold.sh
+graders:
+  - name: fires-impact-analysis
+    type: tool_used
+    tool: 'Skill'
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?impact-analysis"'
+  - name: type-renamed
+    type: regex
+    pattern: 'emailAddress'
+    target:
+      source: file
+      path: src/user.ts
+  - name: signup-updated
+    type: regex
+    pattern: '\.email\b'
+    match: 'not_contains'
+    target:
+      source: file
+      path: src/signup.ts
+  - name: mailer-updated
+    type: regex
+    pattern: '\.email\b'
+    match: 'not_contains'
+    target:
+      source: file
+      path: src/mailer.ts
+  - name: profile-updated
+    type: regex
+    pattern: '\.email\b'
+    match: 'not_contains'
+    target:
+      source: file
+      path: src/profile.ts

@@ -1,0 +1,19 @@
+schema_version: "1.1"
+name: performance-budget-on-slow-list
+description: >-
+  A slow React list is performance-budget's job; a narrower trigger must still catch it.
+  Finding: IN-23.
+tags: [watch, trigger]
+plugins: ["../../.under-test/plugin", "../../harness"]
+execution:
+  max_turns: 12
+  allowed_tools: [Read, Glob, Grep, Skill, Edit]
+  prompt: |
+    The order list page is slow once it has 5,000 rows. Make it fast.
+context:
+  scaffold_script: scaffold.sh
+graders:
+  - name: fires-performance-budget
+    type: tool_used
+    tool: 'Skill'
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?performance-budget"'
