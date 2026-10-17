@@ -1483,13 +1483,13 @@ guard fails closed), and every other hook writes one line on stderr and the sess
 | `main-folder-guard` | before Edit, Write, NotebookEdit, and Serena's edit tools | With `worktrees.guardMainFolder`: refuses an edit of a file in the main checkout itself, and says how to get into a worktree. A Serena edit is placed by the folder Serena has active, which `serena-root` records for the session; a folder it cannot work out, it asks about rather than letting the edit through. |
 | `serena-root` | `mcp__serena__activate_project` (before and after the call), and a session start | Records which folder Serena edits for this session (`worktrees.guardMainFolder`), so the guard above can place a Serena edit: from the moment an activation is allowed the record says "unknown" until Serena's own answer names the folder, so the guard asks rather than trusting a folder Serena may not be on. It refuses an activation that names a project by name, or a folder outside this repo and its worktrees. At a session start it forgets the record (`startup`) or distrusts it (`resume`, `clear`, `fork`). |
 | `playwright-output` | before every `mcp__playwright__*` call | Puts a screenshot or snapshot the caller names by a relative `filename` into the browser's output folder instead of the folder the session runs in (`@playwright/mcp` resolves a caller-named file against the process's own folder). |
-| `merge-guard` | before a Bash or PowerShell command | Asks you before a command that merges a pull request. The forms it reads: `gh pr merge` (`gh pr -R owner/repo merge 5` included), `--auto` (an armed merge lands once the checks pass, with nobody watching), a `gh alias` that expands to one (read from `gh alias list`), and — asking whatever the policy says — a `gh api` call to the pull-request merge endpoint (`repos/o/r/pulls/5/merge`, any method spelling) or a GraphQL query that names `mergePullRequest` / `enablePullRequestAutoMerge`. **Every merge in the command is judged**: `gh pr merge 5 && gh pr merge 6` checks both, and the first it does not allow asks, naming that pull request. It reads three facts, read-only: the pull request (`gh pr view`), the repository's default branch (`gh repo view`), and its required checks (`gh pr checks --required`; a skipped one counts as passing, GitHub's own rule). It lets a merge through with no question only when `autoMerge` is on, the pull request's base is the project's integration base, every required check passed, and — with `reviewBeforePush` on — the head commit has a [recorded review](#the-workflow). Every other case asks you, with the reason it asks; so does a merge that names a repository other than this project's own (`--repo`/`-R`: the policy covers this repository only), one whose earlier steps change the folder, branch or repository it acts on (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing, fails, or answers something it cannot read. A merge with `--admin` (any value) always asks, whatever the policy says, naming the pull request: `--admin` merges past the repository's branch protection — its required reviews (a code-owner approval among them), its required checks and its merge queue — so you decide each one. It asks rather than refuses, because a release may use `--admin` on purpose. In a project without `.claude/cc-smart-dev-kit.json` it stays silent, like every project hook. |
+| `merge-guard` | before a Bash or PowerShell command | Asks you before a command that merges a pull request. The forms it reads: `gh pr merge` (`gh pr -R owner/repo merge 5` included), `--auto` (an armed merge lands once the checks pass, with nobody watching), a `gh alias` that expands to one (read from `gh alias list`), and — asking whatever the policy says — a `gh api` call to the pull-request merge endpoint (`repos/o/r/pulls/5/merge`, any method spelling) or a GraphQL query that names `mergePullRequest` / `enablePullRequestAutoMerge`. **Every merge in the command is judged**: `gh pr merge 5 && gh pr merge 6` checks both, and the first it does not allow asks, naming that pull request. It reads three facts, read-only: the pull request (`gh pr view`), the repository's default branch (`gh repo view`), and its required checks (`gh pr checks --required`; a skipped one counts as passing, GitHub's own rule). It lets a merge through with no question only when `autoMerge` is on, the pull request's base is the project's integration base, every required check passed, and — with `reviewBeforePush` on — the head commit has a [recorded review](#the-workflow) by an agent `reviewAgents` names, or by you. **It reads that policy as committed on the pull request's base** (`origin/<base>`, as last fetched), never from a checkout's own copy of `.claude/cc-smart-dev-kit.json`: a session cannot switch the gate off by editing its worktree's file. No such ref, no file there, or a file it cannot use asks you. Every other case asks you, with the reason it asks; so does a merge that names a repository other than this project's own (`--repo`/`-R`: the policy covers this repository only), one whose earlier steps change the folder, branch or repository it acts on (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing, fails, or answers something it cannot read. A merge with `--admin` (any value) always asks, whatever the policy says, naming the pull request: `--admin` merges past the repository's branch protection — its required reviews (a code-owner approval among them), its required checks and its merge queue — so you decide each one. It asks rather than refuses, because a release may use `--admin` on purpose. In a project without `.claude/cc-smart-dev-kit.json` it stays silent, like every project hook. |
 | `message-guard` | before SendMessage | Refuses a message to a session that works outside this repo (ListAgents lists every session on the machine). |
 | `agent-guard` | before an Agent launch | **Machine-wide** (it runs with or without `.claude/cc-smart-dev-kit.json`): it resolves the model the launch really runs on and holds the model rules. A launch with no `model` or no `effort` is refused (it would inherit the session's, which nobody chose); `effort` `low` or `medium` is refused on every model, a Claude model and an affordable slot alike (a subagent runs at `high`, `xhigh` or `max` only); an affordable gateway slot needs `effort: "max"`: a slot key, a `<backend>:<model>` target, or `haiku` / `sonnet` (or their ids) while the gateway is on and that family's slot (scout, worker) has a chain whose first target is a backend, read from `gateway.json`; with no chain, or one that starts with a `claude-…` model, the launch is Claude — a name no rule knows (`best`, `opusplan`, `default`, …) is judged like Opus; **`opus` and `fable` mean the TIER, whatever model answers behind them** — an override, or the opus or fable slot's chain, that points one at another vendor keeps the tier's rules, is never affordable and never forced to `max`, and the question names both (`` `opus` (answered by openai:gpt-5.5) ``); a review agent whose model the guard reads as Opus is allowed at `high` or `xhigh` — at `max` it asks you (a deeper review is your call, and in `claude -p`, with nobody to answer, it is refused), and a review whose model it cannot read asks about that reading — and any other `opus`-tier launch needs an `Opus reason: <word>` line and asks you to approve it (in `claude -p` that one is refused too); on the `fable` tier a read-only agent (Plan, Reviewer, Explore, Code Explorer) with a `Fable reason: <word> - <why>` line asks you — `build` is the builder's own word, refused there — and an agent that can change files — a builder, or a fork — asks with `Fable reason: build - <what you asked for>`. A fork always runs on the session's model and effort (Claude Code ignores a `model` a fork is given) and needs no `model`; an unknown session model counts as the `opus` tier. A **Workflow** call is judged the same way, from the `agent(...)` options in its script — a launch whose `model` is built at run time is refused, never guessed, and a script that hands `agent` around (`const run = agent; run(…)`, `agent?.(…)`) or builds a call's options at run time (a `...spread`, a computed key) is refused whole — because (proved live) a workflow's agents run inside the tool and pass no hook of their own; a deny refuses the whole call, so none of its launches is recorded, and an ask names every launch that asks. Every premium-tier launch that is allowed or asked is recorded, and `cc-smart-dev-kit usage` lists them with why. |
 | `fable-session` | a session starts; a model switch; each answer ends | **Machine-wide**: when the session's own model is the `fable` tier — Claude Fable, or a model an override points that tier at — it shows *you* one line, once a session: the premium tier uses your plan's limits faster than Opus, so switch with `/model` if you did not mean to. Nothing goes to Claude, never an error and never a block. A session start judges only the `model` the start names; a switch judges `to_model` — the model the session moved TO — so the line appears AT the switch; a finished answer is judged by the model that answered it, which is the catch-all for a Claude Code that fires no `PostModelSwitch`, and can never fire for a model the session has already left (the old `UserPromptSubmit` read was one turn behind: it missed the switch to Fable and warned after the switch back). The line was seen live on a real session (2026-10-17); that `systemMessage` shows on `PostModelSwitch` and `Stop` is not proved yet (the contract's § Relied on, not proved yet). |
 | `job-route` | before a Bash command | With `"jobs": { "route": true }`: a heavy command (the project's own [kinds](docs/jobs.md#kinds)) is sent through the machine's queue — rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>`, byte for byte the same command. A command already inside `cc-smart-dev-kit job run` is left as it is. |
 | `after-merge` | after a pull-request merge | With `worktrees`: the steps to clear the worktree that was merged, and, for a merge into `worktrees.base`, the message to send the other sessions of the repo. Noted forms: `gh pr merge`, `gh pr -R owner/repo merge 5`, a `gh api` merge whose path names the pull request, and a `gh` alias that expands to one ([The hooks](#the-hooks) has the guard's row). A form that names no pull request — a shell alias, a GraphQL merge, a runner such as `xargs` — gets no note. |
-| `review-record` | when a subagent finishes | Records the commit the session's working folder is on, when the agent that finished is one `reviewAgents` lists (the plugin's reviewer by default): the record the merge guard reads for a merge it would make with no person watching ([The review record](#the-workflow)). It writes nothing for an agent that stopped inside its own worktree. |
+| `review-record` | when a subagent starts, and when it finishes | When the agent is one `reviewAgents` lists (the plugin's reviewer by default): notes the commit the session's working folder is on at its start, and records it at its end — only when the folder is still on that commit. It is the record the merge guard reads for a merge it would make with no person watching ([The review record](#the-workflow)). It writes nothing for an agent that stopped inside its own worktree, or on another commit than it started on. |
 | `worktree-leftovers` | a session starts | With `worktrees`: names the worktrees that are finished (every commit on `origin/<base>`, nothing uncommitted, no running session, idle for an hour) or whose folder is gone. It removes nothing. |
 | `session-name` | a session starts; each prompt | With `sessionNames`: asks the session to name itself after its task, then sets that name at the next prompt. |
 
@@ -1969,8 +1969,12 @@ The base branch comes from the project's `cc-smart-dev-kit.json` `worktrees.base
 file (or without the field) the remote's default branch (`origin/HEAD`), else `main`, with
 one line saying which was used.
 
-A session's own worktree is normally cleared by the session: the after-merge note after a
-merge, and the SessionStart note when finished worktrees are left behind, both point at
+A session's own worktree is normally cleared by the session. The after-merge note, right
+after its branch's pull request merged, says `ExitWorktree` with action `remove` — with
+`discard_changes true` only where the plugin's own `worktree-remove` hook is wired (§ the
+engine's lines above), since that hook is what keeps uncommitted work then; without it,
+Claude Code's own check does — and, when `ExitWorktree` cannot, `cc-smart-dev-kit worktrees
+--remove <path>`. The SessionStart note, when finished worktrees are left behind, points at
 `cc-smart-dev-kit worktrees --clean`.
 
 ## `project init`
@@ -2034,7 +2038,21 @@ openPr = draft (project)
 alerts.events = needs-you, question, finished, failed (default)
 alerts.usagePercent = 85 (default)
 switches.sessionNames = true (project)
+gate: what the merge guard judges with, from origin/dev:.claude/cc-smart-dev-kit.json as committed (this checkout's own copy does not count)
+gate autoMerge = true (project, committed on origin/dev)
+gate reviewBeforePush = true (default)
+gate reviewAgents = cc-smart-dev-kit:reviewer (default)
+review-done = no (HEAD 1a2b3c4)
 ```
+
+The `gate` lines are **the review gate**: `autoMerge`, `reviewBeforePush` and `reviewAgents` as
+the merge guard reads them. The guard reads the project's part from the file **as committed
+on the pull request's base** (`origin/<base>`, as last fetched; nothing is fetched for it),
+never from a checkout's working copy — so a change to the gate counts once you commit it to
+the base, push it, and the checkout has fetched it. The other rows show this checkout's file,
+which the skills follow. When the committed file cannot be read (no `origin/<base>`, no file
+there, or one this plugin cannot use), the line says so, and the merge guard asks before every
+merge.
 
 | Setting | Default | What it means |
 |---|---|---|
@@ -2045,7 +2063,7 @@ switches.sessionNames = true (project)
 | `mergeMethod` | `"merge"` | `"merge"`, `"squash"` or `"rebase"`. |
 | `deleteBranch` | `false` | Delete the branch after its merge. |
 | `reviewBeforePush` | `true` | Run the review before a push. |
-| `reviewAgents` | `["cc-smart-dev-kit:reviewer"]` | The subagent types whose return records a review (§ The review record). |
+| `reviewAgents` | `["cc-smart-dev-kit:reviewer"]` | The subagent types whose return records a review (§ The review record), by the exact name Claude Code reports: `plugin:name` for a plugin's agent, the frontmatter `name` for a project's own. |
 | `clearWorktreeAfterMerge` | `false` | Clear the worktree once its pull request merged. |
 | `alerts.events` | all four | Which moments alert: `needs-you`, `question`, `finished`, `failed`. |
 | `alerts.sound` | `false` | A sound with the alert. |
@@ -2075,23 +2093,40 @@ CI is green and the review is done is the caller's check (the merge guard hook),
 | `autoCommit`, `autoPush`, `openPr`, `clearWorktreeAfterMerge` | the instructions: the commit and worktree skills read `cc-smart-dev-kit workflow show` and follow it. |
 | `autoMerge` (with `mergeMethod`, `deleteBranch`) | the **merge guard hook**, which asks you before a merge its rules do not allow — every merge form it reads, in this repository only, and every merge with `--admin` (§ The hooks). |
 | `reviewBeforePush` | both: the **review-record hook** writes the record when the review agent finishes (§ below), and the merge guard asks about a merge whose head commit has no record. |
-| `reviewAgents` | the **review-record hook**: only an agent listed there records a review. |
+| `reviewAgents` | both: the **review-record hook** records only an agent listed there, and the **merge guard** trusts a record only when the list committed on the base names the agent that wrote it. |
 | `alerts.events`, `alerts.sound` | the two alert hooks, `notify` and `stop-failure` (§ Notifications). |
 | `alerts.usagePercent` | the status line: from that share of a plan window it warns. |
 
 **The review record.** The record says one thing: the commit the change set was on had its one
 premium review. It is one small JSON file per repository under
 `~/.claude/cc-smart-dev-kit/reviews/` (mode 0600), and `cc-smart-dev-kit workflow show` prints
-whether the commit here has a record. It is written **by the review-record hook**: Claude Code
-tells it when a subagent finishes, and if that agent is one `reviewAgents` lists (by default
-the plugin's own reviewer) it records the commit the working folder is on at that moment. A
-name is compared ignoring any `plugin:` prefix, case and `-`/`_`/space, so whichever form
-Claude Code reports matches the list. An agent that stopped inside its own worktree records
-nothing: that worktree's branch is a fresh one from the base, never the commit a reviewer
-read. `cc-smart-dev-kit workflow review-done [--sha <commit>]` records one by hand for the
-person's own terminal: it refuses inside Claude Code, where a record a session writes for
-itself is only the session's own word. With `reviewBeforePush` on, the merge guard reads the
-record for the pull request's head commit: no record, and the merge asks you.
+whether the commit here has a record the gate trusts. It is written **by the review-record
+hook**: Claude Code tells it when a subagent starts and when it finishes, and if that agent is
+one `reviewAgents` lists (by default the plugin's own reviewer) it notes the commit the
+working folder is on at the start, and records it at the end — **only when the folder is still
+on that commit**. A fix committed while the reviewer read moves the commit, and then nothing is
+recorded: run the review again with every fix already committed. A name matches exactly: a
+`plugin:name` only that plugin's agent, a bare name only an agent with no plugin prefix, so
+another plugin's `reviewer` never counts for `cc-smart-dev-kit:reviewer`. An agent that stopped
+inside its own worktree records nothing: that worktree's branch is a fresh one from the base,
+never the commit a reviewer read. `cc-smart-dev-kit workflow review-done [--sha <commit>]`
+records one by hand for the person's own terminal: it refuses inside Claude Code, where a
+record a session writes for itself is only the session's own word. With `reviewBeforePush` on,
+the merge guard reads the record for the pull request's head commit: no record by an agent the
+committed `reviewAgents` names (or by you), and the merge asks you. A record an older plugin
+wrote names no agent, so its commit asks once.
+
+**Inside Claude Code, `workflow set` and `unset` of a gate setting** (`autoMerge`,
+`reviewBeforePush`, `reviewAgents`) **refuse**, in both files: the gate is yours to change.
+Run them in your own terminal; for the project's part, commit `.claude/cc-smart-dev-kit.json`
+to the base and push it.
+
+**What the gate is, and is not.** The committed policy, the record and these refusals stop
+mistakes: a session that switches the gate off in its own checkout, a stray `review-done`,
+another plugin's agent named `reviewer`. They are not a lock against a process set on getting
+past them: anything that runs as you can write your own files (the record, `workflow.json`),
+drop `CLAUDECODE` (`env -u CLAUDECODE`), or push to a branch you may push to. Your
+repository's branch protection, and your yes to a merge, are what hold against that.
 
 **The alert settings**, read by `notify`, `stop-failure` and the status line:
 

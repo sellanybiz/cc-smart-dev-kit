@@ -1,6 +1,11 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { type CcSmartDevKitConfig, loadCcSmartDevKitConfig, readOwnHooks } from "./config";
+import {
+  type CcSmartDevKitConfig,
+  loadCcSmartDevKitConfig,
+  parseCcSmartDevKitConfig,
+  readOwnHooks,
+} from "./config";
 import { gitEnv } from "./git-env";
 
 export interface Project {
@@ -40,7 +45,11 @@ export const RESOLVE_GIT_TIMEOUT_MS = 5_000;
 export const GIT_NOT_FOUND =
   "git was not found, so this project's own values cannot be read. Install git, then try again.";
 
-function gitIn(cwd: string, env: Record<string, string>): Git {
+function gitIn(
+  cwd: string,
+  env: Record<string, string>,
+  timeoutMs: number = RESOLVE_GIT_TIMEOUT_MS,
+): Git {
   return (args) => {
     try {
       const result = Bun.spawnSync(["git", ...args], {
@@ -49,7 +58,7 @@ function gitIn(cwd: string, env: Record<string, string>): Git {
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: RESOLVE_GIT_TIMEOUT_MS,
+        timeout: timeoutMs,
       });
       return {
         ok: result.exitCode === 0,
@@ -167,6 +176,61 @@ export function loadProjectConfig(checkout: Checkout, pluginVersion?: string): P
     configFile = config === null ? null : main;
   }
   return { ...checkout, config, configFile };
+}
+
+/** Where the project's file sits inside a commit. */
+export const CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
+
+/** What `readCommittedConfig` found on one branch: the file, or why there is none to read. */
+export type CommittedConfig =
+  | { found: true; config: CcSmartDevKitConfig; where: string }
+  | { found: false; why: string; where: string };
+
+export interface CommittedOptions {
+  /** The environment git runs with. Default: process.env. */
+  env?: Record<string, string | undefined>;
+  /** How long each git call may take. Default: `RESOLVE_GIT_TIMEOUT_MS`. */
+  timeoutMs?: number;
+  /** The plugin version to check `requires` against. Default: this build's version. */
+  pluginVersion?: string;
+}
+
+/**
+ * The project's cc-smart-dev-kit.json **as committed on `origin/<branch>`**: read with git alone
+ * (`rev-parse`, then `cat-file`), never the working copy of any checkout, so a session cannot
+ * change what it says by editing a file. Nothing is fetched: the ref is as fresh as the last
+ * fetch, so a policy change counts once it is pushed and fetched.
+ *
+ * `found: false` when the ref is not there (no `origin`, a branch never fetched, a fork) or the
+ * commit has no such file: the caller asks the person rather than guess. A committed file that
+ * cannot be used throws as `loadProjectConfig` does (CcSmartDevKitVersionError for a `requires`
+ * this plugin does not meet, CcSmartDevKitConfigError for invalid text), naming `where`.
+ */
+export function readCommittedConfig(
+  checkout: Checkout,
+  branch: string,
+  options: CommittedOptions = {},
+): CommittedConfig {
+  const ref = `origin/${branch}`;
+  const where = `${ref}:${CONFIG_PATH}`;
+  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
+  if (!commit.ok) {
+    return {
+      found: false,
+      where,
+      why: `${ref} is not known in this repository (no origin, or the branch was never fetched)`,
+    };
+  }
+  const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
+  if (!blob.ok) return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
+  const text = git(["cat-file", "blob", blob.stdout.trim()]);
+  if (!text.ok) return { found: false, where, why: `git could not read ${where}` };
+  return {
+    found: true,
+    where,
+    config: parseCcSmartDevKitConfig(text.stdout, where, options.pluginVersion),
+  };
 }
 
 /**

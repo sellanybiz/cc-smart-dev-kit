@@ -36,10 +36,13 @@ it removes the worktree of the subagent that stopped, and which worktrees a proj
 the project's decision, so it stays wired by the project.
 
 **A plugin SubagentStop hook that touches no worktree is fine** (today: `review-record`
-only). It can be silent for a project that never opted in, it removes nothing, and no other
-SubagentStop hook competes with it. `entries.test.ts` fails when `hooks.json` wires
-WorktreeCreate, WorktreeRemove, or a SubagentStop entry that runs anything but
-`review-record` — so `subagent-stop` can never creep in.
+only, which also runs on SubagentStart to note the commit a review agent starts on, and
+records a review at the stop only when HEAD is still that commit). It can be silent for a
+project that never opted in, it removes nothing, and no other SubagentStop hook competes with
+it. `entries.test.ts` fails when `hooks.json` wires WorktreeCreate, WorktreeRemove, or a
+SubagentStart or SubagentStop entry that runs anything but `review-record` — so
+`subagent-stop` can never creep in. The review gate it feeds stops mistakes, not a same-user
+process set on getting past it (`docs/design.md` § The review record).
 
 ## The plugin's hooks: shell form, through the bun shim
 

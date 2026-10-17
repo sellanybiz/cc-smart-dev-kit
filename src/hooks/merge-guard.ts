@@ -15,7 +15,20 @@
  *   required check counts as passing, which is GitHub's own rule for a merge);
  * - with `reviewBeforePush` on, the pull request's **head commit** has a recorded review,
  *   written by the review agent's own end (`src/hooks/review-record.ts`,
- *   `src/workflow/reviews.ts`).
+ *   `src/workflow/reviews.ts`) — by an agent `reviewAgents` names, or by the person by hand.
+ *
+ * **The policy is the one committed on the pull request's base.** Every value it judges with —
+ * `autoMerge`, `reviewBeforePush`, `reviewAgents`, `worktrees.base` and `worktrees.bases`, and
+ * whether `ownHooks` hands the merge to the project's own guard — comes from the built-in
+ * default, the person's own `workflow.json`, and `.claude/cc-smart-dev-kit.json` as committed on
+ * `origin/<base>` (`resolveGate`), never a checkout's working copy: a session can edit its own
+ * worktree's file, but not what a branch it cannot push to says. Nothing is fetched, so a policy
+ * change counts once it is pushed and fetched; a ref or a file that is not there asks. Before
+ * any gh call the guard reads the base this checkout names (`worktrees.base`), so `autoMerge`
+ * off still asks without gh; once gh names the pull request's base, that base's file judges it.
+ *
+ * These checks stop mistakes, not a process that sets out to get past them: anything that runs
+ * as the person can write the person's own files (`docs/design.md` § The review record).
  *
  * **And only for this project's own repository.** A merge that names another one
  * (`--repo`/`-R`, or a `gh api` path) always asks: the policy is about the repository the
@@ -51,7 +64,7 @@
 import type { CcSmartDevKitConfig } from "../project/config";
 import type { Project } from "../project/resolve";
 import { autoMergeOff, autoMergeRefusal } from "../workflow/auto-merge";
-import { type ResolvedWorkflow, resolveWorkflow } from "../workflow/resolve";
+import { type GateRead, resolveGate } from "../workflow/resolve";
 import { hasReview, reviewsFile } from "../workflow/reviews";
 import {
   type MergeCall,
@@ -205,6 +218,21 @@ export function mergeRefusal(facts: MergeFacts): string | null {
 export function notByItself(reason: string, number: null | number = null): string {
   const which = number === null ? "this pull request" : `#${number}`;
   return `cc-smart-dev-kit will not merge ${which} by itself: ${reason}. Approve the merge yourself if you meant it.`;
+}
+
+/**
+ * Why the guard cannot judge with the policy committed on `branch`: its ref, its file, or the
+ * file's content cannot be used. A policy counts once it is pushed and fetched — the guard
+ * fetches nothing itself — so that is the way out the question names.
+ */
+export function policyUnread(branch: string, why: string): string {
+  return `the merge policy committed on ${branch} cannot be read: ${why}; a policy counts once it is committed, pushed and fetched`;
+}
+
+/** Why the guard cannot judge when the person's own workflow file cannot be read. */
+function workflowUnread(error: unknown): string {
+  // The person's own workflow file cannot be read, so whether autoMerge is on is unknown.
+  return `the workflow settings cannot be read (${error instanceof Error ? error.message : String(error)})`;
 }
 
 /**
@@ -392,19 +420,6 @@ export function mergeGuard(context: HookContext): HookResult {
     return toolDecision("ask", notByItself(adminRefusal(admin.target?.ref ?? null)));
   }
 
-  let resolved: ResolvedWorkflow;
-  try {
-    resolved = resolveWorkflow(paths, config);
-  } catch (error) {
-    // The person's own workflow file cannot be read, so whether autoMerge is on is unknown.
-    const why = error instanceof Error ? error.message : String(error);
-    return toolDecision("ask", notByItself(`the workflow settings cannot be read (${why})`));
-  }
-  // The policy first: it needs no gh, so a machine without gh hears the real reason — and a
-  // command the guard cannot judge at all costs no gh call either.
-  const off = autoMergeOff(resolved);
-  if (off !== null) return toolDecision("ask", notByItself(off));
-
   // One deadline for the whole run (fix: a killed hook blocks nothing, so an overrun is
   // fail-open). Every call gets its own limit or what is left of the budget, whichever is
   // smaller; when too little is left for the next one, the guard asks instead.
@@ -412,6 +427,39 @@ export function mergeGuard(context: HookContext): HookResult {
   const budgetAt = startedAt + budgetMs(env);
   const timeFor = (limitMs: number): number =>
     Math.min(limitMs, budgetAt - Date.now() - BUDGET_MARGIN_MS);
+
+  // The review gate, read as committed on a branch — never this checkout's own copy of the
+  // file, which a session can edit (`resolveGate`). One read per branch per run.
+  const gates = new Map<string, GateRead>();
+  const gateOf = (branch: string): GateRead | "late" => {
+    const known = gates.get(branch);
+    if (known !== undefined) return known;
+    const left = timeFor(GUARD_GIT_TIMEOUT_MS);
+    if (left <= 0) return "late";
+    const read = resolveGate(paths, project, branch, { env, timeoutMs: left });
+    gates.set(branch, read);
+    return read;
+  };
+
+  // The policy first, from the base this checkout names: it needs no gh, so a machine without
+  // gh hears the real reason — and a command the guard cannot judge at all costs no gh call
+  // either. The pull request's own base is read again below, once gh has named it.
+  const integration = config.worktrees?.base ?? null;
+  if (integration !== null) {
+    let early: GateRead | "late";
+    try {
+      early = gateOf(integration);
+    } catch (error) {
+      return toolDecision("ask", notByItself(workflowUnread(error)));
+    }
+    if (early === "late")
+      return toolDecision("ask", notInTime(`the policy committed on ${integration}`));
+    if (!early.ok) return toolDecision("ask", notByItself(policyUnread(integration, early.why)));
+    // The project runs its own merge guard, as its committed policy says: that one answers.
+    if (early.gate.config?.ownHooks?.includes("merge-guard") === true) return SILENT;
+    const off = autoMergeOff(early.gate.resolved, integration);
+    if (off !== null) return toolDecision("ask", notByItself(off));
+  }
 
   // Every merge the command runs, in order, its aliases read when a `gh <word>` needs them.
   // A `--disable-auto` takes an armed merge back: it merges nothing, so it is not judged.
@@ -450,6 +498,20 @@ export function mergeGuard(context: HookContext): HookResult {
     if (view === null) {
       return toolDecision("ask", notChecked("the pull request this command names", env));
     }
+    // The policy that judges this pull request: the one committed on its own base.
+    let read: GateRead | "late";
+    try {
+      read = gateOf(view.base);
+    } catch (error) {
+      return toolDecision("ask", notByItself(workflowUnread(error), view.number));
+    }
+    if (read === "late") {
+      return toolDecision("ask", notInTime(`the policy committed on ${view.base}`));
+    }
+    if (!read.ok) {
+      return toolDecision("ask", notByItself(policyUnread(view.base, read.why), view.number));
+    }
+    const { resolved, config: committed } = read.gate;
     // The default branch is a fact of the repository: read once for a command that merges
     // several pull requests of the same one.
     const where = target.repo ?? "";
@@ -464,7 +526,7 @@ export function mergeGuard(context: HookContext): HookResult {
     if (defaultBranch === null) {
       return toolDecision("ask", notChecked("this repository's default branch", env));
     }
-    const branchRefusal = autoMergeRefusal(resolved, config, view.base, defaultBranch);
+    const branchRefusal = autoMergeRefusal(resolved, committed, view.base, defaultBranch);
     let checks: RequiredCheck[] | null = null;
     if (branchRefusal === null) {
       const checksLeft = timeFor(GH_TIMEOUT_MS);
@@ -477,9 +539,11 @@ export function mergeGuard(context: HookContext): HookResult {
       }
     }
     const repository = project.mainCheckout ?? project.root;
+    // A record counts only when an agent the committed `reviewAgents` names wrote it, or the
+    // person did by hand: a list a session edits in its own checkout trusts no one (`hasReview`).
     const reviewed =
       !resolved.reviewBeforePush.value ||
-      hasReview(reviewsFile(paths.stateDir, repository), view.headOid);
+      hasReview(reviewsFile(paths.stateDir, repository), view.headOid, resolved.reviewAgents.value);
 
     const reason = mergeRefusal({
       branchRefusal,

@@ -103,7 +103,15 @@ exit 1
   return dir;
 }
 
-/** The origin remote every `ready` repo has: the project's own repository, compared case-insensitively. */
+/** The policy is off, read from the project's file committed on `origin/dev`. */
+const OFF_IN_PROJECT =
+  'autoMerge is off (project, committed on origin/dev): turn it on in .claude/cc-smart-dev-kit.json ("workflow": {"autoMerge": true}), commit it to dev and push';
+
+/** The policy is off because nothing turns it on: the built-in default. */
+const OFF_BY_DEFAULT =
+  'autoMerge is off (default): turn it on in .claude/cc-smart-dev-kit.json ("workflow": {"autoMerge": true}), commit it to dev and push';
+
+/** The origin remote every `ready` repo has:the project's own repository, compared case-insensitively. */
 const ORIGIN = "git@github.com:Example-Org/App.git";
 
 /**
@@ -134,15 +142,53 @@ function envWithGh(gh: string | null, withoutGh = false): Record<string, string>
   return { ...env, PATH: bin ?? "" };
 }
 
-/** A recorded review for `sha`, written by hand into the state folder of `env`. */
-function recordReviewHere(env: Record<string, string>, repo: string, sha: string): void {
+/**
+ * A recorded review for `sha`, written by hand into the state folder of `env`, as the
+ * review-record hook writes one: by the agent `by` (the plugin's reviewer by default).
+ */
+function recordReviewHere(
+  env: Record<string, string>,
+  repo: string,
+  sha: string,
+  by = "cc-smart-dev-kit:reviewer",
+): void {
   const file = join(
     cliPaths(env).stateDir,
     "reviews",
     `${createHash("sha256").update(repo).digest("hex").slice(0, 16)}.json`,
   );
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify({ [sha]: "2026-10-16T10:00:00.000Z" }, null, 2)}\n`);
+  writeFileSync(
+    file,
+    `${JSON.stringify({ [sha]: { at: "2026-10-16T10:00:00.000Z", by: [by] } }, null, 2)}\n`,
+  );
+}
+
+/**
+ * Commits the project's file in `repo` and points `origin/<branch>` at that commit for every
+ * branch named: the policy as committed on a pull request's base is what the guard reads
+ * (`resolveGate`), never the working copy. A plain ref, no fetch: the guard fetches nothing.
+ */
+function commitConfig(repo: string, config: unknown, branches: Iterable<string>): void {
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
+  git(repo, "add", ".claude/cc-smart-dev-kit.json");
+  git(repo, "commit", "-q", "-m", "the project's policy");
+  for (const branch of branches) git(repo, "update-ref", `refs/remotes/origin/${branch}`, "HEAD");
+}
+
+/** Every branch a fixture's policy and answers name: each gets an `origin/<branch>` ref. */
+function branchesOf(config: unknown, over: Record<string, string>): Set<string> {
+  const branches = new Set(["main"]);
+  const worktrees = (config as { worktrees?: { base?: string; bases?: Record<string, string> } })
+    .worktrees;
+  if (worktrees?.base !== undefined) branches.add(worktrees.base);
+  for (const target of Object.values(worktrees?.bases ?? {})) branches.add(target);
+  for (const [name, json] of Object.entries(answers(over))) {
+    if (!name.startsWith("view") || json === "") continue;
+    const base = (JSON.parse(json) as { baseRefName?: unknown }).baseRefName;
+    if (typeof base === "string") branches.add(base);
+  }
+  return branches;
 }
 
 /** The input Claude Code sends for one Bash command. */
@@ -188,9 +234,11 @@ function ghCalls(gh: string): string[] {
 }
 
 /**
- * A repo that opted in, with a fake gh beside it and every answer already right. `withOrigin`:
- * give it an `origin` remote naming `ORIGIN`, which a merge that carries `--repo` is compared
- * against (a repo without one cannot be compared, and such a merge asks).
+ * A repo that opted in, with a fake gh beside it and every answer already right: the
+ * project's file committed, and `origin/<branch>` at that commit for every branch the policy
+ * and the answers name. `withOrigin`: give it an `origin` remote naming `ORIGIN`, which a
+ * merge that carries `--repo` is compared against (a repo without one cannot be compared,
+ * and such a merge asks).
  */
 function ready(
   config: unknown = CONFIG,
@@ -200,7 +248,7 @@ function ready(
 ): { env: Record<string, string>; gh: string; repo: string } {
   const repo = makeRepo();
   if (withOrigin) git(repo, "remote", "add", "origin", ORIGIN);
-  writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
+  commitConfig(repo, config, branchesOf(config, over));
   const gh = fakeGh(answers(over));
   const env = envWithGh(gh, withoutGh);
   return { env, gh, repo };
@@ -302,10 +350,7 @@ describe("every condition that asks", () => {
     const { env, gh, repo } = ready({ ...CONFIG, workflow: { autoMerge: false } });
     const result = await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env);
     expect(result).toEqual({
-      stdout: willNotMerge(
-        "this pull request",
-        "autoMerge is off (project): turn it on with `cc-smart-dev-kit workflow set autoMerge true --project`",
-      ),
+      stdout: willNotMerge("this pull request", OFF_IN_PROJECT),
     });
     expect(ghCalls(gh)).toEqual([]);
   });
@@ -316,10 +361,7 @@ describe("every condition that asks", () => {
       worktrees: { base: "dev", prefix: "app-wt-" },
     });
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
-      stdout: willNotMerge(
-        "this pull request",
-        "autoMerge is off (default): turn it on with `cc-smart-dev-kit workflow set autoMerge true --project`",
-      ),
+      stdout: willNotMerge("this pull request", OFF_BY_DEFAULT),
     });
   });
 
@@ -454,10 +496,7 @@ describe("every condition that asks", () => {
   test("an armed merge (--auto) is judged the same way", async () => {
     const { env, repo } = ready({ ...CONFIG, workflow: { autoMerge: false } });
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge --auto 7"), env)).toEqual({
-      stdout: willNotMerge(
-        "this pull request",
-        "autoMerge is off (project): turn it on with `cc-smart-dev-kit workflow set autoMerge true --project`",
-      ),
+      stdout: willNotMerge("this pull request", OFF_IN_PROJECT),
     });
   });
 });
@@ -989,6 +1028,7 @@ describe("the guard's own deadline", () => {
   test("no time left for the first call: asks in time, and runs nothing", async () => {
     // A test sets the budget (`GUARD_BUDGET_ENV`); a hook never does. Below the margin there
     // is no time for any call at all, so the guard must ask — never overrun the hook's 30 s.
+    // The first read is the policy committed on the base (local git, before any gh call).
     const { env, gh, repo } = ready();
     recordReviewHere(env, repo, HEAD);
     const result = await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), {
@@ -997,7 +1037,7 @@ describe("the guard's own deadline", () => {
     });
     expect(result).toEqual({
       stdout: ask(
-        "cc-smart-dev-kit could not check this merge in time: reading the pull request this command names would have taken longer than the guard's own budget allows. Approve the merge yourself if it is right.",
+        "cc-smart-dev-kit could not check this merge in time: reading the policy committed on dev would have taken longer than the guard's own budget allows. Approve the merge yourself if it is right.",
       ),
     });
     expect(ghCalls(gh)).toEqual([]);
@@ -1164,6 +1204,161 @@ describe("a merge with --admin always asks, whatever the policy says", () => {
   ])("%j: no merge, so silent, and gh is not called", async (command) => {
     const { env, gh, repo } = ready(CONFIG, FIVE_AND_SIX);
     expect(await runHook(mergeGuardHook, input(repo, command), env)).toEqual({});
+    expect(ghCalls(gh)).toEqual([]);
+  });
+});
+
+describe("the review gate is read as committed on the pull request's base (CM-1)", () => {
+  /** A worktree of `repo` whose own copy of the project's file says `config`, uncommitted. */
+  function worktreeSaying(repo: string, config: unknown): string {
+    const worktree = join(repo, "..", "app-wt-session");
+    git(repo, "worktree", "add", "-q", "-b", "session-branch", worktree);
+    writeClaudeFile(worktree, "cc-smart-dev-kit.json", config);
+    return worktree;
+  }
+
+  /** The reason the guard asked with, or null when it was silent. */
+  async function reasonFor(env: Record<string, string>, cwd: string): Promise<string | null> {
+    const result = await runHook(mergeGuardHook, input(cwd, "gh pr merge 7"), env);
+    if (result.stdout === undefined) return null;
+    return JSON.parse(result.stdout).hookSpecificOutput.permissionDecisionReason;
+  }
+
+  const NO_REVIEW =
+    "the head commit aaaaaaa has no recorded review (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)";
+
+  test("CM-1: a worktree's own uncommitted config cannot switch the review gate off", async () => {
+    const { env, repo } = ready();
+    const worktree = worktreeSaying(repo, {
+      ...CONFIG,
+      workflow: { autoMerge: true, reviewBeforePush: false },
+    });
+    expect(await runHook(mergeGuardHook, input(worktree, "gh pr merge 7"), env)).toEqual({
+      stdout: willNotMerge("#7", NO_REVIEW),
+    });
+  });
+
+  test("CM-1: a worktree's own uncommitted autoMerge does not turn the gate on", async () => {
+    const { env, gh, repo } = ready({ ...CONFIG, workflow: { autoMerge: false } });
+    recordReviewHere(env, repo, HEAD);
+    const worktree = worktreeSaying(repo, CONFIG);
+    expect(await runHook(mergeGuardHook, input(worktree, "gh pr merge 7"), env)).toEqual({
+      stdout: willNotMerge("this pull request", OFF_IN_PROJECT),
+    });
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("CM-1: a worktree's own reviewAgents cannot make another agent's record count", async () => {
+    const { env, repo } = ready();
+    recordReviewHere(env, repo, HEAD, "general-purpose");
+    const worktree = worktreeSaying(repo, {
+      ...CONFIG,
+      workflow: { autoMerge: true, reviewAgents: ["general-purpose"] },
+    });
+    expect(await runHook(mergeGuardHook, input(worktree, "gh pr merge 7"), env)).toEqual({
+      stdout: willNotMerge("#7", NO_REVIEW),
+    });
+  });
+
+  test("CM-1: an uncommitted change in the main checkout itself counts for nothing either", async () => {
+    const { env, repo } = ready();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...CONFIG,
+      workflow: { autoMerge: true, reviewBeforePush: false },
+    });
+    expect(await reasonFor(env, repo)).toBe(
+      `cc-smart-dev-kit will not merge #7 by itself: ${NO_REVIEW}. Approve the merge yourself if you meant it.`,
+    );
+  });
+
+  test("CM-1: the committed reviewAgents decides whose record counts", async () => {
+    const { env, repo } = ready({
+      ...CONFIG,
+      workflow: { autoMerge: true, reviewAgents: ["fresh-eyes"] },
+    });
+    recordReviewHere(env, repo, HEAD, "fresh-eyes");
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
+  });
+
+  test("HK-6: another plugin's reviewer recorded the commit: asks", async () => {
+    const { env, repo } = ready();
+    recordReviewHere(env, repo, HEAD, "other-plugin:reviewer");
+    expect(await reasonFor(env, repo)).toContain("has no recorded review");
+  });
+
+  test("CM-1: a record the person made by hand counts whatever the list", async () => {
+    const { env, repo } = ready();
+    recordReviewHere(env, repo, HEAD, "workflow review-done");
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
+  });
+
+  test("CM-1: a policy change counts once it is committed on the base", async () => {
+    const { env, repo } = ready();
+    commitConfig(repo, { ...CONFIG, workflow: { autoMerge: true, reviewBeforePush: false } }, [
+      "dev",
+    ]);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
+  });
+
+  test("CM-1: no origin/<base> to read the policy from: asks, naming it, and reads nothing with gh", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const gh = fakeGh(answers());
+    const env = envWithGh(gh);
+    recordReviewHere(env, repo, HEAD);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: willNotMerge(
+        "this pull request",
+        "the merge policy committed on dev cannot be read: origin/dev is not known in this repository (no origin, or the branch was never fetched); a policy counts once it is committed, pushed and fetched",
+      ),
+    });
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("CM-1: a base with no committed project file: asks", async () => {
+    const repo = makeRepo();
+    git(repo, "update-ref", "refs/remotes/origin/dev", "HEAD");
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const gh = fakeGh(answers());
+    const env = envWithGh(gh);
+    recordReviewHere(env, repo, HEAD);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: willNotMerge(
+        "this pull request",
+        "the merge policy committed on dev cannot be read: origin/dev has no .claude/cc-smart-dev-kit.json committed; a policy counts once it is committed, pushed and fetched",
+      ),
+    });
+  });
+
+  test("CM-1: a committed file that needs a newer plugin: asks, naming it", async () => {
+    const { env, repo } = ready({ ...CONFIG, requires: ">=99" });
+    // The working copy is usable; only the committed one is too new.
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    expect(await reasonFor(env, repo)).toStartWith(
+      "cc-smart-dev-kit will not merge this pull request by itself: the merge policy committed on dev cannot be read: origin/dev:.claude/cc-smart-dev-kit.json: this project needs cc-smart-dev-kit >=99",
+    );
+  });
+
+  test("CM-1: the pull request's own base is read: a base whose committed file is missing asks", async () => {
+    const { env, repo } = ready(CONFIG, {
+      view: JSON.stringify({ baseRefName: "feature/x", headRefOid: HEAD, number: 7 }),
+    });
+    // feature/x has a ref, but at the first commit, before the project's file.
+    git(repo, "update-ref", "refs/remotes/origin/feature/x", "HEAD~1");
+    recordReviewHere(env, repo, HEAD);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: willNotMerge(
+        "#7",
+        "the merge policy committed on feature/x cannot be read: origin/feature/x has no .claude/cc-smart-dev-kit.json committed; a policy counts once it is committed, pushed and fetched",
+      ),
+    });
+  });
+
+  test("CM-1: the base's committed file lists merge-guard in ownHooks: the project's copy answers", async () => {
+    const { env, gh, repo } = ready({ ...CONFIG, ownHooks: ["merge-guard"] });
+    // The working copy does not list it: the committed policy decides.
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
     expect(ghCalls(gh)).toEqual([]);
   });
 });

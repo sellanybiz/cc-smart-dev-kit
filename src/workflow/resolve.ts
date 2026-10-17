@@ -10,6 +10,10 @@
  * 3. **the built-in default** — the safe one (nothing is committed, pushed or merged by
  *    itself), from `schema.ts`.
  *
+ * **The review gate** (`REVIEW_GATE_KEYS`, what the merge guard judges with) resolves the same
+ * way, with one change of source: the project's part is the file as committed on a branch
+ * (`resolveGate`), never a checkout's working copy, which a session can edit.
+ *
  * A **switch** is different on purpose: it names a setting that already exists — the status
  * line in Claude Code's `settings.json` (setup's `--statusline`), the project's
  * `sessionNames`, its `jobs.route`, and the update hold file (`update --hold`). The value
@@ -26,6 +30,12 @@ import { existsSync, readFileSync } from "node:fs";
 import type { CliPaths } from "../cli/paths";
 import { statuslineSetting } from "../cli/setup";
 import type { CcSmartDevKitConfig } from "../project/config";
+import {
+  type Checkout,
+  type CommittedConfig,
+  type CommittedOptions,
+  readCommittedConfig,
+} from "../project/resolve";
 import { isHeld, updateFiles } from "../update/state";
 import {
   type AlertEvent,
@@ -182,6 +192,61 @@ function current<T>(value: T, source: WorkflowSource): ResolvedValue<T> {
 /** The project's value of a boolean field that lives in `.claude/cc-smart-dev-kit.json`. */
 function projectFlag(value: boolean | undefined): ResolvedValue<boolean> {
   return value === undefined ? current(false, "default") : current(value, "project");
+}
+
+/**
+ * Where a value came from, as a person reads it: `project, committed on origin/dev` when the
+ * project's part was read from a branch's committed file (`resolveGate`), else the bare source.
+ */
+export function sourceLabel(value: ResolvedValue<unknown>, branch: string | null): string {
+  return value.source === "project" && branch !== null
+    ? `project, committed on origin/${branch}`
+    : value.source;
+}
+
+/**
+ * The review gate (`REVIEW_GATE_KEYS`) as the merge guard reads it: the built-in default, the
+ * person's own file, and the project's file **as committed on `origin/<branch>`**, never the
+ * working copy of a checkout. A session can edit its own worktree's file; it cannot change
+ * what a branch it has not pushed to says.
+ */
+export interface Gate {
+  /** The branch whose committed file holds the project's part; null when none was named. */
+  branch: string | null;
+  /** That committed file; null when no branch was named. */
+  config: CcSmartDevKitConfig | null;
+  /** Every value, resolved over that committed file. */
+  resolved: ResolvedWorkflow;
+}
+
+/** The gate, or why it cannot be read (the caller asks the person). */
+export type GateRead = { ok: true; gate: Gate } | { ok: false; why: string };
+
+/**
+ * The gate for `branch`. With `branch` null (the project names no `worktrees.base`), only the
+ * default and the person's file count. A ref or a file that is not there, or a committed file
+ * that cannot be used, is `ok: false` with the reason; a broken personal file throws
+ * `WorkflowConfigError`, as `resolveWorkflow` does.
+ */
+export function resolveGate(
+  paths: CliPaths,
+  checkout: Checkout,
+  branch: string | null,
+  options: CommittedOptions = {},
+): GateRead {
+  if (branch === null) {
+    return { ok: true, gate: { branch, config: null, resolved: resolveWorkflow(paths, null) } };
+  }
+  let committed: CommittedConfig;
+  try {
+    committed = readCommittedConfig(checkout, branch, options);
+  } catch (error) {
+    // A committed file too new or broken, or no git at all: the gate is unknown, never guessed.
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+  if (!committed.found) return { ok: false, why: committed.why };
+  const resolved = resolveWorkflow(paths, committed.config);
+  return { ok: true, gate: { branch, config: committed.config, resolved } };
 }
 
 /**

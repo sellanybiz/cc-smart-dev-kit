@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
+import { hookEnv, makeClone, runHook, wireProjectHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import {
   clearWorktreeNote,
@@ -14,6 +14,7 @@ import {
   sameRepository,
   tellSessionsNote,
 } from "./after-merge";
+import { projectHookSettings } from "./project-wiring";
 import { afterMergeHook } from "./specs";
 
 describe("did the command merge a pull request?", () => {
@@ -323,7 +324,7 @@ describe("the hook", () => {
       stdout: JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "PostToolUse",
-          additionalContext: `${clearWorktreeNote(worktree, "fix/a")}\n\n${tellSessionsNote(pr, "main")}`,
+          additionalContext: `${clearWorktreeNote(worktree, "fix/a", false)}\n\n${tellSessionsNote(pr, "main")}`,
         },
       }),
     });
@@ -375,13 +376,55 @@ describe("the hook", () => {
         "Merged several pull requests this turn? Send each session one message, naming every merged number.",
       ].join("\n"),
     );
-    expect(clearWorktreeNote("/code/app-wt-fix-a", "fix/a")).toBe(
+    expect(clearWorktreeNote("/code/app-wt-fix-a", "fix/a", true)).toBe(
       [
         "That merged the pull request of this worktree's branch, fix/a. Clear the worktree now, unless the user wants more work on this branch:",
         'ExitWorktree with action "remove" and discard_changes true. Claude Code cannot check a worktree outside the repo, so the cc-smart-dev-kit hook does: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.',
-        'If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: git worktree remove "/code/app-wt-fix-a", then git branch -d fix/a.',
+        'If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: cc-smart-dev-kit worktrees --remove "/code/app-wt-fix-a" — it removes the folder and the branch only when the worktree is finished.',
       ].join("\n"),
     );
+    expect(clearWorktreeNote("/code/app-wt-fix-a", "fix/a", false)).toBe(
+      [
+        "That merged the pull request of this worktree's branch, fix/a. Clear the worktree now, unless the user wants more work on this branch:",
+        "ExitWorktree with action \"remove\", without discard_changes: no cc-smart-dev-kit hook removes this project's worktrees, so Claude Code's own check is what keeps uncommitted work, and it refuses when there is some.",
+        'If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: cc-smart-dev-kit worktrees --remove "/code/app-wt-fix-a" — it removes the folder and the branch only when the worktree is finished.',
+      ].join("\n"),
+    );
+  });
+
+  /** The note the hook gave after `gh pr merge --squash` in the worktree. */
+  async function noteAfterMerge(cwd: string, env: Record<string, string>): Promise<string> {
+    const result = await runHook(afterMergeHook, ran(cwd, "gh pr merge --squash"), env);
+    return JSON.parse(result.stdout ?? "{}").hookSpecificOutput?.additionalContext ?? "";
+  }
+
+  test("HK-1: the engine's worktree-remove not wired: the note never offers discard_changes", async () => {
+    const { worktree } = project();
+    const note = await noteAfterMerge(join(worktree, "src"), fakeGh(merged));
+    expect(note).toContain("Clear the worktree now");
+    expect(note).not.toContain("discard_changes true");
+  });
+
+  test("HK-1: a project hook of its own on WorktreeRemove is not the plugin's: no discard_changes", async () => {
+    const { repo, worktree } = project();
+    wireProjectHook(repo, "WorktreeRemove");
+    const note = await noteAfterMerge(join(worktree, "src"), fakeGh(merged));
+    expect(note).not.toContain("discard_changes true");
+  });
+
+  test("HK-1: the plugin's worktree-remove wired in the project: discard_changes true is offered", async () => {
+    const { repo, worktree } = project();
+    writeClaudeFile(repo, "settings.json", projectHookSettings());
+    const note = await noteAfterMerge(join(worktree, "src"), fakeGh(merged));
+    expect(note).toContain('ExitWorktree with action "remove" and discard_changes true.');
+  });
+
+  test("HK-1: wired in the folder the session started in (CLAUDE_PROJECT_DIR), the same", async () => {
+    const { worktree } = project();
+    const started = tempDir("session-start");
+    writeClaudeFile(started, "settings.json", projectHookSettings());
+    const env = { ...fakeGh(merged), CLAUDE_PROJECT_DIR: started };
+    expect(await noteAfterMerge(join(worktree, "src"), env)).toContain("discard_changes true.");
   });
 
   test("a command that merges nothing never asks gh", async () => {
@@ -414,7 +457,7 @@ describe("the hook", () => {
       env,
     );
     expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toBe(
-      `${clearWorktreeNote(worktree, "fix/a")}\n\n${tellSessionsNote(pr, "main")}`,
+      `${clearWorktreeNote(worktree, "fix/a", false)}\n\n${tellSessionsNote(pr, "main")}`,
     );
     expect(readFileSync(env.GH_LOG ?? "", "utf8")).toBe(
       "pr view --repo example-org/app --json number,title,baseRefName,headRefName,state,url,mergedAt\n",
