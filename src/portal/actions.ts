@@ -31,7 +31,7 @@ import type { CliPaths } from "../cli/paths";
 import { runUpdate } from "../cli/update";
 import { listModels, probeModel } from "../gateway/backends";
 import { type GatewayContext, runGateway } from "../gateway/commands";
-import { loadConfigFile, messageOf } from "../gateway/config";
+import { fallbackOn, loadConfigFile, messageOf } from "../gateway/config";
 import { testJudgeTarget } from "../gateway/judge-test";
 import { isModelSlot, JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";
 import { runJobCommand } from "../jobs/commands";
@@ -133,6 +133,11 @@ export interface PortalMemory {
   fallback: Record<string, string[]>;
   /** The judge chain when it was last saved: what the judge switch turns on again. */
   judge: string[];
+  /**
+   * The fallback switch each of those slots had when its chain was remembered, by slot key:
+   * `slot <x> off` drops the switch with the chain, so On puts this back too.
+   */
+  switches: Record<string, boolean>;
   version: 1;
 }
 
@@ -141,7 +146,7 @@ export function memoryFile(paths: CliPaths): string {
 }
 
 export function emptyMemory(): PortalMemory {
-  return { fallback: {}, judge: [], version: 1 };
+  return { fallback: {}, judge: [], switches: {}, version: 1 };
 }
 
 /** What the file holds, or nothing when it is not there or not readable. */
@@ -153,7 +158,12 @@ export function parseMemory(text: string): PortalMemory {
     return emptyMemory();
   }
   if (typeof raw !== "object" || raw === null) return emptyMemory();
-  const body = raw as { fallback?: unknown; judge?: unknown; version?: unknown };
+  const body = raw as {
+    fallback?: unknown;
+    judge?: unknown;
+    switches?: unknown;
+    version?: unknown;
+  };
   if (body.version !== 1) return emptyMemory();
   const judge = Array.isArray(body.judge)
     ? body.judge.filter((entry): entry is string => typeof entry === "string")
@@ -166,7 +176,13 @@ export function parseMemory(text: string): PortalMemory {
       }
     }
   }
-  return { fallback, judge, version: 1 };
+  const switches: Record<string, boolean> = {};
+  if (typeof body.switches === "object" && body.switches !== null) {
+    for (const [slot, on] of Object.entries(body.switches as Record<string, unknown>)) {
+      if (typeof on === "boolean") switches[slot] = on;
+    }
+  }
+  return { fallback, judge, switches, version: 1 };
 }
 
 /** The file's text, or nothing: a missing or unreadable one is the default. */
@@ -391,16 +407,43 @@ async function saveSlot(
 }
 
 /**
- * A saved chain the switches can turn on again. Only the three that can be off, and always
- * under the **slot key** (`cc-smart-dev-kit-opus`) — the same key `switchFallback` reads and
- * the same key the config uses. Storing it under the family (`opus`) instead was the bug: the
- * switch then found nothing and turned nothing on.
+ * A saved chain the switches can turn on again, with the slot's fallback switch as the config
+ * holds it now. Only the three the switches turn off, and always under the **slot key**
+ * (`cc-smart-dev-kit-opus`) — the same key `switchModels` reads and the same key the config
+ * uses. Storing it under the family (`opus`) instead was the bug: the switch then found
+ * nothing and turned nothing on.
  */
 function rememberChain(action: ActionContext, slot: string, targets: string[]): void {
   if (slot === JUDGE_SLOT) action.memory.judge = targets;
   else if (isModelSlot(slot)) action.memory.fallback[slot] = targets;
   else return;
+  const fallback = currentFallback(action, slot);
+  if (fallback !== null) action.memory.switches[slot] = fallback;
   writeMemory(action.portal.paths, action.memory);
+}
+
+/** The fallback switch the config gives a slot right now; null with no config. */
+function currentFallback(action: ActionContext, slot: string): boolean | null {
+  try {
+    return fallbackOn(loadConfigFile(action.portal.paths.gatewayConfigFile), slot);
+  } catch {
+    // No config, or one that cannot be read: there is no switch to remember.
+    return null;
+  }
+}
+
+/**
+ * After a switch put a remembered chain back: its remembered fallback switch too, through
+ * `gateway fallback`, when the config does not already hold it. The lines it printed.
+ */
+async function restoreFallback(action: ActionContext, slot: string): Promise<ActionResult> {
+  const wanted = Object.hasOwn(action.memory.switches, slot)
+    ? action.memory.switches[slot]
+    : undefined;
+  if (wanted === undefined || currentFallback(action, slot) === wanted) {
+    return { lines: [], ok: true };
+  }
+  return gateway(action, ["fallback", slot, wanted ? "on" : "off"]);
 }
 
 /**
@@ -451,7 +494,10 @@ async function switchJudge(action: ActionContext, on: boolean): Promise<ActionRe
       ok: false,
     };
   }
-  return gateway(action, ["slot", "judge", action.memory.judge.join(",")]);
+  const set = await gateway(action, ["slot", "judge", action.memory.judge.join(",")]);
+  if (!set.ok) return set;
+  const fallback = await restoreFallback(action, JUDGE_SLOT);
+  return { lines: [...set.lines, ...fallback.lines], ok: fallback.ok };
 }
 
 /**
@@ -491,9 +537,13 @@ async function switchModels(action: ActionContext, on: boolean): Promise<ActionR
       continue;
     }
     const result = await gateway(action, ["slot", slot, targets.join(",")]);
-    if (result.ok) turnedOn += 1;
     ok = ok && result.ok;
     lines.push(...result.lines);
+    if (!result.ok) continue;
+    turnedOn += 1;
+    const fallback = await restoreFallback(action, slot);
+    ok = ok && fallback.ok;
+    lines.push(...fallback.lines);
   }
   if (missing.length > 0) {
     lines.push(

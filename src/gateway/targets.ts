@@ -296,14 +296,24 @@ export const FAMILY_SLOTS: Readonly<Record<string, ClaudeFamily>> = {
 };
 
 /**
+ * A provider's prefix before a Claude id, as a cloud names its copy of the model:
+ * `us.anthropic.claude-…`, `anthropic.claude-…` (dot-separated words). Never one with a `:`
+ * or a `/` in it: `<backend>:<model>` is a backend's model, whatever its name says.
+ */
+const PROVIDER_PREFIX = /^(?:[a-z0-9-]+\.)*claude-/;
+
+/**
  * The Claude family a model id names, by its `-<family>-` part (`claude-opus-5-5`,
- * `claude-3-5-haiku-20241022`), `[1m]` ignored; null for anything else (a backend's model, a
- * slot key, a Claude id that names no family).
+ * `claude-3-5-haiku-20241022`, `us.anthropic.claude-fable-5-1-20261001-v1:0`), `[1m]`
+ * ignored; null for anything else (a backend's model, a slot key, a Claude id that names no
+ * family).
  */
 export function claudeFamily(model: string): ClaudeFamily | null {
   const name = `${withoutContextSuffix(model).toLowerCase()}-`;
-  if (!name.startsWith("claude-")) return null;
-  return CLAUDE_FAMILIES.find((family) => name.includes(`-${family}-`)) ?? null;
+  const prefix = PROVIDER_PREFIX.exec(name);
+  if (prefix === null) return null;
+  const id = name.slice(prefix[0].length - "claude-".length);
+  return CLAUDE_FAMILIES.find((family) => id.includes(`-${family}-`)) ?? null;
 }
 
 /**

@@ -361,7 +361,7 @@ export function slotRows(config: GatewayConfig, router: RouterFacts): SlotRow[] 
     const targets = config.slots[key];
     const on = targets !== undefined;
     rows.push({
-      fallback: on && fallbackOn(config, key),
+      fallback: fallbackOn(config, key),
       info: meta.info,
       key,
       kind: on ? meta.kind : "off",

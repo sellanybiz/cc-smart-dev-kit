@@ -59,7 +59,8 @@ flowchart TD
 
 - A `claude-…` model goes to the slot of its family (`familySlotFor`, `src/gateway/targets.ts`):
   `-haiku-` → scout, `-sonnet-` → worker, `-opus-` → opus, `-fable-` → fable, read from the
-  id Claude Code sends (`[1m]` ignored). With no chain there, and for any **unknown** model
+  id Claude Code sends (`[1m]` ignored; a cloud provider's dot-separated prefix such as
+  `us.anthropic.claude-…` too, never a `<backend>:` one). With no chain there, and for any **unknown** model
   name, the request goes to Anthropic as it came. So does every path that is not
   `/v1/messages` or `/v1/messages/count_tokens`. The router never guesses an affordable backend.
 - A **slot key** is a model name the router owns: `cc-smart-dev-kit-<name>`. Up to 0.4.3,
@@ -107,11 +108,15 @@ machine adds; off for opus, fable and the judge.
   it on later needs no retyping.
 - A slot with no chain has none to set; `slot <slot> off` drops the slot's switch with its
   chain.
-- **A 0.4.x config keeps its meaning.** A model slot that 0.4.x's `modelSlots` names
-  (`{"claude-opus-5-5": "cc-smart-dev-kit-opus"}`) was saved as "the model itself, then the
-  next target when it cannot answer", so its switch reads as on. The next `gateway slot opus
-  …` drops that entry and writes `"fallback": {"cc-smart-dev-kit-opus": true}` instead, so
-  nothing flips. A 0.4.x judge chain does not carry over: § The judge slot.
+- **A 0.4.x opus or fable chain starts with its switch off**, the model slots' default. 0.4.x
+  moved on only at the plan's usage limit; on, the switch moves on at any 408, 429, 5xx, 529
+  or network error (and Opus rests after it), which is more than such a chain was set up
+  for. Turn it on with `cc-smart-dev-kit gateway fallback opus on` when that is what you
+  want. 0.4.x's `modelSlots` entry changes nothing; the next `gateway slot opus …` drops it.
+  A 0.4.x judge chain does not carry over: § The judge slot.
+- **An opus or fable chain takes every id of its family**: 0.4.x keyed it by one id
+  (`claude-opus-5-5`); now every Opus id reaches the opus chain, and a `claude-…` first
+  target answers for all of them (with the bytes as sent only for its own id).
 - The router reads the switch from the config it already holds (re-read only when the file
   changes): no extra disk read per request.
 
@@ -141,8 +146,11 @@ cc-smart-dev-kit gateway slot judge off         # Claude judges again
    Code retries the check on another Claude model. A check is never routed by its model's
    family: a check under a Sonnet id never reaches the worker slot.
 2. **A chain:** the check goes to the judge's tested targets in order, with the named
-   backend translations only (`reasoningOffForBackend`, `toolSearchForBackend`); a judge
-   that hangs gets `timeouts.firstByteMs` before the next one is asked (fallback on). The log
+   backend translations only (`reasoningOffForBackend`, `toolSearchForBackend`); every judge
+   target gets `timeouts.firstByteMs` for its answer's headers, the last one too: a judge that
+   hangs is given up on, the next one is asked (fallback on), and when none is left Claude
+   Code gets a 504 `timeout_error` in Anthropic's shape and fails the check, instead of waiting
+   on it. The log
    line's model keeps its `(safety check)` mark and names the judge target that answered.
 3. `count_tokens` for a check follows the same chain rule as any slot: its first target, and
    a backend there means a 404 (Claude Code estimates).
@@ -437,7 +445,9 @@ reaches Claude Code**.
   comments and reports failures inside the stream. So for an affordable backend that is not
   last, the router holds the stream until the first real event, then replays it and pipes
   the rest chunk by chunk.
-- **Deadline:** `timeouts.firstByteMs`, 60 s by default.
+- **Deadline:** `timeouts.firstByteMs`, 60 s by default. For a safety check on a backend (the
+  judge), on every target, the last too; when the last one misses it, the answer is a 504
+  `timeout_error` in Anthropic's shape.
 - **Cooldown.** A target that answered 429 rests for its `retry-after` (default 60 s); a
   408, 5xx, 529, network error or timeout rests `retry-after` or 30 s; at most 600 s, in
   memory. A resting target is skipped unless it is the last. Only a `/v1/messages` answer
@@ -689,7 +699,11 @@ open), the router binds the config's port itself, as before.
      to a new port";
    - a socket unit that changed on the same port: the same, "its socket unit changed, so
      the socket closes and opens again";
-4. makes the config when there is none (the backend key comes on stdin, never argv);
+4. makes the config when there is none (the backend key comes on stdin, never argv). For a
+   config an older version wrote, it drops 0.4.x's hidden Claude step: a scout or worker
+   chain that still equals 0.4.x's exact default (`omniroute:ollama-cloud/deepseek-v4.1-flash`
+   → `omniroute:ollama-cloud/glm-5.3-flash` → `claude-sonnet-5-5`) loses its last target,
+   with one line saying so (`upgradeConfig`). A chain the person changed stays as it is;
 5. writes the **restart-pending marker**, then the copy and the two units, all through
    `src/setup/` (backup, record for `restore`, atomic write);
 6. runs `systemctl --user daemon-reload` and `enable cc-smart-dev-kit-router.socket
@@ -721,6 +735,18 @@ open), the router binds the config's port itself, as before.
    date.
 
 With nothing changed, the socket open and no marker: only `enable --now` of both units.
+
+Last, setup takes 0.4.3's `ANTHROPIC_DEFAULT_HAIKU_MODEL` / `…_SONNET_MODEL` keys (and their
+`…_NAME` / `…_DESCRIPTION`) out of Claude Code's `settings.json` where `cc-smart-dev-kit` still
+owns them with the value it wrote (`retireOldModelKeys`; one the person set or changed stays),
+as `gateway on` does. With them, a session sends `haiku` / `sonnet` work by the slot's name,
+and a slot with no chain refuses that with a 400 (the router never picks a Claude model for
+it). It then says to restart every open Claude session: a running session may keep the
+removed keys until it restarts (`docs/claude-code-contract.md`: a removed key was not
+watched). A plugin update alone never swaps the router: the router that runs is the copy in
+`~/.local/share/cc-smart-dev-kit/`, and only `gateway setup` (or `migrate`) writes it; until then
+the older router answers, the update's notification says to run `gateway setup`, and
+`doctor` says the copy is not this version's.
 
 The service unit: the absolute path of the `bun` that ran setup on the copy, with
 `--no-env-file`; `Wants=` and `After=` the socket; `RuntimeDirectory=cc-smart-dev-kit-router`

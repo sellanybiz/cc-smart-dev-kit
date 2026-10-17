@@ -22,6 +22,7 @@ import { runGateway } from "../gateway/commands";
 import { gatewayChecks } from "../gateway/doctor";
 import type { HealthFetch, HealthProbe } from "../gateway/health";
 import { shellQuote } from "../setup/launcher";
+import { applyManagedJson } from "../setup/managed-json";
 import { listBackups } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
@@ -520,6 +521,63 @@ function machine(
     apiFetch,
   };
 }
+
+describe("cc-smart-dev-kit gateway setup on a machine an older version set up", () => {
+  test("drops 0.4.x's hidden Claude step from a default chain, takes out 0.4.3's model keys, says to restart", async () => {
+    const m = machine();
+    const server = fakeServer();
+    const oldDefault = [
+      "omniroute:ollama-cloud/deepseek-v4.1-flash",
+      "omniroute:ollama-cloud/glm-5.3-flash",
+      "claude-sonnet-5-5",
+    ];
+    // Scout as 0.4.x wrote it; worker as the person changed it (Claude Sonnet stays theirs).
+    m.writeConfig(server.port, {
+      "cc-smart-dev-kit-scout": oldDefault,
+      "cc-smart-dev-kit-worker": ["omniroute:m1", "claude-sonnet-5-5"],
+    });
+    const paths = cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir });
+    writeFileSync(m.paths.settings, '{\n  "model": "opus"\n}\n');
+    // As 0.4.3's `gateway on` left the settings: its model keys, owned.
+    applyManagedJson({
+      file: m.paths.settings,
+      set: [
+        [["env", "ANTHROPIC_DEFAULT_HAIKU_MODEL"], "cc-smart-dev-kit-scout[1m]"],
+        [["env", "ANTHROPIC_DEFAULT_SONNET_MODEL"], "cc-smart-dev-kit-worker[1m]"],
+      ],
+      stateDir: paths.stateDir,
+    });
+    const done = await m.run(["gateway", "setup"]);
+    expect(done.stderr).toBe("");
+    expect(done.exitCode).toBe(0);
+    expect(done.stdout).toContain(
+      "~ cc-smart-dev-kit-scout: took out claude-sonnet-5-5, the Claude model 0.4.x put at the end of its default chain; no Claude model answers there unless you put one in (cc-smart-dev-kit gateway slot scout <targets>)\n",
+    );
+    expect(done.stdout).not.toContain("~ cc-smart-dev-kit-worker:");
+    expect(done.stdout).toContain(
+      [
+        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_HAIKU_MODEL: "cc-smart-dev-kit-scout[1m]" -> (none)',
+        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker[1m]" -> (none)',
+        // The `env` those keys made goes with them: the person had none.
+        "~ ~/.claude/settings.json: env: {} -> (none)",
+        "Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.",
+        "",
+      ].join("\n"),
+    );
+    const config = JSON.parse(readFileSync(m.paths.config, "utf8")) as {
+      slots: Record<string, string[]>;
+    };
+    expect(config.slots).toEqual({
+      "cc-smart-dev-kit-scout": oldDefault.slice(0, 2),
+      "cc-smart-dev-kit-worker": ["omniroute:m1", "claude-sonnet-5-5"],
+    });
+    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus" });
+    // A second run has nothing left to change, and says nothing about it.
+    const again = await m.run(["gateway", "setup"]);
+    expect(again.stdout).not.toContain("took out");
+    expect(again.stdout).not.toContain("Restart every open Claude session now");
+  });
+});
 
 describe("cc-smart-dev-kit gateway setup", () => {
   // Reworked: runs in this process (`runHere`). With no config the router listens on the

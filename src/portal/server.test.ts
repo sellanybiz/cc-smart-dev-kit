@@ -1573,6 +1573,107 @@ describe("the actions", () => {
     }
   });
 
+  test("an off scout or worker shows its switch's own default on the Slots page, not off", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      const off = await world.post(
+        "slot.save",
+        { slot: "worker", targets: ["omniroute:glm-5.3-flash"] },
+        csrf,
+      );
+      expect(JSON.parse(off.body).ok).toBe(true);
+      // The CLI turns worker off; the page must not read that as "fallback off".
+      const config = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
+        slots: Record<string, string[]>;
+      };
+      delete config.slots["cc-smart-dev-kit-worker"];
+      writeFileSync(world.paths.gatewayConfigFile, JSON.stringify(config, null, 2), {
+        mode: 0o600,
+      });
+      const slots = await world.call("/slots");
+      expect(slots.body).toContain("&quot;worker&quot;:true");
+      // Opus has no chain either, and its default is off.
+      expect(slots.body).toContain("&quot;opus&quot;:false");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the opus and fable switch, Off then On, puts back the fallback switch with the chain", async () => {
+    const backend = fakeBackend(["glm-5.3-flash", "deepseek-v4.1-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      const saved = await world.post(
+        "slot.save",
+        { slot: "opus", targets: ["omniroute:glm-5.3-flash", "omniroute:deepseek-v4.1-flash"] },
+        csrf,
+      );
+      expect(JSON.parse(saved.body).ok).toBe(true);
+      const on = await world.post("slot.fallback", { on: true, slot: "opus" }, csrf);
+      expect(JSON.parse(on.body).ok).toBe(true);
+      const read = () =>
+        JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
+          fallback?: Record<string, boolean>;
+          slots: Record<string, string[]>;
+        };
+      expect(read().fallback).toEqual({ "cc-smart-dev-kit-opus": true });
+      expect(
+        JSON.parse((await world.post("switch", { name: "models", on: false }, csrf)).body).ok,
+      ).toBe(true);
+      expect(read().fallback).toBeUndefined();
+      const back = await world.post("switch", { name: "models", on: true }, csrf);
+      const answer = JSON.parse(back.body) as { lines: string[]; ok: boolean };
+      expect(answer.ok).toBe(true);
+      expect(read().slots["cc-smart-dev-kit-opus"]).toEqual([
+        "omniroute:glm-5.3-flash",
+        "omniroute:deepseek-v4.1-flash",
+      ]);
+      expect(read().fallback).toEqual({ "cc-smart-dev-kit-opus": true });
+      expect(answer.lines).toContain("cc-smart-dev-kit-opus: fallback off → on");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the judge switch, Off then On, puts back the judge's fallback switch too", async () => {
+    const backend = fakeBackend(["glm-5.3-flash", "deepseek-v4.1-flash"], {
+      chat: "<block>yes</block>",
+    });
+    const world = await open({ backendPort: backend.port });
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      const saved = await world.post(
+        "slot.save",
+        { slot: "judge", targets: ["omniroute:glm-5.3-flash", "omniroute:deepseek-v4.1-flash"] },
+        csrf,
+      );
+      expect(JSON.parse(saved.body).ok).toBe(true);
+      expect(
+        JSON.parse((await world.post("slot.fallback", { on: true, slot: "judge" }, csrf)).body).ok,
+      ).toBe(true);
+      expect(
+        JSON.parse((await world.post("switch", { name: "judge", on: false }, csrf)).body).ok,
+      ).toBe(true);
+      const again = await world.post("switch", { name: "judge", on: true }, csrf);
+      expect(JSON.parse(again.body).ok).toBe(true);
+      const config = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
+        fallback?: Record<string, boolean>;
+      };
+      expect(config.fallback).toEqual({ "cc-smart-dev-kit-judge": true });
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
   test("the judge switch remembers a chain the command line set before it turns it off", async () => {
     // A chain set from the terminal was lost by one Off: the switch had nothing to turn on.
     const backend = fakeBackend(["glm-5.3-flash"], { chat: "<block>yes</block>" });

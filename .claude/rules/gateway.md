@@ -70,7 +70,12 @@ Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `
 - **The fallback switch** (`fallback` in the config, `fallbackOn`): on, the next target
   answers on the statuses `fallbackKind` names; off, only the first target ever answers.
   Default on for scout, worker and a machine's own slots; off for opus, fable and judge
-  (`FALLBACK_OFF_BY_DEFAULT`). A 0.4.x model slot (named in `modelSlots`) reads as on.
+  (`FALLBACK_OFF_BY_DEFAULT`). A 0.4.x opus or fable chain gets that default, off: "on" moves
+  on at far more than the plan limit it was set up for. `gateway setup` drops 0.4.x's hidden
+  `claude-sonnet-5-5` from a scout or worker chain only while that chain is still 0.4.x's
+  exact default (`withoutRetiredDefaultClaude`); a chain the person changed is theirs.
+- **A safety check on a backend has a deadline on every target, the last too** (a lone judge
+  that hangs would hold every action): its miss is a 504 `timeout_error`, never a wait.
   Read from the config the router holds: no disk read per request.
 - **No model id in the code as a default, a target or a fallback.** `gateway setup` writes
   no chain; the person picks from the live list (`gateway models`, the portal). A rule that
@@ -113,8 +118,9 @@ never set it in use.
 
 ## Settings and secrets
 
-- `gateway on` / `off` change Claude Code's settings only through `src/setup/`
-  (`applyManagedJson`, owned keys). A gateway key someone else set stops `on` with
+- `gateway on` / `off`, and `gateway setup`'s removal of 0.4.3's retired model keys
+  (`retireOldModelKeys`), change Claude Code's settings only through `src/setup/`
+  (`applyManagedJson`, owned keys, only a key that still holds the value cc-smart-dev-kit wrote). A gateway key someone else set stops `on` with
   ForeignKeyError, its value masked; it is never overwritten.
 - **Never write** `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`,
   `CLAUDE_CODE_SUBAGENT_MODEL` or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`

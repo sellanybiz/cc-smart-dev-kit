@@ -81,9 +81,9 @@ export const gatewayConfigSchema = z
     /**
      * 0.4.x only, read and never written again: the Claude ids whose requests a model slot
      * took (`{"claude-opus-5-5": "cc-smart-dev-kit-opus"}`). A request reaches its slot by
-     * its family now (`familySlotFor`). Kept so such a config loads, and so its chain keeps
-     * the meaning it was saved with: a model slot this names has its fallback on
-     * (`fallbackOn`). `gateway slot opus|fable` drops the entry.
+     * its family now (`familySlotFor`), and the entry changes nothing: such a chain starts
+     * with its fallback switch at the model slots' default, off (`fallbackOn`). Kept so such
+     * a config loads; `gateway slot opus|fable` drops the entry.
      */
     modelSlots: z.record(z.string(), z.string()).optional(),
     port: z.int().min(1).max(65_535).default(DEFAULT_PORT),
@@ -176,17 +176,14 @@ export function modelSlotError(
 /**
  * Is this slot's fallback switch on? The person's own setting (`fallback`) when there is
  * one. Otherwise the slot's default: off for the model slots and the judge
- * (`FALLBACK_OFF_BY_DEFAULT`), on for every other slot. One exception keeps a 0.4.x config's
- * meaning: a model slot its `modelSlots` names was saved as "the model itself, then the next
- * target when it cannot answer", so its fallback reads as on.
+ * (`FALLBACK_OFF_BY_DEFAULT`), on for every other slot. A 0.4.x opus or fable chain gets that
+ * default too: it moved on only at the plan's usage limit, and "on" now moves on at any 408,
+ * 429, 5xx, 529 or network error, so turning it on is the person's choice
+ * (`gateway fallback <slot> on`).
  */
-export function fallbackOn(
-  config: Pick<GatewayConfig, "fallback" | "modelSlots">,
-  slot: string,
-): boolean {
+export function fallbackOn(config: Pick<GatewayConfig, "fallback">, slot: string): boolean {
   const set = config.fallback;
   if (set !== undefined && Object.hasOwn(set, slot)) return set[slot] === true;
-  if (Object.values(config.modelSlots ?? {}).includes(slot)) return true;
   return !FALLBACK_OFF_BY_DEFAULT.includes(slot);
 }
 

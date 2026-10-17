@@ -190,11 +190,26 @@ After that, use `cc-smart-dev-kit setup` to set up again (for example after an u
 
 **After you update, run these in your own terminal, in this order:**
 
-1. `cc-smart-dev-kit gateway setup` — updates the router copy on this machine.
-2. `cc-smart-dev-kit gateway on` — takes out the model keys 0.4.3 wrote
-   (`ANTHROPIC_DEFAULT_HAIKU_MODEL` / `…_SONNET_MODEL`). A slot is reached by the model's family
-   now, so those keys are no longer needed.
-3. Restart Claude Code.
+1. `cc-smart-dev-kit gateway setup` — updates the router copy on this machine (a plugin update
+   alone never does: until this step the older router keeps answering). It also takes out the
+   model keys 0.4.3 wrote (`ANTHROPIC_DEFAULT_HAIKU_MODEL` / `…_SONNET_MODEL`, only where
+   cc-smart-dev-kit set them), and drops the hidden `claude-sonnet-5-5` from a scout or worker
+   chain that is still 0.4.x's default. A slot is reached by the model's family now, so those
+   keys are no longer needed.
+2. **Restart every open Claude session right after.** A session that is still running may keep
+   sending `haiku` / `sonnet` work by the slot's old name; when that slot has no chain, the
+   router refuses it with a 400 that says what to do.
+3. `cc-smart-dev-kit gateway on` — only if the gateway is not on yet.
+
+Check your scout and worker chains (`cc-smart-dev-kit gateway status`): a Claude model answers
+there only if you put it in the chain. Setup took out the `claude-sonnet-5-5` 0.4.x added at
+the end of its default chains; a chain you changed is left as it is.
+
+An opus or fable chain set before 0.5.0 starts with its fallback **off**: it moved on only at
+the plan's usage limit, and "on" now moves on at any rate limit or server error. Turn it on
+with `cc-smart-dev-kit gateway fallback <slot> on` when you want that. An opus or fable chain now
+also takes every Opus or Fable id, not only the one 0.4.x keyed it by, and a `claude-…` first
+target answers for all of them.
 
 A judge set before 0.5.0 is ignored until it is tested and set again
 (`cc-smart-dev-kit gateway slot judge <target>[,…]`), because the judge's job changed: it judged
@@ -915,7 +930,7 @@ How it works: [docs/gateway.md](docs/gateway.md).
 | Command | What it does |
 |---|---|
 | `cc-smart-dev-kit gateway check` | One read-only question, for scripts (the installer asks it): does the gateway have an OmniRoute key the backend accepts? Exit 0 yes, 1 no key yet (OmniRoute answers, so one can be made), 3 it could not be judged (nothing answers, or the config cannot be read), 4 the key is one OmniRoute refuses. It asks the backend only — never the router's port — and prints one line saying what it found. |
-| `cc-smart-dev-kit gateway setup [--yes] [--backend-key-stdin <backend> \| --omniroute-password[-stdin] \| --no-backend-key] [--save-unchecked]` | Makes `~/.config/cc-smart-dev-kit/gateway.json` (mode 600; the key on stdin, never argv), copies the router to `~/.local/share/cc-smart-dev-kit/router.js`, writes the systemd user units `cc-smart-dev-kit-router.socket` (it holds the port) and `cc-smart-dev-kit-router.service`, starts them, and waits up to 5 s for the router to answer. First of all it asks the router's port: when another program holds it (an older router, say), it stops and writes nothing. When the router runs and the copy or a unit changed, it says what the restart does and asks; `--yes` skips the question. A restart lets the answers in flight finish (up to 120 s; an answer still running then is cut, and Claude Code retries it), and new requests wait in the socket meanwhile, so none of them fails. A connection that sends nothing is closed half a second after the restart starts, so it cannot hold the restart. The exceptions are the restarts that must open the socket again (the first setup that moves a router from an older version to its socket, a socket that was stopped, a changed socket unit or port): until the old router has finished its answers, new requests fail, and setup's warning names which case it is. When the socket cannot open at all, setup says so and starts the router without it (the router binds the port itself). A router that fails to start 5 times within 60 s is given up: systemd then closes its socket too, so requests are refused at once instead of waiting; `doctor` names it, and `gateway setup` starts both again. A setup that stopped half way is finished by the next one. It never touches Claude Code's settings. |
+| `cc-smart-dev-kit gateway setup [--yes] [--backend-key-stdin <backend> \| --omniroute-password[-stdin] \| --no-backend-key] [--save-unchecked]` | Makes `~/.config/cc-smart-dev-kit/gateway.json` (mode 600; the key on stdin, never argv), copies the router to `~/.local/share/cc-smart-dev-kit/router.js`, writes the systemd user units `cc-smart-dev-kit-router.socket` (it holds the port) and `cc-smart-dev-kit-router.service`, starts them, and waits up to 5 s for the router to answer. First of all it asks the router's port: when another program holds it (an older router, say), it stops and writes nothing. When the router runs and the copy or a unit changed, it says what the restart does and asks; `--yes` skips the question. A restart lets the answers in flight finish (up to 120 s; an answer still running then is cut, and Claude Code retries it), and new requests wait in the socket meanwhile, so none of them fails. A connection that sends nothing is closed half a second after the restart starts, so it cannot hold the restart. The exceptions are the restarts that must open the socket again (the first setup that moves a router from an older version to its socket, a socket that was stopped, a changed socket unit or port): until the old router has finished its answers, new requests fail, and setup's warning names which case it is. When the socket cannot open at all, setup says so and starts the router without it (the router binds the port itself). A router that fails to start 5 times within 60 s is given up: systemd then closes its socket too, so requests are refused at once instead of waiting; `doctor` names it, and `gateway setup` starts both again. A setup that stopped half way is finished by the next one. In Claude Code's settings it does one thing only: it takes out the model keys 0.4.3's `gateway on` wrote (`ANTHROPIC_DEFAULT_HAIKU_MODEL` / `…_SONNET_MODEL` and their `…_NAME` / `…_DESCRIPTION`), where cc-smart-dev-kit still owns them; then restart every open Claude session. In `gateway.json` it drops the `claude-sonnet-5-5` 0.4.x put at the end of a scout or worker chain that is still that exact default. |
 | `cc-smart-dev-kit gateway status` | Router health, each backend, the slots, and whether Claude Code points at the gateway. Keys are masked. |
 | `cc-smart-dev-kit gateway models` | Every model each backend offers, and the slots. |
 | `cc-smart-dev-kit gateway slot <scout\|worker\|opus\|fable> <target>[,<target>…]` | A slot's chain (any targets, any order, from `gateway models`); live. `slot <slot> off`: that model is plain Claude again. |
@@ -1926,7 +1941,9 @@ when removing it can lose nothing and disturb no one:
 - no program runs from inside it, and none works in it — a dev server started there is one.
   The `worktrees` command's own process, and the shells that started it, are left out of it:
   their command line names the folder only because they were asked about it — their working
-  folder still counts, so a shell that really sits in the worktree keeps it;
+  folder still counts, so a shell that really sits in the worktree keeps it. A working folder is
+  read on Linux only: on macOS and Windows the command line alone counts, and a Claude session in
+  the worktree is kept by the rule above;
 - no Docker container, running or stopped, mounts files from inside it;
 - every commit on it is on `origin/<base>`;
 - git has not touched it for an hour (a worktree made a minute ago is not finished: its

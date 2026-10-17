@@ -551,9 +551,16 @@ function Test-GitCanRead {
 # installed as before. The account is named from `gh api user --jq .login`, the one call that
 # also proves somebody is logged in; when it answers nothing (gh offline, say) the check is
 # skipped and the marketplace steps below report their own failure.
+#
+# Both calls put gh's stderr away (2>$null): its own "Could not resolve to a Repository ..." and
+# "please run: gh auth login" lines are not this script's words to print, and the check says what
+# it found itself. install.sh silences the same two (>/dev/null 2>&1), so the two twins print the
+# same lines on the same machine. A native command's stderr redirected to $null is safe here:
+# this script sets no $ErrorActionPreference, so it runs at the default "Continue" -- Windows
+# PowerShell 5.1 only turns a native command's stderr into a terminating error under "Stop".
 function Assert-RepoReadAccess {
   if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) { return }
-  $null | & gh repo view $Repo --json name | Out-Null
+  $null | & gh repo view $Repo --json name 2>$null | Out-Null
   if ($LASTEXITCODE -eq 0) { return }
   $login = [string](@($null | & gh api user --jq .login 2>$null) | Select-Object -First 1)
   if ([string]::IsNullOrEmpty($login)) { return }

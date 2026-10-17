@@ -198,12 +198,16 @@ describe("which stops get an alert", () => {
       body: "claude-opus-5-5: five_hour, resets 13:00. The cc-smart-dev-kit-opus fallback is on, yet this turn stopped: check cc-smart-dev-kit gateway status.",
       title: "Claude usage limit reached",
     });
-    // A 0.4.x config: the slot its `modelSlots` names reads as on, as the router reads it.
+    // A 0.4.x config: the slot its `modelSlots` names reads as off, the opus default, as the
+    // router reads it (0.4.x moved on only at the plan limit); so the action turns it on.
     const old = config({
       modelSlots: { "claude-opus-5-5": "cc-smart-dev-kit-opus" },
       slots: on.slots,
     });
-    expect(planAlert(AT_LIMIT, ctx({ config: old }))?.action).toBeNull();
+    expect(planAlert(AT_LIMIT, ctx({ config: old }))?.action).toEqual({
+      commands: [["gateway", "fallback", "opus", "on"]],
+      label: "Use glm-5.3-flash until it resets",
+    });
     // The opus chain starts with a backend: Opus was not asked first.
     const backendFirst = config({
       slots: {

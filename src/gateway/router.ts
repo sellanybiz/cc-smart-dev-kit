@@ -203,6 +203,9 @@ const UNSUPPORTED =
 /** The words of Anthropic's 400 for a thinking block it cannot verify. */
 const BAD_SIGNATURE = "Invalid `signature`";
 
+/** Why an upstream call failed when it gave no headers by its deadline. */
+const NO_HEADERS_IN_TIME = "no response headers in time";
+
 /** Path of the router's own health check, answered before anything is forwarded. */
 export const HEALTH_PATH = "/__cc-smart-dev-kit/health";
 
@@ -1165,11 +1168,11 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     try {
       const first = await (timer === null ? pending : Promise.race([pending, timer.done]));
       if (first !== "timeout") return { response: first };
-      controller.abort(new Error("no response headers in time"));
+      controller.abort(new Error(NO_HEADERS_IN_TIME));
       // A fetch that ignores the abort may still answer later: free that answer too.
       // Its rejection is the abort just sent — the expected end, nothing to report.
       void pending.then(discard, () => undefined);
-      return { failure: "no response headers in time", status: null };
+      return { failure: NO_HEADERS_IN_TIME, status: null };
     } catch (error) {
       return { failure: messageOf(error), status: null };
     } finally {
@@ -1405,6 +1408,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     const failures: string[] = [];
     let fallbacks = 0;
     let skipped = 0;
+    /** The last target gave no headers by its deadline (only a safety check's judge has one). */
+    let lastTimedOut = false;
     for (const [index, target] of targets.entries()) {
       const last = index === targets.length - 1;
       const label = formatTarget(target);
@@ -1414,14 +1419,15 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         skipped += 1;
         continue;
       }
-      // The header deadline guards only where it can help: a streaming request to a
+      // The header deadline guards only where it can help: a streaming request to an
       // affordable backend with another target behind it. Anthropic, the last target and
       // a non-streaming answer (which may take minutes) wait as long as it takes;
       // the client hanging up still cancels them.
-      // An auto-mode check gets the same deadline though it does not stream: a judge that
-      // hangs would hold every action, and the judge after it would never be asked.
+      // An auto-mode check on a backend (the judge) gets the deadline on every target, the
+      // last too, though it does not stream: a judge that hangs would hold every action, the
+      // judge after it would never be asked, and a lone judge would never answer at all.
       const deadlineAt =
-        !last && target.kind === "backend" && (body.stream === true || guard)
+        target.kind === "backend" && (guard || (!last && body.stream === true))
           ? deps.now() + config.timeouts.firstByteMs
           : null;
       const built = targetUpstream(req, url, config, body, target, guard, asked);
@@ -1449,6 +1455,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       // neither starts nor ends a rest (its 200 during a plan limit says nothing of it).
       if (url.pathname === MESSAGES_PATH) noteCooldown(label, result);
       if ("failure" in result) {
+        lastTimedOut = last && result.failure === NO_HEADERS_IN_TIME;
         failures.push(`${label}: ${result.failure}`);
         if (!last) {
           fallbacks += 1;
@@ -1514,13 +1521,22 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       fallbacks += 1;
     }
     const lastTarget = targets.at(-1);
+    const answered = failures.join("; ") || "no targets";
     return {
       fallbacks,
-      response: anthropicError(
-        502,
-        "api_error",
-        `cc-smart-dev-kit-router: no target for ${name} answered (${failures.join("; ") || "no targets"})`,
-      ),
+      // A judge that never answered: a timeout in Anthropic's shape, so Claude Code fails the
+      // check (and asks the person, or tries another model) instead of waiting on it.
+      response: lastTimedOut
+        ? anthropicError(
+            504,
+            "timeout_error",
+            `cc-smart-dev-kit-router: no target for ${name} answered within ${config.timeouts.firstByteMs} ms (${answered})`,
+          )
+        : anthropicError(
+            502,
+            "api_error",
+            `cc-smart-dev-kit-router: no target for ${name} answered (${answered})`,
+          ),
       skipped,
       target: lastTarget === undefined ? "none" : formatTarget(lastTarget),
     };

@@ -8358,11 +8358,14 @@ var FAMILY_SLOTS = {
   "cc-smart-dev-kit-worker": "sonnet",
   ...MODEL_SLOTS
 };
+var PROVIDER_PREFIX = /^(?:[a-z0-9-]+\.)*claude-/;
 function claudeFamily(model) {
   const name = `${withoutContextSuffix(model).toLowerCase()}-`;
-  if (!name.startsWith("claude-"))
+  const prefix = PROVIDER_PREFIX.exec(name);
+  if (prefix === null)
     return null;
-  return CLAUDE_FAMILIES.find((family) => name.includes(`-${family}-`)) ?? null;
+  const id = name.slice(prefix[0].length - "claude-".length);
+  return CLAUDE_FAMILIES.find((family) => id.includes(`-${family}-`)) ?? null;
 }
 function familySlotKey(family) {
   return Object.keys(FAMILY_SLOTS).find((key) => FAMILY_SLOTS[key] === family) ?? null;

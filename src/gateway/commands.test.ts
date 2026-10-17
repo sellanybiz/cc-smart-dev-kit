@@ -23,8 +23,14 @@ import { restore } from "../setup/restore";
 import { listBackups } from "../setup/write";
 import { tempDir } from "../testing/temp";
 import { parseModelList } from "./backends";
-import { ensureConfig, planFallbackChange, planSlotChange } from "./commands";
-import { type GatewayConfig, loadConfigFile } from "./config";
+import {
+  ensureConfig,
+  planFallbackChange,
+  planSlotChange,
+  upgradeConfig,
+  withoutRetiredDefaultClaude,
+} from "./commands";
+import { type GatewayConfig, loadConfigFile, saveConfig } from "./config";
 import type { HealthProbe } from "./health";
 import { judgeTestRequest, judgeVerdict } from "./judge-test";
 import {
@@ -60,6 +66,7 @@ import {
   gatewayEnv,
   maskKey,
   ownedGatewayEnvKeys,
+  retireOldModelKeys,
   settingsReport,
   turnOff,
   turnOn,
@@ -1418,7 +1425,7 @@ describe("slot opus / fable, and the fallback switch", () => {
     });
   });
 
-  it("a new chain for a 0.4.x model slot keeps its fallback on, now written out", () => {
+  it("a new chain for a 0.4.x model slot drops modelSlots, and its switch stays at the default, off", () => {
     const old: GatewayConfig = {
       ...config(),
       modelSlots: { "claude-opus-5-5": "cc-smart-dev-kit-opus" },
@@ -1430,7 +1437,7 @@ describe("slot opus / fable, and the fallback switch", () => {
     const moved = planSlotChange(old, "opus", "omniroute:glm-5.3-flash,claude-opus-5-5", models);
     if (!("config" in moved)) throw new Error(moved.error);
     expect(moved.config).not.toHaveProperty("modelSlots");
-    expect(moved.config.fallback).toEqual({ "cc-smart-dev-kit-opus": true });
+    expect(moved.config).not.toHaveProperty("fallback");
   });
 
   it("fallback: on and off for a slot with a chain; a value equal to the default is no entry", () => {
@@ -1470,6 +1477,106 @@ describe("slot opus / fable, and the fallback switch", () => {
     const off = planSlotChange(cfg, "worker", "off", models);
     if (!("config" in off)) throw new Error(off.error);
     expect(off.config).not.toHaveProperty("fallback");
+  });
+});
+
+describe("an older version's config and settings, as gateway setup upgrades them", () => {
+  /** 0.4.x's default scout and worker chain, written out by hand. */
+  const OLD_DEFAULT = [
+    "omniroute:ollama-cloud/deepseek-v4.1-flash",
+    "omniroute:ollama-cloud/glm-5.3-flash",
+    "claude-sonnet-5-5",
+  ];
+
+  it("a scout or worker chain that is still 0.4.x's default loses its Claude step; any other chain stays", () => {
+    const cfg: GatewayConfig = {
+      ...config(),
+      slots: {
+        // The person's: the same targets in another order, and one with a target added.
+        "cc-smart-dev-kit-affordable": OLD_DEFAULT,
+        "cc-smart-dev-kit-opus": OLD_DEFAULT,
+        "cc-smart-dev-kit-scout": OLD_DEFAULT,
+        "cc-smart-dev-kit-worker": [...OLD_DEFAULT, "omniroute:glm-5.3-flash"],
+      },
+    };
+    const kept = withoutRetiredDefaultClaude(cfg);
+    expect(kept.dropped).toEqual(["cc-smart-dev-kit-scout"]);
+    expect(kept.config.slots).toEqual({
+      "cc-smart-dev-kit-affordable": OLD_DEFAULT,
+      "cc-smart-dev-kit-opus": OLD_DEFAULT,
+      "cc-smart-dev-kit-scout": [
+        "omniroute:ollama-cloud/deepseek-v4.1-flash",
+        "omniroute:ollama-cloud/glm-5.3-flash",
+      ],
+      "cc-smart-dev-kit-worker": [...OLD_DEFAULT, "omniroute:glm-5.3-flash"],
+    });
+    const reordered = withoutRetiredDefaultClaude({
+      ...cfg,
+      slots: {
+        "cc-smart-dev-kit-scout": [OLD_DEFAULT[1] ?? "", OLD_DEFAULT[0] ?? "", "claude-sonnet-5-5"],
+      },
+    });
+    expect(reordered.dropped).toEqual([]);
+  });
+
+  it.skipIf(NO_POSIX_MODES)(
+    "upgradeConfig saves the file and says one line a slot; a second run changes nothing",
+    () => {
+      const path = join(tempDir("gateway-upgrade"), "gateway.json");
+      saveConfig(path, {
+        ...config(),
+        backends: { omniroute: { apiKey: "omni-key-123456", baseUrl: "http://omni.test" } },
+        slots: { "cc-smart-dev-kit-scout": OLD_DEFAULT, "cc-smart-dev-kit-worker": OLD_DEFAULT },
+      });
+      expect(upgradeConfig(path, { dryRun: true })).toHaveLength(2);
+      expect(loadConfigFile(path).slots["cc-smart-dev-kit-scout"]).toEqual(OLD_DEFAULT);
+      expect(upgradeConfig(path)).toEqual([
+        "~ cc-smart-dev-kit-scout: took out claude-sonnet-5-5, the Claude model 0.4.x put at the end of its default chain; no Claude model answers there unless you put one in (cc-smart-dev-kit gateway slot scout <targets>)",
+        "~ cc-smart-dev-kit-worker: took out claude-sonnet-5-5, the Claude model 0.4.x put at the end of its default chain; no Claude model answers there unless you put one in (cc-smart-dev-kit gateway slot worker <targets>)",
+      ]);
+      expect(loadConfigFile(path).slots).toEqual({
+        "cc-smart-dev-kit-scout": OLD_DEFAULT.slice(0, 2),
+        "cc-smart-dev-kit-worker": OLD_DEFAULT.slice(0, 2),
+      });
+      expect(upgradeConfig(path)).toEqual([]);
+      expect(upgradeConfig(join(tempDir("gateway-upgrade-none"), "gateway.json"))).toEqual([]);
+    },
+  );
+
+  it("retireOldModelKeys takes out 0.4.3's model keys it still owns, and nothing else", () => {
+    const home = tempDir("gateway-retire");
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    const file = join(home, ".claude", "settings.json");
+    const stateDir = join(home, ".claude", "cc-smart-dev-kit");
+    writeFileSync(file, `${JSON.stringify({ env: { FOO: "1" }, model: "opus" }, null, 2)}\n`);
+    applyManagedJson({
+      file,
+      set: Object.entries({ ...ON_ENV, ...OLD_MODEL_ENV }).map(
+        ([key, value]) => [["env", key], value] as const,
+      ),
+      stateDir,
+    });
+    const changed = JSON.parse(readFileSync(file, "utf8")) as { env: Record<string, string> };
+    changed.env.ANTHROPIC_DEFAULT_SONNET_MODEL = "claude-sonnet-5-5"; // theirs now
+    writeFileSync(file, `${JSON.stringify(changed, null, 2)}\n`);
+    const result = retireOldModelKeys({ settingsFile: file, stateDir });
+    expect(result.changes.map((change) => change.path[1]).sort()).toEqual([
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+    ]);
+    // The gateway's own keys stay on: setup is not `off`.
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      env: { ...ON_ENV, ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5-5", FOO: "1" },
+      model: "opus",
+    });
+    // Nothing of its own left: nothing is written. No settings file: none is made.
+    expect(retireOldModelKeys({ settingsFile: file, stateDir }).written).toBe(false);
+    const bare = join(tempDir("gateway-retire-none"), "settings.json");
+    expect(retireOldModelKeys({ settingsFile: bare, stateDir }).written).toBe(false);
+    expect(existsSync(bare)).toBe(false);
   });
 });
 

@@ -233,6 +233,27 @@ export function turnOn(options: {
 }
 
 /**
+ * Removes only the retired model keys (`RETIRED_GATEWAY_ENV_KEYS`) cc-smart-dev-kit still owns
+ * with the value it wrote: `gateway setup` runs it, the step every machine runs after an
+ * update, so a machine whose settings still send `haiku` / `sonnet` work to a slot by name
+ * stops doing that even before `gateway on`. A key the person set or changed stays. With no
+ * settings file, nothing is written.
+ */
+export function retireOldModelKeys(options: {
+  settingsFile: string;
+  stateDir: string;
+  dryRun?: boolean;
+}): ManagedJsonResult {
+  return applyManagedJson({
+    file: options.settingsFile,
+    stateDir: options.stateDir,
+    remove: RETIRED_GATEWAY_ENV_KEYS.map(envPath),
+    createdObject: createdObjects(options.stateDir, options.settingsFile),
+    ...(options.dryRun !== undefined && { dryRun: options.dryRun }),
+  });
+}
+
+/**
  * Removes the gateway env keys cc-smart-dev-kit owns. A gateway key someone else set stays, and
  * is returned in `foreign`, so the output can name it.
  */

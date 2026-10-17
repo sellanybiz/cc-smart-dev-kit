@@ -9,7 +9,9 @@
  *   status    router health, each backend, the slots, and what settings.json says.
  *   setup     makes the config if there is none (the key comes on stdin, never argv),
  *             puts the router copy and the systemd user unit in place, and starts it, or
- *             restarts it (after a yes) when one changed. Never touches Claude settings.
+ *             restarts it (after a yes) when one changed. For a machine an older version
+ *             set up, it also drops 0.4.x's hidden Claude step from a default chain and
+ *             takes out 0.4.3's model keys from Claude Code's settings (only its own).
  *   on / off  sets or removes the gateway env keys in Claude Code's settings.
  *
  * API keys are masked in every output. The design: docs/gateway.md.
@@ -50,7 +52,14 @@ import {
   systemdService,
 } from "./service";
 import { scheduledTaskService } from "./service-windows";
-import { maskKey, settingsReport, shownValue, turnOff, turnOn } from "./settings";
+import {
+  maskKey,
+  retireOldModelKeys,
+  settingsReport,
+  shownValue,
+  turnOff,
+  turnOn,
+} from "./settings";
 import {
   FAMILY_SLOTS,
   JUDGE_SLOT,
@@ -345,6 +354,62 @@ function withFallback(config: GatewayConfig, slot: string, value: boolean | null
 }
 
 /**
+ * The chain 0.4.x's `defaultConfig` wrote for the scout and the worker, exactly, in every
+ * version that had one (read from the git history; 0.2.x's had the same targets under its old
+ * slot names, which `migrate` renamed). Its last target is a Claude model the person never
+ * chose: a hidden Claude step. Only ever compared, never written.
+ */
+const RETIRED_DEFAULT_CHAIN: readonly string[] = [
+  "omniroute:ollama-cloud/deepseek-v4.1-flash",
+  "omniroute:ollama-cloud/glm-5.3-flash",
+  "claude-sonnet-5-5",
+];
+
+/** The slots that 0.4.x gave `RETIRED_DEFAULT_CHAIN`. */
+const RETIRED_DEFAULT_SLOTS: readonly string[] = [
+  "cc-smart-dev-kit-scout",
+  "cc-smart-dev-kit-worker",
+];
+
+/**
+ * The config without 0.4.x's hidden Claude step: a scout or worker chain that still equals
+ * `RETIRED_DEFAULT_CHAIN` loses its last target. A chain the person changed in any way is
+ * theirs, a Claude target included, and stays. `dropped` names each slot that changed.
+ */
+export function withoutRetiredDefaultClaude(config: GatewayConfig): {
+  config: GatewayConfig;
+  dropped: string[];
+} {
+  const dropped = RETIRED_DEFAULT_SLOTS.filter((slot) => {
+    const chain = Object.hasOwn(config.slots, slot) ? config.slots[slot] : undefined;
+    return (
+      chain !== undefined &&
+      chain.length === RETIRED_DEFAULT_CHAIN.length &&
+      chain.every((target, index) => target === RETIRED_DEFAULT_CHAIN[index])
+    );
+  });
+  if (dropped.length === 0) return { config, dropped };
+  const slots = { ...config.slots };
+  for (const slot of dropped) slots[slot] = RETIRED_DEFAULT_CHAIN.slice(0, -1);
+  return { config: { ...config, slots }, dropped };
+}
+
+/**
+ * `gateway setup`'s step for a config an older version wrote: 0.4.x's hidden Claude step
+ * goes (`withoutRetiredDefaultClaude`), saved only when something changed. One line per
+ * slot it changed, for the person; none when nothing did.
+ */
+export function upgradeConfig(configPath: string, options: { dryRun?: boolean } = {}): string[] {
+  if (!existsSync(configPath)) return [];
+  const { config, dropped } = withoutRetiredDefaultClaude(loadConfigFile(configPath));
+  if (dropped.length > 0 && options.dryRun !== true) saveConfig(configPath, config);
+  return dropped.map(
+    (slot) =>
+      `~ ${slot}: took out ${RETIRED_DEFAULT_CHAIN.at(-1)}, the Claude model 0.4.x put at the end of its default chain; no Claude model answers there unless you put one in (${COMMAND} gateway slot ${slotName(slot)} <targets>)`,
+  );
+}
+
+/**
  * The config with one slot changed, after checking every target: it parses, its backend
  * exists, and its model is in that backend's list. `claude-…` targets are taken as they
  * are: Anthropic's list is not reachable without the person's login. Every slot takes any
@@ -354,9 +419,9 @@ function withFallback(config: GatewayConfig, slot: string, value: boolean | null
  * form's `thinking: disabled` with a 400.
  *
  * The slot's fallback switch stays as it was (`fallbackOn`); a 0.4.x `modelSlots` entry for
- * the slot goes, and the switch it meant is written out when the default would differ. A
- * judge change drops every judge test proof (`judgeTested`): `judge off` needs none, and new
- * targets get theirs only from the test, in `commandSlot` (`withJudgeProofs`).
+ * the slot goes (it changes nothing any more). A judge change drops every judge test proof
+ * (`judgeTested`): `judge off` needs none, and new targets get theirs only from the test, in
+ * `commandSlot` (`withJudgeProofs`).
  */
 export function planSlotChange(
   current: GatewayConfig,
@@ -409,11 +474,7 @@ export function planSlotChange(
       };
     }
   }
-  let changed: GatewayConfig = { ...base, slots: { ...base.slots, [key]: next } };
-  if (old.length > 0 && fallbackOn(changed, key) !== fallbackOn(config, key)) {
-    changed = withFallback(changed, key, fallbackOn(config, key));
-  }
-  const checked = parseConfig(changed);
+  const checked = parseConfig({ ...base, slots: { ...base.slots, [key]: next } });
   if ("error" in checked) return { error: checked.error };
   return { config: checked.config, key, next, old };
 }
@@ -853,6 +914,10 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
     allowNone: options.noKey || password !== null,
     dryRun: true,
   });
+  // The two steps for a machine an older version set up, read-only first: a config or a
+  // settings file that cannot be read stops the setup here, before anything is written.
+  upgradeConfig(configPath, { dryRun: true });
+  retireOldModelKeys({ dryRun: true, settingsFile: paths.settingsFile, stateDir: paths.stateDir });
   // The port question comes before the backend is called at all: a port another program holds
   // refuses the setup, and no key is made or checked for nothing.
   if ((await installRouter(install({ dryRun: true }))) === "declined") return 1;
@@ -955,6 +1020,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
           stateDir: paths.stateDir,
         });
         ctx.print(said.replaceAll(configPath, tildify(configPath, paths.home)));
+        for (const line of upgradeConfig(configPath)) ctx.print(line);
         if (existsSync(configPath) && Object.keys(loadConfigFile(configPath).slots).length === 0) {
           ctx.print(
             `Every slot is off, so every Claude model stays plain Claude. Pick the models yourself: ${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets> (or the portal's Slots page).`,
@@ -980,6 +1046,18 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
             },
           }),
         );
+        // 0.4.3's `haiku` / `sonnet` model keys, where cc-smart-dev-kit still owns them: with the
+        // new router, a request that names a slot with no chain is refused.
+        const retired = retireOldModelKeys({
+          settingsFile: paths.settingsFile,
+          stateDir: paths.stateDir,
+        });
+        if (retired.changes.length > 0) {
+          ctx.print(changeLines(retired, paths.home).join("\n"));
+          ctx.print(
+            "Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.",
+          );
+        }
         if (settingsReport(paths.settingsFile).baseUrl === null) {
           ctx.print(
             `Claude Code does not use the gateway yet. Check it: ${COMMAND} gateway status. Then: ${COMMAND} gateway on.`,

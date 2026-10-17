@@ -182,9 +182,12 @@ function New-World([string]$Name, [hashtable]$Options = @{}) {
       FAKE_OMNIROUTE_PASSWORD_REFUSED = $(if ($Options["OmniRoutePasswordRefused"] -eq $true) { "yes" } else { "no" })
       # Which of the plugin's MCP servers are registered by something else, as JSON.
       FAKE_MCP_STATUS = $mcpStatus
-      # The GitHub CLI: the login it answers, and whether its account can see the repository.
+      # The GitHub CLI: the login it answers, whether its account can see the repository, and
+      # whether nobody is logged in at all (its own flag: an empty environment value cannot be
+      # relied on to arrive as an empty variable, so FAKE_GH_LOGIN="" would not do).
       # And the way Claude Code's own add is refused on a machine with no GitHub SSH key.
       FAKE_GH_LOGIN = $(if ($Options.ContainsKey("GhLogin")) { $Options["GhLogin"] } else { "example-user" })
+      FAKE_GH_LOGGED_OUT = $(if ($Options["GhLoggedOut"] -eq $true) { "yes" } else { "no" })
       FAKE_GH_VIEW_FAILS = $(if ($Options["GhViewFails"] -eq $true) { "yes" } else { "no" })
       FAKE_CLAUDE_SSH_REFUSED = $(if ($Options["ClaudeSshRefused"] -eq $true) { "yes" } else { "no" })
       FAKE_CLAUDE_ADD_NOT_FOUND = $(if ($Options["ClaudeAddNotFound"] -eq $true) { "yes" } else { "no" })
@@ -562,6 +565,27 @@ try {
   Assert-Contains "gh is not installed" $result.out "[ok] 4/8 marketplaces added: $repo, thedotmack/claude-mem, anthropics/claude-plugins-official"
   $passed++
   $names.Add("gh is not installed")
+
+  # 18. gh is installed but NOBODY is logged in: both of its questions fail with gh's own "gh
+  #     auth login" line, the installer skips the check, and the run goes on -- and neither of
+  #     gh's two lines reaches the output (the script puts its stderr away, 2>$null).
+  $loggedOut = New-World "logged-out" @{ Answers = @("y", ("A" * 43), "n", "n"); GhLoggedOut = $true }
+  $result = Invoke-Install $loggedOut @($repo)
+  Assert-Code "nobody is logged in" $result 0 $loggedOut
+  Assert-Contains "nobody is logged in" $result.out "[ok] 4/8 marketplaces added: $repo, thedotmack/claude-mem, anthropics/claude-plugins-official"
+  # Both questions were asked, and both were skipped: no account line, no marketplace over HTTPS.
+  $calls = (Get-Calls $loggedOut) -join "`n"
+  if ($calls -notmatch "gh repo view " -or $calls -notmatch "gh api user --jq .login") {
+    Stop-Smoke "nobody is logged in: the check was not asked at all; the log is:`n$calls"
+  }
+  if ($calls -match "plugin marketplace add https") {
+    Stop-Smoke "nobody is logged in: the marketplace was added over HTTPS; the log is:`n$calls"
+  }
+  if ($result.out -match "the GitHub account|gh auth login") {
+    Stop-Smoke "nobody is logged in: gh's own words reached the installer's output:`n$($result.out)"
+  }
+  $passed++
+  $names.Add("nobody is logged in")
 } finally {
   Get-ChildItem -Path ([System.IO.Path]::GetTempPath()) -Filter "cc-smart-dev-kit-install-*" -Directory -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue

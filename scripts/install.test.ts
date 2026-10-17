@@ -122,6 +122,8 @@ interface WorldOptions {
   ghLogin?: string;
   /** The account cannot see the repository: `gh repo view` answers "Could not resolve …". */
   ghRepoViewFails?: boolean;
+  /** Nobody is logged in to gh: both of its questions fail with gh's own "gh auth login" line. */
+  ghLoggedOut?: boolean;
   /** Leave `gh` off PATH, as a machine that has none. */
   noGh?: boolean;
   /**
@@ -367,9 +369,14 @@ exit 0
     // The two questions the installer asks the GitHub CLI: whether the account this machine
     // is logged in with can see the repository (`repo view`, which fails the way gh does when
     // it cannot — "Could not resolve to a Repository …"), and its login (`api user`). Every
-    // other call succeeds, as before.
+    // other call succeeds, as before. With nobody logged in BOTH questions fail with gh's own
+    // line, as the real gh does: the installer must skip the check and print none of it.
     gh: `#!/bin/sh
 printf '%s\\n' "gh $*" >> ${JSON.stringify(log)}
+if [ "$FAKE_GH_LOGGED_OUT" = "yes" ]; then
+  printf 'To get started with GitHub CLI, please run: gh auth login\\n' >&2
+  exit 1
+fi
 case "$*" in
 "repo view "*)
   if [ "$FAKE_GH_VIEW_FAILS" = "yes" ]; then
@@ -591,9 +598,11 @@ function world(options: WorldOptions = {}): World {
         ? ""
         : mcpStatusJson(options.mcpForeignAgain, configDir),
     FAKE_MCP_COUNT: join(home, "mcp-status-count"),
-    // The GitHub CLI: the login it answers, and whether its account can see the repository.
-    // And the way Claude Code's own add is refused on a machine with no GitHub SSH key.
+    // The GitHub CLI: the login it answers, whether its account can see the repository, and
+    // whether nobody is logged in at all. And the way Claude Code's own add is refused on a
+    // machine with no GitHub SSH key.
     FAKE_GH_LOGIN: options.ghLogin ?? "example-user",
+    FAKE_GH_LOGGED_OUT: options.ghLoggedOut === true ? "yes" : "no",
     FAKE_GH_VIEW_FAILS: options.ghRepoViewFails === true ? "yes" : "no",
     FAKE_CLAUDE_SSH_REFUSED: options.claudeSshRefused === true ? "yes" : "no",
     FAKE_CLAUDE_ADD_NOT_FOUND: options.claudeAddNotFound === true ? "yes" : "no",
@@ -1496,6 +1505,23 @@ describe("install.sh: the GitHub account and the marketplace's source", () => {
       `✓ 4/8 marketplaces added: ${REPO}, thedotmack/claude-mem, anthropics/claude-plugins-official\n`,
     );
   });
+
+  test("nobody is logged in to gh: the check is skipped, and none of gh's words are printed", () => {
+    // Both of gh's questions fail with its own "please run: gh auth login" line — and NEITHER
+    // of those lines may reach the output (both calls put gh's stderr away), so this also
+    // guards the two silencings: `>/dev/null 2>&1` on `repo view`, `2>/dev/null` on `api user`.
+    const w = world({ answers: browserAnswers("n"), ghLoggedOut: true });
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    // Asked, so the branch really is the "it answered nothing" one.
+    expect(w.callsOf("gh")).toEqual([`repo view ${REPO} --json name`, "api user --jq .login"]);
+    expect(out).not.toContain("the GitHub account");
+    expect(out).not.toContain("gh auth login");
+    expect(w.callsOf("claude")).toContain(`plugin marketplace add ${REPO}`);
+    expect(out).toContain(
+      `✓ 4/8 marketplaces added: ${REPO}, thedotmack/claude-mem, anthropics/claude-plugins-official\n`,
+    );
+  });
 });
 
 describe("the Windows fakes: the same logic the Windows run uses, on Linux", () => {
@@ -1728,9 +1754,47 @@ describe("the Windows fakes: the same logic the Windows run uses, on Linux", () 
       "Could not resolve to a Repository with the name 'example-org/cc-smart-dev-kit'.",
     );
   });
+
+  test("the fake gh answers a logged-out machine the way the real one does", () => {
+    // The Windows world's half of the "nobody is logged in" smoke case, proved here so the
+    // runner does not have to teach it: BOTH questions fail, with gh's own line on stderr and
+    // nothing on stdout — the machine the installer skips the check on, not stops on.
+    const w = fakeWorld();
+    const said: string[] = [];
+    const errors: string[] = [];
+    const io = {
+      error: (line: string) => errors.push(line),
+      say: (line: string) => said.push(line),
+    };
+    const loggedOut = { log: w.log, loggedOut: true };
+    expect(gh(["repo", "view", REPO, "--json", "name"], loggedOut, io)).toBe(1);
+    expect(gh(["api", "user", "--jq", ".login"], loggedOut, io)).toBe(1);
+    expect(said).toEqual([]);
+    expect(errors).toEqual([
+      "To get started with GitHub CLI, please run: gh auth login",
+      "To get started with GitHub CLI, please run: gh auth login",
+    ]);
+    expect(w.calls()).toEqual([`gh repo view ${REPO} --json name`, "gh api user --jq .login"]);
+  });
 });
 
 describe("the PowerShell files: the patterns the Windows run taught us", () => {
+  // The two installers must print the SAME lines for the same machine. PowerShell hands a
+  // native command's stderr straight to the console unless the call puts it away, so gh's own
+  // "Could not resolve to a Repository ..." and "please run: gh auth login" lines were printed
+  // by install.ps1 and not by install.sh (0.5.0 review). Every gh call in install.ps1 silences
+  // stderr now, exactly as install.sh's two calls do (`>/dev/null 2>&1`, `2>/dev/null`).
+  // The Windows smoke's logged-out case would catch a drop on the runner; this catches it on
+  // Linux, before that run. (`gh` is only ever asked these two questions.)
+  test("install.ps1 puts gh's own stderr away, as install.sh does", () => {
+    const ps1 = readFileSync(INSTALL_PS1, "utf8");
+    expect(ps1).toContain("& gh repo view $Repo --json name 2>$null");
+    expect(ps1).toContain("& gh api user --jq .login 2>$null");
+    const ghCalls = [...ps1.matchAll(/& gh [^\r\n]*/g)].map((match) => match[0]);
+    expect(ghCalls).toHaveLength(2);
+    expect(ghCalls.filter((call) => !call.includes("2>$null"))).toEqual([]);
+  });
+
   // 0.4.2's first Windows run printed "marketplaces added: c, x, ..." for the repository:
   // `@(@($a, $b)) + $list` does NOT keep the pair together -- PowerShell enumerates that
   // inner array, the loop then walks two STRINGS before the pairs, and `$pair[0]` on a

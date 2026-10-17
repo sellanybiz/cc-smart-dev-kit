@@ -6070,11 +6070,14 @@ var FAMILY_SLOTS = {
   "cc-smart-dev-kit-worker": "sonnet",
   ...MODEL_SLOTS
 };
+var PROVIDER_PREFIX = /^(?:[a-z0-9-]+\.)*claude-/;
 function claudeFamily(model) {
   const name = `${withoutContextSuffix(model).toLowerCase()}-`;
-  if (!name.startsWith("claude-"))
+  const prefix = PROVIDER_PREFIX.exec(name);
+  if (prefix === null)
     return null;
-  return CLAUDE_FAMILIES.find((family) => name.includes(`-${family}-`)) ?? null;
+  const id = name.slice(prefix[0].length - "claude-".length);
+  return CLAUDE_FAMILIES.find((family) => id.includes(`-${family}-`)) ?? null;
 }
 function familySlotKey(family) {
   return Object.keys(FAMILY_SLOTS).find((key) => FAMILY_SLOTS[key] === family) ?? null;
@@ -6216,8 +6219,6 @@ function fallbackOn(config, slot) {
   const set = config.fallback;
   if (set !== undefined && Object.hasOwn(set, slot))
     return set[slot] === true;
-  if (Object.values(config.modelSlots ?? {}).includes(slot))
-    return true;
   return !FALLBACK_OFF_BY_DEFAULT.includes(slot);
 }
 function aliasError(name, to, config) {
@@ -6990,6 +6991,7 @@ var FALLBACK_SAVE_EVERY_MS = 60000;
 var TOO_LONG = /context|too long|too large|too many tokens|token limit|payload/i;
 var UNSUPPORTED = /unsupported|not supported|unknown (?:content|block|type)|invalid (?:content|block) type|image|document|server_tool|web_search|web_fetch|tool_reference/i;
 var BAD_SIGNATURE = "Invalid `signature`";
+var NO_HEADERS_IN_TIME = "no response headers in time";
 var HEALTH_PATH = "/__cc-smart-dev-kit/health";
 var MESSAGES_PATH = "/v1/messages";
 var COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
@@ -7562,11 +7564,11 @@ function createRouter(deps) {
       const first = await (timer === null ? pending : Promise.race([pending, timer.done]));
       if (first !== "timeout")
         return { response: first };
-      controller.abort(new Error("no response headers in time"));
+      controller.abort(new Error(NO_HEADERS_IN_TIME));
       pending.then(discard, () => {
         return;
       });
-      return { failure: "no response headers in time", status: null };
+      return { failure: NO_HEADERS_IN_TIME, status: null };
     } catch (error) {
       return { failure: messageOf(error), status: null };
     } finally {
@@ -7727,6 +7729,7 @@ function createRouter(deps) {
     const failures = [];
     let fallbacks = 0;
     let skipped = 0;
+    let lastTimedOut = false;
     for (const [index, target] of targets.entries()) {
       const last = index === targets.length - 1;
       const label = formatTarget(target);
@@ -7736,7 +7739,7 @@ function createRouter(deps) {
         skipped += 1;
         continue;
       }
-      const deadlineAt = !last && target.kind === "backend" && (body.stream === true || guard) ? deps.now() + config.timeouts.firstByteMs : null;
+      const deadlineAt = target.kind === "backend" && (guard || !last && body.stream === true) ? deps.now() + config.timeouts.firstByteMs : null;
       const built = targetUpstream(req, url, config, body, target, guard, asked);
       let result = "error" in built ? { failure: built.error, status: null } : await send(req, built.upstream, deadlineAt);
       if (req.signal.aborted)
@@ -7752,6 +7755,7 @@ function createRouter(deps) {
       if (url.pathname === MESSAGES_PATH)
         noteCooldown(label, result);
       if ("failure" in result) {
+        lastTimedOut = last && result.failure === NO_HEADERS_IN_TIME;
         failures.push(`${label}: ${result.failure}`);
         if (!last) {
           fallbacks += 1;
@@ -7786,9 +7790,10 @@ function createRouter(deps) {
       fallbacks += 1;
     }
     const lastTarget = targets.at(-1);
+    const answered = failures.join("; ") || "no targets";
     return {
       fallbacks,
-      response: anthropicError(502, "api_error", `cc-smart-dev-kit-router: no target for ${name} answered (${failures.join("; ") || "no targets"})`),
+      response: lastTimedOut ? anthropicError(504, "timeout_error", `cc-smart-dev-kit-router: no target for ${name} answered within ${config.timeouts.firstByteMs} ms (${answered})`) : anthropicError(502, "api_error", `cc-smart-dev-kit-router: no target for ${name} answered (${answered})`),
       skipped,
       target: lastTarget === undefined ? "none" : formatTarget(lastTarget)
     };

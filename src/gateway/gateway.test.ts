@@ -57,7 +57,13 @@ import {
   type UpstreamInit,
 } from "./router";
 import type { CheckDay } from "./safety-checks";
-import { cooldownSeconds, isAutoModeGuard, planUsageLimit, resolveRoute } from "./targets";
+import {
+  claudeFamily,
+  cooldownSeconds,
+  isAutoModeGuard,
+  planUsageLimit,
+  resolveRoute,
+} from "./targets";
 
 /**
  * The judge test proofs of the test config's two affordable targets, as `gateway slot judge`
@@ -1258,6 +1264,36 @@ describe("auto mode's safety check", () => {
     expect(res.status).toBe(200);
     expect(calls.map((c) => c.url)).toEqual([OLLAMA_URL, OMNI_URL]);
     expect(firstSignal?.aborted).toBe(true);
+  });
+
+  it("a lone judge that hangs gets the deadline too: a 504 timeout in Anthropic's shape, never a wait", async () => {
+    let signal: AbortSignal | undefined;
+    const lone: GatewayConfig = {
+      ...withJudge(50),
+      slots: { ...config(50).slots, "cc-smart-dev-kit-judge": ["ollama:deepseek-v4.1-flash"] },
+    };
+    const { calls, handle } = router(
+      [
+        (call) => {
+          signal = call.signal;
+          // Never answers, and ignores the abort: the router must not wait on it.
+          return new Promise<Response>(() => undefined);
+        },
+      ],
+      { config: lone },
+    );
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(504);
+    expect(await res.json()).toEqual({
+      error: {
+        message:
+          "cc-smart-dev-kit-router: no target for cc-smart-dev-kit-judge answered within 50 ms (ollama:deepseek-v4.1-flash: no response headers in time)",
+        type: "timeout_error",
+      },
+      type: "error",
+    });
+    expect(calls.map((c) => c.url)).toEqual([OLLAMA_URL]);
+    expect(signal?.aborted).toBe(true);
   });
 
   it("judge not set, the plan's usage limit: the answer goes back as it is", async () => {
@@ -3312,12 +3348,37 @@ describe("model slots (opus, fable) and every slot by its family", () => {
     expect(again.calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OMNI_URL]);
   });
 
-  it("a 0.4.x config reads with its meaning kept: Opus first, its fallback on, the next target at its limit", async () => {
-    const { calls, handle } = router([atLimit, ok], { config: oldOpusConfig() });
+  it("a 0.4.x opus chain starts with its fallback off: Opus answers, and at its limit the 429 goes back; nothing else is asked", async () => {
+    // 0.4.x moved on only at the plan's usage limit; "on" now moves on at any 408 / 429 / 5xx,
+    // so a chain set before 0.5.0 gets the opus default, off, until the person turns it on.
+    const { calls, handle } = router([atLimit], { config: oldOpusConfig() });
     const sent = JSON.stringify(opusBody(), null, 1);
-    await handle(clientRequest({ body: sent }));
-    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OMNI_URL]);
+    const res = await handle(clientRequest({ body: sent }));
+    expect(res.status).toBe(429);
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
     expect(nth(calls, 0).body).toBe(sent);
+    expect(fallbackOn(oldOpusConfig(), "cc-smart-dev-kit-opus")).toBe(false);
+  });
+
+  it("a provider's prefix before the Claude id still names its family; a backend's model never does", async () => {
+    expect(claudeFamily("us.anthropic.claude-fable-5-1-20261001-v1:0")).toBe("fable");
+    expect(claudeFamily("anthropic.claude-opus-5-5")).toBe("opus");
+    expect(claudeFamily("global.anthropic.claude-sonnet-5-5[1m]")).toBe("sonnet");
+    expect(claudeFamily("claude-haiku-4-5-20251001")).toBe("haiku");
+    expect(claudeFamily("omniroute:anthropic.claude-opus-5-5")).toBeNull();
+    expect(claudeFamily("openrouter/claude-opus-5-5")).toBeNull();
+    expect(claudeFamily("my-claude-opus-5-5")).toBeNull();
+    // Routing follows: such an Opus id reaches the opus chain; with no chain, it goes as sent.
+    const on = router([ok], { config: withOpus(["omniroute:glm-5.3-flash"]) });
+    await on.handle(
+      clientRequest({ body: JSON.stringify(message("us.anthropic.claude-opus-5-5-v1:0")) }),
+    );
+    expect(on.calls.map((c) => c.url)).toEqual([OMNI_URL]);
+    const off = router([ok]);
+    const sent = JSON.stringify(message("us.anthropic.claude-opus-5-5-v1:0"));
+    await off.handle(clientRequest({ body: sent }));
+    expect(off.calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+    expect(nth(off.calls, 0).body).toBe(sent);
   });
 
   it("another Claude model in the chain gets the body with its model set, and only the fields it refuses changed", async () => {
@@ -3485,7 +3546,7 @@ describe("model slots (opus, fable) and every slot by its family", () => {
     );
   });
 
-  it("each slot's fallback switch: its own setting, else on for scout and worker, off for opus, fable and judge; a 0.4.x model slot on", () => {
+  it("each slot's fallback switch: its own setting, else on for scout and worker, off for opus, fable and judge", () => {
     const slots = {
       "cc-smart-dev-kit-fable": ["omniroute:glm-5.3-flash"],
       "cc-smart-dev-kit-judge": ["ollama:deepseek-v4.1-flash"],
@@ -3493,7 +3554,7 @@ describe("model slots (opus, fable) and every slot by its family", () => {
       "cc-smart-dev-kit-scout": ["omniroute:glm-5.3-flash"],
       "cc-smart-dev-kit-worker": ["omniroute:glm-5.3-flash"],
     };
-    const states = (cfg: Pick<GatewayConfig, "fallback" | "modelSlots">) =>
+    const states = (cfg: Pick<GatewayConfig, "fallback">) =>
       Object.keys(slots).map((slot) => [slot, fallbackOn(cfg, slot)]);
     expect(states({})).toEqual([
       ["cc-smart-dev-kit-fable", false],
@@ -3505,25 +3566,14 @@ describe("model slots (opus, fable) and every slot by its family", () => {
     expect(
       states({
         fallback: { "cc-smart-dev-kit-judge": true, "cc-smart-dev-kit-worker": false },
-        modelSlots: { "claude-opus-5-5": "cc-smart-dev-kit-opus" },
       }),
     ).toEqual([
       ["cc-smart-dev-kit-fable", false],
       ["cc-smart-dev-kit-judge", true],
-      ["cc-smart-dev-kit-opus", true],
+      ["cc-smart-dev-kit-opus", false],
       ["cc-smart-dev-kit-scout", true],
       ["cc-smart-dev-kit-worker", false],
     ]);
-    // The person's own setting wins over the 0.4.x meaning.
-    expect(
-      fallbackOn(
-        {
-          fallback: { "cc-smart-dev-kit-opus": false },
-          modelSlots: { "claude-opus-5-5": "cc-smart-dev-kit-opus" },
-        },
-        "cc-smart-dev-kit-opus",
-      ),
-    ).toBe(false);
   });
 
   // ─── Another target's answer, kept safe for the Claude conversation ─────────────

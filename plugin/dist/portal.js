@@ -6982,11 +6982,14 @@ var FAMILY_SLOTS = {
   "cc-smart-dev-kit-worker": "sonnet",
   ...MODEL_SLOTS
 };
+var PROVIDER_PREFIX = /^(?:[a-z0-9-]+\.)*claude-/;
 function claudeFamily(model) {
   const name = `${withoutContextSuffix(model).toLowerCase()}-`;
-  if (!name.startsWith("claude-"))
+  const prefix = PROVIDER_PREFIX.exec(name);
+  if (prefix === null)
     return null;
-  return CLAUDE_FAMILIES.find((family) => name.includes(`-${family}-`)) ?? null;
+  const id = name.slice(prefix[0].length - "claude-".length);
+  return CLAUDE_FAMILIES.find((family) => id.includes(`-${family}-`)) ?? null;
 }
 function familySlotKey(family) {
   return Object.keys(FAMILY_SLOTS).find((key) => FAMILY_SLOTS[key] === family) ?? null;
@@ -7128,8 +7131,6 @@ function fallbackOn(config, slot) {
   const set = config.fallback;
   if (set !== undefined && Object.hasOwn(set, slot))
     return set[slot] === true;
-  if (Object.values(config.modelSlots ?? {}).includes(slot))
-    return true;
   return !FALLBACK_OFF_BY_DEFAULT.includes(slot);
 }
 function aliasError(name, to, config) {
@@ -7951,6 +7952,7 @@ var FALLBACK_SAVE_EVERY_MS = 60000;
 var TOO_LONG = /context|too long|too large|too many tokens|token limit|payload/i;
 var UNSUPPORTED = /unsupported|not supported|unknown (?:content|block|type)|invalid (?:content|block) type|image|document|server_tool|web_search|web_fetch|tool_reference/i;
 var BAD_SIGNATURE = "Invalid `signature`";
+var NO_HEADERS_IN_TIME = "no response headers in time";
 var HEALTH_PATH = "/__cc-smart-dev-kit/health";
 var MESSAGES_PATH = "/v1/messages";
 var COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
@@ -8523,11 +8525,11 @@ function createRouter(deps) {
       const first = await (timer === null ? pending : Promise.race([pending, timer.done]));
       if (first !== "timeout")
         return { response: first };
-      controller.abort(new Error("no response headers in time"));
+      controller.abort(new Error(NO_HEADERS_IN_TIME));
       pending.then(discard, () => {
         return;
       });
-      return { failure: "no response headers in time", status: null };
+      return { failure: NO_HEADERS_IN_TIME, status: null };
     } catch (error) {
       return { failure: messageOf(error), status: null };
     } finally {
@@ -8688,6 +8690,7 @@ function createRouter(deps) {
     const failures = [];
     let fallbacks = 0;
     let skipped = 0;
+    let lastTimedOut = false;
     for (const [index, target] of targets.entries()) {
       const last = index === targets.length - 1;
       const label = formatTarget(target);
@@ -8697,7 +8700,7 @@ function createRouter(deps) {
         skipped += 1;
         continue;
       }
-      const deadlineAt = !last && target.kind === "backend" && (body.stream === true || guard) ? deps.now() + config.timeouts.firstByteMs : null;
+      const deadlineAt = target.kind === "backend" && (guard || !last && body.stream === true) ? deps.now() + config.timeouts.firstByteMs : null;
       const built = targetUpstream(req, url, config, body, target, guard, asked);
       let result = "error" in built ? { failure: built.error, status: null } : await send(req, built.upstream, deadlineAt);
       if (req.signal.aborted)
@@ -8713,6 +8716,7 @@ function createRouter(deps) {
       if (url.pathname === MESSAGES_PATH)
         noteCooldown(label, result);
       if ("failure" in result) {
+        lastTimedOut = last && result.failure === NO_HEADERS_IN_TIME;
         failures.push(`${label}: ${result.failure}`);
         if (!last) {
           fallbacks += 1;
@@ -8747,9 +8751,10 @@ function createRouter(deps) {
       fallbacks += 1;
     }
     const lastTarget = targets.at(-1);
+    const answered = failures.join("; ") || "no targets";
     return {
       fallbacks,
-      response: anthropicError(502, "api_error", `cc-smart-dev-kit-router: no target for ${name} answered (${failures.join("; ") || "no targets"})`),
+      response: lastTimedOut ? anthropicError(504, "timeout_error", `cc-smart-dev-kit-router: no target for ${name} answered within ${config.timeouts.firstByteMs} ms (${answered})`) : anthropicError(502, "api_error", `cc-smart-dev-kit-router: no target for ${name} answered (${answered})`),
       skipped,
       target: lastTarget === undefined ? "none" : formatTarget(lastTarget)
     };
@@ -12656,6 +12661,15 @@ function turnOn(options) {
     ...options.dryRun !== undefined && { dryRun: options.dryRun }
   });
 }
+function retireOldModelKeys(options) {
+  return applyManagedJson({
+    file: options.settingsFile,
+    stateDir: options.stateDir,
+    remove: RETIRED_GATEWAY_ENV_KEYS.map(envPath),
+    createdObject: createdObjects(options.stateDir, options.settingsFile),
+    ...options.dryRun !== undefined && { dryRun: options.dryRun }
+  });
+}
 function turnOff(options) {
   const env = readSettings(options.settingsFile).env;
   const result = applyManagedJson({
@@ -12826,6 +12840,35 @@ function withFallback(config, slot, value) {
     kept.push([slot, value]);
   return kept.length > 0 ? { ...rest, fallback: Object.fromEntries(kept) } : rest;
 }
+var RETIRED_DEFAULT_CHAIN = [
+  "omniroute:ollama-cloud/deepseek-v4.1-flash",
+  "omniroute:ollama-cloud/glm-5.3-flash",
+  "claude-sonnet-5-5"
+];
+var RETIRED_DEFAULT_SLOTS = [
+  "cc-smart-dev-kit-scout",
+  "cc-smart-dev-kit-worker"
+];
+function withoutRetiredDefaultClaude(config) {
+  const dropped = RETIRED_DEFAULT_SLOTS.filter((slot) => {
+    const chain = Object.hasOwn(config.slots, slot) ? config.slots[slot] : undefined;
+    return chain !== undefined && chain.length === RETIRED_DEFAULT_CHAIN.length && chain.every((target, index) => target === RETIRED_DEFAULT_CHAIN[index]);
+  });
+  if (dropped.length === 0)
+    return { config, dropped };
+  const slots = { ...config.slots };
+  for (const slot of dropped)
+    slots[slot] = RETIRED_DEFAULT_CHAIN.slice(0, -1);
+  return { config: { ...config, slots }, dropped };
+}
+function upgradeConfig(configPath, options = {}) {
+  if (!existsSync19(configPath))
+    return [];
+  const { config, dropped } = withoutRetiredDefaultClaude(loadConfigFile(configPath));
+  if (dropped.length > 0 && options.dryRun !== true)
+    saveConfig(configPath, config);
+  return dropped.map((slot) => `~ ${slot}: took out ${RETIRED_DEFAULT_CHAIN.at(-1)}, the Claude model 0.4.x put at the end of its default chain; no Claude model answers there unless you put one in (${COMMAND} gateway slot ${slotName(slot)} <targets>)`);
+}
 function planSlotChange(current, slotArg, targetsText, modelsByBackend) {
   const key = slotKeyFromArg(slotArg);
   if (key === null) {
@@ -12871,11 +12914,7 @@ function planSlotChange(current, slotArg, targetsText, modelsByBackend) {
       };
     }
   }
-  let changed = { ...base, slots: { ...base.slots, [key]: next } };
-  if (old.length > 0 && fallbackOn(changed, key) !== fallbackOn(config, key)) {
-    changed = withFallback(changed, key, fallbackOn(config, key));
-  }
-  const checked = parseConfig(changed);
+  const checked = parseConfig({ ...base, slots: { ...base.slots, [key]: next } });
   if ("error" in checked)
     return { error: checked.error };
   return { config: checked.config, key, next, old };
@@ -13221,6 +13260,8 @@ async function commandSetup(ctx, args) {
     allowNone: options.noKey || password !== null,
     dryRun: true
   });
+  upgradeConfig(configPath, { dryRun: true });
+  retireOldModelKeys({ dryRun: true, settingsFile: paths.settingsFile, stateDir: paths.stateDir });
   if (await installRouter(install({ dryRun: true })) === "declined")
     return 1;
   if (password !== null) {
@@ -13294,6 +13335,8 @@ async function commandSetup(ctx, args) {
         stateDir: paths.stateDir
       });
       ctx.print(said.replaceAll(configPath, tildify(configPath, paths.home)));
+      for (const line of upgradeConfig(configPath))
+        ctx.print(line);
       if (existsSync19(configPath) && Object.keys(loadConfigFile(configPath).slots).length === 0) {
         ctx.print(`Every slot is off, so every Claude model stays plain Claude. Pick the models yourself: ${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets> (or the portal's Slots page).`);
       }
@@ -13311,6 +13354,15 @@ async function commandSetup(ctx, args) {
             ctx.print(line);
         }
       }));
+      const retired = retireOldModelKeys({
+        settingsFile: paths.settingsFile,
+        stateDir: paths.stateDir
+      });
+      if (retired.changes.length > 0) {
+        ctx.print(changeLines(retired, paths.home).join(`
+`));
+        ctx.print("Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.");
+      }
       if (settingsReport(paths.settingsFile).baseUrl === null) {
         ctx.print(`Claude Code does not use the gateway yet. Check it: ${COMMAND} gateway status. Then: ${COMMAND} gateway on.`);
       }
@@ -23273,7 +23325,7 @@ function slotRows(config, router) {
     const targets = config.slots[key];
     const on = targets !== undefined;
     rows.push({
-      fallback: on && fallbackOn(config, key),
+      fallback: fallbackOn(config, key),
       info: meta.info,
       key,
       kind: on ? meta.kind : "off",
@@ -23615,7 +23667,7 @@ function memoryFile(paths) {
   return paths.portalStateFile;
 }
 function emptyMemory() {
-  return { fallback: {}, judge: [], version: 1 };
+  return { fallback: {}, judge: [], switches: {}, version: 1 };
 }
 function parseMemory(text) {
   let raw;
@@ -23638,7 +23690,14 @@ function parseMemory(text) {
       }
     }
   }
-  return { fallback, judge, version: 1 };
+  const switches = {};
+  if (typeof body.switches === "object" && body.switches !== null) {
+    for (const [slot, on] of Object.entries(body.switches)) {
+      if (typeof on === "boolean")
+        switches[slot] = on;
+    }
+  }
+  return { fallback, judge, switches, version: 1 };
 }
 function readMemory(paths) {
   try {
@@ -23791,7 +23850,24 @@ function rememberChain(action, slot, targets) {
     action.memory.fallback[slot] = targets;
   else
     return;
+  const fallback = currentFallback(action, slot);
+  if (fallback !== null)
+    action.memory.switches[slot] = fallback;
   writeMemory(action.portal.paths, action.memory);
+}
+function currentFallback(action, slot) {
+  try {
+    return fallbackOn(loadConfigFile(action.portal.paths.gatewayConfigFile), slot);
+  } catch {
+    return null;
+  }
+}
+async function restoreFallback(action, slot) {
+  const wanted = Object.hasOwn(action.memory.switches, slot) ? action.memory.switches[slot] : undefined;
+  if (wanted === undefined || currentFallback(action, slot) === wanted) {
+    return { lines: [], ok: true };
+  }
+  return gateway(action, ["fallback", slot, wanted ? "on" : "off"]);
 }
 function rememberCurrent(action, slot) {
   const targets = currentChain(action, slot);
@@ -23823,7 +23899,11 @@ async function switchJudge(action, on) {
       ok: false
     };
   }
-  return gateway(action, ["slot", "judge", action.memory.judge.join(",")]);
+  const set = await gateway(action, ["slot", "judge", action.memory.judge.join(",")]);
+  if (!set.ok)
+    return set;
+  const fallback = await restoreFallback(action, JUDGE_SLOT);
+  return { lines: [...set.lines, ...fallback.lines], ok: fallback.ok };
 }
 async function switchModels(action, on) {
   const slots = Object.keys(MODEL_SLOTS);
@@ -23853,10 +23933,14 @@ async function switchModels(action, on) {
       continue;
     }
     const result = await gateway(action, ["slot", slot, targets.join(",")]);
-    if (result.ok)
-      turnedOn += 1;
     ok = ok && result.ok;
     lines.push(...result.lines);
+    if (!result.ok)
+      continue;
+    turnedOn += 1;
+    const fallback = await restoreFallback(action, slot);
+    ok = ok && fallback.ok;
+    lines.push(...fallback.lines);
   }
   if (missing.length > 0) {
     lines.push(`No saved chain for ${missing.join(" or ")}: go to Slots, pick it, add a model, and Save.`);

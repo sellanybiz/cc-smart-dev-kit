@@ -1,16 +1,18 @@
 /**
- * A model slot's fallback answer, made safe to keep in a Claude conversation.
+ * An answer another target gave for a Claude model's request, made safe to keep in a Claude
+ * conversation.
  *
- * WHY (the owner's yes, 2026-10-15, for exactly this case)
- *   While Opus or Fable is at its plan's usage limit, a model slot answers from a more affordable
- *   target. Claude Code stores that answer in the conversation and sends it back on every
- *   later turn. Once the Claude model answers again, it checks the signature of every
- *   `thinking` block in the history. A block another model wrote (GLM through OmniRoute
- *   answers with a `thinking` block whose signature is made up, and a `redacted_thinking`
- *   block) fails that check: Anthropic answers 400 "Invalid `signature` in `thinking`
+ * WHY (the owner's yes, 2026-10-15, first for a model slot's fallback; since 0.5.0 for every
+ * answer another target gives to a request that named a Claude model)
+ *   A slot reached by a Claude model's family may answer from another model: a backend, or
+ *   another Claude model. Claude Code stores that answer in the conversation and sends it
+ *   back on every later turn. Once the Claude model answers that conversation again, it
+ *   checks the signature of every `thinking` block in the history. A block another model
+ *   wrote (GLM through OmniRoute answers with a `thinking` block whose signature is made up,
+ *   and a `redacted_thinking` block) fails that check: Anthropic answers 400 "Invalid `signature` in `thinking`
  *   block", and resending the same history never clears it
  *   (platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting). The session
- *   is stuck. So, for a model slot's fallback answers only:
+ *   is stuck. So, for those answers only (never the model's own):
  *   - `thinking` and `redacted_thinking` blocks are removed, and the later blocks'
  *     `index` values renumbered so they stay 0, 1, 2 … (a stream);
  *   - an answer left with no block gets one text block, `EMPTY_ANSWER_TEXT`: Anthropic
