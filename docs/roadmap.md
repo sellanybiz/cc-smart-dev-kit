@@ -115,6 +115,38 @@ The owner's decisions, all about which model runs what, in one patch release:
 The general instructions (`plugin/instructions/core.md`), the `subagent-decision` and `review`
 skills and the two reference pages carry the same words; core.md stays at its 190 lines.
 
+## 0.4.2 — one command installs the plugin
+
+- `install.sh` and `install.ps1` (README § Install): the same steps, words and exit codes on
+  macOS, Linux and native Windows; each step one line, skipped when done; asks before it
+  installs or upgrades Bun; asks for the browser token, the gateway key and the Tavily key
+  (each can be skipped, none is echoed); ends with `doctor` and what is left. Exit codes: 0
+  done, 3 installed with items left, 1 a step failed, 2 refused.
+- The move runs on every machine and `setup` follows it (`migrate` says "Nothing to move."
+  where there is nothing). `setup --tavily-key-stdin` writes the key through the token's own
+  atomic writer.
+
+## 0.4.3 — the installer's first real run
+
+- The marketplace is refreshed before any version is compared, then the installed CLI's own
+  version is read (older: stop, with the two commands that fix it, exit 1).
+- A backend key is tested before it is saved (`gateway check`, `--backend-key-stdin`,
+  `--save-unchecked`); `gateway setup --omniroute-password[-stdin]` can make the router's key
+  itself. The installer asks before it replaces an MCP server of the person's own
+  (`mcp status --json`). A pasted secret no longer arrives broken (one home,
+  `src/cli/secret-line.ts`, and both installers). Both of Chrome's files name the
+  `claude-code` profile; `doctor` reads Chrome's own extension record.
+
+## 0.5.0 — every gateway slot works the same way
+
+- A slot is reached by the model's family; each slot has its own fallback switch; a slot with
+  no chain is off; no hidden Claude step; the judge judges every check; `agent-guard` reads
+  affordability from `gateway.json`; another model's thinking never goes back to Claude;
+  claude-mem follows the scout slot only.
+- The upgrade path takes out the 0.4.3 model keys, drops the hidden `claude-sonnet-5-5`,
+  starts an old opus or fable chain with its fallback off, and ignores an untested judge.
+  `worktrees --remove` no longer finds itself; `--admin` always asks.
+
 ## 1 — Foundation (done)
 
 The repo, CI, the bundle step and its check, `claude plugin validate --strict`, the
@@ -211,7 +243,8 @@ sessions closed in the same moment before the machine started (`docs/windows-set
 Slots keyed by the real model ids, so a Claude model at the plan's usage limit falls back
 to a chosen target instead of stopping; the usage-limit alert; and the status line's
 warning. The fallback's answers are made safe for Claude Code (`fallback-answer.ts`), and
-a judge target is used only after it passed the judge test.
+a judge target is used only after it passed the judge test. (0.5.0 changed how a slot is reached: by the model's family, not
+by an exact id, and each slot has its own fallback switch.)
 
 ## 8 — Web search (done, 0.3.0)
 
