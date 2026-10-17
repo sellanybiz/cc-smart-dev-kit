@@ -128,6 +128,18 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "alerts.usagePercent",
 ];
 
+/**
+ * The settings the merge guard judges a merge with: the **review gate**. The guard reads them
+ * from the person's own file and from the project's file as committed on the pull request's
+ * base, never a checkout's working copy (`resolveGate` in `resolve.ts`), and `workflow set`
+ * and `unset` refuse them inside Claude Code (`commands.ts`): only the person changes the gate.
+ */
+export const REVIEW_GATE_KEYS: readonly WorkflowKey[] = [
+  "autoMerge",
+  "reviewBeforePush",
+  "reviewAgents",
+];
+
 /** Every switch key, in the order `workflow show` prints them. */
 export const SWITCH_KEYS: readonly WorkflowKey[] = SWITCH_NAMES.map(
   (name) => `switches.${name}` as WorkflowKey,

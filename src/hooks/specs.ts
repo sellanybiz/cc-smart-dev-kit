@@ -16,7 +16,7 @@
  * | merge-guard | PreToolUse (Bash, PowerShell) | asking before every command that merges a pull request (`merge-guard.ts`) |
  * | job-route | PreToolUse (Bash) | asking about a heavy command, classified with the default kinds |
  * | after-merge | PostToolUse, PostToolUseFailure (Bash, PowerShell) | one line after a merge |
- * | review-record | SubagentStop | one line when the review could not be recorded |
+ * | review-record | SubagentStart, SubagentStop | one line when the review could not be recorded |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
  *
@@ -44,6 +44,7 @@ import { existsSync } from "node:fs";
 import { classifyHeavyCommand } from "../jobs/classify";
 import { mergeKinds } from "../jobs/kinds";
 import type { CcSmartDevKitConfig } from "../project/config";
+import { recordsReview } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import { afterMerge, mergesPullRequest, requestsMerge } from "./after-merge";
 import { agentGuard, guardFacts } from "./agent-guard";
@@ -63,7 +64,7 @@ import { jobRoute, routeFacts } from "./job-route";
 import { editedFile, mainFolderGuard, serenaEditedFile } from "./main-folder-guard";
 import { mergeGuard } from "./merge-guard";
 import { messageGuard } from "./message-guard";
-import { agentTypeOf, recordsReview, reviewRecord } from "./review-record";
+import { agentTypeOf, reviewRecord } from "./review-record";
 import type { HookSpec } from "./run";
 import { readSerenaRoot, serenaRoot } from "./serena-root";
 import { sessionName } from "./session-name";
@@ -244,25 +245,29 @@ export const afterMergeHook: HookSpec = {
 };
 
 /**
- * The review record: SubagentStop, when the agent that stopped is a review agent
- * (`workflow.reviewAgents`, default: the plugin's own reviewer). It records the commit the
- * session's working folder is on, which is what the merge guard reads before a merge it
- * would make with no person watching (`src/hooks/review-record.ts`, the whole story).
+ * The review record: SubagentStart notes the commit a review agent (`workflow.reviewAgents`,
+ * default: the plugin's own reviewer) starts on, and SubagentStop records it when the agent
+ * stops on that same commit — what the merge guard reads before a merge it would make with
+ * no person watching (`src/hooks/review-record.ts`, the whole story).
  *
  * A plugin-wired SubagentStop is safe for THIS hook because it never touches a worktree: the
  * engine's own `subagent-stop` stays the project's opt-in (`.claude/rules/hooks.md`).
- * SubagentStop carries no context, so its answers are silence and stderr only.
+ * SubagentStart cannot block a launch, and this hook adds no context to either event, so its
+ * answers are silence and stderr only.
  */
 export const reviewRecordHook: HookSpec = {
   name: "review-record",
-  events: ["SubagentStop"],
+  events: ["SubagentStart", "SubagentStop"],
   wiring: "plugin",
-  onConfigProblem: (message, input) => {
+  onConfigProblem: (message, input, event) => {
     // Which agents record is in the project's file, so with no usable file the built-in list
     // decides whether this is even about a review: one stderr line when it is, silence when
-    // it is not, like `after-merge` only speaks after a merge.
+    // it is not, like `after-merge` only speaks after a merge. Said once, at the stop, where
+    // the review would have been recorded.
     const agent = agentTypeOf(input);
-    return agent !== null && recordsReview(agent, workflowDefaults.reviewAgents)
+    return event === "SubagentStop" &&
+      agent !== null &&
+      recordsReview(agent, workflowDefaults.reviewAgents)
       ? { stderr: `cc-smart-dev-kit review-record: ${message}` }
       : SILENT;
   },

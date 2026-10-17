@@ -4,7 +4,14 @@ import { join } from "node:path";
 import { VERSION } from "../build-info";
 import { git, tempDir } from "../testing/temp";
 import { CcSmartDevKitConfigError, CcSmartDevKitVersionError } from "./config";
-import { GIT_NOT_FOUND, locateCheckout, ownHooksOf, resolveProject } from "./resolve";
+import {
+  type Checkout,
+  GIT_NOT_FOUND,
+  locateCheckout,
+  ownHooksOf,
+  readCommittedConfig,
+  resolveProject,
+} from "./resolve";
 
 /** A repo with one commit, so `git worktree add` works. */
 function makeRepo(): string {
@@ -341,5 +348,72 @@ describe("resolveProject: git problems give clear errors", () => {
   test("a new enough git outside a repo: still null", () => {
     const env = fakeGitEnv({ "--version": "echo 'git version 2.31.0'; exit 0" });
     expect(resolveProject(tempDir("nogit"), { env })).toBeNull();
+  });
+});
+
+describe("readCommittedConfig: the file as committed on origin/<branch> (CM-1)", () => {
+  /** The checkout of `folder`, which must be in git. */
+  function checkoutOf(folder: string): Checkout {
+    const checkout = locateCheckout(folder);
+    if (checkout === null) throw new Error(`${folder} is not in git`);
+    return checkout;
+  }
+
+  /** A repo whose project file is committed and whose `origin/dev` points at that commit. */
+  function committedRepo(content: string): string {
+    const repo = makeRepo();
+    writeCcSmartDevKitJson(repo, content);
+    git(repo, "add", ".claude/cc-smart-dev-kit.json");
+    git(repo, "commit", "-q", "-m", "policy");
+    git(repo, "update-ref", "refs/remotes/origin/dev", "HEAD");
+    return repo;
+  }
+
+  test("CM-1: the committed file, never the working copy", () => {
+    const repo = committedRepo('{ "workflow": { "autoMerge": true } }');
+    writeCcSmartDevKitJson(repo, '{ "workflow": { "autoMerge": false } }');
+    expect(readCommittedConfig(checkoutOf(repo), "dev")).toEqual({
+      found: true,
+      where: "origin/dev:.claude/cc-smart-dev-kit.json",
+      config: { workflow: { autoMerge: true } },
+    });
+  });
+
+  test("CM-1: a worktree reads the same ref, whatever its own copy says", () => {
+    const repo = committedRepo('{ "workflow": { "autoMerge": true } }');
+    const worktree = join(repo, "..", "wt");
+    git(repo, "worktree", "add", "-q", "-b", "wt", worktree);
+    writeCcSmartDevKitJson(worktree, '{ "workflow": { "autoMerge": false } }');
+    const read = readCommittedConfig(checkoutOf(worktree), "dev");
+    expect(read.found && read.config).toEqual({ workflow: { autoMerge: true } });
+  });
+
+  test("no such ref: found false, saying so", () => {
+    const repo = committedRepo("{}");
+    expect(readCommittedConfig(checkoutOf(repo), "release")).toEqual({
+      found: false,
+      where: "origin/release:.claude/cc-smart-dev-kit.json",
+      why: "origin/release is not known in this repository (no origin, or the branch was never fetched)",
+    });
+  });
+
+  test("a ref whose commit has no project file: found false, saying so", () => {
+    const repo = makeRepo();
+    git(repo, "update-ref", "refs/remotes/origin/dev", "HEAD");
+    expect(readCommittedConfig(checkoutOf(repo), "dev")).toEqual({
+      found: false,
+      where: "origin/dev:.claude/cc-smart-dev-kit.json",
+      why: "origin/dev has no .claude/cc-smart-dev-kit.json committed",
+    });
+  });
+
+  test("a committed file that is invalid, or too new: throws, naming the ref", () => {
+    const broken = checkoutOf(committedRepo('{ "worktree": {} }'));
+    expect(() => readCommittedConfig(broken, "dev")).toThrow(CcSmartDevKitConfigError);
+    expect(() => readCommittedConfig(broken, "dev")).toThrow(
+      "Invalid origin/dev:.claude/cc-smart-dev-kit.json: worktree: unknown field",
+    );
+    const newer = checkoutOf(committedRepo('{ "requires": ">=99" }'));
+    expect(() => readCommittedConfig(newer, "dev")).toThrow(CcSmartDevKitVersionError);
   });
 });

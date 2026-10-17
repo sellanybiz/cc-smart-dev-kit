@@ -6586,18 +6586,21 @@ function checkRequires(file, raw, pluginVersion) {
 function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
   if (!existsSync2(file))
     return null;
+  return parseCcSmartDevKitConfig(readFileSync3(file, "utf8"), file, pluginVersion);
+}
+function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
   let raw;
   try {
-    raw = JSON.parse(readFileSync3(file, "utf8"));
+    raw = JSON.parse(text);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new CcSmartDevKitConfigError(`Invalid ${file}: not valid JSON (${reason})`);
+    throw new CcSmartDevKitConfigError(`Invalid ${where}: not valid JSON (${reason})`);
   }
-  checkRequires(file, raw, pluginVersion);
+  checkRequires(where, raw, pluginVersion);
   const parsed = ccSmartDevKitConfigSchema.safeParse(raw);
   if (!parsed.success) {
     const issues = parsed.error.issues.map(describeIssue).join("; ");
-    throw new CcSmartDevKitConfigError(`Invalid ${file}: ${issues}`);
+    throw new CcSmartDevKitConfigError(`Invalid ${where}: ${issues}`);
   }
   return parsed.data;
 }
@@ -6630,7 +6633,7 @@ function gitEnv(base) {
 var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
 var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
-function gitIn(cwd, env) {
+function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
   return (args) => {
     try {
       const result = Bun.spawnSync(["git", ...args], {
@@ -6639,7 +6642,7 @@ function gitIn(cwd, env) {
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: RESOLVE_GIT_TIMEOUT_MS
+        timeout: timeoutMs
       });
       return {
         ok: result.exitCode === 0,

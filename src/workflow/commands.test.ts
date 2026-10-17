@@ -38,9 +38,9 @@ const SETTINGS = {
 };
 
 describe("workflow show", () => {
-  test("nothing set: every value with the built-in default as where it came from", () => {
+  test("nothing set: every value with the built-in default as where it came from", async () => {
     const run = context(tempDir("not-git"));
-    expect(runWorkflow(["show"], run.context)).toBe(0);
+    expect(await runWorkflow(["show"], run.context)).toBe(0);
     expect(run.errors).toEqual([]);
     expect(run.lines).toEqual([
       "your own defaults: ~/.config/cc-smart-dev-kit/workflow.json; a project's .claude/cc-smart-dev-kit.json wins field by field",
@@ -65,7 +65,7 @@ describe("workflow show", () => {
     ]);
   });
 
-  test("a project's file and the person's: each value says where it came from", () => {
+  test("a project's file and the person's: each value says where it came from", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
@@ -79,7 +79,7 @@ describe("workflow show", () => {
       `${JSON.stringify({ openPr: "ready", alerts: { sound: true } }, null, 2)}\n`,
     );
     const run = context(repo, env);
-    expect(runWorkflow([], run.context)).toBe(0);
+    expect(await runWorkflow([], run.context)).toBe(0);
     expect(run.lines).toContain("openPr = draft (project)");
     expect(run.lines).toContain("alerts.sound = true (personal)");
     expect(run.lines).toContain("autoMerge = true (project)");
@@ -90,13 +90,13 @@ describe("workflow show", () => {
     );
   });
 
-  test("a broken personal file: one line on stderr, exit 1", () => {
+  test("a broken personal file: one line on stderr, exit 1", async () => {
     const env = hookEnv();
     const paths = cliPaths(env);
     mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
     writeFileSync(paths.workflowConfigFile, `${JSON.stringify({ autoCommit: "yes" }, null, 2)}\n`);
     const run = context(tempDir("not-git"), env);
-    expect(runWorkflow(["show"], run.context)).toBe(1);
+    expect(await runWorkflow(["show"], run.context)).toBe(1);
     expect(run.lines).toEqual([]);
     expect(run.errors).toEqual([
       `Invalid ${paths.workflowConfigFile}: autoCommit: Invalid input: expected boolean, received string`,
@@ -105,64 +105,64 @@ describe("workflow show", () => {
 });
 
 describe("workflow set and unset", () => {
-  test("a policy value goes into the person's own file, 0600", () => {
+  test("a policy value goes into the person's own file, 0600", async () => {
     const env = hookEnv();
     const run = context(tempDir("not-git"), env);
-    expect(runWorkflow(["set", "autoCommit", "true"], run.context)).toBe(0);
+    expect(await runWorkflow(["set", "autoCommit", "true"], run.context)).toBe(0);
     const file = cliPaths(env).workflowConfigFile;
     expect(run.lines).toEqual([`+ ~/.config/cc-smart-dev-kit/workflow.json: autoCommit = true`]);
     expect(readFileSync(file, "utf8")).toBe(`${JSON.stringify({ autoCommit: true }, null, 2)}\n`);
     expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
-  test("a second value keeps the first, and the file's own indentation", () => {
+  test("a second value keeps the first, and the file's own indentation", async () => {
     const env = hookEnv();
     const file = cliPaths(env).workflowConfigFile;
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, `{\n    "autoCommit": true\n}\n`);
     const run = context(tempDir("not-git"), env);
-    expect(runWorkflow(["set", "alerts.sound", "true"], run.context)).toBe(0);
+    expect(await runWorkflow(["set", "alerts.sound", "true"], run.context)).toBe(0);
     expect(readFileSync(file, "utf8")).toBe(
       `{\n    "autoCommit": true,\n    "alerts": {\n        "sound": true\n    }\n}\n`,
     );
     expect(run.lines).toEqual(["~ ~/.config/cc-smart-dev-kit/workflow.json: alerts.sound = true"]);
   });
 
-  test("the same value again writes nothing", () => {
+  test("the same value again writes nothing", async () => {
     const env = hookEnv();
     const run = context(tempDir("not-git"), env);
-    runWorkflow(["set", "openPr", "draft"], run.context);
+    await runWorkflow(["set", "openPr", "draft"], run.context);
     const again = context(tempDir("not-git"), env);
-    expect(runWorkflow(["set", "openPr", "draft"], again.context)).toBe(0);
+    expect(await runWorkflow(["set", "openPr", "draft"], again.context)).toBe(0);
     expect(again.lines).toEqual([
       "= ~/.config/cc-smart-dev-kit/workflow.json: openPr = draft (already set)",
     ]);
   });
 
-  test("unset takes the value out, and the default holds again", () => {
+  test("unset takes the value out, and the default holds again", async () => {
     const env = hookEnv();
     const run = context(tempDir("not-git"), env);
-    runWorkflow(["set", "alerts.events", "finished"], run.context);
+    await runWorkflow(["set", "alerts.events", "finished"], run.context);
     const off = context(tempDir("not-git"), env);
-    expect(runWorkflow(["unset", "alerts.events"], off.context)).toBe(0);
+    expect(await runWorkflow(["unset", "alerts.events"], off.context)).toBe(0);
     expect(off.lines).toEqual(["- ~/.config/cc-smart-dev-kit/workflow.json: alerts.events unset"]);
     const shown = context(tempDir("not-git"), env);
-    runWorkflow(["show"], shown.context);
+    await runWorkflow(["show"], shown.context);
     expect(shown.lines).toContain(
       "alerts.events = needs-you, question, finished, failed (default)",
     );
   });
 
-  test("a list of events is read from one quoted word", () => {
+  test("a list of events is read from one quoted word", async () => {
     const env = hookEnv();
     const run = context(tempDir("not-git"), env);
-    expect(runWorkflow(["set", "alerts.events", "needs-you,finished"], run.context)).toBe(0);
+    expect(await runWorkflow(["set", "alerts.events", "needs-you,finished"], run.context)).toBe(0);
     expect(readFileSync(cliPaths(env).workflowConfigFile, "utf8")).toBe(
       `${JSON.stringify({ alerts: { events: ["needs-you", "finished"] } }, null, 2)}\n`,
     );
   });
 
-  test("--project writes the project's file, keeping its other fields and its indentation", () => {
+  test("--project writes the project's file, keeping its other fields and its indentation", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
@@ -171,7 +171,7 @@ describe("workflow set and unset", () => {
       `{\n    "worktrees": { "base": "main", "prefix": "app-wt-" },\n    "autoMode": ["one rule"]\n}\n`,
     );
     const run = context(repo, env);
-    expect(runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(0);
+    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(0);
     expect(run.lines).toEqual([`~ ${file}: autoCommit = true`]);
     // The indent (four spaces here) stays; a one-line object is written out, as any JSON writer does.
     expect(readFileSync(file, "utf8")).toBe(
@@ -193,67 +193,71 @@ describe("workflow set and unset", () => {
     );
   });
 
-  test("a project switch is written as the field the project already reads", () => {
+  test("a project switch is written as the field the project already reads", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
     const run = context(repo, env);
-    expect(runWorkflow(["set", "switches.jobRoute", "true", "--project"], run.context)).toBe(0);
+    expect(await runWorkflow(["set", "switches.jobRoute", "true", "--project"], run.context)).toBe(
+      0,
+    );
     expect(run.lines).toEqual([`~ ${file}: switches.jobRoute = true`]);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ ...SETTINGS, jobs: { route: true } });
     const off = context(repo, env);
-    expect(runWorkflow(["unset", "switches.sessionNames", "--project"], off.context)).toBe(0);
+    expect(await runWorkflow(["unset", "switches.sessionNames", "--project"], off.context)).toBe(0);
     const after = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
     expect(after.sessionNames).toBeUndefined();
     expect(after.worktrees).toEqual(SETTINGS.worktrees);
   });
 
-  test("a project switch asked for without --project says where it lives", () => {
+  test("a project switch asked for without --project says where it lives", async () => {
     const env = hookEnv();
     const run = context(makeRepo(), env);
-    expect(runWorkflow(["set", "switches.sessionNames", "true"], run.context)).toBe(1);
+    expect(await runWorkflow(["set", "switches.sessionNames", "true"], run.context)).toBe(1);
     expect(run.errors).toEqual([
       "switches.sessionNames is the project's setting (sessionNames in .claude/cc-smart-dev-kit.json): run it with --project inside the project",
     ]);
   });
 
-  test("a personal switch asked for with --project says where it lives", () => {
+  test("a personal switch asked for with --project says where it lives", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
     const run = context(repo, env);
-    expect(runWorkflow(["set", "switches.updateHold", "true", "--project"], run.context)).toBe(1);
+    expect(
+      await runWorkflow(["set", "switches.updateHold", "true", "--project"], run.context),
+    ).toBe(1);
     expect(run.errors).toEqual([
       "switches.updateHold is your own setting, not the project's: run it without --project (the update hold is per person, per machine)",
     ]);
   });
 
-  test("--project with no .claude/cc-smart-dev-kit.json says to run project init", () => {
+  test("--project with no .claude/cc-smart-dev-kit.json says to run project init", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     const run = context(repo, env);
-    expect(runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(1);
+    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(1);
     expect(run.errors).toEqual([
       `${repo} has no .claude/cc-smart-dev-kit.json: run \`cc-smart-dev-kit project init\` there first, or set this in your own defaults (without --project)`,
     ]);
   });
 
-  test("the status line switch writes Claude Code's own key", () => {
+  test("the status line switch writes Claude Code's own key", async () => {
     const env = hookEnv();
     const paths = cliPaths(env);
     const run = context(tempDir("not-git"), env);
-    expect(runWorkflow(["set", "switches.statusLine", "true"], run.context)).toBe(0);
+    expect(await runWorkflow(["set", "switches.statusLine", "true"], run.context)).toBe(0);
     const settings = JSON.parse(readFileSync(paths.settingsFile, "utf8")) as {
       statusLine?: { command?: string; type?: string };
     };
     expect(settings.statusLine?.command).toBe(`${paths.binDir}/cc-smart-dev-kit statusline`);
     expect(settings.statusLine?.type).toBe("command");
     const off = context(tempDir("not-git"), env);
-    expect(runWorkflow(["unset", "switches.statusLine"], off.context)).toBe(0);
+    expect(await runWorkflow(["unset", "switches.statusLine"], off.context)).toBe(0);
     expect(JSON.parse(readFileSync(paths.settingsFile, "utf8"))).toEqual({});
   });
 
-  test("a status line someone else set is never overwritten", () => {
+  test("a status line someone else set is never overwritten", async () => {
     const env = hookEnv();
     const paths = cliPaths(env);
     mkdirSync(dirname(paths.settingsFile), { recursive: true });
@@ -262,7 +266,7 @@ describe("workflow set and unset", () => {
       `${JSON.stringify({ statusLine: { command: "mine", type: "command" } }, null, 2)}\n`,
     );
     const run = context(tempDir("not-git"), env);
-    expect(runWorkflow(["set", "switches.statusLine", "true"], run.context)).toBe(1);
+    expect(await runWorkflow(["set", "switches.statusLine", "true"], run.context)).toBe(1);
     expect(run.errors[0]).toContain('statusLine is {"command":"mine","type":"command"}');
     expect(run.errors[0]).toContain("cc-smart-dev-kit does not overwrite it");
     expect(JSON.parse(readFileSync(paths.settingsFile, "utf8"))).toEqual({
@@ -270,7 +274,7 @@ describe("workflow set and unset", () => {
     });
   });
 
-  test("unsetting a status line that is not cc-smart-dev-kit's leaves it", () => {
+  test("unsetting a status line that is not cc-smart-dev-kit's leaves it", async () => {
     const env = hookEnv();
     const paths = cliPaths(env);
     mkdirSync(dirname(paths.settingsFile), { recursive: true });
@@ -279,7 +283,7 @@ describe("workflow set and unset", () => {
       `${JSON.stringify({ statusLine: { command: "mine" } }, null, 2)}\n`,
     );
     const run = context(tempDir("not-git"), env);
-    expect(runWorkflow(["unset", "switches.statusLine"], run.context)).toBe(0);
+    expect(await runWorkflow(["unset", "switches.statusLine"], run.context)).toBe(0);
     expect(run.lines).toEqual([
       "= ~/.claude/settings.json: the cc-smart-dev-kit status line is not on (not owned by cc-smart-dev-kit; left alone)",
     ]);
@@ -288,43 +292,43 @@ describe("workflow set and unset", () => {
     });
   });
 
-  test("the update hold switch is the file behind `update --hold`", () => {
+  test("the update hold switch is the file behind `update --hold`", async () => {
     const env = hookEnv();
     const paths = cliPaths(env);
     const run = context(tempDir("not-git"), env);
-    expect(runWorkflow(["set", "switches.updateHold", "true"], run.context)).toBe(0);
+    expect(await runWorkflow(["set", "switches.updateHold", "true"], run.context)).toBe(0);
     expect(existsSync(join(paths.stateDir, "update-hold"))).toBe(true);
     expect(run.lines).toEqual([
       "+ ~/.claude/cc-smart-dev-kit/update-hold: background updates are on hold",
     ]);
     const off = context(tempDir("not-git"), env);
-    expect(runWorkflow(["unset", "switches.updateHold"], off.context)).toBe(0);
+    expect(await runWorkflow(["unset", "switches.updateHold"], off.context)).toBe(0);
     expect(existsSync(join(paths.stateDir, "update-hold"))).toBe(false);
   });
 
-  test("an unknown setting, and a value of the wrong kind: exit 2, nothing written", () => {
+  test("an unknown setting, and a value of the wrong kind: exit 2, nothing written", async () => {
     const env = hookEnv();
     const run = context(tempDir("not-git"), env);
-    expect(runWorkflow(["set", "autoMergeSoon", "true"], run.context)).toBe(2);
+    expect(await runWorkflow(["set", "autoMergeSoon", "true"], run.context)).toBe(2);
     expect(run.errors[0]).toContain("Unknown setting: autoMergeSoon");
-    expect(runWorkflow(["set", "openPr", "maybe"], run.context)).toBe(2);
+    expect(await runWorkflow(["set", "openPr", "maybe"], run.context)).toBe(2);
     expect(run.errors[1]).toContain("openPr is one of off, draft, ready");
     expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
   });
 
-  test("set with two values, and set with none: exit 2", () => {
+  test("set with two values, and set with none: exit 2", async () => {
     const env = hookEnv();
     const run = context(tempDir("not-git"), env);
-    expect(runWorkflow(["set", "alerts.events", "finished", "failed"], run.context)).toBe(2);
+    expect(await runWorkflow(["set", "alerts.events", "finished", "failed"], run.context)).toBe(2);
     expect(run.errors[0]).toContain("set needs one value");
     const none = context(tempDir("not-git"), env);
-    expect(runWorkflow(["set", "autoCommit"], none.context)).toBe(2);
+    expect(await runWorkflow(["set", "autoCommit"], none.context)).toBe(2);
     expect(none.errors[0]).toContain("set needs one value");
   });
 
-  test("an unknown workflow command: exit 2", () => {
+  test("an unknown workflow command: exit 2", async () => {
     const run = context(tempDir("not-git"));
-    expect(runWorkflow(["write", "autoCommit", "true"], run.context)).toBe(2);
+    expect(await runWorkflow(["write", "autoCommit", "true"], run.context)).toBe(2);
     expect(run.errors[0]).toContain("Unknown workflow command: write");
   });
 });
@@ -339,12 +343,12 @@ describe("workflow review-done", () => {
     );
   }
 
-  test("HEAD is recorded: the file holds the full sha, 0600, and says so", () => {
+  test("HEAD is recorded: the file holds the full sha, 0600, and says so", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     const head = git(repo, "rev-parse", "HEAD").trim();
     const run = context(repo, env);
-    expect(runWorkflow(["review-done"], run.context)).toBe(0);
+    expect(await runWorkflow(["review-done"], run.context)).toBe(0);
     const file = recordFile(env, repo);
     expect(run.lines).toEqual([
       `+ ${tildify(file, env.HOME ?? "")}: the review of ${head.slice(0, 7)} is recorded`,
@@ -353,21 +357,21 @@ describe("workflow review-done", () => {
     expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
-  test("show says whether the commit here has one", () => {
+  test("show says whether the commit here has one", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     const head = git(repo, "rev-parse", "HEAD").trim();
     const before = context(repo, env);
-    runWorkflow(["show"], before.context);
+    await runWorkflow(["show"], before.context);
     expect(before.lines).toContain(`review-done = no (HEAD ${head.slice(0, 7)})`);
-    runWorkflow(["review-done"], context(repo, env).context);
+    await runWorkflow(["review-done"], context(repo, env).context);
     const after = context(repo, env);
-    runWorkflow(["show"], after.context);
+    await runWorkflow(["show"], after.context);
     expect(after.lines).toContain(`review-done = yes (HEAD ${head.slice(0, 7)})`);
     expect(after.lines).not.toContain(`review-done = no (HEAD ${head.slice(0, 7)})`);
   });
 
-  test("--sha records an earlier commit; a second call says it was already recorded", () => {
+  test("--sha records an earlier commit; a second call says it was already recorded", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     const first = git(repo, "rev-parse", "HEAD").trim();
@@ -375,45 +379,45 @@ describe("workflow review-done", () => {
     git(repo, "add", "second.txt");
     git(repo, "commit", "-q", "-m", "second");
     const run = context(repo, env);
-    expect(runWorkflow(["review-done", "--sha", first.slice(0, 7)], run.context)).toBe(0);
+    expect(await runWorkflow(["review-done", "--sha", first.slice(0, 7)], run.context)).toBe(0);
     expect(run.lines[0]).toContain(`the review of ${first.slice(0, 7)} is recorded`);
     const again = context(repo, env);
-    expect(runWorkflow(["review-done", "--sha", first], again.context)).toBe(0);
+    expect(await runWorkflow(["review-done", "--sha", first], again.context)).toBe(0);
     expect(again.lines[0]).toContain("was already recorded");
     // HEAD itself (the second commit) is not recorded: only the commit asked for.
     const shown = context(repo, env);
-    runWorkflow(["show"], shown.context);
+    await runWorkflow(["show"], shown.context);
     expect(shown.lines.some((line) => line.startsWith("review-done = no (HEAD "))).toBe(true);
   });
 
-  test("a commit nothing names: exit 1, nothing written", () => {
+  test("a commit nothing names: exit 1, nothing written", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     const run = context(repo, env);
-    expect(runWorkflow(["review-done", "--sha", "no-such-commit"], run.context)).toBe(1);
+    expect(await runWorkflow(["review-done", "--sha", "no-such-commit"], run.context)).toBe(1);
     expect(run.errors[0]).toContain("no-such-commit is not a commit in this repository");
     expect(existsSync(recordFile(env, repo))).toBe(false);
   });
 
-  test("outside a git project, and with a bad flag: nothing is written", () => {
+  test("outside a git project, and with a bad flag: nothing is written", async () => {
     const outside = context(tempDir("not-git"));
-    expect(runWorkflow(["review-done"], outside.context)).toBe(1);
+    expect(await runWorkflow(["review-done"], outside.context)).toBe(1);
     expect(outside.errors[0]).toContain("this folder is not in a git project");
     const env = hookEnv();
     const repo = makeRepo();
     const bad = context(repo, env);
-    expect(runWorkflow(["review-done", "--sha"], bad.context)).toBe(2);
+    expect(await runWorkflow(["review-done", "--sha"], bad.context)).toBe(2);
     expect(bad.errors[0]).toContain("--sha needs a commit");
     const unknown = context(repo, env);
-    expect(runWorkflow(["review-done", "--now"], unknown.context)).toBe(2);
+    expect(await runWorkflow(["review-done", "--now"], unknown.context)).toBe(2);
     expect(unknown.errors[0]).toContain("Unknown option: --now");
   });
 
-  test("inside Claude Code it refuses: the review agent's own return records the review", () => {
+  test("inside Claude Code it refuses: the review agent's own return records the review", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     const run = context(repo, { ...env, CLAUDECODE: "1" });
-    expect(runWorkflow(["review-done"], run.context)).toBe(1);
+    expect(await runWorkflow(["review-done"], run.context)).toBe(1);
     expect(run.lines).toEqual([]);
     expect(run.errors[0]).toBe(
       "cc-smart-dev-kit workflow review-done cannot run inside a Claude Code session: the review record is written by the review-record hook when a review agent (workflow setting reviewAgents) returns, so a record is never the session's own word. Run it in your own terminal to record one by hand.",
@@ -421,14 +425,14 @@ describe("workflow review-done", () => {
     expect(existsSync(recordFile(env, repo))).toBe(false);
   });
 
-  test("a worktree records into the repository's own file", () => {
+  test("a worktree records into the repository's own file", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     const worktree = join(repo, "..", "app-wt-review");
     git(repo, "worktree", "add", "-q", "-b", "review-branch", worktree);
     const head = git(worktree, "rev-parse", "HEAD").trim();
     const run = context(worktree, env);
-    expect(runWorkflow(["review-done"], run.context)).toBe(0);
+    expect(await runWorkflow(["review-done"], run.context)).toBe(0);
     expect(existsSync(recordFile(env, repo))).toBe(true);
     expect(Object.keys(JSON.parse(readFileSync(recordFile(env, repo), "utf8")) as object)).toEqual([
       head,
@@ -492,7 +496,7 @@ describe("the writers, called directly (the portal does this)", () => {
 });
 
 describe("the command itself, as Claude Code runs it", () => {
-  test("workflow set writes the person's file under this HOME", () => {
+  test("workflow set writes the person's file under this HOME", async () => {
     // A temp HOME and a PATH: the CLI as its own process, never this machine's files.
     const home = tempDir("workflow-cli-home");
     const env = { ...hookEnv(), HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") };
@@ -523,5 +527,124 @@ describe("the command itself, as Claude Code runs it", () => {
     ).toEqual({
       openPr: "draft",
     });
+  });
+});
+
+describe("the review gate (CM-1)", () => {
+  /** Commits the project's file and points `origin/main` at it: the policy the guard reads. */
+  function committed(repo: string, config: unknown): string {
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
+    git(repo, "add", ".claude/cc-smart-dev-kit.json");
+    git(repo, "commit", "-q", "-m", "the project's policy");
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+    return file;
+  }
+
+  test.each([
+    ["set", "autoMerge", ["true"]],
+    ["set", "reviewBeforePush", ["false"]],
+    ["set", "reviewAgents", ["general-purpose"]],
+    ["unset", "reviewBeforePush", []],
+  ] as const)(
+    "CM-1: workflow %s %s refuses inside Claude Code, in both files",
+    async (sub, key, value) => {
+      const env = hookEnv();
+      const repo = makeRepo();
+      const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+      const before = readFileSync(file, "utf8");
+      for (const where of [[], ["--project"]]) {
+        const run = context(repo, { ...env, CLAUDECODE: "1" });
+        expect(await runWorkflow([sub, key, ...value, ...where], run.context)).toBe(1);
+        expect(run.lines).toEqual([]);
+        expect(run.errors).toEqual([
+          `cc-smart-dev-kit workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} is part of the merge guard's review gate, which only you change. Run it in your own terminal; for the project's policy, change .claude/cc-smart-dev-kit.json there, commit it to the base and push it — the merge guard reads only the committed file.`,
+        ]);
+      }
+      expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
+      expect(readFileSync(file, "utf8")).toBe(before);
+    },
+  );
+
+  test("a setting outside the gate still works inside Claude Code", async () => {
+    const env = hookEnv();
+    const run = context(tempDir("not-git"), { ...env, CLAUDECODE: "1" });
+    expect(await runWorkflow(["set", "openPr", "draft"], run.context)).toBe(0);
+    expect(run.lines).toEqual(["+ ~/.config/cc-smart-dev-kit/workflow.json: openPr = draft"]);
+  });
+
+  test("CM-1: show prints the gate as the merge guard reads it, from the committed file", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    committed(repo, { ...SETTINGS, workflow: { autoMerge: true } });
+    // This checkout's own copy says otherwise: the guard does not read it.
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      workflow: { autoMerge: false, reviewBeforePush: false },
+    });
+    const run = context(repo, env);
+    expect(await runWorkflow(["show"], run.context)).toBe(0);
+    expect(run.lines).toContain("autoMerge = false (project)");
+    const gate = run.lines.filter((line) => line.startsWith("gate"));
+    expect(gate).toEqual([
+      "gate: what the merge guard judges with, from origin/main:.claude/cc-smart-dev-kit.json as committed (this checkout's own copy does not count)",
+      "gate autoMerge = true (project, committed on origin/main)",
+      "gate reviewBeforePush = true (default)",
+      "gate reviewAgents = cc-smart-dev-kit:reviewer (default)",
+    ]);
+  });
+
+  test("CM-1: show says when the committed policy cannot be read", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    const run = context(repo, env);
+    expect(await runWorkflow(["show"], run.context)).toBe(0);
+    expect(run.lines.filter((line) => line.startsWith("gate"))).toEqual([
+      "gate: the merge guard cannot read the policy committed on main (origin/main is not known in this repository (no origin, or the branch was never fetched)), so it asks before every merge",
+    ]);
+  });
+
+  test("show without a worktrees.base: the gate is each pull request's base", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=0.1" });
+    const run = context(repo, env);
+    expect(await runWorkflow(["show"], run.context)).toBe(0);
+    expect(run.lines.filter((line) => line.startsWith("gate"))).toEqual([
+      "gate: this project names no worktrees.base, so the merge guard reads the policy committed on each pull request's base",
+    ]);
+  });
+
+  test("CM-1: review-done = yes only for a record the gate's own list trusts", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    committed(repo, SETTINGS);
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    const record = join(
+      cliPaths(env).stateDir,
+      "reviews",
+      `${createHash("sha256").update(repo).digest("hex").slice(0, 16)}.json`,
+    );
+    mkdirSync(dirname(record), { recursive: true });
+    writeFileSync(
+      record,
+      JSON.stringify({ [head]: { at: "2026-10-16T10:00:00.000Z", by: ["general-purpose"] } }),
+    );
+    const run = context(repo, env);
+    await runWorkflow(["show"], run.context);
+    expect(run.lines).toContain(`review-done = no (HEAD ${head.slice(0, 7)})`);
+  });
+
+  test("review-done records the person, by hand", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    await runWorkflow(["review-done"], context(repo, env).context);
+    const record = join(
+      cliPaths(env).stateDir,
+      "reviews",
+      `${createHash("sha256").update(repo).digest("hex").slice(0, 16)}.json`,
+    );
+    expect(JSON.parse(readFileSync(record, "utf8"))[head].by).toEqual(["workflow review-done"]);
   });
 });

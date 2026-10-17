@@ -175,18 +175,32 @@ export function loadCcSmartDevKitConfig(
   pluginVersion: string = VERSION,
 ): CcSmartDevKitConfig | null {
   if (!existsSync(file)) return null;
+  return parseCcSmartDevKitConfig(readFileSync(file, "utf8"), file, pluginVersion);
+}
+
+/**
+ * The same checks on a cc-smart-dev-kit.json's text, wherever it came from: a file on disk, or
+ * the file as committed on a branch (`readCommittedConfig` in `src/project/resolve.ts`). `where`
+ * names it in every error. Throws CcSmartDevKitVersionError when the plugin is too old, and
+ * CcSmartDevKitConfigError when the text is invalid.
+ */
+export function parseCcSmartDevKitConfig(
+  text: string,
+  where: string,
+  pluginVersion: string = VERSION,
+): CcSmartDevKitConfig {
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(file, "utf8"));
+    raw = JSON.parse(text);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new CcSmartDevKitConfigError(`Invalid ${file}: not valid JSON (${reason})`);
+    throw new CcSmartDevKitConfigError(`Invalid ${where}: not valid JSON (${reason})`);
   }
-  checkRequires(file, raw, pluginVersion);
+  checkRequires(where, raw, pluginVersion);
   const parsed = ccSmartDevKitConfigSchema.safeParse(raw);
   if (!parsed.success) {
     const issues = parsed.error.issues.map(describeIssue).join("; ");
-    throw new CcSmartDevKitConfigError(`Invalid ${file}: ${issues}`);
+    throw new CcSmartDevKitConfigError(`Invalid ${where}: ${issues}`);
   }
   return parsed.data;
 }
