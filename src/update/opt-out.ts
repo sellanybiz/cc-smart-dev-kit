@@ -7,7 +7,7 @@
  * nothing while one is in force (it honours the person's choice like Claude Code does).
  */
 
-import { readFileSync } from "node:fs";
+import { readUserJson } from "../setup/user-json";
 
 type Env = Record<string, string | undefined>;
 
@@ -28,7 +28,7 @@ export function isSet(value: unknown): boolean {
 /** The `env` object of a settings.json; empty when the file or the object is missing. */
 export function settingsEnv(settingsFile: string): Record<string, unknown> {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(settingsFile, "utf8"));
+    const parsed = readUserJson(settingsFile);
     const env = (parsed as { env?: unknown } | null)?.env;
     return typeof env === "object" && env !== null && !Array.isArray(env)
       ? (env as Record<string, unknown>)

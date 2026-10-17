@@ -48,8 +48,12 @@ export interface McpServer {
 
 /** What building the registrations needs from the machine. */
 export interface McpContext {
-  /** The launcher (`~/.local/bin/cc-smart-dev-kit`): it finds bun itself, whatever PATH Claude Code was started with. */
-  launcher: string;
+  /**
+   * How a program starts the launcher (`launcherArgv`): it finds bun itself, whatever PATH
+   * Claude Code was started with. The `sh` launcher's path off Windows; on Windows
+   * `cmd.exe /c <the .cmd launcher>`, because a program there cannot run a `sh` script (ST-7).
+   */
+  launcher: readonly string[];
   /** `bunx`, as an absolute path when there is one. */
   bunx: string;
   /** The Serena context installed beside the plugin's data (`<dataDir>/serena/contexts/worktree.yml`). */
@@ -85,10 +89,13 @@ const LONG_CALL_MS = 300_000;
 
 /** Every server, with the JSON to register it by. */
 export function mcpServers(context: McpContext): McpServer[] {
+  const [command, ...before] = context.launcher;
   return [
     {
       name: "playwright",
-      json: json({ command: context.launcher, args: ["browser", "mcp"] }),
+      // `command` first, then `args`: the order every earlier setup wrote, so a machine whose
+      // registration is the same as before sees the same JSON text (`planMcpServers`).
+      json: json({ command, args: [...before, "browser", "mcp"] }),
     },
     {
       name: "serena",

@@ -74,6 +74,62 @@ describe("check-version-bump", () => {
     });
   });
 
+  test.each([
+    ["1.0.0+1", "The version did not go up, 1.0.0 -> 1.0.0+1"],
+    ["1.0.0-rc.1", "The version went down, 1.0.0 -> 1.0.0-rc.1"],
+  ])("ST-9: %s is not a raise", (version, start) => {
+    const repo = makeRepo();
+    commit(repo, {
+      "plugin/dist/cli.js": "console.log(2);\n",
+      "plugin/.claude-plugin/plugin.json": manifest(version),
+    });
+    const result = check(repo);
+    expect(result.ok).toBe(false);
+    expect(result.message.startsWith(start)).toBe(true);
+  });
+
+  test.each([["1.1"], ["v1.1.0"], ["1.1.0 "], [" 1.1.0"], ["1.1.0x"], ["01.1.0"], ["1.1.0-"]])(
+    "ST-9: %p is not a version",
+    (version) => {
+      const repo = makeRepo();
+      commit(repo, {
+        "plugin/dist/cli.js": "console.log(2);\n",
+        "plugin/.claude-plugin/plugin.json": manifest(version),
+      });
+      expect(check(repo)).toEqual({
+        ok: false,
+        message: `plugin/.claude-plugin/plugin.json: ${JSON.stringify(version)} is not a version (MAJOR.MINOR.PATCH, as semver.org writes it).`,
+      });
+    },
+  );
+
+  test("two pull requests that raise to the same version: the second fails once the first is on the base", () => {
+    const repo = makeRepo();
+    commit(repo, {
+      "plugin/dist/cli.js": "console.log(2);\n",
+      "plugin/.claude-plugin/plugin.json": manifest("1.1.0"),
+    });
+    // The other pull request, branched from the same 1.0.0, landed first with 1.1.0.
+    git(repo, "checkout", "-q", "main");
+    commit(repo, {
+      "plugin/hooks/hooks.json": "{}\n",
+      "plugin/.claude-plugin/plugin.json": manifest("1.1.0"),
+    });
+    git(repo, "checkout", "-q", "feature");
+    expect(check(repo)).toEqual({
+      ok: false,
+      message:
+        "main is at 1.1.0 now, and this branch has 1.1.0: another pull request raised it first. " +
+        'Raise "version" in plugin/.claude-plugin/plugin.json above 1.1.0 (the release skill), then run: bun run build',
+    });
+    // Raised above the base's: it passes.
+    commit(repo, { "plugin/.claude-plugin/plugin.json": manifest("1.2.0") });
+    expect(check(repo)).toEqual({
+      ok: true,
+      message: "plugin/ changed, and the version went up: 1.0.0 -> 1.2.0 (main is at 1.1.0).",
+    });
+  });
+
   test("a commit that landed on the base later does not count", () => {
     const repo = makeRepo();
     commit(repo, { "README.md": "feature\n" });

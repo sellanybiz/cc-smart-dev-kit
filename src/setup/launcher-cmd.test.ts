@@ -5,6 +5,7 @@ import { tempDir } from "../testing/temp";
 import {
   cmdBakedBunPath,
   installLauncherCmd,
+  launcherArgv,
   launcherCmdArgv,
   launcherCmdScript,
 } from "./launcher-cmd";
@@ -98,7 +99,7 @@ describe("the Windows launcher script", () => {
 
   test("runs the installed cli.js with --no-env-file, and passes every argument through", () => {
     expect(script).toContain(
-      'rem --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.\n',
+      'rem --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.\r\n',
     );
     expect(script).toContain(
       '"%bun%" --no-env-file "--config=%install_path%\\bunfig.toml" "%install_path%\\dist\\cli.js" %*',
@@ -254,5 +255,37 @@ describe("running the .cmd", () => {
     expect(
       launcherCmdArgv("C:\\Users\\me\\.local\\bin\\cc-smart-dev-kit.cmd", ["version"]),
     ).toEqual(["cmd.exe", "/c", "C:\\Users\\me\\.local\\bin\\cc-smart-dev-kit.cmd", "version"]);
+  });
+
+  test("ST-7: the launcher a program starts is the .cmd through cmd.exe on Windows, the sh one elsewhere", () => {
+    // On native Windows a program (Claude Code starting an MCP server) cannot run the
+    // extensionless `#!/bin/sh` launcher: only Git Bash can. The file is joined the way
+    // setup writes it on the host that runs the test.
+    const bin = join(tempDir("launcher-argv"), ".local", "bin");
+    expect(launcherArgv(bin, "win32")).toEqual([
+      "cmd.exe",
+      "/c",
+      join(bin, "cc-smart-dev-kit.cmd"),
+    ]);
+    expect(launcherArgv(bin, "linux")).toEqual([join(bin, "cc-smart-dev-kit")]);
+    expect(launcherArgv(bin, "darwin")).toEqual([join(bin, "cc-smart-dev-kit")]);
+  });
+});
+
+describe("the .cmd's line ends", () => {
+  test("ST-8: every line ends in CRLF, as cmd needs for its labels and goto", () => {
+    // cmd reads a batch file in 512-byte blocks; with LF-only lines a `goto` can miss its
+    // label at a block's edge. Windows's own batch files end each line in CRLF.
+    const script = launcherCmdScript("C:\\Users\\me\\.bun\\bin\\bun.exe");
+    expect(script.endsWith("\r\n")).toBe(true);
+    expect(script.replaceAll("\r\n", "")).not.toContain("\n");
+    expect(script.replaceAll("\r\n", "")).not.toContain("\r");
+    expect(script.split("\r\n")).toContain(":found_bun");
+    // The baked bun reads back from both: this script, and an older setup's LF-only one (which
+    // doctor then calls out of date, so setup writes it again).
+    expect(cmdBakedBunPath(script)).toBe("C:\\Users\\me\\.bun\\bin\\bun.exe");
+    expect(cmdBakedBunPath(script.replaceAll("\r\n", "\n"))).toBe(
+      "C:\\Users\\me\\.bun\\bin\\bun.exe",
+    );
   });
 });

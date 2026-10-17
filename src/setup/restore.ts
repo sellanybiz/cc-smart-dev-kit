@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, rmdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { isStrictlyInside } from "../path-compare";
 import { removeAllOwnedEntries } from "./managed-entries";
 import { applyManagedJson, createdObjects, formatKeyPath, ownedKeys } from "./managed-json";
 import { removeManagedLines } from "./managed-line";
@@ -159,7 +160,8 @@ export function restore(
 function removeEmptyFolders(file: string, stateDir: string): void {
   const root = realTarget(stateDir);
   let dir = dirname(file);
-  while (dir.startsWith(`${root}/`) && existsSync(dir) && readdirSync(dir).length === 0) {
+  // `isStrictlyInside`, not a `${root}/` prefix: on Windows the paths have `\` (ST-6).
+  while (isStrictlyInside(dir, root) && existsSync(dir) && readdirSync(dir).length === 0) {
     rmdirSync(dir);
     dir = dirname(dir);
   }

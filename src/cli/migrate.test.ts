@@ -25,8 +25,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join, relative } from "node:path";
-import { MARKETPLACE_SOURCE, VERSION } from "../build-info";
+import { join, relative, win32 } from "node:path";
+import { COMMAND, MARKETPLACE_SOURCE, VERSION } from "../build-info";
 import { loadConfigFile } from "../gateway/config";
 import type { HealthProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
@@ -39,11 +39,17 @@ import {
   BOOKKEEPING_NAMES,
   MIGRATE_STEPS,
   type MigrateOptions,
+  type MigratePaths,
   type MigrateStep,
+  type MigrateUnits,
+  makeRenamer,
+  migratePaths,
+  migrateUnits,
   OLD,
   oldGatewayEnv,
   progressFile,
   readOldConfig,
+  rewriteStateFolder,
   runMigrate,
 } from "./migrate";
 import { cliPaths } from "./paths";
@@ -1181,5 +1187,67 @@ describe("readOldConfig — the mode rule", () => {
     const file = configFile();
     expect(readOldConfig(file, "linux")).toEqual(config);
     expect(readOldConfig(file, "win32")).toEqual(config);
+  });
+});
+
+describe("the renamer and the state folder's rewrite", () => {
+  /** The old and new paths of a Windows machine: every path with `\`. */
+  function windowsPaths() {
+    const home = "C:\\Users\\me";
+    const units: MigrateUnits = {
+      dir: win32.join(home, ".config", "systemd", "user"),
+      oldUnit: OLD.unit,
+      oldSocket: OLD.socket,
+      unit: "unit.service",
+      socket: "unit.socket",
+    };
+    const old: MigratePaths = {
+      oldConfigDir: win32.join(home, ".config", OLD.name),
+      configDir: win32.join(home, ".config", COMMAND),
+      oldStateDir: win32.join(home, ".claude", OLD.name),
+      stateDir: win32.join(home, ".claude", COMMAND),
+      oldShareDir: win32.join(home, ".local", "share", OLD.name),
+      shareDir: win32.join(home, ".local", "share", COMMAND),
+      oldStateHomeDir: win32.join(home, ".local", "state", OLD.name),
+      stateHomeDir: win32.join(home, ".local", "state", COMMAND),
+      oldLauncher: win32.join(home, ".local", "bin", OLD.name),
+      launcher: win32.join(home, ".local", "bin", COMMAND),
+      oldUnitFile: win32.join(units.dir, units.oldUnit),
+      oldSocketFile: win32.join(units.dir, units.oldSocket),
+      unitFile: win32.join(units.dir, units.unit),
+      socketFile: win32.join(units.dir, units.socket),
+    };
+    return { home, old, units };
+  }
+
+  test("ST-6: a record under a moved folder is renamed on Windows too, where paths have `\\`", () => {
+    const { home, old, units } = windowsPaths();
+    const renamer = makeRenamer(old, units);
+    expect(renamer.path(win32.join(old.oldStateDir, "instructions", "core.md"))).toBe(
+      win32.join(home, ".claude", COMMAND, "instructions", "core.md"),
+    );
+    expect(renamer.path(old.oldStateDir)).toBe(old.stateDir);
+    // A folder of the person's own that only starts with the old name is not ours.
+    const theirs = win32.join(home, ".claude", `${OLD.name}-notes`, "a.md");
+    expect(renamer.path(theirs)).toBe(theirs);
+  });
+
+  test("a stray file in backups/ (not a folder) is left alone, and the rest is rewritten", () => {
+    const home = tempDir("migrate-stray");
+    const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
+    const units = migrateUnits(paths);
+    const old = migratePaths(paths, units);
+    const backups = join(old.stateDir, "backups");
+    const oldFile = join(old.oldStateDir, "settings.json");
+    const folder = join(backups, encodeURIComponent(oldFile));
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, `settings.json${OLD.backupInfix}${STAMP}`), "{}\n");
+    writeFileSync(join(backups, "notes.txt"), "a file of the person's own\n");
+    const counted = rewriteStateFolder(old.stateDir, makeRenamer(old, units), false);
+    expect(counted).toEqual({ files: 0, backups: 2 });
+    expect(readdirSync(backups).sort()).toEqual(
+      [encodeURIComponent(join(old.stateDir, "settings.json")), "notes.txt"].sort(),
+    );
+    expect(readFileSync(join(backups, "notes.txt"), "utf8")).toBe("a file of the person's own\n");
   });
 });

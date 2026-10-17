@@ -240,3 +240,50 @@ describe("every question comes first", () => {
     expect(settings.autoMode).toEqual({ environment: ["$defaults", RULE] });
   });
 });
+
+describe("setup and the MCP servers' record", () => {
+  /** A fake `claude` that says, at each `mcp add-json`, whether the lock and the record are there. */
+  function watchingClaude(stateDir: string, seen: string): string {
+    const lock = JSON.stringify(join(stateDir, "lock"));
+    const records = JSON.stringify(join(stateDir, "mcp-servers.json"));
+    return [
+      'if [ "$1 $2" = "mcp add-json" ]; then',
+      `  if [ -e ${lock} ]; then held=locked; else held=unlocked; fi`,
+      `  if grep -q "\\"$5\\"" ${records} 2>/dev/null; then rec=recorded; else rec=unrecorded; fi`,
+      `  echo "$5 $held $rec" >> ${JSON.stringify(seen)}`,
+      "fi",
+      "exit 0",
+    ].join("\n");
+  }
+
+  test("ST-4: every claude mcp add-json runs inside the lock, with its record written first", async () => {
+    const w = world();
+    const seen = join(w.home, "seen.log");
+    // The world's fake `claude` (it keeps its mode), now watching this world's state folder.
+    writeFileSync(join(w.bin, "claude"), `#!/bin/sh\n${watchingClaude(w.paths.stateDir, seen)}\n`);
+    expect(await w.setup()).toBe(0);
+    expect(readFileSync(seen, "utf8")).toBe(
+      [
+        "playwright locked recorded",
+        "serena locked recorded",
+        "sequential-thinking locked recorded",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("ST-5: a record setup cannot read: no MCP server is touched, and the file stays", async () => {
+    const w = world();
+    const file = join(w.paths.stateDir, "mcp-servers.json");
+    writeFileSync(file, "{not json");
+    expect(await w.setup()).toBe(0);
+    expect(readFileSync(file, "utf8")).toBe("{not json");
+    // No fake was called at all here, so the log may not exist: either way, no `claude mcp`.
+    const logFile = join(w.home, "calls.log");
+    expect(existsSync(logFile) ? readFileSync(logFile, "utf8") : "").not.toContain("claude mcp ");
+    expect(printed.join("\n")).toContain(
+      "! cannot read ~/.claude/cc-smart-dev-kit/mcp-servers.json (",
+    );
+    expect(printed.join("\n")).not.toContain("registered again");
+  });
+});

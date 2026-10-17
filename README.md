@@ -578,7 +578,8 @@ hour**, in the background, and never makes the session wait or prints anything:
 1. It compares the marketplace's remote head (`git ls-remote`, with no password prompt
    in a terminal: `GIT_TERMINAL_PROMPT=0` and ssh `BatchMode`; a git credential helper
    that opens a window of its own may still show it) with Claude Code's local copy, and
-   the installed version with the copy's.
+   the installed version with the copy's. A local copy whose head git cannot read counts as
+   not behind: only the two versions decide then.
 2. When either is behind, it runs the same two commands as `cc-smart-dev-kit update`, in your
    home folder and without git variables like `GIT_DIR` that a session may carry, logs
    each step to `~/.claude/cc-smart-dev-kit/update.log`, and shows one desktop notification when
@@ -1234,7 +1235,8 @@ principles, how to end a turn, and keeping docs true. `cc-smart-dev-kit setup` i
 user, **on by default**:
 
 - a copy goes to `~/.claude/cc-smart-dev-kit/instructions/` (refreshed by every setup, and by the
-  first session start after a plugin update);
+  first session start after a plugin update — only of the installed version, or of one newer
+  than the copy: a session of the older version that still runs never writes its files back);
 - one block in `~/.claude/CLAUDE.md` imports it:
 
   ```markdown
@@ -1749,23 +1751,41 @@ folders. Registered for the user, the names stay and the servers stay.
 
 | Server | What it is |
 |---|---|
-| `playwright` | The browser ([The browser](#the-browser)): the launcher, `browser mcp`, on your own Chrome through the Playwright extension. |
+| `playwright` | The browser ([The browser](#the-browser)): the launcher, `browser mcp`, on your own Chrome through the Playwright extension. On Windows it starts the `.cmd` launcher through `cmd.exe /c` — Claude Code starts the server as a program, and a program there cannot run the `sh` launcher. |
 | `serena` | [Serena](https://github.com/oraios/serena) code intelligence, at a pinned commit, started with the plugin's own context (installed as `~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml`): Serena's `claude-code` context with project switching on, so `activate_project` is listed and a session can point Serena at its worktree. |
 | `sequential-thinking` | `@modelcontextprotocol/server-sequential-thinking`, at a pinned version, through `bunx`. |
 | `tavily-websearch` | [Tavily](https://tavily.com)'s remote web-search server (`https://mcp.tavily.com/mcp/`). Its key is **never** written into a registration or printed: the header carries `Bearer ${TAVILY_API_KEY}`, which Claude Code fills in from its own environment at connect time. |
 
-- **The Tavily key**, in order: `TAVILY_API_KEY` in your environment (nothing for setup to
-  do), else the key file `~/.claude/cc-smart-dev-kit/tavily.key` — **mode 600**, which setup
-  copies into the `env` of your `settings.json` as a secret key cc-smart-dev-kit owns (masked in
-  output, kept as a hash in `owned.json`, and the settings file left at mode 600). Without a
+- **The Tavily key**, in this order:
+  1. `TAVILY_API_KEY` in your environment, set by you: nothing for setup to do.
+  2. `env.TAVILY_API_KEY` in your `settings.json`, set by you: nothing to do either — Claude
+     Code fills the header from there too.
+  3. The key file `~/.claude/cc-smart-dev-kit/tavily.key` — **mode 600**, which setup copies
+     into the `env` of your `settings.json` as a secret key cc-smart-dev-kit owns (masked in
+     output, kept as a hash in `owned.json`, and the settings file left at mode 600). A new key
+     in the file replaces the copy at the next setup.
+  4. The copy setup wrote on an earlier run, when the key file is gone since: still a working
+     key, so it stays.
+
+  Which value is setup's own copy is told by its hash in `owned.json`, not by where it is
+  found: Claude Code hands the settings' `env` to its own shell, so a setup run inside a Claude
+  Code session sees the copy in its environment too, and still knows it as its own. Without a
   key the server is skipped, and setup says so. A key file others can read, or an empty one,
   is refused with the command that fixes it — never with the key in it. On Windows a mode says
   nothing (the profile's ACL protects the file), so a key file there is read whatever its bits
   say. `cc-smart-dev-kit setup --tavily-key-stdin` takes the key on stdin and writes that key
   file for you (the [installer](#install) uses it); the key never reaches a command line, and
-  `restore` leaves the file — it is your key, not a settings key setup owns. When the key moves to your environment (or goes away), the copy setup wrote is removed
-  with it, and a Tavily server setup had registered is taken back — never a stale registration
-  left behind.
+  `restore` leaves the file — it is your key, not a settings key setup owns. When your own key
+  moves to your environment, the copy setup wrote is removed; when no key is left at all
+  (setup's copy taken out by hand too), a Tavily server setup had registered is taken back —
+  never a stale registration left behind.
+- **Every `claude mcp` step runs inside setup's lock, and its record comes first.** Before
+  each `claude mcp add-json` (and before an update's `remove`), setup writes the server's
+  record in `~/.claude/cc-smart-dev-kit/mcp-servers.json`, marked as in flight. A setup that
+  stops halfway — a crash, a closed terminal — leaves a server the next setup finishes or keeps
+  as its own, never one it reads as someone else's. When that record file cannot be read, no
+  server is added, removed or updated, the file stays as it is (it may still say what setup
+  registered), and one line says to fix it by hand.
 - Versions are **pinned** (`src/mcp/versions.ts`): a server started as `@latest` asks the
   registry on every session start and installs whatever was published a minute ago, and
   re-resolving a dependency tree makes the start slow enough to fail inside Claude Code's
@@ -1791,6 +1811,8 @@ folders. Registered for the user, the names stay and the servers stay.
   (`~/.claude/cc-smart-dev-kit/mcp-servers.json`), and so do Serena's context file and the
   Tavily `env` key. A server you re-pointed — or removed yourself — stays, and setup says so
   with the exact command that adds it back (a server you removed is never registered again).
+  A server restore could not remove keeps its record, so the next `restore` tries again; that,
+  and a record file restore cannot read (kept, never deleted), make `restore` exit 1.
 - `doctor` checks each one: registered at user scope, and it starts (`claude mcp get`, which
   starts it once). A server registered somewhere else — a project's `.mcp.json`, or the local
   scope — is a ✗ naming what wins over yours. A server registered at user scope by **something

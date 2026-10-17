@@ -4,9 +4,14 @@
  */
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { isInside } from "../path-compare";
 import { gitEnv } from "../project/git-env";
 import { BATCH_SSH_COMMAND, hasOwnSshCommand } from "../setup/marketplace-access";
 import type { Env } from "./run";
+
+// The path tests live in their one home, `src/path-compare.ts`; the hooks have always imported
+// them from here, so this file hands them on rather than every hook changing its import.
+export { IGNORE_CASE, isInside, samePath } from "../path-compare";
 
 export interface GitRun {
   ok: boolean;
@@ -50,27 +55,6 @@ export function noPromptEnv(env: Env): Env {
   const quiet: Env = { ...env, GIT_TERMINAL_PROMPT: "0" };
   if (!hasOwnSshCommand(quiet)) quiet.GIT_SSH_COMMAND = BATCH_SSH_COMMAND;
   return quiet;
-}
-
-/** Folders compare without case on Windows only. */
-export const IGNORE_CASE = process.platform === "win32";
-
-/**
- * Is `path` the folder itself, or inside it? `..` and `.` are resolved first, so
- * `app/../app-wt-x` is not "inside app".
- */
-export function isInside(path: string, folder: string, ignoreCase = IGNORE_CASE): boolean {
-  const form = (p: string) => {
-    const forward = resolve(p).replace(/\\/g, "/").replace(/\/+$/, "");
-    return ignoreCase ? forward.toLowerCase() : forward;
-  };
-  const child = form(path);
-  const parent = form(folder);
-  return child === parent || child.startsWith(`${parent}/`);
-}
-
-export function samePath(a: string, b: string, ignoreCase = IGNORE_CASE): boolean {
-  return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
 }
 
 /**

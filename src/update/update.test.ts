@@ -27,7 +27,7 @@ import {
   refreshInstructionsAtSessionStart,
   sessionStart,
 } from "./background";
-import { isOlder } from "./check";
+import { checkForUpdate, isOlder } from "./check";
 import {
   CHECK_INTERVAL_MS,
   isDue,
@@ -795,6 +795,21 @@ describe("cc-smart-dev-kit update", () => {
     // Nothing newer now.
     expect((await m.cli(["update"])).stdout).toBe("cc-smart-dev-kit 1.1.0 is up to date.\n");
   }, 30_000);
+
+  test("a local copy whose head git cannot read is not 'behind': only the versions decide then", () => {
+    // `git rev-parse HEAD` answers nothing a commit looks like (a copy that is not a git
+    // checkout, or a broken one). Read as "behind", every check said so, and the background
+    // check refreshed the marketplace every hour for nothing.
+    const m = machine({ localHead: "" });
+    expect(checkForUpdate(m.paths, m.env)).toEqual({ installed: "1.0.0", kind: "up-to-date" });
+    // A newer version in the copy is still found.
+    const newer = machine({ localHead: "", inCopy: "1.2.0" });
+    expect(checkForUpdate(newer.paths, newer.env)).toMatchObject({
+      catalogBehind: false,
+      inCopy: "1.2.0",
+      kind: "behind",
+    });
+  });
 
   test("a wrong option: the usage, exit 2", async () => {
     const run = await machine().cli(["update", "--now"]);
