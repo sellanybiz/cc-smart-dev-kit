@@ -322,6 +322,7 @@ The release is one PR with one version (0.6.0). Before it merges, a phase is und
 
 What only the owner can judge, once `release-0.6.0` builds (each track's steps can run as soon as that track has landed):
 - **A:** open the portal from a terminal; the link works, and `ps` during the open shows no token. On Windows (if available): `cc-smart-dev-kit doctor` shows the instructions installed.
+- **B7:** start a new Claude Code session; open `http://127.0.0.1:<port>`; it stays up past 30 minutes; after a plugin update it comes back on the new version; from another device on your network the port does not answer.
 - **B:** run `cc-smart-dev-kit setup` and `doctor` in a real terminal — is it clear in five seconds? In the portal: switch opus to Claude and back to Custom; the chain returns exactly. Change a slot from a terminal while the portal is open; the switch moves by itself. Add `claude-haiku-5-5` to the scout chain from the portal.
 - **C:** read the new core.md before it merges; work one normal session with it and say what feels different.
 
