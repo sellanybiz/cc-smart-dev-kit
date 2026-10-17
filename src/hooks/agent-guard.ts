@@ -8,25 +8,29 @@
  * silent there. It is wired with `--missing=ask`: a guard fails closed.
  *
  * **Why.** An Agent call with no `model` runs on whatever model the session has; an Opus or
- * Fable launch spends the person's own plan usage; a subagent at `low` or `medium` does work
- * nobody chose to cheapen; and an affordable gateway slot works well only at effort `max`.
- * The owner's decisions (2026-10-16):
+ * Fable launch spends the person's own plan usage; a subagent at `low` does work nobody chose
+ * to cheapen; and an affordable gateway slot works well only at effort `max`.
  *
- * **Effort.** A subagent never runs at `low` or `medium` (the owner, 2026-10-16), whatever the
- * model: the guard refuses a launch whose `effort` is not `high`, `xhigh` or `max`. That list
- * lives once, in `ALLOWED_EFFORTS`, and the guard, its messages and the tests all read it. On
- * top of it, an affordable slot must be `max` and a review runs at `xhigh` by default — at
- * `max` only when the person asks for a deeper review, and then the guard asks them.
+ * **Effort** (the owner's decision D5, 2026-10-17). A subagent never runs at `low`, whatever
+ * the model: the guard refuses a launch whose `effort` is not `medium`, `high`, `xhigh` or
+ * `max`. That list lives once, in `ALLOWED_EFFORTS`, and the guard, its messages and the tests
+ * all read it. `medium` is for searches and reads, `high` for building and for reviews, and
+ * `xhigh` and `max` only when the person asks. Two rules sit on top: an affordable slot must
+ * be `max`, and a review runs at `REVIEW_EFFORT` (`high`) — above it only when the person asks
+ * for a deeper review, and then the guard asks them.
  *
  * | The model behind the launch | The verdict |
  * |---|---|
  * | an affordable slot key / a `<backend>:<model>` target / `haiku` or `sonnet` (or their ids) while the gateway is on and the family's slot chain starts with a backend | allow; with the gateway on, its effort must be `max`, else deny |
  * | any other name (`best`, `opusplan`, `default`, `inherit`, a name no rule knows) | the `opus` tier below (the strictest reading): only what the guard can prove affordable is affordable |
- * | Claude Sonnet or Haiku (the gateway off, the family's slot off, or its chain starting with a `claude-…` model) | allow (the effort rule above still holds) |
- * | the `opus` tier | a review agent (or one ending `:reviewer`) whose family is really Opus: allow, no question — but at effort `max` a review is an **ask** (a deeper review the person asked for); anything else with a prompt line `Opus reason: <one of OPUS_REASONS>`: **ask** (the person approves each one, and sees the reason); without that line: deny |
+ * | Claude Sonnet or Haiku (the gateway off, the family's slot off, or its chain starting with a Claude Sonnet or Haiku model) | allow (the effort rule above still holds) |
+ * | the `opus` tier | a review agent (or one ending `:reviewer`) whose family is really Opus: allow, no question — but above `high` (`xhigh`, `max`) a review is an **ask** (a deeper review the person asked for); anything else with a prompt line `Opus reason: <one of OPUS_REASONS>`: **ask** (the person approves each one, and sees the reason); without that line: deny |
  * | the `fable` tier | a read-only agent type with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: **ask** (the word `build` is not one of them: a read-only agent never builds); an agent that can change files (any other type, a fork included) with `Fable reason: build - <why>`: **ask** (the person asked for it); no line, a builder without the word `build`, or an unattended session (`claude -p`): deny |
  * | no `model` / no `effort` | deny (a launch that names neither would inherit the session's, which nobody chose) — except a `fork`, which always inherits both |
- * | a session nobody watches (`claude -p`) | every premium launch that would ask is denied (there is nobody to approve it); a review on the `opus` tier at `high` or `xhigh`: allow |
+ * | a session nobody watches (`claude -p`) | every premium launch that would ask is denied (there is nobody to approve it); a review on the `opus` tier at `medium` or `high`: allow |
+ *
+ * A reason word is read with the punctuation around it dropped: `Opus reason: security.` names
+ * `security`.
  *
  * **Tiers, not vendors** (the owner, 2026-10-16). `opus` and `fable` mean the TIER: whatever
  * model answers behind them — Claude, a backend through an override or the family's slot, a
@@ -48,14 +52,21 @@
  *      (`gateway.json`, read through the gateway's own `loadConfigFile`). A slot with no chain
  *      is off: the Claude model itself answers, on the person's own login.
  * So `sonnet` is an affordable slot exactly when the gateway is on and the worker's chain
- * starts with a `<backend>:<model>`; a chain that starts with a `claude-…` model is Claude. A
+ * starts with a `<backend>:<model>`; a chain that starts with a `claude-…` model is Claude.
+ * **A name never runs below the tier of what answers it:** when the override or the slot
+ * answers a family name with a model the guard reads as a stricter premium family (`sonnet`
+ * whose `ANTHROPIC_DEFAULT_SONNET_MODEL` is a Claude Opus id, or whose worker chain starts with
+ * one), the launch is that family and its tier — it spends that tier's usage. A model the guard
+ * cannot read as a family leaves the name's own tier (`asNamed`). A
  * `fork` runs on the session's model and effort — Claude Code ignores a `model` it is given —
  * so it is judged on the session's own: the last Claude model in the hook input's
  * `transcript_path` (`lastClaudeModel`), else `ANTHROPIC_MODEL`; unknowable → the `opus` tier.
  *
- * Every premium launch that is allowed or asked is recorded with its reason
- * (`agent-launches.ts`), and `cc-smart-dev-kit usage` lists them. Anything the guard cannot work
- * out lets the call through, except a Workflow whose launches it cannot read (`workflowRefusal`).
+ * Every premium launch is recorded with its reason (`agent-launches.ts`) once it is known to
+ * run, and `cc-smart-dev-kit usage` lists them: an allowed launch on PreToolUse, and an asked
+ * one on PostToolUse — the call ran, so the person said yes (`RAN_EVENT`). A launch the person
+ * refuses is never recorded. Anything the guard cannot work out lets the call through, except a
+ * Workflow whose launches it cannot read (`workflowRefusal`).
  */
 
 import type { CliPaths } from "../cli/paths";
@@ -90,7 +101,10 @@ export const WORKFLOW_TOOLS = ["Workflow"] as const;
 /** The subagent type a fork uses: it runs on the session's model and effort. */
 export const FORK = "fork";
 
-/** What `Opus reason:` may name (the owner's list). */
+/**
+ * What `Opus reason:` may name (the owner's list). `research` is ambiguous research, and
+ * `retry` is a job an affordable model failed twice, handed to Opus.
+ */
 export const OPUS_REASONS = [
   "security",
   "money",
@@ -101,6 +115,8 @@ export const OPUS_REASONS = [
   "architecture",
   "plan-review",
   "debugging",
+  "research",
+  "retry",
 ] as const;
 
 /**
@@ -139,17 +155,26 @@ export const REVIEW_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS";
 export const READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";
 
 /**
- * The effort levels a subagent may run at — the one home of that list (owner, 2026-10-16):
- * `low` and `medium` are refused on every model, a Claude model and an affordable gateway slot
- * alike. Two rules name one level each, on top of this one: an affordable slot must be `max`,
- * and a review runs at `xhigh` by default — at `max` only when the person asks for a deeper
- * review, and then the guard asks them.
+ * The effort levels a subagent may run at, lowest first — the one home of that list (the
+ * owner's decision D5): `low` is refused on every model, a Claude model and an affordable
+ * gateway slot alike. Two rules name one level each, on top of this one: an affordable slot
+ * must be `max`, and a review runs at `REVIEW_EFFORT` — above it only when the person asks for
+ * a deeper review, and then the guard asks them.
  */
-export const ALLOWED_EFFORTS = ["high", "xhigh", "max"] as const;
+export const ALLOWED_EFFORTS = ["medium", "high", "xhigh", "max"] as const;
+
+/** The effort a review runs at unless the person asked for a deeper one. */
+export const REVIEW_EFFORT = "high";
 
 /** True when an effort a launch names is one a subagent may run at. */
 function effortAllowed(effort: string): boolean {
   return (ALLOWED_EFFORTS as readonly string[]).includes(effort.toLowerCase());
+}
+
+/** True when `effort` is an allowed level above the one a review runs at by default. */
+function deeperThanReview(effort: string): boolean {
+  const levels: readonly string[] = ALLOWED_EFFORTS;
+  return levels.indexOf(effort.toLowerCase()) > levels.indexOf(REVIEW_EFFORT);
 }
 
 /** A subagent type as a list compares it: after any `plugin:`, `-`/`_`/space as one `-`. */
@@ -249,10 +274,35 @@ export function tierOfMappedId(
   return null;
 }
 
+/** How strict a tier is: none, then `opus`, then `fable`. */
+function tierRank(tier: "fable" | "opus" | null): number {
+  return tier === "fable" ? 2 : tier === "opus" ? 1 : 0;
+}
+
+/**
+ * A name's reading once its override or its family's slot has answered with `answered`. The
+ * NAME's family and tier stay the launch's (owner, 2026-10-16) — `opus` is the `opus` tier even
+ * when a backend answers it — unless what answers is a model the guard reads as a STRICTER
+ * premium family: then the launch is that family and its tier, because it spends that tier's
+ * usage (`sonnet` whose override or worker chain is a Claude Opus id is the `opus` tier). A
+ * model the guard cannot read as a family never raises the tier.
+ */
+function asNamed(
+  answered: LaunchModel,
+  family: ClaudeFamily | null,
+  tier: "fable" | "opus" | null,
+): LaunchModel {
+  const real = premiumTier(answered.family);
+  return tierRank(real) > tierRank(tier)
+    ? { ...answered, tier: real }
+    : { ...answered, family, tier };
+}
+
 /**
  * The model behind a Claude family once the router has had it: its slot's first target while
  * the gateway is on and the slot has a chain, else `claude` (the Claude model answers). The
- * family and the tier stay the ones the NAME stands for (owner, 2026-10-16).
+ * family and the tier are the ones the NAME stands for, or the stricter one of what answers
+ * (`asNamed`).
  */
 function throughFamilySlot(
   claude: string,
@@ -262,7 +312,7 @@ function throughFamilySlot(
   const tier = tierOfReading(family);
   const first = familyFirstTarget(gateway, family);
   if (first === null) return { claude: true, family, model: claude, tier };
-  return { ...resolveTarget(first), family, tier };
+  return asNamed(resolveTarget(first), family, tier);
 }
 
 /** A Claude id, slot key or `<backend>:<model>` as the model behind the launch. */
@@ -321,8 +371,9 @@ export function resolveLaunchModel(name: string, gateway: GatewayFacts, env: Env
   const override = stringField(env[familyEnv(family)]);
   if (override !== null) {
     // The NAME's family stays the launch's family: `opus` is the `opus` tier even when a backend
-    // answers it, so the record, the review shortcut and the messages read the same family.
-    return { ...resolveName(withoutContextSuffix(override.trim()), gateway), family, tier };
+    // answers it, so the record, the review shortcut and the messages read the same family —
+    // unless the override answers with a stricter premium family (`asNamed`).
+    return asNamed(resolveName(withoutContextSuffix(override.trim()), gateway), family, tier);
   }
   return throughFamilySlot(text, family, gateway);
 }
@@ -815,9 +866,14 @@ export function reasonLine(prompt: string, label: string): null | string {
   return null;
 }
 
-/** The first word of a reason line, lower case; null when it names a word not in `allowed`. */
+/**
+ * The first word of a reason line, lower case, without the punctuation around it
+ * (`security.`, `` `security` ``, `security,` all read `security`); null when it names a word
+ * not in `allowed`. A word is letters and digits joined by single hyphens (`plan-review`).
+ */
 function reasonWord(text: null | string, allowed: readonly string[]): null | string {
-  const word = text?.split(/\s+/)[0]?.toLowerCase() ?? "";
+  const found = /^[^a-z0-9]*([a-z0-9]+(?:-[a-z0-9]+)*)/.exec(text?.toLowerCase() ?? "");
+  const word = found?.[1] ?? "";
   return allowed.includes(word) ? word : null;
 }
 
@@ -826,20 +882,27 @@ const NO_MODEL = [
   "An agent given none runs on the session's model and effort, which nobody chose: pass `model` and `effort` on every launch.",
 ].join("\n");
 
-/** The levels of `ALLOWED_EFFORTS` as the guard's messages name them: `` `high`, `xhigh`, `max` ``. */
-const EFFORTS = ALLOWED_EFFORTS.map((one) => `\`${one}\``).join(", ");
+/** The levels of `ALLOWED_EFFORTS` as the guard's messages name them: `` `medium`, `high`, `xhigh` or `max` ``. */
+const EFFORTS = `${ALLOWED_EFFORTS.slice(0, -1)
+  .map((one) => `\`${one}\``)
+  .join(", ")} or \`${ALLOWED_EFFORTS.at(-1)}\``;
+
+/** What each allowed level is for (the owner's decision D5), as every effort message says it. */
+const EFFORT_USE =
+  "`medium` is for searches and reads, `high` for building and for reviews, and `xhigh` and `max` only when the person asks for them (an affordable gateway slot always runs at `max`).";
 
 const NO_EFFORT = [
   "This Agent launch names no `effort`.",
-  `An agent given none runs at the session's effort: pass \`effort\` on every launch — ${EFFORTS} only, never \`low\` or \`medium\` (\`max\` for the hardest problem, always on an affordable gateway slot).`,
+  `An agent given none runs at the session's effort: pass \`effort\` on every launch, ${EFFORTS}.`,
+  EFFORT_USE,
 ].join("\n");
 
-/** Said when a launch names an effort a subagent never runs at: `low`, `medium`, or a level no rule knows. */
+/** Said when a launch names an effort a subagent never runs at: `low`, or a level no rule knows. */
 function effortDenial(effort: string): string {
   return [
-    `This launch asks for effort \`${effort}\`, which no subagent may run at (the owner's rule, 2026-10-16).`,
-    `A subagent runs at ${EFFORTS} only — \`low\` and \`medium\` are refused on every model, a Claude model and an affordable gateway slot alike.`,
-    "`high` is for searches, reads and routine building, `xhigh` for review and real judgment, and `max` for the hardest problem only (always on an affordable gateway slot).",
+    `This launch asks for effort \`${effort}\`, which no subagent may run at (the plugin's rule).`,
+    `A subagent runs at ${EFFORTS} — never \`low\`, on any model.`,
+    EFFORT_USE,
   ].join("\n");
 }
 
@@ -864,7 +927,7 @@ function atEffort(effort: null | string): string {
 function opusDenial(real: LaunchModel): string {
   return [
     `This launch would run on ${namedModel(real)}.`,
-    "Opus is for reviews and the owner's listed exceptions only: launch it as a review agent (`subagent_type` Reviewer, or one ending `:reviewer`), or put a line in the prompt saying why — the person is then asked to approve each one:",
+    "Opus is for reviews and the plugin's listed exceptions only: launch it as a review agent (`subagent_type` Reviewer, or one ending `:reviewer`), or put a line in the prompt saying why — the person is then asked to approve each one:",
     `Opus reason: <${OPUS_REASONS.join("|")}>`,
   ].join("\n");
 }
@@ -908,8 +971,8 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
   const real = launch.fork
     ? forkModel(ctx.sessionModel, ctx, env)
     : resolveLaunchModel(named ?? "", ctx, env);
-  // The owner's rule, before every model rule: a subagent never runs at `low` or `medium` — on
-  // a Claude model and an affordable slot alike. A level no rule knows is refused, not guessed.
+  // The effort rule, before every model rule: a subagent never runs at `low` — on a Claude model
+  // and an affordable slot alike. A level no rule knows is refused, not guessed.
   if (launch.effort !== null && !effortAllowed(launch.effort)) {
     return deny(real, effortDenial(launch.effort));
   }
@@ -965,15 +1028,16 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
 
   // The `opus` tier — a Claude Opus model, an `opus` name with anything behind it, or a name no
   // rule knows (the strictest reading). A review is allowed without a question when its family
-  // is really Opus; at `max` it asks — a deeper review is the person's own call (owner,
-  // 2026-10-16) — and the ask rests on the effort, not on a prompt. A review whose model the
-  // guard cannot read asks like any other Opus launch. Anything else needs a reason line, and is
+  // is really Opus; above `REVIEW_EFFORT` it asks — a deeper review is the person's own call
+  // (D5) — and the ask rests on the effort, not on a prompt. A review whose model the guard
+  // cannot read asks like any other Opus launch. Anything else needs a reason line, and is
   // refused when nobody is there to answer.
   if (real.tier === "opus") {
     if (isReview) {
       // A review is allowed with no question only when the model behind it is really the Opus
-      // family (owner, 2026-10-16). At `max` it asks — a deeper review is the person's own call —
-      // and a review the guard cannot read as Opus asks about that reading rather than passing.
+      // family (owner, 2026-10-16). Above `REVIEW_EFFORT` it asks — a deeper review is the
+      // person's own call — and a review the guard cannot read as Opus asks about that reading
+      // rather than passing.
       if (real.family !== "opus") {
         if (nobodyWatches(env)) {
           return deny(
@@ -991,21 +1055,23 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
           why: "opus:review-unreadable",
         };
       }
-      if (launch.effort?.toLowerCase() !== "max") return allow(real, "review");
+      // A fork names no effort and is never a review type; a review with none was refused above.
+      const effort = launch.effort?.toLowerCase() ?? REVIEW_EFFORT;
+      if (!deeperThanReview(effort)) return allow(real, "review");
       if (nobodyWatches(env)) {
         return deny(
           real,
           [
-            "A review at effort `max` is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
-            "Run it at `xhigh`, or in an interactive session.",
+            `A review at effort \`${effort}\` is approved by the person, one by one, and this session has nobody to answer (\`claude -p\`).`,
+            `Run it at \`${REVIEW_EFFORT}\`, or in an interactive session.`,
           ].join("\n"),
         );
       }
       return {
         decision: "ask",
         real,
-        reason: `${namedModel(real)} review at effort \`max\`: reviews run at \`xhigh\` unless you asked for a deeper one. Approve if you did.`,
-        why: "opus:review-max",
+        reason: `${namedModel(real)} review at effort \`${effort}\`: a review runs at \`${REVIEW_EFFORT}\` unless you asked for a deeper one. Approve if you did.`,
+        why: `opus:review-${effort}`,
       };
     }
     const said = reasonLine(launch.prompt, "Opus reason");
@@ -1117,6 +1183,8 @@ export function readGuardContext(paths: CliPaths, input: HookInput, env: Env): G
  * (`CC_SMART_DEV_KIT_HOOK_LOG`) runs this.
  */
 export function guardFacts(input: HookInput, context: HookEnvContext): Record<string, unknown> {
+  // After the call the guard answers nothing: a verdict there would read as a second question.
+  if (afterTheCall(input)) return { event: RAN_EVENT };
   const guard = readGuardContext(context.paths, input, context.env);
   const tool = stringField(input.tool_name);
   if (tool !== null && (WORKFLOW_TOOLS as readonly string[]).includes(tool)) {
@@ -1174,9 +1242,26 @@ function recorded(
 }
 
 /**
+ * The event that says a call RAN. A PreToolUse hook cannot know the person's answer to an ask,
+ * so an asked launch is recorded here instead: Claude Code runs PostToolUse only for a call
+ * that ran, and an asked call runs only on the person's yes. The guard says nothing there.
+ */
+export const RAN_EVENT = "PostToolUse";
+
+/** True when the input is the guard's run after the call (`RAN_EVENT`), not its question. */
+function afterTheCall(input: HookInput): boolean {
+  return stringField(input.hook_event_name) === RAN_EVENT;
+}
+
+/**
  * The hook's answer: judge the launch (or every launch a Workflow script makes), record an
- * Opus or Fable one, and answer with the PreToolUse decision. Anything it cannot read lets
- * the call through.
+ * Opus or Fable one once it is known to run, and answer with the PreToolUse decision.
+ *
+ * The record: on PreToolUse, a call the guard allows outright (it runs with no question); on
+ * PostToolUse (`RAN_EVENT`), a call the guard asked about (it ran, so the person said yes). So
+ * a launch the person refuses is never recorded, and none is recorded twice. A Workflow is one
+ * call: when any of its launches asks, the person may refuse them all, so all wait for the run.
+ * Anything it cannot read lets the call through.
  */
 export function agentGuard(
   input: HookInput,
@@ -1188,32 +1273,37 @@ export function agentGuard(
   const tool = stringField(input.tool_name);
   const context = readGuardContext(paths, input, env);
   const file = agentLaunchesFile(paths.stateDir);
+  const ran = afterTheCall(input);
+  const record = (verdict: Verdict, launch: Launch) => {
+    const line = recorded(verdict, launch, input, cwd, nowMs);
+    if (line !== null) appendAgentLaunch(file, line);
+  };
   if (tool !== null && (WORKFLOW_TOOLS as readonly string[]).includes(tool)) {
     const script = stringField(toolInput(input).script);
     if (script === null) return SILENT;
     // A launch the guard cannot follow — `agent` handed around, options built at run time —
     // refuses the whole call: the rules would not hold for it.
     const refusal = workflowRefusal(script);
-    if (refusal !== null) return toolDecision("deny", refusal);
+    if (refusal !== null) return ran ? SILENT : toolDecision("deny", refusal);
     const results = judgeWorkflow(script, context, env);
     // The strictest verdict of the script's launches answers for the whole call: a deny refuses
-    // it, so nothing in it ran and none of its launches is recorded; otherwise every asking and
-    // allowed launch is, and the ask names each launch that asks.
+    // it, so nothing in it runs and none of its launches is recorded; otherwise the ask names
+    // each launch that asks.
     const decided = results.find((one) => one.verdict.decision === "deny");
-    if (decided !== undefined) return toolDecision("deny", workflowReason(decided));
-    for (const one of results) {
-      const record = recorded(one.verdict, asLaunch(one.launch), input, cwd, nowMs);
-      if (record !== null) appendAgentLaunch(file, record);
-    }
+    if (decided !== undefined) return ran ? SILENT : toolDecision("deny", workflowReason(decided));
     const asks = results.filter((one) => one.verdict.decision === "ask");
-    return asks.length === 0
-      ? SILENT
-      : toolDecision("ask", asks.map((one) => workflowReason(one)).join("\n"));
+    const asked = asks.length > 0;
+    // Recorded when the whole call is known to run: at once when nothing in it asks, else after
+    // it ran.
+    if (ran === asked) {
+      for (const one of results) record(one.verdict, asLaunch(one.launch));
+    }
+    if (ran || !asked) return SILENT;
+    return toolDecision("ask", asks.map((one) => workflowReason(one)).join("\n"));
   }
   const launch = readLaunch(input);
   if (launch === null) return SILENT;
   const result = judgeLaunch(launch, context, env);
-  const launchRecord = recorded(result, launch, input, cwd, nowMs);
-  if (launchRecord !== null && result.decision !== "deny") appendAgentLaunch(file, launchRecord);
-  return result.decision === "allow" ? SILENT : toolDecision(result.decision, result.reason);
+  if (result.decision === (ran ? "ask" : "allow")) record(result, launch);
+  return ran || result.decision === "allow" ? SILENT : toolDecision(result.decision, result.reason);
 }
