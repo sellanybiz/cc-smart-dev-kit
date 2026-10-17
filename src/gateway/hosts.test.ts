@@ -24,6 +24,19 @@ describe("isLoopbackHost", () => {
     }
   });
 
+  it("GW hunch 7: a name under .localhost is this machine too (RFC 6761), so its key skips a proxy", () => {
+    for (const url of [
+      "http://app.localhost/",
+      "http://omniroute.localhost:20128",
+      "http://A.B.LOCALHOST./",
+    ]) {
+      expect(`${url} ${isLoopbackHost(new URL(url).hostname)}`).toBe(`${url} true`);
+    }
+    expect(directIfLoopback("http://omniroute.localhost:20128/v1/messages")).toEqual({
+      proxy: false,
+    });
+  });
+
   it("not this machine: other addresses and names", () => {
     for (const url of [
       "http://128.0.0.1/",
@@ -33,7 +46,8 @@ describe("isLoopbackHost", () => {
       "http://[1::1]/",
       "https://api.anthropic.com/",
       "http://localhost.example.test/",
-      "http://app.localhost/",
+      "http://notlocalhost/",
+      "http://app.localhost.example.test/",
     ]) {
       expect(`${url} ${isLoopbackHost(new URL(url).hostname)}`).toBe(`${url} false`);
     }

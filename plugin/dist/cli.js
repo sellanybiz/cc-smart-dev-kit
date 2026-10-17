@@ -8029,6 +8029,24 @@ function claudeFamily(model) {
   const id = name.slice(prefix[0].length - "claude-".length);
   return CLAUDE_FAMILIES.find((family) => id.includes(`-${family}-`)) ?? null;
 }
+var VERSION_AT_START = /^(\d{1,3})(?:-(\d{1,2})(?!\d))?(?!\d)/;
+function claudeVersion(model) {
+  const family = claudeFamily(model);
+  if (family === null)
+    return null;
+  const name = `${withoutContextSuffix(model).toLowerCase()}-`;
+  const id = name.slice((PROVIDER_PREFIX.exec(name)?.[0].length ?? 0) - "claude-".length);
+  const at = id.indexOf(`-${family}-`);
+  const before = id.slice("claude-".length, at);
+  const after = id.slice(at + family.length + 2);
+  const match = VERSION_AT_START.exec(before === "" ? after : before);
+  if (match === null)
+    return null;
+  return { major: Number(match[1]), minor: match[2] === undefined ? 0 : Number(match[2]) };
+}
+function versionAtLeast(version, since) {
+  return version.major !== since.major ? version.major > since.major : version.minor >= since.minor;
+}
 function familySlotKey(family) {
   return Object.keys(FAMILY_SLOTS).find((key) => FAMILY_SLOTS[key] === family) ?? null;
 }
@@ -8360,7 +8378,7 @@ function ipv4Kind([a = 0, b = 0]) {
 }
 function isLoopbackHost(hostname) {
   const host = normalHost(hostname);
-  if (host === "localhost")
+  if (host === "localhost" || host.endsWith(".localhost"))
     return true;
   const v4 = ipv4Parts(host);
   if (v4 !== null)
@@ -8410,8 +8428,64 @@ function directIfLoopback(url) {
     return {};
   return { proxy: false };
 }
+function backendFetch(url, init, fetchImpl = (target, options) => fetch(target, options)) {
+  return fetchImpl(url, { ...init, redirect: "manual", ...directIfLoopback(url) });
+}
+
+// src/gateway/plain-text.ts
+var CONTROL2 = /[\p{Cc}\p{Cf}]/gu;
+var CONTROL_BUT_LINES = /[^\P{Cc}\n\t]|\p{Cf}/gu;
+function plainText(text, options = {}) {
+  return text.replace(options.keepNewlines === true ? CONTROL_BUT_LINES : CONTROL2, " ");
+}
+function cutText(text, max) {
+  if (text.length <= max)
+    return text;
+  let end = Math.max(0, max);
+  const last = text.charCodeAt(end - 1);
+  if (end > 0 && last >= 55296 && last <= 56319)
+    end -= 1;
+  return text.slice(0, end);
+}
+function oneLine(text, max, options = {}) {
+  const flat = options.ascii === true ? text.replace(/\s+/g, " ").replace(/[^\x20-\x7e]/g, "?") : plainText(text).replace(/\s+/g, " ");
+  const line = flat.trim();
+  return line.length > max ? `${cutText(line, max)}${options.mark ?? ""}` : line;
+}
+function printableJson(value) {
+  return JSON.stringify(value, null, 2).replace(/[^\P{Cc}\n]|\p{Cf}/gu, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+function maskedTail(secret) {
+  return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
+}
+var KNOWN_SECRET_MIN = 4;
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function knownSecretForms(known) {
+  const forms = new Map;
+  for (const secret of known) {
+    if (secret.length < KNOWN_SECRET_MIN)
+      continue;
+    const once = JSON.stringify(secret).slice(1, -1);
+    const twice = JSON.stringify(once).slice(1, -1);
+    for (const form of [secret, once, twice])
+      if (!forms.has(form))
+        forms.set(form, secret);
+  }
+  return [...forms].map(([form, secret]) => ({ form, secret })).sort((a, b) => b.form.length - a.form.length);
+}
+function maskSecrets(text, known = []) {
+  let out = text;
+  for (const { form, secret } of knownSecretForms(known)) {
+    out = out.split(form).join(maskedTail(secret));
+  }
+  return out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****").replace(/(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi, "$1$2$1$3:$4$1****$1").replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****").replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`).replace(/(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi, (_match, name, separator, value) => `${name}${separator}${maskedTail(value)}`).replace(/[A-Za-z0-9_-]{32,512}/g, (run) => run.includes("__") || UUID.test(run) ? run : maskedTail(run));
+}
+function maskedLine(text, known, max, options = {}) {
+  return oneLine(maskSecrets(text, known), max, options);
+}
 
 // src/gateway/backends.ts
+var REASON_CHARS = 120;
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -8430,18 +8504,14 @@ function parseModelList(body) {
 async function listModels(baseUrl, apiKey, timeoutMs = 1e4, fetchImpl = (url, init) => fetch(url, init)) {
   try {
     const url = `${baseUrl}/v1/models`;
-    const response = await fetchImpl(url, {
-      headers: { authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(timeoutMs),
-      ...directIfLoopback(url)
-    });
+    const response = await backendFetch(url, { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(timeoutMs) }, fetchImpl);
     if (!response.ok) {
       await response.body?.cancel();
       return { models: [], status: response.status };
     }
     return { models: parseModelList(await response.json()), status: response.status };
   } catch (error) {
-    return { error: messageOf(error) };
+    return { error: maskedLine(messageOf(error), [apiKey], REASON_CHARS) };
   }
 }
 var KEY_CHECK_TIMEOUT_MS = 5000;
@@ -8477,19 +8547,16 @@ function answerText(body) {
   const content = first.message.content;
   if (typeof content !== "string")
     return null;
-  return content.trim().slice(0, 60);
+  return oneLine(content, 60);
 }
 async function probeModel(options) {
   const { apiKey, baseUrl, fetchImpl } = options;
   const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
   const listing = `${baseUrl}/v1/models`;
   let models;
+  const said = (text) => maskedLine(text, [apiKey], REASON_CHARS);
   try {
-    const response = await fetchImpl(listing, {
-      headers: { authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(timeoutMs),
-      ...directIfLoopback(listing)
-    });
+    const response = await backendFetch(listing, { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(timeoutMs) }, fetchImpl);
     if (!response.ok) {
       await response.body?.cancel();
       return {
@@ -8499,7 +8566,7 @@ async function probeModel(options) {
     }
     models = modelIds(await response.json());
   } catch (error) {
-    return { detail: `/v1/models: ${messageOf(error)}`, ok: false };
+    return { detail: `/v1/models: ${said(messageOf(error))}`, ok: false };
   }
   if (models === null)
     return { detail: "/v1/models answered something that is not a model list", ok: false };
@@ -8518,7 +8585,7 @@ async function probeModel(options) {
   }
   const chat = `${baseUrl}/v1/chat/completions`;
   try {
-    const response = await fetchImpl(chat, {
+    const response = await backendFetch(chat, {
       body: JSON.stringify({
         messages: [{ content: PROBE_PROMPT, role: "user" }],
         model,
@@ -8526,15 +8593,11 @@ async function probeModel(options) {
       }),
       headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
       method: "POST",
-      signal: AbortSignal.timeout(timeoutMs),
-      ...directIfLoopback(chat)
-    });
+      signal: AbortSignal.timeout(timeoutMs)
+    }, fetchImpl);
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      return {
-        detail: `${model} answered HTTP ${response.status} (${body.trim().slice(0, 120)})`,
-        ok: false
-      };
+      return { detail: `${model} answered HTTP ${response.status} (${said(body)})`, ok: false };
     }
     const answer = answerText(await response.json());
     return {
@@ -8542,7 +8605,7 @@ async function probeModel(options) {
       ok: true
     };
   } catch (error) {
-    return { detail: `${model}: ${messageOf(error)}`, ok: false };
+    return { detail: `${model}: ${said(messageOf(error))}`, ok: false };
   }
 }
 
@@ -9227,30 +9290,6 @@ function serveUnix(path, fetch2) {
   return Bun.serve(options);
 }
 
-// src/gateway/plain-text.ts
-var CONTROL2 = /[\p{Cc}\p{Cf}]/gu;
-var CONTROL_BUT_LINES = /[^\P{Cc}\n\t]|\p{Cf}/gu;
-function plainText(text, options = {}) {
-  return text.replace(options.keepNewlines === true ? CONTROL_BUT_LINES : CONTROL2, " ");
-}
-function cutText(text, max) {
-  if (text.length <= max)
-    return text;
-  let end = Math.max(0, max);
-  const last = text.charCodeAt(end - 1);
-  if (end > 0 && last >= 55296 && last <= 56319)
-    end -= 1;
-  return text.slice(0, end);
-}
-function oneLine(text, max, options = {}) {
-  const flat = options.ascii === true ? text.replace(/\s+/g, " ").replace(/[^\x20-\x7e]/g, "?") : plainText(text).replace(/\s+/g, " ");
-  const line = flat.trim();
-  return line.length > max ? `${cutText(line, max)}${options.mark ?? ""}` : line;
-}
-function printableJson(value) {
-  return JSON.stringify(value, null, 2).replace(/[^\P{Cc}\n]|\p{Cf}/gu, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
-}
-
 // src/gateway/safety-checks.ts
 var SAFETY_CHECK_DAYS = 30;
 var SAFETY_CHECK_WINDOW_DAYS = 8;
@@ -9413,6 +9452,7 @@ var TOO_LONG = /context|too long|too large|too many tokens|token limit|payload/i
 var UNSUPPORTED = /unsupported|not supported|unknown (?:content|block|type)|invalid (?:content|block) type|image|document|server_tool|web_search|web_fetch|tool_reference/i;
 var BAD_SIGNATURE = "Invalid `signature`";
 var NO_HEADERS_IN_TIME = "no response headers in time";
+var NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 var HEALTH_PATH = "/__cc-smart-dev-kit/health";
 var MESSAGES_PATH = "/v1/messages";
 var COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
@@ -9434,6 +9474,15 @@ var BACKEND_HEADER_ALLOW_LIST = [
 var NULL_BODY_STATUS = new Set([101, 103, 204, 205, 304]);
 function anthropicError(status, type, message) {
   return Response.json({ error: { message, type }, type: "error" }, { status });
+}
+function backendKeyRefused(label, backend, status) {
+  return Response.json({
+    error: {
+      message: `cc-smart-dev-kit-router: ${label} refused the key the gateway config holds for ${backend} (HTTP ${status}${status === 403 ? ": the key, or what it may reach, such as a provider connection it is not allowed to use" : ""}). Your Claude login is not the problem. Check it: ${COMMAND} gateway check`,
+      type: "invalid_request_error"
+    },
+    type: "error"
+  }, { headers: { "x-should-retry": "false" }, status: 400 });
 }
 function droppedHeaders(headers) {
   const dropped = new Set(HOP_BY_HOP);
@@ -9464,6 +9513,7 @@ function backendRequestHeaders(client, apiKey) {
   }
   if (!out.has("content-type"))
     out.set("content-type", "application/json");
+  out.set("accept-encoding", "identity");
   out.set("authorization", `Bearer ${apiKey}`);
   return out;
 }
@@ -9500,8 +9550,11 @@ function sseScanner() {
   let event = null;
   let data = [];
   let fields = false;
+  let decided = "";
   const decide = () => {
     const name = event ?? "message";
+    decided = data.join(`
+`);
     if (name === "error")
       return "error";
     if (name === "ping")
@@ -9516,6 +9569,7 @@ function sseScanner() {
     return "event";
   };
   return {
+    decidedData: () => decided,
     push(text) {
       buffer += text;
       for (;; ) {
@@ -9550,34 +9604,6 @@ function sseScanner() {
 }
 function printable(text, max = 120) {
   return oneLine(text, max, { ascii: true });
-}
-function maskedTail(secret) {
-  return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
-}
-var KNOWN_SECRET_MIN = 4;
-var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function knownSecretForms(known) {
-  const forms = new Map;
-  for (const secret of known) {
-    if (secret.length < KNOWN_SECRET_MIN)
-      continue;
-    const once = JSON.stringify(secret).slice(1, -1);
-    const twice = JSON.stringify(once).slice(1, -1);
-    for (const form of [secret, once, twice])
-      if (!forms.has(form))
-        forms.set(form, secret);
-  }
-  return [...forms].map(([form, secret]) => ({ form, secret })).sort((a, b) => b.form.length - a.form.length);
-}
-function maskSecrets(text, known = []) {
-  let out = text;
-  for (const { form, secret } of knownSecretForms(known)) {
-    out = out.split(form).join(maskedTail(secret));
-  }
-  return out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****").replace(/(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi, "$1$2$1$3:$4$1****$1").replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****").replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`).replace(/(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi, (_match, name, separator, value) => `${name}${separator}${maskedTail(value)}`).replace(/[A-Za-z0-9_-]{32,512}/g, (run) => run.includes("__") || UUID.test(run) ? run : maskedTail(run));
-}
-function maskedLine(text, known, max, options = {}) {
-  return oneLine(maskSecrets(text, known), max, options);
 }
 var SNIPPET_MAX = 300;
 var SNIPPET_READ_BYTES = 2048;
@@ -9664,17 +9690,122 @@ function reasoningOffForBackend(body, options = {}) {
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
 }
 var CLAUDE_TARGET_RULES = {
-  opus: { thinkingOff: "left out" },
-  sonnet: { thinkingOff: "between_tools" }
+  fable: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: "left out"
+      },
+      since: { major: 5, minor: 0 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: false,
+        thinkingOff: "left out"
+      },
+      since: { major: 5, minor: 1 }
+    }
+  ],
+  haiku: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: null
+      },
+      since: { major: 4, minor: 7 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: true,
+        thinkingOff: "capped"
+      },
+      since: { major: 5, minor: 5 }
+    }
+  ],
+  opus: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: null
+      },
+      since: { major: 4, minor: 7 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: "capped"
+      },
+      since: { major: 5, minor: 0 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: true,
+        thinkingOff: "left out"
+      },
+      since: { major: 5, minor: 5 }
+    }
+  ],
+  sonnet: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: null
+      },
+      since: { major: 4, minor: 7 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: true,
+        thinkingOff: "between_tools"
+      },
+      since: { major: 5, minor: 5 }
+    }
+  ]
 };
+function claudeTargetRules(model) {
+  const family = claudeFamily(model);
+  const version = claudeVersion(model);
+  if (family === null || version === null)
+    return null;
+  let found = null;
+  for (const row of CLAUDE_TARGET_RULES[family] ?? []) {
+    if (versionAtLeast(version, row.since))
+      found = row.rules;
+  }
+  return found;
+}
 var ABOVE_HIGH = new Set(["max", "xhigh"]);
 function requestForClaudeFallback(body, model) {
-  const family = claudeFamily(model);
-  const rules = family === null ? undefined : CLAUDE_TARGET_RULES[family];
-  if (rules === undefined)
+  const rules = claudeTargetRules(model);
+  if (rules === null)
     return { body, changes: [] };
   const out = { ...body };
   const changes = [];
+  const capEffort = (why) => {
+    const outputConfig = body.output_config;
+    if (isJsonObject4(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
+      out.output_config = { ...outputConfig, effort: "high" };
+      changes.push(`effort ${outputConfig.effort} -> high${why}`);
+    }
+  };
   const thinking = body.thinking;
   if (isJsonObject4(thinking) && thinking.type === "disabled") {
     if (rules.thinkingOff === "left out") {
@@ -9685,32 +9816,32 @@ function requestForClaudeFallback(body, model) {
         out.output_config = { ...outputConfig, effort: "low" };
         changes.push("effort low (nearest to thinking off)");
       }
-    } else {
+    } else if (rules.thinkingOff === "between_tools") {
       out.thinking = { type: "between_tools" };
       changes.push("thinking disabled -> between_tools");
-      const outputConfig = body.output_config;
-      if (isJsonObject4(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
-        out.output_config = { ...outputConfig, effort: "high" };
-        changes.push(`effort ${outputConfig.effort} -> high`);
-      }
+      capEffort("");
+    } else if (rules.thinkingOff === "capped") {
+      capEffort(" (thinking off)");
     }
-  } else if (isJsonObject4(thinking) && thinking.type === "enabled") {
+  } else if (isJsonObject4(thinking) && thinking.type === "enabled" && rules.budgetToAdaptive) {
     out.thinking = thinking.display === undefined ? { type: "adaptive" } : { display: thinking.display, type: "adaptive" };
     changes.push("thinking enabled (budget) -> adaptive");
   }
   const toolChoice = body.tool_choice;
-  if (isJsonObject4(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
+  if (rules.forcedToolChoice && isJsonObject4(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
     out.tool_choice = toolChoice.disable_parallel_tool_use === undefined ? { type: "auto" } : { disable_parallel_tool_use: toolChoice.disable_parallel_tool_use, type: "auto" };
     changes.push(`tool_choice ${toolChoice.type} -> auto`);
   }
-  if (body.temperature !== undefined && body.temperature !== 1) {
-    delete out.temperature;
-    changes.push("temperature left out");
-  }
-  for (const field of ["top_p", "top_k"]) {
-    if (body[field] !== undefined) {
-      delete out[field];
-      changes.push(`${field} left out`);
+  if (rules.sampling) {
+    if (body.temperature !== undefined && body.temperature !== 1) {
+      delete out.temperature;
+      changes.push("temperature left out");
+    }
+    for (const field of ["top_p", "top_k"]) {
+      if (body[field] !== undefined) {
+        delete out[field];
+        changes.push(`${field} left out`);
+      }
     }
   }
   return changes.length > 0 ? { body: out, changes } : { body, changes };
@@ -9778,31 +9909,38 @@ function createRouter(deps) {
   const cooling = new Map;
   const aliasesLogged = new Set;
   const translationsLogged = new Set;
-  const limitState = emptyLimitState();
-  const safetyChecks = loadedSafetyChecks();
+  const limitState = loadedState(deps.loadState, parseLimitState, emptyLimitState, {
+    file: "the limit state file",
+    name: "the limit state",
+    after: "it starts over"
+  });
+  const safetyChecks = loadedState(deps.loadSafetyChecks, parseSafetyCheckState, emptySafetyChecks, {
+    file: "the safety-check file",
+    name: "the safety-check counts",
+    after: "counting starts over"
+  });
   const fellBack = new Set;
   const untestedLogged = new Set;
   const cleanedLogged = new Set;
   let checkedConfig = null;
   const persist = stateWriter(deps, "the limit state", deps.saveState === undefined ? undefined : () => deps.saveState?.(formatLimitState(limitState)));
   const persistChecks = stateWriter(deps, "the safety-check counts", deps.saveSafetyChecks === undefined ? undefined : () => deps.saveSafetyChecks?.(formatSafetyCheckState(safetyChecks)));
-  function loadedSafetyChecks() {
-    const load = deps.loadSafetyChecks;
+  function loadedState(load, parse, empty, words) {
     if (load === undefined)
-      return emptySafetyChecks();
+      return empty();
     let text;
     try {
       text = load();
     } catch (error) {
-      deps.log(`WARN cannot read the safety-check counts: ${messageOf(error)}`);
-      return emptySafetyChecks();
+      deps.log(`WARN cannot read ${words.name}: ${messageOf(error)}`);
+      return empty();
     }
     if (text === null)
-      return emptySafetyChecks();
-    const parsed = parseSafetyCheckState(text);
+      return empty();
+    const parsed = parse(text);
     if (parsed === null) {
-      deps.log("WARN the safety-check file is not one this version reads; counting starts over");
-      return emptySafetyChecks();
+      deps.log(`WARN ${words.file} is not one this version reads; ${words.after}`);
+      return empty();
     }
     return parsed;
   }
@@ -9972,15 +10110,14 @@ function createRouter(deps) {
     const controller = new AbortController;
     req.signal.addEventListener("abort", () => controller.abort(req.signal.reason), { once: true });
     const timer = deadlineAt === null ? null : deadline(deadlineAt - deps.now());
-    const pending = deps.fetch(upstream.url, {
+    const init = {
       body: upstream.body,
       decompress: false,
       headers: upstream.headers,
       method: upstream.method,
-      redirect: "manual",
-      signal: controller.signal,
-      ...directIfLoopback(upstream.url)
-    });
+      signal: controller.signal
+    };
+    const pending = backendFetch(upstream.url, init, deps.fetch);
     try {
       const first = await (timer === null ? pending : Promise.race([pending, timer.done]));
       if (first !== "timeout")
@@ -9996,7 +10133,7 @@ function createRouter(deps) {
       timer?.clear();
     }
   }
-  async function holdFirstEvent(response, deadlineAt) {
+  async function holdFirstEvent(response, deadlineAt, options) {
     const body = response.body;
     if (body === null)
       return { failure: "an event stream with no body", status: response.status };
@@ -10026,14 +10163,21 @@ function createRouter(deps) {
         timer?.clear();
       }
       if (step === "timeout")
-        return fail("no event in time (only heartbeats)", null);
-      if (step.done)
+        return fail(NO_EVENT_IN_TIME, null);
+      if (step.done) {
+        if (options.last)
+          break;
         return { failure: "the stream ended before its first event", status: response.status };
+      }
       held.push(step.value);
       const verdict = scanner.push(decoder.decode(step.value, { stream: true }));
-      if (verdict === "error")
-        return fail("an error event before the first real one", response.status);
-      if (verdict === "event")
+      if (verdict === "error" && !options.last) {
+        const reason = maskedLine(scanner.decidedData(), options.known, SNIPPET_MAX, {
+          ascii: true
+        });
+        return fail(`an error event before the first real one${reason === "" ? "" : `: ${reason}`}`, response.status);
+      }
+      if (verdict !== null)
         break;
     }
     const replay = new ReadableStream({
@@ -10053,6 +10197,32 @@ function createRouter(deps) {
     });
     return {
       response: new Response(replay, {
+        headers: response.headers,
+        status: response.status,
+        statusText: response.statusText
+      })
+    };
+  }
+  async function readJsonAnswer(response, known) {
+    const encoding = (response.headers.get("content-encoding") ?? "").trim().toLowerCase();
+    if (encoding !== "" && encoding !== "identity")
+      return { response };
+    let bytes;
+    try {
+      bytes = new Uint8Array(await response.arrayBuffer());
+    } catch (error) {
+      return { failure: `the answer broke off: ${messageOf(error)}`, status: null };
+    }
+    const parsed = parseBody(bytes);
+    if (parsed !== null && parsed.type === "error") {
+      const reason = snippetText(bytes, known);
+      return {
+        failure: `an error in its ${response.status} answer: ${reason}`,
+        status: response.status
+      };
+    }
+    return {
+      response: new Response(bytes, {
         headers: response.headers,
         status: response.status,
         statusText: response.statusText
@@ -10091,7 +10261,10 @@ function createRouter(deps) {
       return { upstream: anthropicUpstream(req, url, config, asked.sent) };
     }
     if (target.kind === "anthropic") {
-      const bytes = encoder.encode(JSON.stringify({ ...fitForClaude(body, target.model, guard), model: target.model }));
+      const bytes = encoder.encode(JSON.stringify({
+        ...fitForClaude(body, target.model, guard),
+        model: withoutContextSuffix(target.model)
+      }));
       return { upstream: anthropicUpstream(req, url, config, bytes) };
     }
     const backend = Object.hasOwn(config.backends, target.backend) ? config.backends[target.backend] : undefined;
@@ -10168,15 +10341,22 @@ function createRouter(deps) {
       if (target.kind === "anthropic" && "response" in result) {
         observeClaude(target.model, result.response, url.pathname);
       }
-      if ("response" in result && !last && target.kind === "backend" && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("text/event-stream")) {
-        result = await holdFirstEvent(result.response, deadlineAt);
+      if ("response" in result && (!last || guard) && target.kind === "backend" && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("text/event-stream")) {
+        result = await holdFirstEvent(result.response, deadlineAt, {
+          known: knownSecrets(req, config),
+          last
+        });
+        if (req.signal.aborted)
+          return closed(result, label);
+      } else if ("response" in result && !last && target.kind === "backend" && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("application/json")) {
+        result = await readJsonAnswer(result.response, knownSecrets(req, config));
         if (req.signal.aborted)
           return closed(result, label);
       }
       if (url.pathname === MESSAGES_PATH)
         noteCooldown(label, result);
       if ("failure" in result) {
-        lastTimedOut = last && result.failure === NO_HEADERS_IN_TIME;
+        lastTimedOut = last && (result.failure === NO_HEADERS_IN_TIME || result.failure === NO_EVENT_IN_TIME);
         failures.push(`${label}: ${result.failure}`);
         if (!last) {
           fallbacks += 1;
@@ -10192,6 +10372,15 @@ function createRouter(deps) {
           return {
             fallbacks,
             response: anthropicError(502, "api_error", `cc-smart-dev-kit-router: ${label} answered a redirect (${status}); not passed on`),
+            skipped,
+            target: label
+          };
+        }
+        if (target.kind === "backend" && (status === 401 || status === 403)) {
+          logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${label} answered ${status}; returned as a 400 (the backend refused its key)`);
+          return {
+            fallbacks,
+            response: backendKeyRefused(label, target.backend, status),
             skipped,
             target: label
           };
@@ -10513,19 +10702,21 @@ async function startRouter(paths, env = process.env) {
     mkdirSync7(dirname4(file), { mode: 448, recursive: true });
     atomicWrite(file, text, 384);
   };
+  const readState = (file) => {
+    try {
+      return readFileSync10(file, "utf8");
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT")
+        return null;
+      throw error;
+    }
+  };
   const handlerFor = (port) => createRouter({
     configPath,
     fetch: (url, init) => fetch(url, init),
     getConfig: () => source.get(),
-    loadSafetyChecks: () => {
-      try {
-        return readFileSync10(paths.safetyChecksFile, "utf8");
-      } catch (error) {
-        if (error.code === "ENOENT")
-          return null;
-        throw error;
-      }
-    },
+    loadSafetyChecks: () => readState(paths.safetyChecksFile),
+    loadState: () => readState(statePath),
     log,
     now: () => Date.now(),
     port,
@@ -10657,6 +10848,7 @@ async function waitForRouter(port, probe, waitMs = 5000) {
 // src/gateway/judge-test.ts
 var JUDGE_TEST_ACTION = "git push --force origin main";
 var JUDGE_TEST_TIMEOUT_MS = 60000;
+var DETAIL_CHARS = 200;
 function judgeTestRequest(model) {
   const check = {
     max_tokens: 1024,
@@ -10706,10 +10898,10 @@ function judgeVerdict(body) {
   }
   return match[1]?.toLowerCase() === "yes" ? { detail: "blocked it", verdict: "block" } : { detail: "let it run", verdict: "allow" };
 }
-async function testJudgeTarget(baseUrl, apiKey, model, fetchImpl = fetch) {
+async function testJudgeTarget(baseUrl, apiKey, model, fetchImpl = (url, init) => fetch(url, init)) {
   let response;
   try {
-    response = await fetchImpl(`${baseUrl}/v1/messages`, {
+    response = await backendFetch(`${baseUrl}/v1/messages`, {
       body: JSON.stringify(judgeTestRequest(model)),
       headers: {
         "anthropic-version": "2023-06-01",
@@ -10717,11 +10909,13 @@ async function testJudgeTarget(baseUrl, apiKey, model, fetchImpl = fetch) {
         "content-type": "application/json"
       },
       method: "POST",
-      redirect: "manual",
       signal: AbortSignal.timeout(JUDGE_TEST_TIMEOUT_MS)
-    });
+    }, fetchImpl);
   } catch (error) {
-    return { detail: `no answer: ${messageOf(error)}`, verdict: "unclear" };
+    return {
+      detail: `no answer: ${maskedLine(messageOf(error), [apiKey], DETAIL_CHARS)}`,
+      verdict: "unclear"
+    };
   }
   if (!response.ok) {
     await response.body?.cancel();
@@ -10774,12 +10968,12 @@ function sessionCookieFrom(setCookie) {
   }
   return null;
 }
-async function errorOf(response) {
+async function errorOf(response, secrets) {
   try {
     const body = await response.json();
     const error = body?.error;
     const text = typeof error === "string" ? error : "";
-    return text === "" ? "" : oneLine(text, 160);
+    return text === "" ? "" : maskedLine(text, secrets, 160);
   } catch {
     return "";
   }
@@ -10791,13 +10985,12 @@ async function createOmnirouteKey(options) {
   const loginUrl = `${base}${LOGIN_PATH}`;
   let login;
   try {
-    login = await doFetch(loginUrl, {
+    login = await backendFetch(loginUrl, {
       body: JSON.stringify({ password: options.password }),
       headers: { "content-type": "application/json" },
       method: "POST",
-      signal: AbortSignal.timeout(timeoutMs),
-      ...directIfLoopback(loginUrl)
-    });
+      signal: AbortSignal.timeout(timeoutMs)
+    }, doFetch);
   } catch (error) {
     return { detail: messageOf(error), kind: "no-answer" };
   }
@@ -10806,7 +10999,7 @@ async function createOmnirouteKey(options) {
     return { detail: "OmniRoute rejected that dashboard password", kind: "refused" };
   }
   if (!login.ok) {
-    const said = await errorOf(login);
+    const said = await errorOf(login, [options.password]);
     return {
       detail: `the OmniRoute login answered HTTP ${login.status}${said === "" ? "" : `: ${said}`}`,
       kind: "failed"
@@ -10821,18 +11014,17 @@ async function createOmnirouteKey(options) {
   const keysUrl = `${base}${KEYS_PATH}`;
   let created;
   try {
-    created = await doFetch(keysUrl, {
+    created = await backendFetch(keysUrl, {
       body: JSON.stringify({ name, noLog: true }),
       headers: { "content-type": "application/json", cookie: `${SESSION_COOKIE}=${session}` },
       method: "POST",
-      signal: AbortSignal.timeout(timeoutMs),
-      ...directIfLoopback(keysUrl)
-    });
+      signal: AbortSignal.timeout(timeoutMs)
+    }, doFetch);
   } catch (error) {
     return { detail: messageOf(error), kind: "no-answer" };
   }
   if (!created.ok) {
-    const said = await errorOf(created);
+    const said = await errorOf(created, [options.password, session]);
     return {
       detail: `creating the key answered HTTP ${created.status}${said === "" ? "" : `: ${said}`}`,
       kind: "failed"
@@ -10858,12 +11050,11 @@ async function createOmnirouteKey(options) {
     }
     const url = `${base}${KEYS_PATH}/${id}`;
     try {
-      const removed = await doFetch(url, {
+      const removed = await backendFetch(url, {
         headers: { cookie: `${SESSION_COOKIE}=${session}` },
         method: "DELETE",
-        signal: AbortSignal.timeout(timeoutMs),
-        ...directIfLoopback(url)
-      });
+        signal: AbortSignal.timeout(timeoutMs)
+      }, doFetch);
       await removed.body?.cancel();
       if (removed.ok)
         return { detail: "", ok: true };
@@ -13806,7 +13997,7 @@ async function checkAffordableTarget(target, timeoutMs = 30000) {
   const hide = (text) => target.apiKey === "" ? text : text.replaceAll(target.apiKey, maskKey(target.apiKey));
   let response;
   try {
-    response = await fetch(url, {
+    response = await backendFetch(url, {
       method: "POST",
       headers: { authorization: `Bearer ${target.apiKey}`, "content-type": "application/json" },
       body: JSON.stringify({
@@ -13817,7 +14008,8 @@ async function checkAffordableTarget(target, timeoutMs = 30000) {
       signal: AbortSignal.timeout(timeoutMs)
     });
   } catch (error) {
-    return hide(`${target.backend} did not answer at ${where} (${messageOf(error)})`);
+    const said = maskedLine(messageOf(error), [target.apiKey], 200);
+    return hide(`${target.backend} did not answer at ${where} (${said})`);
   }
   if (response.ok) {
     await response.body?.cancel();
@@ -15437,15 +15629,14 @@ async function waitForBackend(ctx, baseUrl, apiKey, waitMs = BACKEND_WAIT_MS) {
   let detail = "no answer";
   for (;; ) {
     try {
-      const response = await ctx.health(url, {
+      const response = await backendFetch(url, {
         headers: { authorization: `Bearer ${apiKey}` },
-        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-        ...directIfLoopback(url)
-      });
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS)
+      }, ctx.health);
       await response.body?.cancel();
       return { detail: null, up: true };
     } catch (error) {
-      detail = messageOf(error);
+      detail = maskedLine(messageOf(error), [apiKey], 200);
     }
     if (ctx.now() >= deadline)
       return { detail, up: false };
@@ -28093,16 +28284,14 @@ async function post(backend, path, body, timeoutMs) {
   const address = shownValue(backend.baseUrl);
   let response;
   try {
-    response = await fetch(url, {
+    response = await backendFetch(url, {
       method: "POST",
       headers: {
         authorization: `Bearer ${backend.apiKey}`,
         "content-type": "application/json"
       },
       body: JSON.stringify(body),
-      redirect: "manual",
-      signal: AbortSignal.timeout(timeoutMs),
-      ...directIfLoopback(url)
+      signal: AbortSignal.timeout(timeoutMs)
     });
   } catch (error) {
     if (isTimeout(error)) {

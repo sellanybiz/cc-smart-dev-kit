@@ -6079,6 +6079,24 @@ function claudeFamily(model) {
   const id = name.slice(prefix[0].length - "claude-".length);
   return CLAUDE_FAMILIES.find((family) => id.includes(`-${family}-`)) ?? null;
 }
+var VERSION_AT_START = /^(\d{1,3})(?:-(\d{1,2})(?!\d))?(?!\d)/;
+function claudeVersion(model) {
+  const family = claudeFamily(model);
+  if (family === null)
+    return null;
+  const name = `${withoutContextSuffix(model).toLowerCase()}-`;
+  const id = name.slice((PROVIDER_PREFIX.exec(name)?.[0].length ?? 0) - "claude-".length);
+  const at = id.indexOf(`-${family}-`);
+  const before = id.slice("claude-".length, at);
+  const after = id.slice(at + family.length + 2);
+  const match = VERSION_AT_START.exec(before === "" ? after : before);
+  if (match === null)
+    return null;
+  return { major: Number(match[1]), minor: match[2] === undefined ? 0 : Number(match[2]) };
+}
+function versionAtLeast(version, since) {
+  return version.major !== since.major ? version.major > since.major : version.minor >= since.minor;
+}
 function familySlotKey(family) {
   return Object.keys(FAMILY_SLOTS).find((key) => FAMILY_SLOTS[key] === family) ?? null;
 }
@@ -6621,7 +6639,7 @@ function normalHost(hostname) {
 }
 function isLoopbackHost(hostname) {
   const host = normalHost(hostname);
-  if (host === "localhost")
+  if (host === "localhost" || host.endsWith(".localhost"))
     return true;
   const v4 = ipv4Parts(host);
   if (v4 !== null)
@@ -6639,6 +6657,9 @@ function directIfLoopback(url) {
   if (parsed === null || !isLoopbackHost(parsed.hostname))
     return {};
   return { proxy: false };
+}
+function backendFetch(url, init, fetchImpl = (target, options) => fetch(target, options)) {
+  return fetchImpl(url, { ...init, redirect: "manual", ...directIfLoopback(url) });
 }
 
 // src/gateway/limit-state.ts
@@ -6666,6 +6687,16 @@ function emptyLimitState() {
 function formatLimitState(state) {
   return `${JSON.stringify(state, null, 2)}
 `;
+}
+function parseLimitState(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = stateSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
 }
 function current(resetsAt, lastMs, nowMs) {
   if (resetsAt !== null)
@@ -6839,6 +6870,34 @@ function oneLine(text, max, options = {}) {
   const line = flat.trim();
   return line.length > max ? `${cutText(line, max)}${options.mark ?? ""}` : line;
 }
+function maskedTail(secret) {
+  return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
+}
+var KNOWN_SECRET_MIN = 4;
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function knownSecretForms(known) {
+  const forms = new Map;
+  for (const secret of known) {
+    if (secret.length < KNOWN_SECRET_MIN)
+      continue;
+    const once = JSON.stringify(secret).slice(1, -1);
+    const twice = JSON.stringify(once).slice(1, -1);
+    for (const form of [secret, once, twice])
+      if (!forms.has(form))
+        forms.set(form, secret);
+  }
+  return [...forms].map(([form, secret]) => ({ form, secret })).sort((a, b) => b.form.length - a.form.length);
+}
+function maskSecrets(text, known = []) {
+  let out = text;
+  for (const { form, secret } of knownSecretForms(known)) {
+    out = out.split(form).join(maskedTail(secret));
+  }
+  return out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****").replace(/(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi, "$1$2$1$3:$4$1****$1").replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****").replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`).replace(/(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi, (_match, name, separator, value) => `${name}${separator}${maskedTail(value)}`).replace(/[A-Za-z0-9_-]{32,512}/g, (run) => run.includes("__") || UUID.test(run) ? run : maskedTail(run));
+}
+function maskedLine(text, known, max, options = {}) {
+  return oneLine(maskSecrets(text, known), max, options);
+}
 
 // src/gateway/safety-checks.ts
 var SAFETY_CHECK_DAYS = 30;
@@ -6992,6 +7051,7 @@ var TOO_LONG = /context|too long|too large|too many tokens|token limit|payload/i
 var UNSUPPORTED = /unsupported|not supported|unknown (?:content|block|type)|invalid (?:content|block) type|image|document|server_tool|web_search|web_fetch|tool_reference/i;
 var BAD_SIGNATURE = "Invalid `signature`";
 var NO_HEADERS_IN_TIME = "no response headers in time";
+var NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 var HEALTH_PATH = "/__cc-smart-dev-kit/health";
 var MESSAGES_PATH = "/v1/messages";
 var COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
@@ -7013,6 +7073,15 @@ var BACKEND_HEADER_ALLOW_LIST = [
 var NULL_BODY_STATUS = new Set([101, 103, 204, 205, 304]);
 function anthropicError(status, type, message) {
   return Response.json({ error: { message, type }, type: "error" }, { status });
+}
+function backendKeyRefused(label, backend, status) {
+  return Response.json({
+    error: {
+      message: `cc-smart-dev-kit-router: ${label} refused the key the gateway config holds for ${backend} (HTTP ${status}${status === 403 ? ": the key, or what it may reach, such as a provider connection it is not allowed to use" : ""}). Your Claude login is not the problem. Check it: ${COMMAND} gateway check`,
+      type: "invalid_request_error"
+    },
+    type: "error"
+  }, { headers: { "x-should-retry": "false" }, status: 400 });
 }
 function droppedHeaders(headers) {
   const dropped = new Set(HOP_BY_HOP);
@@ -7043,6 +7112,7 @@ function backendRequestHeaders(client, apiKey) {
   }
   if (!out.has("content-type"))
     out.set("content-type", "application/json");
+  out.set("accept-encoding", "identity");
   out.set("authorization", `Bearer ${apiKey}`);
   return out;
 }
@@ -7079,8 +7149,11 @@ function sseScanner() {
   let event = null;
   let data = [];
   let fields = false;
+  let decided = "";
   const decide = () => {
     const name = event ?? "message";
+    decided = data.join(`
+`);
     if (name === "error")
       return "error";
     if (name === "ping")
@@ -7095,6 +7168,7 @@ function sseScanner() {
     return "event";
   };
   return {
+    decidedData: () => decided,
     push(text) {
       buffer += text;
       for (;; ) {
@@ -7129,34 +7203,6 @@ function sseScanner() {
 }
 function printable(text, max = 120) {
   return oneLine(text, max, { ascii: true });
-}
-function maskedTail(secret) {
-  return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
-}
-var KNOWN_SECRET_MIN = 4;
-var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function knownSecretForms(known) {
-  const forms = new Map;
-  for (const secret of known) {
-    if (secret.length < KNOWN_SECRET_MIN)
-      continue;
-    const once = JSON.stringify(secret).slice(1, -1);
-    const twice = JSON.stringify(once).slice(1, -1);
-    for (const form of [secret, once, twice])
-      if (!forms.has(form))
-        forms.set(form, secret);
-  }
-  return [...forms].map(([form, secret]) => ({ form, secret })).sort((a, b) => b.form.length - a.form.length);
-}
-function maskSecrets(text, known = []) {
-  let out = text;
-  for (const { form, secret } of knownSecretForms(known)) {
-    out = out.split(form).join(maskedTail(secret));
-  }
-  return out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****").replace(/(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi, "$1$2$1$3:$4$1****$1").replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****").replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`).replace(/(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi, (_match, name, separator, value) => `${name}${separator}${maskedTail(value)}`).replace(/[A-Za-z0-9_-]{32,512}/g, (run) => run.includes("__") || UUID.test(run) ? run : maskedTail(run));
-}
-function maskedLine(text, known, max, options = {}) {
-  return oneLine(maskSecrets(text, known), max, options);
 }
 var SNIPPET_MAX = 300;
 var SNIPPET_READ_BYTES = 2048;
@@ -7243,17 +7289,122 @@ function reasoningOffForBackend(body, options = {}) {
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
 }
 var CLAUDE_TARGET_RULES = {
-  opus: { thinkingOff: "left out" },
-  sonnet: { thinkingOff: "between_tools" }
+  fable: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: "left out"
+      },
+      since: { major: 5, minor: 0 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: false,
+        thinkingOff: "left out"
+      },
+      since: { major: 5, minor: 1 }
+    }
+  ],
+  haiku: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: null
+      },
+      since: { major: 4, minor: 7 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: true,
+        thinkingOff: "capped"
+      },
+      since: { major: 5, minor: 5 }
+    }
+  ],
+  opus: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: null
+      },
+      since: { major: 4, minor: 7 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: "capped"
+      },
+      since: { major: 5, minor: 0 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: true,
+        thinkingOff: "left out"
+      },
+      since: { major: 5, minor: 5 }
+    }
+  ],
+  sonnet: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: null
+      },
+      since: { major: 4, minor: 7 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: true,
+        thinkingOff: "between_tools"
+      },
+      since: { major: 5, minor: 5 }
+    }
+  ]
 };
+function claudeTargetRules(model) {
+  const family = claudeFamily(model);
+  const version = claudeVersion(model);
+  if (family === null || version === null)
+    return null;
+  let found = null;
+  for (const row of CLAUDE_TARGET_RULES[family] ?? []) {
+    if (versionAtLeast(version, row.since))
+      found = row.rules;
+  }
+  return found;
+}
 var ABOVE_HIGH = new Set(["max", "xhigh"]);
 function requestForClaudeFallback(body, model) {
-  const family = claudeFamily(model);
-  const rules = family === null ? undefined : CLAUDE_TARGET_RULES[family];
-  if (rules === undefined)
+  const rules = claudeTargetRules(model);
+  if (rules === null)
     return { body, changes: [] };
   const out = { ...body };
   const changes = [];
+  const capEffort = (why) => {
+    const outputConfig = body.output_config;
+    if (isJsonObject3(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
+      out.output_config = { ...outputConfig, effort: "high" };
+      changes.push(`effort ${outputConfig.effort} -> high${why}`);
+    }
+  };
   const thinking = body.thinking;
   if (isJsonObject3(thinking) && thinking.type === "disabled") {
     if (rules.thinkingOff === "left out") {
@@ -7264,32 +7415,32 @@ function requestForClaudeFallback(body, model) {
         out.output_config = { ...outputConfig, effort: "low" };
         changes.push("effort low (nearest to thinking off)");
       }
-    } else {
+    } else if (rules.thinkingOff === "between_tools") {
       out.thinking = { type: "between_tools" };
       changes.push("thinking disabled -> between_tools");
-      const outputConfig = body.output_config;
-      if (isJsonObject3(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
-        out.output_config = { ...outputConfig, effort: "high" };
-        changes.push(`effort ${outputConfig.effort} -> high`);
-      }
+      capEffort("");
+    } else if (rules.thinkingOff === "capped") {
+      capEffort(" (thinking off)");
     }
-  } else if (isJsonObject3(thinking) && thinking.type === "enabled") {
+  } else if (isJsonObject3(thinking) && thinking.type === "enabled" && rules.budgetToAdaptive) {
     out.thinking = thinking.display === undefined ? { type: "adaptive" } : { display: thinking.display, type: "adaptive" };
     changes.push("thinking enabled (budget) -> adaptive");
   }
   const toolChoice = body.tool_choice;
-  if (isJsonObject3(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
+  if (rules.forcedToolChoice && isJsonObject3(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
     out.tool_choice = toolChoice.disable_parallel_tool_use === undefined ? { type: "auto" } : { disable_parallel_tool_use: toolChoice.disable_parallel_tool_use, type: "auto" };
     changes.push(`tool_choice ${toolChoice.type} -> auto`);
   }
-  if (body.temperature !== undefined && body.temperature !== 1) {
-    delete out.temperature;
-    changes.push("temperature left out");
-  }
-  for (const field of ["top_p", "top_k"]) {
-    if (body[field] !== undefined) {
-      delete out[field];
-      changes.push(`${field} left out`);
+  if (rules.sampling) {
+    if (body.temperature !== undefined && body.temperature !== 1) {
+      delete out.temperature;
+      changes.push("temperature left out");
+    }
+    for (const field of ["top_p", "top_k"]) {
+      if (body[field] !== undefined) {
+        delete out[field];
+        changes.push(`${field} left out`);
+      }
     }
   }
   return changes.length > 0 ? { body: out, changes } : { body, changes };
@@ -7357,31 +7508,38 @@ function createRouter(deps) {
   const cooling = new Map;
   const aliasesLogged = new Set;
   const translationsLogged = new Set;
-  const limitState = emptyLimitState();
-  const safetyChecks = loadedSafetyChecks();
+  const limitState = loadedState(deps.loadState, parseLimitState, emptyLimitState, {
+    file: "the limit state file",
+    name: "the limit state",
+    after: "it starts over"
+  });
+  const safetyChecks = loadedState(deps.loadSafetyChecks, parseSafetyCheckState, emptySafetyChecks, {
+    file: "the safety-check file",
+    name: "the safety-check counts",
+    after: "counting starts over"
+  });
   const fellBack = new Set;
   const untestedLogged = new Set;
   const cleanedLogged = new Set;
   let checkedConfig = null;
   const persist = stateWriter(deps, "the limit state", deps.saveState === undefined ? undefined : () => deps.saveState?.(formatLimitState(limitState)));
   const persistChecks = stateWriter(deps, "the safety-check counts", deps.saveSafetyChecks === undefined ? undefined : () => deps.saveSafetyChecks?.(formatSafetyCheckState(safetyChecks)));
-  function loadedSafetyChecks() {
-    const load = deps.loadSafetyChecks;
+  function loadedState(load, parse, empty, words) {
     if (load === undefined)
-      return emptySafetyChecks();
+      return empty();
     let text;
     try {
       text = load();
     } catch (error) {
-      deps.log(`WARN cannot read the safety-check counts: ${messageOf(error)}`);
-      return emptySafetyChecks();
+      deps.log(`WARN cannot read ${words.name}: ${messageOf(error)}`);
+      return empty();
     }
     if (text === null)
-      return emptySafetyChecks();
-    const parsed = parseSafetyCheckState(text);
+      return empty();
+    const parsed = parse(text);
     if (parsed === null) {
-      deps.log("WARN the safety-check file is not one this version reads; counting starts over");
-      return emptySafetyChecks();
+      deps.log(`WARN ${words.file} is not one this version reads; ${words.after}`);
+      return empty();
     }
     return parsed;
   }
@@ -7551,15 +7709,14 @@ function createRouter(deps) {
     const controller = new AbortController;
     req.signal.addEventListener("abort", () => controller.abort(req.signal.reason), { once: true });
     const timer = deadlineAt === null ? null : deadline(deadlineAt - deps.now());
-    const pending = deps.fetch(upstream.url, {
+    const init = {
       body: upstream.body,
       decompress: false,
       headers: upstream.headers,
       method: upstream.method,
-      redirect: "manual",
-      signal: controller.signal,
-      ...directIfLoopback(upstream.url)
-    });
+      signal: controller.signal
+    };
+    const pending = backendFetch(upstream.url, init, deps.fetch);
     try {
       const first = await (timer === null ? pending : Promise.race([pending, timer.done]));
       if (first !== "timeout")
@@ -7575,7 +7732,7 @@ function createRouter(deps) {
       timer?.clear();
     }
   }
-  async function holdFirstEvent(response, deadlineAt) {
+  async function holdFirstEvent(response, deadlineAt, options) {
     const body = response.body;
     if (body === null)
       return { failure: "an event stream with no body", status: response.status };
@@ -7605,14 +7762,21 @@ function createRouter(deps) {
         timer?.clear();
       }
       if (step === "timeout")
-        return fail("no event in time (only heartbeats)", null);
-      if (step.done)
+        return fail(NO_EVENT_IN_TIME, null);
+      if (step.done) {
+        if (options.last)
+          break;
         return { failure: "the stream ended before its first event", status: response.status };
+      }
       held.push(step.value);
       const verdict = scanner.push(decoder.decode(step.value, { stream: true }));
-      if (verdict === "error")
-        return fail("an error event before the first real one", response.status);
-      if (verdict === "event")
+      if (verdict === "error" && !options.last) {
+        const reason = maskedLine(scanner.decidedData(), options.known, SNIPPET_MAX, {
+          ascii: true
+        });
+        return fail(`an error event before the first real one${reason === "" ? "" : `: ${reason}`}`, response.status);
+      }
+      if (verdict !== null)
         break;
     }
     const replay = new ReadableStream({
@@ -7632,6 +7796,32 @@ function createRouter(deps) {
     });
     return {
       response: new Response(replay, {
+        headers: response.headers,
+        status: response.status,
+        statusText: response.statusText
+      })
+    };
+  }
+  async function readJsonAnswer(response, known) {
+    const encoding = (response.headers.get("content-encoding") ?? "").trim().toLowerCase();
+    if (encoding !== "" && encoding !== "identity")
+      return { response };
+    let bytes;
+    try {
+      bytes = new Uint8Array(await response.arrayBuffer());
+    } catch (error) {
+      return { failure: `the answer broke off: ${messageOf(error)}`, status: null };
+    }
+    const parsed = parseBody(bytes);
+    if (parsed !== null && parsed.type === "error") {
+      const reason = snippetText(bytes, known);
+      return {
+        failure: `an error in its ${response.status} answer: ${reason}`,
+        status: response.status
+      };
+    }
+    return {
+      response: new Response(bytes, {
         headers: response.headers,
         status: response.status,
         statusText: response.statusText
@@ -7670,7 +7860,10 @@ function createRouter(deps) {
       return { upstream: anthropicUpstream(req, url, config, asked.sent) };
     }
     if (target.kind === "anthropic") {
-      const bytes = encoder.encode(JSON.stringify({ ...fitForClaude(body, target.model, guard), model: target.model }));
+      const bytes = encoder.encode(JSON.stringify({
+        ...fitForClaude(body, target.model, guard),
+        model: withoutContextSuffix(target.model)
+      }));
       return { upstream: anthropicUpstream(req, url, config, bytes) };
     }
     const backend = Object.hasOwn(config.backends, target.backend) ? config.backends[target.backend] : undefined;
@@ -7747,15 +7940,22 @@ function createRouter(deps) {
       if (target.kind === "anthropic" && "response" in result) {
         observeClaude(target.model, result.response, url.pathname);
       }
-      if ("response" in result && !last && target.kind === "backend" && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("text/event-stream")) {
-        result = await holdFirstEvent(result.response, deadlineAt);
+      if ("response" in result && (!last || guard) && target.kind === "backend" && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("text/event-stream")) {
+        result = await holdFirstEvent(result.response, deadlineAt, {
+          known: knownSecrets(req, config),
+          last
+        });
+        if (req.signal.aborted)
+          return closed(result, label);
+      } else if ("response" in result && !last && target.kind === "backend" && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("application/json")) {
+        result = await readJsonAnswer(result.response, knownSecrets(req, config));
         if (req.signal.aborted)
           return closed(result, label);
       }
       if (url.pathname === MESSAGES_PATH)
         noteCooldown(label, result);
       if ("failure" in result) {
-        lastTimedOut = last && result.failure === NO_HEADERS_IN_TIME;
+        lastTimedOut = last && (result.failure === NO_HEADERS_IN_TIME || result.failure === NO_EVENT_IN_TIME);
         failures.push(`${label}: ${result.failure}`);
         if (!last) {
           fallbacks += 1;
@@ -7771,6 +7971,15 @@ function createRouter(deps) {
           return {
             fallbacks,
             response: anthropicError(502, "api_error", `cc-smart-dev-kit-router: ${label} answered a redirect (${status}); not passed on`),
+            skipped,
+            target: label
+          };
+        }
+        if (target.kind === "backend" && (status === 401 || status === 403)) {
+          logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${label} answered ${status}; returned as a 400 (the backend refused its key)`);
+          return {
+            fallbacks,
+            response: backendKeyRefused(label, target.backend, status),
             skipped,
             target: label
           };
@@ -8092,19 +8301,21 @@ async function startRouter(paths, env = process.env) {
     mkdirSync3(dirname2(file), { mode: 448, recursive: true });
     atomicWrite(file, text, 384);
   };
+  const readState = (file) => {
+    try {
+      return readFileSync3(file, "utf8");
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT")
+        return null;
+      throw error;
+    }
+  };
   const handlerFor = (port) => createRouter({
     configPath,
     fetch: (url, init) => fetch(url, init),
     getConfig: () => source.get(),
-    loadSafetyChecks: () => {
-      try {
-        return readFileSync3(paths.safetyChecksFile, "utf8");
-      } catch (error) {
-        if (error.code === "ENOENT")
-          return null;
-        throw error;
-      }
-    },
+    loadSafetyChecks: () => readState(paths.safetyChecksFile),
+    loadState: () => readState(statePath),
     log,
     now: () => Date.now(),
     port,

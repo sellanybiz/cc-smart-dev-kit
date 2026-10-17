@@ -316,6 +316,43 @@ export function claudeFamily(model: string): ClaudeFamily | null {
   return CLAUDE_FAMILIES.find((family) => id.includes(`-${family}-`)) ?? null;
 }
 
+/** A Claude model's version: `claude-opus-5-5` is 5.5, `claude-opus-5` is 5.0. */
+export interface ClaudeVersion {
+  major: number;
+  minor: number;
+}
+
+/**
+ * A version at the start of `text`: `5-5`, `4`, never a date (`4-20250514` is 4.0: a minor
+ * has one or two digits, a date eight).
+ */
+const VERSION_AT_START = /^(\d{1,3})(?:-(\d{1,2})(?!\d))?(?!\d)/;
+
+/**
+ * The version a Claude model id names, `[1m]` and a provider's prefix ignored: after its
+ * family (`claude-opus-4-5-20251101` → 4.5, `claude-sonnet-5` → 5.0,
+ * `us.anthropic.claude-fable-5-1-20261001-v1:0` → 5.1), or before it in the older form
+ * (`claude-3-5-haiku-20241022` → 3.5). Null when the id names no family, or no version
+ * (`claude-opus-latest`).
+ */
+export function claudeVersion(model: string): ClaudeVersion | null {
+  const family = claudeFamily(model);
+  if (family === null) return null;
+  const name = `${withoutContextSuffix(model).toLowerCase()}-`;
+  const id = name.slice((PROVIDER_PREFIX.exec(name)?.[0].length ?? 0) - "claude-".length);
+  const at = id.indexOf(`-${family}-`);
+  const before = id.slice("claude-".length, at);
+  const after = id.slice(at + family.length + 2);
+  const match = VERSION_AT_START.exec(before === "" ? after : before);
+  if (match === null) return null;
+  return { major: Number(match[1]), minor: match[2] === undefined ? 0 : Number(match[2]) };
+}
+
+/** Is `version` this one, or newer? */
+export function versionAtLeast(version: ClaudeVersion, since: ClaudeVersion): boolean {
+  return version.major !== since.major ? version.major > since.major : version.minor >= since.minor;
+}
+
 /**
  * The slot key that answers for a Claude family (`familySlotKey("opus")` →
  * `cc-smart-dev-kit-opus`), from `FAMILY_SLOTS`; null for a family no slot answers for.

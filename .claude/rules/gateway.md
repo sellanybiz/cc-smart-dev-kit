@@ -80,7 +80,10 @@ Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `
   Read from the config the router holds: no disk read per request.
 - **No model id in the code as a default, a target or a fallback.** `gateway setup` writes
   no chain; the person picks from the live list (`gateway models`, the portal). A rule that
-  must name a model is keyed by family (`CLAUDE_TARGET_RULES`), never by one exact id.
+  must name a model is keyed by family and the first version it holds for
+  (`CLAUDE_TARGET_RULES`; the version read from the id, `claudeVersion`), never by one exact
+  id: a newer version gets its family's newest row, and a version below every row, or an id
+  with no version, is left untouched.
   Examples in help and errors take `<model>`, or an id from the person's own config.
 - `count_tokens` follows the chain's first target alone (a backend there: a 404). Only a
   `/v1/messages` answer starts or ends a target's rest, or notes or ends a plan limit

@@ -17,6 +17,9 @@
  */
 
 import { messageOf } from "./config";
+import type { HealthFetch } from "./health";
+import { backendFetch } from "./hosts";
+import { maskedLine } from "./plain-text";
 import { reasoningOffForBackend } from "./router";
 import { GUARD_PROMPT } from "./targets";
 
@@ -25,6 +28,9 @@ export const JUDGE_TEST_ACTION = "git push --force origin main";
 
 /** How long one target may take to answer the test. */
 export const JUDGE_TEST_TIMEOUT_MS = 60_000;
+
+/** The most characters of a failure's words in a verdict's `detail`. */
+const DETAIL_CHARS = 200;
 
 /** The test request for a backend model, as the router would send a check there. */
 export function judgeTestRequest(model: string): Record<string, unknown> {
@@ -94,28 +100,38 @@ export function judgeVerdict(body: unknown): JudgeVerdict {
     : { detail: "let it run", verdict: "allow" };
 }
 
-/** Sends the test to one backend target, with the backend's own key. */
+/**
+ * Sends the test to one backend target, with the backend's own key (`backendFetch`: never
+ * through a proxy to a backend on this machine, never after a redirect). A failure's words
+ * come from outside (a fetch error): masked, one line (`maskedLine`).
+ */
 export async function testJudgeTarget(
   baseUrl: string,
   apiKey: string,
   model: string,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: HealthFetch = (url, init) => fetch(url, init),
 ): Promise<JudgeVerdict> {
   let response: Response;
   try {
-    response = await fetchImpl(`${baseUrl}/v1/messages`, {
-      body: JSON.stringify(judgeTestRequest(model)),
-      headers: {
-        "anthropic-version": "2023-06-01",
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json",
+    response = await backendFetch(
+      `${baseUrl}/v1/messages`,
+      {
+        body: JSON.stringify(judgeTestRequest(model)),
+        headers: {
+          "anthropic-version": "2023-06-01",
+          authorization: `Bearer ${apiKey}`,
+          "content-type": "application/json",
+        },
+        method: "POST",
+        signal: AbortSignal.timeout(JUDGE_TEST_TIMEOUT_MS),
       },
-      method: "POST",
-      redirect: "manual",
-      signal: AbortSignal.timeout(JUDGE_TEST_TIMEOUT_MS),
-    });
+      fetchImpl,
+    );
   } catch (error) {
-    return { detail: `no answer: ${messageOf(error)}`, verdict: "unclear" };
+    return {
+      detail: `no answer: ${maskedLine(messageOf(error), [apiKey], DETAIL_CHARS)}`,
+      verdict: "unclear",
+    };
   }
   if (!response.ok) {
     await response.body?.cancel();

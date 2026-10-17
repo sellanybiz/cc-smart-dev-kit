@@ -45,7 +45,7 @@ import {
   type LimitRecord,
   parseLimitState,
 } from "../gateway/limit-state";
-import { maskedLine } from "../gateway/router";
+import { maskedLine } from "../gateway/plain-text";
 import { UNIT_NAME } from "../gateway/service";
 import { settingsReport, shownBackendUrl } from "../gateway/settings";
 import { FAMILY_SLOTS, JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";

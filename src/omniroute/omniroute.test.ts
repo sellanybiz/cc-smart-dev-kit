@@ -355,6 +355,33 @@ describe("the model path's own check", () => {
     });
   });
 
+  test("GW-6: a backend's words are shown masked and on one line, never as they came", async () => {
+    const key = "omni-live-key-0123456789abcdef";
+    const failed = await probeModel({
+      apiKey: key,
+      baseUrl: "http://127.0.0.1:9",
+      fetchImpl: async (url) =>
+        url.endsWith("/v1/models")
+          ? Response.json({ data: [{ id: "glm-5.3-flash" }] })
+          : new Response(`bad key ${key}\n\u001b[2Jforged line`, { status: 401 }),
+      model: "glm-5.3-flash",
+    });
+    expect(failed).toEqual({
+      detail: "glm-5.3-flash answered HTTP 401 (bad key ****cdef [2Jforged line)",
+      ok: false,
+    });
+    const answered = await probeModel({
+      apiKey: key,
+      baseUrl: "http://127.0.0.1:9",
+      fetchImpl: async (url) =>
+        url.endsWith("/v1/models")
+          ? Response.json({ data: [{ id: "glm-5.3-flash" }] })
+          : Response.json({ choices: [{ message: { content: "ready\u001b]52;c;eA==\u0007" } }] }),
+      model: "glm-5.3-flash",
+    });
+    expect(answered).toEqual({ detail: 'glm-5.3-flash answered "ready ]52;c;eA=="', ok: true });
+  });
+
   test("no model to try: the list alone, and it says so", async () => {
     const result = await probeModel({
       apiKey: "k",

@@ -27,11 +27,12 @@ The rules for changing it: `.claude/rules/gateway.md`.
   adds a target of its own**, Claude included: a chain that is used up gives Claude Code its
   last answer, or a 502.
 - **Auto mode's safety check** is judged by Claude unless the person gives the
-  `cc-smart-dev-kit-judge` slot a chain; then the judge's first tested target judges every
-  check (§ The judge slot). Every check is counted, with what its answer reported, for
+  `cc-smart-dev-kit-judge` slot a chain; then the judge's first target judges every check,
+  once it has passed the judge test (§ The judge slot). Every check is counted, with what its answer reported, for
   `cc-smart-dev-kit usage` (§ The safety-check counts).
 - The router writes the plan limits it sees to a small state file, which the status line
-  and the usage-limit alert read (§ The limit state, the status line, the alert).
+  and the usage-limit alert read, and reads it back when it starts (§ The limit state, the
+  status line, the alert).
 - **No prompt text is ever changed.** An affordable backend gets two named format translations
   and nothing else (§ What an affordable backend sees).
 - Only this machine can reach the router (§ Local only).
@@ -127,10 +128,12 @@ should this run? With the gateway on, Claude Code makes that check itself, as se
 requests, through the router.
 
 **The rule: Claude judges, unless the person gives the judge slot a chain.** With a chain,
-the judge's first target that passed the judge test judges every check, in Claude's place;
-the next one only while the judge's fallback switch is on (off by default). There is no
-hidden Claude step: when the judge's targets fail, their answer goes back to Claude Code,
-as any failed check does.
+the judge's first target judges every check, in Claude's place, once it has passed the judge
+test. The targets after it are used only while the judge's fallback switch is on (off by
+default), and then each one that passed the test, in order. So with the switch off, a first
+target that has not passed the test means no judge at all: Claude judges, and the router
+says why in one WARN (`judgeTargetsOf`). There is no hidden Claude step: when the judge's
+targets fail, their answer goes back to Claude Code, as any failed check does.
 
 ```sh
 cc-smart-dev-kit gateway slot judge <backend>:<model>[,<backend>:<model>]
@@ -147,10 +150,12 @@ cc-smart-dev-kit gateway slot judge off         # Claude judges again
    family: a check under a Sonnet id never reaches the worker slot.
 2. **A chain:** the check goes to the judge's tested targets in order, with the named
    backend translations only (`reasoningOffForBackend`, `toolSearchForBackend`); every judge
-   target gets `timeouts.firstByteMs` for its answer's headers, the last one too: a judge that
-   hangs is given up on, the next one is asked (fallback on), and when none is left Claude
-   Code gets a 504 `timeout_error` in Anthropic's shape and fails the check, instead of waiting
-   on it. The log
+   target gets `timeouts.firstByteMs` for its answer's headers, the last one too, and when
+   its answer is a stream, for its first real event as well (a stream of heartbeats alone
+   would hold every action): a judge that hangs is given up on, the next one is asked
+   (fallback on), and when none is left Claude Code gets a 504 `timeout_error` in Anthropic's
+   shape and fails the check, instead of waiting on it. The last judge's stream that opens
+   with an error event, or ends early, is its answer, passed on as it came. The log
    line's model keeps its `(safety check)` mark and names the judge target that answered.
 3. `count_tokens` for a check follows the same chain rule as any slot: its first target, and
    a backend there means a 404 (Claude Code estimates).
@@ -203,6 +208,18 @@ monitor for autonomous AI coding agents", and by offering no tools (`isAutoModeG
 A conversation that quotes the sentence offers tools, so it is never taken for the
 check. The two forms seen so far are in `docs/claude-code-contract.md`. The log marks a
 check `(safety check)`.
+
+**The limit of finding it by its prompt.** When Claude Code rewords that sentence, the router
+no longer sees a check: the request goes by its model name like any other. The newer form's
+name is `sonnet`, so with a worker chain the check reaches the worker slot's first target, a
+model that never took the judge test, and with none it reaches Claude as before. The judge's
+test proof cannot help there; only the contract row's live proof of the prompt, repeated on
+each new Claude Code version (`claude-code-upgrade`), catches it. Claude Code 2.1.302 added
+`CLAUDE_CODE_AUTO_MODE_MODEL`, which picks the model of the client-side safety check (its
+changelog: "it does not change the model for server-side auto mode"). Its docs do not say
+whether it takes a name that is not a Claude model, nor what the check's request then looks
+like, so the router does not rely on it: a model name of the router's own there would let it
+know a check by its name, once Claude Code documents that it may.
 
 ## Model slots: Opus and Fable
 
@@ -299,7 +316,10 @@ the router in the background (never before an answer goes out; at most once a mi
 a running fallback): the Claude models it last saw at the plan's limit (the window and its
 reset) and the slots whose first target, a Claude model, is at that limit while a next
 target answers (§ Model slots). Never a key, a header value or a word of a request.
-`limit-state.ts` reads it. A judge record a 0.4.3 router wrote is not shown any more: the
+`limit-state.ts` reads it. The router reads it once when it starts (`loadState`), so a
+restart (an update, a crash) keeps the limits and the fallbacks it saw, and its next write
+keeps them too; a file it cannot read or understand is said once in a WARN, and it starts
+from none. A judge record a 0.4.3 router wrote is not shown any more: the
 judge is no fallback since 0.5.0.
 
 **The status line** (`cc-smart-dev-kit statusline`; `cc-smart-dev-kit setup --statusline` sets it in
@@ -436,18 +456,32 @@ reaches Claude Code**.
 |---|---|
 | Anthropic (`claude-*`) | status 408, 429, 500, 502, 503, 504, 529, a network error, or no response headers in time |
 | An affordable backend, not the last target | the same, **and any other non-2xx** (a 401 or 404 is a wrong key or model; a 400 can be one model refusing another's reasoning history), logged as a warning |
-| An affordable backend, streaming | an `event: error` before the first real event, a stream that ends first, or no real event before the deadline |
+| An affordable backend, streaming | an `event: error` before the first real event (its reason in the WARN line, keys masked), a stream that ends first, or no real event before the deadline |
+| An affordable backend, not streaming | a `200` whose JSON body is Anthropic's error shape (`{"type":"error", …}`), its reason in the WARN line; the target does not rest, as for an error event |
 
 - **The last target is always tried and its answer returned**, whatever it is. Nothing is
   added after it: with every target failed, Claude Code gets the last answer, or a 502 when
   none answered at all. No request goes to Anthropic that the chain does not name.
+- **One exception: a backend refusing its own key.** When the answer that goes back is a
+  backend's 401 or 403, Claude Code gets a 400 `invalid_request_error` instead, with
+  `x-should-retry: false`, whose message names the backend and says to run
+  `cc-smart-dev-kit gateway check` (`backendKeyRefused`). Passed on as it is, Claude Code
+  reads a 401 as its own login failing and says "Please run /login", which cannot fix a
+  backend key; a 5xx it would retry up to 10 times, each one refused again. A 400 it shows
+  and does not retry (code.claude.com/docs/en/errors, § Automatic retries). The status
+  Claude Code shows is proved live in `docs/claude-code-contract.md`. Anthropic's own 401
+  is the person's login, and goes back unchanged.
 - **The stream hold.** OmniRoute answers `200` after about a second, then sends keep-alive
   comments and reports failures inside the stream. So for an affordable backend that is not
   last, the router holds the stream until the first real event, then replays it and pipes
-  the rest chunk by chunk.
+  the rest chunk by chunk. It asks every backend for its answer uncompressed
+  (`accept-encoding: identity`): it passes the bytes on as they came, and a gzip stream
+  would hold no event it can read, so every target but the last would "fail". A non-streaming
+  `200` JSON answer from a backend that is not last is read whole first, for the same reason
+  as an error event (the table above), then passed on byte for byte.
 - **Deadline:** `timeouts.firstByteMs`, 60 s by default. For a safety check on a backend (the
-  judge), on every target, the last too; when the last one misses it, the answer is a 504
-  `timeout_error` in Anthropic's shape.
+  judge), on every target, the last too, and for a stream until its first real event; when
+  the last one misses it, the answer is a 504 `timeout_error` in Anthropic's shape.
 - **Cooldown.** A target that answered 429 rests for its `retry-after` (default 60 s); a
   408, 5xx, 529, network error or timeout rests `retry-after` or 30 s; at most 600 s, in
   memory. A resting target is skipped unless it is the last. Only a `/v1/messages` answer
@@ -468,8 +502,9 @@ reaches Claude Code**.
   `secret` or `password` and a `:` or `=`, and any run of 32 or more letters, digits, `_`
   or `-`, except a run with `__` (an MCP tool name) or a UUID. A masked value of 12 or
   more characters keeps its last four. Then it is made one line of printable ASCII
-  (`maskedLine` in `router.ts`, and `oneLine` in `src/gateway/plain-text.ts`: the one
-  home for making outside text safe to print, which `cc-smart-dev-kit search` uses too). The line
+  (`maskedLine` and `oneLine` in `src/gateway/plain-text.ts`: the one home for making
+  outside text safe to print, which the gateway's commands, claude-mem's check and
+  `cc-smart-dev-kit search` use too). The line
   is written in the background, so the answer reaches Claude Code whole and at once; it
   can come after the request's own log line. A failed read gives one `WARN` line, not two.
 
@@ -482,24 +517,36 @@ request; `[1m]` ignored), it gets the bytes Claude Code sent, built for it. Any 
 built **for another name**: another model's, a slot's, or the old name's. That body can carry
 fields the target refuses with a 400. One named translation, `requestForClaudeFallback`,
 changes only those fields, to the nearest value the target accepts, and never `system`, a
-message or a tool. Its rules are kept **by the target's family** (`-sonnet-`, `-opus-`), so a
-newer version of a family gets them with no change here; they come from Anthropic's
-migration guides for the 5.5 models (platform.claude.com/docs/en/models/sonnet-5-5/migration-guide
-and …/opus-5-5/migration-guide, read 2026-10-15). A newer version that changes a rule shows
-in the WARN line with Anthropic's reason, and its row changes then.
+message or a tool. Its rules are kept **by the target's family and the first version they
+hold for** (`CLAUDE_TARGET_RULES`; the version read from the id by `claudeVersion`:
+`claude-opus-4-5-20251101` is 4.5, `claude-sonnet-5` is 5.0, `claude-3-5-haiku-…` is 3.5).
+A target gets the row of its family with the highest version at or below its own, so a
+newer version gets the newest rules with no change here. A version below every row, an id
+with no version, and a family with no row get the body with only `model` changed. The rows
+come from Anthropic's docs, read 2026-10-17: the per-model table in
+platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting, the extended
+thinking page ("Claude 4.7 and later models … reject" a budget; 4.5 and earlier refuse
+`adaptive`), and the migration guides of Sonnet 5.5, Opus 5.5, Haiku 5.5 and Fable 5.1. A
+newer version that changes a rule shows in the WARN line with Anthropic's reason, and its
+row changes then.
 
-| Field as sent | a Sonnet target gets | an Opus target gets |
+| Field as sent | changed for | becomes |
 |---|---|---|
-| `thinking: {type: "disabled"}` | `{type: "between_tools"}` (its "thinking off"); an effort of `xhigh` or `max` becomes `high`, the highest it takes with thinking off | no `thinking` field (it always thinks); with no effort named, `output_config.effort: "low"`, the nearest to no thinking (the guide's own before / after); a named effort is kept |
-| `thinking: {type: "enabled", budget_tokens}` | `{type: "adaptive"}`, `display` kept | the same |
-| `tool_choice` `any` or `tool` | `{type: "auto"}`, `disable_parallel_tool_use` kept | the same |
-| `temperature` other than 1, any `top_p`, any `top_k` | left out (the default) | the same |
+| `thinking: {type: "disabled"}` | Sonnet 5.5 and later | `{type: "between_tools"}` (its "thinking off"); an effort of `xhigh` or `max` becomes `high`, the highest it takes with thinking off |
+| | Opus 5.5 and later, Fable 5 and later | no `thinking` field (they always think); with no effort named, `output_config.effort: "low"`, the nearest to no thinking (the Opus guide's own before / after); a named effort is kept |
+| | Opus 5, Haiku 5.5 and later | kept; an effort of `xhigh` or `max` becomes `high` (they take thinking off only up to `high`) |
+| `thinking: {type: "enabled", budget_tokens}` | every family, 4.7 and later | `{type: "adaptive"}`, `display` kept |
+| `tool_choice` `any` or `tool` | Sonnet 5.5, Opus 5.5, Fable 5.1, and later | `{type: "auto"}`, `disable_parallel_tool_use` kept |
+| `temperature` other than 1, any `top_p`, any `top_k` | Sonnet 5.5, Opus 5.5, Haiku 5.5, and later | left out (the default) |
 
 A forced `tool_choice` that becomes `auto` lets the model answer without calling the
 tool: the request then gets a text answer where Claude Code wanted a tool call.
 
-A target of another family (Haiku, Fable) gets the body with only `model` changed: add its
-row when it needs one. The router logs each kind of translation once (`translated for …`).
+A target written with `[1m]` (`claude-sonnet-5-5[1m]`) is sent under its id alone, as
+Claude Code sends one: `[1m]` is Claude Code's own mark, and Anthropic knows no model by
+that name. The router adds no 1M-context beta header of its own; the request keeps the
+headers Claude Code sent for the model it named. The router logs each kind of translation
+once (`translated for …`).
 
 **Not translated, because it would mean changing a message**, so it can still give a 400
 on a Claude target:
@@ -538,14 +585,23 @@ message); the next live case's `WARN` line will tell.
 The router builds a **new** request for an affordable backend:
 
 - Headers: only `accept`, `anthropic-version`, `content-type`, `user-agent`,
-  `x-claude-code-session-id`, plus the backend's own key as `Authorization`. Never
-  `authorization`, `x-api-key`, `cookie` or `anthropic-beta`.
+  `x-claude-code-session-id`, plus `accept-encoding: identity` (§ Fallback rules, the stream
+  hold) and the backend's own key as `Authorization`. Never the client's `authorization`,
+  `x-api-key`, `cookie` or `anthropic-beta`.
 - The body without `metadata` (it holds the Claude account id).
-- **No proxy to a backend on this machine.** Bun's `fetch` sends a request through
-  `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` unless `NO_PROXY` lists the host, and this
-  request carries the backend's key. So a backend whose `baseUrl` is on 127.0.0.0/8,
-  `::1` or `localhost` is called straight (`directIfLoopback`, `src/gateway/hosts.ts`),
-  by the router and by the model list (`gateway models`, `slot`, `status`, `doctor`). A
+- **No proxy to a backend on this machine, and no redirect.** Bun's `fetch` sends a request
+  through `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` unless `NO_PROXY` lists the host, and this
+  request carries the backend's key. So every request with a backend's key, OmniRoute's
+  dashboard password or its session cookie goes through one helper, `backendFetch`
+  (`src/gateway/hosts.ts`): a backend whose `baseUrl` is on 127.0.0.0/8, `::1`, `localhost`
+  or a name under `.localhost` is called straight (`directIfLoopback`), and a redirect is
+  never followed (`redirect: "manual"`). Its callers: the router, the model list and the
+  key check (`gateway models`, `slot`, `status`, `doctor`), the model probe and OmniRoute's
+  wait after an update, the judge test, claude-mem's check, `cc-smart-dev-kit search`, and
+  the OmniRoute key made with the dashboard password. A test (`src/gateway/proxy.test.ts` ›
+  "backendFetch is the only way") reads every file in `src/` and fails on a `fetch` that
+  sends an `authorization` or `x-api-key` header any other way: a hand-kept list of callers is
+  how the judge test and claude-mem's check were missed before 0.6.0. A
   remote backend, and Anthropic, keep the environment's proxy settings: HTTPS through a
   company proxy is normal there. `directIfLoopback` passes `proxy: false`, which Bun
   honours from 1.4.3 on (oven-sh/bun#42692); Bun 1.4.2 ignores it and sends the key to

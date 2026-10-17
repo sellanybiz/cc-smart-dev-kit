@@ -90,11 +90,17 @@ import {
   watchConfig,
 } from "./config";
 import { cleanFallbackResponse } from "./fallback-answer";
-import { directIfLoopback } from "./hosts";
-import { currentLimits, emptyLimitState, formatLimitState, type LimitState } from "./limit-state";
+import { type BackendFetchOptions, backendFetch } from "./hosts";
+import {
+  currentLimits,
+  emptyLimitState,
+  formatLimitState,
+  type LimitState,
+  parseLimitState,
+} from "./limit-state";
 import { inheritedListenFd, innerSocketPath, LISTEN_VARS, listenOnFd, serveUnix } from "./listen";
 import type { RouterPaths } from "./paths";
-import { oneLine } from "./plain-text";
+import { maskedLine, oneLine } from "./plain-text";
 import {
   addCheckTokens,
   type CheckSide,
@@ -108,7 +114,10 @@ import {
   type SafetyCheckState,
 } from "./safety-checks";
 import {
+  type ClaudeFamily,
+  type ClaudeVersion,
   claudeFamily,
+  claudeVersion,
   cooldownSeconds,
   FAMILY_SLOTS,
   fallbackKind,
@@ -123,6 +132,7 @@ import {
   resolveRoute,
   type Target,
   targetsInUse,
+  versionAtLeast,
   withoutContextSuffix,
 } from "./targets";
 
@@ -173,6 +183,12 @@ export interface RouterDeps {
    * starts so a restart goes on counting the same days. Absent, or null: none yet.
    */
   loadSafetyChecks?: () => null | string;
+  /**
+   * The limit state file's text (`limit-state.ts`), read once when the router starts, so a
+   * restart (an update, a crash) keeps the plan limits and the fallbacks it saw, and its
+   * next write keeps them too. Absent, or null: none yet.
+   */
+  loadState?: () => null | string;
   log: (line: string) => void;
   /** Milliseconds since the epoch. */
   now: () => number;
@@ -205,6 +221,9 @@ const BAD_SIGNATURE = "Invalid `signature`";
 
 /** Why an upstream call failed when it gave no headers by its deadline. */
 const NO_HEADERS_IN_TIME = "no response headers in time";
+
+/** Why a held stream failed when it gave no real event by its deadline. */
+const NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 
 /** Path of the router's own health check, answered before anything is forwarded. */
 export const HEALTH_PATH = "/__cc-smart-dev-kit/health";
@@ -246,6 +265,26 @@ export function anthropicError(status: number, type: string, message: string): R
   return Response.json({ error: { message, type }, type: "error" }, { status });
 }
 
+/**
+ * What Claude Code gets when the target that answers last is a backend refusing its own key
+ * (401 or 403): a 400 in Anthropic's error shape that names the backend and the check to run,
+ * with `x-should-retry: false`. Never the 401 itself, which Claude Code reads as the person's
+ * own login failing. The exact status Claude Code 2.1.300 shows and does not retry:
+ * docs/claude-code-contract.md.
+ */
+export function backendKeyRefused(label: string, backend: string, status: number): Response {
+  return Response.json(
+    {
+      error: {
+        message: `cc-smart-dev-kit-router: ${label} refused the key the gateway config holds for ${backend} (HTTP ${status}${status === 403 ? ": the key, or what it may reach, such as a provider connection it is not allowed to use" : ""}). Your Claude login is not the problem. Check it: ${COMMAND} gateway check`,
+        type: "invalid_request_error",
+      },
+      type: "error",
+    },
+    { headers: { "x-should-retry": "false" }, status: 400 },
+  );
+}
+
 function droppedHeaders(headers: Headers): Set<string> {
   const dropped = new Set(HOP_BY_HOP);
   for (const name of (headers.get("connection") ?? "").split(",")) {
@@ -267,7 +306,12 @@ export function anthropicRequestHeaders(client: Headers): Headers {
   return out;
 }
 
-/** The allow-listed client headers and the backend's own key — nothing else. */
+/**
+ * The allow-listed client headers and the backend's own key — nothing else — and
+ * `accept-encoding: identity`. The router reads a backend's stream until its first real event
+ * (`holdFirstEvent`) and passes the bytes on as they came (`decompress: false`): a gzip stream
+ * would hold no event the scanner can read, and every target but the last would "fail".
+ */
 export function backendRequestHeaders(client: Headers, apiKey: string): Headers {
   const out = new Headers();
   for (const name of BACKEND_HEADER_ALLOW_LIST) {
@@ -275,6 +319,7 @@ export function backendRequestHeaders(client: Headers, apiKey: string): Headers 
     if (value !== null) out.set(name, value);
   }
   if (!out.has("content-type")) out.set("content-type", "application/json");
+  out.set("accept-encoding", "identity");
   out.set("authorization", `Bearer ${apiKey}`);
   return out;
 }
@@ -316,14 +361,21 @@ function responseHeaders(upstream: Headers, normalizeRetryAfterAt: null | number
  * lines (`: …`) as heartbeats, and reports a failure in-band as `event: error`. So
  * for an affordable backend "before the first byte" means "before the first real event":
  * comments are skipped; `ping` carries no content and decides nothing either.
+ * `decidedData` is the data of the event that decided (its `data:` lines, joined): an error
+ * event's reason, for the log.
  */
-export function sseScanner(): { push(text: string): "error" | "event" | null } {
+export function sseScanner(): {
+  decidedData(): string;
+  push(text: string): "error" | "event" | null;
+} {
   let buffer = "";
   let event: null | string = null;
   let data: string[] = [];
   let fields = false;
+  let decided = "";
   const decide = (): "error" | "event" | null => {
     const name = event ?? "message";
+    decided = data.join("\n");
     if (name === "error") return "error";
     if (name === "ping") return null;
     try {
@@ -342,6 +394,7 @@ export function sseScanner(): { push(text: string): "error" | "event" | null } {
     return "event";
   };
   return {
+    decidedData: () => decided,
     push(text) {
       buffer += text;
       for (;;) {
@@ -372,93 +425,6 @@ export function sseScanner(): { push(text: string): "error" | "event" | null } {
 /** Text safe for one log line: printable ASCII only, bounded length (`oneLine`). */
 function printable(text: string, max = 120): string {
   return oneLine(text, max, { ascii: true });
-}
-
-/** A secret as the log shows it: `****` and, for a long one, its last four characters. */
-function maskedTail(secret: string): string {
-  return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
-}
-
-/** A known secret shorter than this is not masked by its text: it would wreck the line. */
-const KNOWN_SECRET_MIN = 4;
-
-/** A UUID (8-4-4-4-12 hex): a request or object id, never a key. */
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * Each known secret as it can stand in an error text: as it is, as a JSON string shows it,
- * and as a JSON string inside a JSON string shows it. Longest first, so a secret that holds
- * another is masked whole.
- */
-function knownSecretForms(known: readonly string[]): { form: string; secret: string }[] {
-  const forms = new Map<string, string>();
-  for (const secret of known) {
-    if (secret.length < KNOWN_SECRET_MIN) continue;
-    const once = JSON.stringify(secret).slice(1, -1);
-    const twice = JSON.stringify(once).slice(1, -1);
-    for (const form of [secret, once, twice]) if (!forms.has(form)) forms.set(form, secret);
-  }
-  return [...forms]
-    .map(([form, secret]) => ({ form, secret }))
-    .sort((a, b) => b.form.length - a.form.length);
-}
-
-/**
- * An upstream's error text with anything that looks like a key masked, before it goes to
- * the log. An upstream may echo a key back ("invalid x-api-key sk-…"). Masked, in order:
- *   - `known`: the exact secrets the router holds (each backend's key, the request's
- *     `x-api-key` and `authorization`), short ones too, and their JSON-escaped forms;
- *   - an email address (an account's, in an error about it);
- *   - the value of a JSON field whose name says key, token, secret, password or
- *     authorization, its quotes escaped or not;
- *   - a `Bearer` / `Basic` credential; an `sk-…` key;
- *   - a value after `key`, `token`, `secret` or `password` and a `:` or `=` (a header, a
- *     query): `x-api-key: abc123`, `api_key=…`. Without the `:` or `=` the words after it
- *     are prose ("the key does not exist"), and stay;
- *   - any unbroken run of 32 or more letters, digits, `_` or `-`, but a run with `__` (an
- *     MCP tool name, `mcp__plugin_x__tool`) or a UUID: those are names, never keys.
- * Every quantifier is bounded, so no input makes a pattern backtrack for long; the caller
- * also cuts the text to 2 KB first (`errorSnippet`). ASCII only, because the log line is
- * (`printable`); so not `maskKey` from settings.ts, whose `••••` the log would turn into
- * `????` (and the router bundle must not import settings.ts: it bakes in the plugin
- * version).
- */
-export function maskSecrets(text: string, known: readonly string[] = []): string {
-  let out = text;
-  for (const { form, secret } of knownSecretForms(known)) {
-    out = out.split(form).join(maskedTail(secret));
-  }
-  return out
-    .replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****")
-    .replace(
-      /(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi,
-      "$1$2$1$3:$4$1****$1",
-    )
-    .replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****")
-    .replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`)
-    .replace(
-      /(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi,
-      (_match, name: string, separator: string, value: string) =>
-        `${name}${separator}${maskedTail(value)}`,
-    )
-    .replace(/[A-Za-z0-9_-]{32,512}/g, (run) =>
-      run.includes("__") || UUID.test(run) ? run : maskedTail(run),
-    );
-}
-
-/**
- * An outside error text as one line to show: anything like a key masked first
- * (`maskSecrets`, with the `known` secrets), then made one line of at most `max`
- * characters with no control character (`oneLine`). The router's log passes `ascii`;
- * `cc-smart-dev-kit search` shows Unicode and marks a cut with `…`.
- */
-export function maskedLine(
-  text: string,
-  known: readonly string[],
-  max: number,
-  options: { ascii?: boolean; mark?: string } = {},
-): string {
-  return oneLine(maskSecrets(text, known), max, options);
 }
 
 /** How long an error snippet in the log may be. */
@@ -598,33 +564,147 @@ export function reasoningOffForBackend(
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
 }
 
+/** What a Claude target refuses with a 400, from one version of its family on. */
+interface ClaudeTargetRules {
+  /** `thinking: {type: "enabled", budget_tokens}` → `{type: "adaptive"}`. */
+  budgetToAdaptive: boolean;
+  /**
+   * What `thinking: {type: "disabled"}` becomes: `between_tools` (effort at most `high`),
+   * `left out` (thinking is always on), `capped` (kept, effort at most `high`), or null
+   * (the target takes it as it is).
+   */
+  thinkingOff: "between_tools" | "capped" | "left out" | null;
+  /** A forced `tool_choice` (`any` / `tool`) → `auto`. */
+  forcedToolChoice: boolean;
+  /** A `temperature` other than 1, any `top_p`, any `top_k` → left out. */
+  sampling: boolean;
+}
+
 /**
- * What a slot's `claude-…` target refuses with a 400, by the target's FAMILY (`claudeFamily`),
- * so a newer version of the family needs no change here. Only families whose rules
- * Anthropic's migration guides state are here; a target of another family gets the body as
- * Claude Code built it (only `model` changes). Sources, read 2026-10-15, for the 5.5 models:
- *   - platform.claude.com/docs/en/models/sonnet-5-5/migration-guide
- *   - platform.claude.com/docs/en/models/opus-5-5/migration-guide
- * Both refuse `thinking: {type: "enabled", budget_tokens}`, a forced `tool_choice`
- * (`any` / `tool`, on `count_tokens` too) and a non-default `temperature` / `top_p` /
- * `top_k`. They differ on `thinking: {type: "disabled"}`: Sonnet wants
- * `{type: "between_tools"}` instead (accepted at effort `high` or below, with no other
- * field in `thinking`); Opus always thinks, so the field is left out, and with no effort
- * named the effort becomes `low` (the guide's own before / after for "disabled"). A newer
- * version that changes a rule shows in the WARN line with Anthropic's reason; its row
+ * What a slot's `claude-…` target refuses with a 400, by the target's FAMILY (`claudeFamily`)
+ * and the first VERSION a rule set holds for (`claudeVersion`). A target gets the row of its
+ * family with the highest `since` at or below its own version, so a newer version needs no
+ * change here; a version below every row of its family, an id with no version, and a family
+ * with no row get the body as Claude Code built it (only `model` changes). Only what
+ * Anthropic's docs state is here. Sources, read 2026-10-17:
+ *   - platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting (the per-model
+ *     table: which `thinking.type` each model refuses; `between_tools` on Sonnet 5.5 only;
+ *     `disabled` on Opus 5 and Haiku 5.5 only at effort `high` or below);
+ *   - platform.claude.com/docs/en/build-with-claude/extended-thinking ("Claude 4.7 and later
+ *     models ... reject" a budget; 4.5 and earlier refuse `adaptive`, so a budget stays there);
+ *   - the migration guides of Sonnet 5.5, Opus 5.5 and Haiku 5.5 (the sampling fields; a
+ *     forced `tool_choice` on Sonnet and Opus 5.5) and of Fable 5.1 (a forced `tool_choice`,
+ *     which Fable 5 still takes).
+ * A rule a newer version changes shows in the WARN line with Anthropic's reason; its row
  * changes then.
  */
-const CLAUDE_TARGET_RULES: Partial<
-  Record<
-    NonNullable<ReturnType<typeof claudeFamily>>,
-    { thinkingOff: "between_tools" | "left out" }
-  >
+const CLAUDE_TARGET_RULES: Readonly<
+  Partial<Record<ClaudeFamily, readonly { rules: ClaudeTargetRules; since: ClaudeVersion }[]>>
 > = {
-  opus: { thinkingOff: "left out" },
-  sonnet: { thinkingOff: "between_tools" },
+  fable: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: "left out",
+      },
+      since: { major: 5, minor: 0 },
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: false,
+        thinkingOff: "left out",
+      },
+      since: { major: 5, minor: 1 },
+    },
+  ],
+  haiku: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: null,
+      },
+      since: { major: 4, minor: 7 },
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: true,
+        thinkingOff: "capped",
+      },
+      since: { major: 5, minor: 5 },
+    },
+  ],
+  opus: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: null,
+      },
+      since: { major: 4, minor: 7 },
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: "capped",
+      },
+      since: { major: 5, minor: 0 },
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: true,
+        thinkingOff: "left out",
+      },
+      since: { major: 5, minor: 5 },
+    },
+  ],
+  sonnet: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: null,
+      },
+      since: { major: 4, minor: 7 },
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: true,
+        thinkingOff: "between_tools",
+      },
+      since: { major: 5, minor: 5 },
+    },
+  ],
 };
 
-/** Efforts at which Sonnet 5.5 refuses `between_tools`. */
+/** The rules for one Claude target (`CLAUDE_TARGET_RULES`); null when none apply. */
+function claudeTargetRules(model: string): ClaudeTargetRules | null {
+  const family = claudeFamily(model);
+  const version = claudeVersion(model);
+  if (family === null || version === null) return null;
+  let found: ClaudeTargetRules | null = null;
+  for (const row of CLAUDE_TARGET_RULES[family] ?? []) {
+    if (versionAtLeast(version, row.since)) found = row.rules;
+  }
+  return found;
+}
+
+/** Efforts above `high`: refused with thinking off where a model takes it only up to `high`. */
 const ABOVE_HIGH = new Set(["max", "xhigh"]);
 
 /**
@@ -635,14 +715,15 @@ const ABOVE_HIGH = new Set(["max", "xhigh"]);
  * field the Claude target refuses: Claude Sonnet 5.5 answers 400 to
  * `thinking: {type: "disabled"}`, which Claude Code sends to turn reasoning off for short
  * background calls. Without this, a slot that falls back to Claude after its affordable targets
- * fail answers 400 instead. So, for a target in `CLAUDE_TARGET_RULES` only, each refused
- * field gets the nearest value the target accepts:
+ * fail answers 400 instead. So, for a target with rules (`claudeTargetRules`) only, each
+ * refused field gets the nearest value the target accepts:
  *   - `thinking: {type: "disabled"}` → `{type: "between_tools"}` (Sonnet 5.5; at effort
- *     `xhigh` / `max` the effort becomes `high`, the highest it takes with thinking off),
- *     or no `thinking` field (Opus 5.5: thinking is always on), and, with no effort
- *     named, `output_config.effort: "low"`, the nearest to no thinking;
+ *     `xhigh` / `max` the effort becomes `high`, the highest it takes with thinking off);
+ *     or no `thinking` field (Opus 5.5, Fable: thinking is always on), and, with no effort
+ *     named, `output_config.effort: "low"`, the nearest to no thinking; or kept, with an
+ *     effort above `high` made `high` (Opus 5, Haiku 5.5);
  *   - `thinking: {type: "enabled", budget_tokens}` → `{type: "adaptive"}`, its `display`
- *     kept;
+ *     kept (4.7 and later);
  *   - `tool_choice` `any` or `tool` → `{type: "auto"}`, its `disable_parallel_tool_use`
  *     kept;
  *   - a `temperature` other than 1, any `top_p`, any `top_k` → left out (the default).
@@ -655,12 +736,23 @@ export function requestForClaudeFallback(
   body: Record<string, unknown>,
   model: string,
 ): { body: Record<string, unknown>; changes: string[] } {
-  // The target's family decides (`[1m]` is ignored there): its rules are the family's.
-  const family = claudeFamily(model);
-  const rules = family === null ? undefined : CLAUDE_TARGET_RULES[family];
-  if (rules === undefined) return { body, changes: [] };
+  // The target's family and version decide (`[1m]` is ignored there).
+  const rules = claudeTargetRules(model);
+  if (rules === null) return { body, changes: [] };
   const out: Record<string, unknown> = { ...body };
   const changes: string[] = [];
+  /** An effort above `high` made `high`; `why` follows the change's name in the log. */
+  const capEffort = (why: string) => {
+    const outputConfig = body.output_config;
+    if (
+      isJsonObject(outputConfig) &&
+      typeof outputConfig.effort === "string" &&
+      ABOVE_HIGH.has(outputConfig.effort)
+    ) {
+      out.output_config = { ...outputConfig, effort: "high" };
+      changes.push(`effort ${outputConfig.effort} -> high${why}`);
+    }
+  };
   const thinking = body.thinking;
   if (isJsonObject(thinking) && thinking.type === "disabled") {
     if (rules.thinkingOff === "left out") {
@@ -673,20 +765,14 @@ export function requestForClaudeFallback(
         out.output_config = { ...outputConfig, effort: "low" };
         changes.push("effort low (nearest to thinking off)");
       }
-    } else {
+    } else if (rules.thinkingOff === "between_tools") {
       out.thinking = { type: "between_tools" };
       changes.push("thinking disabled -> between_tools");
-      const outputConfig = body.output_config;
-      if (
-        isJsonObject(outputConfig) &&
-        typeof outputConfig.effort === "string" &&
-        ABOVE_HIGH.has(outputConfig.effort)
-      ) {
-        out.output_config = { ...outputConfig, effort: "high" };
-        changes.push(`effort ${outputConfig.effort} -> high`);
-      }
+      capEffort("");
+    } else if (rules.thinkingOff === "capped") {
+      capEffort(" (thinking off)");
     }
-  } else if (isJsonObject(thinking) && thinking.type === "enabled") {
+  } else if (isJsonObject(thinking) && thinking.type === "enabled" && rules.budgetToAdaptive) {
     out.thinking =
       thinking.display === undefined
         ? { type: "adaptive" }
@@ -694,21 +780,27 @@ export function requestForClaudeFallback(
     changes.push("thinking enabled (budget) -> adaptive");
   }
   const toolChoice = body.tool_choice;
-  if (isJsonObject(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
+  if (
+    rules.forcedToolChoice &&
+    isJsonObject(toolChoice) &&
+    (toolChoice.type === "any" || toolChoice.type === "tool")
+  ) {
     out.tool_choice =
       toolChoice.disable_parallel_tool_use === undefined
         ? { type: "auto" }
         : { disable_parallel_tool_use: toolChoice.disable_parallel_tool_use, type: "auto" };
     changes.push(`tool_choice ${toolChoice.type} -> auto`);
   }
-  if (body.temperature !== undefined && body.temperature !== 1) {
-    delete out.temperature;
-    changes.push("temperature left out");
-  }
-  for (const field of ["top_p", "top_k"]) {
-    if (body[field] !== undefined) {
-      delete out[field];
-      changes.push(`${field} left out`);
+  if (rules.sampling) {
+    if (body.temperature !== undefined && body.temperature !== 1) {
+      delete out.temperature;
+      changes.push("temperature left out");
+    }
+    for (const field of ["top_p", "top_k"]) {
+      if (body[field] !== undefined) {
+        delete out[field];
+        changes.push(`${field} left out`);
+      }
     }
   }
   return changes.length > 0 ? { body: out, changes } : { body, changes };
@@ -840,10 +932,26 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   const aliasesLogged = new Set<string>();
   /** Claude-target translations already logged (target and changes): once each. */
   const translationsLogged = new Set<string>();
-  /** What the state file says: plan limits seen, slots answering from a next target. */
-  const limitState: LimitState = emptyLimitState();
+  /**
+   * What the state file says: plan limits seen, slots answering from a next target. It starts
+   * from the file, so a restart keeps them (`loadState`).
+   */
+  const limitState: LimitState = loadedState(deps.loadState, parseLimitState, emptyLimitState, {
+    file: "the limit state file",
+    name: "the limit state",
+    after: "it starts over",
+  });
   /** Auto mode's safety checks counted so far, by local day (`safety-checks.ts`). */
-  const safetyChecks: SafetyCheckState = loadedSafetyChecks();
+  const safetyChecks: SafetyCheckState = loadedState(
+    deps.loadSafetyChecks,
+    parseSafetyCheckState,
+    emptySafetyChecks,
+    {
+      file: "the safety-check file",
+      name: "the safety-check counts",
+      after: "counting starts over",
+    },
+  );
   /**
    * Claude model ids another target answered for since the router started. A 400 "Invalid
    * `signature`" for one of them gets a WARN that names the cause, also once its fallback
@@ -873,26 +981,30 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   );
 
   /**
-   * The safety-check counts the router starts from: what the file holds (a restart goes on
-   * counting the same days), or none. A file that cannot be read or understood is said so
-   * once, and counting starts from none — an older or a hand-edited file never stops the
-   * router.
+   * A state the router starts from: what its file holds (a restart goes on from there: the
+   * same days counted, the same limits and fallbacks), or none. A file that cannot be read
+   * or understood is said so once, and the state starts from none — an older or a
+   * hand-edited file never stops the router. `words` name it in those lines.
    */
-  function loadedSafetyChecks(): SafetyCheckState {
-    const load = deps.loadSafetyChecks;
-    if (load === undefined) return emptySafetyChecks();
+  function loadedState<T>(
+    load: undefined | (() => null | string),
+    parse: (text: string) => null | T,
+    empty: () => T,
+    words: { after: string; file: string; name: string },
+  ): T {
+    if (load === undefined) return empty();
     let text: null | string;
     try {
       text = load();
     } catch (error) {
-      deps.log(`WARN cannot read the safety-check counts: ${messageOf(error)}`);
-      return emptySafetyChecks();
+      deps.log(`WARN cannot read ${words.name}: ${messageOf(error)}`);
+      return empty();
     }
-    if (text === null) return emptySafetyChecks();
-    const parsed = parseSafetyCheckState(text);
+    if (text === null) return empty();
+    const parsed = parse(text);
     if (parsed === null) {
-      deps.log("WARN the safety-check file is not one this version reads; counting starts over");
-      return emptySafetyChecks();
+      deps.log(`WARN ${words.file} is not one this version reads; ${words.after}`);
+      return empty();
     }
     return parsed;
   }
@@ -1156,15 +1268,16 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     const controller = new AbortController();
     req.signal.addEventListener("abort", () => controller.abort(req.signal.reason), { once: true });
     const timer = deadlineAt === null ? null : deadline(deadlineAt - deps.now());
-    const pending = deps.fetch(upstream.url, {
+    // `backendFetch` for every upstream: an affordable backend's key never goes through a
+    // proxy to this machine, and no upstream's redirect is followed with a key or the login.
+    const init: Omit<UpstreamInit, keyof BackendFetchOptions> = {
       body: upstream.body,
       decompress: false,
       headers: upstream.headers,
       method: upstream.method,
-      redirect: "manual",
       signal: controller.signal,
-      ...directIfLoopback(upstream.url),
-    });
+    };
+    const pending = backendFetch(upstream.url, init, deps.fetch);
     try {
       const first = await (timer === null ? pending : Promise.race([pending, timer.done]));
       if (first !== "timeout") return { response: first };
@@ -1182,16 +1295,25 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
 
   /**
    * Hold an affordable backend's stream until its first real event (`sseScanner`). An
-   * error event, the end of the stream, or `deadlineAt` first → a failure, and the
-   * next target is tried; nothing has reached the client yet. Otherwise the client
-   * gets a stream that replays every byte read so far, then pipes the rest as it
-   * arrives — chunk by chunk, nothing buffered beyond the one being handed over.
+   * error event (its reason in the failure, keys masked: `known`), the end of the stream,
+   * or `deadlineAt` first → a failure, and the next target is tried; nothing has reached
+   * the client yet. Otherwise the client gets a stream that replays every byte read so far,
+   * then pipes the rest as it arrives — chunk by chunk, nothing buffered beyond the one
+   * being handed over.
+   *
+   * The `last` target is held only for its deadline (the safety check's judge: a stream of
+   * heartbeats must not hold every action): an error event or an early end there is the
+   * answer, replayed as it came, because no target is left to try.
    *
    * Nothing is sent to the client while holding (no `ping`): any byte would commit
    * this target, and the wait is bounded by `firstByteMs` anyway. The connection
    * stays open meanwhile — the server's idle timeout is off.
    */
-  async function holdFirstEvent(response: Response, deadlineAt: null | number): Promise<Attempt> {
+  async function holdFirstEvent(
+    response: Response,
+    deadlineAt: null | number,
+    options: { known: readonly string[]; last: boolean },
+  ): Promise<Attempt> {
     const body = response.body;
     if (body === null) return { failure: "an event stream with no body", status: response.status };
     const reader = body.getReader();
@@ -1220,14 +1342,23 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       } finally {
         timer?.clear();
       }
-      if (step === "timeout") return fail("no event in time (only heartbeats)", null);
-      if (step.done)
+      if (step === "timeout") return fail(NO_EVENT_IN_TIME, null);
+      if (step.done) {
+        if (options.last) break;
         return { failure: "the stream ended before its first event", status: response.status };
+      }
       held.push(step.value);
       const verdict = scanner.push(decoder.decode(step.value, { stream: true }));
-      if (verdict === "error")
-        return fail("an error event before the first real one", response.status);
-      if (verdict === "event") break;
+      if (verdict === "error" && !options.last) {
+        const reason = maskedLine(scanner.decidedData(), options.known, SNIPPET_MAX, {
+          ascii: true,
+        });
+        return fail(
+          `an error event before the first real one${reason === "" ? "" : `: ${reason}`}`,
+          response.status,
+        );
+      }
+      if (verdict !== null) break;
     }
     const replay = new ReadableStream<Uint8Array>({
       cancel: (reason) => reader.cancel(reason),
@@ -1244,6 +1375,42 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     });
     return {
       response: new Response(replay, {
+        headers: response.headers,
+        status: response.status,
+        statusText: response.statusText,
+      }),
+    };
+  }
+
+  /**
+   * Read a backend's whole non-streaming 2xx answer while another target can still answer:
+   * a backend may report a failure in a 200 whose body is Anthropic's error shape
+   * (`{"type":"error", …}`), and passed on, Claude Code would keep it as the answer. Such a
+   * body is a failure (its reason in it, keys masked: `known`), and the next target is tried;
+   * the 2xx status means the target does not rest, as for an error event in a stream. Any
+   * other body comes back as the same bytes. An answer in an encoding the router does not
+   * read (it asks for none: `backendRequestHeaders`) is passed on as it came. Only a
+   * non-streaming answer: it is whole before Claude Code reads any of it anyway.
+   */
+  async function readJsonAnswer(response: Response, known: readonly string[]): Promise<Attempt> {
+    const encoding = (response.headers.get("content-encoding") ?? "").trim().toLowerCase();
+    if (encoding !== "" && encoding !== "identity") return { response };
+    let bytes: Uint8Array<ArrayBuffer>;
+    try {
+      bytes = new Uint8Array(await response.arrayBuffer());
+    } catch (error) {
+      return { failure: `the answer broke off: ${messageOf(error)}`, status: null };
+    }
+    const parsed = parseBody(bytes);
+    if (parsed !== null && parsed.type === "error") {
+      const reason = snippetText(bytes, known);
+      return {
+        failure: `an error in its ${response.status} answer: ${reason}`,
+        status: response.status,
+      };
+    }
+    return {
+      response: new Response(bytes, {
         headers: response.headers,
         status: response.status,
         statusText: response.statusText,
@@ -1319,8 +1486,13 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       return { upstream: anthropicUpstream(req, url, config, asked.sent) };
     }
     if (target.kind === "anthropic") {
+      // `[1m]` is Claude Code's own mark, which it strips before it sends an id; Anthropic
+      // knows no model by that name.
       const bytes = encoder.encode(
-        JSON.stringify({ ...fitForClaude(body, target.model, guard), model: target.model }),
+        JSON.stringify({
+          ...fitForClaude(body, target.model, guard),
+          model: withoutContextSuffix(target.model),
+        }),
       );
       return { upstream: anthropicUpstream(req, url, config, bytes) };
     }
@@ -1439,23 +1611,39 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       if (target.kind === "anthropic" && "response" in result) {
         observeClaude(target.model, result.response, url.pathname);
       }
+      // A backend's stream is held until its first real event while another target can
+      // still answer, and for a safety check on every target, the last too: its deadline
+      // holds after the headers as well (a stream of heartbeats would hold every action).
       if (
         "response" in result &&
-        !last &&
+        (!last || guard) &&
         target.kind === "backend" &&
         result.response.ok &&
         (result.response.headers.get("content-type") ?? "").includes("text/event-stream")
       ) {
-        result = await holdFirstEvent(result.response, deadlineAt);
+        result = await holdFirstEvent(result.response, deadlineAt, {
+          known: knownSecrets(req, config),
+          last,
+        });
         // A hang-up during the hold breaks the read: the client's doing, not the
         // target's — it must not rest the target for every other session.
+        if (req.signal.aborted) return closed(result, label);
+      } else if (
+        "response" in result &&
+        !last &&
+        target.kind === "backend" &&
+        result.response.ok &&
+        (result.response.headers.get("content-type") ?? "").includes("application/json")
+      ) {
+        result = await readJsonAnswer(result.response, knownSecrets(req, config));
         if (req.signal.aborted) return closed(result, label);
       }
       // Only a model's answer says whether a target can answer: a `count_tokens` answer
       // neither starts nor ends a rest (its 200 during a plan limit says nothing of it).
       if (url.pathname === MESSAGES_PATH) noteCooldown(label, result);
       if ("failure" in result) {
-        lastTimedOut = last && result.failure === NO_HEADERS_IN_TIME;
+        lastTimedOut =
+          last && (result.failure === NO_HEADERS_IN_TIME || result.failure === NO_EVENT_IN_TIME);
         failures.push(`${label}: ${result.failure}`);
         if (!last) {
           fallbacks += 1;
@@ -1480,6 +1668,24 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
               "api_error",
               `cc-smart-dev-kit-router: ${label} answered a redirect (${status}); not passed on`,
             ),
+            skipped,
+            target: label,
+          };
+        }
+        if (target.kind === "backend" && (status === 401 || status === 403)) {
+          // A backend refusing its own key. Passed on, Claude Code would read it as its own
+          // login failing ("Please run /login"), which cannot fix a backend key. A 5xx would
+          // be retried up to 10 times, each one refused again. A 400 is neither: Claude Code
+          // shows its message and does not retry it (code.claude.com/docs/en/errors,
+          // § Automatic retries), and `x-should-retry: false` says so to its API client too.
+          logErrorAnswer(
+            result.response,
+            knownSecrets(req, config),
+            `WARN ${label} answered ${status}; returned as a 400 (the backend refused its key)`,
+          );
+          return {
+            fallbacks,
+            response: backendKeyRefused(label, target.backend, status),
             skipped,
             target: label,
           };
@@ -1991,24 +2197,26 @@ export async function startRouter(
     mkdirSync(dirname(file), { mode: 0o700, recursive: true });
     atomicWrite(file, text, 0o600);
   };
+  // A state file's text, read when the router starts. A file that is not there yet is the
+  // first run on this machine, not a failure (null); anything else (a mode, a folder that
+  // is not one) throws, and the router says so once itself.
+  const readState = (file: string): null | string => {
+    try {
+      return readFileSync(file, "utf8");
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+      throw error;
+    }
+  };
   const handlerFor = (port: number) =>
     createRouter({
       configPath,
       fetch: (url, init) => fetch(url, init),
       getConfig: () => source.get(),
-      // The safety checks counted before this router started, so a restart (an update, a
-      // crash) goes on counting the same days. A file that is not there yet is the first
-      // run, not a failure; an unreadable one is said so once, by the router itself.
-      loadSafetyChecks: () => {
-        try {
-          return readFileSync(paths.safetyChecksFile, "utf8");
-        } catch (error) {
-          // The first run on this machine: no file yet. Anything else (a mode, a folder
-          // that is not there) is said once, by the router.
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-          throw error;
-        }
-      },
+      // What the router counted and saw before it started, so a restart (an update, a crash)
+      // goes on counting the same days, and keeps the plan limits and fallbacks it saw.
+      loadSafetyChecks: () => readState(paths.safetyChecksFile),
+      loadState: () => readState(statePath),
       log,
       now: () => Date.now(),
       port,

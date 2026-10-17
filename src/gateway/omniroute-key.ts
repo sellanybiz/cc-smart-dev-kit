@@ -38,8 +38,8 @@
 import { hostname } from "node:os";
 import { messageOf } from "./config";
 import type { HealthFetch } from "./health";
-import { directIfLoopback } from "./hosts";
-import { oneLine } from "./plain-text";
+import { backendFetch, directIfLoopback } from "./hosts";
+import { maskedLine, oneLine } from "./plain-text";
 
 /** The dashboard paths, as OmniRoute 3.8.51 has them. */
 export const LOGIN_PATH = "/api/auth/login";
@@ -127,13 +127,16 @@ export function sessionCookieFrom(setCookie: null | string): null | string {
   return null;
 }
 
-/** OmniRoute's own `error` field of an answer, as one safe line (never quotes a secret). */
-async function errorOf(response: Response): Promise<string> {
+/**
+ * OmniRoute's own `error` field of an answer, as one safe line: the `secrets` (the password,
+ * the session cookie) and anything else like a key masked (`maskedLine`).
+ */
+async function errorOf(response: Response, secrets: readonly string[]): Promise<string> {
   try {
     const body = (await response.json()) as { error?: unknown } | null;
     const error = body?.error;
     const text = typeof error === "string" ? error : "";
-    return text === "" ? "" : oneLine(text, 160);
+    return text === "" ? "" : maskedLine(text, secrets, 160);
   } catch {
     return "";
   }
@@ -141,9 +144,11 @@ async function errorOf(response: Response): Promise<string> {
 
 /**
  * Makes one OmniRoute API key with the dashboard password. `fetch` is injectable so no test
- * reaches a real OmniRoute; every request carries `directIfLoopback` (a local program is never
- * reached through a proxy from the environment). The password and the session cookie go into no
- * message, no log and no error.
+ * reaches a real OmniRoute. The three requests that carry the password or the session cookie go
+ * through `backendFetch`: a local program is never reached through a proxy from the
+ * environment, and a redirect is never followed (a 307 would send the password's body on to the
+ * address it names). The password and the session cookie go into no message, no log and no
+ * error.
  */
 export async function createOmnirouteKey(options: {
   baseUrl: string;
@@ -158,13 +163,16 @@ export async function createOmnirouteKey(options: {
   const loginUrl = `${base}${LOGIN_PATH}`;
   let login: Response;
   try {
-    login = await doFetch(loginUrl, {
-      body: JSON.stringify({ password: options.password }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-      signal: AbortSignal.timeout(timeoutMs),
-      ...directIfLoopback(loginUrl),
-    });
+    login = await backendFetch(
+      loginUrl,
+      {
+        body: JSON.stringify({ password: options.password }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+        signal: AbortSignal.timeout(timeoutMs),
+      },
+      doFetch,
+    );
   } catch (error) {
     return { detail: messageOf(error), kind: "no-answer" };
   }
@@ -173,7 +181,7 @@ export async function createOmnirouteKey(options: {
     return { detail: "OmniRoute rejected that dashboard password", kind: "refused" };
   }
   if (!login.ok) {
-    const said = await errorOf(login);
+    const said = await errorOf(login, [options.password]);
     return {
       detail: `the OmniRoute login answered HTTP ${login.status}${said === "" ? "" : `: ${said}`}`,
       kind: "failed",
@@ -189,18 +197,21 @@ export async function createOmnirouteKey(options: {
   const keysUrl = `${base}${KEYS_PATH}`;
   let created: Response;
   try {
-    created = await doFetch(keysUrl, {
-      body: JSON.stringify({ name, noLog: true }),
-      headers: { "content-type": "application/json", cookie: `${SESSION_COOKIE}=${session}` },
-      method: "POST",
-      signal: AbortSignal.timeout(timeoutMs),
-      ...directIfLoopback(keysUrl),
-    });
+    created = await backendFetch(
+      keysUrl,
+      {
+        body: JSON.stringify({ name, noLog: true }),
+        headers: { "content-type": "application/json", cookie: `${SESSION_COOKIE}=${session}` },
+        method: "POST",
+        signal: AbortSignal.timeout(timeoutMs),
+      },
+      doFetch,
+    );
   } catch (error) {
     return { detail: messageOf(error), kind: "no-answer" };
   }
   if (!created.ok) {
-    const said = await errorOf(created);
+    const said = await errorOf(created, [options.password, session]);
     return {
       detail: `creating the key answered HTTP ${created.status}${said === "" ? "" : `: ${said}`}`,
       kind: "failed",
@@ -232,12 +243,15 @@ export async function createOmnirouteKey(options: {
     }
     const url = `${base}${KEYS_PATH}/${id}`;
     try {
-      const removed = await doFetch(url, {
-        headers: { cookie: `${SESSION_COOKIE}=${session}` },
-        method: "DELETE",
-        signal: AbortSignal.timeout(timeoutMs),
-        ...directIfLoopback(url),
-      });
+      const removed = await backendFetch(
+        url,
+        {
+          headers: { cookie: `${SESSION_COOKIE}=${session}` },
+          method: "DELETE",
+          signal: AbortSignal.timeout(timeoutMs),
+        },
+        doFetch,
+      );
       await removed.body?.cancel();
       if (removed.ok) return { detail: "", ok: true };
       return { detail: `OmniRoute answered HTTP ${removed.status}`, ok: false };

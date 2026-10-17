@@ -12,7 +12,11 @@
 
 import { messageOf } from "./config";
 import type { HealthFetch } from "./health";
-import { directIfLoopback } from "./hosts";
+import { backendFetch } from "./hosts";
+import { maskedLine, oneLine } from "./plain-text";
+
+/** The most characters of a backend's own words (an error answer, a fetch error) in a detail. */
+const REASON_CHARS = 120;
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -45,19 +49,20 @@ export async function listModels(
 ): Promise<{ error: string } | { models: ListedModel[]; status: number }> {
   try {
     const url = `${baseUrl}/v1/models`;
-    const response = await fetchImpl(url, {
-      headers: { authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(timeoutMs),
-      // The key goes straight to a backend on this machine, never through a proxy.
-      ...directIfLoopback(url),
-    });
+    // The key goes straight to a backend on this machine, never through a proxy.
+    const response = await backendFetch(
+      url,
+      { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(timeoutMs) },
+      fetchImpl,
+    );
     if (!response.ok) {
       await response.body?.cancel();
       return { models: [], status: response.status };
     }
     return { models: parseModelList(await response.json()), status: response.status };
   } catch (error) {
-    return { error: messageOf(error) };
+    // A fetch error's words come from outside: one line, the key masked.
+    return { error: maskedLine(messageOf(error), [apiKey], REASON_CHARS) };
   }
 }
 
@@ -134,14 +139,14 @@ function modelIds(body: unknown): null | string[] {
     .filter((id): id is string => id !== null);
 }
 
-/** The text of the first assistant message in an OpenAI-shaped answer, cut short. */
+/** The text of the first assistant message in an OpenAI-shaped answer, one safe line, cut short. */
 export function answerText(body: unknown): null | string {
   if (!isJsonObject(body) || !Array.isArray(body.choices)) return null;
   const first = body.choices[0];
   if (!isJsonObject(first) || !isJsonObject(first.message)) return null;
   const content = first.message.content;
   if (typeof content !== "string") return null;
-  return content.trim().slice(0, 60);
+  return oneLine(content, 60);
 }
 
 /**
@@ -159,12 +164,14 @@ export async function probeModel(options: {
   const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
   const listing = `${baseUrl}/v1/models`;
   let models: null | string[];
+  /** Words from outside (a fetch error, an answer) as one line, the key masked. */
+  const said = (text: string) => maskedLine(text, [apiKey], REASON_CHARS);
   try {
-    const response = await fetchImpl(listing, {
-      headers: { authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(timeoutMs),
-      ...directIfLoopback(listing),
-    });
+    const response = await backendFetch(
+      listing,
+      { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(timeoutMs) },
+      fetchImpl,
+    );
     if (!response.ok) {
       await response.body?.cancel();
       return {
@@ -177,7 +184,7 @@ export async function probeModel(options: {
     }
     models = modelIds(await response.json());
   } catch (error) {
-    return { detail: `/v1/models: ${messageOf(error)}`, ok: false };
+    return { detail: `/v1/models: ${said(messageOf(error))}`, ok: false };
   }
   if (models === null)
     return { detail: "/v1/models answered something that is not a model list", ok: false };
@@ -197,24 +204,24 @@ export async function probeModel(options: {
   }
   const chat = `${baseUrl}/v1/chat/completions`;
   try {
-    const response = await fetchImpl(chat, {
-      body: JSON.stringify({
-        messages: [{ content: PROBE_PROMPT, role: "user" }],
-        model,
-        max_tokens: 8,
-      }),
-      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-      method: "POST",
-      signal: AbortSignal.timeout(timeoutMs),
-      ...directIfLoopback(chat),
-    });
+    const response = await backendFetch(
+      chat,
+      {
+        body: JSON.stringify({
+          messages: [{ content: PROBE_PROMPT, role: "user" }],
+          model,
+          max_tokens: 8,
+        }),
+        headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+        method: "POST",
+        signal: AbortSignal.timeout(timeoutMs),
+      },
+      fetchImpl,
+    );
     if (!response.ok) {
       // Its own reason is worth having: it is why the slot would fall to the next target.
       const body = await response.text().catch(() => "");
-      return {
-        detail: `${model} answered HTTP ${response.status} (${body.trim().slice(0, 120)})`,
-        ok: false,
-      };
+      return { detail: `${model} answered HTTP ${response.status} (${said(body)})`, ok: false };
     }
     const answer = answerText(await response.json());
     return {
@@ -225,6 +232,6 @@ export async function probeModel(options: {
       ok: true,
     };
   } catch (error) {
-    return { detail: `${model}: ${messageOf(error)}`, ok: false };
+    return { detail: `${model}: ${said(messageOf(error))}`, ok: false };
   }
 }

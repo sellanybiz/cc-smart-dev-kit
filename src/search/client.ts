@@ -15,22 +15,22 @@
  *   400 that says so.
  *
  * The key comes from the gateway's config file, read in this process. It is never
- * printed: an error answer, and the reason a request failed, go through the router's own
- * `maskSecrets` (the function its log uses) before they reach the terminal, and the
+ * printed: an error answer, and the reason a request failed, go through `maskSecrets`
+ * (`src/gateway/plain-text.ts`, the router's log uses it too) before they reach the terminal, and the
  * address is shown through `shownValue` (a URL with a user and password is masked). A
  * 200 answer is not masked: the generic "32 characters or more" rule would wreck real
  * page text, and a search answer is OmniRoute's own — the program the key was given to.
  * Only errors, which an upstream may echo a key into, are masked.
  *
  * A request to an OmniRoute on this machine never goes through a proxy from the
- * environment (`directIfLoopback`): it carries the key.
+ * environment, and never follows a redirect (`backendFetch`): it carries the key.
  *
  * The shapes and the tests: docs/search.md.
  */
 
 import { messageOf } from "../gateway/config";
-import { directIfLoopback } from "../gateway/hosts";
-import { maskedLine } from "../gateway/router";
+import { backendFetch } from "../gateway/hosts";
+import { maskedLine } from "../gateway/plain-text";
 import { shownValue } from "../gateway/settings";
 
 /** How long one search or fetch may take before it is given up. */
@@ -132,7 +132,7 @@ function reasonOf(text: string, backend: SearchBackend): string {
  *
  * A redirect is **not** followed: the key would travel to whatever address the answer
  * names. The router refuses one from an affordable backend for the same reason
- * (`.claude/rules/gateway.md` § The login only ever reaches Anthropic); `manual` is what
+ * (`.claude/rules/gateway.md` § The login only ever reaches Anthropic); `backendFetch`'s `manual` is what
  * makes the answer readable here instead of a bare fetch failure.
  */
 async function post(
@@ -145,16 +145,14 @@ async function post(
   const address = shownValue(backend.baseUrl);
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await backendFetch(url, {
       method: "POST",
       headers: {
         authorization: `Bearer ${backend.apiKey}`,
         "content-type": "application/json",
       },
       body: JSON.stringify(body),
-      redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
-      ...directIfLoopback(url),
     });
   } catch (error) {
     // A timeout is not a refused connection (something may be busy there, or the network

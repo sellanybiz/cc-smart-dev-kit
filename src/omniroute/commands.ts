@@ -29,7 +29,8 @@ import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { PROBE_TIMEOUT_MS, type ProbeFetch, probeModel } from "../gateway/backends";
 import { loadConfigFile, messageOf } from "../gateway/config";
-import { directIfLoopback } from "../gateway/hosts";
+import { backendFetch } from "../gateway/hosts";
+import { maskedLine } from "../gateway/plain-text";
 import type { Runner } from "../gateway/service";
 import { shownBackendUrl } from "../gateway/settings";
 import { withLock } from "../setup/lock";
@@ -405,16 +406,20 @@ export async function waitForBackend(
   let detail = "no answer";
   for (;;) {
     try {
-      const response = await ctx.health(url, {
-        headers: { authorization: `Bearer ${apiKey}` },
-        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-        // The key goes straight to a backend on this machine, never through a proxy.
-        ...directIfLoopback(url),
-      });
+      // The key goes straight to a backend on this machine, never through a proxy.
+      const response = await backendFetch(
+        url,
+        {
+          headers: { authorization: `Bearer ${apiKey}` },
+          signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+        },
+        ctx.health,
+      );
       await response.body?.cancel();
       return { detail: null, up: true };
     } catch (error) {
-      detail = messageOf(error);
+      // A fetch error's words come from outside: one line, the key masked.
+      detail = maskedLine(messageOf(error), [apiKey], 200);
     }
     if (ctx.now() >= deadline) return { detail, up: false };
     await ctx.sleep(Math.max(1, Math.min(pause, deadline - ctx.now())));
