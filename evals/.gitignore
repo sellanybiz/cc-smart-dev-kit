@@ -1,0 +1,4 @@
+# Written by every run: the copy under test, and the results.
+.under-test/
+results/
+cases/results/

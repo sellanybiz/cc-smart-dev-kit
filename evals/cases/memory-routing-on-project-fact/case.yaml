@@ -1,0 +1,16 @@
+schema_version: "1.1"
+name: memory-routing-on-project-fact
+description: >-
+  A stated project fact goes to memory-routing, which picks its one home. Finding: IN-21.
+tags: [watch, trigger]
+plugins: ["../../.under-test/plugin", "../../harness"]
+execution:
+  max_turns: 10
+  allowed_tools: [Read, Glob, Grep, Skill, Edit, Write]
+  prompt: |
+    Remember this about the project: the staging database is called stage-db, and nobody runs migrations against production by hand.
+graders:
+  - name: fires-memory-routing
+    type: tool_used
+    tool: 'Skill'
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?memory-routing"'

@@ -1,0 +1,5 @@
+{
+  "name": "kit-evals",
+  "version": "0.0.0",
+  "description": "Test harness only, never installed: loads the kit's general instructions into each eval session, as setup's import line does on a real machine. Run the suite from the repo root: bun run evals."
+}

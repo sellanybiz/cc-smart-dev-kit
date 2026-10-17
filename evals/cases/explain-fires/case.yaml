@@ -1,0 +1,23 @@
+schema_version: "1.1"
+name: explain-fires
+description: >-
+  "What is X, I don't get it" is the explain skill's trigger; it is not a research task.
+tags: [gate, trigger]
+plugins: ["../../.under-test/plugin", "../../harness"]
+execution:
+  max_turns: 4
+  allowed_tools: [Skill]
+  prompt: |
+    What is a webhook? I keep hearing the word and I don't get it.
+graders:
+  - name: fires-explain
+    type: tool_used
+    tool: 'Skill'
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?explain"'
+  - name: no-research-first
+    type: tool_used
+    tool: 'Skill'
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?research-first"'
+    min: 0
+    max: 0
+    arm: 'both'

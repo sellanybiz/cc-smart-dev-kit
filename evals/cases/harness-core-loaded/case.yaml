@@ -1,0 +1,35 @@
+schema_version: "1.1"
+name: harness-core-loaded
+description: >-
+  The harness itself. Fails when the plugin under test did not load, or the loader hook did not
+  put both ends of core.md into the session: every other case would then measure something else.
+tags: [gate, harness]
+plugins: ["../../.under-test/plugin", "../../harness"]
+expected_outcome: >-
+  Claude names the first and the last section headings of its general instructions.
+execution:
+  max_turns: 2
+  allowed_tools: []
+  prompt: |
+    Your context holds general instructions for how you work. Reply with two lines only: the first "## " section heading of those instructions, then the last one, each copied exactly.
+graders:
+  - name: first-section
+    type: regex
+    pattern: 'Lead the work'
+  - name: last-section
+    type: regex
+    pattern: 'Keep the docs true'
+  - name: kit-skills-loaded
+    type: regex
+    pattern: '"skills":\[[^\]]*"[\w-]+:plan-task"'
+    target: 'trace'
+  - name: no-plugin-error
+    type: regex
+    pattern: '"plugin_errors":\[\{'
+    match: 'not_contains'
+    target: 'trace'
+  - name: no-harness-error
+    type: regex
+    pattern: 'EVAL HARNESS ERROR'
+    match: 'not_contains'
+    target: 'trace'

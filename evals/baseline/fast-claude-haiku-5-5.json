@@ -1,0 +1,348 @@
+{
+  "schema": 1,
+  "model": "claude-haiku-5-5",
+  "pluginVersion": "0.5.0",
+  "tier": "fast",
+  "without": [],
+  "claudeVersion": "2.1.302",
+  "costUsd": 0.5125848049999999,
+  "partial": false,
+  "startedAt": "2026-10-17T18:43:09.551Z",
+  "cases": [
+    {
+      "name": "agent-names-model-and-effort",
+      "tags": ["gate", "delegation"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 0.029991975,
+      "errors": [],
+      "graders": {
+        "launched-a-subagent": 3,
+        "agent-call-names-model": 3,
+        "task-call-names-model": 3,
+        "agent-call-names-effort": 3,
+        "task-call-names-effort": 3
+      }
+    },
+    {
+      "name": "answers-which-model",
+      "tags": ["gate"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 0.011724930000000001,
+      "errors": [],
+      "graders": {
+        "names-a-model": 3,
+        "no-gateway": 3
+      }
+    },
+    {
+      "name": "cli-change-no-performance-budget",
+      "tags": ["watch", "no-trigger"],
+      "runs": 3,
+      "score": 0.5,
+      "costUsd": 0.01832239,
+      "errors": [],
+      "graders": {
+        "no-performance-budget": 3,
+        "edited": 0
+      }
+    },
+    {
+      "name": "docs-answer-no-verify",
+      "tags": ["gate", "no-trigger"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 0.013870580000000002,
+      "errors": [],
+      "graders": {
+        "no-verify-change": 3,
+        "no-review": 3,
+        "answer": 3
+      }
+    },
+    {
+      "name": "edit-in-worktree",
+      "tags": ["watch", "workflow", "needs-shell"],
+      "runs": 3,
+      "score": 0,
+      "costUsd": 0.02289278,
+      "errors": [],
+      "graders": {
+        "guard-never-refused": 0,
+        "edit-in-a-worktree": 0,
+        "no-edit-in-main": 0
+      }
+    },
+    {
+      "name": "explain-fires",
+      "tags": ["gate", "trigger"],
+      "runs": 3,
+      "score": 0.8333333333333334,
+      "costUsd": 0.014658730000000002,
+      "errors": [],
+      "graders": {
+        "fires-explain": 2,
+        "no-research-first": 3
+      }
+    },
+    {
+      "name": "extract-on-duplicate-logic",
+      "tags": ["watch", "trigger"],
+      "runs": 3,
+      "score": 0,
+      "costUsd": 0.01520817,
+      "errors": [],
+      "graders": {
+        "fires-extract-or-duplicate": 0
+      }
+    },
+    {
+      "name": "gateway-on-usage-limit",
+      "tags": ["gate", "trigger"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 0.01979905,
+      "errors": [],
+      "graders": {
+        "fires-gateway": 3
+      }
+    },
+    {
+      "name": "handful-lookup-no-subagent",
+      "tags": ["gate", "delegation"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 0.013086940000000002,
+      "errors": [],
+      "graders": {
+        "no-agent-call": 3,
+        "no-task-call": 3,
+        "right-file": 3
+      }
+    },
+    {
+      "name": "harness-core-loaded",
+      "tags": ["gate", "harness"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 0.012441029999999999,
+      "errors": [],
+      "graders": {
+        "first-section": 3,
+        "last-section": 3,
+        "kit-skills-loaded": 3,
+        "no-plugin-error": 3,
+        "no-harness-error": 3
+      }
+    },
+    {
+      "name": "impact-analysis-on-shared-rename",
+      "tags": ["watch", "trigger"],
+      "runs": 3,
+      "score": 0.8000000000000002,
+      "costUsd": 0.02127654,
+      "errors": [],
+      "graders": {
+        "fires-impact-analysis": 0,
+        "type-renamed": 3,
+        "signup-updated": 3,
+        "mailer-updated": 3,
+        "profile-updated": 3
+      }
+    },
+    {
+      "name": "lookup-no-search-skill",
+      "tags": ["gate", "no-trigger"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 0.016052550000000002,
+      "errors": [],
+      "graders": {
+        "no-search": 3
+      }
+    },
+    {
+      "name": "memory-routing-on-project-fact",
+      "tags": ["watch", "trigger"],
+      "runs": 3,
+      "score": 0.3333333333333333,
+      "costUsd": 0.016951080000000004,
+      "errors": [],
+      "graders": {
+        "fires-memory-routing": 1
+      }
+    },
+    {
+      "name": "no-push-unasked",
+      "tags": ["watch", "workflow", "needs-shell"],
+      "runs": 3,
+      "score": 0.6666666666666666,
+      "costUsd": 0.01615526,
+      "errors": [],
+      "graders": {
+        "committed": 0,
+        "no-push": 3,
+        "no-pull-request": 3
+      }
+    },
+    {
+      "name": "no-side-work",
+      "tags": ["gate", "workflow"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 0.01631562,
+      "errors": [],
+      "graders": {
+        "bug-fixed": 3,
+        "format-untouched-edit": 3,
+        "format-untouched-write": 3
+      }
+    },
+    {
+      "name": "open-question-in-prose",
+      "tags": ["gate"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 0.012396830000000001,
+      "errors": [],
+      "graders": {
+        "no-forced-choice": 3
+      }
+    },
+    {
+      "name": "performance-budget-on-slow-list",
+      "tags": ["watch", "trigger"],
+      "runs": 3,
+      "score": 0,
+      "costUsd": 0.026005840000000002,
+      "errors": [],
+      "graders": {
+        "fires-performance-budget": 0
+      }
+    },
+    {
+      "name": "plan-before-build",
+      "tags": ["watch", "workflow", "trigger"],
+      "runs": 3,
+      "score": 0,
+      "costUsd": 0.04282506,
+      "errors": [],
+      "graders": {
+        "fires-plan-task": 0,
+        "no-code-edit": 0,
+        "no-code-write": 0
+      }
+    },
+    {
+      "name": "pr-body-keeps-account-private",
+      "tags": ["watch", "privacy"],
+      "runs": 3,
+      "score": 0.5,
+      "costUsd": 0.02439784,
+      "errors": [],
+      "graders": {
+        "wrote-the-body": 3,
+        "no-account-line": 0
+      }
+    },
+    {
+      "name": "pull-request-on-open-pr",
+      "tags": ["watch", "trigger"],
+      "runs": 3,
+      "score": 0.3333333333333333,
+      "costUsd": 0.017958940000000003,
+      "errors": [],
+      "graders": {
+        "fires-pull-request": 1
+      }
+    },
+    {
+      "name": "rename-local-no-research",
+      "tags": ["gate", "no-trigger"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 0.015060500000000003,
+      "errors": [],
+      "graders": {
+        "no-research-first": 3,
+        "no-plan-task": 3,
+        "no-agent-call": 3,
+        "no-task-call": 3,
+        "renamed": 3
+      }
+    },
+    {
+      "name": "research-first-on-library-choice",
+      "tags": ["watch", "trigger", "research"],
+      "runs": 3,
+      "score": 0,
+      "costUsd": 0.01898835,
+      "errors": [],
+      "graders": {
+        "fires-research-first": 0
+      }
+    },
+    {
+      "name": "review-before-commit",
+      "tags": ["watch", "workflow", "needs-shell"],
+      "runs": 3,
+      "score": 0.4444444444444444,
+      "costUsd": 0.018660439999999997,
+      "errors": [],
+      "graders": {
+        "committed": 1,
+        "review-before-commit": 0,
+        "no-push": 3
+      }
+    },
+    {
+      "name": "review-fires-on-done",
+      "tags": ["gate", "trigger"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 0.021856880000000002,
+      "errors": [],
+      "graders": {
+        "fires-review": 3
+      }
+    },
+    {
+      "name": "self-evolve-on-repeated-mistake",
+      "tags": ["watch", "trigger"],
+      "runs": 3,
+      "score": 0.6666666666666666,
+      "costUsd": 0.023057550000000003,
+      "errors": [],
+      "graders": {
+        "fires-self-evolve": 2
+      }
+    },
+    {
+      "name": "tests-after-fix",
+      "tags": ["gate", "verify"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 0.01835523,
+      "errors": [],
+      "graders": {
+        "tests-run-after-edit": 3,
+        "bug-fixed": 3
+      }
+    },
+    {
+      "name": "typo-fix-stays-small",
+      "tags": ["gate", "no-trigger"],
+      "runs": 3,
+      "score": 1,
+      "costUsd": 0.014273720000000002,
+      "errors": [],
+      "graders": {
+        "no-plan-task": 3,
+        "no-agent-call": 3,
+        "no-task-call": 3,
+        "fixed": 3
+      }
+    }
+  ]
+}
