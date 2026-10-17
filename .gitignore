@@ -1,3 +1,5 @@
 node_modules/
 *.log
 .DS_Store
+# Claude Code worktrees: each is a checkout of its own, never part of this repo.
+.claude/worktrees/
