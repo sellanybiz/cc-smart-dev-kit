@@ -10,18 +10,11 @@ from), named `cc-smart-dev-kit`.
 
 ## Install
 
-**One command installs the plugin.** It checks the machine, installs or upgrades
-[Bun](https://bun.sh) 1.4.3 or later when it is missing or older, adds the three marketplaces,
-installs the plugin, runs `migrate` and then `setup` (the move is a no-op on a machine
-without the old names), asks for the three things only you have — the browser's token,
-the gateway's key, the Tavily key — and ends with `doctor` and, when something is left,
-the list of what is left. It asks before it installs or
-upgrades anything, it prints the exact command that retries a step that failed, and running
-it again goes on from there.
+**One command installs the plugin.** In the lines below, `<owner>/cc-smart-dev-kit` is the
+repository, and it is the script's argument (the script names no owner: the `repository` field
+of `plugin/.claude-plugin/plugin.json` is where the plugin reads its own).
 
-`<owner>/cc-smart-dev-kit` is the repository, and it is the script's argument (the script
-names no owner: the `repository` field of `plugin/.claude-plugin/plugin.json` is where the
-plugin reads its own). This repo is private, so start it with `gh`, which sends the script's
+**macOS and Linux.** This repo is private, so start it with `gh`, which sends the script's
 own bytes down the pipe:
 
 ```sh
@@ -34,7 +27,7 @@ A public fork can be installed from the raw URL instead:
 curl -fsSL https://raw.githubusercontent.com/<owner>/cc-smart-dev-kit/main/install.sh | bash -s -- <owner>/cc-smart-dev-kit
 ```
 
-On native Windows the same installer is `install.ps1`, for PowerShell 5.1 and `pwsh`, with
+**Windows.** Native Windows (not WSL) uses `install.ps1`, for PowerShell 5.1 and `pwsh`, with
 the same steps, the same words and the same exit codes. It is downloaded to a temp file and
 run as **that file**, so the exit codes are real and a refusal never closes your window:
 
@@ -55,6 +48,14 @@ Remove-Item $f
 (`pwsh -File` in place of `powershell -File` runs the same file under PowerShell 7. From a
 folder with the script in it, `powershell -NoProfile -ExecutionPolicy Bypass -File
 .\install.ps1 <owner>/cc-smart-dev-kit` is the same run.)
+
+The one command does the whole install, in order: it checks the machine, installs or upgrades
+[Bun](https://bun.sh) 1.4.3 or later when it is missing or older, adds the three marketplaces,
+installs the plugin, runs `migrate` and then `setup` (the move is a no-op on a machine without
+the old names), asks for the three things only you have — the browser's token, the gateway's
+key, the Tavily key — and ends with `doctor` and, when something is left, the list of what is
+left. It asks before it installs or upgrades anything, it prints the exact command that retries
+a step that failed, and running it again goes on from there.
 
 - **Run it in your own terminal.** Every question reads the terminal, never the pipe the
   script arrived on, and the installer refuses to run inside a Claude Code session: it may
@@ -156,21 +157,23 @@ step below runs the plugin through it.
    that cc-smart-dev-kit will not load without them. The setup in step 3 adds them, and that
    installs the companions.
 
-3. Run the first setup. The `cc-smart-dev-kit` command does not exist yet, so run it from the
-   plugin folder. Put the installed version in place of `<version>`: the install prints no
-   version, so read it with `ls ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/`:
+3. Run the first setup. The `cc-smart-dev-kit` command does not exist yet, so run the copy
+   that Claude Code installed. Paste this one line: it finds the newest installed version by
+   itself.
 
    ```sh
-   plugin="$HOME/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/<version>"
-   bun --no-env-file --config="$plugin/bunfig.toml" "$plugin/dist/cli.js" setup
+   d="$HOME/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit"; v="$(ls "$d" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1)"; bun --no-env-file --config="$d/$v/bunfig.toml" "$d/$v/dist/cli.js" setup
    ```
+
+   (`ls` lists the installed versions, `sort -t. -k1,1n -k2,2n -k3,3n` puts them in version
+   order — `0.5.0`, then `0.9.0`, then `0.10.0` — and `tail -n1` takes the newest.)
 
    Both flags matter: Bun adds the `.env` files of the folder you run the command from and
    reads its `bunfig.toml`, so without them a project's `.env.local` (its `TAVILY_API_KEY`,
    say) or a project's `preload` would reach setup. The launcher,
    `plugin/bin/cc-smart-dev-kit` and the hooks' bun shim all pass both for the same reason.
-   The bundle path is the installed version's own folder (`…/<version>/dist/cli.js`) and the
-   empty config sits beside it (`…/<version>/bunfig.toml`), so a later version ships its own.
+   The bundle path is the newest version's own folder (`$d/$v/dist/cli.js`) and the empty
+   config sits beside it (`$d/$v/bunfig.toml`), so a later version ships its own.
 
    Setup installs the launcher `~/.local/bin/cc-smart-dev-kit`, turns on auto-update for the
    plugin, registers the MCP servers for your user ([MCP servers](#mcp-servers)), installs
