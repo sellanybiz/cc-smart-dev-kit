@@ -8696,7 +8696,9 @@ var OPUS_REASONS = [
   "ui",
   "architecture",
   "plan-review",
-  "debugging"
+  "debugging",
+  "research",
+  "retry"
 ];
 var FABLE_BUILD_REASON = "build";
 var BUILDER_WORDS = [FABLE_BUILD_REASON];
@@ -8713,9 +8715,14 @@ var READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore", "Code Explorer"];
 var REVIEW_AGENTS = ["Reviewer"];
 var REVIEW_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS";
 var READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";
-var ALLOWED_EFFORTS = ["high", "xhigh", "max"];
+var ALLOWED_EFFORTS = ["medium", "high", "xhigh", "max"];
+var REVIEW_EFFORT = "high";
 function effortAllowed(effort) {
   return ALLOWED_EFFORTS.includes(effort.toLowerCase());
+}
+function deeperThanReview(effort) {
+  const levels = ALLOWED_EFFORTS;
+  return levels.indexOf(effort.toLowerCase()) > levels.indexOf(REVIEW_EFFORT);
 }
 function agentKey(type) {
   const base = type.includes(":") ? type.split(":").pop() ?? type : type;
@@ -8752,12 +8759,19 @@ function tierOfMappedId(model, gateway, env) {
   }
   return null;
 }
+function tierRank(tier) {
+  return tier === "fable" ? 2 : tier === "opus" ? 1 : 0;
+}
+function asNamed(answered, family, tier) {
+  const real = premiumTier(answered.family);
+  return tierRank(real) > tierRank(tier) ? { ...answered, tier: real } : { ...answered, family, tier };
+}
 function throughFamilySlot(claude, family, gateway) {
   const tier = tierOfReading(family);
   const first = familyFirstTarget(gateway, family);
   if (first === null)
     return { claude: true, family, model: claude, tier };
-  return { ...resolveTarget(first), family, tier };
+  return asNamed(resolveTarget(first), family, tier);
 }
 function resolveName(text, gateway) {
   if (text.startsWith("claude-"))
@@ -8793,7 +8807,7 @@ function resolveLaunchModel(name, gateway, env) {
   const tier = premiumTier(family);
   const override = stringField(env[familyEnv(family)]);
   if (override !== null) {
-    return { ...resolveName(withoutContextSuffix(override.trim()), gateway), family, tier };
+    return asNamed(resolveName(withoutContextSuffix(override.trim()), gateway), family, tier);
   }
   return throughFamilySlot(text, family, gateway);
 }
@@ -9150,7 +9164,8 @@ function reasonLine(prompt, label) {
   return null;
 }
 function reasonWord(text, allowed) {
-  const word = text?.split(/\s+/)[0]?.toLowerCase() ?? "";
+  const found = /^[^a-z0-9]*([a-z0-9]+(?:-[a-z0-9]+)*)/.exec(text?.toLowerCase() ?? "");
+  const word = found?.[1] ?? "";
   return allowed.includes(word) ? word : null;
 }
 var NO_MODEL = [
@@ -9158,17 +9173,19 @@ var NO_MODEL = [
   "An agent given none runs on the session's model and effort, which nobody chose: pass `model` and `effort` on every launch."
 ].join(`
 `);
-var EFFORTS = ALLOWED_EFFORTS.map((one) => `\`${one}\``).join(", ");
+var EFFORTS = `${ALLOWED_EFFORTS.slice(0, -1).map((one) => `\`${one}\``).join(", ")} or \`${ALLOWED_EFFORTS.at(-1)}\``;
+var EFFORT_USE = "`medium` is for searches and reads, `high` for building and for reviews, and `xhigh` and `max` only when the person asks for them (an affordable gateway slot always runs at `max`).";
 var NO_EFFORT = [
   "This Agent launch names no `effort`.",
-  `An agent given none runs at the session's effort: pass \`effort\` on every launch \u2014 ${EFFORTS} only, never \`low\` or \`medium\` (\`max\` for the hardest problem, always on an affordable gateway slot).`
+  `An agent given none runs at the session's effort: pass \`effort\` on every launch, ${EFFORTS}.`,
+  EFFORT_USE
 ].join(`
 `);
 function effortDenial(effort) {
   return [
-    `This launch asks for effort \`${effort}\`, which no subagent may run at (the owner's rule, 2026-10-16).`,
-    `A subagent runs at ${EFFORTS} only \u2014 \`low\` and \`medium\` are refused on every model, a Claude model and an affordable gateway slot alike.`,
-    "`high` is for searches, reads and routine building, `xhigh` for review and real judgment, and `max` for the hardest problem only (always on an affordable gateway slot)."
+    `This launch asks for effort \`${effort}\`, which no subagent may run at (the plugin's rule).`,
+    `A subagent runs at ${EFFORTS} \u2014 never \`low\`, on any model.`,
+    EFFORT_USE
   ].join(`
 `);
 }
@@ -9183,7 +9200,7 @@ function atEffort(effort) {
 function opusDenial(real) {
   return [
     `This launch would run on ${namedModel(real)}.`,
-    "Opus is for reviews and the owner's listed exceptions only: launch it as a review agent (`subagent_type` Reviewer, or one ending `:reviewer`), or put a line in the prompt saying why \u2014 the person is then asked to approve each one:",
+    "Opus is for reviews and the plugin's listed exceptions only: launch it as a review agent (`subagent_type` Reviewer, or one ending `:reviewer`), or put a line in the prompt saying why \u2014 the person is then asked to approve each one:",
     `Opus reason: <${OPUS_REASONS.join("|")}>`
   ].join(`
 `);
@@ -9267,20 +9284,21 @@ function judgeLaunch(launch, ctx, env) {
           why: "opus:review-unreadable"
         };
       }
-      if (launch.effort?.toLowerCase() !== "max")
+      const effort = launch.effort?.toLowerCase() ?? REVIEW_EFFORT;
+      if (!deeperThanReview(effort))
         return allow(real, "review");
       if (nobodyWatches(env)) {
         return deny(real, [
-          "A review at effort `max` is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
-          "Run it at `xhigh`, or in an interactive session."
+          `A review at effort \`${effort}\` is approved by the person, one by one, and this session has nobody to answer (\`claude -p\`).`,
+          `Run it at \`${REVIEW_EFFORT}\`, or in an interactive session.`
         ].join(`
 `));
       }
       return {
         decision: "ask",
         real,
-        reason: `${namedModel(real)} review at effort \`max\`: reviews run at \`xhigh\` unless you asked for a deeper one. Approve if you did.`,
-        why: "opus:review-max"
+        reason: `${namedModel(real)} review at effort \`${effort}\`: a review runs at \`${REVIEW_EFFORT}\` unless you asked for a deeper one. Approve if you did.`,
+        why: `opus:review-${effort}`
       };
     }
     const said = reasonLine(launch.prompt, "Opus reason");
@@ -9355,6 +9373,8 @@ function readGuardContext(paths, input, env) {
   };
 }
 function guardFacts(input, context) {
+  if (afterTheCall(input))
+    return { event: RAN_EVENT };
   const guard = readGuardContext(context.paths, input, context.env);
   const tool = stringField(input.tool_name);
   if (tool !== null && WORKFLOW_TOOLS.includes(tool)) {
@@ -9404,38 +9424,49 @@ function recorded(result, launch, input, cwd, nowMs) {
     toolUseId: stringField(input.tool_use_id) ?? ""
   };
 }
+var RAN_EVENT = "PostToolUse";
+function afterTheCall(input) {
+  return stringField(input.hook_event_name) === RAN_EVENT;
+}
 function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
   const tool = stringField(input.tool_name);
   const context = readGuardContext(paths, input, env);
   const file = agentLaunchesFile(paths.stateDir);
+  const ran = afterTheCall(input);
+  const record = (verdict, launch) => {
+    const line = recorded(verdict, launch, input, cwd, nowMs);
+    if (line !== null)
+      appendAgentLaunch(file, line);
+  };
   if (tool !== null && WORKFLOW_TOOLS.includes(tool)) {
     const script = stringField(toolInput(input).script);
     if (script === null)
       return SILENT;
     const refusal = workflowRefusal(script);
     if (refusal !== null)
-      return toolDecision("deny", refusal);
+      return ran ? SILENT : toolDecision("deny", refusal);
     const results = judgeWorkflow(script, context, env);
     const decided = results.find((one) => one.verdict.decision === "deny");
     if (decided !== undefined)
-      return toolDecision("deny", workflowReason(decided));
-    for (const one of results) {
-      const record = recorded(one.verdict, asLaunch(one.launch), input, cwd, nowMs);
-      if (record !== null)
-        appendAgentLaunch(file, record);
-    }
+      return ran ? SILENT : toolDecision("deny", workflowReason(decided));
     const asks = results.filter((one) => one.verdict.decision === "ask");
-    return asks.length === 0 ? SILENT : toolDecision("ask", asks.map((one) => workflowReason(one)).join(`
+    const asked = asks.length > 0;
+    if (ran === asked) {
+      for (const one of results)
+        record(one.verdict, asLaunch(one.launch));
+    }
+    if (ran || !asked)
+      return SILENT;
+    return toolDecision("ask", asks.map((one) => workflowReason(one)).join(`
 `));
   }
   const launch = readLaunch(input);
   if (launch === null)
     return SILENT;
   const result = judgeLaunch(launch, context, env);
-  const launchRecord = recorded(result, launch, input, cwd, nowMs);
-  if (launchRecord !== null && result.decision !== "deny")
-    appendAgentLaunch(file, launchRecord);
-  return result.decision === "allow" ? SILENT : toolDecision(result.decision, result.reason);
+  if (result.decision === (ran ? "ask" : "allow"))
+    record(result, launch);
+  return ran || result.decision === "allow" ? SILENT : toolDecision(result.decision, result.reason);
 }
 
 // src/hooks/fable-session.ts

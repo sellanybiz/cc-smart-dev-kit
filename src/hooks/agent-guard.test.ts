@@ -1,9 +1,10 @@
 /**
  * The Agent guard (`agent-guard.ts`): which model a launch really runs on, and the owner's
- * verdict for each — effort high or above (never `low` or `medium`), an affordable slot at
- * effort max, Claude Sonnet/Haiku free of the model rules, Claude Opus only for a review or a
- * reason line, Claude Fable only read-only with a reason and a person to answer. Plus the
- * record `cc-smart-dev-kit usage` reads.
+ * verdict for each — effort medium or above (never `low`), a review at high unless the person
+ * asks for a deeper one, an affordable slot at effort max, Claude Sonnet/Haiku free of the
+ * model rules, Claude Opus only for a review or a reason line, Claude Fable only read-only
+ * with a reason and a person to answer. Plus the record `cc-smart-dev-kit usage` reads, written
+ * once a launch is known to run.
  */
 import { describe, expect, it } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -275,7 +276,7 @@ describe("the verdict", () => {
   it("a full Opus id is denied too, with the rule in words", () => {
     const result = verdict({ effort: "high", model: OPUS_ID, prompt: "do it" });
     expect(result.decision).toBe("deny");
-    expect(result.reason).toContain("Opus is for reviews and the owner's listed exceptions");
+    expect(result.reason).toContain("Opus is for reviews and the plugin's listed exceptions");
     expect(result.reason).toContain("Opus reason: <security|money|");
   });
 
@@ -301,7 +302,7 @@ describe("the verdict", () => {
     expect(asked.reason).toContain("nobody to answer");
     expect(
       verdict(
-        { effort: "xhigh", model: "opus", prompt: "review", subagent_type: "Reviewer" },
+        { effort: "high", model: "opus", prompt: "review", subagent_type: "Reviewer" },
         CTX,
         unattended,
       ).decision,
@@ -319,12 +320,12 @@ describe("the verdict", () => {
 
   it("a review agent on Opus is allowed; at effort max it asks the person", () => {
     expect(
-      verdict({ effort: "xhigh", model: "opus", prompt: "review", subagent_type: "Reviewer" })
+      verdict({ effort: "high", model: "opus", prompt: "review", subagent_type: "Reviewer" })
         .decision,
     ).toBe("allow");
     expect(
       verdict({
-        effort: "xhigh",
+        effort: "high",
         model: "opus",
         prompt: "review",
         subagent_type: "cc-smart-dev-kit:reviewer",
@@ -339,7 +340,7 @@ describe("the verdict", () => {
     });
     expect(max.decision).toBe("ask");
     expect(max.reason).toContain("Claude Opus review at effort `max`");
-    expect(max.reason).toContain("reviews run at `xhigh` unless you asked for a deeper one");
+    expect(max.reason).toContain("a review runs at `high` unless you asked for a deeper one");
     expect(max.why).toBe("opus:review-max");
   });
 
@@ -355,7 +356,7 @@ describe("the verdict", () => {
     // The usual effort stays allowed there.
     expect(
       verdict(
-        { effort: "xhigh", model: "opus", prompt: "review", subagent_type: "Reviewer" },
+        { effort: "high", model: "opus", prompt: "review", subagent_type: "Reviewer" },
         CTX,
         where,
       ).decision,
@@ -369,32 +370,38 @@ describe("the verdict", () => {
     expect(verdict({ effort: "xhigh", model: "haiku", prompt: "search" }).decision).toBe("allow");
   });
 
-  it("`low` and `medium` are refused on every model: a Claude family and an affordable slot", () => {
+  it("`low` is refused on every model: a Claude family and an affordable slot", () => {
     const on: GuardContext = { ...CTX, config: configWithModelSlot(), gatewayOn: true };
-    for (const effort of ["low", "medium"]) {
-      for (const model of ["haiku", "sonnet", "cc-smart-dev-kit-worker"]) {
-        for (const ctx of [CTX, on]) {
-          const result = verdict({ effort, model, prompt: "search it" }, ctx);
-          expect(result.decision).toBe("deny");
-          expect(result.reason).toContain(`asks for effort \`${effort}\``);
-          expect(result.reason).toContain("owner's rule");
-          for (const level of ALLOWED_EFFORTS) {
-            expect(result.reason).toContain(`\`${level}\``);
-          }
+    for (const model of ["haiku", "sonnet", "cc-smart-dev-kit-worker"]) {
+      for (const ctx of [CTX, on]) {
+        const result = verdict({ effort: "low", model, prompt: "search it" }, ctx);
+        expect(result.decision).toBe("deny");
+        expect(result.reason).toContain("asks for effort `low`");
+        expect(result.reason).toContain("the plugin's rule");
+        for (const level of ALLOWED_EFFORTS) {
+          expect(result.reason).toContain(`\`${level}\``);
         }
       }
-      // A fork inherits, but one that names a level itself is held to the same rule.
-      const fork = verdict(
-        { effort, prompt: "x", subagent_type: "fork" },
-        {
-          config: null,
-          gatewayOn: false,
-          sessionModel: "claude-haiku-4-5",
-        },
-      );
-      expect(fork.decision).toBe("deny");
-      expect(fork.reason).toContain(`asks for effort \`${effort}\``);
     }
+    // A fork inherits, but one that names a level itself is held to the same rule.
+    const fork = verdict(
+      { effort: "low", prompt: "x", subagent_type: "fork" },
+      {
+        config: null,
+        gatewayOn: false,
+        sessionModel: "claude-haiku-4-5",
+      },
+    );
+    expect(fork.decision).toBe("deny");
+    expect(fork.reason).toContain("asks for effort `low`");
+    // `medium` is allowed on a Claude family (D5); an affordable slot with the gateway on still
+    // needs `max`, its own rule.
+    expect(verdict({ effort: "medium", model: "haiku", prompt: "search it" }, on).decision).toBe(
+      "allow",
+    );
+    const slot = verdict({ effort: "medium", model: "cc-smart-dev-kit-worker", prompt: "x" }, on);
+    expect(slot.decision).toBe("deny");
+    expect(slot.reason).toContain("an affordable gateway slot");
   });
 
   it("every allowed level passes a Claude builder; a level no rule knows is refused", () => {
@@ -576,7 +583,7 @@ describe("the verdict", () => {
     expect(asked.why).toBe("opus:review-unreadable");
     // A review on a readable Opus stays allowed with no question.
     expect(
-      verdict({ effort: "xhigh", model: "opus", prompt: "r", subagent_type: "Reviewer" }).decision,
+      verdict({ effort: "high", model: "opus", prompt: "r", subagent_type: "Reviewer" }).decision,
     ).toBe("allow");
   });
 
@@ -711,7 +718,7 @@ describe("the verdict", () => {
     expect(readOnly.decision).toBe("ask");
     const review = verdict(
       {
-        effort: "xhigh",
+        effort: "high",
         model: "opus",
         prompt: "check it",
         subagent_type: "my-auditor",
@@ -757,10 +764,10 @@ describe("tiers, not vendors (owner, 2026-10-16)", () => {
     );
     expect(asked.decision).toBe("ask");
     expect(asked.reason).toContain("`opus` (answered by openai:gpt-5.5)");
-    // A review on the tier: allowed at xhigh, an ask at max, naming the model behind it.
+    // A review on the tier: allowed at high, an ask at max, naming the model behind it.
     expect(
       verdict(
-        { effort: "xhigh", model: "opus", prompt: "r", subagent_type: "Reviewer" },
+        { effort: "high", model: "opus", prompt: "r", subagent_type: "Reviewer" },
         ON,
         OPENAI_OPUS,
       ).decision,
@@ -1038,22 +1045,23 @@ describe("a Workflow script", () => {
     ]);
   });
 
-  it("a Workflow agent() at `low` or `medium` is refused, on every model", () => {
+  it("a Workflow agent() at `low` is refused, on every model; `medium` is allowed (D5)", () => {
     const script = [
-      'await agent("search it", { label: "scout", model: "haiku", effort: "medium" });',
+      'await agent("search it", { label: "scout", model: "haiku", effort: "low" });',
       'await agent("build it", { label: "worker", model: "cc-smart-dev-kit-worker", effort: "low" });',
+      'await agent("read it", { label: "reader", model: "haiku", effort: "medium" });',
       'await agent("check it", { label: "audit", model: "sonnet", effort: "high" });',
     ].join("\n");
     const results = judgeWorkflow(script, CTX, NO_ENV);
-    expect(results.map((one) => one.verdict.decision)).toEqual(["deny", "deny", "allow"]);
-    expect(results[0]?.verdict.reason).toContain("asks for effort `medium`");
+    expect(results.map((one) => one.verdict.decision)).toEqual(["deny", "deny", "allow", "allow"]);
+    expect(results[0]?.verdict.reason).toContain("asks for effort `low`");
     expect(results[1]?.verdict.reason).toContain("asks for effort `low`");
     const answer = JSON.parse(
       agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app").stdout ?? "{}",
     ).hookSpecificOutput;
     expect(answer.permissionDecision).toBe("deny");
     expect(answer.permissionDecisionReason).toContain('the launch "scout"');
-    expect(answer.permissionDecisionReason).toContain("asks for effort `medium`");
+    expect(answer.permissionDecisionReason).toContain("asks for effort `low`");
   });
 
   it("a script with no agent(…) call, or no script at all: nothing to say", () => {
@@ -1094,7 +1102,7 @@ describe("the hook's answer, and the record", () => {
     mkdirSync(where.stateDir, { recursive: true });
     const result = agentGuard(
       agentCall({
-        effort: "xhigh",
+        effort: "high",
         model: "opus",
         prompt: "review it",
         subagent_type: "Reviewer",
@@ -1111,7 +1119,7 @@ describe("the hook's answer, and the record", () => {
     expect(launch?.subagentType).toBe("Reviewer");
   });
 
-  it("an asked Opus launch is recorded once, even when the hook runs twice for one call", () => {
+  it("an asked Opus launch is recorded once it ran, even when the hook runs twice for one call", () => {
     const where = paths();
     mkdirSync(where.stateDir, { recursive: true });
     const input = {
@@ -1123,21 +1131,26 @@ describe("the hook's answer, and the record", () => {
       session_id: "11111111-2222-3333-4444-555555555555",
       tool_use_id: "toolu_1",
     };
+    const ran = { ...input, hook_event_name: "PostToolUse" };
     const asked = agentGuard(input, NO_ENV, where, "/tmp/app");
     expect(JSON.parse(asked.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
-    // 2.1.301 ran the hook once for the call the person approved (proved live); a build that
-    // ran PreToolUse again with the same tool_use_id must not record a second launch.
+    // A build that ran PreToolUse again for the same call records nothing either: the person
+    // has not answered.
     agentGuard(input, NO_ENV, where, "/tmp/app");
+    expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toEqual([]);
+    // It ran: one record, even when PostToolUse runs twice with the same tool_use_id.
+    agentGuard(ran, NO_ENV, where, "/tmp/app");
+    agentGuard(ran, NO_ENV, where, "/tmp/app");
     const launches = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
     expect(launches).toHaveLength(1);
     expect(launches[0]?.reason).toBe("opus:debugging");
     expect(launches[0]?.toolUseId).toBe("toolu_1");
     // Another tool call in the same session is a second launch.
-    agentGuard({ ...input, tool_use_id: "toolu_2" }, NO_ENV, where, "/tmp/app");
+    agentGuard({ ...ran, tool_use_id: "toolu_2" }, NO_ENV, where, "/tmp/app");
     expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toHaveLength(2);
   });
 
-  it("a Workflow denied as a whole records none of its launches; an ask records them", () => {
+  it("a Workflow denied as a whole records none of its launches; an ask records them once it ran", () => {
     const where = paths();
     mkdirSync(where.stateDir, { recursive: true });
     const denied = [
@@ -1148,7 +1161,9 @@ describe("the hook's answer, and the record", () => {
       agentGuard(workflowCall(denied), NO_ENV, where, "/tmp/app").stdout ?? "{}",
     ).hookSpecificOutput;
     expect(answer.permissionDecision).toBe("deny");
-    // The whole call was refused, so nothing in it ran: no launch of it is recorded.
+    // The whole call was refused, so nothing in it ran: no launch of it is recorded, not even
+    // by a PostToolUse run.
+    agentGuard({ ...workflowCall(denied), hook_event_name: "PostToolUse" }, NO_ENV, where, "/a");
     expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toEqual([]);
     const asked =
       'await agent("Fable reason: plan - look", { label: "advice", model: "fable", effort: "max", agentType: "Plan" });';
@@ -1156,6 +1171,8 @@ describe("the hook's answer, and the record", () => {
       agentGuard(workflowCall(asked), NO_ENV, where, "/tmp/app").stdout ?? "{}",
     ).hookSpecificOutput;
     expect(second.permissionDecision).toBe("ask");
+    expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toEqual([]);
+    agentGuard({ ...workflowCall(asked), hook_event_name: "PostToolUse" }, NO_ENV, where, "/a");
     const launches = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
     expect(launches).toHaveLength(1);
     expect(launches[0]?.reason).toBe("fable:plan");
@@ -1176,26 +1193,31 @@ describe("the hook's answer, and the record", () => {
     };
     const asked = agentGuard(input, NO_ENV, where, "/tmp/app");
     expect(JSON.parse(asked.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
+    expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toEqual([]);
+    const ran = { ...input, hook_event_name: "PostToolUse" };
+    agentGuard(ran, NO_ENV, where, "/tmp/app");
     const launches = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
     expect(launches).toHaveLength(1);
     expect(launches[0]?.family).toBe("fable");
     expect(launches[0]?.reason).toBe("fable:build");
     expect(launches[0]?.subagentType).toBe("general-purpose");
-    // The hook runs twice for one call (proved live): one record, not two.
-    agentGuard(input, NO_ENV, where, "/tmp/app");
+    // The hook runs twice for one call: one record, not two.
+    agentGuard(ran, NO_ENV, where, "/tmp/app");
     expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toHaveLength(1);
   });
 
   it("a deeper review at effort max is recorded as `opus:review-max`, so `usage` lists it", () => {
     const where = paths();
     mkdirSync(where.stateDir, { recursive: true });
-    const result = agentGuard(
-      agentCall({ effort: "max", model: "opus", prompt: "review it", subagent_type: "Reviewer" }),
-      NO_ENV,
-      where,
-      "/tmp/app",
-    );
+    const call = agentCall({
+      effort: "max",
+      model: "opus",
+      prompt: "review it",
+      subagent_type: "Reviewer",
+    });
+    const result = agentGuard(call, NO_ENV, where, "/tmp/app");
     expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
+    agentGuard({ ...call, hook_event_name: "PostToolUse" }, NO_ENV, where, "/tmp/app");
     const [launch] = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
     expect(launch?.family).toBe("opus");
     expect(launch?.reason).toBe("opus:review-max");
@@ -1365,9 +1387,9 @@ describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's 
     );
     expect(bare?.reason).toContain("Opus reason: <security|money|");
     expect(bare?.reason).not.toContain("affordable");
-    // A review on the tier at xhigh: allowed with no question, as before.
+    // A review on the tier at high: allowed with no question, as before.
     expect(
-      answer(where, { effort: "xhigh", model: "opus", prompt: "r", subagent_type: "Reviewer" }),
+      answer(where, { effort: "high", model: "opus", prompt: "r", subagent_type: "Reviewer" }),
     ).toBeNull();
     const asked = answer(where, {
       effort: "high",
@@ -1396,5 +1418,284 @@ describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's 
     const [record] = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
     expect(record?.family).toBe("opus");
     expect(record?.model).toBe("omniroute:glm-x");
+  });
+});
+
+describe("the 0.6.0 audit fixes (C3)", () => {
+  function paths(): CliPaths {
+    const home = tempDir("guard-c3");
+    const where = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    mkdirSync(where.stateDir, { recursive: true });
+    return where;
+  }
+
+  /** A hook input for one call, as Claude Code builds it at `event`. */
+  function at(event: string, input: HookInput): HookInput {
+    return {
+      ...input,
+      hook_event_name: event,
+      session_id: "11111111-2222-3333-4444-555555555555",
+      tool_use_id: "toolu_c3",
+    };
+  }
+
+  const records = (where: CliPaths) => readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
+
+  it("IN-2 (D5): a medium scout launch is allowed; `low` is still refused", () => {
+    expect(verdict({ effort: "medium", model: "haiku", prompt: "find the file" }).decision).toBe(
+      "allow",
+    );
+    expect(verdict({ effort: "medium", model: "sonnet", prompt: "read it" }).decision).toBe(
+      "allow",
+    );
+    const low = verdict({ effort: "low", model: "haiku", prompt: "find the file" });
+    expect(low.decision).toBe("deny");
+    expect(low.reason).toBe(
+      [
+        "This launch asks for effort `low`, which no subagent may run at (the plugin's rule).",
+        "A subagent runs at `medium`, `high`, `xhigh` or `max` — never `low`, on any model.",
+        "`medium` is for searches and reads, `high` for building and for reviews, and `xhigh` and `max` only when the person asks for them (an affordable gateway slot always runs at `max`).",
+      ].join("\n"),
+    );
+  });
+
+  it("IN-2 (D5): a medium Opus build is asked, like any Opus build with a reason line", () => {
+    const build = verdict({
+      effort: "medium",
+      model: "opus",
+      prompt: "Opus reason: security - the token check",
+    });
+    expect(build.decision).toBe("ask");
+    expect(build.reason).toContain("at effort `medium`");
+    expect(build.why).toBe("opus:security");
+  });
+
+  it("IN-2 (D5): a review runs at `high`; `xhigh` and `max` ask, as a deeper review", () => {
+    const review = (effort: string, env = NO_ENV) =>
+      verdict({ effort, model: "opus", prompt: "review", subagent_type: "Reviewer" }, CTX, env);
+    expect(review("high").decision).toBe("allow");
+    expect(review("medium").decision).toBe("allow");
+    for (const effort of ["xhigh", "max"]) {
+      const deeper = review(effort);
+      expect(deeper.decision).toBe("ask");
+      expect(deeper.reason).toBe(
+        `Claude Opus review at effort \`${effort}\`: a review runs at \`high\` unless you asked for a deeper one. Approve if you did.`,
+      );
+      expect(deeper.why).toBe(`opus:review-${effort}`);
+      // Nobody to answer: refused, with the way out.
+      const unattended = review(effort, { CLAUDE_CODE_SESSION_ATTENDED: "0" });
+      expect(unattended.decision).toBe("deny");
+      expect(unattended.reason).toBe(
+        [
+          `A review at effort \`${effort}\` is approved by the person, one by one, and this session has nobody to answer (\`claude -p\`).`,
+          "Run it at `high`, or in an interactive session.",
+        ].join("\n"),
+      );
+    }
+    expect(review("high", { CLAUDE_CODE_SESSION_ATTENDED: "0" }).decision).toBe("allow");
+  });
+
+  it("IN-9: an Opus launch with 'Opus reason: research' or 'retry' passes the reason gate", () => {
+    for (const word of ["research", "retry"]) {
+      const result = verdict({
+        effort: "high",
+        model: "opus",
+        prompt: `Opus reason: ${word} - the question is open`,
+      });
+      expect(result.decision).toBe("ask");
+      expect(result.why).toBe(`opus:${word}`);
+    }
+    // The refusal teaches both words.
+    expect(verdict({ effort: "high", model: "opus", prompt: "do it" }).reason).toContain(
+      "Opus reason: <security|money|permissions|schema|deploy|ui|architecture|plan-review|debugging|research|retry>",
+    );
+  });
+
+  it("IN-24: the deny texts say the plugin's rule, never the owner's or a date", () => {
+    const unattended = { CLAUDE_CODE_SESSION_ATTENDED: "0" };
+    const on: GuardContext = { ...CTX, config: configWithModelSlot(), gatewayOn: true };
+    const denials = [
+      verdict({ model: "sonnet", prompt: "x" }),
+      verdict({ effort: "low", model: "sonnet", prompt: "x" }),
+      verdict({ effort: "high", model: "opus", prompt: "x" }),
+      verdict({ effort: "high", model: "fable", prompt: "x", subagent_type: "Plan" }),
+      verdict({ effort: "high", model: "fable", prompt: "x", subagent_type: "general-purpose" }),
+      verdict({ effort: "high", model: "cc-smart-dev-kit-worker", prompt: "x" }, on),
+      verdict({ effort: "high", model: "opus", prompt: "Opus reason: ui - x" }, CTX, unattended),
+      verdict(
+        { effort: "max", model: "opus", prompt: "r", subagent_type: "Reviewer" },
+        CTX,
+        unattended,
+      ),
+    ];
+    for (const one of denials) {
+      expect(one.decision).toBe("deny");
+      expect(one.reason).not.toMatch(/owner/i);
+      expect(one.reason).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    }
+    expect(denials[1]?.reason).toContain("(the plugin's rule)");
+    expect(denials[2]?.reason).toContain("Opus is for reviews and the plugin's listed exceptions");
+  });
+
+  it("HK hunch 4: trailing punctuation keeps a reason word valid ('Opus reason: security.')", () => {
+    for (const line of [
+      "Opus reason: security.",
+      "Opus reason: security, the token check",
+      "Opus reason: security: the token check",
+      "Opus reason: `security` - the token check",
+      "Opus reason: plan-review.",
+    ]) {
+      expect(verdict({ effort: "high", model: "opus", prompt: line }).decision).toBe("ask");
+    }
+    expect(verdict({ effort: "high", model: "opus", prompt: "Opus reason: security." }).why).toBe(
+      "opus:security",
+    );
+    const fable = verdict({
+      effort: "high",
+      model: "fable",
+      prompt: "Fable reason: plan. - a second read",
+      subagent_type: "Plan",
+    });
+    expect(fable.decision).toBe("ask");
+    expect(fable.why).toBe("fable:plan");
+    // Punctuation never turns an unlisted word into a listed one.
+    expect(
+      verdict({ effort: "high", model: "opus", prompt: "Opus reason: securityish." }).decision,
+    ).toBe("deny");
+  });
+
+  it("HK hunch 3: an asked launch is recorded only once it ran (PostToolUse), never on the ask", () => {
+    const where = paths();
+    const call = agentCall({
+      effort: "high",
+      model: "opus",
+      prompt: "Opus reason: debugging - the router hangs",
+    });
+    const asked = agentGuard(at("PreToolUse", call), NO_ENV, where, "/tmp/app");
+    expect(JSON.parse(asked.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
+    // The person has not answered yet: nothing is recorded.
+    expect(records(where)).toEqual([]);
+    // The call ran, so the person said yes: one record, and the hook says nothing.
+    expect(agentGuard(at("PostToolUse", call), NO_ENV, where, "/tmp/app")).toEqual({});
+    const launches = records(where);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.reason).toBe("opus:debugging");
+    expect(launches[0]?.toolUseId).toBe("toolu_c3");
+    // A second PostToolUse run for the same call records nothing new.
+    agentGuard(at("PostToolUse", call), NO_ENV, where, "/tmp/app");
+    expect(records(where)).toHaveLength(1);
+  });
+
+  it("HK hunch 3: an allowed launch is recorded on PreToolUse, and its PostToolUse adds nothing", () => {
+    const where = paths();
+    const review = agentCall({
+      effort: "high",
+      model: "opus",
+      prompt: "review it",
+      subagent_type: "Reviewer",
+    });
+    expect(agentGuard(at("PreToolUse", review), NO_ENV, where, "/tmp/app")).toEqual({});
+    expect(records(where).map((one) => one.reason)).toEqual(["review"]);
+    expect(agentGuard(at("PostToolUse", review), NO_ENV, where, "/tmp/app")).toEqual({});
+    expect(records(where)).toHaveLength(1);
+    // A launch the guard denies records nothing, even on a PostToolUse run.
+    const bare = agentCall({ effort: "high", model: "opus", prompt: "do it" });
+    agentGuard(at("PostToolUse", bare), NO_ENV, where, "/tmp/app");
+    expect(records(where)).toHaveLength(1);
+    // A Sonnet launch is never recorded.
+    agentGuard(
+      at("PostToolUse", agentCall({ effort: "high", model: "sonnet", prompt: "x" })),
+      NO_ENV,
+      where,
+      "/tmp/app",
+    );
+    expect(records(where)).toHaveLength(1);
+  });
+
+  it("HK hunch 3: a Workflow that asks records its launches only once it ran", () => {
+    const where = paths();
+    const script = [
+      'await agent("Fable reason: plan - look", { label: "advice", model: "fable", effort: "max", agentType: "Plan" });',
+      'await agent("review it", { label: "check", model: "opus", effort: "high", agentType: "Reviewer" });',
+    ].join("\n");
+    const asked = agentGuard(at("PreToolUse", workflowCall(script)), NO_ENV, where, "/tmp/app");
+    expect(JSON.parse(asked.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
+    // The person may still say no to the whole call: none of its launches is recorded yet,
+    // not even the review that needed no question.
+    expect(records(where)).toEqual([]);
+    expect(agentGuard(at("PostToolUse", workflowCall(script)), NO_ENV, where, "/tmp/app")).toEqual(
+      {},
+    );
+    expect(records(where).map((one) => one.reason)).toContain("fable:plan");
+    // A Workflow the guard allows outright is recorded on PreToolUse, and not again after it.
+    const quiet = paths();
+    const reviewOnly =
+      'await agent("review it", { label: "check", model: "opus", effort: "high", agentType: "Reviewer" });';
+    expect(
+      agentGuard(at("PreToolUse", workflowCall(reviewOnly)), NO_ENV, quiet, "/tmp/app"),
+    ).toEqual({});
+    expect(records(quiet).map((one) => one.reason)).toEqual(["review"]);
+    agentGuard(at("PostToolUse", workflowCall(reviewOnly)), NO_ENV, quiet, "/tmp/app");
+    expect(records(quiet)).toHaveLength(1);
+  });
+
+  it("HK hunch 3: guardFacts logs no verdict for a PostToolUse run", () => {
+    const where = paths();
+    const call = agentCall({ effort: "high", model: "opus", prompt: "Opus reason: ui - x" });
+    expect(guardFacts(at("PostToolUse", call), { env: NO_ENV, paths: where })).toEqual({
+      event: "PostToolUse",
+    });
+  });
+
+  it("HK hunch 2: `sonnet` whose override answers with Claude Opus is the opus tier", () => {
+    const env = { ANTHROPIC_DEFAULT_SONNET_MODEL: OPUS_ID };
+    expect(resolveLaunchModel("sonnet", NO_GATEWAY, env)).toEqual({
+      claude: true,
+      family: "opus",
+      model: OPUS_ID,
+      tier: "opus",
+    });
+    // It spends the person's Opus usage: the Opus rules hold.
+    const bare = verdict({ effort: "high", model: "sonnet", prompt: "build it" }, CTX, env);
+    expect(bare.decision).toBe("deny");
+    expect(bare.reason).toContain("This launch would run on Claude Opus.");
+    // A review on it is really Claude Opus: allowed, as on `opus`.
+    expect(
+      verdict({ effort: "high", model: "sonnet", prompt: "r", subagent_type: "Reviewer" }, CTX, env)
+        .decision,
+    ).toBe("allow");
+    // Haiku on Claude Fable is the fable tier: even a read-only type needs its reason line.
+    expect(
+      verdict({ effort: "high", model: "haiku", prompt: "r", subagent_type: "Reviewer" }, CTX, {
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-fable-5-1",
+      }).decision,
+    ).toBe("deny");
+    // A Claude Sonnet id, a backend, or an id the guard cannot read keeps the name's own tier.
+    for (const override of ["claude-sonnet-4-6", "openai:gpt-5.5", "us.vendor.some-model"]) {
+      expect(
+        resolveLaunchModel("sonnet", NO_GATEWAY, { ANTHROPIC_DEFAULT_SONNET_MODEL: override }).tier,
+      ).toBeNull();
+    }
+  });
+
+  it("HK hunch 2: `sonnet` whose worker chain starts with Claude Opus is the opus tier", () => {
+    const config = configWithModelSlot();
+    config.slots["cc-smart-dev-kit-worker"] = [OPUS_ID];
+    const on = { config, gatewayOn: true };
+    expect(resolveLaunchModel("sonnet", on, NO_ENV)).toEqual({
+      claude: true,
+      family: "opus",
+      model: OPUS_ID,
+      tier: "opus",
+    });
+    expect(
+      verdict(
+        { effort: "high", model: "sonnet", prompt: "build it" },
+        { ...on, sessionModel: null },
+      ).decision,
+    ).toBe("deny");
+    // `opus` stays the opus tier when its own slot answers with a Claude Sonnet: never lower.
+    config.slots["cc-smart-dev-kit-opus"] = ["claude-sonnet-5-5"];
+    expect(resolveLaunchModel("opus", on, NO_ENV).tier).toBe("opus");
   });
 });
