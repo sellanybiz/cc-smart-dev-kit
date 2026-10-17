@@ -1087,7 +1087,8 @@ describe("the actions", () => {
         env: Record<string, string>;
       };
       expect(settings.env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:20199");
-      expect(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("cc-smart-dev-kit-scout[1m]");
+      // No model is pinned: Claude Code sends each model's own id, the router finds its slot.
+      expect(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
       // And off removes exactly what on wrote.
       const off = await world.post("switch", { name: "gateway", on: false }, csrf);
       expect(JSON.parse(off.body).ok).toBe(true);
@@ -1137,6 +1138,87 @@ describe("the actions", () => {
         "omniroute:glm-5.3-flash",
         "claude-sonnet-5-5",
       ]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("opus saves a chain of one backend target, the CLI's own rule, as scout would", async () => {
+    // Seen live: a person added omniroute:ollama-cloud/glm-5.3-flash to the opus slot, and
+    // Save was refused ("start with the opus model itself").
+    const backend = fakeBackend(["ollama-cloud/glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      const saved = await world.post(
+        "slot.save",
+        { slot: "opus", targets: ["omniroute:ollama-cloud/glm-5.3-flash"] },
+        csrf,
+      );
+      const answer = JSON.parse(saved.body) as { lines: string[]; ok: boolean };
+      expect(answer.ok).toBe(true);
+      expect(answer.lines).toEqual([
+        "cc-smart-dev-kit-opus: (new)",
+        "  now: omniroute:ollama-cloud/glm-5.3-flash  (fallback off)",
+        "The router uses it from its next request.",
+      ]);
+      const config = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
+        modelSlots?: unknown;
+        slots: Record<string, string[]>;
+      };
+      expect(config.slots["cc-smart-dev-kit-opus"]).toEqual([
+        "omniroute:ollama-cloud/glm-5.3-flash",
+      ]);
+      expect(config.modelSlots).toBeUndefined();
+      // The slots page then shows it like any slot: no special first row, no plan-limit words.
+      const slots = await world.call("/slots");
+      expect(slots.body).not.toContain("the Claude model itself");
+      expect(slots.body).not.toContain("plan limit");
+      expect(PORTAL_JS).not.toContain("the Claude model itself");
+      expect(PORTAL_JS).toContain("kept, not used: this slot's fallback is off");
+      expect(PORTAL_JS).toContain("answers if the one above fails or rests");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("a slot's fallback switch: set through `gateway fallback`, its state on the Slots page", async () => {
+    const backend = fakeBackend(["glm-5.3-flash", "deepseek-v4.1-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      await world.enter();
+      const csrf = await world.csrfOf();
+      const saved = await world.post(
+        "slot.save",
+        { slot: "opus", targets: ["omniroute:glm-5.3-flash", "omniroute:deepseek-v4.1-flash"] },
+        csrf,
+      );
+      expect(JSON.parse(saved.body).ok).toBe(true);
+      // Off by default for opus: the page says so, and its switch turns it on.
+      const before = await world.call("/slots");
+      expect(before.body).toContain("&quot;opus&quot;:false");
+      expect(before.body).toContain('data-fallback-for="opus" hidden');
+      const on = await world.post("slot.fallback", { on: true, slot: "opus" }, csrf);
+      const answer = JSON.parse(on.body) as { lines: string[]; ok: boolean };
+      expect(answer.ok).toBe(true);
+      expect(answer.lines[0]).toBe("cc-smart-dev-kit-opus: fallback off → on");
+      const config = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
+        fallback?: Record<string, boolean>;
+      };
+      expect(config.fallback).toEqual({ "cc-smart-dev-kit-opus": true });
+      const after = await world.call("/slots");
+      expect(after.body).toContain("&quot;opus&quot;:true");
+      // A slot with no chain has nothing to fall back to: the CLI refuses it, in its words.
+      const refused = await world.post("slot.fallback", { on: true, slot: "fable" }, csrf);
+      expect(refused.status).toBe(400);
+      expect(JSON.parse(refused.body).lines.join("\n")).toContain(
+        "cc-smart-dev-kit-fable has no chain, so it has nothing to fall back to",
+      );
+      const bad = await world.post("slot.fallback", { on: "yes", slot: "opus" }, csrf);
+      expect(bad.status).toBe(400);
     } finally {
       world.portal.stop();
       backend.stop();
@@ -1380,7 +1462,11 @@ describe("the actions", () => {
       expect(page.body).toContain("3.8.51");
       expect(page.body).toContain("3.9.0");
       expect(page.body).toContain("Update to 3.9.0");
-      expect(page.body).toContain("Claude answers, on your own login");
+      // What the restart costs, with no hidden Claude step behind a slot.
+      expect(page.body).toContain(
+        "While it restarts, a request to an OmniRoute target fails: a slot with its fallback on moves to its next target, if it has one; any other slot answers with that error.",
+      );
+      expect(page.body).not.toContain("Claude answers, on your own login");
       // No unit runs it here: the card must not promise a restart and a check it cannot do.
       expect(page.body).toContain("No user unit runs OmniRoute here");
       expect(page.body).not.toContain("The update restarts");
@@ -1422,9 +1508,9 @@ describe("the actions", () => {
     }
   });
 
-  test("the fallback switch puts the opus chain back after Off, under the slot key", async () => {
+  test("the opus and fable switch puts the opus chain back after Off, under the slot key", async () => {
     // The bug, found by reading the code: `rememberChain` stored the chain under the family
-    // ("opus") and `switchFallback` read it under the slot key ("cc-smart-dev-kit-opus"), so
+    // ("opus") and the switch read it under the slot key ("cc-smart-dev-kit-opus"), so
     // Off then On turned nothing on — and answered ok: true about it.
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
@@ -1444,14 +1530,14 @@ describe("the actions", () => {
         "claude-opus-5-5",
         "omniroute:glm-5.3-flash",
       ]);
-      const off = await world.post("switch", { name: "fallback", on: false }, csrf);
+      const off = await world.post("switch", { name: "models", on: false }, csrf);
       expect(JSON.parse(off.body).ok).toBe(true);
       const gone = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
         slots: Record<string, string[]>;
       };
       expect(gone.slots["cc-smart-dev-kit-opus"]).toBeUndefined();
       // On puts exactly that chain back.
-      const again = await world.post("switch", { name: "fallback", on: true }, csrf);
+      const again = await world.post("switch", { name: "models", on: true }, csrf);
       const answer = JSON.parse(again.body) as { lines: string[]; ok: boolean };
       expect(answer.ok).toBe(true);
       const back = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
@@ -1469,13 +1555,13 @@ describe("the actions", () => {
     }
   });
 
-  test("the fallback switch is off, and says so, when nothing was turned on", async () => {
+  test("the opus and fable switch is off, and says so, when nothing was turned on", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
       await world.enter();
       const csrf = await world.csrfOf();
-      const answer = await world.post("switch", { name: "fallback", on: true }, csrf);
+      const answer = await world.post("switch", { name: "models", on: true }, csrf);
       expect(answer.status).toBe(400);
       const body = JSON.parse(answer.body) as { lines: string[]; ok: boolean };
       expect(body.ok).toBe(false);

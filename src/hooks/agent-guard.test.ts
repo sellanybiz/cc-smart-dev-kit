@@ -32,7 +32,10 @@ import type { HookInput } from "./io";
 const NO_ENV = {} as Record<string, string | undefined>;
 const OPUS_ID = "claude-opus-5-5";
 
-/** A gateway config with an Opus model slot (its first target is the model itself). */
+/**
+ * A gateway config whose opus chain starts with Claude Opus, and whose worker chain starts with
+ * a backend. (Its 0.4.x `modelSlots` entry still loads; the router reaches a slot by family.)
+ */
 function configWithModelSlot(): GatewayConfig {
   return {
     aliases: {},
@@ -55,6 +58,12 @@ function agentCall(fields: Record<string, unknown>, tool = "Agent"): HookInput {
 }
 
 const CTX: GuardContext = { config: null, gatewayOn: false, sessionModel: null };
+
+/** The config above, with Claude Code's settings pointing at the router. */
+const ON_SLOTS = { config: configWithModelSlot(), gatewayOn: true };
+
+/** No gateway config, and Claude Code's settings not pointing at one. */
+const NO_GATEWAY = { config: null, gatewayOn: false };
 
 /** A Workflow tool call, as Claude Code builds one. */
 function workflowCall(script: string): HookInput {
@@ -79,20 +88,20 @@ function verdict(fields: Record<string, unknown>, ctx: GuardContext = CTX, env =
 
 describe("which model a launch runs on", () => {
   it("a family name with no override and no gateway: the family itself, and its tier", () => {
-    expect(resolveLaunchModel("opus", null, NO_ENV)).toEqual({
+    expect(resolveLaunchModel("opus", NO_GATEWAY, NO_ENV)).toEqual({
       claude: true,
       family: "opus",
       model: "opus",
       tier: "opus",
     });
-    expect(resolveLaunchModel("fable", null, NO_ENV)).toEqual({
+    expect(resolveLaunchModel("fable", NO_GATEWAY, NO_ENV)).toEqual({
       claude: true,
       family: "fable",
       model: "fable",
       tier: "fable",
     });
     // Haiku and Sonnet have no premium tier.
-    expect(resolveLaunchModel("sonnet", null, NO_ENV)).toEqual({
+    expect(resolveLaunchModel("sonnet", NO_GATEWAY, NO_ENV)).toEqual({
       claude: true,
       family: "sonnet",
       model: "sonnet",
@@ -102,10 +111,12 @@ describe("which model a launch runs on", () => {
 
   it("Claude Code's env override wins: ANTHROPIC_DEFAULT_OPUS_MODEL (fable has one too)", () => {
     expect(
-      resolveLaunchModel("opus", null, { ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-8" }),
+      resolveLaunchModel("opus", NO_GATEWAY, { ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-8" }),
     ).toEqual({ claude: true, family: "opus", model: "claude-opus-4-8", tier: "opus" });
     expect(
-      resolveLaunchModel("fable", null, { ANTHROPIC_DEFAULT_FABLE_MODEL: "claude-fable-5-1" }),
+      resolveLaunchModel("fable", NO_GATEWAY, {
+        ANTHROPIC_DEFAULT_FABLE_MODEL: "claude-fable-5-1",
+      }),
     ).toEqual({ claude: true, family: "fable", model: "claude-fable-5-1", tier: "fable" });
   });
 
@@ -113,21 +124,21 @@ describe("which model a launch runs on", () => {
     // `opus` is the tier even when a backend answers it: never affordable, never forced to max,
     // and the family the messages and the record read stays the tier's own.
     expect(
-      resolveLaunchModel("opus", null, { ANTHROPIC_DEFAULT_OPUS_MODEL: "openai:gpt-5.5" }),
+      resolveLaunchModel("opus", NO_GATEWAY, { ANTHROPIC_DEFAULT_OPUS_MODEL: "openai:gpt-5.5" }),
     ).toEqual({ claude: false, family: "opus", model: "openai:gpt-5.5", tier: "opus" });
     expect(
-      resolveLaunchModel("fable", null, { ANTHROPIC_DEFAULT_FABLE_MODEL: "openai:gpt-5.5" }),
+      resolveLaunchModel("fable", NO_GATEWAY, { ANTHROPIC_DEFAULT_FABLE_MODEL: "openai:gpt-5.5" }),
     ).toEqual({ claude: false, family: "fable", model: "openai:gpt-5.5", tier: "fable" });
     // The id an override names is that tier wherever it appears, the session's model included.
     const env = { ANTHROPIC_DEFAULT_FABLE_MODEL: "openai:gpt-5.5" };
-    expect(resolveLaunchModel("openai:gpt-5.5", null, env)).toEqual({
+    expect(resolveLaunchModel("openai:gpt-5.5", NO_GATEWAY, env)).toEqual({
       claude: false,
       family: null,
       model: "openai:gpt-5.5",
       tier: "fable",
     });
     // An id no override names keeps being an affordable target.
-    expect(resolveLaunchModel("openai:gpt-5.5", null, NO_ENV)).toEqual({
+    expect(resolveLaunchModel("openai:gpt-5.5", NO_GATEWAY, NO_ENV)).toEqual({
       claude: false,
       family: null,
       model: "openai:gpt-5.5",
@@ -135,38 +146,49 @@ describe("which model a launch runs on", () => {
     });
   });
 
-  it("the gateway's model slot for the family: its first target answers (the model itself)", () => {
-    expect(resolveLaunchModel("opus", configWithModelSlot(), NO_ENV)).toEqual({
+  it("with the gateway on, the family's slot answers: its chain's first target", () => {
+    expect(resolveLaunchModel("opus", ON_SLOTS, NO_ENV)).toEqual({
       claude: true,
       family: "opus",
       model: OPUS_ID,
       tier: "opus",
     });
-    // A full id that has a model slot keeps the Claude model first, the same way.
-    expect(resolveLaunchModel(OPUS_ID, configWithModelSlot(), NO_ENV)).toEqual({
+    // A full id reaches its family's slot the same way.
+    expect(resolveLaunchModel(OPUS_ID, ON_SLOTS, NO_ENV)).toEqual({
       claude: true,
       family: "opus",
       model: OPUS_ID,
       tier: "opus",
     });
     // A model slot's own key is its family's tier too.
-    expect(resolveLaunchModel("cc-smart-dev-kit-opus", configWithModelSlot(), NO_ENV)).toEqual({
+    expect(resolveLaunchModel("cc-smart-dev-kit-opus", ON_SLOTS, NO_ENV)).toEqual({
       claude: true,
       family: "opus",
       model: OPUS_ID,
       tier: "opus",
     });
+    // Sonnet's slot is the worker: its chain starts with a backend, so a backend answers, and
+    // the launch keeps its family.
+    expect(resolveLaunchModel("sonnet", ON_SLOTS, NO_ENV)).toEqual({
+      claude: false,
+      family: "sonnet",
+      model: "omniroute:glm-5.3-flash",
+      tier: null,
+    });
+    // The same config with the gateway off: nothing reaches the router, Claude Sonnet answers.
+    expect(
+      resolveLaunchModel("sonnet", { config: configWithModelSlot(), gatewayOn: false }, NO_ENV),
+    ).toEqual({ claude: true, family: "sonnet", model: "sonnet", tier: null });
   });
 
   it("a slot key and a backend target are affordable; a name nobody knows is not", () => {
-    const config = configWithModelSlot();
-    expect(resolveLaunchModel("cc-smart-dev-kit-worker", config, NO_ENV)).toEqual({
+    expect(resolveLaunchModel("cc-smart-dev-kit-worker", ON_SLOTS, NO_ENV)).toEqual({
       claude: false,
       family: null,
       model: "omniroute:glm-5.3-flash",
       tier: null,
     });
-    expect(resolveLaunchModel("omniroute:glm-5.3-flash", config, NO_ENV)).toEqual({
+    expect(resolveLaunchModel("omniroute:glm-5.3-flash", ON_SLOTS, NO_ENV)).toEqual({
       claude: false,
       family: null,
       model: "omniroute:glm-5.3-flash",
@@ -174,7 +196,7 @@ describe("which model a launch runs on", () => {
     });
     // A name no rule knows is never read as an affordable slot: the strictest rule answers, and
     // that rule is the `opus` tier.
-    expect(resolveLaunchModel("some-custom-model", config, NO_ENV)).toEqual({
+    expect(resolveLaunchModel("some-custom-model", ON_SLOTS, NO_ENV)).toEqual({
       claude: true,
       family: null,
       model: "some-custom-model",
@@ -183,7 +205,7 @@ describe("which model a launch runs on", () => {
   });
 
   it("a claude-… id is Claude even with no config; the [1m] suffix is dropped first", () => {
-    expect(resolveLaunchModel("claude-sonnet-5-5[1m]", null, NO_ENV)).toEqual({
+    expect(resolveLaunchModel("claude-sonnet-5-5[1m]", NO_GATEWAY, NO_ENV)).toEqual({
       claude: true,
       family: "sonnet",
       model: "claude-sonnet-5-5",
@@ -1251,5 +1273,128 @@ describe("the hook's answer, and the record", () => {
     );
     expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 2)).toEqual([]);
     expect(readFileSync(agentLaunchesFile(where.stateDir), "utf8")).toContain("fable:plan");
+  });
+});
+
+describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's settings)", () => {
+  // The machine as the hook reads it: `gateway.json` through the gateway's own reader, and
+  // Claude Code's settings for `ANTHROPIC_BASE_URL`. No `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` and
+  // no `modelSlots` anywhere: the router sends a Claude model to its family's slot by itself.
+  function machine(slots: Record<string, string[]>, gatewayOn: boolean): CliPaths {
+    const home = tempDir("guard-family");
+    const where = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    mkdirSync(join(where.gatewayConfigFile, ".."), { recursive: true });
+    writeFileSync(
+      where.gatewayConfigFile,
+      JSON.stringify({
+        backends: { omniroute: { apiKey: "k", baseUrl: "http://127.0.0.1:9" } },
+        slots,
+        version: 1,
+      }),
+      { mode: 0o600 },
+    );
+    mkdirSync(join(where.settingsFile, ".."), { recursive: true });
+    writeFileSync(
+      where.settingsFile,
+      JSON.stringify(gatewayOn ? { env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:39999" } } : {}),
+    );
+    mkdirSync(where.stateDir, { recursive: true });
+    return where;
+  }
+
+  /** The hook's PreToolUse answer for one Agent call; null when it stays silent (allowed). */
+  function answer(where: CliPaths, fields: Record<string, unknown>) {
+    const result = agentGuard(agentCall(fields), NO_ENV, where, "/tmp/app");
+    if (result.stdout === undefined || result.stdout === "") return null;
+    const output = JSON.parse(result.stdout).hookSpecificOutput;
+    return {
+      decision: output.permissionDecision as string,
+      reason: output.permissionDecisionReason as string,
+    };
+  }
+
+  const WORKER_ON_BACKEND = { "cc-smart-dev-kit-worker": ["omniroute:glm-x"] };
+
+  it("a sonnet launch on a worker chain that starts with a backend is affordable: effort max", () => {
+    const where = machine(WORKER_ON_BACKEND, true);
+    expect(answer(where, { effort: "high", model: "sonnet", prompt: "build it" })).toEqual({
+      decision: "deny",
+      reason: [
+        "This launch runs on omniroute:glm-x, an affordable gateway slot.",
+        'An affordable slot runs at effort `max` (its reasoning costs cents): pass `effort: "max"`.',
+      ].join("\n"),
+    });
+    expect(answer(where, { effort: "max", model: "sonnet", prompt: "build it" })).toBeNull();
+    // The full id goes to the same slot: the router reads the family, not the exact id.
+    expect(
+      answer(where, { effort: "xhigh", model: "claude-sonnet-9-9", prompt: "build it" })?.decision,
+    ).toBe("deny");
+    // Haiku's slot is the scout: with no scout chain, a haiku launch is Claude Haiku.
+    expect(answer(where, { effort: "high", model: "haiku", prompt: "search" })).toBeNull();
+  });
+
+  it("no worker chain, a chain that starts with Claude, or the gateway off: Claude Sonnet", () => {
+    for (const where of [
+      machine({ "cc-smart-dev-kit-scout": ["omniroute:glm-x"] }, true),
+      machine({ "cc-smart-dev-kit-worker": ["claude-sonnet-5-5", "omniroute:glm-x"] }, true),
+      machine(WORKER_ON_BACKEND, false),
+    ]) {
+      expect(answer(where, { effort: "high", model: "sonnet", prompt: "build it" })).toBeNull();
+    }
+    // With the gateway off nothing reaches the router: an opus chain there answers nothing, and
+    // the launch is named for the Claude model that runs it.
+    const off = machine({ "cc-smart-dev-kit-opus": ["omniroute:glm-x"] }, false);
+    expect(answer(off, { effort: "high", model: "opus", prompt: "do it" })?.reason).toContain(
+      "This launch would run on Claude Opus.",
+    );
+  });
+
+  it("opus and fable keep their gates by name when their slot starts with a backend", () => {
+    const where = machine(
+      {
+        "cc-smart-dev-kit-fable": ["omniroute:glm-x"],
+        "cc-smart-dev-kit-opus": ["omniroute:glm-x"],
+      },
+      true,
+    );
+    // Never affordable, never forced to `max`: the Opus rule, naming what answers it.
+    const bare = answer(where, { effort: "max", model: "opus", prompt: "do it" });
+    expect(bare?.decision).toBe("deny");
+    expect(bare?.reason).toContain(
+      "This launch would run on `opus` (answered by omniroute:glm-x).",
+    );
+    expect(bare?.reason).toContain("Opus reason: <security|money|");
+    expect(bare?.reason).not.toContain("affordable");
+    // A review on the tier at xhigh: allowed with no question, as before.
+    expect(
+      answer(where, { effort: "xhigh", model: "opus", prompt: "r", subagent_type: "Reviewer" }),
+    ).toBeNull();
+    const asked = answer(where, {
+      effort: "high",
+      model: "opus",
+      prompt: "Opus reason: debugging - it is",
+    });
+    expect(asked?.decision).toBe("ask");
+    expect(asked?.reason).toContain(
+      "`opus` (answered by omniroute:glm-x) launch: not a review, at effort `high`",
+    );
+    // Fable: a read-only agent with its reason asks, naming what answers it; a builder without
+    // the word `build` is refused.
+    const advice = answer(where, {
+      effort: "high",
+      model: "fable",
+      prompt: "Fable reason: plan - yes",
+      subagent_type: "Plan",
+    });
+    expect(advice?.decision).toBe("ask");
+    expect(advice?.reason).toContain("`fable` (answered by omniroute:glm-x) launch: a read-only");
+    expect(
+      answer(where, { effort: "max", model: "fable", prompt: "do it", subagent_type: "x" })
+        ?.decision,
+    ).toBe("deny");
+    // The record names the tier and the model that answered it.
+    const [record] = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
+    expect(record?.family).toBe("opus");
+    expect(record?.model).toBe("omniroute:glm-x");
   });
 });

@@ -638,12 +638,11 @@ describe("migrate — the real 0.2.1 machine", () => {
       "cc-smart-dev-kit-worker",
     ]);
 
-    // The four settings keys the old setup owned now hold this version's value.
+    // The settings keys the old setup owned: the ones this version writes hold its value,
+    // and its model keys, which it no longer writes (0.5.0), are gone.
     const settings = readJson(m.settingsFile);
-    expect(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("cc-smart-dev-kit-scout[1m]");
-    expect(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION).toBe(
-      gatewayEnv(PORT).ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION,
-    );
+    expect(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
+    expect(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION).toBeUndefined();
     expect(settings.model).toBe("opus");
 
     // No instructions block was there, and none was added: that is `setup`'s job, and the
@@ -813,9 +812,10 @@ describe("migrate — the real 0.2.1 machine", () => {
     const after = readJson(m.settingsFile).env;
     expect(after.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-5-5");
     expect(after.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
-    expect(after.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION).toBe(
-      gatewayEnv(PORT).ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION,
-    );
+    // Theirs: they changed it to an empty text.
+    expect(after.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION).toBe("");
+    // Still the old setup's: a model key this version no longer writes, so it goes.
+    expect(after.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION).toBeUndefined();
   });
 
   test("a path of the person's own that carries the old word is not renamed", async () => {

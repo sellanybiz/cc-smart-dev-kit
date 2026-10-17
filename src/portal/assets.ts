@@ -976,6 +976,8 @@ export const PORTAL_JS = `(function () {
     try { chains = JSON.parse(slotsRoot.getAttribute("data-chains") || "{}"); } catch (error) { chains = {}; }
     var tested = {};
     try { tested = JSON.parse(slotsRoot.getAttribute("data-tested") || "{}"); } catch (error) { tested = {}; }
+    var fallback = {};
+    try { fallback = JSON.parse(slotsRoot.getAttribute("data-fallback") || "{}"); } catch (error) { fallback = {}; }
 
     var chainOf = function () { return (chains[slot] || []).slice(); };
     var chainList = slotsRoot.querySelector("[data-chain]");
@@ -1000,7 +1002,7 @@ export const PORTAL_JS = `(function () {
         var who = document.createElement("span"); who.className = "who";
         var id = document.createElement("span"); id.className = "mono wrap-any"; id.textContent = target;
         var role = document.createElement("span"); role.className = "small muted";
-        role.textContent = roleOf(index, chain.length);
+        role.textContent = roleOf(index);
         who.appendChild(id); who.appendChild(role);
         var what = document.createElement("span"); what.className = "what";
         var state = tested[slot + "\\u0000" + target];
@@ -1046,11 +1048,13 @@ export const PORTAL_JS = `(function () {
       });
     };
 
-    var roleOf = function (index, length) {
-      if (index === 0) return slot === "opus" || slot === "fable" ? "the Claude model itself, always first" : "answers first";
-      if (slot === "opus" || slot === "fable") return "answers only at the plan limit, until the reset";
-      if (index === length - 1) return "answers if the one above fails or rests";
-      return "answers if the one above fails or rests";
+    // The same rule for every slot: the first answers; the rest only while the slot's own
+    // fallback switch is on, the command line's "gateway fallback".
+    var roleOf = function (index) {
+      if (index === 0) return "answers first";
+      return fallback[slot] === true
+        ? "answers if the one above fails or rests"
+        : "kept, not used: this slot's fallback is off";
     };
 
     // The command line's own judge rule: a claude-... target in the judge slot is allowed and
@@ -1077,6 +1081,9 @@ export const PORTAL_JS = `(function () {
         if (info) info.textContent = button.getAttribute("data-info") || "";
         var judgeNote = slotsRoot.querySelector("[data-judge-note]");
         if (judgeNote) judgeNote.hidden = slot !== "judge";
+        Array.prototype.forEach.call(slotsRoot.querySelectorAll("[data-fallback-for]"), function (row) {
+          row.hidden = row.getAttribute("data-fallback-for") !== slot;
+        });
         draw();
       });
     });

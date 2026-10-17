@@ -1141,6 +1141,7 @@ function datetime(args) {
 var anyString = /^[\s\S]{0,}$/;
 var integer = /^-?\d+$/;
 var number = /^-?\d+(?:\.\d+)?$/;
+var boolean = /^(?:true|false)$/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
@@ -2021,6 +2022,26 @@ var $ZodNumber = /* @__PURE__ */ $constructor("$ZodNumber", (inst, def) => {
 var $ZodNumberFormat = /* @__PURE__ */ $constructor("$ZodNumberFormat", (inst, def) => {
   $ZodCheckNumberFormat.init(inst, def);
   $ZodNumber.init(inst, def);
+});
+var $ZodBoolean = /* @__PURE__ */ $constructor("$ZodBoolean", (inst, def) => {
+  $ZodType.init(inst, def);
+  inst._zod.pattern = boolean;
+  inst._zod.parse = (payload, _ctx) => {
+    if (def.coerce)
+      try {
+        payload.value = Boolean(payload.value);
+      } catch (_) {}
+    const input = payload.value;
+    if (typeof input === "boolean")
+      return payload;
+    payload.issues.push({
+      expected: "boolean",
+      code: "invalid_type",
+      input,
+      inst
+    });
+    return payload;
+  };
 });
 var $ZodUnknown = /* @__PURE__ */ $constructor("$ZodUnknown", (inst, def) => {
   $ZodType.init(inst, def);
@@ -3738,6 +3759,12 @@ function _int(Class, params) {
     ...normalizeParams(params)
   });
 }
+function _boolean(Class, params) {
+  return new Class({
+    type: "boolean",
+    ...normalizeParams(params)
+  });
+}
 function _unknown(Class) {
   return new Class({
     type: "unknown"
@@ -4619,6 +4646,9 @@ var numberProcessor = (schema, ctx, _json, params) => {
     if (rest.length)
       json.allOf = [...json.allOf ?? [], ...rest.map((m) => ({ multipleOf: m }))];
   }
+};
+var booleanProcessor = (_schema, _ctx, json, _params) => {
+  json.type = "boolean";
 };
 var neverProcessor = (_schema, _ctx, json, _params) => {
   json.not = {};
@@ -5522,6 +5552,14 @@ var ZodNumberFormat = /* @__PURE__ */ $constructor("ZodNumberFormat", (inst, def
 function int(params) {
   return _int(ZodNumberFormat, params);
 }
+var ZodBoolean = /* @__PURE__ */ $constructor("ZodBoolean", (inst, def) => {
+  $ZodBoolean.init(inst, def);
+  ZodType.init(inst, def);
+  inst._zod.processJSONSchema = (ctx, json, params) => booleanProcessor(inst, ctx, json, params);
+});
+function boolean2(params) {
+  return _boolean(ZodBoolean, params);
+}
 var ZodUnknown = /* @__PURE__ */ $constructor("ZodUnknown", (inst, def) => {
   $ZodUnknown.init(inst, def);
   ZodType.init(inst, def);
@@ -6026,15 +6064,33 @@ var MODEL_SLOTS = {
   "cc-smart-dev-kit-fable": "fable",
   "cc-smart-dev-kit-opus": "opus"
 };
-function modelSlotFor(model, modelSlots) {
-  if (typeof model !== "string" || !model.startsWith("claude-") || modelSlots === undefined) {
+var CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"];
+var FAMILY_SLOTS = {
+  "cc-smart-dev-kit-scout": "haiku",
+  "cc-smart-dev-kit-worker": "sonnet",
+  ...MODEL_SLOTS
+};
+function claudeFamily(model) {
+  const name = `${withoutContextSuffix(model).toLowerCase()}-`;
+  if (!name.startsWith("claude-"))
     return null;
-  }
-  const name = withoutContextSuffix(model);
-  if (!Object.hasOwn(modelSlots, name))
+  return CLAUDE_FAMILIES.find((family) => name.includes(`-${family}-`)) ?? null;
+}
+function familySlotKey(family) {
+  return Object.keys(FAMILY_SLOTS).find((key) => FAMILY_SLOTS[key] === family) ?? null;
+}
+function familySlotFor(model) {
+  if (typeof model !== "string")
     return null;
-  const slot = modelSlots[name];
-  return slot === undefined ? null : { model: name, slot };
+  const family = claudeFamily(model);
+  if (family === null)
+    return null;
+  const slot = familySlotKey(family);
+  return slot === null ? null : { model: withoutContextSuffix(model), slot };
+}
+var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS), JUDGE_SLOT];
+function targetsInUse(targets, fallback) {
+  return fallback ? [...targets] : targets.slice(0, 1);
 }
 function planUsageLimit(status, header) {
   if (status !== 429)
@@ -6078,8 +6134,7 @@ function cooldownSeconds(status, retryAfter) {
 var DEFAULT_PORT = 20100;
 var DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 var DEFAULT_FIRST_BYTE_MS = 60000;
-var FALLBACK_SLOT_TARGET = "claude-sonnet-5-5";
-var NO_CONFIG_MEANS = `every haiku / sonnet call answers on ${FALLBACK_SLOT_TARGET} (your own Claude login) until it is fixed`;
+var NO_CONFIG_MEANS = "every slot is off: each Claude model goes to Anthropic as Claude Code sent it (your own Claude login) until it is fixed";
 var baseUrl = url({ protocol: /^https?$/ }).transform((url2) => url2.replace(/\/+$/, ""));
 var backendSchema = looseObject({
   apiKey: string2().min(1),
@@ -6090,6 +6145,7 @@ var gatewayConfigSchema = looseObject({
   anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
   backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
   judgeTested: record(string2(), string2()).optional(),
+  fallback: record(string2(), boolean2()).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
   slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),
@@ -6127,6 +6183,15 @@ var gatewayConfigSchema = looseObject({
       ctx.addIssue({ code: "custom", message: error, path: ["modelSlots", model] });
     }
   }
+  for (const slot of Object.keys(config.fallback ?? {})) {
+    if (!Object.hasOwn(config.slots, slot)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `fallback names slot "${slot}", which is not in slots (a slot with no chain has nothing to fall back to)`,
+        path: ["fallback", slot]
+      });
+    }
+  }
 });
 function modelSlotError(model, slot, slots) {
   if (!model.startsWith("claude-") || /\s/.test(model) || model === "claude-") {
@@ -6139,19 +6204,21 @@ function modelSlotError(model, slot, slots) {
   if (family === undefined) {
     return `modelSlots "${model}" points at "${slot}", which is not a model slot (${Object.keys(MODEL_SLOTS).sort().join(", ")})`;
   }
-  if (!model.includes(`-${family}-`)) {
+  if (claudeFamily(model) !== family) {
     return `modelSlots "${model}" points at ${slot}, which is for ${family} models`;
   }
-  const targets = Object.hasOwn(slots, slot) ? slots[slot] : undefined;
-  if (targets === undefined)
+  if (!Object.hasOwn(slots, slot)) {
     return `modelSlots "${model}" points at slot "${slot}", which is not in slots`;
-  if (targets[0] !== model) {
-    return `slot ${slot} must start with "${model}" itself: that target is the model, sent unchanged`;
-  }
-  if (targets.length < 2) {
-    return `slot ${slot} names no target after "${model}" to answer at its usage limit`;
   }
   return null;
+}
+function fallbackOn(config, slot) {
+  const set = config.fallback;
+  if (set !== undefined && Object.hasOwn(set, slot))
+    return set[slot] === true;
+  if (Object.values(config.modelSlots ?? {}).includes(slot))
+    return true;
+  return !FALLBACK_OFF_BY_DEFAULT.includes(slot);
 }
 function aliasError(name, to, config) {
   if (name.trim() === "" || /\s/.test(name))
@@ -6178,7 +6245,7 @@ function aliasError(name, to, config) {
   }
   return null;
 }
-var JUDGE_TEST_VERSION = 2;
+var JUDGE_TEST_VERSION = 3;
 function judgeTestProof(target, backendUrl) {
   return createHash("sha256").update(`cc-smart-dev-kit judge test ${JUDGE_TEST_VERSION}
 ${target}
@@ -6231,10 +6298,7 @@ function emptyConfig() {
     anthropicBaseUrl: DEFAULT_ANTHROPIC_BASE_URL,
     backends: {},
     port: DEFAULT_PORT,
-    slots: {
-      "cc-smart-dev-kit-scout": [FALLBACK_SLOT_TARGET],
-      "cc-smart-dev-kit-worker": [FALLBACK_SLOT_TARGET]
-    },
+    slots: {},
     timeouts: { firstByteMs: DEFAULT_FIRST_BYTE_MS },
     version: 1
   };
@@ -6602,6 +6666,14 @@ function formatLimitState(state) {
   return `${JSON.stringify(state, null, 2)}
 `;
 }
+function current(resetsAt, lastMs, nowMs) {
+  if (resetsAt !== null)
+    return resetsAt * 1000 > nowMs;
+  return nowMs - lastMs < NO_RESET_FRESH_MS;
+}
+function currentLimits(state, nowMs) {
+  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
 
 // src/gateway/listen.ts
 import { mkdtempSync, rmSync } from "fs";
@@ -6915,7 +6987,6 @@ function checkUsageFromAnswer(text, streaming) {
 
 // src/gateway/router.ts
 var FALLBACK_SAVE_EVERY_MS = 60000;
-var LIMIT_REST_MIN_SEC = 60;
 var TOO_LONG = /context|too long|too large|too many tokens|token limit|payload/i;
 var UNSUPPORTED = /unsupported|not supported|unknown (?:content|block|type)|invalid (?:content|block) type|image|document|server_tool|web_search|web_fetch|tool_reference/i;
 var BAD_SIGNATURE = "Invalid `signature`";
@@ -7170,13 +7241,13 @@ function reasoningOffForBackend(body, options = {}) {
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
 }
 var CLAUDE_TARGET_RULES = {
-  "claude-opus-5-5": { thinkingOff: "left out" },
-  "claude-sonnet-5-5": { thinkingOff: "between_tools" }
+  opus: { thinkingOff: "left out" },
+  sonnet: { thinkingOff: "between_tools" }
 };
 var ABOVE_HIGH = new Set(["max", "xhigh"]);
 function requestForClaudeFallback(body, model) {
-  const id = withoutContextSuffix(model);
-  const rules = Object.hasOwn(CLAUDE_TARGET_RULES, id) ? CLAUDE_TARGET_RULES[id] : undefined;
+  const family = claudeFamily(model);
+  const rules = family === null ? undefined : CLAUDE_TARGET_RULES[family];
   if (rules === undefined)
     return { body, changes: [] };
   const out = { ...body };
@@ -7241,6 +7312,9 @@ function deadline(ms) {
   });
   return { clear: () => clearTimeout(timer), done };
 }
+function sameModel(a, b) {
+  return withoutContextSuffix(a) === withoutContextSuffix(b);
+}
 var CHECK_USAGE_MAX_BYTES = 256 * 1024;
 function stateWriter(deps, what, save) {
   if (save === undefined)
@@ -7283,7 +7357,6 @@ function createRouter(deps) {
   const translationsLogged = new Set;
   const limitState = emptyLimitState();
   const safetyChecks = loadedSafetyChecks();
-  const limitedUntil = new Map;
   const fellBack = new Set;
   const untestedLogged = new Set;
   const cleanedLogged = new Set;
@@ -7329,12 +7402,11 @@ function createRouter(deps) {
       return null;
     delete limitState.limits[id];
     for (const [slot, record] of Object.entries(limitState.fallbacks)) {
-      if (record.model !== id || slot === JUDGE_SLOT)
+      if (record.model !== id)
         continue;
       delete limitState.fallbacks[slot];
       deps.log(`${slot}: ${id} answers again; its fallback is over`);
     }
-    limitedUntil.delete(id);
     persist();
     return null;
   }
@@ -7369,12 +7441,9 @@ function createRouter(deps) {
     if (config === checkedConfig)
       return;
     checkedConfig = config;
-    const inUse = new Set(Object.values(config.modelSlots ?? {}));
-    if (judgeTargetsOf(config, false).length > 0)
-      inUse.add(JUDGE_SLOT);
     let changed = false;
     for (const slot of Object.keys(limitState.fallbacks)) {
-      if (inUse.has(slot))
+      if (Object.hasOwn(config.slots, slot) && fallbackOn(config, slot))
         continue;
       delete limitState.fallbacks[slot];
       deps.log(`${slot}: removed from the config; its fallback record is dropped`);
@@ -7383,15 +7452,15 @@ function createRouter(deps) {
     if (changed)
       persist();
   }
-  function judgeTargetsOf(config, warn) {
+  function judgeTargetsOf(config) {
     const judge = resolveRoute(JUDGE_SLOT, config);
     if (judge.kind !== "slot")
       return [];
-    return judge.targets.filter((target) => {
+    return targetsInUse(judge.targets, fallbackOn(config, JUDGE_SLOT)).filter((target) => {
       const text = formatTarget(target);
       if (judgeTargetTested(config, text))
         return true;
-      if (warn && !untestedLogged.has(text)) {
+      if (!untestedLogged.has(text)) {
         untestedLogged.add(text);
         deps.log(`WARN ${JUDGE_SLOT}: ${text} has not passed the judge test, so it judges nothing. Test and set it: ${COMMAND} gateway slot judge <targets>`);
       }
@@ -7400,6 +7469,16 @@ function createRouter(deps) {
   }
   function hadFallback(model) {
     return fellBack.has(model);
+  }
+  function signatureWarn(model, status) {
+    const id = withoutContextSuffix(model);
+    if (status !== 400 || !hadFallback(id))
+      return;
+    return (snippet) => {
+      if (!snippet.includes(BAD_SIGNATURE))
+        return;
+      deps.log(`WARN ${id} refused a thinking block's signature: this conversation holds a thinking block another model wrote for ${id}. Claude Code 2.1.300 sent the request once more and was answered (seen live); if the session stays stuck, /rewind in Claude Code to the message before the other model answered, or start a new session`);
+    };
   }
   async function discard(response) {
     try {
@@ -7584,7 +7663,10 @@ function createRouter(deps) {
     }
     return fitted.body;
   }
-  function targetUpstream(req, url, config, body, target, guard) {
+  function targetUpstream(req, url, config, body, target, guard, asked) {
+    if (target.kind === "anthropic" && asked !== null && sameModel(target.model, asked.model)) {
+      return { upstream: anthropicUpstream(req, url, config, asked.sent) };
+    }
     if (target.kind === "anthropic") {
       const bytes = encoder.encode(JSON.stringify({ ...fitForClaude(body, target.model, guard), model: target.model }));
       return { upstream: anthropicUpstream(req, url, config, bytes) };
@@ -7630,17 +7712,6 @@ function createRouter(deps) {
     }
     return out;
   }
-  function limitedNow() {
-    const now = deps.now();
-    const out = {};
-    for (const [model, until] of limitedUntil) {
-      if (until <= now)
-        limitedUntil.delete(model);
-      else
-        out[model] = Math.ceil((until - now) / 1000);
-    }
-    return out;
-  }
   function closed(result, label) {
     if ("response" in result)
       discard(result.response);
@@ -7651,7 +7722,8 @@ function createRouter(deps) {
       target: label
     };
   }
-  async function chain(req, url, config, body, targets, name, guard, standsInFor = null) {
+  async function chain(req, url, config, body, targets, name, guard, asked = null) {
+    const standsInFor = asked?.model ?? null;
     const failures = [];
     let fallbacks = 0;
     let skipped = 0;
@@ -7665,7 +7737,7 @@ function createRouter(deps) {
         continue;
       }
       const deadlineAt = !last && target.kind === "backend" && (body.stream === true || guard) ? deps.now() + config.timeouts.firstByteMs : null;
-      const built = targetUpstream(req, url, config, body, target, guard);
+      const built = targetUpstream(req, url, config, body, target, guard, asked);
       let result = "error" in built ? { failure: built.error, status: null } : await send(req, built.upstream, deadlineAt);
       if (req.signal.aborted)
         return closed(result, label);
@@ -7677,7 +7749,8 @@ function createRouter(deps) {
         if (req.signal.aborted)
           return closed(result, label);
       }
-      noteCooldown(label, result);
+      if (url.pathname === MESSAGES_PATH)
+        noteCooldown(label, result);
       if ("failure" in result) {
         failures.push(`${label}: ${result.failure}`);
         if (!last) {
@@ -7699,11 +7772,11 @@ function createRouter(deps) {
           };
         }
         if (status >= 400) {
-          logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN ${label} answered ${status}; returned as it is`, standsInFor === null || status !== 400 && status !== 413 ? undefined : (snippet) => {
+          logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN ${label} answered ${status}; returned as it is`, target.kind === "anthropic" ? signatureWarn(target.model, status) : standsInFor === null || status !== 400 && status !== 413 ? undefined : (snippet) => {
             const kind = TOO_LONG.test(snippet) ? "too long" : UNSUPPORTED.test(snippet) ? "a kind of content it does not take" : null;
             if (kind === null)
               return;
-            deps.log(`WARN ${name}: ${label} refused this ${standsInFor} conversation (${kind}). A long ([1m], 200k+ tokens) or rich (images, documents, server tools) ${standsInFor} conversation may be more than the fallback takes: /compact it, start a new one, or wait for ${standsInFor}'s reset`);
+            deps.log(`WARN ${name}: ${label} refused this ${standsInFor} conversation (${kind}). A long ([1m], 200k+ tokens) or rich (images, documents, server tools) ${standsInFor} conversation may be more than ${label} takes: /compact it, start a new one, or put a target that takes it first in ${name}`);
           });
         }
         return { fallbacks, response: relay(result.response, target), skipped, target: label };
@@ -7728,39 +7801,36 @@ function createRouter(deps) {
       target: "refused"
     };
   }
-  async function useModelSlot(req, url, config, body, sent, found, rest, answerDirect) {
-    const until = limitedUntil.get(found.model);
-    let limit;
-    let skipped = 0;
-    if (until !== undefined && until > deps.now()) {
-      skipped = 1;
-      limit = limitState.limits[found.model] ?? null;
-    } else {
-      limitedUntil.delete(found.model);
-      const result = await send(req, anthropicUpstream(req, url, config, sent), null);
-      if (req.signal.aborted)
-        return closed(result, found.model);
-      if (!("response" in result))
-        return answerDirect(result, null, found.model);
-      limit = observeClaude(found.model, result.response, url.pathname);
-      if (limit === null)
-        return answerDirect(result, null, found.model);
-      const nowSec = deps.now() / 1000;
-      const restSec = limit.resetsAt === null ? COOLDOWN_MAX_SEC : limit.resetsAt <= nowSec ? LIMIT_REST_MIN_SEC : Math.min(limit.resetsAt - nowSec, COOLDOWN_MAX_SEC);
-      limitedUntil.set(found.model, deps.now() + restSec * 1000);
-      logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${found.model} answered 429 (the plan's usage limit); trying the next target of ${found.slot}`);
+  async function slotRequest(req, url, config, body, slot, chained, guard, asked) {
+    const targets = guard ? chained : targetsInUse(chained, fallbackOn(config, slot));
+    const first = targets[0];
+    if (url.pathname === COUNT_TOKENS_PATH) {
+      if (first === undefined || first.kind === "backend") {
+        return {
+          fallbacks: 0,
+          response: anthropicError(404, "not_found_error", `count_tokens is not available for ${slot}; Claude Code estimates instead`),
+          skipped: 0,
+          target: first === undefined ? "none" : formatTarget(first)
+        };
+      }
+      return chain(req, url, config, body, [first], slot, guard, asked);
     }
-    const outcome = await chain(req, url, config, body, rest, found.slot, false, found.model);
-    if (!req.signal.aborted)
-      noteFallback(found.slot, found.model, limit, outcome);
-    return {
-      ...outcome,
-      fallbacks: outcome.fallbacks + (skipped === 0 ? 1 : 0),
-      response: cleanAnswer(found, outcome),
-      skipped: outcome.skipped + skipped
-    };
+    const outcome = await chain(req, url, config, body, targets, slot, guard, asked);
+    if (req.signal.aborted || first === undefined)
+      return outcome;
+    if (first.kind === "anthropic" && outcome.target !== formatTarget(first)) {
+      const limited = withoutContextSuffix(first.model);
+      const limit = currentLimits(limitState, deps.now()).find(([model]) => model === limited);
+      if (limit !== undefined)
+        noteFallback(slot, limited, limit[1], outcome);
+    }
+    if (asked === null || sameModel(outcome.target, asked.model))
+      return outcome;
+    if (outcome.response.ok)
+      fellBack.add(asked.model);
+    return { ...outcome, response: cleanAnswer(slot, asked.model, outcome) };
   }
-  function cleanAnswer(found, outcome) {
+  function cleanAnswer(slot, model, outcome) {
     if (deps.fallbackAnswersAsIs === true)
       return outcome.response;
     const cleaned = cleanFallbackResponse(outcome.response, (changes) => {
@@ -7768,62 +7838,15 @@ function createRouter(deps) {
         changes.thinking > 0 ? "thinking blocks removed" : "",
         changes.ids > 0 ? "tool_use ids made safe" : ""
       ].filter((part) => part !== "");
-      const text = `${found.slot}: ${outcome.target}'s answers: ${kinds.join(", ")}`;
+      const text = `${slot}: ${outcome.target}'s answers: ${kinds.join(", ")}`;
       if (cleanedLogged.has(text))
         return;
       cleanedLogged.add(text);
-      deps.log(`${text} (${found.model} refuses them in its history; logged once per kind)`);
+      deps.log(`${text} (${model} refuses them in its history; logged once per kind)`);
     });
     if (cleaned.note !== null)
-      deps.log(`WARN ${found.slot}: ${outcome.target}: ${cleaned.note}`);
+      deps.log(`WARN ${slot}: ${outcome.target}: ${cleaned.note}`);
     return cleaned.response;
-  }
-  async function judgeAsFallback(req, url, config, body, model, judgeTargets, toClaude) {
-    const checkModel = withoutContextSuffix(String(body.model ?? "-"));
-    let limit = null;
-    let reason;
-    if (!req.headers.has("authorization") && !req.headers.has("x-api-key")) {
-      reason = "the request carries no Claude login";
-    } else {
-      const outcome = await toClaude();
-      const answer = outcome.response;
-      limit = planUsageLimit(answer.status, (name) => answer.headers.get(name));
-      if (req.signal.aborted || limit === null && answer.status !== 401) {
-        if (answer.status < 400)
-          endJudgeFallback();
-        return outcome;
-      }
-      discard(answer);
-      reason = limit === null ? "Claude answered 401 (no valid Claude login)" : `Claude is at the plan's usage limit (${limit.claim ?? "no window named"})`;
-    }
-    model.name = `${model.name} [judge fallback]`;
-    const judged = await chain(req, url, config, body, judgeTargets, JUDGE_SLOT, true);
-    if (req.signal.aborted)
-      return judged;
-    deps.log(`WARN safety check judged by ${judged.target} (${judged.response.status}), not by Claude: ${reason}`);
-    if (!judged.response.ok)
-      return { ...judged, fallbacks: judged.fallbacks + 1 };
-    const now = deps.now();
-    const before = limitState.fallbacks[JUDGE_SLOT];
-    const resetsAt = limit?.resetsAt ?? null;
-    limitState.fallbacks[JUDGE_SLOT] = {
-      lastAt: now,
-      model: checkModel,
-      resetsAt,
-      since: before?.since ?? now,
-      target: judged.target
-    };
-    if (before === undefined || before.target !== judged.target || before.resetsAt !== resetsAt || now - before.lastAt >= FALLBACK_SAVE_EVERY_MS) {
-      persist();
-    }
-    return { ...judged, fallbacks: judged.fallbacks + 1 };
-  }
-  function endJudgeFallback() {
-    if (!Object.hasOwn(limitState.fallbacks, JUDGE_SLOT))
-      return;
-    delete limitState.fallbacks[JUDGE_SLOT];
-    deps.log(`${JUDGE_SLOT}: Claude answers safety checks again; the judge fallback is over`);
-    persist();
   }
   function countedCheck(judged) {
     const day = localDay(deps.now());
@@ -7930,17 +7953,12 @@ function createRouter(deps) {
     }
     const sent = req.method === "GET" || req.method === "HEAD" || req.body === null ? null : new Uint8Array(await req.arrayBuffer());
     let bytes = sent;
-    const answerDirect = (result, observed, claudeModel = observed) => {
+    const answerDirect = (result, observed) => {
       if (observed !== null && "response" in result) {
         observeClaude(observed, result.response, url.pathname);
       }
       if (isMessages && "response" in result && result.response.status >= 400) {
-        const id = claudeModel === null ? null : withoutContextSuffix(claudeModel);
-        logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN anthropic answered ${result.response.status}`, id === null || result.response.status !== 400 || !hadFallback(id) ? undefined : (snippet) => {
-          if (!snippet.includes(BAD_SIGNATURE))
-            return;
-          deps.log(`WARN ${id} refused a thinking block's signature: this conversation holds a thinking block a fallback model wrote while ${id} was at its plan limit. Claude Code 2.1.300 sent the request once more and was answered (seen live); if the session stays stuck, /rewind in Claude Code to the message before the fallback answered, or start a new session`);
-        });
+        logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN anthropic answered ${result.response.status}`, observed === null ? undefined : signatureWarn(observed, result.response.status));
       }
       const response = "response" in result ? relay(result.response, null) : anthropicError(502, "api_error", `cc-smart-dev-kit-router: Anthropic did not answer (${result.failure})`);
       return { fallbacks: 0, response, skipped: 0, target: "anthropic" };
@@ -7974,15 +7992,17 @@ function createRouter(deps) {
     }
     if (guard)
       model.name = `${model.name} (safety check)`;
-    const judgeTargets = guard ? judgeTargetsOf(config, true) : [];
-    const judged = judgeTargets.length > 0 && url.pathname === MESSAGES_PATH ? judgeAsFallback(req, url, config, body, model, judgeTargets, claudeRoute) : claudeRoute();
-    return guard && url.pathname === MESSAGES_PATH ? countedCheck(judged) : judged;
+    const judgeTargets = guard ? judgeTargetsOf(config) : [];
+    const answered = judgeTargets.length > 0 ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null) : claudeRoute();
+    return guard && url.pathname === MESSAGES_PATH ? countedCheck(answered) : answered;
     function claudeRoute() {
-      const found = guard || alias !== null || url.pathname !== MESSAGES_PATH ? null : modelSlotFor(body.model, config.modelSlots);
-      const slotRoute = found === null ? null : resolveRoute(found.slot, config);
-      const rest = slotRoute?.kind === "slot" ? slotRoute.targets.slice(1) : [];
-      if (found !== null && rest.length > 0) {
-        return useModelSlot(req, url, config, body, sent, found, rest, answerDirect);
+      const found = guard || alias !== null ? null : familySlotFor(body.model);
+      const familyRoute = found === null ? null : resolveRoute(found.slot, config);
+      if (found !== null && familyRoute?.kind === "slot" && familyRoute.targets.length > 0) {
+        return slotRequest(req, url, config, body, found.slot, familyRoute.targets, false, {
+          model: found.model,
+          sent
+        });
       }
       const decided = resolveRequestRoute(body, config, guard);
       if (decided.kind === "anthropic") {
@@ -7993,28 +8013,28 @@ function createRouter(deps) {
         return direct(sent);
       if (decided.kind === "unknown-slot") {
         const slots = Object.keys(config.slots);
+        const family = Object.hasOwn(FAMILY_SLOTS, decided.slot) ? FAMILY_SLOTS[decided.slot] : undefined;
+        const message = family === undefined ? `cc-smart-dev-kit-router: "${decided.slot}" is not a slot in ${deps.configPath} (slots: ${slots.length > 0 ? slots.join(", ") : `none \u2014 run ${COMMAND} gateway setup`})` : `cc-smart-dev-kit-router: ${decided.slot} is off (no chain in ${deps.configPath}), and this request names the slot, not a Claude model: Claude Code's settings still send ${family} work to it. Run: ${COMMAND} gateway on (it stops that), or give the slot a chain: ${COMMAND} gateway slot ${decided.slot.replace(/^cc-smart-dev-kit-/, "")} <targets>`;
         return Promise.resolve({
           fallbacks: 0,
-          response: anthropicError(400, "invalid_request_error", `cc-smart-dev-kit-router: "${decided.slot}" is not a slot in ${deps.configPath} (slots: ${slots.length > 0 ? slots.join(", ") : "none \u2014 run cc-smart-dev-kit gateway setup"})`),
+          response: anthropicError(400, "invalid_request_error", message),
           skipped: 0,
           target: "none"
         });
       }
-      const targets = decided.kind === "slot" ? decided.targets : [decided.target];
-      const name = decided.kind === "slot" ? decided.slot : model.name;
-      if (url.pathname === COUNT_TOKENS_PATH) {
-        const first = targets[0];
-        if (first === undefined || first.kind === "backend") {
-          return Promise.resolve({
-            fallbacks: 0,
-            response: anthropicError(404, "not_found_error", `count_tokens is not available for ${name}; Claude Code estimates instead`),
-            skipped: 0,
-            target: first === undefined ? "none" : formatTarget(first)
-          });
-        }
-        return chain(req, url, config, body, [first], name, guard);
+      if (decided.kind === "slot") {
+        return slotRequest(req, url, config, body, decided.slot, decided.targets, guard, null);
       }
-      return chain(req, url, config, body, targets, name, guard);
+      const target = decided.target;
+      if (url.pathname === COUNT_TOKENS_PATH) {
+        return Promise.resolve({
+          fallbacks: 0,
+          response: anthropicError(404, "not_found_error", `count_tokens is not available for ${model.name}; Claude Code estimates instead`),
+          skipped: 0,
+          target: formatTarget(target)
+        });
+      }
+      return chain(req, url, config, body, [target], model.name, guard);
     }
   }
   return async function handle(req) {
@@ -8032,8 +8052,6 @@ function createRouter(deps) {
       return Response.json({
         cooling: coolingNow(),
         fallbacks: stats.fallbacks,
-        limited: limitedNow(),
-        modelSlots: deps.getConfig().modelSlots ?? {},
         ok: true,
         port: deps.port,
         requests: stats.requests,

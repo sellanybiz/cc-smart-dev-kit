@@ -5,6 +5,9 @@ import { tempDir } from "../testing/temp";
 import {
   BATCH_SSH_COMMAND,
   canReadGitRemote,
+  gitFailureCause,
+  githubRepoInUrl,
+  marketplaceAccessAdvice,
   marketplaceInstallLocation,
   marketplaceSource,
   redactUrl,
@@ -53,7 +56,8 @@ describe("redactUrl", () => {
 /**
  * A fake git first on PATH. It logs each call with the ssh command it got, answers
  * `config --get core.sshCommand` with `sshCommand` (when given), and fails ls-remote with
- * `stderr` (when given).
+ * `stderr` (when given) — line by line, so a multi-line failure arrives as several lines
+ * (a shell's own `echo` would keep the `\\n` literally on some machines).
  */
 function fakeGit(options: { sshCommand?: string; stderr?: string } = {}) {
   const dir = tempDir("fake-git");
@@ -66,7 +70,12 @@ function fakeGit(options: { sshCommand?: string; stderr?: string } = {}) {
       'if [ "$1" = config ]; then',
       options.sshCommand ? `  echo ${JSON.stringify(options.sshCommand)}; exit 0` : "  exit 1",
       "fi",
-      options.stderr ? `echo ${JSON.stringify(options.stderr)} >&2; exit 128` : "exit 0",
+      options.stderr
+        ? `printf '%s\\n' ${options.stderr
+            .split("\n")
+            .map((line) => JSON.stringify(line))
+            .join(" ")} >&2; exit 128`
+        : "exit 0",
       "",
     ].join("\n"),
   );
@@ -104,13 +113,32 @@ describe("canReadGitRemote", () => {
     expect(calls()).toEqual([`ls-remote ${url} HEAD | prompt=0 | ssh=${ssh}`]);
   });
 
-  test("a failure: git's last line, with any URL in it redacted", () => {
+  test("a failure: git's last line as the detail, with any URL in it redacted", () => {
     const { env } = fakeGit({
       stderr: "fatal: unable to access 'https://bot:tok@git.example.com/r.git/': 403",
     });
     expect(canReadGitRemote("https://bot:tok@git.example.com/r.git", env)).toEqual({
-      ok: false,
       detail: "fatal: unable to access 'https://***@git.example.com/r.git/': 403",
+      ok: false,
+      output: "fatal: unable to access 'https://***@git.example.com/r.git/': 403",
+    });
+  });
+
+  test("everything git said, not only its last line: the cause is named above it", () => {
+    // What a machine with no GitHub SSH key prints: the line that names the cause is the
+    // FIRST one, and both the detail a line prints and the output a cause is judged from
+    // carry no URL at all here.
+    const { env } = fakeGit({
+      stderr:
+        "git@github.com: Permission denied (publickey).\n" +
+        "fatal: Could not read from remote repository.",
+    });
+    expect(canReadGitRemote("git@github.com:example-org/cc-smart-dev-kit.git", env)).toEqual({
+      detail: "fatal: Could not read from remote repository.",
+      ok: false,
+      output:
+        "git@github.com: Permission denied (publickey).\n" +
+        "fatal: Could not read from remote repository.",
     });
   });
 });
@@ -182,5 +210,111 @@ describe("marketplaceSource", () => {
     expect(marketplaceSource(join(tempDir("known"), "none.json"), "mkt", {})).toEqual({
       kind: "missing",
     });
+  });
+});
+
+describe("gitFailureCause", () => {
+  // Both causes were seen live on 2026-10-17, while two team machines were moved: one had no
+  // GitHub SSH key (the marketplace added fine over HTTPS), one was logged in with an account
+  // that could not see the private repository (nothing could be added).
+  test("ssh's own lines: the SSH connection to GitHub was refused", () => {
+    expect(
+      gitFailureCause(
+        "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\n",
+      ),
+    ).toBe("ssh-refused");
+    expect(
+      gitFailureCause(
+        "Host key verification failed.\nfatal: Could not read from remote repository.\n",
+      ),
+    ).toBe("ssh-refused");
+    // A blocked port 22 prints neither of ssh's own lines: only git's summary line.
+    expect(
+      gitFailureCause(
+        "ssh: connect to host github.com port 22: Connection refused\nfatal: Could not read from remote repository.\n",
+      ),
+    ).toBe("ssh-refused");
+  });
+
+  test("a repository the account cannot see is not ssh, though git prints the same summary", () => {
+    expect(
+      gitFailureCause(
+        "ERROR: Repository not found.\nfatal: Could not read from remote repository.\n",
+      ),
+    ).toBe("cannot-see");
+    expect(
+      gitFailureCause("Could not resolve to a Repository with the name 'example-org/tools'.\n"),
+    ).toBe("cannot-see");
+    expect(
+      gitFailureCause(
+        "remote: Repository not found.\nfatal: repository 'https://github.com/example-org/tools.git/' not found\n",
+      ),
+    ).toBe("cannot-see");
+  });
+
+  test("anything else: unknown, and the check keeps the words it always had", () => {
+    expect(
+      gitFailureCause(
+        "fatal: unable to access 'https://github.com/example-org/tools.git/': The requested URL returned error: 403",
+      ),
+    ).toBe("unknown");
+    expect(
+      gitFailureCause(
+        "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+      ),
+    ).toBe("unknown");
+    expect(gitFailureCause("")).toBe("unknown");
+  });
+});
+
+describe("githubRepoInUrl", () => {
+  test("the three forms Claude Code and git use, with and without .git", () => {
+    expect(githubRepoInUrl("git@github.com:example-org/cc-smart-dev-kit.git")).toBe(
+      "example-org/cc-smart-dev-kit",
+    );
+    expect(githubRepoInUrl("https://github.com/example-org/cc-smart-dev-kit.git")).toBe(
+      "example-org/cc-smart-dev-kit",
+    );
+    expect(githubRepoInUrl("ssh://git@github.com/example-org/cc-smart-dev-kit")).toBe(
+      "example-org/cc-smart-dev-kit",
+    );
+  });
+
+  test("another host, a host that only looks like GitHub, or no repository: null", () => {
+    expect(githubRepoInUrl("git@git.example.com:org/repo.git")).toBeNull();
+    expect(githubRepoInUrl("https://github.example.com/org/repo.git")).toBeNull();
+    expect(githubRepoInUrl("https://github.com/org")).toBeNull();
+    expect(githubRepoInUrl("")).toBeNull();
+  });
+});
+
+describe("marketplaceAccessAdvice", () => {
+  test("SSH refused: the same marketplace, added over HTTPS", () => {
+    expect(marketplaceAccessAdvice("ssh-refused", "example-org/cc-smart-dev-kit")).toBe(
+      "SSH to GitHub was refused: add the marketplace over HTTPS instead. Run: " +
+        "claude plugin marketplace add https://github.com/example-org/cc-smart-dev-kit.git",
+    );
+  });
+
+  test("the account cannot read the repository: the owner, then the invitation", () => {
+    expect(marketplaceAccessAdvice("cannot-see", "example-org/cc-smart-dev-kit")).toBe(
+      "The GitHub account cannot read the repository: ask the repository's owner for read " +
+        "access, then accept the invitation at " +
+        "https://github.com/example-org/cc-smart-dev-kit/invitations.",
+    );
+  });
+
+  test("no repository in the source: the fix says what it can", () => {
+    expect(marketplaceAccessAdvice("ssh-refused", null)).toBe(
+      "SSH to GitHub was refused: check your SSH key for that host, or add the marketplace " +
+        "over an HTTPS URL.",
+    );
+    expect(marketplaceAccessAdvice("cannot-see", null)).toBe(
+      "The GitHub account cannot read the repository: ask the repository's owner for read access.",
+    );
+  });
+
+  test("unknown: nothing, so the caller keeps its own words", () => {
+    expect(marketplaceAccessAdvice("unknown", "example-org/cc-smart-dev-kit")).toBe("");
   });
 });

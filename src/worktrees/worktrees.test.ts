@@ -173,13 +173,13 @@ describe("the machine's facts", () => {
     // `/proc/<pid>/cwd` holds the physical path, while a worktree may be listed through a
     // link (and the other way round: a session started with `cd <link>/…`).
     expect(
-      programsInside([{ cwd: real, path: "/usr/bin/bun dev", pid: 3 }], linked, false),
+      programsInside([{ cwd: real, path: "/usr/bin/bun dev", pid: 3 }], linked, false, 900),
     ).toEqual(["bun"]);
     expect(
-      programsInside([{ cwd: linked, path: "/usr/bin/bun dev", pid: 3 }], real, false),
+      programsInside([{ cwd: linked, path: "/usr/bin/bun dev", pid: 3 }], real, false, 900),
     ).toEqual(["bun"]);
     // A command line written from the physical path counts too.
-    expect(programsInside([{ path: `${real}/server.ts`, pid: 4 }], linked, false)).toEqual([
+    expect(programsInside([{ path: `${real}/server.ts`, pid: 4 }], linked, false, 900)).toEqual([
       "server.ts",
     ]);
     expect(containersUsing(linked, [{ name: "db", sources: [real] }], false)).toEqual(["db"]);
@@ -189,35 +189,128 @@ describe("the machine's facts", () => {
   });
 
   test("the programs using a worktree: started from it, or working in it", () => {
+    // `ps -ww -o pid=,ppid=,args=`: the pid, the process that started it, then the command line.
     const lines = [
-      `1 /usr/bin/bun /work/app-wt-x/server.ts`,
-      "2 /usr/bin/other --flag /work/app-wt-x/notes.md",
-      "3 /usr/bin/git status",
-      `4 node /opt/thing.js --cwd /work/app-wt-y`,
+      `11 9 /usr/bin/bun /work/app-wt-x/server.ts`,
+      "12 9 /usr/bin/other --flag /work/app-wt-x/notes.md",
+      "13 9 /usr/bin/git status",
+      `14 9 node /opt/thing.js --cwd /work/app-wt-y`,
     ].join("\n");
     const programs = parseCommandLines(lines);
-    expect(programsInside(programs, "/work/app-wt-x", false)).toEqual(["bun", "other"]);
+    expect(programs).toEqual([
+      { parentPid: 9, path: "/usr/bin/bun /work/app-wt-x/server.ts", pid: 11 },
+      { parentPid: 9, path: "/usr/bin/other --flag /work/app-wt-x/notes.md", pid: 12 },
+      { parentPid: 9, path: "/usr/bin/git status", pid: 13 },
+      { parentPid: 9, path: "node /opt/thing.js --cwd /work/app-wt-y", pid: 14 },
+    ]);
+    expect(programsInside(programs, "/work/app-wt-x", false, 900)).toEqual(["bun", "other"]);
     // A `git` of our own scanning there never keeps a worktree (the scan runs git itself).
     expect(
       programsInside(
-        [{ cwd: "/work/app-wt-x", path: "/usr/bin/git status", pid: 9 }],
+        [{ cwd: "/work/app-wt-x", parentPid: 900, path: "/usr/bin/git status", pid: 9 }],
         "/work/app-wt-x",
         false,
+        900,
       ),
     ).toEqual([]);
     // A program whose working folder is inside it counts, even when its command line never
     // names it: a dev server started with `cd <worktree>`.
     expect(
       programsInside(
-        [{ cwd: "/work/app-wt-x", path: "/usr/bin/bun --watch", pid: 9 }],
+        [{ cwd: "/work/app-wt-x", parentPid: 900, path: "/usr/bin/bun --watch", pid: 9 }],
+        "/work/app-wt-x",
+        false,
+        900,
+      ),
+    ).toEqual(["bun"]);
+    // Windows' list: `<pid><tab><parent pid><tab><file>`.
+    expect(parsePrograms("42\t7\tC:\\Program Files\\nodejs\\node.exe")).toEqual([
+      { parentPid: 7, path: "C:\\Program Files\\nodejs\\node.exe", pid: 42 },
+    ]);
+  });
+
+  test("a listing line without a command line is left out, never read as a parent pid", () => {
+    // A process `ps` prints with no arguments left has a pid and a parent pid and nothing
+    // else: what remains is no file, and taking the parent pid for one would count a program
+    // that is not there.
+    expect(parseCommandLines("  103  101\n  104  101 /usr/bin/bun dev")).toEqual([
+      { parentPid: 101, path: "/usr/bin/bun dev", pid: 104 },
+    ]);
+    expect(parsePrograms("42\t7\nnot a line")).toEqual([]);
+  });
+
+  test("the command that asked about a worktree, and the chain that started it, never count", () => {
+    // `cc-smart-dev-kit worktrees --remove /work/app-wt-x` names the folder in its own command
+    // line, and so does the shell that ran it, and the session above that. None of them works
+    // in it: they only asked about it.
+    const asking = [
+      { parentPid: 200, path: "bun cli.ts worktrees --remove /work/app-wt-x", pid: 100 },
+      {
+        parentPid: 300,
+        path: "bash -c cc-smart-dev-kit worktrees --remove /work/app-wt-x",
+        pid: 200,
+      },
+      { parentPid: 1, path: "claude", pid: 300 },
+    ];
+    expect(programsInside(asking, "/work/app-wt-x", false, 100)).toEqual([]);
+    // The head is this process unless the caller says otherwise: the same command chain, with
+    // the pid the real `worktrees` has.
+    expect(
+      programsInside(
+        [
+          {
+            parentPid: 200,
+            path: "bun cli.ts worktrees --remove /work/app-wt-x",
+            pid: process.pid,
+          },
+          {
+            parentPid: 1,
+            path: "bash -c cc-smart-dev-kit worktrees --remove /work/app-wt-x",
+            pid: 200,
+          },
+        ],
         "/work/app-wt-x",
         false,
       ),
-    ).toEqual(["bun"]);
-    // Windows' list: `<pid><tab><file>`.
-    expect(parsePrograms("42\tC:\\Program Files\\nodejs\\node.exe")).toEqual([
-      { path: "C:\\Program Files\\nodejs\\node.exe", pid: 42 },
-    ]);
+    ).toEqual([]);
+    // An ANCESTOR of ours working in the worktree still counts: the shell that sits there —
+    // its command line is no reason to count it, but its working folder is.
+    expect(
+      programsInside(
+        [
+          { parentPid: 300, path: "bun cli.ts worktrees --remove /work/app-wt-x", pid: 100 },
+          { cwd: "/work/app-wt-x", parentPid: 1, path: "bash -c cd /work/app-wt-x", pid: 300 },
+        ],
+        "/work/app-wt-x",
+        false,
+        100,
+      ),
+    ).toEqual(["bash"]);
+    // Only the chain is left out: an unrelated program naming it counts, and so does a CHILD
+    // of our own process (started by the command that is asking).
+    expect(
+      programsInside(
+        [
+          { parentPid: 1, path: "/usr/bin/node /work/app-wt-x/server.js", pid: 4001 },
+          { parentPid: 100, path: "/usr/bin/tail -f /work/app-wt-x/log", pid: 4002 },
+        ],
+        "/work/app-wt-x",
+        false,
+        100,
+      ),
+    ).toEqual(["node", "tail"]);
+    // A pid seen twice ends the walk: a reused pid cannot hang it.
+    expect(
+      programsInside(
+        [
+          { parentPid: 200, path: "bun /work/app-wt-x/server.js", pid: 100 },
+          { parentPid: 100, path: "other /work/app-wt-x/notes.md", pid: 200 },
+        ],
+        "/work/app-wt-x",
+        false,
+        100,
+      ),
+    ).toEqual([]);
   });
 });
 

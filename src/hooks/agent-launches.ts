@@ -14,7 +14,7 @@
 
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ClaudeFamily } from "./agent-guard";
+import type { ClaudeFamily } from "../gateway/targets";
 
 /** One allowed Opus or Fable launch. */
 export interface AgentLaunch {

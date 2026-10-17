@@ -20,17 +20,17 @@
  *
  * | The model behind the launch | The verdict |
  * |---|---|
- * | an affordable slot key / a `<backend>:<model>` target | allow; with the gateway on, its effort must be `max`, else deny |
+ * | an affordable slot key / a `<backend>:<model>` target / `haiku` or `sonnet` (or their ids) while the gateway is on and the family's slot chain starts with a backend | allow; with the gateway on, its effort must be `max`, else deny |
  * | any other name (`best`, `opusplan`, `default`, `inherit`, a name no rule knows) | the `opus` tier below (the strictest reading): only what the guard can prove affordable is affordable |
- * | Claude Sonnet or Haiku | allow (the effort rule above still holds) |
+ * | Claude Sonnet or Haiku (the gateway off, the family's slot off, or its chain starting with a `claude-…` model) | allow (the effort rule above still holds) |
  * | the `opus` tier | a review agent (or one ending `:reviewer`) whose family is really Opus: allow, no question — but at effort `max` a review is an **ask** (a deeper review the person asked for); anything else with a prompt line `Opus reason: <one of OPUS_REASONS>`: **ask** (the person approves each one, and sees the reason); without that line: deny |
  * | the `fable` tier | a read-only agent type with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: **ask** (the word `build` is not one of them: a read-only agent never builds); an agent that can change files (any other type, a fork included) with `Fable reason: build - <why>`: **ask** (the person asked for it); no line, a builder without the word `build`, or an unattended session (`claude -p`): deny |
  * | no `model` / no `effort` | deny (a launch that names neither would inherit the session's, which nobody chose) — except a `fork`, which always inherits both |
  * | a session nobody watches (`claude -p`) | every premium launch that would ask is denied (there is nobody to approve it); a review on the `opus` tier at `high` or `xhigh`: allow |
  *
  * **Tiers, not vendors** (the owner, 2026-10-16). `opus` and `fable` mean the TIER: whatever
- * model answers behind them — Claude, a backend through an override or a model slot, a name no
- * rule knows — the tier's gates hold (the reason line, the ask, the review rules, `max` asking,
+ * model answers behind them — Claude, a backend through an override or the family's slot, a
+ * name no rule knows — the tier's gates hold (the reason line, the ask, the review rules, `max` asking,
  * `-p` refusing). A tier is never affordable and never forced to `max`. The guard's messages
  * name both: `` `opus` (answered by openai:gpt-…) ``. So a launch is judged by `LaunchModel.tier`
  * and it is decided before the affordable rule; Sonnet, Haiku and the affordable slots keep
@@ -39,10 +39,16 @@
  * **Which model, exactly.** The call's `model` is a name (`haiku|sonnet|opus|fable` — the
  * only four Claude Code's Agent tool accepts, proved live from its own schema; a full id, a
  * slot key and `<backend>:<model>` are read too, for a Workflow script or a future build).
- * It is resolved the way Claude Code resolves it:
- * `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` (all four exist in Claude Code 2.1.301, fable included)
- * overrides the family's model, and then the gateway config's first target answers
- * (`modelSlots` keeps a real Claude id first, so that target is the Claude model itself). A
+ * It is resolved the way Claude Code and the router resolve it:
+ *   1. `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` (all four exist in Claude Code 2.1.301, fable
+ *      included), when the person set one, replaces the family's model;
+ *   2. with the gateway on (`ANTHROPIC_BASE_URL` in Claude Code's settings), the router sends a
+ *      Claude model to its FAMILY's slot (`FAMILY_SLOTS`: haiku → scout, sonnet → worker, opus
+ *      → opus, fable → fable) while that slot has a chain, and the chain's first target answers
+ *      (`gateway.json`, read through the gateway's own `loadConfigFile`). A slot with no chain
+ *      is off: the Claude model itself answers, on the person's own login.
+ * So `sonnet` is an affordable slot exactly when the gateway is on and the worker's chain
+ * starts with a `<backend>:<model>`; a chain that starts with a `claude-…` model is Claude. A
  * `fork` runs on the session's model and effort — Claude Code ignores a `model` it is given —
  * so it is judged on the session's own: the last Claude model in the hook input's
  * `transcript_path` (`lastClaudeModel`), else `ANTHROPIC_MODEL`; unknowable → the `opus` tier.
@@ -55,7 +61,16 @@
 import type { CliPaths } from "../cli/paths";
 import { type GatewayConfig, loadConfigFile } from "../gateway/config";
 import { settingsReport } from "../gateway/settings";
-import { isSlotKey, MODEL_SLOTS, parseTarget, withoutContextSuffix } from "../gateway/targets";
+import {
+  CLAUDE_FAMILIES,
+  type ClaudeFamily,
+  claudeFamily,
+  familySlotKey,
+  isSlotKey,
+  MODEL_SLOTS,
+  parseTarget,
+  withoutContextSuffix,
+} from "../gateway/targets";
 import { type AgentLaunch, agentLaunchesFile, appendAgentLaunch } from "./agent-launches";
 import {
   type HookInput,
@@ -67,19 +82,6 @@ import {
 } from "./io";
 import type { Env, HookEnvContext } from "./run";
 import { lastClaudeModel } from "./transcript";
-
-/** The Claude families Claude Code names as models, and overrides through its environment. */
-export const CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"] as const;
-export type ClaudeFamily = (typeof CLAUDE_FAMILIES)[number];
-
-/**
- * The family a model id names, by its `-<family>-` part (`claude-opus-5-5` → `opus`); null
- * for a name no family can be read from (a backend's model, a Claude id from the future).
- */
-export function familyOfModel(model: string): ClaudeFamily | null {
-  const name = model.toLowerCase();
-  return CLAUDE_FAMILIES.find((family) => name.includes(`-${family}-`)) ?? null;
-}
 
 /** The tools this guard reads: the Agent tool, the older name, and Workflow. */
 export const AGENT_TOOLS = ["Agent", "Task"] as const;
@@ -171,9 +173,9 @@ function agentList(from: readonly string[], env: Env, name: string): Set<string>
 export interface LaunchModel {
   /** True when the first target that answers is a Claude model (the person's own login). */
   claude: boolean;
-  /** The family the launch's name stands for: a family name keeps its own through an override
-   * or a model slot, a Claude id reads its own, and null is anything the guard cannot read as a
-   * family (a backend target, a name no rule knows). */
+  /** The family the launch's name stands for: a family name and a Claude id keep their own
+   * through an override or their family's slot, a slot key reads its first target's, and null
+   * is anything the guard cannot read as a family (a backend target, a name no rule knows). */
   family: ClaudeFamily | null;
   /** How the launch names it: the resolved id, the slot's first target, or the name as sent. */
   model: string;
@@ -183,6 +185,16 @@ export interface LaunchModel {
    * name no rule knows. Null for everything else (Haiku, Sonnet, an affordable target).
    */
   tier: "fable" | "opus" | null;
+}
+
+/**
+ * What the guard knows of the gateway: its config (null when there is none, or it cannot be
+ * used), and whether Claude Code's settings send the requests to it.
+ */
+export interface GatewayFacts {
+  config: GatewayConfig | null;
+  /** True when Claude Code's settings point at the router (`ANTHROPIC_BASE_URL`). */
+  gatewayOn: boolean;
 }
 
 /** The premium tier a family name or a Claude id stands for; null for Haiku and Sonnet. */
@@ -196,9 +208,8 @@ function premiumTier(family: ClaudeFamily | null): "fable" | "opus" | null {
  * rule knows (`best`, `default`, …) — the strict one, `opus`, exactly as the rules treated it
  * before there were tiers.
  */
-function tierOfReading(id: string, family: ClaudeFamily | null): "fable" | "opus" | null {
-  if (family === null) return premiumTier(familyOfModel(id)) ?? "opus";
-  return premiumTier(family);
+function tierOfReading(family: ClaudeFamily | null): "fable" | "opus" | null {
+  return family === null ? "opus" : premiumTier(family);
 }
 
 /** Claude Code's override for a family: `ANTHROPIC_DEFAULT_OPUS_MODEL`, … */
@@ -206,46 +217,59 @@ export function familyEnv(family: ClaudeFamily): string {
   return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
 }
 
-/** The first target of the model slot for a family, from the config's `modelSlots`. */
-function modelSlotFirstTarget(config: GatewayConfig | null, family: ClaudeFamily): null | string {
-  if (config === null) return null;
-  for (const [model, slot] of Object.entries(config.modelSlots ?? {})) {
-    if (familyOfModel(model) !== family) continue;
-    const first = config.slots[slot]?.[0];
-    if (first !== undefined) return first;
-  }
-  return null;
+/**
+ * The first target of the slot that answers for a Claude family, the way the router picks it
+ * (`familySlotKey`, `FAMILY_SLOTS`: haiku → scout, sonnet → worker, opus → opus, fable →
+ * fable). Null when the gateway is off (Claude Code sends nothing to the router), when there
+ * is no config, and when the slot has no chain: it is off, and the Claude model itself answers.
+ */
+function familyFirstTarget(gateway: GatewayFacts, family: ClaudeFamily | null): null | string {
+  if (!gateway.gatewayOn || gateway.config === null || family === null) return null;
+  const slot = familySlotKey(family);
+  if (slot === null || !Object.hasOwn(gateway.config.slots, slot)) return null;
+  return gateway.config.slots[slot]?.[0] ?? null;
 }
 
 /**
- * The tier an id stands for when a person's own override or a model slot answers with it: the
- * session's model may be the backend id an `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` or a model slot
- * names, and that id is still the family's tier (owner, 2026-10-16).
+ * The tier an id stands for when a person's own override or a premium family's slot answers
+ * with it: the session's model may be the backend id an `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` or
+ * the opus or fable slot's first target names, and that id is still the family's tier (owner,
+ * 2026-10-16).
  */
 export function tierOfMappedId(
   model: string,
-  config: GatewayConfig | null,
+  gateway: GatewayFacts,
   env: Env,
 ): "fable" | "opus" | null {
   for (const premium of ["fable", "opus"] as const) {
     const override = stringField(env[familyEnv(premium)]);
     if (override !== null && withoutContextSuffix(override.trim()) === model) return premium;
-    if (modelSlotFirstTarget(config, premium) === model) return premium;
+    if (familyFirstTarget(gateway, premium) === model) return premium;
   }
   return null;
 }
 
+/**
+ * The model behind a Claude family once the router has had it: its slot's first target while
+ * the gateway is on and the slot has a chain, else `claude` (the Claude model answers). The
+ * family and the tier stay the ones the NAME stands for (owner, 2026-10-16).
+ */
+function throughFamilySlot(
+  claude: string,
+  family: ClaudeFamily | null,
+  gateway: GatewayFacts,
+): LaunchModel {
+  const tier = tierOfReading(family);
+  const first = familyFirstTarget(gateway, family);
+  if (first === null) return { claude: true, family, model: claude, tier };
+  return { ...resolveTarget(first), family, tier };
+}
+
 /** A Claude id, slot key or `<backend>:<model>` as the model behind the launch. */
-function resolveName(text: string, config: GatewayConfig | null): LaunchModel {
-  if (text.startsWith("claude-")) {
-    const slot = config?.modelSlots?.[text];
-    const first = slot === undefined ? undefined : config?.slots[slot]?.[0];
-    const shown = first ?? text;
-    const family = familyOfModel(shown);
-    return { claude: true, family, model: shown, tier: tierOfReading(text, family) };
-  }
+function resolveName(text: string, gateway: GatewayFacts): LaunchModel {
+  if (text.startsWith("claude-")) return throughFamilySlot(text, claudeFamily(text), gateway);
   if (isSlotKey(text)) {
-    const first = config?.slots[text]?.[0];
+    const first = gateway.config?.slots[text]?.[0];
     const model =
       first === undefined
         ? { claude: false, family: null, model: text, tier: null }
@@ -273,32 +297,24 @@ function resolveTarget(text: string): LaunchModel {
   if (!("target" in parsed) || parsed.target.kind !== "anthropic") {
     return { claude: false, family: null, model: text, tier: null };
   }
-  const family = familyOfModel(parsed.target.model);
-  return {
-    claude: true,
-    family,
-    model: parsed.target.model,
-    tier: tierOfReading(parsed.target.model, family),
-  };
+  const family = claudeFamily(parsed.target.model);
+  return { claude: true, family, model: parsed.target.model, tier: tierOfReading(family) };
 }
 
 /**
  * The model behind a launch that names `name`: a family name goes through Claude Code's
- * environment, then the gateway's model slot for that family; anything else is resolved as
- * itself. **A family name keeps its tier** through the override and the model slot: `opus` is
- * the premium tier even when the target that answers it is not a Claude model.
+ * environment, then — with the gateway on — its family's slot; a Claude id through its family's
+ * slot; anything else is resolved as itself. **A family name keeps its tier** through the
+ * override and the slot: `opus` is the premium tier even when the target that answers it is not
+ * a Claude model.
  */
-export function resolveLaunchModel(
-  name: string,
-  config: GatewayConfig | null,
-  env: Env,
-): LaunchModel {
+export function resolveLaunchModel(name: string, gateway: GatewayFacts, env: Env): LaunchModel {
   const text = withoutContextSuffix(name.trim());
   const family = CLAUDE_FAMILIES.find((one) => one === text.toLowerCase());
   if (family === undefined) {
     // A person's own override may name this id for a family: it is that family's tier then.
-    const mapped = tierOfMappedId(text, config, env);
-    const resolved = resolveName(text, config);
+    const mapped = tierOfMappedId(text, gateway, env);
+    const resolved = resolveName(text, gateway);
     return mapped === null || resolved.tier !== null ? resolved : { ...resolved, tier: mapped };
   }
   const tier = premiumTier(family);
@@ -306,9 +322,9 @@ export function resolveLaunchModel(
   if (override !== null) {
     // The NAME's family stays the launch's family: `opus` is the `opus` tier even when a backend
     // answers it, so the record, the review shortcut and the messages read the same family.
-    return { ...resolveName(withoutContextSuffix(override.trim()), config), family, tier };
+    return { ...resolveName(withoutContextSuffix(override.trim()), gateway), family, tier };
   }
-  return { claude: true, family, model: modelSlotFirstTarget(config, family) ?? text, tier };
+  return throughFamilySlot(text, family, gateway);
 }
 
 /** The `model` (or one of its aliases) behind a launch, as Claude Code will send it. */
@@ -340,10 +356,7 @@ export function readLaunch(input: HookInput): Launch | null {
 }
 
 /** What the guard reads from this machine; a test passes its own. */
-export interface GuardContext {
-  config: GatewayConfig | null;
-  /** True when Claude Code's settings point at the router (`ANTHROPIC_BASE_URL`). */
-  gatewayOn: boolean;
+export interface GuardContext extends GatewayFacts {
   /** The session's own model, for a fork; null when it cannot be read. */
   sessionModel: null | string;
   /** The subagent types a Fable launch may use; the plugin's list by default. */
@@ -893,8 +906,8 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
   // fork is given (`docs/claude-code-contract.md`), so judging the name it carries would judge a
   // model it never runs on.
   const real = launch.fork
-    ? forkModel(ctx.sessionModel, ctx.config, env)
-    : resolveLaunchModel(named ?? "", ctx.config, env);
+    ? forkModel(ctx.sessionModel, ctx, env)
+    : resolveLaunchModel(named ?? "", ctx, env);
   // The owner's rule, before every model rule: a subagent never runs at `low` or `medium` — on
   // a Claude model and an affordable slot alike. A level no rule knows is refused, not guessed.
   if (launch.effort !== null && !effortAllowed(launch.effort)) {
@@ -913,7 +926,7 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
   const builder = !readOnly.has(agentKey(type));
 
   // The premium tiers come FIRST, before the affordable rule: `opus` and `fable` are the tier
-  // whatever model answers behind them (owner, 2026-10-16), so an override or a model slot that
+  // whatever model answers behind them (owner, 2026-10-16), so an override or a family slot that
   // points one at a backend never makes it an affordable slot, never forces `max`, and never
   // drops the reason line.
   if (real.tier === "fable") {
@@ -1042,14 +1055,10 @@ function nobodyWatches(env: Env): boolean {
 }
 
 /** The model behind a fork: the session's own, unknowable → Claude Opus. */
-function forkModel(
-  sessionModel: null | string,
-  config: GatewayConfig | null,
-  env: Env,
-): LaunchModel {
+function forkModel(sessionModel: null | string, gateway: GatewayFacts, env: Env): LaunchModel {
   if (sessionModel === null)
     return { claude: true, family: "opus", model: "the session's model (unknown)", tier: "opus" };
-  return resolveLaunchModel(sessionModel, config, env);
+  return resolveLaunchModel(sessionModel, gateway, env);
 }
 
 /** The gateway config for a hook on this machine: null when there is none, or it cannot be used. */
@@ -1074,18 +1083,28 @@ export function sessionModelOf(input: HookInput, env: Env): null | string {
   return answered ?? stringField(env.ANTHROPIC_MODEL);
 }
 
+/**
+ * True when Claude Code's settings send its requests to the router (`ANTHROPIC_BASE_URL` set);
+ * false when they do not, or cannot be read.
+ */
+export function gatewayOnOf(paths: CliPaths): boolean {
+  try {
+    return settingsReport(paths.settingsFile).baseUrl !== null;
+  } catch {
+    // Settings that cannot be read send nothing anywhere the guard can prove: off.
+    return false;
+  }
+}
+
+/** The gateway as a hook on this machine sees it: its config, and whether it is on. */
+export function gatewayFactsOf(paths: CliPaths): GatewayFacts {
+  return { config: gatewayConfigOf(paths), gatewayOn: gatewayOnOf(paths) };
+}
+
 /** What the guard reads from this machine for `judgeLaunch`; never throws. */
 export function readGuardContext(paths: CliPaths, input: HookInput, env: Env): GuardContext {
-  const config = gatewayConfigOf(paths);
-  let gatewayOn = false;
-  try {
-    gatewayOn = settingsReport(paths.settingsFile).baseUrl !== null;
-  } catch {
-    gatewayOn = false;
-  }
   return {
-    config,
-    gatewayOn,
+    ...gatewayFactsOf(paths),
     // The session's own model, for a fork: what last answered, else the model the session was
     // started on, else unknowable.
     sessionModel: sessionModelOf(input, env),

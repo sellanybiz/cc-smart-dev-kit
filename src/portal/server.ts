@@ -394,6 +394,7 @@ export async function startPortal(
           chains: Object.fromEntries(
             rows.map((row) => [row.name, row.targets.map((t) => t.target)]),
           ),
+          fallback: Object.fromEntries(rows.map((row) => [row.name, row.fallback])),
           models,
           slots: rows,
           tested,

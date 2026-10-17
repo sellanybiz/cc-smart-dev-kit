@@ -5924,7 +5924,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.4.3",
+  version: "0.5.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -7527,6 +7527,7 @@ function call(fields = {}) {
     unread: null,
     arms: false,
     disarms: false,
+    admin: false,
     unknown: null,
     ...fields
   };
@@ -7819,13 +7820,14 @@ function prCalls(rest, moved, carried) {
   const args = rest.slice(index + 1);
   if (args.some((arg) => arg === "-h" || arg === "--help"))
     return [];
-  const named = namedPullRequest(args);
+  const named = mergeArguments(args);
   return [
     call({
       target: { ref: named.ref, repo: repo ?? named.repo ?? carried },
       refusal: moved,
       arms: args.some(isAutoFlag),
-      disarms: args.some(isDisableAutoFlag)
+      disarms: args.some(isDisableAutoFlag),
+      admin: named.admin
     })
   ];
 }
@@ -7838,9 +7840,10 @@ var MERGE_FLAGS_WITH_VALUE = new Set([
   "--subject"
 ]);
 var MERGE_SHORT_WITH_VALUE = "AbtFR";
-function namedPullRequest(words) {
+function mergeArguments(words) {
   let ref = null;
   let repo = null;
+  let admin = false;
   for (let index = 0;index < words.length; index++) {
     const word = words[index] ?? "";
     if (word === "--") {
@@ -7853,6 +7856,8 @@ function namedPullRequest(words) {
       const value = at === -1 ? undefined : word.slice(at + 1);
       if (name === "--repo")
         repo = value ?? words[index + 1] ?? null;
+      if (name === "--admin")
+        admin = true;
       if (value === undefined && MERGE_FLAGS_WITH_VALUE.has(name))
         index += 1;
       continue;
@@ -7871,7 +7876,7 @@ function namedPullRequest(words) {
     }
     ref ??= word || null;
   }
-  return { ref, repo };
+  return { ref, repo, admin };
 }
 var API_VALUE_FLAGS = new Set([
   "--cache",
@@ -8347,14 +8352,28 @@ var MODEL_SLOTS = {
   "cc-smart-dev-kit-fable": "fable",
   "cc-smart-dev-kit-opus": "opus"
 };
+var CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"];
+var FAMILY_SLOTS = {
+  "cc-smart-dev-kit-scout": "haiku",
+  "cc-smart-dev-kit-worker": "sonnet",
+  ...MODEL_SLOTS
+};
+function claudeFamily(model) {
+  const name = `${withoutContextSuffix(model).toLowerCase()}-`;
+  if (!name.startsWith("claude-"))
+    return null;
+  return CLAUDE_FAMILIES.find((family) => name.includes(`-${family}-`)) ?? null;
+}
+function familySlotKey(family) {
+  return Object.keys(FAMILY_SLOTS).find((key) => FAMILY_SLOTS[key] === family) ?? null;
+}
+var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS), JUDGE_SLOT];
 var FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
 
 // src/gateway/config.ts
 var DEFAULT_PORT = 20100;
 var DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 var DEFAULT_FIRST_BYTE_MS = 60000;
-var FALLBACK_SLOT_TARGET = "claude-sonnet-5-5";
-var NO_CONFIG_MEANS = `every haiku / sonnet call answers on ${FALLBACK_SLOT_TARGET} (your own Claude login) until it is fixed`;
 var baseUrl = url({ protocol: /^https?$/ }).transform((url2) => url2.replace(/\/+$/, ""));
 var backendSchema = looseObject({
   apiKey: string2().min(1),
@@ -8365,6 +8384,7 @@ var gatewayConfigSchema = looseObject({
   anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
   backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
   judgeTested: record(string2(), string2()).optional(),
+  fallback: record(string2(), boolean2()).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
   slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),
@@ -8402,6 +8422,15 @@ var gatewayConfigSchema = looseObject({
       ctx.addIssue({ code: "custom", message: error, path: ["modelSlots", model] });
     }
   }
+  for (const slot of Object.keys(config.fallback ?? {})) {
+    if (!Object.hasOwn(config.slots, slot)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `fallback names slot "${slot}", which is not in slots (a slot with no chain has nothing to fall back to)`,
+        path: ["fallback", slot]
+      });
+    }
+  }
 });
 function modelSlotError(model, slot, slots) {
   if (!model.startsWith("claude-") || /\s/.test(model) || model === "claude-") {
@@ -8414,17 +8443,11 @@ function modelSlotError(model, slot, slots) {
   if (family === undefined) {
     return `modelSlots "${model}" points at "${slot}", which is not a model slot (${Object.keys(MODEL_SLOTS).sort().join(", ")})`;
   }
-  if (!model.includes(`-${family}-`)) {
+  if (claudeFamily(model) !== family) {
     return `modelSlots "${model}" points at ${slot}, which is for ${family} models`;
   }
-  const targets = Object.hasOwn(slots, slot) ? slots[slot] : undefined;
-  if (targets === undefined)
+  if (!Object.hasOwn(slots, slot)) {
     return `modelSlots "${model}" points at slot "${slot}", which is not in slots`;
-  if (targets[0] !== model) {
-    return `slot ${slot} must start with "${model}" itself: that target is the model, sent unchanged`;
-  }
-  if (targets.length < 2) {
-    return `slot ${slot} names no target after "${model}" to answer at its usage limit`;
   }
   return null;
 }
@@ -8492,16 +8515,19 @@ import { existsSync as existsSync5, readFileSync as readFileSync4 } from "fs";
 function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
-    ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: "cc-smart-dev-kit-scout[1m]",
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: `Affordable model for search and reading: the scout slot (${COMMAND} gateway slot scout \u2026)`,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (affordable)",
-    ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker[1m]",
-    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: `Affordable model for routine code and docs: the worker slot (${COMMAND} gateway slot worker \u2026)`,
-    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (affordable)"
+    ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`
   };
 }
+var RETIRED_GATEWAY_ENV_KEYS = [
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"
+];
 var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
+var REMOVED_ON_OFF = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
 var SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
 var LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 function isJsonObject(value) {
@@ -8655,11 +8681,6 @@ function lastClaudeModel(transcriptPath) {
 }
 
 // src/hooks/agent-guard.ts
-var CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"];
-function familyOfModel(model) {
-  const name = model.toLowerCase();
-  return CLAUDE_FAMILIES.find((family) => name.includes(`-${family}-`)) ?? null;
-}
 var AGENT_TOOLS = ["Agent", "Task"];
 var WORKFLOW_TOOLS = ["Workflow"];
 var FORK = "fork";
@@ -8704,46 +8725,42 @@ function agentList(from, env, name) {
 function premiumTier(family) {
   return family === "fable" || family === "opus" ? family : null;
 }
-function tierOfReading(id, family) {
-  if (family === null)
-    return premiumTier(familyOfModel(id)) ?? "opus";
-  return premiumTier(family);
+function tierOfReading(family) {
+  return family === null ? "opus" : premiumTier(family);
 }
 function familyEnv(family) {
   return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
 }
-function modelSlotFirstTarget(config, family) {
-  if (config === null)
+function familyFirstTarget(gateway, family) {
+  if (!gateway.gatewayOn || gateway.config === null || family === null)
     return null;
-  for (const [model, slot] of Object.entries(config.modelSlots ?? {})) {
-    if (familyOfModel(model) !== family)
-      continue;
-    const first = config.slots[slot]?.[0];
-    if (first !== undefined)
-      return first;
-  }
-  return null;
+  const slot = familySlotKey(family);
+  if (slot === null || !Object.hasOwn(gateway.config.slots, slot))
+    return null;
+  return gateway.config.slots[slot]?.[0] ?? null;
 }
-function tierOfMappedId(model, config, env) {
+function tierOfMappedId(model, gateway, env) {
   for (const premium of ["fable", "opus"]) {
     const override = stringField(env[familyEnv(premium)]);
     if (override !== null && withoutContextSuffix(override.trim()) === model)
       return premium;
-    if (modelSlotFirstTarget(config, premium) === model)
+    if (familyFirstTarget(gateway, premium) === model)
       return premium;
   }
   return null;
 }
-function resolveName(text, config) {
-  if (text.startsWith("claude-")) {
-    const slot = config?.modelSlots?.[text];
-    const first = slot === undefined ? undefined : config?.slots[slot]?.[0];
-    const shown = first ?? text;
-    const family = familyOfModel(shown);
-    return { claude: true, family, model: shown, tier: tierOfReading(text, family) };
-  }
+function throughFamilySlot(claude, family, gateway) {
+  const tier = tierOfReading(family);
+  const first = familyFirstTarget(gateway, family);
+  if (first === null)
+    return { claude: true, family, model: claude, tier };
+  return { ...resolveTarget(first), family, tier };
+}
+function resolveName(text, gateway) {
+  if (text.startsWith("claude-"))
+    return throughFamilySlot(text, claudeFamily(text), gateway);
   if (isSlotKey(text)) {
-    const first = config?.slots[text]?.[0];
+    const first = gateway.config?.slots[text]?.[0];
     const model = first === undefined ? { claude: false, family: null, model: text, tier: null } : resolveTarget(first);
     const slotFamily = MODEL_SLOTS[text];
     return slotFamily === "fable" || slotFamily === "opus" ? { ...model, family: slotFamily, tier: slotFamily } : model;
@@ -8759,28 +8776,23 @@ function resolveTarget(text) {
   if (!("target" in parsed) || parsed.target.kind !== "anthropic") {
     return { claude: false, family: null, model: text, tier: null };
   }
-  const family = familyOfModel(parsed.target.model);
-  return {
-    claude: true,
-    family,
-    model: parsed.target.model,
-    tier: tierOfReading(parsed.target.model, family)
-  };
+  const family = claudeFamily(parsed.target.model);
+  return { claude: true, family, model: parsed.target.model, tier: tierOfReading(family) };
 }
-function resolveLaunchModel(name, config, env) {
+function resolveLaunchModel(name, gateway, env) {
   const text = withoutContextSuffix(name.trim());
   const family = CLAUDE_FAMILIES.find((one) => one === text.toLowerCase());
   if (family === undefined) {
-    const mapped = tierOfMappedId(text, config, env);
-    const resolved = resolveName(text, config);
+    const mapped = tierOfMappedId(text, gateway, env);
+    const resolved = resolveName(text, gateway);
     return mapped === null || resolved.tier !== null ? resolved : { ...resolved, tier: mapped };
   }
   const tier = premiumTier(family);
   const override = stringField(env[familyEnv(family)]);
   if (override !== null) {
-    return { ...resolveName(withoutContextSuffix(override.trim()), config), family, tier };
+    return { ...resolveName(withoutContextSuffix(override.trim()), gateway), family, tier };
   }
-  return { claude: true, family, model: modelSlotFirstTarget(config, family) ?? text, tier };
+  return throughFamilySlot(text, family, gateway);
 }
 function readLaunch(input) {
   const tool = stringField(input.tool_name);
@@ -9198,7 +9210,7 @@ function judgeLaunch(launch, ctx, env) {
     if (launch.effort === null)
       return deny(null, NO_EFFORT);
   }
-  const real = launch.fork ? forkModel(ctx.sessionModel, ctx.config, env) : resolveLaunchModel(named ?? "", ctx.config, env);
+  const real = launch.fork ? forkModel(ctx.sessionModel, ctx, env) : resolveLaunchModel(named ?? "", ctx, env);
   if (launch.effort !== null && !effortAllowed(launch.effort)) {
     return deny(real, effortDenial(launch.effort));
   }
@@ -9306,10 +9318,10 @@ function judgeLaunch(launch, ctx, env) {
 function nobodyWatches(env) {
   return (env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0";
 }
-function forkModel(sessionModel, config, env) {
+function forkModel(sessionModel, gateway, env) {
   if (sessionModel === null)
     return { claude: true, family: "opus", model: "the session's model (unknown)", tier: "opus" };
-  return resolveLaunchModel(sessionModel, config, env);
+  return resolveLaunchModel(sessionModel, gateway, env);
 }
 function gatewayConfigOf(paths) {
   try {
@@ -9323,17 +9335,19 @@ function sessionModelOf(input, env) {
   const answered = transcript === null ? null : lastClaudeModel(transcript);
   return answered ?? stringField(env.ANTHROPIC_MODEL);
 }
-function readGuardContext(paths, input, env) {
-  const config = gatewayConfigOf(paths);
-  let gatewayOn = false;
+function gatewayOnOf(paths) {
   try {
-    gatewayOn = settingsReport(paths.settingsFile).baseUrl !== null;
+    return settingsReport(paths.settingsFile).baseUrl !== null;
   } catch {
-    gatewayOn = false;
+    return false;
   }
+}
+function gatewayFactsOf(paths) {
+  return { config: gatewayConfigOf(paths), gatewayOn: gatewayOnOf(paths) };
+}
+function readGuardContext(paths, input, env) {
   return {
-    config,
-    gatewayOn,
+    ...gatewayFactsOf(paths),
     sessionModel: sessionModelOf(input, env)
   };
 }
@@ -9512,7 +9526,7 @@ function firstTime(mark) {
   }
 }
 function couldBeFable(model, env) {
-  if (familyOfModel(model) === "fable")
+  if (claudeFamily(model) === "fable")
     return true;
   const override = stringField(env[familyEnv("fable")]);
   if (override !== null && withoutContextSuffix(override.trim()) === model)
@@ -9539,7 +9553,7 @@ function fableSession(input, env, paths) {
     model = sessionModelOf(input, env);
   if (model === null || !couldBeFable(model, env))
     return SILENT;
-  const real = resolveLaunchModel(model, gatewayConfigOf(paths), env);
+  const real = resolveLaunchModel(model, gatewayFactsOf(paths), env);
   if (real.tier !== "fable")
     return SILENT;
   if (!firstTime(mark))
@@ -10156,9 +10170,7 @@ var UNCHOSEN = {
   CLAUDE_MEM_OPENAI_COMPAT_PRESET: [""],
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: [""],
   CLAUDE_MEM_OPENAI_COMPAT_MODEL: [""],
-  [API_KEY]: [""],
-  CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: ["", "claude"],
-  CLAUDE_MEM_QUOTA_FALLBACK_MODEL: [""]
+  [API_KEY]: [""]
 };
 
 // src/machine/warp.ts
@@ -10444,6 +10456,13 @@ function notByItself(reason, number = null) {
   const which = number === null ? "this pull request" : `#${number}`;
   return `cc-smart-dev-kit will not merge ${which} by itself: ${reason}. Approve the merge yourself if you meant it.`;
 }
+function adminRefusal(ref) {
+  const which = ref === null ? "the current branch's pull request" : numericRef(ref) === null ? `\`${ref}\`` : `#${ref}`;
+  return `the command merges ${which} with \`--admin\`, which uses administrator rights to merge past the repository's branch protection (its required reviews, a code-owner approval among them, its required checks and its merge queue), so you decide each one`;
+}
+function adminMerge(calls) {
+  return calls.find((one) => one.admin && !one.disarms);
+}
 function notChecked(what, env) {
   const why = ghMissing(env) ? "gh is not installed" : `gh could not read ${what}`;
   return `cc-smart-dev-kit could not check this merge: ${why}. Approve the merge yourself if it is right.`;
@@ -10525,6 +10544,10 @@ function mergeGuard(context) {
   const config = project.config;
   if (config === null)
     return SILENT;
+  const admin = adminMerge(pullRequestMerges(command));
+  if (admin !== undefined) {
+    return toolDecision("ask", notByItself(adminRefusal(admin.target?.ref ?? null)));
+  }
   let resolved;
   try {
     resolved = resolveWorkflow(paths, config);
@@ -10544,6 +10567,9 @@ function mergeGuard(context) {
   let ownRead = false;
   for (const merge of merges) {
     const number = numericRef(merge.target?.ref ?? null);
+    if (merge.admin) {
+      return toolDecision("ask", notByItself(adminRefusal(merge.target?.ref ?? null)));
+    }
     if (merge.unread !== null)
       return toolDecision("ask", notChecked(merge.unread, env));
     if (merge.refusal !== null)

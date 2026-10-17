@@ -10,15 +10,23 @@
  *   So the command asks, and keeps the worktree while something uses it.
  *
  *   Two probes, because they see different things:
- *   - the COMMAND LINES of the running processes (`ps -ww -o pid=,args=` on macOS and Linux,
- *     `Get-CimInstance Win32_Process` on Windows): a program STARTED FROM a file inside the
- *     worktree names that file;
+ *   - the COMMAND LINES of the running processes (`ps -ww -o pid=,ppid=,args=` on macOS and
+ *     Linux, `Get-CimInstance Win32_Process` on Windows): a program STARTED FROM a file inside
+ *     the worktree names that file;
  *   - the WORKING FOLDER of each process (Linux only, `/proc/<pid>/cwd`): a dev server started
  *     with `cd <worktree> && …` names the worktree nowhere in its command line.
  *
  *   The tools this scan runs itself are left out (`git`, `docker`, `ps`, `powershell`): they
  *   are short-lived children of this command, and a `git status` in a worktree would
  *   otherwise keep it forever.
+ *
+ *   So is the command that is ASKING — `cc-smart-dev-kit worktrees --remove <path>` names the
+ *   path in its own command line, and the shell that ran it, and the session above that, name
+ *   it in theirs. None of them works in the worktree; they only asked about it. That is why
+ *   each program's parent pid is read too: `programsInside` walks the chain up from this
+ *   process, and leaves it out of the COMMAND-LINE match alone. A working folder still counts
+ *   for every one of them (Linux), so the session or the shell that really sits in the
+ *   worktree keeps it.
  *
  * Windows has no `ps` and no `/proc`: there the command lines alone are read, as the project
  * this came from did — and a folder a program still uses cannot be renamed there anyway, so
@@ -39,6 +47,12 @@ export interface RunningProgram {
   /** The file it was started from, when the command line says (null: only its folder is known). */
   path: null | string;
   pid: number;
+  /**
+   * The process that started it, when the listing says; absent when unknown. `programsInside`
+   * walks it up from this process, to tell the command that ASKED about a worktree — one whose
+   * own command line names it — from a program that uses it.
+   */
+  parentPid?: number;
   /** The folder it works in, when that could be read (Linux only); absent when unknown. */
   cwd?: string;
 }
@@ -127,31 +141,51 @@ export function containersUsing(
     .map((container) => container.name);
 }
 
-/** `<pid><tab><file>` lines, the shape `ps` and PowerShell are asked for. Others are skipped. */
+/**
+ * `<pid><tab><parent pid><tab><file>` lines, the shape PowerShell is asked for. A line that
+ * does not hold all three is skipped: it names no file, and there is no folder here to fall
+ * back on.
+ */
 export function parsePrograms(lines: string): RunningProgram[] {
   const programs: RunningProgram[] = [];
   for (const line of lines.split(/\r?\n/)) {
-    const tab = line.indexOf("\t");
-    if (tab === -1) continue;
-    const pid = Number(line.slice(0, tab).trim());
-    const path = line.slice(tab + 1).trim();
-    if (Number.isInteger(pid) && pid > 0 && path !== "") programs.push({ path, pid });
+    const fields = line.split("\t");
+    const pid = Number(fields[0]?.trim() ?? "");
+    const parentPid = Number(fields[1]?.trim() ?? "");
+    const path = fields.slice(2).join("\t").trim();
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    // pid 1's parent is 0; a process whose parent is unknown is not printed this way.
+    if (!Number.isInteger(parentPid) || parentPid < 0) continue;
+    if (path === "") continue;
+    programs.push({ parentPid, path, pid });
   }
   return programs;
 }
 
-/** `<pid><space><the whole command line>` lines, the shape `ps -ww -o pid=,args=` prints. */
+/**
+ * `<pid><spaces><parent pid><spaces><the whole command line>` lines, the shape
+ * `ps -ww -o pid=,ppid=,args=` prints. A process with no arguments left prints its pid and its
+ * parent alone, and the parent pid is no file: such a line is skipped, and on Linux its working
+ * folder (`/proc/<pid>/cwd`) still says whether it uses a worktree.
+ */
 export function parseCommandLines(lines: string): RunningProgram[] {
   const programs: RunningProgram[] = [];
   for (const line of lines.split(/\r?\n/)) {
     const text = line.trim();
     if (text === "") continue;
-    const space = text.indexOf(" ");
-    if (space === -1) continue;
-    const pid = Number(text.slice(0, space));
-    const path = text.slice(space + 1).trim();
+    const afterPid = text.indexOf(" ");
+    if (afterPid === -1) continue;
+    const pid = Number(text.slice(0, afterPid));
+    const rest = text.slice(afterPid + 1).trimStart();
+    const afterParent = rest.indexOf(" ");
+    if (afterParent === -1) continue;
+    const parentPid = Number(rest.slice(0, afterParent));
+    const path = rest.slice(afterParent + 1).trim();
     // `ps` prints our own `ps` too; it names no worktree folder, so it falls out anyway.
-    if (Number.isInteger(pid) && pid > 0 && path !== "") programs.push({ path, pid });
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    if (!Number.isInteger(parentPid) || parentPid < 0) continue;
+    if (path === "") continue;
+    programs.push({ parentPid, path, pid });
   }
   return programs;
 }
@@ -176,9 +210,37 @@ export function mentions(line: string, folder: string): boolean {
 }
 
 /**
+ * The pids of `pid` and of every process that started it, up to pid 1, as far as the listing
+ * says — the chain one command runs in. A pid that appears twice ends the walk (a reused pid
+ * is no descent), and a process the listing does not hold contributes nothing.
+ */
+function lineage(programs: RunningProgram[], pid: number): Set<number> {
+  const parents = new Map<number, number>();
+  for (const program of programs) {
+    if (program.parentPid !== undefined) parents.set(program.pid, program.parentPid);
+  }
+  const chain = new Set<number>([pid]);
+  let at = pid;
+  for (;;) {
+    // pid 1's parent is 0: the chain ends there.
+    const parent = parents.get(at);
+    if (parent === undefined || parent <= 0 || chain.has(parent)) break;
+    chain.add(parent);
+    at = parent;
+  }
+  return chain;
+}
+
+/**
  * The programs that use `worktree`: one started from a file inside it (its command line names
  * it), or one whose working folder is inside it (Linux), each once, sorted by name. The tools
  * this scan runs itself are left out.
+ *
+ * So is `ownPid` — the process asking, this one by default — and every process that started
+ * it: the command line of `cc-smart-dev-kit worktrees --remove <path>` names the worktree, and
+ * so does the shell that ran it, and the session above that. They only asked about it, so
+ * they never count. They still count when their WORKING FOLDER is inside the worktree: the
+ * session or the shell that really sits there is what keeps it.
  *
  * A worktree can be reached through a symlink: `git worktree list` prints the path it was made
  * with, while `/proc/<pid>/cwd` — and a command line written from it — holds the physical one.
@@ -189,8 +251,10 @@ export function programsInside(
   programs: RunningProgram[],
   worktree: string,
   ignoreCase = IGNORE_CASE,
+  ownPid = process.pid,
 ): string[] {
   const ours = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
+  const asking = lineage(programs, ownPid);
   const real = realPath(worktree);
   const forms = real === worktree ? [worktree] : [worktree, real];
   const names = new Set<string>();
@@ -198,6 +262,9 @@ export function programsInside(
     const named = program.path !== null && forms.some((form) => mentions(program.path ?? "", form));
     const working = program.cwd !== undefined && isInside(realPath(program.cwd), real, ignoreCase);
     if (!named && !working) continue;
+    // The chain that asked names the worktree only in its command line — unless one of them
+    // works in it, and then `working` says so and it counts.
+    if (!working && asking.has(program.pid)) continue;
     const file = (program.path ?? "").split(/[\s"'`]/)[0] ?? "";
     const base = file.replace(/^.*[\\/]/, "");
     if (ours.has(base)) continue;
@@ -246,11 +313,15 @@ export function dockerMounts(): "unknown" | ContainerMounts[] {
   return parseContainerMounts(inspected.out) ?? "unknown";
 }
 
-/** Prints `<pid><tab><file>` for every running program started from a file, in UTF-8. */
+/**
+ * Prints `<pid><tab><parent pid><tab><file>` for every running program started from a file, in
+ * UTF-8. The parent pid comes along so that the command line of the program asking, and of the
+ * chain that started it, can be told from one that uses the worktree (`programsInside`).
+ */
 const LIST_PROGRAMS =
   "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " +
   "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " +
-  'ForEach-Object { "$($_.ProcessId)`t$($_.ExecutablePath)" }';
+  'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
 
 /** Every running process's working folder, from `/proc` (Linux), by pid. */
 function cwdOf(pid: number): string | undefined {
@@ -296,7 +367,7 @@ export function runningPrograms(on: NodeJS.Platform = platform()): "unknown" | R
   }
   let lines: string;
   try {
-    const run = Bun.spawnSync(["ps", "-ww", "-o", "pid=,args="], {
+    const run = Bun.spawnSync(["ps", "-ww", "-o", "pid=,ppid=,args="], {
       stderr: "pipe",
       stdout: "pipe",
       timeout: PROGRAMS_TIMEOUT_MS,

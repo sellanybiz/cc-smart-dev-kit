@@ -21,8 +21,10 @@ import {
 import { realTarget } from "../setup/write";
 
 /**
- * The env keys `gateway on` writes. Opus and Fable stay unpinned, so they are real Claude.
- * No `ANTHROPIC_AUTH_TOKEN`: without one, Claude Code sends the person's own login.
+ * The env keys `gateway on` writes. No model is pinned: Claude Code sends each Claude
+ * model's own id, and the router takes it to the slot of its family when that slot has a
+ * chain (haiku → scout, sonnet → worker, opus, fable), or to Anthropic unchanged when it has
+ * none. No `ANTHROPIC_AUTH_TOKEN`: without one, Claude Code sends the person's own login.
  *
  * `ENABLE_TOOL_SEARCH`: with a base URL that is not Anthropic's, Claude Code turns MCP tool
  * search off and sends every tool definition up front (measured: an Opus session started
@@ -34,14 +36,23 @@ export function gatewayEnv(port: number): Record<string, string> {
   return {
     ENABLE_TOOL_SEARCH: "true",
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: "cc-smart-dev-kit-scout[1m]",
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: `Affordable model for search and reading: the scout slot (${COMMAND} gateway slot scout …)`,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (affordable)",
-    ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker[1m]",
-    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: `Affordable model for routine code and docs: the worker slot (${COMMAND} gateway slot worker …)`,
-    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (affordable)",
   };
 }
+
+/**
+ * Env keys `gateway on` wrote up to 0.4.3: they pointed the `haiku` and `sonnet` names at the
+ * scout and worker slot names. With them, a slot with no chain could not be plain Claude (the
+ * request names the slot, not a Claude model), so `gateway on` removes the ones cc-smart-dev-kit
+ * still owns, and `gateway off` and `restore` treat them as the gateway's own keys.
+ */
+export const RETIRED_GATEWAY_ENV_KEYS: readonly string[] = [
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+];
 
 /**
  * Env keys the gateway must never write.
@@ -59,8 +70,11 @@ export const FORBIDDEN_ENV_KEYS = [
   "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
 ] as const;
 
-/** Every env key `gateway on` sets and `gateway off` removes. */
+/** Every env key `gateway on` sets. */
 export const GATEWAY_ENV_KEYS: readonly string[] = Object.keys(gatewayEnv(20100));
+
+/** Every env key `gateway off` removes: the ones `on` sets, and the ones it once set. */
+const REMOVED_ON_OFF: readonly string[] = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
 
 /** Settings that move every agent launched without `model` onto one model. `status` warns. */
 const SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
@@ -137,12 +151,12 @@ export function ownedGatewayEnvKeys(settingsFile: string, stateDir: string): str
     // caller: it decides whether a running router may be stopped at once, and a key that is
     // there but cannot be read must keep every session working.
     const owned = ownedKeys(stateDir, realTarget(settingsFile));
-    return GATEWAY_ENV_KEYS.filter((key) =>
+    return REMOVED_ON_OFF.filter((key) =>
       owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key),
     );
   }
   const records = ownedRecords(stateDir, realTarget(settingsFile));
-  return GATEWAY_ENV_KEYS.filter(
+  return REMOVED_ON_OFF.filter(
     (key) => ownership(records, envPath(key), getKey(settings, envPath(key))) === "ours",
   );
 }
@@ -189,7 +203,11 @@ export function assertNoForeignGatewayKeys(settingsFile: string, stateDir: strin
   }
 }
 
-/** Sets the gateway env keys as owned keys. Throws ForeignKeyError on a key that is not ours. */
+/**
+ * Sets the gateway env keys as owned keys, and removes the retired ones cc-smart-dev-kit still
+ * owns (`RETIRED_GATEWAY_ENV_KEYS`; one the person set or changed stays). Throws
+ * ForeignKeyError on a key that is not ours.
+ */
 export function turnOn(options: {
   settingsFile: string;
   stateDir: string;
@@ -209,6 +227,7 @@ export function turnOn(options: {
     file: options.settingsFile,
     stateDir: options.stateDir,
     set,
+    remove: RETIRED_GATEWAY_ENV_KEYS.map(envPath),
     ...(options.dryRun !== undefined && { dryRun: options.dryRun }),
   });
 }
@@ -225,7 +244,7 @@ export function turnOff(options: { settingsFile: string; stateDir: string; dryRu
   const result = applyManagedJson({
     file: options.settingsFile,
     stateDir: options.stateDir,
-    remove: GATEWAY_ENV_KEYS.map(envPath),
+    remove: REMOVED_ON_OFF.map(envPath),
     // Gateway setup created the `env` these keys live in, when the settings had none: an
     // `env` this removal empties goes with them. One the person had stays.
     createdObject: createdObjects(options.stateDir, options.settingsFile),

@@ -65,11 +65,11 @@ Commands:
                      install the plugin's instructions for Claude (a copy in
                      ~/.claude/cc-smart-dev-kit/instructions/, imported by a block in
                      ~/.claude/CLAUDE.md), add the companion plugins' marketplaces, point
-                     claude-mem at the gateway's affordable model (when both are there), and
-                     copy the project's auto-mode entries into your settings. The entries
-                     are trust rules: they are shown and asked on a terminal (--yes:
-                     shown, not asked); with no terminal they are left out, also with
-                     --yes.
+                     claude-mem at the scout slot's affordable model (when its chain starts
+                     with one), and copy the project's auto-mode entries into your
+                     settings. The entries are trust rules: they are shown and asked on a
+                     terminal (--yes: shown, not asked); with no terminal they are left
+                     out, also with --yes.
                      --project <dir>: the project to read .claude/cc-smart-dev-kit.json from
                      (default: this folder). --warp: install the Warp terminal (the
                      commands are shown and asked; sudo asks for your password) and its

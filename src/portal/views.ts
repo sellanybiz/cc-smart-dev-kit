@@ -142,7 +142,7 @@ function usageCards(data: OverviewData): string {
     .map(
       (limit) => `<div class="card warn pad">
 <div class="spread"><span class="bold">${escapeHtml(limit.model)}</span><span class="tag">at its plan limit</span></div>
-<p class="small warncolor">Anthropic refused it at ${escapeHtml(limit.claim)}${limit.resets === null ? "" : `, resetting at ${escapeHtml(limit.resets)}`}. A model slot answers from its next target until then; without one, its work waits for the reset.</p>
+<p class="small warncolor">Anthropic refused it at ${escapeHtml(limit.claim)}${limit.resets === null ? "" : `, resetting at ${escapeHtml(limit.resets)}`}. A slot whose chain names it moves to its next target while its fallback is on; any other of its work waits for the reset.</p>
 </div>`,
     )
     .join("");
@@ -150,7 +150,7 @@ function usageCards(data: OverviewData): string {
     .map(
       (fallback) => `<div class="card pad">
 <div class="spread"><span class="bold">${escapeHtml(fallback.slot)}</span><span class="chip on">${escapeHtml(fallback.target)}</span></div>
-<p class="small muted">It answers for ${escapeHtml(fallback.model)} since ${escapeHtml(fallback.since)}, and asks the model itself again until it answers.</p>
+<p class="small muted">It answers in place of ${escapeHtml(fallback.model)} since ${escapeHtml(fallback.since)}; ${escapeHtml(fallback.model)} is asked again once its rest is over.</p>
 </div>`,
     )
     .join("");
@@ -185,12 +185,12 @@ export function overviewPage(shell: Shell, data: OverviewData): string {
 ${switchButton({ action: "switch", body: { name: "gateway", on: !data.switches.gateway }, confirm: SWITCH_CONFIRM, id: "sw-gw", label: "Gateway", on: data.switches.gateway, reload: true })}
 </div>
 <div class="row-wide">
-<div class="col g2 fill1"><span id="sw-judge" class="bold">Your own judge</span><span class="small muted">${data.switches.judgeUntested ? "A target has not passed the force-push test, so the router ignores it." : "Off: Claude judges auto mode's safety check. It turns on only with a saved, fully force-push-tested chain."}</span></div>
+<div class="col g2 fill1"><span id="sw-judge" class="bold">Your own judge</span><span class="small muted">${data.switches.judgeUntested ? "A target has not passed the force-push test, so the router ignores it." : data.switches.judge ? "On: your judge judges every auto-mode safety check in Claude's place. A weak judge can let a risky command through, and it reads the conversation." : "Off: Claude judges auto mode's safety checks. It turns on only with a saved, fully force-push-tested chain."}</span></div>
 ${switchButton({ action: "switch", body: { name: "judge", on: !data.switches.judge }, confirm: SWITCH_CONFIRM, id: "sw-judge", label: "Your own judge", on: data.switches.judge, reload: true })}
 </div>
 <div class="row-wide">
-<div class="col g2 fill1"><span id="sw-fb" class="bold">opus and fable fallback</span><span class="small muted">At the plan limit, the next target answers until the reset.</span></div>
-${switchButton({ action: "switch", body: { name: "fallback", on: !data.switches.fallback }, confirm: SWITCH_CONFIRM, id: "sw-fb", label: "opus and fable fallback", on: data.switches.fallback, reload: true })}
+<div class="col g2 fill1"><span id="sw-models" class="bold">opus and fable slots</span><span class="small muted">On: Opus and Fable requests go to the chains saved on the Slots page. Off: Opus and Fable answer themselves.</span></div>
+${switchButton({ action: "switch", body: { name: "models", on: !data.switches.models }, confirm: SWITCH_CONFIRM, id: "sw-models", label: "opus and fable slots", on: data.switches.models, reload: true })}
 </div>
 <div class="foot">A switch changes every running Claude session from its next request. You confirm first.</div>
 <div class="foot" data-out-for="switch" role="status"></div>
@@ -243,6 +243,8 @@ export interface SlotsData {
   /** Why a backend's models are not listed, per backend. */
   backendNotes: string[];
   chains: Record<string, string[]>;
+  /** Each slot's fallback switch, by short name (`scout`): it decides the chain's labels. */
+  fallback: Record<string, boolean>;
   models: ModelRow[];
   slots: SlotRow[];
   /** `"<slot>\u0000<target>"` → `blocked` for a judge target that passed. */
@@ -269,14 +271,27 @@ export function slotsPage(shell: Shell, data: SlotsData): string {
     )
     .join("");
   const first = data.slots[0];
+  // One fallback switch per slot, the picked slot's shown: the same `gateway fallback` the
+  // command line runs. A slot with no saved chain has none to set.
+  const fallbackSwitches = data.slots
+    .map((slot) => {
+      const saved = (data.chains[slot.name] ?? []).length > 0 && slot.kind !== "off";
+      const id = `fb-${slot.name}`;
+      const on = data.fallback[slot.name] === true;
+      return `<div class="row-wide" data-fallback-for="${escapeHtml(slot.name)}" ${slot.name === first?.name ? "" : "hidden"}>
+<div class="col g2 fill1"><span id="${escapeHtml(id)}" class="bold">Fallback</span><span class="small muted">${saved ? "On: the next target answers when the one above it fails or rests. Off: only the first target answers, and the rest stay saved." : "Save a chain first: a slot with no chain has nothing to fall back to."}</span></div>
+${switchButton({ action: "slot.fallback", body: { on: !on, slot: slot.name }, confirm: SWITCH_CONFIRM, disabled: !saved, id, label: "Fallback", on, reload: true })}
+</div>`;
+    })
+    .join("");
   const body = `<div class="pagehead">
 <div>
 <h1>Slots</h1>
-<p>A slot is a chain of models. The first target answers; the next one answers only if it fails or rests. Same checks as <code>${COMMAND} gateway slot</code>.</p>
+<p>A slot is a chain of models. The first target answers; the next one answers only if it fails or rests, and only while the slot's fallback is on. A slot with no chain is off: that model answers itself. Same checks as <code>${COMMAND} gateway slot</code>.</p>
 </div>
 </div>
 
-<div data-slots data-slot="${escapeHtml(first?.name ?? "scout")}" data-chains="${escapeHtml(JSON.stringify(data.chains))}" data-tested="${escapeHtml(JSON.stringify(data.tested))}">
+<div data-slots data-slot="${escapeHtml(first?.name ?? "scout")}" data-chains="${escapeHtml(JSON.stringify(data.chains))}" data-fallback="${escapeHtml(JSON.stringify(data.fallback))}" data-tested="${escapeHtml(JSON.stringify(data.tested))}">
 
 <section aria-labelledby="pick-h">
 <h2 id="pick-h" class="h2sm">Pick a slot</h2>
@@ -302,6 +317,9 @@ export function slotsPage(shell: Shell, data: SlotsData): string {
 <ul class="chain" data-chain></ul>
 </div>
 
+<div class="list">${fallbackSwitches}</div>
+<div data-out-for="slot.fallback" role="status"></div>
+
 <div class="row">
 <button type="button" class="btn primary" data-test>Test each target</button>
 <button type="button" class="btn strong" data-save>Save</button>
@@ -324,7 +342,7 @@ export function slotsPage(shell: Shell, data: SlotsData): string {
 <h2>Live model list</h2>
 <p class="muted">What each backend lists, and the Claude models the config names. The context length comes from the backend's own list; prices and image support are in OmniRoute's own catalog and are not read here.</p>
 </div>
-<div class="row"><input type="search" class="search" data-find placeholder="glm, deepseek, claude…" aria-label="Find a model"></div>
+<div class="row"><input type="search" class="search" data-find placeholder="a model id…" aria-label="Find a model"></div>
 </div>
 ${data.backendNotes.map((note) => `<p class="notice">${escapeHtml(note)}</p>`).join("")}
 <div class="table"><div class="inner" data-models>
@@ -923,10 +941,10 @@ ${omniroute.registryError === null ? "" : `<p class="notice">The npm registry co
 ${
   omniroute.unit === null
     ? `<p class="notice">No user unit runs OmniRoute here, so an update installs the new version but cannot restart it or check it: restart OmniRoute the way this machine runs it, then run <code>${COMMAND} omniroute status</code>.</p>`
-    : `<p class="muted">The update restarts ${escapeHtml(omniroute.unit)}, so the gateway's slots fall to their next target while it comes back: Claude answers, on your own login. A version that does not answer is put back.</p>`
+    : `<p class="muted">The update restarts ${escapeHtml(omniroute.unit)}, so while it comes back a request to an OmniRoute target fails: a slot with its fallback on moves to its next target, if it has one; any other slot answers with that error. A version that does not answer is put back.</p>`
 }
 <div class="row">
-<button type="button" class="btn primary" data-action="omniroute.update" data-confirm="Install the newest release and restart the model path? While it restarts, the gateway's slots fall to their next target — Claude answers, on your own login." data-reload>${omniroute.state === "behind" ? `Update to ${escapeHtml(omniroute.newestVersion ?? "")}` : "Update"}</button>
+<button type="button" class="btn primary" data-action="omniroute.update" data-confirm="Install the newest release and restart the model path? While it restarts, a request to an OmniRoute target fails: a slot with its fallback on moves to its next target, if it has one; any other slot answers with that error." data-reload>${omniroute.state === "behind" ? `Update to ${escapeHtml(omniroute.newestVersion ?? "")}` : "Update"}</button>
 <button type="button" class="btn" data-action="omniroute.rollback" data-confirm="Put the version the last update replaced back, and restart the model path?" data-reload>Roll back</button>
 </div>
 <div data-out-for="omniroute.update" role="status"></div>

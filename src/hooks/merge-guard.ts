@@ -21,6 +21,14 @@
  * (`--repo`/`-R`, or a `gh api` path) always asks: the policy is about the repository the
  * work is in, read from its `origin` remote.
  *
+ * **And never with `--admin`.** `gh pr merge … --admin` (or `--admin=<anything>`) merges with
+ * administrator rights, past the repository's branch protection — its required reviews (a
+ * code-owner approval among them), its required checks and its merge queue. Such a merge
+ * always asks, whatever the policy says and before it is read, naming the pull request, so the
+ * person decides each one; it never denies, because a release flow may use `--admin` on
+ * purpose and the person's yes to the prompt is that decision. The flag is read with the
+ * merge's other words (`after-merge.ts`), in every form below, aliases included.
+ *
  * Every merge in the command is judged, in the order it runs them — `gh pr merge 5 && gh pr
  * merge 6` checks both — and the first the policy does not allow asks, naming its pull
  * request. The forms it cannot judge ask too, with the reason: a `gh api` merge, a GraphQL
@@ -45,7 +53,13 @@ import type { Project } from "../project/resolve";
 import { autoMergeOff, autoMergeRefusal } from "../workflow/auto-merge";
 import { type ResolvedWorkflow, resolveWorkflow } from "../workflow/resolve";
 import { hasReview, reviewsFile } from "../workflow/reviews";
-import { mergeCalls, repositoryKey, requestsMerge } from "./after-merge";
+import {
+  type MergeCall,
+  mergeCalls,
+  pullRequestMerges,
+  repositoryKey,
+  requestsMerge,
+} from "./after-merge";
 import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
 import { type HookResult, SILENT, stringField, toolDecision, toolInput } from "./io";
 import type { Env, HookContext } from "./run";
@@ -191,6 +205,25 @@ export function mergeRefusal(facts: MergeFacts): string | null {
 export function notByItself(reason: string, number: null | number = null): string {
   const which = number === null ? "this pull request" : `#${number}`;
   return `cc-smart-dev-kit will not merge ${which} by itself: ${reason}. Approve the merge yourself if you meant it.`;
+}
+
+/**
+ * Why a merge that carries `--admin` asks: it names the pull request as the command does (a
+ * number, a URL or a branch, or the current branch's when it names none).
+ */
+export function adminRefusal(ref: string | null): string {
+  const which =
+    ref === null
+      ? "the current branch's pull request"
+      : numericRef(ref) === null
+        ? `\`${ref}\``
+        : `#${ref}`;
+  return `the command merges ${which} with \`--admin\`, which uses administrator rights to merge past the repository's branch protection (its required reviews, a code-owner approval among them, its required checks and its merge queue), so you decide each one`;
+}
+
+/** The first of `calls` that merges with `--admin`, or undefined (a `--disable-auto` merges nothing). */
+function adminMerge(calls: MergeCall[]): MergeCall | undefined {
+  return calls.find((one) => one.admin && !one.disarms);
 }
 
 /** The question when the guard could not read what it needs: gh is missing, or did not answer. */
@@ -351,6 +384,13 @@ export function mergeGuard(context: HookContext): HookResult {
   // A project that never opted in must not notice the plugin (`.claude/rules/hooks.md`):
   // the policy it would judge with lives in the project's own file.
   if (config === null) return SILENT;
+  // `--admin` asks whatever the policy says, so it is read first, from the line alone: no
+  // policy, no gh, and the question names the real risk even where the policy would ask anyway.
+  // (A merge an alias runs is read below, once its expansion is known.)
+  const admin = adminMerge(pullRequestMerges(command));
+  if (admin !== undefined) {
+    return toolDecision("ask", notByItself(adminRefusal(admin.target?.ref ?? null)));
+  }
 
   let resolved: ResolvedWorkflow;
   try {
@@ -383,6 +423,9 @@ export function mergeGuard(context: HookContext): HookResult {
   let ownRead = false;
   for (const merge of merges) {
     const number = numericRef(merge.target?.ref ?? null);
+    if (merge.admin) {
+      return toolDecision("ask", notByItself(adminRefusal(merge.target?.ref ?? null)));
+    }
     if (merge.unread !== null) return toolDecision("ask", notChecked(merge.unread, env));
     if (merge.refusal !== null) return toolDecision("ask", notByItself(merge.refusal, number));
     const target = merge.target;

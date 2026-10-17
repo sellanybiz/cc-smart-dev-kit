@@ -17,6 +17,17 @@ import { dirname, join } from "node:path";
 
 /** What this fake reads from the environment the smoke test builds. */
 export interface Context {
+  /**
+   * No GitHub SSH key on this machine: `marketplace add <owner>/<repo>` is refused the way ssh
+   * refuses it, and the `https://…` form — what the installer falls back to — is added fine
+   * (live, 2026-10-17).
+   */
+  addSshRefused: boolean;
+  /**
+   * The repository cannot be read at all: BOTH forms of the add fail with "Repository not
+   * found" — access, not ssh, and the HTTPS form cannot fix it (the installer must not retry).
+   */
+  addNotFound: boolean;
   configDir: string;
   log: string;
   version: string;
@@ -30,6 +41,8 @@ export const MARKETPLACE_NAMES: Record<string, string> = {
 
 export function contextFromEnv(): Context {
   return {
+    addNotFound: process.env.FAKE_CLAUDE_ADD_NOT_FOUND === "yes",
+    addSshRefused: process.env.FAKE_CLAUDE_SSH_REFUSED === "yes",
     configDir: process.env.CLAUDE_CONFIG_DIR ?? "",
     log: process.env.FAKE_LOG ?? "",
     version: process.env.FAKE_MARKETPLACE_VERSION ?? "0.4.2",
@@ -65,7 +78,31 @@ export function marketplaceNameFor(source: string): string {
   return MARKETPLACE_NAMES[source] ?? "cc-smart-dev-kit";
 }
 
-function marketplaceAdd(context: Context, source: string): void {
+/** One `marketplace add`: 0 added, 1 when this machine's ssh to GitHub refused it. */
+function marketplaceAdd(
+  context: Context,
+  source: string,
+  io: { error?: (line: string) => void },
+): number {
+  // A machine with no GitHub SSH key: Claude Code adds a marketplace over ssh, so the plain
+  // `owner/repo` form is refused and the `https://…` one — what the installer falls back to —
+  // is added. Both land under the marketplace's OWN name, from its own marketplace file, so
+  // the record's key is the same either way (live, 2026-10-17). A repository the account cannot
+  // see is refused the same way, with the line that means access and not ssh.
+  if (marketplaceNameFor(source) === "cc-smart-dev-kit" && !source.includes("://")) {
+    const sayError = io.error ?? ((line: string) => process.stderr.write(`${line}\n`));
+    if (context.addNotFound) {
+      sayError("ERROR: Repository not found.\n" + "fatal: Could not read from remote repository.");
+      return 1;
+    }
+    if (context.addSshRefused) {
+      sayError(
+        "git@github.com: Permission denied (publickey).\n" +
+          "fatal: Could not read from remote repository.",
+      );
+      return 1;
+    }
+  }
   const name = marketplaceNameFor(source);
   const dir = join(context.configDir, "plugins", "marketplaces", name);
   mkdirSync(join(dir, "plugin", ".claude-plugin"), { recursive: true });
@@ -78,6 +115,7 @@ function marketplaceAdd(context: Context, source: string): void {
   const known = readJson(knownFile(context));
   known[name] = { source: { source: "github", repo: source }, installLocation: dir };
   writeJson(knownFile(context), known);
+  return 0;
 }
 
 function marketplaceRemove(context: Context, name: string): void {
@@ -141,34 +179,38 @@ function pluginUninstall(context: Context, id: string): void {
   writeJson(installedFile(context), installed);
 }
 
-/** What the fake answers: it logs the call, then does what Claude Code would do. */
-export function answer(argv: string[], context: Context): void {
+/** What the fake answers: it logs the call, then does what Claude Code would do. 0, or 1 when the command it stands in for fails. */
+export function answer(
+  argv: string[],
+  context: Context,
+  io: { error?: (line: string) => void } = {},
+): number {
   record(context, `claude ${argv.join(" ")}`);
   const [plugin, command, third, fourth] = argv;
-  if (plugin !== "plugin") return;
+  if (plugin !== "plugin") return 0;
   if (command === "marketplace" && third === "add" && fourth !== undefined) {
-    marketplaceAdd(context, fourth);
-    return;
+    return marketplaceAdd(context, fourth, io);
   }
   if (command === "marketplace" && third === "remove" && fourth !== undefined) {
     marketplaceRemove(context, fourth);
-    return;
+    return 0;
   }
   if (command === "marketplace" && third === "update" && fourth !== undefined) {
     marketplaceUpdate(context, fourth);
-    return;
+    return 0;
   }
   if (command === "install" || command === "update") {
     pluginRecord(context);
-    return;
+    return 0;
   }
   if (command === "enable") {
     pluginEnable(context);
-    return;
+    return 0;
   }
   if (command === "uninstall" && third !== undefined) pluginUninstall(context, third);
+  return 0;
 }
 
 if (import.meta.main) {
-  answer(process.argv.slice(2), contextFromEnv());
+  process.exitCode = answer(process.argv.slice(2), contextFromEnv());
 }

@@ -4,15 +4,21 @@
  *
  * Claude Code sends every request to the local router (`ANTHROPIC_BASE_URL`), with the
  * person's own Claude login on it. The model name decides the way out:
- *   - `claude-…`               → Anthropic, untouched (the own login is meant for it);
- *   - a slot key (`cc-smart-dev-kit-scout`)  → the slot's targets, in order, first that answers;
+ *   - `claude-…`               → the slot for its family (`familySlotFor`: haiku → scout,
+ *                                sonnet → worker, opus → opus, fable → fable) when that slot
+ *                                has a chain; with none (the slot is off), Anthropic,
+ *                                untouched (the own login is meant for it);
+ *   - a slot key (`cc-smart-dev-kit-scout`)  → the slot's targets, in order;
  *   - `<backend>:<model>`      → that backend, no fallback (an ad-hoc try);
  *   - anything else            → Anthropic, untouched: never a guess at a backend.
+ * A slot's next target answers only while the slot's fallback switch is on (`fallbackOn`,
+ * config.ts); the router never adds a target of its own, Claude included.
  * An alias from the config's `aliases` is resolved first (`resolveAlias`), so an old
  * model name reaches its new slot. One request is recognised by its body, not its name:
  * auto mode's safety check (`isAutoModeGuard`, on the request as it came) goes to the
- * `cc-smart-dev-kit-judge` slot (`JUDGE_SLOT`), or stays on Claude in a config without one
- * (`resolveRequestRoute`), also when an alias would send it to an affordable backend.
+ * `cc-smart-dev-kit-judge` slot (`JUDGE_SLOT`) when it has a tested chain, or stays on
+ * Claude in a config without one (`resolveRequestRoute`), also when an alias would send it
+ * to an affordable backend.
  *
  * A target is written as text in the config and on the command line (and an explicit
  * `<backend>:<model>` works as a model name too, for a one-off try):
@@ -246,28 +252,24 @@ export function resolveRequestRoute(
 }
 
 /**
- * The fallback judge for auto mode's safety checks, opt-in and OFF by default: a new config
- * has no such slot. Set or not, every check goes to Claude first (`resolveRequestRoute`);
- * the judge answers only when Claude cannot: the plan's usage limit, a 401, or no login
- * (the router's `judgeAsFallback`). So auto mode also works at the Claude limit.
- * `gateway slot judge <target>[,<target>]` sets it after each target passes the judge test
- * (`judge-test.ts`); `gateway slot judge off` removes it. The trade-off: a more affordable judge can
- * block good work, a weak one can let a risky command through, and it reads the
+ * The judge for auto mode's safety checks, opt-in and OFF by default: a new config has no
+ * such slot, and every check then goes to Claude (`resolveRequestRoute`). With a chain, the
+ * check goes to the judge's targets in order, like any slot's request (the next one only
+ * while its fallback switch is on); the router uses only a target that passed the judge test
+ * (`judge-test.ts`, `judgeTargetTested`). `gateway slot judge <target>[,<target>]` sets it
+ * after each target passes; `gateway slot judge off` removes it. The trade-off: an affordable
+ * judge can block good work, a weak one can let a risky command through, and it reads the
  * conversation (docs/gateway.md).
  */
 export const JUDGE_SLOT = "cc-smart-dev-kit-judge";
 
 /**
- * The model slots: a fallback for a Claude model Claude Code sends by its real id (the main
- * session's Opus, a Fable agent). OFF by default: with no entry in the config's
- * `modelSlots`, `claude-opus-5-5` goes to Anthropic byte for byte, as it always did.
- * `gateway slot opus claude-opus-5-5,<target>…` turns one on. Its first target is the model
- * itself, sent byte for byte; the router moves to the next target ONLY when Anthropic
- * answers with the plan's usage limit (`planUsageLimit`), never on a short 429 or a 5xx.
- * The value is the family the slot's first target must name, so a typo such as
- * `slot opus claude-sonnet-5-5,…` is refused.
+ * The model slots: the slots for the premium families, Opus and Fable, which Claude Code
+ * sends by their real ids (the main session's Opus, an `opus` or `fable` agent). Like every
+ * slot: OFF by default (no chain: the request goes to Anthropic byte for byte), any target in
+ * any order once the person gives it a chain. The value is the family the slot answers for.
  */
-export const MODEL_SLOTS: Readonly<Record<string, string>> = {
+export const MODEL_SLOTS: Readonly<Record<string, ClaudeFamily>> = {
   "cc-smart-dev-kit-fable": "fable",
   "cc-smart-dev-kit-opus": "opus",
 };
@@ -277,18 +279,67 @@ export function isModelSlot(slot: string): boolean {
   return Object.hasOwn(MODEL_SLOTS, slot);
 }
 
-/** The model slot for a model name, from the config's `modelSlots`; null when it has none. */
-export function modelSlotFor(
-  model: unknown,
-  modelSlots: Readonly<Record<string, string>> | undefined,
-): null | { model: string; slot: string } {
-  if (typeof model !== "string" || !model.startsWith("claude-") || modelSlots === undefined) {
-    return null;
-  }
-  const name = withoutContextSuffix(model);
-  if (!Object.hasOwn(modelSlots, name)) return null;
-  const slot = modelSlots[name];
-  return slot === undefined ? null : { model: name, slot };
+/** The Claude families a model id can name: `claude-<family>-…` or `claude-3-5-<family>-…`. */
+export const CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"] as const;
+export type ClaudeFamily = (typeof CLAUDE_FAMILIES)[number];
+
+/**
+ * The slot that answers for each Claude family, when it has a chain. Read from the id Claude
+ * Code sends, so a newer version of a family (`claude-opus-6-0`) reaches its slot with no
+ * change here. Scout and worker are Haiku's and Sonnet's: background calls, `haiku` and
+ * `sonnet` agents, and a main session on Sonnet.
+ */
+export const FAMILY_SLOTS: Readonly<Record<string, ClaudeFamily>> = {
+  "cc-smart-dev-kit-scout": "haiku",
+  "cc-smart-dev-kit-worker": "sonnet",
+  ...MODEL_SLOTS,
+};
+
+/**
+ * The Claude family a model id names, by its `-<family>-` part (`claude-opus-5-5`,
+ * `claude-3-5-haiku-20241022`), `[1m]` ignored; null for anything else (a backend's model, a
+ * slot key, a Claude id that names no family).
+ */
+export function claudeFamily(model: string): ClaudeFamily | null {
+  const name = `${withoutContextSuffix(model).toLowerCase()}-`;
+  if (!name.startsWith("claude-")) return null;
+  return CLAUDE_FAMILIES.find((family) => name.includes(`-${family}-`)) ?? null;
+}
+
+/**
+ * The slot key that answers for a Claude family (`familySlotKey("opus")` →
+ * `cc-smart-dev-kit-opus`), from `FAMILY_SLOTS`; null for a family no slot answers for.
+ */
+export function familySlotKey(family: ClaudeFamily): null | string {
+  return Object.keys(FAMILY_SLOTS).find((key) => FAMILY_SLOTS[key] === family) ?? null;
+}
+
+/**
+ * The slot for a Claude model a request names (`familySlotFor("claude-opus-6-0")` →
+ * `cc-smart-dev-kit-opus`), with the id as Claude Code sent it, without `[1m]`; null for a
+ * name that is not a Claude id of a known family. Whether the slot is on is the config's.
+ */
+export function familySlotFor(model: unknown): null | { model: string; slot: string } {
+  if (typeof model !== "string") return null;
+  const family = claudeFamily(model);
+  if (family === null) return null;
+  const slot = familySlotKey(family);
+  return slot === null ? null : { model: withoutContextSuffix(model), slot };
+}
+
+/**
+ * The slots whose fallback switch is off until the person turns it on: the model slots and
+ * the judge, whose next targets stand in for a premium model or for the safety judge. Every
+ * other slot (scout, worker, a machine's own) starts with it on.
+ */
+export const FALLBACK_OFF_BY_DEFAULT: readonly string[] = [...Object.keys(MODEL_SLOTS), JUDGE_SLOT];
+
+/**
+ * The targets a slot's request may use: the whole chain while its fallback switch is on, its
+ * first target alone while it is off. The rest stay saved, unused.
+ */
+export function targetsInUse<T>(targets: readonly T[], fallback: boolean): T[] {
+  return fallback ? [...targets] : targets.slice(0, 1);
 }
 
 /**

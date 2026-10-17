@@ -25,12 +25,14 @@
  * that just ended, and a switch back is a different answer.
  *
  * The tier is read the Agent guard's way (`resolveLaunchModel`: the family name, a Claude id,
- * a model slot, `ANTHROPIC_DEFAULT_FABLE_MODEL`), so there is no second list of what counts as
- * Fable — and a `fable` tier a backend answers warns the same, naming the model that answers it.
+ * the fable slot's chain while the gateway is on, `ANTHROPIC_DEFAULT_FABLE_MODEL`), so there is
+ * no second list of what counts as Fable — and a `fable` tier a backend answers warns the same,
+ * naming the model that answers it.
  *
  * **What it costs.** A session that was told stops at the mark. A session on anything else pays
- * one `existsSync` and — at Stop — the transcript's tail; the gateway config is read only when
- * the model text could be Fable at all (`couldBeFable`), and the settings file never is. A
+ * one `existsSync` and — at Stop — the transcript's tail; the gateway config and Claude Code's
+ * settings (is the gateway on?) are read only when the model text could be Fable at all
+ * (`couldBeFable`). A
  * session nobody watches (`claude -p`) is told nothing and keeps no mark.
  *
  * **Once a session**, the mark is `<TMPDIR>/cc-smart-dev-kit-session-names/<session id>.fable`,
@@ -44,11 +46,10 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { MODEL_SLOTS, withoutContextSuffix } from "../gateway/targets";
+import { claudeFamily, MODEL_SLOTS, withoutContextSuffix } from "../gateway/targets";
 import {
   familyEnv,
-  familyOfModel,
-  gatewayConfigOf,
+  gatewayFactsOf,
   type LaunchModel,
   resolveLaunchModel,
   sessionModelOf,
@@ -92,10 +93,10 @@ function firstTime(mark: string): boolean {
 
 /**
  * True when this text could be the fable tier before any file is read: a Claude Fable id, the
- * family name, the family's model-slot key, or the id the person's own override names.
+ * family name, the family's slot key, or the id the person's own override names.
  */
 export function couldBeFable(model: string, env: Env): boolean {
-  if (familyOfModel(model) === "fable") return true;
+  if (claudeFamily(model) === "fable") return true;
   const override = stringField(env[familyEnv("fable")]);
   if (override !== null && withoutContextSuffix(override.trim()) === model) return true;
   const text = withoutContextSuffix(model.trim());
@@ -120,7 +121,7 @@ export function fableSession(input: HookInput, env: Env, paths: CliPaths): HookR
   else if (event === "PostModelSwitch") model = stringField(input.to_model);
   else model = sessionModelOf(input, env);
   if (model === null || !couldBeFable(model, env)) return SILENT;
-  const real = resolveLaunchModel(model, gatewayConfigOf(paths), env);
+  const real = resolveLaunchModel(model, gatewayFactsOf(paths), env);
   if (real.tier !== "fable") return SILENT;
   if (!firstTime(mark)) return SILENT;
   return systemMessage(fableSessionMessage(fableSessionModelName(real)));

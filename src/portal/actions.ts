@@ -1,7 +1,8 @@
 /**
  * What a POST to the portal really does. Every one of them runs the command line's own code:
  *
- *   - a slot, the gateway switch, the judge, the fallback, the router restart and the
+ *   - a slot, its fallback switch, the gateway switch, the judge, the opus and fable slots,
+ *     the router restart and the
  *     OmniRoute update go through `runGateway` / `runOmniroute` — the same functions, the
  *     same checks, the same lock, and the same lines, with `print` collecting them;
  *   - `update`, `doctor`, the heavy-job queue and the companions call the modules the CLI
@@ -123,8 +124,12 @@ export interface ActionContext {
 
 /** The portal's own small state, in the plugin's state folder. */
 export interface PortalMemory {
-  /** The opus and fable fallback chains, by slot key (`cc-smart-dev-kit-opus`): what the
-   * switch turns on again. The slot key, never the family name: the switch reads the same key. */
+  /**
+   * The opus and fable chains, by slot key (`cc-smart-dev-kit-opus`): what the models switch
+   * turns on again. The slot key, never the family name: the switch reads the same key.
+   * Named `fallback` in the file since 0.4.x, when those slots were a fallback: kept, so a
+   * saved file still reads.
+   */
   fallback: Record<string, string[]>;
   /** The judge chain when it was last saved: what the judge switch turns on again. */
   judge: string[];
@@ -354,6 +359,21 @@ async function testTargets(
   return { lines, ok, results };
 }
 
+/**
+ * Sets a slot's fallback switch through `gateway fallback`, the command line's own checks:
+ * a slot with no saved chain has none to set.
+ */
+async function setSlotFallback(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
+  if (slot === "" || typeof body.on !== "boolean") {
+    return { lines: ["Pick a slot, and say on or off."], ok: false };
+  }
+  return gateway(action, ["fallback", slot, body.on ? "on" : "off"]);
+}
+
 /** Saves a chain through `gateway slot`, which also remembers it for the switches. */
 async function saveSlot(
   action: ActionContext,
@@ -435,11 +455,11 @@ async function switchJudge(action: ActionContext, on: boolean): Promise<ActionRe
 }
 
 /**
- * The opus and fable fallback. Off turns both off. On puts the remembered chains back (a
- * model slot needs no test: the CLI checks its model list, and its first target is the
- * Claude model itself). A family with nothing remembered is named, not invented.
+ * The opus and fable slots. Off turns both off (Opus and Fable answer themselves). On puts
+ * the remembered chains back (a model slot needs no test: the CLI checks its model list). A
+ * family with nothing remembered is named, not invented.
  */
-async function switchFallback(action: ActionContext, on: boolean): Promise<ActionResult> {
+async function switchModels(action: ActionContext, on: boolean): Promise<ActionResult> {
   const slots = Object.keys(MODEL_SLOTS);
   if (!on) {
     // One at a time: each takes setup's state lock, and a second call waiting on it would
@@ -456,7 +476,7 @@ async function switchFallback(action: ActionContext, on: boolean): Promise<Actio
       lines.push(...result.lines);
     }
     return {
-      lines: lines.length === 0 ? ["The opus and fable fallback was already off."] : lines,
+      lines: lines.length === 0 ? ["The opus and fable slots were already off."] : lines,
       ok,
     };
   }
@@ -466,7 +486,7 @@ async function switchFallback(action: ActionContext, on: boolean): Promise<Actio
   let ok = true;
   for (const slot of slots) {
     const targets = action.memory.fallback[slot] ?? [];
-    if (targets.length < 2) {
+    if (targets.length === 0) {
       missing.push(slot.replace(/^cc-smart-dev-kit-/, ""));
       continue;
     }
@@ -477,7 +497,7 @@ async function switchFallback(action: ActionContext, on: boolean): Promise<Actio
   }
   if (missing.length > 0) {
     lines.push(
-      `No saved chain for ${missing.join(" or ")}: go to Slots, pick it, add a model, and Save — its first target is the Claude model itself.`,
+      `No saved chain for ${missing.join(" or ")}: go to Slots, pick it, add a model, and Save.`,
     );
   }
   if (turnedOn === 0) {
@@ -996,6 +1016,8 @@ export async function runAction(
       return testTargets(action, body);
     case "slot.save":
       return saveSlot(action, body);
+    case "slot.fallback":
+      return setSlotFallback(action, body);
     case "switch": {
       const which = typeof body.name === "string" ? body.name : "";
       const on = body.on === true;
@@ -1004,8 +1026,8 @@ export async function runAction(
           return switchGateway(action, on);
         case "judge":
           return switchJudge(action, on);
-        case "fallback":
-          return switchFallback(action, on);
+        case "models":
+          return switchModels(action, on);
         case "hold":
           return switchHold(action, on);
         default:

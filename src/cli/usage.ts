@@ -277,7 +277,7 @@ export function formatSafetyChecks(
   for (const [day, record] of days) {
     const fallback =
       record.fallback.checks > 0
-        ? `; a fallback ${record.fallback.checks} (${tokens(record.fallback)})`
+        ? `; your judge ${record.fallback.checks} (${tokens(record.fallback)})`
         : "";
     lines.push(
       `  ${day === today ? `today (${day})` : day}: ${plural(record.checks, "check")} — Anthropic ${record.anthropic.checks} (${tokens(record.anthropic)})${fallback}`,

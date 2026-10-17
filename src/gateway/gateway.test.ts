@@ -40,6 +40,7 @@ import { join } from "node:path";
 import { tempDir } from "../testing/temp";
 import {
   emptyConfig,
+  fallbackOn,
   type GatewayConfig,
   loadConfigFile,
   parseConfig,
@@ -60,10 +61,19 @@ import { cooldownSeconds, isAutoModeGuard, planUsageLimit, resolveRoute } from "
 
 /**
  * The judge test proofs of the test config's two affordable targets, as `gateway slot judge`
- * writes them. Worked out by hand: `printf 'cc-smart-dev-kit judge test 2\n<target>\n<backend URL>'
+ * writes them. Worked out by hand: `printf 'cc-smart-dev-kit judge test 3\n<target>\n<backend URL>'
  * | sha256sum`, the first 32 characters.
  */
 const JUDGE_PROOFS = {
+  "ollama:deepseek-v4.1-flash": "7ba29732f38510ee35fc59e165681f36",
+  "omniroute:glm-5.3-flash": "08eff590b3765df0a3633e319617e0a1",
+};
+
+/**
+ * The same two targets' proofs as 0.4.3 wrote them (`… judge test 2 …`), when a judge
+ * answered only after Claude could not: they must not count for a judge that judges first.
+ */
+const OLD_JUDGE_PROOFS = {
   "ollama:deepseek-v4.1-flash": "43205114c09c6f948cf304d03e1490af",
   "omniroute:glm-5.3-flash": "456b2ea21f1ac7550861ad561381a6ee",
 };
@@ -1130,12 +1140,14 @@ describe("auto mode's safety check", () => {
     expect(JSON.parse(calls[0]?.body ?? "")).toEqual(affordableBodyFor("glm-5.3-flash"));
   });
 
-  // ─── The judge slot: a fallback only, when Claude cannot answer ─────────────
+  // ─── The judge slot: a slot like any other, off by default ───────────────────
 
-  function withJudge(firstByteMs = 1000): GatewayConfig {
+  /** The judge chain: DeepSeek, then GLM, both tested. Its fallback is off unless `fallback`. */
+  function withJudge(firstByteMs = 1000, fallback?: boolean): GatewayConfig {
     const cfg = config(firstByteMs);
     return {
       ...cfg,
+      ...(fallback === undefined ? {} : { fallback: { "cc-smart-dev-kit-judge": fallback } }),
       judgeTested: JUDGE_PROOFS,
       slots: {
         ...cfg.slots,
@@ -1145,7 +1157,9 @@ describe("auto mode's safety check", () => {
   }
 
   const ok = () => new Response("{}", { status: 200 });
+  const down = () => new Response("down", { status: 503 });
   const OLLAMA_URL = "https://ollama.test/v1/messages";
+  const OMNI_URL = "http://omni.test/v1/messages";
   /** Anthropic's answer at the plan's usage limit (Claude Code 2.1.300's own test shape). */
   const atLimit = () =>
     new Response(
@@ -1162,32 +1176,13 @@ describe("auto mode's safety check", () => {
         status: 429,
       },
     );
-  /** A short rate limit: a 429 with no plan-limit headers. Claude Code retries it itself. */
-  const shortLimit = () =>
-    new Response('{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}', {
-      headers: { "retry-after": "1" },
-      status: 429,
-    });
 
-  it("judge set, Claude answers: the check never reaches the judge, and goes byte for byte", async () => {
+  it("judge with a chain: its first target judges the check, reasoning off, no login; Claude is not asked", async () => {
     const { calls, handle, logs } = router([ok], { config: withJudge() });
-    const sent = JSON.stringify(guardBody());
-    const res = await handle(clientRequest({ body: sent }));
-    expect(res.status).toBe(200);
-    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
-    expect(calls[0]?.body).toBe(sent);
-    expect(logs).toEqual([
-      "2026-10-15T10:00:00.000Z POST /v1/messages claude-sonnet-5 (safety check) → anthropic 200 0ms fallbacks=0",
-    ]);
-  });
-
-  it("judge set, the plan's usage limit: the judge answers, reasoning off, no login, a WARN naming it", async () => {
-    const states: string[] = [];
-    const { calls, handle, logs } = router([atLimit, ok], { config: withJudge(), states });
     const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
     expect(res.status).toBe(200);
-    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OLLAMA_URL]);
-    const check: unknown = JSON.parse(nth(calls, 1).body ?? "");
+    expect(calls.map((c) => c.url)).toEqual([OLLAMA_URL]);
+    const check: unknown = JSON.parse(nth(calls, 0).body ?? "");
     expect(check).toMatchObject({
       max_tokens: 64,
       model: "deepseek-v4.1-flash",
@@ -1196,51 +1191,27 @@ describe("auto mode's safety check", () => {
       thinking: { type: "disabled" },
     });
     expect(check).not.toHaveProperty("metadata");
-    expectNoLogin(nth(calls, 1));
-    expect(logs).toEqual([
-      // Anthropic's reason, as for any 4xx (the rule for every target); then the judgement.
-      'WARN anthropic answered 429 — {"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}',
-      "WARN safety check judged by ollama:deepseek-v4.1-flash (200), not by Claude: Claude is at the plan's usage limit (five_hour)",
-      "2026-10-15T10:00:00.000Z POST /v1/messages claude-sonnet-5 (safety check) [judge fallback] → ollama:deepseek-v4.1-flash 200 0ms fallbacks=1",
+    expect(nth(calls, 0).headers).toEqual([
+      ["accept", "application/json"],
+      ["anthropic-version", "2023-06-01"],
+      ["authorization", "Bearer ollama-key-abcdef"],
+      ["content-type", "application/json"],
+      ["user-agent", "claude-cli/2.1.299 (external, cli)"],
+      ["x-claude-code-session-id", "sess-1"],
     ]);
-    expect(JSON.parse(states.at(-1) ?? "")).toEqual({
-      fallbacks: {
-        "cc-smart-dev-kit-judge": {
-          lastAt: Date.UTC(2026, 9, 15, 10, 0, 0),
-          model: "claude-sonnet-5",
-          resetsAt: 1792090800,
-          since: Date.UTC(2026, 9, 15, 10, 0, 0),
-          target: "ollama:deepseek-v4.1-flash",
-        },
-      },
-      limits: {
-        "claude-sonnet-5": {
-          claim: "five_hour",
-          resetsAt: 1792090800,
-          seenAt: Date.UTC(2026, 9, 15, 10, 0, 0),
-        },
-      },
-      version: 1,
-    });
+    expectNoLogin(nth(calls, 0));
+    expect(logs).toEqual([
+      "2026-10-15T10:00:00.000Z POST /v1/messages claude-sonnet-5 (safety check) → ollama:deepseek-v4.1-flash 200 0ms fallbacks=0",
+    ]);
   });
 
-  it("a judge that fails judged nothing: its fallback is not recorded as active", async () => {
-    const states: string[] = [];
-    const down = () => new Response("down", { status: 503 });
-    const { handle } = router([atLimit, down, down], { config: withJudge(), states });
-    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
-    expect(res.status).toBe(503);
-    expect(JSON.parse(states.at(-1) ?? "").fallbacks).toEqual({});
-  });
-
-  it("the newer form at the limit: its slot's Claude target first, then the judge, reasoning off", async () => {
-    const { calls, handle } = router([atLimit, ok], { config: withJudge() });
+  it("the newer form, under a slot name, goes to the judge too, reasoning off", async () => {
+    const { calls, handle } = router([ok], { config: withJudge() });
     await handle(
       clientRequest({ body: JSON.stringify(slotGuardBody("cc-smart-dev-kit-worker[1m]")) }),
     );
-    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OLLAMA_URL]);
-    expect(JSON.parse(nth(calls, 0).body ?? "")).toMatchObject({ model: "claude-sonnet-5-5" });
-    const check: unknown = JSON.parse(nth(calls, 1).body ?? "");
+    expect(calls.map((c) => c.url)).toEqual([OLLAMA_URL]);
+    const check: unknown = JSON.parse(nth(calls, 0).body ?? "");
     expect(check).toMatchObject({
       model: "deepseek-v4.1-flash",
       output_config: { effort: "none" },
@@ -1248,52 +1219,45 @@ describe("auto mode's safety check", () => {
     expect(check).not.toHaveProperty("thinking");
   });
 
-  it("judge set, a 401 (no valid Claude login): the judge answers", async () => {
-    const { calls, handle, logs } = router(
-      [
-        () =>
-          new Response('{"type":"error","error":{"type":"authentication_error"}}', { status: 401 }),
-        ok,
-      ],
-      { config: withJudge() },
-    );
+  it("judge, fallback off (its default): a failing first target is the answer; nothing else is asked, Claude neither", async () => {
+    const { calls, handle } = router([down], { config: withJudge() });
     const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
-    expect(res.status).toBe(200);
-    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OLLAMA_URL]);
-    expect(logs).toContain(
-      "WARN safety check judged by ollama:deepseek-v4.1-flash (200), not by Claude: Claude answered 401 (no valid Claude login)",
-    );
-  });
-
-  it("judge set, no login on the request at all: Claude is not asked, the judge answers", async () => {
-    const { calls, handle } = router([ok], { config: withJudge() });
-    const res = await handle(
-      clientRequest({
-        body: JSON.stringify(guardBody()),
-        headers: { authorization: null, cookie: null, "x-api-key": null },
-      }),
-    );
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(503);
+    expect(await res.text()).toBe("down");
     expect(calls.map((c) => c.url)).toEqual([OLLAMA_URL]);
   });
 
-  it("judge set, a 5xx or a short 429: no judge; Claude's answer goes back as it is", async () => {
-    const cases = [
-      { answer: () => new Response("down", { status: 503 }), status: 503, text: "down" },
-      {
-        answer: shortLimit,
-        status: 429,
-        text: '{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}',
-      },
-    ];
-    for (const { answer, status, text } of cases) {
-      const { calls, handle, logs } = router([answer], { config: withJudge() });
-      const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
-      expect(res.status).toBe(status);
-      expect(await res.text()).toBe(text);
-      expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
-      expect(logs.filter((line) => line.includes("judged by"))).toEqual([]);
-    }
+  it("judge, fallback on: the next judge answers when its first does not", async () => {
+    const { calls, handle } = router([down, ok], { config: withJudge(1000, true) });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(200);
+    expect(calls.map((c) => c.url)).toEqual([OLLAMA_URL, OMNI_URL]);
+  });
+
+  it("judge, every target failing: its last answer goes back, and nothing goes to Anthropic", async () => {
+    const { calls, handle } = router([down, down], { config: withJudge(1000, true) });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(503);
+    expect(calls.map((c) => c.url)).toEqual([OLLAMA_URL, OMNI_URL]);
+  });
+
+  it("a judge that hangs gets the deadline though the check does not stream; the next judge answers", async () => {
+    let firstSignal: AbortSignal | undefined;
+    const { calls, handle } = router(
+      [
+        (call) => {
+          firstSignal = call.signal;
+          // Never answers, and ignores the abort: the router must not wait on it.
+          return new Promise<Response>(() => undefined);
+        },
+        ok,
+      ],
+      { config: withJudge(50, true) },
+    );
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(200);
+    expect(calls.map((c) => c.url)).toEqual([OLLAMA_URL, OMNI_URL]);
+    expect(firstSignal?.aborted).toBe(true);
   });
 
   it("judge not set, the plan's usage limit: the answer goes back as it is", async () => {
@@ -1304,52 +1268,18 @@ describe("auto mode's safety check", () => {
     expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
   });
 
-  it("the judge's own fallback answers when its first does not", async () => {
-    const { calls, handle } = router([atLimit, () => new Response("busy", { status: 503 }), ok], {
-      config: withJudge(),
+  it("a judge set before 0.5.0 (its proofs from test version 2) judges nothing: Claude judges, one WARN per target", async () => {
+    const { calls, handle, logs } = router([ok], {
+      config: { ...withJudge(), judgeTested: OLD_JUDGE_PROOFS },
     });
-    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
-    expect(res.status).toBe(200);
-    expect(calls.map((c) => c.url)).toEqual([
-      ANTHROPIC_URL,
-      OLLAMA_URL,
-      "http://omni.test/v1/messages",
+    const sent = JSON.stringify(guardBody());
+    await handle(clientRequest({ body: sent }));
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+    expect(nth(calls, 0).body).toBe(sent);
+    expect(logs).toEqual([
+      "WARN cc-smart-dev-kit-judge: ollama:deepseek-v4.1-flash has not passed the judge test, so it judges nothing. Test and set it: cc-smart-dev-kit gateway slot judge <targets>",
+      "2026-10-15T10:00:00.000Z POST /v1/messages claude-sonnet-5 (safety check) → anthropic 200 0ms fallbacks=0",
     ]);
-  });
-
-  it("a judge that hangs gets the deadline though the check does not stream; the next judge answers", async () => {
-    let firstSignal: AbortSignal | undefined;
-    const { calls, handle } = router(
-      [
-        atLimit,
-        (call) => {
-          firstSignal = call.signal;
-          // Never answers, and ignores the abort: the router must not wait on it.
-          return new Promise<Response>(() => undefined);
-        },
-        ok,
-      ],
-      { config: withJudge(50) },
-    );
-    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
-    expect(res.status).toBe(200);
-    expect(calls.map((c) => c.url)).toEqual([
-      ANTHROPIC_URL,
-      OLLAMA_URL,
-      "http://omni.test/v1/messages",
-    ]);
-    expect(firstSignal?.aborted).toBe(true);
-  });
-
-  it("the judge fallback ends once Claude answers a check again", async () => {
-    const states: string[] = [];
-    const { handle, logs } = router([atLimit, ok, ok], { config: withJudge(), states });
-    await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
-    await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
-    expect(logs).toContain(
-      "cc-smart-dev-kit-judge: Claude answers safety checks again; the judge fallback is over",
-    );
-    expect(JSON.parse(states.at(-1) ?? "")).toEqual({ fallbacks: {}, limits: {}, version: 1 });
   });
 
   it("the judge slot takes no claude-… target: the check's body would get a 400", () => {
@@ -1374,18 +1304,16 @@ describe("auto mode's safety check", () => {
     expect(isAutoModeGuard({ model: "claude-opus-5-5", system: prompt, tools: [] })).toBe(true);
   });
 
-  it("count_tokens for a check with a judge slot: Claude, as with no judge; never the judge", async () => {
-    const { calls, handle } = router([atLimit], { config: withJudge() });
+  it("count_tokens for a check with a judge: the judge's first target, a backend, so a 404", async () => {
+    const { calls, handle } = router([], { config: withJudge() });
     const res = await handle(
       clientRequest({
         body: JSON.stringify(guardBody()),
         path: "/v1/messages/count_tokens?beta=true",
       }),
     );
-    expect(res.status).toBe(429);
-    expect(calls.map((c) => c.url)).toEqual([
-      "https://anthropic.test/v1/messages/count_tokens?beta=true",
-    ]);
+    expect(res.status).toBe(404);
+    expect(calls).toEqual([]);
   });
 
   it("a judge slot changes nothing else: an ordinary Claude request goes byte for byte", async () => {
@@ -1521,9 +1449,9 @@ describe("auto mode's safety check", () => {
     });
   });
 
-  it("a check the judge answered counts as a fallback, with what its own answer reported", async () => {
+  it("a check the judge answered counts as the judge's, with what its own answer reported", async () => {
     const checks: string[] = [];
-    const { handle, settled } = router([atLimit, answerWithUsage(11, 3)], {
+    const { handle, settled } = router([answerWithUsage(11, 3)], {
       checks,
       config: withJudge(),
     });
@@ -1768,9 +1696,22 @@ describe("a slot's Claude target: only the fields it refuses change", () => {
       changes: [],
     });
     expect(requestForClaudeFallback(accepted, "claude-sonnet-5-5").body).toBe(accepted);
-    // A model with no rules in the table: unchanged, whatever it carries.
+    // A family with no rules in the table: unchanged, whatever it carries.
     const body = refusedBody("cc-smart-dev-kit-worker");
-    expect(requestForClaudeFallback(body, "claude-sonnet-5").body).toBe(body);
+    expect(requestForClaudeFallback(body, "claude-haiku-4-5").body).toBe(body);
+    expect(requestForClaudeFallback(body, "claude-fable-5-1").body).toBe(body);
+  });
+
+  it("the rules go by the target's family: a newer Sonnet or Opus gets its family's", () => {
+    const off = { model: "cc-smart-dev-kit-worker", thinking: { type: "disabled" } };
+    expect(requestForClaudeFallback(off, "claude-sonnet-6-0").body).toEqual({
+      model: "cc-smart-dev-kit-worker",
+      thinking: { type: "between_tools" },
+    });
+    expect(requestForClaudeFallback(off, "claude-opus-6-0[1m]").body).toEqual({
+      model: "cc-smart-dev-kit-worker",
+      output_config: { effort: "low" },
+    });
   });
 
   it("a slot falling back to Claude Sonnet 5.5 sends between_tools; the affordable targets got the body unchanged by it", async () => {
@@ -2378,8 +2319,6 @@ describe("local-only guard", () => {
     expect(JSON.parse(text)).toEqual({
       cooling: {},
       fallbacks: 0,
-      limited: {},
-      modelSlots: {},
       ok: true,
       port: 20100,
       requests: 1,
@@ -2559,19 +2498,16 @@ describe("config file", () => {
     expect(source.get().slots).toEqual({ "cc-smart-dev-kit-scout": ["claude-haiku-5-5"] });
   });
 
-  it("no file at start: both slots on Claude Sonnet, says so once, and picks the file up later", () => {
+  it("no file at start: every slot off, says so once, and picks the file up later", () => {
     const path = join(dir, "gateway.json");
     const logs: string[] = [];
     const source = watchConfig(path, (line) => logs.push(line));
-    expect(source.get().slots).toEqual({
-      "cc-smart-dev-kit-scout": ["claude-sonnet-5-5"],
-      "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"],
-    });
+    expect(source.get().slots).toEqual({});
     expect(source.get().port).toBe(20100);
     expect(source.loaded()).toBe(false);
     expect(logs).toHaveLength(1);
     expect(logs[0]).toContain(
-      "every haiku / sonnet call answers on claude-sonnet-5-5 (your own Claude login) until it is fixed",
+      "every slot is off: each Claude model goes to Anthropic as Claude Code sent it (your own Claude login) until it is fixed",
     );
     write(path, fileJson({ "cc-smart-dev-kit-scout": ["claude-sonnet-5-5"] }), 1000);
     expect(source.get().slots).toEqual({ "cc-smart-dev-kit-scout": ["claude-sonnet-5-5"] });
@@ -2580,14 +2516,14 @@ describe("config file", () => {
 });
 
 describe("no config: Claude Code keeps working", () => {
-  it("a slot call answers on the own login through Claude Sonnet, not a 400", async () => {
-    const { calls, handle } = router([() => new Response("sonnet")], { config: emptyConfig() });
-    const res = await handle(
-      clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-scout")) }),
-    );
-    expect(await res.text()).toBe("sonnet");
-    expect(nth(calls, 0).url).toBe("https://anthropic.test/v1/messages?beta=true");
-    expect(JSON.parse(nth(calls, 0).body ?? "")).toMatchObject({ model: "claude-sonnet-5-5" });
+  it("every slot off: a Claude model's call goes to Anthropic as sent, on the own login; no model is put in its place", async () => {
+    const { calls, handle } = router([() => new Response("haiku")], { config: emptyConfig() });
+    const sent = JSON.stringify(message("claude-haiku-4-5-20251001"));
+    const res = await handle(clientRequest({ body: sent }));
+    expect(await res.text()).toBe("haiku");
+    expect(calls.map((c) => c.url)).toEqual(["https://anthropic.test/v1/messages?beta=true"]);
+    expect(nth(calls, 0).body).toBe(sent);
+    expect(nth(calls, 0).headers).toContainEqual(["authorization", `Bearer ${TOKEN}`]);
   });
 
   it.skipIf(NO_POSIX_MODES)("a refused file is picked up after chmod 600 alone", () => {
@@ -2723,17 +2659,7 @@ describe("aliases", () => {
     expectNoLogin(nth(calls, 0));
   });
 
-  /** Anthropic's answer at the plan's usage limit. */
-  const atLimit = () =>
-    new Response("{}", {
-      headers: {
-        "anthropic-ratelimit-unified-reset": "1792090800",
-        "anthropic-ratelimit-unified-status": "rejected",
-      },
-      status: 429,
-    });
-
-  it("the safety check under an old name is still the safety check: Claude first, the judge at the limit", async () => {
+  it("the safety check under an old name is still the safety check: the judge takes it", async () => {
     const judged = aliased(
       { "old-worker": "cc-smart-dev-kit-worker" },
       {
@@ -2741,7 +2667,7 @@ describe("aliases", () => {
         slots: { ...config().slots, "cc-smart-dev-kit-judge": ["ollama:deepseek-v4.1-flash"] },
       },
     );
-    const { calls, handle, logs } = router([atLimit, () => new Response("{}")], {
+    const { calls, handle, logs } = router([() => new Response("{}")], {
       config: judged,
     });
     const check = {
@@ -2751,12 +2677,9 @@ describe("aliases", () => {
       system: "You are a security monitor for autonomous AI coding agents.",
     };
     await handle(clientRequest({ body: JSON.stringify(check) }));
-    expect(calls.map((call) => call.url)).toEqual([
-      "https://anthropic.test/v1/messages?beta=true",
-      "https://ollama.test/v1/messages",
-    ]);
+    expect(calls.map((call) => call.url)).toEqual(["https://ollama.test/v1/messages"]);
     expect(logs.at(-1)).toBe(
-      "2026-10-15T10:00:00.000Z POST /v1/messages old-worker[1m] (safety check) [judge fallback] → ollama:deepseek-v4.1-flash 200 0ms fallbacks=1",
+      "2026-10-15T10:00:00.000Z POST /v1/messages old-worker[1m] (safety check) → ollama:deepseek-v4.1-flash 200 0ms fallbacks=0",
     );
   });
 
@@ -2792,7 +2715,7 @@ describe("aliases", () => {
     expect(isAutoModeGuard(check, { "other-name": "cc-smart-dev-kit-worker" })).toBe(false);
   });
 
-  it("judge on: the same check goes to Anthropic as sent; only at the limit to the judge", async () => {
+  it("judge on: the same check goes to the judge, without the login, never to the alias's backend", async () => {
     const judged = aliased(
       { "old-worker": "omniroute:glm-5.3-flash" },
       {
@@ -2801,19 +2724,10 @@ describe("aliases", () => {
       },
     );
     const sent = JSON.stringify(aliasedCheck("old-worker[1m]"));
-    const refused = router([() => new Response("not found", { status: 404 })], { config: judged });
-    expect((await refused.handle(clientRequest({ body: sent }))).status).toBe(404);
-    expect(refused.calls.map((call) => call.url)).toEqual([
-      "https://anthropic.test/v1/messages?beta=true",
-    ]);
-    expect(nth(refused.calls, 0).body).toBe(sent);
-    const limited = router([atLimit, () => new Response("{}")], { config: judged });
-    await limited.handle(clientRequest({ body: sent }));
-    expect(limited.calls.map((call) => call.url)).toEqual([
-      "https://anthropic.test/v1/messages?beta=true",
-      "https://ollama.test/v1/messages",
-    ]);
-    expectNoLogin(nth(limited.calls, 1));
+    const { calls, handle } = router([() => new Response("{}")], { config: judged });
+    expect((await handle(clientRequest({ body: sent }))).status).toBe(200);
+    expect(calls.map((call) => call.url)).toEqual(["https://ollama.test/v1/messages"]);
+    expectNoLogin(nth(calls, 0));
   });
 
   it("a request under that alias that is not the check still goes to the backend", async () => {
@@ -3144,14 +3058,27 @@ describe("prompts stay as Claude Code wrote them", () => {
 
 // ─── Model slots: a fallback for Opus or Fable, only at the plan's usage limit ─────────────
 
-describe("model slots (opus, fable)", () => {
+describe("model slots (opus, fable) and every slot by its family", () => {
   const ANTHROPIC_URL = "https://anthropic.test/v1/messages?beta=true";
+  const COUNT_URL = "https://anthropic.test/v1/messages/count_tokens?beta=true";
   const OMNI_URL = "http://omni.test/v1/messages";
+  const OLLAMA_URL = "https://ollama.test/v1/messages";
   const T0 = Date.UTC(2026, 9, 15, 10, 0, 0);
   /** Unix seconds, three hours after T0. */
   const RESET = T0 / 1000 + 3 * 3600;
 
-  function withOpusSlot(): GatewayConfig {
+  /** config() with an opus chain; its fallback switch left to its default (off) unless given. */
+  function withOpus(targets: string[], fallback?: boolean): GatewayConfig {
+    const cfg = config();
+    return {
+      ...cfg,
+      ...(fallback === undefined ? {} : { fallback: { "cc-smart-dev-kit-opus": fallback } }),
+      slots: { ...cfg.slots, "cc-smart-dev-kit-opus": targets },
+    };
+  }
+
+  /** A 0.4.x config: `modelSlots` keyed by the real id, the model itself first. */
+  function oldOpusConfig(): GatewayConfig {
     const cfg = config();
     return {
       ...cfg,
@@ -3163,13 +3090,12 @@ describe("model slots (opus, fable)", () => {
           "omniroute:glm-5.3-flash",
           "ollama:deepseek-v4.1-flash",
         ],
-        // Another slot that also uses Opus, ahead of an affordable target.
-        "cc-smart-dev-kit-opus-first": ["claude-opus-5-5", "omniroute:glm-5.3-flash"],
       },
     };
   }
 
   const ok = () => new Response("{}", { status: 200 });
+  const down = () => new Response("down", { status: 503 });
   const atLimit = () =>
     new Response(
       '{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}',
@@ -3190,9 +3116,13 @@ describe("model slots (opus, fable)", () => {
       status: 429,
     });
 
-  /** An Opus request as Claude Code sends it, with a thinking block in its history. */
+  /**
+   * An Opus request as Claude Code sends it for the main session: adaptive thinking, an
+   * effort, context management, a thinking block in its history.
+   */
   function opusBody(model = "claude-opus-5-5"): Record<string, unknown> {
     return {
+      context_management: { edits: [{ type: "clear_thinking_20251015" }] },
       max_tokens: 32000,
       messages: [
         { content: "fix the build", role: "user" },
@@ -3207,13 +3137,13 @@ describe("model slots (opus, fable)", () => {
       ],
       metadata: { user_id: `user_acct-42_${TOKEN}` },
       model,
-      output_config: { effort: "high" },
+      output_config: { effort: "xhigh" },
       stream: true,
       thinking: { type: "adaptive" },
     };
   }
 
-  it("default, no model slot: an Opus request at its limit goes byte for byte, the 429 as it is", async () => {
+  it("default, no opus chain: an Opus request at its limit goes byte for byte, the 429 as it is", async () => {
     const states: string[] = [];
     const { calls, handle } = router([atLimit], { states });
     const sent = JSON.stringify(opusBody(), null, 1); // spaced: a re-written body would differ
@@ -3222,6 +3152,7 @@ describe("model slots (opus, fable)", () => {
     expect(res.headers.get("anthropic-ratelimit-unified-status")).toBe("rejected");
     expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
     expect(nth(calls, 0).body).toBe(sent);
+    expect(nth(calls, 0).headers).toContainEqual(["authorization", `Bearer ${TOKEN}`]);
     // The limit is noted for the status line and the hook; the answer is not touched.
     expect(JSON.parse(states.at(-1) ?? "")).toEqual({
       fallbacks: {},
@@ -3230,36 +3161,124 @@ describe("model slots (opus, fable)", () => {
     });
   });
 
-  it("a model slot, Claude answers: one call, byte for byte, on the own login", async () => {
-    const { calls, handle, logs } = router([ok], { config: withOpusSlot() });
-    const sent = JSON.stringify(opusBody(), null, 1);
-    const res = await handle(clientRequest({ body: sent }));
-    expect(res.status).toBe(200);
+  it("an off slot passes the exact id it was sent through: a newer Opus, byte for byte, on the own login", async () => {
+    const { calls, handle, logs } = router([ok]);
+    const sent = JSON.stringify(opusBody("claude-opus-6-0"), null, 1);
+    await handle(clientRequest({ body: sent }));
     expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
     expect(nth(calls, 0).body).toBe(sent);
     expect(nth(calls, 0).headers).toContainEqual(["authorization", `Bearer ${TOKEN}`]);
     expect(logs).toEqual([
-      "2026-10-15T10:00:00.000Z POST /v1/messages claude-opus-5-5 → anthropic 200 0ms fallbacks=0",
+      "2026-10-15T10:00:00.000Z POST /v1/messages claude-opus-6-0 → anthropic 200 0ms fallbacks=0",
     ]);
   });
 
-  it("at the plan's usage limit: the next target, with an affordable backend's translations only; one WARN; the state file", async () => {
+  it("an opus chain whose first target is a backend: that backend, its own key, no Claude credential, a body it takes", async () => {
+    const { calls, handle, logs } = router([ok], {
+      config: withOpus(["omniroute:ollama-cloud/glm-5.3-flash"]),
+    });
+    const res = await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+    expect(res.status).toBe(200);
+    expect(calls.map((c) => c.url)).toEqual([OMNI_URL]);
+    // Exactly the allow-list and the backend's key: no authorization of the login, no
+    // x-api-key, no cookie, no anthropic-beta.
+    expect(nth(calls, 0).headers).toEqual([
+      ["accept", "application/json"],
+      ["anthropic-version", "2023-06-01"],
+      ["authorization", "Bearer omni-key-123456"],
+      ["content-type", "application/json"],
+      ["user-agent", "claude-cli/2.1.299 (external, cli)"],
+      ["x-claude-code-session-id", "sess-1"],
+    ]);
+    expectNoLogin(nth(calls, 0));
+    // The body as sent, without `metadata`, under the backend's model: thinking, effort and
+    // context management stay for OmniRoute's own translation; not a word of a message changes.
+    expect(JSON.parse(nth(calls, 0).body ?? "")).toEqual({
+      context_management: { edits: [{ type: "clear_thinking_20251015" }] },
+      max_tokens: 32000,
+      messages: [
+        { content: "fix the build", role: "user" },
+        {
+          content: [
+            { signature: "sig-abc", thinking: "Look at the error first.", type: "thinking" },
+            { text: "Looking.", type: "text" },
+          ],
+          role: "assistant",
+        },
+        { content: "go on", role: "user" },
+      ],
+      model: "ollama-cloud/glm-5.3-flash",
+      output_config: { effort: "xhigh" },
+      stream: true,
+      thinking: { type: "adaptive" },
+    });
+    expect(logs).toEqual([
+      "2026-10-15T10:00:00.000Z POST /v1/messages claude-opus-5-5 → omniroute:ollama-cloud/glm-5.3-flash 200 0ms fallbacks=0",
+    ]);
+  });
+
+  it("a request reaches its family's slot by the id it names: a newer Opus, an Opus with [1m], Haiku and Sonnet", async () => {
+    const cfg = withOpus(["omniroute:glm-5.3-flash"]);
+    const { calls, handle } = router([ok, ok, ok, ok], { config: cfg });
+    for (const model of [
+      "claude-opus-6-0",
+      "claude-opus-5-5[1m]",
+      // config()'s scout: GLM first; its worker: Claude Sonnet 5.5 alone, so the bytes as sent.
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5-5",
+    ]) {
+      await handle(clientRequest({ body: JSON.stringify(message(model)) }));
+    }
+    expect(calls.map((c) => c.url)).toEqual([OMNI_URL, OMNI_URL, OMNI_URL, ANTHROPIC_URL]);
+    expect(JSON.parse(nth(calls, 0).body ?? "").model).toBe("glm-5.3-flash");
+    expect(nth(calls, 3).body).toBe(JSON.stringify(message("claude-sonnet-5-5")));
+  });
+
+  it("fallback off (opus's default): the first target failing is its answer; no second request, nothing to Anthropic", async () => {
+    const { calls, handle } = router([down], {
+      config: withOpus(["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"]),
+    });
+    const res = await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+    expect(res.status).toBe(503);
+    expect(await res.text()).toBe("down");
+    expect(calls.map((c) => c.url)).toEqual([OMNI_URL]);
+  });
+
+  it("fallback on: the second target answers when the first fails, the rule scout uses", async () => {
+    const { calls, handle } = router([down, ok], {
+      config: withOpus(["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"], true),
+    });
+    const res = await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+    expect(res.status).toBe(200);
+    expect(calls.map((c) => c.url)).toEqual([OMNI_URL, OLLAMA_URL]);
+    expectNoLogin(nth(calls, 1));
+    expect(nth(calls, 1).headers).toContainEqual(["authorization", "Bearer ollama-key-abcdef"]);
+  });
+
+  it("every target failing: the last answer goes back, and nothing goes to Anthropic", async () => {
+    const { calls, handle } = router([down, down], {
+      config: withOpus(["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"], true),
+    });
+    const res = await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+    expect(res.status).toBe(503);
+    expect(calls.map((c) => c.url)).toEqual([OMNI_URL, OLLAMA_URL]);
+  });
+
+  it("an explicit claude-… target is used in its place: Opus itself first, the bytes as sent; at its limit the next target", async () => {
     const states: string[] = [];
-    const { calls, handle, logs } = router([atLimit, ok], { config: withOpusSlot(), states });
+    const { calls, handle, logs } = router([atLimit, ok], {
+      config: withOpus(["claude-opus-5-5", "omniroute:glm-5.3-flash"], true),
+      states,
+    });
     const sent = JSON.stringify(opusBody(), null, 1);
     const res = await handle(clientRequest({ body: sent }));
     expect(res.status).toBe(200);
     expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OMNI_URL]);
     expect(nth(calls, 0).body).toBe(sent);
-    const affordable = nth(calls, 1);
-    expectNoLogin(affordable);
-    expect(affordable.headers).toEqual(AFFORDABLE_HEADERS_OMNI);
-    // The body as sent, without `metadata`, under the backend's model: the thinking block
-    // stays (GLM 5.3 Flash took one, measured), not a word changes.
-    const { metadata: _dropped, ...rest } = opusBody();
-    expect(JSON.parse(affordable.body ?? "")).toEqual({ ...rest, model: "glm-5.3-flash" });
+    expect(nth(calls, 0).headers).toContainEqual(["authorization", `Bearer ${TOKEN}`]);
+    expectNoLogin(nth(calls, 1));
     expect(logs).toEqual([
-      'WARN claude-opus-5-5 answered 429 (the plan\'s usage limit); trying the next target of cc-smart-dev-kit-opus — {"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}',
+      'WARN claude-opus-5-5 answered 429; trying the next target — {"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}',
       "WARN cc-smart-dev-kit-opus: claude-opus-5-5 is at its plan usage limit (five_hour, resets 2026-10-15T13:00:00.000Z); answering from omniroute:glm-5.3-flash until claude-opus-5-5 answers again",
       "2026-10-15T10:00:00.000Z POST /v1/messages claude-opus-5-5 → omniroute:glm-5.3-flash 200 0ms fallbacks=1",
     ]);
@@ -3278,29 +3297,51 @@ describe("model slots (opus, fable)", () => {
     });
   });
 
-  it("a short 429 or a 5xx: no fallback, Claude's answer as it is, and Opus does not rest", async () => {
-    const { calls, handle } = router(
-      [shortLimit, () => new Response("down", { status: 503 }), ok],
-      { config: withOpusSlot() },
-    );
+  it("a short 429 or a 5xx from Opus moves on too, as on every slot", async () => {
+    const { calls, handle } = router([shortLimit, ok], {
+      config: withOpus(["claude-opus-5-5", "omniroute:glm-5.3-flash"], true),
+    });
     const sent = JSON.stringify(opusBody());
-    const first = await handle(clientRequest({ body: sent }));
-    expect(first.status).toBe(429);
-    expect(await first.text()).toBe(
-      '{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}',
-    );
-    const second = await handle(clientRequest({ body: sent }));
-    expect(second.status).toBe(503);
-    expect(await second.text()).toBe("down");
     expect((await handle(clientRequest({ body: sent }))).status).toBe(200);
-    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, ANTHROPIC_URL, ANTHROPIC_URL]);
+    // A router of its own: Opus rests for a moment after the 429 above.
+    const again = router([down, ok], {
+      config: withOpus(["claude-opus-5-5", "omniroute:glm-5.3-flash"], true),
+    });
+    expect((await again.handle(clientRequest({ body: sent }))).status).toBe(200);
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OMNI_URL]);
+    expect(again.calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OMNI_URL]);
   });
 
-  it("Opus rests until its reset (10 minutes at most), then is asked again; its answer ends the fallback", async () => {
+  it("a 0.4.x config reads with its meaning kept: Opus first, its fallback on, the next target at its limit", async () => {
+    const { calls, handle } = router([atLimit, ok], { config: oldOpusConfig() });
+    const sent = JSON.stringify(opusBody(), null, 1);
+    await handle(clientRequest({ body: sent }));
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OMNI_URL]);
+    expect(nth(calls, 0).body).toBe(sent);
+  });
+
+  it("another Claude model in the chain gets the body with its model set, and only the fields it refuses changed", async () => {
+    const { calls, handle } = router([ok], { config: withOpus(["claude-sonnet-5-5"]) });
+    const body = {
+      ...opusBody(),
+      output_config: { effort: "max" },
+      thinking: { type: "disabled" },
+    };
+    await handle(clientRequest({ body: JSON.stringify(body) }));
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+    expect(JSON.parse(nth(calls, 0).body ?? "")).toEqual({
+      ...body,
+      model: "claude-sonnet-5-5",
+      output_config: { effort: "high" },
+      thinking: { type: "between_tools" },
+    });
+  });
+
+  it("Opus rests after its limit (10 minutes at most), then is asked again; its answer ends the fallback", async () => {
     let now = T0;
     const states: string[] = [];
     const { calls, handle, logs } = router([atLimit, ok, ok, ok], {
-      config: withOpusSlot(),
+      config: withOpus(["claude-opus-5-5", "omniroute:glm-5.3-flash"], true),
       now: () => now,
       states,
     });
@@ -3314,7 +3355,7 @@ describe("model slots (opus, fable)", () => {
     expect(logs.filter((line) => line.includes(" POST "))).toEqual([
       "2026-10-15T10:00:00.000Z POST /v1/messages claude-opus-5-5 → omniroute:glm-5.3-flash 200 0ms fallbacks=1",
       "2026-10-15T10:01:00.000Z POST /v1/messages claude-opus-5-5 → omniroute:glm-5.3-flash 200 0ms fallbacks=0 skipped=1",
-      "2026-10-15T10:11:00.000Z POST /v1/messages claude-opus-5-5 → anthropic 200 0ms fallbacks=0",
+      "2026-10-15T10:11:00.000Z POST /v1/messages claude-opus-5-5 → claude-opus-5-5 200 0ms fallbacks=0",
     ]);
     expect(logs).toContain(
       "cc-smart-dev-kit-opus: claude-opus-5-5 answers again; its fallback is over",
@@ -3323,15 +3364,10 @@ describe("model slots (opus, fable)", () => {
     expect(JSON.parse(states.at(-1) ?? "")).toEqual({ fallbacks: {}, limits: {}, version: 1 });
   });
 
-  it("a short 429 to another slot's Opus target never moves the model slot", async () => {
-    const { calls, handle } = router([shortLimit, ok, ok], { config: withOpusSlot() });
-    await handle(clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-opus-first")) }));
-    await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
-    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OMNI_URL, ANTHROPIC_URL]);
-  });
-
-  it("the safety check under an Opus id never goes to the model slot", async () => {
-    const { calls, handle } = router([atLimit], { config: withOpusSlot() });
+  it("the safety check under an Opus id never goes to the opus slot", async () => {
+    const { calls, handle } = router([atLimit], {
+      config: withOpus(["omniroute:glm-5.3-flash"]),
+    });
     const check = {
       max_tokens: 64,
       messages: [{ content: "<transcript>git push --force</transcript>", role: "user" }],
@@ -3345,21 +3381,42 @@ describe("model slots (opus, fable)", () => {
     expect(nth(calls, 0).body).toBe(sent);
   });
 
-  it("count_tokens stays on Anthropic; a [1m] name finds the slot", async () => {
-    const { calls, handle } = router([atLimit, atLimit, ok], { config: withOpusSlot() });
-    const counted = await handle(
+  it("count_tokens: the first target only; a backend there is a 404, Opus itself gets the bytes as sent", async () => {
+    const backendFirst = router([], { config: withOpus(["omniroute:glm-5.3-flash"]) });
+    const counted = await backendFirst.handle(
       clientRequest({
         body: JSON.stringify(opusBody()),
         path: "/v1/messages/count_tokens?beta=true",
       }),
     );
-    expect(counted.status).toBe(429);
-    await handle(clientRequest({ body: JSON.stringify(opusBody("claude-opus-5-5[1m]")) }));
-    expect(calls.map((c) => c.url)).toEqual([
-      "https://anthropic.test/v1/messages/count_tokens?beta=true",
-      ANTHROPIC_URL,
-      OMNI_URL,
-    ]);
+    expect(counted.status).toBe(404);
+    expect(backendFirst.calls).toEqual([]);
+    const claudeFirst = router([ok], {
+      config: withOpus(["claude-opus-5-5", "omniroute:glm-5.3-flash"], true),
+    });
+    const sent = JSON.stringify(opusBody(), null, 1);
+    await claudeFirst.handle(
+      clientRequest({ body: sent, path: "/v1/messages/count_tokens?beta=true" }),
+    );
+    expect(claudeFirst.calls.map((c) => c.url)).toEqual([COUNT_URL]);
+    expect(nth(claudeFirst.calls, 0).body).toBe(sent);
+  });
+
+  it("a slot-named request for a slot that is off: a 400 that says how to fix it, nothing sent", async () => {
+    const { calls, handle } = router([], { config: emptyConfig() });
+    const res = await handle(
+      clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-worker[1m]")) }),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: {
+        message:
+          "cc-smart-dev-kit-router: cc-smart-dev-kit-worker is off (no chain in /home/someone/.config/cc-smart-dev-kit/gateway.json), and this request names the slot, not a Claude model: Claude Code's settings still send sonnet work to it. Run: cc-smart-dev-kit gateway on (it stops that), or give the slot a chain: cc-smart-dev-kit gateway slot worker <targets>",
+        type: "invalid_request_error",
+      },
+      type: "error",
+    });
+    expect(calls).toEqual([]);
   });
 
   it("planUsageLimit: only a 429 that says rejected, with no paid extra usage taking over", () => {
@@ -3397,13 +3454,19 @@ describe("model slots (opus, fable)", () => {
     ).toEqual({ claim: null, resetsAt: null });
   });
 
-  it("the config: a model slot starts with its own model, has a target after it, and fits its family", () => {
-    const cfg = withOpusSlot();
+  it("the config: a model slot takes any chain; a 0.4.x modelSlots entry still loads, its family and slot checked; fallback names a slot", () => {
+    const cfg = oldOpusConfig();
     expect("config" in parseConfig(cfg)).toBe(true);
     const errorOf = (changed: Partial<GatewayConfig>) => {
       const parsed = parseConfig({ ...cfg, ...changed });
       return "error" in parsed ? parsed.error : "no error";
     };
+    // Any order, any length: a backend first, one target.
+    const swapped = ["omniroute:glm-5.3-flash", "claude-opus-5-5"];
+    expect(errorOf({ slots: { ...cfg.slots, "cc-smart-dev-kit-opus": swapped } })).toBe("no error");
+    expect(
+      errorOf({ slots: { ...cfg.slots, "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"] } }),
+    ).toBe("no error");
     expect(errorOf({ modelSlots: { "claude-sonnet-5-5": "cc-smart-dev-kit-opus" } })).toContain(
       'modelSlots "claude-sonnet-5-5" points at cc-smart-dev-kit-opus, which is for opus models',
     );
@@ -3413,20 +3476,57 @@ describe("model slots (opus, fable)", () => {
     expect(errorOf({ modelSlots: { "claude-opus-5-5[1m]": "cc-smart-dev-kit-opus" } })).toContain(
       'modelSlots key "claude-opus-5-5[1m]": write it without [1m]',
     );
-    const swapped = ["omniroute:glm-5.3-flash", "claude-opus-5-5"];
-    expect(errorOf({ slots: { ...cfg.slots, "cc-smart-dev-kit-opus": swapped } })).toContain(
-      'slot cc-smart-dev-kit-opus must start with "claude-opus-5-5" itself',
-    );
-    expect(
-      errorOf({ slots: { ...cfg.slots, "cc-smart-dev-kit-opus": ["claude-opus-5-5"] } }),
-    ).toContain('slot cc-smart-dev-kit-opus names no target after "claude-opus-5-5"');
     const { "cc-smart-dev-kit-opus": _gone, ...withoutSlot } = cfg.slots;
     expect(errorOf({ slots: withoutSlot })).toContain(
       'modelSlots "claude-opus-5-5" points at slot "cc-smart-dev-kit-opus", which is not in slots',
     );
+    expect(errorOf({ fallback: { "cc-smart-dev-kit-fable": true } })).toContain(
+      'fallback names slot "cc-smart-dev-kit-fable", which is not in slots',
+    );
   });
 
-  // ─── The fallback's answer, kept safe for the Claude conversation ─────────────
+  it("each slot's fallback switch: its own setting, else on for scout and worker, off for opus, fable and judge; a 0.4.x model slot on", () => {
+    const slots = {
+      "cc-smart-dev-kit-fable": ["omniroute:glm-5.3-flash"],
+      "cc-smart-dev-kit-judge": ["ollama:deepseek-v4.1-flash"],
+      "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"],
+      "cc-smart-dev-kit-scout": ["omniroute:glm-5.3-flash"],
+      "cc-smart-dev-kit-worker": ["omniroute:glm-5.3-flash"],
+    };
+    const states = (cfg: Pick<GatewayConfig, "fallback" | "modelSlots">) =>
+      Object.keys(slots).map((slot) => [slot, fallbackOn(cfg, slot)]);
+    expect(states({})).toEqual([
+      ["cc-smart-dev-kit-fable", false],
+      ["cc-smart-dev-kit-judge", false],
+      ["cc-smart-dev-kit-opus", false],
+      ["cc-smart-dev-kit-scout", true],
+      ["cc-smart-dev-kit-worker", true],
+    ]);
+    expect(
+      states({
+        fallback: { "cc-smart-dev-kit-judge": true, "cc-smart-dev-kit-worker": false },
+        modelSlots: { "claude-opus-5-5": "cc-smart-dev-kit-opus" },
+      }),
+    ).toEqual([
+      ["cc-smart-dev-kit-fable", false],
+      ["cc-smart-dev-kit-judge", true],
+      ["cc-smart-dev-kit-opus", true],
+      ["cc-smart-dev-kit-scout", true],
+      ["cc-smart-dev-kit-worker", false],
+    ]);
+    // The person's own setting wins over the 0.4.x meaning.
+    expect(
+      fallbackOn(
+        {
+          fallback: { "cc-smart-dev-kit-opus": false },
+          modelSlots: { "claude-opus-5-5": "cc-smart-dev-kit-opus" },
+        },
+        "cc-smart-dev-kit-opus",
+      ),
+    ).toBe(false);
+  });
+
+  // ─── Another target's answer, kept safe for the Claude conversation ─────────────
 
   /** A streamed answer with a thinking block first, then a text block. */
   const THINKING_STREAM = [
@@ -3442,9 +3542,9 @@ describe("model slots (opus, fable)", () => {
   const streamOf = (text: string) => () =>
     new Response(text, { headers: { "content-type": "text/event-stream" }, status: 200 });
 
-  it("the fallback's answer reaches Claude Code without its thinking blocks; one log line names it", async () => {
-    const { handle, logs } = router([atLimit, streamOf(THINKING_STREAM)], {
-      config: withOpusSlot(),
+  it("a backend's answer for a Claude model reaches Claude Code without its thinking blocks; one log line names it", async () => {
+    const { handle, logs } = router([streamOf(THINKING_STREAM)], {
+      config: withOpus(["omniroute:glm-5.3-flash"]),
     });
     const res = await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
     expect(await res.text()).toBe(
@@ -3461,23 +3561,25 @@ describe("model slots (opus, fable)", () => {
     );
   });
 
-  it("Claude's own answer keeps its thinking blocks, byte for byte; the test-only switch keeps the fallback's", async () => {
-    const own = router([streamOf(THINKING_STREAM)], { config: withOpusSlot() });
+  it("Claude's own answer keeps its thinking blocks, byte for byte; the test-only switch keeps another target's", async () => {
+    const own = router([streamOf(THINKING_STREAM)], {
+      config: withOpus(["claude-opus-5-5", "omniroute:glm-5.3-flash"], true),
+    });
     const claude = await own.handle(clientRequest({ body: JSON.stringify(opusBody()) }));
     expect(await claude.text()).toBe(THINKING_STREAM);
-    const asIs = router([atLimit, streamOf(THINKING_STREAM)], {
-      config: withOpusSlot(),
+    const asIs = router([streamOf(THINKING_STREAM)], {
+      config: withOpus(["omniroute:glm-5.3-flash"]),
       fallbackAnswersAsIs: true,
     });
-    const fallback = await asIs.handle(clientRequest({ body: JSON.stringify(opusBody()) }));
-    expect(await fallback.text()).toBe(THINKING_STREAM);
+    const other = await asIs.handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+    expect(await other.text()).toBe(THINKING_STREAM);
   });
 
   it("count_tokens during the rest: its 200 neither ends the limit nor the fallback", async () => {
     let now = T0;
     const states: string[] = [];
     const { calls, handle, logs } = router([atLimit, ok, ok, ok], {
-      config: withOpusSlot(),
+      config: withOpus(["claude-opus-5-5", "omniroute:glm-5.3-flash"], true),
       now: () => now,
       states,
     });
@@ -3490,12 +3592,7 @@ describe("model slots (opus, fable)", () => {
     expect(counted.status).toBe(200);
     now += 1000;
     await handle(clientRequest({ body: sent }));
-    expect(calls.map((c) => c.url)).toEqual([
-      ANTHROPIC_URL,
-      OMNI_URL,
-      "https://anthropic.test/v1/messages/count_tokens?beta=true",
-      OMNI_URL,
-    ]);
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OMNI_URL, COUNT_URL, OMNI_URL]);
     expect(logs).not.toContain(
       "cc-smart-dev-kit-opus: claude-opus-5-5 answers again; its fallback is over",
     );
@@ -3504,7 +3601,7 @@ describe("model slots (opus, fable)", () => {
     });
   });
 
-  it("a count_tokens 200 with no model slot leaves a noted limit too", async () => {
+  it("a count_tokens 200 with no opus chain leaves a noted limit too", async () => {
     const states: string[] = [];
     const { handle } = router([atLimit, ok], { states });
     const sent = JSON.stringify(opusBody());
@@ -3515,33 +3612,15 @@ describe("model slots (opus, fable)", () => {
     });
   });
 
-  it("a reset already past rests Opus 60 s, not none", async () => {
-    let now = T0;
-    const past = () =>
-      new Response("{}", {
-        headers: {
-          "anthropic-ratelimit-unified-reset": String(T0 / 1000 - 10),
-          "anthropic-ratelimit-unified-status": "rejected",
-        },
-        status: 429,
-      });
-    const { calls, handle } = router([past, ok, ok, ok], {
-      config: withOpusSlot(),
-      now: () => now,
-    });
-    const sent = JSON.stringify(opusBody());
-    await handle(clientRequest({ body: sent }));
-    now += 59_000;
-    await handle(clientRequest({ body: sent }));
-    now += 2_000;
-    await handle(clientRequest({ body: sent }));
-    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OMNI_URL, OMNI_URL, ANTHROPIC_URL]);
-  });
-
   it("a fallback that fails is not recorded as active", async () => {
     const states: string[] = [];
-    const down = () => new Response("down", { status: 503 });
-    const { handle, logs } = router([atLimit, down, down], { config: withOpusSlot(), states });
+    const { handle, logs } = router([atLimit, down, down], {
+      config: withOpus(
+        ["claude-opus-5-5", "omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"],
+        true,
+      ),
+      states,
+    });
     const res = await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
     expect(res.status).toBe(503);
     expect(JSON.parse(states.at(-1) ?? "").fallbacks).toEqual({});
@@ -3550,73 +3629,71 @@ describe("model slots (opus, fable)", () => {
     );
   });
 
-  it("a model slot taken out of the config loses its fallback record", async () => {
-    const states: string[] = [];
-    let cfg = withOpusSlot();
-    const { handle, logs } = router([atLimit, ok, ok], { getConfig: () => cfg, states });
-    await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
-    expect(Object.keys(JSON.parse(states.at(-1) ?? "").fallbacks)).toEqual([
-      "cc-smart-dev-kit-opus",
-    ]);
-    const { modelSlots: _off, ...rest } = cfg;
-    cfg = rest;
-    await handle(clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-worker")) }));
-    expect(JSON.parse(states.at(-1) ?? "").fallbacks).toEqual({});
-    expect(logs).toContain(
-      "cc-smart-dev-kit-opus: removed from the config; its fallback record is dropped",
-    );
+  it("a slot taken out of the config, or whose fallback goes off, loses its fallback record", async () => {
+    for (const change of ["out", "fallback off"] as const) {
+      const states: string[] = [];
+      let cfg = withOpus(["claude-opus-5-5", "omniroute:glm-5.3-flash"], true);
+      const { handle, logs } = router([atLimit, ok, ok], { getConfig: () => cfg, states });
+      await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+      expect(Object.keys(JSON.parse(states.at(-1) ?? "").fallbacks)).toEqual([
+        "cc-smart-dev-kit-opus",
+      ]);
+      if (change === "out") {
+        const { "cc-smart-dev-kit-opus": _off, ...slots } = cfg.slots;
+        const { fallback: _switch, ...rest } = cfg;
+        cfg = { ...rest, slots };
+      } else {
+        cfg = { ...cfg, fallback: { "cc-smart-dev-kit-opus": false } };
+      }
+      await handle(clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-worker")) }));
+      expect(JSON.parse(states.at(-1) ?? "").fallbacks).toEqual({});
+      expect(logs).toContain(
+        "cc-smart-dev-kit-opus: removed from the config; its fallback record is dropped",
+      );
+    }
   });
 
-  it("Opus refuses a thinking block's signature after a fallback: a WARN names the cause and /rewind", async () => {
-    let now = T0;
+  it("Opus refuses a thinking block's signature after another target answered for it: a WARN names the cause and /rewind", async () => {
     const badSignature = () =>
       new Response(
         '{"type":"error","error":{"type":"invalid_request_error","message":"messages.3.content.0: Invalid `signature` in `thinking` block"}}',
         { status: 400 },
       );
-    const { handle, logs } = router([atLimit, ok, badSignature], {
-      config: withOpusSlot(),
-      now: () => now,
-    });
+    let cfg = withOpus(["omniroute:glm-5.3-flash"]);
+    const { handle, logs } = router([ok, badSignature], { getConfig: () => cfg });
     const sent = JSON.stringify(opusBody());
     await handle(clientRequest({ body: sent }));
-    now += 600_000;
+    // The person turns the slot off: Opus answers the same conversation itself again.
+    cfg = config();
     const res = await handle(clientRequest({ body: sent }));
     expect(res.status).toBe(400);
     expect(logs).toContain(
-      "WARN claude-opus-5-5 refused a thinking block's signature: this conversation holds a thinking block a fallback model wrote while claude-opus-5-5 was at its plan limit. Claude Code 2.1.300 sent the request once more and was answered (seen live); if the session stays stuck, /rewind in Claude Code to the message before the fallback answered, or start a new session",
+      "WARN claude-opus-5-5 refused a thinking block's signature: this conversation holds a thinking block another model wrote for claude-opus-5-5. Claude Code 2.1.300 sent the request once more and was answered (seen live); if the session stays stuck, /rewind in Claude Code to the message before the other model answered, or start a new session",
     );
   });
 
-  it("the same 400 with no fallback before it: no such WARN", async () => {
+  it("the same 400 with no other target before it: no such WARN", async () => {
     const badSignature = () =>
       new Response('{"error":{"message":"Invalid `signature` in `thinking` block"}}', {
         status: 400,
       });
-    const { handle, logs } = router([badSignature], { config: withOpusSlot() });
+    const { handle, logs } = router([badSignature], {
+      config: withOpus(["claude-opus-5-5", "omniroute:glm-5.3-flash"]),
+    });
     await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
     expect(logs.some((line) => line.includes("refused a thinking block's signature"))).toBe(false);
   });
 
-  it("the fallback refuses the conversation for its size: a WARN names long and rich conversations", async () => {
+  it("a target refuses the conversation for its size: a WARN names long and rich conversations", async () => {
     const tooLong = () =>
       new Response('{"error":{"message":"Input exceeds context window of 202752 tokens"}}', {
         status: 400,
       });
-    const cfg = withOpusSlot();
-    const { handle, logs } = router([atLimit, tooLong], {
-      config: {
-        ...cfg,
-        slots: {
-          ...cfg.slots,
-          "cc-smart-dev-kit-opus": ["claude-opus-5-5", "omniroute:glm-5.3-flash"],
-        },
-      },
-    });
+    const { handle, logs } = router([tooLong], { config: withOpus(["omniroute:glm-5.3-flash"]) });
     const res = await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
     expect(res.status).toBe(400);
     expect(logs).toContain(
-      "WARN cc-smart-dev-kit-opus: omniroute:glm-5.3-flash refused this claude-opus-5-5 conversation (too long). A long ([1m], 200k+ tokens) or rich (images, documents, server tools) claude-opus-5-5 conversation may be more than the fallback takes: /compact it, start a new one, or wait for claude-opus-5-5's reset",
+      "WARN cc-smart-dev-kit-opus: omniroute:glm-5.3-flash refused this claude-opus-5-5 conversation (too long). A long ([1m], 200k+ tokens) or rich (images, documents, server tools) claude-opus-5-5 conversation may be more than omniroute:glm-5.3-flash takes: /compact it, start a new one, or put a target that takes it first in cc-smart-dev-kit-opus",
     );
   });
 

@@ -1,8 +1,8 @@
 /**
  * The judge test: `gateway slot judge <targets>` sets no target that fails it.
  *
- * The judge answers auto mode's safety check only when Claude cannot (the router's
- * `judgeAsFallback`). Before a target may do that, it gets one check-shaped request for an
+ * A judge chain's target judges auto mode's safety checks in Claude's place (the router's
+ * `judgeTargetsOf`). Before a target may do that, it gets one check-shaped request for an
  * obviously risky action, a force push to the main branch, and it must block it.
  *
  * How close it is to Claude Code's real check (docs/gateway.md § The judge):

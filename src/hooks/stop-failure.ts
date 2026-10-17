@@ -10,8 +10,11 @@
  *     rate limit says "… (not your usage limit) …"); or
  *   - the router's state file: it saw Anthropic's plan-limit answer in the last two minutes.
  * Which model hit it: the session's own, the last Claude model in its transcript, when the
- * state file has a limit for it; else the freshest limit of a model that can have a model
- * slot (Opus, Fable). The alert offers that model's slot.
+ * state file has a limit for it; else the freshest limit of a Claude model whose family has a
+ * slot (`familySlotFor`: haiku → scout, sonnet → worker, opus → opus, fable → fable). The
+ * alert offers that slot's fallback (`offerFor`): the model first, the person's own affordable
+ * targets after it, and the slot's fallback switch on, so the next target answers while the
+ * model is at its limit and the model answers again once it can.
  *
  * Only for a person who set the gateway up (`gateway.json` exists): someone who never
  * opted in must not notice the plugin. A `gateway.json` that cannot be read still gives the
@@ -22,20 +25,25 @@
  * Every error becomes one stderr line and exit 0.
  *
  * The alert:
- *   - Linux (`notify-send` with `--action`): "Use <target> until it resets" runs
- *     `cc-smart-dev-kit gateway slot <opus|fable> <model>,<targets>`; "Wait" does nothing. The
- *     fallback then ends by itself: the router asks Claude again and goes back once it answers.
- *   - macOS: a plain notification that names the command.
+ *   - Linux (`notify-send` with `--action`): "Use <target> until it resets" runs, in order,
+ *     `cc-smart-dev-kit gateway slot <slot> <model>,<targets>` (when the slot needs that chain)
+ *     and `cc-smart-dev-kit gateway fallback <slot> on`; "Wait" does nothing. The fallback then
+ *     ends by itself: the model rests after its 429, the router asks it again, and it answers
+ *     first once it can.
+ *   - macOS: a plain notification that names the commands.
  *   - Windows: the same kind of alert as macOS, as a toast (`windowsToastArgv`), which names
- *     the command; a toast with an action button needs an activation callback this hook does
+ *     the commands; a toast with an action button needs an activation callback this hook does
  *     not have, so the action stays Linux-only.
+ *
+ * **No model id of the plugin's own** (owner, 2026-10-17): every target the alert names is
+ * the model that hit the limit, or one the person put in their own chains.
  *   - Anything else: one stderr line.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { type GatewayConfig, loadConfigFile } from "../gateway/config";
+import { fallbackOn, type GatewayConfig, loadConfigFile } from "../gateway/config";
 import {
   currentLimits,
   formatClock,
@@ -44,7 +52,16 @@ import {
   parseLimitState,
 } from "../gateway/limit-state";
 import { settingsReport } from "../gateway/settings";
-import { MODEL_SLOTS, parseTarget, withoutContextSuffix } from "../gateway/targets";
+import {
+  type ClaudeFamily,
+  claudeFamily,
+  familySlotFor,
+  familySlotKey,
+  JUDGE_SLOT,
+  parseTarget,
+  SLOT_PREFIX,
+  withoutContextSuffix,
+} from "../gateway/targets";
 import { alertsAt, type ResolvedAlerts } from "../workflow/alerts";
 import { hasDesktop } from "./desktop-alert";
 import type { Env } from "./run";
@@ -60,19 +77,16 @@ const NOT_LIMIT_TEXT = /\(not your usage limit\)/;
 /** How recent the router's plan-limit answer must be to explain this stop. */
 export const STATE_FRESH_MS = 2 * 60_000;
 
-/**
- * The Claude model the alert offers after the model itself when only that model's own
- * window ran out (`seven_day_opus`): the rest of the plan still answers it.
- */
-export const OTHER_CLAUDE = "claude-sonnet-5-5";
-
 /** The CLI command the hook starts the worker with, through the launcher. Not in `--help`. */
 export const ALERT_WORKER_COMMAND = "alert-worker";
 
 /** What the alert says, and the one action it may offer. */
 export interface Alert {
-  /** The slot command's arguments, for the "Use … until it resets" action; null: none. */
-  action: null | { args: string[]; label: string };
+  /**
+   * The "Use … until it resets" action: the CLI commands it runs, in order, each as its
+   * arguments (`["gateway", "fallback", "opus", "on"]`); null: none.
+   */
+  action: null | { commands: string[][]; label: string };
   body: string;
   title: string;
 }
@@ -101,40 +115,146 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The model slot (`cc-smart-dev-kit-opus`) and family (`opus`) of a Claude model; null for none. */
-function slotOf(model: string): null | { family: string; slot: string } {
-  for (const [slot, family] of Object.entries(MODEL_SLOTS)) {
-    if (model.includes(`-${family}-`)) return { family, slot };
-  }
-  return null;
+/** The slot a Claude model's requests reach (`familySlotFor`), with the family it is for. */
+interface FamilySlot {
+  family: ClaudeFamily;
+  /** The slot key: `cc-smart-dev-kit-opus`. */
+  key: string;
+  /** The slot as the CLI takes it: `opus`. */
+  name: string;
+}
+
+/** The family slot of a Claude model; null for a name of no known family. */
+function slotOf(model: string): FamilySlot | null {
+  const found = familySlotFor(model);
+  const family = claudeFamily(model);
+  if (found === null || family === null) return null;
+  return { family, key: found.slot, name: found.slot.slice(SLOT_PREFIX.length) };
 }
 
 /**
- * The slot targets the alert offers for `model`, the model itself first: then, when only
- * that model's own window ran out (a claim that ends in `_<family>`, such as
- * `seven_day_opus`), `OTHER_CLAUDE`, which the rest of the plan still answers; then every
- * `<backend>:<model>` target of the worker slot, in order. An account-wide claim
- * (`five_hour`, `seven_day`, or none named) stops every Claude model, so no Claude model
- * follows it. Null when the worker slot has no backend target.
+ * The person's own chains the alert takes stand-in targets from, in order: the worker's
+ * (Sonnet's work: the person's building model), the scout's, then every other slot in the
+ * config — never the judge's (a model chosen to judge safety checks), and never `own`, the
+ * slot the alert is about.
+ */
+function standInChains(config: GatewayConfig, own: string): string[][] {
+  const first = (["sonnet", "haiku"] as const)
+    .map(familySlotKey)
+    .filter((key): key is string => key !== null);
+  const keys = [...new Set([...first, ...Object.keys(config.slots)])];
+  return keys
+    .filter((key) => key !== own && key !== JUDGE_SLOT && Object.hasOwn(config.slots, key))
+    .map((key) => config.slots[key] ?? []);
+}
+
+/**
+ * The chain the alert offers for a slot that has none yet, or only one target: `first` (the
+ * slot's own target, else the model that hit the limit); then, when only that family's own
+ * window ran out (a claim that ends in `_<family>`, such as `seven_day_opus`), the first
+ * `claude-…` target of another family in the person's own chains, which the rest of the plan
+ * still answers; then every `<backend>:<model>` target of those chains, in order, each once
+ * (`standInChains`). An account-wide claim (`five_hour`, `seven_day`, or none named) stops
+ * every Claude model, so no Claude model follows it. Null when the person's chains hold no
+ * backend target: there is nothing affordable to offer, and the plugin names no model itself.
  */
 export function suggestedTargets(
   config: GatewayConfig,
-  model: string,
-  family: string,
+  first: string,
+  slot: FamilySlot,
   claim: null | string,
 ): null | string[] {
-  const backends = (config.slots["cc-smart-dev-kit-worker"] ?? []).filter((text) => {
+  const chains = standInChains(config, slot.key).flat();
+  const backends = chains.filter((text) => {
     const parsed = parseTarget(text);
     return "target" in parsed && parsed.target.kind === "backend";
   });
   if (backends.length === 0) return null;
-  const modelOnly = claim?.endsWith(`_${family}`) === true;
-  return [model, ...(modelOnly ? [OTHER_CLAUDE] : []), ...backends];
+  const modelOnly = claim?.endsWith(`_${slot.family}`) === true;
+  const otherClaude = modelOnly
+    ? chains.find((text) => {
+        const family = claudeFamily(text);
+        return text.startsWith("claude-") && family !== null && family !== slot.family;
+      })
+    : undefined;
+  return [...new Set([first, ...(otherClaude === undefined ? [] : [otherClaude]), ...backends])];
 }
 
 /** A target as the action's label names it: `glm-5.3-flash`, `claude-sonnet-5-5`. */
 function shortName(target: string): string {
   return target.slice(target.lastIndexOf("/") + 1).replace(/^[^:]*:/, "");
+}
+
+/** Commands as the person would type them: `cc-smart-dev-kit gateway … && cc-smart-dev-kit gateway …`. */
+function typed(commands: string[][]): string {
+  return commands.map((args) => `${COMMAND} ${args.join(" ")}`).join(" && ");
+}
+
+/** What the alert can offer for a slot at its model's limit. */
+type Offer =
+  /** Nothing to set: the slot already answers some other way, and the words say so. */
+  | { kind: "none"; words: string }
+  /** The commands that turn the fallback on, and the chain they leave in the slot. */
+  | { commands: string[][]; kind: "commands"; targets: string[] }
+  /** No affordable target in the person's chains: the words say what to do. */
+  | { kind: "no-target"; words: string };
+
+/**
+ * What the alert offers for `slot`, whose first Claude target `model` hit the plan's limit,
+ * from the person's own config (0.5.0: every slot the same way, no chain written by the
+ * plugin):
+ *   - the slot's chain starts with an affordable target: Claude was not the slot's first
+ *     answer, so the alert only points at `gateway status`;
+ *   - two targets or more, fallback on: the fallback is already set, yet the turn stopped;
+ *   - two targets or more, fallback off: the person's own chain, with the switch on
+ *     (`gateway fallback <slot> on`);
+ *   - no chain, or one target: the chain `suggestedTargets` builds, saved with
+ *     `gateway slot <slot> <targets>`, then the switch on. Both, always, in that order: the
+ *     switch needs a chain, and a click may come half an hour after the alert.
+ */
+function offerFor(
+  config: GatewayConfig,
+  slot: FamilySlot,
+  model: string,
+  claim: null | string,
+): Offer {
+  const chain = config.slots[slot.key] ?? [];
+  const fallback = ["gateway", "fallback", slot.name, "on"];
+  const head = chain[0];
+  if (head !== undefined) {
+    const parsed = parseTarget(head);
+    if (!("target" in parsed) || parsed.target.kind !== "anthropic") {
+      return {
+        kind: "none",
+        words: `${slot.key} answers from ${head} first, yet this turn stopped: check ${COMMAND} gateway status.`,
+      };
+    }
+  }
+  if (chain.length > 1) {
+    if (fallbackOn(config, slot.key)) {
+      return {
+        kind: "none",
+        words: `The ${slot.key} fallback is on, yet this turn stopped: check ${COMMAND} gateway status.`,
+      };
+    }
+    return { commands: [fallback], kind: "commands", targets: chain };
+  }
+  const targets = suggestedTargets(config, head ?? model, slot, claim);
+  if (targets === null) {
+    const shown = typed([
+      ["gateway", "slot", slot.name, `${head ?? model},<backend>:<model>`],
+      fallback,
+    ]);
+    return {
+      kind: "no-target",
+      words: `To use a more affordable model until it resets: ${shown} (${COMMAND} gateway models lists the models).`,
+    };
+  }
+  return {
+    commands: [["gateway", "slot", slot.name, targets.join(",")], fallback],
+    kind: "commands",
+    targets,
+  };
 }
 
 /**
@@ -155,7 +275,7 @@ export function planAlert(input: unknown, ctx: AlertContext): Alert | null {
   if (!LIMIT_TEXT.test(text) && !limits.some(fresh)) return null;
   if (!ctx.gatewaySetUp) return null;
 
-  // The session's own model first; else the freshest limit of a model with a model slot.
+  // The session's own model first; else the freshest limit of a model whose family has a slot.
   const own =
     ctx.sessionModel === null
       ? undefined
@@ -187,28 +307,22 @@ export function planAlert(input: unknown, ctx: AlertContext): Alert | null {
       title,
     };
   }
-  if (Object.hasOwn(ctx.config.modelSlots ?? {}, model)) {
+  const offer = offerFor(ctx.config, slot, model, record?.claim ?? null);
+  if (offer.kind !== "commands") return { action: null, body: `${head} ${offer.words}`, title };
+  const shown = typed(offer.commands);
+  if (!ctx.gatewayOn) {
     return {
       action: null,
-      body: `${head} The ${slot.slot} fallback is on, yet this turn stopped: check ${COMMAND} gateway status.`,
-      title,
-    };
-  }
-  const targets = suggestedTargets(ctx.config, model, slot.family, record?.claim ?? null);
-  const command = `${COMMAND} gateway slot ${slot.family} ${(targets ?? [model, "<backend>:<model>"]).join(",")}`;
-  if (targets === null || !ctx.gatewayOn) {
-    return {
-      action: null,
-      body: `${head} To use a more affordable model until it resets: ${command}`,
+      body: `${head} To use a more affordable model until it resets, turn the gateway on (${COMMAND} gateway on), then: ${shown}`,
       title,
     };
   }
   return {
     action: {
-      args: ["gateway", "slot", slot.family, targets.join(",")],
-      label: `Use ${shortName(targets[1] ?? "")} until it resets`,
+      commands: offer.commands,
+      label: `Use ${shortName(offer.targets[1] ?? "")} until it resets`,
     },
-    body: `${head} A more affordable model until it resets: ${command} (Claude takes over again by itself once it answers).`,
+    body: `${head} A more affordable model until it resets: ${shown} (Claude takes over again by itself once it answers).`,
     title,
   };
 }
@@ -352,16 +466,22 @@ export function parseAlert(text: string): Alert | null {
   }
   const action = raw.action;
   if (action === null) return { action: null, body: raw.body, title: raw.title };
+  if (!isJsonObject(action) || typeof action.label !== "string") return null;
+  const commands = action.commands;
   if (
-    !isJsonObject(action) ||
-    typeof action.label !== "string" ||
-    !Array.isArray(action.args) ||
-    !action.args.every((arg: unknown) => typeof arg === "string")
+    !Array.isArray(commands) ||
+    commands.length === 0 ||
+    !commands.every(
+      (args: unknown) =>
+        Array.isArray(args) &&
+        args.length > 0 &&
+        args.every((arg: unknown) => typeof arg === "string"),
+    )
   ) {
     return null;
   }
   return {
-    action: { args: action.args as string[], label: action.label },
+    action: { commands: commands as string[][], label: action.label },
     body: raw.body,
     title: raw.title,
   };
@@ -420,9 +540,9 @@ export function usesAlertWorker(platform: NodeJS.Platform, launcherExists: boole
 
 /**
  * The detached worker (`cc-smart-dev-kit alert-worker`, run through the launcher): shows the alert
- * and, on Linux with an action, waits for the click. "use" runs the slot command through
- * the launcher too (`launcher`, its path), so it is the installed version's at click time,
- * then says how it went. A `notify-send` without `--action` (an old one, or no
+ * and, on Linux with an action, waits for the click. "use" runs the action's commands in
+ * order through the launcher too (`launcher`, its path), so they are the installed version's
+ * at click time, stops at the first that fails, then says how it went. A `notify-send` without `--action` (an old one, or no
  * notification service) gets the plain notification instead. Returns what it did.
  */
 export function runAlert(alert: Alert, platform: string, launcher: string, run: Runner): string {
@@ -442,8 +562,10 @@ export function runAlert(alert: Alert, platform: string, launcher: string, run: 
     if (asked.timedOut) return "no answer";
     if (asked.exitCode === 0) {
       if (asked.stdout.trim() !== "use") return "waited";
-      const slot = run({ argv: [launcher, ...alert.action.args], timeoutMs: 60_000 });
-      const done = slot.exitCode === 0;
+      // In order, and no further once one fails: the switch needs the chain before it.
+      const done = alert.action.commands.every(
+        (args) => run({ argv: [launcher, ...args], timeoutMs: 60_000 }).exitCode === 0,
+      );
       run({
         argv: [
           "notify-send",
@@ -451,7 +573,7 @@ export function runAlert(alert: Alert, platform: string, launcher: string, run: 
           done ? "Fallback on" : "Fallback not turned on",
           done
             ? `${alert.action.label.replace(/^Use /, "Using ")}: ${COMMAND} gateway status shows it. Send a message in Claude Code to go on now.`
-            : `Run it yourself to see why: ${COMMAND} ${alert.action.args.join(" ")}`,
+            : `Run it yourself to see why: ${typed(alert.action.commands)}`,
         ],
         timeoutMs: 10_000,
       });

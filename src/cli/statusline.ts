@@ -10,8 +10,10 @@
  *
  * What it shows, parts joined by ` · `:
  *   - the model's display name;
- *   - a model slot answering from its fallback (`⚠ claude-opus-5-5 at its limit → omniroute:…
- *     until 13:00`), and `judge: fallback active (…)` when the judge answers safety checks;
+ *   - a slot whose first target, a Claude model, is at its plan limit, answering from its
+ *     next target (`⚠ claude-opus-5-5 at its limit → omniroute:… until 13:00`). A judge
+ *     record an older router wrote is not shown: from 0.5.0 the judge is no fallback, it
+ *     judges every check once the person gives it a chain;
  *   - a plan limit the router saw, with no fallback (`⛔ claude-opus-5-5 at its plan limit
  *     until 13:00`): a refused request brings Claude Code no new numbers, so only the
  *     router's state file (`limit-state.ts`) knows it;
@@ -75,10 +77,7 @@ export function statuslineText(
   const covered = new Set<string>();
   if (state !== null) {
     for (const [slot, record] of currentFallbacks(state, nowMs)) {
-      if (slot === JUDGE_SLOT) {
-        parts.push(`judge: fallback active (${record.target})`);
-        continue;
-      }
+      if (slot === JUDGE_SLOT) continue;
       covered.add(record.model);
       parts.push(`⚠ ${record.model} at its limit → ${record.target}${until(record.resetsAt)}`);
     }

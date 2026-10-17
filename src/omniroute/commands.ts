@@ -502,7 +502,7 @@ async function commandUpdate(ctx: OmnirouteContext, rest: string[]): Promise<num
   );
   step(
     ctx,
-    "While it restarts, the gateway's slots fall to their next target — Claude answers, on your own login. A new version that does not answer is put back.",
+    "While it restarts, a request to an OmniRoute target fails: a slot with its fallback on moves to its next target, if it has one; any other slot answers with that error. A new version that does not answer is put back.",
   );
   if (!askToRestart(ctx, yes, `Install ${NAME} ${target} and restart?`)) return 1;
 
@@ -582,7 +582,7 @@ async function commandRollback(ctx: OmnirouteContext, rest: string[]): Promise<n
   step(ctx, warning);
   step(
     ctx,
-    "While it restarts, the gateway's slots fall to their next target — Claude answers, on your own login.",
+    "While it restarts, a request to an OmniRoute target fails: a slot with its fallback on moves to its next target, if it has one; any other slot answers with that error.",
   );
   if (
     !askToRestart(ctx, rest.includes("--yes"), `Install ${NAME} ${previous.version} and restart?`)

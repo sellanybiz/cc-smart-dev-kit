@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
+import { COMMAND } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
 import { loadConfigFile, messageOf } from "../gateway/config";
 import { maskKey } from "../gateway/settings";
-import { parseTarget } from "../gateway/targets";
+import { familySlotKey, parseTarget } from "../gateway/targets";
 import { findUserInstall } from "../setup/installed-plugins";
 import {
   applyManagedJson,
@@ -21,20 +22,25 @@ import { companionState, companions, comparableVersion } from "./companions";
 
 /**
  * claude-mem (the memory plugin cc-smart-dev-kit depends on) summarises every session, by default
- * with Claude Haiku on the person's own Claude login. When the cc-smart-dev-kit gateway is set
- * up, setup points claude-mem at the gateway's affordable model instead, straight at its
- * backend (OmniRoute by default, which speaks OpenAI's format), with Claude Haiku as
- * claude-mem's quota fallback: while the affordable model is in a quota or rate-limit cooldown,
- * claude-mem sends its work to Claude, and hands it back once the affordable model answers
- * again. It is not a fallback for a backend that is down or refuses the key (claude-mem
- * never routes around an authentication failure; its CHANGELOG, 13.29.0).
+ * with Claude Haiku on the person's own Claude login. Its work is Haiku's, so it follows the
+ * gateway's slot for Haiku, the scout (`familySlotKey("haiku")`), and nothing else: when the
+ * person gave the scout a chain whose first target is a `<backend>:<model>`, setup points
+ * claude-mem at that model, straight at its backend (OmniRoute by default, which speaks
+ * OpenAI's format). A scout with no chain (a fresh `gateway setup` writes none), or one that
+ * starts with a Claude model, leaves claude-mem on Claude, as it is.
  *
- * Seven keys in `~/.claude-mem/settings.json`, owned through `applyManagedJson`, so a
- * restore takes them out and claude-mem is back on its own defaults. claude-mem writes
- * every default into that file on its first run, so a key that holds claude-mem's own
- * default (`""`, or `claude` for the two providers) counts as "nobody chose it" and may be
- * taken. Any other value is the person's choice, also in a key cc-smart-dev-kit set before and
- * the person changed since: then setup changes none of the keys.
+ * **No model of the plugin's own** (owner, 2026-10-17): setup writes no quota fallback.
+ * claude-mem's own (`CLAUDE_MEM_QUOTA_FALLBACK_*`, its defaults or the person's values) stays
+ * as it is. The two fallback keys 0.4.3 and earlier wrote (Claude Haiku, a fixed id) are taken
+ * out again while they still hold cc-smart-dev-kit's value (`RETIRED_KEYS`); a value the
+ * person set or changed stays.
+ *
+ * Five keys in `~/.claude-mem/settings.json`, owned through `applyManagedJson`, so a restore
+ * takes them out and claude-mem is back on its own defaults. claude-mem writes every default
+ * into that file on its first run, so a key that holds claude-mem's own default (`""`, or
+ * `claude` for the provider) counts as "nobody chose it" and may be taken. Any other value is
+ * the person's choice, also in a key cc-smart-dev-kit set before and the person changed since:
+ * then setup changes none of the keys.
  */
 
 export const CLAUDE_MEM_ID = "claude-mem@thedotmack";
@@ -46,9 +52,15 @@ export const CLAUDE_MEM_MIN_VERSION = "13.29.0";
  * search stays off (claude-mem's CHANGELOG, 13.35.0, #4595). doctor warns below it.
  */
 export const CLAUDE_MEM_CHROMA_FIX_VERSION = "13.35.0";
-/** claude-mem's quota fallback: Claude, with claude-mem's own default model, named exactly. */
-export const FALLBACK_PROVIDER = "claude";
-export const FALLBACK_MODEL = "claude-haiku-4-5-20251001";
+/**
+ * claude-mem's quota-fallback keys, which 0.4.3 and earlier set to a fixed Claude model. Never
+ * written now; setup takes them out while they hold cc-smart-dev-kit's value, and leaves the
+ * person's.
+ */
+export const RETIRED_KEYS = [
+  "CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER",
+  "CLAUDE_MEM_QUOTA_FALLBACK_MODEL",
+] as const;
 
 const API_KEY = "CLAUDE_MEM_OPENAI_COMPAT_API_KEY";
 /** The person's own pool of keys. Never set by cc-smart-dev-kit; a pool there is their choice. */
@@ -62,8 +74,6 @@ const UNCHOSEN: Readonly<Record<string, readonly string[]>> = {
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: [""],
   CLAUDE_MEM_OPENAI_COMPAT_MODEL: [""],
   [API_KEY]: [""],
-  CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: ["", "claude"],
-  CLAUDE_MEM_QUOTA_FALLBACK_MODEL: [""],
 };
 
 const unchosen = (path: KeyPath, value: unknown) =>
@@ -81,8 +91,9 @@ export interface AffordableTarget {
 }
 
 /**
- * The first affordable target of the scout slot (else the worker slot) in gateway.json, or why
- * there is none. The scout is the most affordable slot, the one made for background work.
+ * The scout slot's first target in gateway.json, when it is an affordable `<backend>:<model>`
+ * (claude-mem's work is Haiku's, and the scout is Haiku's slot), or why there is none: the
+ * gateway is not set up, the scout has no chain, or its chain starts with a Claude model.
  */
 export function gatewayAffordableTarget(
   gatewayConfigFile: string,
@@ -94,26 +105,30 @@ export function gatewayAffordableTarget(
   } catch (error) {
     return { reason: `gateway.json cannot be used (${messageOf(error)})` };
   }
-  for (const slot of ["cc-smart-dev-kit-scout", "cc-smart-dev-kit-worker"]) {
-    for (const text of config.slots[slot] ?? []) {
-      const parsed = parseTarget(text);
-      if ("error" in parsed || parsed.target.kind !== "backend") continue;
-      const backend = config.backends[parsed.target.backend];
-      if (backend === undefined) continue;
-      return {
-        target: {
-          backend: parsed.target.backend,
-          baseUrl: `${backend.baseUrl}/v1`,
-          model: parsed.target.model,
-          apiKey: backend.apiKey,
-        },
-      };
-    }
+  const slot = familySlotKey("haiku");
+  const first = slot === null ? undefined : config.slots[slot]?.[0];
+  if (slot === null || first === undefined) {
+    return { reason: `${slot ?? "the scout slot"} has no chain` };
   }
-  return { reason: "no slot in gateway.json has an affordable target" };
+  const parsed = parseTarget(first);
+  if ("error" in parsed || parsed.target.kind !== "backend") {
+    return { reason: `${slot} starts with ${first}, not an affordable model` };
+  }
+  const backend = config.backends[parsed.target.backend];
+  if (backend === undefined) return { reason: `${first} names no backend in gateway.json` };
+  return {
+    target: {
+      backend: parsed.target.backend,
+      baseUrl: `${backend.baseUrl}/v1`,
+      model: parsed.target.model,
+      apiKey: backend.apiKey,
+    },
+  };
 }
 
 export interface ClaudeMemPlan {
+  /** The keys to take out while they hold cc-smart-dev-kit's value (`RETIRED_KEYS`). */
+  remove: KeyPath[];
   /** The keys to set, with their path (flat, or under `env` in an older file). */
   set: Array<readonly [KeyPath, string]>;
   target: AffordableTarget;
@@ -154,7 +169,7 @@ export function claudeMemPlan(
     const provider = getKey(data, at(PROVIDER));
     if (provider.found && ownership(records, at(PROVIDER), provider) === "ours") {
       return {
-        note: `! claude-mem still uses the backend cc-smart-dev-kit set for it, but ${affordable.reason}. Run cc-smart-dev-kit setup again once the gateway has an affordable model, or cc-smart-dev-kit restore to put claude-mem back on its own defaults.`,
+        note: `! claude-mem still uses the backend ${COMMAND} set for it, but ${affordable.reason}. Run ${COMMAND} setup again once the scout slot starts with an affordable model, or ${COMMAND} restore to put claude-mem back on its own defaults.`,
       };
     }
     return { note: null };
@@ -195,8 +210,6 @@ export function claudeMemPlan(
     CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: target.baseUrl,
     CLAUDE_MEM_OPENAI_COMPAT_MODEL: target.model,
     [API_KEY]: target.apiKey,
-    CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: FALLBACK_PROVIDER,
-    CLAUDE_MEM_QUOTA_FALLBACK_MODEL: FALLBACK_MODEL,
   };
 
   // The person's own choice stands: one key set by them, and none of the keys change.
@@ -212,7 +225,13 @@ export function claudeMemPlan(
       note: `  claude-mem settings left alone: ${key} is ${shown} in ${short} (your choice)`,
     };
   }
-  return { plan: { set: Object.entries(wanted).map(([key, value]) => [at(key), value]), target } };
+  return {
+    plan: {
+      remove: RETIRED_KEYS.map(at),
+      set: Object.entries(wanted).map(([key, value]) => [at(key), value]),
+      target,
+    },
+  };
 }
 
 /**
@@ -269,7 +288,7 @@ export function isSecretPath(path: KeyPath): boolean {
   return path.at(-1) === API_KEY;
 }
 
-/** Writes (or, with `dryRun`, only checks) the plan's keys. */
+/** Writes (or, with `dryRun`, only checks) the plan's keys, and takes out the retired ones. */
 export function applyClaudeMem(
   paths: CliPaths,
   plan: ClaudeMemPlan,
@@ -279,6 +298,7 @@ export function applyClaudeMem(
     file: paths.claudeMemSettingsFile,
     stateDir: paths.stateDir,
     set: plan.set,
+    remove: plan.remove,
     dryRun,
     unchosen,
     secret: isSecretPath,

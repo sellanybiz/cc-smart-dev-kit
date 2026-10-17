@@ -7,8 +7,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { listModels } from "./backends";
-import { NEEDS_SYSTEMD, routerService } from "./commands";
-import { emptyConfig, judgeTargetTested, loadConfigFile, messageOf } from "./config";
+import { JUDGE_WARNING, NEEDS_SYSTEMD, routerService } from "./commands";
+import { emptyConfig, fallbackOn, judgeTargetTested, loadConfigFile, messageOf } from "./config";
 import { type HealthFetch, routerHealth } from "./health";
 import {
   type RouterService,
@@ -20,7 +20,7 @@ import {
 } from "./service";
 import { TASK_LABEL, taskFacts, taskRunsCopy } from "./service-windows";
 import { shownValue } from "./settings";
-import { isModelSlot, JUDGE_SLOT, parseTarget } from "./targets";
+import { FAMILY_SLOTS, isModelSlot, JUDGE_SLOT, parseTarget } from "./targets";
 
 export interface DoctorCheck {
   ok: boolean;
@@ -126,12 +126,12 @@ export async function gatewayChecks(options: {
   let config: ReturnType<typeof loadConfigFile>;
   if (!existsSync(paths.gatewayConfigFile)) {
     // Set up with --no-backend-key: the router runs `emptyConfig()` on the default port,
-    // every slot on Claude. Nothing is wrong; it is only not affordable yet.
+    // every slot off. Nothing is wrong; every model is only plain Claude yet.
     config = emptyConfig();
     checks.push({
       ok: true,
       info: true,
-      text: `no ${short(paths.gatewayConfigFile)} yet: the router answers every slot on your own Claude login. To add a backend: ${COMMAND} gateway setup --backend-key-stdin omniroute < key-file`,
+      text: `no ${short(paths.gatewayConfigFile)} yet: every slot is off, so every Claude model goes to Anthropic as Claude Code sent it, on your own login. To add a backend: ${COMMAND} gateway setup --backend-key-stdin omniroute < key-file`,
     });
   } else {
     try {
@@ -173,13 +173,28 @@ export async function gatewayChecks(options: {
 
   for (const slot of Object.keys(config.slots).sort()) {
     const first = config.slots[slot]?.[0] ?? "(none)";
-    checks.push({ ok: true, info: true, text: `slot ${slot}: first target ${first}` });
+    const rest = (config.slots[slot]?.length ?? 1) - 1;
+    const fallback = fallbackOn(config, slot)
+      ? `fallback on${rest > 0 ? `, ${String(rest)} more after it` : ""}`
+      : `fallback off${rest > 0 ? `: ${String(rest)} more kept, not used` : ""}`;
+    checks.push({
+      ok: true,
+      info: true,
+      text: `slot ${slot}: first target ${first} (${fallback})`,
+    });
   }
-  // An affordable slot that falls back to Claude Opus or Fable spends the person's own plan usage
-  // without saying so (the Agent guard asks the person about every launch on those models, a
-  // review at `high` or `xhigh` aside):
-  // a warning, not a failure. The model slots are left out: their own first target IS the
-  // Claude model, which is what they are for.
+  for (const slot of Object.keys(FAMILY_SLOTS)) {
+    if (Object.hasOwn(config.slots, slot)) continue;
+    checks.push({
+      ok: true,
+      info: true,
+      text: `slot ${slot}: off, ${FAMILY_SLOTS[slot]} goes to Anthropic as Claude Code sent it`,
+    });
+  }
+  // A scout or worker chain that names Claude Opus or Fable spends the person's own plan usage
+  // on routine work without saying so (the Agent guard asks the person about every launch on
+  // those models, a review at `high` or `xhigh` aside): a warning, not a failure. The model
+  // slots are left out: a premium model is what they are for.
   for (const [slot, targets] of Object.entries(config.slots).sort(([a], [b]) => (a < b ? -1 : 1))) {
     if (isModelSlot(slot)) continue;
     const costly = targets.filter((target) => {
@@ -192,18 +207,22 @@ export async function gatewayChecks(options: {
     checks.push({
       ok: true,
       warn: true,
-      text: `slot ${slot} falls back to ${costly.join(", ")}: an affordable slot that answers on Claude Opus or Fable spends your own plan usage. To change it: ${COMMAND} gateway slot ${slot} <targets>`,
+      text: `slot ${slot} names ${costly.join(", ")}: a slot for routine work that answers on Claude Opus or Fable spends your own plan usage. To change it: ${COMMAND} gateway slot ${slot} <targets>`,
     });
   }
   if (!Object.hasOwn(config.slots, JUDGE_SLOT)) {
     checks.push({
       ok: true,
       info: true,
-      text: `slot ${JUDGE_SLOT}: off, auto mode's safety checks go to Claude`,
+      text: `slot ${JUDGE_SLOT}: off, Claude judges auto mode's safety checks`,
     });
   }
+  if (Object.hasOwn(config.slots, JUDGE_SLOT)) {
+    checks.push({ ok: true, warn: true, text: `slot ${JUDGE_SLOT}: ${JUDGE_WARNING}` });
+  }
   // A judge target counts only once `gateway slot judge` tested it; the router ignores
-  // any other (a hand edit, a config from before 0.3).
+  // any other (a hand edit, a config from before 0.5.0, when a judge answered only after
+  // Claude could not).
   for (const target of config.slots[JUDGE_SLOT] ?? []) {
     if (judgeTargetTested(config, target)) continue;
     checks.push({

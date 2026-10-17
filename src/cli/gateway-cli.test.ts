@@ -85,7 +85,13 @@ function fakeServer(
         if (options.modelsStatus !== undefined && options.modelsStatus !== 200) {
           return new Response("no", { status: options.modelsStatus });
         }
-        return Response.json({ data: [{ id: "m1" }, { context_length: 200000, id: "m2" }] });
+        return Response.json({
+          data: [
+            { id: "m1" },
+            { context_length: 200000, id: "m2" },
+            { id: "ollama-cloud/glm-5.3-flash" },
+          ],
+        });
       }
       if (url.pathname === "/__cc-smart-dev-kit/health") {
         return Response.json({
@@ -526,7 +532,7 @@ describe("cc-smart-dev-kit gateway setup", () => {
     expect(first.exitCode).toBe(0);
     expect(first.stdout).toBe(
       [
-        `no config at ~/.config/cc-smart-dev-kit/gateway.json yet: the router answers every slot on your own Claude login until the OmniRoute key is added (setup --backend-key-stdin omniroute)`,
+        `no config at ~/.config/cc-smart-dev-kit/gateway.json yet: every slot is off, so every Claude model goes to Anthropic as Claude Code sent it, on your own login, until the OmniRoute key is added (setup --backend-key-stdin omniroute)`,
         "+ ~/.local/share/cc-smart-dev-kit/router.js: router copy created",
         "+ ~/.config/systemd/user/cc-smart-dev-kit-router.service: unit created",
         "+ ~/.config/systemd/user/cc-smart-dev-kit-router.socket: socket unit created",
@@ -1064,7 +1070,7 @@ describe("cc-smart-dev-kit gateway setup: the port", () => {
 
 describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
   const STAGE_1_KEYS =
-    "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_BASE_URL, env.ANTHROPIC_DEFAULT_HAIKU_MODEL, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, env.ANTHROPIC_DEFAULT_SONNET_MODEL, env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, env; everything else kept";
+    "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_BASE_URL, env; everything else kept";
 
   /**
    * What stage 1 says when it removed the launcher: `cc-smart-dev-kit` is off the PATH, so it
@@ -1201,7 +1207,7 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
     expect(first.stderr).toBe("");
     expect(first.exitCode).toBe(0);
     expect(first.stdout).toContain(
-      "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_DEFAULT_HAIKU_MODEL, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, env.ANTHROPIC_DEFAULT_SONNET_MODEL, env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION, env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME; everything else kept\n",
+      "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH; everything else kept\n",
     );
     expect(first.stdout).toContain(`${STAGE_1_AGAIN}\n`);
     expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({
@@ -1421,14 +1427,8 @@ describe("cc-smart-dev-kit gateway on / off", () => {
       [
         '~ ~/.claude/settings.json: env.ENABLE_TOOL_SEARCH: (none) -> "true"',
         `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: (none) -> "http://127.0.0.1:${server.port}"`,
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_HAIKU_MODEL: (none) -> "cc-smart-dev-kit-scout[1m]"',
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: (none) -> "Affordable model for search and reading: the scout slot (cc-smart-dev-kit gateway slot scout …)"',
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: (none) -> "Scout (affordable)"',
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_SONNET_MODEL: (none) -> "cc-smart-dev-kit-worker[1m]"',
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: (none) -> "Affordable model for routine code and docs: the worker slot (cc-smart-dev-kit gateway slot worker …)"',
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: (none) -> "Worker (affordable)"',
         "Done. The changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
-        "Every Claude Code session on this machine, in every folder, uses the gateway from now on: its haiku / sonnet work (background titles and summaries too) goes to the affordable slots.",
+        "Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.",
         "",
       ].join("\n"),
     );
@@ -1447,12 +1447,12 @@ describe("cc-smart-dev-kit gateway on / off", () => {
     const m = machine();
     const server = fakeServer();
     m.writeConfig(server.port);
-    const settings = `${JSON.stringify({ env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: "old-scout[1m]" } }, null, 2)}\n`;
+    const settings = `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:19999" } }, null, 2)}\n`;
     writeFileSync(m.paths.settings, settings);
     const on = await m.run(["gateway", "on"]);
     expect(on.exitCode).toBe(1);
     expect(on.stderr).toBe(
-      `cc-smart-dev-kit: ${m.paths.settings}: env.ANTHROPIC_DEFAULT_HAIKU_MODEL is old-scout[1m], set by someone else. cc-smart-dev-kit does not overwrite it. Remove it by hand if cc-smart-dev-kit should manage it.\n`,
+      `cc-smart-dev-kit: ${m.paths.settings}: env.ANTHROPIC_BASE_URL is http://127.0.0.1:19999, set by someone else. cc-smart-dev-kit does not overwrite it. Remove it by hand if cc-smart-dev-kit should manage it.\n`,
     );
     expect(readFileSync(m.paths.settings, "utf8")).toBe(settings);
     expect(existsSync(join(m.home, ".claude", "cc-smart-dev-kit"))).toBe(false);
@@ -1486,9 +1486,11 @@ describe("cc-smart-dev-kit doctor: the gateway", () => {
         `✓ the router's socket (cc-smart-dev-kit-router.socket) holds 127.0.0.1:${server.port}`,
         `✓ the router answers on 127.0.0.1:${server.port}`,
         `✓ backend omniroute (http://127.0.0.1:${server.port}) answers`,
-        "· slot cc-smart-dev-kit-scout: first target omniroute:m1",
-        "· slot cc-smart-dev-kit-worker: first target claude-sonnet-5-5",
-        "· slot cc-smart-dev-kit-judge: off, auto mode's safety checks go to Claude",
+        "· slot cc-smart-dev-kit-scout: first target omniroute:m1 (fallback on, 1 more after it)",
+        "· slot cc-smart-dev-kit-worker: first target claude-sonnet-5-5 (fallback on)",
+        "· slot cc-smart-dev-kit-fable: off, fable goes to Anthropic as Claude Code sent it",
+        "· slot cc-smart-dev-kit-opus: off, opus goes to Anthropic as Claude Code sent it",
+        "· slot cc-smart-dev-kit-judge: off, Claude judges auto mode's safety checks",
         "",
       ].join("\n"),
     );
@@ -1554,7 +1556,7 @@ describe("cc-smart-dev-kit doctor: a gateway that is not installed, or half", ()
     );
   });
 
-  test("set up with no gateway.json: the router's default port, every slot on Claude, as information", async () => {
+  test("set up with no gateway.json: the router's default port, every slot off, as information", async () => {
     const m = machine();
     expect((await m.runHere(["gateway", "setup", "--no-backend-key"])).exitCode).toBe(0);
     m.probed.length = 0;
@@ -1570,12 +1572,14 @@ describe("cc-smart-dev-kit doctor: a gateway that is not installed, or half", ()
     ).toEqual([
       "✓ the router service (cc-smart-dev-kit-router.service) is active",
       "✓ the router copy ~/.local/share/cc-smart-dev-kit/router.js is up to date",
-      "· no ~/.config/cc-smart-dev-kit/gateway.json yet: the router answers every slot on your own Claude login. To add a backend: cc-smart-dev-kit gateway setup --backend-key-stdin omniroute < key-file",
+      "· no ~/.config/cc-smart-dev-kit/gateway.json yet: every slot is off, so every Claude model goes to Anthropic as Claude Code sent it, on your own login. To add a backend: cc-smart-dev-kit gateway setup --backend-key-stdin omniroute < key-file",
       "✓ the router's socket (cc-smart-dev-kit-router.socket) holds 127.0.0.1:20100",
       "✓ the router answers on 127.0.0.1:20100",
-      "· slot cc-smart-dev-kit-scout: first target claude-sonnet-5-5",
-      "· slot cc-smart-dev-kit-worker: first target claude-sonnet-5-5",
-      "· slot cc-smart-dev-kit-judge: off, auto mode's safety checks go to Claude",
+      "· slot cc-smart-dev-kit-scout: off, haiku goes to Anthropic as Claude Code sent it",
+      "· slot cc-smart-dev-kit-worker: off, sonnet goes to Anthropic as Claude Code sent it",
+      "· slot cc-smart-dev-kit-fable: off, fable goes to Anthropic as Claude Code sent it",
+      "· slot cc-smart-dev-kit-opus: off, opus goes to Anthropic as Claude Code sent it",
+      "· slot cc-smart-dev-kit-judge: off, Claude judges auto mode's safety checks",
     ]);
     // Asked of the fake, never the network.
     expect(m.probed).toEqual(["http://127.0.0.1:20100/__cc-smart-dev-kit/health"]);
@@ -1749,18 +1753,21 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
         'judge test: omniroute:m2 blocked "git push --force origin main"',
         'judge test: omniroute:m1 blocked "git push --force origin main"',
         "cc-smart-dev-kit-judge: (new)",
-        "  now: omniroute:m2 → omniroute:m1",
+        "  now: omniroute:m2 → omniroute:m1  (fallback off: only omniroute:m2 answers; the rest are kept, not used)",
+        "  To let the next target answer when omniroute:m2 fails or rests: cc-smart-dev-kit gateway fallback judge on",
+        "WARN a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
         "The router uses it from its next request.",
         "",
       ].join("\n"),
     );
     const saved = JSON.parse(readFileSync(m.paths.config, "utf8"));
     expect(saved.slots["cc-smart-dev-kit-judge"]).toEqual(["omniroute:m2", "omniroute:m1"]);
-    // The proof the router checks: the recipe in config.ts's `judgeTestProof`, by hand.
+    // The proof the router checks: the recipe in config.ts's `judgeTestProof`, by hand. Test
+    // version 3 since 0.5.0, when a judge started judging every check first.
     const url = `http://127.0.0.1:${server.port}`;
     const proof = (target: string) =>
       createHash("sha256")
-        .update(`cc-smart-dev-kit judge test 2\n${target}\n${url}`)
+        .update(`cc-smart-dev-kit judge test 3\n${target}\n${url}`)
         .digest("hex")
         .slice(0, 32);
     expect(saved.judgeTested).toEqual({
@@ -1824,7 +1831,7 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
     });
   });
 
-  test("an affordable slot falling back to Opus or Fable: ! a warning, never a failure", async () => {
+  test("a scout or worker chain that names Opus or Fable: ! a warning, never a failure", async () => {
     const m = machine();
     const server = fakeServer();
     expect((await m.runHere(["gateway", "setup", "--no-backend-key"])).exitCode).toBe(0);
@@ -1855,35 +1862,95 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
     });
     const warnings = checks.filter((check) => check.warn === true);
     expect(warnings.map((check) => check.text)).toEqual([
-      "slot cc-smart-dev-kit-scout falls back to claude-fable-5-1: an affordable slot that answers on Claude Opus or Fable spends your own plan usage. To change it: cc-smart-dev-kit gateway slot cc-smart-dev-kit-scout <targets>",
+      "slot cc-smart-dev-kit-scout names claude-fable-5-1: a slot for routine work that answers on Claude Opus or Fable spends your own plan usage. To change it: cc-smart-dev-kit gateway slot cc-smart-dev-kit-scout <targets>",
     ]);
-    // A warning is not a failure, and the model slot is left alone (its first target IS the model).
+    // A warning is not a failure, and the model slot is left alone (a premium model is its job).
     expect(warnings.every((check) => check.ok)).toBe(true);
-    expect(checks.some((check) => check.text.includes("cc-smart-dev-kit-opus falls back"))).toBe(
-      false,
-    );
-    expect(checks.some((check) => check.text.includes("cc-smart-dev-kit-worker falls back"))).toBe(
+    expect(checks.some((check) => check.text.includes("cc-smart-dev-kit-opus names"))).toBe(false);
+    expect(checks.some((check) => check.text.includes("cc-smart-dev-kit-worker names"))).toBe(
       false,
     );
   });
 
-  test("slot opus: on, then off; the file names the real model id", async () => {
+  test("slot opus: one backend target is a chain; off again; no model id is written for it", async () => {
     const m = machine();
     const server = fakeServer();
     m.writeConfig(server.port);
-    const on = await m.run(["gateway", "slot", "opus", "claude-opus-5-5,omniroute:m1"]);
+    const on = await m.run(["gateway", "slot", "opus", "omniroute:ollama-cloud/glm-5.3-flash"]);
     expect(on.stderr).toBe("");
+    expect(on.exitCode).toBe(0);
     expect(on.stdout).toBe(
-      "cc-smart-dev-kit-opus: (new)\n  now: claude-opus-5-5 → omniroute:m1\nThe router uses it from its next request.\n",
+      "cc-smart-dev-kit-opus: (new)\n  now: omniroute:ollama-cloud/glm-5.3-flash  (fallback off)\nThe router uses it from its next request.\n",
     );
     const saved = JSON.parse(readFileSync(m.paths.config, "utf8"));
-    expect(saved.modelSlots).toEqual({ "claude-opus-5-5": "cc-smart-dev-kit-opus" });
-    expect(saved.slots["cc-smart-dev-kit-opus"]).toEqual(["claude-opus-5-5", "omniroute:m1"]);
+    expect(saved).not.toHaveProperty("modelSlots");
+    expect(saved.slots["cc-smart-dev-kit-opus"]).toEqual(["omniroute:ollama-cloud/glm-5.3-flash"]);
     const off = await m.run(["gateway", "slot", "opus", "off"]);
     expect(off.stdout).toBe(
-      "cc-smart-dev-kit-opus: claude-opus-5-5 → omniroute:m1\n  now: off (opus goes to Anthropic unchanged)\nThe router uses it from its next request.\n",
+      "cc-smart-dev-kit-opus: omniroute:ollama-cloud/glm-5.3-flash\n  now: off: opus goes to Anthropic as Claude Code sent it, on your own login\nThe router uses it from its next request.\n",
     );
-    expect(JSON.parse(readFileSync(m.paths.config, "utf8"))).not.toHaveProperty("modelSlots");
+    expect(JSON.parse(readFileSync(m.paths.config, "utf8")).slots).not.toHaveProperty(
+      "cc-smart-dev-kit-opus",
+    );
+  });
+
+  test("slot fable with two backends, then fallback on: the switch is saved and said; a slot with no chain is refused", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    const set = await m.run(["gateway", "slot", "fable", "omniroute:m1,omniroute:m2"]);
+    expect(set.stderr).toBe("");
+    expect(set.stdout).toBe(
+      [
+        "cc-smart-dev-kit-fable: (new)",
+        "  now: omniroute:m1 → omniroute:m2  (fallback off: only omniroute:m1 answers; the rest are kept, not used)",
+        "  To let the next target answer when omniroute:m1 fails or rests: cc-smart-dev-kit gateway fallback fable on",
+        "The router uses it from its next request.",
+        "",
+      ].join("\n"),
+    );
+    const on = await m.run(["gateway", "fallback", "fable", "on"]);
+    expect(on.stderr).toBe("");
+    expect(on.stdout).toBe(
+      [
+        "cc-smart-dev-kit-fable: fallback off → on",
+        "  omniroute:m1 → omniroute:m2  (fallback on)",
+        "  The next target answers when the one before it fails or rests.",
+        "The router uses it from its next request.",
+        "",
+      ].join("\n"),
+    );
+    expect(JSON.parse(readFileSync(m.paths.config, "utf8")).fallback).toEqual({
+      "cc-smart-dev-kit-fable": true,
+    });
+    const refused = await m.run(["gateway", "fallback", "opus", "on"]);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toBe(
+      "cc-smart-dev-kit: cc-smart-dev-kit-opus has no chain, so it has nothing to fall back to. Give it one first: cc-smart-dev-kit gateway slot opus <targets>\n",
+    );
+    expect((await m.run(["gateway", "fallback", "fable"])).exitCode).toBe(2);
+  });
+
+  test("status shows each slot's chain and its fallback switch, and every slot that is off", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port, {
+      "cc-smart-dev-kit-opus": ["omniroute:m1", "omniroute:m2"],
+      "cc-smart-dev-kit-worker": ["omniroute:m1", "omniroute:m2"],
+    });
+    const status = await m.run(["gateway", "status"]);
+    expect(status.stderr).toBe("");
+    expect(status.stdout).toContain(
+      [
+        "Slots (the first target answers; the next one only while fallback is on):",
+        "  cc-smart-dev-kit-scout omniroute:m1 → claude-sonnet-5-5  (fallback on)",
+        "  cc-smart-dev-kit-worker omniroute:m1 → omniroute:m2  (fallback on)",
+        "  cc-smart-dev-kit-fable off: fable goes to Anthropic as Claude Code sent it, on your own login",
+        "  cc-smart-dev-kit-opus omniroute:m1 → omniroute:m2  (fallback off: only omniroute:m1 answers; the rest are kept, not used)",
+        "  cc-smart-dev-kit-judge off: Claude judges auto mode's safety checks",
+        "",
+      ].join("\n"),
+    );
   });
 });
 
@@ -1937,6 +2004,8 @@ describe("secrets", () => {
     record(await m.run(["gateway", "slot", "worker", "omniroute:m1,claude-sonnet-5-5"]));
     record(await m.run(["gateway", "slot", "judge", "omniroute:m2"]));
     record(await m.run(["gateway", "slot", "opus", "claude-opus-5-5,omniroute:m1"]));
+    record(await m.run(["gateway", "fallback", "opus", "on"]));
+    record(await m.run(["gateway", "fallback", "worker", "off"]));
     record(await m.run(["gateway", "slot", "opus", "off"]));
     record(await m.run(["usage"]));
     record(await m.run(["gateway", "slot", "worker", "omniroute:nope"]));
@@ -2044,7 +2113,7 @@ describe("cc-smart-dev-kit gateway on Windows: the router as a Scheduled Task", 
     expect(done.exitCode).toBe(0);
     expect(done.stdout).toBe(
       [
-        "no config at ~/.config/cc-smart-dev-kit/gateway.json yet: the router answers every slot on your own Claude login until the OmniRoute key is added (setup --backend-key-stdin omniroute)",
+        "no config at ~/.config/cc-smart-dev-kit/gateway.json yet: every slot is off, so every Claude model goes to Anthropic as Claude Code sent it, on your own login, until the OmniRoute key is added (setup --backend-key-stdin omniroute)",
         "+ ~/.local/share/cc-smart-dev-kit/router.js: router copy created",
         "+ ~/.local/share/cc-smart-dev-kit/router-task.xml: task created",
         "registered and (re)started the task cc-smart-dev-kit-router",

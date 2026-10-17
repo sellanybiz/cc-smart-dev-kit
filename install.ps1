@@ -36,9 +36,11 @@
 # THE STEPS, IN ORDER, each one line (a second run skips what is already done):
 #
 #   1. refuse inside a Claude Code session (CLAUDECODE, as `migrate` tests it);
-#   2. `claude` on PATH, and git can read the repository;
+#   2. `claude` on PATH, the GitHub CLI's account able to read the repository, and git able to
+#      read it;
 #   3. Bun present and at least MinBun (asked before it installs or upgrades one);
-#   4. the three marketplaces added (this repository's, and the two companions');
+#   4. the three marketplaces added (this repository's, and the two companions'), over HTTPS
+#      when Claude Code's own ssh add was refused;
 #   5. the plugin installed -- or updated when it is older, or enabled when it is off;
 #   6. `migrate`, then `setup` (the move decides by itself what to move; setup is what
 #      installs the instructions and the launcher), then the old plugin, asked about;
@@ -76,7 +78,7 @@ $MinBun = "1.4.3"
 # (step 5): a CLI older than this script would refuse the options this script passes it, and
 # that is exactly what happened on the first real run (2026-10-17: the installed CLI was 0.4.1,
 # it had no `--tavily-key-stdin`, and the run died at the Tavily step).
-$InstallerVersion = "0.4.3"
+$InstallerVersion = "0.5.0"
 
 # The names this repository declares: the marketplace in .claude-plugin/marketplace.json
 # and the plugin id in plugin/.claude-plugin/plugin.json. `claude plugin install` needs
@@ -542,6 +544,31 @@ function Test-GitCanRead {
     if ($hadSsh) { $env:GIT_SSH_COMMAND = $savedSsh } else { Remove-Item env:GIT_SSH_COMMAND -ErrorAction SilentlyContinue }
   }
 }
+# Can the GitHub CLI's account read the repository? That account is the one `gh auth setup-git`
+# wires into git, and without read access no marketplace of this repository can be added -- no
+# retry helps until its owner grants the invitation. Nothing is asked when gh is missing, when
+# nobody is logged in, or when the account can see the repository: a machine without gh is
+# installed as before. The account is named from `gh api user --jq .login`, the one call that
+# also proves somebody is logged in; when it answers nothing (gh offline, say) the check is
+# skipped and the marketplace steps below report their own failure.
+function Assert-RepoReadAccess {
+  if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) { return }
+  $null | & gh repo view $Repo --json name | Out-Null
+  if ($LASTEXITCODE -eq 0) { return }
+  $login = [string](@($null | & gh api user --jq .login 2>$null) | Select-Object -First 1)
+  if ([string]::IsNullOrEmpty($login)) { return }
+  Stop-Failed "the GitHub account $login cannot read ${Repo}" @("ask the repository's owner for read access", "accept the invitation at https://github.com/${Repo}/invitations")
+}
+
+# The lines that mean ssh to GitHub was refused, and not that the repository is out of reach.
+# ssh's own two come first; git's summary line follows EITHER failure, so a "Repository not
+# found" beside it is access, not ssh, and the HTTPS form cannot fix that (live, 2026-10-17).
+function Test-SshRefused([string]$Text) {
+  if ($Text -match "Permission denied \(publickey\)" -or $Text -match "Host key verification failed") { return $true }
+  if ($Text -match "Could not read from remote repository") { return $Text -notmatch "Repository not found" }
+  return $false
+}
+
 if (Test-GitCanRead) {
   if ($DryRun) {
     Write-Skip "2/8 claude found: $ClaudeBin; the dry run reaches no network, so git is not checked"
@@ -551,6 +578,10 @@ if (Test-GitCanRead) {
 } elseif ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
   Stop-Failed "git is not on PATH, and a private repository needs it (Git for Windows brings it)" @("install Git for Windows: https://git-scm.com/download/win")
 } else {
+  # git's own line below names git credentials; when git is there and the GitHub account cannot
+  # see the repository at all, that sends the person to fix credentials they already have -- so
+  # gh is asked, and names the account instead (live, 2026-10-17).
+  Assert-RepoReadAccess
   Stop-Failed "git cannot read ${Repo}: a private repository needs your git credentials" @("gh auth login", "gh auth setup-git")
 }
 
@@ -614,6 +645,10 @@ if ([string]::IsNullOrEmpty($Bun)) {
 
 # --- 4. marketplaces -------------------------------------------------------------------
 $Added = [System.Collections.Generic.List[string]]::new()
+# Before the first add: read access is what makes it possible at all (the same check step 2 runs
+# when git could not read the repository). Only when this repository's marketplace is not added
+# yet -- a machine that already has it added is installed as before.
+if (-not $DryRun -and -not (Test-MarketplaceAdded $Marketplace)) { Assert-RepoReadAccess }
 # `$entry`, never `$marketplace`: PowerShell variables are case-INSENSITIVE, and a loop
 # variable spelled like the script's `$Marketplace` writes over it -- which is exactly how
 # step 5 lost the marketplace's version on 0.4.2's Windows run (it printed "the plugin is
@@ -623,8 +658,22 @@ foreach ($entry in $MarketplacesToAdd) {
   $source = $entry.Source
   if (Test-MarketplaceAdded $name) { continue }
   if (-not $DryRun) {
-    & $ClaudeBin plugin marketplace add $source
-    if ($LASTEXITCODE -ne 0) {
+    # Claude Code adds a marketplace over ssh by default, so a machine with no GitHub SSH key
+    # (or a blocked port 22) is refused. The same marketplace over HTTPS works, and it lands
+    # under the SAME name -- that name comes from the repository's own marketplace file, never
+    # from the source -- so every step after this one finds it (live, 2026-10-17). One retry,
+    # never a loop; any other failure is reported as it always was, with the command's own
+    # words kept for whoever reads the line.
+    $addOut = Get-CommandText { & $ClaudeBin plugin marketplace add $source }
+    $addCode = $LASTEXITCODE
+    if ($addCode -ne 0 -and (Test-SshRefused $addOut)) {
+      $source = "https://github.com/${source}.git"
+      Write-Skip "4/8 SSH to GitHub was refused, so the marketplace is added over HTTPS instead: $source"
+      $addOut = Get-CommandText { & $ClaudeBin plugin marketplace add $source }
+      $addCode = $LASTEXITCODE
+    }
+    if ($addCode -ne 0) {
+      if (-not [string]::IsNullOrEmpty($addOut)) { [Console]::Error.WriteLine($addOut) }
       Stop-Failed "adding the marketplace $source failed" @("claude plugin marketplace add $source")
     }
   }

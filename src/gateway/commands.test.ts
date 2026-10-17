@@ -18,12 +18,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { ForeignKeyError, ownedKeys } from "../setup/managed-json";
+import { applyManagedJson, ForeignKeyError, ownedKeys } from "../setup/managed-json";
 import { restore } from "../setup/restore";
 import { listBackups } from "../setup/write";
 import { tempDir } from "../testing/temp";
 import { parseModelList } from "./backends";
-import { ensureConfig, planSlotChange } from "./commands";
+import { ensureConfig, planFallbackChange, planSlotChange } from "./commands";
 import { type GatewayConfig, loadConfigFile } from "./config";
 import type { HealthProbe } from "./health";
 import { judgeTestRequest, judgeVerdict } from "./judge-test";
@@ -103,9 +103,17 @@ function config(): GatewayConfig {
   };
 }
 
-/** The env block `on` writes on port 20100, written out by hand. */
+/**
+ * The env block `on` writes on port 20100, written out by hand. No model is pinned: Claude
+ * Code sends each model's own id, and the router finds its family's slot (since 0.5.0).
+ */
 const ON_ENV = {
   ANTHROPIC_BASE_URL: "http://127.0.0.1:20100",
+  ENABLE_TOOL_SEARCH: "true",
+};
+
+/** The model keys `on` wrote up to 0.4.3, with the values it wrote, by hand. */
+const OLD_MODEL_ENV = {
   ANTHROPIC_DEFAULT_HAIKU_MODEL: "cc-smart-dev-kit-scout[1m]",
   ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION:
     "Affordable model for search and reading: the scout slot (cc-smart-dev-kit gateway slot scout …)",
@@ -114,7 +122,6 @@ const ON_ENV = {
   ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION:
     "Affordable model for routine code and docs: the worker slot (cc-smart-dev-kit gateway slot worker …)",
   ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (affordable)",
-  ENABLE_TOOL_SEARCH: "true",
 };
 
 // ─── Claude Code settings: on / off ─────────────────────────────────────────────
@@ -155,7 +162,7 @@ describe("Claude Code settings: on / off", () => {
         permissions: { allow: ["Bash(ls:*)"] },
       });
       expect(result.written).toBe(true);
-      expect(result.changes).toHaveLength(8);
+      expect(result.changes).toHaveLength(2);
       const backups = listBackups(stateDir, file);
       expect(backups).toHaveLength(1);
       expect(readFileSync(backups[0]?.path ?? "", "utf8")).toBe(before);
@@ -166,24 +173,41 @@ describe("Claude Code settings: on / off", () => {
         ownedKeys(stateDir, file)
           .map((path) => path.join("."))
           .sort(),
-      ).toEqual([
-        "env.ANTHROPIC_BASE_URL",
-        "env.ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        "env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
-        "env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
-        "env.ANTHROPIC_DEFAULT_SONNET_MODEL",
-        "env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
-        "env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
-        "env.ENABLE_TOOL_SEARCH",
-      ]);
+      ).toEqual(["env.ANTHROPIC_BASE_URL", "env.ENABLE_TOOL_SEARCH"]);
     },
   );
+
+  it("on takes out the model keys an older version wrote; one the person changed since stays", () => {
+    const { file, stateDir } = seed({ env: { FOO: "1" } });
+    // As 0.4.3's `on` left a machine: its eight keys, owned.
+    applyManagedJson({
+      file,
+      set: Object.entries({ ...ON_ENV, ...OLD_MODEL_ENV }).map(
+        ([key, value]) => [["env", key], value] as const,
+      ),
+      stateDir,
+    });
+    const changed = JSON.parse(readFileSync(file, "utf8")) as { env: Record<string, string> };
+    changed.env.ANTHROPIC_DEFAULT_SONNET_MODEL = "claude-sonnet-5-5";
+    writeFileSync(file, `${JSON.stringify(changed, null, 2)}\n`);
+    const result = turnOn({ settingsFile: file, stateDir, port: 20100 });
+    expect(result.changes.map((change) => change.path[1]).sort()).toEqual([
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+    ]);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      env: { ...ON_ENV, ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5-5", FOO: "1" },
+    });
+  });
 
   it("on over a key someone else set: ForeignKeyError, the value masked, nothing written", () => {
     // Changed by the move: the old `on` replaced these values; now it never takes a key it
     // does not own. An older install's keys are cleared first (a project's migration).
     for (const [key, value, shown] of [
-      ["ANTHROPIC_DEFAULT_SONNET_MODEL", "sk-ant-oat01-ABCDEFGH", "••••EFGH"],
+      ["ANTHROPIC_BASE_URL", "sk-ant-oat01-ABCDEFGH", "••••EFGH"],
       ["ANTHROPIC_BASE_URL", "https://user:hunter2-secret@proxy.example", "••••mple"],
       ["ENABLE_TOOL_SEARCH", "auto", "auto"],
       // The same value, set by someone else: still not ours, or `off` could not remove it.
@@ -210,6 +234,16 @@ describe("Claude Code settings: on / off", () => {
       expect(readFileSync(file, "utf8")).toBe(before);
       expect(existsSync(stateDir)).toBe(false);
     }
+  });
+
+  it("a model key the person set is theirs: on neither refuses it nor touches it", () => {
+    const { file, stateDir } = seed({
+      env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5-5" },
+    });
+    turnOn({ settingsFile: file, stateDir, port: 20100 });
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      env: { ...ON_ENV, ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5-5" },
+    });
   });
 
   it("on never writes CLAUDE_CODE_SUBAGENT_MODEL, its _FORCE, or a login key or token", () => {
@@ -241,19 +275,26 @@ describe("Claude Code settings: on / off", () => {
     const { result, foreign } = turnOff({ settingsFile: file, stateDir });
     expect(result.changes.map((change) => change.path[1]).sort()).toEqual([
       "ANTHROPIC_BASE_URL",
-      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-      "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
-      "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
-      "ANTHROPIC_DEFAULT_SONNET_MODEL",
-      "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
-      "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
       "ENABLE_TOOL_SEARCH",
     ]);
     expect(foreign).toEqual([]);
     // Changed by the move: the old `off` also removed CLAUDE_CODE_SUBAGENT_MODEL. It is not
     // the gateway's key, so it stays.
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(original);
-    expect([...GATEWAY_ENV_KEYS].sort()).toEqual([
+    expect([...GATEWAY_ENV_KEYS].sort()).toEqual(["ANTHROPIC_BASE_URL", "ENABLE_TOOL_SEARCH"]);
+  });
+
+  it("off takes out the model keys an older version wrote too", () => {
+    const { file, stateDir } = seed({ model: "opus" });
+    applyManagedJson({
+      file,
+      set: Object.entries({ ...ON_ENV, ...OLD_MODEL_ENV }).map(
+        ([key, value]) => [["env", key], value] as const,
+      ),
+      stateDir,
+    });
+    expect(ownedGatewayEnvKeys(file, stateDir)).toEqual([
+      "ENABLE_TOOL_SEARCH",
       "ANTHROPIC_BASE_URL",
       "ANTHROPIC_DEFAULT_HAIKU_MODEL",
       "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
@@ -261,8 +302,9 @@ describe("Claude Code settings: on / off", () => {
       "ANTHROPIC_DEFAULT_SONNET_MODEL",
       "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
       "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
-      "ENABLE_TOOL_SEARCH",
     ]);
+    turnOff({ settingsFile: file, stateDir });
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ model: "opus" });
   });
 
   it("off: an env our setup created goes with its last key; one the person had stays", () => {
@@ -319,27 +361,13 @@ describe("Claude Code settings: on / off", () => {
     expect(ownedGatewayEnvKeys(file, stateDir)).toEqual([
       "ENABLE_TOOL_SEARCH",
       "ANTHROPIC_BASE_URL",
-      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-      "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
-      "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
-      "ANTHROPIC_DEFAULT_SONNET_MODEL",
-      "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
-      "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
     ]);
     // The person points Claude Code at their own gateway: that key is their choice now, and
     // restore's staging must stop counting it as a way running sessions reach the router.
     const changed = JSON.parse(readFileSync(file, "utf8")) as { env: Record<string, string> };
     changed.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:19999";
     writeFileSync(file, `${JSON.stringify(changed, null, 2)}\n`);
-    expect(ownedGatewayEnvKeys(file, stateDir)).toEqual([
-      "ENABLE_TOOL_SEARCH",
-      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-      "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
-      "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
-      "ANTHROPIC_DEFAULT_SONNET_MODEL",
-      "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
-      "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
-    ]);
+    expect(ownedGatewayEnvKeys(file, stateDir)).toEqual(["ENABLE_TOOL_SEARCH"]);
     // Restore leaves it (theirs), takes ours out, and gives up the ownership of it.
     expect(restore(stateDir).map((result) => result.action)).toEqual(["cleaned"]);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
@@ -384,21 +412,10 @@ describe("setup, slot and models helpers", () => {
       );
       ensureConfig(path, { backend: "omniroute", value: "omni-key-123456" });
       expect(statSync(path).mode & 0o777).toBe(0o600);
-      // DeepSeek first in both slots, GLM second, Claude Sonnet last; ids as OmniRoute's
-      // /v1/models lists them. Changed by the move: no judge slot. Auto mode's safety
-      // check stays on Claude until the person turns the judge on.
-      expect(loadConfigFile(path).slots).toEqual({
-        "cc-smart-dev-kit-scout": [
-          "omniroute:ollama-cloud/deepseek-v4.1-flash",
-          "omniroute:ollama-cloud/glm-5.3-flash",
-          "claude-sonnet-5-5",
-        ],
-        "cc-smart-dev-kit-worker": [
-          "omniroute:ollama-cloud/deepseek-v4.1-flash",
-          "omniroute:ollama-cloud/glm-5.3-flash",
-          "claude-sonnet-5-5",
-        ],
-      });
+      // A fresh setup writes no chain and no switch (0.5.0): every slot is off, every model
+      // plain Claude, until the person picks targets from the live model list.
+      expect(loadConfigFile(path).slots).toEqual({});
+      expect(loadConfigFile(path).fallback).toBeUndefined();
       expect(loadConfigFile(path).aliases).toEqual({});
       const said = ensureConfig(path, { backend: "ollama", value: "ollama-key-abcdef" });
       expect(said).toBe(`set the key of backend "ollama" (••••cdef) in ${path}`);
@@ -432,7 +449,7 @@ describe("setup, slot and models helpers", () => {
     });
     expect(planSlotChange(cfg, "Scout!", "claude-sonnet-5-5", models)).toEqual({
       error:
-        '"Scout!" is not a slot name (scout, worker, judge, opus, fable, or cc-smart-dev-kit-<name>)',
+        '"Scout!" is not a slot name (scout, worker, opus, fable, judge, or cc-smart-dev-kit-<name>)',
     });
     // `judge off`: the way back to Claude. config() has no judge slot yet.
     expect(planSlotChange(cfg, "judge", "off", models)).toEqual({
@@ -453,10 +470,10 @@ describe("setup, slot and models helpers", () => {
       "cc-smart-dev-kit-scout",
       "cc-smart-dev-kit-worker",
     ]);
-    expect(planSlotChange(cfg, "worker", "off", models)).toEqual({
-      error:
-        "only cc-smart-dev-kit-judge, cc-smart-dev-kit-opus and cc-smart-dev-kit-fable can be off; give cc-smart-dev-kit-worker its targets instead",
-    });
+    // Every slot can be off now: worker's model is then plain Sonnet.
+    const workerOff = planSlotChange(cfg, "worker", "off", models);
+    if (!("config" in workerOff)) throw new Error(workerOff.error);
+    expect(workerOff.config.slots["cc-smart-dev-kit-worker"]).toBeUndefined();
     const ok = planSlotChange(cfg, "worker", "omniroute:glm-5.3-flash, claude-sonnet-5-5", models);
     if (!("config" in ok)) throw new Error(ok.error);
     expect(ok.key).toBe("cc-smart-dev-kit-worker");
@@ -499,18 +516,17 @@ describe("setup, slot and models helpers", () => {
   it("setup --no-backend-key: no config and no key is allowed, and writes nothing", () => {
     const path = join(tempDir("gateway-nokey"), ".config", "cc-smart-dev-kit", "gateway.json");
     expect(ensureConfig(path, null, { allowNone: true })).toBe(
-      `no config at ${path} yet: the router answers every slot on your own Claude login until the OmniRoute key is added (setup --backend-key-stdin omniroute)`,
+      `no config at ${path} yet: every slot is off, so every Claude model goes to Anthropic as Claude Code sent it, on your own login, until the OmniRoute key is added (setup --backend-key-stdin omniroute)`,
     );
     expect(existsSync(path)).toBe(false);
     // Without the flag it still refuses, so a forgotten key is not silent.
     expect(() => ensureConfig(path, null)).toThrow("no config at");
-    // The key later creates the full default config, not a Claude-only one.
+    // The key later creates the config with its backend, and still no chain.
     ensureConfig(path, { backend: "omniroute", value: "omni-key-123456" }, { allowNone: true });
-    expect(loadConfigFile(path).slots["cc-smart-dev-kit-worker"]).toEqual([
-      "omniroute:ollama-cloud/deepseek-v4.1-flash",
-      "omniroute:ollama-cloud/glm-5.3-flash",
-      "claude-sonnet-5-5",
-    ]);
+    expect(loadConfigFile(path).backends).toEqual({
+      omniroute: { apiKey: "omni-key-123456", baseUrl: "http://127.0.0.1:20128" },
+    });
+    expect(loadConfigFile(path).slots).toEqual({});
   });
 });
 
@@ -1335,42 +1351,65 @@ describe("router service stop", () => {
 
 // ─── The model slots and the judge test ─────────────────────────────────────────
 
-describe("slot opus / fable", () => {
+describe("slot opus / fable, and the fallback switch", () => {
   const models = { omniroute: ["glm-5.3-flash", "deepseek-v4.1-flash"] };
 
-  it("turns a model slot on: the model first, then its fallbacks; modelSlots keyed by the real id", () => {
-    const plan = planSlotChange(
-      config(),
-      "opus",
-      "claude-opus-5-5,omniroute:glm-5.3-flash",
-      models,
-    );
-    if (!("config" in plan)) throw new Error(plan.error);
-    expect(plan.key).toBe("cc-smart-dev-kit-opus");
-    expect(plan.old).toEqual([]);
-    expect(plan.config.slots["cc-smart-dev-kit-opus"]).toEqual([
-      "claude-opus-5-5",
-      "omniroute:glm-5.3-flash",
-    ]);
-    expect(plan.config.modelSlots).toEqual({ "claude-opus-5-5": "cc-smart-dev-kit-opus" });
-    const fable = planSlotChange(
-      plan.config,
-      "fable",
-      "claude-fable-5-1,omniroute:deepseek-v4.1-flash",
-      models,
-    );
-    if (!("config" in fable)) throw new Error(fable.error);
-    expect(fable.config.modelSlots).toEqual({
-      "claude-fable-5-1": "cc-smart-dev-kit-fable",
-      "claude-opus-5-5": "cc-smart-dev-kit-opus",
-    });
+  it("a model slot takes any chain like scout: one backend target alone, two backends, a Claude target anywhere", () => {
+    for (const [slot, text, chain] of [
+      ["opus", "omniroute:glm-5.3-flash", ["omniroute:glm-5.3-flash"]],
+      [
+        "fable",
+        "omniroute:glm-5.3-flash,omniroute:deepseek-v4.1-flash",
+        ["omniroute:glm-5.3-flash", "omniroute:deepseek-v4.1-flash"],
+      ],
+      [
+        "opus",
+        "omniroute:glm-5.3-flash,claude-opus-5-5",
+        ["omniroute:glm-5.3-flash", "claude-opus-5-5"],
+      ],
+    ] as const) {
+      const planned = planSlotChange(config(), slot, text, models);
+      if (!("config" in planned)) throw new Error(planned.error);
+      expect(planned.key).toBe(`cc-smart-dev-kit-${slot}`);
+      expect(planned.next).toEqual([...chain]);
+      expect(planned.config.slots[`cc-smart-dev-kit-${slot}`]).toEqual([...chain]);
+      // No `modelSlots` and no switch are written: the family finds the slot, and the
+      // switch keeps its default (off) until the person sets it.
+      expect(planned.config).not.toHaveProperty("modelSlots");
+      expect(planned.config).not.toHaveProperty("fallback");
+    }
   });
 
-  it("off removes the slot and its modelSlots entry; with none left, no modelSlots field at all", () => {
-    const on = planSlotChange(config(), "opus", "claude-opus-5-5,omniroute:glm-5.3-flash", models);
-    if (!("config" in on)) throw new Error(on.error);
-    const off = planSlotChange(on.config, "opus", "off", models);
+  it("a model slot refuses what scout refuses", () => {
+    for (const slot of ["scout", "opus", "fable"]) {
+      expect(planSlotChange(config(), slot, "omniroute:kimi", models)).toEqual({
+        error:
+          '"omniroute:kimi": "omniroute" has no model "kimi" (see cc-smart-dev-kit gateway models)',
+      });
+      expect(planSlotChange(config(), slot, "nobody:x", models)).toEqual({
+        error: '"nobody:x": backend "nobody" is not in the config',
+      });
+      expect(planSlotChange(config(), slot, "glm", models)).toEqual({
+        error: '"glm" is neither claude-<id> nor <backend>:<model>',
+      });
+      expect(planSlotChange(config(), slot, " , ", models)).toEqual({
+        error: "give at least one target",
+      });
+    }
+  });
+
+  it("off removes the slot; a 0.4.x modelSlots entry for it goes too, and with none left the field", () => {
+    const old: GatewayConfig = {
+      ...config(),
+      modelSlots: { "claude-opus-5-5": "cc-smart-dev-kit-opus" },
+      slots: {
+        ...config().slots,
+        "cc-smart-dev-kit-opus": ["claude-opus-5-5", "omniroute:glm-5.3-flash"],
+      },
+    };
+    const off = planSlotChange(old, "opus", "off", models);
     if (!("config" in off)) throw new Error(off.error);
+    expect(off.old).toEqual(["claude-opus-5-5", "omniroute:glm-5.3-flash"]);
     expect(off.next).toEqual([]);
     expect(Object.keys(off.config.slots)).not.toContain("cc-smart-dev-kit-opus");
     expect(off.config).not.toHaveProperty("modelSlots");
@@ -1379,37 +1418,58 @@ describe("slot opus / fable", () => {
     });
   });
 
-  it("refuses a model slot that does not start with its own model, or has no fallback", () => {
-    expect(planSlotChange(config(), "opus", "omniroute:glm-5.3-flash", models)).toEqual({
+  it("a new chain for a 0.4.x model slot keeps its fallback on, now written out", () => {
+    const old: GatewayConfig = {
+      ...config(),
+      modelSlots: { "claude-opus-5-5": "cc-smart-dev-kit-opus" },
+      slots: {
+        ...config().slots,
+        "cc-smart-dev-kit-opus": ["claude-opus-5-5", "omniroute:glm-5.3-flash"],
+      },
+    };
+    const moved = planSlotChange(old, "opus", "omniroute:glm-5.3-flash,claude-opus-5-5", models);
+    if (!("config" in moved)) throw new Error(moved.error);
+    expect(moved.config).not.toHaveProperty("modelSlots");
+    expect(moved.config.fallback).toEqual({ "cc-smart-dev-kit-opus": true });
+  });
+
+  it("fallback: on and off for a slot with a chain; a value equal to the default is no entry", () => {
+    const withOpus = planSlotChange(config(), "opus", "omniroute:glm-5.3-flash", models);
+    if (!("config" in withOpus)) throw new Error(withOpus.error);
+    const on = planFallbackChange(withOpus.config, "opus", "on");
+    if (!("config" in on)) throw new Error(on.error);
+    expect(on).toMatchObject({ key: "cc-smart-dev-kit-opus", now: true, was: false });
+    expect(on.config.fallback).toEqual({ "cc-smart-dev-kit-opus": true });
+    // Its chain is kept as it was.
+    expect(on.config.slots["cc-smart-dev-kit-opus"]).toEqual(["omniroute:glm-5.3-flash"]);
+    const back = planFallbackChange(on.config, "opus", "off");
+    if (!("config" in back)) throw new Error(back.error);
+    expect(back.config).not.toHaveProperty("fallback");
+    const workerOff = planFallbackChange(config(), "worker", "off");
+    if (!("config" in workerOff)) throw new Error(workerOff.error);
+    expect(workerOff).toMatchObject({ now: false, was: true });
+    expect(workerOff.config.fallback).toEqual({ "cc-smart-dev-kit-worker": false });
+  });
+
+  it("fallback: refused for a slot with no chain, a wrong word, or a name that is no slot", () => {
+    expect(planFallbackChange(config(), "fable", "on")).toEqual({
       error:
-        "cc-smart-dev-kit-opus: start with the opus model itself, e.g. cc-smart-dev-kit gateway slot opus claude-opus-5-5,omniroute:<model>",
+        "cc-smart-dev-kit-fable has no chain, so it has nothing to fall back to. Give it one first: cc-smart-dev-kit gateway slot fable <targets>",
     });
-    expect(
-      planSlotChange(config(), "fable", "claude-opus-5-5,omniroute:glm-5.3-flash", models),
-    ).toEqual({
+    expect(planFallbackChange(config(), "worker", "yes")).toEqual({
+      error: 'say on or off, not "yes"',
+    });
+    expect(planFallbackChange(config(), "Worker!", "on")).toEqual({
       error:
-        "cc-smart-dev-kit-fable: start with the fable model itself, e.g. cc-smart-dev-kit gateway slot fable claude-fable-5-1,omniroute:<model>",
-    });
-    expect(planSlotChange(config(), "opus", "claude-opus-5-5", models)).toEqual({
-      error: "cc-smart-dev-kit-opus: give the fallback targets after claude-opus-5-5",
-    });
-    expect(planSlotChange(config(), "opus", "claude-opus-5-5,omniroute:kimi", models)).toEqual({
-      error:
-        '"omniroute:kimi": "omniroute" has no model "kimi" (see cc-smart-dev-kit gateway models)',
+        '"Worker!" is not a slot name (scout, worker, opus, fable, judge, or cc-smart-dev-kit-<name>)',
     });
   });
 
-  it("a new model id replaces the old entry for the same slot", () => {
-    const on = planSlotChange(config(), "opus", "claude-opus-5-5,omniroute:glm-5.3-flash", models);
-    if (!("config" in on)) throw new Error(on.error);
-    const moved = planSlotChange(
-      on.config,
-      "opus",
-      "claude-opus-6-0,omniroute:glm-5.3-flash",
-      models,
-    );
-    if (!("config" in moved)) throw new Error(moved.error);
-    expect(moved.config.modelSlots).toEqual({ "claude-opus-6-0": "cc-smart-dev-kit-opus" });
+  it("a slot turned off loses its fallback setting with its chain", () => {
+    const cfg: GatewayConfig = { ...config(), fallback: { "cc-smart-dev-kit-worker": false } };
+    const off = planSlotChange(cfg, "worker", "off", models);
+    if (!("config" in off)) throw new Error(off.error);
+    expect(off.config).not.toHaveProperty("fallback");
   });
 });
 

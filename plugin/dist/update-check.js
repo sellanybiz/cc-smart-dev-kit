@@ -7,7 +7,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.4.3",
+  version: "0.5.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -1717,7 +1717,7 @@ function gitAccessEnv(baseEnv) {
 function gitRemoteHead(url, ref, baseEnv = process.env) {
   const result = lsRemote(url, ref, baseEnv);
   if (!result.ok)
-    return result;
+    return { detail: result.detail, ok: false };
   const lines = result.stdout.split(`
 `).map((line) => line.trim().split(/\s+/)).filter((fields) => fields.length === 2);
   const line = lines.find(([, name]) => name.endsWith("^{}")) ?? lines[0];
@@ -1738,15 +1738,18 @@ function lsRemote(url, ref, baseEnv) {
     });
     if (result.exitCode === 0)
       return { ok: true, stdout: result.stdout.toString() };
-    const lines = result.stderr.toString().trim().split(`
-`);
-    const detail = result.signalCode ? "timed out" : (lines.at(-1) ?? "").trim();
-    return { ok: false, detail: redactUrlsIn(detail) || `git exited with ${result.exitCode}` };
-  } catch (error) {
+    const said = redactUrlsIn(result.stderr.toString().trim());
+    const detail = result.signalCode ? "timed out" : (said.split(`
+`).at(-1) ?? "").trim();
+    const output = said || `git exited with ${result.exitCode}`;
     return {
+      detail: detail || `git exited with ${result.exitCode}`,
       ok: false,
-      detail: redactUrlsIn(error instanceof Error ? error.message : String(error))
+      output
     };
+  } catch (error) {
+    const said = redactUrlsIn(error instanceof Error ? error.message : String(error));
+    return { detail: said, ok: false, output: said };
   }
 }
 function marketplaceInstallLocation(knownMarketplacesFile, name) {

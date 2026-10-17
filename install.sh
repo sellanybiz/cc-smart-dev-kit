@@ -32,9 +32,11 @@
 # THE STEPS, IN ORDER, each one line (a second run skips what is already done):
 #
 #   1. refuse inside a Claude Code session (CLAUDECODE, as `migrate` tests it);
-#   2. `claude` on PATH, and git can read the repository;
+#   2. `claude` on PATH, the GitHub CLI's account able to read the repository, and git able to
+#      read it;
 #   3. Bun present and at least MIN_BUN (asked before it installs or upgrades one);
-#   4. the three marketplaces added (this repository's, and the two companions');
+#   4. the three marketplaces added (this repository's, and the two companions'), over HTTPS
+#      when Claude Code's own ssh add was refused;
 #   5. the plugin installed — or updated when it is older, or enabled when it is off;
 #   6. `migrate`, then `setup` (the move decides by itself what to move; setup is what
 #      installs the instructions and the launcher), then the old plugin, asked about;
@@ -73,7 +75,7 @@ MIN_BUN="1.4.3"
 # (step 5): a CLI older than this script would refuse the options this script passes it, and
 # that is exactly what happened on the first real run (2026-10-17: the installed CLI was 0.4.1,
 # it had no `--tavily-key-stdin`, and the run died at the Tavily step).
-INSTALLER_VERSION="0.4.3"
+INSTALLER_VERSION="0.5.0"
 
 # The names this repository declares: the marketplace in .claude-plugin/marketplace.json
 # and the plugin id in plugin/.claude-plugin/plugin.json. `claude plugin install` needs
@@ -405,7 +407,7 @@ EOF
 # ─── the run ───────────────────────────────────────────────────────────────────────────
 main() {
   local DRY_RUN="no" REPO="" arg
-  local added="" pair name source
+  local added="" pair name source add_out add_code
   local have_version want_version restart_flag gateway_go
   local cli_have gateway_check_out gateway_check_code gateway_saved gateway_tries gateway_code
   local mcp_asked=""
@@ -488,6 +490,25 @@ main() {
       git ls-remote "git@github.com:$REPO.git" </dev/null >/dev/null 2>&1 && return 0
     GIT_TERMINAL_PROMPT=0 git ls-remote "https://github.com/$REPO.git" </dev/null >/dev/null 2>&1
   }
+
+  # Can the GitHub CLI's account read the repository? That account is the one `gh auth
+  # setup-git` wires into git, and without read access no marketplace of this repository can
+  # be added — no retry helps until its owner grants the invitation. Nothing is asked when gh
+  # is missing, when nobody is logged in, or when the account can see the repository: a machine
+  # without gh is installed as before. The account is named from `gh api user --jq .login`, the
+  # one call that also proves somebody is logged in; when it answers nothing (gh offline, say)
+  # the check is skipped and the marketplace steps below report their own failure.
+  check_repo_read_access() {
+    command -v gh >/dev/null 2>&1 || return 0
+    gh repo view "$REPO" --json name </dev/null >/dev/null 2>&1 && return 0
+    local login
+    login="$(gh api user --jq .login </dev/null 2>/dev/null || true)"
+    [ -n "$login" ] || return 0
+    failed "the GitHub account $login cannot read $REPO" \
+      "ask the repository's owner for read access" \
+      "accept the invitation at https://github.com/$REPO/invitations"
+  }
+
   if git_can_read; then
     if [ "$DRY_RUN" = "yes" ]; then
       skip "2/8 claude found: $CLAUDE_BIN; the dry run reaches no network, so git is not checked"
@@ -495,6 +516,10 @@ main() {
       step "2/8 claude found: $CLAUDE_BIN, and git can read $REPO"
     fi
   else
+    # git's own line below names git credentials; when git is there and the GitHub account
+    # cannot see the repository at all, that sends the person to fix credentials they already
+    # have — so gh is asked, and names the account instead (live, 2026-10-17).
+    if command -v git >/dev/null 2>&1; then check_repo_read_access; fi
     failed "git cannot read $REPO: a private repository needs your git credentials" \
       "gh auth login" \
       "gh auth setup-git"
@@ -561,12 +586,52 @@ main() {
   fi
 
   # ─── 4. marketplaces ─────────────────────────────────────────────────────────────────
+  # Before the first add: read access is what makes it possible at all (the same check step 2
+  # runs when git could not read the repository). Only when this repository's marketplace is
+  # not added yet — a machine that already has it added is installed as before.
+  if [ "$DRY_RUN" = "no" ] && ! marketplace_added "$MARKETPLACE"; then
+    check_repo_read_access
+  fi
+
+  # The lines that mean ssh to GitHub was refused, and not that the repository is out of reach.
+  # ssh's own two come first; git's summary line follows EITHER failure, so a "Repository not
+  # found" beside it is access, not ssh, and the HTTPS form cannot fix that (live, 2026-10-17).
+  ssh_refused() { # <the failed command's output>
+    case "$1" in
+    *"Permission denied (publickey)"* | *"Host key verification failed"*) return 0 ;;
+    esac
+    case "$1" in
+    *"Could not read from remote repository"*)
+      case "$1" in *"Repository not found"*) return 1 ;; esac
+      return 0
+      ;;
+    esac
+    return 1
+  }
+
   for pair in "$MARKETPLACE|$REPO" $COMPANION_MARKETPLACES; do
     name="${pair%%|*}"
     source="${pair#*|}"
     if marketplace_added "$name"; then continue; fi
     if [ "$DRY_RUN" = "no" ]; then
-      if ! "$CLAUDE_BIN" plugin marketplace add "$source" </dev/null; then
+      # Claude Code adds a marketplace over ssh by default, so a machine with no GitHub SSH
+      # key (or a blocked port 22) is refused. The same marketplace over HTTPS works, and it
+      # lands under the SAME name — that name comes from the repository's own marketplace file,
+      # never from the source — so every step after this one finds it (live, 2026-10-17). One
+      # retry, never a loop; any other failure is reported as it always was, with the command's
+      # own words kept for whoever reads the line.
+      add_out=""
+      add_code=0
+      add_out="$("$CLAUDE_BIN" plugin marketplace add "$source" </dev/null 2>&1)" || add_code=$?
+      if [ "$add_code" -ne 0 ] && ssh_refused "$add_out"; then
+        source="https://github.com/$source.git"
+        skip "4/8 SSH to GitHub was refused, so the marketplace is added over HTTPS instead: $source"
+        add_out=""
+        add_code=0
+        add_out="$("$CLAUDE_BIN" plugin marketplace add "$source" </dev/null 2>&1)" || add_code=$?
+      fi
+      if [ "$add_code" -ne 0 ]; then
+        [ -z "$add_out" ] || printf '%s\n' "$add_out" >&2
         failed "adding the marketplace $source failed" "claude plugin marketplace add $source"
       fi
     fi
