@@ -6724,6 +6724,9 @@ var FIND_INSTALL_JS = [
   "process.stdout.write(e.installPath);"
 ].join("");
 
+// src/path-compare.ts
+var IGNORE_CASE = process.platform === "win32";
+
 // src/setup/lock.ts
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
 

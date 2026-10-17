@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { parseUserJson } from "./user-json";
 import {
   atomicWrite,
   type ChangedEntry,
@@ -124,7 +125,9 @@ export function readJsonObject(file: string): {
   if (text.trim() === "") return { data: {}, indent: "  ", text };
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    // A byte order mark an editor put first is skipped (`user-json.ts`); `text` keeps it, so
+    // the race check compares with the file exactly as read.
+    parsed = parseUserJson(text);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);
@@ -180,6 +183,26 @@ export function ownedRecords(stateDir: string, file: string): OwnedRecord[] {
 
 function hashOf(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+/**
+ * Is `value` exactly what cc-smart-dev-kit wrote at `path` in `file`? True when it owns that key
+ * and `value` matches its record: the value it kept, or, for a secret, the SHA-256 it kept
+ * instead. A record that keeps neither proves nothing, so that is false. Reads `owned.json`
+ * only; `value` may come from anywhere (the environment, another file), never printed.
+ */
+export function isOwnedValue(
+  stateDir: string,
+  file: string,
+  path: KeyPath,
+  value: unknown,
+): boolean {
+  const record = ownedRecords(stateDir, realTarget(file)).find((entry) =>
+    samePath(entry.path, path),
+  );
+  if (record === undefined) return false;
+  if (record.sha256 !== undefined) return hashOf(value) === record.sha256;
+  return Object.hasOwn(record, "value") && Bun.deepEquals(record.value, value, true);
 }
 
 /** The record cc-smart-dev-kit keeps for a key it just wrote: the value, or only its hash. */

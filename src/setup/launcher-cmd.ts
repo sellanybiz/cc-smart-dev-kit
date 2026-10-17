@@ -34,7 +34,7 @@
 import { join } from "node:path";
 import { PLUGIN_ID } from "../build-info";
 import { BUN_CONFIG_NAME } from "./bun-config";
-import type { InstallLauncherOptions } from "./launcher";
+import { type InstallLauncherOptions, LAUNCHER_NAME } from "./launcher";
 import { type WriteOutcome, writeManagedFile } from "./write";
 
 export const LAUNCHER_CMD_NAME = "cc-smart-dev-kit.cmd";
@@ -55,8 +55,11 @@ const FIND_INSTALL_JS = [
   "process.stdout.write(e.installPath);",
 ].join("");
 
-/** The line setup bakes into the `.cmd`, and the reader below. `set "baked_bun=<path>"`. */
-const BAKED_LINE = /^set "baked_bun=(.*)"$/m;
+/**
+ * The line setup bakes into the `.cmd`, and the reader below. `set "baked_bun=<path>"`, its
+ * line ended by CRLF (`launcherCmdScript`) or, in a launcher an older setup wrote, by LF.
+ */
+const BAKED_LINE = /^set "baked_bun=(.*)"\r?$/m;
 
 /**
  * The bun path baked into a `.cmd` launcher by launcherCmdScript(), or null when the script
@@ -91,8 +94,18 @@ function cmdQuote(value: string): string {
  *
  * `bunPath` is the bun that ran setup (process.execPath) — on Windows the native path
  * (`C:\Users\…\bun.exe`), which is exactly what `cmd` wants.
+ *
+ * Every line ends in CRLF (ST-8). `cmd` reads a batch file in blocks, and a `goto` or `call`
+ * to a label in a file with LF-only line ends can miss the label where a block ends (the
+ * long-known batch label bug); Windows's own batch files, and Git for Windows' checkout of a
+ * `.cmd`, end each line in CRLF. The text is written here with `\n` and turned into CRLF once.
  */
 export function launcherCmdScript(bunPath: string): string {
+  return launcherCmdText(bunPath).replaceAll("\n", "\r\n");
+}
+
+/** The script's text, one `\n` per line; `launcherCmdScript` gives it its CRLF line ends. */
+function launcherCmdText(bunPath: string): string {
   return `@echo off
 rem cc-smart-dev-kit launcher for Windows, for cmd and PowerShell. Written by "cc-smart-dev-kit setup"; setup rewrites it, so do not edit it.
 rem It runs the cc-smart-dev-kit command from the installed version of the cc-smart-dev-kit plugin.
@@ -156,6 +169,20 @@ exit /b 1
  */
 export function launcherCmdArgv(cmdPath: string, args: string[]): string[] {
   return ["cmd.exe", "/c", cmdPath, ...args];
+}
+
+/**
+ * How a program (not a shell) starts the launcher in `binDir`: the `sh` launcher off Windows;
+ * on Windows the `.cmd` through `cmd.exe` (`launcherCmdArgv`), since a program there cannot
+ * run a `sh` script. What setup registers the browser's MCP server with (ST-7) — Claude Code's
+ * own advice for a stdio server on native Windows is the same `cmd /c` wrapper. The paths are
+ * joined exactly as `installLauncherCmd` and `installLauncher` join them, so the command names
+ * the very file setup wrote.
+ */
+export function launcherArgv(binDir: string, platform: NodeJS.Platform): string[] {
+  return platform === "win32"
+    ? launcherCmdArgv(join(binDir, LAUNCHER_CMD_NAME), [])
+    : [join(binDir, LAUNCHER_NAME)];
 }
 
 /** Writes `<binDir>/cc-smart-dev-kit.cmd`, with a backup when it changes. Windows only. */

@@ -22,10 +22,11 @@ export interface McpRecord {
   /** When it was registered (ISO time), for a person reading the file. */
   at: string;
   /**
-   * An update (`claude mcp remove`, then `add-json`) is in flight. The mark is written
-   * BEFORE the remove runs and cleared only after the add succeeds, so an interrupted update
-   * is told from a server the person took away: a server that is registered no more WHILE
-   * this is set is the plugin's own half-finished work, and setup registers it again.
+   * An add or an update (`claude mcp remove`, then `add-json`) is in flight. The mark is
+   * written BEFORE the first command runs and cleared only after the add succeeds, so an
+   * interrupted one is told from a server the person took away or registered themselves: a
+   * server that is registered no more WHILE this is set is the plugin's own half-finished
+   * work, and setup registers it again; one that holds what setup was adding is kept.
    */
   pending?: boolean;
 }
@@ -109,5 +110,32 @@ export function markMcpServerPending(
   const record = servers[name];
   if (record === undefined || record.pending === true) return;
   servers[name] = { ...record, pending: true };
+  writeRecords(stateDir, servers, file);
+}
+
+/**
+ * The record before any `claude mcp add-json` setup runs for `name` (ST-4). A server is
+ * registered the moment the add returns, so a run that dies after it — or that then finds the
+ * state lock busy — used to leave a registration with no record, which every later setup read
+ * as the person's own and never managed again. Written first, the record says "setup's own
+ * add is in flight", and the next setup finishes or keeps it (`planMcpServers`).
+ *
+ * A record that is there already (an update, or one interrupted earlier) is only marked
+ * pending, its json kept: that json is what is registered until the add succeeds. With no
+ * record, a pending one of `json` is written. Called inside the state lock.
+ */
+export function markMcpServerAdding(
+  stateDir: string,
+  name: string,
+  json: string,
+  now: string,
+  file = mcpRecordsFile(stateDir),
+): void {
+  const servers = readMcpRecords(stateDir, file);
+  if (servers[name] !== undefined) {
+    markMcpServerPending(stateDir, name, file);
+    return;
+  }
+  servers[name] = { at: now, json, pending: true };
   writeRecords(stateDir, servers, file);
 }

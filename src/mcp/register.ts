@@ -3,15 +3,19 @@
  * own `claude mcp` commands, never by editing `<config dir>/.claude.json` by hand (Claude
  * Code writes that file itself, and a second writer would lose its changes).
  *
- * WHAT SETUP DOES, PER SERVER
+ * WHAT SETUP DOES, PER SERVER (inside the state lock; every add and update writes its
+ * `pending` record before its first command, so a run that stops halfway is finished or kept
+ * by the next one, never read as someone else's server)
  *   - not registered: `claude mcp add-json --scope user <name> <json>`.
  *   - registered with exactly the JSON setup recorded: nothing at all.
  *   - registered with the JSON setup recorded, and that JSON has changed (a new pin): remove,
  *     then add again — `add-json` refuses a name that exists ("MCP server <name> already
  *     exists in user config", exit 1, seen live). The update marks the record `pending`
  *     before the remove, and the mark is cleared only after the add succeeds.
- *   - not registered, with a record marked `pending`: setup's own update was interrupted
- *     between the remove and the add, so the server is registered again.
+ *   - not registered, with a record marked `pending`: setup's own add or update was
+ *     interrupted before its add, so the server is registered.
+ *   - registered with exactly what setup would register, and a record marked `pending`: the
+ *     add succeeded and only the record write did not land: kept, and the mark cleared.
  *   - not registered, with a record NOT marked pending: the person removed it. The record is
  *     forgotten, the server is not registered again, and one `·` line says how to add it back.
  *   - registered with something else, and not ours: LEFT ALONE, with a note — a server of the
@@ -21,23 +25,33 @@
  *   - a server the plugin no longer wants (Tavily without a key), still registered with our
  *     record: taken back (`claude mcp remove`), and the record goes.
  *
- * WHEN CLAUDE CODE'S OWN CONFIG CANNOT BE READ
+ * WHEN CLAUDE CODE'S OWN CONFIG, OR THE RECORD, CANNOT BE READ
  *   Nothing is touched on any path: no server is added, removed, updated or forgotten, every
  *   record stays, and one line says `cannot read <file>: nothing changed`. Reading "not
  *   registered" out of a file that did not read would drop the record of a server that IS
  *   registered, and the plugin's servers would then stay registered with nothing tracking them.
+ *   A record file that does not read is kept as it is, for the person to fix: it may still say
+ *   what setup registered (`unreadableRecordsNote`).
  *
  * WHAT RESTORE DOES
  *   For each recorded server still holding the JSON setup registered: `claude mcp remove
  *   <name> --scope user`. Then the record goes. A server the person re-pointed stays. When
- *   the user config cannot be read, every record stays and one line says so.
+ *   the user config or the record cannot be read, every record stays, one line says so, and
+ *   restore exits 1 — as it does when a removal fails (that record stays, for the next try).
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { tildify } from "../cli/paths";
 import { shellQuote } from "../setup/launcher";
-import { forgetMcpServer, type McpRecord, readMcpRecords, recordMcpServer } from "./records";
+import { parseUserJson, readUserJson } from "../setup/user-json";
+import {
+  forgetMcpServer,
+  type McpRecord,
+  mcpRecordsFile,
+  readMcpRecords,
+  recordMcpServer,
+} from "./records";
 import type { McpServer, ServerName } from "./servers";
 
 /** Runs one `claude` command. A test hands in a fake; the CLI passes `Bun.spawnSync`. */
@@ -58,7 +72,7 @@ export function readUserServers(file: string): Record<string, unknown> | null {
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? {} : null;
   }
   try {
-    const parsed: unknown = JSON.parse(text);
+    const parsed = parseUserJson(text);
     if (typeof parsed !== "object" || parsed === null) return null;
     const servers = (parsed as { mcpServers?: unknown }).mcpServers;
     return typeof servers === "object" && servers !== null && !Array.isArray(servers)
@@ -132,6 +146,18 @@ export function unreadableUserConfigNote(file: string, names: readonly string[])
       ? "no MCP server is touched"
       : `the MCP servers cc-smart-dev-kit registered stay as they are: ${kept.join(", ")}`;
   return `! cannot read ${file}: nothing changed — ${which}`;
+}
+
+/**
+ * The one line setup and restore print when cc-smart-dev-kit's own record of the servers
+ * (`mcp-servers.json`) cannot be read: no server is added, removed or updated, and the file
+ * stays as it is — it may still hold what setup registered, and only a person can tell.
+ */
+export function unreadableRecordsNote(file: string, reason: string): string {
+  return (
+    `! cannot read ${file} (${reason}): nothing changed — no MCP server is touched, and the ` +
+    "file stays. Fix it by hand, then run the command again"
+  );
 }
 
 /** The note for a server that is registered with a config cc-smart-dev-kit did not write. */
@@ -210,14 +236,15 @@ export function planMcpServers(
           { action: "gone", forget: true, json: "", name, note: goneNote(name, recorded.json) };
     }
     if (recorded.pending === true) {
+      // First: what setup would register is there. Its own add (a first one, or an update's)
+      // succeeded and only the record write did not land: keep it, and clear the mark. Asked
+      // before the next test, because a first add's pending record holds that same json.
+      if (sameConfig(json, current)) {
+        return { action: "keep", clearPending: true, json, name, note: null };
+      }
       if (sameConfig(recorded.json, current)) {
         // The update's remove never ran (or failed): run the whole update again.
         return { action: "update", json, name, note: null };
-      }
-      if (sameConfig(json, current)) {
-        // The update's add succeeded and only the record write did not land: keep it, and
-        // clear the mark.
-        return { action: "keep", clearPending: true, json, name, note: null };
       }
       // Someone else wrote it while the update was in flight: theirs.
       return { action: "foreign", forget: true, json, name, note: changedByPersonNote(name) };
@@ -270,16 +297,18 @@ export interface McpApplyResult {
  * Runs the plan with `claude`. `ok` is false when a command failed, or when `claude` is not
  * on PATH (`which` returns null: nothing is run).
  *
- * `markPending` is called before an update's own `claude mcp remove` runs, so an interrupted
- * update is known the next time (`records.ts` `markMcpServerPending`); a dry run never calls
- * it. Every other write is the caller's, after this returns.
+ * `markPending(name, json)` is called before the first command of every add and every update
+ * — before an update's own `claude mcp remove`, before a first `add-json` — so an interrupted
+ * one is known the next time (`records.ts` `markMcpServerAdding`); a dry run never calls it.
+ * Every other write is the caller's, after this returns. The caller runs this inside the state
+ * lock, so no second setup reads or writes the records in between.
  */
 export function applyMcpServers(
   plan: readonly McpPlanEntry[],
   run: ClaudeRun,
   which: (command: string) => null | string,
   dryRun: boolean,
-  markPending: (name: string) => void,
+  markPending: (name: string, json: string) => void,
 ): McpApplyResult {
   const result: McpApplyResult = {
     changes: [],
@@ -311,7 +340,7 @@ export function applyMcpServers(
       );
       continue;
     }
-    if (entry.action === "update") markPending(entry.name);
+    if (entry.action === "update" || entry.action === "add") markPending(entry.name, entry.json);
     let failed = false;
     for (const argv of argvList) {
       const outcome = run(argv);
@@ -357,6 +386,11 @@ export interface McpRemoval {
   /** Names that are no longer cc-smart-dev-kit's: their record can go. */
   forgotten: string[];
   wouldRun: string[];
+  /**
+   * The record file could not be read: nothing was removed, and the file must stay (ST-5) —
+   * it may hold what setup registered. The caller counts this as a failure.
+   */
+  recordsUnreadable: boolean;
 }
 
 /**
@@ -373,15 +407,24 @@ export function removeMcpServers(
   dryRun: boolean,
   stateDir: string = paths.stateDir,
 ): McpRemoval {
-  const result: McpRemoval = { forgotten: [], kept: [], notes: [], removed: [], wouldRun: [] };
+  const result: McpRemoval = {
+    forgotten: [],
+    kept: [],
+    notes: [],
+    recordsUnreadable: false,
+    removed: [],
+    wouldRun: [],
+  };
   let records: Record<string, McpRecord>;
   try {
     records = readMcpRecords(stateDir);
   } catch (error) {
+    result.recordsUnreadable = true;
     result.notes.push(
-      `! the MCP servers cc-smart-dev-kit registered cannot be read back (${
-        error instanceof Error ? error.message : String(error)
-      }): none was removed`,
+      unreadableRecordsNote(
+        tildify(mcpRecordsFile(stateDir), paths.home),
+        error instanceof Error ? error.message : String(error),
+      ),
     );
     return result;
   }
@@ -461,7 +504,7 @@ export function overridingServer(
 /** The local-scope servers for `cwd`: `projects[<cwd>].mcpServers` in Claude Code's own file. */
 function localServers(userConfigFile: string, cwd: string): Record<string, unknown> {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(userConfigFile, "utf8"));
+    const parsed = readUserJson(userConfigFile);
     const projects = (parsed as { projects?: unknown } | null)?.projects;
     if (typeof projects !== "object" || projects === null) return {};
     const entry = (projects as Record<string, { mcpServers?: unknown }>)[cwd];
@@ -477,7 +520,7 @@ function localServers(userConfigFile: string, cwd: string): Record<string, unkno
 /** The `mcpServers` of one `.mcp.json` (a project's own file). `{}` when it is not readable. */
 function readProjectServers(file: string): Record<string, unknown> {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    const parsed = readUserJson(file);
     const servers = (parsed as { mcpServers?: unknown } | null)?.mcpServers;
     return typeof servers === "object" && servers !== null && !Array.isArray(servers)
       ? (servers as Record<string, unknown>)

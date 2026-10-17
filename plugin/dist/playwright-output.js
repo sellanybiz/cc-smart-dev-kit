@@ -145,6 +145,15 @@ var FIND_INSTALL_JS = [
   "process.stdout.write(e.installPath);"
 ].join("");
 
+// src/setup/user-json.ts
+var BOM = "\uFEFF";
+function withoutBom(text) {
+  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+}
+function parseUserJson(text) {
+  return JSON.parse(withoutBom(text));
+}
+
 // src/mcp/register.ts
 function readUserServers(file) {
   let text;
@@ -154,7 +163,7 @@ function readUserServers(file) {
     return error.code === "ENOENT" ? {} : null;
   }
   try {
-    const parsed = JSON.parse(text);
+    const parsed = parseUserJson(text);
     if (typeof parsed !== "object" || parsed === null)
       return null;
     const servers = parsed.mcpServers;

@@ -8,9 +8,10 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { tempDir } from "../testing/temp";
 import {
+  copiesUnder,
   copyDifferences,
   forgetInstructionsState,
   type InstructionsPaths,
@@ -57,8 +58,25 @@ function setup() {
     claudeMd: join(configDir, "CLAUDE.md"),
     stateDir,
     importPath: "~/.claude/cc-smart-dev-kit/instructions/core.md",
+    installedPluginsFile: join(configDir, "plugins", "installed_plugins.json"),
   };
   return { dir, source, stateDir, paths };
+}
+
+/** Claude Code's record of the installed plugin, at `version`. */
+function installedAt(paths: InstructionsPaths, version: string): void {
+  mkdirSync(join(paths.installedPluginsFile, ".."), { recursive: true });
+  writeFileSync(
+    paths.installedPluginsFile,
+    JSON.stringify({
+      version: 2,
+      plugins: {
+        "cc-smart-dev-kit@cc-smart-dev-kit": [
+          { scope: "user", installPath: join(paths.stateDir, "..", "plugin"), version },
+        ],
+      },
+    }),
+  );
 }
 
 const read = (file: string) => readFileSync(file, "utf8");
@@ -310,6 +328,49 @@ describe("refreshInstructionsCopy", () => {
     expect(readVersionStamp(stateDir)).toBe("1.0.0");
   });
 
+  test("ST-2: an older session never writes back older instructions", async () => {
+    // A session of the old version still runs after an update: its SessionStart (a resume, a
+    // `/clear`, a compaction) must not put the old files back over the new version's copy.
+    const { source, stateDir, paths } = setup();
+    installedAt(paths, V2);
+    writeFileSync(join(source, "core.md"), "# Core, version two\n");
+    installInstructions(paths, false, V2);
+    writeFileSync(join(source, "core.md"), "# Core, version one\n");
+    expect(await refreshInstructionsCopy(paths, V1)).toEqual([]);
+    expect(read(join(paths.target, "core.md"))).toBe("# Core, version two\n");
+    expect(readVersionStamp(stateDir)).toBe("1.1.0");
+    // With no record of what is installed, the same: only a newer version refreshes.
+    rmSync(paths.installedPluginsFile);
+    expect(await refreshInstructionsCopy(paths, V1)).toEqual([]);
+    expect(readVersionStamp(stateDir)).toBe("1.1.0");
+  });
+
+  test("ST-2: the installed version refreshes the copy, also when it is older (a downgrade)", async () => {
+    // The person installed the older version on purpose: its session is the installed one, so
+    // its files are the right ones.
+    const { dir, source, stateDir, paths } = setup();
+    writeFileSync(join(source, "core.md"), "# Core, version two\n");
+    installInstructions(paths, false, V2);
+    writeFileSync(join(source, "core.md"), "# Core, version one\n");
+    installedAt(paths, V1);
+    expect(lines(await refreshInstructionsCopy(paths, V1), dir)).toEqual([
+      "~ home/.claude/cc-smart-dev-kit/instructions/core.md: updated",
+    ]);
+    expect(read(join(paths.target, "core.md"))).toBe("# Core, version one\n");
+    expect(readVersionStamp(stateDir)).toBe("1.0.0");
+  });
+
+  test("ST-2: a stamp that is not a version is refreshed only by the installed version", async () => {
+    const { source, stateDir, paths } = setup();
+    installInstructions(paths, false, V1);
+    writeFileSync(versionStampFile(stateDir), "not-a-version\n");
+    writeFileSync(join(source, "core.md"), "# Core, version two\n");
+    expect(await refreshInstructionsCopy(paths, V2)).toEqual([]);
+    installedAt(paths, V2);
+    expect(await refreshInstructionsCopy(paths, V2)).toHaveLength(1);
+    expect(readVersionStamp(stateDir)).toBe("1.1.0");
+  });
+
   test("dry run: the lines, and nothing written", async () => {
     const { dir, source, stateDir, paths } = setup();
     installInstructions(paths, false, V1);
@@ -365,5 +426,21 @@ describe("copyDifferences", () => {
     // A newer plugin dropped the opt-in file; the old copy of it is still there.
     rmSync(join(source, "optin"), { recursive: true });
     expect(copyDifferences(paths)).toEqual(["optin/worktrees.md is not shipped any more"]);
+  });
+});
+
+describe("copiesUnder", () => {
+  test("ST-6: the copy's files are found on Windows, where every path has `\\`", () => {
+    // What changed.json holds on Windows: real paths with backslashes. The old prefix test
+    // (`${root}/`) found none of them, so the copy looked "not installed" and doctor failed.
+    const root = "C:\\Users\\me\\.claude\\cc-smart-dev-kit\\instructions";
+    const core = win32.join(root, "core.md");
+    const optin = win32.join(root, "optin", "worktrees.md");
+    const settings = "C:\\Users\\me\\.claude\\settings.json";
+    const sibling = "C:\\Users\\me\\.claude\\cc-smart-dev-kit\\instructions-old\\core.md";
+    expect(copiesUnder([settings, core, sibling, optin], root, true)).toEqual([core, optin]);
+    expect(copiesUnder(["/home/user/.claude/x/core.md"], "/home/user/.claude/x", false)).toEqual([
+      "/home/user/.claude/x/core.md",
+    ]);
   });
 });

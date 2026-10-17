@@ -1,6 +1,9 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { type CliPaths, tildify } from "../cli/paths";
+import { IGNORE_CASE, isStrictlyInside } from "../path-compare";
+import { isOlder } from "../update/check";
+import { findUserInstall } from "./installed-plugins";
 import { withLock } from "./lock";
 import {
   applyManagedMarkdown,
@@ -69,6 +72,12 @@ export interface InstructionsPaths {
   stateDir: string;
   /** How the block names the always-on file: `~/.claude/...` under HOME, else absolute. */
   importPath: string;
+  /**
+   * Claude Code's `installed_plugins.json`: which plugin version is installed now. The refresh
+   * at a session start reads it, so a session of an older version never writes its files back
+   * (`refreshMayWrite`).
+   */
+  installedPluginsFile: string;
 }
 
 /** Where the instructions go, and how the `CLAUDE.md` block names them. */
@@ -85,6 +94,7 @@ export function instructionsPaths(paths: CliPaths, source: string): Instructions
     stateDir: paths.stateDir,
     // `~/...` keeps a CLAUDE.md shared between machines (a dotfiles repo) right on each one.
     importPath: tildify(join(target, ALWAYS_ON_FILE), paths.home),
+    installedPluginsFile: paths.installedPluginsFile,
   };
 }
 
@@ -132,10 +142,17 @@ export function listInstructionFiles(source: string): string[] {
   return files;
 }
 
+/**
+ * The files of `files` inside the folder `root`, in their order. Through `isInside`: on Windows
+ * every path has `\`, so a `${root}/` prefix test never matched one there.
+ */
+export function copiesUnder(files: string[], root: string, ignoreCase = IGNORE_CASE): string[] {
+  return files.filter((file) => isStrictlyInside(file, root, ignoreCase));
+}
+
 /** The files of the managed copy that changed.json tracks (real paths). */
 function trackedCopies(target: string, stateDir: string): string[] {
-  const root = `${realTarget(target)}/`;
-  return Object.keys(readChanged(stateDir)).filter((file) => file.startsWith(root));
+  return copiesUnder(Object.keys(readChanged(stateDir)), realTarget(target));
 }
 
 function lineOf(result: RestoreResult, block: boolean): InstructionsLine | null {
@@ -191,11 +208,11 @@ export function copyDifferences(paths: InstructionsPaths): string[] {
       out.push(`${name} differs`);
     }
   }
-  const root = `${realTarget(paths.target)}/`;
+  const root = realTarget(paths.target);
   const wanted = new Set(files.map((name) => realTarget(join(paths.target, name))));
   for (const file of trackedCopies(paths.target, paths.stateDir)) {
     if (!wanted.has(file) && existsSync(file)) {
-      out.push(`${file.slice(root.length)} is not shipped any more`);
+      out.push(`${relative(root, file).split(sep).join("/")} is not shipped any more`);
     }
   }
   return out;
@@ -307,9 +324,35 @@ function installCopy(
 }
 
 /**
+ * May a session of `version` write its files over the copy that `stamp` names? Only the
+ * plugin version Claude Code has installed now (`installed`: also an older one the person went
+ * back to), or a version newer than the stamp. A session of an older version keeps running
+ * after an update, and its SessionStart comes again on a resume, a `/clear` or a compaction:
+ * without this it put the old files back over the new ones, and the next new session put the
+ * new ones back, each time with a backup. A stamp or a version that is not a version number
+ * proves nothing newer: only the installed version writes then.
+ */
+export function refreshMayWrite(
+  stamp: string | null,
+  version: string,
+  installed: string | null,
+): boolean {
+  if (installed !== null && installed === version) return true;
+  return isOlder(stamp, version);
+}
+
+/** Does the copy need `version`, and may this session write it? Files only, never a write. */
+function refreshDue(paths: InstructionsPaths, version: string): boolean {
+  if (!instructionsNeedRefresh(paths, version)) return false;
+  const installed = findUserInstall(paths.installedPluginsFile)?.version ?? null;
+  return refreshMayWrite(readVersionStamp(paths.stateDir), version, installed);
+}
+
+/**
  * Brings the copy up to `version` after a plugin update, and does nothing else: no block, no
  * other setup step, no question. It does nothing when the person opted out, when setup never
- * installed the copy, or when the stamp already names `version` (`instructionsNeedRefresh`).
+ * installed the copy, when the stamp already names `version` (`instructionsNeedRefresh`), or
+ * when `version` is neither the installed one nor newer than the stamp (`refreshMayWrite`).
  * Runs inside the state folder's lock; with `dryRun`, it only reports and takes no lock.
  */
 export async function refreshInstructionsCopy(
@@ -318,11 +361,11 @@ export async function refreshInstructionsCopy(
   options: { dryRun?: boolean; waitMs?: number } = {},
 ): Promise<InstructionsLine[]> {
   // Checked before the lock too: a machine that never ran setup gets no state folder.
-  if (!instructionsNeedRefresh(paths, version)) return [];
+  if (!refreshDue(paths, version)) return [];
   if (options.dryRun) return installCopy(paths, true, version);
   return withLock(
     paths.stateDir,
-    () => (instructionsNeedRefresh(paths, version) ? installCopy(paths, false, version) : []),
+    () => (refreshDue(paths, version) ? installCopy(paths, false, version) : []),
     { waitMs: options.waitMs ?? 10_000 },
   );
 }

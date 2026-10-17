@@ -1,9 +1,10 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { DEPENDENCIES } from "../build-info";
 import type { Dependency } from "../build-info/manifest";
 import type { CliPaths } from "../cli/paths";
 import { isValidRange } from "../project/version-range";
 import { findUserInstall } from "../setup/installed-plugins";
+import { readUserJson } from "../setup/user-json";
 import type { Machine } from "./machine";
 
 /**
@@ -54,7 +55,7 @@ export function companions(dependencies: readonly Dependency[] = DEPENDENCIES): 
 function readJson(file: string): Record<string, unknown> | null {
   if (!existsSync(file)) return null;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    const parsed: unknown = readUserJson(file);
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : null;

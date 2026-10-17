@@ -83,6 +83,30 @@ Things the `.cmd` has to do differently, and why:
 - **A `.cmd` is not an executable**: nothing can spawn it without a shell, so `doctor` runs it
   through `cmd.exe /c`. That is also why the *hooks* cannot use a `.cmd` as an exec-form
   command (`claude-code-contract.md`).
+- **The browser's MCP server starts it the same way.** Claude Code starts an MCP server as a
+  program, and a program on Windows cannot run the `sh` launcher, so on Windows `setup`
+  registers `playwright` as `cmd.exe /c <the .cmd> browser mcp` (`launcherArgv` in
+  `src/setup/launcher-cmd.ts`) — Claude Code's own advice for a stdio server on native Windows
+  is the same `cmd /c` wrapper. Off Windows the registration names the `sh` launcher, as before.
+- **Every line ends in CRLF.** `cmd` reads a batch file in blocks, and a `goto` to a label in a
+  file with LF-only line ends can miss the label where a block ends. A launcher an older setup
+  wrote with LF line ends reads as out of date in `doctor`; `setup` writes it again.
+
+## Paths: `\`, and folder names without case
+
+Every test whether one path is inside another goes through one function, `isInside` in
+`src/path-compare.ts`: it turns `\` into `/`, resolves `.` and `..`, and compares without case
+on Windows only. A `${folder}/` prefix test never matches a Windows path, which is what kept the
+instructions' copy "not installed" there (doctor failed, and a restore left the copy's empty
+folders). The tests give it `path.win32` paths, so a Linux run checks the Windows case too.
+
+## A settings file with a byte order mark
+
+Notepad, and an older PowerShell's `Set-Content -Encoding UTF8`, save UTF-8 with a byte order
+mark (U+FEFF) first. `JSON.parse` refuses that character, so every reader of a JSON file a
+person may edit (`settings.json`, Claude Code's own files, a project's `.mcp.json`) goes through
+`readUserJson` in `src/setup/user-json.ts`, which skips it. A file setup writes again is written
+without the mark, the form Claude Code writes itself.
 
 ## File modes on Windows: the ACL, not `chmod`
 
@@ -202,3 +226,9 @@ Nothing below has been run on Windows yet. Each one is a live check, not a unit 
    session a hook that needs bash errors visibly instead of passing silently.
 10. **Ctrl+C**: in a real console, `cc-smart-dev-kit portal` then Ctrl+C — the exit code is 130
     (`echo %ERRORLEVEL%` right after), and the parent prints nothing odd.
+11. **The browser's MCP server through `cmd.exe /c`**: after `setup`, `claude mcp get playwright`
+    shows `cmd.exe /c …\cc-smart-dev-kit.cmd browser mcp` and says Connected; a session's
+    Playwright tools answer; and when the session ends no `cmd.exe` or bun is left running, and
+    no "Terminate batch job (Y/N)?" waits in a console.
+12. **The instructions' copy**: after `setup`, `doctor` shows the instructions `✓` (the copy is
+    found as installed), and `restore` removes the copy's folders.

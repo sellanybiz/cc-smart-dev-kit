@@ -119,7 +119,11 @@ export function checkForUpdate(paths: CliPaths, env: Env): UpdateStatus {
       failures.push(`${redactUrl(url)}: ${head.detail}`);
     }
     if (remote === null) return { detail: failures.join("; "), kind: "unreachable" };
-    catalogBehind = localHead(location, env) !== remote.head;
+    // A copy whose head cannot be read proves nothing about the remote: only the versions
+    // below decide then. Read as "behind", every check said so, and the background check
+    // refreshed the marketplace every hour for nothing.
+    const local = localHead(location, env);
+    catalogBehind = local !== null && local !== remote.head;
   }
 
   if (catalogBehind || isOlder(install.version, inCopy)) {

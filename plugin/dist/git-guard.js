@@ -7417,7 +7417,23 @@ import { join as join9 } from "path";
 
 // src/hooks/git.ts
 import { realpathSync as realpathSync3 } from "fs";
-import { basename as basename2, dirname as dirname3, join as join7, resolve as resolve2 } from "path";
+import { basename as basename2, dirname as dirname3, join as join7, resolve as resolve3 } from "path";
+
+// src/path-compare.ts
+import { resolve as resolve2 } from "path";
+var IGNORE_CASE = process.platform === "win32";
+function isInside(path, folder, ignoreCase = IGNORE_CASE) {
+  const form = (p) => {
+    const forward = resolve2(p.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
+    return ignoreCase ? forward.toLowerCase() : forward;
+  };
+  const child = form(path);
+  const parent = form(folder);
+  return child === parent || child.startsWith(`${parent}/`);
+}
+function samePath(a, b, ignoreCase = IGNORE_CASE) {
+  return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
+}
 
 // src/setup/marketplace-access.ts
 var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
@@ -7440,29 +7456,16 @@ function runGit(cwd, args, env, timeoutMs = 15000) {
     return { ok: false, out: "", err: error instanceof Error ? error.message : String(error) };
   }
 }
-var IGNORE_CASE = process.platform === "win32";
-function isInside(path, folder, ignoreCase = IGNORE_CASE) {
-  const form = (p) => {
-    const forward = resolve2(p).replace(/\\/g, "/").replace(/\/+$/, "");
-    return ignoreCase ? forward.toLowerCase() : forward;
-  };
-  const child = form(path);
-  const parent = form(folder);
-  return child === parent || child.startsWith(`${parent}/`);
-}
-function samePath(a, b, ignoreCase = IGNORE_CASE) {
-  return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
-}
 function realPath(path) {
   const rest = [];
-  let at = resolve2(path);
+  let at = resolve3(path);
   for (;; ) {
     try {
       return join7(realpathSync3(at), ...rest);
     } catch {
       const parent = dirname3(at);
       if (parent === at)
-        return resolve2(path);
+        return resolve3(path);
       rest.unshift(basename2(at));
       at = parent;
     }
@@ -10058,7 +10061,7 @@ function fableSession(input, env, paths) {
 }
 
 // src/hooks/git-guard.ts
-import { isAbsolute, resolve as resolve3 } from "path";
+import { isAbsolute, resolve as resolve4 } from "path";
 var DEFAULT_PROTECTED_BRANCHES = ["main"];
 var PUSH_VALUE_OPTIONS = [
   ["--exec", 4],
@@ -10079,13 +10082,13 @@ function movedTo(program, folder, args) {
     return null;
   const path = process.platform === "win32" ? target.replace(/^\/([A-Za-z])(?=\/|$)/, "$1:") : target;
   if (isAbsolute(path))
-    return resolve3(path);
-  return folder === null ? null : resolve3(folder, path);
+    return resolve4(path);
+  return folder === null ? null : resolve4(folder, path);
 }
 function currentBranch(folder, dir, env) {
   if (folder === null)
     return;
-  const where = dir === undefined ? folder : resolve3(folder, dir);
+  const where = dir === undefined ? folder : resolve4(folder, dir);
   const run = runGit(where, ["symbolic-ref", "--short", "-q", "HEAD"], env, GUARD_GIT_TIMEOUT_MS);
   return run.ok && run.out !== "" ? run.out : undefined;
 }
@@ -10390,11 +10393,11 @@ function routeFacts(input) {
 }
 
 // src/hooks/main-folder-guard.ts
-import { isAbsolute as isAbsolute3, resolve as resolve5 } from "path";
+import { isAbsolute as isAbsolute3, resolve as resolve6 } from "path";
 
 // src/hooks/serena-root.ts
 import { readFileSync as readFileSync10, rmSync, statSync as statSync5 } from "fs";
-import { isAbsolute as isAbsolute2, join as join13, resolve as resolve4 } from "path";
+import { isAbsolute as isAbsolute2, join as join13, resolve as resolve5 } from "path";
 var SERENA_ACTIVATE_TOOL = "mcp__serena__activate_project";
 var SERENA_ROOT_DIR = "serena-root";
 var UNKNOWN = "unknown";
@@ -10415,7 +10418,7 @@ function readSerenaRoot(paths, sessionId) {
     return missing ? undefined : { kind: "unknown" };
   }
   const root = text.trim();
-  return root !== UNKNOWN && isAbsolute2(root) ? { kind: "path", path: resolve4(root) } : { kind: "unknown" };
+  return root !== UNKNOWN && isAbsolute2(root) ? { kind: "path", path: resolve5(root) } : { kind: "unknown" };
 }
 function writeSerenaRoot(paths, sessionId, root) {
   const file = serenaRootFile(paths, sessionId);
@@ -10456,7 +10459,7 @@ function isFolder(path) {
 function activationAllowed(project, folders) {
   if (typeof project !== "string" || !isAbsolute2(project))
     return false;
-  const wanted = resolve4(project);
+  const wanted = resolve5(project);
   return folders.some((folder) => samePath(wanted, folder, IGNORE_CASE));
 }
 var ACTIVATION_REFUSAL = "Point Serena only at this repo's main checkout or one of its worktrees, by absolute path \u2014 never a project name and never a folder outside the repo: every worktree shares one project name, so a name cannot say which folder is meant.";
@@ -10488,7 +10491,7 @@ function serenaRoot(context) {
   if (event === "PostToolUse") {
     const root = activatedRoot(input.tool_response);
     if (root !== undefined && isFolder(root)) {
-      writeSerenaRoot(paths, sessionId, { kind: "path", path: resolve4(root) });
+      writeSerenaRoot(paths, sessionId, { kind: "path", path: resolve5(root) });
     }
     return SILENT;
   }
@@ -10527,7 +10530,7 @@ function editedFile(input, cwd) {
   const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
   if (path === null)
     return null;
-  return realPath(isAbsolute3(path) ? resolve5(path) : resolve5(cwd, path));
+  return realPath(isAbsolute3(path) ? resolve6(path) : resolve6(cwd, path));
 }
 function serenaEditedFile(input, record, projectDir) {
   const tool = stringField(input.tool_name);
@@ -10550,7 +10553,7 @@ function serenaEditedFile(input, record, projectDir) {
   const root = record?.kind === "path" ? record.path : projectDir;
   if (root === null || !isAbsolute3(root))
     return { unplaceable: true };
-  return { file: realPath(resolve5(root, relative)) };
+  return { file: realPath(resolve6(root, relative)) };
 }
 function editsMainFolder(file, mainCheckout, worktrees) {
   if (!isInside(file, mainCheckout))
@@ -11345,7 +11348,7 @@ var FETCH_AGE_MS = 24 * 60 * 60 * 1000;
 
 // src/hooks/worktree-leftovers.ts
 import { readFileSync as readFileSync15, statSync as statSync8 } from "fs";
-import { basename as basename3, isAbsolute as isAbsolute4, join as join18, resolve as resolve6 } from "path";
+import { basename as basename3, isAbsolute as isAbsolute4, join as join18, resolve as resolve7 } from "path";
 var IDLE_MINUTES = 60;
 function idleMinutes(worktree, now) {
   let admin;
@@ -11355,7 +11358,7 @@ function idleMinutes(worktree, now) {
     return 0;
   }
   if (!isAbsolute4(admin))
-    admin = resolve6(worktree, admin);
+    admin = resolve7(worktree, admin);
   let last = 0;
   for (const file of ["index", "HEAD", join18("logs", "HEAD")]) {
     try {

@@ -175,8 +175,10 @@ export interface InstructionsRefreshDeps {
  * version's files, but the running version's code wrote the managed copy — so the **first
  * session start of a new version** brings the copy up to it. The copy only: never the
  * `CLAUDE.md` block, never a question, nothing when the person chose `--no-instructions` or
- * setup never installed it (`instructionsNeedRefresh`), and nothing when another process
- * holds the state lock (it does the work). A failure is one line, and the session goes on.
+ * setup never installed it (`instructionsNeedRefresh`), nothing from a session of a version
+ * that is neither the installed one nor newer than the copy (`refreshMayWrite`: an old session
+ * that resumes or compacts after an update), and nothing when another process holds the
+ * state lock (it does the work). A failure is one line, and the session goes on.
  */
 export async function refreshInstructionsAtSessionStart(
   deps: InstructionsRefreshDeps,

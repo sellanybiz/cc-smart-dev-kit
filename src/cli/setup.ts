@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { browserSetupReport, realBrowserSetupDeps } from "../browser/setup";
 import {
@@ -30,18 +30,24 @@ import {
   warpPluginSteps,
   warpRemoveCommands,
 } from "../machine/warp";
-import { type McpRecord, markMcpServerPending, readMcpRecords } from "../mcp/records";
+import {
+  type McpRecord,
+  markMcpServerAdding,
+  mcpRecordsFile,
+  readMcpRecords,
+} from "../mcp/records";
 import {
   applyMcpServers,
   type ClaudeRun,
   planMcpServers,
   readUserServers,
   recordApplied,
+  unreadableRecordsNote,
   unreadableUserConfigNote,
 } from "../mcp/register";
 import { installSerenaContext, serenaContextSource } from "../mcp/serena-context";
 import { mcpServers } from "../mcp/servers";
-import { readTavilyKey, TAVILY_ENV_KEY } from "../mcp/tavily";
+import { readTavilyKey, TAVILY_KEY_PATH } from "../mcp/tavily";
 import {
   AUTO_MODE_PATH,
   type AutoModeSource,
@@ -57,16 +63,18 @@ import {
   setInstructionsOptOut,
 } from "../setup/instructions";
 import { installLauncher, LAUNCHER_NAME } from "../setup/launcher";
-import { installLauncherCmd } from "../setup/launcher-cmd";
+import { installLauncherCmd, launcherArgv } from "../setup/launcher-cmd";
 import { withLock } from "../setup/lock";
 import {
   applyManagedJson,
   createdObjects,
   formatKeyPath,
+  isObject,
   type KeyPath,
   ownedKeys,
 } from "../setup/managed-json";
 import { applyTmuxLine, TMUX_LINE, TMUX_NOW_COMMAND, tmuxServerRunning } from "../setup/tmux";
+import { readUserJson } from "../setup/user-json";
 import { atomicWrite, realTarget } from "../setup/write";
 import { type CliPaths, tildify } from "./paths";
 
@@ -115,9 +123,6 @@ function show(value: unknown): string {
   return value === undefined ? "(none)" : JSON.stringify(value);
 }
 
-/** The settings key setup may write the Tavily key into (an owned secret key). */
-export const TAVILY_KEY_PATH: KeyPath = ["env", TAVILY_ENV_KEY];
-
 /**
  * A value as setup prints it: the Tavily key is never shown, only that it is one (and
  * `(none)` when it is gone).
@@ -131,12 +136,11 @@ function shownValue(path: KeyPath, value: unknown): string {
 function marketplaceKnown(settingsFile: string): boolean {
   if (!existsSync(settingsFile)) return false;
   try {
-    const settings = JSON.parse(readFileSync(settingsFile, "utf8")) as {
-      extraKnownMarketplaces?: Record<string, unknown>;
-    };
-    const entry = settings.extraKnownMarketplaces?.[MARKETPLACE];
-    return typeof entry === "object" && entry !== null;
+    const settings = readUserJson(settingsFile);
+    const known = isObject(settings) ? settings.extraKnownMarketplaces : undefined;
+    return isObject(known) && isObject(known[MARKETPLACE]);
   } catch {
+    // Not JSON: the marketplace cannot be read out of it; the message names the file.
     return false;
   }
 }
@@ -163,8 +167,8 @@ export function statuslineSetting(paths: CliPaths): Record<string, string> {
 function hasStatusline(settingsFile: string): boolean {
   if (!existsSync(settingsFile)) return false;
   try {
-    const settings = JSON.parse(readFileSync(settingsFile, "utf8")) as Record<string, unknown>;
-    return Object.hasOwn(settings, "statusLine");
+    const settings = readUserJson(settingsFile);
+    return isObject(settings) && Object.hasOwn(settings, "statusLine");
   } catch {
     // An unreadable file: setup's own pass reports it.
     return false;
@@ -707,18 +711,20 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   // do about each. A server of the person's own is never taken over (`register.ts`); when
   // Claude Code's own config cannot be read, nothing is touched at all.
   let records: Record<string, McpRecord> = {};
+  let recordsProblem: null | string = null;
   try {
     records = readMcpRecords(paths.stateDir);
   } catch (error) {
-    report.notes.push(
-      `! the MCP servers cc-smart-dev-kit registered cannot be read back (${messageOf(error)}): they are registered again`,
-    );
+    recordsProblem = messageOf(error);
   }
-  const liveServers = readUserServers(paths.userConfigFile);
+  // Either file unread means nothing is known about the servers, so nothing is touched (ST-5):
+  // without the record, every server setup registered would read as someone else's, and a
+  // record written now would replace the one that holds what setup really registered.
+  const liveServers = recordsProblem === null ? readUserServers(paths.userConfigFile) : null;
   const mcpPlan = planMcpServers(
     mcpServers({
       bunx: machine.which("bunx") ?? "bunx",
-      launcher: join(paths.binDir, LAUNCHER_NAME),
+      launcher: launcherArgv(paths.binDir, machine.platform),
       serenaContextFile: paths.serenaContextFile,
       tavily: tavily.source === "none" ? { key: false, reason: tavily.reason } : { key: true },
     }),
@@ -737,7 +743,9 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       : entry,
   );
   // One line, not one per server: nothing was added, removed, updated or forgotten.
-  if (liveServers === null) {
+  if (recordsProblem !== null) {
+    report.notes.push(unreadableRecordsNote(short(mcpRecordsFile(paths.stateDir)), recordsProblem));
+  } else if (liveServers === null) {
     report.notes.push(
       unreadableUserConfigNote(short(paths.userConfigFile), Object.keys(records).sort()),
     );
@@ -826,37 +834,47 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   for (const line of steps.lines) (line.startsWith("!") ? report.notes : report.changes).push(line);
   if (!steps.ok) ok = false;
 
-  // The MCP servers, at user scope, through Claude Code's own `claude mcp` commands. An
-  // update marks its record before its own `remove` runs, so a crash in between is known
-  // the next time (`markMcpServerPending`).
-  const applied = applyMcpServers(mcpPlan, claudeRun, machine.which, false, (name) => {
-    markMcpServerPending(paths.stateDir, name);
-  });
-  report.changes.push(...applied.changes);
-  report.notes.push(...applied.notes);
-  if (!applied.ok) ok = false;
-
-  // The first run: claude-mem came with a companion step just now, so plan it again.
+  // The first run: claude-mem came with a companion step just now, so plan it again. Before
+  // the lock: it asks the backend over the network. Its lines come after the MCP servers'.
+  const claudeMemAgain: Report = { changes: [], info: [], notes: [] };
   if (claudeMem === "not-installed" && claudeSteps.length > 0) {
-    const again = await decideClaudeMem(paths, false, report);
+    const again = await decideClaudeMem(paths, false, claudeMemAgain);
     if (again !== "not-installed") managed.claudeMem = again;
   }
 
+  const now = new Date().toISOString();
   const written = await withLock(
     paths.stateDir,
     () => {
+      // The MCP servers, at user scope, through Claude Code's own `claude mcp` commands —
+      // inside the lock, with each add's or update's record written before its first command
+      // (`markMcpServerAdding`): a run that dies after an add, or that would find the lock
+      // busy, can no longer leave a server registered with no record of it (ST-4).
+      const mcp = applyMcpServers(mcpPlan, claudeRun, machine.which, false, (name, json) => {
+        markMcpServerAdding(paths.stateDir, name, json, now);
+      });
       const shortcuts =
         warp.removeShortcuts && warpDone ? removeWarpDesktopEntries(paths, false) : [];
       const files = applySetup(paths, managed, false, serenaSource, machine.platform);
       // Which servers setup registered: cc-smart-dev-kit's own state, like the lock — not a
       // user file, so no backup (restore reads it to take exactly those back).
-      recordApplied(paths.stateDir, applied, new Date().toISOString());
+      recordApplied(paths.stateDir, mcp, now);
       // cc-smart-dev-kit's own state, like the lock: not a user file, so no backup.
       if (declined) atomicWrite(statuslineDeclinedFile(paths.stateDir), "no\n", 0o600);
-      return { changes: [...shortcuts, ...files.changes], info: files.info, notes: files.notes };
+      return {
+        mcp,
+        changes: [...shortcuts, ...files.changes],
+        info: files.info,
+        notes: files.notes,
+      };
     },
     { waitMs: 10_000 },
   );
+  report.changes.push(...written.mcp.changes);
+  report.notes.push(...written.mcp.notes);
+  if (!written.mcp.ok) ok = false;
+  report.info.push(...claudeMemAgain.info);
+  report.notes.push(...claudeMemAgain.notes);
   report.changes.push(...written.changes);
   report.info.push(...written.info);
   report.notes.push(...written.notes);
