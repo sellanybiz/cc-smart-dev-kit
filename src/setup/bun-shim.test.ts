@@ -179,6 +179,7 @@ describe("the hooks' bun shim", () => {
         "SessionStart",
         "Stop",
         "StopFailure",
+        "SubagentStart",
         "SubagentStop",
         "UserPromptSubmit",
       ]),
