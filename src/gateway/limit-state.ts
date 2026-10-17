@@ -1,7 +1,8 @@
 /**
  * The router's limit state file: `~/.local/state/cc-smart-dev-kit/gateway-state.json`.
  *
- * The router writes it; `cc-smart-dev-kit statusline` and the StopFailure hook read it. It says two
+ * The router writes it, and reads it once when it starts (a restart keeps what it saw);
+ * `cc-smart-dev-kit statusline` and the StopFailure hook read it. It says two
  * things, and never a key, a header value or a word of a request:
  *   - `limits`: the Claude models Anthropic last answered with the plan's usage limit
  *     (`planUsageLimit`), with the window that ran out and when it resets. A model is removed

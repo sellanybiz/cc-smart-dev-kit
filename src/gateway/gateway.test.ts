@@ -47,9 +47,9 @@ import {
   saveConfig,
   watchConfig,
 } from "./config";
+import { maskSecrets } from "./plain-text";
 import {
   createRouter,
-  maskSecrets,
   reasoningOffForBackend,
   requestForClaudeFallback,
   sseScanner,
@@ -217,6 +217,8 @@ function router(
     fallbackAnswersAsIs?: boolean;
     /** The safety-check counts the router starts from (a restart reads the file). */
     loadedChecks?: null | string;
+    /** The limit state the router starts from (a restart reads the file). */
+    loadedState?: null | string;
     now?: () => number;
     /** The state file's texts, in the order the router wrote them. */
     states?: string[];
@@ -241,6 +243,7 @@ function router(
     fetch: upstream.fetch,
     getConfig: options.getConfig ?? (() => cfg),
     loadSafetyChecks: () => options.loadedChecks ?? null,
+    loadState: () => options.loadedState ?? null,
     log: (line) => logs.push(line),
     now: options.now ?? (() => Date.UTC(2026, 9, 15, 10, 0, 0)),
     port: PORT,
@@ -345,6 +348,7 @@ function affordableBodyFor(model: string): Record<string, unknown> {
 
 const AFFORDABLE_HEADERS_OMNI: [string, string][] = [
   ["accept", "application/json"],
+  ["accept-encoding", "identity"],
   ["anthropic-version", "2023-06-01"],
   ["authorization", "Bearer omni-key-123456"],
   ["content-type", "application/json"],
@@ -519,6 +523,28 @@ describe("affordable backends never see the Claude login", () => {
     for (const call of calls) expectNoLogin(call);
   });
 
+  it("GW-3: a backend is asked for its answer uncompressed, so the first-event hold can read it", async () => {
+    const stream =
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"m"}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n';
+    /** A backend like a real server: gzip, unless the request asks for no encoding. */
+    const compressing = (call: Call) =>
+      call.headers.some(([name, value]) => name === "accept-encoding" && value === "identity")
+        ? new Response(stream, { headers: { "content-type": "text/event-stream" } })
+        : new Response(Bun.gzipSync(new TextEncoder().encode(stream)), {
+            headers: { "content-encoding": "gzip", "content-type": "text/event-stream" },
+          });
+    const { calls, handle, logs } = router([compressing, compressing]);
+    const res = await handle(
+      clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-affordable")) }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(stream);
+    // The first target answered: no fallback for an answer the hold could not read.
+    expect(calls.map((c) => c.url)).toEqual(["http://omni.test/v1/messages"]);
+    expect(nth(calls, 0).headers).toContainEqual(["accept-encoding", "identity"]);
+    expect(logs.filter((line) => line.includes("WARN"))).toEqual([]);
+  });
+
   it("explicit <backend>:<model>: that backend alone, no fallback, no login", async () => {
     const { calls, handle } = router([() => new Response("down", { status: 503 })]);
     const res = await handle(clientRequest({ body: JSON.stringify(message("ollama:kimi-k3")) }));
@@ -593,6 +619,30 @@ describe("fallback", () => {
     expect(logs).toContain(
       "WARN ollama:deepseek-v4.1-flash answered 401; trying the next target — no key",
     );
+  });
+
+  it("GW-4: the last backend refusing its own key (401, 403) answers a 400 that names the backend, never a login failure", async () => {
+    for (const status of [401, 403]) {
+      const { calls, handle, logs } = router([
+        () => new Response('{"error":{"message":"invalid api key"}}', { status }),
+      ]);
+      const res = await handle(
+        clientRequest({ body: JSON.stringify(message("omniroute:glm-5.3-flash")) }),
+      );
+      expect(res.status).toBe(400);
+      expect(res.headers.get("x-should-retry")).toBe("false");
+      expect(await res.json()).toEqual({
+        error: {
+          message: `cc-smart-dev-kit-router: omniroute:glm-5.3-flash refused the key the gateway config holds for omniroute (HTTP ${status}${status === 403 ? ": the key, or what it may reach, such as a provider connection it is not allowed to use" : ""}). Your Claude login is not the problem. Check it: cc-smart-dev-kit gateway check`,
+          type: "invalid_request_error",
+        },
+        type: "error",
+      });
+      expect(calls).toHaveLength(1);
+      expect(logs).toContain(
+        `WARN omniroute:glm-5.3-flash answered ${status}; returned as a 400 (the backend refused its key) — {"error":{"message":"invalid api key"}}`,
+      );
+    }
   });
 
   it("Anthropic's 400 and 401 are the answer: returned unchanged, nothing else tried", async () => {
@@ -1199,6 +1249,7 @@ describe("auto mode's safety check", () => {
     expect(check).not.toHaveProperty("metadata");
     expect(nth(calls, 0).headers).toEqual([
       ["accept", "application/json"],
+      ["accept-encoding", "identity"],
       ["anthropic-version", "2023-06-01"],
       ["authorization", "Bearer ollama-key-abcdef"],
       ["content-type", "application/json"],
@@ -1294,6 +1345,73 @@ describe("auto mode's safety check", () => {
     });
     expect(calls.map((c) => c.url)).toEqual([OLLAMA_URL]);
     expect(signal?.aborted).toBe(true);
+  });
+
+  it("GW-2: a lone judge whose stream sends only heartbeats gets the deadline too: a 504, never a wait", async () => {
+    const lone: GatewayConfig = {
+      ...withJudge(50),
+      slots: { ...config(50).slots, "cc-smart-dev-kit-judge": ["ollama:deepseek-v4.1-flash"] },
+    };
+    const state = { cancelled: false };
+    const { calls, handle } = router(
+      [
+        () => {
+          let timer: ReturnType<typeof setInterval> | undefined;
+          const body = new ReadableStream<Uint8Array>({
+            cancel() {
+              state.cancelled = true;
+              clearInterval(timer);
+            },
+            start(controller) {
+              timer = setInterval(
+                () => controller.enqueue(new TextEncoder().encode(": ping\n\n")),
+                10,
+              );
+            },
+          });
+          return new Response(body, { headers: { "content-type": "text/event-stream" } });
+        },
+      ],
+      // The real clock: the deadline is a time, and the heartbeats keep coming until it passes.
+      { config: lone, now: () => Date.now() },
+    );
+    const res = await handle(
+      clientRequest({ body: JSON.stringify({ ...guardBody(), stream: true }) }),
+    );
+    expect(res.status).toBe(504);
+    expect(await res.json()).toEqual({
+      error: {
+        message:
+          "cc-smart-dev-kit-router: no target for cc-smart-dev-kit-judge answered within 50 ms (ollama:deepseek-v4.1-flash: no event in time (only heartbeats))",
+        type: "timeout_error",
+      },
+      type: "error",
+    });
+    expect(calls.map((c) => c.url)).toEqual([OLLAMA_URL]);
+    expect(state.cancelled).toBe(true);
+  });
+
+  it("GW-2: a lone judge's stream that opens with a real event, or with an error event, is passed on as it came", async () => {
+    const lone: GatewayConfig = {
+      ...withJudge(50),
+      slots: { ...config(50).slots, "cc-smart-dev-kit-judge": ["ollama:deepseek-v4.1-flash"] },
+    };
+    const answered = 'event: message_start\ndata: {"type":"message_start"}\n\n';
+    const failed = ': ping\n\nevent: error\ndata: {"type":"error"}\n\n';
+    const { handle } = router(
+      [
+        () => new Response(answered, { headers: { "content-type": "text/event-stream" } }),
+        () => new Response(failed, { headers: { "content-type": "text/event-stream" } }),
+      ],
+      { config: lone },
+    );
+    for (const stream of [answered, failed]) {
+      const res = await handle(
+        clientRequest({ body: JSON.stringify({ ...guardBody(), stream: true }) }),
+      );
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe(stream);
+    }
   });
 
   it("judge not set, the plan's usage limit: the answer goes back as it is", async () => {
@@ -1732,10 +1850,70 @@ describe("a slot's Claude target: only the fields it refuses change", () => {
       changes: [],
     });
     expect(requestForClaudeFallback(accepted, "claude-sonnet-5-5").body).toBe(accepted);
-    // A family with no rules in the table: unchanged, whatever it carries.
+    // A version older than every rule of its family: unchanged, whatever it carries.
     const body = refusedBody("cc-smart-dev-kit-worker");
     expect(requestForClaudeFallback(body, "claude-haiku-4-5").body).toBe(body);
-    expect(requestForClaudeFallback(body, "claude-fable-5-1").body).toBe(body);
+  });
+
+  it("GW-5: the rules go by family AND version; a version no rule names stays as it is", () => {
+    const off = { model: "w", output_config: { effort: "max" }, thinking: { type: "disabled" } };
+    const budget = { model: "w", thinking: { budget_tokens: 4000, type: "enabled" } };
+    const forced = { model: "w", temperature: 0.2, tool_choice: { type: "any" }, top_k: 5 };
+    /** What one target makes of one body: the changes, in order. */
+    const changes = (body: Record<string, unknown>, target: string) =>
+      requestForClaudeFallback(body, target).changes;
+    // 4.5 and earlier take only a budget, and refuse adaptive: a budget stays.
+    for (const old of [
+      "claude-sonnet-4-5",
+      "claude-opus-4-5-20251101",
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-4-20250514",
+      "claude-3-7-sonnet-20250219",
+      "claude-3-5-haiku-20241022",
+    ]) {
+      expect(`${old}: ${changes(budget, old).join(", ")}`).toBe(`${old}: `);
+      expect(`${old}: ${changes(off, old).join(", ")}`).toBe(`${old}: `);
+      expect(`${old}: ${changes(forced, old).join(", ")}`).toBe(`${old}: `);
+    }
+    // 4.6 takes both modes and thinking off.
+    expect(changes(budget, "claude-sonnet-4-6")).toEqual([]);
+    expect(changes(off, "claude-opus-4-6")).toEqual([]);
+    // 4.7 and later refuse a budget; Opus 4.7 / 4.8 and Sonnet 5 still take thinking off.
+    for (const target of ["claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-5"]) {
+      expect(changes(budget, target)).toEqual(["thinking enabled (budget) -> adaptive"]);
+      expect(changes(off, target)).toEqual([]);
+      expect(changes(forced, target)).toEqual([]);
+    }
+    // Opus 5 and Haiku 5.5 take thinking off at effort high or below only.
+    for (const target of ["claude-opus-5", "claude-haiku-5-5"]) {
+      expect(requestForClaudeFallback(off, target).body).toEqual({
+        model: "w",
+        output_config: { effort: "high" },
+        thinking: { type: "disabled" },
+      });
+      expect(changes(off, target)).toEqual(["effort max -> high (thinking off)"]);
+    }
+    // Haiku 5.5 refuses the sampling fields, and takes a forced tool choice.
+    expect(requestForClaudeFallback(forced, "claude-haiku-5-5").body).toEqual({
+      model: "w",
+      tool_choice: { type: "any" },
+    });
+    // Fable always thinks; 5.1 refuses a forced tool choice too, Fable 5 takes it.
+    expect(requestForClaudeFallback(off, "claude-fable-5").body).toEqual({
+      model: "w",
+      output_config: { effort: "max" },
+    });
+    expect(changes(forced, "claude-fable-5")).toEqual([]);
+    expect(changes(forced, "us.anthropic.claude-fable-5-1-20261001-v1:0")).toEqual([
+      "tool_choice any -> auto",
+    ]);
+    // A date suffix, [1m] and a newer version read as their version; no version, no rule.
+    expect(changes(off, "claude-sonnet-5-5-20261001[1m]")).toEqual([
+      "thinking disabled -> between_tools",
+      "effort max -> high",
+    ]);
+    expect(changes(budget, "claude-haiku-7")).toEqual(["thinking enabled (budget) -> adaptive"]);
+    expect(changes(budget, "claude-opus-latest")).toEqual([]);
   });
 
   it("the rules go by the target's family: a newer Sonnet or Opus gets its family's", () => {
@@ -2065,6 +2243,54 @@ describe("streaming", () => {
     expect(await res.text()).toBe("from ollama");
     expect(calls).toHaveLength(2);
     expect(early.state.cancelled).toBe(true);
+  });
+
+  it("GW hunch 4: a 200 whose JSON body is an error, from a target that is not last → the next target answers", async () => {
+    const errorBody =
+      '{"type":"error","error":{"type":"api_error","message":"upstream failed for omni-key-123456"}}';
+    const { calls, handle, logs } = router([
+      () => new Response(errorBody, { headers: { "content-type": "application/json" } }),
+      () => new Response('{"type":"message"}', { headers: { "content-type": "application/json" } }),
+    ]);
+    const res = await handle(
+      clientRequest({
+        body: JSON.stringify({ ...message("cc-smart-dev-kit-scout"), stream: false }),
+      }),
+    );
+    expect(await res.text()).toBe('{"type":"message"}');
+    expect(calls).toHaveLength(2);
+    expect(logs).toContain(
+      'WARN omniroute:glm-5.3-flash failed (an error in its 200 answer: {"type":"error","error":{"type":"api_error","message":"upstream failed for ****3456"}}); trying the next target',
+    );
+  });
+
+  it("GW hunch 4: a 200 JSON answer that is not an error is passed on byte for byte", async () => {
+    const answer = '{"type":"message","content":[{"type":"text","text":"hi"}]}';
+    const { calls, handle } = router([
+      () => new Response(answer, { headers: { "content-type": "application/json" } }),
+    ]);
+    const res = await handle(
+      clientRequest({
+        body: JSON.stringify({ ...message("cc-smart-dev-kit-scout"), stream: false }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/json");
+    expect(await res.text()).toBe(answer);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("GW improvement 2: a held stream's error event names its reason in the WARN line, keys masked", async () => {
+    const early = gatedStream([
+      ": keepalive\n\n",
+      'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"upstream busy for omni-key-123456"}}\n\n',
+    ]);
+    early.open(1);
+    const { handle, logs } = router([() => early.response, () => new Response("from ollama")]);
+    await handle(clientRequest({ body: JSON.stringify(message("cc-smart-dev-kit-scout")) }));
+    expect(logs).toContain(
+      'WARN omniroute:glm-5.3-flash failed (an error event before the first real one: {"type":"error","error":{"type":"overloaded_error","message":"upstream busy for ****3456"}}); trying the next target',
+    );
   });
 
   it("OmniRoute's early 200: heartbeat, then message_start → streamed from the start, nothing lost", async () => {
@@ -3103,6 +3329,19 @@ describe("model slots (opus, fable) and every slot by its family", () => {
   /** Unix seconds, three hours after T0. */
   const RESET = T0 / 1000 + 3 * 3600;
 
+  it("GW hunch 1: a Claude target written with [1m] reaches Anthropic under its id alone, as Claude Code sends one", async () => {
+    const cfg = config();
+    const { calls, handle } = router([() => new Response("{}")], {
+      config: {
+        ...cfg,
+        slots: { ...cfg.slots, "cc-smart-dev-kit-opus": ["claude-sonnet-5-5[1m]"] },
+      },
+    });
+    await handle(clientRequest({ body: JSON.stringify(message("claude-opus-5-5")) }));
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+    expect(JSON.parse(nth(calls, 0).body ?? "").model).toBe("claude-sonnet-5-5");
+  });
+
   /** config() with an opus chain; its fallback switch left to its default (off) unless given. */
   function withOpus(targets: string[], fallback?: boolean): GatewayConfig {
     const cfg = config();
@@ -3220,6 +3459,7 @@ describe("model slots (opus, fable) and every slot by its family", () => {
     // x-api-key, no cookie, no anthropic-beta.
     expect(nth(calls, 0).headers).toEqual([
       ["accept", "application/json"],
+      ["accept-encoding", "identity"],
       ["anthropic-version", "2023-06-01"],
       ["authorization", "Bearer omni-key-123456"],
       ["content-type", "application/json"],
@@ -3298,6 +3538,49 @@ describe("model slots (opus, fable) and every slot by its family", () => {
     const res = await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
     expect(res.status).toBe(503);
     expect(calls.map((c) => c.url)).toEqual([OMNI_URL, OLLAMA_URL]);
+  });
+
+  it("GW-8: a restart keeps the limit state: what the file held is there, and the next write keeps it", async () => {
+    const before = {
+      fallbacks: {
+        "cc-smart-dev-kit-opus": {
+          lastAt: T0 - 60_000,
+          model: "claude-opus-5-5",
+          resetsAt: RESET,
+          since: T0 - 600_000,
+          target: "omniroute:glm-5.3-flash",
+        },
+      },
+      limits: { "claude-opus-5-5": { claim: "five_hour", resetsAt: RESET, seenAt: T0 - 60_000 } },
+      version: 1,
+    };
+    const states: string[] = [];
+    const { handle, logs } = router([atLimit], {
+      config: withOpus(["claude-opus-5-5", "omniroute:glm-5.3-flash"], true),
+      loadedState: JSON.stringify(before),
+      states,
+    });
+    // Another model reaches its limit: the file is written again, and the opus record stays.
+    await handle(clientRequest({ body: JSON.stringify(opusBody("claude-sonnet-5-5")) }));
+    expect(JSON.parse(states.at(-1) ?? "")).toEqual({
+      fallbacks: before.fallbacks,
+      limits: {
+        "claude-opus-5-5": before.limits["claude-opus-5-5"],
+        "claude-sonnet-5-5": { claim: "five_hour", resetsAt: RESET, seenAt: T0 },
+      },
+      version: 1,
+    });
+    // The opus slot still has its chain and its fallback on: its record is kept, said nowhere.
+    expect(logs.filter((line) => line.includes("cc-smart-dev-kit-opus"))).toEqual([]);
+  });
+
+  it("GW-8: a state file the router cannot read is said once, and it starts from none", async () => {
+    const states: string[] = [];
+    const { handle, logs } = router([ok], { loadedState: "{not json", states });
+    await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+    expect(logs).toContain(
+      "WARN the limit state file is not one this version reads; it starts over",
+    );
   });
 
   it("an explicit claude-… target is used in its place: Opus itself first, the bytes as sent; at its limit the next target", async () => {

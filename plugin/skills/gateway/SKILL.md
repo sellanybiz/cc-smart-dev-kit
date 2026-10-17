@@ -131,10 +131,11 @@ launched, which model wrote each reply, and the share on Opus. Read only; no mes
 ## The judge for auto mode
 
 **Claude judges auto mode's safety checks (should this action run?) unless the person gives
-the judge slot a chain.** With a chain, its first tested target judges every check, in
-Claude's place; the next one only while the judge's fallback switch is on (off by default).
-There is no hidden Claude step. With no judge, Claude Code asks the person when Claude
-cannot answer.
+the judge slot a chain.** With a chain, its first target judges every check, in Claude's
+place, once it has passed the judge test; the targets after it, each one tested, only while
+the judge's fallback switch is on (off by default). With the switch off and an untested first
+target, Claude judges. There is no hidden Claude step. With no judge, Claude Code asks the
+person when Claude cannot answer.
 
 Why it is the person's choice and never the default: an affordable judge that judged every
 check wrongly blocked real work three times, and a weaker one let a force push through.

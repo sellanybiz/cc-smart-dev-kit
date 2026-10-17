@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
 import { loadConfigFile, messageOf } from "../gateway/config";
+import { backendFetch } from "../gateway/hosts";
+import { maskedLine } from "../gateway/plain-text";
 import { maskKey } from "../gateway/settings";
 import { familySlotKey, parseTarget } from "../gateway/targets";
 import { findUserInstall } from "../setup/installed-plugins";
@@ -251,7 +253,9 @@ export async function checkAffordableTarget(
     target.apiKey === "" ? text : text.replaceAll(target.apiKey, maskKey(target.apiKey));
   let response: Response;
   try {
-    response = await fetch(url, {
+    // `backendFetch`: the key never goes through a proxy to a backend on this machine, and a
+    // redirect is not followed with it (it reads as the answer that is not ok, below).
+    response = await backendFetch(url, {
       method: "POST",
       headers: { authorization: `Bearer ${target.apiKey}`, "content-type": "application/json" },
       body: JSON.stringify({
@@ -262,7 +266,9 @@ export async function checkAffordableTarget(
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
-    return hide(`${target.backend} did not answer at ${where} (${messageOf(error)})`);
+    // A fetch error's words come from outside: one line, the key masked.
+    const said = maskedLine(messageOf(error), [target.apiKey], 200);
+    return hide(`${target.backend} did not answer at ${where} (${said})`);
   }
   if (response.ok) {
     await response.body?.cancel();

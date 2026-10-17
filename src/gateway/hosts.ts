@@ -70,10 +70,14 @@ function ipv4Kind([a = 0, b = 0]: number[]): null | string {
   return null;
 }
 
-/** True when `hostname` (a `URL.hostname`) is this machine: 127.0.0.0/8, ::1, `localhost`. */
+/**
+ * True when `hostname` (a `URL.hostname`) is this machine: 127.0.0.0/8, ::1, `localhost`, and
+ * any name under `.localhost` (RFC 6761 § 6.3 keeps those names on the loopback address; on a
+ * machine whose resolver does not, the request fails here instead of reaching a proxy).
+ */
 export function isLoopbackHost(hostname: string): boolean {
   const host = normalHost(hostname);
-  if (host === "localhost") return true;
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
   const v4 = ipv4Parts(host);
   if (v4 !== null) return v4[0] === 127;
   const v6 = ipv6Groups(host);
@@ -125,4 +129,32 @@ export function directIfLoopback(url: string): { proxy?: false } {
   const parsed = URL.parse(url);
   if (parsed === null || !isLoopbackHost(parsed.hostname)) return {};
   return { proxy: false };
+}
+
+/** What `backendFetch` adds to every request's options. */
+export interface BackendFetchOptions {
+  proxy?: false;
+  redirect: "manual";
+}
+
+/**
+ * The one way to send a request that carries a secret to a backend: its key, OmniRoute's
+ * dashboard password, or the session cookie that password bought. Two options, always:
+ *   - `directIfLoopback(url)`: a backend on this machine is reached straight, never through
+ *     a proxy from the environment, which would see the secret;
+ *   - `redirect: "manual"`: a redirect is never followed, so the secret never travels to the
+ *     address an answer names. The caller sees the 3xx as an answer that is not ok.
+ * `fetchImpl` is the caller's own `fetch` (a test passes a fake); it gets both options. A test
+ * (`proxy.test.ts` › "backendFetch is the only way") fails on any `fetch` call in `src/` that
+ * sends an `authorization` or `x-api-key` header some other way.
+ */
+export function backendFetch<Init extends RequestInit>(
+  url: string,
+  init: Init,
+  fetchImpl: (url: string, init: Init & BackendFetchOptions) => Promise<Response> = (
+    target,
+    options,
+  ) => fetch(target, options),
+): Promise<Response> {
+  return fetchImpl(url, { ...init, redirect: "manual", ...directIfLoopback(url) });
 }
