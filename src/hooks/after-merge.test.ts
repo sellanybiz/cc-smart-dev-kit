@@ -106,12 +106,41 @@ describe("did the command merge a pull request?", () => {
         unread: null,
         arms: false,
         disarms: false,
+        admin: false,
         unknown: null,
       },
     ]);
     expect(refusal("gh --admin=true pr merge 20")).toEqual([
       "the command carries `--admin=true` before the gh command, which this guard does not know",
     ]);
+  });
+
+  test.each([
+    // `--admin`, with or without a value, anywhere among the merge's own flags.
+    ["gh pr merge 5 --merge --admin", "5", true],
+    ["gh pr merge 5 --admin=true", "5", true],
+    ["gh pr merge 5 --admin=false", "5", true],
+    ["gh pr merge --admin 5", "5", true],
+    ["gh pr merge --admin", null, true],
+    ["gh pr -R org/app merge 5 --admin", "5", true],
+    // A flag's value is never a flag (gh reads the next word as the value), and after `--`
+    // every word is an argument.
+    ["gh pr merge 5 --subject --admin", "5", false],
+    ["gh pr merge 5 -t --admin", "5", false],
+    ["gh pr merge 5 --body=--admin", "5", false],
+    ["gh pr merge 5 -- --admin", "5", false],
+    ["gh pr merge 5 --match-head-commit abc123 --merge", "5", false],
+    ["gh pr merge 5 --squash", "5", false],
+  ])("%j: the pull request %j, --admin %j", (command, ref, admin) => {
+    expect(
+      pullRequestMerges(command).map((one) => ({ ref: one.target?.ref ?? null, admin: one.admin })),
+    ).toEqual([{ ref, admin }]);
+  });
+
+  test("two merges: --admin belongs to the one that carries it", () => {
+    expect(
+      pullRequestMerges("gh pr merge 5 && gh pr merge 6 --admin").map((one) => one.admin),
+    ).toEqual([false, true]);
   });
 
   test("which pull request, and which repo", () => {

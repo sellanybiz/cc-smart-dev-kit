@@ -5,7 +5,7 @@
  * request (the router recognises it as the safety check, `isAutoModeGuard` in
  * `targets.ts`). Each one is a model call: it costs tokens, and nobody sees the bill.
  * So the router counts them, by local day: how many went through, how many Anthropic
- * answered and how many a fallback target (the judge), and the input, output and cache
+ * answered and how many the judge slot, and the input, output and cache
  * tokens each answer's `usage` reported (`message_start` / `message_delta` on a stream,
  * the body's `usage` otherwise). `cc-smart-dev-kit usage` reads this file
  * (`src/cli/usage.ts`), today and the seven days before it.
@@ -75,7 +75,7 @@ export type CheckDay = z.output<typeof daySchema>;
 
 export type SafetyCheckState = z.output<typeof stateSchema>;
 
-/** Who answered a safety check: Anthropic, or a fallback target (the judge slot). */
+/** Who answered a safety check: Anthropic, or a target of the judge slot (`fallback`, the name the file has kept since 0.3). */
 export type CheckSide = "anthropic" | "fallback";
 
 export function emptySafetyChecks(): SafetyCheckState {

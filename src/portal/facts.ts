@@ -30,6 +30,7 @@ import { VERSION } from "../build-info";
 import { listModels } from "../gateway/backends";
 import {
   DEFAULT_PORT,
+  fallbackOn,
   type GatewayConfig,
   judgeTargetTested,
   loadConfigFile,
@@ -46,7 +47,7 @@ import {
 } from "../gateway/limit-state";
 import { UNIT_NAME } from "../gateway/service";
 import { settingsReport, shownBackendUrl } from "../gateway/settings";
-import { isModelSlot, JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";
+import { FAMILY_SLOTS, JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";
 import { companionChecks, companionState, companions } from "../machine/companions";
 import { detectSystem, detectWarpApp, warpCheck } from "../machine/warp";
 import { type OmnirouteContext, omnirouteFacts } from "../omniroute/commands";
@@ -142,7 +143,6 @@ export interface RouterFacts {
   /** Seconds it has been up. */
   cooling: [string, number][];
   fallbacks: number;
-  limited: [string, number][];
   port: number;
   requests: number;
   up: boolean;
@@ -168,7 +168,6 @@ export async function routerFacts(ctx: PortalContext, port: number): Promise<Rou
     return {
       cooling: [],
       fallbacks: 0,
-      limited: [],
       port,
       requests: 0,
       up: false,
@@ -181,7 +180,6 @@ export async function routerFacts(ctx: PortalContext, port: number): Promise<Rou
   return {
     cooling: entriesOf(body.cooling),
     fallbacks: number("fallbacks"),
-    limited: entriesOf(body.limited),
     port: typeof body.port === "number" ? body.port : port,
     requests: number("requests"),
     up: true,
@@ -302,6 +300,8 @@ export interface SlotTarget {
 }
 
 export interface SlotRow {
+  /** Its fallback switch (`fallbackOn`): may the next target answer? */
+  fallback: boolean;
   /** The words the page shows instead of the slot key's prefix. */
   info: string;
   key: string;
@@ -314,23 +314,23 @@ export interface SlotRow {
 /** The words each slot kind gets, the same ones the Slots page shows. */
 const SLOT_META: Readonly<Record<string, { info: string; kind: string }>> = {
   fable: {
-    info: "claude-fable-5-1 answers first. The next target answers only when Anthropic refuses at the plan limit, until the reset.",
+    info: "Every Fable request: the main session on Fable and every fable agent. With no chain, Fable answers itself.",
     kind: "model",
   },
   judge: {
-    info: "Claude judges auto mode's safety check whenever Claude can answer. This chain answers only at the plan limit or with no Claude login, and only while the judge switch is on.",
-    kind: "off by default",
+    info: "Auto mode's safety checks. With no chain, Claude judges them. With one, its first target judges every check in Claude's place, and only a target that passed the force-push test is used. A weak judge can let a risky command through, and it reads the conversation.",
+    kind: "judge",
   },
   opus: {
-    info: "claude-opus-5-5 answers first. The next target answers only when Anthropic refuses at the plan limit, until the reset.",
+    info: "Every Opus request: the main session on Opus and every opus agent. With no chain, Opus answers itself.",
     kind: "model",
   },
   scout: {
-    info: "Affordable. File search, greps, reading and summaries.",
+    info: "Haiku's work: file search, greps, reading, summaries and background calls. With no chain, Haiku answers itself.",
     kind: "affordable",
   },
   worker: {
-    info: "Affordable. Building, doc updates, tests and mechanical runs.",
+    info: "Sonnet's work: building, doc updates, tests and mechanical runs. With no chain, Sonnet answers itself.",
     kind: "affordable",
   },
 };
@@ -359,10 +359,9 @@ export function slotRows(config: GatewayConfig, router: RouterFacts): SlotRow[] 
     const name = slotName(key);
     const meta = SLOT_META[name] ?? { info: "A slot of this machine's own.", kind: "other" };
     const targets = config.slots[key];
-    const on =
-      targets !== undefined &&
-      (!isModelSlot(key) || Object.values(config.modelSlots ?? {}).includes(key));
+    const on = targets !== undefined;
     rows.push({
+      fallback: fallbackOn(config, key),
       info: meta.info,
       key,
       kind: on ? meta.kind : "off",
@@ -386,20 +385,22 @@ export function slotRows(config: GatewayConfig, router: RouterFacts): SlotRow[] 
 /** The CLI's own note for a slot, in the same words (`printSlots`). */
 function slotNote(config: GatewayConfig, key: string, on: boolean): string {
   if (!on) {
-    return isModelSlot(key)
-      ? `off: ${MODEL_SLOTS[key] ?? key} goes to Anthropic unchanged`
-      : "off: auto mode's safety checks go to Claude, and to no one else";
+    if (key === JUDGE_SLOT) return "off: Claude judges auto mode's safety checks";
+    const family = Object.hasOwn(FAMILY_SLOTS, key) ? FAMILY_SLOTS[key] : undefined;
+    return family === undefined
+      ? "off"
+      : `off: ${family} goes to Anthropic as Claude Code sent it, on your own login`;
   }
+  const fallback = fallbackOn(config, key) ? "fallback on" : "fallback off";
   if (key === JUDGE_SLOT) {
     const untested = (config.slots[key] ?? []).filter(
       (target) => !judgeTargetTested(config, target),
     );
     return untested.length > 0
-      ? `NOT TESTED, so ignored: ${untested.join(", ")}`
-      : "only when Claude cannot answer a check";
+      ? `${fallback}; NOT TESTED, so ignored: ${untested.join(", ")}`
+      : `${fallback}; judges every safety check in Claude's place`;
   }
-  if (isModelSlot(key)) return "the rest only at the plan's usage limit";
-  return "";
+  return fallback;
 }
 
 // ── The live model list ─────────────────────────────────────────────────────────
@@ -419,7 +420,7 @@ export function contextText(length: null | number): string {
   return length >= 1000 ? `${Math.round(length / 1000)}K` : String(length);
 }
 
-/** Every `claude-…` name the config mentions: the model slots' keys, and every target. */
+/** Every `claude-…` name the config mentions: a 0.4.x `modelSlots` key, and every target. */
 export function claudeModels(config: GatewayConfig): string[] {
   const found = new Set<string>(Object.keys(config.modelSlots ?? {}));
   for (const targets of Object.values(config.slots)) {
@@ -492,8 +493,8 @@ export async function backendRows(
 // ── Switches ────────────────────────────────────────────────────────────────────
 
 export interface SwitchFacts {
-  /** The `opus` and `fable` fallback chains are set. */
-  fallback: boolean;
+  /** The `opus` or `fable` slot has a chain. */
+  models: boolean;
   /** `ANTHROPIC_BASE_URL` is in Claude Code's settings. */
   gateway: boolean;
   /** The judge slot is set, and every target passed the force-push test. */
@@ -506,9 +507,9 @@ export interface SwitchFacts {
   warnings: string[];
 }
 
-/** Which model slots are on: `modelSlots` names a slot and the slot is in the config. */
+/** Which model slots are on: the ones with a chain. */
 export function modelSlotsOn(config: GatewayConfig): string[] {
-  return Object.values(config.modelSlots ?? {}).filter((slot) => Object.hasOwn(config.slots, slot));
+  return Object.keys(MODEL_SLOTS).filter((slot) => Object.hasOwn(config.slots, slot));
 }
 
 export function switchFacts(ctx: PortalContext, config: GatewayConfig): SwitchFacts {
@@ -527,11 +528,11 @@ export function switchFacts(ctx: PortalContext, config: GatewayConfig): SwitchFa
   }
   const judgeTargets = config.slots[JUDGE_SLOT] ?? [];
   return {
-    fallback: modelSlotsOn(config).length > 0,
     gateway: report.baseUrl !== null,
     judge:
       judgeTargets.length > 0 && judgeTargets.every((target) => judgeTargetTested(config, target)),
     judgeUntested: judgeTargets.some((target) => !judgeTargetTested(config, target)),
+    models: modelSlotsOn(config).length > 0,
     settingsBaseUrl: report.baseUrl,
     warnings,
   };

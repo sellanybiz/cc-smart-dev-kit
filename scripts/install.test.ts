@@ -26,6 +26,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { MIN_BUN } from "../src/build-info/bun";
+import { REPO_ACCESS_FIX_LINES, SSH_REFUSED_WORDS } from "../src/setup/marketplace-access";
 import { tempDir } from "../src/testing/temp";
 import {
   answer as bun,
@@ -117,6 +118,21 @@ interface WorldOptions {
   mcpForeign?: { name: string; runsWhat: string }[];
   /** The same, for the SECOND `mcp status` call (after the Tavily step). */
   mcpForeignAgain?: { name: string; runsWhat: string }[];
+  /** The GitHub login the fake `gh api user --jq .login` answers. */
+  ghLogin?: string;
+  /** The account cannot see the repository: `gh repo view` answers "Could not resolve …". */
+  ghRepoViewFails?: boolean;
+  /** Nobody is logged in to gh: both of its questions fail with gh's own "gh auth login" line. */
+  ghLoggedOut?: boolean;
+  /** Leave `gh` off PATH, as a machine that has none. */
+  noGh?: boolean;
+  /**
+   * No GitHub SSH key: `claude plugin marketplace add <owner>/<repo>` is refused the way ssh
+   * refuses it, and the `https://github.com/<owner>/<repo>.git` form is added fine.
+   */
+  claudeSshRefused?: boolean;
+  /** The repository cannot be read at all: both forms of the add fail with "Repository not found". */
+  claudeAddNotFound?: boolean;
 }
 
 /** One `mcp status --json` answer, as the real command writes it. */
@@ -274,11 +290,29 @@ exit 0
     // the user-scope install record, the plugin folder the installer runs next, and the
     // `enabledPlugins` key Claude Code sets. `update`, `enable`, `uninstall` and
     // `marketplace remove` write the same records the real ones do.
+    //
+    // The repository's own source is the one that can be refused, the way a machine's ssh
+    // refusal and a repository the account cannot see were (live, 2026-10-17): the plain
+    // `owner/repo` form is added over ssh and FAILS, and the `https://…` form — the one the
+    // installer falls back to — is added fine. `FAKE_CLAUDE_ADD_NOT_FOUND` refuses both.
     claude: `#!/bin/sh
 log=${JSON.stringify(log)}
 printf '%s\\n' "claude $*" >> "$log"
 bun=${JSON.stringify(REAL_BUN)}
 if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "add" ]; then
+  case "$4" in
+  *://*) ;;
+  *cc-smart-dev-kit*)
+    if [ "$FAKE_CLAUDE_ADD_NOT_FOUND" = "yes" ]; then
+      printf 'ERROR: Repository not found.\\nfatal: Could not read from remote repository.\\n' >&2
+      exit 1
+    fi
+    if [ "$FAKE_CLAUDE_SSH_REFUSED" = "yes" ]; then
+      printf 'git@github.com: Permission denied (publickey).\\nfatal: Could not read from remote repository.\\n\\nPlease make sure you have the correct access rights\\nand the repository exists.\\n' >&2
+      exit 1
+    fi
+    ;;
+  esac
   name="cc-smart-dev-kit"
   case "$4" in
   *claude-mem) name=thedotmack ;;
@@ -332,8 +366,29 @@ printf '%s\\n' "git $*" >> ${JSON.stringify(log)}
 if [ "$FAKE_GIT_FAILS" = "yes" ]; then exit 128; fi
 exit 0
 `,
+    // The two questions the installer asks the GitHub CLI: whether the account this machine
+    // is logged in with can see the repository (`repo view`, which fails the way gh does when
+    // it cannot — "Could not resolve to a Repository …"), and its login (`api user`). Every
+    // other call succeeds, as before. With nobody logged in BOTH questions fail with gh's own
+    // line, as the real gh does: the installer must skip the check and print none of it.
     gh: `#!/bin/sh
 printf '%s\\n' "gh $*" >> ${JSON.stringify(log)}
+if [ "$FAKE_GH_LOGGED_OUT" = "yes" ]; then
+  printf 'To get started with GitHub CLI, please run: gh auth login\\n' >&2
+  exit 1
+fi
+case "$*" in
+"repo view "*)
+  if [ "$FAKE_GH_VIEW_FAILS" = "yes" ]; then
+    printf "Could not resolve to a Repository with the name '%s'.\\n" "$3" >&2
+    exit 1
+  fi
+  printf '{"name":"cc-smart-dev-kit"}\\n'
+  ;;
+"api user --jq .login")
+  printf '%s\\n' "$FAKE_GH_LOGIN"
+  ;;
+esac
 exit 0
 `,
     // `uname -s` decides whether the gateway's router can run here (systemd on Linux).
@@ -370,6 +425,7 @@ function world(options: WorldOptions = {}): World {
   const scripts = fakeScripts(log);
   for (const [name, body] of Object.entries(scripts)) {
     if (name === "bun" && options.noBun === true) continue;
+    if (name === "gh" && options.noGh === true) continue;
     writeFileSync(join(fakeBin, name), body);
     chmodSync(join(fakeBin, name), 0o755);
   }
@@ -378,8 +434,8 @@ function world(options: WorldOptions = {}): World {
   writeFileSync(installable, scripts.bun ?? "");
   chmodSync(installable, 0o755);
 
-  // `noSystemctl`: a PATH of the same fakes plus the few tools the script and the fakes
-  // need, and no systemctl among them (the machine's own /usr/bin has one).
+  // `noSystemctl` and `noGh`: a PATH of the same fakes plus the few tools the script and the
+  // fakes need, and no systemctl and no gh among them (the machine's own /usr/bin has both).
   const toolsBin = join(home, "tools-bin");
   mkdirSync(toolsBin, { recursive: true });
   for (const tool of ["cat", "cp", "mkdir", "chmod", "grep", "rm", "ls"]) {
@@ -502,8 +558,12 @@ function world(options: WorldOptions = {}): World {
     HOME: home,
     CLAUDE_CONFIG_DIR: configDir,
     // The fakes first, then the few system tools a shell script needs (bash itself, cat,
-    // mkdir, cp, grep) — or, for the no-systemctl case, the same tools without systemctl.
-    PATH: options.noSystemctl === true ? `${fakeBin}:${toolsBin}` : `${fakeBin}:/usr/bin:/bin`,
+    // mkdir, cp, grep) — or, for a world without systemctl and/or without gh, the same tools
+    // with neither of the two.
+    PATH:
+      options.noSystemctl === true || options.noGh === true
+        ? `${fakeBin}:${toolsBin}`
+        : `${fakeBin}:/usr/bin:/bin`,
     CC_SMART_DEV_KIT_INSTALL_TTY: answersFile,
     FAKE_BUN_VERSION: options.bunVersion ?? MIN_BUN,
     FAKE_BUN_UPGRADED: join(home, "bun-upgraded"),
@@ -538,6 +598,14 @@ function world(options: WorldOptions = {}): World {
         ? ""
         : mcpStatusJson(options.mcpForeignAgain, configDir),
     FAKE_MCP_COUNT: join(home, "mcp-status-count"),
+    // The GitHub CLI: the login it answers, whether its account can see the repository, and
+    // whether nobody is logged in at all. And the way Claude Code's own add is refused on a
+    // machine with no GitHub SSH key.
+    FAKE_GH_LOGIN: options.ghLogin ?? "example-user",
+    FAKE_GH_LOGGED_OUT: options.ghLoggedOut === true ? "yes" : "no",
+    FAKE_GH_VIEW_FAILS: options.ghRepoViewFails === true ? "yes" : "no",
+    FAKE_CLAUDE_SSH_REFUSED: options.claudeSshRefused === true ? "yes" : "no",
+    FAKE_CLAUDE_ADD_NOT_FOUND: options.claudeAddNotFound === true ? "yes" : "no",
   };
 
   const spawn = (args: string[], env: Record<string, string>, input?: string) => {
@@ -1323,6 +1391,139 @@ describe("install.sh: what only the person has", () => {
   });
 });
 
+describe("install.sh: the GitHub account and the marketplace's source", () => {
+  // Both failures were seen live on 2026-10-17, while two team machines were moved: one had no
+  // GitHub SSH key (Claude Code adds a marketplace over ssh, and the same marketplace over
+  // HTTPS works), one was logged in with an account that could not see the private
+  // repository (nothing could be added, and the installer said only "a private repository
+  // needs your git credentials").
+  test("no GitHub SSH key: the marketplace is added over HTTPS once, and the run goes on", () => {
+    const w = world({ answers: browserAnswers("n", "n"), claudeSshRefused: true });
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    expect(out).toContain(
+      `· 4/8 SSH to GitHub was refused, so the marketplace is added over HTTPS instead: https://github.com/${REPO}.git\n`,
+    );
+    // The repository's own source first, refused, then the HTTPS form: exactly one fallback,
+    // and then the two companions as always.
+    expect(w.callsOf("claude").filter((call) => call.startsWith("plugin marketplace add"))).toEqual(
+      [
+        `plugin marketplace add ${REPO}`,
+        `plugin marketplace add https://github.com/${REPO}.git`,
+        "plugin marketplace add thedotmack/claude-mem",
+        "plugin marketplace add anthropics/claude-plugins-official",
+      ],
+    );
+    expect(out).toContain(
+      `✓ 4/8 marketplaces added: https://github.com/${REPO}.git, thedotmack/claude-mem, anthropics/claude-plugins-official\n`,
+    );
+    // The name it landed under comes from the repository's own marketplace file, so it is the
+    // same name either way — and every later step found it: the refresh, the install, setup.
+    expect(w.callsOf("claude")).toContain("plugin marketplace update cc-smart-dev-kit");
+    expect(w.callsOf("claude")).toContain(
+      "plugin install cc-smart-dev-kit@cc-smart-dev-kit --scope user",
+    );
+    expect(w.callsOf("bun")).toContain(`${w.cli} setup`);
+    const known = JSON.parse(
+      w.read(join(w.configDir, "plugins/known_marketplaces.json")),
+    ) as Record<string, unknown>;
+    expect(Object.keys(known).sort()).toEqual([
+      "cc-smart-dev-kit",
+      "claude-plugins-official",
+      "thedotmack",
+    ]);
+  });
+
+  test("the repository cannot be read at all: reported as before, with no HTTPS retry", () => {
+    // A fallback is not a retry loop: "Repository not found" is access, not ssh, and the
+    // HTTPS form cannot fix it.
+    const w = world({ answers: browserAnswers("n", "n"), claudeAddNotFound: true });
+    const { code, out } = w.run();
+    expect(code).toBe(1);
+    expect(out).toContain(`✗ adding the marketplace ${REPO} failed\n`);
+    expect(out).toContain(
+      `  Retry just that step with:\n    claude plugin marketplace add ${REPO}\n`,
+    );
+    expect(w.callsOf("claude")).toEqual([`plugin marketplace add ${REPO}`]);
+    expect(out).not.toContain("SSH to GitHub was refused");
+  });
+
+  test("the account cannot see the repository: the account, the owner and the invitation", () => {
+    const w = world({ answers: browserAnswers("n", "n"), ghRepoViewFails: true });
+    const { code, out } = w.run();
+    expect(code).toBe(1);
+    expect(out).toContain(`✗ the GitHub account example-user cannot read ${REPO}\n`);
+    expect(out).toContain(
+      "  Retry just that step with:\n" +
+        "    ask the repository's owner for read access\n" +
+        `    accept the invitation at https://github.com/${REPO}/invitations\n` +
+        "  Then run this installer again: it goes on from there.\n",
+    );
+    // The two GitHub questions, and nothing else: no marketplace was added, and no later step
+    // ran (adding it cannot work until the account can see the repository).
+    expect(w.callsOf("gh")).toEqual([`repo view ${REPO} --json name`, "api user --jq .login"]);
+    expect(w.callsOf("claude")).toEqual([]);
+  });
+
+  test("git cannot read it and the account cannot see it: the account is named, not credentials", () => {
+    // The live failure (2026-10-17) stopped HERE, at step 2, with "a private repository needs
+    // your git credentials" — sending the person to fix credentials they already had. gh can
+    // tell which it is, so step 2 asks it before it prints that line.
+    const w = world({ answers: ["n"], gitFails: true, ghRepoViewFails: true });
+    const { code, out } = w.run();
+    expect(code).toBe(1);
+    expect(out).toContain(`✗ the GitHub account example-user cannot read ${REPO}\n`);
+    expect(out).toContain("    ask the repository's owner for read access\n");
+    expect(out).not.toContain("git cannot read");
+    // git was tried both ways first (step 2) and nothing else ran.
+    expect(w.callsOf("git")).toEqual([
+      `ls-remote git@github.com:${REPO}.git`,
+      `ls-remote https://github.com/${REPO}.git`,
+    ]);
+    expect(w.callsOf("claude")).toEqual([]);
+  });
+
+  test("git cannot read it and the account can see it: the git-credentials line, as before", () => {
+    const w = world({ answers: ["n"], gitFails: true });
+    const { code, out } = w.run();
+    expect(code).toBe(1);
+    expect(out).toContain(
+      `✗ git cannot read ${REPO}: a private repository needs your git credentials\n`,
+    );
+    expect(out).toContain("    gh auth login\n    gh auth setup-git\n");
+    // One question only: the login is asked for only when the account cannot see the repository.
+    expect(w.callsOf("gh")).toEqual([`repo view ${REPO} --json name`]);
+  });
+
+  test("gh is not installed: the check is skipped and the marketplace is added as before", () => {
+    const w = world({ answers: browserAnswers("n"), noGh: true });
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    expect(w.callsOf("gh")).toEqual([]);
+    expect(w.callsOf("claude")).toContain(`plugin marketplace add ${REPO}`);
+    expect(out).toContain(
+      `✓ 4/8 marketplaces added: ${REPO}, thedotmack/claude-mem, anthropics/claude-plugins-official\n`,
+    );
+  });
+
+  test("nobody is logged in to gh: the check is skipped, and none of gh's words are printed", () => {
+    // Both of gh's questions fail with its own "please run: gh auth login" line — and NEITHER
+    // of those lines may reach the output (both calls put gh's stderr away), so this also
+    // guards the two silencings: `>/dev/null 2>&1` on `repo view`, `2>/dev/null` on `api user`.
+    const w = world({ answers: browserAnswers("n"), ghLoggedOut: true });
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    // Asked, so the branch really is the "it answered nothing" one.
+    expect(w.callsOf("gh")).toEqual([`repo view ${REPO} --json name`, "api user --jq .login"]);
+    expect(out).not.toContain("the GitHub account");
+    expect(out).not.toContain("gh auth login");
+    expect(w.callsOf("claude")).toContain(`plugin marketplace add ${REPO}`);
+    expect(out).toContain(
+      `✓ 4/8 marketplaces added: ${REPO}, thedotmack/claude-mem, anthropics/claude-plugins-official\n`,
+    );
+  });
+});
+
 describe("the Windows fakes: the same logic the Windows run uses, on Linux", () => {
   // scripts/install-windows-fakes/*.ts are what the `.cmd` wrappers in the Windows smoke
   // test run (through the real bun.exe). Their logic is exercised HERE, on Linux, so a typo
@@ -1346,7 +1547,13 @@ describe("the Windows fakes: the same logic the Windows run uses, on Linux", () 
 
   test("the fake claude writes the records the installer reads back", () => {
     const w = fakeWorld();
-    const context = { configDir: w.configDir, log: w.log, version: MARKETPLACE_VERSION };
+    const context = {
+      addNotFound: false,
+      addSshRefused: false,
+      configDir: w.configDir,
+      log: w.log,
+      version: MARKETPLACE_VERSION,
+    };
     for (const source of [REPO, "thedotmack/claude-mem", "anthropics/claude-plugins-official"]) {
       claude(["plugin", "marketplace", "add", source], context);
     }
@@ -1490,9 +1697,104 @@ describe("the Windows fakes: the same logic the Windows run uses, on Linux", () 
       "gh auth login",
     ]);
   });
+
+  test("the fake claude's ssh refusal, and the fake gh's two answers", () => {
+    // The Windows world's half of the two GitHub cases: the repository's own `owner/repo` add
+    // is refused the way ssh refuses it on a machine with no key, the `https://…` form is
+    // added — under the same marketplace name — and gh answers whether the account can see
+    // the repository and what its login is.
+    const w = fakeWorld();
+    const refused = {
+      addNotFound: false,
+      addSshRefused: true,
+      configDir: w.configDir,
+      log: w.log,
+      version: MARKETPLACE_VERSION,
+    };
+    const errors: string[] = [];
+    const io = { error: (line: string) => errors.push(line) };
+    expect(claude(["plugin", "marketplace", "add", REPO], refused, io)).toBe(1);
+    expect(errors).toEqual([
+      "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.",
+    ]);
+    // The other refusal: access, not ssh — the same non-zero exit, the line that says so.
+    expect(
+      claude(["plugin", "marketplace", "add", REPO], { ...refused, addNotFound: true }, io),
+    ).toBe(1);
+    expect(errors.at(-1)).toBe(
+      "ERROR: Repository not found.\nfatal: Could not read from remote repository.",
+    );
+    const known = () =>
+      JSON.parse(
+        readFileSync(join(w.configDir, "plugins/known_marketplaces.json"), "utf8"),
+      ) as Record<string, { source: { repo: string } }>;
+    expect(existsSync(join(w.configDir, "plugins/known_marketplaces.json"))).toBe(false);
+    expect(
+      claude(["plugin", "marketplace", "add", `https://github.com/${REPO}.git`], refused, io),
+    ).toBe(0);
+    expect(Object.keys(known())).toEqual(["cc-smart-dev-kit"]);
+    expect(known()["cc-smart-dev-kit"]?.source.repo).toBe(`https://github.com/${REPO}.git`);
+
+    const said: string[] = [];
+    const ghIo = {
+      error: (line: string) => errors.push(line),
+      say: (line: string) => said.push(line),
+    };
+    expect(gh(["repo", "view", REPO, "--json", "name"], { log: w.log }, ghIo)).toBe(0);
+    expect(said.splice(0)).toEqual(['{"name":"cc-smart-dev-kit"}']);
+    expect(gh(["api", "user", "--jq", ".login"], { login: "example-user", log: w.log }, ghIo)).toBe(
+      0,
+    );
+    expect(said.splice(0)).toEqual(["example-user"]);
+    // An account that cannot see the repository: gh's own words, and a non-zero exit.
+    expect(
+      gh(["repo", "view", REPO, "--json", "name"], { log: w.log, viewFails: true }, ghIo),
+    ).toBe(1);
+    expect(errors.at(-1)).toBe(
+      "Could not resolve to a Repository with the name 'example-org/cc-smart-dev-kit'.",
+    );
+  });
+
+  test("the fake gh answers a logged-out machine the way the real one does", () => {
+    // The Windows world's half of the "nobody is logged in" smoke case, proved here so the
+    // runner does not have to teach it: BOTH questions fail, with gh's own line on stderr and
+    // nothing on stdout — the machine the installer skips the check on, not stops on.
+    const w = fakeWorld();
+    const said: string[] = [];
+    const errors: string[] = [];
+    const io = {
+      error: (line: string) => errors.push(line),
+      say: (line: string) => said.push(line),
+    };
+    const loggedOut = { log: w.log, loggedOut: true };
+    expect(gh(["repo", "view", REPO, "--json", "name"], loggedOut, io)).toBe(1);
+    expect(gh(["api", "user", "--jq", ".login"], loggedOut, io)).toBe(1);
+    expect(said).toEqual([]);
+    expect(errors).toEqual([
+      "To get started with GitHub CLI, please run: gh auth login",
+      "To get started with GitHub CLI, please run: gh auth login",
+    ]);
+    expect(w.calls()).toEqual([`gh repo view ${REPO} --json name`, "gh api user --jq .login"]);
+  });
 });
 
 describe("the PowerShell files: the patterns the Windows run taught us", () => {
+  // The two installers must print the SAME lines for the same machine. PowerShell hands a
+  // native command's stderr straight to the console unless the call puts it away, so gh's own
+  // "Could not resolve to a Repository ..." and "please run: gh auth login" lines were printed
+  // by install.ps1 and not by install.sh (0.5.0 review). Every gh call in install.ps1 silences
+  // stderr now, exactly as install.sh's two calls do (`>/dev/null 2>&1`, `2>/dev/null`).
+  // The Windows smoke's logged-out case would catch a drop on the runner; this catches it on
+  // Linux, before that run. (`gh` is only ever asked these two questions.)
+  test("install.ps1 puts gh's own stderr away, as install.sh does", () => {
+    const ps1 = readFileSync(INSTALL_PS1, "utf8");
+    expect(ps1).toContain("& gh repo view $Repo --json name 2>$null");
+    expect(ps1).toContain("& gh api user --jq .login 2>$null");
+    const ghCalls = [...ps1.matchAll(/& gh [^\r\n]*/g)].map((match) => match[0]);
+    expect(ghCalls).toHaveLength(2);
+    expect(ghCalls.filter((call) => !call.includes("2>$null"))).toEqual([]);
+  });
+
   // 0.4.2's first Windows run printed "marketplaces added: c, x, ..." for the repository:
   // `@(@($a, $b)) + $list` does NOT keep the pair together -- PowerShell enumerates that
   // inner array, the loop then walks two STRINGS before the pairs, and `$pair[0]` on a
@@ -1644,6 +1946,24 @@ describe("install.sh and install.ps1: the shared rules", () => {
     expect(assigned).toHaveLength(1);
     expect(versionCheck).toBeGreaterThan(-1);
     expect(assigned[0] ?? Number.POSITIVE_INFINITY).toBeLessThan(versionCheck);
+  });
+
+  // The lines that finish a repository the GitHub account cannot read, and the words that name
+  // the ssh cause, are the plugin's own (src/setup/marketplace-access.ts: doctor prints them
+  // too). A shell script cannot import that file, so all three carry the same words, and this
+  // keeps them in step — each installer with its own spelling of the repository in the line.
+  test("both installers carry the marketplace access lines of the plugin's own copy", () => {
+    const withRepo = (repo: string) =>
+      REPO_ACCESS_FIX_LINES.map((line) => line.replace("%s", repo));
+    // PowerShell's spelling of the repository, `$` and `{Repo}` written apart so it is not read
+    // as a template placeholder here.
+    const psRepo = "$" + "{Repo}";
+    for (const line of [...withRepo("$REPO"), SSH_REFUSED_WORDS]) {
+      expect(readFileSync(INSTALL_SH, "utf8")).toContain(line);
+    }
+    for (const line of [...withRepo(psRepo), SSH_REFUSED_WORDS]) {
+      expect(readFileSync(INSTALL_PS1, "utf8")).toContain(line);
+    }
   });
 
   test("the PowerShell files are pure ASCII, so any Windows code page reads them", () => {

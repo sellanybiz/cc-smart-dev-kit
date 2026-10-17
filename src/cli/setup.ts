@@ -547,8 +547,12 @@ async function decideClaudeMem(
     if (planned.note !== null) report.notes.push(planned.note);
     return null;
   }
-  // Nothing to change: no need to ask the backend.
-  if (applyClaudeMem(paths, planned.plan, true).changes.length === 0) return planned.plan;
+  // Nothing to set: no need to ask the backend. Taking out a retired key writes no key, model
+  // or address the backend must answer for.
+  const sets = applyClaudeMem(paths, planned.plan, true).changes.filter(
+    (change) => change.after !== undefined,
+  );
+  if (sets.length === 0) return planned.plan;
   if (dryRun) {
     report.info.push(
       `  claude-mem: would check ${planned.plan.target.backend} (one chat request) before writing its settings`,

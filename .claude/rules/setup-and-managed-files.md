@@ -75,8 +75,8 @@ Each of them:
   the next write. This is general, in `applyManagedJson`: every caller gets it.
 - **The one exception: an unchosen value.** A caller may name, per key, the values that
   mean "nobody chose this yet" (`unchosen`): a program's own default that the program
-  wrote into its file itself. claude-mem does that on its first run, so its seven keys
-  may be taken while they hold `""` (or `claude`, for its two providers). Any other value
+  wrote into its file itself. claude-mem does that on its first run, so its five keys
+  may be taken while they hold `""` (or `claude`, for its provider). Any other value
   is the person's choice: `claudeMemPlan` then changes none of the keys. Restore removes
   the key, and the program falls back to the same default.
 - **A secret is never printed.** A key whose value is a secret (claude-mem's API key) is

@@ -102,16 +102,16 @@ session may run on Fable as its main model: the person's choice — **never comm
 `/model` switch, not even when Claude Code's own notice says the model changed; the plugin's one line is the only
 word on it.** `opus` and `fable` mean the tier, whatever model answers. `agent-guard` asks the person for each one.
 
-**With the cc-smart-dev-kit gateway on** (`ANTHROPIC_BASE_URL` points at the local router),
-`haiku` and `sonnet` are its affordable slots (`cc-smart-dev-kit-scout`, `cc-smart-dev-kit-worker`),
-Claude as the last fallback; `opus` and `fable` stay Claude on the person's own login. Off,
-they are the real Claude models. Which model sits behind a slot is live config, read once a
-session (`cc-smart-dev-kit gateway status`). An affordable model's work still gets an Opus review.
+**With the cc-smart-dev-kit gateway on** (`ANTHROPIC_BASE_URL` points at the local router), each
+Claude family has a slot the person controls (`haiku` → scout, `sonnet` → worker, `opus`, `fable`;
+auto mode's safety checks → judge). A slot with a chain sends that family to the person's models;
+one with no chain is off — plain Claude on their login. No hidden Claude fallback. What answers is
+live config, read once a session (`cc-smart-dev-kit gateway status`); affordable work still gets an Opus review.
 
-**Auto mode's safety checks are judged by Claude whenever Claude can answer** — never by an
-affordable model to save usage. **Never change the path your own model traffic takes** (restart
-or replace the gateway, change its address) from your own shell tool: the session cuts its own
-line mid-change. Give the person the command to run instead (`/cc-smart-dev-kit:gateway`).
+**Every slot and its fallback switch is the person's** — never set or change one yourself. **Never
+change the path your own model traffic takes** (`gateway on`/`off`/`slot`/`fallback`, a router restart,
+its address) from your own shell tool: the session cuts its own line mid-change. Give the person the
+command to run instead (`/cc-smart-dev-kit:gateway`).
 
 **Effort:** `high` for searches, reads and routine building, `xhigh` for review and real judgment, and `max` for
 the hardest problem only. A deeper review needs the person's yes at `max` too, and the guard asks them. An

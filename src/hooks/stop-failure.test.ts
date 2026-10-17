@@ -110,13 +110,23 @@ function ctx(extra: Partial<AlertContext> = {}): AlertContext {
 }
 
 describe("which stops get an alert", () => {
-  it("the plan limit on Opus: an alert that offers the Opus slot with the worker's affordable model", () => {
+  it("the plan limit on Opus: the opus chain from the person's own targets, then its fallback on", () => {
+    // The opus slot has no chain: Opus first, then the backend targets of the person's worker
+    // chain, then of the scout's — and the switch on, which is off for opus by default.
     expect(planAlert(AT_LIMIT, ctx())).toEqual({
       action: {
-        args: ["gateway", "slot", "opus", "claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash"],
+        commands: [
+          [
+            "gateway",
+            "slot",
+            "opus",
+            "claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash,omniroute:ollama-cloud/deepseek-v4.1-flash",
+          ],
+          ["gateway", "fallback", "opus", "on"],
+        ],
         label: "Use glm-5.3-flash until it resets",
       },
-      body: "claude-opus-5-5: five_hour, resets 13:00. A more affordable model until it resets: cc-smart-dev-kit gateway slot opus claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash (Claude takes over again by itself once it answers).",
+      body: "claude-opus-5-5: five_hour, resets 13:00. A more affordable model until it resets: cc-smart-dev-kit gateway slot opus claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash,omniroute:ollama-cloud/deepseek-v4.1-flash && cc-smart-dev-kit gateway fallback opus on (Claude takes over again by itself once it answers).",
       title: "Claude usage limit reached",
     });
   });
@@ -147,20 +157,37 @@ describe("which stops get an alert", () => {
     ).not.toBeNull();
   });
 
-  it("no action when the model has no slot, the slot is already on, or the gateway is off", () => {
+  it("no action when the model has no family, its slot answers some other way, or the fallback is on", () => {
     expect(planAlert(AT_LIMIT, ctx({ state: null }))).toEqual({
       action: null,
       body: "Claude: plan limit, resets 1:42am. Claude Code continues by itself after the reset.",
       title: "Claude usage limit reached",
     });
+    // A Claude id of no family the router knows has no slot.
+    expect(
+      planAlert(
+        AT_LIMIT,
+        ctx({ sessionModel: "claude-mystery-1", state: state("claude-mystery-1", 1000) }),
+      ),
+    ).toEqual({
+      action: null,
+      body: "claude-mystery-1: five_hour, resets 13:00. Claude Code continues by itself after the reset.",
+      title: "Claude usage limit reached",
+    });
+    // The worker's chain starts with a backend: Claude was not its first answer.
     expect(
       planAlert(
         AT_LIMIT,
         ctx({ sessionModel: "claude-sonnet-5-5", state: state("claude-sonnet-5-5", 1000) }),
-      )?.action,
-    ).toBeNull();
+      ),
+    ).toEqual({
+      action: null,
+      body: "claude-sonnet-5-5: five_hour, resets 13:00. cc-smart-dev-kit-worker answers from omniroute:ollama-cloud/glm-5.3-flash first, yet this turn stopped: check cc-smart-dev-kit gateway status.",
+      title: "Claude usage limit reached",
+    });
+    // The opus chain and its switch on, in 0.5.0's own field (no `modelSlots`).
     const on = config({
-      modelSlots: { "claude-opus-5-5": "cc-smart-dev-kit-opus" },
+      fallback: { "cc-smart-dev-kit-opus": true },
       slots: {
         ...config().slots,
         "cc-smart-dev-kit-opus": ["claude-opus-5-5", "omniroute:ollama-cloud/glm-5.3-flash"],
@@ -171,26 +198,84 @@ describe("which stops get an alert", () => {
       body: "claude-opus-5-5: five_hour, resets 13:00. The cc-smart-dev-kit-opus fallback is on, yet this turn stopped: check cc-smart-dev-kit gateway status.",
       title: "Claude usage limit reached",
     });
-    expect(planAlert(AT_LIMIT, ctx({ gatewayOn: false }))).toEqual({
-      action: null,
-      body: "claude-opus-5-5: five_hour, resets 13:00. To use a more affordable model until it resets: cc-smart-dev-kit gateway slot opus claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash",
+    // A 0.4.x config: the slot its `modelSlots` names reads as off, the opus default, as the
+    // router reads it (0.4.x moved on only at the plan limit); so the action turns it on.
+    const old = config({
+      modelSlots: { "claude-opus-5-5": "cc-smart-dev-kit-opus" },
+      slots: on.slots,
+    });
+    expect(planAlert(AT_LIMIT, ctx({ config: old }))?.action).toEqual({
+      commands: [["gateway", "fallback", "opus", "on"]],
+      label: "Use glm-5.3-flash until it resets",
+    });
+    // The opus chain starts with a backend: Opus was not asked first.
+    const backendFirst = config({
+      slots: {
+        ...config().slots,
+        "cc-smart-dev-kit-opus": ["omniroute:ollama-cloud/glm-5.3-flash"],
+      },
+    });
+    expect(planAlert(AT_LIMIT, ctx({ config: backendFirst }))?.body).toBe(
+      "claude-opus-5-5: five_hour, resets 13:00. cc-smart-dev-kit-opus answers from omniroute:ollama-cloud/glm-5.3-flash first, yet this turn stopped: check cc-smart-dev-kit gateway status.",
+    );
+  });
+
+  it("the person's own opus chain with its fallback off: the action only turns the switch on", () => {
+    const off = config({
+      slots: {
+        ...config().slots,
+        "cc-smart-dev-kit-opus": ["claude-opus-5-5", "omniroute:ollama-cloud/glm-5.3-flash"],
+      },
+    });
+    expect(planAlert(AT_LIMIT, ctx({ config: off }))).toEqual({
+      action: {
+        commands: [["gateway", "fallback", "opus", "on"]],
+        label: "Use glm-5.3-flash until it resets",
+      },
+      body: "claude-opus-5-5: five_hour, resets 13:00. A more affordable model until it resets: cc-smart-dev-kit gateway fallback opus on (Claude takes over again by itself once it answers).",
       title: "Claude usage limit reached",
     });
   });
 
-  it("an account-wide limit offers every affordable target of the worker slot, in order", () => {
-    expect(planAlert(AT_LIMIT, ctx({ config: twoAffordable() }))?.action).toEqual({
-      args: [
+  it("an opus chain of one Claude target keeps it first; the gateway off gives the commands in words", () => {
+    const one = config({
+      slots: { ...config().slots, "cc-smart-dev-kit-opus": ["claude-opus-4-8"] },
+    });
+    expect(planAlert(AT_LIMIT, ctx({ config: one }))?.action?.commands).toEqual([
+      [
         "gateway",
         "slot",
         "opus",
-        "claude-opus-5-5,omniroute:ollama-cloud/deepseek-v4.1-flash,omniroute:ollama-cloud/glm-5.3-flash",
+        "claude-opus-4-8,omniroute:ollama-cloud/glm-5.3-flash,omniroute:ollama-cloud/deepseek-v4.1-flash",
+      ],
+      ["gateway", "fallback", "opus", "on"],
+    ]);
+    expect(planAlert(AT_LIMIT, ctx({ gatewayOn: false }))).toEqual({
+      action: null,
+      body: "claude-opus-5-5: five_hour, resets 13:00. To use a more affordable model until it resets, turn the gateway on (cc-smart-dev-kit gateway on), then: cc-smart-dev-kit gateway slot opus claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash,omniroute:ollama-cloud/deepseek-v4.1-flash && cc-smart-dev-kit gateway fallback opus on",
+      title: "Claude usage limit reached",
+    });
+  });
+
+  it("an account-wide limit offers every affordable target of the person's chains, worker first, each once, never the judge's", () => {
+    const withJudge = config({
+      slots: { ...twoAffordable().slots, "cc-smart-dev-kit-judge": ["omniroute:judge-model"] },
+    });
+    expect(planAlert(AT_LIMIT, ctx({ config: withJudge }))?.action).toEqual({
+      commands: [
+        [
+          "gateway",
+          "slot",
+          "opus",
+          "claude-opus-5-5,omniroute:ollama-cloud/deepseek-v4.1-flash,omniroute:ollama-cloud/glm-5.3-flash",
+        ],
+        ["gateway", "fallback", "opus", "on"],
       ],
       label: "Use deepseek-v4.1-flash until it resets",
     });
   });
 
-  it("an Opus-only limit (seven_day_opus) offers Sonnet first, then the affordable targets", () => {
+  it("an Opus-only limit (seven_day_opus) offers the person's own Sonnet target first, then the affordable ones", () => {
     const opusOnly: LimitState = {
       fallbacks: {},
       limits: {
@@ -200,52 +285,76 @@ describe("which stops get an alert", () => {
     };
     expect(planAlert(AT_LIMIT, ctx({ config: twoAffordable(), state: opusOnly }))).toEqual({
       action: {
-        args: [
-          "gateway",
-          "slot",
-          "opus",
-          "claude-opus-5-5,claude-sonnet-5-5,omniroute:ollama-cloud/deepseek-v4.1-flash,omniroute:ollama-cloud/glm-5.3-flash",
+        commands: [
+          [
+            "gateway",
+            "slot",
+            "opus",
+            "claude-opus-5-5,claude-sonnet-5-5,omniroute:ollama-cloud/deepseek-v4.1-flash,omniroute:ollama-cloud/glm-5.3-flash",
+          ],
+          ["gateway", "fallback", "opus", "on"],
         ],
         label: "Use claude-sonnet-5-5 until it resets",
       },
-      body: "claude-opus-5-5: seven_day_opus, resets 13:00. A more affordable model until it resets: cc-smart-dev-kit gateway slot opus claude-opus-5-5,claude-sonnet-5-5,omniroute:ollama-cloud/deepseek-v4.1-flash,omniroute:ollama-cloud/glm-5.3-flash (Claude takes over again by itself once it answers).",
+      body: "claude-opus-5-5: seven_day_opus, resets 13:00. A more affordable model until it resets: cc-smart-dev-kit gateway slot opus claude-opus-5-5,claude-sonnet-5-5,omniroute:ollama-cloud/deepseek-v4.1-flash,omniroute:ollama-cloud/glm-5.3-flash && cc-smart-dev-kit gateway fallback opus on (Claude takes over again by itself once it answers).",
       title: "Claude usage limit reached",
     });
   });
 
-  it("the session's own model picks the limit record; else the freshest Opus or Fable one", () => {
+  it("no model id of the plugin's own: only the limit's model and the person's targets", () => {
+    const opusOnly: LimitState = {
+      fallbacks: {},
+      limits: {
+        "claude-opus-5-5": { claim: "seven_day_opus", resetsAt: RESET, seenAt: NOW - 5_000 },
+      },
+      version: 1,
+    };
+    // No Claude target of another family in the person's chains: none is added.
+    const noClaude = config({
+      slots: { "cc-smart-dev-kit-worker": ["omniroute:ollama-cloud/glm-5.3-flash"] },
+    });
+    const alert = planAlert(AT_LIMIT, ctx({ config: noClaude, state: opusOnly }));
+    expect(alert?.action?.commands).toEqual([
+      ["gateway", "slot", "opus", "claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash"],
+      ["gateway", "fallback", "opus", "on"],
+    ]);
+    expect(JSON.stringify(alert)).not.toContain("claude-sonnet");
+    // A fresh setup: a backend and no chain. Nothing affordable to name, so no action.
+    expect(planAlert(AT_LIMIT, ctx({ config: config({ slots: {} }) }))).toEqual({
+      action: null,
+      body: "claude-opus-5-5: five_hour, resets 13:00. To use a more affordable model until it resets: cc-smart-dev-kit gateway slot opus claude-opus-5-5,<backend>:<model> && cc-smart-dev-kit gateway fallback opus on (cc-smart-dev-kit gateway models lists the models).",
+      title: "Claude usage limit reached",
+    });
+  });
+
+  it("the session's own model picks the limit record; else the freshest one with a family slot", () => {
     const three: LimitState = {
       fallbacks: {},
       limits: {
         "claude-fable-5-1": { claim: "five_hour", resetsAt: RESET, seenAt: NOW - 10 * 60_000 },
+        "claude-mystery-1": { claim: "five_hour", resetsAt: RESET, seenAt: NOW - 1_000 },
         "claude-opus-5-5": { claim: "seven_day", resetsAt: RESET, seenAt: NOW - 5_000 },
-        "claude-sonnet-5-5": { claim: "five_hour", resetsAt: RESET, seenAt: NOW - 1_000 },
       },
       version: 1,
     };
     // A Fable session: its own record, though an Opus one is fresher.
     expect(
       planAlert(AT_LIMIT, ctx({ sessionModel: "claude-fable-5-1[1m]", state: three }))?.action
-        ?.args,
+        ?.commands,
     ).toEqual([
-      "gateway",
-      "slot",
-      "fable",
-      "claude-fable-5-1,omniroute:ollama-cloud/glm-5.3-flash",
+      [
+        "gateway",
+        "slot",
+        "fable",
+        "claude-fable-5-1,omniroute:ollama-cloud/glm-5.3-flash,omniroute:ollama-cloud/deepseek-v4.1-flash",
+      ],
+      ["gateway", "fallback", "fable", "on"],
     ]);
-    // A Sonnet session: its own record, and no slot to offer.
-    expect(
-      planAlert(AT_LIMIT, ctx({ sessionModel: "claude-sonnet-5-5", state: three }))?.body,
-    ).toBe(
-      "claude-sonnet-5-5: five_hour, resets 13:00. Claude Code continues by itself after the reset.",
+    // No model from the transcript: the freshest record whose family has a slot (the mystery
+    // id has none, though it is fresher).
+    expect(planAlert(AT_LIMIT, ctx({ state: three }))?.body).toStartWith(
+      "claude-opus-5-5: seven_day, resets 13:00. A more affordable model until it resets: cc-smart-dev-kit gateway slot opus ",
     );
-    // No model from the transcript: the freshest record of a model with a model slot.
-    expect(planAlert(AT_LIMIT, ctx({ state: three }))?.action?.args).toEqual([
-      "gateway",
-      "slot",
-      "opus",
-      "claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash",
-    ]);
   });
 
   it("readAlertContext: the session model from the input's transcript_path; a broken gateway.json is still set up", () => {
@@ -315,7 +424,10 @@ describe("which stops get an alert", () => {
 describe("the worker shows it", () => {
   const ALERT: Alert = {
     action: {
-      args: ["gateway", "slot", "opus", "claude-opus-5-5,omniroute:m1"],
+      commands: [
+        ["gateway", "slot", "opus", "claude-opus-5-5,omniroute:m1"],
+        ["gateway", "fallback", "opus", "on"],
+      ],
       label: "Use m1 until it resets",
     },
     body: "body text",
@@ -337,9 +449,10 @@ describe("the worker shows it", () => {
     return { run, runs };
   }
 
-  it("Linux, the person clicks the action: the slot command runs through the launcher, then a note says so", () => {
+  it("Linux, the person clicks the action: the commands run in order through the launcher, then a note says so", () => {
     const fake = fakeRunner([
       { exitCode: 0, stdout: "use\n" },
+      { exitCode: 0, stdout: "" },
       { exitCode: 0, stdout: "" },
     ]);
     expect(runAlert(ALERT, "linux", LAUNCHER, fake.run)).toBe("used");
@@ -353,6 +466,7 @@ describe("the worker shows it", () => {
         "body text",
       ],
       [LAUNCHER, "gateway", "slot", "opus", "claude-opus-5-5,omniroute:m1"],
+      [LAUNCHER, "gateway", "fallback", "opus", "on"],
       [
         "notify-send",
         "--app-name=cc-smart-dev-kit",
@@ -371,17 +485,28 @@ describe("the worker shows it", () => {
     expect(gone.runs).toHaveLength(1);
   });
 
-  it("Linux, the slot command fails: a note with the command to run by hand", () => {
+  it("Linux, the slot command fails: the switch is not run, and a note gives the commands to run by hand", () => {
     const fake = fakeRunner([
       { exitCode: 0, stdout: "use" },
       { exitCode: 1, stdout: "" },
     ]);
     expect(runAlert(ALERT, "linux", LAUNCHER, fake.run)).toBe("use failed");
-    expect(fake.runs.at(-1)?.argv).toEqual([
-      "notify-send",
-      "--app-name=cc-smart-dev-kit",
-      "Fallback not turned on",
-      "Run it yourself to see why: cc-smart-dev-kit gateway slot opus claude-opus-5-5,omniroute:m1",
+    expect(fake.runs.map((run) => run.argv)).toEqual([
+      [
+        "notify-send",
+        "--app-name=cc-smart-dev-kit",
+        "--action=use=Use m1 until it resets",
+        "--action=wait=Wait",
+        "Claude usage limit reached",
+        "body text",
+      ],
+      [LAUNCHER, "gateway", "slot", "opus", "claude-opus-5-5,omniroute:m1"],
+      [
+        "notify-send",
+        "--app-name=cc-smart-dev-kit",
+        "Fallback not turned on",
+        "Run it yourself to see why: cc-smart-dev-kit gateway slot opus claude-opus-5-5,omniroute:m1 && cc-smart-dev-kit gateway fallback opus on",
+      ],
     ]);
   });
 
@@ -450,7 +575,19 @@ describe("the worker shows it", () => {
       action: null,
     });
     expect(parseAlert("{not json")).toBeNull();
-    expect(parseAlert(JSON.stringify({ ...ALERT, action: { args: [1], label: "x" } }))).toBeNull();
+    expect(
+      parseAlert(JSON.stringify({ ...ALERT, action: { commands: [[1]], label: "x" } })),
+    ).toBeNull();
+    expect(
+      parseAlert(JSON.stringify({ ...ALERT, action: { commands: [], label: "x" } })),
+    ).toBeNull();
+    expect(
+      parseAlert(JSON.stringify({ ...ALERT, action: { commands: [[]], label: "x" } })),
+    ).toBeNull();
+    // 0.4.3's one-command shape is not this version's.
+    expect(
+      parseAlert(JSON.stringify({ ...ALERT, action: { args: ["gateway"], label: "x" } })),
+    ).toBeNull();
     expect(parseAlert(JSON.stringify({ body: "b" }))).toBeNull();
   });
 });

@@ -1,8 +1,9 @@
 # The AI Gateway on native Windows
 
 The gateway is the local router between Claude Code and every model
-(`docs/gateway.md`): Claude models go to Anthropic byte for byte on the person's own login,
-and the `haiku` / `sonnet` names point at slots of more affordable models. On Windows the
+(`docs/gateway.md`): each Claude model's work goes to the models the person chose (a chain per
+model family, a slot), and every model whose slot has no chain stays real Claude, on the
+person's own login. On Windows the
 router is the same program and the same bundle (`plugin/dist/router.js`); what differs is
 **how it is kept running** and **what a restart costs**.
 

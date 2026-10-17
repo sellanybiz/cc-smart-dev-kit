@@ -519,7 +519,9 @@ describe("cc-smart-dev-kit omniroute", () => {
     expect(await runOmniroute(["update", "--yes"], world.ctx)).toBe(0);
     const text = world.said.join("\n");
     expect(text).toContain("OmniRoute 3.8.51 → 3.9.0, and omniroute.service restarts");
-    expect(text).toContain("Claude answers, on your own login");
+    expect(text).toContain(
+      "While it restarts, a request to an OmniRoute target fails: a slot with its fallback on moves to its next target, if it has one; any other slot answers with that error.",
+    );
     expect(world.ran).toContain(
       `${join(world.home, ".bun", "bin", "bun")} add --global omniroute@3.9.0`,
     );

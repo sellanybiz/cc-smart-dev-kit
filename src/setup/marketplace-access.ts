@@ -73,6 +73,86 @@ export function marketplaceSource(
 /** The ssh command doctor uses when the user has none of their own: never asks, gives up soon. */
 export const BATCH_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=8";
 
+/**
+ * The words that name the first cause below, where the fix is the HTTPS form of the same
+ * marketplace. The two installers carry the same sentence in their own lines (install.sh's
+ * `failed`, install.ps1's `Stop-Failed`): a shell script cannot import this file, so
+ * `scripts/install.test.ts` keeps the three in step.
+ */
+export const SSH_REFUSED_WORDS = "SSH to GitHub was refused";
+
+/**
+ * The two lines that finish a repository the GitHub account cannot read. `%s` is
+ * `<owner>/<repo>`: each installer carries the same lines with its own spelling of the
+ * repository in that place, and `scripts/install.test.ts` keeps the three in step.
+ */
+export const REPO_ACCESS_FIX_LINES = [
+  "ask the repository's owner for read access",
+  "accept the invitation at https://github.com/%s/invitations",
+] as const;
+
+/** The two fix lines with the repository in them (`scripts/install.test.ts` reads the two above). */
+export function repoAccessFixLines(repo: string): string[] {
+  return REPO_ACCESS_FIX_LINES.map((line) => line.replace("%s", repo));
+}
+
+/**
+ * Which of the two causes a failed marketplace read names, when its own words say so. Both
+ * were seen live on 2026-10-17, while two team machines were moved:
+ * - `ssh-refused`: ssh to GitHub was refused — no SSH key on the machine, or port 22 blocked.
+ *   The same marketplace adds fine over HTTPS.
+ * - `cannot-see`: the GitHub account may not read the repository — a private repository and no
+ *   invitation. No retry helps until its owner grants access.
+ * Anything else is `unknown`, and the caller keeps the words it always had.
+ */
+export type GitFailureCause = "ssh-refused" | "cannot-see" | "unknown";
+
+export function gitFailureCause(detail: string): GitFailureCause {
+  if (/permission denied \(publickey\)|host key verification failed/i.test(detail)) {
+    return "ssh-refused";
+  }
+  // git's own summary line follows either failure. A repository the account cannot see prints
+  // it too, and "Repository not found" beside it is access, not ssh.
+  if (/could not read from remote repository/i.test(detail)) {
+    return /repository not found/i.test(detail) ? "cannot-see" : "ssh-refused";
+  }
+  if (/repository not found|could not resolve to a repository/i.test(detail)) return "cannot-see";
+  return "unknown";
+}
+
+/**
+ * `<owner>/<repo>` for a GitHub git URL — the scp-like form (`git@github.com:o/r.git`) or an
+ * `ssh://` / `https://` one. Null for any other URL, and then a fix cannot name the repository.
+ */
+export function githubRepoInUrl(url: string): string | null {
+  const match = /^(?:git@|ssh:\/\/|https?:\/\/)(?:git@)?github\.com[:/](.+?)\/*$/i.exec(url);
+  if (!match?.[1]) return null;
+  const repo = match[1].replace(/\.git$/, "");
+  return /^[^/]+\/[^/]+$/.test(repo) ? repo : null;
+}
+
+/**
+ * What to do about a marketplace that cannot be read, for one of the two causes a person can
+ * act on. Empty for `unknown`: the caller keeps its own words. `repo` is `<owner>/<repo>` when
+ * the marketplace's source names one, and null when it does not (a `git` source on another
+ * host, say).
+ *
+ * The fix lines are the installers' own words (see `REPO_ACCESS_FIX_LINES`).
+ */
+export function marketplaceAccessAdvice(cause: GitFailureCause, repo: string | null): string {
+  if (cause === "ssh-refused") {
+    return repo === null
+      ? `${SSH_REFUSED_WORDS}: check your SSH key for that host, or add the marketplace over an HTTPS URL.`
+      : `${SSH_REFUSED_WORDS}: add the marketplace over HTTPS instead. ` +
+          `Run: claude plugin marketplace add https://github.com/${repo}.git`;
+  }
+  if (cause === "cannot-see") {
+    const lines = repo === null ? [REPO_ACCESS_FIX_LINES[0]] : repoAccessFixLines(repo);
+    return `The GitHub account cannot read the repository: ${lines.join(", then ")}.`;
+  }
+  return "";
+}
+
 /** Schemes whose user part may be a token (`https://<token>@host/…`), so all of it is hidden. */
 const TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
@@ -129,17 +209,28 @@ export function hasOwnSshCommand(env: Record<string, string | undefined>): boole
   }
 }
 
+/** A git read that failed: `detail` is its last line, `output` everything it said (both redacted). */
+export interface GitReadFailure {
+  detail: string;
+  ok: false;
+  output: string;
+}
+
 /**
  * True when `git ls-remote` can read the repo: the same access Claude Code needs to update.
  * Never asks for a password (GIT_TERMINAL_PROMPT=0), and gives up after the timeout.
  * Ssh BatchMode is added only when the user has no ssh command of their own: GIT_SSH_COMMAND
  * wins over core.sshCommand, so setting it would hide the one their access needs.
- * The detail is redacted: it never shows a password or token.
+ * The detail and the output are redacted: neither ever shows a password or token.
+ *
+ * `detail` is git's LAST line — what a one-line message prints. `output` is the whole of what
+ * git said, because the line that names the failure ("Permission denied (publickey)", "Repository
+ * not found") is usually ABOVE the last one: `gitFailureCause` reads it (live, 2026-10-17).
  */
 export function canReadGitRemote(
   url: string,
   baseEnv: Record<string, string | undefined> = process.env,
-): { ok: boolean; detail: string } {
+): { ok: true; detail: "" } | GitReadFailure {
   const result = lsRemote(url, "HEAD", baseEnv);
   return result.ok ? { ok: true, detail: "" } : result;
 }
@@ -167,7 +258,7 @@ export function gitRemoteHead(
   baseEnv: Record<string, string | undefined> = process.env,
 ): { detail: string; ok: false } | { ok: true; sha: string } {
   const result = lsRemote(url, ref, baseEnv);
-  if (!result.ok) return result;
+  if (!result.ok) return { detail: result.detail, ok: false };
   const lines = result.stdout
     .split("\n")
     .map((line) => line.trim().split(/\s+/))
@@ -183,7 +274,7 @@ function lsRemote(
   url: string,
   ref: string,
   baseEnv: Record<string, string | undefined>,
-): { detail: string; ok: false } | { ok: true; stdout: string } {
+): { ok: true; stdout: string } | GitReadFailure {
   const env = gitAccessEnv(baseEnv);
   try {
     const result = Bun.spawnSync(["git", "ls-remote", url, ref], {
@@ -194,14 +285,17 @@ function lsRemote(
       timeout: ACCESS_TIMEOUT_MS,
     });
     if (result.exitCode === 0) return { ok: true, stdout: result.stdout.toString() };
-    const lines = result.stderr.toString().trim().split("\n");
-    const detail = result.signalCode ? "timed out" : (lines.at(-1) ?? "").trim();
-    return { ok: false, detail: redactUrlsIn(detail) || `git exited with ${result.exitCode}` };
-  } catch (error) {
+    const said = redactUrlsIn(result.stderr.toString().trim());
+    const detail = result.signalCode ? "timed out" : (said.split("\n").at(-1) ?? "").trim();
+    const output = said || `git exited with ${result.exitCode}`;
     return {
+      detail: detail || `git exited with ${result.exitCode}`,
       ok: false,
-      detail: redactUrlsIn(error instanceof Error ? error.message : String(error)),
+      output,
     };
+  } catch (error) {
+    const said = redactUrlsIn(error instanceof Error ? error.message : String(error));
+    return { detail: said, ok: false, output: said };
   }
 }
 

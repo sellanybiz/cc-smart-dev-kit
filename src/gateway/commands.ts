@@ -5,10 +5,13 @@
  *   serve     runs the router in this terminal (the systemd unit runs the copy instead).
  *   models    every model each backend offers, then the slot table.
  *   slot      checks each target and saves; the router uses it from its next request.
+ *   fallback  turns a slot's fallback switch on or off: may its next target answer?
  *   status    router health, each backend, the slots, and what settings.json says.
  *   setup     makes the config if there is none (the key comes on stdin, never argv),
  *             puts the router copy and the systemd user unit in place, and starts it, or
- *             restarts it (after a yes) when one changed. Never touches Claude settings.
+ *             restarts it (after a yes) when one changed. For a machine an older version
+ *             set up, it also drops 0.4.x's hidden Claude step from a default chain and
+ *             takes out 0.4.3's model keys from Claude Code's settings (only its own).
  *   on / off  sets or removes the gateway env keys in Claude Code's settings.
  *
  * API keys are masked in every output. The design: docs/gateway.md.
@@ -26,6 +29,7 @@ import {
   DEFAULT_ANTHROPIC_BASE_URL,
   DEFAULT_FIRST_BYTE_MS,
   DEFAULT_PORT,
+  fallbackOn,
   type GatewayConfig,
   judgeTargetTested,
   judgeTestProof,
@@ -48,12 +52,19 @@ import {
   systemdService,
 } from "./service";
 import { scheduledTaskService } from "./service-windows";
-import { maskKey, settingsReport, shownValue, turnOff, turnOn } from "./settings";
 import {
-  isModelSlot,
+  maskKey,
+  retireOldModelKeys,
+  settingsReport,
+  shownValue,
+  turnOff,
+  turnOn,
+} from "./settings";
+import {
+  FAMILY_SLOTS,
   JUDGE_SLOT,
-  MODEL_SLOTS,
   parseTarget,
+  SLOT_PREFIX,
   slotKeyFromArg,
   type Target,
 } from "./targets";
@@ -66,17 +77,19 @@ Commands:
                          be made), 3 the backend could not be judged, 4 the key is refused.
   status                 Router health, backends, slots, and the Claude Code settings.
   models                 Every model each backend offers, and the slots.
-  slot <slot> <targets>  Set a slot's targets, in order. <slot>: scout, worker, judge,
-                         opus or fable.
-                         e.g. slot worker omniroute:ollama-cloud/glm-5.3-flash,claude-sonnet-5-5
-  slot opus claude-opus-5-5,<target>[,<target>]
-                         Opus goes to Anthropic unchanged; only at the plan's usage limit
-                         the next target answers. The same for fable (claude-fable-5-1).
-  slot judge <targets>   A fallback judge for auto mode's safety check, used only when
-                         Claude cannot answer it. Each target must first block a test
-                         check (a force push to main), or it is not set.
-  slot <judge|opus|fable> off
-                         Turn that fallback off.
+  slot <slot> <targets>  Set a slot's chain: any targets, in order, each <backend>:<model>
+                         (see "models") or claude-<model>. <slot>: scout (Haiku's work),
+                         worker (Sonnet's), opus, fable, or judge. The first target
+                         answers; the next only while the slot's fallback is on.
+  slot judge <targets>   A judge for auto mode's safety checks: it judges every check, in
+                         Claude's place. Each target must first block a test check (a
+                         force push to main), or it is not set. A weak judge can let a
+                         risky command through, and it reads the conversation.
+  slot <slot> off        No chain: that model is plain Claude again (the judge: Claude
+                         judges the checks).
+  fallback <slot> on|off May the next target answer when the one before it fails or
+                         rests? Off: only the first answers, and the rest stay saved.
+                         On by default for scout and worker; off for opus, fable, judge.
   setup [--yes] [--backend-key-stdin <backend> | --omniroute-password-stdin
         | --omniroute-password | --no-backend-key] [--save-unchecked]
                          Make the config (the key on stdin), install the router copy and
@@ -177,16 +190,12 @@ export const KNOWN_BACKENDS: Record<string, string> = {
 };
 
 /**
- * The slot table a new config gets; `gateway slot` changes it. DeepSeek first in each:
- * almost every subagent token is a cached re-read, and its cached input costs less than
- * GLM's (ollama.com/pricing). The ids are the ones OmniRoute's `/v1/models` lists, so
- * `gateway slot` can check them. No aliases: a project's own migration writes those, and
- * `migrate` writes the ones a machine moving from 0.2.x's slot names needs.
- *
- * No judge slot and no model slots: auto mode's safety checks stay on Claude, untouched,
- * and with no fallback judge Claude Code asks the person when Claude cannot answer. The
- * person may set a fallback judge (`gateway slot judge <targets>`, tested first): a more affordable
- * judge can block good work, and a weak one can let a risky command through.
+ * The config a new machine gets: the OmniRoute backend and its key, and NO slot. Every slot
+ * is off, so every Claude model stays plain Claude until the person gives a slot a chain
+ * from the live model list (`gateway models`, then `gateway slot <slot> <targets>`, or the
+ * portal's Slots page). No model is chosen for anyone here, and none is added behind a chain.
+ * No aliases: a project's own migration writes those, and `migrate` writes the ones a
+ * machine moving from 0.2.x's slot names needs.
  */
 export function defaultConfig(omnirouteKey: string): GatewayConfig {
   return {
@@ -194,18 +203,7 @@ export function defaultConfig(omnirouteKey: string): GatewayConfig {
     anthropicBaseUrl: DEFAULT_ANTHROPIC_BASE_URL,
     backends: { omniroute: { apiKey: omnirouteKey, baseUrl: "http://127.0.0.1:20128" } },
     port: DEFAULT_PORT,
-    slots: {
-      "cc-smart-dev-kit-scout": [
-        "omniroute:ollama-cloud/deepseek-v4.1-flash",
-        "omniroute:ollama-cloud/glm-5.3-flash",
-        "claude-sonnet-5-5",
-      ],
-      "cc-smart-dev-kit-worker": [
-        "omniroute:ollama-cloud/deepseek-v4.1-flash",
-        "omniroute:ollama-cloud/glm-5.3-flash",
-        "claude-sonnet-5-5",
-      ],
-    },
+    slots: {},
     timeouts: { firstByteMs: DEFAULT_FIRST_BYTE_MS },
     version: 1,
   };
@@ -218,8 +216,8 @@ export function defaultConfig(omnirouteKey: string): GatewayConfig {
  *
  * `allowNone` (`setup --no-backend-key`, a machine whose key does not exist yet): no
  * config and no key is then not an error. Nothing is written: the router runs on
- * `emptyConfig()` (every slot on Claude) until the key creates the default config.
- * Writing a Claude-only file instead would keep Claude-only slots after the key came.
+ * `emptyConfig()` (every slot off, so every model plain Claude) until the key creates the
+ * default config.
  *
  * `stateDir`: when a key REPLACES one that is already there, the file is backed up first
  * (`backupFile`, the one backup helper: `<stateDir>/backups/`, never beside the file — the
@@ -236,7 +234,7 @@ export function ensureConfig(
 ): string {
   if (!existsSync(configPath)) {
     if (key === null && options.allowNone === true) {
-      return `no config at ${configPath} yet: the router answers every slot on your own Claude login until the OmniRoute key is added (setup --backend-key-stdin omniroute)`;
+      return `no config at ${configPath} yet: every slot is off, so every Claude model goes to Anthropic as Claude Code sent it, on your own login, until the OmniRoute key is added (setup --backend-key-stdin omniroute)`;
     }
     if (key?.backend !== "omniroute") {
       throw new ConfigError(
@@ -273,7 +271,7 @@ export function ensureConfig(
 
 /**
  * The port the router listens on: the config's, or `DEFAULT_PORT` when there is no config
- * file (the router then runs `emptyConfig()`, every slot on Claude, on that port). A file
+ * file (the router then runs `emptyConfig()`, every slot off, on that port). A file
  * that is there but cannot be used throws: its port is unknown.
  */
 export function configuredPort(configPath: string): number {
@@ -340,17 +338,90 @@ export function keyUncheckedMessage(options: {
   ].join("\n");
 }
 
+/** The config with `modelSlots` (0.4.x only) left without any entry for `slot`. */
+function withoutModelSlot(config: GatewayConfig, slot: string): GatewayConfig {
+  const { modelSlots, ...rest } = config;
+  const kept = Object.entries(modelSlots ?? {}).filter(([, named]) => named !== slot);
+  return kept.length > 0 ? { ...rest, modelSlots: Object.fromEntries(kept) } : rest;
+}
+
+/** The config with `slot`'s fallback switch set (`value`), or left to its default (null). */
+function withFallback(config: GatewayConfig, slot: string, value: boolean | null): GatewayConfig {
+  const { fallback, ...rest } = config;
+  const kept = Object.entries(fallback ?? {}).filter(([named]) => named !== slot);
+  if (value !== null) kept.push([slot, value]);
+  return kept.length > 0 ? { ...rest, fallback: Object.fromEntries(kept) } : rest;
+}
+
+/**
+ * The chain 0.4.x's `defaultConfig` wrote for the scout and the worker, exactly, in every
+ * version that had one (read from the git history; 0.2.x's had the same targets under its old
+ * slot names, which `migrate` renamed). Its last target is a Claude model the person never
+ * chose: a hidden Claude step. Only ever compared, never written.
+ */
+const RETIRED_DEFAULT_CHAIN: readonly string[] = [
+  "omniroute:ollama-cloud/deepseek-v4.1-flash",
+  "omniroute:ollama-cloud/glm-5.3-flash",
+  "claude-sonnet-5-5",
+];
+
+/** The slots that 0.4.x gave `RETIRED_DEFAULT_CHAIN`. */
+const RETIRED_DEFAULT_SLOTS: readonly string[] = [
+  "cc-smart-dev-kit-scout",
+  "cc-smart-dev-kit-worker",
+];
+
+/**
+ * The config without 0.4.x's hidden Claude step: a scout or worker chain that still equals
+ * `RETIRED_DEFAULT_CHAIN` loses its last target. A chain the person changed in any way is
+ * theirs, a Claude target included, and stays. `dropped` names each slot that changed.
+ */
+export function withoutRetiredDefaultClaude(config: GatewayConfig): {
+  config: GatewayConfig;
+  dropped: string[];
+} {
+  const dropped = RETIRED_DEFAULT_SLOTS.filter((slot) => {
+    const chain = Object.hasOwn(config.slots, slot) ? config.slots[slot] : undefined;
+    return (
+      chain !== undefined &&
+      chain.length === RETIRED_DEFAULT_CHAIN.length &&
+      chain.every((target, index) => target === RETIRED_DEFAULT_CHAIN[index])
+    );
+  });
+  if (dropped.length === 0) return { config, dropped };
+  const slots = { ...config.slots };
+  for (const slot of dropped) slots[slot] = RETIRED_DEFAULT_CHAIN.slice(0, -1);
+  return { config: { ...config, slots }, dropped };
+}
+
+/**
+ * `gateway setup`'s step for a config an older version wrote: 0.4.x's hidden Claude step
+ * goes (`withoutRetiredDefaultClaude`), saved only when something changed. One line per
+ * slot it changed, for the person; none when nothing did.
+ */
+export function upgradeConfig(configPath: string, options: { dryRun?: boolean } = {}): string[] {
+  if (!existsSync(configPath)) return [];
+  const { config, dropped } = withoutRetiredDefaultClaude(loadConfigFile(configPath));
+  if (dropped.length > 0 && options.dryRun !== true) saveConfig(configPath, config);
+  return dropped.map(
+    (slot) =>
+      `~ ${slot}: took out ${RETIRED_DEFAULT_CHAIN.at(-1)}, the Claude model 0.4.x put at the end of its default chain; no Claude model answers there unless you put one in (${COMMAND} gateway slot ${slotName(slot)} <targets>)`,
+  );
+}
+
 /**
  * The config with one slot changed, after checking every target: it parses, its backend
  * exists, and its model is in that backend's list. `claude-…` targets are taken as they
- * are: Anthropic's list is not reachable without the person's login. `judge off` removes
- * the judge slot, so auto mode's checks go back to Claude; no other slot can be off:
- * Claude Code's haiku / sonnet names point at them. (A `claude-…` target in the judge slot
- * is no way back: the check's body is built for the model it names, and Claude Sonnet 5.5
- * refuses its `thinking: disabled` with a 400.)
+ * are: Anthropic's list is not reachable without the person's login. Every slot takes any
+ * chain, in any order, and `<slot> off` removes it (no chain: that model is plain Claude;
+ * the judge: Claude judges). The judge takes no `claude-…` target (the config refuses it):
+ * a check's body is built for the model it names, and Claude Sonnet 5.5 refused the older
+ * form's `thinking: disabled` with a 400.
  *
- * A judge change drops every judge test proof (`judgeTested`): `judge off` needs none, and
- * new targets get theirs only from the test, in `commandSlot` (`withJudgeProofs`).
+ * The slot's fallback switch stays as it was (`fallbackOn`); a 0.4.x `modelSlots` entry for
+ * the slot goes (it changes nothing any more). A judge change drops every judge test proof
+ * (`judgeTested`): `judge off` needs none, and new targets get theirs only from the test, in
+ * `commandSlot` (`withJudgeProofs`).
  */
 export function planSlotChange(
   current: GatewayConfig,
@@ -361,51 +432,26 @@ export function planSlotChange(
   const key = slotKeyFromArg(slotArg);
   if (key === null) {
     return {
-      error: `"${slotArg}" is not a slot name (scout, worker, judge, opus, fable, or cc-smart-dev-kit-<name>)`,
+      error: `"${slotArg}" is not a slot name (scout, worker, opus, fable, judge, or cc-smart-dev-kit-<name>)`,
     };
   }
   const { judgeTested: _proofs, ...withoutProofs } = current;
   const config = key === JUDGE_SLOT ? withoutProofs : current;
-  const model = isModelSlot(key);
-  // The model slots' entries in `modelSlots`, without this slot's.
-  const otherModelSlots = Object.fromEntries(
-    Object.entries(config.modelSlots ?? {}).filter(([, slot]) => slot !== key),
-  );
-  /** The config with `modelSlots` written only when it has an entry: absent is the default. */
-  const withModelSlots = (base: GatewayConfig, entries: Record<string, string>): GatewayConfig => {
-    const { modelSlots: _old, ...rest } = base;
-    return Object.keys(entries).length > 0 ? { ...rest, modelSlots: entries } : rest;
-  };
+  const old = config.slots[key] ?? [];
+  const base = withoutModelSlot(config, key);
   if (targetsText.trim() === "off") {
-    if (key !== JUDGE_SLOT && !model) {
-      return {
-        error: `only ${JUDGE_SLOT}, cc-smart-dev-kit-opus and cc-smart-dev-kit-fable can be off; give ${key} its targets instead`,
-      };
-    }
     if (!Object.hasOwn(config.slots, key)) return { error: `${key} is already off` };
     const slots = Object.fromEntries(Object.entries(config.slots).filter(([name]) => name !== key));
     // An alias may still point at the slot: the check says so.
-    const checked = parseConfig(withModelSlots({ ...config, slots }, otherModelSlots));
+    const checked = parseConfig(withFallback({ ...base, slots }, key, null));
     if ("error" in checked) return { error: checked.error };
-    return { config: checked.config, key, next: [], old: config.slots[key] ?? [] };
+    return { config: checked.config, key, next: [], old };
   }
   const next = targetsText
     .split(",")
     .map((text) => text.trim())
     .filter((text) => text !== "");
   if (next.length === 0) return { error: "give at least one target" };
-  if (model) {
-    // The first target is the Claude model the slot is for, sent unchanged; the rest answer
-    // only at its plan usage limit.
-    const first = next[0] ?? "";
-    const family = MODEL_SLOTS[key] ?? "";
-    if (!first.startsWith("claude-") || !first.includes(`-${family}-`)) {
-      return {
-        error: `${key}: start with the ${family} model itself, e.g. ${COMMAND} gateway slot ${family} ${family === "opus" ? "claude-opus-5-5" : "claude-fable-5-1"},omniroute:<model>`,
-      };
-    }
-    if (next.length < 2) return { error: `${key}: give the fallback targets after ${first}` };
-  }
   for (const text of next) {
     const parsed = parseTarget(text);
     if ("error" in parsed) return { error: parsed.error };
@@ -428,42 +474,96 @@ export function planSlotChange(
       };
     }
   }
-  const slots = { ...config.slots, [key]: next };
-  const changed = model
-    ? withModelSlots({ ...config, slots }, { ...otherModelSlots, [next[0] ?? ""]: key })
-    : { ...config, slots };
-  const checked = parseConfig(changed);
+  const checked = parseConfig({ ...base, slots: { ...base.slots, [key]: next } });
   if ("error" in checked) return { error: checked.error };
-  return { config: checked.config, key, next, old: config.slots[key] ?? [] };
+  return { config: checked.config, key, next, old };
+}
+
+/**
+ * The config with one slot's fallback switch set: on, its next target answers when the one
+ * before it fails or rests; off, only its first. A slot with no chain has none to set. A
+ * value equal to the slot's default is written as no entry (`fallbackOn`).
+ */
+export function planFallbackChange(
+  current: GatewayConfig,
+  slotArg: string,
+  value: string,
+): { config: GatewayConfig; key: string; now: boolean; was: boolean } | { error: string } {
+  const key = slotKeyFromArg(slotArg);
+  if (key === null) {
+    return {
+      error: `"${slotArg}" is not a slot name (scout, worker, opus, fable, judge, or cc-smart-dev-kit-<name>)`,
+    };
+  }
+  if (value !== "on" && value !== "off") return { error: `say on or off, not "${value}"` };
+  if (!Object.hasOwn(current.slots, key)) {
+    return {
+      error: `${key} has no chain, so it has nothing to fall back to. Give it one first: ${COMMAND} gateway slot ${slotName(key)} <targets>`,
+    };
+  }
+  const now = value === "on";
+  const was = fallbackOn(current, key);
+  const unset = withFallback(current, key, null);
+  const checked = parseConfig(
+    fallbackOn(unset, key) === now ? unset : withFallback(unset, key, now),
+  );
+  if ("error" in checked) return { error: checked.error };
+  return { config: checked.config, key, now, was };
+}
+
+/** A slot key's short name, as a person types it: `cc-smart-dev-kit-scout` → `scout`. */
+function slotName(key: string): string {
+  return key.startsWith(SLOT_PREFIX) ? key.slice(SLOT_PREFIX.length) : key;
+}
+
+/** What a slot with no chain means, in words. */
+function offWords(key: string): string {
+  if (key === JUDGE_SLOT) return "off: Claude judges auto mode's safety checks";
+  const family = Object.hasOwn(FAMILY_SLOTS, key) ? FAMILY_SLOTS[key] : undefined;
+  return family === undefined
+    ? "off"
+    : `off: ${family} goes to Anthropic as Claude Code sent it, on your own login`;
+}
+
+/** The trade-off of a judge other than Claude, said wherever one is set or shown. */
+export const JUDGE_WARNING =
+  "a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action";
+
+/** What a slot's fallback switch means for its chain, in words. */
+function fallbackWords(config: GatewayConfig, key: string): string {
+  const targets = config.slots[key] ?? [];
+  if (fallbackOn(config, key)) return "fallback on";
+  return targets.length > 1
+    ? `fallback off: only ${targets[0]} answers; the rest are kept, not used`
+    : "fallback off";
 }
 
 function printSlots(config: GatewayConfig, print: (line: string) => void): void {
-  print("\nSlots (first that answers wins):");
-  const keys = Object.keys(config.slots).sort();
-  if (keys.length === 0) print("  (none)");
+  print("\nSlots (the first target answers; the next one only while fallback is on):");
+  const known = [...Object.keys(FAMILY_SLOTS), JUDGE_SLOT];
+  const keys = [
+    ...known,
+    ...Object.keys(config.slots)
+      .filter((key) => !known.includes(key))
+      .sort(),
+  ];
   for (const key of keys) {
-    const untested = (config.slots[key] ?? []).filter(
-      (target) => !judgeTargetTested(config, target),
-    );
-    const note =
-      key === JUDGE_SLOT
-        ? untested.length > 0
-          ? `  (NOT TESTED, so ignored: ${untested.join(", ")}; run ${COMMAND} gateway slot judge <targets>)`
-          : "  (only when Claude cannot answer a check)"
-        : isModelSlot(key)
-          ? "  (the rest only at the plan's usage limit)"
-          : "";
-    print(`  ${key.padEnd(16)} ${(config.slots[key] ?? []).join(" → ")}${note}`);
-  }
-  if (!Object.hasOwn(config.slots, JUDGE_SLOT)) {
-    print(
-      `  ${JUDGE_SLOT.padEnd(16)} off: auto mode's safety checks go to Claude, and to no one else`,
-    );
-  }
-  for (const [slot, family] of Object.entries(MODEL_SLOTS).sort(([a], [b]) => (a < b ? -1 : 1))) {
-    if (!Object.values(config.modelSlots ?? {}).includes(slot)) {
-      print(`  ${slot.padEnd(16)} off: ${family} goes to Anthropic unchanged`);
+    const targets = config.slots[key];
+    if (targets === undefined) {
+      print(`  ${key.padEnd(16)} ${offWords(key)}`);
+      continue;
     }
+    const notes = [fallbackWords(config, key)];
+    if (key === JUDGE_SLOT) {
+      const untested = targets.filter((target) => !judgeTargetTested(config, target));
+      notes.push(
+        untested.length > 0
+          ? `NOT TESTED, so ignored: ${untested.join(", ")}; run ${COMMAND} gateway slot judge <targets>`
+          : "judges every safety check in Claude's place",
+      );
+    }
+    print(`  ${key.padEnd(16)} ${targets.join(" → ")}  (${notes.join("; ")})`);
+    if (key === JUDGE_SLOT) print(`    WARN ${JUDGE_WARNING}`);
   }
   const aliases = Object.entries(config.aliases).sort(([a], [b]) => (a < b ? -1 : 1));
   if (aliases.length > 0) {
@@ -493,7 +593,7 @@ async function commandModels(ctx: GatewayContext): Promise<number> {
   }
   printSlots(config, ctx.print);
   ctx.print(
-    "\nAny claude-<id> target (e.g. claude-sonnet-5-5) goes to Anthropic on your own Claude login.",
+    "\nA claude-<model> target goes to Anthropic on your own Claude login: write the id as Anthropic names it.",
   );
   return 0;
 }
@@ -513,9 +613,10 @@ export function withJudgeProofs(
 }
 
 /**
- * A slot turned off loses its fallback record in the router's state file at once, so the
- * status line stops showing it even before the router's next request (the router drops it
- * too, when it reads the changed config). A file that is not there, or not readable, stays.
+ * A slot turned off, or whose fallback switch went off, loses its fallback record in the
+ * router's state file at once, so the status line stops showing it even before the router's
+ * next request (the router drops it too, when it reads the changed config). A file that is
+ * not there, or not readable, stays.
  */
 function dropFallbackRecord(statePath: string, slot: string): void {
   let state: ReturnType<typeof parseLimitState>;
@@ -589,11 +690,47 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
   );
   const now =
     plan.next.length > 0
-      ? plan.next.join(" → ")
-      : plan.key === JUDGE_SLOT
-        ? "off (auto mode's safety check on Claude, and on no one else)"
-        : `off (${MODEL_SLOTS[plan.key] ?? plan.key} goes to Anthropic unchanged)`;
+      ? `${plan.next.join(" → ")}  (${fallbackWords(plan.config, plan.key)})`
+      : offWords(plan.key);
   ctx.print(`${plan.key}: ${plan.old.join(" → ") || "(new)"}\n  now: ${now}`);
+  if (plan.next.length > 1 && !fallbackOn(plan.config, plan.key)) {
+    ctx.print(
+      `  To let the next target answer when ${plan.next[0]} fails or rests: ${COMMAND} gateway fallback ${slotName(plan.key)} on`,
+    );
+  }
+  if (plan.key === JUDGE_SLOT && plan.next.length > 0) ctx.print(`WARN ${JUDGE_WARNING}`);
+  ctx.print("The router uses it from its next request.");
+  return 0;
+}
+
+async function commandFallback(ctx: GatewayContext, args: string[]): Promise<number> {
+  const [slotArg, value, ...extra] = args;
+  if (slotArg === undefined || value === undefined || extra.length > 0) {
+    ctx.error(USAGE);
+    return 2;
+  }
+  const configPath = ctx.paths.gatewayConfigFile;
+  // Read again and save inside the lock, as `slot` does: another command's change stays.
+  const plan = await withLock(
+    ctx.paths.stateDir,
+    () => {
+      const planned = planFallbackChange(loadConfigFile(configPath), slotArg, value);
+      if ("error" in planned) throw new Error(planned.error);
+      saveConfig(configPath, planned.config);
+      if (!planned.now) dropFallbackRecord(ctx.paths.gatewayStateFile, planned.key);
+      return planned;
+    },
+    { waitMs: 10_000 },
+  );
+  const targets = plan.config.slots[plan.key] ?? [];
+  ctx.print(
+    `${plan.key}: fallback ${plan.was ? "on" : "off"} → ${plan.now ? "on" : "off"}\n  ${targets.join(" → ")}  (${fallbackWords(plan.config, plan.key)})`,
+  );
+  ctx.print(
+    plan.now
+      ? "  The next target answers when the one before it fails or rests."
+      : "  Only the first target answers; when it fails, its error goes back to Claude Code.",
+  );
   ctx.print("The router uses it from its next request.");
   return 0;
 }
@@ -635,12 +772,6 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
     const cooling = isJsonObject(body.cooling) ? Object.entries(body.cooling) : [];
     for (const [target, seconds] of cooling)
       ctx.print(`  resting: ${target} for ${String(seconds)} s more`);
-    const limited = isJsonObject(body.limited) ? Object.entries(body.limited) : [];
-    for (const [model, seconds] of limited) {
-      ctx.print(
-        `  at its plan usage limit: ${model}; its model slot answers from a fallback, and asks it again in ${String(seconds)} s`,
-      );
-    }
   }
   if (config !== null) {
     for (const [name, backend] of Object.entries(config.backends)) {
@@ -783,6 +914,10 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
     allowNone: options.noKey || password !== null,
     dryRun: true,
   });
+  // The two steps for a machine an older version set up, read-only first: a config or a
+  // settings file that cannot be read stops the setup here, before anything is written.
+  upgradeConfig(configPath, { dryRun: true });
+  retireOldModelKeys({ dryRun: true, settingsFile: paths.settingsFile, stateDir: paths.stateDir });
   // The port question comes before the backend is called at all: a port another program holds
   // refuses the setup, and no key is made or checked for nothing.
   if ((await installRouter(install({ dryRun: true }))) === "declined") return 1;
@@ -885,6 +1020,12 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
           stateDir: paths.stateDir,
         });
         ctx.print(said.replaceAll(configPath, tildify(configPath, paths.home)));
+        for (const line of upgradeConfig(configPath)) ctx.print(line);
+        if (existsSync(configPath) && Object.keys(loadConfigFile(configPath).slots).length === 0) {
+          ctx.print(
+            `Every slot is off, so every Claude model stays plain Claude. Pick the models yourself: ${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets> (or the portal's Slots page).`,
+          );
+        }
         if (key !== null && existsSync(backups) && readdirSync(backups).length > backupsBefore) {
           ctx.print(
             `  the file as it was before the change is in ${tildify(backups, paths.home)}: copy it back to put the key that was there in place`,
@@ -905,6 +1046,18 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
             },
           }),
         );
+        // 0.4.3's `haiku` / `sonnet` model keys, where cc-smart-dev-kit still owns them: with the
+        // new router, a request that names a slot with no chain is refused.
+        const retired = retireOldModelKeys({
+          settingsFile: paths.settingsFile,
+          stateDir: paths.stateDir,
+        });
+        if (retired.changes.length > 0) {
+          ctx.print(changeLines(retired, paths.home).join("\n"));
+          ctx.print(
+            "Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.",
+          );
+        }
         if (settingsReport(paths.settingsFile).baseUrl === null) {
           ctx.print(
             `Claude Code does not use the gateway yet. Check it: ${COMMAND} gateway status. Then: ${COMMAND} gateway on.`,
@@ -1031,7 +1184,7 @@ async function commandOn(ctx: GatewayContext): Promise<number> {
       `Done. The changed file has a backup in ${tildify(paths.stateDir, paths.home)}/backups/.`,
     );
     ctx.print(
-      "Every Claude Code session on this machine, in every folder, uses the gateway from now on: its haiku / sonnet work (background titles and summaries too) goes to the affordable slots.",
+      "Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.",
     );
   }
   printOverrides(settingsReport(paths.settingsFile), ctx.print);
@@ -1078,6 +1231,8 @@ export async function runGateway(args: string[], ctx: GatewayContext): Promise<n
       return noArgs(() => commandModels(ctx));
     case "slot":
       return commandSlot(ctx, rest);
+    case "fallback":
+      return commandFallback(ctx, rest);
     case "status":
       return noArgs(() => commandStatus(ctx));
     case "setup":

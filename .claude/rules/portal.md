@@ -107,8 +107,8 @@ in this turn.
 - **Never in the background, and never inside a Claude Code session.** It restarts a service
   that answers real requests.
 - **A failure is put back**: install the recorded version, restart, wait and check again, then
-  say what failed. The confirmation says what the restart costs (the slots fall to their next
-  target, which is Claude).
+  say what failed. The confirmation says what the restart costs (a request to an OmniRoute
+  target fails meanwhile: a slot with its fallback on moves to its next target, if any).
 - **The restart is waited for, never a rollback for being slow.** `systemctl --user restart`
   returns before OmniRoute listens, so the check polls `/v1/models` with a growing pause for up
   to a minute (`waitForBackend`, with the clock and `sleep` from outside), and only then sends

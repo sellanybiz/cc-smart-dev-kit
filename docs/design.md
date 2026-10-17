@@ -150,7 +150,7 @@ one question, then `claude plugin uninstall anymodel@anymodel` and `claude plugi
 remove anymodel` — last, because removing a marketplace uninstalls the plugins installed
 from it.
 
-**What the first real run taught it (2026-10-17).** Four steps were added after that run, and
+**What the first real run taught it (2026-10-17).** Six steps were added after that run, and
 each one is the fix for something it did:
 
 - **The marketplace's own copy is refreshed first** (`claude plugin marketplace update
@@ -183,6 +183,25 @@ each one is the fix for something it did:
   shows the command that runs instead (never an `env` or a header), and asks per server: a yes
   runs `claude mcp remove <name> --scope user` and then `setup` again, so the plugin registers
   its own WITH its record; a no lists the exact command under "What is left".
+- **A marketplace that ssh refuses is added over HTTPS once** (`ssh_refused`, in both scripts).
+  Claude Code adds a marketplace over ssh by default, so a machine with no GitHub SSH key — or
+  a blocked port 22 — was refused and nothing was added. The one source is retried once as
+  `https://github.com/<owner>/<repo>.git`, with a line saying so; the marketplace's name comes
+  from the repository's own marketplace file, never from the source, so the same name lands and
+  every step after it finds the marketplace. Any other failure is reported as it always was,
+  with the command's own words kept for whoever reads the line. One retry, never a loop.
+- **The GitHub account is asked before anything is added** (`check_repo_read_access`, the same
+  two fix lines `doctor` prints). With `gh` installed and somebody logged in
+  (`gh api user --jq .login`, the one call that also proves it), `gh repo view
+  <owner>/<repo> --json name` decides: an account that cannot read the repository stops the run
+  (exit 1) with the account, the line "ask the repository's owner for read access" and the
+  invitation page, because no retry helps until its owner grants access. It is asked at step 2
+  too, when git could not read the repository (git's own line there sends the person to fix
+  credentials they already have), and skipped when `gh` is missing, nobody is logged in, or the
+  account can see the repository — a machine without `gh` installs as before. `doctor` names the
+  same two causes, read from the whole of git's error output (`gitFailureCause` over `output`:
+  the line that names the cause is not the last one) with `marketplaceAccessAdvice`, and keeps
+  its old line for anything else.
 
 **Secrets are cleaned where they are read.** Many terminals (Warp among them) wrap a paste in
 the bracketed-paste markers `ESC[200~` … `ESC[201~`, a shell turns that mode on and nothing turns
@@ -263,24 +282,29 @@ logic is TypeScript and not batch, `scripts/install.test.ts` runs every one of t
 An optional local router between Claude Code and the model providers
 (`src/gateway/`, design and limits in `gateway.md`):
 
-- Claude models go to Anthropic byte for byte, on the person's own login. The `haiku` and
-  `sonnet` names point at slots of more affordable models, each with a Claude target last.
+- Each Claude model goes to the slot of its family when the person gave that slot a chain,
+  and to Anthropic byte for byte, on the person's own login, when not. No model is chosen
+  for anyone: a fresh setup gives no slot a chain.
 - **No prompt text is ever changed.** An affordable backend gets two named, tested format
-  translations and nothing else. A slot's Claude target gets one,
+  translations and nothing else. A slot's Claude target that is not the model asked for gets one,
   `requestForClaudeFallback`: only the fields that Claude model refuses (Claude Code built
-  the body for the slot name), never a word of the prompt. The rules:
+  the body for another model), never a word of the prompt. The rules:
   `.claude/rules/gateway.md`.
 - Every 4xx / 5xx from any target is logged with the start of its reason, keys masked,
   so a failure can be read in the journal.
-- Auto mode's safety check is judged by Claude whenever Claude can answer it. The opt-in
-  judge slot is a fallback only, for when Claude cannot (the plan's usage limit, no valid
-  login), and a target must pass a test check before it is set; the router uses only a
-  target whose test proof is in the config. Otherwise Claude Code asks the person.
-- Opus and Fable stay byte for byte on Anthropic. An opt-in model slot answers from a
-  fallback only at the plan's usage limit, its answers without thinking blocks (Opus
-  refuses one it cannot verify; the owner's yes for this case); the router writes what it
-  saw to a small state file that the status line and the StopFailure alert read. The
-  alert's worker runs through the launcher, never from the plugin's version folder.
+- Auto mode's safety check is judged by Claude unless the person gives the judge slot a
+  chain; then its first tested target judges every check (the next only with the judge's
+  fallback on). A target must pass a test check before it is set; the router uses only a
+  target whose test proof is in the config.
+- Every Claude model reaches the slot of its family (haiku → scout, sonnet → worker, opus,
+  fable), read from the id Claude Code sends. A slot with no chain is off: that model stays
+  byte for byte on Anthropic. A chain is the person's, any targets in any order, and each
+  slot's fallback switch decides whether its next target may answer; the router never adds
+  a target, Claude included. Another target's answers for a Claude model lose their
+  thinking blocks (the model refuses one it cannot verify; the owner's yes); the router
+  writes the plan limits it saw to a small state file that the status line and the
+  StopFailure alert read. The alert's worker runs through the launcher, never from the
+  plugin's version folder.
 - A config `aliases` map lets a machine's old model names reach the new slots while it
   moves. The plugin ships none; a project's migration writes them.
 - `gateway on` / `off` change Claude Code's settings only as owned keys through
@@ -714,8 +738,8 @@ days to prove itself. `doctor` says, as information, when one is waiting.
 - **Never in the background, and never inside a Claude Code session.** It restarts a service
   that answers real requests, so a person runs it, sees each step and reads what failed; and a
   session must not move its own model path mid-turn. The confirmation says what the restart
-  costs: while the unit comes back, the slots fall to their next target, and the last target
-  of both shipped slots is Claude.
+  costs: while the unit comes back, a slot whose fallback is on falls to its next target,
+  and one whose chain is used up fails.
 - **`rollback`** installs the recorded version and keeps the record, so a second rollback is a
   no-op rather than a bounce.
 - **Every effect goes through an injected `runner`, `registry` and `fetch`**, so a test uses a
@@ -753,8 +777,7 @@ model traffic goes through. It also stops before writing anything when a target 
 already there — two folders are never merged by themselves. Every step prints one line,
 each changed file gets a backup first, and `--dry-run` writes, runs and stops nothing. A
 second run says "Nothing to move.". One thing does not carry over: a judge target's test
-proof (the proof's own text changed with the name), so a fallback judge needs its test
-again.
+proof (the proof's own text changed with the name), so a judge needs its test again.
 
 ## Moving a machine from the old names (0.3.0)
 
@@ -1189,11 +1212,17 @@ only, `ALLOWED_EFFORTS` in the code, refused on every model — and then reads t
 `model`, `effort`, `subagent_type` and prompt, and resolves the model the launch will really
 run on:
 
-1. a family name (`haiku|sonnet|opus|fable`) goes through Claude Code's own override
-   (`ANTHROPIC_DEFAULT_<FAMILY>_MODEL`; all four exist on 2.1.301, Fable included), then the
-   gateway's model slot for that family — whose first target is the Claude model itself;
-2. a full id, a slot key or `<backend>:<model>` is resolved as itself (a slot's first target
-   answers, `modelSlots` keeps the Claude id first); **any other name** (`best`, `opusplan`,
+1. a family name (`haiku|sonnet|opus|fable`) goes through Claude Code's own override, when
+   the person set one (`ANTHROPIC_DEFAULT_<FAMILY>_MODEL`; all four exist on 2.1.301, Fable
+   included; `gateway on` writes none since 0.5.0), then — with the gateway on
+   (`ANTHROPIC_BASE_URL` in Claude Code's settings) — the family's slot, the way the router
+   picks it (`FAMILY_SLOTS`: haiku → scout, sonnet → worker, opus → opus, fable → fable): its
+   chain's first target answers, read from `gateway.json` through the gateway's own
+   `loadConfigFile`. A slot with no chain is off, and the Claude model answers. So `sonnet` is
+   an affordable slot (effort `max`) exactly when the gateway is on and the worker's chain
+   starts with a `<backend>:<model>`;
+2. a full Claude id goes through its family's slot the same way; a slot key or
+   `<backend>:<model>` is resolved as itself (a slot's first target answers); **any other name** (`best`, `opusplan`,
    `default`, `inherit`, a name no rule knows) is resolved the strictest way — the rule for a
    Claude id with no family to read — because only what the guard can prove affordable is
    affordable;
@@ -1233,7 +1262,7 @@ of the script that asks, not only the first.
 
 **Tiers, not vendors** (the owner, 2026-10-16). `LaunchModel.tier` is what the rules go by:
 `opus` and `fable` mean the tier whatever answers behind them — a family name keeps its tier
-through `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` and through a model slot, a Claude id has its
+through `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` and through its family's slot, a Claude id has its
 family's, and a name the guard cannot read is the `opus` tier, the strict reading. So an
 override that points `opus` at a backend never becomes an affordable slot, is never forced to
 `max`, and never loses the reason line; the messages name both, `` `opus` (answered by
@@ -1282,12 +1311,14 @@ Fable, and then warned while the person was back on Opus. Stop judges the answer
 ended, and a switch back is a different answer.
 
 The tier is read the guard's way too (`resolveLaunchModel`, `ANTHROPIC_DEFAULT_FABLE_MODEL` and
-the model slots included), so there is no second list of what counts as Fable, and a tier a
-backend answers warns the same, naming the model (`the \`fable\` model, openai:gpt-5.5`).
+the fable slot's chain while the gateway is on included), so there is no second list of what
+counts as Fable, and a tier a backend answers warns the same, naming the model (`the
+\`fable\` model, openai:gpt-5.5`).
 
 What it costs: a session that was told stops at the mark; a session on anything else pays one
-`existsSync`, and — at a stop — the transcript's tail; the gateway config is read only when the
-model text could be Fable at all (`couldBeFable`), and the settings file never. A session nobody
+`existsSync`, and — at a stop — the transcript's tail; the gateway config and Claude Code's
+settings (is the gateway on?) are read only when the model text could be Fable at all
+(`couldBeFable`). A session nobody
 watches (`claude -p`) is told nothing and keeps no mark. The mark that keeps it to once a session
 is `<TMPDIR>/cc-smart-dev-kit-session-names/<session id>.fable`, beside the session's own name
 files (`namesDir`, one home), so the OS clears it; it is made with `wx`, so two runs that race
@@ -1760,7 +1791,9 @@ asked for (`src/sessions/`, `src/worktrees/`):
   `origin/<base>`: the verdict is a pure function of the facts (`verdict.ts`), so every reason
   to keep a worktree is one testable rule, and the facts themselves (git's list, the running
   sessions, Docker's mounts, the programs using it) come from `machine-facts.ts` and
-  `scan.ts`. `--clean` and `--remove` hold a port as a lock (`ports.ts`), move a worktree
+  `scan.ts` — reading each process's parent too, so the command that asked about a worktree,
+  and the shells that started it, are not taken for programs using it. `--clean` and `--remove`
+  hold a port as a lock (`ports.ts`), move a worktree
   aside before deleting it, and delete a branch only when the base holds every commit on it.
   The plugin's own leftovers hook uses the same verdict; the dev-server probe the project
   this came from had (one project's `.dev-server.json` and ports) is **not** ported — the
@@ -1906,22 +1939,25 @@ These are Claude Code's own commands on its own files, so `restore` does not und
 
 ## claude-mem on the gateway
 
-claude-mem's summaries run on Claude Haiku, on the person's own login, by default.
-With the gateway set up, `setup` points claude-mem's openai-compatible provider straight
-at the backend of the gateway's affordable model (the scout slot's first backend target), with
-Claude Haiku as claude-mem's quota fallback (`src/machine/claude-mem.ts`). The fallback
-takes claude-mem's work while the affordable model is in a quota or rate-limit cooldown, and
-hands it back once the affordable model answers again; it is not a fallback for a backend
-that is down or refuses its key (claude-mem never routes around an authentication
-failure: its CHANGELOG, 13.29.0).
+claude-mem's summaries run on Claude Haiku, on the person's own login, by default. Its work
+is Haiku's, so it follows the gateway's slot for Haiku, the scout: when the person gave the
+scout a chain whose first target is a `<backend>:<model>`, `setup` points claude-mem's
+openai-compatible provider straight at that backend and model (`src/machine/claude-mem.ts`).
+A scout with no chain (a fresh `gateway setup` writes none) or one that starts with a Claude
+model leaves claude-mem on Claude; the worker's chain is never used for it.
 
-- Seven keys in claude-mem's settings, owned through `applyManagedJson`. claude-mem's
-  seeded defaults count as unchosen; any other value of the seven is the person's
+**No model of the plugin's own** (owner, 2026-10-17): setup writes no quota fallback.
+claude-mem's `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` / `…_MODEL` keep claude-mem's defaults or
+the person's values. The fixed Claude Haiku id that 0.4.3 and earlier wrote there is taken out
+again while it still holds cc-smart-dev-kit's value (`RETIRED_KEYS`), and a value the person
+set or changed stays. A removal alone sends no check to the backend.
+
+- Five keys in claude-mem's settings, owned through `applyManagedJson`. claude-mem's
+  seeded defaults count as unchosen; any other value of the five is the person's
   choice (also one cc-smart-dev-kit wrote and the person changed since, and a key pool of their
   own in `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS`), and then none of them change.
 - **Straight to the backend, not through the router.** claude-mem speaks OpenAI's format
-  and the router speaks Anthropic's, and claude-mem's own fallback already goes back to
-  Claude. The key is the backend's key from `gateway.json`.
+  and the router speaks Anthropic's. The key is the backend's key from `gateway.json`.
 - **Checked before the write, the way claude-mem calls it:** claude-mem's custom preset
   adds `/chat/completions` to its base URL (its worker, 13.35.0), so setup sends one
   `POST <backend>/v1/chat/completions` for the model with the key and `max_tokens: 1`;
@@ -1930,8 +1966,8 @@ failure: its CHANGELOG, 13.29.0).
   alone: claude-mem itself rewrites such a file flat on its next start, and drops any
   flat key written beside `env` then (its `loadFromFile`), so a key written either way
   now would be lost or no longer owned.
-- **No affordable target any more** while the keys are still cc-smart-dev-kit's: setup says that
-  claude-mem still points at the old backend, and how to fix it.
+- **No affordable scout target any more** while the keys are still cc-smart-dev-kit's: setup
+  says that claude-mem still points at the old backend, and how to fix it.
 - **No chroma workaround.** An older pin of claude-mem's vector search (`pydantic<2.12`
   through a wrapped `uvx`) is not needed: claude-mem 13.35.0 ships its own pin
   (`pydantic<2.14`, its CHANGELOG, #4595). `doctor` warns (`!`, never a failure) below

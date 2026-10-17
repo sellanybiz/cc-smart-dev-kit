@@ -25,6 +25,8 @@ import { hostPlatform } from "../machine/host";
 import { isOwnerOnly } from "../setup/file-mode";
 import { atomicWrite } from "../setup/write";
 import {
+  claudeFamily,
+  FALLBACK_OFF_BY_DEFAULT,
   isBackendName,
   isSlotKey,
   JUDGE_SLOT,
@@ -37,11 +39,9 @@ export const DEFAULT_PORT = 20100;
 export const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 export const DEFAULT_FIRST_BYTE_MS = 60_000;
 
-/** What both slots answer on while there is no good config file. */
-const FALLBACK_SLOT_TARGET = "claude-sonnet-5-5";
-
 /** The log's words for running on `emptyConfig()`. */
-const NO_CONFIG_MEANS = `every haiku / sonnet call answers on ${FALLBACK_SLOT_TARGET} (your own Claude login) until it is fixed`;
+const NO_CONFIG_MEANS =
+  "every slot is off: each Claude model goes to Anthropic as Claude Code sent it (your own Claude login) until it is fixed";
 
 /** An http(s) URL, without the trailing slash, so `base + "/v1/messages"` is clean. */
 const baseUrl = z.url({ protocol: /^https?$/ }).transform((url) => url.replace(/\/+$/, ""));
@@ -72,11 +72,18 @@ export const gatewayConfigSchema = z
      */
     judgeTested: z.record(z.string(), z.string()).optional(),
     /**
-     * Claude model ids that have a model slot: `{"claude-opus-5-5": "cc-smart-dev-kit-opus"}`.
-     * Absent (the default): every `claude-…` request goes to Anthropic byte for byte. With
-     * an entry, that model's requests go to the slot, whose first target is the model
-     * itself; the next target answers only at the plan's usage limit (`targets.ts`).
-     * `gateway slot opus|fable` writes it.
+     * Each slot's fallback switch, where the person set it: `{"<slot>": true | false}`. On,
+     * the next target answers when the one before it fails or rests; off, only the first
+     * target ever answers, and the rest stay saved. Absent: the slot's default
+     * (`fallbackOn`). `gateway fallback <slot> on|off` writes it.
+     */
+    fallback: z.record(z.string(), z.boolean()).optional(),
+    /**
+     * 0.4.x only, read and never written again: the Claude ids whose requests a model slot
+     * took (`{"claude-opus-5-5": "cc-smart-dev-kit-opus"}`). A request reaches its slot by
+     * its family now (`familySlotFor`), and the entry changes nothing: such a chain starts
+     * with its fallback switch at the model slots' default, off (`fallbackOn`). Kept so such
+     * a config loads; `gateway slot opus|fable` drops the entry.
      */
     modelSlots: z.record(z.string(), z.string()).optional(),
     port: z.int().min(1).max(65_535).default(DEFAULT_PORT),
@@ -125,13 +132,22 @@ export const gatewayConfigSchema = z
         ctx.addIssue({ code: "custom", message: error, path: ["modelSlots", model] });
       }
     }
+    for (const slot of Object.keys(config.fallback ?? {})) {
+      if (!Object.hasOwn(config.slots, slot)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `fallback names slot "${slot}", which is not in slots (a slot with no chain has nothing to fall back to)`,
+          path: ["fallback", slot],
+        });
+      }
+    }
   });
 
 /**
- * Why a `modelSlots` entry cannot be used, or null when it can. The key is the Claude id
- * Claude Code sends (without `[1m]`); the slot is a model slot (`cc-smart-dev-kit-opus`,
- * `cc-smart-dev-kit-fable`) whose FIRST target is that same id, so a request that is not at its
- * limit still reaches Anthropic byte for byte; and the slot has a target after it.
+ * Why a 0.4.x `modelSlots` entry cannot be read, or null when it can: the key is a Claude
+ * id (without `[1m]`), the slot a model slot of that id's family, and in `slots`. What 0.4.x
+ * also asked (the model itself first, a target after it) is no rule any more: a model slot
+ * takes any chain, like every slot.
  */
 export function modelSlotError(
   model: string,
@@ -148,19 +164,27 @@ export function modelSlotError(
   if (family === undefined) {
     return `modelSlots "${model}" points at "${slot}", which is not a model slot (${Object.keys(MODEL_SLOTS).sort().join(", ")})`;
   }
-  if (!model.includes(`-${family}-`)) {
+  if (claudeFamily(model) !== family) {
     return `modelSlots "${model}" points at ${slot}, which is for ${family} models`;
   }
-  const targets = Object.hasOwn(slots, slot) ? slots[slot] : undefined;
-  if (targets === undefined)
+  if (!Object.hasOwn(slots, slot)) {
     return `modelSlots "${model}" points at slot "${slot}", which is not in slots`;
-  if (targets[0] !== model) {
-    return `slot ${slot} must start with "${model}" itself: that target is the model, sent unchanged`;
-  }
-  if (targets.length < 2) {
-    return `slot ${slot} names no target after "${model}" to answer at its usage limit`;
   }
   return null;
+}
+
+/**
+ * Is this slot's fallback switch on? The person's own setting (`fallback`) when there is
+ * one. Otherwise the slot's default: off for the model slots and the judge
+ * (`FALLBACK_OFF_BY_DEFAULT`), on for every other slot. A 0.4.x opus or fable chain gets that
+ * default too: it moved on only at the plan's usage limit, and "on" now moves on at any 408,
+ * 429, 5xx, 529 or network error, so turning it on is the person's choice
+ * (`gateway fallback <slot> on`).
+ */
+export function fallbackOn(config: Pick<GatewayConfig, "fallback">, slot: string): boolean {
+  const set = config.fallback;
+  if (set !== undefined && Object.hasOwn(set, slot)) return set[slot] === true;
+  return !FALLBACK_OFF_BY_DEFAULT.includes(slot);
 }
 
 /**
@@ -201,12 +225,14 @@ function aliasError(
 export type GatewayConfig = z.output<typeof gatewayConfigSchema>;
 
 /**
- * The judge test's version. Raise it when the test changes: every judge target then
- * counts as untested until `gateway slot judge` tests it again. At 2 since 0.3.0: the
- * fixed phrase the proof is made from changed with the plugin's name, so every proof an
- * earlier version wrote is invalid, and a target must be tested again.
+ * The judge test's version. Raise it when the test changes, or what passing it lets a target
+ * do: every judge target then counts as untested until `gateway slot judge` tests it again.
+ * 2 since 0.3.0: the fixed phrase the proof is made from changed with the plugin's name.
+ * 3 since 0.5.0: a judge target judges every check first, where before it answered only
+ * when Claude could not. A judge set for the old meaning is not taken for the new one: the
+ * router ignores it, and Claude judges, until the person tests and sets it again.
  */
-export const JUDGE_TEST_VERSION = 2;
+export const JUDGE_TEST_VERSION = 3;
 
 /**
  * The proof that a judge target passed the judge test, as `gateway slot judge` writes it
@@ -315,11 +341,11 @@ export function saveConfig(path: string, config: GatewayConfig): void {
 }
 
 /**
- * The config the router runs on while the file is missing or bad at start: no backends,
- * and both slots on Claude Sonnet 5.5 (1M context, like the `[1m]` the slot names
- * announce) on the person's own login. So every haiku / sonnet call still answers, only
- * not affordably. Better than a service that crash-loops, or a 400 on every subagent, for
- * every Claude Code session on the machine.
+ * The config the router runs on while the file is missing or bad at start: no backends and
+ * no slots, so every slot is off and each Claude model's request goes to Anthropic as Claude
+ * Code sent it, on the person's own login. Nothing answers on a model the person did not
+ * choose. Better than a service that crash-loops for every Claude Code session on the
+ * machine.
  */
 export function emptyConfig(): GatewayConfig {
   return {
@@ -327,10 +353,7 @@ export function emptyConfig(): GatewayConfig {
     anthropicBaseUrl: DEFAULT_ANTHROPIC_BASE_URL,
     backends: {},
     port: DEFAULT_PORT,
-    slots: {
-      "cc-smart-dev-kit-scout": [FALLBACK_SLOT_TARGET],
-      "cc-smart-dev-kit-worker": [FALLBACK_SLOT_TARGET],
-    },
+    slots: {},
     timeouts: { firstByteMs: DEFAULT_FIRST_BYTE_MS },
     version: 1,
   };

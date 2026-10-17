@@ -114,6 +114,11 @@ export interface MergeCall {
   arms: boolean;
   /** A `--disable-auto`: it takes an armed merge back, so this command merges nothing. */
   disarms: boolean;
+  /**
+   * An `--admin` (any value) on the merge's own words: gh merges with administrator rights,
+   * past the repository's branch protection, so the merge guard always asks.
+   */
+  admin: boolean;
   /** The word after `gh` that names no gh command: an alias to look up, or an extension. */
   unknown: string | null;
 }
@@ -126,6 +131,7 @@ function call(fields: Partial<MergeCall> = {}): MergeCall {
     unread: null,
     arms: false,
     disarms: false,
+    admin: false,
     unknown: null,
     ...fields,
   };
@@ -545,13 +551,14 @@ function prCalls(rest: string[], moved: string | null, carried: string | null): 
   if (rest[index] !== "merge") return [];
   const args = rest.slice(index + 1);
   if (args.some((arg) => arg === "-h" || arg === "--help")) return [];
-  const named = namedPullRequest(args);
+  const named = mergeArguments(args);
   return [
     call({
       target: { ref: named.ref, repo: repo ?? named.repo ?? carried },
       refusal: moved,
       arms: args.some(isAutoFlag),
       disarms: args.some(isDisableAutoFlag),
+      admin: named.admin,
     }),
   ];
 }
@@ -570,12 +577,19 @@ const MERGE_FLAGS_WITH_VALUE = new Set([
 const MERGE_SHORT_WITH_VALUE = "AbtFR";
 
 /**
- * Which pull request a `gh pr merge`'s own words name: `ref` null when they name none (the
- * current branch's), else the number, URL or branch; `repo` the `--repo` / `-R`.
+ * What a `gh pr merge`'s own words say, read the way gh reads them: `ref` null when they name
+ * no pull request (the current branch's), else the number, URL or branch; `repo` the
+ * `--repo` / `-R`; `admin` an `--admin` flag, with or without a value. A flag's value is
+ * never read as a flag (`--subject --admin` is a subject), and nothing after `--` is a flag.
  */
-function namedPullRequest(words: string[]): { ref: string | null; repo: string | null } {
+function mergeArguments(words: string[]): {
+  ref: string | null;
+  repo: string | null;
+  admin: boolean;
+} {
   let ref: string | null = null;
   let repo: string | null = null;
+  let admin = false;
   for (let index = 0; index < words.length; index++) {
     const word = words[index] ?? "";
     if (word === "--") {
@@ -587,6 +601,7 @@ function namedPullRequest(words: string[]): { ref: string | null; repo: string |
       const name = at === -1 ? word : word.slice(0, at);
       const value = at === -1 ? undefined : word.slice(at + 1);
       if (name === "--repo") repo = value ?? words[index + 1] ?? null;
+      if (name === "--admin") admin = true;
       // A flag that takes a value, written without `=`: the next word is its value, never the
       // pull request's name.
       if (value === undefined && MERGE_FLAGS_WITH_VALUE.has(name)) index += 1;
@@ -604,7 +619,7 @@ function namedPullRequest(words: string[]): { ref: string | null; repo: string |
     }
     ref ??= word || null;
   }
-  return { ref, repo };
+  return { ref, repo, admin };
 }
 
 /** `gh api` flags that take a value (gh 2.102.0, `gh api --help`): `=value`, or the next word. */

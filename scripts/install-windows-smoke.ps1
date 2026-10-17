@@ -3,7 +3,9 @@
 # scripts/install.test.ts proves for install.sh: a fresh machine, a second run, an
 # old-anymodel machine, a half-moved machine, a machine with only the old plugin, a refusal
 # inside a Claude Code session, an old Bun answered no, no repository argument, -DryRun, the
-# secrets, and the exit code 3 a doctor [x] gives.
+# secrets, the exit code 3 a doctor [x] gives, and the two GitHub ones -- a machine with no
+# SSH key (the marketplace is added over HTTPS instead) and an account that cannot see the
+# repository (the run stops and names it) -- plus a machine that has no gh at all.
 #
 # The fakes are `.cmd` files and nothing else, so a fake that reads stdin (the keys, the
 # browser's token) reads the very stdin the installer piped to it. They log every argument
@@ -73,7 +75,7 @@ if (-not (Test-Path $script:FakesDir)) { Stop-Smoke "scripts/install-windows-fak
 # every one of them with fake arguments and a fake world).
 #
 # The environment the fakes read is in New-World below (FAKE_LOG, FAKE_BUN_VERSION, ...).
-function Write-Fakes([string]$Dir, [string]$RealBun, [string]$FakesDir) {
+function Write-Fakes([string]$Dir, [string]$RealBun, [string]$FakesDir, [bool]$NoGh = $false) {
   $wrappers = @(
     @{ Name = "claude"; Script = "claude.ts" },
     @{ Name = "bun"; Script = "bun.ts" },
@@ -81,6 +83,7 @@ function Write-Fakes([string]$Dir, [string]$RealBun, [string]$FakesDir) {
     @{ Name = "gh"; Script = "gh.ts" }
   )
   foreach ($wrapper in $wrappers) {
+    if ($wrapper.Name -eq "gh" -and $NoGh) { continue }
     $text = @(
       "@echo off",
       "`"$RealBun`" `"$FakesDir\$($wrapper.Script)`" %*",
@@ -98,7 +101,13 @@ function New-World([string]$Name, [hashtable]$Options = @{}) {
   $log = Join-Path $worldHome "calls.log"
   New-Item -ItemType Directory -Force -Path $bin | Out-Null
   Set-Content -Path $log -Value ""
-  Write-Fakes -Dir $bin -RealBun $script:RealBun -FakesDir $script:FakesDir
+  Write-Fakes -Dir $bin -RealBun $script:RealBun -FakesDir $script:FakesDir -NoGh ($Options["NoGh"] -eq $true)
+  # A world with no gh: its wrapper is not written, and the GitHub CLI folders come out of PATH
+  # too, so the gh a runner has installed cannot answer for a machine that has none.
+  $worldPath = $bin + ";" + $env:PATH
+  if ($Options["NoGh"] -eq $true) {
+    $worldPath = @(($worldPath -split ";") | Where-Object { $_ -ne "" -and $_ -notmatch "[\\/]GitHub CLI" }) -join ";"
+  }
   $configDir = Join-Path $worldHome ".claude"
   if ($Options.ContainsKey("InstalledVersion")) {
     $pluginDir = Join-Path $configDir ("plugins\cache\cc-smart-dev-kit\cc-smart-dev-kit\" + $Options["InstalledVersion"])
@@ -156,7 +165,7 @@ function New-World([string]$Name, [hashtable]$Options = @{}) {
       HOME = $worldHome
       USERPROFILE = $worldHome
       CLAUDE_CONFIG_DIR = $configDir
-      PATH = $bin + ";" + $env:PATH
+      PATH = $worldPath
       CC_SMART_DEV_KIT_INSTALL_TTY = $answers
       FAKE_LOG = $log
       FAKE_LAUNCHER = $template
@@ -173,6 +182,15 @@ function New-World([string]$Name, [hashtable]$Options = @{}) {
       FAKE_OMNIROUTE_PASSWORD_REFUSED = $(if ($Options["OmniRoutePasswordRefused"] -eq $true) { "yes" } else { "no" })
       # Which of the plugin's MCP servers are registered by something else, as JSON.
       FAKE_MCP_STATUS = $mcpStatus
+      # The GitHub CLI: the login it answers, whether its account can see the repository, and
+      # whether nobody is logged in at all (its own flag: an empty environment value cannot be
+      # relied on to arrive as an empty variable, so FAKE_GH_LOGIN="" would not do).
+      # And the way Claude Code's own add is refused on a machine with no GitHub SSH key.
+      FAKE_GH_LOGIN = $(if ($Options.ContainsKey("GhLogin")) { $Options["GhLogin"] } else { "example-user" })
+      FAKE_GH_LOGGED_OUT = $(if ($Options["GhLoggedOut"] -eq $true) { "yes" } else { "no" })
+      FAKE_GH_VIEW_FAILS = $(if ($Options["GhViewFails"] -eq $true) { "yes" } else { "no" })
+      FAKE_CLAUDE_SSH_REFUSED = $(if ($Options["ClaudeSshRefused"] -eq $true) { "yes" } else { "no" })
+      FAKE_CLAUDE_ADD_NOT_FOUND = $(if ($Options["ClaudeAddNotFound"] -eq $true) { "yes" } else { "no" })
     }
   }
 }
@@ -491,6 +509,83 @@ try {
   }
   $passed++
   $names.Add("a pasted secret")
+
+  # 15. No GitHub SSH key: Claude Code adds the marketplace over ssh first and is refused, the
+  #     same marketplace is added over HTTPS instead -- once -- and the run goes on (live,
+  #     2026-10-17). The name it lands under comes from the repository's own marketplace file,
+  #     so it is the same name either way, and every later step finds it.
+  $noSsh = New-World "no-ssh" @{ Answers = @("y", ("A" * 43), "n", "n"); ClaudeSshRefused = $true }
+  $result = Invoke-Install $noSsh @($repo)
+  Assert-Code "no GitHub SSH key" $result 0 $noSsh
+  Assert-Contains "no GitHub SSH key" $result.out "- 4/8 SSH to GitHub was refused, so the marketplace is added over HTTPS instead: https://github.com/${repo}.git"
+  Assert-Contains "no GitHub SSH key" $result.out "[ok] 4/8 marketplaces added: https://github.com/${repo}.git, thedotmack/claude-mem, anthropics/claude-plugins-official"
+  Assert-Contains "no GitHub SSH key" $result.out "[ok] 5/8 the plugin is installed ($marketplaceVersion)"
+  $adds = @(Get-Calls $noSsh | Where-Object { $_ -eq "claude plugin marketplace add $repo" -or $_ -eq "claude plugin marketplace add https://github.com/${repo}.git" })
+  if ($adds.Count -ne 2) {
+    Stop-Smoke "no GitHub SSH key: the repository's source was not tried exactly twice; the log is:`n$((Get-Calls $noSsh) -join "`n")"
+  }
+  $passed++
+  $names.Add("no GitHub SSH key")
+
+  # 15b. A failure that is access, not ssh ("Repository not found"): reported as it always was,
+  #      with the one attempt, and no HTTPS retry (a fallback is not a retry loop).
+  $noAccessAtAll = New-World "not-found" @{ Answers = @("n"); ClaudeAddNotFound = $true }
+  $result = Invoke-Install $noAccessAtAll @($repo)
+  Assert-Code "a repository that cannot be read" $result 1 $noAccessAtAll
+  Assert-Contains "a repository that cannot be read" $result.out "[x] adding the marketplace $repo failed"
+  Assert-Contains "a repository that cannot be read" $result.out "claude plugin marketplace add $repo"
+  if ((Get-Calls $noAccessAtAll) -match "claude plugin marketplace add https") {
+    Stop-Smoke "a repository that cannot be read: it fell back to HTTPS anyway:`n$((Get-Calls $noAccessAtAll) -join "`n")"
+  }
+  $passed++
+  $names.Add("a repository that cannot be read")
+
+  # 16. The GitHub account cannot see the repository: stopped before any add, with the account,
+  #     the owner and the invitation, and exit 1 (live, 2026-10-17).
+  $noAccess = New-World "no-access" @{ Answers = @("n"); GhViewFails = $true }
+  $result = Invoke-Install $noAccess @($repo)
+  Assert-Code "the account cannot see the repository" $result 1 $noAccess
+  Assert-Contains "the account cannot see the repository" $result.out "[x] the GitHub account example-user cannot read $repo"
+  Assert-Contains "the account cannot see the repository" $result.out "ask the repository's owner for read access"
+  Assert-Contains "the account cannot see the repository" $result.out "accept the invitation at https://github.com/${repo}/invitations"
+  if ((Get-Calls $noAccess) -match "marketplace add") {
+    Stop-Smoke "the account cannot see the repository: a marketplace was added anyway:`n$((Get-Calls $noAccess) -join "`n")"
+  }
+  $passed++
+  $names.Add("the account cannot see the repository")
+
+  # 17. gh is not installed: the read-access check is skipped, and the marketplace is added as
+  #     before (the world's PATH has no gh at all).
+  $noGh = New-World "no-gh" @{ Answers = @("y", ("A" * 43), "n", "n"); NoGh = $true }
+  $result = Invoke-Install $noGh @($repo)
+  Assert-Code "gh is not installed" $result 0 $noGh
+  if ((Get-Calls $noGh) -match "^gh ") {
+    Stop-Smoke "gh is not installed: gh was called anyway:`n$((Get-Calls $noGh) -join "`n")"
+  }
+  Assert-Contains "gh is not installed" $result.out "[ok] 4/8 marketplaces added: $repo, thedotmack/claude-mem, anthropics/claude-plugins-official"
+  $passed++
+  $names.Add("gh is not installed")
+
+  # 18. gh is installed but NOBODY is logged in: both of its questions fail with gh's own "gh
+  #     auth login" line, the installer skips the check, and the run goes on -- and neither of
+  #     gh's two lines reaches the output (the script puts its stderr away, 2>$null).
+  $loggedOut = New-World "logged-out" @{ Answers = @("y", ("A" * 43), "n", "n"); GhLoggedOut = $true }
+  $result = Invoke-Install $loggedOut @($repo)
+  Assert-Code "nobody is logged in" $result 0 $loggedOut
+  Assert-Contains "nobody is logged in" $result.out "[ok] 4/8 marketplaces added: $repo, thedotmack/claude-mem, anthropics/claude-plugins-official"
+  # Both questions were asked, and both were skipped: no account line, no marketplace over HTTPS.
+  $calls = (Get-Calls $loggedOut) -join "`n"
+  if ($calls -notmatch "gh repo view " -or $calls -notmatch "gh api user --jq .login") {
+    Stop-Smoke "nobody is logged in: the check was not asked at all; the log is:`n$calls"
+  }
+  if ($calls -match "plugin marketplace add https") {
+    Stop-Smoke "nobody is logged in: the marketplace was added over HTTPS; the log is:`n$calls"
+  }
+  if ($result.out -match "the GitHub account|gh auth login") {
+    Stop-Smoke "nobody is logged in: gh's own words reached the installer's output:`n$($result.out)"
+  }
+  $passed++
+  $names.Add("nobody is logged in")
 } finally {
   Get-ChildItem -Path ([System.IO.Path]::GetTempPath()) -Filter "cc-smart-dev-kit-install-*" -Directory -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue

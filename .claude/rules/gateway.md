@@ -22,9 +22,10 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
 - **Never switch on an output style, and never add `--append-system-prompt`** or any other
   way of adding words to what a model is told.
 - A request routed to Anthropic goes **byte for byte** (only hop-by-hop headers, `host`
-  and `content-length` are dropped). A slot's `claude-…` target, and an alias to a
+  and `content-length` are dropped): an off slot's model, and a chain's `claude-…` target
+  that is the very model the request named. Any other `claude-…` target, and an alias to a
   `claude-…` model, change `model`, and only the fields that model refuses, through
-  `requestForClaudeFallback` (its table names each model's rules, from Anthropic's
+  `requestForClaudeFallback` (its table names each FAMILY's rules, from Anthropic's
   migration guides). Never `system`, a message or a tool.
   **Auto mode's safety check is never translated for a Claude target**, on any route: it
   reaches it with only `model` changed (the router skips the translation when `guard` is
@@ -52,52 +53,74 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
 - A redirect from an affordable backend becomes a 502.
 - A `claude-…` name is never an alias, and never routed anywhere but Anthropic.
 
-## The judge is a fallback, never the first judge
+## Every slot the same way; no model chosen for anyone (owner, 2026-10-17)
 
-Safety is judged by Claude when Claude can answer; otherwise by a fallback judge the
-person chose and that passed the test; otherwise by the person, because Claude Code asks.
+Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `-fable`,
+`-judge` (auto mode's safety checks). One rule set for all of them:
 
-- **Claude first, always.** A safety check takes the way it takes with no judge
-  (`judgeAsFallback` calls that way first). No config, flag or alias may send every check
-  to an affordable model; do not bring that mode back.
-- **The judge only when Claude cannot answer:** `planUsageLimit` (the plan's usage limit),
-  a 401, or a request with no login. Never on a short 429, a 5xx or any other answer:
-  those reach Claude Code as they are. Never for `count_tokens`.
-- **Off by default:** `defaultConfig()` has no judge slot; only the person sets one.
+- **A request reaches a slot by its model's FAMILY** (`familySlotFor`), read from the id
+  Claude Code sends: never by an exact id, so a newer version needs no change. Or by the
+  slot's own name. Never the safety check (it has the judge), never a name an alias changed.
+- **No chain = off = plain Claude**: the request goes to Anthropic byte for byte, the id it
+  carried included. A slot-named request for an off slot gets a 400 that says what to do;
+  the router never picks a Claude model for it.
+- **A chain is the person's**: any targets, any order, any one first. The router never adds
+  a target, Claude included: not at the end of a chain, not when every target fails, not
+  when one rests. A used-up chain returns its last answer, or a 502.
+- **The fallback switch** (`fallback` in the config, `fallbackOn`): on, the next target
+  answers on the statuses `fallbackKind` names; off, only the first target ever answers.
+  Default on for scout, worker and a machine's own slots; off for opus, fable and judge
+  (`FALLBACK_OFF_BY_DEFAULT`). A 0.4.x opus or fable chain gets that default, off: "on" moves
+  on at far more than the plan limit it was set up for. `gateway setup` drops 0.4.x's hidden
+  `claude-sonnet-5-5` from a scout or worker chain only while that chain is still 0.4.x's
+  exact default (`withoutRetiredDefaultClaude`); a chain the person changed is theirs.
+- **A safety check on a backend has a deadline on every target, the last too** (a lone judge
+  that hangs would hold every action): its miss is a 504 `timeout_error`, never a wait.
+  Read from the config the router holds: no disk read per request.
+- **No model id in the code as a default, a target or a fallback.** `gateway setup` writes
+  no chain; the person picks from the live list (`gateway models`, the portal). A rule that
+  must name a model is keyed by family (`CLAUDE_TARGET_RULES`), never by one exact id.
+  Examples in help and errors take `<model>`, or an id from the person's own config.
+- `count_tokens` follows the chain's first target alone (a backend there: a 404). Only a
+  `/v1/messages` answer starts or ends a target's rest, or notes or ends a plan limit
+  (`observeClaude`).
+
+## The judge: the person's choice, always tested
+
+Claude judges auto mode's safety checks unless the person gives the judge slot a chain.
+
+- **Off by default:** `defaultConfig()` has no judge slot; only the person sets one. With
+  none, a check takes the way it always took to Claude (`resolveRequestRoute`).
+- **With a chain:** the judge's first TESTED target judges every check (the next one only
+  with the judge's fallback on). No hidden Claude step: the judge's failure is the answer.
 - **Never set untested:** `gateway slot judge` runs the judge test (`judge-test.ts`) on
   each target and refuses one that does not block it. No skip flag, ever. A target that
   passed gets its proof in the config's `judgeTested` (`judgeTestProof`: the test
   version, the target, its backend's URL); **the router uses only a target with a
-  matching proof**, ignores any other with one WARN, and doctor fails on it. Raise
-  `JUDGE_TEST_VERSION` when the test changes.
-- **Loud:** one WARN per judged check, naming the target; the state file says so.
-- Docs and the skill name the trade-off: a more affordable judge can block good work, a weak one
-  can let a risky command through, and the test proves one obvious case only.
+  matching proof**, ignores any other with one WARN (Claude then judges), and doctor fails
+  on it. Raise `JUDGE_TEST_VERSION` when the test changes, or what passing it lets a target
+  do (3 since 0.5.0, when a judge started judging first).
+- The judge takes no `claude-…` target.
+- **Say the trade-off** wherever a judge is set or shown (`JUDGE_WARNING`): a weaker judge
+  can block good work or let a risky command through, and it reads the conversation.
 
-## Model slots: only at the plan's usage limit
+## Answers another target gives for a Claude model
 
-`cc-smart-dev-kit-opus` / `cc-smart-dev-kit-fable` (`modelSlots`, keyed by the real Claude id):
-
-- **Off by default.** With no `modelSlots`, a `claude-…` request goes byte for byte.
-- The slot's first target is the model itself and gets **the bytes Claude Code sent**.
-- The next target answers **only** on `planUsageLimit`. A short 429, a 5xx, a 400 or a
-  network error goes back as it is. A new trigger needs a contract row and a test.
-- Never the safety check, never `count_tokens`, never a name an alias changed. Only a
-  `/v1/messages` answer notes or ends a limit (`observeClaude`).
-- The fallback gets only the named translations a slot target gets; no **request**
-  changes (the thinking blocks of the history included).
-- **The owner's yes (2026-10-15), for exactly this case: a model slot's fallback
-  ANSWERS** lose their `thinking` / `redacted_thinking` blocks, get one text block when
-  nothing is left, and get a safe `tool_use` id (`cleanFallbackResponse`,
-  `fallback-answer.ts`). Claude Code keeps the answer, and Opus refuses a thinking block it
-  cannot verify. Never an answer of Claude itself, never another route's answer, never a
-  request. `fallbackAnswersAsIs` is a test-only switch for the live proof; never set it in
-  use.
+**The owner's yes (2026-10-15), first for a model slot's fallback, now for every answer that
+another target gives to a request that named a Claude model** (every slot is reached by
+family since 0.5.0, and the history problem is the same): the answer loses its `thinking` /
+`redacted_thinking` blocks, gets one text block when nothing is left, and gets a safe
+`tool_use` id (`cleanFallbackResponse`, `fallback-answer.ts`). Claude Code keeps the answer,
+and the Claude model refuses a thinking block it cannot verify once it answers that
+conversation again. Never an answer of the model itself, never an answer to a slot-named
+request, never a request. `fallbackAnswersAsIs` is a test-only switch for the live proof;
+never set it in use.
 
 ## Settings and secrets
 
-- `gateway on` / `off` change Claude Code's settings only through `src/setup/`
-  (`applyManagedJson`, owned keys). A gateway key someone else set stops `on` with
+- `gateway on` / `off`, and `gateway setup`'s removal of 0.4.3's retired model keys
+  (`retireOldModelKeys`), change Claude Code's settings only through `src/setup/`
+  (`applyManagedJson`, owned keys, only a key that still holds the value cc-smart-dev-kit wrote). A gateway key someone else set stops `on` with
   ForeignKeyError, its value masked; it is never overwritten.
 - **Never write** `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`,
   `CLAUDE_CODE_SUBAGENT_MODEL` or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`
@@ -200,7 +223,8 @@ person chose and that passed the test; otherwise by the person, because Claude C
 ## Names
 
 Slots `cc-smart-dev-kit-scout`, `cc-smart-dev-kit-worker`, `cc-smart-dev-kit-judge`, and the model slots
-`cc-smart-dev-kit-opus`, `cc-smart-dev-kit-fable`; the limit state `~/.local/state/cc-smart-dev-kit/gateway-state.json`; config
+`cc-smart-dev-kit-opus`, `cc-smart-dev-kit-fable`; the CLI's `gateway slot` and `gateway fallback`;
+the limit state `~/.local/state/cc-smart-dev-kit/gateway-state.json`; config
 `~/.config/cc-smart-dev-kit/gateway.json`; unit and log name `cc-smart-dev-kit-router`; health path
 `/__cc-smart-dev-kit/health`. A project's old names reach the new ones through the config's
 `aliases` map, which its own migration writes; the plugin ships none, and writes them on

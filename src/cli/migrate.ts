@@ -683,25 +683,34 @@ export function rewriteStateFolder(
   return { files, backups };
 }
 
-/** What the moved settings file needs: the gateway keys whose value is still the old one. */
+/**
+ * What the moved settings file needs: the gateway keys whose value is still the old one get
+ * this version's, and the ones this version no longer writes (the model keys, 0.5.0) go.
+ */
 export function settingsChanges(
   settingsFile: string,
   stateDir: string,
   oldEnv: Record<string, string>,
   newEnv: Record<string, string>,
-): { set: [string, string][]; kept: string[] } {
+): { set: [string, string][]; remove: string[]; kept: string[] } {
   const set: [string, string][] = [];
+  const remove: string[] = [];
   const kept: string[] = [];
-  if (!existsSync(settingsFile)) return { set, kept };
+  if (!existsSync(settingsFile)) return { set, remove, kept };
   const parsed: unknown = JSON.parse(readFileSync(settingsFile, "utf8"));
   const settings = isObject(parsed) ? parsed : {};
   const records = ownedRecords(stateDir, realTarget(settingsFile));
-  for (const key of Object.keys(newEnv)) {
+  for (const key of new Set([...Object.keys(newEnv), ...Object.keys(oldEnv)])) {
     const path = ["env", key];
     const current = getKey(settings, path);
     // The remembered-value rule: only a key that still holds what the old version wrote is
     // ours to change. A key the person changed, or removed, since is theirs.
     if (ownership(records, path, current) === "ours") {
+      // A key this version no longer writes (the model keys, since 0.5.0) goes.
+      if (!Object.hasOwn(newEnv, key)) {
+        if (current.found) remove.push(key);
+        continue;
+      }
       const oldValue = oldEnv[key] ?? "";
       const newValue = newEnv[key] ?? "";
       if (oldValue !== newValue) set.push([key, newValue]);
@@ -713,7 +722,7 @@ export function settingsChanges(
       kept.push(key);
     }
   }
-  return { set, kept };
+  return { set, remove, kept };
 }
 
 /**
@@ -1236,18 +1245,19 @@ export async function runMigrate(paths: CliPaths, options: MigrateOptions): Prom
       const oldEnv = oldGatewayEnv(plan.port);
       const newEnv = gatewayEnv(plan.port);
       const changes = settingsChanges(paths.settingsFile, stateDir, oldEnv, newEnv);
-      if (changes.set.length > 0) {
+      if (changes.set.length > 0 || changes.remove.length > 0) {
         const result = applyManagedJson({
           file: paths.settingsFile,
           stateDir,
           set: changes.set.map(([key, value]) => [["env", key], value] as const),
+          remove: changes.remove.map((key) => ["env", key]),
           ...(options.dryRun && { dryRun: true }),
         });
         if (result.changes.length > 0) {
           say(
             "~",
             short(paths.settingsFile),
-            `${String(result.changes.length)} gateway key(s) now name this version's slots and words`,
+            `${String(result.changes.length)} gateway key(s) changed to this version's, or taken out where it writes none`,
           );
         }
       } else if (existsSync(paths.settingsFile)) {

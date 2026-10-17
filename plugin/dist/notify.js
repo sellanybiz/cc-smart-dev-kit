@@ -116,7 +116,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.4.3",
+  version: "0.5.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6416,6 +6416,7 @@ import { mkdirSync, readFileSync as readFileSync2, statSync as statSync2 } from 
 
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
+var SLOT_PREFIX = "cc-smart-dev-kit-";
 var SLOT_KEY = /^cc-smart-dev-kit-[a-z0-9][a-z0-9-]*$/;
 var CONTEXT_SUFFIX = /\[1m\]$/i;
 function isBackendName(name) {
@@ -6454,14 +6455,40 @@ var MODEL_SLOTS = {
   "cc-smart-dev-kit-fable": "fable",
   "cc-smart-dev-kit-opus": "opus"
 };
+var CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"];
+var FAMILY_SLOTS = {
+  "cc-smart-dev-kit-scout": "haiku",
+  "cc-smart-dev-kit-worker": "sonnet",
+  ...MODEL_SLOTS
+};
+var PROVIDER_PREFIX = /^(?:[a-z0-9-]+\.)*claude-/;
+function claudeFamily(model) {
+  const name = `${withoutContextSuffix(model).toLowerCase()}-`;
+  const prefix = PROVIDER_PREFIX.exec(name);
+  if (prefix === null)
+    return null;
+  const id = name.slice(prefix[0].length - "claude-".length);
+  return CLAUDE_FAMILIES.find((family) => id.includes(`-${family}-`)) ?? null;
+}
+function familySlotKey(family) {
+  return Object.keys(FAMILY_SLOTS).find((key) => FAMILY_SLOTS[key] === family) ?? null;
+}
+function familySlotFor(model) {
+  if (typeof model !== "string")
+    return null;
+  const family = claudeFamily(model);
+  if (family === null)
+    return null;
+  const slot = familySlotKey(family);
+  return slot === null ? null : { model: withoutContextSuffix(model), slot };
+}
+var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS), JUDGE_SLOT];
 var FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
 
 // src/gateway/config.ts
 var DEFAULT_PORT = 20100;
 var DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 var DEFAULT_FIRST_BYTE_MS = 60000;
-var FALLBACK_SLOT_TARGET = "claude-sonnet-5-5";
-var NO_CONFIG_MEANS = `every haiku / sonnet call answers on ${FALLBACK_SLOT_TARGET} (your own Claude login) until it is fixed`;
 var baseUrl = url({ protocol: /^https?$/ }).transform((url2) => url2.replace(/\/+$/, ""));
 var backendSchema = looseObject({
   apiKey: string2().min(1),
@@ -6472,6 +6499,7 @@ var gatewayConfigSchema = looseObject({
   anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
   backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
   judgeTested: record(string2(), string2()).optional(),
+  fallback: record(string2(), boolean2()).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
   slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),
@@ -6509,6 +6537,15 @@ var gatewayConfigSchema = looseObject({
       ctx.addIssue({ code: "custom", message: error, path: ["modelSlots", model] });
     }
   }
+  for (const slot of Object.keys(config.fallback ?? {})) {
+    if (!Object.hasOwn(config.slots, slot)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `fallback names slot "${slot}", which is not in slots (a slot with no chain has nothing to fall back to)`,
+        path: ["fallback", slot]
+      });
+    }
+  }
 });
 function modelSlotError(model, slot, slots) {
   if (!model.startsWith("claude-") || /\s/.test(model) || model === "claude-") {
@@ -6521,19 +6558,19 @@ function modelSlotError(model, slot, slots) {
   if (family === undefined) {
     return `modelSlots "${model}" points at "${slot}", which is not a model slot (${Object.keys(MODEL_SLOTS).sort().join(", ")})`;
   }
-  if (!model.includes(`-${family}-`)) {
+  if (claudeFamily(model) !== family) {
     return `modelSlots "${model}" points at ${slot}, which is for ${family} models`;
   }
-  const targets = Object.hasOwn(slots, slot) ? slots[slot] : undefined;
-  if (targets === undefined)
+  if (!Object.hasOwn(slots, slot)) {
     return `modelSlots "${model}" points at slot "${slot}", which is not in slots`;
-  if (targets[0] !== model) {
-    return `slot ${slot} must start with "${model}" itself: that target is the model, sent unchanged`;
-  }
-  if (targets.length < 2) {
-    return `slot ${slot} names no target after "${model}" to answer at its usage limit`;
   }
   return null;
+}
+function fallbackOn(config, slot) {
+  const set = config.fallback;
+  if (set !== undefined && Object.hasOwn(set, slot))
+    return set[slot] === true;
+  return !FALLBACK_OFF_BY_DEFAULT.includes(slot);
 }
 function aliasError(name, to, config) {
   if (name.trim() === "" || /\s/.test(name))
@@ -6599,16 +6636,19 @@ import { existsSync as existsSync3, readFileSync as readFileSync3 } from "fs";
 function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
-    ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: "cc-smart-dev-kit-scout[1m]",
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION: `Affordable model for search and reading: the scout slot (${COMMAND} gateway slot scout \u2026)`,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Scout (affordable)",
-    ANTHROPIC_DEFAULT_SONNET_MODEL: "cc-smart-dev-kit-worker[1m]",
-    ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: `Affordable model for routine code and docs: the worker slot (${COMMAND} gateway slot worker \u2026)`,
-    ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Worker (affordable)"
+    ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`
   };
 }
+var RETIRED_GATEWAY_ENV_KEYS = [
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"
+];
 var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
+var REMOVED_ON_OFF = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
 var SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
 var LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 function isJsonObject(value) {
@@ -6658,9 +6698,7 @@ var UNCHOSEN = {
   CLAUDE_MEM_OPENAI_COMPAT_PRESET: [""],
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: [""],
   CLAUDE_MEM_OPENAI_COMPAT_MODEL: [""],
-  [API_KEY]: [""],
-  CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: ["", "claude"],
-  CLAUDE_MEM_QUOTA_FALLBACK_MODEL: [""]
+  [API_KEY]: [""]
 };
 
 // src/machine/warp.ts
@@ -7134,30 +7172,81 @@ function startedByPeer(transcriptPath) {
 var LIMIT_TEXT = /^You've hit your (?:[\w-]+ ){0,3}limit\b/;
 var NOT_LIMIT_TEXT = /\(not your usage limit\)/;
 var STATE_FRESH_MS = 2 * 60000;
-var OTHER_CLAUDE = "claude-sonnet-5-5";
 var ALERT_WORKER_COMMAND = "alert-worker";
 function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function slotOf(model) {
-  for (const [slot, family] of Object.entries(MODEL_SLOTS)) {
-    if (model.includes(`-${family}-`))
-      return { family, slot };
-  }
-  return null;
+  const found = familySlotFor(model);
+  const family = claudeFamily(model);
+  if (found === null || family === null)
+    return null;
+  return { family, key: found.slot, name: found.slot.slice(SLOT_PREFIX.length) };
 }
-function suggestedTargets(config, model, family, claim) {
-  const backends = (config.slots["cc-smart-dev-kit-worker"] ?? []).filter((text) => {
+function standInChains(config, own) {
+  const first = ["sonnet", "haiku"].map(familySlotKey).filter((key) => key !== null);
+  const keys = [...new Set([...first, ...Object.keys(config.slots)])];
+  return keys.filter((key) => key !== own && key !== JUDGE_SLOT && Object.hasOwn(config.slots, key)).map((key) => config.slots[key] ?? []);
+}
+function suggestedTargets(config, first, slot, claim) {
+  const chains = standInChains(config, slot.key).flat();
+  const backends = chains.filter((text) => {
     const parsed = parseTarget(text);
     return "target" in parsed && parsed.target.kind === "backend";
   });
   if (backends.length === 0)
     return null;
-  const modelOnly = claim?.endsWith(`_${family}`) === true;
-  return [model, ...modelOnly ? [OTHER_CLAUDE] : [], ...backends];
+  const modelOnly = claim?.endsWith(`_${slot.family}`) === true;
+  const otherClaude = modelOnly ? chains.find((text) => {
+    const family = claudeFamily(text);
+    return text.startsWith("claude-") && family !== null && family !== slot.family;
+  }) : undefined;
+  return [...new Set([first, ...otherClaude === undefined ? [] : [otherClaude], ...backends])];
 }
 function shortName(target) {
   return target.slice(target.lastIndexOf("/") + 1).replace(/^[^:]*:/, "");
+}
+function typed(commands) {
+  return commands.map((args) => `${COMMAND} ${args.join(" ")}`).join(" && ");
+}
+function offerFor(config, slot, model, claim) {
+  const chain = config.slots[slot.key] ?? [];
+  const fallback = ["gateway", "fallback", slot.name, "on"];
+  const head = chain[0];
+  if (head !== undefined) {
+    const parsed = parseTarget(head);
+    if (!("target" in parsed) || parsed.target.kind !== "anthropic") {
+      return {
+        kind: "none",
+        words: `${slot.key} answers from ${head} first, yet this turn stopped: check ${COMMAND} gateway status.`
+      };
+    }
+  }
+  if (chain.length > 1) {
+    if (fallbackOn(config, slot.key)) {
+      return {
+        kind: "none",
+        words: `The ${slot.key} fallback is on, yet this turn stopped: check ${COMMAND} gateway status.`
+      };
+    }
+    return { commands: [fallback], kind: "commands", targets: chain };
+  }
+  const targets = suggestedTargets(config, head ?? model, slot, claim);
+  if (targets === null) {
+    const shown = typed([
+      ["gateway", "slot", slot.name, `${head ?? model},<backend>:<model>`],
+      fallback
+    ]);
+    return {
+      kind: "no-target",
+      words: `To use a more affordable model until it resets: ${shown} (${COMMAND} gateway models lists the models).`
+    };
+  }
+  return {
+    commands: [["gateway", "slot", slot.name, targets.join(",")], fallback],
+    kind: "commands",
+    targets
+  };
 }
 function planAlert(input, ctx) {
   if (!ctx.alerts.events.value.includes("failed"))
@@ -7196,28 +7285,23 @@ function planAlert(input, ctx) {
       title
     };
   }
-  if (Object.hasOwn(ctx.config.modelSlots ?? {}, model)) {
+  const offer = offerFor(ctx.config, slot, model, record?.claim ?? null);
+  if (offer.kind !== "commands")
+    return { action: null, body: `${head} ${offer.words}`, title };
+  const shown = typed(offer.commands);
+  if (!ctx.gatewayOn) {
     return {
       action: null,
-      body: `${head} The ${slot.slot} fallback is on, yet this turn stopped: check ${COMMAND} gateway status.`,
-      title
-    };
-  }
-  const targets = suggestedTargets(ctx.config, model, slot.family, record?.claim ?? null);
-  const command = `${COMMAND} gateway slot ${slot.family} ${(targets ?? [model, "<backend>:<model>"]).join(",")}`;
-  if (targets === null || !ctx.gatewayOn) {
-    return {
-      action: null,
-      body: `${head} To use a more affordable model until it resets: ${command}`,
+      body: `${head} To use a more affordable model until it resets, turn the gateway on (${COMMAND} gateway on), then: ${shown}`,
       title
     };
   }
   return {
     action: {
-      args: ["gateway", "slot", slot.family, targets.join(",")],
-      label: `Use ${shortName(targets[1] ?? "")} until it resets`
+      commands: offer.commands,
+      label: `Use ${shortName(offer.targets[1] ?? "")} until it resets`
     },
-    body: `${head} A more affordable model until it resets: ${command} (Claude takes over again by itself once it answers).`,
+    body: `${head} A more affordable model until it resets: ${shown} (Claude takes over again by itself once it answers).`,
     title
   };
 }

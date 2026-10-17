@@ -1027,3 +1027,143 @@ describe("the guard's own deadline", () => {
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
   });
 });
+
+describe("a merge with --admin always asks, whatever the policy says", () => {
+  /** What `gh pr view 5` and `gh pr view 6` answer: both go into the integration base. */
+  const FIVE_AND_SIX = {
+    "view-5": JSON.stringify({ baseRefName: "dev", headRefOid: HEAD, number: 5 }),
+    "view-6": JSON.stringify({ baseRefName: "dev", headRefOid: HEAD, number: 6 }),
+  };
+
+  /** The question an `--admin` merge gets, `which` naming its pull request as the command does. */
+  function adminAsks(which: string): string {
+    return willNotMerge(
+      "this pull request",
+      `the command merges ${which} with \`--admin\`, which uses administrator rights to merge past the repository's branch protection (its required reviews, a code-owner approval among them, its required checks and its merge queue), so you decide each one`,
+    );
+  }
+
+  test("every auto-merge condition met: the same merge without --admin is silent, with it asks", async () => {
+    const { env, gh, repo } = ready(CONFIG, FIVE_AND_SIX);
+    recordReviewHere(env, repo, HEAD);
+    // The control: this merge is one the policy allows by itself.
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 5 --merge"), env)).toEqual({});
+    expect(
+      await runHook(mergeGuardHook, input(repo, "gh pr merge 5 --merge --admin"), env),
+    ).toEqual({ stdout: adminAsks("#5") });
+    // Only the allowed merge read anything: the --admin one asked from the line alone.
+    expect(ghCalls(gh)).toEqual([
+      "pr view 5 --json number,baseRefName,headRefOid",
+      "repo view --json defaultBranchRef",
+      "pr checks 5 --required --json name,bucket",
+    ]);
+  });
+
+  test.each([
+    ["gh pr merge 5 --merge --admin=true", "#5"],
+    ["gh pr merge 5 --admin=false", "#5"],
+    ["gh pr merge --admin 5 --squash", "#5"],
+    ["gh pr merge --admin", "the current branch's pull request"],
+    ["gh pr merge fix/login --admin", "`fix/login`"],
+    [
+      "gh pr merge https://github.com/example-org/app/pull/5 --admin",
+      "`https://github.com/example-org/app/pull/5`",
+    ],
+    ["gh pr merge 5 --body 'ship it' --admin", "#5"],
+    ["gh pr merge --auto --admin 5", "#5"],
+    ["bash -c 'gh pr merge 5 --admin'", "#5"],
+    ["timeout 60 gh pr merge 5 --admin", "#5"],
+  ])("%j: asks, naming %s, and reads nothing with gh", async (command, which) => {
+    const { env, gh, repo } = ready(CONFIG, FIVE_AND_SIX);
+    recordReviewHere(env, repo, HEAD);
+    expect(await runHook(mergeGuardHook, input(repo, command), env)).toEqual({
+      stdout: adminAsks(which),
+    });
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("this project's own repository named with -R before the command: still asks", async () => {
+    const { env, gh, repo } = ready(CONFIG, FIVE_AND_SIX, false, true);
+    recordReviewHere(env, repo, HEAD);
+    expect(
+      await runHook(mergeGuardHook, input(repo, "gh -R Example-Org/App pr merge 5 --admin"), env),
+    ).toEqual({ stdout: adminAsks("#5") });
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("two merges, only the second with --admin: asks, naming the second", async () => {
+    const { env, gh, repo } = ready(CONFIG, FIVE_AND_SIX);
+    recordReviewHere(env, repo, HEAD);
+    expect(
+      await runHook(mergeGuardHook, input(repo, "gh pr merge 5 && gh pr merge 6 --admin"), env),
+    ).toEqual({ stdout: adminAsks("#6") });
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("PowerShell: the same question", async () => {
+    const { env, repo } = ready(CONFIG, FIVE_AND_SIX);
+    recordReviewHere(env, repo, HEAD);
+    const powershell = {
+      ...input(repo, "gh.exe pr merge 5 --admin; Write-Output done"),
+      tool_name: "PowerShell",
+    };
+    expect(await runHook(mergeGuardHook, powershell, env)).toEqual({ stdout: adminAsks("#5") });
+  });
+
+  test("an alias whose expansion carries --admin: asks once the alias is read", async () => {
+    const { env, gh, repo } = ready(CONFIG, {
+      ...FIVE_AND_SIX,
+      "alias list": "ma: pr merge --admin\n",
+    });
+    recordReviewHere(env, repo, HEAD);
+    expect(await runHook(mergeGuardHook, input(repo, "gh ma 5"), env)).toEqual({
+      stdout: adminAsks("#5"),
+    });
+    expect(ghCalls(gh)).toEqual(["alias list"]);
+  });
+
+  test("autoMerge off: the question names --admin, not only the policy", async () => {
+    const { env, gh, repo } = ready({ ...CONFIG, workflow: { autoMerge: false } }, FIVE_AND_SIX);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 5 --admin"), env)).toEqual({
+      stdout: adminAsks("#5"),
+    });
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("a project that never opted in: still silent (the plugin stays invisible)", async () => {
+    const repo = makeRepo();
+    const gh = fakeGh(answers(FIVE_AND_SIX));
+    const env = envWithGh(gh);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 5 --admin"), env)).toEqual({});
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test.each([
+    // A flag's value is never a flag: gh reads `--admin` here as the subject, as `-t`'s value
+    // and after `--` as a word, so these are ordinary merges, judged as always.
+    "gh pr merge 5 --subject --admin",
+    "gh pr merge 5 -t --admin",
+    "gh pr merge 5 --merge -- --admin",
+    // The value-taking flag the parser already knew: its value is not the pull request.
+    `gh pr merge 5 --match-head-commit ${HEAD} --merge`,
+  ])("%j: no --admin, so judged as always: silent when allowed", async (command) => {
+    const { env, gh, repo } = ready(CONFIG, FIVE_AND_SIX);
+    recordReviewHere(env, repo, HEAD);
+    expect(await runHook(mergeGuardHook, input(repo, command), env)).toEqual({});
+    expect(ghCalls(gh)).toEqual([
+      "pr view 5 --json number,baseRefName,headRefOid",
+      "repo view --json defaultBranchRef",
+      "pr checks 5 --required --json name,bucket",
+    ]);
+  });
+
+  test.each([
+    "gh pr view 5 --admin",
+    "gh pr merge 5 --disable-auto --admin",
+    'echo "gh pr merge 5 --admin"',
+  ])("%j: no merge, so silent, and gh is not called", async (command) => {
+    const { env, gh, repo } = ready(CONFIG, FIVE_AND_SIX);
+    expect(await runHook(mergeGuardHook, input(repo, command), env)).toEqual({});
+    expect(ghCalls(gh)).toEqual([]);
+  });
+});

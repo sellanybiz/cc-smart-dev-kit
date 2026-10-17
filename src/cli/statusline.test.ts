@@ -42,7 +42,7 @@ describe("statusline", () => {
     expect(statuslineText("not an object", null, NOW, "UTC")).toBe("");
   });
 
-  it("a model slot on its fallback, and the judge fallback", () => {
+  it("a slot on its fallback; a judge record an older router wrote is not shown", () => {
     const state: LimitState = {
       fallbacks: {
         "cc-smart-dev-kit-judge": {
@@ -64,7 +64,7 @@ describe("statusline", () => {
       version: 1,
     };
     expect(statuslineText(input(null, null), state, NOW, "UTC")).toBe(
-      "Opus 5.5 · judge: fallback active (ollama:deepseek-v4.1-flash) · ⚠ claude-opus-5-5 at its limit → omniroute:ollama-cloud/glm-5.3-flash until 13:00",
+      "Opus 5.5 · ⚠ claude-opus-5-5 at its limit → omniroute:ollama-cloud/glm-5.3-flash until 13:00",
     );
   });
 

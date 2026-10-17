@@ -245,7 +245,7 @@ describe("the auto-mode safety checks the router counted", () => {
     expect(formatSafetyChecks(state, NOW, "UTC")).toEqual([
       "",
       "Auto mode's safety checks the router counted on this machine:",
-      "  today (2026-10-15): 5 checks — Anthropic 3 (1234 in, 7 out, 0 cache read, 0 cache write); a fallback 2 (0 in, 0 out, 20 cache read, 1 cache write)",
+      "  today (2026-10-15): 5 checks — Anthropic 3 (1234 in, 7 out, 0 cache read, 0 cache write); your judge 2 (0 in, 0 out, 20 cache read, 1 cache write)",
       "  2026-10-14: 1 check — Anthropic 1 (90 in, 1 out, 0 cache read, 0 cache write)",
       "  2026-10-08: 4 checks — Anthropic 4 (400 in, 9 out, 0 cache read, 0 cache write)",
       "  The tokens are what each answer's `usage` reported; whether they count against a Pro, Max or Team plan's limit is not confirmed (Anthropic's docs say they do on Enterprise and API accounts).",

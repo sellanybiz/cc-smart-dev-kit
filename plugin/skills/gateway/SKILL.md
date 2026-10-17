@@ -1,6 +1,6 @@
 ---
 name: gateway
-description: Use when the person wants more affordable models behind Claude Code's subagents, wants to switch the model behind a slot, hits the plan's usage limit, or when the local AI gateway (cc-smart-dev-kit-router), OmniRoute, Ollama Cloud or an affordable model misbehaves. Covers setting it up, switching a slot, the Opus and Fable fallbacks at the usage limit, the fallback judge for auto mode, the status line, the usage report, checking health, turning it on or off, and what never to do. Trigger phrases - "use GLM for subagents", "more affordable subagents", "switch back to Claude subagents", "which models can I use", "ai gateway", "cc-smart-dev-kit-router", "the router is down", "subagents are failing", "usage limit", "hit my limit", "use GLM until it resets", "how much is on Opus".
+description: Use when the person wants more affordable models behind Claude Code's subagents or main session, wants to switch the model behind a slot, hits the plan's usage limit, or when the local AI gateway (cc-smart-dev-kit-router), OmniRoute, Ollama Cloud or an affordable model misbehaves. Covers setting it up, giving a slot (scout, worker, opus, fable, judge) a chain, each slot's fallback switch, the judge for auto mode, the status line, the usage report, checking health, turning it on or off, and what never to do. Trigger phrases - "use GLM for subagents", "more affordable subagents", "switch back to Claude subagents", "which models can I use", "ai gateway", "cc-smart-dev-kit-router", "the router is down", "subagents are failing", "usage limit", "hit my limit", "use GLM until it resets", "how much is on Opus".
 ---
 
 # The AI Gateway
@@ -16,18 +16,24 @@ repository (the installed plugin does not carry the docs).
 
 - Claude Code sends every request to the router on `127.0.0.1` (`ANTHROPIC_BASE_URL`),
   with the person's **own** Claude login on it. Nothing outside the machine can reach it.
-- A `claude-*` model goes to Anthropic unchanged. `opus` and `fable` stay real Claude.
-- `haiku` points at the slot `cc-smart-dev-kit-scout`, `sonnet` at `cc-smart-dev-kit-worker`. A slot is a
-  list of targets, tried in order; the first that answers wins. Keep a `claude-*` target
-  last, so work never stops when an affordable model fails.
-- A target is `claude-<id>` or `<backend>:<model>` (for example
-  `omniroute:ollama-cloud/glm-5.3-flash`). A `claude-<id>` target gets the request with
-  its model name, and any field that model refuses put in the form it accepts (Claude
-  Sonnet 5.5 refuses "thinking disabled"); never a word of the prompt.
+- **Each Claude model has a slot, by its family**, read from the id Claude Code sends:
+  Haiku → `cc-smart-dev-kit-scout`, Sonnet → `cc-smart-dev-kit-worker`, Opus →
+  `cc-smart-dev-kit-opus`, Fable → `cc-smart-dev-kit-fable`. Auto mode's safety check has its own,
+  `cc-smart-dev-kit-judge`.
+- **A slot with no chain is off**: that model is plain Claude, sent to Anthropic unchanged.
+  A fresh setup gives no slot a chain, and the plugin never picks a model for anyone.
+- **A slot's chain** is a list of targets the person picked: the first answers; the next
+  only while the slot's **fallback switch** is on (default: on for scout and worker, off for
+  opus, fable and judge). The router never adds a target, Claude included: a chain that is
+  used up returns its error.
+- A target is `claude-<id>` or `<backend>:<model>`, from the live list (`gateway models`).
+  A `claude-<id>` target that is the very model asked for gets the request as sent; another
+  one gets its model name, and any field that model refuses put in the form it accepts
+  (Claude Sonnet refuses "thinking disabled"); never a word of the prompt.
 - **User-wide:** once it is on, every Claude Code session on the machine, in every folder,
-  sends its `haiku` / `sonnet` work to the slots. It runs as a systemd user unit on Linux
-  and as a per-user Scheduled Task on Windows; on Windows a restart refuses requests for a
-  moment, and Claude Code retries them.
+  goes through it. It runs as a systemd user unit on Linux and as a per-user Scheduled Task
+  on Windows; on Windows a restart refuses requests for a moment, and Claude Code retries
+  them.
 
 ## Set it up
 
@@ -49,10 +55,12 @@ repository (the installed plugin does not carry the docs).
    (down, a 5xx) saves nothing either unless you add `--save-unchecked`, which saves it with a
    WARN line. The file as it was is kept in the state folder's `backups/` whenever a key really
    changes.
-   No key yet: `cc-smart-dev-kit gateway setup --no-backend-key` (every slot answers on Claude).
+   No key yet: `cc-smart-dev-kit gateway setup --no-backend-key` (every slot off: every model
+   plain Claude).
    Setup stops, writing nothing, when another program holds the router's port (an older
    router, say): stop that program first.
-2. `cc-smart-dev-kit gateway status`: the router is up, the backend answers, the slots look right.
+2. `cc-smart-dev-kit gateway status`: the router is up, the backend answers. Every slot is off
+   until the person gives it a chain (§ Give a slot a chain).
    `cc-smart-dev-kit gateway check` answers the one question a script asks — does the gateway
    have an OmniRoute key the backend accepts? — with an exit code (0 works, 1 no key yet and
    OmniRoute answers, 3 could not be judged, 4 the key is refused); read-only, and it never asks
@@ -61,47 +69,56 @@ repository (the installed plugin does not carry the docs).
    save.** Pick the moment with the person, and let the person run it when this session's
    own requests would switch (§ A change to your own model path).
 
-## Switch a slot ("use GLM for subagents", "Claude for subagents again")
+## Give a slot a chain ("use GLM for subagents", "Claude for subagents again")
 
 1. `cc-smart-dev-kit gateway models`: every model each backend offers, and the slot table.
-2. `cc-smart-dev-kit gateway slot <scout|worker> <target>[,<target>…]`. It checks each target
-   against step 1, saves the config, and is **live**: no restart.
-   - GLM for workers: `cc-smart-dev-kit gateway slot worker omniroute:ollama-cloud/glm-5.3-flash,claude-sonnet-5-5`
-   - Claude again: `cc-smart-dev-kit gateway slot worker claude-sonnet-5-5`, the same for `scout`.
-3. `cc-smart-dev-kit gateway status`, and tell the person in one line what changed.
+   Take every target from this list; never suggest one from memory.
+2. `cc-smart-dev-kit gateway slot <scout|worker|opus|fable> <target>[,<target>…]`. It checks
+   each target against step 1, saves the config, and is **live**: no restart. Any order,
+   any target first, the same for every slot.
+   - One model for every Sonnet request: `cc-smart-dev-kit gateway slot worker omniroute:<model>`
+   - Plain Claude again: `cc-smart-dev-kit gateway slot worker off`.
+3. **The fallback switch**: `cc-smart-dev-kit gateway fallback <slot> on|off`. On, the next
+   target answers when the one before it fails or rests (a 429 or a 5xx from Claude, any
+   failure from a backend). Off, only the first answers, and its error goes back; the rest
+   stay saved. `gateway status` shows each slot's switch.
+4. `cc-smart-dev-kit gateway status`, and tell the person in one line what changed.
 
 Before a new model goes in a slot: compare its context window in `gateway models` with the
-provider's own page, check that it accepts images if subagents look at screenshots, and
+provider's own page, check that it accepts images if the work looks at screenshots, and
 check its cached-input price (subagent tokens are mostly cached re-reads).
 
-## The usage limit: Opus and Fable fallbacks ("use GLM until it resets")
+## Opus and Fable ("use GLM until it resets", "try this model as Opus")
 
-When the plan runs out, Claude Code stops: "You've hit your limit · resets …". It does not
-switch models by itself. A **model slot** lets a more affordable model carry on until the reset:
+The opus and fable slots work exactly like scout and worker. Any model can answer every
+Opus request, the main session's included:
 
-- On: `cc-smart-dev-kit gateway slot opus claude-opus-5-5,<backend>:<model>` (Fable:
-  `slot fable claude-fable-5-1,…`). Opus still goes to Anthropic unchanged; only when
-  Anthropic answers with the plan's usage limit does the next target answer. Never on a
-  short rate limit or a server error: Claude Code retries those itself.
-- It ends by itself: the router asks Opus again at most every 10 minutes and goes back
-  once it answers. Off for good: `cc-smart-dev-kit gateway slot opus off`.
+- That model alone: `cc-smart-dev-kit gateway slot opus <backend>:<model>`.
+- **Until Opus's limit resets:** `cc-smart-dev-kit gateway slot opus claude-<opus id>,<backend>:<model>`
+  (the Opus id as Claude Code sends it), then `cc-smart-dev-kit gateway fallback opus on`. Opus
+  answers first; at its limit (or a short rate limit, or a server error) the next target
+  answers, and the router asks Opus again at most every 10 minutes.
+- Off: `cc-smart-dev-kit gateway slot opus off`: Opus answers itself again.
 - Only when the person asks. Say what leaves Claude: the whole Opus conversation goes to
-  that provider while the fallback is on.
-- The router removes the thinking blocks from the fallback's answers before Claude Code
-  stores them (Opus refuses a thinking block it cannot verify), and gives an answer that
-  held only thinking one short text block. If Opus still answers 400 "Invalid
-  `signature`" (an older conversation), the router log says so: `/rewind` to the message
-  before the fallback answered, or start a new session.
+  that provider whenever it answers.
+- The router removes the thinking blocks from another model's answers before Claude Code
+  stores them (Opus refuses a thinking block it cannot verify). If Opus still answers 400
+  "Invalid `signature`" (an older conversation), the router log says so: `/rewind` to the
+  message before the other model answered, or start a new session.
 - A long (`[1m]`, 200k+ tokens) or rich (images, documents, server tools) Opus
-  conversation may be more than the fallback takes. Its 400 gets a WARN in the router
-  log: `/compact`, a new session, or wait for the reset.
+  conversation may be more than a backend takes. Its 400 gets a WARN in the router log:
+  `/compact`, a new session, or a target with a larger window first.
 
 **The alert.** With the gateway set up, a turn stopped at the limit shows a desktop
-notification about the session's own model. On Linux, "Use <target> until it resets" runs
-`cc-smart-dev-kit gateway slot opus …`: the model, then Sonnet when only Opus's own window ran out
-(`seven_day_opus`), then the worker slot's affordable targets in order; then send a message in
-Claude Code to go on now. "Wait" does nothing. On macOS it names the command. A
-`gateway.json` that cannot be read still gives the alert, without the action.
+notification about the session's own model and its family's slot. On Linux, "Use <target>
+until it resets" runs `cc-smart-dev-kit gateway slot <slot> …` (the model first, then a Claude
+target of another family from your own chains when only that family's window ran out, such
+as `seven_day_opus`, then the affordable targets of your worker chain, then your scout's),
+then `cc-smart-dev-kit gateway fallback <slot> on`; then send a message in Claude Code to go
+on now. A slot that already has your chain with its fallback off gets only the second
+command. "Wait" does nothing. On macOS it names the commands. With no affordable target in
+any of your chains, it offers nothing and points at `gateway models`. A `gateway.json`
+that cannot be read still gives the alert, without the action.
 
 **The status line.** `cc-smart-dev-kit setup --statusline` (asked once in a terminal when none is
 set; a "no" is remembered) shows the 5-hour and 7-day usage, warns from 85 %, and shows
@@ -111,34 +128,31 @@ any fallback in use.
 per session, the main session's replies by model, and apart, its subagents: how they were
 launched, which model wrote each reply, and the share on Opus. Read only; no message text.
 
-## The judge for auto mode: a fallback only
+## The judge for auto mode
 
-**Auto mode's safety checks (should this action run?) are judged by Claude whenever Claude
-can answer.** Only when Claude cannot — the plan limit is reached, or there is no valid
-Claude login — does a fallback judge that the person switched on judge them. That fallback must be
-the strongest model available, not the most affordable, and it may be set only after it blocked a
-test force push to the main branch. With no fallback judge set, Claude Code asks the person
-before each risky action.
+**Claude judges auto mode's safety checks (should this action run?) unless the person gives
+the judge slot a chain.** With a chain, its first tested target judges every check, in
+Claude's place; the next one only while the judge's fallback switch is on (off by default).
+There is no hidden Claude step. With no judge, Claude Code asks the person when Claude
+cannot answer.
 
-Why: an affordable judge that judged every check wrongly blocked real work three times, and a
-weaker one let a force push through.
+Why it is the person's choice and never the default: an affordable judge that judged every
+check wrongly blocked real work three times, and a weaker one let a force push through.
 
-The judge slot is off by default, and even when set it answers a check only when Claude
-cannot. "Claude first" relies on the router recognising the check by its prompt (the plugin's
-`docs/gateway.md` § Known limits). Only when the person asks for it:
+Only when the person asks for it:
 
 - On: `cc-smart-dev-kit gateway slot judge <target>[,<target>]`. Each target must first block a
   test check (a force push to `main`); one that does not is refused, and nothing is saved.
-  There is no way to skip the test: pick another model. A judge target added by hand is
-  untested: the router ignores it, and `cc-smart-dev-kit doctor` fails until `slot judge` tests it.
+  There is no way to skip the test: pick another model. A judge target added by hand, or set
+  before 0.5.0 (when a judge answered only after Claude could not), is untested: the router
+  ignores it (Claude judges), and `cc-smart-dev-kit doctor` fails until `slot judge` tests it.
 - Off: `cc-smart-dev-kit gateway slot judge off`.
 
-**Say the trade-off before you turn it on:** at the limit, a more affordable judge keeps auto mode
-going, but decides worse. It can block good work, and a weak one can let a risky command
-through; the test proves one obvious case only. Every judged check sends the conversation
-and the next action to that provider, and the log has a `WARN safety check judged by …`
-line for each. The judge slot takes no `claude-*` target. "Auto mode blocks good work at
-the limit": `gateway slot judge off`, and Claude Code asks the person instead.
+**Say the trade-off before you turn it on:** a judge other than Claude decides worse. It can
+block good work, and a weak one can let a risky command through; the test proves one
+obvious case only. Every check sends the conversation and the next action to that provider.
+The judge slot takes no `claude-*` target (with no chain, Claude judges anyway). "Auto mode
+blocks good work": `gateway slot judge off`, and Claude judges again.
 
 ## Check health
 
@@ -201,13 +215,14 @@ one the moment the port is free.
   replaces the person's own login.
 - **Set `CLAUDE_CODE_SUBAGENT_MODEL` or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`**: an agent
   launched without a `model` (a reviewer, say) would run on an affordable slot.
+- **Pick a model for the person**, or add one to a chain as a hidden fallback: every target
+  comes from the live list, by the person's choice.
 - **Change prompt text** to help an affordable model: no edited prompts, no output style, no
   `--append-system-prompt`.
 - **Put a backend key on the command line**, or print a key or password anywhere: names
   only.
 - **Turn the judge or a model slot on** without the person's yes and the trade-off said.
-- **Send every safety check to an affordable model**, or look for a way around the judge test:
-  the judge is a fallback for when Claude cannot answer, and nothing else.
+- **Look for a way around the judge test**, or set a judge the person did not ask for.
 - **Restart the router** (`gateway setup --yes`, `systemctl restart`) without telling the
   person what the restart does: requests wait during the drain, and the first move to the
   socket makes them fail for one drain.

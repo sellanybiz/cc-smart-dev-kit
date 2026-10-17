@@ -18,6 +18,7 @@ import { MCP_VERSIONS } from "../mcp/versions";
 import { versionStampFile } from "../setup/instructions";
 import { installLauncher } from "../setup/launcher";
 import { installLauncherCmd } from "../setup/launcher-cmd";
+import { applyManagedJson } from "../setup/managed-json";
 import { listBackups } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
@@ -30,6 +31,11 @@ const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 interface SetupOptions {
   marketplace?: boolean;
   gitOk?: boolean;
+  /**
+   * What the fake git prints on stderr as it fails, line by line. Default: the URL-with-a-token
+   * 403 line — a failure that names neither of the two causes doctor can point at.
+   */
+  gitStderr?: string;
   /** The marketplace source in known_marketplaces.json. Default: github example-org/cc-smart-dev-kit. */
   source?: Record<string, string>;
   /** The version in the marketplace's local copy. Default: VERSION. null: no manifest there. */
@@ -157,11 +163,14 @@ function setup(options: SetupOptions = {}) {
   );
 
   // A fake git first on PATH, so doctor's access check never reaches the network.
-  // It logs each call, has no core.sshCommand, and fails ls-remote when gitOk is false.
+  // It logs each call, has no core.sshCommand, and fails ls-remote when gitOk is false —
+  // with `gitStderr` line by line, so a multi-line failure arrives as several lines.
   const fakeBin = join(home, "fake-bin");
   const gitLog = join(home, "git-calls.log");
   mkdirSync(fakeBin);
   if (options.fakeGit !== false) {
+    const stderr =
+      options.gitStderr ?? "fatal: unable to access 'https://bot:tok@git.example.com/r.git/': 403";
     writeFileSync(
       join(fakeBin, "git"),
       [
@@ -169,7 +178,10 @@ function setup(options: SetupOptions = {}) {
         `echo "$* | prompt=$GIT_TERMINAL_PROMPT | ssh=$GIT_SSH_COMMAND" >> ${JSON.stringify(gitLog)}`,
         '[ "$1" = config ] && exit 1',
         options.gitOk === false
-          ? "echo \"fatal: unable to access 'https://bot:tok@git.example.com/r.git/': 403\" >&2; exit 128"
+          ? `printf '%s\\n' ${stderr
+              .split("\n")
+              .map((line) => JSON.stringify(line))
+              .join(" ")} >&2; exit 128`
           : "exit 0",
         "",
       ].join("\n"),
@@ -1132,6 +1144,48 @@ describe("cc-smart-dev-kit doctor", () => {
     expect(gitCalls().match(/ls-remote/g)).toHaveLength(2);
   });
 
+  test("no GitHub SSH key: ✗ names ssh, and the HTTPS add that works instead", () => {
+    // Live, 2026-10-17: Claude Code adds a marketplace over ssh, and a machine with no GitHub
+    // SSH key is refused. The line that names the cause is the first of git's, not its last.
+    const { run } = setup({
+      gitOk: false,
+      gitStderr:
+        "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.",
+    });
+    run(["setup"]);
+    const result = run(["doctor"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain(
+      "✗ cannot read the marketplace (" +
+        "git@github.com:example-org/cc-smart-dev-kit.git: fatal: Could not read from remote repository.; " +
+        "https://github.com/example-org/cc-smart-dev-kit.git: fatal: Could not read from remote repository.). " +
+        "SSH to GitHub was refused: add the marketplace over HTTPS instead. " +
+        "Run: claude plugin marketplace add https://github.com/example-org/cc-smart-dev-kit.git",
+    );
+  });
+
+  test("the account cannot see the repository: ✗ names the owner and the invitation", () => {
+    // The other live failure: the GitHub account this machine is logged in with cannot see the
+    // private repository at all — over either URL.
+    const { run } = setup({
+      gitOk: false,
+      gitStderr:
+        "ERROR: Repository not found.\nfatal: Could not read from remote repository.\n" +
+        "Please make sure you have the correct access rights\nand the repository exists.",
+    });
+    run(["setup"]);
+    const result = run(["doctor"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain(
+      "✗ cannot read the marketplace (" +
+        "git@github.com:example-org/cc-smart-dev-kit.git: and the repository exists.; " +
+        "https://github.com/example-org/cc-smart-dev-kit.git: and the repository exists.). " +
+        "The GitHub account cannot read the repository: ask the repository's owner for read " +
+        "access, then accept the invitation at " +
+        "https://github.com/example-org/cc-smart-dev-kit/invitations.",
+    );
+  });
+
   test("a marketplace URL with a token: the token is never printed", () => {
     const source = {
       source: "git",
@@ -1858,8 +1912,18 @@ const CHAT_CHECK = `POST /v1/chat/completions Bearer ${PLANTED_KEY} ${JSON.strin
   max_tokens: 1,
 })}`;
 
-/** gateway.json with the omniroute backend at `url`, as `gateway setup` makes it. */
-function writeGatewayConfig(home: string, url: string) {
+/**
+ * gateway.json with the omniroute backend at `url`, and the chains a person gave the slots
+ * (by default the scout's and the worker's, each starting with the affordable model).
+ */
+function writeGatewayConfig(
+  home: string,
+  url: string,
+  slots: Record<string, string[]> = {
+    "cc-smart-dev-kit-scout": [`omniroute:${AFFORDABLE_MODEL}`, "claude-sonnet-5-5"],
+    "cc-smart-dev-kit-worker": [`omniroute:${AFFORDABLE_MODEL}`, "claude-sonnet-5-5"],
+  },
+) {
   const file = join(home, ".config", "cc-smart-dev-kit", "gateway.json");
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(
@@ -1867,10 +1931,7 @@ function writeGatewayConfig(home: string, url: string) {
     JSON.stringify({
       version: 1,
       backends: { omniroute: { apiKey: PLANTED_KEY, baseUrl: url } },
-      slots: {
-        "cc-smart-dev-kit-scout": [`omniroute:${AFFORDABLE_MODEL}`, "claude-sonnet-5-5"],
-        "cc-smart-dev-kit-worker": [`omniroute:${AFFORDABLE_MODEL}`, "claude-sonnet-5-5"],
-      },
+      slots,
     }),
     { mode: 0o600 },
   );
@@ -1896,8 +1957,8 @@ function writeClaudeMem(home: string, settings: unknown): string {
   return file;
 }
 
-describe("cc-smart-dev-kit setup: claude-mem on the gateway's affordable model", () => {
-  test("claude-mem's defaults become the affordable model, with Claude Haiku as the fallback; the key never shows; restore takes them out", async () => {
+describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable model", () => {
+  test("claude-mem's defaults become the scout's affordable model, and no fallback model is written; the key never shows; restore takes them out", async () => {
     const { home, run, runAsync } = setup();
     const backend = fakeBackend();
     writeGatewayConfig(home, backend.url);
@@ -1911,10 +1972,11 @@ describe("cc-smart-dev-kit setup: claude-mem on the gateway's affordable model",
         `~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: "" -> "${backend.url}/v1"`,
         `~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_MODEL: "" -> "${AFFORDABLE_MODEL}"`,
         '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "" -> "••••cdef"',
-        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "" -> "claude-haiku-4-5-20251001"',
         "",
       ].join("\n"),
     );
+    // claude-mem's own quota fallback stays its own: no model of the plugin's is written.
+    expect(result.stdout).not.toContain("QUOTA_FALLBACK");
     expect(`${result.stdout}${result.stderr}`).not.toContain(PLANTED_KEY);
     // The key was checked against the backend once, before anything was written.
     expect(backend.seen).toEqual([CHAT_CHECK]);
@@ -1925,7 +1987,6 @@ describe("cc-smart-dev-kit setup: claude-mem on the gateway's affordable model",
       CLAUDE_MEM_OPENAI_COMPAT_API_KEY: PLANTED_KEY,
       CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: `${backend.url}/v1`,
       CLAUDE_MEM_OPENAI_COMPAT_MODEL: AFFORDABLE_MODEL,
-      CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "claude-haiku-4-5-20251001",
     });
     expect(statSync(file).mode & 0o777).toBe(0o600);
 
@@ -1941,8 +2002,62 @@ describe("cc-smart-dev-kit setup: claude-mem on the gateway's affordable model",
     expect(readJson(file)).toEqual({
       CLAUDE_MEM_MODEL: "claude-haiku-4-5-20251001",
       CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "claude",
+      CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "",
       CLAUDE_MEM_CONTEXT_OBSERVATIONS: "50",
     });
+  });
+
+  test("the quota fallback 0.4.3 wrote is taken out while it is still ours; the person's own fallback stays", async () => {
+    const { home, stateDir, runAsync } = setup();
+    writeGatewayConfig(home, fakeBackend().url);
+    const file = writeClaudeMem(home, SEEDED);
+    // What 0.4.3's setup left: its fixed Claude model in claude-mem's fallback, owned.
+    applyManagedJson({
+      file,
+      stateDir,
+      set: [[["CLAUDE_MEM_QUOTA_FALLBACK_MODEL"], "claude-haiku-4-5-20251001"]],
+      unchosen: () => true,
+    });
+    const result = await runAsync(["setup"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(
+      '~ ~/.claude-mem/settings.json: CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "claude-haiku-4-5-20251001" -> (none)\n',
+    );
+    const written = readJson(file);
+    expect(Object.hasOwn(written, "CLAUDE_MEM_QUOTA_FALLBACK_MODEL")).toBe(false);
+    expect(written.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER).toBe("claude");
+
+    // A person's own fallback: kept as it is, and the rest is set around it.
+    const other = setup();
+    writeGatewayConfig(other.home, fakeBackend().url);
+    const theirs = writeClaudeMem(other.home, {
+      ...SEEDED,
+      CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "gemini",
+      CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "gemini-their-own",
+    });
+    expect((await other.runAsync(["setup"])).exitCode).toBe(0);
+    const kept = readJson(theirs);
+    expect(kept.CLAUDE_MEM_PROVIDER).toBe("openai-compatible");
+    expect(kept.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER).toBe("gemini");
+    expect(kept.CLAUDE_MEM_QUOTA_FALLBACK_MODEL).toBe("gemini-their-own");
+  });
+
+  test("the scout has no chain, or it starts with Claude: claude-mem is not pointed at the gateway", async () => {
+    for (const slots of [
+      // Only the worker has a chain: claude-mem's work is Haiku's, not Sonnet's.
+      { "cc-smart-dev-kit-worker": [`omniroute:${AFFORDABLE_MODEL}`] },
+      // The scout asks Claude first: claude-mem stays on Claude too.
+      { "cc-smart-dev-kit-scout": ["claude-haiku-4-5-20251001", `omniroute:${AFFORDABLE_MODEL}`] },
+    ]) {
+      const { home, runAsync } = setup();
+      const backend = fakeBackend();
+      writeGatewayConfig(home, backend.url, slots);
+      const file = writeClaudeMem(home, SEEDED);
+      const before = readFileSync(file, "utf8");
+      expect((await runAsync(["setup"])).stdout).not.toContain("claude-mem");
+      expect(readFileSync(file, "utf8")).toBe(before);
+      expect(backend.seen).toEqual([]);
+    }
   });
 
   test("the person chose another provider: every claude-mem key is left alone, said once", () => {
@@ -1987,7 +2102,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the gateway's affordable model",
     expect(readFileSync(file, "utf8")).toBe(before);
   });
 
-  test("claude-mem never ran yet: its settings file is made with the seven keys, mode 600", async () => {
+  test("claude-mem never ran yet: its settings file is made with the five keys, mode 600", async () => {
     const { home, run, runAsync } = setup();
     const backend = fakeBackend();
     writeGatewayConfig(home, backend.url);
@@ -1999,8 +2114,6 @@ describe("cc-smart-dev-kit setup: claude-mem on the gateway's affordable model",
       CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: `${backend.url}/v1`,
       CLAUDE_MEM_OPENAI_COMPAT_MODEL: AFFORDABLE_MODEL,
       CLAUDE_MEM_OPENAI_COMPAT_API_KEY: PLANTED_KEY,
-      CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "claude",
-      CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "claude-haiku-4-5-20251001",
     });
     expect(statSync(file).mode & 0o777).toBe(0o600);
     run(["restore"]);
@@ -2082,7 +2195,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the gateway's affordable model",
     expect(backend.seen).toEqual([]);
   });
 
-  test("a key cc-smart-dev-kit set and the person changed since is theirs: setup leaves all seven, restore leaves theirs", async () => {
+  test("a key cc-smart-dev-kit set and the person changed since is theirs: setup leaves all five, restore leaves theirs", async () => {
     const { home, run, runAsync } = setup();
     const backend = fakeBackend();
     writeGatewayConfig(home, backend.url);
@@ -2102,6 +2215,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the gateway's affordable model",
       CLAUDE_MEM_MODEL: "claude-haiku-4-5-20251001",
       CLAUDE_MEM_OPENAI_COMPAT_MODEL: "my-own-model",
       CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "claude",
+      CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "",
       CLAUDE_MEM_CONTEXT_OBSERVATIONS: "50",
     });
   });
@@ -2134,7 +2248,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the gateway's affordable model",
     expect(run(["setup"]).stdout).toBe(
       [
         "Nothing to change. Setup is up to date.",
-        "! claude-mem still uses the backend cc-smart-dev-kit set for it, but the gateway is not set up. Run cc-smart-dev-kit setup again once the gateway has an affordable model, or cc-smart-dev-kit restore to put claude-mem back on its own defaults.",
+        "! claude-mem still uses the backend cc-smart-dev-kit set for it, but the gateway is not set up. Run cc-smart-dev-kit setup again once the scout slot starts with an affordable model, or cc-smart-dev-kit restore to put claude-mem back on its own defaults.",
         TAVILY_SKIPPED,
         "",
       ].join("\n"),
@@ -2372,9 +2486,9 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
       join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
       JSON.stringify({
         fallbacks: {
-          "cc-smart-dev-kit-judge": {
+          "cc-smart-dev-kit-opus": {
             lastAt: Date.now(),
-            model: "claude-sonnet-5",
+            model: "claude-opus-5-5",
             resetsAt: null,
             since: Date.now(),
             target: "omniroute:m1",
@@ -2397,7 +2511,7 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toBe(
-      "Opus 5.5 · judge: fallback active (omniroute:m1) · 5h 40%\n",
+      "Opus 5.5 · ⚠ claude-opus-5-5 at its limit → omniroute:m1 · 5h 40%\n",
     );
   });
 
@@ -2502,7 +2616,7 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout.split("\n").slice(-4)).toEqual([
       "Auto mode's safety checks the router counted on this machine:",
-      `  today (${today}): 3 checks — Anthropic 2 (1234 in, 7 out, 500 cache read, 0 cache write); a fallback 1 (11 in, 3 out, 0 cache read, 0 cache write)`,
+      `  today (${today}): 3 checks — Anthropic 2 (1234 in, 7 out, 500 cache read, 0 cache write); your judge 1 (11 in, 3 out, 0 cache read, 0 cache write)`,
       "  The tokens are what each answer's `usage` reported; whether they count against a Pro, Max or Team plan's limit is not confirmed (Anthropic's docs say they do on Enterprise and API accounts).",
       "",
     ]);

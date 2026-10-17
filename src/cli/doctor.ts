@@ -43,6 +43,10 @@ import {
 import {
   canReadGitRemote,
   canReadHttp,
+  type GitFailureCause,
+  gitFailureCause,
+  githubRepoInUrl,
+  marketplaceAccessAdvice,
   marketplaceCopyVersion,
   marketplaceInstallLocation,
   marketplaceSource,
@@ -240,6 +244,11 @@ function checkLauncherCmd(paths: CliPaths, shLauncher: string): Check {
  * Can this machine read the marketplace's source? Updates need it.
  * Works for any git host, public or private, and needs no gh. Every URL is printed
  * without its password, token or query string.
+ *
+ * A failure that names one of the two causes a person can act on says which it is, and how to
+ * fix it (the same lines the two installers print): ssh to GitHub refused — add the same
+ * marketplace over HTTPS — or an account that may not read the repository — ask its owner for
+ * access. Any other failure keeps the line this check always had.
  */
 async function checkMarketplaceAccess(paths: CliPaths, env: Env): Promise<Check> {
   const source = marketplaceSource(paths.knownMarketplacesFile, MARKETPLACE, env);
@@ -264,16 +273,27 @@ async function checkMarketplaceAccess(paths: CliPaths, env: Env): Promise<Check>
     }
     case "git": {
       const failures: string[] = [];
+      let cause: GitFailureCause = "unknown";
+      let repo: string | null = null;
       for (const url of source.urls) {
         const result = canReadGitRemote(url, env);
         if (result.ok) return { ok: true, text: `can read the marketplace at ${redactUrl(url)}` };
         failures.push(`${redactUrl(url)}: ${result.detail}`);
+        // The cause comes from EVERYTHING git said (`output`): the line that names it —
+        // "Permission denied (publickey)", "Repository not found" — is not the last one, and the
+        // detail printed above is. And `<owner>/<repo>` when a GitHub URL carries one: the fix
+        // lines name the repository; a source on another host gets what we can say.
+        if (cause === "unknown") cause = gitFailureCause(result.output);
+        if (repo === null) repo = githubRepoInUrl(url);
       }
+      const advice = marketplaceAccessAdvice(cause, repo);
       return {
         ok: false,
         text:
           `cannot read the marketplace (${failures.join("; ")}). ` +
-          "Check your git access: an SSH key, or a git credential helper.",
+          (advice === ""
+            ? "Check your git access: an SSH key, or a git credential helper."
+            : advice),
       };
     }
   }

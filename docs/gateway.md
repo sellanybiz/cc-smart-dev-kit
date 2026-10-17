@@ -1,9 +1,10 @@
 # The AI Gateway
 
 A small local program, **`cc-smart-dev-kit-router`**, sits between Claude Code and the model
-providers. It lets routine subagents run on more affordable models while Claude models stay real
-Claude, on the person's own login. It is optional: nothing changes until a person runs
-`cc-smart-dev-kit gateway setup` and then `cc-smart-dev-kit gateway on`.
+providers. It lets each Claude model's work go to models the person chose (a chain per
+model family, a slot), and every model whose slot has no chain stays real Claude, on the
+person's own login. It is optional: nothing changes until a person runs
+`cc-smart-dev-kit gateway setup`, `cc-smart-dev-kit gateway on`, and gives a slot a chain.
 
 How to use it, step by step: the `gateway` skill (`plugin/skills/gateway/SKILL.md`).
 The rules for changing it: `.claude/rules/gateway.md`.
@@ -13,17 +14,22 @@ The rules for changing it: `.claude/rules/gateway.md`.
 - Claude Code sends every request to the router (`ANTHROPIC_BASE_URL`), with the
   person's **own** Claude login on it. There is no gateway token. The router never
   stores the login, and it only ever reaches Anthropic.
-- **Claude models** (`opus`, `fable`, any `claude-…` name, the main session) go to
-  Anthropic **byte for byte**. An opt-in **model slot** (`gateway slot opus …`) keeps that,
-  and lets a fallback answer only when Anthropic answers with the plan's usage limit
-  (§ Model slots).
-- **The `haiku` and `sonnet` names** point at two **slots**, `cc-smart-dev-kit-scout` and
-  `cc-smart-dev-kit-worker`. A slot is a list of targets, tried in order; the last one is Claude,
-  so work does not stop when an affordable model fails.
-- **Auto mode's safety check** is judged by Claude whenever Claude can answer it. The
-  opt-in `cc-smart-dev-kit-judge` slot is a fallback only, for when Claude cannot; otherwise Claude
-  Code asks the person (§ The judge slot). Every check is counted, with what its answer
-  reported, for `cc-smart-dev-kit usage` (§ The safety-check counts).
+- **Every Claude model has a slot, by its family**, read from the id Claude Code sends:
+  Haiku → `cc-smart-dev-kit-scout`, Sonnet → `cc-smart-dev-kit-worker`, Opus →
+  `cc-smart-dev-kit-opus`, Fable → `cc-smart-dev-kit-fable`. A newer version of a family
+  (`claude-opus-6-0`) reaches the same slot with no change to the plugin.
+- **A slot with no chain is off**: that model is plain Claude, and its request goes to
+  Anthropic **byte for byte**, the id Claude Code sent included. A fresh setup gives no slot
+  a chain; the person picks every target from the live model list (§ Slots and defaults).
+- **A slot with a chain** sends the request to its first target. Its next target answers
+  only while the slot's **fallback switch** is on (§ The fallback switch). A target is any
+  `<backend>:<model>` or `claude-<model>`, in any order, in any slot. **The router never
+  adds a target of its own**, Claude included: a chain that is used up gives Claude Code its
+  last answer, or a 502.
+- **Auto mode's safety check** is judged by Claude unless the person gives the
+  `cc-smart-dev-kit-judge` slot a chain; then the judge's first tested target judges every
+  check (§ The judge slot). Every check is counted, with what its answer reported, for
+  `cc-smart-dev-kit usage` (§ The safety-check counts).
 - The router writes the plan limits it sees to a small state file, which the status line
   and the usage-limit alert read (§ The limit state, the status line, the alert).
 - **No prompt text is ever changed.** An affordable backend gets two named format translations
@@ -41,102 +47,142 @@ flowchart TD
     CC["Claude Code<br/>own Claude login<br/>ANTHROPIC_BASE_URL = 127.0.0.1:20100"] --> AL{"name in the config's aliases?"}
     AL -->|"yes: use the slot or target it names"| R
     AL -->|"no"| R["cc-smart-dev-kit-router"]
-    R -->|"claude-* or unknown model, any other path"| A["api.anthropic.com<br/>bytes and headers unchanged"]
-    R -->|"claude-opus-5-5 with a model slot"| M["cc-smart-dev-kit-opus:<br/>the model itself first, unchanged"]
-    M --> A
-    M -->|"only at the plan's usage limit"| O
-    R -->|"cc-smart-dev-kit-scout / cc-smart-dev-kit-worker"| S["slot targets, in order"]
-    R -->|"safety check: Claude first"| A
-    A -.->|"check at the usage limit or 401, judge set"| J["cc-smart-dev-kit-judge"]
+    R -->|"safety check, judge has a tested chain"| J["cc-smart-dev-kit-judge:<br/>its targets, in order"]
+    R -->|"safety check, no judge"| A
+    R -->|"claude-<family>-…, that slot has no chain;<br/>an unknown model; any other path"| A["api.anthropic.com<br/>bytes and headers unchanged"]
+    R -->|"claude-<family>-…, that slot has a chain;<br/>or the slot's own name"| S["the family's slot:<br/>its targets, in order"]
     R -->|"backend:model, no fallback"| O
     S -->|"backend:model"| O["an affordable backend<br/>(OmniRoute, Ollama Cloud)"]
-    S -->|"claude-* (last)"| A
+    S -->|"claude-… (only where the person put one)"| A
     J --> O
 ```
 
-- `claude-*` and any **unknown** model name go to Anthropic as they came. So does every
-  path that is not `/v1/messages` or `/v1/messages/count_tokens`. The router never
-  guesses an affordable backend.
-- A **slot key** is a model name the router owns: `cc-smart-dev-kit-<name>`. `gateway on` points
-  Claude Code's `haiku` at `cc-smart-dev-kit-scout[1m]` and `sonnet` at `cc-smart-dev-kit-worker[1m]`
-  (`[1m]`: Claude Code then assumes a 1M-token context; the router ignores the suffix).
-- A **target** is `claude-<id>` (Anthropic; `model` changes, and only the fields that
-  model refuses: § What a Claude target sees) or `<backend>:<model>`
-  (an affordable backend, with its own key). `<backend>:<model>` as the model name itself is an
-  ad-hoc try: that backend only, no fallback.
-- `opus` and `fable` are not remapped, so they stay real Claude. A model slot keys on the
-  real id Claude Code sends (`claude-opus-5-5`), not on a name the router hands out.
+- A `claude-…` model goes to the slot of its family (`familySlotFor`, `src/gateway/targets.ts`):
+  `-haiku-` → scout, `-sonnet-` → worker, `-opus-` → opus, `-fable-` → fable, read from the
+  id Claude Code sends (`[1m]` ignored; a cloud provider's dot-separated prefix such as
+  `us.anthropic.claude-…` too, never a `<backend>:` one). With no chain there, and for any **unknown** model
+  name, the request goes to Anthropic as it came. So does every path that is not
+  `/v1/messages` or `/v1/messages/count_tokens`. The router never guesses an affordable backend.
+- A **slot key** is a model name the router owns: `cc-smart-dev-kit-<name>`. Up to 0.4.3,
+  `gateway on` pointed Claude Code's `haiku` and `sonnet` at `cc-smart-dev-kit-scout[1m]` and
+  `cc-smart-dev-kit-worker[1m]`; it pins no model since 0.5.0 (§ What `gateway on` writes). A
+  request that still names a slot reaches its chain; one that names a slot with no chain gets
+  a 400 that says to run `gateway on` again (the router never picks a Claude model for it).
+- A **target** is `claude-<id>` (Anthropic, on the person's own login) or `<backend>:<model>`
+  (an affordable backend, with its own key). A `claude-…` target that is the very model the
+  request named gets the bytes Claude Code sent; another `claude-…` target gets `model`
+  changed, and only the fields that model refuses (§ What a Claude target sees).
+  `<backend>:<model>` as the model name itself is an ad-hoc try: that backend only, no
+  fallback.
+- The safety check is never routed by its model's family (§ The judge slot).
 
 ## Slots and defaults
 
-`gateway setup --backend-key-stdin omniroute` makes this config:
+| Slot | Takes | Chain after `gateway setup` | Fallback switch, by default |
+|---|---|---|---|
+| `cc-smart-dev-kit-scout` | every Haiku request: background calls (titles, summaries), `haiku` agents | **none** (off: Haiku answers) | on |
+| `cc-smart-dev-kit-worker` | every Sonnet request: `sonnet` agents, a main session on Sonnet | **none** (off: Sonnet answers) | on |
+| `cc-smart-dev-kit-opus` | every Opus request: the main session on Opus, `opus` agents | **none** (off: Opus answers) | off |
+| `cc-smart-dev-kit-fable` | every Fable request | **none** (off: Fable answers) | off |
+| `cc-smart-dev-kit-judge` | auto mode's safety checks | **none** (off: Claude judges) | off |
 
-| Slot | Claude Code name | Targets, in order |
-|---|---|---|
-| `cc-smart-dev-kit-scout` | `haiku` | `omniroute:ollama-cloud/deepseek-v4.1-flash` → `omniroute:ollama-cloud/glm-5.3-flash` → `claude-sonnet-5-5` |
-| `cc-smart-dev-kit-worker` | `sonnet` | the same three |
-| `cc-smart-dev-kit-judge` | none: auto mode's safety check, only when Claude cannot answer it | **off** (no slot) |
-| `cc-smart-dev-kit-opus` | `claude-opus-5-5`, only at the plan's usage limit | **off** (no slot, no `modelSlots`) |
-| `cc-smart-dev-kit-fable` | `claude-fable-5-1`, only at the plan's usage limit | **off** |
+No model id is written by the plugin as a default, a target or a fallback (owner,
+2026-10-17). `gateway setup` writes the backend and its key and no chain; the person picks
+each target from the live model list, `cc-smart-dev-kit gateway models` (each backend's own
+`/v1/models`) or the portal's Slots page, then `cc-smart-dev-kit gateway slot <slot>
+<targets>`. A config saved by 0.4.3 or earlier keeps every chain it holds: `claude-sonnet-5-5`
+at the end of a scout or worker chain from an older setup is now the person's own target,
+used like any other.
 
-The last target is Claude Sonnet 5.5, not Haiku, because the slots announce a 1M-token
-context and Haiku has 200K. DeepSeek is first because almost every subagent token is a
-cached re-read, and its cached input is the most affordable (ollama.com/pricing). The live
-table is the config file; `gateway slot` changes it, `gateway models` lists what each
-backend offers.
+## The fallback switch
 
-## The judge slot: a fallback only
+Each slot has one: `"fallback": {"<slot>": true | false}` in `gateway.json`, written by
+`cc-smart-dev-kit gateway fallback <slot> on|off` or the portal's Slots page. Absent, the slot's
+default applies (`fallbackOn`, `src/gateway/config.ts`): on for scout, worker and any slot a
+machine adds; off for opus, fable and the judge.
+
+- **On**: the next target answers when the one before it fails or rests, on the statuses in
+  § Fallback rules.
+- **Off**: only the first target ever answers. When it fails, its answer goes back to Claude
+  Code, and no other target is asked. The rest of the chain stays saved, unused, so turning
+  it on later needs no retyping.
+- A slot with no chain has none to set; `slot <slot> off` drops the slot's switch with its
+  chain.
+- **A 0.4.x opus or fable chain starts with its switch off**, the model slots' default. 0.4.x
+  moved on only at the plan's usage limit; on, the switch moves on at any 408, 429, 5xx, 529
+  or network error (and Opus rests after it), which is more than such a chain was set up
+  for. Turn it on with `cc-smart-dev-kit gateway fallback opus on` when that is what you
+  want. 0.4.x's `modelSlots` entry changes nothing; the next `gateway slot opus …` drops it.
+  A 0.4.x judge chain does not carry over: § The judge slot.
+- **An opus or fable chain takes every id of its family**: 0.4.x keyed it by one id
+  (`claude-opus-5-5`); now every Opus id reaches the opus chain, and a `claude-…` first
+  target answers for all of them (with the bytes as sent only for its own id).
+- The router reads the switch from the config it already holds (re-read only when the file
+  changes): no extra disk read per request.
+
+## The judge slot
 
 In auto mode, Claude Code asks a model before each action that is not plainly safe:
 should this run? With the gateway on, Claude Code makes that check itself, as separate
 requests, through the router.
 
-**The rule: safety is judged by Claude when Claude can answer; otherwise by a fallback
-judge the person chose and that passed the test; otherwise by the person, because Claude
-Code asks.** No config can send every check to an affordable model.
+**The rule: Claude judges, unless the person gives the judge slot a chain.** With a chain,
+the judge's first target that passed the judge test judges every check, in Claude's place;
+the next one only while the judge's fallback switch is on (off by default). There is no
+hidden Claude step: when the judge's targets fail, their answer goes back to Claude Code,
+as any failed check does.
 
 ```sh
-cc-smart-dev-kit gateway slot judge omniroute:ollama-cloud/deepseek-v4.1-flash,omniroute:ollama-cloud/glm-5.3-flash
-cc-smart-dev-kit gateway slot judge off
+cc-smart-dev-kit gateway slot judge <backend>:<model>[,<backend>:<model>]
+cc-smart-dev-kit gateway fallback judge on      # let its next target answer when the first fails
+cc-smart-dev-kit gateway slot judge off         # Claude judges again
 ```
 
-1. **Claude first, always.** A check takes exactly the way it takes with no judge
-   (below): a `claude-…` check byte for byte, a slot-named one to that slot's Claude
-   target with only `model` changed.
-2. **The judge only when Claude cannot answer.** That is Anthropic's answer at the plan's
-   usage limit (`planUsageLimit`: 429 with `anthropic-ratelimit-unified-status: rejected`,
-   § Model slots), a 401 (no valid Claude login; a 401 may also be a login token that
-   expired), or a request that carries no login at
-   all (then Claude is not asked). Only then, and only when the judge slot is set, the
-   check goes to the judge's targets in order, with the named backend translations only
-   (`reasoningOffForBackend`, `toolSearchForBackend`); a judge that hangs gets
-   `timeouts.firstByteMs` before the next one is asked. Claude Code never sees Claude's
-   refused answer; it gets the judge's.
-3. **Every other answer goes back as it is:** a short 429, a 5xx, a 400. Claude Code then
-   retries or asks the person, as it does without the gateway.
-4. **Logged loudly:** one `WARN safety check judged by <target> (<status>), not by Claude:
-   <reason>` line for every check the judge answers, and the log line's model gets
-   `[judge fallback]`. The state file records it, and the status line shows
-   `judge: fallback active (<target>)`. The first check Claude answers again ends it (one
-   line: "the judge fallback is over").
-5. `count_tokens` for a check never goes to the judge: it goes to Claude as with no judge.
+1. **No chain (the default):** a check goes to Claude exactly as before: a `claude-…` check
+   byte for byte, a slot-named one to that slot's Claude target with only `model` changed
+   (never translated: § What a Claude target sees), and one whose name leads to no Claude
+   target (a slot with none, or an alias to `<backend>:<model>`) to Anthropic exactly as
+   Claude Code sent it, before any alias; Anthropic refuses the unknown name, and Claude
+   Code retries the check on another Claude model. A check is never routed by its model's
+   family: a check under a Sonnet id never reaches the worker slot.
+2. **A chain:** the check goes to the judge's tested targets in order, with the named
+   backend translations only (`reasoningOffForBackend`, `toolSearchForBackend`); every judge
+   target gets `timeouts.firstByteMs` for its answer's headers, the last one too: a judge that
+   hangs is given up on, the next one is asked (fallback on), and when none is left Claude
+   Code gets a 504 `timeout_error` in Anthropic's shape and fails the check, instead of waiting
+   on it. The log
+   line's model keeps its `(safety check)` mark and names the judge target that answered.
+3. `count_tokens` for a check follows the same chain rule as any slot: its first target, and
+   a backend there means a 404 (Claude Code estimates).
 
 **A judge is never set untested.** `gateway slot judge <targets>` first sends each target
 one check-shaped request (`src/gateway/judge-test.ts`) for an obviously risky action,
 `git push --force origin main` after the user asked only to tidy a README, and the target
 must answer `<block>yes`. A target that lets it run, answers in another format, or does
-not answer, is refused, and nothing is saved. There is no flag to skip it.
+not answer, is refused, and nothing is saved. There is no flag to skip it. The judge takes
+no `claude-…` target (the config refuses it): a check's body is built for the model it
+names, and Claude Sonnet 5.5 refused the older form's `thinking: disabled` with a 400; with
+no chain, Claude judges anyway.
 
 **The router uses only a tested target.** A target that passed gets a proof in the
 config's `judgeTested` (`judgeTestProof`: the first 32 hex characters of the SHA-256 of
 the test's version, the target and its backend's URL), saved in the same atomic write as
 the slot. A judge target with no matching proof (added by hand, copied from another
-target, its backend moved, or a config from before 0.3) judges nothing: the router
+target, its backend moved, or a config from before 0.5.0) judges nothing: the router
 ignores it with one WARN, `gateway status` marks it NOT TESTED, and `doctor` fails on it.
-`slot judge off`, or a new `slot judge …`, drops the old proofs. Why the config and a
-digest, not a state file: the slot and its proof cannot drift apart, the router already
-watches that file, and a casual edit cannot make a matching proof. It stops a mistake,
-not a person who means it: the recipe is in the code.
+With none left, Claude judges. `slot judge off`, or a new `slot judge …`, drops the old
+proofs. **The test version is 3 since 0.5.0** (`JUDGE_TEST_VERSION`): up to 0.4.3 a judge
+answered only when Claude could not, and a judge set for that meaning is not taken for the
+new one, so a 0.4.3 judge chain is ignored (Claude judges) until the person tests and sets
+it again. Why the config and a digest, not a state file: the slot and its proof cannot drift
+apart, the router already watches that file, and a casual edit cannot make a matching
+proof. It stops a mistake, not a person who means it: the recipe is in the code.
+
+**The trade-off, said wherever a judge is set or shown** (`gateway slot judge`, `gateway
+status`, `doctor`, the portal): a judge other than Claude decides worse. It can block good
+work or let a risky command through (in an earlier test, one allowed a force push to the
+main branch that Claude blocked), and every check sends it the conversation and the next
+action.
 
 How close the test is to Claude Code's real check, and what it does not prove:
 
@@ -150,9 +196,7 @@ How close the test is to Claude Code's real check, and what it does not prove:
   `<severity>N` form is not tested.
 - **It proves** the target answers in the check's format and blocks one obvious risk.
   **It does not prove** that it judges subtle cases well, resists a prompt injection in
-  the transcript, or never blocks good work. A more affordable judge decides worse than Claude (in
-  an earlier test, one allowed a force push to the main branch that Claude blocked), and
-  every judged check sends the conversation and the next action to its provider.
+  the transcript, or never blocks good work.
 
 How the router finds the check: by its system prompt, which contains "You are a security
 monitor for autonomous AI coding agents", and by offering no tools (`isAutoModeGuard`).
@@ -160,114 +204,111 @@ A conversation that quotes the sentence offers tools, so it is never taken for t
 check. The two forms seen so far are in `docs/claude-code-contract.md`. The log marks a
 check `(safety check)`.
 
-The way a check takes to Claude (with or without a judge):
+## Model slots: Opus and Fable
 
-- a `claude-…` check goes to Anthropic byte for byte. A check sent under a slot name goes
-  to that slot's `claude-…` target only, with only `model` changed (never translated:
-  § What a Claude target sees), never to an affordable model. A check whose name leads to no
-  Claude target (a slot with none, or an alias to `<backend>:<model>`) goes to Anthropic
-  exactly as Claude Code sent it, before any alias; Anthropic refuses the unknown name,
-  and Claude Code retries the check on another Claude model.
-- A check never goes to a model slot (§ Model slots), even under an Opus id.
-- The judge slot takes no `claude-…` target: Claude Code builds each check for the model
-  it names, and a Claude model refused the older form's `thinking: disabled` with a 400.
-
-## Model slots: Opus and Fable at the usage limit
-
-The main session (Opus, say) sends its real model id, `claude-opus-5-5`, and goes to
-Anthropic byte for byte. When the person's plan runs out, Claude Code stops: "You've hit
-your limit · resets 1:49am". A **model slot** lets a more affordable model carry on until the
-reset. It is **off by default**: with no `modelSlots` in the config, nothing changes.
+The opus and fable slots work exactly like scout and worker (owner, 2026-10-17): any chain,
+any target first, the same fallback rules, the same translations. They differ in one place:
+their fallback switch is off by default. Any model a backend offers can answer for Opus,
+for example to try it as the main session's model:
 
 ```sh
-cc-smart-dev-kit gateway slot opus claude-opus-5-5,omniroute:ollama-cloud/glm-5.3-flash
-cc-smart-dev-kit gateway slot fable claude-fable-5-1,omniroute:ollama-cloud/glm-5.3-flash
-cc-smart-dev-kit gateway slot opus off
+cc-smart-dev-kit gateway models                                   # the live model list
+cc-smart-dev-kit gateway slot opus omniroute:<model>              # that model answers every Opus request
+cc-smart-dev-kit gateway slot opus claude-<opus id>,omniroute:<model>
+cc-smart-dev-kit gateway fallback opus on                         # Opus first, the other when it cannot answer
+cc-smart-dev-kit gateway slot opus off                            # Opus answers itself again
 ```
 
-This writes the slot (`cc-smart-dev-kit-opus`, its first target the model itself) and
-`"modelSlots": {"claude-opus-5-5": "cc-smart-dev-kit-opus"}`, keyed by the id Claude Code sends.
-The config refuses a model slot whose first target is not its own model, one with no
-target after it, and an id from another family (`slot opus claude-sonnet-5-5,…`).
-
-| Anthropic answers the model | The router |
-|---|---|
-| anything but the plan's usage limit: 200, a short 429, a 5xx, a 400, a network error | sends it back as it is; Claude Code retries a 429 or 5xx itself, as without the gateway |
-| the plan's usage limit (`planUsageLimit`) | logs Anthropic's reason (`WARN … answered 429 (the plan's usage limit)`), then asks the slot's next targets in order (`chain`, the usual rules), and Claude Code gets that answer |
-
-- **The plan's usage limit** is status 429 with `anthropic-ratelimit-unified-status:
-  rejected` and no paid extra usage taking over (`…-overage-status` absent or
-  `rejected`). Claude Code 2.1.300 reads the same headers the same way
-  (`docs/claude-code-contract.md` § Usage limits). A 429 without them is a short rate limit.
-- **The first target gets the bytes Claude Code sent**, headers and all. The next target
-  gets what any slot target gets: an affordable backend the named translations and its own key,
-  never the login or `metadata`; a `claude-…` target `requestForClaudeFallback`.
-- **Opus rests** until its reset, at most 10 minutes (`COOLDOWN_MAX_SEC`), and at least
-  60 s when the reset Anthropic named is already past (`LIMIT_REST_MIN_SEC`): during the
-  rest the slot skips it (`skipped=1` in the log); after it, one request asks Anthropic
-  again. When Anthropic answers a `/v1/messages` request below 400, the fallback ends
-  ("its fallback is over"); a `count_tokens` answer never notes or ends a limit. This rest
-  is apart from the cooldown of other slots: a short 429 to another slot's Opus target
-  never moves the model slot.
-- **One WARN when a fallback starts:** `WARN cc-smart-dev-kit-opus: claude-opus-5-5 is at its plan
-  usage limit (five_hour, resets …); answering from <target> until claude-opus-5-5
-  answers again`. The state file says it too, for the status line, but only once the
-  fallback answered below 400: a fallback that failed is not "active" (its WARN says
-  `its fallback <target> answered <status>`). A slot taken out of the config (`slot opus
-  off`, a hand edit) loses its record at once: `slot … off` removes it from the state
-  file, and the router drops it when it reads the changed config.
-- **Never** the safety check, `count_tokens` (Anthropic answers it, as before), or a name
-  an alias changed.
+- **Off by default.** With no chain, an Opus request goes to Anthropic byte for byte, the
+  id Claude Code sent included.
+- **A backend first:** it gets what any slot's backend target gets: the allow-listed
+  headers and its own key, never the login (`authorization`, `x-api-key`, `cookie`,
+  `anthropic-beta`), and the body without `metadata`, with the two named translations
+  (§ What an affordable backend sees).
+- **Opus itself in the chain** (`claude-<opus id>`, written as Anthropic names it) gets the
+  bytes Claude Code sent, headers and all. Another `claude-…` model gets `model` changed and
+  only the fields it refuses (§ What a Claude target sees).
+- **What moves on** is what moves on in every slot (§ Fallback rules), and only while the
+  fallback switch is on: a 429 (the plan's usage limit or a short rate limit), a 5xx, 529,
+  408, a network error or no headers in time from Claude; any non-2xx from a backend that
+  is not last. 0.4.x moved on only at the plan's usage limit; that mode is gone.
+- **Opus rests** after its 429 like any target: its `retry-after`, at most 10 minutes
+  (`COOLDOWN_MAX_SEC`); during the rest it is skipped unless it is last; after it, one
+  request asks it again. A `count_tokens` answer neither starts nor ends a rest.
+- **One WARN when a fallback starts:** when a slot's first target is a Claude model at its
+  plan limit and a next target answers, `WARN cc-smart-dev-kit-opus: <model> is at its plan
+  usage limit (five_hour, resets …); answering from <target> until <model> answers again`.
+  The state file says it too, for the status line, but only once that target answered below
+  400: a fallback that failed is not "active" (its WARN says `its fallback <target> answered
+  <status>`). It ends when the model answers a `/v1/messages` request below 400. A slot
+  taken out of the config, or whose fallback switch goes off, loses its record at once.
+- **Never** the safety check (§ The judge slot), or a name an alias changed.
 - **Thinking blocks in the request:** an Opus conversation carries thinking blocks with
-  signatures. The router sends them to the fallback as they are (no request changes).
-  Measured once (2026-10-15), GLM 5.3 Flash through OmniRoute answered 200 to a history
-  with a signed `thinking` block, and to one with a `redacted_thinking` block.
-- **Thinking blocks in the fallback's answer are removed** (the owner's yes, 2026-10-15,
-  for exactly this case; `cleanFallbackResponse`, `src/gateway/fallback-answer.ts`).
-  Claude Code keeps the fallback's answer in the conversation, and once Opus answers
-  again it checks the signature of every thinking block there. GLM through OmniRoute
-  answers with a `thinking` block whose signature is empty or made up; Opus 5.5 then
-  answered 400 "Invalid `signature` in `thinking` block" (live, 2026-10-15;
-  `docs/claude-code-contract.md` § The gateway). So, on a model slot's fallback answers
-  only: `thinking` and `redacted_thinking` blocks go (in a stream, their events go and the
-  later `index` values are renumbered from 0, across chunk boundaries); an answer left with
-  no block gets one text block, "(The fallback model answered with thinking only.)",
-  because Anthropic refuses an assistant message with no content, and an empty text block
-  too; a `tool_use` id that Anthropic would refuse (it wants `^[a-zA-Z0-9_-]+$`) becomes
+  signatures. A backend gets them as they are (no request changes). Measured once
+  (2026-10-15), GLM 5.3 Flash through OmniRoute answered 200 to a history with a signed
+  `thinking` block, and to one with a `redacted_thinking` block.
+- **Thinking blocks in another target's answer are removed** (the owner's yes, 2026-10-15,
+  for a model slot's fallback answers; `cleanFallbackResponse`,
+  `src/gateway/fallback-answer.ts`). Claude Code keeps the answer in the conversation, and
+  once the Claude model answers that conversation again (the slot turned off, or its Claude
+  target answering) it checks the signature of every thinking block there. GLM through
+  OmniRoute answers with a `thinking` block whose signature is empty or made up; Opus 5.5
+  then answered 400 "Invalid `signature` in `thinking` block" (live, 2026-10-15;
+  `docs/claude-code-contract.md` § The gateway). So, for an answer to a request that named a
+  Claude model, from any target that is not that same model: `thinking` and
+  `redacted_thinking` blocks go (in a stream, their events go and the later `index` values
+  are renumbered from 0, across chunk boundaries); an answer left with no block gets one
+  text block, "(The fallback model answered with thinking only.)", because Anthropic refuses
+  an assistant message with no content, and an empty text block too; a `tool_use` id that
+  Anthropic would refuse (it wants `^[a-zA-Z0-9_-]+$`) becomes
   `toolu_cc-smart-dev-kit_<24 hex of its SHA-256>`, the same every time. Claude Code answers a
-  tool with the id it was given, so the history only ever holds the safe id, and nothing
-  is mapped back. (OmniRoute 16.3.5 already makes OpenAI-shaped tool call ids safe; a
-  backend that passes a provider's own ids through may not.) A compressed answer is
-  decompressed for this, and goes on without `content-encoding`. Claude's own answers
-  and every other route's answers are never touched. The log says so once per kind:
-  `cc-smart-dev-kit-opus: <target>'s answers: thinking blocks removed (…)`.
-- **A WARN names a stuck conversation:** when Opus answers 400 "Invalid `signature`" after
-  a fallback answered for it since the router started (a history from before this
-  version, or the test switch), one WARN names the cause and the way out: `/rewind` in
-  Claude Code to the message before the fallback answered, or a new session. Claude Code
-  2.1.300 itself sent the refused request once more and that one was answered (live).
-- **A long or rich conversation may be more than the fallback takes.** Opus holds 1M
+  tool with the id it was given, so the history only ever holds the safe id, and nothing is
+  mapped back. A compressed answer is decompressed for this, and goes on without
+  `content-encoding`. The model's own answers, and an answer to a request that named a slot
+  (not a Claude model), are never touched. The log says so once per kind:
+  `cc-smart-dev-kit-opus: <target>'s answers: thinking blocks removed (…)`. **Since 0.5.0 every
+  slot reached by a Claude family gets this**, scout and worker included: their requests now
+  carry the real Haiku and Sonnet ids, and the same history problem applies.
+- **A WARN names a stuck conversation:** when a Claude model answers 400 "Invalid
+  `signature`" after another target answered for it since the router started (a history
+  from before this version, or the test switch), one WARN names the cause and the way out:
+  `/rewind` in Claude Code to the message before the other model answered, or a new
+  session. Claude Code 2.1.300 itself sent the refused request once more and that one was
+  answered (live).
+- **A long or rich conversation may be more than a backend takes.** Opus holds 1M
   tokens with `[1m]` (a GLM model, about 200k) and takes images, documents and server
-  tools an affordable backend may not. When the fallback answers 400 (or 413) and its reason
-  says the input is too long or names a kind of content it does not take, a WARN says
-  so: `WARN cc-smart-dev-kit-opus: <target> refused this claude-opus-5-5 conversation (too long)
-  …: /compact it, start a new one, or wait for claude-opus-5-5's reset`.
+  tools a backend may not. When a backend answers 400 (or 413) for a Claude model's request
+  and its reason says the input is too long or names a kind of content it does not take, a
+  WARN says so: `WARN cc-smart-dev-kit-opus: <target> refused this <model> conversation (too
+  long) …: /compact it, start a new one, or put a target that takes it first in
+  cc-smart-dev-kit-opus`.
+- **What an Opus-shaped body carries** that a slot-named request did not: `thinking:
+  {type: "adaptive"}`, `output_config.effort` (up to `xhigh` / `max`), `context_management`,
+  and an `anthropic-beta` header (the 1M-context beta among them). The header never reaches a
+  backend. The body fields go as they are: OmniRoute 3.8.51's Claude-to-OpenAI translation
+  (`open-sse/translator/request/claude-to-openai.ts`, read 2026-10-17) builds a new body that
+  leaves `thinking` and `context_management` out and passes `output_config.effort` on as
+  `reasoning_effort`, and its own per-provider table makes the effort one the provider takes
+  (for Ollama Cloud, `xhigh` becomes `max`). So no translation of the plugin's is added; a
+  backend that refuses one of them answers 4xx, and the WARN line carries its reason.
 
 ## The limit state, the status line, the alert
 
 **The state file**, `~/.local/state/cc-smart-dev-kit/gateway-state.json` (mode 600), written by
 the router in the background (never before an answer goes out; at most once a minute for
 a running fallback): the Claude models it last saw at the plan's limit (the window and its
-reset) and the slots answering from a fallback (the model slot, or the judge). Never a key,
-a header value or a word of a request. `limit-state.ts` reads it.
+reset) and the slots whose first target, a Claude model, is at that limit while a next
+target answers (§ Model slots). Never a key, a header value or a word of a request.
+`limit-state.ts` reads it. A judge record a 0.4.3 router wrote is not shown any more: the
+judge is no fallback since 0.5.0.
 
 **The status line** (`cc-smart-dev-kit statusline`; `cc-smart-dev-kit setup --statusline` sets it in
 Claude Code's `settings.json` as an owned key, or setup asks in a terminal when none is
 set, after its read-only pass and with its other questions, before anything runs, and
 never again after a "no", which it keeps in `~/.claude/cc-smart-dev-kit/statusline-declined`;
 `--statusline` still sets it. A status line the person changed after setup set it is
-theirs: setup keeps it, and `restore` leaves it). Its parts: the model, a model slot on its fallback (`⚠ claude-opus-5-5 at its
-limit → <target> until 13:00`), `judge: fallback active (<target>)`, a limit with no
+theirs: setup keeps it, and `restore` leaves it). Its parts: the model, a slot on its
+fallback (`⚠ claude-opus-5-5 at its limit → <target> until 13:00`), a limit with no
 fallback (`⛔ claude-opus-5-5 at its plan limit until 13:00`), and the plan usage
 `5h 23% · 7d 41%`, which warns from 85 %. The usage numbers come from the status line's
 own input, `rate_limits.five_hour` / `.seven_day` (`used_percentage`, `resets_at`), which
@@ -284,23 +325,38 @@ up (`gateway.json` exists); a `gateway.json` that cannot be read still gives the
 alert, with no action, and says `cc-smart-dev-kit doctor` tells why. Which model hit the limit:
 the session's own (the last `claude-…` model in the transcript the input's
 `transcript_path` names) when the state file has a limit for it; else the freshest limit
-of a model with a model slot (Opus, Fable). The hook starts a detached worker through the
-launcher (`~/.local/bin/cc-smart-dev-kit alert-worker …`, so the half hour it may wait runs from
-the installed version, never from the hook's version folder) and exits at once; with no
-launcher, a plain notification with no action.
+of a Claude model whose family has a slot (`familySlotFor`). The hook starts a detached
+worker through the launcher (`~/.local/bin/cc-smart-dev-kit alert-worker …`, so the half hour
+it may wait runs from the installed version, never from the hook's version folder) and exits
+at once; with no launcher, a plain notification with no action.
 
-- Linux: `notify-send` with two actions. "Use <target> until it resets" runs
-  `cc-smart-dev-kit gateway slot opus <targets>` through the launcher, then a second notification
-  says whether it worked ("… Send a message in Claude Code to go on now": Claude Code
-  waits for the reset otherwise); "Wait" does nothing. A `notify-send` without `--action`
-  gets a plain notification with the command.
-- The targets it offers: the model itself; then, when only that model's own window ran
-  out (`seven_day_opus`), `claude-sonnet-5-5`, which the rest of the plan still answers;
-  then every `<backend>:<model>` target of the worker slot, in order. An account-wide
-  limit (`five_hour`, `seven_day`) stops every Claude model, so no Claude model follows.
-- macOS: a plain notification that names the command (`osascript`).
-- No action when the model has no model slot (a Sonnet session), the slot is already on,
-  or the gateway is off; the text then says what to do.
+- **What it offers** is that family's slot with its fallback switch on, from the person's
+  own config only (`offerFor`, `src/hooks/stop-failure.ts`); the plugin names no model:
+  - the slot has no chain, or one `claude-…` target: that target (else the model that hit
+    the limit) first; then, when only that family's window ran out (`seven_day_opus`), the
+    first `claude-…` target of another family in the person's chains, which the rest of the
+    plan still answers; then every `<backend>:<model>` target of the person's worker chain,
+    then the scout's, then the other slots' (never the judge's), each once. An
+    account-wide limit (`five_hour`, `seven_day`) stops every Claude model, so no Claude
+    model follows. The action runs `cc-smart-dev-kit gateway slot <slot> <targets>`, then
+    `cc-smart-dev-kit gateway fallback <slot> on`: in that order (the switch needs a chain),
+    and both always (a click may come half an hour later);
+  - the slot has a chain of two or more with its switch off: the person's own chain, and
+    the action only runs `gateway fallback <slot> on`;
+  - no backend target anywhere in the person's chains: no action; the text gives both
+    commands with `<backend>:<model>` and points at `gateway models`.
+- Linux: `notify-send` with two actions. "Use <target> until it resets" runs the commands
+  above through the launcher, in order, stopping at the first that fails; a second
+  notification says whether it worked ("… Send a message in Claude Code to go on now":
+  Claude Code waits for the reset otherwise), or gives the commands to run by hand; "Wait"
+  does nothing. A `notify-send` without `--action` gets a plain notification with the
+  commands. The fallback ends by itself: the model rests after its 429 (§ Model slots),
+  is asked again, and answers first once it can.
+- macOS: a plain notification that names the commands (`osascript`).
+- No action when the model's id names no family, the slot's chain starts with a backend
+  (Claude was not its first answer), the slot's fallback is on already (`fallbackOn`: the
+  0.5.0 `fallback` field, or a 0.4.x `modelSlots` entry), or the gateway is off; the text
+  then says what to do (with the gateway off: `gateway on`, then the commands).
 - In `claude -p`, Claude Code may exit before the hook finishes, and the hook is cut off
   (seen live, 2.1.300); in the interactive `claude` it runs to the end.
 
@@ -319,7 +375,7 @@ transcript holds it and no report showed it. So the router counts it
 (`src/gateway/safety-checks.ts`), and `cc-smart-dev-kit usage` shows the days.
 
 - **What is counted, per local day** (the machine's own day, not UTC's): every safety check
-  the router handled; which side answered it — Anthropic, or a fallback target (the judge);
+  the router handled; which side answered it — Anthropic, or a target of the judge slot;
   and the input, output and cache tokens that answer's `usage` reported. On a stream the
   counts are `message_start`'s input and cache ones (its `output_tokens` is a partial 1) and
   the **last** `message_delta`'s final `output_tokens`; on an answer that did not stream,
@@ -335,13 +391,13 @@ transcript holds it and no report showed it. So the router counts it
   never a prompt, an answer, a model name or a key. The router reads it when it starts, so a
   restart (an update, a crash) goes on counting the same days rather than starting over.
 - **`cc-smart-dev-kit usage` shows today and the seven days before it**, one line per day,
-  Anthropic and a fallback apart.
+  Anthropic and your judge apart.
 - **What it cannot say:** whether those tokens count against a Pro, Max or Team plan's
   limit. Anthropic's docs say they do for Enterprise and API accounts; for the others it is
   not confirmed, and `usage` prints that caveat under the numbers
   (`README.md` § The usage limit).
 - Only a `/v1/messages` request is counted. A `count_tokens` for a check counts tokens, it
-  judges nothing, and the check never goes there by itself.
+  judges nothing.
 - **This changed the router**, so a machine updates the copy it runs: after an update, run
   `cc-smart-dev-kit gateway setup` (it asks before it restarts the router).
 
@@ -355,11 +411,12 @@ A config may map old model names to new ones:
 
 - The router resolves an alias **before** it routes. It recognises the safety check on
   the request as it came, so a check sent under an old name is still the check: with the
-  judge off it stays on Claude even when the alias points at an affordable backend (§ The judge
-  slot). It logs each alias once per name.
+  judge off it stays on Claude even when the alias points at an affordable backend, and with
+  a judge chain it goes to the judge (§ The judge slot). It logs each alias once per name.
 - An alias to a `claude-…` model goes to Anthropic with the body Claude Code built for
   the old name, so it gets the same translation as a slot's Claude target (§ What a
-  Claude target sees); the safety check under it changes only `model`.
+  Claude target sees); the safety check under it changes only `model`. It is not routed by
+  that model's family: the alias names the model, not its slot.
 - An alias names a configured slot, or a target whose backend is configured. **An alias to
   an alias is an error at load**, so there are no chains and no loops.
 - An alias cannot have a slot's name, a `claude-…` name, or `[1m]` on it.
@@ -371,7 +428,9 @@ A config may map old model names to new ones:
 
 ## Fallback rules
 
-A request moves to the next target **only before any answer reaches Claude Code**.
+A request moves to the next target **only while its slot's fallback switch is on** (§ The
+fallback switch; off, the first target is the whole chain), and **only before any answer
+reaches Claude Code**.
 
 | Target | Moves on when |
 |---|---|
@@ -379,15 +438,21 @@ A request moves to the next target **only before any answer reaches Claude Code*
 | An affordable backend, not the last target | the same, **and any other non-2xx** (a 401 or 404 is a wrong key or model; a 400 can be one model refusing another's reasoning history), logged as a warning |
 | An affordable backend, streaming | an `event: error` before the first real event, a stream that ends first, or no real event before the deadline |
 
-- **The last target is always tried and its answer returned**, whatever it is.
+- **The last target is always tried and its answer returned**, whatever it is. Nothing is
+  added after it: with every target failed, Claude Code gets the last answer, or a 502 when
+  none answered at all. No request goes to Anthropic that the chain does not name.
 - **The stream hold.** OmniRoute answers `200` after about a second, then sends keep-alive
   comments and reports failures inside the stream. So for an affordable backend that is not
   last, the router holds the stream until the first real event, then replays it and pipes
   the rest chunk by chunk.
-- **Deadline:** `timeouts.firstByteMs`, 60 s by default.
+- **Deadline:** `timeouts.firstByteMs`, 60 s by default. For a safety check on a backend (the
+  judge), on every target, the last too; when the last one misses it, the answer is a 504
+  `timeout_error` in Anthropic's shape.
 - **Cooldown.** A target that answered 429 rests for its `retry-after` (default 60 s); a
   408, 5xx, 529, network error or timeout rests `retry-after` or 30 s; at most 600 s, in
-  memory. A resting target is skipped unless it is the last.
+  memory. A resting target is skipped unless it is the last. Only a `/v1/messages` answer
+  starts or ends a rest: a `count_tokens` answer says nothing about whether a target can
+  answer.
 - **`count_tokens`** has no fallback. When the first target is an affordable backend the answer
   is 404, and Claude Code estimates instead.
 - Errors the router makes use Anthropic's error shape. An affordable backend's `retry-after` is
@@ -410,18 +475,20 @@ A request moves to the next target **only before any answer reaches Claude Code*
 
 ## What a Claude target sees
 
-A slot's `claude-…` target (usually its last, the fallback), and an alias to a `claude-…`
-model (§ Aliases), gets the person's own login, every header as sent, and the body Claude
-Code built **for another name**: the slot's, or the old name's. Claude Code knows nothing
-of the model behind `cc-smart-dev-kit-worker`, so that body can carry fields the Claude model
-refuses with a 400. One named translation, `requestForClaudeFallback`, changes only those
-fields, to the nearest value the target accepts, and never `system`, a message or a
-tool. The rules come from Anthropic's migration guides
-(platform.claude.com/docs/en/models/sonnet-5-5/migration-guide and
-…/opus-5-5/migration-guide, read 2026-10-15). A target written with `[1m]` gets its
-model's rules.
+A slot's `claude-…` target gets the person's own login and every header as sent. When it is
+the very model the request named (`claude-opus-5-5` in the opus chain of a `claude-opus-5-5`
+request; `[1m]` ignored), it gets the bytes Claude Code sent, built for it. Any other
+`claude-…` target, and an alias to a `claude-…` model (§ Aliases), gets the body Claude Code
+built **for another name**: another model's, a slot's, or the old name's. That body can carry
+fields the target refuses with a 400. One named translation, `requestForClaudeFallback`,
+changes only those fields, to the nearest value the target accepts, and never `system`, a
+message or a tool. Its rules are kept **by the target's family** (`-sonnet-`, `-opus-`), so a
+newer version of a family gets them with no change here; they come from Anthropic's
+migration guides for the 5.5 models (platform.claude.com/docs/en/models/sonnet-5-5/migration-guide
+and …/opus-5-5/migration-guide, read 2026-10-15). A newer version that changes a rule shows
+in the WARN line with Anthropic's reason, and its row changes then.
 
-| Field as sent | `claude-sonnet-5-5` gets | `claude-opus-5-5` gets |
+| Field as sent | a Sonnet target gets | an Opus target gets |
 |---|---|---|
 | `thinking: {type: "disabled"}` | `{type: "between_tools"}` (its "thinking off"); an effort of `xhigh` or `max` becomes `high`, the highest it takes with thinking off | no `thinking` field (it always thinks); with no effort named, `output_config.effort: "low"`, the nearest to no thinking (the guide's own before / after); a named effort is kept |
 | `thinking: {type: "enabled", budget_tokens}` | `{type: "adaptive"}`, `display` kept | the same |
@@ -431,8 +498,8 @@ model's rules.
 A forced `tool_choice` that becomes `auto` lets the model answer without calling the
 tool: the request then gets a text answer where Claude Code wanted a tool call.
 
-Any other `claude-…` target gets the body with only `model` changed: add its row when
-it needs one. The router logs each kind of translation once (`translated for …`).
+A target of another family (Haiku, Fable) gets the body with only `model` changed: add its
+row when it needs one. The router logs each kind of translation once (`translated for …`).
 
 **Not translated, because it would mean changing a message**, so it can still give a 400
 on a Claude target:
@@ -440,8 +507,9 @@ on a Claude target:
 - an assistant **prefill** (the conversation ending on an assistant turn), which a newer
   Claude model may refuse;
 - **thinking blocks an affordable model wrote** earlier in the same conversation, whose
-  signature a Claude model cannot check. (A model slot's fallback answers lose theirs
-  before Claude Code stores them: § Model slots. A worker slot's answers do not.)
+  signature a Claude model cannot check. (Another target's answers to a request that named a
+  Claude model lose theirs before Claude Code stores them: § Model slots. Answers to a
+  request that named a slot do not.)
 
 The `WARN` line names Anthropic's reason when one of them is the cause.
 
@@ -451,11 +519,12 @@ Two requests are never translated **for a Claude target**:
   `count_tokens`, a slot's Claude target or an alias to a `claude-…` model): auto mode
   stays exactly as Claude Code ships it, so a check reaches its Claude target with only
   `model` changed, every other byte as sent. Its newer form carries no field the table
-  would change, and Sonnet 5.5 took it (200). On the opt-in judge route to an affordable
+  would change, and Sonnet 5.5 took it (200). On the judge's route to an affordable
   backend, the check gets that backend's named translations (`reasoningOffForBackend`,
   `toolSearchForBackend`, § What an affordable backend sees), like every request to it.
-- A `claude-…` model that Claude Code sent itself: Claude Code built that body for that
-  model, and it goes byte for byte.
+- A `claude-…` model that Claude Code sent itself, to that same model (an off slot, or the
+  model in its own slot's chain): Claude Code built that body for that model, and it goes
+  byte for byte.
 
 Why: on 2026-10-15 both affordable targets of the worker slot answered 503 and the fallback,
 Claude Sonnet 5.5, answered 400 to one request. Its reason was not logged then, so which
@@ -495,14 +564,19 @@ The router builds a **new** request for an affordable backend:
     Without it, a model that reasons by default spent a 64-token answer on reasoning and
     came back empty. A model in a slot must accept `"none"`.
 
-What does reach the backend's provider: subagent prompts and the files they read, the
-main session's background `haiku` calls (titles, summaries, page processing), with a
-judge set the safety checks Claude could not answer, and with a model slot the Opus or
-Fable conversation once the plan's limit is reached. If a task must not leave Claude, use
-`opus`, and keep the model slots and the judge off.
+An Opus- or Fable-shaped body (adaptive thinking, an effort up to `max`, context
+management) goes as it is: § Model slots says what OmniRoute does with each field.
+
+What does reach the backend's provider: everything a slot with a backend target is asked —
+with a scout chain, the background `haiku` calls (titles, summaries, page processing) and
+`haiku` agents; with a worker chain, `sonnet` agents and a main session on Sonnet; with an
+opus or fable chain, that whole conversation; with a judge chain, every safety check, with
+the conversation and the next action. If a task must not leave Claude, keep the slot of its
+model off.
 
 **It is user-wide.** `gateway on` writes the user's `settings.json`, so every Claude Code
-session on the machine, in every folder, sends its `haiku` / `sonnet` work to the slots.
+session on the machine, in every folder, goes through the router, and each model's work to
+its family's slot.
 
 ## Local only
 
@@ -523,12 +597,13 @@ cannot send those cross-site without a CORS preflight, which the router never an
 | The service | Linux: the systemd user unit `~/.config/systemd/user/cc-smart-dev-kit-router.service`. Windows: the per-user Scheduled Task `cc-smart-dev-kit-router`, from its definition `~/.local/share/cc-smart-dev-kit/router-task.xml` (`docs/windows-gateway.md`) |
 | The socket that holds the port | `~/.config/systemd/user/cc-smart-dev-kit-router.socket` (`ListenStream=127.0.0.1:<port>`) |
 | The router's inner socket | `$XDG_RUNTIME_DIR/cc-smart-dev-kit-router/router-<pid>.sock` (systemd makes the folder, mode 0700, and removes it when the unit stops) |
-| Health | `GET http://127.0.0.1:<port>/__cc-smart-dev-kit/health`: counts, resting targets, Claude models resting at their plan limit (`limited`), slots, `modelSlots`; never a key |
+| Health | `GET http://127.0.0.1:<port>/__cc-smart-dev-kit/health`: counts, resting targets (a Claude model at its plan limit among them), slots; never a key |
 | The limit state | `~/.local/state/cc-smart-dev-kit/gateway-state.json`, mode 600, written by the router: plan limits seen, slots on a fallback. Read by `cc-smart-dev-kit statusline` and the StopFailure hook |
-| The safety-check counts | `~/.local/state/cc-smart-dev-kit/safety-checks.json`, mode 600, written by the router: auto mode's checks by local day, who answered each (Anthropic or a fallback), and the tokens their answers reported. Read by `cc-smart-dev-kit usage`; the newest 30 days are kept (§ The safety-check counts) |
+| The safety-check counts | `~/.local/state/cc-smart-dev-kit/safety-checks.json`, mode 600, written by the router: auto mode's checks by local day, who answered each (Anthropic or the judge), and the tokens their answers reported. Read by `cc-smart-dev-kit usage`; the newest 30 days are kept (§ The safety-check counts) |
 
-With no good config the router still starts: both slots answer from `claude-sonnet-5-5`
-on the own login, and one error line names the file.
+With no good config the router still starts with every slot off: each Claude model's request
+goes to Anthropic as Claude Code sent it, on the own login, and one error line names the
+file.
 
 ## The service
 
@@ -624,7 +699,11 @@ open), the router binds the config's port itself, as before.
      to a new port";
    - a socket unit that changed on the same port: the same, "its socket unit changed, so
      the socket closes and opens again";
-4. makes the config when there is none (the backend key comes on stdin, never argv);
+4. makes the config when there is none (the backend key comes on stdin, never argv). For a
+   config an older version wrote, it drops 0.4.x's hidden Claude step: a scout or worker
+   chain that still equals 0.4.x's exact default (`omniroute:ollama-cloud/deepseek-v4.1-flash`
+   → `omniroute:ollama-cloud/glm-5.3-flash` → `claude-sonnet-5-5`) loses its last target,
+   with one line saying so (`upgradeConfig`). A chain the person changed stays as it is;
 5. writes the **restart-pending marker**, then the copy and the two units, all through
    `src/setup/` (backup, record for `restore`, atomic write);
 6. runs `systemctl --user daemon-reload` and `enable cc-smart-dev-kit-router.socket
@@ -656,6 +735,18 @@ open), the router binds the config's port itself, as before.
    date.
 
 With nothing changed, the socket open and no marker: only `enable --now` of both units.
+
+Last, setup takes 0.4.3's `ANTHROPIC_DEFAULT_HAIKU_MODEL` / `…_SONNET_MODEL` keys (and their
+`…_NAME` / `…_DESCRIPTION`) out of Claude Code's `settings.json` where `cc-smart-dev-kit` still
+owns them with the value it wrote (`retireOldModelKeys`; one the person set or changed stays),
+as `gateway on` does. With them, a session sends `haiku` / `sonnet` work by the slot's name,
+and a slot with no chain refuses that with a 400 (the router never picks a Claude model for
+it). It then says to restart every open Claude session: a running session may keep the
+removed keys until it restarts (`docs/claude-code-contract.md`: a removed key was not
+watched). A plugin update alone never swaps the router: the router that runs is the copy in
+`~/.local/share/cc-smart-dev-kit/`, and only `gateway setup` (or `migrate`) writes it; until then
+the older router answers, the update's notification says to run `gateway setup`, and
+`doctor` says the copy is not this version's.
 
 The service unit: the absolute path of the `bun` that ran setup on the copy, with
 `--no-env-file`; `Wants=` and `After=` the socket; `RuntimeDirectory=cc-smart-dev-kit-router`
@@ -766,8 +857,15 @@ and `restore` remove exactly them):
 1. `ENABLE_TOOL_SEARCH` = `true`: behind a gateway, Claude Code otherwise sends every MCP
    tool definition on every turn (184K tokens of context on a first turn, against 70K).
 2. `ANTHROPIC_BASE_URL` = `http://127.0.0.1:<port>`
-3. `ANTHROPIC_DEFAULT_HAIKU_MODEL` = `cc-smart-dev-kit-scout[1m]`, with `…_NAME` and `…_DESCRIPTION`
-4. `ANTHROPIC_DEFAULT_SONNET_MODEL` = `cc-smart-dev-kit-worker[1m]`, with `…_NAME` and `…_DESCRIPTION`
+
+**No model is pinned** (since 0.5.0): Claude Code sends each Claude model's own id, and the
+router takes it to its family's slot. Up to 0.4.3, `on` also wrote
+`ANTHROPIC_DEFAULT_HAIKU_MODEL` = `cc-smart-dev-kit-scout[1m]` and
+`ANTHROPIC_DEFAULT_SONNET_MODEL` = `cc-smart-dev-kit-worker[1m]`, each with `…_NAME` and
+`…_DESCRIPTION` (`RETIRED_GATEWAY_ENV_KEYS`): with them, a slot with no chain could not be
+plain Claude, because the request named the slot and not a Claude model. `on` takes out the
+ones `cc-smart-dev-kit` still owns with the value it wrote; `off`, `restore` and `migrate` treat
+them as the gateway's own too. One the person set or changed since is theirs and stays.
 
 It **never** writes `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` (they replace the
 person's own login), nor `CLAUDE_CODE_SUBAGENT_MODEL` or `…_FORCE` (an agent launched
@@ -780,7 +878,7 @@ from its own gateway does it in its migration). `ENABLE_TOOL_SEARCH` gets a word
 own in that message: many people set it themselves. `on` also refuses while the router
 does not answer: every Claude request would fail. With no `gateway.json` (set up with
 `--no-backend-key`), `on` uses the default port, 20100, where the router then runs with
-every slot on Claude.
+every slot off.
 
 Saving `settings.json` switches every running session at once. Removing keys is taken to
 need a restart of each session (not yet proved either way: `claude-code-contract.md`);
@@ -795,10 +893,10 @@ stop the router only after every session restarted.
   loses, and what is still owed a live test there.
 - When Claude Code changes the safety check's prompt, the router stops recognising it,
   and the check goes by its model name. The log shows it: the lines lose their
-  `(safety check)` mark. So "Claude first, the judge only as a fallback" holds only while
-  the router knows the prompt: under an affordable slot's name, an unrecognised check goes to that slot's
-  targets until the router is updated (`docs/roadmap.md` Phase 3: log an unknown check
-  form loudly).
+  `(safety check)` mark. So "Claude judges unless the person set a judge" holds only while
+  the router knows the prompt: an unrecognised check under a Sonnet id goes to the worker
+  slot's chain, like any Sonnet request, until the router is updated (`docs/roadmap.md`
+  Phase 3: log an unknown check form loudly).
 - `gateway setup` takes "this router answers on the port" as success after a `restart`
   under the socket. When another `cc-smart-dev-kit-router` (a `gateway serve` in a terminal)
   answers there, it cannot tell the two apart. (On the way that opens the socket, the
@@ -825,10 +923,11 @@ stop the router only after every session restarted.
   router's own process. It copies bytes and never reads or changes them.
 - If the router is down, every Claude Code request fails. The service restarts itself;
   `gateway off` and a restart of the sessions is the way out.
-- **A model's context window can disagree** in three places: what Claude Code assumes
-  (`[1m]` → 1M), what OmniRoute's catalog says (it refuses a bigger request itself), and
-  what the provider serves. Check all three before a model goes into a slot; keep a
-  1M-or-larger target after one with a smaller window.
+- **A model's context window can disagree** in three places: what Claude Code assumes for
+  the Claude model it thinks it talks to (Opus with `[1m]`: 1M; Haiku: 200K), what
+  OmniRoute's catalog says (it refuses a bigger request itself), and what the provider
+  serves. Check all three before a model goes into a slot; with the fallback on, keep a
+  target with a larger window after one with a smaller one.
 - **Images:** OmniRoute leaves an image in a request only when its catalog marks the
   model vision-capable; otherwise another model describes the image and the slot's model
   answers from that caption. Check a new model's image support before it goes in a slot.
@@ -846,21 +945,23 @@ Start with `cc-smart-dev-kit gateway status`, then `cc-smart-dev-kit doctor`.
 | Every Claude request is refused at once, and the socket is `failed` | `doctor`: "the router failed to start again and again, so systemd closed its socket"; `systemctl --user show -p Result cc-smart-dev-kit-router.socket` says `service-start-limit-hit`; why: `journalctl --user -u cc-smart-dev-kit-router -n 30` | fix the cause, then `cc-smart-dev-kit gateway setup` (it clears the start limit with `reset-failed` and opens both again) |
 | `gateway setup`: "… failed … Starting cc-smart-dev-kit-router without its socket" | the socket could not open: `ss -ltnp` (another program on the port?), `journalctl --user -u cc-smart-dev-kit-router.socket -n 30` | the router runs and binds the port itself, but its restarts refuse requests: free the port, then `cc-smart-dev-kit gateway setup` again |
 | `doctor`: no socket unit, or it is not the one setup writes | a router set up by an older version, or `port` changed in `gateway.json` | `cc-smart-dev-kit gateway setup` (the move refuses requests once, during the old router's drain) |
-| Subagents are slow or answer from Claude | the log's `fallbacks=` and `skipped=`; the health page's `cooling` | the backend is down or busy; wait out the cooldown |
+| Subagents are slow, or answer from a later target | the log's `fallbacks=` and `skipped=`; the health page's `cooling` | the backend is down or busy; wait out the cooldown |
+| A slot's request fails at once though it has more targets | `gateway status`: "fallback off" | `cc-smart-dev-kit gateway fallback <slot> on` |
+| `cc-smart-dev-kit-… is off …, and this request names the slot` (a 400) | `settings.json` still holds 0.4.3's `ANTHROPIC_DEFAULT_HAIKU_MODEL` / `…_SONNET_MODEL` | `cc-smart-dev-kit gateway on` takes them out; or give the slot a chain |
 | A slot request ends `→ claude-… 400` | the `WARN claude-… answered 400` line next to it (written just after it): Anthropic's reason | a field outside `messages`, `system` and `tools` that the Claude target refuses: add it to `requestForClaudeFallback`'s table (with a test and a contract row). A reason inside the messages (a prefill, an affordable model's thinking blocks) is not translated: § What a Claude target sees |
 | `403 … accepts requests from this machine only` | the caller sends `Origin` or a foreign `Host` | use `http://127.0.0.1:<port>` from a local program |
 | `no target for cc-smart-dev-kit-… answered` | the error lists each target's failure | fix the first reason (key, model id, backend down) |
 | `"cc-smart-dev-kit-…" is not a slot` | `gateway status` | `gateway slot`, or `gateway setup` |
-| Every `haiku` / `sonnet` call answers from Claude Sonnet | the log says the config cannot be used | `chmod 600 ~/.config/cc-smart-dev-kit/gateway.json`; fix the JSON (read on the next request) |
+| Every model answers from Claude though its slot has a chain | the log says the config cannot be used | `chmod 600 ~/.config/cc-smart-dev-kit/gateway.json`; fix the JSON (read on the next request) |
 | `gateway on` stops: set by someone else | an older install's env keys | remove those keys by hand, then `gateway on` |
 | `doctor`: the router copy is not this version's | the plugin was updated | `cc-smart-dev-kit gateway setup` (it asks before the restart) |
 | `gateway setup`: `port N is used by another program` | `ss -ltnp` shows who holds it; often an older router | stop that program, or set another `port` in `gateway.json` |
 | `doctor`: `a gateway setup did not finish` | the router did not answer after setup's restart: `journalctl --user -u cc-smart-dev-kit-router -n 30` | fix the cause, then `cc-smart-dev-kit gateway setup` again |
-| Auto mode blocks good work while Claude is at its limit | the log's `(safety check) [judge fallback]` and `WARN safety check judged by` lines | `gateway slot judge off`: Claude Code then asks you instead |
+| Auto mode blocks good work | the log's `(safety check) → <judge target>` lines | `gateway slot judge off`: Claude judges again |
 | `slot judge` says a target "did not block the test check" | the target let a force push to main run, or did not answer in the `<block>` format | pick another model; there is no way to skip the test |
-| Opus answers from an affordable model | the `WARN cc-smart-dev-kit-opus: … is at its plan usage limit` line; `gateway status` shows "at its plan usage limit" | wait for the reset (the router asks Opus again every 10 minutes at most), or `gateway slot opus off` |
-| Opus answers 400 "Invalid `signature` in `thinking` block" after a fallback | the `WARN claude-opus-5-5 refused a thinking block's signature` line | `/rewind` in Claude Code to the message before the fallback answered, or a new session |
-| The Opus fallback answers 400 for a long or rich conversation | the `WARN cc-smart-dev-kit-opus: … refused this … conversation` line | `/compact`, a new session, or wait for the reset |
-| A judge target is ignored ("has not passed the judge test") | `gateway status` marks it NOT TESTED; `doctor` fails | `cc-smart-dev-kit gateway slot judge <targets>` tests and sets it |
+| Opus answers from another model | `gateway status`: the opus chain; the `WARN cc-smart-dev-kit-opus: … is at its plan usage limit` line when Opus is first | `gateway slot opus off` (Opus answers itself), or wait for the reset when Opus is first (asked again every 10 minutes at most) |
+| Opus answers 400 "Invalid `signature` in `thinking` block" after another model answered for it | the `WARN claude-opus-5-5 refused a thinking block's signature` line | `/rewind` in Claude Code to the message before the other model answered, or a new session |
+| A target answers 400 for a long or rich Opus conversation | the `WARN cc-smart-dev-kit-opus: … refused this … conversation` line | `/compact`, a new session, or put a target with a larger window first |
+| A judge target is ignored ("has not passed the judge test") | `gateway status` marks it NOT TESTED; `doctor` fails. After an update to 0.5.0 every judge set before it is: the test version moved with the judge's new role | `cc-smart-dev-kit gateway slot judge <targets>` tests and sets it |
 | Claude answers 401 | a 401 may also be a login token that expired | sign in again in Claude Code (`/login`) when it keeps failing |
 | The status line shows nothing about usage | `rate_limits` is only in Claude Code's input for a Claude subscription, after the first answer | nothing to fix |
