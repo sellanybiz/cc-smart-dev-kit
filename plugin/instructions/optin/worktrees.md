@@ -5,30 +5,48 @@ worktree (a second checkout of the repo, on its own branch, in its own folder). 
 this file with its own import line. The steps — entering, leaving and clearing a worktree,
 finding a lost session — are the `/cc-smart-dev-kit:worktree` skill.
 
-The project's values come from its `.claude/cc-smart-dev-kit.json`, `worktrees` field: `base` (the
-branch new work starts from and pull requests go into), `prefix` (the folder name of a
-worktree beside the repo), `setup` (the command a new worktree runs) and `bases` (a branch
-whose name starts with one of those prefixes starts from the base that prefix names, not from
-`base`). The project's own
-`CLAUDE.md`, rules and `.claude/cc-smart-dev-kit/worktree.md` win where they say more.
+Every project uses Claude Code's own worktrees: `<repo>/.claude/worktrees/<name>` on the
+branch `worktree-<name>`. The project's values come from its `.claude/cc-smart-dev-kit.json`,
+`worktrees` field: `base` (the branch new work starts from and pull requests go into) and
+`bases` (a branch family whose pull requests go into another base, which auto-merge and the
+after-merge note read). To start a task from another base, switch the main checkout to it
+first with `baseRef: "head"`, or make a worktree of it with `git worktree add` as Claude
+Code's docs say. The git-ignored files a new worktree needs (`.env.local` and
+the like) are named in `.worktreeinclude`, which Claude Code copies into each one. The
+project's own `CLAUDE.md`, rules and `.claude/cc-smart-dev-kit/worktree.md` win where they say
+more.
 
-**Where a worktree lands.** The cc-smart-dev-kit plugin adds no worktree hook to every project.
-Unless this project wired cc-smart-dev-kit's worktree hooks into its own `.claude/settings.json`,
-`EnterWorktree` uses Claude Code's own `.claude/worktrees/<name>`, and `prefix` and `setup`
-are not applied. Wired in, the cc-smart-dev-kit engine follows the `worktrees` field. How to wire it:
-README.md in the cc-smart-dev-kit repository, § Worktrees.
+**A base branch that is not the repo's default branch** sets `"worktree": {"baseRef": "head"}`
+in its committed `.claude/settings.json`: a new worktree then starts from your current branch,
+not from `origin`'s default branch. Start new work from the main checkout on the base branch
+(`git switch <base>` first if it was switched to explore), and a subagent's worktree gets the
+session's commits too. Under `fresh` (Claude Code's default), a worktree and its subagents
+start from `origin`'s default branch.
+
+The plugin's old worktree engine — the `worktree-create`, `worktree-remove` and
+`subagent-stop` hooks, and the `worktrees.prefix` and `worktrees.setup` fields — is
+deprecated and retires in the next minor version. A project still wired to it keeps working
+until then, and `cc-smart-dev-kit doctor` names the steps to move.
 
 ## One session, one worktree, one branch
 
-**Always work in your own worktree. The main checkout stays on the latest `base`:** never
-edit, commit or switch branches there; sessions start there. Before your first edit, enter a
-worktree with `EnterWorktree`, the branch as its `name`. Every change goes: worktree →
-branch → commit → push → pull request into `base` → merge (after the person's yes) → tell the
-other sessions → clear the worktree.
+**Always work in your own worktree. Sessions start in the main checkout:** never edit or
+commit there. A new task starts from there with `claude -w <task-name>` (dashes, not slashes:
+a `/` in a name becomes `+`); in a running session, `EnterWorktree` with the task name as its
+`name` makes one. An existing worktree is entered by its name, or by path with
+`EnterWorktree`. A session already in a worktree that starts an **unrelated** task goes back
+to the main checkout first (`ExitWorktree`), then starts the new one from there. Every change
+goes: worktree → branch → commit → push → pull request into `base` → merge (after the
+person's yes) → tell the other sessions → clear the worktree.
 
 Why: in a shared folder, one session's `switch`, `stash`, `reset` or `restore` moves or hides
 another's uncommitted work, and a commit sweeps up files it did not write. In your own
 worktree, `git status`, the linter and the tests describe your change alone.
+
+**A subagent with `isolation: "worktree"`** gets its own worktree cut from the same base as
+the session's: with `baseRef: "head"`, the session's branch and its commits; under `fresh`,
+`origin`'s default branch. It usually has no packages installed: it runs the project's
+install before tests.
 
 ## What every worktree still shares
 

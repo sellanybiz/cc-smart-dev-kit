@@ -122,6 +122,25 @@ describe("resolveProject", () => {
     });
   });
 
+  test("worktrees.base alone is valid: the deprecated prefix is optional", () => {
+    const repo = makeRepo();
+    writeCcSmartDevKitJson(repo, JSON.stringify({ worktrees: { base: "dev" } }));
+    expect(resolveProject(repo)?.config?.worktrees).toEqual({ base: "dev" });
+    // The engine's fields are still accepted until it retires: never a parse failure.
+    writeCcSmartDevKitJson(
+      repo,
+      JSON.stringify({
+        worktrees: { base: "dev", prefix: "app-wt-", setup: ["bun", "install"], engine: "own" },
+      }),
+    );
+    expect(resolveProject(repo)?.config?.worktrees).toEqual({
+      base: "dev",
+      prefix: "app-wt-",
+      setup: ["bun", "install"],
+      engine: "own",
+    });
+  });
+
   test.each([
     [{ protectedBranches: [] }, "protectedBranches:"],
     [{ protectedBranches: [""] }, "protectedBranches.0:"],

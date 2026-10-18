@@ -21,10 +21,16 @@ Each spec in `src/hooks/specs.ts` says who wires it (`wiring`):
   every project. It stays silent in a project without `cc-smart-dev-kit.json`, and in one whose
   `ownHooks` names it (§ The project's own copy).
 - **The project** (`PROJECT_HOOKS`, `wiring: "project"`): the project wires
-  `cc-smart-dev-kit hook <name>` in its own `.claude/settings.json`, exactly as the README's
-  § Worktrees shows (the lines come from `src/hooks/project-wiring.ts`; a test keeps the
-  README the same). Today: the worktree engine (WorktreeCreate, WorktreeRemove,
-  SubagentStop). No `ownHooks` step: the wiring is the project's opt-in.
+  `cc-smart-dev-kit hook <name>` in its own `.claude/settings.json`, exactly as
+  `cc-smart-dev-kit hook` prints it (the lines come from `src/hooks/project-wiring.ts`).
+  Today: the plugin's **deprecated** worktree engine (WorktreeCreate, WorktreeRemove,
+  SubagentStop), which retires in the next minor version. No `ownHooks` step: the wiring is
+  the project's opt-in.
+
+**Every project uses Claude Code's own worktrees** (`<repo>/.claude/worktrees/<name>` on
+`worktree-<name>`), and they need no hook. A project that still wires the engine keeps
+working until the engine retires; `worktrees.prefix` is optional in the schema and the engine
+needs it to name its folder, so the create hook fails closed and says so when it is missing.
 
 **Never wire WorktreeCreate or WorktreeRemove in `hooks.json`, and never the engine's
 `subagent-stop`.** A WorktreeCreate hook replaces Claude Code's own creation in every project
@@ -33,7 +39,8 @@ creation fail (proved live). So a plugin WorktreeCreate cannot step aside for a 
 did not opt in, and a hook-made worktree loses Claude Code's lock, its cleanup marker,
 `-w "#123"` and its Git LFS handling. `subagent-stop` is on that list for the same reason:
 it removes the worktree of the subagent that stopped, and which worktrees a project keeps is
-the project's decision, so it stays wired by the project.
+the project's decision, so it stays wired by the project. The engine itself is deprecated
+(owner, 2026-10-18): it is deleted in the next minor version, and no new project wires it.
 
 **A plugin SubagentStop hook that touches no worktree is fine** (today: `review-record`
 only). It can be silent for a project that never opted in, it removes nothing, and no other
@@ -131,12 +138,12 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
 - Never `process.cwd()`.
 - Without a `.claude/cc-smart-dev-kit.json`, every plugin hook stays silent. A project that never
   opted in must not notice the plugin.
-- The engine makes a subagent's worktree in Claude Code's own shape:
+- The deprecated engine makes a subagent's worktree in Claude Code's own shape:
   `<main checkout>/.claude/worktrees/agent-<hex>` on `worktree-agent-<hex>`, from the
   remote's default branch, or HEAD with `worktree.baseRef: "head"` or no remote;
   `.worktreeinclude` copied. SubagentStop finds it by that shape. A change to that shape
   needs the contract row proved again first.
-- A session's **new** branch is cut from `origin/<base>` right after
+- The engine cuts a session's **new** branch from `origin/<base>` right after
   `git fetch origin <base>`, so a repo with no `origin` cannot make one: WorktreeCreate
   fails closed and says the fetch failed. An existing branch is checked out all the same.
 

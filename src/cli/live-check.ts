@@ -4,12 +4,12 @@
  * starts real Claude Code sessions, which use the person's login and cost a few cents.
  *
  * In a temp folder it makes two throwaway repos: one without cc-smart-dev-kit.json, where Claude
- * Code makes its own worktrees, and one that turned the worktree engine on (`worktrees` in
- * cc-smart-dev-kit.json, and the three `cc-smart-dev-kit hook` lines in its `.claude/settings.json`, exactly
- * as the README says, each running **the plugin being checked**: this CLI's own
- * `plugin/dist/cli.js` with the bun running it, never the installed launcher). It clones the
- * second from a local bare "origin". In each it runs one `claude -p` session with this
- * plugin (`--plugin-dir`), only the EnterWorktree, ExitWorktree and Bash tools, permission
+ * Code makes its own worktrees (the default every project uses), and one that still wires the
+ * plugin's deprecated worktree engine (`worktrees` in cc-smart-dev-kit.json, and the three
+ * `cc-smart-dev-kit hook` lines in its `.claude/settings.json`, each running **the plugin being
+ * checked**: this CLI's own `plugin/dist/cli.js` with the bun running it, never the installed
+ * launcher). It clones the second from a local bare "origin". In each it runs one `claude -p`
+ * session with this plugin (`--plugin-dir`), only the EnterWorktree, ExitWorktree and Bash tools, permission
  * for exactly those calls (no permission mode that skips the checks), and a tiny prompt:
  * enter a worktree, run `git status` there, leave it with "remove". Every hook run is logged
  * (`CC_SMART_DEV_KIT_HOOK_LOG`), with what the hook's own parser read (`logFacts`), and the check
@@ -124,9 +124,9 @@ export function parseClaudeVersion(output: string): string | null {
 
 /**
  * The prompt each live session gets: three tool calls, nothing else. `discard_changes`:
- * Claude Code cannot check a hook-made worktree outside the repo, and refuses "remove"
- * without it (seen live); the engine's WorktreeRemove is then the check, and the worktree
- * here holds no work.
+ * Claude Code cannot check a worktree outside the repo (the deprecated engine's shape), and
+ * refuses "remove" without it (seen live); the engine's WorktreeRemove is then the check, and
+ * the worktree here holds no work. A worktree under `.claude/worktrees/` accepts it too.
  */
 export const LIVE_PROMPT =
   `Call the EnterWorktree tool with name "${LIVE_NAME}". Then run the Bash command ` +
@@ -311,7 +311,8 @@ export function runLiveCheck(
     writeFileSync(join(plain, "README.md"), "live check\n");
     git(plain, "add", "README.md");
     git(plain, "commit", "-q", "-m", "first");
-    // The worktree engine turned on, as the README says: beside the repo, from origin/main.
+    // The deprecated engine's old shape, still proved this release: a folder beside the repo,
+    // from origin/main.
     const origin = join(root, "origin.git");
     git(root, "init", "-q", "--bare", "-b", "main", origin);
     const configured = join(root, "configured");

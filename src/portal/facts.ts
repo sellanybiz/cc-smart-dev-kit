@@ -784,20 +784,14 @@ export function projectFileTexts(root: string): {
 /**
  * The line under the Project card's settings preview: what the plan does to the settings file.
  * One home — the page draws it and the preview's answer carries it (`project.preview`), so
- * the sentence can never describe a different plan than the boxes beside it. Both engines go
- * through here: the plugin's adds its hook lines, and an engine of the project's own takes
- * exactly those lines back out.
+ * the sentence can never describe a different plan than the boxes beside it. The plan adds
+ * Claude Code's `worktree.baseRef: "head"` when the base branch is not the repo's default
+ * branch, and never takes a key out.
  */
-export function settingsLineNote(added: number, removed: number): string {
-  const parts: string[] = [];
-  if (added > 0) {
-    parts.push(`${added} line${added === 1 ? "" : "s"}, added inside the existing file`);
-  }
-  if (removed > 0) {
-    parts.push(`${removed} line${removed === 1 ? "" : "s"} removed, the plugin's own hooks`);
-  }
-  if (parts.length === 0) return "No line is added to .claude/settings.json.";
-  return `${parts.join(", and ")}. Nothing else there changes.`;
+export function settingsLineNote(added: number): string {
+  return added > 0
+    ? `${added} line${added === 1 ? "" : "s"}, added inside the existing file. Nothing else there changes.`
+    : "No line is added to .claude/settings.json.";
 }
 
 /**
@@ -891,6 +885,7 @@ export function projectCardData(
       filesHash: projectFilesHash(texts),
       plan: workflow.planProjectInit({
         answers: defaults.answers,
+        defaultBranch: defaults.defaultBranch,
         existing: texts.existing,
         existingSettings: texts.existingSettings,
         root: project.root,

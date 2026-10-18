@@ -96,11 +96,8 @@ export function fakeDefaults(): ProjectInitDefaults {
     answers: {
       base: "integration",
       bases: { "hotfix/": "main", "release/": "main" },
-      engine: "plugin",
       guards: { guardMainFolder: true, jobRoute: false, sessionNames: true },
-      prefix: "app-wt-",
       protectedBranches: ["main", "integration"],
-      setup: ["bun", "install"],
       workflow: {},
     },
     defaultBranch: "main",
@@ -112,33 +109,23 @@ function fakePlan(input: ProjectInitInput): ProjectInitPlan {
   const file = `${input.root}/.claude/cc-smart-dev-kit.json`;
   const settingsFile = `${input.root}/.claude/settings.json`;
   const text = `${JSON.stringify(input.answers, null, 2)}\n`;
-  const hookLines =
-    input.answers.engine === "plugin"
-      ? [
-          '"hooks": {',
-          '  "WorktreeCreate": [{ "hooks": [{ "type": "command", "command": "cc-smart-dev-kit hook worktree", "timeout": 600 }] }]',
-          "}",
-        ]
-      : [];
-  // An engine of the project's own takes the plugin's lines back out, the way the real plan
-  // does when an earlier `project init` left them in the file.
-  const removedLines =
-    input.answers.engine === "own" &&
-    (input.existingSettings ?? "").includes("cc-smart-dev-kit hook")
-      ? ["WorktreeCreate: cc-smart-dev-kit hook worktree-create (timeout 600 s)"]
-      : [];
+  // A base branch other than the repo's default gets Claude Code's `baseRef: "head"`.
+  const hasHead = (input.existingSettings ?? "").includes('"baseRef": "head"');
+  const settingsAdds =
+    input.answers.base !== input.defaultBranch && !hasHead ? ['worktree.baseRef: "head"'] : [];
+  const settingsText =
+    settingsAdds.length > 0
+      ? `{\n  "worktree": {\n    "baseRef": "head"\n  }\n}\n`
+      : `${input.existingSettings ?? "{}\n"}`;
   return {
     changed: text !== input.existing,
     diff: [`+ worktrees.base: ${JSON.stringify(input.answers.base)}`],
     file,
-    hookLines,
     notes: [],
-    removedLines,
-    settingsChanged:
-      (hookLines.length > 0 && input.existingSettings !== `${hookLines.join("\n")}\n`) ||
-      removedLines.length > 0,
+    settingsAdds,
+    settingsChanged: settingsAdds.length > 0,
     settingsFile,
-    settingsText: `${hookLines.join("\n")}\n`,
+    settingsText,
     text,
   };
 }

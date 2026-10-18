@@ -21,23 +21,23 @@ import type { Check as DoctorCheck } from "../cli/doctor";
 import { UNIT_NAME } from "../gateway/service";
 import { JUDGE_SLOT } from "../gateway/targets";
 import type { LastCheck } from "../update/state";
-import {
-  type BackendRow,
-  type BrowserCardData,
-  type CompanionRow,
-  type FallbackRow,
-  type LimitRow,
-  type LogLine,
-  type ModelRow,
-  type OmnirouteRow,
-  type ProjectCardData,
-  type RouterFacts,
-  type SettingsData,
-  type SlotRow,
-  type SwitchFacts,
-  settingsLineNote,
-  type WarpRow,
+import type {
+  BackendRow,
+  BrowserCardData,
+  CompanionRow,
+  FallbackRow,
+  LimitRow,
+  LogLine,
+  ModelRow,
+  OmnirouteRow,
+  ProjectCardData,
+  RouterFacts,
+  SettingsData,
+  SlotRow,
+  SwitchFacts,
+  WarpRow,
 } from "./facts";
+import { settingsLineNote } from "./facts";
 import { barePage, command, escapeHtml, LOCK_ICON, layout, type Shell, switchButton } from "./page";
 import { SETTINGS_CARDS, type SettingChoice, type SettingsRow } from "./settings";
 import type { ProjectInitAnswers, ProjectInitPlan, WorkflowSource } from "./workflow-adapter";
@@ -724,12 +724,10 @@ function projectForm(
   answers: ProjectInitAnswers,
   plan: ProjectInitPlan,
 ): string {
-  const setup = answers.setup === null ? "" : answers.setup.join(" ");
-  const baseHelp = `The folder that stays on the latest ${answers.base} is never edited or committed in.`;
-  // What the settings file changes: the lines the engine adds, and the ones an engine of the
-  // project's own takes back out (a `-` line, the way a diff reads).
-  const settingsLines = [...plan.hookLines, ...plan.removedLines.map((line) => `- ${line}`)];
-  const settingsNote = settingsLineNote(plan.hookLines.length, plan.removedLines.length);
+  const baseHelp = "Edits happen in a worktree, never in the main checkout.";
+  // What the settings file changes: Claude Code's `worktree.baseRef` line, when the base
+  // branch is not the repo's default branch.
+  const settingsNote = settingsLineNote(plan.settingsAdds.length);
   // The hash of the two files the plan was made against: the write sends it back, and the
   // server refuses a write whose preview no longer matches the files on disk.
   const hash = data.filesHash === null ? "" : ` data-files-hash="${escapeHtml(data.filesHash)}"`;
@@ -737,8 +735,6 @@ function projectForm(
 
 <div class="fields">
 <div class="field"><label for="f-base">Base branch</label><input id="f-base" type="text" value="${escapeHtml(answers.base)}" data-answer="base"></div>
-<div class="field"><label for="f-prefix">Worktree folder prefix</label><input id="f-prefix" type="text" value="${escapeHtml(answers.prefix)}" data-answer="prefix"></div>
-<div class="field"><label for="f-setup">Setup command</label><input id="f-setup" type="text" value="${escapeHtml(setup)}" data-answer="setup"></div>
 </div>
 
 <div class="col g8">
@@ -770,19 +766,10 @@ ${guardRow({ help: "The type check, the build, the tests and the coverage run he
 </div>
 
 <div class="col g8">
-<h3>Worktree engine</h3>
-<p class="small muted">The plugin's engine makes the worktree and runs the setup command. The project's own runs your script instead.</p>
-<div role="group" aria-label="Worktree engine" class="segment" data-engine>
-<button type="button" aria-pressed="${answers.engine === "plugin"}" data-engine-value="plugin">The plugin's</button>
-<button type="button" aria-pressed="${answers.engine === "own"}" data-engine-value="own">The project's own</button>
-</div>
-</div>
-
-<div class="col g8">
 <h3>Preview</h3>
 <p class="small muted">Exactly what will be written.</p>
 ${codeBox({ attribute: "data-preview-file", copyLabel: "Copy the contents of .claude/cc-smart-dev-kit.json", label: ".claude/cc-smart-dev-kit.json", text: plan.text })}
-${codeBox({ attribute: "data-preview-settings", copyLabel: "Copy the lines .claude/settings.json changes by", label: ".claude/settings.json", text: settingsLines.join("\n") })}
+${codeBox({ attribute: "data-preview-settings", copyLabel: "Copy the line .claude/settings.json changes by", label: ".claude/settings.json", text: plan.settingsAdds.join("\n") })}
 <p class="small muted" data-preview-note>${escapeHtml(settingsNote)}</p>
 <div class="col g2" data-preview-notes>${plan.notes
     .map((note) => `<p class="small muted">${escapeHtml(note)}</p>`)
