@@ -5,6 +5,15 @@ import { type WriteOutcome, writeManagedFile } from "./write";
 export const LAUNCHER_NAME = "cc-smart-dev-kit";
 
 /**
+ * The launcher as a hook's shell string finds it: by its path under `$HOME`, never the bare
+ * name, because Claude Code's hook processes get the PATH Claude Code was started with, and
+ * that may lack `~/.local/bin` (an IDE, a desktop launcher). The shell expands `$HOME`, and
+ * the quotes keep a home folder with a space one word. It holds on Windows too, where the
+ * shell is Git Bash and sets `$HOME` (`docs/windows-hooks.md`).
+ */
+export const LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
+
+/**
  * Finds the user-scope install of the plugin in installed_plugins.json (the last argument)
  * and prints its installPath. Plain JS in double quotes only: it sits inside sh single quotes.
  * Mirrors findUserInstall() in installed-plugins.ts.

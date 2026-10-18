@@ -3,10 +3,14 @@
  * Machine-wide (`USER_HOOKS`): it reads no `cc-smart-dev-kit.json`, and its opt-in is the machine.
  *
  * Wired for one handler per event (`plugin/hooks/hooks.json`), so one alert per event:
- *   - `Notification`, matcher `permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input|agent_completed|worker_permission_prompt`
- *     — the moments Claude asks for something, and agent view's own `agent_needs_input` and
- *     `agent_completed` (`AGENT_VIEW_TYPES`). The idle wait (`idle_prompt`) is left out on
- *     purpose: the `Stop` notification already announced that finished turn.
+ *   - `Notification`, matcher `permission_prompt|elicitation_dialog|elicitation_url_dialog|worker_permission_prompt`
+ *     (`PLUGIN_NOTIFY_TYPES`) — the moments a session's own process asks for something. The
+ *     idle wait (`idle_prompt`) is left out on purpose: the `Stop` notification already
+ *     announced that finished turn. Agent view's own `agent_needs_input` and
+ *     `agent_completed` (`AGENT_VIEW_TYPES`) are raised in the list's process, which runs no
+ *     plugin hooks: `cc-smart-dev-kit setup` wires them in the person's user settings
+ *     through `cc-smart-dev-kit hook notify` (`src/setup/user-notify-hook.ts`). The code
+ *     accepts both lists (`NOTIFY_TYPES`), so either wiring gets the same handling.
  *   - `Stop` — the turn ended, with the turn's last answer as the message.
  *   - `PreToolUse` on `AskUserQuestion|ExitPlanMode` — Claude asks a question or shows a
  *     plan. Claude Code raises no `Notification` at that moment, so this covers it.
@@ -95,32 +99,25 @@ import {
 } from "./desktop-alert";
 import { startDetached } from "./detached";
 import { type HookResult, SILENT } from "./io";
+import { AGENT_VIEW_TYPES, NOTIFY_TYPES } from "./notify-types";
 import type { Env } from "./run";
 import { cleanSessionName } from "./session-name";
 import { ALERT_WORKER_COMMAND, type Runner, stopFailureWillAlert } from "./stop-failure";
 import { lastAssistantText, lastCustomTitle, startedByPeer } from "./transcript";
 
-/** The notification types that mean "Claude needs you", the ones `hooks.json` matches. */
-export const NOTIFY_TYPES = [
-  "permission_prompt",
-  "elicitation_dialog",
-  "elicitation_url_dialog",
-  "agent_needs_input",
-  "agent_completed",
-  "worker_permission_prompt",
-] as const;
-
 /**
- * The notification types agent view (`claude agents`, the list of sessions) raises for the
- * sessions it shows, in its own process: `agent_needs_input` while one waits, and
- * `agent_completed` when one finished or failed. The hook input is the list's own session and
- * folder, so these carry no session name of their own (the message names the session), and
- * the per-session question mark (the list's session, not the background one) says nothing
- * about them. `agent_needs_input` also comes from a session's own process — a teammate's setup
- * question, auto mode's classifier notice (Claude Code's hooks page) — and its input carries
- * no sign of which: both get this handling, so that one loses its `· <session>` and its mark.
+ * The types and the two matchers live in `notify-types.ts`, which imports nothing: this
+ * module reaches `cli/setup` through `src/workflow/`, which imports the managed user hook,
+ * so a constant defined here would sit in an import cycle. Re-exported here because the
+ * hook's own code, its tests and `doctor` read them from this module.
  */
-export const AGENT_VIEW_TYPES = ["agent_needs_input", "agent_completed"] as const;
+export {
+  AGENT_VIEW_MATCHER,
+  AGENT_VIEW_TYPES,
+  NOTIFY_MATCHER,
+  NOTIFY_TYPES,
+  PLUGIN_NOTIFY_TYPES,
+} from "./notify-types";
 
 /** The tools that mean "Claude asks you something", the ones `hooks.json` matches. */
 export const ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"] as const;
@@ -303,33 +300,33 @@ export function warpShowsIt(event: string, input: Record<string, unknown>): bool
   );
 }
 
-/** The event Warp's agent format carries for this alert. One mapping: `warpAgentSequence` uses it. */
-function warpEventOf(alert: Alert, notificationType: string): string {
+/**
+ * The event Warp's agent format carries for this alert. One mapping: `warpAgentSequence` uses
+ * it. **Never `agent_needs_input`**: Warp showed only a tab badge for it and no popup, while
+ * `permission_request` showed the popup (proved live on Windows Warp, 2026-10-19), so every
+ * wait and question goes as `permission_request`.
+ */
+export function warpEventOf(alert: Alert): string {
   if (alert.moment === "finished") return "stop";
   if (alert.moment === "failed") return "stop_failure";
-  if (
-    alert.moment === "needs-you" &&
-    (notificationType === "permission_prompt" || notificationType === "worker_permission_prompt")
-  ) {
-    return "permission_request";
-  }
-  return "agent_needs_input";
+  return "permission_request";
 }
 
 /**
  * The alert in Warp's own agent format, for a session whose far end is Warp: OSC 777 with
  * `warp://cli-agent` and a JSON object — `{v, agent, event, session_id, cwd, project}`, then
  * the event's own fields: `response` for a stop, `response` and, only when the input names a
- * real error, `error_type`, for a failure, `summary` for a wait. Warp shows its popup while
- * it is in front, and a desktop notification with a sound while it is not (proved live over
- * SSH from a pane without Warp's shell integration, `docs/claude-code-contract.md`). The body
+ * real error, `error_type`, for a failure, `summary` for a wait or a question. Every wait and
+ * question carries `permission_request`: the event Warp showed a popup for, where
+ * `agent_needs_input` gave only a tab badge (proved live 2026-10-19, `warpEventOf`). Warp
+ * shows its popup while it is in front, and a desktop notification with a sound while it is
+ * not (proved live over SSH from a pane without Warp's shell integration, `docs/claude-code-contract.md`). The body
  * is already one line without control characters (`shown`), and `JSON.stringify` escapes what
  * is left.
  */
 export function warpAgentSequence(alert: Alert, input: Record<string, unknown>): string {
   const cwd = typeof input.cwd === "string" ? input.cwd : "";
-  const type = typeof input.notification_type === "string" ? input.notification_type : "";
-  const event = warpEventOf(alert, type);
+  const event = warpEventOf(alert);
   const payload: Record<string, unknown> = {
     v: WARP_AGENT_PROTOCOL,
     agent: "claude",

@@ -370,8 +370,14 @@ export function retryOnConcurrentChange<T>(file: string, fn: () => T, attempts =
 
 export interface ManagedWriteOptions {
   stateDir: string;
-  /** What this write changes, for restore. */
-  kind: ChangeKind;
+  /** What this write changes, for restore. Left out only with `record: false`. */
+  kind?: ChangeKind;
+  /**
+   * `false`: make the backup and the write, but keep this file out of `changed.json` — the
+   * managed kind keeps its own record file (the user-level hook, `owned-hooks.json`), and an
+   * older running cc-smart-dev-kit must never meet a `changed.json` kind it does not know.
+   */
+  record?: false;
   /** The exact lines this write adds (`file-line`): restore removes those, and only those. */
   lines?: string[];
   /** The mode of a file that does not exist yet. An existing file keeps its own mode. */
@@ -437,8 +443,14 @@ export function writeManagedFile(
   }
   const outcome: WriteOutcome = currentMode === null ? "created" : "updated";
   if (options.dryRun) return { outcome, backup: null };
+  if (options.record !== false && options.kind === undefined) {
+    throw new Error("writeManagedFile: a recorded write needs its kind");
+  }
   const backup = backupFile(options.stateDir, target);
-  const isBaseline = recordChange(options.stateDir, target, options.kind, backup, options.lines);
+  const isBaseline =
+    options.record === false
+      ? false
+      : recordChange(options.stateDir, target, options.kind as ChangeKind, backup, options.lines);
   try {
     atomicWrite(target, content, wantedMode, () => {
       options.onBeforeCompare?.();

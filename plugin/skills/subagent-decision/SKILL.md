@@ -37,6 +37,10 @@ A subagent has none of your conversation. Treat it as a smart colleague who just
 - **Exact paths, symbols and test cases.**
 - **Its files:** a write-capable agent gets the exact list it may change, and "change nothing
   else". Check `git status --short` when it returns.
+- **A builder that needs its own checkout gets one:** launch it with `isolation: "worktree"`
+  and merge its branch back when it hands over. A session that entered a worktree writes
+  only inside it, and its agents inherit that limit, so never brief one with a path in a
+  different worktree.
 - **It deletes only files it created.** Never let it clean a shared folder (a scratch
   folder, an output folder, a temp folder another agent uses) — one agent that did removed
   the session's own scripts.

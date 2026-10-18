@@ -59,6 +59,7 @@ import {
   tmuxLineIn,
   tmuxPassthroughOf,
 } from "../setup/tmux";
+import { USER_NOTIFY_COMMAND, userNotifyHookState } from "../setup/user-notify-hook";
 import { isOlder } from "../update/check";
 import { FORCE_PLUGIN_UPDATES_VAR, updateOptOuts } from "../update/opt-out";
 import {
@@ -769,6 +770,39 @@ function checkTmux(paths: CliPaths, env: Env, machine: Machine): Check[] {
 }
 
 /**
+ * The user-level `Notification` hook setup writes for agent view: Claude Code's list of
+ * sessions runs only the hooks in settings files, never a plugin's `hooks.json`, so its
+ * `agent_needs_input` and `agent_completed` alerts reach the notifier only through this
+ * entry (`src/setup/user-notify-hook.ts`, `docs/claude-code-contract.md`).
+ */
+export function checkUserNotifyHook(paths: CliPaths): Check {
+  const where = tildify(paths.settingsFile, paths.home);
+  const state = userNotifyHookState(paths.settingsFile);
+  if (state === "current") {
+    return {
+      ok: true,
+      text: `agent view's notification hook is set in ${where}: ${USER_NOTIFY_COMMAND}`,
+    };
+  }
+  if (state === "edited") {
+    // The person's own version of the managed hook: it still runs the notifier, so it is
+    // information, never a failure (an owned key the person changed is theirs, too).
+    return {
+      ok: true,
+      info: true,
+      text: `agent view's notification hook in ${where} was edited since setup wrote it; it still runs ${USER_NOTIFY_COMMAND}, and cc-smart-dev-kit leaves it alone`,
+    };
+  }
+  return {
+    ok: false,
+    text:
+      state === "elsewhere"
+        ? `agent view's notification hook in ${where} does not run ${USER_NOTIFY_COMMAND}, so agent view's alerts never reach the notifier. Run: ${COMMAND} setup`
+        : `agent view's notification hook is missing from ${where}, so agent view's alerts never arrive. Run: ${COMMAND} setup`,
+  };
+}
+
+/**
  * The Linux desktop extras the notifier can use (`src/hooks/desktop-alert.ts`): a click on
  * an alert that raises the session's terminal window, the alert's minute on screen, one
  * alert per session, and the XFCE Do-Not-Disturb check. Each is skipped in silence when
@@ -914,6 +948,7 @@ export async function doctorChecks(
     ...(browser == null ? [] : browserChecks(paths, browser)),
     warpCheck(gateway.machine, paths),
     ...checkTmux(paths, env, gateway.machine),
+    checkUserNotifyHook(paths),
     ...checkDesktopExtras(gateway.machine.platform, env, gateway.machine),
     ...(project === null ? [] : projectChecks(project.cwd, env, paths, project.pluginHooksFile)),
     ...(runtime.ok ? await gatewayChecks({ paths, ...gateway }) : [skipped]),

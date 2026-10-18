@@ -115,7 +115,7 @@ var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
 
 // src/build-info/index.ts
 var info = {
-  version: "0.5.2",
+  version: "0.5.3",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -137,6 +137,8 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/setup/launcher.ts
+var LAUNCHER_NAME = "cc-smart-dev-kit";
+var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
 var FIND_INSTALL_JS = [
   "const f=process.argv[process.argv.length-1];",
   'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',

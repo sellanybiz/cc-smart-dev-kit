@@ -20,11 +20,8 @@
  *
  * `cc-smart-dev-kit hook` prints exactly `projectHookSettingsText()`.
  */
-import { LAUNCHER_NAME } from "../setup/launcher";
+import { LAUNCHER_IN_SHELL, LAUNCHER_NAME } from "../setup/launcher";
 import { PROJECT_HOOKS } from "./specs";
-
-/** The launcher, as the shell finds it from a project hook: by its path under `$HOME`. */
-export const LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
 
 /** Each project hook's timeout, in seconds: the setup command may take up to 540 s. */
 const TIMEOUTS: Record<string, number> = {

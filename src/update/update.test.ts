@@ -242,13 +242,15 @@ describe("the SessionStart hook and the background check, end to end", () => {
     expect(run.ms).toBeLessThan(2_000);
     const last = await m.settled();
     expect(last.result).toBe("updated");
-    expect(last.detail).toBe("1.1.0 (was 1.0.0)");
+    expect(last.detail).toBe(
+      "1.1.0 (was 1.0.0); agent view's notification hook is missing: cc-smart-dev-kit setup writes it",
+    );
     expect(m.read("claude.log")).toBe(
       "plugin marketplace update cc-smart-dev-kit\nplugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user\n",
     );
     expect(m.installedVersion()).toBe("1.1.0");
     expect(m.read("notify.log")).toBe(
-      "notify-send cc-smart-dev-kit cc-smart-dev-kit 1.1.0 installed; restart Claude sessions to load it\n",
+      "notify-send cc-smart-dev-kit cc-smart-dev-kit 1.1.0 installed; restart Claude sessions to load it; agent view's notification hook is missing: cc-smart-dev-kit setup writes it\n",
     );
     // git: the remote head (no password prompt), then the copy's head.
     expect(m.read("git.log")).toBe(
@@ -265,7 +267,7 @@ describe("the SessionStart hook and the background check, end to end", () => {
         "newer: installed 1.0.0, the marketplace copy 1.0.0, and the copy is behind the remote",
         "run: claude plugin marketplace update cc-smart-dev-kit",
         "run: claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user",
-        "updated: 1.1.0 (was 1.0.0)",
+        "updated: 1.1.0 (was 1.0.0); agent view's notification hook is missing: cc-smart-dev-kit setup writes it",
         "",
       ].join("\n"),
     );
@@ -405,11 +407,39 @@ describe("the SessionStart hook and the background check, end to end", () => {
     await m.hook();
     expect(await m.settled()).toMatchObject({
       detail:
-        "1.1.0 (was 1.0.0); its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart)",
+        "1.1.0 (was 1.0.0); its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart); agent view's notification hook is missing: cc-smart-dev-kit setup writes it",
       result: "updated",
     });
     expect(m.read("notify.log")).toBe(
-      "notify-send cc-smart-dev-kit cc-smart-dev-kit 1.1.0 installed; restart Claude sessions to load it; its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart)\n",
+      "notify-send cc-smart-dev-kit cc-smart-dev-kit 1.1.0 installed; restart Claude sessions to load it; its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart); agent view's notification hook is missing: cc-smart-dev-kit setup writes it\n",
+    );
+  }, 30_000);
+
+  test("the notification hook is already set: no `setup` hint in the update's text", async () => {
+    const m = machine({ remoteHead: HEAD_B });
+    writeFileSync(
+      m.paths.settingsFile,
+      JSON.stringify({
+        hooks: {
+          Notification: [
+            {
+              matcher: "agent_needs_input|agent_completed",
+              hooks: [
+                {
+                  type: "command",
+                  command: '"$HOME/.local/bin/cc-smart-dev-kit" hook notify',
+                  timeout: 10,
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    await m.hook();
+    expect(await m.settled()).toMatchObject({ detail: "1.1.0 (was 1.0.0)", result: "updated" });
+    expect(m.read("notify.log")).toBe(
+      "notify-send cc-smart-dev-kit cc-smart-dev-kit 1.1.0 installed; restart Claude sessions to load it\n",
     );
   }, 30_000);
 
@@ -890,6 +920,15 @@ describe("the notification", () => {
     const script = Buffer.from(toast?.[4] ?? "", "base64").toString("utf16le");
     expect(decodedToastText(script, "title")).toBe("cc-smart-dev-kit");
     expect(decodedToastText(script, "body")).toBe(text);
+  });
+
+  test("the setup hints: the router's, the missing notification hook's, or both", () => {
+    expect(installedText("1.2.3", false, true)).toBe(
+      "cc-smart-dev-kit 1.2.3 installed; restart Claude sessions to load it; agent view's notification hook is missing: cc-smart-dev-kit setup writes it",
+    );
+    expect(installedText("1.2.3", true, true)).toBe(
+      "cc-smart-dev-kit 1.2.3 installed; restart Claude sessions to load it; its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart); agent view's notification hook is missing: cc-smart-dev-kit setup writes it",
+    );
   });
 
   test("a version that is not plain text never reaches the notifier", () => {

@@ -67,6 +67,7 @@ import {
   ownedKeys,
 } from "../setup/managed-json";
 import { applyTmuxLine, TMUX_LINE, TMUX_NOW_COMMAND, tmuxServerRunning } from "../setup/tmux";
+import { applyUserNotifyHook, USER_NOTIFY_COMMAND } from "../setup/user-notify-hook";
 import { atomicWrite, realTarget } from "../setup/write";
 import { type CliPaths, tildify } from "./paths";
 
@@ -324,6 +325,24 @@ function applySetup(
         `  ${where}: ${JSON.stringify(entry)} is there already (not cc-smart-dev-kit's); left alone`,
       );
     }
+  }
+
+  // Agent view (Claude Code's list of sessions) runs only the hooks in settings files, never
+  // a plugin's hooks.json, so its two notification types need this one user-level entry. The
+  // command runs the launcher, which survives a plugin update (`user-notify-hook.ts`).
+  const notifyHook = applyUserNotifyHook(paths, dryRun);
+  const notifyWhere = `${short(paths.settingsFile)}: ${formatKeyPath(["hooks", "Notification"])}`;
+  if (notifyHook.action === "left") {
+    // The person edited the managed entry: it is theirs now, and setup adds no second one.
+    info.push(
+      `  ${notifyWhere}: a hook with this matcher was edited since setup wrote it (${USER_NOTIFY_COMMAND}); it stays, and no second one was added`,
+    );
+  } else if (notifyHook.action !== "unchanged") {
+    changes.push(
+      notifyHook.action === "replaced"
+        ? `~ ${notifyWhere}: replaced the hand-written notify hook with the managed one (${USER_NOTIFY_COMMAND})`
+        : `~ ${notifyWhere}: ${notifyHook.action === "updated" ? "updated" : "added"} the agent-view notification hook (${USER_NOTIFY_COMMAND})`,
+    );
   }
 
   if (managed.claudeMem !== null) {

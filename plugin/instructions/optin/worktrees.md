@@ -43,6 +43,12 @@ Why: in a shared folder, one session's `switch`, `stash`, `reset` or `restore` m
 another's uncommitted work, and a commit sweeps up files it did not write. In your own
 worktree, `git status`, the linter and the tests describe your change alone.
 
+**A session working in a worktree it entered keeps its writes there.** Claude Code limits
+it, and its subagents, to that checkout: a path in another worktree is refused in `-p` and
+asks the person every time in an interactive session. Edit only the checkout you are in,
+and give unrelated work its own session (`claude -w <task-name>`) — never a detour through
+another worktree's files.
+
 **A subagent with `isolation: "worktree"`** gets its own worktree cut from the same base as
 the session's: with `baseRef: "head"`, the session's branch and its commits; under `fresh`,
 `origin`'s default branch. It usually has no packages installed: it runs the project's

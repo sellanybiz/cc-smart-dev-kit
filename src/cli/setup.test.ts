@@ -240,3 +240,177 @@ describe("every question comes first", () => {
     expect(settings.autoMode).toEqual({ environment: ["$defaults", RULE] });
   });
 });
+
+describe("setup manages agent view's notification hook", () => {
+  const MATCHER = "agent_needs_input|agent_completed";
+  const COMMAND = '"$HOME/.local/bin/cc-smart-dev-kit" hook notify';
+  // What a manual test left behind: the plugin's shim and bundle, from its version folder.
+  const HAND_NOTIFY =
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code's placeholder, filled in by Claude Code.
+    '"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh" --missing=quiet "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"';
+  const MANAGED = {
+    matcher: MATCHER,
+    hooks: [{ type: "command", command: COMMAND, timeout: 10 }],
+  };
+
+  test("written once, in the person's own settings; a second setup changes nothing; restore removes it", async () => {
+    const w = world();
+    expect(await w.setup()).toBe(0);
+    expect(printed).toContain(
+      `~ ~/.claude/settings.json: hooks.Notification: added the agent-view notification hook (${COMMAND})`,
+    );
+    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([MANAGED]);
+
+    printed.length = 0;
+    expect(await w.setup()).toBe(0);
+    expect(printed[0]).toBe("Nothing to change. Setup is up to date.");
+    expect(printed.join("\n")).not.toContain("agent view");
+    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([MANAGED]);
+
+    restore(w.paths.stateDir);
+    expect(readJson(w.paths.settingsFile).hooks).toBeUndefined();
+  });
+
+  test("a hand-written entry that runs the plugin's dist/notify.js is replaced in place, not doubled", async () => {
+    const w = world();
+    const settings = readJson(w.paths.settingsFile);
+    const hand = {
+      matcher: MATCHER,
+      hooks: [{ type: "command", command: HAND_NOTIFY, timeout: 10 }],
+    };
+    settings.hooks = { Notification: [hand] };
+    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
+    expect(await w.setup()).toBe(0);
+    expect(printed).toContain(
+      `~ ~/.claude/settings.json: hooks.Notification: replaced the hand-written notify hook with the managed one (${COMMAND})`,
+    );
+    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([MANAGED]);
+    // Restore removes the managed entry and does not bring the replaced hand entry back:
+    // its version folder may be gone, and the person can restore the file's backup by hand.
+    // The list itself stays: it was in the person's file before setup touched it.
+    restore(w.paths.stateDir);
+    expect(readJson(w.paths.settingsFile).hooks).toEqual({ Notification: [] });
+  });
+
+  test("a version folder's notify.js named by its cache path: replaced too", async () => {
+    const w = world();
+    const settings = readJson(w.paths.settingsFile);
+    const hand = {
+      matcher: MATCHER,
+      hooks: [
+        {
+          type: "command",
+          command:
+            '"$HOME/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/0.5.2/dist/notify.js"',
+          timeout: 10,
+        },
+      ],
+    };
+    settings.hooks = { Notification: [hand] };
+    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
+    expect(await w.setup()).toBe(0);
+    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([MANAGED]);
+  });
+
+  test("a hand entry that also runs a logger is never replaced: kept whole, ours added beside it", async () => {
+    const w = world();
+    const settings = readJson(w.paths.settingsFile);
+    const mixed = {
+      matcher: MATCHER,
+      hooks: [
+        { type: "command", command: HAND_NOTIFY, timeout: 10 },
+        { type: "command", command: "./my-logger.sh" },
+      ],
+    };
+    settings.hooks = { Notification: [mixed] };
+    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
+    expect(await w.setup()).toBe(0);
+    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([mixed, MANAGED]);
+  });
+
+  test("another program's notify bundle, and the person's own hook: kept whole, ours added beside them", async () => {
+    const w = world();
+    const settings = readJson(w.paths.settingsFile);
+    const personal = {
+      matcher: MATCHER,
+      hooks: [{ type: "command", command: "node /home/user/my-notifier/dist/notify.js" }],
+    };
+    const foreign = {
+      matcher: MATCHER,
+      hooks: [{ type: "command", command: "./my-notify.sh" }],
+    };
+    settings.hooks = { Notification: [personal, foreign] };
+    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
+    expect(await w.setup()).toBe(0);
+    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([personal, foreign, MANAGED]);
+  });
+
+  test("our command plus a logger: the person's edited copy, left whole and never doubled", async () => {
+    const w = world();
+    const settings = readJson(w.paths.settingsFile);
+    const mixed = {
+      matcher: MATCHER,
+      hooks: [
+        { type: "command", command: `${COMMAND} 2>>log` },
+        { type: "command", command: "./my-logger.sh" },
+      ],
+    };
+    settings.hooks = { Notification: [mixed] };
+    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
+    expect(await w.setup()).toBe(0);
+    expect(
+      printed.filter((line) =>
+        line.includes("hooks.Notification: a hook with this matcher was edited"),
+      ),
+    ).toHaveLength(1);
+    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([mixed]);
+  });
+
+  test("a person-edited managed entry: setup leaves it, adds none, and says so once", async () => {
+    const w = world();
+    const settings = readJson(w.paths.settingsFile);
+    const edited = {
+      matcher: MATCHER,
+      hooks: [{ type: "command", command: `${COMMAND} 2>>log`, timeout: 30 }],
+    };
+    settings.hooks = { Notification: [edited] };
+    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
+    expect(await w.setup()).toBe(0);
+    expect(printed).toContain(
+      `  ~/.claude/settings.json: hooks.Notification: a hook with this matcher was edited since setup wrote it (${COMMAND}); it stays, and no second one was added`,
+    );
+    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([edited]);
+    restore(w.paths.stateDir);
+    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([edited]);
+  });
+
+  test("the person's own hooks stay: another event, and a Notification hook of their own", async () => {
+    const w = world();
+    const settings = readJson(w.paths.settingsFile);
+    const own = {
+      matcher: "permission_prompt",
+      hooks: [{ type: "command", command: "./mine.sh" }],
+    };
+    const stop = { hooks: [{ type: "command", command: "./stop.sh", timeout: 5 }] };
+    settings.hooks = { Notification: [own], Stop: [stop] };
+    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
+    expect(await w.setup()).toBe(0);
+    expect(readJson(w.paths.settingsFile).hooks).toEqual({
+      Notification: [own, MANAGED],
+      Stop: [stop],
+    });
+    restore(w.paths.stateDir);
+    expect(readJson(w.paths.settingsFile).hooks).toEqual({ Notification: [own], Stop: [stop] });
+  });
+
+  test("--dry-run shows the entry and writes nothing", async () => {
+    const w = world();
+    const before = readFileSync(w.paths.settingsFile, "utf8");
+    expect(await w.setup({ dryRun: true })).toBe(0);
+    expect(printed).toContain(
+      `~ ~/.claude/settings.json: hooks.Notification: added the agent-view notification hook (${COMMAND})`,
+    );
+    expect(readFileSync(w.paths.settingsFile, "utf8")).toBe(before);
+    expect(printed).toContain("Dry run: nothing was written or run.");
+  });
+});

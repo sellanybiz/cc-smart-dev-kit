@@ -14,6 +14,11 @@ worktree still shares, when to message other sessions — is the opt-in instruct
 (`optin/worktrees.md`), which the project imports. This skill is the how. The project's
 values (`base`, `bases`) are in `.claude/cc-smart-dev-kit.json`, field `worktrees`.
 
+**Another worktree's file is not yours to edit.** Once this session is in a worktree it
+entered (`claude -w`, `EnterWorktree`), Claude Code limits it, and the agents it starts, to
+that checkout: work there, and for a separate one launch a builder with
+`isolation: "worktree"` (`/cc-smart-dev-kit:subagent-decision` § How to brief).
+
 ## Start a task
 
 1. **In a running session, `EnterWorktree` with the task name as its `name` creates the
