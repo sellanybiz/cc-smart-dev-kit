@@ -18,6 +18,7 @@ So every change to a user's file goes through `src/setup/`, and nothing else wri
 |---|---|---|
 | JSON settings | `applyManagedJson` | single keys, listed in `owned.json` |
 | A JSON list of strings (`autoMode.environment`) | `applyManagedEntries` | single entries, each with its source, listed in `owned-entries.json` |
+| One hook entry in a `hooks.<event>` list (`settings.json`) | `applyManagedHook` (`managed-hook.ts`) | the entry it wrote, listed in `owned-hooks.json` |
 | Markdown | `applyManagedMarkdown` | one block between `<!-- cc-smart-dev-kit:begin -->` and `<!-- cc-smart-dev-kit:end -->` |
 | Exact lines in a text file the person owns (`~/.tmux.conf`) | `applyManagedLine` / `removeManagedLines` (`managed-line.ts`) | the exact lines it added, listed as `lines` in `changed.json` (`file-line`) |
 | A file it owns whole (the launcher) | `writeManagedFile` | the whole file |
@@ -114,7 +115,7 @@ Each of them:
   arguments — never an `env` or a `headers`, which can hold a key. The installer asks with it
   (`install.sh`, `install.ps1`); `doctor` warns from the same facts.
 - **State (`<stateDir>`):** `$CLAUDE_CONFIG_DIR/cc-smart-dev-kit/` (by default
-  `~/.claude/cc-smart-dev-kit/`): `owned.json`, `owned-entries.json`, `changed.json`, the `lock`, and `backups/`
+  `~/.claude/cc-smart-dev-kit/`): `owned.json`, `owned-entries.json`, `owned-hooks.json`, `changed.json`, the `lock`, and `backups/`
   (mode 0700). Beside them, the instructions' two state files: `no-instructions` (a stored
   `setup --no-instructions`, honoured by every later setup and by the copy's refresh) and
   `instructions-version` (the version that wrote the copy). `restore` removes both.
@@ -159,6 +160,11 @@ Each of them:
     after setup.
   - JSON lists: removes only the entries in `owned-entries.json`. The anchor stays when
     the person added an entry since; it is then no longer claimed.
+  - Hook entries: removes the entry listed in `owned-hooks.json` from `hooks.<event>` while
+    it still matches what setup wrote; an entry the person changed since stays, and so does
+    every other entry. A `hooks` object or event list setup created goes with its last
+    entry. Its record is its own file, never a `changed.json` kind, so an older running
+    cc-smart-dev-kit never reads a kind it refuses.
   - Plugins and marketplaces setup added with `claude plugin …` stay: they are Claude
     Code's own changes to its own files, and removing claude-mem would remove the
     person's memory plugin.

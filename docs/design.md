@@ -498,7 +498,7 @@ The guarantees:
   restore with nothing left changes nothing.
 
 Its state (`<stateDir>`) lives in `$CLAUDE_CONFIG_DIR/cc-smart-dev-kit/` (by default
-`~/.claude/cc-smart-dev-kit/`): `owned.json`, `owned-entries.json`, `changed.json`, the lock and `backups/`. The
+`~/.claude/cc-smart-dev-kit/`): `owned.json`, `owned-entries.json`, `owned-hooks.json`, `changed.json`, the lock and `backups/`. The
 state is per config folder, but the launcher in `~/.local/bin` is shared by all of
 them. So a restore under one config folder can remove a launcher another one relies
 on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
@@ -1369,9 +1369,9 @@ twice.
 `cc-smart-dev-kit.json`; the one thing it reads from a project's file is the `workflow.alerts`
 settings, when a project has them (§ The workflow › The alert settings).
 
-**Which events, one alert each** (`plugin/hooks/hooks.json`): `Notification` (the "needs you"
-types, `worker_permission_prompt` included, and agent view's own `agent_needs_input` and
-`agent_completed`; the idle wait is left out — the `Stop` alert
+**Which events, one alert each** (`plugin/hooks/hooks.json`): `Notification` (a session's own
+"needs you" types, `worker_permission_prompt` included — `PLUGIN_NOTIFY_TYPES`; the idle
+wait is left out — the `Stop` alert
 already announced that turn); `Stop` (the turn's last answer as the body, from the
 transcript's tail, 300 ms after the event because Claude Code writes it just then);
 `PreToolUse` on `AskUserQuestion|ExitPlanMode` (Claude Code raises no Notification at the
@@ -1385,7 +1385,23 @@ notifier announces the stopped turn on its own routes.
 
 **Agent view and background sessions.** Claude Code raises `Notification` hooks in the
 list's own process while `claude agents` is open: `agent_needs_input` while a session waits,
-and `agent_completed` with "<label> finished" or "<label> failed". The hook input is the
+and `agent_completed` with "<label> finished" or "<label> failed". **That process runs only
+the hooks in settings files, never a plugin's `hooks.json`** (proved live on 2.1.302,
+`docs/claude-code-contract.md`), so `cc-smart-dev-kit setup` manages one user-level entry in
+`~/.claude/settings.json` (`src/setup/user-notify-hook.ts`): matcher
+`agent_needs_input|agent_completed`, the command
+`"$HOME/.local/bin/cc-smart-dev-kit" hook notify`, timeout 10. It runs the same function the
+bundle's entry runs (`src/hooks/notify-entry.ts`) through the launcher, so a plugin update
+that deletes the old version folder cannot break it. The plugin's `hooks.json` leaves these
+two types out (`NOTIFY_MATCHER`), so a normal session never runs the alert twice. The entry's
+record is `owned-hooks.json`, never a `changed.json` kind: an older running cc-smart-dev-kit
+(a portal copy, a session that has not restarted) refuses a changed.json kind it does not
+know. An entry the person edited (another timeout, a redirection) is theirs — setup leaves
+it, claims nothing and adds no second one, and `doctor` shows it as information, never a
+failure. A hand-written entry setup replaced (it ran the plugin's own `dist/notify.js`, from a
+version folder) does not come back on restore: the managed entry goes, and the file's backup
+has the old one. A background update never runs setup, so when the entry is missing its
+notification says `cc-smart-dev-kit setup` writes it (`NOTIFY_HOOK_SETUP_HINT`). The hook input is the
 list's session and folder, so those alerts carry no session name (`titled(kind, null)`), and
 the per-session question mark says nothing about them. `agent_needs_input` also comes from a
 session's own process (a teammate's setup question, auto mode's classifier notice), and the
@@ -1437,8 +1453,11 @@ as Warp when `isWarpTerminal` says so, when `LC_TERMINAL=WarpTerminal` arrives (
 `SetEnv`, through sshd's usual `AcceptEnv LANG LC_*`), or when the person set `sshWarp`; a
 named terminal in `TERM_PROGRAM` (VS Code's `vscode`) says it is not Warp, while tmux's own
 `tmux` says nothing about the far end. One function maps the event (`warpEventOf`): finished
-→ `stop`, failed → `stop_failure`, a permission prompt → `permission_request`, every other
-wait and question → `agent_needs_input`; **the session's own device** — for an event whose answer Claude Code does
+→ `stop`, failed → `stop_failure`, and every wait and question — a permission prompt, a
+worker's prompt, agent view's `agent_needs_input`, a question — → `permission_request`.
+`agent_needs_input` is never sent: Warp showed only a tab badge for it and no popup, while
+`permission_request` showed the popup (proved live on Windows Warp, 2026-10-19);
+**the session's own device** — for an event whose answer Claude Code does
 not read at all (`StopFailure`), for agent view's own alerts (the list reads the field but
 never writes it out: only a session's conversation view sets up that writer, 2.1.302, so the
 list's own pty is the route there), and for a Claude Code too old for the field, where `/dev/tty`

@@ -482,6 +482,15 @@ const MCP_DOCTOR_OK = [
   '✓ MCP server "sequential-thinking": Connected',
 ];
 
+/** The user-level Notification hook setup writes for agent view, and its line. */
+const NOTIFY_HOOK_ENTRY = {
+  matcher: "agent_needs_input|agent_completed",
+  hooks: [
+    { type: "command", command: '"$HOME/.local/bin/cc-smart-dev-kit" hook notify', timeout: 10 },
+  ],
+};
+const NOTIFY_HOOK_ADDED = `~ ~/.claude/settings.json: hooks.Notification: added the agent-view notification hook ("$HOME/.local/bin/cc-smart-dev-kit" hook notify)`;
+
 /** The block setup writes into ~/.claude/CLAUDE.md. */
 const BLOCK = [
   "<!-- cc-smart-dev-kit:begin -->",
@@ -517,6 +526,7 @@ describe("cc-smart-dev-kit setup", () => {
         ...MCP_REGISTERED,
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        NOTIFY_HOOK_ADDED,
         SERENA_CONTEXT,
         ...INSTRUCTIONS_CREATED,
         TAVILY_SKIPPED,
@@ -527,6 +537,7 @@ describe("cc-smart-dev-kit setup", () => {
     expect(existsSync(launcher)).toBe(true);
     expect(readJson(settingsFile)).toEqual({
       model: "opus",
+      hooks: { Notification: [NOTIFY_HOOK_ENTRY] },
       enabledPlugins: {
         "cc-smart-dev-kit@cc-smart-dev-kit": true,
         "claude-mem@thedotmack": true,
@@ -544,7 +555,8 @@ describe("cc-smart-dev-kit setup", () => {
   test("the backups go into the state folder, never beside the files", () => {
     const { configDir, stateDir, settingsFile, binDir, run } = setup();
     run(["setup"]);
-    expect(listBackups(stateDir, settingsFile)).toHaveLength(1);
+    // Two changes to settings.json: the auto-update key, then the notification hook.
+    expect(listBackups(stateDir, settingsFile)).toHaveLength(2);
     expect(readdirSync(binDir)).toEqual(["cc-smart-dev-kit"]);
     expect(readdirSync(configDir).sort()).toEqual([
       // Claude Code's own user-scope config: the fake `claude mcp add-json` writes it.
@@ -562,7 +574,7 @@ describe("cc-smart-dev-kit setup", () => {
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(`Nothing to change. Setup is up to date.\n${TAVILY_SKIPPED}\n`);
-    expect(listBackups(stateDir, settingsFile)).toHaveLength(1);
+    expect(listBackups(stateDir, settingsFile)).toHaveLength(2);
   });
 
   test("--dry-run prints the changes and writes nothing at all: no state folder, no lock", () => {
@@ -575,6 +587,7 @@ describe("cc-smart-dev-kit setup", () => {
         ...mcpDryRunLines(home),
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        NOTIFY_HOOK_ADDED,
         SERENA_CONTEXT,
         ...INSTRUCTIONS_CREATED,
         TAVILY_SKIPPED,
@@ -715,6 +728,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
         ...MCP_REGISTERED,
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        NOTIFY_HOOK_ADDED,
         SERENA_CONTEXT,
         OPT_OUT_STORED,
         TAVILY_SKIPPED,
@@ -883,6 +897,7 @@ describe("cc-smart-dev-kit doctor", () => {
         `✓ the browser token is set (${join(home, ".config", "cc-smart-dev-kit", "playwright-extension.token")}, mode 600)`,
         // Warp is optional too.
         "· Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
+        `✓ agent view's notification hook is set in ~/.claude/settings.json: "$HOME/.local/bin/cc-smart-dev-kit" hook notify`,
         // The gateway is optional: never set up is information, not a failure.
         "· gateway: not set up (optional). To use it: cc-smart-dev-kit gateway setup",
         "",
@@ -1073,6 +1088,7 @@ describe("cc-smart-dev-kit doctor", () => {
       "✓ claude-mem@thedotmack 13.39.0 is installed and on",
       "✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
       "· Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
+      "✗ agent view's notification hook is missing from ~/.claude/settings.json, so agent view's alerts never arrive. Run: cc-smart-dev-kit setup",
       "· gateway: not checked on this Bun (its checks send the backend key)",
     ]);
     expect(exitCode).toBe(1);
@@ -1553,6 +1569,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
         ...MCP_REGISTERED,
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        NOTIFY_HOOK_ADDED,
         SERENA_CONTEXT,
         ...INSTRUCTIONS_CREATED,
         TAVILY_SKIPPED,
@@ -1632,6 +1649,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
       [
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        NOTIFY_HOOK_ADDED,
         SERENA_CONTEXT,
         ...INSTRUCTIONS_CREATED,
         "! The claude command is not on PATH, so setup skipped these steps. Run them once it is:",
@@ -2721,7 +2739,9 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     expect(`${restored.stdout}${restored.stderr}`).not.toContain("tvly-file-secret");
     // The line names the key's PATH, never its value. The `env` object setup made for it goes
     // with the key: this settings file had none of its own.
-    expect(restored.stdout).toContain("env.TAVILY_API_KEY, env; everything else kept");
+    expect(restored.stdout).toContain(
+      "env.TAVILY_API_KEY, env, the hook entry in hooks.Notification; everything else kept",
+    );
     expect(readJson(join(home, ".claude", "settings.json")).env).toBeUndefined();
   });
 

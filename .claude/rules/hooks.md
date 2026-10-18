@@ -160,7 +160,7 @@ and, like `notify` and `update-check`, it is a `USER_HOOKS` bundle: no frame, no
 never enters the frame, needs no `cc-smart-dev-kit.json`, and its opt-in is the machine. (The one
 thing it reads from a project that has one is its `workflow.alerts` settings — which moments
 alert, and whether a sound goes with them — through `src/workflow/alerts.ts`.) It alerts on
-`Notification` (agent view's `agent_needs_input` and `agent_completed` included), `Stop`,
+`Notification` (the types a session's own process raises: `PLUGIN_NOTIFY_TYPES`), `Stop`,
 `PreToolUse` on `AskUserQuestion|ExitPlanMode`, and `StopFailure`
 (`rate_limit` only where the `stop-failure` hook will not show its own alert —
 `stopFailureWillAlert`: no desktop, no gateway set up, or a short rate limit), and clears its mark
@@ -176,6 +176,22 @@ format when the far end is Warp (`farEndIsWarp`: Warp's own variables, else `LC_
 else the `sshWarp` setting); inside Warp whose own plugin is on it stays quiet but for the sound,
 a waiting question, a waiting agent and agent view's finished/failed alert; with nowhere to show it, nothing. The whole contract, the marks and the
 three settings: `docs/design.md` § The notifier.
+
+**The notifier has a second wiring, in the person's user settings.** Agent view
+(`claude agents`, the list of sessions) raises `Notification` with `agent_needs_input` and
+`agent_completed` in its own process, and runs **only the hooks in settings files, never a
+plugin's `hooks.json`** (proved live on 2.1.302; `docs/claude-code-contract.md`). So `setup`
+manages one entry under `hooks.Notification` in `~/.claude/settings.json`
+(`src/setup/user-notify-hook.ts`): matcher `AGENT_VIEW_MATCHER`, the command
+`"$HOME/.local/bin/cc-smart-dev-kit" hook notify`, timeout 10. It runs the same function the
+bundle's entry runs (`src/hooks/notify-entry.ts`), through the launcher, so an update that
+deletes the old version folder cannot break it. `plugin/hooks/hooks.json` therefore matches
+only `NOTIFY_MATCHER` (a session's own types): with both wirings the alert would run twice
+there. The code accepts both lists (`NOTIFY_TYPES`, one home in `src/hooks/notify-types.ts`);
+`setup` writes the entry through the managed-hook path (`src/setup/managed-hook.ts`: backup,
+atomic write, `owned-hooks.json`, `restore` removes it) and replaces a hand-written entry
+that runs the plugin's own `dist/notify.js` rather than adding a second. `doctor` checks the
+entry. On Windows the same line holds in Git Bash (`docs/windows-hooks.md`).
 
 **A hook's answer can carry `terminalSequence`** (Claude Code 2.1.141+): the OSC in that
 output field is written to the session's terminal by Claude Code itself — the only route for

@@ -82,6 +82,11 @@ characters as well as by extension, which matters because Windows has no execute
 form is proved there; the real launcher's own body (bun from its baked path, the installed
 plugin's CLI) is proved on Linux and macOS and is owed one Windows run.
 
+The **user-level notification hook** `setup` writes uses the same form, with the same
+launcher and the same reasoning: `"$HOME/.local/bin/cc-smart-dev-kit" hook notify`. It sits
+in Claude Code's user settings, not a project's, and agent view runs it there on Windows
+through Git Bash like any other shell-form hook.
+
 ## What Windows costs these hooks
 
 - **Git Bash is needed.** With Git for Windows installed, Claude Code runs shell-form hooks

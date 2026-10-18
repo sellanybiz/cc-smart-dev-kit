@@ -6325,7 +6325,7 @@ import { existsSync, readFileSync as readFileSync2 } from "fs";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.5.2",
+  version: "0.5.3",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6772,6 +6772,7 @@ gpgkey=${WARP_KEY_URL}
 
 // src/setup/launcher.ts
 var LAUNCHER_NAME = "cc-smart-dev-kit";
+var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
 var FIND_INSTALL_JS = [
   "const f=process.argv[process.argv.length-1];",
   'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
@@ -6783,6 +6784,9 @@ var FIND_INSTALL_JS = [
 // src/setup/lock.ts
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
 
+// src/setup/managed-hook.ts
+var PLUGIN_CACHE = `plugins/cache/${MARKETPLACE}/${PLUGIN}/`;
+
 // src/setup/launcher-cmd.ts
 var FIND_INSTALL_JS2 = [
   "const f=process.argv[process.argv.length-1];",
@@ -6792,6 +6796,22 @@ var FIND_INSTALL_JS2 = [
   "if(!e)process.exit(1);",
   "process.stdout.write(e.installPath);"
 ].join("");
+
+// src/hooks/notify-types.ts
+var PLUGIN_NOTIFY_TYPES = [
+  "permission_prompt",
+  "elicitation_dialog",
+  "elicitation_url_dialog",
+  "worker_permission_prompt"
+];
+var AGENT_VIEW_TYPES = ["agent_needs_input", "agent_completed"];
+var NOTIFY_TYPES = [...PLUGIN_NOTIFY_TYPES, ...AGENT_VIEW_TYPES];
+var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
+var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
+
+// src/setup/user-notify-hook.ts
+var USER_NOTIFY_HOOK_NAME = "notify";
+var USER_NOTIFY_COMMAND = `${LAUNCHER_IN_SHELL} hook ${USER_NOTIFY_HOOK_NAME}`;
 
 // src/update/state.ts
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -6954,6 +6974,7 @@ function windowsToastArgvFor(title, body, critical = false) {
 
 // src/update/apply.ts
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
+var NOTIFY_HOOK_SETUP_HINT = `agent view's notification hook is missing: ${COMMAND} setup writes it`;
 
 // src/hooks/transcript.ts
 import { closeSync, fstatSync, openSync, readSync } from "fs";

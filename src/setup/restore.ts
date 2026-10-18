@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, rmdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { removeAllOwnedEntries } from "./managed-entries";
+import { removeAllManagedHooks } from "./managed-hook";
 import { applyManagedJson, createdObjects, formatKeyPath, ownedKeys } from "./managed-json";
 import { removeManagedLines } from "./managed-line";
 import { removeManagedMarkdown } from "./managed-markdown";
@@ -139,17 +140,40 @@ export function restore(
 ): RestoreResult[] {
   const except = new Set(options.except ?? []);
   const only = options.only === undefined ? null : new Set(options.only);
+  // The managed hook entries have their own record (`owned-hooks.json`), never a
+  // changed.json kind, so an older running cc-smart-dev-kit never meets a kind it refuses
+  // (`managed-hook.ts`). Their details join the same file's line as the keys below.
+  const hooks = new Map(
+    removeAllManagedHooks(stateDir, { except, only }).map((result) => [result.file, result]),
+  );
   const entries = Object.entries(readChanged(stateDir)).filter(
     ([file]) => !except.has(file) && (only === null || only.has(file)),
   );
-  return entries.map(([file, entry]) => {
+  const results = entries.map(([file, entry]) => {
     const result = entry.kinds.includes("whole-file")
       ? restoreWholeFile(file, entry, stateDir)
       : restorePartly(file, entry, stateDir);
+    const hook = hooks.get(file);
+    if (hook !== undefined) {
+      hooks.delete(file);
+      for (const where of hook.removed) result.details.push(`the hook entry in ${where}`);
+      if (hook.backup !== null) result.savedAs ??= hook.backup;
+      if (result.action === "unchanged" && hook.removed.length > 0) result.action = "cleaned";
+    }
     if (result.action !== "no-backup") forgetChange(stateDir, file);
     if (result.action === "removed") removeEmptyFolders(file, stateDir);
     return result;
   });
+  // A file whose only managed change was the hook entry: its own line.
+  for (const [file, hook] of hooks) {
+    results.push({
+      file,
+      action: hook.removed.length > 0 ? "cleaned" : "unchanged",
+      details: hook.removed.map((where) => `the hook entry in ${where}`),
+      ...(hook.backup !== null && { savedAs: hook.backup }),
+    });
+  }
+  return results;
 }
 
 /**

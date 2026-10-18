@@ -20,11 +20,13 @@ import { bunConfigArg } from "../setup/bun-config";
 import { type InstructionsPaths, refreshInstructionsCopy } from "../setup/instructions";
 import { LockBusyError, withLock } from "../setup/lock";
 import { redactUrlsIn } from "../setup/marketplace-access";
+import { userNotifyHookState } from "../setup/user-notify-hook";
 import {
   type ApplyResult,
   applyUpdate,
   type CommandRunner,
   installedText,
+  NOTIFY_HOOK_SETUP_HINT,
   ROUTER_SETUP_HINT,
   routerNeedsSetup,
 } from "./apply";
@@ -267,11 +269,16 @@ export async function backgroundCheck(deps: BackgroundDeps): Promise<void> {
               return;
             }
             const routerChanged = routerNeedsSetup(deps.paths);
+            // A background update never runs setup, so the user-level notification hook is
+            // missing after it: one hint says who writes it. An edited one still runs, so it
+            // asks for nothing.
+            const notifyState = userNotifyHookState(deps.paths.settingsFile);
+            const notifyHookMissing = notifyState === "missing" || notifyState === "elsewhere";
             record(
               "updated",
-              `${result.after ?? "(no version)"} (was ${result.before ?? "none"})${routerChanged ? `; ${ROUTER_SETUP_HINT}` : ""}`,
+              `${result.after ?? "(no version)"} (was ${result.before ?? "none"})${routerChanged ? `; ${ROUTER_SETUP_HINT}` : ""}${notifyHookMissing ? `; ${NOTIFY_HOOK_SETUP_HINT}` : ""}`,
             );
-            deps.notify(installedText(result.after, routerChanged));
+            deps.notify(installedText(result.after, routerChanged, notifyHookMissing));
             return;
           }
         }

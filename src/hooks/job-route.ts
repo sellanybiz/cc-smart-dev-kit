@@ -26,7 +26,7 @@
 import { COMMAND } from "../build-info/names";
 import { classifyHeavyCommand } from "../jobs/classify";
 import { type Kinds, mergeKinds } from "../jobs/kinds";
-import { shellQuote } from "../setup/launcher";
+import { LAUNCHER_IN_SHELL, shellQuote } from "../setup/launcher";
 import { invocationOf, nestedCommand, shellSegments, wordsOf } from "../shell/command";
 import {
   type HookInput,
@@ -37,9 +37,6 @@ import {
   toolInput,
 } from "./io";
 import type { Env, HookContext } from "./run";
-
-/** The launcher, as a shell finds it from a hook or a rewritten command: its path under $HOME. */
-export const LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${COMMAND}"`;
 
 /** A word that needs no quoting for a shell to keep it as it is. */
 const PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;

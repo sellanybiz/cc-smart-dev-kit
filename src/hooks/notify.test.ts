@@ -17,6 +17,8 @@ import { tempDir } from "../testing/temp";
 import type { AlertEvent } from "../workflow/schema";
 import { inBackgroundSession } from "./background-session";
 import {
+  AGENT_VIEW_MATCHER,
+  AGENT_VIEW_TYPES,
   type Alert,
   ASK_MARK_MS,
   agentViewKey,
@@ -24,15 +26,19 @@ import {
   farEndIsWarp,
   isSsh,
   isWarpTerminal,
+  NOTIFY_MATCHER,
+  NOTIFY_TYPES,
   type NotifyDeps,
   notifyHook,
   notifySequence,
+  PLUGIN_NOTIFY_TYPES,
   readNotifyConfig,
   runtimeDir,
   terminalRoute,
   versionAtLeast,
   WAIT_END_EVENTS,
   warpAgentSequence,
+  warpEventOf,
   warpPluginOn,
   warpShowsIt,
 } from "./notify";
@@ -840,7 +846,7 @@ describe("Warp's agent format over SSH", () => {
     expect(farEndIsWarp({}, plain)).toBe(false);
   });
 
-  test("the four events: the exact JSON, in the one key order", () => {
+  test("the three events: the exact JSON, in the one key order", () => {
     expect(warpAgentSequence(alertOf("finished", "the body"), INPUT)).toBe(
       `${PREFIX}{"v":1,"agent":"claude","event":"stop","session_id":"s-1","cwd":"/home/user/my-app","project":"my-app","response":"the body"}\u0007`,
     );
@@ -861,25 +867,33 @@ describe("Warp's agent format over SSH", () => {
     expect(warpAgentSequence(alertOf("needs-you", "the body"), INPUT)).toBe(
       `${PREFIX}{"v":1,"agent":"claude","event":"permission_request","session_id":"s-1","cwd":"/home/user/my-app","project":"my-app","summary":"the body"}\u0007`,
     );
-    // A worker's permission prompt takes the same event; a question and every other wait
-    // are `agent_needs_input`.
-    expect(
-      warpAgentSequence(alertOf("needs-you", "the body"), {
-        ...INPUT,
-        notification_type: "worker_permission_prompt",
-      }),
-    ).toContain('"event":"permission_request"');
-    expect(
-      warpAgentSequence(alertOf("needs-you", "the body"), {
-        ...INPUT,
-        notification_type: "agent_needs_input",
-      }),
-    ).toBe(
-      `${PREFIX}{"v":1,"agent":"claude","event":"agent_needs_input","session_id":"s-1","cwd":"/home/user/my-app","project":"my-app","summary":"the body"}\u0007`,
-    );
+    // Every wait and question takes `permission_request`, the one event Warp showed a popup
+    // for: `agent_needs_input` gave only a tab badge (proved live on Windows Warp, 2026-10-19).
+    for (const notification_type of ["worker_permission_prompt", "agent_needs_input"]) {
+      expect(
+        warpAgentSequence(alertOf("needs-you", "the body"), { ...INPUT, notification_type }),
+      ).toBe(
+        `${PREFIX}{"v":1,"agent":"claude","event":"permission_request","session_id":"s-1","cwd":"/home/user/my-app","project":"my-app","summary":"the body"}\u0007`,
+      );
+    }
     expect(warpAgentSequence(alertOf("question", "the body"), {})).toBe(
-      `${PREFIX}{"v":1,"agent":"claude","event":"agent_needs_input","session_id":"","cwd":"","project":"","summary":"the body"}\u0007`,
+      `${PREFIX}{"v":1,"agent":"claude","event":"permission_request","session_id":"","cwd":"","project":"","summary":"the body"}\u0007`,
     );
+  });
+
+  test("the mapping: finished → stop, failed → stop_failure, every wait and question → permission_request", () => {
+    // One mapping, one home (`warpEventOf`). `agent_needs_input` is never sent: Warp showed
+    // only a tab badge for it and no popup.
+    expect(
+      ["needs-you", "question", "finished", "failed"].map(
+        (moment) => `${moment}: ${warpEventOf(alertOf(moment as Alert["moment"], "the body"))}`,
+      ),
+    ).toEqual([
+      "needs-you: permission_request",
+      "question: permission_request",
+      "finished: stop",
+      "failed: stop_failure",
+    ]);
   });
 
   test("exactly one ESC and one BEL: the sequence is a single notification", () => {
@@ -1698,11 +1712,28 @@ describe("the workflow's alert settings", () => {
 });
 
 describe("hooks.json wires what this hook handles", () => {
+  test("the two matchers are each one home, and the code accepts their union", () => {
+    // A session's own process gets the plugin's four types; agent view's two run from the
+    // user-level hook setup writes. The code accepts both, so either wiring answers the same.
+    expect([...PLUGIN_NOTIFY_TYPES]).toEqual([
+      "permission_prompt",
+      "elicitation_dialog",
+      "elicitation_url_dialog",
+      "worker_permission_prompt",
+    ]);
+    expect([...AGENT_VIEW_TYPES]).toEqual(["agent_needs_input", "agent_completed"]);
+    expect([...NOTIFY_TYPES]).toEqual([...PLUGIN_NOTIFY_TYPES, ...AGENT_VIEW_TYPES]);
+    expect(NOTIFY_MATCHER).toBe(
+      "permission_prompt|elicitation_dialog|elicitation_url_dialog|worker_permission_prompt",
+    );
+    expect(AGENT_VIEW_MATCHER).toBe("agent_needs_input|agent_completed");
+  });
+
   test("one handler per event, quiet mode, and the matchers match the code's own lists", () => {
     const wired = wiredNotify();
     expect(wired.map(({ event, matcher }) => `${event} ${matcher ?? ""}`).sort()).toEqual(
       [
-        "Notification permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input|agent_completed|worker_permission_prompt",
+        `Notification ${NOTIFY_MATCHER}`,
         "PostToolUse AskUserQuestion|ExitPlanMode",
         "PostToolUseFailure AskUserQuestion|ExitPlanMode",
         "PreToolUse AskUserQuestion|ExitPlanMode",
