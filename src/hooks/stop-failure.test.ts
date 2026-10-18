@@ -21,6 +21,7 @@ import {
   type Run,
   readAlertContext,
   runAlert,
+  stopFailureWillAlert,
   usesAlertWorker,
 } from "./stop-failure";
 import { decodedToastText } from "./windows-toast";
@@ -419,6 +420,30 @@ describe("which stops get an alert", () => {
       planAlert(AT_LIMIT, ctx({ alerts: read.alerts, alertsProblem: read.alertsProblem })),
     ).not.toBeNull();
   });
+
+  it("a background session: stopFailureWillAlert is false, so the notifier stays out too", () => {
+    // A background session inherits the daemon's display, so the alert it would show goes to
+    // a desktop the person is not looking at: agent view alerts for it instead
+    // (`background-session.ts`).
+    const home = tempDir("alert-context");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    mkdirSync(join(home, ".config", "cc-smart-dev-kit"), { recursive: true });
+    writeFileSync(paths.gatewayConfigFile, JSON.stringify(config()), { mode: 0o600 });
+    const deps = {
+      env: { DISPLAY: ":0" },
+      nowMs: NOW,
+      paths,
+      platform: "linux" as const,
+      which: (command: string) => (command === "notify-send" ? "/usr/bin/notify-send" : null),
+    };
+    expect(stopFailureWillAlert(AT_LIMIT, deps)).toBe(true);
+    expect(
+      stopFailureWillAlert(AT_LIMIT, {
+        ...deps,
+        env: { CLAUDE_JOB_DIR: join(home, "job"), DISPLAY: ":0" },
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("the worker shows it", () => {
@@ -598,7 +623,11 @@ describe("the hook as Claude Code runs it", () => {
    * state, a fake notify-send, and (unless `launcher` is false) a fake launcher in
    * `~/.local/bin` that runs this CLI's source, as the real one runs the installed version.
    */
-  function machine(gateway: "broken" | "none" | "ok", launcher = true) {
+  function machine(
+    gateway: "broken" | "none" | "ok",
+    launcher = true,
+    extraEnv: Record<string, string> = {},
+  ) {
     const home = tempDir("stop-failure");
     const claudeDir = join(home, ".claude");
     mkdirSync(claudeDir, { recursive: true });
@@ -651,7 +680,13 @@ describe("the hook as Claude Code runs it", () => {
     }
     const run = (input: unknown) =>
       Bun.spawnSync([process.execPath, ...guard.args, ENTRY], {
-        env: { CLAUDE_CONFIG_DIR: claudeDir, HOME: home, PATH: bin, ...guard.env },
+        env: {
+          CLAUDE_CONFIG_DIR: claudeDir,
+          HOME: home,
+          PATH: bin,
+          ...guard.env,
+          ...extraEnv,
+        },
         stdin: new Blob([typeof input === "string" ? input : JSON.stringify(input)]),
         stderr: "pipe",
         stdout: "pipe",
@@ -764,5 +799,17 @@ describe("the hook as Claude Code runs it", () => {
       await Bun.sleep(300);
       expect(existsSync(m.log)).toBe(false);
     }
+  });
+
+  it("a background session: no alert and no sound, whatever the limit", async () => {
+    // A background session shows no alert of its own: agent view alerts for it while the
+    // list is open (`background-session.ts`). The sound is silenced with the alert.
+    const m = machine("ok", true, { CLAUDE_JOB_DIR: join(tempDir("job"), "abc") });
+    const result = m.run(AT_LIMIT);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe("");
+    expect(result.stderr.toString()).toBe("");
+    await Bun.sleep(300);
+    expect(existsSync(m.log)).toBe(false);
   });
 });

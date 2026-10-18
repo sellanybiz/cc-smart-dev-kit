@@ -1527,8 +1527,11 @@ alert:
 | a question (`AskUserQuestion`) or a plan for your OK (`ExitPlanMode`) | `Claude asks you · <session>`, with the question |
 | the turn ended | `Claude finished · <session>`, with the turn's last answer |
 | the turn died on an error | `Claude stopped · <session>`, with the error |
+| agent view: a session waits, or finished or failed | `Claude needs you`, `Claude finished` or `Claude stopped`, with the list's message |
 
-`<session>` is the session's `/rename` name when it has one, else its folder. Questions need
+`<session>` is the session's `/rename` name when it has one, else its folder. Agent view's
+alerts carry no session name: Claude Code raises them in the list's own process, and the
+message says which session it is. Questions need
 a hook of their own: Claude Code raises no notification at the moment Claude asks. A few
 waits stay quiet on purpose: the idle wait (the "finished" alert already announced that
 turn), the permission prompt that follows a question about six seconds later (the same wait),
@@ -1538,6 +1541,15 @@ usage limit **where the `stop-failure` hook shows that alert itself** (a desktop
 gateway set up — never two alerts for one stop). Where that hook has no alert to show (no
 desktop, no gateway), the stopped turn is this hook's alert like any other.
 
+**Agent view** (`claude agents`, the list of sessions) raises its own alerts while the list is
+open: one for a session that needs your input, and one when a session finished or failed. The
+first says `Claude needs you`; the others say `Claude finished` or `Claude stopped`, and the
+list's message says which session and how it ended. **A background session** (one Claude Code
+started outside a terminal) shows no alert of its own: it inherits the display and terminal
+variables of the program that started it, so its own alert would go to the wrong place. Agent
+view is the one place its alerts come from while the list is open; with no list open, it does
+not alert.
+
 **A desktop** shows the alert through `notify-send` on Linux (it needs a desktop:
 `DISPLAY` or `WAYLAND_DISPLAY`) or `osascript` on macOS, and plays the freedesktop sound
 when `paplay` is installed. **An SSH session** with no desktop to show it on gets the same
@@ -1545,10 +1557,33 @@ alert in the terminal you are looking at, as an OSC 777 notification — no `not
 needed on a server: Claude Code writes the sequence for the hook (2.1.141 or later, wrapped
 for tmux itself), and for an event whose answer Claude Code does not read (the usage-limit
 alert) the hook writes it to the terminal device Claude Code's own session is attached to.
+**When the terminal at the far end of the SSH session is Warp**, the alert goes in Warp's own
+agent format instead: Warp shows its popup while it is in front, and a desktop notification
+with a sound while it is not (proved live on a Windows PC reached over SSH, 2026-10-18). A
+plain OSC 777 gives only a silent Windows notification there. A Warp tab sends nothing over
+SSH by default, so the client has to say it is Warp — with `LC_TERMINAL`, which sshd lets
+through with its usual `AcceptEnv LANG LC_*` (the Debian and Ubuntu default):
+
+```sh
+ssh -o SetEnv=LC_TERMINAL=WarpTerminal <host>
+```
+
+or one line in that host's block of `~/.ssh/config`:
+
+```
+Host <host>
+  SetEnv LC_TERMINAL=WarpTerminal
+```
+
+`ssh -G <host>` shows what the client will send. Inside tmux, a pane keeps the variables of
+the moment its tmux server started: after you change `SetEnv`, restart tmux, or the alert
+keeps its old form. A server whose sshd does not forward
+`LC_TERMINAL` needs the `sshWarp` fallback setting below.
 **Inside Warp** Warp's own
 Claude Code plugin shows a finished turn, a question, a permission prompt and an error
-itself, so ours stays quiet and plays only the sound — except a question or a waiting agent,
-which may sit in a tab you are not looking at: those stay ours. With no desktop, no SSH and
+itself, so ours stays quiet and plays only the sound — except a question, a waiting agent or
+agent view's finished/failed alert (Warp's plugin has no such alert), which may sit in a tab
+you are not looking at: those stay ours. With no desktop, no SSH and
 no Warp there is nowhere to show it, and nothing happens — not a failure.
 
 **A Linux desktop gives the alert three more things, each where its tool is installed**
@@ -1569,15 +1604,18 @@ behaviour does not come over: picking the session's **tab** inside XFCE Terminal
 the desktop's accessibility service, which this plugin does not carry) — the window comes to
 the front, and the tab stays where it is.
 
-One settings file, `~/.claude/cc-smart-dev-kit/notify.json` (both keys optional):
+One settings file, `~/.claude/cc-smart-dev-kit/notify.json` (all three keys optional):
 
 ```json
-{ "desktopSound": true, "sshBell": false }
+{ "desktopSound": true, "sshBell": false, "sshWarp": false }
 ```
 
 `desktopSound` (default `true`) plays the freedesktop sound with a desktop notification.
 `sshBell` (default `false`) sends a terminal bell after an SSH alert, for a terminal that
-ignores the notification.
+ignores the notification. Not with Warp at the far end: Warp decides the sound itself.
+`sshWarp` (default `false`) treats the far end of an SSH session as Warp when nothing else
+names it, so the alert goes in Warp's agent format. Turn it on only when you connect from
+Warp: another terminal ignores the sequence, and the alert is lost.
 
 **tmux swallows a sequence written inside a pane**, so an alert from a session in a tmux
 window reaches your terminal only through tmux's passthrough. `cc-smart-dev-kit setup` adds one line
@@ -2097,8 +2135,8 @@ record for the pull request's head commit: no record, and the merge asks you.
 
 | Setting | What it does |
 |---|---|
-| `alerts.events` | Which moments alert: `needs-you` (a permission prompt, an MCP prompt, a background agent waiting), `question` (a question, or a plan for your OK), `finished` (a turn ended), `failed` (a turn died). A moment left out is silence, on every route. |
-| `alerts.sound` | A sound with the alert where the platform has one: Linux's freedesktop sound through `paplay` (else `canberra-gtk-play`), a system sound through `afplay` on macOS, the toast's own sound on Windows, a terminal bell over SSH. Off by default; `notify.json`'s own `desktopSound` and `sshBell` keep working beside it. |
+| `alerts.events` | Which moments alert: `needs-you` (a permission prompt, an MCP prompt, a background agent waiting), `question` (a question, or a plan for your OK), `finished` (a turn ended, or agent view says a session finished), `failed` (a turn died, or agent view says a session failed). A moment left out is silence, on every route. |
+| `alerts.sound` | A sound with the alert where the platform has one: Linux's freedesktop sound through `paplay` (else `canberra-gtk-play`), a system sound through `afplay` on macOS, the toast's own sound on Windows, a terminal bell over SSH (not with Warp at the far end, which plays its own). Off by default; `notify.json`'s own `desktopSound` and `sshBell` keep working beside it. |
 | `alerts.usagePercent` | The plan usage, in percent, a warning starts at (85 by default) — the status line's `⚠`. |
 
 **The switches** (`switches.*`) are not stored anywhere: each one reads and writes the

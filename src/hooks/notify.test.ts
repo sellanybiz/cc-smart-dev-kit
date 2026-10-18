@@ -9,13 +9,19 @@
  * points at (`XDG_RUNTIME_DIR`), never the real one.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
+import type { AlertEvent } from "../workflow/schema";
+import { inBackgroundSession } from "./background-session";
 import {
+  type Alert,
   ASK_MARK_MS,
+  agentViewKey,
+  DEFAULT_NOTIFY_CONFIG,
+  farEndIsWarp,
   isSsh,
   isWarpTerminal,
   type NotifyDeps,
@@ -26,9 +32,11 @@ import {
   terminalRoute,
   versionAtLeast,
   WAIT_END_EVENTS,
+  warpAgentSequence,
   warpPluginOn,
   warpShowsIt,
 } from "./notify";
+import { stopFailureWillAlert } from "./stop-failure";
 import { decodedToastText } from "./windows-toast";
 
 const ENTRY = join(import.meta.dir, "..", "entries", "notify.ts");
@@ -621,7 +629,9 @@ describe("Warp: its own plugin shows the alert, ours plays the sound", () => {
     expect(warpShowsIt("Stop", {})).toBe(true);
     expect(warpShowsIt("PreToolUse", { tool_name: "AskUserQuestion" })).toBe(true);
     expect(warpShowsIt("Notification", { notification_type: "agent_needs_input" })).toBe(false);
+    expect(warpShowsIt("Notification", { notification_type: "agent_completed" })).toBe(false);
     expect(warpShowsIt("Notification", { notification_type: "elicitation_dialog" })).toBe(false);
+    expect(warpShowsIt("Notification", { notification_type: "permission_prompt" })).toBe(true);
   });
 
   test("without the plugin (or outside Warp): the normal alert", () => {
@@ -630,6 +640,386 @@ describe("Warp: its own plugin shows the alert, ours plays the sound", () => {
     notifyHook(stopInput(env.HOME), "Stop", deps);
     expect(runs.length).toBe(2);
     expect(runs[1]?.[1]).not.toBe("--urgency=critical");
+  });
+});
+
+describe("agent view: the sessions the list shows", () => {
+  /** The list's own input for agent view's alert: its session, its folder, the message. */
+  function agentInput(home: string, type: string, message: string): Record<string, unknown> {
+    return {
+      cwd: join(home, "my-app"),
+      hook_event_name: "Notification",
+      message,
+      notification_type: type,
+      session_id: "list-1",
+    };
+  }
+
+  test("a finished and a failed session: the message, no session name, the moment's urgency and sound", () => {
+    const { bin, env, home } = machine();
+    const finished = setup(env);
+    notifyHook(
+      agentInput(home, "agent_completed", "my-app finished"),
+      "Notification",
+      finished.deps,
+    );
+    expect(finished.runs).toEqual([
+      [join(bin, "paplay"), "/usr/share/sounds/freedesktop/stereo/service-logout.oga"],
+      [join(bin, "notify-send"), "Claude finished", "my-app finished"],
+    ]);
+    const failed = setup(env);
+    notifyHook(agentInput(home, "agent_completed", "my-app failed"), "Notification", failed.deps);
+    expect(failed.runs).toEqual([
+      [join(bin, "paplay"), "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga"],
+      [join(bin, "notify-send"), "--urgency=critical", "Claude stopped", "my-app failed"],
+    ]);
+    // An empty message falls back to the moment's own sentence.
+    const empty = setup(env);
+    notifyHook(agentInput(home, "agent_completed", ""), "Notification", empty.deps);
+    expect(empty.runs[1]).toEqual([
+      join(bin, "notify-send"),
+      "Claude finished",
+      "A background session finished.",
+    ]);
+  });
+
+  test("over SSH, plain far end: the exact OSC 777, titled without the list's folder", () => {
+    const { env, home } = machine({
+      CLAUDE_CODE_VERSION: "2.1.301",
+      DISPLAY: "",
+      SSH_CONNECTION: "10.0.0.2 51000",
+    });
+    const finished = setup(env);
+    expect(
+      notifyHook(
+        agentInput(home, "agent_completed", "my-app finished"),
+        "Notification",
+        finished.deps,
+      ),
+    ).toEqual({});
+    expect(finished.tty).toEqual(["\u001b]777;notify;Claude finished;my-app finished\u0007"]);
+    const failed = setup(env);
+    expect(
+      notifyHook(agentInput(home, "agent_completed", "my-app failed"), "Notification", failed.deps),
+    ).toEqual({});
+    expect(failed.tty).toEqual(["\u001b]777;notify;Claude stopped;my-app failed\u0007"]);
+  });
+
+  test("the list never writes a hook's terminalSequence: its own device carries the alert", () => {
+    // Claude Code 2.1.302's list reads the field but has no writer for it, so a field answer
+    // would be lost. With a version that would pick the field for any other alert, agent
+    // view's alerts still go to a device: `/dev/tty`, else the list's own pty — never both.
+    const { env, home } = machine({
+      CLAUDE_CODE_VERSION: "2.1.302",
+      DISPLAY: "",
+      SSH_CONNECTION: "10.0.0.2 51000",
+    });
+    expect(terminalRoute("Notification", env, "agent_completed")).toBe("device-then-field");
+    expect(terminalRoute("Notification", env, "agent_needs_input")).toBe("device-then-field");
+    expect(terminalRoute("Notification", env, "permission_prompt")).toBe("field");
+    const waiting = setup(env, { writeTerminal: () => false });
+    expect(
+      notifyHook(
+        agentInput(home, "agent_needs_input", "my-app needs your input"),
+        "Notification",
+        waiting.deps,
+      ),
+    ).toEqual({});
+    expect(waiting.tty).toEqual([]);
+    expect(waiting.session).toEqual([
+      "\u001b]777;notify;Claude needs you;my-app needs your input\u0007",
+    ]);
+    // No device at all (a host without `/proc`): the field still carries it — a session's own
+    // `agent_needs_input` (a teammate's setup question) has it written out. One write only.
+    const nowhere = setup(env, { writeSessionTerminal: () => false, writeTerminal: () => false });
+    expect(
+      notifyHook(
+        agentInput(home, "agent_needs_input", "Teammate setup needs your input"),
+        "Notification",
+        nowhere.deps,
+      ),
+    ).toEqual({
+      stdout:
+        '{"terminalSequence":"\\u001b]777;notify;Claude needs you;Teammate setup needs your input\\u0007"}',
+    });
+    // Every other alert on the device route still ends there: no field for StopFailure.
+    const failure = setup(env, { writeSessionTerminal: () => false, writeTerminal: () => false });
+    expect(
+      notifyHook(
+        { cwd: join(home, "my-app"), error: "overloaded_error", session_id: "s-1" },
+        "StopFailure",
+        failure.deps,
+      ),
+    ).toEqual({});
+  });
+
+  test("on the desktop, each background session keeps its own alert", () => {
+    // The list's session is the same for all of them: the key adds the session the message
+    // names, so B's "finished" never closes A's "needs your input".
+    const a = agentViewKey("list-1", "fix-login needs your input: Which branch?");
+    expect(agentViewKey("list-1", "fix-login needs your input")).toBe(a);
+    expect(agentViewKey("list-1", "fix-login finished")).toBe(a);
+    expect(agentViewKey("list-1", "fix-login failed")).toBe(a);
+    expect(agentViewKey("list-1", "add-search finished")).not.toBe(a);
+    expect(agentViewKey("list-2", "fix-login finished")).not.toBe(a);
+    expect(a).toStartWith("list-1-");
+    expect(a).toMatch(/^[A-Za-z0-9-]+$/);
+  });
+
+  test("no label and no question mark: the input is the list's, not the background session's", () => {
+    const { bin, env, home, runtime } = machine();
+    // Both would label an ordinary alert: the transcript's name and the folder.
+    const file = transcript([{ customTitle: "the list", type: "user" }], home);
+    const mark = join(runtime, "cc-smart-dev-kit-notify-asked-list-1");
+    writeFileSync(mark, "1\n");
+    const waiting = setup(env);
+    notifyHook(
+      {
+        ...agentInput(home, "agent_needs_input", "my-app needs your input: Which branch?"),
+        transcript_path: file,
+      },
+      "Notification",
+      waiting.deps,
+    );
+    expect(waiting.runs).toEqual([
+      [join(bin, "paplay"), "/usr/share/sounds/freedesktop/stereo/service-login.oga"],
+      [
+        join(bin, "notify-send"),
+        "--urgency=critical",
+        "Claude needs you",
+        "my-app needs your input: Which branch?",
+      ],
+    ]);
+    // A permission prompt for the same marked session is the wait already alerted about.
+    const prompt = setup(env);
+    notifyHook(
+      {
+        hook_event_name: "Notification",
+        message: "Claude needs your permission",
+        notification_type: "permission_prompt",
+        session_id: "list-1",
+      },
+      "Notification",
+      prompt.deps,
+    );
+    expect(prompt.runs).toEqual([]);
+  });
+});
+
+describe("Warp's agent format over SSH", () => {
+  /** An alert as `alertFor` hands it over: only the moment and the body matter here. */
+  function alertOf(moment: AlertEvent, body: string): Alert {
+    return { body, critical: false, moment, sound: null, title: "Claude" };
+  }
+
+  const INPUT = {
+    cwd: "/home/user/my-app",
+    error: "overloaded_error",
+    notification_type: "permission_prompt",
+    session_id: "s-1",
+  };
+  const PREFIX = "\u001b]777;notify;warp://cli-agent;";
+
+  test("the far end is Warp: LC_TERMINAL, a named terminal, or the person's fallback", () => {
+    const plain = DEFAULT_NOTIFY_CONFIG;
+    const fallback = { ...DEFAULT_NOTIFY_CONFIG, sshWarp: true };
+    expect(farEndIsWarp({ TERM_PROGRAM: "WarpTerminal" }, plain)).toBe(true);
+    expect(
+      farEndIsWarp({ WARP_CLI_AGENT_PROTOCOL_VERSION: "1", WARP_CLIENT_VERSION: "v1" }, plain),
+    ).toBe(true);
+    // A terminal that names itself decides: VS Code says vscode, whatever the client sent.
+    expect(farEndIsWarp({ LC_TERMINAL: "WarpTerminal", TERM_PROGRAM: "vscode" }, plain)).toBe(
+      false,
+    );
+    // tmux's own TERM_PROGRAM says nothing about the far end, so LC_TERMINAL decides.
+    expect(farEndIsWarp({ LC_TERMINAL: "WarpTerminal", TERM_PROGRAM: "tmux" }, plain)).toBe(true);
+    // LC_TERMINAL names another client (iTerm2 sends it too): not Warp, whatever the fallback.
+    expect(farEndIsWarp({ LC_TERMINAL: "iTerm2" }, fallback)).toBe(false);
+    expect(farEndIsWarp({ LC_TERMINAL: "warpterminal" }, plain)).toBe(true);
+    expect(farEndIsWarp({}, fallback)).toBe(true);
+    expect(farEndIsWarp({}, plain)).toBe(false);
+  });
+
+  test("the four events: the exact JSON, in the one key order", () => {
+    expect(warpAgentSequence(alertOf("finished", "the body"), INPUT)).toBe(
+      `${PREFIX}{"v":1,"agent":"claude","event":"stop","session_id":"s-1","cwd":"/home/user/my-app","project":"my-app","response":"the body"}\u0007`,
+    );
+    expect(warpAgentSequence(alertOf("failed", "the body"), INPUT)).toBe(
+      `${PREFIX}{"v":1,"agent":"claude","event":"stop_failure","session_id":"s-1","cwd":"/home/user/my-app","project":"my-app","response":"the body","error_type":"overloaded_error"}\u0007`,
+    );
+    // Warp shows `error_type` as a prefix of the text, so an input that names no error leaves
+    // the key out entirely: an `agent_completed` failure has none, and "unknown" would show.
+    for (const noError of [
+      { ...INPUT, error: undefined },
+      { ...INPUT, error: "" },
+      { ...INPUT, error: 7 },
+    ]) {
+      expect(warpAgentSequence(alertOf("failed", "the body"), noError)).toBe(
+        `${PREFIX}{"v":1,"agent":"claude","event":"stop_failure","session_id":"s-1","cwd":"/home/user/my-app","project":"my-app","response":"the body"}\u0007`,
+      );
+    }
+    expect(warpAgentSequence(alertOf("needs-you", "the body"), INPUT)).toBe(
+      `${PREFIX}{"v":1,"agent":"claude","event":"permission_request","session_id":"s-1","cwd":"/home/user/my-app","project":"my-app","summary":"the body"}\u0007`,
+    );
+    // A worker's permission prompt takes the same event; a question and every other wait
+    // are `agent_needs_input`.
+    expect(
+      warpAgentSequence(alertOf("needs-you", "the body"), {
+        ...INPUT,
+        notification_type: "worker_permission_prompt",
+      }),
+    ).toContain('"event":"permission_request"');
+    expect(
+      warpAgentSequence(alertOf("needs-you", "the body"), {
+        ...INPUT,
+        notification_type: "agent_needs_input",
+      }),
+    ).toBe(
+      `${PREFIX}{"v":1,"agent":"claude","event":"agent_needs_input","session_id":"s-1","cwd":"/home/user/my-app","project":"my-app","summary":"the body"}\u0007`,
+    );
+    expect(warpAgentSequence(alertOf("question", "the body"), {})).toBe(
+      `${PREFIX}{"v":1,"agent":"claude","event":"agent_needs_input","session_id":"","cwd":"","project":"","summary":"the body"}\u0007`,
+    );
+  });
+
+  test("exactly one ESC and one BEL: the sequence is a single notification", () => {
+    const sequence = warpAgentSequence(alertOf("finished", "the body"), INPUT);
+    expect([...sequence].filter((char) => char === "\u001b")).toHaveLength(1);
+    expect([...sequence].filter((char) => char === "\u0007")).toHaveLength(1);
+  });
+
+  test("through the hook's field: stdout is the Warp sequence, and sshBell adds no second BEL", () => {
+    const { env } = machine({
+      CLAUDE_CODE_VERSION: "2.1.301",
+      DISPLAY: "",
+      LC_TERMINAL: "WarpTerminal",
+      SSH_CONNECTION: "10.0.0.2 51000",
+    });
+    writeConfig(env, { sshBell: true });
+    const sequence =
+      '\u001b]777;notify;warp://cli-agent;{"v":1,"agent":"claude","event":"stop","session_id":"11111111-2222-3333-4444-555555555555","cwd":"","project":"","response":"Claude finished its turn."}\u0007';
+    const result = run(
+      { hook_event_name: "Stop", session_id: "11111111-2222-3333-4444-555555555555" },
+      env,
+    );
+    expect(result).toEqual({
+      exitCode: 0,
+      stderr: "",
+      stdout: `{"terminalSequence":${JSON.stringify(sequence)}}`,
+    });
+    expect([...sequence].filter((char) => char === "\u0007")).toHaveLength(1);
+  });
+
+  test("a Warpified list with Warp's plugin on: Stop stays quiet, agent_completed goes out in Warp's format", () => {
+    const { env, home } = machine({
+      CLAUDE_CODE_VERSION: "2.1.301",
+      DISPLAY: "",
+      SSH_CONNECTION: "10.0.0.2 51000",
+      TERM_PROGRAM: "WarpTerminal",
+    });
+    warpPlugin(env);
+    const stop = setup(env);
+    expect(notifyHook(stopInput(home), "Stop", stop.deps)).toEqual({});
+    expect(stop.runs).toEqual([]);
+    expect(stop.tty).toEqual([]);
+
+    const done = setup(env);
+    const result = notifyHook(
+      {
+        cwd: join(home, "my-app"),
+        hook_event_name: "Notification",
+        message: "my-app finished",
+        notification_type: "agent_completed",
+        session_id: "list-3",
+      },
+      "Notification",
+      done.deps,
+    );
+    const sequence = `\u001b]777;notify;warp://cli-agent;{"v":1,"agent":"claude","event":"stop","session_id":"list-3","cwd":"${join(home, "my-app")}","project":"my-app","response":"my-app finished"}\u0007`;
+    expect(result).toEqual({});
+    expect(done.tty).toEqual([sequence]);
+    expect(done.runs).toEqual([]);
+  });
+});
+
+describe("a background session leaves its alerts to agent view", () => {
+  const JOB = "/home/user/.claude/jobs/abc";
+
+  test("inBackgroundSession reads CLAUDE_JOB_DIR, and nothing else", () => {
+    expect(inBackgroundSession({ CLAUDE_JOB_DIR: JOB })).toBe(true);
+    expect(inBackgroundSession({ CLAUDE_JOB_DIR: "" })).toBe(false);
+    expect(inBackgroundSession({})).toBe(false);
+    expect(inBackgroundSession({ CLAUDE_CODE_SESSION_KIND: "bg" })).toBe(false);
+  });
+
+  test("with a desktop and a notifier: nothing runs, nothing is written, the answer is empty", () => {
+    const { env, home } = machine({ CLAUDE_JOB_DIR: JOB });
+    const { deps, runs, session, tty } = setup(env);
+    expect(notifyHook(stopInput(home), "Stop", deps)).toEqual({});
+    expect(runs).toEqual([]);
+    expect(tty).toEqual([]);
+    expect(session).toEqual([]);
+    // Not even the question's mark: a question writes one in any other session, and here
+    // the hook returned before it wrote anything.
+    const asked = setup(env);
+    expect(
+      notifyHook(
+        {
+          hook_event_name: "PreToolUse",
+          session_id: "list-1",
+          tool_input: { questions: [{ question: "Which branch?" }] },
+          tool_name: "AskUserQuestion",
+        },
+        "PreToolUse",
+        asked.deps,
+      ),
+    ).toEqual({});
+    expect(asked.runs).toEqual([]);
+    expect(existsSync(join(runtimeDir(env), "cc-smart-dev-kit-notify-asked-list-1"))).toBe(false);
+
+    const result = run(
+      {
+        cwd: home,
+        hook_event_name: "Notification",
+        message: "Claude needs your permission to use Bash",
+        notification_type: "permission_prompt",
+        session_id: "list-1",
+      },
+      env,
+    );
+    expect(result).toEqual({ exitCode: 0, stderr: "", stdout: "" });
+    expect(existsSync(join(home, "notify.log"))).toBe(false);
+  });
+
+  test("over SSH too: no terminal sequence, and no usage-limit alert", () => {
+    const { env, home } = machine({
+      CLAUDE_CODE_VERSION: "2.1.301",
+      CLAUDE_JOB_DIR: JOB,
+      DISPLAY: "",
+      SSH_CONNECTION: "10.0.0.2 51000",
+    });
+    const { deps, runs, tty } = setup(env);
+    expect(notifyHook(stopInput(home), "Stop", deps)).toEqual({});
+    expect(runs).toEqual([]);
+    expect(tty).toEqual([]);
+    expect(notifyHook(limitInput(env), "StopFailure", deps)).toEqual({});
+    expect(runs).toEqual([]);
+  });
+
+  test("the usage-limit alert's own hook says it will not alert, so the notifier is not the second", () => {
+    const { env } = machine();
+    gatewaySetUp(env);
+    const deps = {
+      env,
+      nowMs: Date.now(),
+      paths: cliPaths(env),
+      platform: "linux" as const,
+      which: (command: string) => Bun.which(command, { PATH: env.PATH ?? "" }),
+    };
+    expect(stopFailureWillAlert(limitInput(env), deps)).toBe(true);
+    expect(
+      stopFailureWillAlert(limitInput(env), { ...deps, env: { ...env, CLAUDE_JOB_DIR: JOB } }),
+    ).toBe(false);
   });
 });
 
@@ -833,16 +1223,19 @@ describe("the SSH terminal route", () => {
     );
   });
 
-  test("the settings file: its two keys, and the defaults for anything else", () => {
+  test("the settings file: its three keys, and the defaults for anything else", () => {
     const home = tempDir("notify-config");
     const file = join(home, "notify.json");
-    expect(readNotifyConfig(file)).toEqual({ desktopSound: true, sshBell: false });
+    expect(readNotifyConfig(file)).toEqual({ desktopSound: true, sshBell: false, sshWarp: false });
     writeFileSync(file, "not json");
-    expect(readNotifyConfig(file)).toEqual({ desktopSound: true, sshBell: false });
-    writeFileSync(file, JSON.stringify({ desktopSound: "no", sshBell: 1 }));
-    expect(readNotifyConfig(file)).toEqual({ desktopSound: true, sshBell: false });
-    writeFileSync(file, JSON.stringify({ desktopSound: false, sshBell: true }));
-    expect(readNotifyConfig(file)).toEqual({ desktopSound: false, sshBell: true });
+    expect(readNotifyConfig(file)).toEqual({ desktopSound: true, sshBell: false, sshWarp: false });
+    writeFileSync(file, JSON.stringify({ desktopSound: "no", sshBell: 1, sshWarp: "yes" }));
+    expect(readNotifyConfig(file)).toEqual({ desktopSound: true, sshBell: false, sshWarp: false });
+    writeFileSync(file, JSON.stringify({ desktopSound: false, sshBell: true, sshWarp: true }));
+    expect(readNotifyConfig(file)).toEqual({ desktopSound: false, sshBell: true, sshWarp: true });
+    // The fallback is off unless the file says exactly true: it changes how every SSH alert goes.
+    writeFileSync(file, JSON.stringify({ sshWarp: false }));
+    expect(readNotifyConfig(file).sshWarp).toBe(false);
     expect(runtimeDir({ XDG_RUNTIME_DIR: "/run/user/1001" })).toBe("/run/user/1001");
   });
 
@@ -1157,6 +1550,34 @@ describe("the workflow's alert settings", () => {
     expect(on.runs.length).toBeGreaterThan(0);
   });
 
+  test("agent view's finished or failed alert is the moment its message names, and alerts.events decides", () => {
+    const { env } = machine();
+    const input = {
+      cwd: join(env.HOME, "my-app"),
+      hook_event_name: "Notification",
+      message: "my-app finished",
+      notification_type: "agent_completed",
+      session_id: "list-2",
+    };
+    writeAlerts(env, { events: ["needs-you", "question", "failed"] });
+    const hiddenFinished = setup(env);
+    expect(notifyHook(input, "Notification", hiddenFinished.deps)).toEqual({});
+    expect(hiddenFinished.runs).toEqual([]);
+
+    writeAlerts(env, { events: ["needs-you", "question", "finished"] });
+    const hiddenFailed = setup(env);
+    expect(
+      notifyHook({ ...input, message: "my-app failed" }, "Notification", hiddenFailed.deps),
+    ).toEqual({});
+    expect(hiddenFailed.runs).toEqual([]);
+
+    // The moment the person kept still alerts.
+    writeAlerts(env, { events: ["finished"] });
+    const shown = setup(env);
+    notifyHook(input, "Notification", shown.deps);
+    expect(shown.runs.length).toBe(2);
+  });
+
   test("a question left out: the permission prompt that follows it still alerts", () => {
     const { env } = machine();
     writeAlerts(env, { events: ["needs-you", "finished", "failed"] });
@@ -1281,7 +1702,7 @@ describe("hooks.json wires what this hook handles", () => {
     const wired = wiredNotify();
     expect(wired.map(({ event, matcher }) => `${event} ${matcher ?? ""}`).sort()).toEqual(
       [
-        "Notification permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input|worker_permission_prompt",
+        "Notification permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input|agent_completed|worker_permission_prompt",
         "PostToolUse AskUserQuestion|ExitPlanMode",
         "PostToolUseFailure AskUserQuestion|ExitPlanMode",
         "PreToolUse AskUserQuestion|ExitPlanMode",
