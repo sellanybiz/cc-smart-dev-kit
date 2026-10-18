@@ -1550,7 +1550,12 @@ gateway set up — never two alerts for one stop). Where that hook has no alert 
 desktop, no gateway), the stopped turn is this hook's alert like any other.
 
 **Agent view** (`claude agents`, the list of sessions) raises its own alerts while the list is
-open: one for a session that needs your input, and one when a session finished or failed. The
+open: one for a session that needs your input, and one when a session finished or failed.
+Two limits are Claude Code's own: the list alerts only for a session it saw in another state
+first (one that starts and waits or finishes within seconds gives none), and **while you are
+inside a session you opened from the list, it raises no alert for the others**. To keep every
+alert, leave one tab on the list and open a session in another tab with
+`claude attach <name>`. The
 first says `Claude needs you`; the others say `Claude finished` or `Claude stopped`, and the
 list's message says which session and how it ended. **Agent view runs only the hooks in
 settings files, never a plugin's**, so `cc-smart-dev-kit setup` writes one user-level
