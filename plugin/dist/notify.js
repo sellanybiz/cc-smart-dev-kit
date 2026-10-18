@@ -116,7 +116,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.5.0",
+  version: "0.5.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6849,6 +6849,11 @@ function soundArgv(moment, platform, which) {
   return null;
 }
 
+// src/hooks/background-session.ts
+function inBackgroundSession(env) {
+  return (env.CLAUDE_JOB_DIR ?? "") !== "";
+}
+
 // src/hooks/desktop-alert.ts
 var TOOL_TIMEOUT_MS = 5000;
 function hasDesktop(platform, env) {
@@ -7352,6 +7357,8 @@ function limitAlertDesktop(platform, env, which) {
   return false;
 }
 function stopFailureWillAlert(input, deps) {
+  if (inBackgroundSession(deps.env))
+    return false;
   if (!limitAlertDesktop(deps.platform, deps.env, deps.which))
     return false;
   return planAlert(input, readAlertContext(deps.paths, deps.nowMs, input, deps.env)) !== null;
@@ -7376,10 +7383,15 @@ var NOTIFY_TYPES = [
   "elicitation_dialog",
   "elicitation_url_dialog",
   "agent_needs_input",
+  "agent_completed",
   "worker_permission_prompt"
 ];
+var AGENT_VIEW_TYPES = ["agent_needs_input", "agent_completed"];
 var ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"];
+var AGENT_FINISHED_BODY = "A background session finished.";
+var AGENT_FAILED_BODY = "A background session failed.";
 var TYPE_BODY = {
+  agent_completed: AGENT_FINISHED_BODY,
   agent_needs_input: "A background agent is waiting for you.",
   elicitation_dialog: "Claude asks you for input.",
   elicitation_url_dialog: "Claude asks you to open a page.",
@@ -7394,6 +7406,9 @@ var TRANSCRIPT_FLUSH_MS = 300;
 var TERMINAL_SEQUENCE_MIN_VERSION = "2.1.141";
 var TERMINAL_SEQUENCE_EVENTS = ["Notification", "PreToolUse", "Stop"];
 var WARP_PLUGIN_ID = "warp@claude-code-warp";
+var WARP_AGENT_TITLE = "warp://cli-agent";
+var WARP_AGENT_PROTOCOL = 1;
+var WARP_TERMINAL_NAME = "warpterminal";
 function isJsonObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -7434,7 +7449,7 @@ function isSsh(env) {
   return (env.SSH_CONNECTION ?? "") !== "" || (env.SSH_TTY ?? "") !== "";
 }
 function isWarpTerminal(env) {
-  if ((env.TERM_PROGRAM ?? "").toLowerCase() === "warpterminal")
+  if ((env.TERM_PROGRAM ?? "").toLowerCase() === WARP_TERMINAL_NAME)
     return true;
   return (env.WARP_CLI_AGENT_PROTOCOL_VERSION ?? "") !== "" && (env.WARP_CLIENT_VERSION ?? "") !== "";
 }
@@ -7462,7 +7477,49 @@ function warpShowsIt(event, input) {
   if (event !== "Notification")
     return true;
   const type = typeof input.notification_type === "string" ? input.notification_type : "";
-  return !(type.startsWith("elicitation") || type === "agent_needs_input");
+  return !(type.startsWith("elicitation") || AGENT_VIEW_TYPES.includes(type));
+}
+function warpEventOf(alert, notificationType) {
+  if (alert.moment === "finished")
+    return "stop";
+  if (alert.moment === "failed")
+    return "stop_failure";
+  if (alert.moment === "needs-you" && (notificationType === "permission_prompt" || notificationType === "worker_permission_prompt")) {
+    return "permission_request";
+  }
+  return "agent_needs_input";
+}
+function warpAgentSequence(alert, input) {
+  const cwd = typeof input.cwd === "string" ? input.cwd : "";
+  const type = typeof input.notification_type === "string" ? input.notification_type : "";
+  const event = warpEventOf(alert, type);
+  const payload = {
+    v: WARP_AGENT_PROTOCOL,
+    agent: "claude",
+    event,
+    session_id: typeof input.session_id === "string" ? input.session_id : "",
+    cwd,
+    project: cwd === "" ? "" : basename(cwd)
+  };
+  if (event === "stop" || event === "stop_failure")
+    payload.response = alert.body;
+  else
+    payload.summary = alert.body;
+  if (event === "stop_failure" && typeof input.error === "string" && input.error !== "") {
+    payload.error_type = input.error;
+  }
+  return `\x1B]777;notify;${WARP_AGENT_TITLE};${JSON.stringify(payload)}\x07`;
+}
+function farEndIsWarp(env, config) {
+  if (isWarpTerminal(env))
+    return true;
+  const program = env.TERM_PROGRAM ?? "";
+  if (program !== "" && program.toLowerCase() !== "tmux")
+    return false;
+  const client = env.LC_TERMINAL ?? "";
+  if (client !== "")
+    return client.toLowerCase() === WARP_TERMINAL_NAME;
+  return config.sshWarp;
 }
 function sessionLabel(transcript, cwd) {
   if (transcript !== null) {
@@ -7484,6 +7541,7 @@ function askAlert(input, ctx) {
     return {
       body: "A plan is ready for your OK",
       critical: true,
+      moment: "question",
       sound: "service-login",
       title: titled("Claude asks you", ctx.label)
     };
@@ -7494,6 +7552,7 @@ function askAlert(input, ctx) {
   return {
     body: shown(asked, "Claude has a question for you"),
     critical: true,
+    moment: "question",
     sound: "service-login",
     title: titled("Claude asks you", ctx.label)
   };
@@ -7512,6 +7571,7 @@ function alertFor(input, event, ctx) {
       return {
         body: shown(text, "The turn ended with an error"),
         critical: true,
+        moment: "failed",
         sound: "dialog-warning",
         title: titled("Claude stopped", ctx.label)
       };
@@ -7527,6 +7587,7 @@ function alertFor(input, event, ctx) {
       return {
         body: shown(answer ?? "", "Claude finished its turn."),
         critical: false,
+        moment: "finished",
         sound: "service-logout",
         title: titled("Claude finished", ctx.label)
       };
@@ -7540,14 +7601,26 @@ function alertFor(input, event, ctx) {
       const type = typeof input.notification_type === "string" ? input.notification_type : "";
       if (!NOTIFY_TYPES.includes(type))
         return null;
-      if (markedWaiting(ctx.mark, ctx.nowMs))
+      const agentView = AGENT_VIEW_TYPES.includes(type);
+      if (!agentView && markedWaiting(ctx.mark, ctx.nowMs))
         return null;
       const message = typeof input.message === "string" ? input.message : "";
+      if (type === "agent_completed") {
+        const failed = message.endsWith(" failed");
+        return {
+          body: shown(message, failed ? AGENT_FAILED_BODY : AGENT_FINISHED_BODY),
+          critical: failed,
+          moment: failed ? "failed" : "finished",
+          sound: failed ? "dialog-warning" : "service-logout",
+          title: titled(failed ? "Claude stopped" : "Claude finished", null)
+        };
+      }
       return {
         body: shown(message, TYPE_BODY[type] ?? "Claude needs you."),
         critical: true,
+        moment: "needs-you",
         sound: "service-login",
-        title: titled("Claude needs you", ctx.label)
+        title: titled("Claude needs you", agentView ? null : ctx.label)
       };
     }
     default:
@@ -7571,9 +7644,12 @@ function writeFailed(file, key) {
     writeFileSync(file, key);
   } catch {}
 }
-function terminalRoute(event, env) {
+function terminalRoute(event, env, notificationType = "") {
   if (!TERMINAL_SEQUENCE_EVENTS.includes(event))
     return "tty";
+  if (event === "Notification" && AGENT_VIEW_TYPES.includes(notificationType)) {
+    return "device-then-field";
+  }
   const raw = env.CLAUDE_CODE_VERSION;
   if (raw === undefined || raw === "")
     return "field-if-no-tty";
@@ -7601,7 +7677,11 @@ function tmuxPassthrough(sequence) {
 function forTty(sequence, env) {
   return (env.TMUX ?? "") === "" ? sequence : tmuxPassthrough(sequence);
 }
-var DEFAULT_NOTIFY_CONFIG = { desktopSound: true, sshBell: false };
+var DEFAULT_NOTIFY_CONFIG = {
+  desktopSound: true,
+  sshBell: false,
+  sshWarp: false
+};
 function readNotifyConfig(file) {
   let parsed;
   try {
@@ -7613,7 +7693,8 @@ function readNotifyConfig(file) {
     return DEFAULT_NOTIFY_CONFIG;
   return {
     desktopSound: typeof parsed.desktopSound === "boolean" ? parsed.desktopSound : true,
-    sshBell: parsed.sshBell === true
+    sshBell: parsed.sshBell === true,
+    sshWarp: parsed.sshWarp === true
   };
 }
 function spawnNotifyFor(platform) {
@@ -7622,6 +7703,10 @@ function spawnNotifyFor(platform) {
       onError: (message) => console.error(`cc-smart-dev-kit notify: could not show the notification: ${message}`)
     });
   };
+}
+function agentViewKey(session, message) {
+  const named = message.replace(/ (?:needs your input(?:: [\s\S]*)?|finished|failed)$/, "");
+  return `${session}-${Bun.hash(named).toString(36)}`;
 }
 function desktopTarget(deps, cwd, label, session) {
   return {
@@ -7656,16 +7741,12 @@ function playSound(alert, deps, config, alerts) {
   if (argv !== null)
     deps.run(argv);
 }
-var ALERT_EVENT_OF = {
-  Notification: "needs-you",
-  PreToolUse: "question",
-  Stop: "finished",
-  StopFailure: "failed"
-};
 function notifyHook(input, event, deps) {
   if (!isJsonObject4(input))
     return SILENT;
   if ((deps.env.CLAUDE_CODE_ENTRYPOINT ?? "cli") !== "cli")
+    return SILENT;
+  if (inBackgroundSession(deps.env))
     return SILENT;
   const session = sessionKey(input.session_id);
   const dir = runtimeDir(deps.env);
@@ -7696,14 +7777,16 @@ function notifyHook(input, event, deps) {
   if (alert === null)
     return SILENT;
   const here = alertsAt(deps.paths, cwd, deps.env);
-  const kind = ALERT_EVENT_OF[event];
-  if (kind !== undefined && !here.alerts.events.value.includes(kind)) {
+  if (!here.alerts.events.value.includes(alert.moment)) {
     if (event === "PreToolUse")
       forget(mark);
     return withProblem(SILENT, here.problem);
   }
   const config = readNotifyConfig(deps.paths.notifyConfigFile);
-  const argv = desktopCommand(alert, deps, desktopTarget(deps, cwd, label, session));
+  const type = typeof input.notification_type === "string" ? input.notification_type : "";
+  const agentView = event === "Notification" && AGENT_VIEW_TYPES.includes(type);
+  const desktopKey = agentView ? agentViewKey(session, typeof input.message === "string" ? input.message : "") : session;
+  const argv = desktopCommand(alert, deps, desktopTarget(deps, cwd, label, desktopKey));
   if (isWarpTerminal(deps.env) && warpPluginOn(deps.paths.claudeConfigDir)) {
     if (warpShowsIt(event, input)) {
       if (argv !== null)
@@ -7718,16 +7801,23 @@ function notifyHook(input, event, deps) {
   }
   if (!isSsh(deps.env))
     return withProblem(SILENT, here.problem);
-  const sequence = config.sshBell || here.alerts.sound.value ? `${notifySequence(alert.title, alert.body)}\x07` : notifySequence(alert.title, alert.body);
-  const route = terminalRoute(event, deps.env);
+  let sequence;
+  if (farEndIsWarp(deps.env, config)) {
+    sequence = warpAgentSequence(alert, input);
+  } else {
+    const plain = notifySequence(alert.title, alert.body);
+    sequence = config.sshBell || here.alerts.sound.value ? `${plain}\x07` : plain;
+  }
+  const route = terminalRoute(event, deps.env, type);
   if (route === "field")
     return withProblem(fieldAnswer(sequence), here.problem);
   const onTty = forTty(sequence, deps.env);
-  if (route === "tty") {
+  if (route === "tty" || route === "device-then-field") {
     if (deps.writeTerminal(onTty))
       return withProblem(SILENT, here.problem);
-    deps.writeSessionTerminal(onTty);
-    return withProblem(SILENT, here.problem);
+    if (deps.writeSessionTerminal(onTty))
+      return withProblem(SILENT, here.problem);
+    return route === "device-then-field" ? withProblem(fieldAnswer(sequence), here.problem) : withProblem(SILENT, here.problem);
   }
   return deps.writeTerminal(onTty) ? withProblem(SILENT, here.problem) : withProblem(fieldAnswer(sequence), here.problem);
 }

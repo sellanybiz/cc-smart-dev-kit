@@ -1333,7 +1333,8 @@ twice.
 settings, when a project has them (§ The workflow › The alert settings).
 
 **Which events, one alert each** (`plugin/hooks/hooks.json`): `Notification` (the "needs you"
-types, `worker_permission_prompt` included; the idle wait is left out — the `Stop` alert
+types, `worker_permission_prompt` included, and agent view's own `agent_needs_input` and
+`agent_completed`; the idle wait is left out — the `Stop` alert
 already announced that turn); `Stop` (the turn's last answer as the body, from the
 transcript's tail, 300 ms after the event because Claude Code writes it just then);
 `PreToolUse` on `AskUserQuestion|ExitPlanMode` (Claude Code raises no Notification at the
@@ -1344,6 +1345,27 @@ where that hook will show its alert — a desktop to show it on, the gateway set
 plan limit (`stopFailureWillAlert`) — so one stop never gives two alerts; where it has no
 alert to give (no desktop, no gateway, a short rate limit, which is no plan limit), the
 notifier announces the stopped turn on its own routes.
+
+**Agent view and background sessions.** Claude Code raises `Notification` hooks in the
+list's own process while `claude agents` is open: `agent_needs_input` while a session waits,
+and `agent_completed` with "<label> finished" or "<label> failed". The hook input is the
+list's session and folder, so those alerts carry no session name (`titled(kind, null)`), and
+the per-session question mark says nothing about them. `agent_needs_input` also comes from a
+session's own process (a teammate's setup question, auto mode's classifier notice), and the
+input carries no sign of which: both get the agent-view handling, so that one alert loses its
+`· <session>` and its mark — a cost taken knowingly, since guessing from the message's words
+would be wrong for one of them. On a Linux desktop the one-alert-per-session key adds the
+session the message names (`agentViewKey`): one background session's alert never closes
+another's. The list never writes a hook's `terminalSequence` out, so these types take the
+devices first (`device-then-field`), and the field only when no device is found. A background session has
+`CLAUDE_JOB_DIR` set (Claude Code's environment-variables page) and inherits the daemon's
+`DISPLAY` and terminal variables, so an alert of its own would go to the wrong place: the
+notifier and the usage-limit alert stay silent there, and agent view is the one place its
+alerts come from while the list is open (`background-session.ts`). The owner accepted the
+trade-off (2026-10-18): with no list open, a background session does not alert. The alert's
+moment is its own field (`Alert.moment`), set with its words in `alertFor`: the
+finished/failed split of `agent_completed` is what `alerts.events` filters on, like every
+other moment.
 
 **The waits that stay quiet**, all from the team's older notification script, which this
 replaces: the permission prompt about six seconds after a question (the same wait — a mark
@@ -1366,8 +1388,23 @@ line, capped) and sent through the hook's `terminalSequence` output field (Claud
 and later writes it to the session's terminal itself, and wraps it for tmux — a wrapped
 sequence in the field is rejected, so the field carries the bare one), or straight to
 `/dev/tty` (wrapped for tmux by `tmuxPassthrough` when `TMUX` is set) for a Claude Code
-without that field; **the session's own device** — for an event whose answer Claude Code does
-not read at all (`StopFailure`), and for a Claude Code too old for the field, where `/dev/tty`
+without that field; **Warp at the far end** — `farEndIsWarp` sends that SSH alert in Warp's
+own agent format instead: OSC 777 with `warp://cli-agent` and one JSON object (`v`, `agent`,
+`event`, `session_id`, `cwd`, `project`, then `response` for a stop or `summary` for a wait;
+`error_type` only when the input names a real StopFailure reason, because Warp shows it as a
+prefix of the text). Warp shows its popup while the person is in front, and a desktop
+notification with a sound while they are not, and it decides the sound itself: no extra BEL.
+Proved live 2026-10-18 on a Windows PC reached over SSH from a pane without Warp's shell
+integration; the plain OSC 777 gave a silent Windows notification there. The far end counts
+as Warp when `isWarpTerminal` says so, when `LC_TERMINAL=WarpTerminal` arrives (the client's
+`SetEnv`, through sshd's usual `AcceptEnv LANG LC_*`), or when the person set `sshWarp`; a
+named terminal in `TERM_PROGRAM` (VS Code's `vscode`) says it is not Warp, while tmux's own
+`tmux` says nothing about the far end. One function maps the event (`warpEventOf`): finished
+→ `stop`, failed → `stop_failure`, a permission prompt → `permission_request`, every other
+wait and question → `agent_needs_input`; **the session's own device** — for an event whose answer Claude Code does
+not read at all (`StopFailure`), for agent view's own alerts (the list reads the field but
+never writes it out: only a session's conversation view sets up that writer, 2.1.302, so the
+list's own pty is the route there), and for a Claude Code too old for the field, where `/dev/tty`
 is tried first and a hook on 2.1.301 has no controlling terminal at all (ENXIO): the pty
 Claude Code is attached to, found from its pid (`CLAUDE_PID`, then the hook's parent:
 `/proc/<pid>/fd/0`, then 1 and 2), written to only when this user owns it, and wrapped for
@@ -1375,8 +1412,9 @@ tmux like `/dev/tty` (proved live 2026-10-16: the alert arrived in the terminal 
 exactly once; `src/hooks/terminal.ts`, `docs/claude-code-contract.md`); **nothing** — no desktop route, not over SSH, or **inside Warp** with
 Warp's own plugin on (`TERM_PROGRAM=WarpTerminal`, or the `WARP_*` pair a background session
 keeps), whose hooks already show a finished turn, a question, a permission prompt and an
-error. In Warp ours plays only the sound, and shows a question (`elicitation_*`) or a waiting
-agent itself: those may sit in a tab the person is not looking at (owner, 2026-10-11). A
+error. In Warp ours plays only the sound, and shows a question (`elicitation_*`), a waiting
+agent or agent view's finished/failed alert itself (Warp's plugin has no `agent_completed`):
+those may sit in a tab the person is not looking at (owner, 2026-10-11). A
 session that is none of those — no desktop, no SSH, no Warp — gets nothing, and that is not a
 failure: an alert on every turn would be noise.
 
@@ -1402,9 +1440,11 @@ this plugin does not carry) — the window is raised, and the tab stays where it
 Windows and the SSH terminal are unchanged.
 
 **The title** is `<kind> · <session>`: the session's newest `customTitle` from the
-transcript's tail (`cleanSessionName`), else the folder of the hook's `cwd`. **The settings**
-are `~/.claude/cc-smart-dev-kit/notify.json`: `desktopSound` (default on) and `sshBell` (default off,
-one BEL after an SSH alert). The notifier starts detached, so a slow one never holds the
+transcript's tail (`cleanSessionName`), else the folder of the hook's `cwd`; agent view's
+alerts carry no session name, because their input is the list's. **The settings**
+are `~/.claude/cc-smart-dev-kit/notify.json`: `desktopSound` (default on), `sshBell` (default off,
+one BEL after an SSH alert) and `sshWarp` (default off: the fallback that says the far end of
+an SSH session is Warp). The notifier starts detached, so a slow one never holds the
 hook. `setup` does not touch anyone's own notification hooks: a person with those removes
 them by hand when they switch to this one.
 

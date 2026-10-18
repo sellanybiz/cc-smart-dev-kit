@@ -1,5 +1,5 @@
 {
-  "description": "cc-smart-dev-kit: git, edit (Edit/Write/NotebookEdit and Serena's edit tools), message, merge and agent guards, a caller-named screenshot put in the browser's output folder, the folder Serena edits recorded per session, notifications (a finished turn, a question, a plan, a permission prompt, a stopped turn; on the desktop, in an SSH terminal as OSC 777, or left to Warp's own plugin), notes after a merge and at session start, one note to the person when the session itself runs on Claude Fable, the review record a finished review agent writes, session names, the usage-limit alert and the background update check. Each hook stays silent while the project wires its own for the same event.",
+  "description": "cc-smart-dev-kit: git, edit (Edit/Write/NotebookEdit and Serena's edit tools), message, merge and agent guards, a caller-named screenshot put in the browser's output folder, the folder Serena edits recorded per session, notifications (a finished turn, a question, a plan, a permission prompt, a stopped turn, and agent view's own waiting or finished session; on the desktop, in an SSH terminal as OSC 777 or Warp's own format, or left to Warp's own plugin), notes after a merge and at session start, one note to the person when the session itself runs on Claude Fable, the review record a finished review agent writes, session names, the usage-limit alert and the background update check. Each hook stays silent while the project wires its own for the same event.",
   "hooks": {
     "StopFailure": [
       {
@@ -127,7 +127,7 @@
     ],
     "Notification": [
       {
-        "matcher": "permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input|worker_permission_prompt",
+        "matcher": "permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input|agent_completed|worker_permission_prompt",
         "hooks": [
           {
             "type": "command",

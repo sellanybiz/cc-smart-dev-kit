@@ -153,22 +153,29 @@ and, like `notify` and `update-check`, it is a `USER_HOOKS` bundle: no frame, no
 never enters the frame, needs no `cc-smart-dev-kit.json`, and its opt-in is the machine. (The one
 thing it reads from a project that has one is its `workflow.alerts` settings — which moments
 alert, and whether a sound goes with them — through `src/workflow/alerts.ts`.) It alerts on
-`Notification`, `Stop`, `PreToolUse` on `AskUserQuestion|ExitPlanMode`, and `StopFailure`
+`Notification` (agent view's `agent_needs_input` and `agent_completed` included), `Stop`,
+`PreToolUse` on `AskUserQuestion|ExitPlanMode`, and `StopFailure`
 (`rate_limit` only where the `stop-failure` hook will not show its own alert —
 `stopFailureWillAlert`: no desktop, no gateway set up, or a short rate limit), and clears its mark
-on `PostToolUse`, `PostToolUseFailure` and `UserPromptSubmit`. The route is the desktop
+on `PostToolUse`, `PostToolUseFailure` and `UserPromptSubmit`. A background session
+(`CLAUDE_JOB_DIR`, `src/hooks/background-session.ts`) shows no alert of its own — it inherits
+the daemon's display and terminal variables, and agent view alerts for it while the list is
+open — and the usage-limit alert stays silent there too. The route is the desktop
 (`notify-send` — on a Linux desktop with the right tools the detached `alert-worker` in its
 place, which waits for a click and raises the session's window, `src/hooks/desktop-alert.ts`
 — `osascript`, with the freedesktop sound), or — with no desktop route here and
-an SSH session (`SSH_CONNECTION`/`SSH_TTY`) — the terminal as OSC 777; inside Warp whose own
-plugin is on it stays quiet but for the sound and a waiting question; with nowhere to show it,
-nothing. The whole contract, the marks and the two settings: `docs/design.md` § The notifier.
+an SSH session (`SSH_CONNECTION`/`SSH_TTY`) — the terminal as OSC 777, or in Warp's own agent
+format when the far end is Warp (`farEndIsWarp`: Warp's own variables, else `LC_TERMINAL=WarpTerminal`,
+else the `sshWarp` setting); inside Warp whose own plugin is on it stays quiet but for the sound,
+a waiting question, a waiting agent and agent view's finished/failed alert; with nowhere to show it, nothing. The whole contract, the marks and the
+three settings: `docs/design.md` § The notifier.
 
 **A hook's answer can carry `terminalSequence`** (Claude Code 2.1.141+): the OSC in that
 output field is written to the session's terminal by Claude Code itself — the only route for
 a hook with no controlling terminal — and Claude Code wraps it for tmux itself, so the field
 carries the **bare** sequence and a wrapped one is rejected whole
-(`docs/claude-code-contract.md`). An event whose output is not read (`StopFailure`) writes a
+(`docs/claude-code-contract.md`). An event whose output is not read (`StopFailure`), and agent
+view's own alerts (the list, `claude agents`, reads the field but never writes it out), write a
 terminal device instead: `/dev/tty` first, wrapped for tmux there (`forTty`), and, where the
 hook has no controlling terminal at all (2.1.301: ENXIO), the session's own device — the pty
 Claude Code is attached to, found from its pid (`src/hooks/terminal.ts`) — never both.

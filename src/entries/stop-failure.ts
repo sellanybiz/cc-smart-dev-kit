@@ -1,7 +1,8 @@
 // The StopFailure hook (plugin/hooks/hooks.json).
 //
 // Reads the input on stdin, decides on an alert (`planAlert`), starts the detached worker
-// that shows it, and exits at once, printing nothing. The worker runs through the launcher
+// that shows it, and exits at once, printing nothing. A background session shows nothing at
+// all (`background-session.ts`). The worker runs through the launcher
 // (`~/.local/bin/cc-smart-dev-kit alert-worker <alert JSON>`), never from this file's version
 // folder: it may wait half an hour for a click, and an update may delete the folder
 // meanwhile. With no launcher (setup never ran), a plain notification with no action,
@@ -13,6 +14,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { soundArgv } from "../hooks/alert-sound";
+import { inBackgroundSession } from "../hooks/background-session";
 import { startDetached } from "../hooks/detached";
 import {
   ALERT_WORKER_COMMAND,
@@ -39,6 +41,10 @@ async function hook(): Promise<void> {
     console.error("cc-smart-dev-kit StopFailure: the hook input is not JSON");
     return;
   }
+  // A background session shows nothing: agent view alerts for it while the list is open,
+  // and it inherits the daemon's display, so an alert of its own would go to the wrong
+  // place (`src/hooks/background-session.ts`).
+  if (inBackgroundSession(process.env)) return;
   const paths = cliPaths();
   const ctx = readAlertContext(paths, Date.now(), input, process.env);
   const alert = planAlert(input, ctx);

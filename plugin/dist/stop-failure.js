@@ -105,6 +105,11 @@ function soundArgv(moment, platform, which) {
   return null;
 }
 
+// src/hooks/background-session.ts
+function inBackgroundSession(env) {
+  return (env.CLAUDE_JOB_DIR ?? "") !== "";
+}
+
 // src/hooks/detached.ts
 import { spawn } from "child_process";
 var CMD = "cmd";
@@ -6320,7 +6325,7 @@ import { existsSync, readFileSync as readFileSync2 } from "fs";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.5.0",
+  version: "0.5.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -7225,6 +7230,8 @@ async function hook() {
     console.error("cc-smart-dev-kit StopFailure: the hook input is not JSON");
     return;
   }
+  if (inBackgroundSession(process.env))
+    return;
   const paths = cliPaths();
   const ctx = readAlertContext(paths, Date.now(), input, process.env);
   const alert = planAlert(input, ctx);
