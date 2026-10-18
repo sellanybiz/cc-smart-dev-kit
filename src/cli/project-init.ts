@@ -3,12 +3,16 @@
  * `planProjectInit` (`src/project/init.ts`), the plan on screen, and the write.
  *
  * **The defaults come from the repo, then the flags win:** the base from `origin/HEAD`, else
- * the repo's own branches (`defaultBranchOf`), the worktree folder prefix from the repo's name, the setup
- * command from the lockfile (`bun install`, `npm ci`, `pnpm install`, `yarn`), the bases for
- * `hotfix/` and `release/` from the default branch, and the protected branches from the
- * default branch and the base plus, when `gh` is installed and answers, the branches GitHub
- * protects. A file that is already there wins over every detected default: running init
- * again keeps what the project has.
+ * the repo's own branches (`defaultBranchOf`), the bases for `hotfix/` and `release/` from
+ * the default branch, and the protected branches from the default branch and the base plus,
+ * when `gh` is installed and answers, the branches GitHub protects. A file that is already
+ * there wins over every detected default: running init again keeps what the project has.
+ *
+ * **Every project uses Claude Code's own worktrees**, so no worktree hook is written. When
+ * the base branch is not the repo's default branch, `.claude/settings.json` gets
+ * `"worktree": {"baseRef": "head"}`, so a new worktree starts from the branch the session is
+ * on. The plugin's old engine's fields (`worktrees.prefix`, `worktrees.setup`,
+ * `worktrees.engine`) are deprecated and neither asked for nor written.
  *
  * **Every question has a flag**, so a run with no terminal and `--yes` writes the whole file
  * from the flags and the defaults. With no terminal and no `--yes`, nothing is written: the
@@ -18,7 +22,7 @@
  * quietly says nothing when it fails.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { runGit } from "../hooks/git";
@@ -147,17 +151,6 @@ export function defaultBranchOf(runner: ProjectInitRunner, root: string): string
   return currentBranchOf(runner, root) ?? "main";
 }
 
-/** The setup command the repo's lockfile asks for; null when there is no lockfile. */
-export function setupFromLockfile(root: string): string[] | null {
-  if (existsSync(join(root, "bun.lock")) || existsSync(join(root, "bun.lockb"))) {
-    return ["bun", "install"];
-  }
-  if (existsSync(join(root, "package-lock.json"))) return ["npm", "ci"];
-  if (existsSync(join(root, "pnpm-lock.yaml"))) return ["pnpm", "install"];
-  if (existsSync(join(root, "yarn.lock"))) return ["yarn"];
-  return null;
-}
-
 /** `owner/name` from the `origin` remote, however it is written; null when it cannot be read. */
 function originRepository(
   runner: ProjectInitRunner,
@@ -201,8 +194,6 @@ export function protectedFromGithub(runner: ProjectInitRunner, root: string): st
 export interface DetectedFacts {
   /** The repository's default branch (`origin/HEAD`). */
   defaultBranch: string;
-  /** The setup command the lockfile asks for; null: none. */
-  setup: string[] | null;
   /** The branches GitHub protects; empty when unknown. */
   protectedFromGithub: string[];
 }
@@ -211,7 +202,6 @@ export interface DetectedFacts {
 export function detectFacts(runner: ProjectInitRunner, root: string): DetectedFacts {
   return {
     defaultBranch: defaultBranchOf(runner, root),
-    setup: setupFromLockfile(root),
     protectedFromGithub: protectedFromGithub(runner, root),
   };
 }
@@ -221,15 +211,13 @@ export interface ProjectInitFlags {
   dryRun: boolean;
   yes: boolean;
   base?: string;
-  prefix?: string;
-  /** The setup command; null: none (--no-setup). */
-  setup?: string[] | null;
   bases?: Record<string, string>;
   protectedBranches?: string[];
+  /** The deprecated engine's flags the person still passed: accepted, and ignored. */
+  deprecatedFlags?: string[];
   guardMainFolder?: boolean;
   sessionNames?: boolean;
   jobRoute?: boolean;
-  engine?: "plugin" | "own";
   /** The workflow policy, as the `key=value` words `--workflow` was given. */
   workflow?: string[];
 }
@@ -238,6 +226,7 @@ export interface ProjectInitFlags {
 export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { error: string } {
   const flags: ProjectInitFlags = { dryRun: false, yes: false };
   const workflow: string[] = [];
+  const deprecated: string[] = [];
   const value = (name: string, next: string | undefined): string => {
     if (next === undefined || next.startsWith("--")) throw new Error(`${name} needs a value`);
     return next;
@@ -256,18 +245,17 @@ export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { erro
           flags.base = value(arg, argv[index + 1]);
           index += 1;
           break;
+        // The deprecated engine's flags are accepted until the next minor version, and
+        // ignored: they are named in one `!` line with the plan.
         case "--prefix":
-          flags.prefix = value(arg, argv[index + 1]);
-          index += 1;
-          break;
         case "--setup":
-          flags.setup = value(arg, argv[index + 1])
-            .split(" ")
-            .filter((word) => word !== "");
+        case "--engine":
+          value(arg, argv[index + 1]);
           index += 1;
+          deprecated.push(arg);
           break;
         case "--no-setup":
-          flags.setup = null;
+          deprecated.push(arg);
           break;
         case "--bases": {
           const pairs = value(arg, argv[index + 1]);
@@ -297,15 +285,6 @@ export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { erro
         case "--job-route":
           flags.jobRoute = true;
           break;
-        case "--engine": {
-          const engine = value(arg, argv[index + 1]);
-          index += 1;
-          if (engine !== "plugin" && engine !== "own") {
-            throw new Error('--engine is "plugin" or "own"');
-          }
-          flags.engine = engine;
-          break;
-        }
         case "--workflow": {
           // One word, comma separated: `--workflow openPr=draft,alerts.sound=true`.
           for (const word of value(arg, argv[index + 1]).split(",")) {
@@ -322,6 +301,7 @@ export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { erro
     return { error: error instanceof Error ? error.message : String(error) };
   }
   if (workflow.length > 0) flags.workflow = workflow;
+  if (deprecated.length > 0) flags.deprecatedFlags = deprecated;
   return { flags };
 }
 
@@ -361,34 +341,21 @@ function setLeaf(data: Record<string, unknown>, path: string[], value: unknown):
   if (leaf !== undefined) node[leaf] = value;
 }
 
-/** The prefix a worktree's folder gets by default: the repo's name plus `-wt-`. */
-export function defaultPrefix(root: string): string {
-  return `${basename(root).replace(/\.git$/, "")}-wt-`;
-}
-
 /**
  * Every answer, without a person: the flags first, then what the project's file already
  * says, then what the repo says. This is what a `--yes` run writes, and the defaults the
- * questions offer.
+ * questions offer. The deprecated engine fields in an existing file are left out: the plan
+ * keeps them as they are, and never writes one a file does not have.
  */
 export function defaultAnswers(
   existing: Record<string, unknown> | null,
   facts: DetectedFacts,
   flags: ProjectInitFlags,
-  root: string,
 ): ProjectInitAnswers {
   const worktrees = existing !== null && isObject(existing.worktrees) ? existing.worktrees : {};
   const jobs = existing !== null && isObject(existing.jobs) ? existing.jobs : {};
   const base =
     flags.base ?? (typeof worktrees.base === "string" ? worktrees.base : facts.defaultBranch);
-  const prefix =
-    flags.prefix ?? (typeof worktrees.prefix === "string" ? worktrees.prefix : defaultPrefix(root));
-  const setup =
-    flags.setup !== undefined
-      ? flags.setup
-      : Array.isArray(worktrees.setup) && worktrees.setup.every((word) => typeof word === "string")
-        ? worktrees.setup
-        : facts.setup;
   const bases =
     flags.bases ??
     (isObject(worktrees.bases) ? (worktrees.bases as Record<string, string>) : defaultBases(facts));
@@ -402,8 +369,6 @@ export function defaultAnswers(
         ));
   return {
     base,
-    prefix,
-    setup,
     bases,
     protectedBranches,
     guards: {
@@ -415,7 +380,6 @@ export function defaultAnswers(
         (typeof existing?.sessionNames === "boolean" ? existing.sessionNames : true),
       jobRoute: flags.jobRoute ?? (typeof jobs.route === "boolean" ? jobs.route : false),
     },
-    engine: flags.engine ?? (worktrees.engine === "own" ? "own" : "plugin"),
     workflow:
       flags.workflow !== undefined
         ? workflowFromFlags(flags.workflow)
@@ -457,14 +421,6 @@ export function askedAnswers(
   answers: ProjectInitAnswers,
 ): ProjectInitAnswers {
   const base = terminal.text("The branch a new worktree starts from", answers.base);
-  const prefix = terminal.text(
-    "The folder-name prefix of a worktree beside the repo",
-    answers.prefix,
-  );
-  const setupText = terminal.text(
-    'The command run inside a new worktree (words, like "bun install"; empty: none)',
-    answers.setup === null ? "" : answers.setup.join(" "),
-  );
   const basesText = terminal.text(
     "Bases for other branch prefixes, as prefix=base,prefix=base (empty: none)",
     shownBases(answers.bases),
@@ -494,21 +450,11 @@ export function askedAnswers(
       answers.guards.jobRoute,
     ),
   };
-  const engine =
-    terminal.text(
-      'Who makes this project\'s worktrees: "plugin" (cc-smart-dev-kit\'s engine) or "own" (your own)?',
-      answers.engine,
-    ) === "own"
-      ? "own"
-      : "plugin";
   return {
     base: base.trim() === "" ? answers.base : base.trim(),
-    prefix: prefix.trim() === "" ? answers.prefix : prefix.trim(),
-    setup: setupText.trim() === "" ? null : setupText.trim().split(" "),
     bases: parseBases(basesText),
     protectedBranches: protectedText.trim() === "" ? [] : listOf(protectedText),
     guards,
-    engine,
     workflow: workflowText.trim() === "" ? {} : workflowFromFlags(listOf(workflowText)),
   };
 }
@@ -548,15 +494,14 @@ export function shownWorkflow(workflow: Workflow): string {
 
 const POLICY_EXAMPLE = "openPr=draft,autoCommit=true,alerts.events=finished failed";
 
-/** The plan, on screen: the file, the changes, the hook lines, and what to know. */
+/** The plan, on screen: the file, the changes, the settings line, and what to know. */
 function printPlan(plan: ProjectInitPlan, context: ProjectInitContext): void {
   context.print(`${plan.file} will hold:`);
   if (plan.diff.length === 0) context.print("  (no change)");
   for (const line of plan.diff) context.print(`  ${line}`);
   if (plan.settingsChanged) {
     context.print(`${plan.settingsFile} also changes, merged with what it has:`);
-    for (const line of plan.hookLines) context.print(`  + ${line}`);
-    for (const line of plan.removedLines) context.print(`  - ${line}`);
+    for (const line of plan.settingsAdds) context.print(`  + ${line}`);
   }
   if (!plan.changed && !plan.settingsChanged) context.print("Nothing to change.");
   for (const note of plan.notes) context.print(`! ${note}`);
@@ -585,23 +530,21 @@ export function readExisting(file: string): Record<string, unknown> | null {
 
 export const PROJECT_INIT_USAGE = `Usage: ${COMMAND} project init [--dry-run] [--yes] [flags]
 
-Writes this project's .claude/cc-smart-dev-kit.json and, unless the project runs an engine of
-its own, the worktree engine's three lines in .claude/settings.json. It asks first, showing
+Writes this project's .claude/cc-smart-dev-kit.json, and, when the base branch is not the
+repo's default branch, Claude Code's "worktree": {"baseRef": "head"} in
+.claude/settings.json, so a new worktree starts from the branch the session is on. Every
+project uses Claude Code's own worktrees: no worktree hook is written. It asks first, showing
 the defaults; every question has a flag, so a run with no terminal writes nothing unless
 --yes is given. Nothing is committed: commit both files with the project.
 
   --base <branch>        the branch a new worktree starts from (default: origin/HEAD, else the
                          repo's only branch, else main, else master, else the current branch)
-  --prefix <prefix>      the folder-name prefix beside the repo (default: <repo>-wt-)
-  --setup "<words>"      the command run inside a new worktree (default: the lockfile's)
-  --no-setup             write no setup command
   --bases <p=b,p=b>      bases for other branch prefixes (default: hotfix/, release/)
   --protected <a,b>      the branches the git guard asks about (default: the default
                          branch, the base, and GitHub's protected branches)
   --guard-main-folder    refuse edits in the main checkout itself
   --session-names        each session names itself after its task
   --job-route            send heavy commands through the job queue
-  --engine <plugin|own>  who makes this project's worktrees (default: plugin)
   --workflow <k=v,k=v>   the workflow policy, over your own defaults
   --dry-run              print the plan and write nothing
   --yes                  no questions: write the flags and the defaults
@@ -630,7 +573,7 @@ export function runProjectInit(
   let answers: ProjectInitAnswers;
   let plan: ProjectInitPlan;
   try {
-    answers = defaultAnswers(readExisting(file), facts, flags, context.root);
+    answers = defaultAnswers(readExisting(file), facts, flags);
     if (context.terminal !== null && !flags.yes) {
       answers = askedAnswers(context.terminal, answers);
     }
@@ -638,6 +581,7 @@ export function runProjectInit(
       root: context.root,
       existing,
       existingSettings: readText(join(context.root, ".claude", "settings.json")),
+      defaultBranch: facts.defaultBranch,
       answers,
     });
   } catch (error) {
@@ -645,6 +589,12 @@ export function runProjectInit(
     return 1;
   }
   printPlan(plan, context);
+  if (flags.deprecatedFlags !== undefined) {
+    const names = flags.deprecatedFlags.join(", ");
+    context.print(
+      `! ${names} ${flags.deprecatedFlags.length === 1 ? "is" : "are"} deprecated and ignored: the plugin's worktree engine retires in the next minor version, and every project uses Claude Code's own worktrees`,
+    );
+  }
   if (flags.dryRun) {
     context.print("A dry run: nothing was written.");
     return 0;
@@ -670,8 +620,10 @@ export function runProjectInit(
     context.print(`${write.created ? "+" : "~"} ${shown}`);
   }
   context.print("Commit both files with the project.");
+  const requires =
+    (JSON.parse(plan.text) as { requires?: string }).requires ?? requiresFor(VERSION);
   context.print(
-    `The file asks for ${COMMAND} ${requiresFor(VERSION)}: every teammate needs that plugin version or newer.`,
+    `The file asks for ${COMMAND} ${requires}: every teammate needs that plugin version or newer.`,
   );
   return 0;
 }

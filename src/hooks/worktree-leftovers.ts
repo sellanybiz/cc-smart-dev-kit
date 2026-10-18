@@ -4,7 +4,7 @@
  *
  * The after-merge note covers a merge made in a session. It cannot cover a pull request
  * merged somewhere else, or a session that ended or crashed first, so finished worktrees
- * pile up beside the repo with nobody left to remove them.
+ * pile up with nobody left to remove them.
  *
  * A worktree is FINISHED when removing it loses nothing and disturbs no one: it is not
  * locked; no running Claude session works in it; every commit on it is on `origin/<base>`;

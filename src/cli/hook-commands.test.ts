@@ -272,7 +272,10 @@ test("doctor checks the project of the folder it runs in, against the plugin's o
   const run = cli(["doctor"], { cwd: repo });
   expect(run.exitCode).toBe(1);
   expect(run.stdout).toContain(
-    `✗ project: "worktrees" is set in .claude/cc-smart-dev-kit.json, but the project's settings do not wire WorktreeCreate, WorktreeRemove, SubagentStop to cc-smart-dev-kit hook, so Claude Code makes its own worktrees. Run \`cc-smart-dev-kit hook\` for the lines to paste (also in the cc-smart-dev-kit README, § Worktrees)\n`,
+    `! project: .claude/cc-smart-dev-kit.json still sets "worktrees.prefix": the worktree engine is deprecated and retires in the next minor version. Remove it; Claude Code's own worktrees need no hook, and a project whose base branch is not the repo's default branch adds "worktree": {"baseRef": "head"} to .claude/settings.json\n`,
+  );
+  expect(run.stdout).toContain(
+    `! project: .claude/worktrees/ is not git-ignored here, so Claude Code's own worktrees show up in git status: add ".claude/worktrees/" to the repo's .gitignore and commit it\n`,
   );
   expect(run.stdout).toContain(
     `! project: the plugin's git-guard and the project's ./g.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of git-guard, list "git-guard" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed\n`,

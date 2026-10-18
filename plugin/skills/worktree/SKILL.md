@@ -9,47 +9,38 @@ description: For projects that work one session per git worktree - starting a ta
 differs, the add-on wins (`core.md`, top). It names the project's own worktree commands and
 hooks.
 
-The rule — one worktree per session, the main checkout stays on the base branch, what every
+The rule — one worktree per session, the main checkout is where sessions start, what every
 worktree still shares, when to message other sessions — is the opt-in instructions
 (`optin/worktrees.md`), which the project imports. This skill is the how. The project's
-values (`base`, `prefix`, `setup`) are in `.claude/cc-smart-dev-kit.json`, field `worktrees`; the
-cc-smart-dev-kit worktree engine reads them only where the project wired it in (§ Start a task,
-step 2).
+values (`base`, `bases`) are in `.claude/cc-smart-dev-kit.json`, field `worktrees`.
 
 ## Start a task
 
-1. **Pick the branch:** an existing one, or a new one for this task.
-2. **`EnterWorktree` with the branch as its `name`.** Where it lands depends on the project.
-   The plugin itself ships no worktree hook. **Not wired in:** Claude Code makes its own
-   worktree, `.claude/worktrees/<name>` (or the project's own WorktreeCreate hook decides).
-   **Wired in:** the project's `.claude/settings.json` runs cc-smart-dev-kit's worktree hooks
-   (`cc-smart-dev-kit hook worktree-create`, `worktree-remove`, `subagent-stop`), and the cc-smart-dev-kit
-   engine places the worktree by `worktrees` in `.claude/cc-smart-dev-kit.json`. The exact lines to
-   paste are in README.md in the cc-smart-dev-kit repository, § Worktrees.
+1. **In a running session, `EnterWorktree` with the task name as its `name` creates the
+   worktree**; an existing one is entered by its name. `claude -w <task-name>` is how a
+   person starts a fresh session in one. Use dashes: a `/` in a name becomes `+` in the folder
+   and the branch. Claude Code makes `<repo>/.claude/worktrees/<task-name>` on the branch
+   `worktree-<task-name>`, cut from the current branch when the project's settings say
+   `"worktree": {"baseRef": "head"}`, else from `origin`'s default branch.
+   **Already in a worktree and starting an unrelated task?** `ExitWorktree` first, then start
+   the new one from the main checkout.
+2. **`EnterWorktree` with `path`** enters a folder outside `.claude/worktrees/`. Only that
+   form makes the person approve a prompt; the name needs none.
 3. **Bring it up to date.** A worktree that already held the branch comes back as it was
-   left. So after every `EnterWorktree`: `git fetch origin <base>`, then
+   left. So after entering it: `git fetch origin <base>`, then
    `git rev-list --count HEAD..origin/<base>`, and merge `origin/<base>` when it is behind —
    never into a branch whose pull request goes somewhere else (a hotfix or release branch).
-4. **Run the project's setup** (`worktrees.setup`, for example the package install) when the
-   hook did not, and again after any pull that changes the lockfile — stale packages make
-   the linter and the type check report errors that are not in the code.
+4. **Run the project's install first** (for example `bun install`), and again after any pull
+   that changes the lockfile. Claude Code has no setup step, so a new worktree has no
+   packages, and stale packages make the linter and the type check report errors that are not
+   in the code. The git-ignored files `.worktreeinclude` names are already copied in.
 5. **A language-server tool** (such as Serena) stays pointed at the folder the session
-   started in. Point it at the worktree's **absolute path** right after `EnterWorktree`, and
+   started in. Point it at the worktree's **absolute path** right after entering it, and
    again after `/clear`, a fork or a resume. Only the main session does this; subagents use
    the session's server and never re-point it. Until it points at the worktree, use `Grep`
    and `Read`.
 6. **A refusal that names a running session** means that session works in that worktree:
    ask it. Never force it, and never move or remove its folder to get in.
-
-**Already in a worktree?** From inside one, `EnterWorktree` is a switch, which Claude Code
-allows only to worktrees under `.claude/worktrees/`. So: `ExitWorktree` with `keep`, then
-`EnterWorktree` with the branch as its `name`. Entering a folder outside `.claude/worktrees/`
-by `path` makes the person approve a prompt every time; use the `path` form only for what the
-name cannot reach (a branch name Claude Code refuses), and say so.
-
-**A subagent with `isolation: "worktree"`** gets its own worktree, cut from your current
-commit, usually with no packages installed: it can read and edit, but not run tests until it
-runs the project's setup.
 
 ## Before you leave or remove a worktree
 
@@ -68,10 +59,13 @@ the person wants more work on that branch. Left off — the default — say in o
 worktree looks finished, give these steps, and let the person decide.
 
 - **Finished** means: every commit is on `origin/<base>`, nothing is uncommitted, no local
-  file that cannot be rebuilt, no running session, server or process uses it. Then remove it:
-  `ExitWorktree` with `remove` (a worktree a WorktreeCreate hook made needs a WorktreeRemove
-  hook for this), or `git worktree remove <path>` and `git branch -d <branch>` from the main
-  checkout.
+  file that cannot be rebuilt, no running session, server or process uses it. Then leave:
+  Claude Code removes a clean worktree of an unnamed session on exit, and asks first for a
+  named one or one with work left.
+  `ExitWorktree` with `remove` does it now, from inside; from the main checkout,
+  `git worktree remove <path>` and `git branch -d <branch>`. A subagent's worktree is
+  removed when it made no changes. `cc-smart-dev-kit worktrees` lists the repo's finished
+  ones and `--clean` removes them.
 - **Not finished:** stop and ask. A worktree with uncommitted work, local files or commits
   that are not merged is someone's work.
 
@@ -85,7 +79,8 @@ next stop, and anything that needs a person (new migrations, new settings).
 A session's history follows its folder: while it works in a worktree, Claude Code lists it
 under that folder. From the main checkout, `/resume` can widen its list to every worktree;
 `claude --resume <session-id>` works from any folder. A session whose worktree was removed
-resumes in the current folder.
+resumes in the current folder. `cc-smart-dev-kit sessions` lists this project's sessions in
+its worktrees too, and brings back the ones a restart or a closed window stopped.
 
 ## After a merged change to hooks or settings
 

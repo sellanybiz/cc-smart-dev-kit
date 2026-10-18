@@ -378,8 +378,17 @@ describe("the hook", () => {
     expect(clearWorktreeNote("/code/app-wt-fix-a", "fix/a")).toBe(
       [
         "That merged the pull request of this worktree's branch, fix/a. Clear the worktree now, unless the user wants more work on this branch:",
-        'ExitWorktree with action "remove" and discard_changes true. Claude Code cannot check a worktree outside the repo, so the cc-smart-dev-kit hook does: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.',
+        'ExitWorktree with action "remove". A worktree outside .claude/worktrees/ may be refused because Claude Code cannot check it: if the refusal is only for the merged commits, check that `git status --porcelain` is empty and `git log @{u}..` shows nothing, then call it again with discard_changes true. The deprecated cc-smart-dev-kit engine\'s WorktreeRemove hook is then the only check: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.',
         'If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: git worktree remove "/code/app-wt-fix-a", then git branch -d fix/a.',
+      ].join("\n"),
+    );
+    // Claude Code's own worktree, inside the repo: it checks the worktree itself, so no
+    // discard_changes is needed.
+    expect(clearWorktreeNote("/code/my-app/.claude/worktrees/fix-a", "worktree-fix-a")).toBe(
+      [
+        "That merged the pull request of this worktree's branch, worktree-fix-a. Clear the worktree now, unless the user wants more work on this branch:",
+        'ExitWorktree with action "remove": Claude Code checks a worktree under .claude/worktrees/ itself and says when work is left.',
+        'If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: git worktree remove "/code/my-app/.claude/worktrees/fix-a", then git branch -d worktree-fix-a.',
       ].join("\n"),
     );
   });

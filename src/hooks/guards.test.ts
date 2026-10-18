@@ -67,12 +67,12 @@ describe("the main-folder guard", () => {
     const { repo, worktree } = guarded();
     expect(
       await runHook(mainFolderGuardHook, edit(worktree, join(repo, "a.ts")), hookEnv()),
-    ).toEqual(deny(mainFolderRefusal(repo, "main")));
-    expect(mainFolderRefusal("/code/app", "main")).toBe(
+    ).toEqual(deny(mainFolderRefusal(repo)));
+    expect(mainFolderRefusal("/code/app")).toBe(
       [
-        "This file is in the main checkout (/code/app). This project keeps the main checkout on `main` and makes every change in a worktree (cc-smart-dev-kit.json `worktrees.guardMainFolder`).",
+        "This file is in the main checkout (/code/app). This project makes every change in a worktree (cc-smart-dev-kit.json `worktrees.guardMainFolder`).",
         "Already working in a worktree? Edit the same file under that worktree's folder.",
-        "Not in one yet: EnterWorktree, with the branch for this work as its `name`, makes one.",
+        "Not in one yet: EnterWorktree with the task name as its `name` makes one — use dashes, since a `/` becomes `+`.",
       ].join("\n"),
     );
   });
@@ -140,11 +140,11 @@ describe("the main-folder guard", () => {
     symlinkSync(repo, link);
     expect(
       await runHook(mainFolderGuardHook, edit(worktree, join(link, "a.ts")), hookEnv()),
-    ).toEqual(deny(mainFolderRefusal(repo, "main")));
+    ).toEqual(deny(mainFolderRefusal(repo)));
     // A file that does not exist yet, in a folder reached through the link, is in it too.
     expect(
       await runHook(mainFolderGuardHook, edit(worktree, join(link, "new", "a.ts")), hookEnv()),
-    ).toEqual(deny(mainFolderRefusal(repo, "main")));
+    ).toEqual(deny(mainFolderRefusal(repo)));
     // A symlinked worktree is not the main checkout.
     const wtLink = join(tempDir("link-wt"), "app-wt-fix");
     symlinkSync(worktree, wtLink);

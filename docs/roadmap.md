@@ -87,6 +87,27 @@ Done in this release:
   it may still have running — is reported by `doctor` (with the command that deletes the folder,
   which is the person's own call, and the pid of that Chrome) and is never deleted or used.
 
+## 0.5.2 — every project on Claude Code's own worktrees
+
+The owner's decision (2026-10-18): the plugin's own worktree engine is retired in favour of
+Claude Code's, which is what every project gets now.
+
+- **Every project uses Claude Code's own worktrees**: `<repo>/.claude/worktrees/<name>` on
+  `worktree-<name>`, a task started with `claude -w <task-name>`, and no WorktreeCreate or
+  WorktreeRemove hook (`design.md` § Worktrees: Claude Code's own).
+- **`"worktree": {"baseRef": "head"}`** in a project's committed `.claude/settings.json` when
+  its base branch is not the repo's default branch: a worktree, and a subagent's worktree, are
+  cut from the current branch. `project init` writes the line; `baseRef` takes only `"fresh"`
+  (the default) or `"head"`.
+- **The engine is deprecated, not yet deleted**: `worktrees.engine`, `worktrees.prefix`
+  (optional now) and `worktrees.setup` stay accepted, `cc-smart-dev-kit hook` still answers for a
+  project that wired it, and `doctor` warns with the exact steps to move. **The engine's code
+  and fields are removed in the next minor version.**
+- **`doctor`** warns when `.claude/worktrees/` is not git-ignored, when a project still sets
+  an engine field or wires its hooks, and when a non-default `worktrees.base` has no
+  `baseRef: "head"` in the project's settings.
+- **`cc-smart-dev-kit sessions`** finds a project's sessions in its nested worktrees too.
+
 ## 0.4.1 — the model rules of 2026-10-16
 
 The owner's decisions, all about which model runs what, in one patch release:

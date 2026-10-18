@@ -140,13 +140,13 @@ export function editsMainFolder(file: string, mainCheckout: string, worktrees: s
   return innermostWorktree(file, [mainCheckout, ...worktrees]) === mainCheckout;
 }
 
-export function mainFolderRefusal(mainCheckout: string, base: string, viaSerena = false): string {
+export function mainFolderRefusal(mainCheckout: string, viaSerena = false): string {
   return [
-    `This file is in the main checkout (${mainCheckout}). This project keeps the main checkout on \`${base}\` and makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).`,
+    `This file is in the main checkout (${mainCheckout}). This project makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).`,
     viaSerena
       ? "A Serena edit lands in the project Serena has active, and that is the main checkout. Point Serena at your worktree first: `mcp__serena__activate_project` with the worktree's absolute path — then edit through Serena again. Or use Edit/Write with the same file's path under the worktree."
       : "Already working in a worktree? Edit the same file under that worktree's folder.",
-    "Not in one yet: EnterWorktree, with the branch for this work as its `name`, makes one.",
+    "Not in one yet: EnterWorktree with the task name as its `name` makes one — use dashes, since a `/` becomes `+`.",
   ].join("\n");
 }
 
@@ -178,8 +178,7 @@ function judge(file: string, context: HookContext, viaSerena: boolean): HookResu
   ) {
     return SILENT;
   }
-  const base = project.config?.worktrees?.base ?? "the base branch";
-  return toolDecision("deny", mainFolderRefusal(main, base, viaSerena));
+  return toolDecision("deny", mainFolderRefusal(main, viaSerena));
 }
 
 export function mainFolderGuard(context: HookContext): HookResult {

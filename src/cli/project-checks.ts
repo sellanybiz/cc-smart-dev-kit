@@ -5,13 +5,11 @@
  *   `.claude/anymodel/` folder and a settings hook that calls `~/.local/bin/anymodel` are
  *   left there by 0.2.x: `migrate` moves a machine's own files, never a project's, so each of
  *   them is a warning that names the new file, folder or command.
- * - **The worktree engine is wired as `cc-smart-dev-kit.json` says.** With `worktrees`, the project's
- *   settings must wire WorktreeCreate, WorktreeRemove and SubagentStop to
- *   `cc-smart-dev-kit hook <name>`; wired without `worktrees`, every worktree would fail. Next to the
- *   engine, a second WorktreeCreate hook (the project's or the user's) would make a second
- *   worktree for each request (Claude Code runs both: `docs/claude-code-contract.md`).
- *   `"worktrees.engine": "own"` says the project runs an engine of its own: the plugin's
- *   hooks are then not expected (`·`, not ✗), and wiring them anyway is the warning.
+ * - **The deprecated worktree engine.** Every project uses Claude Code's own worktrees, so a
+ *   project that still wires the engine's hooks, or still sets `worktrees.engine`,
+ *   `worktrees.prefix` or `worktrees.setup`, gets a warning naming what to remove: the engine
+ *   retires in the next minor version. `.claude/worktrees/` that is not git-ignored is a
+ *   warning too.
  * - **The project's own copies of plugin hooks.** Each hook `ownHooks` lists is off here
  *   (information); a listed one with no project hook on its event left to answer is a
  *   warning. A project hook on the same event and tool as a plugin hook the list does NOT
@@ -27,6 +25,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
+import { runGit } from "../hooks/git";
 import { runsProjectHook } from "../hooks/project-wiring";
 import {
   allWiredHandlers,
@@ -38,6 +37,7 @@ import { MACHINE_WIDE_HOOKS, PROJECT_HOOKS } from "../hooks/specs";
 import { type CcSmartDevKitConfig, CcSmartDevKitConfigError } from "../project/config";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { type CliPaths, tildify } from "./paths";
+import { defaultBranchOf, realRunner } from "./project-init";
 
 export interface ProjectLine {
   ok: boolean;
@@ -60,9 +60,6 @@ function shown(file: string, projectDir: string, home: string): string {
     ? file.slice(projectDir.length + 1)
     : tildify(file, home);
 }
-
-const ENGINE_HINT =
-  "Run `cc-smart-dev-kit hook` for the lines to paste (also in the cc-smart-dev-kit README, § Worktrees)";
 
 /** The plugin's old name: 0.2.x wrote it into projects, and `migrate` moves no project's files. */
 const OLD_NAME = "anymodel";
@@ -122,56 +119,62 @@ function oldNameLines(projectDir: string, sources: string[], home: string): Proj
 }
 
 /**
- * The worktree engine's wiring against `worktrees` in cc-smart-dev-kit.json.
+ * `doctor`'s checks of the worktrees in the project it runs in:
  *
- * `"worktrees.engine": "own"` says the project runs an engine of its own: the plugin's
- * engine hooks are then not expected, so their absence is one `·` line and never a ✗. What
- * is wrong there is the other way round: the plugin's hooks wired anyway, next to the
- * project's own worktree hook, make two worktrees for each request — a `!` line, since the
- * person may be mid-way through removing ours.
+ * - **The deprecated engine.** Every project uses Claude Code's own worktrees
+ *   (`<repo>/.claude/worktrees/<name>` on `worktree-<name>`), which need no hook. A project
+ *   that still wires the plugin's engine hooks, or still sets `worktrees.engine`,
+ *   `worktrees.prefix` or `worktrees.setup`, gets one `!` line naming what to remove: the
+ *   engine retires in the next minor version. Hook lines wired with no `worktrees` at all are
+ *   a `✗`, because each of them fails closed. A second WorktreeCreate hook next to the
+ *   engine's makes a second worktree for each request, so that is a `✗` too.
+ * - **`.claude/worktrees/` is git-ignored.** Claude Code puts its worktrees there; a repo
+ *   that does not ignore the folder sees every worktree in `git status`. One `!` line.
  */
-function engineLines(
+function worktreeLines(
   config: CcSmartDevKitConfig | null,
   sources: string[],
   projectDir: string,
+  checkout: Checkout,
   paths: CliPaths,
+  env: Env,
 ): ProjectLine[] {
   const hooks = PROJECT_HOOKS.map((spec) => {
     const event = spec.events[0] ?? "";
     const handlers = sources.flatMap((file) => wiredHandlers(file, event, null));
     return { spec, event, wired: handlers.some((h) => runsProjectHook(h.command, spec.name)) };
   });
-  const missing = hooks.filter((hook) => !hook.wired).map((hook) => hook.event);
   const wired = hooks.filter((hook) => hook.wired).map((hook) => hook.event);
-  const own = config?.worktrees?.engine === "own";
+  const worktrees = config?.worktrees;
+  const fields =
+    worktrees === undefined
+      ? []
+      : (["engine", "prefix", "setup"] as const).filter((field) => Object.hasOwn(worktrees, field));
+  const named = fields.map((field) => `"worktrees.${field}"`);
+  const move =
+    '; Claude Code\'s own worktrees need no hook, and a project whose base branch is not the repo\'s default branch adds "worktree": {"baseRef": "head"} to .claude/settings.json';
   const lines: ProjectLine[] = [];
-  if (config?.worktrees !== undefined && !own) {
-    lines.push(
-      missing.length === 0
-        ? { ok: true, text: `project: the worktree engine is wired (${wired.join(", ")})` }
-        : {
-            ok: false,
-            text: `project: "worktrees" is set in .claude/cc-smart-dev-kit.json, but the project's settings do not wire ${missing.join(", ")} to cc-smart-dev-kit hook${missing.includes("WorktreeCreate") ? ", so Claude Code makes its own worktrees" : ""}. ${ENGINE_HINT}`,
-          },
-    );
-  } else if (config?.worktrees !== undefined) {
-    lines.push(
-      wired.length === 0
-        ? {
-            ok: true,
-            info: true,
-            text: 'project: "worktrees.engine" is "own" in .claude/cc-smart-dev-kit.json, so this project runs its own worktree engine and the cc-smart-dev-kit engine hooks are not wired here',
-          }
-        : {
-            ok: true,
-            warn: true,
-            text: `project: "worktrees.engine" is "own", so this project runs its own worktree engine, but its settings also wire ${wired.join(", ")} to cc-smart-dev-kit hook: two engines answer each worktree request. Take the cc-smart-dev-kit hook lines out`,
-          },
-    );
-  } else if (wired.length > 0) {
+  if (wired.length > 0) {
+    const what = `the project's settings wire ${wired.join(", ")} to cc-smart-dev-kit hook`;
+    if (worktrees === undefined) {
+      lines.push({
+        ok: false,
+        text: `project: ${what}, but ${config === null ? "there is no .claude/cc-smart-dev-kit.json" : '.claude/cc-smart-dev-kit.json has no "worktrees"'}, so each of them fails. Take the cc-smart-dev-kit hook lines out: the worktree engine is deprecated and retires in the next minor version${move}`,
+      });
+    } else {
+      const drop =
+        named.length > 0 ? ` and drop ${named.join(", ")} from .claude/cc-smart-dev-kit.json` : "";
+      lines.push({
+        ok: true,
+        warn: true,
+        text: `project: ${what}: the worktree engine is deprecated and retires in the next minor version. Take those lines out of .claude/settings.json${drop}${move}`,
+      });
+    }
+  } else if (fields.length > 0) {
     lines.push({
-      ok: false,
-      text: `project: the project's settings wire ${wired.join(", ")} to cc-smart-dev-kit hook, but ${config === null ? "there is no .claude/cc-smart-dev-kit.json" : '.claude/cc-smart-dev-kit.json has no "worktrees"'}, so each of them fails. Add "worktrees", or take the cc-smart-dev-kit hook lines out`,
+      ok: true,
+      warn: true,
+      text: `project: .claude/cc-smart-dev-kit.json still sets ${named.join(", ")}: the worktree engine is deprecated and retires in the next minor version. Remove ${fields.length === 1 ? "it" : "them"}${move}`,
     });
   }
   if (hooks.find((hook) => hook.event === "WorktreeCreate")?.wired === true) {
@@ -180,13 +183,60 @@ function engineLines(
       .filter((handler) => !runsProjectHook(handler.command, "worktree-create"));
     for (const other of others) {
       lines.push({
-        ok: own,
-        ...(own ? { warn: true } : {}),
+        ok: false,
         text: `project: another WorktreeCreate hook runs too: ${other.command} (${shown(other.file, projectDir, paths.home)}). Claude Code runs both and makes two worktrees for each request; remove one`,
       });
     }
   }
+  // Claude Code puts its worktrees under `<repo>/.claude/worktrees/`; a repo that does not
+  // ignore the folder shows every worktree's files in `git status`. Only a project that
+  // opted into the worktree workflow has the `worktrees` field, and only it gets told.
+  if (worktrees !== undefined) {
+    const ignored = runGit(checkout.root, ["check-ignore", "-q", ".claude/worktrees/"], env).ok;
+    if (!ignored) {
+      lines.push({
+        ok: true,
+        warn: true,
+        text: "project: .claude/worktrees/ is not git-ignored here, so Claude Code's own worktrees show up in git status: add \".claude/worktrees/\" to the repo's .gitignore and commit it",
+      });
+    }
+    // Claude Code cuts a new worktree from the default branch, unless the project's settings
+    // say `baseRef: "head"`. A base branch that is not the default needs that line; while the
+    // deprecated engine is wired, it decides where the worktree goes instead.
+    const defaultBranch = defaultBranchOf(realRunner(env), checkout.root);
+    if (worktrees.base !== defaultBranch && baseRefOf(sources) !== "head") {
+      const engine =
+        wired.length > 0 ? ", and the plugin's worktree engine decides while it is wired" : "";
+      lines.push({
+        ok: true,
+        warn: true,
+        text: `project: worktrees.base is ${worktrees.base}, not this repo's default branch ${defaultBranch}, and the project's settings do not set "worktree": {"baseRef": "head"}, so a new worktree is cut from the default branch instead${engine}: add "worktree": {"baseRef": "head"} to .claude/settings.json and commit it`,
+      });
+    }
+  }
   return lines;
+}
+
+/**
+ * The `worktree.baseRef` the project's settings files set, or null. The last file that has
+ * one wins, as Claude Code reads them (`settings.local.json` over `settings.json`).
+ */
+function baseRefOf(sources: string[]): string | null {
+  let baseRef: string | null = null;
+  for (const file of sources) {
+    if (!existsSync(file)) continue;
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+      if (typeof parsed !== "object" || parsed === null) continue;
+      const worktree = (parsed as { worktree?: unknown }).worktree;
+      if (typeof worktree !== "object" || worktree === null) continue;
+      const value = (worktree as { baseRef?: unknown }).baseRef;
+      if (typeof value === "string") baseRef = value;
+    } catch {
+      // A settings file that is not JSON: Claude Code cannot read it either.
+    }
+  }
+  return baseRef;
 }
 
 interface PluginHook {
@@ -331,7 +381,7 @@ export function projectChecks(
   }
   const lines = [
     ...oldNameLines(projectDir, sources, paths.home),
-    ...engineLines(config, sources, projectDir, paths),
+    ...worktreeLines(config, sources, projectDir, checkout, paths, env),
   ];
   // Without cc-smart-dev-kit.json every plugin hook is silent: nothing can answer twice.
   if (config !== null) {

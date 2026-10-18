@@ -397,6 +397,18 @@ describe("a session's worktree", () => {
       'worktree not created: worktrees.prefix "../x-" must be part of a folder name, with no "/" or "\\"',
     );
   });
+
+  test("no worktrees.prefix: the deprecated engine fails closed and names the fix", async () => {
+    // The field is optional in the schema now, so a project wired to the engine can be
+    // missing it: there is no folder to make, and the message says how to move on.
+    const { repo } = makeClone();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "main" } });
+    const result = await create(repo, "fix/d");
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(
+      "worktrees.prefix is not set in .claude/cc-smart-dev-kit.json, and the deprecated worktree engine needs it to name its folder",
+    );
+  });
 });
 
 describe("a `git worktree add` that hangs", () => {

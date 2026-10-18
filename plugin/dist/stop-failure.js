@@ -6325,7 +6325,7 @@ import { existsSync, readFileSync as readFileSync2 } from "fs";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.5.1",
+  version: "0.5.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6542,7 +6542,7 @@ var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
     base: string2().min(1),
-    prefix: string2().min(1),
+    prefix: string2().min(1).optional(),
     setup: array(string2().min(1)).min(1).optional(),
     guardMainFolder: boolean2().optional(),
     bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {

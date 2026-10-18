@@ -25,6 +25,13 @@ export const PLUGIN_HOOK_NAMES = [
 ] as const;
 
 /**
+ * The plugin version that made `worktrees.prefix` optional. A project file written without
+ * it needs at least this version: an older plugin still requires the field and refuses the
+ * whole file, which would leave every guard asking. One home for the number.
+ */
+export const WORKTREE_PREFIX_OPTIONAL_SINCE = "0.5.2";
+
+/**
  * The per-project opt-in file, `.claude/cc-smart-dev-kit.json`.
  * Strict on purpose: a typo like `"worktree"` fails loudly instead of being ignored.
  */
@@ -36,11 +43,24 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
     .optional(),
   worktrees: z
     .strictObject({
-      /** The branch new worktrees start from ("dev"). */
+      /**
+       * The branch new worktrees start from ("dev"). Every project uses Claude Code's own
+       * worktrees (`<repo>/.claude/worktrees/<name>`); this is the integration base the
+       * after-merge and leftovers notes compare with.
+       */
       base: z.string().min(1),
-      /** The folder-name prefix of a worktree beside the repo ("app-wt-"). */
-      prefix: z.string().min(1),
-      /** A command (argv form) run inside a new worktree, e.g. ["bun", "install"]. */
+      /**
+       * Deprecated: the folder-name prefix of a worktree the plugin's engine made beside the
+       * repo ("app-wt-"). Still accepted, because a project wired to the engine uses it, and
+       * it retires with the engine in the next minor version. A project on Claude Code's own
+       * worktrees leaves it out.
+       */
+      prefix: z.string().min(1).optional(),
+      /**
+       * Deprecated: a command (argv form) the plugin's engine ran inside a new worktree, e.g.
+       * ["bun", "install"]. Still accepted until the engine retires; a project on Claude
+       * Code's own worktrees runs its install itself.
+       */
       setup: z.array(z.string().min(1)).min(1).optional(),
       /**
        * Refuse an Edit, Write or NotebookEdit of a file in the main checkout itself (not in
@@ -48,9 +68,10 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
        */
       guardMainFolder: z.boolean().optional(),
       /**
-       * A branch-name prefix (ending in "/") to the base a new worktree for such a branch
-       * starts from: `{"hotfix/": "main", "release/": "main"}`. Every other branch starts
-       * from `base`. The longest prefix that matches wins.
+       * A branch-name prefix (ending in "/") to the base that branch family's pull requests
+       * go into: `{"hotfix/": "main", "release/": "main"}`. Every other branch's requests go
+       * into `base`. The longest prefix that matches wins. Auto-merge and the after-merge
+       * note read it; the deprecated engine also started such a branch from it.
        */
       bases: z
         .record(z.string(), z.string().min(1))
@@ -68,9 +89,10 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
         })
         .optional(),
       /**
-       * Who makes this project's worktrees. `"plugin"` (the default) wires cc-smart-dev-kit's
-       * engine hooks (`worktree-create`, `worktree-remove`, `subagent-stop`); `"own"` means
-       * the project runs an engine of its own, so `doctor` does not expect the plugin's.
+       * Deprecated: who made this project's worktrees. `"plugin"` wired cc-smart-dev-kit's
+       * engine hooks (`worktree-create`, `worktree-remove`, `subagent-stop`); `"own"` meant the
+       * project ran an engine of its own. Every project now uses Claude Code's own worktrees,
+       * so this is accepted and ignored until the engine retires in the next minor version.
        */
       engine: z.enum(["plugin", "own"]).optional(),
     })
