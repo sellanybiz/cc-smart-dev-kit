@@ -9,7 +9,7 @@
  * |---|---|---|
  * | git-guard | PreToolUse (Bash, PowerShell) | asking before every command that runs git |
  * | main-folder-guard | PreToolUse (Edit, Write, NotebookEdit, Serena's edit tools) | asking before every edit in the repo |
- * | serena-root | PreToolUse, PostToolUse, PostToolUseFailure (activate_project), SessionStart | silent; the guard asks without a record |
+ * | serena-root | PreToolUse, PostToolUse (activate_project), SessionStart | silent; the guard denies without a known record, and a resume, clear or fork gets one line |
  * | message-guard | PreToolUse (SendMessage) | asking before every message |
  * | agent-guard | PreToolUse (Agent, Task, Workflow) | machine-wide: it judges the same way without cc-smart-dev-kit.json (`agent-guard.ts`) |
  * | fable-session | SessionStart, PostModelSwitch, Stop | machine-wide: it says the same line without cc-smart-dev-kit.json (`fable-session.ts`) |
@@ -210,8 +210,10 @@ export const mainFolderGuardHook: HookSpec = {
  * guard can place a Serena edit (`serena-root.ts`). Opt-in with the guard it serves
  * (`worktrees.guardMainFolder`), and it polices an `activate_project` call too: an absolute
  * path to this repo or one of its worktrees, never a project name. A broken or too new
- * cc-smart-dev-kit.json stops the recording (one line says why) — the guard then ASKS about a
- * Serena edit, so a missing record never lets one through.
+ * cc-smart-dev-kit.json stops the recording (one line says why) — the guard's own
+ * `onConfigProblem` then ASKS about a Serena edit (it cannot know whether the project turned
+ * the guard on), so a missing record never lets one through. A resume, a `/clear` or a fork
+ * writes "unknown" and gives the session one line saying the `activate_project` step.
  */
 export const serenaRootHook: HookSpec = {
   name: "serena-root",

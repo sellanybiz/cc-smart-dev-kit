@@ -1,5 +1,5 @@
 /**
- * The Serena root keeper (`serena-root`): PreToolUse, PostToolUse and PostToolUseFailure on
+ * The Serena root keeper (`serena-root`): PreToolUse and PostToolUse on
  * `mcp__serena__activate_project`, and SessionStart. It exists for one question the
  * main-folder guard cannot answer alone: **which folder does Serena edit?**
  *
@@ -21,36 +21,39 @@
  *     worktree of a repo shares one project name, so a name cannot say which folder is meant.
  *   - PostToolUse (Claude Code sends it only when the call succeeded): the folder Serena's own
  *     answer names, when it names an existing folder. An answer that cannot be read or names
- *     none leaves "unknown" — where the guard ASKS, never passes.
+ *     none leaves "unknown" — where the guard DENIES with the step that fixes it, never passes.
  *
  *   The record is therefore only ever a folder Serena itself confirmed. Until then the guard
- *   asks the person, which costs one answer and cannot let a main-checkout edit through.
+ *   denies a Serena edit and says how to point Serena at a folder, which Claude can do on its
+ *   own; it cannot let a main-checkout edit through.
  *   - SessionStart: `startup` clears the record (a new process starts a new Serena, back at
  *     the start folder — "no record" is exactly that), `resume`, `clear` and `fork` write
  *     "unknown" (under those, the same Serena may keep its project while the session knows
- *     nothing about it; refusing costs one activation), `compact` keeps it (same session,
- *     same Serena).
+ *     nothing about it) and add one line telling the session how to point Serena again, and
+ *     `compact` keeps it (same session, same Serena).
  *
  * THE RECORD IS CC-SMART-DEV-KIT'S OWN STATE
  *   `<stateDir>/serena-root/<session id>.txt`: either an absolute folder, or `unknown`. It
- *   never holds a secret, and `restore` may leave it (a stale record only makes the guard ask
- *   once more).
+ *   never holds a secret, and `restore` may leave it (a stale record only makes the guard deny
+ *   once more, until one `activate_project` names a folder).
  *
  * FAILING OPEN, AND FAILING CLOSED
  *   This hook never stops a tool call by accident: a broken input, or a bug, is one line on
  *   stderr and exit 0 (`run.ts`). The one call it refuses is an activation that cannot be
  *   placed (`deny`). Everything else it cannot work out becomes "unknown", and the guard then
- *   ASKS the person about a Serena edit — never lets it through.
+ *   DENIES a Serena edit with the step that fixes it — never lets it through.
  *
  * Opt-in with the guard it serves: `worktrees.guardMainFolder` in cc-smart-dev-kit.json.
  * A project without it is not policed here at all.
  */
 import { readFileSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { atomicWrite } from "../setup/write";
 import { GUARD_GIT_TIMEOUT_MS, IGNORE_CASE, listWorktrees, samePath } from "./git";
 import {
+  addContext,
   type HookInput,
   type HookResult,
   SILENT,
@@ -71,6 +74,22 @@ export type SerenaRoot = { kind: "path"; path: string } | { kind: "unknown" };
 
 /** The content of a record whose root could not be worked out. */
 const UNKNOWN = "unknown";
+
+/**
+ * The one step that points Serena at a folder: shared by the guard's denial and the session
+ * start's note, so the two never drift. Serena's current call also asks for the `session_id`
+ * its instructions give; a session that has none reads them with
+ * `mcp__serena__initial_instructions` first.
+ */
+export const SERENA_POINT_STEP = `Point Serena at the folder you work in with \`${SERENA_ACTIVATE_TOOL}\`: an ABSOLUTE path (your worktree), and the arguments its tool asks for — the \`session_id\` Serena's instructions give (\`mcp__serena__initial_instructions\` if you have none).`;
+
+/**
+ * Said to a session that resumed, cleared or forked: the same Serena may keep its project
+ * while this session cannot know it, so the record says "unknown" and the guard denies a
+ * Serena edit until one `activate_project` names a folder. One line: the same step the
+ * guard's denial gives, said before the first edit rather than at it.
+ */
+export const SERENA_FOLDER_UNKNOWN_NOTE = `${PLUGIN}: the folder Serena has active is not known for this session. Before any Serena edit, do this. ${SERENA_POINT_STEP} Or use Edit/Write with the file's absolute path.`;
 
 /**
  * The record file of a session, or null for an id that cannot be a file name (nothing is
@@ -185,9 +204,15 @@ export function serenaRoot(context: HookContext): HookResult {
   if (project.config?.worktrees?.guardMainFolder !== true) return SILENT;
   if (event === "SessionStart") {
     const source = stringField(input.source);
-    if (source === "startup") clearSerenaRoot(paths, sessionId);
-    else if (source === "resume" || source === "clear" || source === "fork") {
+    if (source === "startup") {
+      clearSerenaRoot(paths, sessionId);
+      return SILENT;
+    }
+    if (source === "resume" || source === "clear" || source === "fork") {
       writeSerenaRoot(paths, sessionId, { kind: "unknown" });
+      // One line, no stdout banner: the session knows the step that makes its Serena edits
+      // placeable again before it sends the first one.
+      return addContext("SessionStart", SERENA_FOLDER_UNKNOWN_NOTE);
     }
     return SILENT;
   }
@@ -199,7 +224,7 @@ export function serenaRoot(context: HookContext): HookResult {
       writeSerenaRoot(paths, sessionId, { kind: "path", path: resolve(root) });
     }
     // No folder in the answer (or none that exists): the record stays "unknown", and the
-    // guard asks about a Serena edit rather than placing it.
+    // guard denies a Serena edit rather than placing it.
     return SILENT;
   }
   if (event !== "PreToolUse") return SILENT;
@@ -208,7 +233,7 @@ export function serenaRoot(context: HookContext): HookResult {
     return toolDecision("deny", ACTIVATION_REFUSAL);
   }
   // Until Serena's own answer names the folder it activated, this session cannot say where
-  // its edits land: "unknown" makes the guard ask instead of trusting an old folder.
+  // its edits land: "unknown" makes the guard deny instead of trusting an old folder.
   writeSerenaRoot(paths, sessionId, { kind: "unknown" });
   return SILENT;
 }

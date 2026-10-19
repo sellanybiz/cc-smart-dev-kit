@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { VERSION } from "../build-info";
-import { git, tempDir } from "../testing/temp";
+import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { CcSmartDevKitConfigError, CcSmartDevKitVersionError } from "./config";
 import { GIT_NOT_FOUND, locateCheckout, ownHooksOf, resolveProject } from "./resolve";
 
@@ -319,7 +319,7 @@ function fakeGitEnv(answers: Record<string, string>): Record<string, string | un
     `#!/bin/sh\ncase "$1" in\n${cases}\n  *) exec ${JSON.stringify(realGit)} "$@" ;;\nesac\n`,
   );
   chmodSync(join(dir, "git"), 0o755);
-  return { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}` };
+  return { ...cleanGitEnv(), PATH: `${dir}:${process.env.PATH ?? ""}` };
 }
 
 describe("resolveProject: git problems give clear errors", () => {

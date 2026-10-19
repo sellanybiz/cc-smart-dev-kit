@@ -19,15 +19,18 @@
  *   the active project folder — so they are placed by that folder the same way
  *   (`SERENA_MEMORY_TOOLS`). With no record Serena is still at the folder the
  *   session started in — `CLAUDE_PROJECT_DIR`, which Claude Code keeps at that folder also
- *   inside a worktree. A record that says "unknown", and no `CLAUDE_PROJECT_DIR` either, means
- *   the file cannot be placed: the guard ASKS rather than letting it through.
+ *   inside a worktree. A record that says "unknown" means the file cannot be placed: the
+ *   guard DENIES it, with the `activate_project` step Claude can take itself. No record and
+ *   no `CLAUDE_PROJECT_DIR` either: it DENIES the same way — one activation records a folder
+ *   (PostToolUse), so Claude can always make the next edit placeable.
  *
  * Edits outside the repo, and edits inside a worktree (also one that lives inside the main
  * checkout, under `.claude/worktrees/`), pass. Anything else it cannot work out lets the edit
  * through: a guard that failed on its own bug would stop every edit. The one exception is a
- * Serena edit it cannot place, above: there "unknown" asks.
+ * Serena edit it cannot place, above: there it denies.
  */
 import { isAbsolute, resolve } from "node:path";
+import { PLUGIN } from "../build-info/names";
 import { GUARD_GIT_TIMEOUT_MS, innermostWorktree, isInside, listWorktrees, realPath } from "./git";
 import {
   type HookInput,
@@ -38,7 +41,7 @@ import {
   toolInput,
 } from "./io";
 import type { HookContext } from "./run";
-import { readSerenaRoot, type SerenaRoot } from "./serena-root";
+import { readSerenaRoot, SERENA_POINT_STEP, type SerenaRoot } from "./serena-root";
 
 /**
  * Serena's edit tools: the ones whose `relative_path` this guard must place. `replace_in_files`
@@ -146,15 +149,19 @@ export function mainFolderRefusal(mainCheckout: string, viaSerena = false): stri
     viaSerena
       ? "A Serena edit lands in the project Serena has active, and that is the main checkout. Point Serena at your worktree first: `mcp__serena__activate_project` with the worktree's absolute path — then edit through Serena again. Or use Edit/Write with the same file's path under the worktree."
       : "Already working in a worktree? Edit the same file under that worktree's folder.",
-    "Not in one yet: EnterWorktree with the task name as its `name` makes one — use dashes, since a `/` becomes `+`.",
+    "Not in one yet: `EnterWorktree` with the task name as its `name` makes one, or resumes an existing one — use dashes, since a `/` becomes `+`.",
   ].join("\n");
 }
 
-/** Said when a Serena edit cannot be placed: where Serena points is not known here. */
+/**
+ * Said when a Serena edit cannot be placed: where Serena points is not known here. A denial,
+ * not a question: Claude Code's "Yes, don't ask again" does not silence a hook's `ask`, and
+ * the step that fixes this is one tool call Claude can make itself.
+ */
 export function unplaceableSerenaRefusal(): string {
   return [
-    "This is a Serena edit, and the folder Serena has active is not known to cc-smart-dev-kit, so it cannot tell whether the file is in the main checkout.",
-    "Point Serena at a folder with `mcp__serena__activate_project` and an ABSOLUTE path (your worktree, or this repo's main checkout), then edit through Serena again — or use Edit/Write with the file's absolute path.",
+    `This is a Serena edit, and the folder Serena has active is not known to ${PLUGIN}, so it cannot tell whether the file is in the main checkout.`,
+    `${SERENA_POINT_STEP} Then edit through Serena again. Or use Edit/Write with the file's absolute path.`,
   ].join("\n");
 }
 
@@ -188,8 +195,11 @@ export function mainFolderGuard(context: HookContext): HookResult {
   }
   const serena = serenaEditedFile(input, readSerenaRoot(paths, input.session_id), startFolder(env));
   if (serena !== null) {
+    // A file the hook cannot place: deny with the step, since a hook's `ask` cannot be
+    // silenced for good. One activation records the folder (PostToolUse), so Claude always
+    // has a way to make the next edit placeable.
     return "unplaceable" in serena
-      ? toolDecision("ask", unplaceableSerenaRefusal())
+      ? toolDecision("deny", unplaceableSerenaRefusal())
       : judge(serena.file, context, true);
   }
   const file = editedFile(input, cwd);

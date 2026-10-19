@@ -17,7 +17,11 @@ import { COMMAND, PLUGIN, PLUGIN_ID } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { detachedArgv } from "../hooks/detached";
 import { bunConfigArg } from "../setup/bun-config";
-import { type InstructionsPaths, refreshInstructionsCopy } from "../setup/instructions";
+import {
+  type InstructionsPaths,
+  refreshInstructionsCopy,
+  refreshRefusal,
+} from "../setup/instructions";
 import { LockBusyError, withLock } from "../setup/lock";
 import { redactUrlsIn } from "../setup/marketplace-access";
 import { userNotifyHookState } from "../setup/user-notify-hook";
@@ -177,14 +181,19 @@ export interface InstructionsRefreshDeps {
  * version's files, but the running version's code wrote the managed copy — so the **first
  * session start of a new version** brings the copy up to it. The copy only: never the
  * `CLAUDE.md` block, never a question, nothing when the person chose `--no-instructions` or
- * setup never installed it (`instructionsNeedRefresh`), and nothing when another process
- * holds the state lock (it does the work). A failure is one line, and the session goes on.
+ * setup never installed it (`instructionsNeedRefresh`), nothing from a session that is not the
+ * installed plugin version (`refreshMayWrite`: an old session that resumes or compacts after an
+ * update), and nothing when another process holds the state lock (it does the work). A failure
+ * is one line, and the session goes on; so is a refresh this session must not make, so the
+ * person knows why the copy stayed as it was.
  */
 export async function refreshInstructionsAtSessionStart(
   deps: InstructionsRefreshDeps,
 ): Promise<void> {
   try {
     await refreshInstructionsCopy(deps.where, deps.version, { waitMs: deps.waitMs ?? 2_000 });
+    const refusal = refreshRefusal(deps.where, deps.version);
+    if (refusal !== null) deps.log(`${PLUGIN}: ${refusal}.`);
   } catch (error) {
     // Another session holds the state lock: it is doing the refresh, or has just done it.
     // Nothing is wrong, and a session start says nothing about it.
