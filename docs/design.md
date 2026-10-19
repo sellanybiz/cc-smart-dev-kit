@@ -1281,12 +1281,14 @@ no hook of their own (proved live on 2.1.301 — a project hook with the matcher
 `Agent|Task|Workflow` saw the `Workflow` call and nothing else), so the guard reads the
 `script` text: the `model`, `effort` and `agentType` of each call, and its prompt when that
 is a fixed string literal (`readWorkflowScript` — a template that builds its text, `` `${…}` ``,
-is not one). A `model` held in a variable, or a prompt built at run time, is refused for an
-Opus or Fable launch rather than guessed. Two things are refused for the whole call
-(`workflowRefusal`), because no rule can hold for a launch the guard cannot follow: `agent`
-mentioned without a direct call (`const run = agent; run(…)`, `agent?.(…)`, `agent` passed
-around), and a call whose options are built at run time (a `...spread`, a computed `[…]`
-key). The strictest launch of the call answers for the whole call.
+is not one). An option counts only as a key of the call's own options object, quoted or not
+— never the same words in the prompt or in a nested object (`schema: { effort: … }`). A
+`model` held in a variable is refused rather than guessed, and a prompt built at run time is
+refused for a Fable launch (its reason line cannot be read). Two things are refused for the
+whole call (`workflowRefusal`), because no rule can hold for a launch the guard cannot follow:
+`agent` mentioned without a direct call (`const run = agent; run(…)`, `agent?.(…)`, `agent`
+passed around), and a call whose options are built at run time (a `...spread`, a computed
+`[…]` key, the same key twice). The strictest launch of the call answers for the whole call.
 
 The rules are in one table in `src/hooks/agent-guard.ts` (its header), the one list a person
 may extend is an environment variable (`CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS`, the
@@ -1300,16 +1302,21 @@ build, with or without a reason line — and at `max` (`OPUS_ASK_EFFORT`) it ask
 naming the model and the effort. An `Opus reason: <word>` line is optional: when a prompt has
 one, its first word goes into the record, and nothing else reads it. A fork names no effort —
 it runs at the session's own, which the person chose — so an `opus`-tier fork is allowed; a
-fork that names `max` itself is held to the same rule. (Before D11 the tier needed a review
+fork that names `max` itself is held to the same rule. **The free path is for a reading the
+guard can prove is the Opus family**: the `opus` name, a Claude Opus id (a cloud provider's
+`us.anthropic.claude-opus-…` too), the opus slot, or an id the person's own
+`ANTHROPIC_DEFAULT_<FAMILY>_MODEL` names for it. A reading with no family — a name no rule
+knows (`best`, `inherit`, an id the guard cannot read) — may stand for a higher tier, so it
+asks at any effort, is refused in `claude -p`, and is recorded as `opus:unreadable`. (Before D11 the tier needed a review
 agent type or a listed reason word, and refused every launch but a review at `high`; that
 reason list, the review-agent list and its variable are gone.)
 
 An `ask` in a session nobody
 watches (`claude -p`, `CLAUDE_CODE_SESSION_ATTENDED=0`) is refused just like a deny — Claude
 Code cannot ask anyone there (proved live on 2.1.301) — so the guard answers that denial with
-a message that says why; an `opus`-tier launch below `max` needs no answer, so it stays
-allowed there, and one at `max` is told to run at `high` or `xhigh`, or in an interactive
-session. Every allowed or asked premium launch is recorded once, by its `tool_use_id`, in
+a message that says why; an Opus-family launch below `max` needs no answer, so it stays
+allowed there, one at `max` is told to run at `high` or `xhigh`, or in an interactive
+session, and one with no family is told to name `opus`. Every allowed or asked premium launch is recorded once, by its `tool_use_id`, in
 `<stateDir>/agent-launches.jsonl` with why it ran — the `opus` tier as `opus:<effort>`, with
 the prompt's reason word after it when there is one (`opus:xhigh`, `opus:max:security`; a fork
 `opus:session-effort`), and the `fable` tier by its word (`fable:build` for a builder the

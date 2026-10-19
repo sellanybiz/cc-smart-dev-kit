@@ -129,11 +129,12 @@ describe("which model a launch runs on", () => {
     expect(
       resolveLaunchModel("fable", NO_GATEWAY, { ANTHROPIC_DEFAULT_FABLE_MODEL: "openai:gpt-5.5" }),
     ).toEqual({ claude: false, family: "fable", model: "openai:gpt-5.5", tier: "fable" });
-    // The id an override names is that tier wherever it appears, the session's model included.
+    // The id an override names is that tier — and that family — wherever it appears, the
+    // session's model included: the person's own setting proves what the id stands for.
     const env = { ANTHROPIC_DEFAULT_FABLE_MODEL: "openai:gpt-5.5" };
     expect(resolveLaunchModel("openai:gpt-5.5", NO_GATEWAY, env)).toEqual({
       claude: false,
-      family: null,
+      family: "fable",
       model: "openai:gpt-5.5",
       tier: "fable",
     });
@@ -475,24 +476,24 @@ describe("the verdict", () => {
   it("a name the guard does not know is never affordable: the strictest rule answers", () => {
     const on: GuardContext = { ...CTX, config: configWithModelSlot(), gatewayOn: true };
     // Only a slot key and a `<backend>:<model>` target count as affordable: an unknown name
-    // could be anything, so it is judged like a Claude id with no family to read. D11 made
-    // that reading the opus tier, judged by its effort: allowed below `max`, asked at `max`.
+    // could be anything, so it is judged like a Claude id with no family to read: the opus
+    // tier, but not proved Opus — it may stand for a higher tier, so the person approves it at
+    // every effort (D11's free path is for a reading proved as Opus), never forced to `max`.
     for (const model of ["best", "opusplan", "default", "inherit", "gpt-5", "some-custom-model"]) {
-      const result = verdict({ effort: "max", model, prompt: "build it" }, on);
-      expect(result.decision).toBe("ask");
-      expect(result.reason).toContain("Claude Opus launch at effort `max`");
-      expect(result.reason).not.toContain("affordable");
-      // Below `max` it is allowed with no question, and never forced to `max` as a slot would be.
-      expect(verdict({ effort: "high", model, prompt: "build it" }, on).decision).toBe("allow");
-      expect(verdict({ effort: "xhigh", model, prompt: "build it" }, on).decision).toBe("allow");
+      for (const effort of ["high", "xhigh", "max"]) {
+        const result = verdict({ effort, model, prompt: "build it" }, on);
+        expect(result.decision).toBe("ask");
+        expect(result.reason).toContain("cannot read the model behind it as Claude Opus");
+        expect(result.reason).not.toContain("affordable");
+      }
     }
-    const allowed = verdict({
+    const said = verdict({
       effort: "xhigh",
       model: "opusplan",
       prompt: "Opus reason: debugging - it is",
     });
-    expect(allowed.decision).toBe("allow");
-    expect(allowed.real?.family).toBeNull();
+    expect(said.decision).toBe("ask");
+    expect(said.real?.family).toBeNull();
     // A fork's session model follows the same rule: a family name is that family, an unknown
     // name is the strict one.
     const fork = (sessionModel: string) =>
@@ -501,7 +502,7 @@ describe("the verdict", () => {
         { config: null, gatewayOn: false, sessionModel },
       );
     expect(fork("sonnet").decision).toBe("allow");
-    expect(fork("best").decision).toBe("allow");
+    expect(fork("best").decision).toBe("ask");
     expect(fork("best").real?.tier).toBe("opus");
     expect(fork("best").real?.family).toBeNull();
   });
@@ -622,20 +623,20 @@ describe("the verdict", () => {
     ).toBe("ask");
   });
 
-  it("a review whose model the guard cannot read is the opus tier like any launch (D11)", () => {
-    // There is no review shortcut any more: an unreadable name is the opus tier, and the opus
-    // tier is judged by its effort alone — allowed below `max`, asked at `max`.
-    const allowed = verdict({
+  it("a review whose model the guard cannot read asks like any launch (D11)", () => {
+    // There is no review shortcut any more: an unreadable name is the opus tier without a
+    // family, so the person approves it at every effort, a review or not.
+    const unread = verdict({
       effort: "xhigh",
       model: "best",
       prompt: "r",
       subagent_type: "Reviewer",
     });
-    expect(allowed.decision).toBe("allow");
-    expect(allowed.why).toBe("opus:xhigh");
+    expect(unread.decision).toBe("ask");
+    expect(unread.why).toBe("opus:unreadable");
     const max = verdict({ effort: "max", model: "best", prompt: "r", subagent_type: "Reviewer" });
     expect(max.decision).toBe("ask");
-    expect(max.why).toBe("opus:max");
+    expect(max.why).toBe("opus:unreadable");
     // A review on a readable Opus is allowed with no question the same way.
     expect(
       verdict({ effort: "xhigh", model: "opus", prompt: "r", subagent_type: "Reviewer" }).decision,
@@ -1467,5 +1468,118 @@ describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's 
     const [record] = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
     expect(record?.family).toBe("opus");
     expect(record?.model).toBe("omniroute:glm-x");
+  });
+});
+
+describe("the opus tier's free path needs a reading proved as Opus (D11)", () => {
+  const unattended = { CLAUDE_CODE_SESSION_ATTENDED: "0" };
+  const bedrockFable = "us.anthropic.claude-fable-5-1-20261001-v1:0";
+
+  it("a name the guard cannot read asks at any effort, and is refused where nobody answers", () => {
+    for (const name of ["inherit", "best", "some-new-model"]) {
+      const real = resolveLaunchModel(name, NO_GATEWAY, NO_ENV);
+      expect(real.tier).toBe("opus");
+      expect(real.family).toBeNull();
+      const launch = { effort: "high", model: name, prompt: "do it" };
+      const asked = verdict(launch);
+      expect(asked.decision).toBe("ask");
+      expect(asked.why).toBe("opus:unreadable");
+      expect(asked.reason).toContain("cannot read the model behind it as Claude Opus");
+      const refused = verdict(launch, CTX, unattended);
+      expect(refused.decision).toBe("deny");
+      expect(refused.reason).toContain("Name `opus` (or a Claude Opus id) as its model.");
+    }
+  });
+
+  it("a cloud provider's Claude id has its own family: Fable is the fable tier", () => {
+    const real = resolveLaunchModel(bedrockFable, NO_GATEWAY, NO_ENV);
+    expect(real.family).toBe("fable");
+    expect(real.tier).toBe("fable");
+    const opus = resolveLaunchModel(
+      "us.anthropic.claude-opus-5-5-20261001-v1:0",
+      NO_GATEWAY,
+      NO_ENV,
+    );
+    expect(opus.family).toBe("opus");
+    // A backend target is still a backend's model, whatever its name says.
+    expect(resolveLaunchModel("omniroute:claude-opus-5-5", NO_GATEWAY, NO_ENV).tier).toBeNull();
+  });
+
+  it("the person's own override names an id for its family, over the unknown-name default", () => {
+    const fable = resolveLaunchModel("my-fable", NO_GATEWAY, {
+      ANTHROPIC_DEFAULT_FABLE_MODEL: "my-fable",
+    });
+    expect(fable.tier).toBe("fable");
+    const opus = resolveLaunchModel("my-opus", NO_GATEWAY, {
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "my-opus",
+    });
+    expect(opus.tier).toBe("opus");
+    expect(opus.family).toBe("opus");
+    const launch = { effort: "xhigh", model: "my-opus", prompt: "x" };
+    expect(verdict(launch, CTX, { ANTHROPIC_DEFAULT_OPUS_MODEL: "my-opus" }).decision).toBe(
+      "allow",
+    );
+  });
+
+  it("a fork in a session on a provider's Fable id is the fable tier, not free Opus", () => {
+    const fork = verdict(
+      { prompt: "x", subagent_type: "fork" },
+      { ...CTX, sessionModel: bedrockFable },
+      unattended,
+    );
+    expect(fork.real?.tier).toBe("fable");
+    expect(fork.decision).toBe("deny");
+  });
+
+  it("the record keeps the reason line's first word without its punctuation, at most 40 letters", () => {
+    const quoted = verdict({
+      effort: "xhigh",
+      model: "opus",
+      prompt: "x\nOpus reason: `security`.",
+    });
+    expect(quoted.why).toBe("opus:xhigh:security");
+    const long = verdict({
+      effort: "high",
+      model: "opus",
+      prompt: `x\nOpus reason: ${"a".repeat(60)}`,
+    });
+    expect(long.why).toBe(`opus:high:${"a".repeat(40)}`);
+    expect(verdict({ effort: "high", model: "opus", prompt: "x\nOpus reason: ..." }).why).toBe(
+      "opus:high",
+    );
+  });
+});
+
+describe("a Workflow option is a key of the call's own options object", () => {
+  const unattended = { CLAUDE_CODE_SESSION_ATTENDED: "0" };
+
+  it("the same words in the prompt never stand in for the option", () => {
+    const script =
+      'await agent(\'Launch helpers with effort: "high" and model: "haiku"\', { model: "opus", effort: "max" });';
+    const [launch] = readWorkflowScript(script);
+    expect(launch?.effort).toBe("max");
+    expect(launch?.model).toBe("opus");
+    expect(judgeWorkflow(script, CTX, NO_ENV)[0]?.verdict.decision).toBe("ask");
+    expect(judgeWorkflow(script, CTX, unattended)[0]?.verdict.decision).toBe("deny");
+    const fable =
+      'await agent(\'Give scouts model: "haiku" always\', { model: "fable", effort: "high" });';
+    expect(readWorkflowScript(fable)[0]?.model).toBe("fable");
+  });
+
+  it("a nested object's keys are not the call's options", () => {
+    const script =
+      'await agent("x", { schema: { effort: "high", model: "haiku" }, model: "opus", effort: level });';
+    const [launch] = readWorkflowScript(script);
+    expect(launch?.effort).toBeNull();
+    expect(launch?.model).toBe("opus");
+    expect(judgeWorkflow(script, CTX, NO_ENV)[0]?.verdict.decision).toBe("deny");
+  });
+
+  it("a quoted key is read, and the same key twice, quoted or not, refuses the whole call", () => {
+    const quoted = 'await agent("x", { "model": "opus", \'effort\': "high" });';
+    expect(readWorkflowScript(quoted)[0]).toMatchObject({ effort: "high", model: "opus" });
+    expect(workflowRefusal(quoted)).toBeNull();
+    const twice = 'await agent("x", { model: "haiku", effort: "high", "model": "fable" });';
+    expect(workflowRefusal(twice)).toContain("the same option written twice");
   });
 });

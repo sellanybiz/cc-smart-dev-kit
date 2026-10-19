@@ -28,10 +28,10 @@
  * | an affordable slot key / a `<backend>:<model>` target / `haiku` or `sonnet` (or their ids) while the gateway is on and the family's slot chain starts with a backend | allow; with the gateway on, its effort must be `max`, else deny |
  * | any other name (`best`, `opusplan`, `default`, `inherit`, a name no rule knows) | the `opus` tier below (the strictest reading): only what the guard can prove affordable is affordable |
  * | Claude Sonnet or Haiku (the gateway off, the family's slot off, or its chain starting with a `claude-…` model) | allow (the effort rule above still holds) |
- * | the `opus` tier | effort `high` or `xhigh`: allow, for any agent and any purpose; effort `max`: **ask** (the person approves each one, and sees the model and the effort); a fork names no effort: it runs at the session's own, which the person chose, so it is allowed |
+ * | the `opus` tier | read as the Opus family (the `opus` name, a Claude Opus id, the opus slot, an id the person's own override names for it): effort `high` or `xhigh`: allow, for any agent and any purpose; effort `max`: **ask** (the person approves each one, and sees the model and the effort); a fork names no effort: it runs at the session's own, which the person chose, so it is allowed. A reading with no family (a name no rule knows, an id the guard cannot read): **ask** at any effort — it may stand for a higher tier |
  * | the `fable` tier | a read-only agent type with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: **ask** (the word `build` is not one of them: a read-only agent never builds); an agent that can change files (any other type, a fork included) with `Fable reason: build - <why>`: **ask** (the person asked for it); no line, a builder without the word `build`, or an unattended session (`claude -p`): deny |
  * | no `model` / no `effort` | deny (a launch that names neither would inherit the session's, which nobody chose) — except a `fork`, which always inherits both |
- * | a session nobody watches (`claude -p`) | every premium launch that would ask is denied (there is nobody to approve it): the `opus` tier at `max` says to run it at `high` or `xhigh`, or in an interactive session; the `opus` tier below `max` stays allowed |
+ * | a session nobody watches (`claude -p`) | every premium launch that would ask is denied (there is nobody to approve it): the `opus` tier at `max` says to run it at `high` or `xhigh`, or in an interactive session; a reading with no family says to name `opus`; the Opus family below `max` stays allowed |
  *
  * **Tiers, not vendors** (the owner, 2026-10-16). `opus` and `fable` mean the TIER: whatever
  * model answers behind them — Claude, a backend through an override or the family's slot, a
@@ -266,7 +266,11 @@ function throughFamilySlot(
 
 /** A Claude id, slot key or `<backend>:<model>` as the model behind the launch. */
 function resolveName(text: string, gateway: GatewayFacts): LaunchModel {
-  if (text.startsWith("claude-")) return throughFamilySlot(text, claudeFamily(text), gateway);
+  // A Claude id, also as a cloud provider names it (`us.anthropic.claude-fable-…`).
+  const family = claudeFamily(text);
+  if (family !== null || text.startsWith("claude-")) {
+    return throughFamilySlot(text, family, gateway);
+  }
   if (isSlotKey(text)) {
     const first = gateway.config?.slots[text]?.[0];
     const model =
@@ -311,16 +315,18 @@ export function resolveLaunchModel(name: string, gateway: GatewayFacts, env: Env
   const text = withoutContextSuffix(name.trim());
   const family = CLAUDE_FAMILIES.find((one) => one === text.toLowerCase());
   if (family === undefined) {
-    // A person's own override may name this id for a family: it is that family's tier then.
+    // A person's own override may name this id for a family: it is that family's tier then,
+    // unless the id itself proves its family (a reading with no family is only a default).
     const mapped = tierOfMappedId(text, gateway, env);
     const resolved = resolveName(text, gateway);
-    return mapped === null || resolved.tier !== null ? resolved : { ...resolved, tier: mapped };
+    if (mapped === null || (resolved.tier !== null && resolved.family !== null)) return resolved;
+    return { ...resolved, family: resolved.family ?? mapped, tier: mapped };
   }
   const tier = premiumTier(family);
   const override = stringField(env[familyEnv(family)]);
   if (override !== null) {
     // The NAME's family stays the launch's family: `opus` is the `opus` tier even when a backend
-    // answers it, so the record, the review shortcut and the messages read the same family.
+    // answers it, so the record, the free `opus` path and the messages read the same family.
     return { ...resolveName(withoutContextSuffix(override.trim()), gateway), family, tier };
   }
   return throughFamilySlot(text, family, gateway);
@@ -471,12 +477,17 @@ function firstArgument(call: string): null | string {
   return literal === null ? null : literal.value;
 }
 
-/** A fixed string option of a call (`model: "opus"`), or null when absent or not a literal. */
+/**
+ * A fixed string option of a call (`model: "opus"`), or null when absent or not a literal. Only
+ * a key of the call's own options object counts — never the same words in the prompt or in a
+ * nested object (`schema: { effort: … }`), which would let them stand in for the real option.
+ */
 function stringOption(call: string, name: string): null | string {
-  const found = new RegExp(`(^|[{,\\s])${name}\\s*:\\s*`).exec(call);
-  if (found === null) return null;
-  const at = found.index + found[0].length;
-  const literal = literalAt(call, at);
+  const at = readOptions(call).keys.get(name);
+  if (at === undefined) return null;
+  const colon = /^\s*:\s*/.exec(call.slice(at));
+  if (colon === null) return null;
+  const literal = literalAt(call, at + colon[0].length);
   return literal === null ? null : literal.value;
 }
 
@@ -583,50 +594,85 @@ function lineOf(script: string, index: number): number {
   return script.slice(0, index).split("\n").length;
 }
 
+/** What one scan of a call's text finds (`readOptions`). */
+interface CallOptions {
+  /**
+   * True when the call's options are not what they seem: a `...spread` (which can replace any
+   * option), a computed key (`[…]`) where an object's key belongs, or the same key twice at one
+   * level (JavaScript keeps the last, the guard reads the first). Any of them can change `model`
+   * or `effort` after the literal the guard would have read.
+   */
+  hidden: boolean;
+  /**
+   * The keys of the call's own options object — the first object written directly in the call's
+   * parentheses — each with the position just after its name.
+   */
+  keys: Map<string, number>;
+}
+
 /**
- * True when a call's options are not what they seem: a `...spread` (which can replace any
- * option), a computed key (`[…]`) where an object's key belongs, or the same key twice at one
- * level (JavaScript keeps the last, the guard reads the first). Any of them can change `model`
- * or `effort` after the literal the guard would have read.
+ * Scans a call's text once, skipping string literals and comments: the keys of its own options
+ * object, and whether any option is hidden from the guard. A scan that meets an unclosed
+ * literal or comment stops there with what it has read.
  */
-function builtAtRuntime(call: string): boolean {
+function readOptions(call: string): CallOptions {
   const stack: string[] = [];
   /** The keys seen so far, one set per open object literal. */
-  const keys: Array<Set<string>> = [];
+  const seen: Array<Set<string>> = [];
+  const keys = new Map<string, number>();
+  /** True once the call's own options object has closed: a later object is not it. */
+  let optionsDone = false;
   let keyExpected = false;
+  const found = (hidden: boolean): CallOptions => ({ hidden, keys });
+  /** Notes a key of the object open now, ending at `end`; true when that object has it twice. */
+  const twice = (key: string, end: number): boolean => {
+    const open = seen.at(-1);
+    if (open !== undefined) {
+      if (open.has(key)) return true;
+      open.add(key);
+    }
+    if (stack.length === 1 && !optionsDone) keys.set(key, end);
+    return false;
+  };
   for (let index = 1; index < call.length; index += 1) {
     const char = call[index] ?? "";
     const next = call[index + 1] ?? "";
     if (char === '"' || char === "'" || char === "`") {
       const literal = stringAt(call, index);
-      if (literal === null) return false;
+      if (literal === null) return found(false);
+      // A quoted key (`"model": …`) is a key like any other: JavaScript keeps the last of two.
+      if (keyExpected && char !== "`" && twice(literal.value, literal.end)) return found(true);
       index = literal.end - 1;
+      keyExpected = false;
       continue;
     }
     // A comment is not code: the `...` a person writes in one is not a spread.
     if (char === "/" && next === "/") {
       const end = call.indexOf("\n", index);
-      if (end === -1) return false;
+      if (end === -1) return found(false);
       index = end;
       continue;
     }
     if (char === "/" && next === "*") {
       const end = call.indexOf("*/", index + 2);
-      if (end === -1) return false;
+      if (end === -1) return found(false);
       index = end + 1;
       continue;
     }
-    if (call.startsWith("...", index)) return true;
+    if (call.startsWith("...", index)) return found(true);
     if (/\s/.test(char)) continue;
     if (char === "{" || char === "(" || char === "[") {
-      if (keyExpected && char === "[") return true;
+      if (keyExpected && char === "[") return found(true);
       stack.push(char);
-      if (char === "{") keys.push(new Set());
+      if (char === "{") seen.push(new Set());
       keyExpected = char === "{";
       continue;
     }
     if (char === "}" || char === ")" || char === "]") {
-      if (char === "}") keys.pop();
+      if (char === "}") {
+        seen.pop();
+        if (stack.length === 1) optionsDone = true;
+      }
       stack.pop();
       keyExpected = false;
       continue;
@@ -635,20 +681,20 @@ function builtAtRuntime(call: string): boolean {
       keyExpected = stack.at(-1) === "{";
       continue;
     }
-    // A key of an object literal: an identifier one (`"model": …` cannot be read as an option
-    // anyway), and never the same name twice in that object.
+    // A key of an object literal, never the same name twice in that object.
     const key = keyExpected ? /^[A-Za-z_$][\w$]*/.exec(call.slice(index))?.[0] : undefined;
     if (key !== undefined) {
-      const open = keys.at(-1);
-      if (open !== undefined) {
-        if (open.has(key)) return true;
-        open.add(key);
-      }
+      if (twice(key, index + key.length)) return found(true);
       index += key.length - 1;
     }
     keyExpected = false;
   }
-  return false;
+  return found(false);
+}
+
+/** True when a call's options are not what they seem (`CallOptions.hidden`). */
+function builtAtRuntime(call: string): boolean {
+  return readOptions(call).hidden;
 }
 
 /** Where each direct call's `(` sits, in script order: what `readWorkflowScript` reads. */
@@ -987,6 +1033,29 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
     const said = reasonLine(launch.prompt, "Opus reason");
     // A fork names no effort: it runs at the session's own, which the person chose.
     const effort = launch.effort?.toLowerCase() ?? null;
+    // The free path is for a reading the guard can prove is the Opus family. A name it cannot
+    // read (`inherit`, `best`, an id it does not know) may stand for a higher tier, so the
+    // person approves it, at any effort — and where nobody can answer, it is refused.
+    if (real.family !== "opus") {
+      if (nobodyWatches(env)) {
+        return deny(
+          real,
+          [
+            `This launch names \`${real.model}\`, which the guard cannot read as Claude Opus, and such a launch is approved by the person, one by one: this session has nobody to answer (\`claude -p\`).`,
+            "Name `opus` (or a Claude Opus id) as its model.",
+          ].join("\n"),
+        );
+      }
+      return {
+        decision: "ask",
+        real,
+        reason: [
+          `A launch on \`${real.model}\` ${atEffort(launch.effort)}: the guard cannot read the model behind it as Claude Opus, so it may be a higher tier.`,
+          "Approve only if this launch really runs on the opus tier.",
+        ].join("\n"),
+        why: "opus:unreadable",
+      };
+    }
     const why = opusWhy(effort, firstWord(said));
     if (effort !== OPUS_ASK_EFFORT) return allow(real, why);
     if (nobodyWatches(env)) {
@@ -1002,7 +1071,7 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
       decision: "ask",
       real,
       reason: [
-        `${namedModel(real)} launch at effort \`${effort}\`: \`${type || "(no type)"}\`${said === null ? "" : `, with the reason line \`Opus reason: ${said}\``}.`,
+        `${namedModel(real)} launch at effort \`${effort}\`: \`${type || "general-purpose"}\`${said === null ? "" : `, with the reason line "Opus reason: ${said}"`}.`,
         `The opus tier runs at ${levelsText(OPUS_FREE_EFFORTS)} with no question; \`${effort}\` only when the person asks for it. Approve only if you did.`,
       ].join("\n"),
       why,

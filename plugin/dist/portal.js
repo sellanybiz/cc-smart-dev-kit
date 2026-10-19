@@ -17240,8 +17240,10 @@ function throughFamilySlot(claude, family, gateway) {
   return { ...resolveTarget(first), family, tier };
 }
 function resolveName(text, gateway) {
-  if (text.startsWith("claude-"))
-    return throughFamilySlot(text, claudeFamily(text), gateway);
+  const family = claudeFamily(text);
+  if (family !== null || text.startsWith("claude-")) {
+    return throughFamilySlot(text, family, gateway);
+  }
   if (isSlotKey(text)) {
     const first = gateway.config?.slots[text]?.[0];
     const model = first === undefined ? { claude: false, family: null, model: text, tier: null } : resolveTarget(first);
@@ -17268,7 +17270,9 @@ function resolveLaunchModel(name, gateway, env) {
   if (family === undefined) {
     const mapped = tierOfMappedId(text, gateway, env);
     const resolved = resolveName(text, gateway);
-    return mapped === null || resolved.tier !== null ? resolved : { ...resolved, tier: mapped };
+    if (mapped === null || resolved.tier !== null && resolved.family !== null)
+      return resolved;
+    return { ...resolved, family: resolved.family ?? mapped, tier: mapped };
   }
   const tier = premiumTier(family);
   const override = stringField(env[familyEnv(family)]);
@@ -17361,11 +17365,13 @@ function firstArgument(call) {
   return literal === null ? null : literal.value;
 }
 function stringOption(call, name) {
-  const found = new RegExp(`(^|[{,\\s])${name}\\s*:\\s*`).exec(call);
-  if (found === null)
+  const at = readOptions(call).keys.get(name);
+  if (at === undefined)
     return null;
-  const at = found.index + found[0].length;
-  const literal = literalAt(call, at);
+  const colon = /^\s*:\s*/.exec(call.slice(at));
+  if (colon === null)
+    return null;
+  const literal = literalAt(call, at + colon[0].length);
   return literal === null ? null : literal.value;
 }
 function callOpen(at, script) {
@@ -17453,51 +17459,71 @@ function lineOf(script, index) {
   return script.slice(0, index).split(`
 `).length;
 }
-function builtAtRuntime(call) {
+function readOptions(call) {
   const stack = [];
-  const keys = [];
+  const seen = [];
+  const keys = new Map;
+  let optionsDone = false;
   let keyExpected = false;
+  const found = (hidden) => ({ hidden, keys });
+  const twice = (key, end) => {
+    const open = seen.at(-1);
+    if (open !== undefined) {
+      if (open.has(key))
+        return true;
+      open.add(key);
+    }
+    if (stack.length === 1 && !optionsDone)
+      keys.set(key, end);
+    return false;
+  };
   for (let index = 1;index < call.length; index += 1) {
     const char = call[index] ?? "";
     const next = call[index + 1] ?? "";
     if (char === '"' || char === "'" || char === "`") {
       const literal = stringAt(call, index);
       if (literal === null)
-        return false;
+        return found(false);
+      if (keyExpected && char !== "`" && twice(literal.value, literal.end))
+        return found(true);
       index = literal.end - 1;
+      keyExpected = false;
       continue;
     }
     if (char === "/" && next === "/") {
       const end = call.indexOf(`
 `, index);
       if (end === -1)
-        return false;
+        return found(false);
       index = end;
       continue;
     }
     if (char === "/" && next === "*") {
       const end = call.indexOf("*/", index + 2);
       if (end === -1)
-        return false;
+        return found(false);
       index = end + 1;
       continue;
     }
     if (call.startsWith("...", index))
-      return true;
+      return found(true);
     if (/\s/.test(char))
       continue;
     if (char === "{" || char === "(" || char === "[") {
       if (keyExpected && char === "[")
-        return true;
+        return found(true);
       stack.push(char);
       if (char === "{")
-        keys.push(new Set);
+        seen.push(new Set);
       keyExpected = char === "{";
       continue;
     }
     if (char === "}" || char === ")" || char === "]") {
-      if (char === "}")
-        keys.pop();
+      if (char === "}") {
+        seen.pop();
+        if (stack.length === 1)
+          optionsDone = true;
+      }
       stack.pop();
       keyExpected = false;
       continue;
@@ -17508,17 +17534,16 @@ function builtAtRuntime(call) {
     }
     const key = keyExpected ? /^[A-Za-z_$][\w$]*/.exec(call.slice(index))?.[0] : undefined;
     if (key !== undefined) {
-      const open = keys.at(-1);
-      if (open !== undefined) {
-        if (open.has(key))
-          return true;
-        open.add(key);
-      }
+      if (twice(key, index + key.length))
+        return found(true);
       index += key.length - 1;
     }
     keyExpected = false;
   }
-  return false;
+  return found(false);
+}
+function builtAtRuntime(call) {
+  return readOptions(call).hidden;
 }
 function callsOf(script) {
   return agentMentions(script).filter((mention) => mention.call).map((mention) => callOpen(mention.at, script));
@@ -17736,6 +17761,25 @@ function judgeLaunch(launch, ctx, env) {
   if (real.tier === "opus") {
     const said = reasonLine(launch.prompt, "Opus reason");
     const effort = launch.effort?.toLowerCase() ?? null;
+    if (real.family !== "opus") {
+      if (nobodyWatches(env)) {
+        return deny(real, [
+          `This launch names \`${real.model}\`, which the guard cannot read as Claude Opus, and such a launch is approved by the person, one by one: this session has nobody to answer (\`claude -p\`).`,
+          "Name `opus` (or a Claude Opus id) as its model."
+        ].join(`
+`));
+      }
+      return {
+        decision: "ask",
+        real,
+        reason: [
+          `A launch on \`${real.model}\` ${atEffort(launch.effort)}: the guard cannot read the model behind it as Claude Opus, so it may be a higher tier.`,
+          "Approve only if this launch really runs on the opus tier."
+        ].join(`
+`),
+        why: "opus:unreadable"
+      };
+    }
     const why = opusWhy(effort, firstWord2(said));
     if (effort !== OPUS_ASK_EFFORT)
       return allow(real, why);
@@ -17750,7 +17794,7 @@ function judgeLaunch(launch, ctx, env) {
       decision: "ask",
       real,
       reason: [
-        `${namedModel(real)} launch at effort \`${effort}\`: \`${type || "(no type)"}\`${said === null ? "" : `, with the reason line \`Opus reason: ${said}\``}.`,
+        `${namedModel(real)} launch at effort \`${effort}\`: \`${type || "general-purpose"}\`${said === null ? "" : `, with the reason line "Opus reason: ${said}"`}.`,
         `The opus tier runs at ${levelsText(OPUS_FREE_EFFORTS)} with no question; \`${effort}\` only when the person asks for it. Approve only if you did.`
       ].join(`
 `),
