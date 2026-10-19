@@ -991,6 +991,10 @@ created and that holds nothing else is removed.
   whose stamp names another version. `doctor` uses it (and compares each file with the
   plugin's). `refreshInstructionsCopy(paths, version)` brings only the copy up to that
   version: no block, no other step, no question, nothing when opted out or never installed.
+  `refreshDue` also stops a session of an older version from writing its files back over a
+  newer copy (`refreshMayWrite`: the installed version writes, and with no record of it only
+  one newer than the stamp); a session that may not refresh says why in one stderr line
+  (`refreshInstructionsAtSessionStart`).
   It is the **new** version's first session start that calls it: the update itself runs the
   old version's code, which does not know the new files, so the `update-check` SessionStart
   hook refreshes the copy through `refreshInstructionsAtSessionStart` — the copy only,
@@ -1096,8 +1100,12 @@ the main checkout with `claude -w <task-name>`, and Claude Code makes
 `<repo>/.claude/worktrees/<task-name>` on the branch `worktree-<task-name>` (a `/` in the
 name becomes `+`). It keeps its own lock on the worktree, its cleanup marker, the reset of a
 reused clean worktree, `-w "#123"` and its Git LFS handling — none of which a hook could
-rebuild. Entering an existing worktree is `claude -w <name>` again, or `EnterWorktree` by
-`path`; an unrelated task from inside a worktree goes back to the main checkout first.
+rebuild. Entering an existing worktree is `claude -w <name>`, or `EnterWorktree` with its
+`name` (which resumes it as it was left); `EnterWorktree` with a `path` only switches between
+worktrees for a session already inside one, and fails from the main checkout. An unrelated
+task from inside a worktree goes back to the main checkout first. A subagent with its own
+worktree never calls either tool: Claude Code refuses both, and it uses `cd` to move inside
+its own checkout.
 
 - **The base comes from `origin`'s default branch** under `worktree.baseRef: "fresh"` (the
   default; it fetches that branch only when the repo was not fetched for 24 hours). A project
@@ -1213,8 +1221,8 @@ worktrees).
 | Hook | Event (matcher) | On when | What it does |
 |---|---|---|---|
 | `git-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks before a force-push (git's abbreviations included: `--forc`), a push to a protected branch (`protectedBranches`, default `main`), `push --all`/`--mirror`, a branch deleted on the remote (`git push origin :x`, `-d`/`--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that discards changes, `branch -D`, `stash clear` and an unnamed `stash drop`, and (with `worktrees`) a bare `git stash` / `stash pop`. One shell lexer (`shell-command.ts`) reads each command of a line; quoted text, here-docs and comments are data, and shell keywords, wrappers (`timeout 60 git push -f`, `env -i sudo -u me …`, `xargs …`), the here-doc a shell reads as its script, and the text piped into one are read through. Known limits: a git alias, `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file. "Ask", never "deny": the person may mean it. |
-| `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit, Serena's edit tools) | `worktrees.guardMainFolder` | Denies an edit of a file in the main checkout itself, with the way into a worktree. A Serena edit names its file relative to the folder Serena has ACTIVE, so it is placed by `serena-root`'s record (else by `CLAUDE_PROJECT_DIR`, the folder the session started in); a file it cannot place is an `ask`, never a pass. |
-| `serena-root` | PreToolUse, PostToolUse (`mcp__serena__activate_project`), SessionStart | `worktrees.guardMainFolder` | Records which folder Serena edits for this session (`<stateDir>/serena-root/<session id>.txt`): "unknown" from the moment an activation is allowed until Serena's own answer names the folder, so the record is only ever a folder Serena confirmed — and the guard ASKS while it is unknown. It refuses an activation that names a project by NAME or a folder outside this repo and its worktrees. On a broken cc-smart-dev-kit.json it records nothing and says so. |
+| `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit, Serena's edit tools) | `worktrees.guardMainFolder` | Denies an edit of a file in the main checkout itself, with the way into a worktree. A Serena edit names its file relative to the folder Serena has ACTIVE, so it is placed by `serena-root`'s record (else by `CLAUDE_PROJECT_DIR`, the folder the session started in); a file it cannot place is a `deny` with the `activate_project` step Claude can take itself, never a pass. |
+| `serena-root` | PreToolUse, PostToolUse (`mcp__serena__activate_project`), SessionStart | `worktrees.guardMainFolder` | Records which folder Serena edits for this session (`<stateDir>/serena-root/<session id>.txt`): "unknown" from the moment an activation is allowed until Serena's own answer names the folder, so the record is only ever a folder Serena confirmed — and the guard DENIES while the folder is unknown or unrecorded, never passes. A resume, a `/clear` or a fork writes "unknown" and gives the session one context line saying the `activate_project` step that fixes it. It refuses an activation that names a project by NAME or a folder outside this repo and its worktrees. On a broken cc-smart-dev-kit.json it records nothing and says so. |
 | `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
 | `merge-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks the person before a command that merges a pull request. Every merge of the line is judged (`gh pr merge`, `gh pr -R owner/repo merge 5`, an alias from `gh alias list`, `--auto` included), and the first the policy does not allow asks, naming that pull request: `autoMerge` on, the base is the integration base (`autoMergeAllowed`), the merge names THIS project's repository (its `origin`), every required check `gh pr checks --required` reports green, and (with `reviewBeforePush`) the head commit's review is recorded. The forms it does not judge ask with the reason — a `gh api` merge, a GraphQL query it cannot read, a shell alias, an extension whose words name a merge — as does a step that moves the merge's folder, branch or repository (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing or does not answer. Read-only `gh`, 10 s a call of the hook's 30 s. § The workflow › The merge guard. |
 | `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists | Denies a message to a session that works outside this repo (from Claude Code's session records). |

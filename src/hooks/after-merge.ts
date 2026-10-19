@@ -1059,7 +1059,7 @@ export function clearWorktreeNote(path: string, branch: string): string {
     insideClaudeWorktrees(path)
       ? 'ExitWorktree with action "remove": Claude Code checks a worktree under .claude/worktrees/ itself and says when work is left.'
       : 'ExitWorktree with action "remove". A worktree outside .claude/worktrees/ may be refused because Claude Code cannot check it: if the refusal is only for the merged commits, check that `git status --porcelain` is empty and `git log @{u}..` shows nothing, then call it again with discard_changes true. The deprecated cc-smart-dev-kit engine\'s WorktreeRemove hook is then the only check: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.',
-    `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: git worktree remove "${path}", then git branch -d ${branch}.`,
+    `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: git worktree remove "${path}", then git branch -d ${branch}. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.`,
   ].join("\n");
 }
 

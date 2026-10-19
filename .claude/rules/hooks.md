@@ -319,8 +319,15 @@ A bug in a hook must never stop a user's work.
 - A guard asks rather than denies when the person may mean it (a force-push); it denies
   only what is never right in that project (an edit in a guarded main checkout, a message
   to another project's session).
+- **A hook's `ask` cannot be silenced by the person.** Claude Code asks on every matching
+  call: "Yes, don't ask again" leaves no rule a PreToolUse hook's answer respects (proved
+  live 2026-10-19, the Serena guard). So a guard asks only where the person's judgment is
+  the point. When the fix is mechanical and Claude can do it itself — point Serena at its
+  folder with `activate_project` — the guard denies and says the step, and the person is
+  not interrupted on every edit.
 - Anything a guard cannot work out (a session record it cannot read, a branch it cannot
-  name) lets the call through.
+  name) lets the call through — except where the answer is one step away and asking would
+  cost the person every call (a Serena edit whose folder the guard cannot place, above).
 
 ## Session start never changes anything that matters
 

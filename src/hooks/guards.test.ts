@@ -72,7 +72,7 @@ describe("the main-folder guard", () => {
       [
         "This file is in the main checkout (/code/app). This project makes every change in a worktree (cc-smart-dev-kit.json `worktrees.guardMainFolder`).",
         "Already working in a worktree? Edit the same file under that worktree's folder.",
-        "Not in one yet: EnterWorktree with the task name as its `name` makes one — use dashes, since a `/` becomes `+`.",
+        "Not in one yet: `EnterWorktree` with the task name as its `name` makes one, or resumes an existing one — use dashes, since a `/` becomes `+`.",
       ].join("\n"),
     );
   });

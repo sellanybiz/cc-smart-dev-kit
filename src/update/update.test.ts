@@ -1018,6 +1018,55 @@ describe("the instructions copy at a session start", () => {
     expect(said).toEqual([]);
   });
 
+  test("an older session never writes back over the installed copy, and says so in one line", async () => {
+    // Seen live (2026-10-19): a session still on 0.5.2 rewrote the 0.5.3 copy at its start,
+    // and `doctor` read "written by 0.5.2". The copy is not the installed version's here.
+    const home = tempDir("instructions-home");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    const where = instructionsPaths(paths, source());
+    installInstructions(where, false, "0.4.0");
+    mkdirSync(join(paths.claudeConfigDir, "plugins"), { recursive: true });
+    const installed = (version: string) =>
+      writeFileSync(
+        paths.installedPluginsFile,
+        JSON.stringify({
+          version: 2,
+          plugins: {
+            "cc-smart-dev-kit@cc-smart-dev-kit": [
+              { installPath: join(home, "plugin"), scope: "user", version },
+            ],
+          },
+        }),
+      );
+    installed("0.5.0");
+    writeFileSync(join(where.source, "core.md"), "# Core\n\nThe old version's rules.\n");
+    const said: string[] = [];
+
+    await refreshInstructionsAtSessionStart({
+      where,
+      version: "0.3.0",
+      log: (line) => said.push(line),
+    });
+
+    expect(readFileSync(join(where.target, "core.md"), "utf8")).toContain("The plugin's own rules");
+    expect(readVersionStamp(where.stateDir)).toBe("0.4.0");
+    expect(said).toEqual([
+      "cc-smart-dev-kit: this session runs 0.3.0; restart it to use the installed 0.5.0's instructions.",
+    ]);
+
+    // The copy is already the installed version's: an old session runs old code, and the
+    // copy is right — nothing to say.
+    installed("0.4.0");
+    said.length = 0;
+    await refreshInstructionsAtSessionStart({
+      where,
+      version: "0.3.0",
+      log: (line) => said.push(line),
+    });
+    expect(readVersionStamp(where.stateDir)).toBe("0.4.0");
+    expect(said).toEqual([]);
+  });
+
   test("nothing when the person chose --no-instructions, and nothing when setup never ran", async () => {
     const home = tempDir("instructions-home");
     const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });

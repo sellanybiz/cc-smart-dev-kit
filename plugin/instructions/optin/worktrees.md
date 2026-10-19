@@ -33,11 +33,15 @@ until then, and `cc-smart-dev-kit doctor` names the steps to move.
 **Always work in your own worktree. Sessions start in the main checkout:** never edit or
 commit there. A new task starts from there with `claude -w <task-name>` (dashes, not slashes:
 a `/` in a name becomes `+`); in a running session, `EnterWorktree` with the task name as its
-`name` makes one. An existing worktree is entered by its name, or by path with
-`EnterWorktree`. A session already in a worktree that starts an **unrelated** task goes back
-to the main checkout first (`ExitWorktree`), then starts the new one from there. Every change
-goes: worktree → branch → commit → push → pull request into `base` → merge (after the
-person's yes) → tell the other sessions → clear the worktree.
+`name` makes one. An existing worktree is entered by its name with `EnterWorktree` — it
+resumes as it was left, and may carry an earlier session's commits — or by the person with
+`claude -w <name>`. `EnterWorktree` with a path only switches between worktrees for a session
+already inside one; from the main checkout it fails. A worktree outside
+`.claude/worktrees/` is entered by the person starting a session in that folder. A session
+already in a worktree that starts an **unrelated** task goes back to the main checkout first
+(`ExitWorktree`), then starts the new one from there. Every change goes: worktree → branch →
+commit → push → pull request into `base` → merge (after the person's yes) → tell the other
+sessions → clear the worktree.
 
 Why: in a shared folder, one session's `switch`, `stash`, `reset` or `restore` moves or hides
 another's uncommitted work, and a commit sweeps up files it did not write. In your own
@@ -52,7 +56,9 @@ another worktree's files.
 **A subagent with `isolation: "worktree"`** gets its own worktree cut from the same base as
 the session's: with `baseRef: "head"`, the session's branch and its commits; under `fresh`,
 `origin`'s default branch. It usually has no packages installed: it runs the project's
-install before tests.
+install before tests. It never calls `EnterWorktree` or `ExitWorktree` — it is already
+isolated, and Claude Code refuses `ExitWorktree` there — and `cd` moves it inside its own
+worktree.
 
 ## What every worktree still shares
 

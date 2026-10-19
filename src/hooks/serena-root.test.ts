@@ -193,20 +193,57 @@ describe("the keeper, through the hook frame", () => {
       cwd: repo,
       source,
     });
+    const note = {
+      stdout: JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "SessionStart",
+          additionalContext:
+            "cc-smart-dev-kit: the folder Serena has active is not known for this session. Before any Serena edit, do this. Point Serena at the folder you work in with `mcp__serena__activate_project`: an ABSOLUTE path (your worktree), and the arguments its tool asks for — the `session_id` Serena's instructions give (`mcp__serena__initial_instructions` if you have none). Or use Edit/Write with the file's absolute path.",
+        },
+      }),
+    };
 
+    // No record means Serena is at the folder the session started in: nothing to say.
     writeSerenaRoot(paths, SESSION, { kind: "path", path: repo });
     expect(await runHook(serenaRootHook, start("startup"), env)).toEqual({});
     expect(readSerenaRoot(paths, SESSION)).toBeUndefined();
 
+    // Under these the same Serena may keep another project: "unknown" plus the one line
+    // that says how to point it again, before the first Serena edit.
     for (const source of ["resume", "clear", "fork"]) {
       writeSerenaRoot(paths, SESSION, { kind: "path", path: repo });
-      expect(await runHook(serenaRootHook, start(source), env)).toEqual({});
+      expect(await runHook(serenaRootHook, start(source), env)).toEqual(note);
       expect(readSerenaRoot(paths, SESSION)).toEqual({ kind: "unknown" });
     }
+    expect(JSON.parse(note.stdout).hookSpecificOutput.additionalContext).toStartWith(
+      "cc-smart-dev-kit: ",
+    );
+    expect(JSON.parse(note.stdout).hookSpecificOutput.additionalContext).toContain(
+      "`mcp__serena__activate_project`",
+    );
 
+    // A compaction is the same session and the same Serena.
     writeSerenaRoot(paths, SESSION, { kind: "path", path: repo });
     expect(await runHook(serenaRootHook, start("compact"), env)).toEqual({});
     expect(readSerenaRoot(paths, SESSION)).toEqual({ kind: "path", path: repo });
+  });
+
+  test("a session start in a project without the guard: no record, no context line", async () => {
+    const { repo } = repoWithWorktree();
+    const env = hookEnv();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", prefix: "app-wt-" },
+    });
+    for (const source of ["resume", "clear", "fork"]) {
+      expect(
+        await runHook(
+          serenaRootHook,
+          { hook_event_name: "SessionStart", session_id: SESSION, cwd: repo, source },
+          env,
+        ),
+      ).toEqual({});
+    }
+    expect(readSerenaRoot(cliPaths(env), SESSION)).toBeUndefined();
   });
 
   test("a project that did not turn the guard on: nothing is recorded, nothing is refused", async () => {
@@ -301,20 +338,29 @@ describe("the main-folder guard on a Serena edit", () => {
     ).toEqual({});
   });
 
-  test("no record and no start folder, or a record that reads unknown: the guard asks, never passes", async () => {
+  /** The denial an unplaceable Serena edit gets: the step, by hand. */
+  const UNPLACEABLE_DENIAL = [
+    "This is a Serena edit, and the folder Serena has active is not known to cc-smart-dev-kit, so it cannot tell whether the file is in the main checkout.",
+    "Point Serena at the folder you work in with `mcp__serena__activate_project`: an ABSOLUTE path (your worktree), and the arguments its tool asks for — the `session_id` Serena's instructions give (`mcp__serena__initial_instructions` if you have none). Then edit through Serena again. Or use Edit/Write with the file's absolute path.",
+  ].join("\n");
+
+  test("a Serena edit the guard cannot place is denied with the step, with or without a start folder", async () => {
+    // No record and no `CLAUDE_PROJECT_DIR`: one activation records the folder, so the step
+    // is still Claude's to take.
     const noRoot = guarded(null, undefined);
-    const asked = await runHook(
+    const deniedNoRoot = await runHook(
       mainFolderGuardHook,
       serenaEditInput(noRoot.repo, "replace_symbol_body", { relative_path: "src/app.ts" }),
       noRoot.env,
     );
-    expect(outputOf(asked).permissionDecision).toBe("ask");
-    expect(outputOf(asked).permissionDecisionReason).toContain(
-      "the folder Serena has active is not known to cc-smart-dev-kit",
-    );
+    expect(outputOf(deniedNoRoot).permissionDecision).toBe("deny");
+    expect(outputOf(deniedNoRoot).permissionDecisionReason).toBe(UNPLACEABLE_DENIAL);
 
+    // The record itself says "unknown" (a resume, or an activation in flight): the same
+    // denial. An `ask` here would return on every edit: Claude Code's "Yes, don't ask again"
+    // does not silence a hook's ask.
     const unknown = guarded({ kind: "unknown" }, "/work/whatever");
-    const alsoAsked = await runHook(
+    const denied = await runHook(
       mainFolderGuardHook,
       serenaEditInput(unknown.repo, "rename_symbol", {
         name_path: "Greeting",
@@ -322,7 +368,10 @@ describe("the main-folder guard on a Serena edit", () => {
       }),
       unknown.env,
     );
-    expect(outputOf(alsoAsked).permissionDecision).toBe("ask");
+    expect(outputOf(denied).permissionDecision).toBe("deny");
+    expect(outputOf(denied).permissionDecisionReason).toBe(UNPLACEABLE_DENIAL);
+    // The record stays "unknown": only Serena's own answer may place the next edit.
+    expect(readSerenaRoot(cliPaths(unknown.env), SESSION)).toEqual({ kind: "unknown" });
   });
 
   test("replace_in_files with no path is the whole project: refused when Serena is at the main checkout", async () => {
@@ -435,13 +484,14 @@ describe("the main-folder guard on a Serena edit", () => {
     ).toEqual({});
   });
 
-  test("with no record, a memory write cannot be placed: the guard asks, never passes", async () => {
+  test("with no record, a memory write cannot be placed: denied, never passed", async () => {
     const { env, repo } = guarded(null, undefined);
-    const asked = await runHook(
+    const denied = await runHook(
       mainFolderGuardHook,
       serenaEditInput(repo, "write_memory", { content: "x", memory_name: "style" }),
       env,
     );
-    expect(outputOf(asked).permissionDecision).toBe("ask");
+    expect(outputOf(denied).permissionDecision).toBe("deny");
+    expect(outputOf(denied).permissionDecisionReason).toBe(UNPLACEABLE_DENIAL);
   });
 });

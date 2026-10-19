@@ -5924,7 +5924,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.5.3",
+  version: "0.5.4",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -8153,7 +8153,7 @@ function clearWorktreeNote(path, branch) {
   return [
     `That merged the pull request of this worktree's branch, ${branch}. Clear the worktree now, unless the user wants more work on this branch:`,
     insideClaudeWorktrees(path) ? 'ExitWorktree with action "remove": Claude Code checks a worktree under .claude/worktrees/ itself and says when work is left.' : 'ExitWorktree with action "remove". A worktree outside .claude/worktrees/ may be refused because Claude Code cannot check it: if the refusal is only for the merged commits, check that `git status --porcelain` is empty and `git log @{u}..` shows nothing, then call it again with discard_changes true. The deprecated cc-smart-dev-kit engine\'s WorktreeRemove hook is then the only check: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.',
-    `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: git worktree remove "${path}", then git branch -d ${branch}.`
+    `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: git worktree remove "${path}", then git branch -d ${branch}. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.`
   ].join(`
 `);
 }
@@ -9921,6 +9921,8 @@ import { isAbsolute as isAbsolute2, join as join10, resolve as resolve4 } from "
 var SERENA_ACTIVATE_TOOL = "mcp__serena__activate_project";
 var SERENA_ROOT_DIR = "serena-root";
 var UNKNOWN = "unknown";
+var SERENA_POINT_STEP = `Point Serena at the folder you work in with \`${SERENA_ACTIVATE_TOOL}\`: an ABSOLUTE path (your worktree), and the arguments its tool asks for \u2014 the \`session_id\` Serena's instructions give (\`mcp__serena__initial_instructions\` if you have none).`;
+var SERENA_FOLDER_UNKNOWN_NOTE = `${PLUGIN}: the folder Serena has active is not known for this session. Before any Serena edit, do this. ${SERENA_POINT_STEP} Or use Edit/Write with the file's absolute path.`;
 function serenaRootFile(paths, sessionId) {
   if (typeof sessionId !== "string" || !/^[\w-]{1,128}$/.test(sessionId))
     return null;
@@ -9998,10 +10000,13 @@ function serenaRoot(context) {
     return SILENT;
   if (event === "SessionStart") {
     const source = stringField(input.source);
-    if (source === "startup")
+    if (source === "startup") {
       clearSerenaRoot(paths, sessionId);
-    else if (source === "resume" || source === "clear" || source === "fork") {
+      return SILENT;
+    }
+    if (source === "resume" || source === "clear" || source === "fork") {
       writeSerenaRoot(paths, sessionId, { kind: "unknown" });
+      return addContext("SessionStart", SERENA_FOLDER_UNKNOWN_NOTE);
     }
     return SILENT;
   }
@@ -10084,14 +10089,14 @@ function mainFolderRefusal(mainCheckout, viaSerena = false) {
   return [
     `This file is in the main checkout (${mainCheckout}). This project makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).`,
     viaSerena ? "A Serena edit lands in the project Serena has active, and that is the main checkout. Point Serena at your worktree first: `mcp__serena__activate_project` with the worktree's absolute path \u2014 then edit through Serena again. Or use Edit/Write with the same file's path under the worktree." : "Already working in a worktree? Edit the same file under that worktree's folder.",
-    "Not in one yet: EnterWorktree with the task name as its `name` makes one \u2014 use dashes, since a `/` becomes `+`."
+    "Not in one yet: `EnterWorktree` with the task name as its `name` makes one, or resumes an existing one \u2014 use dashes, since a `/` becomes `+`."
   ].join(`
 `);
 }
 function unplaceableSerenaRefusal() {
   return [
-    "This is a Serena edit, and the folder Serena has active is not known to cc-smart-dev-kit, so it cannot tell whether the file is in the main checkout.",
-    "Point Serena at a folder with `mcp__serena__activate_project` and an ABSOLUTE path (your worktree, or this repo's main checkout), then edit through Serena again \u2014 or use Edit/Write with the file's absolute path."
+    `This is a Serena edit, and the folder Serena has active is not known to ${PLUGIN}, so it cannot tell whether the file is in the main checkout.`,
+    `${SERENA_POINT_STEP} Then edit through Serena again. Or use Edit/Write with the file's absolute path.`
   ].join(`
 `);
 }
@@ -10115,7 +10120,7 @@ function mainFolderGuard(context) {
   }
   const serena = serenaEditedFile(input, readSerenaRoot(paths, input.session_id), startFolder(env));
   if (serena !== null) {
-    return "unplaceable" in serena ? toolDecision("ask", unplaceableSerenaRefusal()) : judge(serena.file, context, true);
+    return "unplaceable" in serena ? toolDecision("deny", unplaceableSerenaRefusal()) : judge(serena.file, context, true);
   }
   const file = editedFile(input, cwd);
   return file === null ? SILENT : judge(file, context, false);

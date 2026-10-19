@@ -17,20 +17,27 @@ values (`base`, `bases`) are in `.claude/cc-smart-dev-kit.json`, field `worktree
 **Another worktree's file is not yours to edit.** Once this session is in a worktree it
 entered (`claude -w`, `EnterWorktree`), Claude Code limits it, and the agents it starts, to
 that checkout: work there, and for a separate one launch a builder with
-`isolation: "worktree"` (`/cc-smart-dev-kit:subagent-decision` § How to brief).
+`isolation: "worktree"` (`/cc-smart-dev-kit:subagent-decision` § How to brief). **A subagent
+never calls `EnterWorktree` or `ExitWorktree`:** with `isolation: "worktree"` it is already
+isolated (Claude Code refuses `ExitWorktree` there), and it uses `cd` inside its own worktree.
 
 ## Start a task
 
 1. **In a running session, `EnterWorktree` with the task name as its `name` creates the
-   worktree**; an existing one is entered by its name. `claude -w <task-name>` is how a
-   person starts a fresh session in one. Use dashes: a `/` in a name becomes `+` in the folder
-   and the branch. Claude Code makes `<repo>/.claude/worktrees/<task-name>` on the branch
-   `worktree-<task-name>`, cut from the current branch when the project's settings say
-   `"worktree": {"baseRef": "head"}`, else from `origin`'s default branch.
+   worktree**; an existing one is entered by its name, and resumes as it was left — it may
+   carry an earlier session's commits. `claude -w <task-name>` is how a person starts a fresh
+   session in one, and `claude -w <name>` opens an existing one. Use dashes: a `/` in a name
+   becomes `+` in the folder and the branch. Claude Code makes
+   `<repo>/.claude/worktrees/<task-name>` on the branch `worktree-<task-name>`, cut from the
+   current branch when the project's settings say `"worktree": {"baseRef": "head"}`, else from
+   `origin`'s default branch.
    **Already in a worktree and starting an unrelated task?** `ExitWorktree` first, then start
    the new one from the main checkout.
-2. **`EnterWorktree` with `path`** enters a folder outside `.claude/worktrees/`. Only that
-   form makes the person approve a prompt; the name needs none.
+2. **`EnterWorktree` with `path` only switches between worktrees, for a session already
+   inside one.** From the main checkout it fails: the session's working directory must already
+   be inside a worktree of this repo. Only that form makes the person approve a prompt; the
+   name needs none. **A worktree outside `.claude/worktrees/`:** the person starts a session
+   in that folder.
 3. **Bring it up to date.** A worktree that already held the branch comes back as it was
    left. So after entering it: `git fetch origin <base>`, then
    `git rev-list --count HEAD..origin/<base>`, and merge `origin/<base>` when it is behind —
@@ -54,7 +61,7 @@ that checkout: work there, and for a separate one launch a builder with
 2. Stop your dev server and any `Monitor` working in it (`TaskStop`).
 3. Point the language-server tool back at the main checkout's absolute path. On Windows, a
    folder a running process works in cannot be deleted.
-4. Then `ExitWorktree`.
+4. Then `ExitWorktree` (a subagent does not: it is already isolated).
 
 ## Clear it after the merge
 
