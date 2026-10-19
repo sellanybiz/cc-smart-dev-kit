@@ -401,16 +401,28 @@ try {
   $names.Add("a foreign MCP server")
 
   # 7e. The same, answered no: the server is kept, and it is in what is left.
-  $keepForeign = New-World "mcp-keep" @{ Answers = @("n", "y", ("A" * 43), "n", "n"); McpForeign = '{"servers":[{"name":"serena","runsWhat":"uvx serena start-mcp-server","state":"foreign"}]}' }
+  $keepForeign = New-World "mcp-keep" @{ Answers = @("n", "y", ("A" * 43), "n", "n"); McpForeign = '{"servers":[{"name":"sequential-thinking","runsWhat":"node C:/tools/thinking.js","state":"foreign"}]}' }
   $result = Invoke-Install $keepForeign @($repo)
   Assert-Code "a foreign MCP server kept" $result 0 $keepForeign
-  Assert-Contains "a foreign MCP server kept" $result.out 'the "serena" server was left as it is'
-  Assert-Contains "a foreign MCP server kept" $result.out 'the "serena" MCP server (registered by something else)'
+  Assert-Contains "a foreign MCP server kept" $result.out 'the "sequential-thinking" server was left as it is'
+  Assert-Contains "a foreign MCP server kept" $result.out 'the "sequential-thinking" MCP server (registered by something else)'
   if ((Get-Calls $keepForeign) -match "mcp remove") {
     Stop-Smoke "a foreign MCP server kept: it was removed anyway"
   }
   $passed++
   $names.Add("a foreign MCP server kept")
+
+  # 7f. A serena of the person's own (Serena is retired in 0.6.0): `mcp status` never lists a
+  #     retired name (src/mcp/mcp.test.ts), and the installer has no Serena step of its own, so
+  #     nothing is asked about it and nothing removes it.
+  $ownSerena = New-World "mcp-own-retired" @{ Answers = @("y", ("A" * 43), "n", "n") }
+  $result = Invoke-Install $ownSerena @($repo)
+  Assert-Code "a serena of the person's own" $result 0 $ownSerena
+  if ($result.out -match "serena" -or ((Get-Calls $ownSerena) -join "`n") -match "serena") {
+    Stop-Smoke "a serena of the person's own: the installer touched it:`n$($result.out)"
+  }
+  $passed++
+  $names.Add("a serena of the person's own")
 
   # 8. Inside a Claude Code session: refused, exit 2, nothing runs.
   $inside = New-World "inside" @{ Answers = @("n") }

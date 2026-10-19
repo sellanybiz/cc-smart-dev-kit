@@ -141,6 +141,12 @@ describe("resolveProject", () => {
     });
   });
 
+  test("a retired hook name in ownHooks is still accepted: never a parse failure", () => {
+    const repo = makeRepo();
+    writeCcSmartDevKitJson(repo, JSON.stringify({ ownHooks: ["serena-root", "git-guard"] }));
+    expect(resolveProject(repo)?.config?.ownHooks).toEqual(["serena-root", "git-guard"]);
+  });
+
   test.each([
     [{ protectedBranches: [] }, "protectedBranches:"],
     [{ protectedBranches: [""] }, "protectedBranches.0:"],

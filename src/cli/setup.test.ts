@@ -6,7 +6,10 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { readMcpRecords, recordMcpServer } from "../mcp/records";
+import { serenaLeftoverPaths } from "../mcp/retired";
 import { restore } from "../setup/restore";
+import { readChanged, writeManagedFile } from "../setup/write";
 import { capturePrinted, printed, world } from "../testing/fake-machine";
 import { git, tempDir } from "../testing/temp";
 
@@ -412,5 +415,102 @@ describe("setup manages agent view's notification hook", () => {
     );
     expect(readFileSync(w.paths.settingsFile, "utf8")).toBe(before);
     expect(printed).toContain("Dry run: nothing was written or run.");
+  });
+});
+
+describe("setup takes back what an older setup left for Serena", () => {
+  /**
+   * What an older setup left: `serena` in Claude Code's own config, naming its context file —
+   * recorded as setup's own when `ours` — the context as a tracked whole file, and the
+   * serena-root records.
+   */
+  function olderSerena(w: ReturnType<typeof world>, ours: boolean) {
+    const where = serenaLeftoverPaths(w.paths);
+    const json = JSON.stringify({
+      args: ["serena", "start-mcp-server", "--context", where.contextFile],
+      command: "uvx",
+    });
+    writeFileSync(
+      w.paths.userConfigFile,
+      JSON.stringify({ mcpServers: { serena: JSON.parse(json) } }),
+    );
+    if (ours) recordMcpServer(w.paths.stateDir, "serena", json, "2026-10-01T00:00:00.000Z");
+    writeManagedFile(where.contextFile, "single_project: false\n", {
+      kind: "whole-file",
+      newFileMode: 0o644,
+      stateDir: w.paths.stateDir,
+    });
+    mkdirSync(where.recordDir, { recursive: true });
+    writeFileSync(join(where.recordDir, "11111111-2222-3333-4444-555555555555.txt"), "unknown");
+    return where;
+  }
+
+  const CONTEXT_REMOVED =
+    "- ~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml: removed (Serena's context; Serena is retired in 0.6.0)";
+  const FOLDER_REMOVED =
+    "- ~/.local/share/cc-smart-dev-kit/serena/: removed (Serena's folder, empty now)";
+  const RECORDS_REMOVED =
+    "- ~/.claude/cc-smart-dev-kit/serena-root/: removed (the serena-root hook's records; Serena is retired in 0.6.0)";
+  const KEPT =
+    "  ~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml: left in place: serena still starts Serena with it";
+
+  test("its own registration through `claude mcp remove`, then the context file and the records", async () => {
+    const w = world();
+    const where = olderSerena(w, true);
+    expect(await w.setup()).toBe(0);
+    expect(w.mcpCalls()).toContain("claude mcp remove serena --scope user");
+    expect(printed).toContain("- MCP server serena removed from your user config");
+    expect(printed).toContain(CONTEXT_REMOVED);
+    expect(printed).toContain(FOLDER_REMOVED);
+    expect(printed).toContain(RECORDS_REMOVED);
+    expect(readMcpRecords(w.paths.stateDir).serena).toBeUndefined();
+    expect(existsSync(where.folder)).toBe(false);
+    expect(existsSync(where.recordDir)).toBe(false);
+    expect(readChanged(w.paths.stateDir)[where.contextFile]).toBeUndefined();
+  });
+
+  test("a serena of the person's own: no command runs, and the file it starts with stays", async () => {
+    const w = world();
+    const where = olderSerena(w, false);
+    expect(await w.setup()).toBe(0);
+    expect(w.mcpCalls().filter((call) => call.includes("serena"))).toEqual([]);
+    expect(printed).toContain(KEPT);
+    expect(printed).not.toContain(CONTEXT_REMOVED);
+    expect(existsSync(where.contextFile)).toBe(true);
+    // The plugin's own records go all the same: nothing of the person's reads them.
+    expect(printed).toContain(RECORDS_REMOVED);
+    expect(existsSync(where.recordDir)).toBe(false);
+  });
+
+  test("a `claude mcp remove` that fails: the registration, its record and the file it names all stay; exit 1", async () => {
+    const w = world({
+      bins: {
+        claude: [
+          'case "$*" in "mcp remove serena --scope user") echo "remove failed" >&2; exit 1 ;; esac',
+          "exit 0",
+        ].join("\n"),
+      },
+    });
+    const where = olderSerena(w, true);
+    expect(await w.setup()).toBe(1);
+    expect(printed).toContain("! $ claude mcp remove serena --scope user failed (remove failed)");
+    expect(printed).toContain(KEPT);
+    expect(existsSync(where.contextFile)).toBe(true);
+    expect(readMcpRecords(w.paths.stateDir).serena).toBeDefined();
+  });
+
+  test("--dry-run: each step is shown, and nothing is run or removed", async () => {
+    const w = world();
+    const where = olderSerena(w, true);
+    expect(await w.setup({ dryRun: true })).toBe(0);
+    expect(printed).toContain("$ claude mcp remove serena --scope user");
+    expect(printed).toContain(CONTEXT_REMOVED);
+    expect(printed).toContain(FOLDER_REMOVED);
+    expect(printed).toContain(RECORDS_REMOVED);
+    expect(printed).toContain("Dry run: nothing was written or run.");
+    expect(w.mcpCalls()).toEqual([]);
+    expect(existsSync(where.contextFile)).toBe(true);
+    expect(existsSync(where.recordDir)).toBe(true);
+    expect(readMcpRecords(w.paths.stateDir).serena).toBeDefined();
   });
 });

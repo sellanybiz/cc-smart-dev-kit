@@ -41,7 +41,6 @@ import { runJobCommand } from "../jobs/commands";
 import { realMemoryFacts } from "../jobs/memory";
 import { realMachine } from "../machine/machine";
 import { realMcpDoctorDeps } from "../mcp/doctor";
-import { serenaFolder } from "../mcp/serena-context";
 import { mcpServerStatus, mcpServerStatusLine } from "../mcp/status";
 import { runOmniroute } from "../omniroute/commands";
 import { runPortal } from "../portal/command";
@@ -439,7 +438,6 @@ async function main(argv: string[]): Promise<number> {
         machine: realMachine(process.env, ask),
         instructions: off ? false : on ? true : null,
         instructionsSource: instructionsFolder(import.meta.dir),
-        serenaSource: serenaFolder(import.meta.dir),
         statusline: rest.includes("--statusline"),
       });
     }

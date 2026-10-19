@@ -46,11 +46,9 @@ isolated (Claude Code refuses `ExitWorktree` there), and it uses `cd` inside its
    that changes the lockfile. Claude Code has no setup step, so a new worktree has no
    packages, and stale packages make the linter and the type check report errors that are not
    in the code. The git-ignored files `.worktreeinclude` names are already copied in.
-5. **A language-server tool** (such as Serena) stays pointed at the folder the session
-   started in. Point it at the worktree's **absolute path** right after entering it, and
-   again after `/clear`, a fork or a resume. Only the main session does this; subagents use
-   the session's server and never re-point it. Until it points at the worktree, use `Grep`
-   and `Read`.
+5. **Search the worktree, not the main checkout.** `Grep`, `Glob` and `Read` search the
+   path you give them: give the worktree's absolute path. A code-index server of the
+   project's own that started in the main checkout keeps answering for that folder.
 6. **A refusal that names a running session** means that session works in that worktree:
    ask it. Never force it, and never move or remove its folder to get in.
 
@@ -58,10 +56,9 @@ isolated (Claude Code refuses `ExitWorktree` there), and it uses `cd` inside its
 
 1. **Wait for every agent you launched from it** (`/cc-smart-dev-kit:subagent-decision` § While agents
    run).
-2. Stop your dev server and any `Monitor` working in it (`TaskStop`).
-3. Point the language-server tool back at the main checkout's absolute path. On Windows, a
-   folder a running process works in cannot be deleted.
-4. Then `ExitWorktree` (a subagent does not: it is already isolated).
+2. Stop your dev server and any `Monitor` working in it (`TaskStop`). On Windows, a folder a
+   running process works in cannot be deleted.
+3. Then `ExitWorktree` (a subagent does not: it is already isolated).
 
 ## Clear it after the merge
 

@@ -1321,22 +1321,34 @@ describe("install.sh: what only the person has", () => {
   test("a foreign MCP server, answered no: kept, and it is in what is left", () => {
     const w = world({
       answers: ["n", ...browserAnswers("n", "n")],
-      mcpForeign: [{ name: "serena", runsWhat: "uvx serena start-mcp-server" }],
+      mcpForeign: [{ name: "sequential-thinking", runsWhat: "node /opt/tools/thinking.js" }],
     });
     const { code, out } = w.run();
     expect(code).toBe(0);
     expect(out).toContain(
-      '6/8 The "serena" server is registered by something else (uvx serena start-mcp-server)',
+      '6/8 The "sequential-thinking" server is registered by something else (node /opt/tools/thinking.js)',
     );
     expect(w.callsOf("claude").filter((call) => call.startsWith("mcp remove")).length).toBe(0);
     expect(out).toContain(
-      `  - the "serena" MCP server (registered by something else): claude mcp remove serena --scope user && ${w.launcher} setup\n`,
+      `  - the "sequential-thinking" MCP server (registered by something else): claude mcp remove sequential-thinking --scope user && ${w.launcher} setup\n`,
     );
     expect(out).toContain(
-      `· 6/8 the "serena" server was left as it is: run \`claude mcp remove serena --scope user\`, then \`${w.launcher} setup\`\n`,
+      `· 6/8 the "sequential-thinking" server was left as it is: run \`claude mcp remove sequential-thinking --scope user\`, then \`${w.launcher} setup\`\n`,
     );
     // `setup` ran once only: nothing was replaced, so nothing is registered again.
     expect(w.callsOf("bun").filter((call) => call === `${w.cli} setup`).length).toBe(1);
+  });
+
+  test("a serena of the person's own: never asked about, never removed", () => {
+    // Serena is retired (0.6.0): `mcp status` lists only the plugin's own names, so a `serena`
+    // of the person's own is never reported (`src/mcp/mcp.test.ts` › "a retired name is never
+    // reported"), and setup takes back only a registration its record proves it made. The
+    // installer has no Serena step of its own either.
+    const w = world({ answers: browserAnswers("n", "n") });
+    const { code, out } = w.run();
+    expect(code).toBe(0);
+    expect(out).not.toContain("serena");
+    expect(w.callsOf("claude").filter((call) => call.includes("serena"))).toEqual([]);
   });
 
   test("the plugin's own servers are never asked about, and the check is one read-only call", () => {

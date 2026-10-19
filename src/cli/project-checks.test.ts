@@ -287,8 +287,6 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
       both("git-guard", "./guard.sh", "PreToolUse (Bash)"),
       both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
       both("job-route", "./guard.sh", "PreToolUse (Bash)"),
-      // serena-root also runs at a session start (it forgets or distrusts its record there).
-      both("serena-root", "./hello.sh", "SessionStart (startup)"),
       both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),
       both("session-name", "./hello.sh", "SessionStart (startup)"),
       both("session-name", "bun p.ts", "UserPromptSubmit"),
@@ -306,7 +304,6 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
       "· project: the plugin's session-name is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
       both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
       both("job-route", "./guard.sh", "PreToolUse (Bash)"),
-      both("serena-root", "./hello.sh", "SessionStart (startup)"),
       both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),
     ]);
   });
@@ -320,7 +317,6 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     expect(check(repo)).toEqual([
       "· project: the plugin's session-name is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
       "· project: the plugin's worktree-leftovers is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
-      both("serena-root", "./hello.sh", "SessionStart (startup)"),
     ]);
   });
 
@@ -344,8 +340,18 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["main-folder-guard"] });
     expect(check(repo)).toEqual([
-      "! project: .claude/cc-smart-dev-kit.json lists main-folder-guard in ownHooks, so the plugin's main-folder-guard is off here, but the project's settings wire no hook on PreToolUse (Edit, Write, NotebookEdit, mcp__serena__(replace_symbol_body, insert_after_symbol, insert_before_symbol, replace_content, rename_symbol, safe_delete_symbol, replace_in_files, write_memory, rename_memory, edit_memory, delete_memory)): nothing answers in its place. Take \"main-folder-guard\" out of ownHooks once the project's copy is gone",
+      "! project: .claude/cc-smart-dev-kit.json lists main-folder-guard in ownHooks, so the plugin's main-folder-guard is off here, but the project's settings wire no hook on PreToolUse (Edit, Write, NotebookEdit): nothing answers in its place. Take \"main-folder-guard\" out of ownHooks once the project's copy is gone",
     ]);
+  });
+
+  test("a retired hook name in ownHooks: one · line that it silences nothing and can go, never a warning", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["serena-root"] });
+    expect(check(repo)).toEqual([
+      '· project: .claude/cc-smart-dev-kit.json lists serena-root in ownHooks, a plugin hook that is retired: it silences nothing. Take "serena-root" out of ownHooks',
+    ]);
+    const env = hookEnv();
+    expect(projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS).every((l) => l.ok)).toBe(true);
   });
 
   test("a project hook for every tool runs next to each plugin hook on that event, for all its tools", () => {
@@ -357,7 +363,6 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     // review-record runs on SubagentStop, not PostToolUse, so a PostToolUse "*" never meets it.
     expect(check(repo)).toEqual([
       both("after-merge", "./log.sh", "PostToolUse (Bash, PowerShell)"),
-      both("serena-root", "./log.sh", "PostToolUse (mcp__serena__activate_project)"),
     ]);
   });
 

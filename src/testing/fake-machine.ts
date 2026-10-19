@@ -41,9 +41,6 @@ export function showKeysOutput(...fingerprints: string[]): string {
 /** The plugin's real instructions folder: setup installs them as it does for a person. */
 const PLUGIN_INSTRUCTIONS = join(import.meta.dir, "..", "..", "plugin", "instructions");
 
-/** The plugin's real `serena` folder: setup installs its context as it does for a person. */
-const PLUGIN_SERENA = join(import.meta.dir, "..", "..", "plugin", "serena");
-
 /** Everything the test printed with console.log and console.error (`ERR ` first). */
 export const printed: string[] = [];
 
@@ -218,7 +215,6 @@ export function world(options: WorldOptions = {}) {
       machine,
       instructions: null,
       instructionsSource: PLUGIN_INSTRUCTIONS,
-      serenaSource: PLUGIN_SERENA,
       statusline: false,
       // No environment of its own: a test that wants a key sets one through `extra`.
       env: {},
@@ -236,5 +232,10 @@ export function world(options: WorldOptions = {}) {
       .split("\n")
       .filter((line) => !/^(dpkg-query --status|rpm -q |brew list |claude mcp )/.test(line))
       .join("\n");
-  return { calls, detached, home, machine, paths, questions, setup, staged, bin };
+  /** The `claude mcp …` calls only, one per line: for a test about the MCP registrations. */
+  const mcpCalls = () =>
+    (existsSync(log) ? readFileSync(log, "utf8") : "")
+      .split("\n")
+      .filter((line) => line.startsWith("claude mcp "));
+  return { calls, mcpCalls, detached, home, machine, paths, questions, setup, staged, bin };
 }

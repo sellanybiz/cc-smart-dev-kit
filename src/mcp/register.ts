@@ -19,7 +19,8 @@
  *   - registered with our record, but the file now holds a different config: the person
  *     changed it, so it is theirs: the record is forgotten, and restore leaves it.
  *   - a server the plugin no longer wants (Tavily without a key), still registered with our
- *     record: taken back (`claude mcp remove`), and the record goes.
+ *     record: taken back (`claude mcp remove`), and the record goes. A server an earlier
+ *     version registered and this one retired is planned the same way (`retired.ts`).
  *
  * WHEN CLAUDE CODE'S OWN CONFIG CANNOT BE READ
  *   Nothing is touched on any path: no server is added, removed, updated or forgotten, every
@@ -38,7 +39,7 @@ import type { CliPaths } from "../cli/paths";
 import { tildify } from "../cli/paths";
 import { shellQuote } from "../setup/launcher";
 import { forgetMcpServer, type McpRecord, readMcpRecords, recordMcpServer } from "./records";
-import type { McpServer, ServerName } from "./servers";
+import type { McpServer, RetiredServerName, ServerName } from "./servers";
 
 /** Runs one `claude` command. A test hands in a fake; the CLI passes `Bun.spawnSync`. */
 export type ClaudeRun = (argv: string[]) => { ok: boolean; out: string };
@@ -98,7 +99,8 @@ function deepEqual(a: unknown, b: unknown): boolean {
 }
 
 export interface McpPlanEntry {
-  name: ServerName;
+  /** One of the plugin's servers, or one it retired (only ever taken back: `retired.ts`). */
+  name: RetiredServerName | ServerName;
   /** The JSON to register, for `add` and `update`. Empty for the other actions. */
   json: string;
   action: "add" | "foreign" | "gone" | "keep" | "remove" | "skip" | "update";
@@ -262,6 +264,8 @@ export interface McpApplyResult {
   registered: { json: string; name: string }[];
   /** Servers whose record must be forgotten: the person changed them, or they are gone. */
   forgotten: string[];
+  /** Servers this run took out of the user config: their `claude mcp remove` succeeded. */
+  removed: string[];
   /** The commands a dry run would have run, as `$` lines. */
   wouldRun: string[];
 }
@@ -287,6 +291,7 @@ export function applyMcpServers(
     notes: [],
     ok: true,
     registered: [],
+    removed: [],
     wouldRun: [],
   };
   for (const entry of plan) {
@@ -306,8 +311,9 @@ export function applyMcpServers(
     }
     if (which("claude") === null) {
       result.ok = false;
+      const undone = entry.action === "remove" ? "removed" : "registered";
       result.notes.push(
-        `! The claude command is not on PATH, so ${entry.name} was not registered. Run it once it is.`,
+        `! The claude command is not on PATH, so ${entry.name} was not ${undone}. Run it once it is.`,
       );
       continue;
     }
@@ -327,6 +333,7 @@ export function applyMcpServers(
     if (entry.action === "remove") {
       result.changes.push(`- MCP server ${entry.name} removed from your user config`);
       result.forgotten.push(entry.name);
+      result.removed.push(entry.name);
       continue;
     }
     const verb = entry.action === "add" ? "+" : "~";

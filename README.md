@@ -71,7 +71,7 @@ folder with the script in it, `powershell -NoProfile -ExecutionPolicy Bypass -Fi
     the file, says why, and the question comes once more.
   A key that cannot be checked (OmniRoute not running, a 5xx) is saved with a warning, never
   silently. With no OmniRoute at all, nothing is asked and the gateway goes on the list at the end.
-- **An MCP server of yours.** If one of the plugin's four server names (`playwright`, `serena`,
+- **An MCP server of yours.** If one of the plugin's three server names (`playwright`,
   `sequential-thinking`, `tavily-websearch`) is registered at user scope by something else — a
   project's own script, say — setup leaves it alone, as it must. The installer then shows what
   runs instead and asks whether to replace it, one server at a time. A yes runs
@@ -185,6 +185,37 @@ step below runs the plugin through it.
    ([The browser](#the-browser)); without the token, the browser tools do not work.
 
 After that, use `cc-smart-dev-kit setup` to set up again (for example after an update).
+
+## 0.6.0: Serena is removed
+
+The plugin no longer registers the Serena MCP server, and its `serena-root` hook and its
+`code-explorer` agent are gone. One Serena server ran for each Claude session, at about 3 GB of
+memory each in a large project; sessions seldom used it, and Grep, Glob and Read do most code
+search. For a file's shape — its functions and exports — claude-mem's `smart_outline`,
+`smart_search` and `smart_unfold` do the job (claude-mem is a [companion
+plugin](#companion-plugins) setup installs).
+
+**After you update, run `cc-smart-dev-kit setup` once.** It takes back what an older setup made
+for Serena, and nothing else:
+
+- the `serena` MCP server, with Claude Code's own `claude mcp remove serena --scope user` —
+  only while setup's record says setup registered it, and it still holds exactly what setup
+  registered;
+- Serena's context file, `~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml`
+  (a backup goes to the state folder first), and its folder once it is empty;
+- the `serena-root` hook's records, `~/.claude/cc-smart-dev-kit/serena-root/`.
+
+`--dry-run` shows each of these first. Until setup has run, `doctor` prints one ✗ line that
+says so; after it, nothing.
+
+**A Serena of your own stays.** A `serena` server that setup did not register (or one you
+changed since) is never touched: `doctor` shows it as a `·` line. Its context file stays too,
+while a registration still starts Serena with it. To remove a Serena of your own by hand:
+`claude mcp remove serena -s user`. A project's own `.serena/` folder (Serena's project
+settings and memories) is the project's: delete it when nothing uses it any more.
+
+A project whose `.claude/cc-smart-dev-kit.json` lists `serena-root` in `ownHooks` keeps working:
+the name is still accepted, silences nothing, and `doctor` says it can go.
 
 ## What's new in 0.5.0
 
@@ -547,7 +578,7 @@ Five pages say how, and what still has to be tested there:
 | `cc-smart-dev-kit setup --statusline` | Also sets Claude Code's status line to `cc-smart-dev-kit statusline`, as a key cc-smart-dev-kit owns, without asking (also after an earlier "no"). It never replaces a status line you set: one you set yourself, also after setup had set it, stops setup before it writes anything, and `restore` leaves it. |
 | `cc-smart-dev-kit statusline` | The status line itself: plan usage, a warning from 85 %, and any gateway fallback in use. Reads the JSON Claude Code passes on stdin. |
 | `cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>]` | Which models answered on this machine, per session, from Claude Code's transcripts: the main session's replies by model, and apart, its subagents (how each was launched, the model of each reply, the share on Opus). Default: the last 6 hours. It also shows auto mode's safety checks, which the gateway's router counted, by day, with the tokens each answer reported (below). Read only; no message text. |
-| `cc-smart-dev-kit mcp status [--json]` | Read-only: the four MCP servers cc-smart-dev-kit registers for your user, and which of them are registered by something else instead (a project's own script, say). One line each, naming what runs instead (the command and its arguments — never an `env` or a `headers`), or `--json` for a script. Exit 1 means Claude Code's own config could not be read, so "nothing is foreign" and "could not check" are never confused. The [installer](#install) asks with it before it replaces one of yours; `doctor` warns from the same facts. |
+| `cc-smart-dev-kit mcp status [--json]` | Read-only: the three MCP servers cc-smart-dev-kit registers for your user, and which of them are registered by something else instead (a project's own script, say). One line each, naming what runs instead (the command and its arguments — never an `env` or a `headers`), or `--json` for a script. Exit 1 means Claude Code's own config could not be read, so "nothing is foreign" and "could not check" are never confused. The [installer](#install) asks with it before it replaces one of yours; `doctor` warns from the same facts. |
 | `cc-smart-dev-kit doctor [--live]` | Checks the install, the cc-smart-dev-kit files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below). Prints ✓ or ✗ for each check, `·` for information and `!` for a warning (neither is a failure), and exits with 1 when a check fails. `--live` also proves the hooks and both worktree shapes on the Claude Code installed here (below); it never runs without the flag. |
 | `cc-smart-dev-kit hook <worktree-create\|worktree-remove\|subagent-stop\|notify>` | The plugin's **deprecated** worktree engine, for a project that still wires it in its own `.claude/settings.json` (§ Worktrees), and the notifier hook (below): `setup` wires `hook notify` in your user settings for agent view. It reads the hook's input on stdin and answers as Claude Code expects. With no name, it prints the lines to paste. |
 | `cc-smart-dev-kit project init [--dry-run] [--yes] [flags]` | Sets a project up ([`project init`](#project-init)): it writes the project's `.claude/cc-smart-dev-kit.json` (the worktrees, the protected branches, the guards, and optionally the [workflow](#the-workflow) policy) and, when the base branch is not the repo's default branch, `"worktree": {"baseRef": "head"}` in `.claude/settings.json`. It asks first, showing each default, which comes from the repo (the base from `origin/HEAD`, the protected branches from git and, when `gh` is installed and answers, GitHub); every question has a flag, so a run with no terminal writes nothing unless `--yes` is given. It never commits. `cc-smart-dev-kit project init --help` lists the flags. |
@@ -674,12 +705,16 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   command or the click that fixes it; without the token nothing runs at all
   ([The browser](#the-browser)). Whether the `playwright` server is registered and starts is the
   MCP servers' own line, just below;
-- the MCP servers setup registers (the `playwright` browser, `serena`,
-  `sequential-thinking`, `tavily-websearch`): each is registered at user scope and starts
+- the MCP servers setup registers (the `playwright` browser, `sequential-thinking`,
+  `tavily-websearch`): each is registered at user scope and starts
   (`claude mcp get`, which starts it once). ✗ when one is missing ("Run: cc-smart-dev-kit setup")
   or when another copy of it wins — a project's `.mcp.json`, or the local scope — naming
   what to remove. Without a Tavily key its server is skipped, as a `·` line that names the
   key file: a person who never wanted web search loses nothing. A key is never printed;
+- what an older setup left for Serena ([0.6.0](#060-serena-is-removed)): one ✗ line while
+  setup still has to take back the `serena` registration it made, its context file or the
+  `serena-root` records ("Run: cc-smart-dev-kit setup"), and nothing once it has. A `serena`
+  of your own is a `·` line: it stays;
 - OmniRoute, when it is installed here: a `·` line when a newer release has been out for
   three days (with `cc-smart-dev-kit omniroute update`), and nothing when it is the newest or
   the registry cannot be read. Never a failure (§ OmniRoute updates);
@@ -734,7 +769,8 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   - `!` when `worktrees.base` is not the repo's default branch and the project's settings do
     not set `"worktree": {"baseRef": "head"}`, so a new worktree would be cut from the default
     branch instead; the line names the one line to add;
-  - as information (`·`), each plugin hook the project's `ownHooks` turns off here;
+  - as information (`·`), each plugin hook the project's `ownHooks` turns off here, and each
+    retired hook name it still lists (`serena-root`): accepted, it silences nothing and can go;
   - `!` warnings (never a failure) for an `ownHooks` entry with no project hook left to
     answer, and for a project hook that runs next to a plugin hook `ownHooks` does not
     name: both would answer (§ The hooks);
@@ -1307,19 +1343,18 @@ names such a missing import.
 | `gateway` | The optional AI gateway. |
 | `search` | Quick web lookups and one page's text through the gateway (`cc-smart-dev-kit search`). |
 
-**4 agents** (`cc-smart-dev-kit:<name>`; the caller passes the model and effort on each launch, so
+**3 agents** (`cc-smart-dev-kit:<name>`; the caller passes the model and effort on each launch, so
 none is pinned in their files). `reviewer` and `rules-maintainer` load the skill they work by
 (`review`, `self-evolve`) at start, through their `skills:` field:
 
 | Agent | Job | Needs |
 |---|---|---|
-| `reviewer` | The read-only second opinion on a change set. | — (uses Serena when it is there) |
+| `reviewer` | The read-only second opinion on a change set. | — (uses claude-mem's `smart_outline`, `smart_search` and `smart_unfold` when they are there) |
 | `rules-maintainer` | Edits to instruction files, with a duplicate and conflict check. | — |
-| `code-explorer` | Symbol search: callers, references, definitions. | the **Serena** MCP server |
 | `ui-verifier` | Drives the running app in a browser and measures. | the **Playwright** MCP server |
 
-The MCP servers keep their usual tool names (`mcp__serena__*`, `mcp__playwright__*`) because
-they are registered for your user, not served by the plugin.
+The MCP servers keep their usual tool names (`mcp__playwright__*`) because they are registered
+for your user, not served by the plugin.
 
 **An output style**, `Structured replies` (answer first, short sections, tables). Optional:
 pick it with `/output-style`. The plugin never switches it on.
@@ -1492,8 +1527,7 @@ guard fails closed), and every other hook writes one line on stderr and the sess
 | Hook | When | What it does |
 |---|---|---|
 | `git-guard` | before a Bash or PowerShell command | Asks you before a force-push, a push to a protected branch (`protectedBranches`), `push --all` / `--mirror`, a branch deleted on the remote (`git push origin :x`, `--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that throws changes away, `branch -D`, `stash clear` and an unnamed `stash drop` (they throw work away), and (with `worktrees`) a bare `git stash` or `stash pop`: every worktree shares one stash. Text in quotes, here-docs and comments is not a command; a shell keyword, a wrapper (`timeout 60 git push -f`, `sudo -u me …`), a here-doc fed to `sh`, and the text piped into `sh` are read through. Git's own abbreviations count (`--forc` is `--force`). Not read: a git alias (`-c alias.x=…`, or one of your own), `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file, and a branch it cannot name. |
-| `main-folder-guard` | before Edit, Write, NotebookEdit, and Serena's edit tools | With `worktrees.guardMainFolder`: refuses an edit of a file in the main checkout itself, and says how to get into a worktree. A Serena edit is placed by the folder Serena has active, which `serena-root` records for the session; a folder it cannot work out, it denies with the `activate_project` step, never lets the edit through. |
-| `serena-root` | `mcp__serena__activate_project` (before and after the call), and a session start | Records which folder Serena edits for this session (`worktrees.guardMainFolder`), so the guard above can place a Serena edit: from the moment an activation is allowed the record says "unknown" until Serena's own answer names the folder, so the guard denies rather than trusting a folder Serena may not be on. It refuses an activation that names a project by name, or a folder outside this repo and its worktrees. At a session start it forgets the record (`startup`) or distrusts it (`resume`, `clear`, `fork`) and gives the session one line saying how to point Serena again. |
+| `main-folder-guard` | before Edit, Write, NotebookEdit | With `worktrees.guardMainFolder`: refuses an edit of a file in the main checkout itself, and says how to get into a worktree. |
 | `playwright-output` | before every `mcp__playwright__*` call | Puts a screenshot or snapshot the caller names by a relative `filename` into the browser's output folder instead of the folder the session runs in (`@playwright/mcp` resolves a caller-named file against the process's own folder). |
 | `merge-guard` | before a Bash or PowerShell command | Asks you before a command that merges a pull request. The forms it reads: `gh pr merge` (`gh pr -R owner/repo merge 5` included), `--auto` (an armed merge lands once the checks pass, with nobody watching), a `gh alias` that expands to one (read from `gh alias list`), and — asking whatever the policy says — a `gh api` call to the pull-request merge endpoint (`repos/o/r/pulls/5/merge`, any method spelling) or a GraphQL query that names `mergePullRequest` / `enablePullRequestAutoMerge`. **Every merge in the command is judged**: `gh pr merge 5 && gh pr merge 6` checks both, and the first it does not allow asks, naming that pull request. It reads three facts, read-only: the pull request (`gh pr view`), the repository's default branch (`gh repo view`), and its required checks (`gh pr checks --required`; a skipped one counts as passing, GitHub's own rule). It lets a merge through with no question only when `autoMerge` is on, the pull request's base is the project's integration base, every required check passed, and — with `reviewBeforePush` on — the head commit has a [recorded review](#the-workflow). Every other case asks you, with the reason it asks; so does a merge that names a repository other than this project's own (`--repo`/`-R`: the policy covers this repository only), one whose earlier steps change the folder, branch or repository it acts on (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing, fails, or answers something it cannot read. A merge with `--admin` (any value) always asks, whatever the policy says, naming the pull request: `--admin` merges past the repository's branch protection — its required reviews (a code-owner approval among them), its required checks and its merge queue — so you decide each one. It asks rather than refuses, because a release may use `--admin` on purpose. In a project without `.claude/cc-smart-dev-kit.json` it stays silent, like every project hook. |
 | `message-guard` | before SendMessage | Refuses a message to a session that works outside this repo (ListAgents lists every session on the machine). |
@@ -1815,7 +1849,6 @@ folders. Registered for the user, the names stay and the servers stay.
 | Server | What it is |
 |---|---|
 | `playwright` | The browser ([The browser](#the-browser)): the launcher, `browser mcp`, on your own Chrome through the Playwright extension. |
-| `serena` | [Serena](https://github.com/oraios/serena) code intelligence, at a pinned commit, started with the plugin's own context (installed as `~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml`): Serena's `claude-code` context with project switching on, so `activate_project` is listed and a session can point Serena at its worktree. |
 | `sequential-thinking` | `@modelcontextprotocol/server-sequential-thinking`, at a pinned version, through `bunx`. |
 | `tavily-websearch` | [Tavily](https://tavily.com)'s remote web-search server (`https://mcp.tavily.com/mcp/`). Its key is **never** written into a registration or printed: the header carries `Bearer ${TAVILY_API_KEY}`, which Claude Code fills in from its own environment at connect time. |
 
@@ -1840,7 +1873,12 @@ folders. Registered for the user, the names stay and the servers stay.
   cc-smart-dev-kit did not write is left alone, with a note saying how to hand it back
   (`claude mcp remove <name> --scope user`, then setup). One setup wrote and you re-pointed
   since is yours too, and `restore` leaves it.
-- **`cc-smart-dev-kit mcp status [--json]`** answers, read-only, which of the four are the
+- **A server the plugin retired** (`serena`, in 0.6.0): the next setup takes back the
+  registration it made, by the same rule — only while the record says it is setup's and it
+  still holds exactly that — and never one of yours under that name. `mcp status` no longer
+  lists the name, so the installer never offers to replace yours
+  ([0.6.0](#060-serena-is-removed)).
+- **`cc-smart-dev-kit mcp status [--json]`** answers, read-only, which of the three are the
   plugin's and which are registered by something else: `! playwright: registered by something
   else (node /opt/tools/server.js). To let setup manage it: claude mcp remove playwright
   --scope user, then cc-smart-dev-kit setup`. The command and its arguments are shown; an
@@ -1853,7 +1891,7 @@ folders. Registered for the user, the names stay and the servers stay.
   under "What is left" with the exact command.
 - **`restore` takes exactly those back**: each server that still holds what setup registered
   is removed (`claude mcp remove <name> --scope user`), the record goes
-  (`~/.claude/cc-smart-dev-kit/mcp-servers.json`), and so do Serena's context file and the
+  (`~/.claude/cc-smart-dev-kit/mcp-servers.json`), and so does the
   Tavily `env` key. A server you re-pointed — or removed yourself — stays, and setup says so
   with the exact command that adds it back (a server you removed is never registered again).
 - `doctor` checks each one: registered at user scope, and it starts (`claude mcp get`, which
@@ -2216,7 +2254,7 @@ every question it holds.
 | `worktrees.engine` | **Deprecated**: `"plugin"` or `"own"` said who made the project's worktrees. Accepted and ignored until the engine retires in the next minor version; `doctor` names the steps to move. |
 | `protectedBranches` | The branches the git guard asks about before a push. Default `["main"]`. |
 | `sessionNames` | `true`: each session names itself after its task. Off when left out. |
-| `ownHooks` | The plugin hooks this project still runs as its own copy (in its own settings): exactly those stay silent here, so nothing runs twice. `["git-guard"]` while the project still has its own git guard; empty it once that copy is gone (§ The hooks). |
+| `ownHooks` | The plugin hooks this project still runs as its own copy (in its own settings): exactly those stay silent here, so nothing runs twice. `["git-guard"]` while the project still has its own git guard; empty it once that copy is gone (§ The hooks). A retired hook name (`serena-root`, 0.6.0) is still accepted and silences nothing. |
 | `instructions` | Accepted now. Today a project loads the opt-in instructions with its own import line (§ Instructions, skills and agents); the field does not load them yet. |
 | `autoMode` | Used now: `setup` copies it into your settings ([The auto-mode block](#the-auto-mode-block)). |
 | `jobs.kinds` | Used now: the project's own heavy-job kinds over the defaults ([docs/jobs.md](docs/jobs.md) § Kinds). |

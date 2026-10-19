@@ -120,6 +120,19 @@ describe("the main-folder guard", () => {
     );
   });
 
+  test("a retired hook name in ownHooks (serena-root): the file still reads, and the guard still denies", async () => {
+    // Refused by the strict parse, this name would make the guard ASK about every edit in the
+    // repo ("cannot check"); it is accepted and silences nothing.
+    const { repo, worktree } = guarded();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", prefix: "app-wt-", guardMainFolder: true },
+      ownHooks: ["serena-root"],
+    });
+    expect(
+      await runHook(mainFolderGuardHook, edit(worktree, join(repo, "a.ts")), hookEnv()),
+    ).toEqual(deny(mainFolderRefusal(repo)));
+  });
+
   test("cc-smart-dev-kit.json needs a newer plugin: it asks before an edit in the repo, not outside", async () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=99" });

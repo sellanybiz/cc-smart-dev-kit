@@ -67,7 +67,7 @@ the first time you use it.
 | `src/update/` | The self-update: the SessionStart hook's part, the detached background check, `cc-smart-dev-kit update`'s steps, and their state files. |
 | `src/search/` | The `cc-smart-dev-kit search` command: web search and one page's text through the gateway's OmniRoute backend. |
 | `src/browser/` | The browser: finding the person's Chrome and its `claude-code` profile, the token file, the Playwright MCP launcher (`browser mcp`, extension mode), `browser setup`/`token`/`check`, and `doctor`'s browser lines (`.claude/rules/browser.md`). |
-| `src/mcp/` | The MCP servers `setup` registers at user scope: the registrations (`servers.ts`), Claude Code's own `claude mcp` commands around them (`register.ts`), the record of what it registered (`records.ts`), the Tavily key (`tavily.ts`), Serena's context (`serena-context.ts`), `doctor`'s lines (`doctor.ts`). |
+| `src/mcp/` | The MCP servers `setup` registers at user scope: the registrations (`servers.ts`), Claude Code's own `claude mcp` commands around them (`register.ts`), the record of what it registered (`records.ts`), the Tavily key (`tavily.ts`), what `mcp status` reports (`status.ts`), `doctor`'s lines (`doctor.ts`), and what setup takes back of a server it retired — Serena's registration, context file and records (`retired.ts`). |
 | `src/sessions/` | The `cc-smart-dev-kit sessions` command: reading Claude Code's saved sessions, and reopening the ones a restart or a closed window stopped. |
 | `src/worktrees/` | The `cc-smart-dev-kit worktrees` command: the finished-worktree verdict (`verdict.ts`), the machine's facts (`machine-facts.ts`), the scan and removal (`scan.ts`). |
 | `src/ports.ts` | The local ports cc-smart-dev-kit holds as locks, and why they stay below 32768. |
@@ -109,7 +109,7 @@ Each rule loads itself when you touch a file it covers.
 | `neutrality.md` | every turn | No names; where project details come from. |
 | `bundles-and-releases.md` | `src/`, `scripts/`, `plugin/`, `package.json` | Committed bundles, what `plugin/` may hold, versions. |
 | `hooks.md` | `src/hooks/`, `src/entries/`, `plugin/hooks/` | The hook contract (Phase 3). |
-| `browser.md` | `src/browser/`, `src/testing/chrome-world.ts`, `plugin/serena/` | The browser: never stdout, the required token, Chrome's own profile, read-only Preferences, the costs upstream will not fix. |
+| `browser.md` | `src/browser/`, `src/testing/chrome-world.ts` | The browser: never stdout, the required token, Chrome's own profile, read-only Preferences, the costs upstream will not fix. |
 | `setup-and-managed-files.md` | `src/setup/`, `src/cli/`, `src/machine/` | How the command changes user files and the system. |
 | `gateway.md` | `src/gateway/`, `src/entries/router.ts`, the gateway skill and doc | Never change prompt text; the login reaches Anthropic only; the judge is a fallback only; model slots only at the usage limit; secrets; restarts. |
 | `cc-smart-dev-kit-json.md` | `src/project/` | The `.claude/cc-smart-dev-kit.json` contract. |
