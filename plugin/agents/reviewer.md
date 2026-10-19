@@ -55,7 +55,8 @@ message other sessions or ask the person.
    usually sits between what changed and what did not. A big file: get its shape first —
    `smart_outline` lists its functions and exports, `smart_unfold` opens just the one you
    need, and `smart_search` finds a symbol by name across the repo. Those three tools come
-   from the claude-mem plugin; when they are not there, `Grep` and `Read` do the same job.
+   from the claude-mem plugin; when they are not there or do not answer (on Windows they can
+   fail without an error), `Grep` and `Read` do the same job.
    For a plan: check its claims against the real files.
 3. Attack, using the `cc-smart-dev-kit:review` skill's lists — its edge-case axes and its severity
    scale. That skill is already in your context (this agent's `skills:` field loads it at

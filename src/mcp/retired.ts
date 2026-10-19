@@ -12,10 +12,11 @@
  *
  * WHAT SETUP TAKES BACK, AND WHAT IT LEAVES
  *   - The registration, only while the record says setup made it AND Claude Code still holds
- *     exactly that JSON — the rule every server follows (`sameConfig`). It goes through Claude
- *     Code's own `claude mcp remove`, the way a Tavily server without a key goes
- *     (`planRetiredServers` feeds `applyMcpServers`). A `serena` the record does not own is the
- *     person's: setup never touches it, and `doctor` says so with a `·` line.
+ *     exactly that JSON — the rule every server follows (`sameConfig`); for an update an older
+ *     setup left half done (`pending`), setup's own shape counts too (`setupMadeIt`). It goes
+ *     through Claude Code's own `claude mcp remove`, the way a Tavily server without a key goes
+ *     (`planRetiredServers` feeds `applyMcpServers`). A `serena` the record does not own stays:
+ *     setup never touches it, and `doctor` says, with a `·` line, that it has no record of it.
  *   - The context file, through the managed-file helpers (a backup first, then its
  *     `changed.json` entry dropped), while no registration in Claude Code's own config still
  *     names it: a Serena of the person's own may start with it. Its folder goes too, but only
@@ -41,7 +42,7 @@ import { forgetChange, realTarget, removeManagedFile } from "../setup/write";
 import type { McpCheck } from "./doctor";
 import { type McpRecord, readMcpRecords } from "./records";
 import { type McpPlanEntry, readUserServers, sameConfig } from "./register";
-import { RETIRED_SERVER_NAMES } from "./servers";
+import { RETIRED_SERVER_NAMES, type RetiredServerName } from "./servers";
 import { describeServerConfig } from "./status";
 
 /** The release that dropped Serena: the one home of that number in what setup and doctor say. */
@@ -64,24 +65,71 @@ export function serenaLeftoverPaths(paths: Pick<CliPaths, "dataDir" | "stateDir"
   };
 }
 
-/** The `·` line for a retired server that holds a config setup did not write. */
+/** Where an older setup started Serena from: the start of its `--from` argument. */
+const SERENA_SOURCE_PREFIX = "git+https://github.com/oraios/serena@";
+
+/**
+ * Does `config` have the shape an older setup registered Serena with? `uvx`, `--from` the
+ * Serena repository at some commit, and `--context` naming setup's OWN context file — a path
+ * inside the plugin's data folder, which nothing but setup ever named.
+ */
+function setupsSerenaShape(config: unknown, contextFile: string): boolean {
+  if (typeof config !== "object" || config === null || Array.isArray(config)) return false;
+  const { args, command } = config as { args?: unknown; command?: unknown };
+  if (command !== "uvx" || !Array.isArray(args)) return false;
+  const from = args.indexOf("--from");
+  const context = args.indexOf("--context");
+  const source = args[from + 1];
+  return (
+    from >= 0 &&
+    typeof source === "string" &&
+    source.startsWith(SERENA_SOURCE_PREFIX) &&
+    context >= 0 &&
+    args[context + 1] === contextFile
+  );
+}
+
+/**
+ * Is the live registration `current` the one setup made, by its record? It is while it still
+ * holds exactly the JSON the record has (`sameConfig`). A record marked `pending` is an older
+ * setup's own update that stopped after its `add-json` and before the record write — the record
+ * then holds the OLD JSON and the live config the newer one — so there the registration counts
+ * as setup's when it has setup's own shape too (`planMcpServers` reasons the same way, with the
+ * JSON it would write; a retired server has none, so the shape stands in for it).
+ */
+function setupMadeIt(
+  name: RetiredServerName,
+  recorded: McpRecord | undefined,
+  current: unknown,
+  paths: Pick<CliPaths, "dataDir" | "stateDir">,
+): boolean {
+  if (recorded === undefined) return false;
+  if (sameConfig(recorded.json, current)) return true;
+  return (
+    recorded.pending === true &&
+    name === "serena" &&
+    setupsSerenaShape(current, serenaLeftoverPaths(paths).contextFile)
+  );
+}
+
+/** The `·` line for a retired server whose record no longer matches what is registered. */
 function leftAloneNote(name: string): string {
   return (
-    `· MCP server ${name} holds a config ${PLUGIN} did not write: left alone, it is yours. ` +
+    `· MCP server ${name} holds a config other than the one ${PLUGIN} registered: left alone, and its record forgotten. ` +
     `${COMMAND} no longer registers ${name} (${SERENA_RETIRED_IN}); to remove it: claude mcp remove ${name} --scope user`
   );
 }
 
 /**
- * What setup does about each retired server: `remove` while the record says setup registered it
- * and Claude Code still holds exactly that JSON. Any other server under that name is the
- * person's: its record (when there is one) is forgotten, and the registration stays. A name the
- * record never had is not planned at all. `live` null (Claude Code's own config does not read):
- * nothing, and every record stays.
+ * What setup does about each retired server: `remove` while it is the registration setup made
+ * (`setupMadeIt`). Any other server under that name stays: its record (when there is one) is
+ * forgotten. A name the record never had is not planned at all. `live` null (Claude Code's own
+ * config does not read): nothing, and every record stays.
  */
 export function planRetiredServers(
   records: Record<string, McpRecord>,
   live: null | Record<string, unknown>,
+  paths: Pick<CliPaths, "dataDir" | "stateDir">,
 ): McpPlanEntry[] {
   if (live === null) return [];
   const plan: McpPlanEntry[] = [];
@@ -92,11 +140,10 @@ export function planRetiredServers(
     if (current === undefined) {
       // Gone already: only the record is left, and it goes without a word.
       plan.push({ action: "gone", forget: true, json: "", name, note: null });
-    } else if (sameConfig(recorded.json, current)) {
+    } else if (setupMadeIt(name, recorded, current, paths)) {
       plan.push({ action: "remove", json: "", name, note: null });
     } else {
-      // Re-pointed by the person, or an update of ours that never finished: either way not
-      // provably ours, so it stays.
+      // Re-pointed since, or another program's under that name: not provably ours, so it stays.
       plan.push({ action: "foreign", forget: true, json: "", name, note: leftAloneNote(name) });
     }
   }
@@ -285,17 +332,18 @@ export function retiredChecks(paths: CliPaths): McpCheck[] {
   for (const name of RETIRED_SERVER_NAMES) {
     const current = live[name];
     if (current === undefined) continue;
-    const record = records[name];
-    if (record !== undefined && sameConfig(record.json, current)) {
+    if (setupMadeIt(name, records[name], current, paths)) {
       owed.push(`the "${name}" MCP server it registered`);
       takenBack.push(name);
       continue;
     }
+    // Only what is known: setup has no record of registering this config. Whose it is, the
+    // line does not claim.
     others.push({
       ok: true,
       info: true,
       text:
-        `the "${name}" MCP server is registered, and not by ${PLUGIN} (${describeServerConfig(current)}): ` +
+        `the "${name}" MCP server is registered (${describeServerConfig(current)}), and ${PLUGIN} has no record of registering it as it is: ` +
         `${COMMAND} no longer registers it (${SERENA_RETIRED_IN}) and leaves it alone. To remove it: claude mcp remove ${name} --scope user`,
     });
   }

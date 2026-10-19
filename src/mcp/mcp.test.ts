@@ -1154,6 +1154,7 @@ describe("a retired server: setup takes back only the registration it made", () 
     const plan = planRetiredServers(
       readMcpRecords(fake.paths.stateDir),
       readUserServers(fake.paths.userConfigFile),
+      fake.paths,
     );
     expect(plan).toEqual([{ action: "remove", json: "", name: "serena", note: null }]);
     const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
@@ -1170,6 +1171,7 @@ describe("a retired server: setup takes back only the registration it made", () 
       planRetiredServers(
         readMcpRecords(fake.paths.stateDir),
         readUserServers(fake.paths.userConfigFile),
+        fake.paths,
       ),
     ).toEqual([]);
   });
@@ -1186,6 +1188,7 @@ describe("a retired server: setup takes back only the registration it made", () 
     const plan = planRetiredServers(
       readMcpRecords(fake.paths.stateDir),
       readUserServers(fake.paths.userConfigFile),
+      fake.paths,
     );
     expect(plan).toEqual([]);
     expect(applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending)).toEqual({
@@ -1210,6 +1213,7 @@ describe("a retired server: setup takes back only the registration it made", () 
     const plan = planRetiredServers(
       readMcpRecords(fake.paths.stateDir),
       readUserServers(fake.paths.userConfigFile),
+      fake.paths,
     );
     expect(plan).toEqual([
       {
@@ -1217,7 +1221,7 @@ describe("a retired server: setup takes back only the registration it made", () 
         forget: true,
         json: "",
         name: "serena",
-        note: "· MCP server serena holds a config cc-smart-dev-kit did not write: left alone, it is yours. cc-smart-dev-kit no longer registers serena (0.6.0); to remove it: claude mcp remove serena --scope user",
+        note: "· MCP server serena holds a config other than the one cc-smart-dev-kit registered: left alone, and its record forgotten. cc-smart-dev-kit no longer registers serena (0.6.0); to remove it: claude mcp remove serena --scope user",
       },
     ]);
     const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
@@ -1232,11 +1236,107 @@ describe("a retired server: setup takes back only the registration it made", () 
     const home = tempDir("mcp-retired-gone");
     const { fake } = olderMachine(home);
     const records = readMcpRecords(fake.paths.stateDir);
-    expect(planRetiredServers(records, {})).toEqual([
+    expect(planRetiredServers(records, {}, fake.paths)).toEqual([
       { action: "gone", forget: true, json: "", name: "serena", note: null },
     ]);
     // Claude Code's own config did not read: nothing is planned, and the record stays.
-    expect(planRetiredServers(records, null)).toEqual([]);
+    expect(planRetiredServers(records, null, fake.paths)).toEqual([]);
+  });
+
+  /** Serena as an older setup registered it: its pin, and setup's own context file. */
+  const serenaAt = (commit: string, contextFile: string) =>
+    JSON.stringify({
+      args: [
+        "--from",
+        `git+https://github.com/oraios/serena@${commit}`,
+        "serena",
+        "start-mcp-server",
+        "--context",
+        contextFile,
+        "--open-web-dashboard",
+        "False",
+        "--project-from-cwd",
+      ],
+      command: "uvx",
+      timeout: 300_000,
+    });
+
+  /**
+   * An older setup's pin update that stopped after its `add-json`: the record still holds the
+   * OLD JSON, marked pending, and Claude Code holds `live`.
+   */
+  function halfUpdated(home: string, live: unknown) {
+    const fake = fakeClaude(home);
+    const where = serenaLeftoverPaths(fake.paths);
+    recordMcpServer(fake.paths.stateDir, "serena", serenaAt("aaaa", where.contextFile), "then");
+    markMcpServerPending(fake.paths.stateDir, "serena");
+    mkdirSync(dirname(fake.paths.userConfigFile), { recursive: true });
+    writeFileSync(fake.paths.userConfigFile, JSON.stringify({ mcpServers: { serena: live } }));
+    return { fake, where };
+  }
+
+  test("a pending update whose add landed: setup's own shape is taken back, and doctor owes it", () => {
+    const home = tempDir("mcp-retired-pending");
+    const where = serenaLeftoverPaths(paths(home));
+    const { fake } = halfUpdated(home, JSON.parse(serenaAt("bbbb", where.contextFile)));
+    expect(
+      planRetiredServers(
+        readMcpRecords(fake.paths.stateDir),
+        readUserServers(fake.paths.userConfigFile),
+        fake.paths,
+      ),
+    ).toEqual([{ action: "remove", json: "", name: "serena", note: null }]);
+    expect(retiredChecks(fake.paths)).toEqual([
+      {
+        ok: false,
+        text: 'Serena is retired in 0.6.0, and setup has not taken back the "serena" MCP server it registered yet. Run: cc-smart-dev-kit setup',
+      },
+    ]);
+  });
+
+  test("a pending record, but not setup's shape: left alone, like any config setup did not write", () => {
+    const home = tempDir("mcp-retired-pending-other");
+    const where = serenaLeftoverPaths(paths(home));
+    const elsewhere = join(home, "my-context.yml");
+    for (const live of [
+      // Another context file than setup's own.
+      JSON.parse(serenaAt("bbbb", elsewhere)),
+      // Another command.
+      { ...JSON.parse(serenaAt("bbbb", where.contextFile)), command: "/opt/uvx" },
+      // Started from somewhere else than the Serena repository.
+      {
+        args: ["--from", "serena-agent", "serena", "--context", where.contextFile],
+        command: "uvx",
+      },
+    ]) {
+      const { fake } = halfUpdated(tempDir("mcp-retired-pending-case"), live);
+      expect(
+        planRetiredServers(
+          readMcpRecords(fake.paths.stateDir),
+          readUserServers(fake.paths.userConfigFile),
+          fake.paths,
+        ).map((entry) => entry.action),
+      ).toEqual(["foreign"]);
+    }
+  });
+
+  test("setup's own shape but NO pending mark: the record decides, so it is left alone", () => {
+    const home = tempDir("mcp-retired-shape-only");
+    const fake = fakeClaude(home);
+    const where = serenaLeftoverPaths(fake.paths);
+    recordMcpServer(fake.paths.stateDir, "serena", serenaAt("aaaa", where.contextFile), "then");
+    mkdirSync(dirname(fake.paths.userConfigFile), { recursive: true });
+    writeFileSync(
+      fake.paths.userConfigFile,
+      JSON.stringify({ mcpServers: { serena: JSON.parse(serenaAt("bbbb", where.contextFile)) } }),
+    );
+    expect(
+      planRetiredServers(
+        readMcpRecords(fake.paths.stateDir),
+        readUserServers(fake.paths.userConfigFile),
+        fake.paths,
+      ).map((entry) => entry.action),
+    ).toEqual(["foreign"]);
   });
 
   test("a dry run prints the command and runs none; without claude, nothing runs and the line says so", () => {
@@ -1245,6 +1345,7 @@ describe("a retired server: setup takes back only the registration it made", () 
     const plan = planRetiredServers(
       readMcpRecords(fake.paths.stateDir),
       readUserServers(fake.paths.userConfigFile),
+      fake.paths,
     );
     const dry = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", true, noPending);
     expect(dry.wouldRun).toEqual(["$ claude mcp remove serena --scope user"]);
@@ -1459,6 +1560,7 @@ describe("doctor: what Serena left", () => {
       planRetiredServers(
         readMcpRecords(fake.paths.stateDir),
         readUserServers(fake.paths.userConfigFile),
+        fake.paths,
       ),
       fake.run,
       () => "/usr/bin/claude",
@@ -1494,7 +1596,7 @@ describe("doctor: what Serena left", () => {
       {
         info: true,
         ok: true,
-        text: `the "serena" MCP server is registered, and not by cc-smart-dev-kit (uvx start-mcp-server --context ${where.contextFile}): cc-smart-dev-kit no longer registers it (0.6.0) and leaves it alone. To remove it: claude mcp remove serena --scope user`,
+        text: `the "serena" MCP server is registered (uvx start-mcp-server --context ${where.contextFile}), and cc-smart-dev-kit has no record of registering it as it is: cc-smart-dev-kit no longer registers it (0.6.0) and leaves it alone. To remove it: claude mcp remove serena --scope user`,
       },
     ]);
   });

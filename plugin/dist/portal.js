@@ -9762,6 +9762,25 @@ function serenaLeftoverPaths(paths) {
     recordDir: join10(paths.stateDir, "serena-root")
   };
 }
+var SERENA_SOURCE_PREFIX = "git+https://github.com/oraios/serena@";
+function setupsSerenaShape(config, contextFile) {
+  if (typeof config !== "object" || config === null || Array.isArray(config))
+    return false;
+  const { args, command } = config;
+  if (command !== "uvx" || !Array.isArray(args))
+    return false;
+  const from = args.indexOf("--from");
+  const context = args.indexOf("--context");
+  const source = args[from + 1];
+  return from >= 0 && typeof source === "string" && source.startsWith(SERENA_SOURCE_PREFIX) && context >= 0 && args[context + 1] === contextFile;
+}
+function setupMadeIt(name, recorded, current, paths) {
+  if (recorded === undefined)
+    return false;
+  if (sameConfig(recorded.json, current))
+    return true;
+  return recorded.pending === true && name === "serena" && setupsSerenaShape(current, serenaLeftoverPaths(paths).contextFile);
+}
 function entriesOf(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? Object.entries(value) : [];
 }
@@ -9849,8 +9868,7 @@ function retiredChecks(paths) {
     const current = live[name];
     if (current === undefined)
       continue;
-    const record = records[name];
-    if (record !== undefined && sameConfig(record.json, current)) {
+    if (setupMadeIt(name, records[name], current, paths)) {
       owed.push(`the "${name}" MCP server it registered`);
       takenBack.push(name);
       continue;
@@ -9858,7 +9876,7 @@ function retiredChecks(paths) {
     others.push({
       ok: true,
       info: true,
-      text: `the "${name}" MCP server is registered, and not by ${PLUGIN} (${describeServerConfig(current)}): ` + `${COMMAND} no longer registers it (${SERENA_RETIRED_IN}) and leaves it alone. To remove it: claude mcp remove ${name} --scope user`
+      text: `the "${name}" MCP server is registered (${describeServerConfig(current)}), and ${PLUGIN} has no record of registering it as it is: ` + `${COMMAND} no longer registers it (${SERENA_RETIRED_IN}) and leaves it alone. To remove it: claude mcp remove ${name} --scope user`
     });
   }
   const cleanup = planSerenaCleanup(paths, takenBack);

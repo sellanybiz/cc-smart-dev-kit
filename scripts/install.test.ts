@@ -118,6 +118,8 @@ interface WorldOptions {
   mcpForeign?: { name: string; runsWhat: string }[];
   /** The same, for the SECOND `mcp status` call (after the Tavily step). */
   mcpForeignAgain?: { name: string; runsWhat: string }[];
+  /** User-scope MCP servers already in Claude Code's own config (`<configDir>/.claude.json`). */
+  userServers?: Record<string, unknown>;
   /** The GitHub login the fake `gh api user --jq .login` answers. */
   ghLogin?: string;
   /** The account cannot see the repository: `gh repo view` answers "Could not resolve …". */
@@ -359,6 +361,12 @@ if [ "$1" = "plugin" ] && [ "$2" = "uninstall" ]; then
   "$bun" -e 'const fs=require("fs");const p=process.argv[1];let d={version:2,plugins:{}};try{d=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}d.plugins=d.plugins||{};delete d.plugins[process.argv[2]];fs.writeFileSync(p,JSON.stringify(d,null,2))' \
     "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json" "$3"
 fi
+if [ "$1" = "mcp" ] && [ "$2" = "remove" ] && [ -f "$CLAUDE_CONFIG_DIR/.claude.json" ]; then
+  # Claude Code's own removal: the server leaves the user config, so a test sees what the
+  # installer took away.
+  "$bun" -e 'const fs=require("fs");const p=process.argv[1];const d=JSON.parse(fs.readFileSync(p,"utf8"));if(d.mcpServers)delete d.mcpServers[process.argv[2]];fs.writeFileSync(p,JSON.stringify(d,null,2))' \
+    "$CLAUDE_CONFIG_DIR/.claude.json" "$3"
+fi
 exit 0
 `,
     git: `#!/bin/sh
@@ -497,6 +505,13 @@ function world(options: WorldOptions = {}): World {
     writeFileSync(
       join(configDir, "cc-smart-dev-kit/migrate-progress.json"),
       `${JSON.stringify({ done: ["folders"], version: 1 }, null, 2)}\n`,
+    );
+  }
+  if (options.userServers !== undefined) {
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(
+      join(configDir, ".claude.json"),
+      `${JSON.stringify({ mcpServers: options.userServers }, null, 2)}\n`,
     );
   }
   if (options.routerCopy === true) {
@@ -1342,13 +1357,19 @@ describe("install.sh: what only the person has", () => {
   test("a serena of the person's own: never asked about, never removed", () => {
     // Serena is retired (0.6.0): `mcp status` lists only the plugin's own names, so a `serena`
     // of the person's own is never reported (`src/mcp/mcp.test.ts` › "a retired name is never
-    // reported"), and setup takes back only a registration its record proves it made. The
-    // installer has no Serena step of its own either.
-    const w = world({ answers: browserAnswers("n", "n") });
+    // reported") — this world's fake leaves it out the same way — and setup takes back only a
+    // registration its record proves it made. The fake `claude mcp remove` really removes, so
+    // a Serena step of the installer's own would show here.
+    const theirs = { args: ["serena", "start-mcp-server"], command: "/opt/their-uvx" };
+    const w = world({ answers: browserAnswers("n", "n"), userServers: { serena: theirs } });
     const { code, out } = w.run();
     expect(code).toBe(0);
     expect(out).not.toContain("serena");
     expect(w.callsOf("claude").filter((call) => call.includes("serena"))).toEqual([]);
+    // Still registered, under its name, exactly as the person had it.
+    expect(JSON.parse(w.read(join(w.configDir, ".claude.json"))).mcpServers).toEqual({
+      serena: theirs,
+    });
   });
 
   test("the plugin's own servers are never asked about, and the check is one read-only call", () => {
@@ -1556,6 +1577,29 @@ describe("the Windows fakes: the same logic the Windows run uses, on Linux", () 
           .filter((line) => line !== ""),
     };
   };
+
+  test("the fake claude's `mcp remove` takes that one server out of the user config", () => {
+    const w = fakeWorld();
+    const context = {
+      addNotFound: false,
+      addSshRefused: false,
+      configDir: w.configDir,
+      log: w.log,
+      version: MARKETPLACE_VERSION,
+    };
+    // No user config yet: nothing to remove, and no file is made.
+    expect(claude(["mcp", "remove", "serena", "--scope", "user"], context)).toBe(0);
+    expect(existsSync(join(w.configDir, ".claude.json"))).toBe(false);
+    mkdirSync(w.configDir, { recursive: true });
+    writeFileSync(
+      join(w.configDir, ".claude.json"),
+      JSON.stringify({ mcpServers: { playwright: { command: "a" }, serena: { command: "b" } } }),
+    );
+    expect(claude(["mcp", "remove", "serena", "--scope", "user"], context)).toBe(0);
+    expect(JSON.parse(readFileSync(join(w.configDir, ".claude.json"), "utf8"))).toEqual({
+      mcpServers: { playwright: { command: "a" } },
+    });
+  });
 
   test("the fake claude writes the records the installer reads back", () => {
     const w = fakeWorld();

@@ -1034,7 +1034,8 @@ context from the start, and it needs no path to the plugin's version folder (pro
 Agents that need an MCP server name its tools as `mcp__playwright__*`: the servers are
 registered for the user (§ MCP servers at user scope), so the names stay. The reviewer also
 lists claude-mem's `smart_search`, `smart_outline` and `smart_unfold` (the companion plugin's
-own tool names), for a big file's shape; without them it uses Grep and Read.
+own tool names), for a big file's shape; when they are not there or do not answer (on Windows
+they can fail without an error, claude-mem #1247), it uses Grep and Read.
 
 **The output style** ships but is never switched on: a person picks it with `/output-style`.
 ## The hooks
@@ -1950,8 +1951,13 @@ which every session that works in a worktree does. Registered for the user, the 
   back by the next setup, in `src/mcp/retired.ts`, the one home of that cleanup:
   `planRetiredServers` plans a `remove` only while the record says setup registered it AND
   Claude Code still holds exactly that JSON — the rule a Tavily server without a key follows —
-  so `applyMcpServers` runs `claude mcp remove`; any other `serena` is the person's and stays
-  (its record, if any, is forgotten). Then, in setup's locked pass, `planSerenaCleanup` and
+  so `applyMcpServers` runs `claude mcp remove`. A record marked `pending` (an older setup's pin
+  update stopped after its `add-json`, so the record holds the old JSON and Claude Code the
+  newer) counts too when the live config has setup's own shape — `uvx`, `--from` Serena's
+  repository, `--context` setup's own context file — as `planMcpServers`' pending branch
+  reasons with the JSON it would write (`setupMadeIt`, which `doctor` asks too). Any other
+  `serena` stays (its record, if any, is forgotten), and the lines say only what is known:
+  setup has no record of registering it as it is. Then, in setup's locked pass, `planSerenaCleanup` and
   `applySerenaCleanup` remove what 0.5.x left beside it: the context file
   (`<dataDir>/serena/contexts/worktree.yml`, a whole file setup owned) through
   `removeManagedFile` (a backup first) and `forgetChange`, its folder only when nothing else is
@@ -2011,8 +2017,8 @@ which every session that works in a worktree does. Registered for the user, the 
   "which of these are the plugin's?": the same rule as setup's own (`sameConfig` against the
   record — one home), a line each, and `--json` for a script. Exit 1 means Claude Code's own
   config could not be read, so "nothing is foreign" and "could not check" are never confused.
-  **All four names are reported, Tavily included with no key** (premium review, 2026-10-17: it
-  used to be left out then, so a `tavily-websearch` a project's script had registered was never
+  **Every name in `SERVER_NAMES` is reported, Tavily included with no key** (premium review,
+  2026-10-17: it used to be left out then, so a `tavily-websearch` a project's script had registered was never
   offered for replacement on a machine whose key arrived later in the installer's step 7), and a
   record file that cannot be read gives `unknown` — never `foreign`, or the installer would
   offer to replace a server that is probably the plugin's own.

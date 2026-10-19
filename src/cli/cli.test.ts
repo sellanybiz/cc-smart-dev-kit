@@ -2748,7 +2748,7 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     });
     const checked = run(["doctor"]);
     expect(checked.stdout).toContain(
-      '· the "serena" MCP server is registered, and not by cc-smart-dev-kit (uvx serena start-mcp-server): cc-smart-dev-kit no longer registers it (0.6.0) and leaves it alone. To remove it: claude mcp remove serena --scope user\n',
+      '· the "serena" MCP server is registered (uvx serena start-mcp-server), and cc-smart-dev-kit has no record of registering it as it is: cc-smart-dev-kit no longer registers it (0.6.0) and leaves it alone. To remove it: claude mcp remove serena --scope user\n',
     );
     expect(checked.stdout).not.toContain("✗ Serena");
   });

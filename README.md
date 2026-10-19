@@ -200,7 +200,8 @@ for Serena, and nothing else:
 
 - the `serena` MCP server, with Claude Code's own `claude mcp remove serena --scope user` —
   only while setup's record says setup registered it, and it still holds exactly what setup
-  registered;
+  registered (or, after a pin update an older setup left half done, it still has setup's own
+  shape: `uvx`, Serena's repository, and setup's own context file);
 - Serena's context file, `~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml`
   (a backup goes to the state folder first), and its folder once it is empty;
 - the `serena-root` hook's records, `~/.claude/cc-smart-dev-kit/serena-root/`.
@@ -210,7 +211,9 @@ says so; after it, nothing.
 
 **A Serena of your own stays.** A `serena` server that setup did not register (or one you
 changed since) is never touched: `doctor` shows it as a `·` line. Its context file stays too,
-while a registration still starts Serena with it. To remove a Serena of your own by hand:
+while a registration still starts Serena with it. The main-folder guard no longer looks at
+Serena's edit tools, so a Serena you keep can edit a guarded main checkout without a refusal.
+To remove a Serena of your own by hand:
 `claude mcp remove serena -s user`. A project's own `.serena/` folder (Serena's project
 settings and memories) is the project's: delete it when nothing uses it any more.
 
@@ -1349,7 +1352,7 @@ none is pinned in their files). `reviewer` and `rules-maintainer` load the skill
 
 | Agent | Job | Needs |
 |---|---|---|
-| `reviewer` | The read-only second opinion on a change set. | — (uses claude-mem's `smart_outline`, `smart_search` and `smart_unfold` when they are there) |
+| `reviewer` | The read-only second opinion on a change set. | — (uses claude-mem's `smart_outline`, `smart_search` and `smart_unfold` when they are there and answer; else Grep and Read) |
 | `rules-maintainer` | Edits to instruction files, with a duplicate and conflict check. | — |
 | `ui-verifier` | Drives the running app in a browser and measures. | the **Playwright** MCP server |
 

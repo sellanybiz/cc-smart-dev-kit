@@ -725,7 +725,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       records,
       liveServers,
     ),
-    ...planRetiredServers(records, liveServers),
+    ...planRetiredServers(records, liveServers, paths),
   ];
   /** The registrations this run would take out: for the dry pass's view of Serena's file. */
   const plannedRemovals = mcpPlan

@@ -14805,10 +14805,29 @@ function serenaLeftoverPaths(paths) {
     recordDir: join21(paths.stateDir, "serena-root")
   };
 }
-function leftAloneNote(name) {
-  return `\xB7 MCP server ${name} holds a config ${PLUGIN} did not write: left alone, it is yours. ` + `${COMMAND} no longer registers ${name} (${SERENA_RETIRED_IN}); to remove it: claude mcp remove ${name} --scope user`;
+var SERENA_SOURCE_PREFIX = "git+https://github.com/oraios/serena@";
+function setupsSerenaShape(config, contextFile) {
+  if (typeof config !== "object" || config === null || Array.isArray(config))
+    return false;
+  const { args, command } = config;
+  if (command !== "uvx" || !Array.isArray(args))
+    return false;
+  const from = args.indexOf("--from");
+  const context = args.indexOf("--context");
+  const source = args[from + 1];
+  return from >= 0 && typeof source === "string" && source.startsWith(SERENA_SOURCE_PREFIX) && context >= 0 && args[context + 1] === contextFile;
 }
-function planRetiredServers(records, live) {
+function setupMadeIt(name, recorded, current, paths) {
+  if (recorded === undefined)
+    return false;
+  if (sameConfig(recorded.json, current))
+    return true;
+  return recorded.pending === true && name === "serena" && setupsSerenaShape(current, serenaLeftoverPaths(paths).contextFile);
+}
+function leftAloneNote(name) {
+  return `\xB7 MCP server ${name} holds a config other than the one ${PLUGIN} registered: left alone, and its record forgotten. ` + `${COMMAND} no longer registers ${name} (${SERENA_RETIRED_IN}); to remove it: claude mcp remove ${name} --scope user`;
+}
+function planRetiredServers(records, live, paths) {
   if (live === null)
     return [];
   const plan = [];
@@ -14819,7 +14838,7 @@ function planRetiredServers(records, live) {
     const current = live[name];
     if (current === undefined) {
       plan.push({ action: "gone", forget: true, json: "", name, note: null });
-    } else if (sameConfig(recorded.json, current)) {
+    } else if (setupMadeIt(name, recorded, current, paths)) {
       plan.push({ action: "remove", json: "", name, note: null });
     } else {
       plan.push({ action: "foreign", forget: true, json: "", name, note: leftAloneNote(name) });
@@ -14952,8 +14971,7 @@ function retiredChecks(paths) {
     const current = live[name];
     if (current === undefined)
       continue;
-    const record = records[name];
-    if (record !== undefined && sameConfig(record.json, current)) {
+    if (setupMadeIt(name, records[name], current, paths)) {
       owed.push(`the "${name}" MCP server it registered`);
       takenBack.push(name);
       continue;
@@ -14961,7 +14979,7 @@ function retiredChecks(paths) {
     others.push({
       ok: true,
       info: true,
-      text: `the "${name}" MCP server is registered, and not by ${PLUGIN} (${describeServerConfig(current)}): ` + `${COMMAND} no longer registers it (${SERENA_RETIRED_IN}) and leaves it alone. To remove it: claude mcp remove ${name} --scope user`
+      text: `the "${name}" MCP server is registered (${describeServerConfig(current)}), and ${PLUGIN} has no record of registering it as it is: ` + `${COMMAND} no longer registers it (${SERENA_RETIRED_IN}) and leaves it alone. To remove it: claude mcp remove ${name} --scope user`
     });
   }
   const cleanup = planSerenaCleanup(paths, takenBack);
@@ -21313,7 +21331,7 @@ async function runSetup(paths, options) {
       launcher: join35(paths.binDir, LAUNCHER_NAME),
       tavily: tavily.source === "none" ? { key: false, reason: tavily.reason } : { key: true }
     }), records, liveServers),
-    ...planRetiredServers(records, liveServers)
+    ...planRetiredServers(records, liveServers, paths)
   ];
   const plannedRemovals = mcpPlan.filter((entry) => entry.action === "remove").map((entry) => entry.name);
   if (liveServers === null) {

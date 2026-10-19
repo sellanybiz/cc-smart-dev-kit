@@ -19,7 +19,8 @@ exists in three.
   sits in. More than three files to read: hand the sweep to `Explore` with the exact names,
   and ask for every hit. When the question is a file's shape — its functions and exports —
   claude-mem's `smart_outline` (one file) and `smart_search` (the repo) answer it without
-  reading whole files. Search **your** checkout: in a worktree, a search of the main
+  reading whole files; when they are not there or do not answer, fall back to `Grep` and
+  `Read`. Search **your** checkout: in a worktree, a search of the main
   checkout misses every caller your branch added.
 - **Text** (a route string, a cache or query key, an event name, a column name, an
   environment variable, a permission key): `Grep`.

@@ -19,7 +19,7 @@ gets, are in the core instructions (§ Subagents).
 | Task | Agent |
 |---|---|
 | Symbol questions — callers, references, definitions, rename impact — across many files | `Explore` (built-in, read-only), with the exact names and "every hit"; one lookup: `Grep` for the name as a whole word (`\bname\b`) yourself, then `Read` |
-| A file's or a module's structure — its functions, exports, outline | yourself: claude-mem's `smart_outline` for one file, `smart_search` across the repo, `smart_unfold` for one symbol's body |
+| A file's or a module's structure — its functions, exports, outline | yourself: claude-mem's `smart_outline` for one file, `smart_search` across the repo, `smart_unfold` for one symbol's body; when they are not there or do not answer, `Grep` and `Read` |
 | Text-shaped searches — strings, comments, TODOs, "every file that mentions X" | `Explore` (built-in, read-only); say how thorough |
 | A plan for non-trivial work | `Plan` (built-in, read-only); it returns the text, you write the file |
 | A phase of a plan; any job that both explores and edits | `general-purpose` |

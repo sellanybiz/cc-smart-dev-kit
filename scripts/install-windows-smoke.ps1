@@ -135,6 +135,11 @@ function New-World([string]$Name, [hashtable]$Options = @{}) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $copy) | Out-Null
     Set-Content -Path $copy -Value "// the router"
   }
+  if ($Options.ContainsKey("UserServers")) {
+    # User-scope MCP servers already in Claude Code's own config, as JSON (`.claude.json`).
+    New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+    Set-Content -Path (Join-Path $configDir ".claude.json") -Value $Options["UserServers"]
+  }
   if ($Options["GatewayConfig"] -eq $true) {
     $config = Join-Path $worldHome ".config\cc-smart-dev-kit\gateway.json"
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $config) | Out-Null
@@ -412,14 +417,19 @@ try {
   $passed++
   $names.Add("a foreign MCP server kept")
 
-  # 7f. A serena of the person's own (Serena is retired in 0.6.0): `mcp status` never lists a
-  #     retired name (src/mcp/mcp.test.ts), and the installer has no Serena step of its own, so
-  #     nothing is asked about it and nothing removes it.
-  $ownSerena = New-World "mcp-own-retired" @{ Answers = @("y", ("A" * 43), "n", "n") }
+  # 7f. A serena of the person's own (Serena is retired in 0.6.0): it is in Claude Code's own
+  #     config, `mcp status` leaves it out (as the real one does: src/mcp/mcp.test.ts), and the
+  #     fake `claude mcp remove` really removes -- so a Serena step of the installer's own would
+  #     show. Afterwards it is still registered, exactly as the person had it.
+  $ownSerena = New-World "mcp-own-retired" @{ Answers = @("y", ("A" * 43), "n", "n"); UserServers = '{"mcpServers":{"serena":{"command":"C:/tools/their-uvx.exe","args":["serena","start-mcp-server"]}}}' }
   $result = Invoke-Install $ownSerena @($repo)
   Assert-Code "a serena of the person's own" $result 0 $ownSerena
   if ($result.out -match "serena" -or ((Get-Calls $ownSerena) -join "`n") -match "serena") {
     Stop-Smoke "a serena of the person's own: the installer touched it:`n$($result.out)"
+  }
+  $userConfig = Get-Content -Raw -Path (Join-Path $ownSerena.home ".claude\.claude.json") | ConvertFrom-Json
+  if ($userConfig.mcpServers.serena.command -ne "C:/tools/their-uvx.exe" -or (@($userConfig.mcpServers.serena.args) -join " ") -ne "serena start-mcp-server") {
+    Stop-Smoke "a serena of the person's own: it is not registered as the person had it any more:`n$(Get-Content -Raw -Path (Join-Path $ownSerena.home ".claude\.claude.json"))"
   }
   $passed++
   $names.Add("a serena of the person's own")
