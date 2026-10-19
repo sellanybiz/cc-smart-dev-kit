@@ -2,7 +2,6 @@
 paths:
   - "src/browser/**"
   - "src/testing/chrome-world.ts"
-  - "plugin/serena/**"
 ---
 
 # The Browser

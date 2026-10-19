@@ -57,7 +57,6 @@ function cliPaths(env = process.env) {
     dataDir: join2(router.home, ".local", "share", "cc-smart-dev-kit"),
     browserOutputDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
     browserTokenFile: join2(router.home, ".config", "cc-smart-dev-kit", "playwright-extension.token"),
-    serenaContextFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "serena", "contexts", "worktree.yml"),
     routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
     routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
@@ -115,7 +114,7 @@ var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
 
 // src/build-info/index.ts
 var info = {
-  version: "0.5.5",
+  version: "0.6.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {

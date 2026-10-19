@@ -1,14 +1,16 @@
 /**
- * The MCP servers (`servers.ts`, `records.ts`, `register.ts`): the registrations
- * cc-smart-dev-kit writes at user scope, and taking exactly those back.
+ * The MCP servers (`servers.ts`, `records.ts`, `register.ts`, `retired.ts`): the registrations
+ * cc-smart-dev-kit writes at user scope, taking exactly those back, and what a retired server
+ * left behind.
  *
  * `claude mcp …` is Claude Code's own command, so every case here runs a fake `claude` that
  * records its calls: what matters is which commands setup runs, never what it holds itself.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { listBackups, readChanged, writeManagedFile } from "../setup/write";
 import { tempDir } from "../testing/temp";
 import { mcpChecks } from "./doctor";
 import { markMcpServerPending, readMcpRecords, recordMcpServer } from "./records";
@@ -24,12 +26,14 @@ import {
   unreadableUserConfigNote,
 } from "./register";
 import {
-  installSerenaContext,
-  removeSerenaContext,
-  serenaContextCurrent,
-  serenaContextSource,
-} from "./serena-context";
-import { mcpServers, serenaArgs } from "./servers";
+  applySerenaCleanup,
+  planRetiredServers,
+  planSerenaCleanup,
+  registrationsNaming,
+  retiredChecks,
+  serenaLeftoverPaths,
+} from "./retired";
+import { mcpServers } from "./servers";
 import { describeServerConfig, mcpServerStatus, mcpServerStatusLine } from "./status";
 import { readTavilyKey } from "./tavily";
 import { MCP_VERSIONS, TAVILY_MCP_URL } from "./versions";
@@ -73,7 +77,6 @@ function fakeClaude(home: string) {
 const context = (home: string) => ({
   bunx: "bunx",
   launcher: join(home, ".local", "bin", "cc-smart-dev-kit"),
-  serenaContextFile: join(home, "serena", "worktree.yml"),
   tavily: { key: true } as const,
 });
 
@@ -87,12 +90,11 @@ const noPending = (): void => {};
 const NO_POSIX_MODES = process.platform === "win32";
 
 describe("the servers the plugin registers", () => {
-  test("the four general servers, pinned and at user scope; the browser runs the launcher", () => {
+  test("the three general servers, pinned and at user scope; the browser runs the launcher", () => {
     const home = tempDir("mcp-servers");
     const servers = mcpServers(context(home));
     expect(servers.map((server) => server.name)).toEqual([
       "playwright",
-      "serena",
       "sequential-thinking",
       "tavily-websearch",
     ]);
@@ -100,19 +102,7 @@ describe("the servers the plugin registers", () => {
       args: ["browser", "mcp"],
       command: join(home, ".local", "bin", "cc-smart-dev-kit"),
     });
-    // Serena: the pinned commit, and the plugin's own context (project switching on).
-    expect(serenaArgs("/data/worktree.yml")).toEqual([
-      "--from",
-      `git+https://github.com/oraios/serena@${MCP_VERSIONS.serena}`,
-      "serena",
-      "start-mcp-server",
-      "--context",
-      "/data/worktree.yml",
-      "--open-web-dashboard",
-      "False",
-      "--project-from-cwd",
-    ]);
-    expect(JSON.parse(servers[2]?.json ?? "{}")).toEqual({
+    expect(JSON.parse(servers[1]?.json ?? "{}")).toEqual({
       args: [
         "-y",
         `@modelcontextprotocol/server-sequential-thinking@${MCP_VERSIONS.sequentialThinking}`,
@@ -120,14 +110,14 @@ describe("the servers the plugin registers", () => {
       command: "bunx",
     });
     // Tavily: the key is a placeholder Claude Code fills in; no key is written anywhere.
-    expect(JSON.parse(servers[3]?.json ?? "{}")).toEqual({
+    expect(JSON.parse(servers[2]?.json ?? "{}")).toEqual({
       // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code's placeholder.
       headers: { Authorization: "Bearer ${TAVILY_API_KEY}" },
       timeout: 300_000,
       type: "http",
       url: TAVILY_MCP_URL,
     });
-    expect(servers[3]?.json).not.toContain("tvly-");
+    expect(servers[2]?.json).not.toContain("tvly-");
   });
 
   test("no Tavily key: it is skipped, with a note, and never registered", () => {
@@ -136,7 +126,7 @@ describe("the servers the plugin registers", () => {
       ...context(home),
       tavily: { key: false, reason: "no TAVILY_API_KEY in the environment, and no key file" },
     });
-    const tavily = servers[3];
+    const tavily = servers[2];
     expect(tavily?.json).toBe("");
     // The note setup prints carries the reason, so a person reads what to do.
     expect(tavily?.skipped).toBe("no TAVILY_API_KEY in the environment, and no key file");
@@ -149,29 +139,26 @@ describe("what setup registers, and what it leaves alone", () => {
     const fake = fakeClaude(home);
     const servers = mcpServers(context(home));
     const plan = planMcpServers(servers, {}, readUserServers(fake.paths.userConfigFile));
-    expect(plan.map((entry) => entry.action)).toEqual(["add", "add", "add", "add"]);
+    expect(plan.map((entry) => entry.action)).toEqual(["add", "add", "add"]);
 
     const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
     expect(applied.ok).toBe(true);
     expect(applied.changes).toEqual([
       "+ MCP server playwright registered for your user",
-      "+ MCP server serena registered for your user",
       "+ MCP server sequential-thinking registered for your user",
       "+ MCP server tavily-websearch registered for your user",
     ]);
     recordApplied(fake.paths.stateDir, applied, "2026-10-16T00:00:00.000Z");
     expect(readMcpRecords(fake.paths.stateDir)).toEqual({
       playwright: { at: "2026-10-16T00:00:00.000Z", json: servers[0]?.json ?? "" },
-      serena: { at: "2026-10-16T00:00:00.000Z", json: servers[1]?.json ?? "" },
-      "sequential-thinking": { at: "2026-10-16T00:00:00.000Z", json: servers[2]?.json ?? "" },
-      "tavily-websearch": { at: "2026-10-16T00:00:00.000Z", json: servers[3]?.json ?? "" },
+      "sequential-thinking": { at: "2026-10-16T00:00:00.000Z", json: servers[1]?.json ?? "" },
+      "tavily-websearch": { at: "2026-10-16T00:00:00.000Z", json: servers[2]?.json ?? "" },
     });
     // The commands ran remove-then-add for nobody: first registrations are one command each.
     expect(fake.calls.map((argv) => argv.join(" "))).toEqual([
       `claude mcp add-json --scope user playwright ${servers[0]?.json ?? ""}`,
-      `claude mcp add-json --scope user serena ${servers[1]?.json ?? ""}`,
-      `claude mcp add-json --scope user sequential-thinking ${servers[2]?.json ?? ""}`,
-      `claude mcp add-json --scope user tavily-websearch ${servers[3]?.json ?? ""}`,
+      `claude mcp add-json --scope user sequential-thinking ${servers[1]?.json ?? ""}`,
+      `claude mcp add-json --scope user tavily-websearch ${servers[2]?.json ?? ""}`,
     ]);
 
     // A second setup: nothing to do.
@@ -180,7 +167,7 @@ describe("what setup registers, and what it leaves alone", () => {
       readMcpRecords(fake.paths.stateDir),
       readUserServers(fake.paths.userConfigFile),
     );
-    expect(again.map((entry) => entry.action)).toEqual(["keep", "keep", "keep", "keep"]);
+    expect(again.map((entry) => entry.action)).toEqual(["keep", "keep", "keep"]);
     expect(
       applyMcpServers(again, fake.run, () => "/usr/bin/claude", false, noPending).changes,
     ).toEqual([]);
@@ -210,12 +197,12 @@ describe("what setup registers, and what it leaves alone", () => {
       readMcpRecords(fake.paths.stateDir),
       readUserServers(fake.paths.userConfigFile),
     );
-    expect(plan[2]?.action).toBe("update");
+    expect(plan[1]?.action).toBe("update");
     const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
     expect(applied.changes).toEqual(["~ MCP server sequential-thinking updated for your user"]);
     expect(
       sameConfig(
-        moved[2]?.json ?? "",
+        moved[1]?.json ?? "",
         readUserServers(fake.paths.userConfigFile)?.["sequential-thinking"],
       ),
     ).toBe(true);
@@ -236,11 +223,10 @@ describe("what setup registers, and what it leaves alone", () => {
     );
     expect(plan[0]?.action).toBe("foreign");
     expect(plan[0]?.note).toContain("registered already, and not by cc-smart-dev-kit: left alone");
-    // The three others are registered as usual; the person's own `playwright` is untouched.
+    // The two others are registered as usual; the person's own `playwright` is untouched.
     expect(
       applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending).changes,
     ).toEqual([
-      "+ MCP server serena registered for your user",
       "+ MCP server sequential-thinking registered for your user",
       "+ MCP server tavily-websearch registered for your user",
     ]);
@@ -323,7 +309,7 @@ describe("what setup registers, and what it leaves alone", () => {
     const live = readUserServers(fake.paths.userConfigFile);
     expect(live).toBeNull();
     const plan = planMcpServers(servers, records, live);
-    expect(plan.map((entry) => entry.action)).toEqual(["keep", "keep", "keep", "keep"]);
+    expect(plan.map((entry) => entry.action)).toEqual(["keep", "keep", "keep"]);
     expect(plan.every((entry) => entry.forget === undefined)).toBe(true);
     const again = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
     expect(again.changes).toEqual([]);
@@ -334,7 +320,7 @@ describe("what setup registers, and what it leaves alone", () => {
     expect(readMcpRecords(fake.paths.stateDir)).toEqual(records);
     // The one line the caller prints, with every kept name.
     expect(unreadableUserConfigNote("~/.claude.json", Object.keys(records))).toBe(
-      "! cannot read ~/.claude.json: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: playwright, sequential-thinking, serena, tavily-websearch",
+      "! cannot read ~/.claude.json: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: playwright, sequential-thinking, tavily-websearch",
     );
   });
 
@@ -369,7 +355,7 @@ describe("what setup registers, and what it leaves alone", () => {
       readMcpRecords(fake.paths.stateDir),
       readUserServers(fake.paths.userConfigFile),
     );
-    expect(plan[2]?.action).toBe("update");
+    expect(plan[1]?.action).toBe("update");
     const applied = applyMcpServers(
       plan,
       run,
@@ -385,7 +371,7 @@ describe("what setup registers, and what it leaves alone", () => {
     recordApplied(fake.paths.stateDir, applied, "later");
     expect(readMcpRecords(fake.paths.stateDir)["sequential-thinking"]).toEqual({
       at: "later",
-      json: moved[2]?.json ?? "",
+      json: moved[1]?.json ?? "",
     });
   });
 
@@ -484,7 +470,7 @@ describe("what setup registers, and what it leaves alone", () => {
     writeFileSync(
       fake.paths.userConfigFile,
       JSON.stringify({
-        mcpServers: { ...live, "sequential-thinking": JSON.parse(moved[2]?.json ?? "{}") },
+        mcpServers: { ...live, "sequential-thinking": JSON.parse(moved[1]?.json ?? "{}") },
       }),
     );
 
@@ -493,14 +479,14 @@ describe("what setup registers, and what it leaves alone", () => {
       readMcpRecords(fake.paths.stateDir),
       readUserServers(fake.paths.userConfigFile),
     );
-    expect(plan[2]?.action).toBe("keep");
-    expect(plan[2]?.clearPending).toBe(true);
+    expect(plan[1]?.action).toBe("keep");
+    expect(plan[1]?.clearPending).toBe(true);
     const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
     expect(applied.changes).toEqual([]);
     recordApplied(fake.paths.stateDir, applied, "later");
     expect(readMcpRecords(fake.paths.stateDir)["sequential-thinking"]).toEqual({
       at: "later",
-      json: moved[2]?.json ?? "",
+      json: moved[1]?.json ?? "",
     });
   });
 
@@ -531,7 +517,7 @@ describe("what setup registers, and what it leaves alone", () => {
       readMcpRecords(fake.paths.stateDir),
       readUserServers(fake.paths.userConfigFile),
     );
-    expect(plan[3]?.action).toBe("remove");
+    expect(plan[2]?.action).toBe("remove");
     const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
     expect(applied.changes).toEqual([
       "- MCP server tavily-websearch removed from your user config",
@@ -558,30 +544,30 @@ describe("restore: exactly what setup registered", () => {
       noPending,
     );
     recordApplied(fake.paths.stateDir, applied, "then");
-    // The person re-points one of them (serena) at something of their own.
+    // The person re-points one of them (sequential-thinking) at something of their own.
     const live = readUserServers(fake.paths.userConfigFile) ?? {};
     writeFileSync(
       fake.paths.userConfigFile,
-      JSON.stringify({ mcpServers: { ...live, serena: { command: "/opt/theirs" } } }),
+      JSON.stringify({
+        mcpServers: { ...live, "sequential-thinking": { command: "/opt/theirs" } },
+      }),
     );
 
     const removal = removeMcpServers(fake.paths, fake.run, () => "/usr/bin/claude", false);
     expect(removal.removed).toEqual([
       "- MCP server playwright removed from your user config",
-      "- MCP server sequential-thinking removed from your user config",
       "- MCP server tavily-websearch removed from your user config",
     ]);
     expect(removal.notes).toEqual([
-      "  MCP server serena holds a config cc-smart-dev-kit did not write: left alone (it is yours now)",
+      "  MCP server sequential-thinking holds a config cc-smart-dev-kit did not write: left alone (it is yours now)",
     ]);
     expect(removal.forgotten.sort()).toEqual([
       "playwright",
       "sequential-thinking",
-      "serena",
       "tavily-websearch",
     ]);
     expect(readUserServers(fake.paths.userConfigFile)).toEqual({
-      serena: { command: "/opt/theirs" },
+      "sequential-thinking": { command: "/opt/theirs" },
     });
   });
 
@@ -599,9 +585,9 @@ describe("restore: exactly what setup registered", () => {
     recordApplied(fake.paths.stateDir, applied, "then");
     const removal = removeMcpServers(fake.paths, fake.run, () => null, false);
     expect(removal.removed).toEqual([]);
-    expect(removal.kept).toHaveLength(4);
+    expect(removal.kept).toHaveLength(3);
     expect(removal.notes[0]).toContain("The claude command is not on PATH");
-    expect(Object.keys(readMcpRecords(fake.paths.stateDir))).toHaveLength(4);
+    expect(Object.keys(readMcpRecords(fake.paths.stateDir))).toHaveLength(3);
   });
 
   test("nothing of ours is registered: nothing to do, and no command runs", () => {
@@ -631,18 +617,13 @@ describe("restore: exactly what setup registered", () => {
     const removal = removeMcpServers(fake.paths, fake.run, () => "/usr/bin/claude", false);
     expect(removal.removed).toEqual([]);
     expect(removal.forgotten).toEqual([]);
-    expect(removal.kept).toEqual([
-      "playwright",
-      "sequential-thinking",
-      "serena",
-      "tavily-websearch",
-    ]);
+    expect(removal.kept).toEqual(["playwright", "sequential-thinking", "tavily-websearch"]);
     // `~` and then the platform's own separators: `~\.claude\.claude.json` on Windows.
     expect(removal.notes).toEqual([
-      `! cannot read ${join("~", ".claude", ".claude.json")}: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: playwright, sequential-thinking, serena, tavily-websearch`,
+      `! cannot read ${join("~", ".claude", ".claude.json")}: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: playwright, sequential-thinking, tavily-websearch`,
     ]);
     expect(fake.calls).toHaveLength(callsBefore);
-    expect(Object.keys(readMcpRecords(fake.paths.stateDir))).toHaveLength(4);
+    expect(Object.keys(readMcpRecords(fake.paths.stateDir))).toHaveLength(3);
   });
 });
 
@@ -714,58 +695,8 @@ describe("the Tavily key", () => {
   });
 });
 
-describe("Serena's context", () => {
-  test("it is installed beside the plugin's data, and a restore takes it out again", () => {
-    const home = tempDir("mcp-serena");
-    const paths_ = paths(home);
-    const source = join(import.meta.dir, "..", "..", "plugin", "serena");
-    const file = serenaContextSource(source);
-
-    const first = installSerenaContext(file, paths_.serenaContextFile, paths_.stateDir, false);
-    expect(first.outcome).toBe("created");
-    expect(readFileSync(paths_.serenaContextFile, "utf8")).toBe(readFileSync(file, "utf8"));
-    expect(readFileSync(paths_.serenaContextFile, "utf8")).toContain("single_project: false");
-    expect(serenaContextCurrent(file, paths_.serenaContextFile)).toBe(true);
-
-    // The same content again: nothing to do.
-    expect(
-      installSerenaContext(file, paths_.serenaContextFile, paths_.stateDir, false).outcome,
-    ).toBe("unchanged");
-
-    // A file the person edited is theirs: restore leaves it.
-    writeFileSync(paths_.serenaContextFile, "# edited\n");
-    expect(removeSerenaContext(file, paths_.serenaContextFile, paths_.stateDir, false)).toEqual({
-      file: paths_.serenaContextFile,
-      kept: true,
-    });
-    expect(existsSync(paths_.serenaContextFile)).toBe(true);
-
-    // The plugin's own copy: restore removes it.
-    writeFileSync(paths_.serenaContextFile, readFileSync(file, "utf8"));
-    expect(removeSerenaContext(file, paths_.serenaContextFile, paths_.stateDir, false)).toEqual({
-      file: paths_.serenaContextFile,
-      kept: false,
-    });
-    expect(existsSync(paths_.serenaContextFile)).toBe(false);
-  });
-
-  test("a plugin without the file writes nothing", () => {
-    const home = tempDir("mcp-serena");
-    const paths_ = paths(home);
-    expect(
-      installSerenaContext(
-        join(home, "not-there.yml"),
-        paths_.serenaContextFile,
-        paths_.stateDir,
-        false,
-      ),
-    ).toEqual({ file: paths_.serenaContextFile, outcome: "missing" });
-    expect(existsSync(paths_.serenaContextFile)).toBe(false);
-  });
-});
-
 describe("mcp status: what is registered by something else", () => {
-  // Live, 2026-10-17: a project's own script had registered `playwright` (and the other three)
+  // Live, 2026-10-17: a project's own script had registered `playwright` (and the others)
   // before cc-smart-dev-kit was installed. setup left them alone — the rule — and the person
   // never saw its `!` line, so the plugin's own browser never took over. This is the read-only
   // question the installer asks before it offers to replace one, and the line `doctor` prints.
@@ -779,7 +710,7 @@ describe("mcp status: what is registered by something else", () => {
     mkdirSync(paths_.stateDir, { recursive: true });
     // `playwright` is ours: the record holds exactly the JSON Claude Code has for it.
     recordMcpServer(paths_.stateDir, ours.name, ours.json, "2026-10-17T00:00:00Z");
-    // `serena` was registered by something else: no record of ours at all.
+    // `sequential-thinking` was registered by something else: no record of ours at all.
     writeFileSync(
       paths_.userConfigFile,
       JSON.stringify({
@@ -793,7 +724,22 @@ describe("mcp status: what is registered by something else", () => {
       state: "ours",
     });
     expect(status.find((one) => one.name === other.name)?.state).toBe("foreign");
-    expect(status.find((one) => one.name === "sequential-thinking")?.state).toBe("missing");
+    expect(status.find((one) => one.name === "tavily-websearch")?.state).toBe("missing");
+  });
+
+  test("a retired name is never reported: a server of the person's own under it is never offered for replacement", () => {
+    const home = tempDir("mcp-status-retired");
+    const paths_ = paths(home);
+    mkdirSync(dirname(paths_.userConfigFile), { recursive: true });
+    writeFileSync(
+      paths_.userConfigFile,
+      JSON.stringify({ mcpServers: { serena: { args: ["serena"], command: "uvx" } } }),
+    );
+    expect(mcpServerStatus(paths_).map((one) => `${one.name}:${one.state}`)).toEqual([
+      "playwright:missing",
+      "sequential-thinking:missing",
+      "tavily-websearch:missing",
+    ]);
   });
 
   test("a config changed since setup registered it is foreign again: it is the person's", () => {
@@ -816,14 +762,13 @@ describe("mcp status: what is registered by something else", () => {
     });
   });
 
-  test("ALL FOUR are reported, Tavily included (M3: a key may not exist yet)", () => {
+  test("EVERY ONE is reported, Tavily included (M3: a key may not exist yet)", () => {
     const home = tempDir("mcp-status-none");
     const paths_ = paths(home);
     // Tavily with no key is still one of the plugin's names: a server registered under it by
     // something else must be offered for replacement, whatever this machine has a key for.
     expect(mcpServerStatus(paths_).map((one) => one.name)).toEqual([
       "playwright",
-      "serena",
       "sequential-thinking",
       "tavily-websearch",
     ]);
@@ -869,9 +814,9 @@ describe("mcp status: what is registered by something else", () => {
     ).toBe(
       "! playwright: registered by something else (node /opt/tools/server.js). To let setup manage it: claude mcp remove playwright --scope user, then cc-smart-dev-kit setup",
     );
-    expect(mcpServerStatusLine({ name: "serena", runsWhat: null, state: "ours" })).toBe(
-      "✓ serena: registered by cc-smart-dev-kit",
-    );
+    expect(
+      mcpServerStatusLine({ name: "sequential-thinking", runsWhat: null, state: "ours" }),
+    ).toBe("✓ sequential-thinking: registered by cc-smart-dev-kit");
   });
 });
 
@@ -1033,8 +978,8 @@ describe("a Tavily key the settings hold, and nowhere else", () => {
   });
 });
 
-describe("M3: the live scenario — all four registered by a project's script", () => {
-  // Live, 2026-10-17: a project's own script had registered all four names at user scope, and
+describe("M3: the live scenario — every name registered by a project's script", () => {
+  // Live, 2026-10-17: a project's own script had registered every one of the names at user scope, and
   // the Tavily one carried the key in ITS OWN `env` — the machine had no `TAVILY_API_KEY`
   // anywhere the plugin looked. `mcpServerStatus` used to leave Tavily out then, so the
   // installer never offered to replace it, and that server went on shadowing the plugin's own.
@@ -1042,7 +987,7 @@ describe("M3: the live scenario — all four registered by a project's script", 
     const home = tempDir("mcp-status-project-script");
     const paths_ = paths(home);
     const servers = mcpServers(context(home));
-    // Every one of the four, as a project's script would leave them, the Tavily one with a key
+    // Every one of them, as a project's script would leave them, the Tavily one with a key
     // in its own env.
     const registered: Record<string, unknown> = {};
     for (const server of servers) {
@@ -1059,7 +1004,6 @@ describe("M3: the live scenario — all four registered by a project's script", 
     const status = mcpServerStatus(paths_);
     expect(status.map((one) => `${one.name}:${one.state}`)).toEqual([
       "playwright:foreign",
-      "serena:foreign",
       "sequential-thinking:foreign",
       "tavily-websearch:foreign",
     ]);
@@ -1115,7 +1059,7 @@ describe("a same-name server one scope down wins over the user scope", () => {
     expect(describeServerConfig(found?.config)).toBe("other --api-key •••");
     expect(describeServerConfig(found?.config)).not.toContain(planted);
     // Nothing of the plugin's: null, so doctor says nothing.
-    expect(overridingServer(paths_.userConfigFile, sub, "serena")).toBeNull();
+    expect(overridingServer(paths_.userConfigFile, sub, "sequential-thinking")).toBeNull();
   });
 
   test("doctor's line names the file and what runs instead", () => {
@@ -1157,5 +1101,503 @@ describe("a same-name server one scope down wins over the user scope", () => {
         "cc-smart-dev-kit's is not the one starting. Remove it from that file (or merge the base " +
         "branch when it came from one), then run: cc-smart-dev-kit doctor",
     );
+  });
+});
+
+/** The registration an older setup wrote for Serena: it names the context file. */
+function oldSerenaJson(contextFile: string): string {
+  return JSON.stringify({
+    args: ["serena", "start-mcp-server", "--context", contextFile, "--project-from-cwd"],
+    command: "uvx",
+    timeout: 300_000,
+  });
+}
+
+/**
+ * A machine an older setup left: `serena` registered and recorded by setup, the context file
+ * as a tracked whole file, and the serena-root records. The fake's calls start empty.
+ */
+function olderMachine(home: string) {
+  const fake = fakeClaude(home);
+  const where = serenaLeftoverPaths(fake.paths);
+  const json = oldSerenaJson(where.contextFile);
+  fake.run(["claude", "mcp", "add-json", "--scope", "user", "serena", json]);
+  recordMcpServer(fake.paths.stateDir, "serena", json, "2026-10-01T00:00:00.000Z");
+  writeManagedFile(where.contextFile, "single_project: false\n", {
+    kind: "whole-file",
+    newFileMode: 0o644,
+    stateDir: fake.paths.stateDir,
+  });
+  mkdirSync(where.recordDir, { recursive: true });
+  writeFileSync(join(where.recordDir, "11111111-2222-3333-4444-555555555555.txt"), "unknown");
+  fake.calls.length = 0;
+  return { fake, json, where };
+}
+
+/** A path under the temp home as setup and doctor print it: `~` and the platform's separators. */
+const tilde = (...parts: string[]) => join("~", ...parts);
+const CONTEXT_SHOWN = tilde(
+  ".local",
+  "share",
+  "cc-smart-dev-kit",
+  "serena",
+  "contexts",
+  "worktree.yml",
+);
+const FOLDER_SHOWN = tilde(".local", "share", "cc-smart-dev-kit", "serena");
+const RECORDS_SHOWN = tilde(".claude", "cc-smart-dev-kit", "serena-root");
+
+describe("a retired server: setup takes back only the registration it made", () => {
+  test("ours, as setup registered it: removed with Claude Code's own command, and the record goes", () => {
+    const home = tempDir("mcp-retired");
+    const { fake } = olderMachine(home);
+    const plan = planRetiredServers(
+      readMcpRecords(fake.paths.stateDir),
+      readUserServers(fake.paths.userConfigFile),
+      fake.paths,
+    );
+    expect(plan).toEqual([{ action: "remove", json: "", name: "serena", note: null }]);
+    const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
+    expect(fake.calls.map((argv) => argv.join(" "))).toEqual([
+      "claude mcp remove serena --scope user",
+    ]);
+    expect(applied.changes).toEqual(["- MCP server serena removed from your user config"]);
+    expect(applied.removed).toEqual(["serena"]);
+    recordApplied(fake.paths.stateDir, applied, "later");
+    expect(readMcpRecords(fake.paths.stateDir).serena).toBeUndefined();
+    expect(readUserServers(fake.paths.userConfigFile)?.serena).toBeUndefined();
+    // The next setup has nothing left to plan.
+    expect(
+      planRetiredServers(
+        readMcpRecords(fake.paths.stateDir),
+        readUserServers(fake.paths.userConfigFile),
+        fake.paths,
+      ),
+    ).toEqual([]);
+  });
+
+  test("a serena of the person's own (no record of ours): never planned, never touched", () => {
+    const home = tempDir("mcp-retired-own");
+    const fake = fakeClaude(home);
+    mkdirSync(dirname(fake.paths.userConfigFile), { recursive: true });
+    writeFileSync(
+      fake.paths.userConfigFile,
+      JSON.stringify({ mcpServers: { serena: { args: ["serena"], command: "/opt/their-uvx" } } }),
+    );
+    recordMcpServer(fake.paths.stateDir, "playwright", "{}", "then");
+    const plan = planRetiredServers(
+      readMcpRecords(fake.paths.stateDir),
+      readUserServers(fake.paths.userConfigFile),
+      fake.paths,
+    );
+    expect(plan).toEqual([]);
+    expect(applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending)).toEqual({
+      changes: [],
+      forgotten: [],
+      notes: [],
+      ok: true,
+      registered: [],
+      removed: [],
+      wouldRun: [],
+    });
+    expect(fake.calls).toEqual([]);
+  });
+
+  test("ours by record, changed by the person since: left alone, the record forgotten, one line says how to remove it", () => {
+    const home = tempDir("mcp-retired-changed");
+    const { fake, json } = olderMachine(home);
+    writeFileSync(
+      fake.paths.userConfigFile,
+      JSON.stringify({ mcpServers: { serena: { ...JSON.parse(json), env: { A: "1" } } } }),
+    );
+    const plan = planRetiredServers(
+      readMcpRecords(fake.paths.stateDir),
+      readUserServers(fake.paths.userConfigFile),
+      fake.paths,
+    );
+    expect(plan).toEqual([
+      {
+        action: "foreign",
+        forget: true,
+        json: "",
+        name: "serena",
+        note: "· MCP server serena holds a config other than the one cc-smart-dev-kit registered: left alone, and its record forgotten. cc-smart-dev-kit no longer registers serena (0.6.0); to remove it: claude mcp remove serena --scope user",
+      },
+    ]);
+    const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
+    expect(fake.calls).toEqual([]);
+    expect(applied.forgotten).toEqual(["serena"]);
+    recordApplied(fake.paths.stateDir, applied, "later");
+    expect(readMcpRecords(fake.paths.stateDir).serena).toBeUndefined();
+    expect(readUserServers(fake.paths.userConfigFile)?.serena).toBeDefined();
+  });
+
+  test("gone already: only the record goes, without a word; an unreadable config: nothing at all", () => {
+    const home = tempDir("mcp-retired-gone");
+    const { fake } = olderMachine(home);
+    const records = readMcpRecords(fake.paths.stateDir);
+    expect(planRetiredServers(records, {}, fake.paths)).toEqual([
+      { action: "gone", forget: true, json: "", name: "serena", note: null },
+    ]);
+    // Claude Code's own config did not read: nothing is planned, and the record stays.
+    expect(planRetiredServers(records, null, fake.paths)).toEqual([]);
+  });
+
+  /** Serena as an older setup registered it: its pin, and setup's own context file. */
+  const serenaAt = (commit: string, contextFile: string) =>
+    JSON.stringify({
+      args: [
+        "--from",
+        `git+https://github.com/oraios/serena@${commit}`,
+        "serena",
+        "start-mcp-server",
+        "--context",
+        contextFile,
+        "--open-web-dashboard",
+        "False",
+        "--project-from-cwd",
+      ],
+      command: "uvx",
+      timeout: 300_000,
+    });
+
+  /**
+   * An older setup's pin update that stopped after its `add-json`: the record still holds the
+   * OLD JSON, marked pending, and Claude Code holds `live`.
+   */
+  function halfUpdated(home: string, live: unknown) {
+    const fake = fakeClaude(home);
+    const where = serenaLeftoverPaths(fake.paths);
+    recordMcpServer(fake.paths.stateDir, "serena", serenaAt("aaaa", where.contextFile), "then");
+    markMcpServerPending(fake.paths.stateDir, "serena");
+    mkdirSync(dirname(fake.paths.userConfigFile), { recursive: true });
+    writeFileSync(fake.paths.userConfigFile, JSON.stringify({ mcpServers: { serena: live } }));
+    return { fake, where };
+  }
+
+  test("a pending update whose add landed: setup's own shape is taken back, and doctor owes it", () => {
+    const home = tempDir("mcp-retired-pending");
+    const where = serenaLeftoverPaths(paths(home));
+    const { fake } = halfUpdated(home, JSON.parse(serenaAt("bbbb", where.contextFile)));
+    expect(
+      planRetiredServers(
+        readMcpRecords(fake.paths.stateDir),
+        readUserServers(fake.paths.userConfigFile),
+        fake.paths,
+      ),
+    ).toEqual([{ action: "remove", json: "", name: "serena", note: null }]);
+    expect(retiredChecks(fake.paths)).toEqual([
+      {
+        ok: false,
+        text: 'Serena is retired in 0.6.0, and setup has not taken back the "serena" MCP server it registered yet. Run: cc-smart-dev-kit setup',
+      },
+    ]);
+  });
+
+  test("a pending record, but not setup's shape: left alone, like any config setup did not write", () => {
+    const home = tempDir("mcp-retired-pending-other");
+    const where = serenaLeftoverPaths(paths(home));
+    const elsewhere = join(home, "my-context.yml");
+    for (const live of [
+      // Another context file than setup's own.
+      JSON.parse(serenaAt("bbbb", elsewhere)),
+      // Another command.
+      { ...JSON.parse(serenaAt("bbbb", where.contextFile)), command: "/opt/uvx" },
+      // Started from somewhere else than the Serena repository.
+      {
+        args: ["--from", "serena-agent", "serena", "--context", where.contextFile],
+        command: "uvx",
+      },
+    ]) {
+      const { fake } = halfUpdated(tempDir("mcp-retired-pending-case"), live);
+      expect(
+        planRetiredServers(
+          readMcpRecords(fake.paths.stateDir),
+          readUserServers(fake.paths.userConfigFile),
+          fake.paths,
+        ).map((entry) => entry.action),
+      ).toEqual(["foreign"]);
+    }
+  });
+
+  test("setup's own shape but NO pending mark: the record decides, so it is left alone", () => {
+    const home = tempDir("mcp-retired-shape-only");
+    const fake = fakeClaude(home);
+    const where = serenaLeftoverPaths(fake.paths);
+    recordMcpServer(fake.paths.stateDir, "serena", serenaAt("aaaa", where.contextFile), "then");
+    mkdirSync(dirname(fake.paths.userConfigFile), { recursive: true });
+    writeFileSync(
+      fake.paths.userConfigFile,
+      JSON.stringify({ mcpServers: { serena: JSON.parse(serenaAt("bbbb", where.contextFile)) } }),
+    );
+    expect(
+      planRetiredServers(
+        readMcpRecords(fake.paths.stateDir),
+        readUserServers(fake.paths.userConfigFile),
+        fake.paths,
+      ).map((entry) => entry.action),
+    ).toEqual(["foreign"]);
+  });
+
+  test("a dry run prints the command and runs none; without claude, nothing runs and the line says so", () => {
+    const home = tempDir("mcp-retired-dry");
+    const { fake } = olderMachine(home);
+    const plan = planRetiredServers(
+      readMcpRecords(fake.paths.stateDir),
+      readUserServers(fake.paths.userConfigFile),
+      fake.paths,
+    );
+    const dry = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", true, noPending);
+    expect(dry.wouldRun).toEqual(["$ claude mcp remove serena --scope user"]);
+    expect(dry.removed).toEqual([]);
+    const noClaude = applyMcpServers(plan, fake.run, () => null, false, noPending);
+    expect(noClaude.ok).toBe(false);
+    expect(noClaude.notes).toEqual([
+      "! The claude command is not on PATH, so serena was not removed. Run it once it is.",
+    ]);
+    expect(fake.calls).toEqual([]);
+  });
+
+  test("restore still takes back what an older setup made: the registration, and the file stays tracked for it", () => {
+    const home = tempDir("mcp-retired-restore");
+    const { fake, where } = olderMachine(home);
+    const removal = removeMcpServers(fake.paths, fake.run, () => "/usr/bin/claude", false);
+    expect(removal.removed).toEqual(["- MCP server serena removed from your user config"]);
+    expect(fake.calls.map((argv) => argv.join(" "))).toEqual([
+      "claude mcp remove serena --scope user",
+    ]);
+    expect(readChanged(fake.paths.stateDir)[where.contextFile]?.kinds).toEqual(["whole-file"]);
+  });
+});
+
+describe("a retired server's files: Serena's context and the serena-root records", () => {
+  test("the context file, its folder and the records go; a backup stays; restore stops tracking the file", () => {
+    const home = tempDir("mcp-retired-files");
+    const { fake, where } = olderMachine(home);
+    // This run took the registration back, so nothing names the file any more.
+    const plan = planSerenaCleanup(fake.paths, ["serena"]);
+    expect(plan).toEqual({
+      contextFile: where.contextFile,
+      folder: where.folder,
+      kept: null,
+      recordDir: where.recordDir,
+    });
+    const lines = {
+      changes: [
+        `- ${CONTEXT_SHOWN}: removed (Serena's context; Serena is retired in 0.6.0)`,
+        `- ${FOLDER_SHOWN}/: removed (Serena's folder, empty now)`,
+        `- ${RECORDS_SHOWN}/: removed (the serena-root hook's records; Serena is retired in 0.6.0)`,
+      ],
+      info: [],
+    };
+    // A dry run says the same, and removes nothing.
+    expect(applySerenaCleanup(fake.paths, plan, true)).toEqual(lines);
+    expect(existsSync(where.contextFile)).toBe(true);
+    expect(existsSync(where.recordDir)).toBe(true);
+
+    expect(applySerenaCleanup(fake.paths, plan, false)).toEqual(lines);
+    expect(existsSync(where.folder)).toBe(false);
+    expect(existsSync(where.recordDir)).toBe(false);
+    // The plugin's data folder itself stays.
+    expect(existsSync(fake.paths.dataDir)).toBe(true);
+    expect(readChanged(fake.paths.stateDir)[where.contextFile]).toBeUndefined();
+    // The file's last state is backed up in the state folder.
+    const last = listBackups(fake.paths.stateDir, where.contextFile).at(-1);
+    expect(last?.absent).toBe(false);
+    expect(readFileSync(last?.path ?? "", "utf8")).toBe("single_project: false\n");
+    // Nothing is left to do.
+    expect(planSerenaCleanup(fake.paths, [])).toEqual({
+      contextFile: null,
+      folder: null,
+      kept: null,
+      recordDir: null,
+    });
+  });
+
+  test("a serena of the person's own still starts with the file: it stays, and one line says why", () => {
+    const home = tempDir("mcp-retired-kept");
+    const { fake, where } = olderMachine(home);
+    // Not taken back this run: the registration still names the file.
+    const plan = planSerenaCleanup(fake.paths, []);
+    expect(plan).toEqual({
+      contextFile: null,
+      folder: null,
+      kept: { by: ["serena"] },
+      recordDir: where.recordDir,
+    });
+    const done = applySerenaCleanup(fake.paths, plan, false);
+    expect(done.info).toEqual([
+      `  ${CONTEXT_SHOWN}: left in place: serena still starts Serena with it`,
+    ]);
+    expect(existsSync(where.contextFile)).toBe(true);
+    expect(readdirSync(join(where.folder, "contexts"))).toEqual(["worktree.yml"]);
+  });
+
+  test("Claude Code's config does not read: the file stays, and the line says why", () => {
+    const home = tempDir("mcp-retired-unreadable");
+    const { fake } = olderMachine(home);
+    writeFileSync(fake.paths.userConfigFile, "{ half a file");
+    const plan = planSerenaCleanup(fake.paths, ["serena"]);
+    expect(plan.contextFile).toBeNull();
+    expect(plan.kept).toEqual({ unreadable: true });
+    expect(applySerenaCleanup(fake.paths, plan, true).info).toEqual([
+      `  ${CONTEXT_SHOWN}: left in place: Claude Code's own config cannot be read, so whether a server still starts Serena with it is not known`,
+    ]);
+  });
+
+  test("a path of the wrong kind is not Serena's: nothing planned, nothing thrown", () => {
+    const home = tempDir("mcp-retired-kind");
+    const paths_ = paths(home);
+    const where = serenaLeftoverPaths(paths_);
+    // A file where Serena's folder was, and one where the records' folder was.
+    mkdirSync(paths_.dataDir, { recursive: true });
+    writeFileSync(where.folder, "mine\n");
+    mkdirSync(paths_.stateDir, { recursive: true });
+    writeFileSync(where.recordDir, "mine\n");
+    expect(planSerenaCleanup(paths_, [])).toEqual({
+      contextFile: null,
+      folder: null,
+      kept: null,
+      recordDir: null,
+    });
+    // A folder where the context file was: not a file to take back, and its folder is not empty.
+    const other = tempDir("mcp-retired-kind-dir");
+    const otherPaths = paths(other);
+    const otherWhere = serenaLeftoverPaths(otherPaths);
+    mkdirSync(otherWhere.contextFile, { recursive: true });
+    writeFileSync(join(otherWhere.contextFile, "inside.txt"), "x");
+    expect(planSerenaCleanup(otherPaths, [])).toEqual({
+      contextFile: null,
+      folder: null,
+      kept: null,
+      recordDir: null,
+    });
+  });
+
+  test("another file beside it: the context goes, the folder and that file stay", () => {
+    const home = tempDir("mcp-retired-other");
+    const { fake, where } = olderMachine(home);
+    const mine = join(where.folder, "contexts", "mine.yml");
+    writeFileSync(mine, "mine\n");
+    const plan = planSerenaCleanup(fake.paths, ["serena"]);
+    expect(plan.folder).toBeNull();
+    applySerenaCleanup(fake.paths, plan, false);
+    expect(existsSync(where.contextFile)).toBe(false);
+    expect(readFileSync(mine, "utf8")).toBe("mine\n");
+  });
+
+  test("only the servers are read: a local-scope server counts, a prompt that quotes the path does not", () => {
+    const home = tempDir("mcp-retired-naming");
+    const fake = fakeClaude(home);
+    const file = serenaLeftoverPaths(fake.paths).contextFile;
+    // No config file at all: nothing names it.
+    expect(registrationsNaming(fake.paths.userConfigFile, file, [])).toEqual([]);
+    mkdirSync(dirname(fake.paths.userConfigFile), { recursive: true });
+    writeFileSync(
+      fake.paths.userConfigFile,
+      JSON.stringify({
+        mcpServers: { serena: { args: ["--context", file], command: "uvx" } },
+        projects: {
+          "/work/app": {
+            history: [{ display: `look at ${file}` }],
+            mcpServers: { mine: { args: ["--context", file], command: "uvx" } },
+          },
+          "/work/other": { history: [{ display: file }] },
+        },
+      }),
+    );
+    expect(registrationsNaming(fake.paths.userConfigFile, file, [])).toEqual([
+      "serena",
+      "mine (local scope, /work/app)",
+    ]);
+    // A registration this run takes back no longer counts.
+    expect(registrationsNaming(fake.paths.userConfigFile, file, ["serena"])).toEqual([
+      "mine (local scope, /work/app)",
+    ]);
+    // Only a prompt quotes the path, and a server names something else: nothing names it.
+    writeFileSync(
+      fake.paths.userConfigFile,
+      JSON.stringify({
+        mcpServers: { other: { args: ["--context", "elsewhere.yml"], command: "uvx" } },
+        projects: { "/work/app": { history: [{ display: `look at ${file}` }] } },
+      }),
+    );
+    expect(registrationsNaming(fake.paths.userConfigFile, file, [])).toEqual([]);
+    writeFileSync(fake.paths.userConfigFile, "[]");
+    expect(registrationsNaming(fake.paths.userConfigFile, file, [])).toBeNull();
+  });
+});
+
+describe("doctor: what Serena left", () => {
+  test("nothing on a machine Serena never reached", () => {
+    expect(retiredChecks(paths(tempDir("mcp-retired-none")))).toEqual([]);
+  });
+
+  test("one ✗ line while setup owes the removal, and none after setup", () => {
+    const home = tempDir("mcp-retired-doctor");
+    const { fake } = olderMachine(home);
+    const owed = [
+      {
+        ok: false,
+        text: `Serena is retired in 0.6.0, and setup has not taken back the "serena" MCP server it registered, Serena's context ${CONTEXT_SHOWN}, the serena-root records in ${RECORDS_SHOWN}/ yet. Run: cc-smart-dev-kit setup`,
+      },
+    ];
+    expect(retiredChecks(fake.paths)).toEqual(owed);
+    // The same line among the MCP checks doctor prints.
+    const checks = mcpChecks(
+      fake.paths,
+      {
+        run: () => ({ ok: true, output: "Scope: User config\nStatus: ✓ Connected" }),
+        which: () => "/usr/bin/claude",
+      },
+      {},
+      home,
+    );
+    expect(checks.filter((check) => check.text.startsWith("Serena is retired"))).toEqual(owed);
+
+    // What setup does, in its order: the registration, then the files.
+    const applied = applyMcpServers(
+      planRetiredServers(
+        readMcpRecords(fake.paths.stateDir),
+        readUserServers(fake.paths.userConfigFile),
+        fake.paths,
+      ),
+      fake.run,
+      () => "/usr/bin/claude",
+      false,
+      noPending,
+    );
+    recordApplied(fake.paths.stateDir, applied, "later");
+    applySerenaCleanup(fake.paths, planSerenaCleanup(fake.paths, applied.removed), false);
+    expect(retiredChecks(fake.paths)).toEqual([]);
+  });
+
+  test("a serena of the person's own: one · line, never ✗ — also while it keeps the context file", () => {
+    const home = tempDir("mcp-retired-doctor-own");
+    const { fake, where } = olderMachine(home);
+    // The person re-pointed it (the record no longer matches); the records folder is gone.
+    writeFileSync(
+      fake.paths.userConfigFile,
+      JSON.stringify({
+        mcpServers: {
+          serena: {
+            args: ["start-mcp-server", "--context", where.contextFile],
+            command: "/opt/uvx",
+          },
+        },
+      }),
+    );
+    applySerenaCleanup(
+      fake.paths,
+      { contextFile: null, folder: null, kept: null, recordDir: where.recordDir },
+      false,
+    );
+    expect(retiredChecks(fake.paths)).toEqual([
+      {
+        info: true,
+        ok: true,
+        text: `the "serena" MCP server is registered (uvx start-mcp-server --context ${where.contextFile}), and cc-smart-dev-kit has no record of registering it as it is: cc-smart-dev-kit no longer registers it (0.6.0) and leaves it alone. To remove it: claude mcp remove serena --scope user`,
+      },
+    ]);
   });
 });

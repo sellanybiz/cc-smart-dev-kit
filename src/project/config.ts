@@ -13,7 +13,6 @@ export const PLUGIN_HOOK_NAMES = [
   "git-guard",
   "merge-guard",
   "main-folder-guard",
-  "serena-root",
   "message-guard",
   "agent-guard",
   "fable-session",
@@ -23,6 +22,15 @@ export const PLUGIN_HOOK_NAMES = [
   "worktree-leftovers",
   "session-name",
 ] as const;
+
+/**
+ * The plugin hooks a later version took out, by name: `ownHooks` still ACCEPTS them, and they
+ * silence nothing (no hook of that name runs any more). Refusing one would fail the strict
+ * parse of a project file written for an older plugin, and then every guard would ask on
+ * every call. `doctor` says the name can go (`src/cli/project-checks.ts`). `serena-root`
+ * went with Serena in 0.6.0.
+ */
+export const RETIRED_HOOK_NAMES = ["serena-root"] as const;
 
 /**
  * The plugin version that made `worktrees.prefix` optional. A project file written without
@@ -123,9 +131,10 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
   /**
    * The plugin hooks this project still runs as its own copy (["git-guard"]): exactly
    * those stay silent here, so the two copies never both answer. Emptied once the project
-   * removed its copies (`docs/design.md` § The safe switch).
+   * removed its copies (`docs/design.md` § The safe switch). A retired name
+   * (`RETIRED_HOOK_NAMES`) is accepted and silences nothing.
    */
-  ownHooks: z.array(z.enum(PLUGIN_HOOK_NAMES)).optional(),
+  ownHooks: z.array(z.enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES])).optional(),
 });
 
 export type CcSmartDevKitConfig = z.infer<typeof ccSmartDevKitConfigSchema>;

@@ -246,6 +246,11 @@ Where both exist, **the project says which plugin hooks to keep quiet**: `ownHoo
   `requires`), so it works even when the rest of the file is broken or needs a newer plugin.
 - The names are validated against the plugin's own (`PLUGIN_HOOK_NAMES` in
   `src/project/config.ts`; a test keeps them equal to `HOOKS`): a typo fails the strict parse.
+- **A retired plugin hook keeps its name** (`RETIRED_HOOK_NAMES` in the same file; today
+  `serena-root`, 0.6.0): a project file that lists it still parses, the name silences
+  nothing, and `doctor` prints one `·` line that it can go. Dropping the name from the schema
+  would fail the strict parse, and every guard would then ask on every call. A hook you
+  retire goes there.
 - `cc-smart-dev-kit doctor`, run in a project, prints one `·` line per listed hook, **warns** (`!`)
   when a listed hook's event has no project hook left to answer, and warns when a project
   hook runs next to a plugin hook the list does not name (both may answer).
@@ -321,13 +326,12 @@ A bug in a hook must never stop a user's work.
   to another project's session).
 - **A hook's `ask` cannot be silenced by the person.** Claude Code asks on every matching
   call: "Yes, don't ask again" leaves no rule a PreToolUse hook's answer respects (proved
-  live 2026-10-19, the Serena guard). So a guard asks only where the person's judgment is
-  the point. When the fix is mechanical and Claude can do it itself — point Serena at its
-  folder with `activate_project` — the guard denies and says the step, and the person is
-  not interrupted on every edit.
+  live 2026-10-19, on the main-folder guard's Serena branch, retired in 0.6.0). So a guard
+  asks only where the person's judgment is the point. When the fix is mechanical and Claude
+  can do it itself, the guard denies and says the step, and the person is not interrupted on
+  every call.
 - Anything a guard cannot work out (a session record it cannot read, a branch it cannot
-  name) lets the call through — except where the answer is one step away and asking would
-  cost the person every call (a Serena edit whose folder the guard cannot place, above).
+  name) lets the call through.
 
 ## Session start never changes anything that matters
 

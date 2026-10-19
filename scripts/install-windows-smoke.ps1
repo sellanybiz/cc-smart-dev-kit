@@ -135,6 +135,11 @@ function New-World([string]$Name, [hashtable]$Options = @{}) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $copy) | Out-Null
     Set-Content -Path $copy -Value "// the router"
   }
+  if ($Options.ContainsKey("UserServers")) {
+    # User-scope MCP servers already in Claude Code's own config, as JSON (`.claude.json`).
+    New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+    Set-Content -Path (Join-Path $configDir ".claude.json") -Value $Options["UserServers"]
+  }
   if ($Options["GatewayConfig"] -eq $true) {
     $config = Join-Path $worldHome ".config\cc-smart-dev-kit\gateway.json"
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $config) | Out-Null
@@ -401,16 +406,33 @@ try {
   $names.Add("a foreign MCP server")
 
   # 7e. The same, answered no: the server is kept, and it is in what is left.
-  $keepForeign = New-World "mcp-keep" @{ Answers = @("n", "y", ("A" * 43), "n", "n"); McpForeign = '{"servers":[{"name":"serena","runsWhat":"uvx serena start-mcp-server","state":"foreign"}]}' }
+  $keepForeign = New-World "mcp-keep" @{ Answers = @("n", "y", ("A" * 43), "n", "n"); McpForeign = '{"servers":[{"name":"sequential-thinking","runsWhat":"node C:/tools/thinking.js","state":"foreign"}]}' }
   $result = Invoke-Install $keepForeign @($repo)
   Assert-Code "a foreign MCP server kept" $result 0 $keepForeign
-  Assert-Contains "a foreign MCP server kept" $result.out 'the "serena" server was left as it is'
-  Assert-Contains "a foreign MCP server kept" $result.out 'the "serena" MCP server (registered by something else)'
+  Assert-Contains "a foreign MCP server kept" $result.out 'the "sequential-thinking" server was left as it is'
+  Assert-Contains "a foreign MCP server kept" $result.out 'the "sequential-thinking" MCP server (registered by something else)'
   if ((Get-Calls $keepForeign) -match "mcp remove") {
     Stop-Smoke "a foreign MCP server kept: it was removed anyway"
   }
   $passed++
   $names.Add("a foreign MCP server kept")
+
+  # 7f. A serena of the person's own (Serena is retired in 0.6.0): it is in Claude Code's own
+  #     config, `mcp status` leaves it out (as the real one does: src/mcp/mcp.test.ts), and the
+  #     fake `claude mcp remove` really removes -- so a Serena step of the installer's own would
+  #     show. Afterwards it is still registered, exactly as the person had it.
+  $ownSerena = New-World "mcp-own-retired" @{ Answers = @("y", ("A" * 43), "n", "n"); UserServers = '{"mcpServers":{"serena":{"command":"C:/tools/their-uvx.exe","args":["serena","start-mcp-server"]}}}' }
+  $result = Invoke-Install $ownSerena @($repo)
+  Assert-Code "a serena of the person's own" $result 0 $ownSerena
+  if ($result.out -match "serena" -or ((Get-Calls $ownSerena) -join "`n") -match "serena") {
+    Stop-Smoke "a serena of the person's own: the installer touched it:`n$($result.out)"
+  }
+  $userConfig = Get-Content -Raw -Path (Join-Path $ownSerena.home ".claude\.claude.json") | ConvertFrom-Json
+  if ($userConfig.mcpServers.serena.command -ne "C:/tools/their-uvx.exe" -or (@($userConfig.mcpServers.serena.args) -join " ") -ne "serena start-mcp-server") {
+    Stop-Smoke "a serena of the person's own: it is not registered as the person had it any more:`n$(Get-Content -Raw -Path (Join-Path $ownSerena.home ".claude\.claude.json"))"
+  }
+  $passed++
+  $names.Add("a serena of the person's own")
 
   # 8. Inside a Claude Code session: refused, exit 2, nothing runs.
   $inside = New-World "inside" @{ Answers = @("n") }

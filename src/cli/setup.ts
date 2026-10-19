@@ -39,7 +39,7 @@ import {
   recordApplied,
   unreadableUserConfigNote,
 } from "../mcp/register";
-import { installSerenaContext, serenaContextSource } from "../mcp/serena-context";
+import { applySerenaCleanup, planRetiredServers, planSerenaCleanup } from "../mcp/retired";
 import { mcpServers } from "../mcp/servers";
 import { readTavilyKey, TAVILY_ENV_KEY } from "../mcp/tavily";
 import {
@@ -97,8 +97,6 @@ export interface SetupOptions {
   instructions: boolean | null;
   /** The plugin's `instructions` folder, beside `dist/`. */
   instructionsSource: string;
-  /** The plugin's `serena` folder, beside `dist/`: the context Serena is registered with. */
-  serenaSource: string;
   /** `--statusline`: set the status line without asking. */
   statusline: boolean;
   /** The environment: the Tavily key may come from it (`TAVILY_API_KEY`). */
@@ -180,9 +178,6 @@ interface Managed {
   instructions: { where: InstructionsPaths; choice: boolean | null };
   /** Set the status line (`--statusline`, or a "yes" to the question). */
   statusline: boolean;
-  /** Install Serena's context beside the plugin's data (the file its registration names). */
-  serena: boolean;
-  /** The Tavily key to write into the settings as an owned secret, or null. */
   /**
    * What the settings' own `env.TAVILY_API_KEY` gets — the ONE decision, from where the key
    * was found (`readTavilyKey`):
@@ -209,12 +204,16 @@ interface Report {
   notes: string[];
 }
 
-/** Every change setup makes to files, in order. With `dryRun`, it only reports them. */
+/**
+ * Every change setup makes to files, in order. With `dryRun`, it only reports them.
+ * `takenBack`: the retired MCP registrations this run takes out (a dry run: the ones it
+ * would), which no longer keep Serena's old context file in place (`retired.ts`).
+ */
 function applySetup(
   paths: CliPaths,
   managed: Managed,
   dryRun: boolean,
-  serenaSource: string,
+  takenBack: readonly string[],
   platform: NodeJS.Platform,
 ): { changes: string[]; info: string[]; notes: string[] } {
   const short = (path: string) => tildify(path, paths.home);
@@ -292,27 +291,6 @@ function applySetup(
     info.push(`  ${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
   }
 
-  const serenaLines: { mark: "+" | "~" | "!"; text: string }[] = [];
-  if (managed.serena) {
-    const serena = installSerenaContext(
-      serenaSource,
-      paths.serenaContextFile,
-      paths.stateDir,
-      dryRun,
-    );
-    if (serena.outcome === "missing") {
-      serenaLines.push({
-        mark: "!",
-        text: `Serena's context file is missing from the plugin (${serenaSource}): Serena was not registered. Reinstall the plugin.`,
-      });
-    } else if (serena.outcome !== "unchanged") {
-      serenaLines.push({
-        mark: serena.outcome === "created" ? "+" : "~",
-        text: `${short(serena.file)}: Serena's context (project switching on)`,
-      });
-    }
-  }
-
   if (managed.autoMode !== null) {
     const result = applyAutoMode(paths.settingsFile, paths.stateDir, managed.autoMode, dryRun);
     const where = `${short(result.file)}: ${formatKeyPath(AUTO_MODE_PATH)}`;
@@ -364,6 +342,13 @@ function applySetup(
     }
   }
 
+  // What an older setup left for Serena, retired: its context file (while no registration
+  // still names it) and the serena-root records. Decided here, on each pass, so the dry run
+  // and the real run say the same thing.
+  const serena = applySerenaCleanup(paths, planSerenaCleanup(paths, takenBack), dryRun);
+  changes.push(...serena.changes);
+  info.push(...serena.info);
+
   const { where, choice } = managed.instructions;
   const optOut = choice === null ? instructionsOptedOut(paths.stateDir) : !choice;
   const stored = choice === null ? null : setInstructionsOptOut(paths.stateDir, optOut, dryRun);
@@ -372,9 +357,6 @@ function applySetup(
     ...(optOut ? removeInstructions(where, dryRun) : installInstructions(where, dryRun, VERSION)),
   ];
   const notes: string[] = [];
-  for (const line of serenaLines) {
-    (line.mark === "!" ? notes : changes).push(`${line.mark} ${line.text}`);
-  }
   for (const line of instructions) {
     (line.mark === "!" ? notes : changes).push(`${line.mark} ${short(line.file)}: ${line.what}`);
   }
@@ -701,7 +683,6 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     options.tavilyKeyStdin === null
       ? readTavilyKey(paths, options.env)
       : { source: "file" as const, value: options.tavilyKeyStdin };
-  const serenaSource = serenaContextSource(options.serenaSource);
   const managed: Managed = {
     claudeMem: claudeMem === "not-installed" ? null : claudeMem,
     autoMode: autoMode?.wanted ?? null,
@@ -709,7 +690,6 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       where: instructionsPaths(paths, options.instructionsSource),
       choice: options.instructions,
     },
-    serena: existsSync(serenaSource),
     statusline: options.statusline,
     tavilyKeyPlan:
       tavily.source === "file"
@@ -724,7 +704,8 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
 
   // The MCP servers: what setup registered last time, what Claude Code holds now, and what to
   // do about each. A server of the person's own is never taken over (`register.ts`); when
-  // Claude Code's own config cannot be read, nothing is touched at all.
+  // Claude Code's own config cannot be read, nothing is touched at all. A retired server
+  // setup registered itself is taken back the same way (`retired.ts`).
   let records: Record<string, McpRecord> = {};
   try {
     records = readMcpRecords(paths.stateDir);
@@ -734,27 +715,22 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     );
   }
   const liveServers = readUserServers(paths.userConfigFile);
-  const mcpPlan = planMcpServers(
-    mcpServers({
-      bunx: machine.which("bunx") ?? "bunx",
-      launcher: join(paths.binDir, LAUNCHER_NAME),
-      serenaContextFile: paths.serenaContextFile,
-      tavily: tavily.source === "none" ? { key: false, reason: tavily.reason } : { key: true },
-    }),
-    records,
-    liveServers,
-  ).map((entry) =>
-    // A registration that names a context file which is not in place would replace a Serena
-    // that starts with one that does not: the existing registration is left as it is.
-    entry.name === "serena" && !managed.serena
-      ? {
-          ...entry,
-          action: "skip" as const,
-          json: "",
-          note: "! serena: the plugin's context file is missing, so your existing registration is left as it is",
-        }
-      : entry,
-  );
+  const mcpPlan = [
+    ...planMcpServers(
+      mcpServers({
+        bunx: machine.which("bunx") ?? "bunx",
+        launcher: join(paths.binDir, LAUNCHER_NAME),
+        tavily: tavily.source === "none" ? { key: false, reason: tavily.reason } : { key: true },
+      }),
+      records,
+      liveServers,
+    ),
+    ...planRetiredServers(records, liveServers, paths),
+  ];
+  /** The registrations this run would take out: for the dry pass's view of Serena's file. */
+  const plannedRemovals = mcpPlan
+    .filter((entry) => entry.action === "remove")
+    .map((entry) => entry.name);
   // One line, not one per server: nothing was added, removed, updated or forgotten.
   if (liveServers === null) {
     report.notes.push(
@@ -776,7 +752,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
 
   // A read-only pass: a key the user set (autoUpdate: false) throws ForeignKeyError here,
   // before anything is asked, written or run, the launcher and the state folder included.
-  const planned = applySetup(paths, managed, true, serenaSource, machine.platform);
+  const planned = applySetup(paths, managed, true, plannedRemovals, machine.platform);
 
   if (options.dryRun) {
     const wouldRegister = applyMcpServers(mcpPlan, claudeRun, machine.which, true, () => {});
@@ -866,7 +842,9 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     () => {
       const shortcuts =
         warp.removeShortcuts && warpDone ? removeWarpDesktopEntries(paths, false) : [];
-      const files = applySetup(paths, managed, false, serenaSource, machine.platform);
+      // Only what was really taken out counts: a `claude mcp remove` that failed leaves the
+      // registration, and whatever it names, where it was.
+      const files = applySetup(paths, managed, false, applied.removed, machine.platform);
       // Which servers setup registered: cc-smart-dev-kit's own state, like the lock — not a
       // user file, so no backup (restore reads it to take exactly those back).
       recordApplied(paths.stateDir, applied, new Date().toISOString());

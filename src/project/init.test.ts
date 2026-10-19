@@ -105,9 +105,10 @@ describe("planProjectInit", () => {
 
   test("no prefix needs at least 0.5.2; a kept prefix keeps the plugin's minor", () => {
     // A 0.5.0/0.5.1 plugin still requires `worktrees.prefix`: a file written without one
-    // must ask for the version that made it optional, or every guard asks there.
+    // must ask for the version that made it optional, or every guard asks there. The file's
+    // own range is an older minor's, written by hand: it must not depend on this plugin's.
     const noPrefix = planProjectInit(
-      input({ existing: `{"requires": "${THIS_MINOR}", "worktrees": {"base": "dev"}}\n` }),
+      input({ existing: `{"requires": ">=0.5", "worktrees": {"base": "dev"}}\n` }),
     );
     expect(noPrefix.text).toContain(`"requires": "${NO_PREFIX_MINOR}"`);
     const withPrefix = planProjectInit(
@@ -132,11 +133,13 @@ describe("planProjectInit", () => {
     ).toContain('"requires": ">=0.6"');
   });
 
-  test("a 0.5.1 file whose answers did not change is not rewritten", () => {
+  test("a file with the engine's fields, its answers unchanged and this minor's range: not rewritten", () => {
+    // Its range is this plugin's own minor: an older one is raised to it (the test above), so a
+    // hand-written ">=0.5" would stop being "unchanged" at every minor release.
     const root = tempDir("project-init");
     const existing = `${JSON.stringify(
       {
-        requires: ">=0.5",
+        requires: THIS_MINOR,
         worktrees: {
           base: "dev",
           prefix: "app-wt-",

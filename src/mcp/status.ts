@@ -1,12 +1,13 @@
 /**
- * What the plugin's four MCP servers look like on this machine right now — one read-only
- * question, answered for `cc-smart-dev-kit mcp status` (the installer reads it, `--json`) and
- * for `doctor`'s `!` line.
+ * What the plugin's MCP servers (`SERVER_NAMES`) look like on this machine right now — one
+ * read-only question, answered for `cc-smart-dev-kit mcp status` (the installer reads it,
+ * `--json`) and for `doctor`'s `!` line. A retired name is not one of them: a server of the
+ * person's own under it is never offered for replacement.
  *
- * WHY IT EXISTS (live, 2026-10-17). A project's own script had registered `playwright`,
- * `serena`, `sequential-thinking` and `tavily-websearch` at user scope before cc-smart-dev-kit
- * was installed. `setup` left them all alone — the rule: a person's own server is never taken
- * over — and printed one `!` line per server saying so. Among the installer's output nobody
+ * WHY IT EXISTS (live, 2026-10-17). A project's own script had registered every one of the
+ * plugin's server names at user scope before cc-smart-dev-kit was installed. `setup` left them
+ * all alone — the rule: a person's own server is never taken over — and printed one `!` line
+ * per server saying so. Among the installer's output nobody
  * read it, so the old browser kept starting and the plugin's own never took over. The rule
  * stays; what changes is that the INSTALLER now asks, showing what runs instead.
  *
@@ -129,7 +130,7 @@ export function mcpServerStatusLine(status: McpServerStatus): string {
 }
 
 /**
- * The state of each of the plugin's servers — ALL FOUR, whatever this machine has a key for.
+ * The state of each of the plugin's servers — EVERY ONE, whatever this machine has a key for.
  * Reads Claude Code's own config and the plugin's records; writes nothing.
  *
  * Tavily is reported even with no key (`readTavilyKey` source "none"): a person's own

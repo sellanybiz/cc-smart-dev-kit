@@ -124,7 +124,7 @@ export const FABLE_REASONS = [
  * any word of `FABLE_REASONS` is enough. Every other type — a fork included — can change
  * files and needs the one word `build` (`FABLE_BUILD_REASON`).
  */
-export const READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore", "Code Explorer"] as const;
+export const READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore"] as const;
 
 /** The environment variable a person may extend that list with (comma-separated). */
 export const READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";
@@ -943,7 +943,7 @@ function opusWhy(effort: null | string, word: null | string): string {
 function fableDenial(real: LaunchModel): string {
   return [
     `This launch would run on ${namedModel(real)}.`,
-    "Fable advises; it builds only when the person asks. Use a read-only agent type (Plan, Reviewer, Explore, Code Explorer) and put a line in the prompt saying why:",
+    `Fable advises; it builds only when the person asks. Use a read-only agent type (${READ_ONLY_AGENTS.join(", ")}) and put a line in the prompt saying why:`,
     `Fable reason: <${FABLE_REASONS.join("|")}> - <why>`,
     `An agent that can change files needs \`Fable reason: ${FABLE_BUILD_REASON} - <what the person asked>\` instead.`,
   ].join("\n");

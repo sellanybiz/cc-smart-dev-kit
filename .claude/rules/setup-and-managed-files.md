@@ -110,8 +110,8 @@ Each of them:
   leaves `gateway.json` alone on purpose, because it holds the person's key. The setup line says
   which folder the backup is in; copying a file back is the person's own step.
 - **`cc-smart-dev-kit mcp status [--json]`** (`src/mcp/status.ts`) is read-only and answers which
-  of the plugin's four MCP servers are its own and which are registered by something else, on the
-  same rule as setup (`sameConfig` against the record). Its line shows a server's command and
+  of the plugin's MCP servers (`SERVER_NAMES`) are its own and which are registered by
+  something else, on the same rule as setup (`sameConfig` against the record). Its line shows a server's command and
   arguments — never an `env` or a `headers`, which can hold a key. The installer asks with it
   (`install.sh`, `install.ps1`); `doctor` warns from the same facts.
 - **State (`<stateDir>`):** `$CLAUDE_CONFIG_DIR/cc-smart-dev-kit/` (by default
@@ -186,6 +186,11 @@ Each of them:
   - A restored file is no longer tracked in `changed.json`, so a second `restore`
     changes nothing. When the baseline backup is missing, the file is left alone.
 - A new kind of managed change must say how `restore` undoes it, with a test.
+- **What a retired piece left is taken back by setup with the same helpers** (Serena, 0.6.0:
+  `src/mcp/retired.ts`): a registration only while the record proves it is setup's own, a
+  file through `removeManagedFile` (backup first) and `forgetChange`, never a file that a
+  registration of the person's still names. `--dry-run` shows each step; `doctor` has one ✗
+  line until it is done.
 - **A service is a managed change too.** When `gateway setup` installed the router (its
   copy or unit is in `changed.json`), `restore` works in two stages, because running
   sessions are taken to keep pointing at the router until they restart (one live look

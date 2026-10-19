@@ -961,7 +961,7 @@ its own repo.
 
 ## Instructions, skills and agents
 
-The plugin carries general working instructions for Claude, 16 skills and 4 agents, all
+The plugin carries general working instructions for Claude, 17 skills and 3 agents, all
 written for any project (`README.md` § Instructions, skills and agents lists them).
 
 **The always-on instructions reach Claude through the user's `CLAUDE.md`.** A plugin cannot
@@ -1031,8 +1031,11 @@ An agent that works by a skill loads it with `skills:` in its frontmatter (`revi
 `cc-smart-dev-kit:review`; `rules-maintainer`: `cc-smart-dev-kit:self-evolve`): the skill's text is in its
 context from the start, and it needs no path to the plugin's version folder (proved live:
 `claude-code-contract.md` § Instructions).
-Agents that need an MCP server name its tools as `mcp__serena__*` or `mcp__playwright__*`:
-the servers are registered for the user (§ MCP servers at user scope), so the names stay.
+Agents that need an MCP server name its tools as `mcp__playwright__*`: the servers are
+registered for the user (§ MCP servers at user scope), so the names stay. The reviewer also
+lists claude-mem's `smart_search`, `smart_outline` and `smart_unfold` (the companion plugin's
+own tool names), for a big file's shape; when they are not there or do not answer (on Windows
+they can fail without an error, claude-mem #1247), it uses Grep and Read.
 
 **The output style** ships but is never switched on: a person picks it with `/output-style`.
 ## The hooks
@@ -1221,8 +1224,7 @@ worktrees).
 | Hook | Event (matcher) | On when | What it does |
 |---|---|---|---|
 | `git-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks before a force-push (git's abbreviations included: `--forc`), a push to a protected branch (`protectedBranches`, default `main`), `push --all`/`--mirror`, a branch deleted on the remote (`git push origin :x`, `-d`/`--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that discards changes, `branch -D`, `stash clear` and an unnamed `stash drop`, and (with `worktrees`) a bare `git stash` / `stash pop`. One shell lexer (`shell-command.ts`) reads each command of a line; quoted text, here-docs and comments are data, and shell keywords, wrappers (`timeout 60 git push -f`, `env -i sudo -u me …`, `xargs …`), the here-doc a shell reads as its script, and the text piped into one are read through. Known limits: a git alias, `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file. "Ask", never "deny": the person may mean it. |
-| `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit, Serena's edit tools) | `worktrees.guardMainFolder` | Denies an edit of a file in the main checkout itself, with the way into a worktree. A Serena edit names its file relative to the folder Serena has ACTIVE, so it is placed by `serena-root`'s record (else by `CLAUDE_PROJECT_DIR`, the folder the session started in); a file it cannot place is a `deny` with the `activate_project` step Claude can take itself, never a pass. |
-| `serena-root` | PreToolUse, PostToolUse (`mcp__serena__activate_project`), SessionStart | `worktrees.guardMainFolder` | Records which folder Serena edits for this session (`<stateDir>/serena-root/<session id>.txt`): "unknown" from the moment an activation is allowed until Serena's own answer names the folder, so the record is only ever a folder Serena confirmed — and the guard DENIES while the folder is unknown or unrecorded, never passes. A resume, a `/clear` or a fork writes "unknown" and gives the session one context line saying the `activate_project` step that fixes it. It refuses an activation that names a project by NAME or a folder outside this repo and its worktrees. On a broken cc-smart-dev-kit.json it records nothing and says so. |
+| `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit) | `worktrees.guardMainFolder` | Denies an edit of a file in the main checkout itself, with the way into a worktree. (Until 0.6.0 it also placed Serena's edits, with the `serena-root` hook's record; both went with Serena.) |
 | `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
 | `merge-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks the person before a command that merges a pull request. Every merge of the line is judged (`gh pr merge`, `gh pr -R owner/repo merge 5`, an alias from `gh alias list`, `--auto` included), and the first the policy does not allow asks, naming that pull request: `autoMerge` on, the base is the integration base (`autoMergeAllowed`), the merge names THIS project's repository (its `origin`), every required check `gh pr checks --required` reports green, and (with `reviewBeforePush`) the head commit's review is recorded. The forms it does not judge ask with the reason — a `gh api` merge, a GraphQL query it cannot read, a shell alias, an extension whose words name a merge — as does a step that moves the merge's folder, branch or repository (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing or does not answer. Read-only `gh`, 10 s a call of the hook's 30 s. § The workflow › The merge guard. |
 | `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists | Denies a message to a session that works outside this repo (from Claude Code's session records). |
@@ -1335,7 +1337,7 @@ openai:gpt-5.5) ``.
 
 The Fable rules are the owner's of 2026-10-16, and each is the person's call:
 
-- **A read-only agent** (Plan, Reviewer, Explore, Code Explorer) takes any word of
+- **A read-only agent** (Plan, Reviewer, Explore) takes any word of
   `FABLE_REASONS` — `hard`, `rewrite`, `ui-design`, `architecture`, `review`, `plan`,
   `unsatisfied` — where `unsatisfied` is a fresh attempt after the person did not like the main
   session's answer (`subagent-decision` § Choosing Fable has the brief it gets) and `review` is
@@ -1563,7 +1565,8 @@ into a release branch, the main checkout following the base branch after each me
 (installs and migrations), the notes about one project's dev notes, migrations and env
 files, and the claude-mem start-folder note. **Ported in Phase 4, with the MCP servers the
 plugin registers:** the Serena root record (Serena's edits in the main-folder guard — the
-`serena-root` hook, above) and the Playwright output folder (the `playwright-output` hook).
+`serena-root` hook, retired with Serena in 0.6.0) and the Playwright output folder (the
+`playwright-output` hook, above).
 **Not ported:** the Windows helper that
 removes a worktree after the session lets go of it — the plugin removes one when its session
 asks (the WorktreeRemove hook) or by `cc-smart-dev-kit worktrees --clean`, and it moves the
@@ -1762,6 +1765,12 @@ answer the same command). The second warning leaves the machine-wide hooks out
 `agent-guard`): they answer about the machine, not the project, so a project hook on their
 event is not a second copy of a plugin piece.
 
+**A plugin hook the plugin retires** keeps its name in the schema as a retired name
+(`RETIRED_HOOK_NAMES` in `src/project/config.ts`; today `serena-root`, 0.6.0): a project file
+that still lists it parses, and the name silences nothing, because no hook of that name runs.
+Refusing it would fail the strict parse, and every guard would then ask about every call.
+`doctor` prints one `·` line that the name can go.
+
 The deprecated worktree engine is not part of the switch, because the project wires it
 itself: a project still on it moves by taking those lines out and using Claude Code's own
 worktrees (README § Worktrees), in one commit. `cc-smart-dev-kit doctor` reports a second
@@ -1934,16 +1943,36 @@ hook matcher and agent tool list that names `mcp__<server>__*`; and a server fro
 file or the "local" scope is stopped by Claude Code as soon as the session's folder changes,
 which every session that works in a worktree does. Registered for the user, the names stay.
 
-- **Four servers**: `playwright` (the browser above), `serena` (with the plugin's own
-  context, so a session can point Serena at its worktree), `sequential-thinking`, and
-  `tavily-websearch`. Each version is pinned in `src/mcp/versions.ts`; the file's header says
-  why, and how to move one. A project's own servers stay in that project.
-- **Serena's context** is a whole file cc-smart-dev-kit owns, installed in the data folder
-  (`<dataDir>/serena/contexts/worktree.yml`), because the registration names its path and a
-  version folder is deleted by an update. It is Serena's own `claude-code` context with
-  `single_project: false`: with the default, `activate_project` is hidden and Serena could
-  never follow a session into its worktree.
-- - **The settings' own `env` counts as a key** (`readTavilyKey`): `TAVILY_API_KEY` in the process
+- **Three servers** (`SERVER_NAMES`): `playwright` (the browser above), `sequential-thinking`,
+  and `tavily-websearch`. Each version is pinned in `src/mcp/versions.ts`; the file's header
+  says why, and how to move one. A project's own servers stay in that project.
+- **A retired server** (`RETIRED_SERVER_NAMES`; today `serena`, dropped in 0.6.0 — one server
+  per session at about 3 GB each in a large project, for tools sessions seldom called) is taken
+  back by the next setup, in `src/mcp/retired.ts`, the one home of that cleanup:
+  `planRetiredServers` plans a `remove` only while the record says setup registered it AND
+  Claude Code still holds exactly that JSON — the rule a Tavily server without a key follows —
+  so `applyMcpServers` runs `claude mcp remove`. A record marked `pending` (an older setup's pin
+  update stopped after its `add-json`, so the record holds the old JSON and Claude Code the
+  newer) counts too when the live config has setup's own shape — `uvx`, `--from` Serena's
+  repository, `--context` setup's own context file — as `planMcpServers`' pending branch
+  reasons with the JSON it would write (`setupMadeIt`, which `doctor` asks too). Any other
+  `serena` stays (its record, if any, is forgotten), and the lines say only what is known:
+  setup has no record of registering it as it is. Then, in setup's locked pass, `planSerenaCleanup` and
+  `applySerenaCleanup` remove what 0.5.x left beside it: the context file
+  (`<dataDir>/serena/contexts/worktree.yml`, a whole file setup owned) through
+  `removeManagedFile` (a backup first) and `forgetChange`, its folder only when nothing else is
+  in it, and the `serena-root` records (`<stateDir>/serena-root/`). The context file stays while
+  any MCP registration in Claude Code's own config — the user scope but the ones this run took
+  back, and every folder's local scope — still names it, or when that config does not read:
+  a Serena of the person's own may start with it. Only the servers are read there, never the
+  rest of the file (a prompt may quote the path). The dry pass counts the planned removals;
+  the real pass counts only those that succeeded (`McpApplyResult.removed`), so a failed
+  `claude mcp remove` keeps the file its registration names. `doctor` asks the same
+  functions (`retiredChecks`): one ✗ line while setup owes any of it, none after, and a `·`
+  line for a `serena` that is not setup's. `mcp status` lists only `SERVER_NAMES`, so the
+  installer never offers to replace a retired name. `restore` needs nothing new: it takes back
+  a recorded registration and a tracked file the way it takes back any other.
+- **The settings' own `env` counts as a key** (`readTavilyKey`): `TAVILY_API_KEY` in the process
   environment, then the `env` of the settings files (the map Claude Code expands an MCP server's
   `${VAR}` from — `userSettings`/`flagSettings`/`policySettings` `.env`, read in the installed
   2.1.302), then the key file setup owns. A key that lives only in the settings is a key Claude
@@ -1965,7 +1994,8 @@ which every session that works in a worktree does. Registered for the user, the 
 - **What setup registered is recorded** (`<stateDir>/mcp-servers.json`: the name, the exact
   JSON, when, and whether an update is in flight), so `restore` removes exactly that: each
   server that still holds what setup wrote (`claude mcp remove <name> --scope user`), then the
-  record, Serena's context file and the Tavily `env` key. A server the person re-pointed — or
+  record and the Tavily `env` key (and, for a machine setup reached before 0.6.0, Serena's
+  context file, a tracked whole file like any other). A server the person re-pointed — or
   removed — is theirs and stays: the record is forgotten, and a later restore does not try it
   again (a `·` line says the exact command that adds it back). A server of the person's own
   under one of these names is never taken over; setup says how to hand it back.
@@ -1987,8 +2017,8 @@ which every session that works in a worktree does. Registered for the user, the 
   "which of these are the plugin's?": the same rule as setup's own (`sameConfig` against the
   record — one home), a line each, and `--json` for a script. Exit 1 means Claude Code's own
   config could not be read, so "nothing is foreign" and "could not check" are never confused.
-  **All four names are reported, Tavily included with no key** (premium review, 2026-10-17: it
-  used to be left out then, so a `tavily-websearch` a project's script had registered was never
+  **Every name in `SERVER_NAMES` is reported, Tavily included with no key** (premium review,
+  2026-10-17: it used to be left out then, so a `tavily-websearch` a project's script had registered was never
   offered for replacement on a machine whose key arrived later in the installer's step 7), and a
   record file that cannot be read gives `unknown` — never `foreign`, or the installer would
   offer to replace a server that is probably the plugin's own.

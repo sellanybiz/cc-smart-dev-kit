@@ -96,7 +96,7 @@ Opus spawn. Never put `model:` or `effort:` in an agent's frontmatter — perman
 **Opus may build when the work needs it** (security, money, permissions, schema, deploy, architecture, UI judgment,
 tangled debugging) **up to `xhigh`, with no approval; `max` needs the person's yes** — a session nobody watches refuses
 it (`claude -p`), and a fork runs at the session's own effort. **Fable advises; it builds only when the person asks.**
-Read-only agents (Plan, Reviewer, Explore, Code Explorer) take `Fable reason:
+Read-only agents (Plan, Reviewer, Explore) take `Fable reason:
 <hard|rewrite|ui-design|architecture|review|plan|unsatisfied> - <why>`; a builder, or a fork, needs `Fable reason:
 build - <what the person asked>` — each word's use is in `/cc-smart-dev-kit:subagent-decision` § Choosing Fable. A
 session may run on Fable as its main model: the person's choice — **never comment on the session's own model or on a

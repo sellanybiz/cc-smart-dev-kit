@@ -8,8 +8,7 @@
  * | Hook | Event (matcher) | Fails closed by |
  * |---|---|---|
  * | git-guard | PreToolUse (Bash, PowerShell) | asking before every command that runs git |
- * | main-folder-guard | PreToolUse (Edit, Write, NotebookEdit, Serena's edit tools) | asking before every edit in the repo |
- * | serena-root | PreToolUse, PostToolUse (activate_project), SessionStart | silent; the guard denies without a known record, and a resume, clear or fork gets one line |
+ * | main-folder-guard | PreToolUse (Edit, Write, NotebookEdit) | asking before every edit in the repo |
  * | message-guard | PreToolUse (SendMessage) | asking before every message |
  * | agent-guard | PreToolUse (Agent, Task, Workflow) | machine-wide: it judges the same way without cc-smart-dev-kit.json (`agent-guard.ts`) |
  * | fable-session | SessionStart, PostModelSwitch, Stop | machine-wide: it says the same line without cc-smart-dev-kit.json (`fable-session.ts`) |
@@ -60,12 +59,11 @@ import {
   toolInput,
 } from "./io";
 import { jobRoute, routeFacts } from "./job-route";
-import { editedFile, mainFolderGuard, serenaEditedFile } from "./main-folder-guard";
+import { editedFile, mainFolderGuard } from "./main-folder-guard";
 import { mergeGuard } from "./merge-guard";
 import { messageGuard } from "./message-guard";
 import { agentTypeOf, recordsReview, reviewRecord } from "./review-record";
 import type { HookSpec } from "./run";
-import { readSerenaRoot, serenaRoot } from "./serena-root";
 import { sessionName } from "./session-name";
 import { programsOf } from "./shell-command";
 import { worktreeCreate } from "./worktree-create";
@@ -190,37 +188,14 @@ export const mainFolderGuardHook: HookSpec = {
   name: "main-folder-guard",
   events: ["PreToolUse"],
   wiring: "plugin",
-  onConfigProblem: (message, input, _event, checkout, context) => {
+  onConfigProblem: (message, input, _event, checkout) => {
     const file = typeof input.cwd === "string" ? editedFile(input, input.cwd) : null;
     const repo = checkout.mainCheckout ?? checkout.root;
-    if (file !== null && isInside(file, repo)) {
-      return toolDecision("ask", cannotCheck("whether this edit belongs in a worktree", message));
-    }
-    // A Serena edit names its file relative to the project Serena has active, which cannot be
-    // read from a broken cc-smart-dev-kit.json: ask about it rather than let it through.
-    return serenaEditedFile(input, readSerenaRoot(context.paths, input.session_id), null) === null
-      ? SILENT
-      : toolDecision("ask", cannotCheck("whether this Serena edit belongs in a worktree", message));
+    return file !== null && isInside(file, repo)
+      ? toolDecision("ask", cannotCheck("whether this edit belongs in a worktree", message))
+      : SILENT;
   },
   run: mainFolderGuard,
-};
-
-/**
- * The Serena root keeper: which folder Serena edits for this session, so the main-folder
- * guard can place a Serena edit (`serena-root.ts`). Opt-in with the guard it serves
- * (`worktrees.guardMainFolder`), and it polices an `activate_project` call too: an absolute
- * path to this repo or one of its worktrees, never a project name. A broken or too new
- * cc-smart-dev-kit.json stops the recording (one line says why) — the guard's own
- * `onConfigProblem` then ASKS about a Serena edit (it cannot know whether the project turned
- * the guard on), so a missing record never lets one through. A resume, a `/clear` or a fork
- * writes "unknown" and gives the session one line saying the `activate_project` step.
- */
-export const serenaRootHook: HookSpec = {
-  name: "serena-root",
-  events: ["PreToolUse", "PostToolUse", "SessionStart"],
-  wiring: "plugin",
-  onConfigProblem: (message) => ({ stderr: cannotCheck("which folder Serena edits", message) }),
-  run: serenaRoot,
 };
 
 export const messageGuardHook: HookSpec = {
@@ -368,7 +343,6 @@ export const HOOKS: readonly HookSpec[] = [
   gitGuardHook,
   mergeGuardHook,
   mainFolderGuardHook,
-  serenaRootHook,
   messageGuardHook,
   agentGuardHook,
   fableSessionHook,

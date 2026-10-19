@@ -17,6 +17,8 @@
  *   (`MACHINE_WIDE_HOOKS`: stop-failure, update-check, notify, and `agent-guard` and
  *   `fable-session`, which run with or without the project's file) are never warned about: they
  *   answer about the machine, so a project hook beside one is not a copy of a plugin piece.
+ *   A retired hook name in `ownHooks` (`RETIRED_HOOK_NAMES`) is information: it silences
+ *   nothing, and can be taken out.
  *
  * The project's settings are read where Claude Code reads them: `$CLAUDE_PROJECT_DIR` when
  * it is set (doctor run from a session), else the checkout of the folder doctor runs in.
@@ -34,7 +36,11 @@ import {
   wiredHandlers,
 } from "../hooks/settings-hooks";
 import { MACHINE_WIDE_HOOKS, PROJECT_HOOKS } from "../hooks/specs";
-import { type CcSmartDevKitConfig, CcSmartDevKitConfigError } from "../project/config";
+import {
+  type CcSmartDevKitConfig,
+  CcSmartDevKitConfigError,
+  RETIRED_HOOK_NAMES,
+} from "../project/config";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { type CliPaths, tildify } from "./paths";
 import { defaultBranchOf, realRunner } from "./project-init";
@@ -299,6 +305,16 @@ function ownCopyLines(
   const own: string[] = config.ownHooks ?? [];
   const lines: ProjectLine[] = [];
   for (const name of own) {
+    if ((RETIRED_HOOK_NAMES as readonly string[]).includes(name)) {
+      // No hook of that name runs any more: the entry keeps nothing quiet, and only costs a
+      // reader a question.
+      lines.push({
+        ok: true,
+        info: true,
+        text: `project: .claude/cc-smart-dev-kit.json lists ${name} in ownHooks, a plugin hook that is retired: it silences nothing. Take "${name}" out of ownHooks`,
+      });
+      continue;
+    }
     const entries = pluginHooks.filter((hook) => hook.name === name);
     const replaced = entries.some((hook) =>
       hook.subjects.some((subject) =>
