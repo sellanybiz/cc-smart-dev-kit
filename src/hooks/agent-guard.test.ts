@@ -1583,3 +1583,29 @@ describe("a Workflow option is a key of the call's own options object", () => {
     expect(workflowRefusal(twice)).toContain("the same option written twice");
   });
 });
+
+describe("the read-only agent types (0.6.0: the code-explorer agent is gone)", () => {
+  it("an agent named Code Explorer is no longer read-only: a Fable launch on it is a builder's", () => {
+    const launch = {
+      effort: "high",
+      model: "fable",
+      prompt: "Find the callers.\nFable reason: review - a second look",
+      subagent_type: "Code Explorer",
+    };
+    const result = verdict(launch);
+    expect(result.decision).toBe("deny");
+    expect(result.reason).toContain("`Code Explorer`, which can change files");
+    // The advice names the read-only types from their one list.
+    const unsaid = verdict({
+      effort: "high",
+      model: "fable",
+      prompt: "x",
+      subagent_type: "Explore",
+    });
+    expect(unsaid.reason).toContain(
+      "Use a read-only agent type (Plan, Reviewer, Explore) and put a line in the prompt saying why:",
+    );
+    // The same line on a read-only type still asks the person.
+    expect(verdict({ ...launch, subagent_type: "Explore" }).decision).toBe("ask");
+  });
+});

@@ -80,7 +80,7 @@ work, hard architecture, a rewrite or a complex UI/UX design, a strong second-op
 refining a plan — and a fresh attempt when the person is not satisfied with your answer. The
 guard asks the person about every Fable launch.
 
-- **Read-only agents** (Plan, Reviewer, Explore, Code Explorer) take an advisory word:
+- **Read-only agents** (Plan, Reviewer, Explore) take an advisory word:
   `Fable reason: <hard|rewrite|ui-design|architecture|review|plan|unsatisfied> - <why>`.
   `unsatisfied` is the fresh attempt: something you answered did not land.
 - **An agent that can change files** — a builder, or a fork — needs the one word `build`, which
