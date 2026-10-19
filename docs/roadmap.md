@@ -87,6 +87,22 @@ Done in this release:
   it may still have running — is reported by `doctor` (with the command that deletes the folder,
   which is the person's own call, and the pid of that Chrome) and is never deleted or used.
 
+## 0.5.5 — Opus runs without asking below `max` (D11)
+
+The owner's decision D11, brought forward from 0.6.0 because a session nobody can be asked in
+(a background session, `claude -p`) could not start its Opus builders at all:
+
+- **An `opus` launch runs with no question at `high` or `xhigh`** — any agent, any purpose,
+  review or not — and needs no `Opus reason:` line; **at `max` it asks the person**, and a
+  `claude -p` session refuses that one, with a message saying to run it lower or interactively.
+  Fable keeps its rules exactly (`design.md` § The Agent guard).
+- **The reason list, the review-agent list and `CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS`
+  are gone.** An `Opus reason:` line is optional: when a prompt has one, its first word only
+  names the purpose in the record, which reads `opus:<effort>` (with the word after it when
+  there is one, `opus:xhigh:security`; a fork is `opus:session-effort`).
+- **Everything else is unchanged:** `model` and `effort` on every launch, `low` and `medium`
+  refused, an affordable gateway slot at `max`, and Fable's reason line and asks.
+
 ## 0.5.2 — every project on Claude Code's own worktrees
 
 The owner's decision (2026-10-18): the plugin's own worktree engine is retired in favour of

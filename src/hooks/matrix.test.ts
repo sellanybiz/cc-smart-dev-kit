@@ -110,7 +110,7 @@ const denyLine = (result: HookResult) => {
   expect(result.exitCode ?? 0).toBe(0);
   const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
   expect(output.permissionDecision).toBe("deny");
-  expect(output.permissionDecisionReason).toContain("Opus is for reviews");
+  expect(output.permissionDecisionReason).toContain("asks for effort `medium`");
 };
 const contextLine = (result: HookResult) => {
   const text: string = JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext;
@@ -224,7 +224,7 @@ const CASES: Case[] = [
         session_id: SESSION,
         cwd: project(config),
         tool_name: "Agent",
-        tool_input: { effort: "high", model: "opus", prompt: "do it" },
+        tool_input: { effort: "medium", model: "opus", prompt: "do it" },
       },
       env: hookEnv(),
     }),

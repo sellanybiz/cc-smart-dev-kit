@@ -25,7 +25,8 @@ export interface AgentLaunch {
   model: string;
   /** The folder the session worked in. */
   project: string;
-  /** Why it was allowed: `review`, `opus:<word>`, `fable:<word>`. */
+  /** Why it ran: the `opus` tier as `opus:<effort>`, with its reason word when one is given
+   * (`opus:xhigh`, `opus:max:security`, a fork's `opus:session-effort`); `fable:<word>`. */
   reason: string;
   /** The subagent type the call named; empty when it named none. */
   subagentType: string;

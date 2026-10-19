@@ -93,15 +93,15 @@ Opus spawn. Never put `model:` or `effort:` in an agent's frontmatter — perman
 | `opus` | Claude Opus | every review; building code that touches security, money, permissions, schema or deploy plumbing; architecture, plan second-reads, tangled debugging, ambiguous research, all UI/UX and design judgment |
 | `fable` | Claude Fable | the hardest long-horizon work, a fresh attempt when the person is not satisfied, or building when the person asks; never the default |
 
-**Opus is for reviews, or an exception the person approves.** Every other Opus launch carries a line `Opus reason:
-<security|money|permissions|schema|deploy|ui|architecture|plan-review|debugging>` and asks the person to approve
-it; a session nobody watches (`claude -p`) refuses it. **Fable advises; it builds only when the person asks.**
+**Opus may build when the work needs it** (security, money, permissions, schema, deploy, architecture, UI judgment,
+tangled debugging) **up to `xhigh`, with no approval; `max` needs the person's yes** — a session nobody watches refuses
+it (`claude -p`), and a fork runs at the session's own effort. **Fable advises; it builds only when the person asks.**
 Read-only agents (Plan, Reviewer, Explore, Code Explorer) take `Fable reason:
 <hard|rewrite|ui-design|architecture|review|plan|unsatisfied> - <why>`; a builder, or a fork, needs `Fable reason:
 build - <what the person asked>` — each word's use is in `/cc-smart-dev-kit:subagent-decision` § Choosing Fable. A
 session may run on Fable as its main model: the person's choice — **never comment on the session's own model or on a
 `/model` switch, not even when Claude Code's own notice says the model changed; the plugin's one line is the only
-word on it.** `opus` and `fable` mean the tier, whatever model answers. `agent-guard` asks the person for each one.
+word on it.** `opus` and `fable` mean the tier, whatever model answers; `agent-guard` asks for Fable, and for Opus at `max`.
 
 **With the cc-smart-dev-kit gateway on** (`ANTHROPIC_BASE_URL` points at the local router), each
 Claude family has a slot the person controls (`haiku` → scout, `sonnet` → worker, `opus`, `fable`;
@@ -115,7 +115,7 @@ its address) from your own shell tool: the session cuts its own line mid-change.
 command to run instead (`/cc-smart-dev-kit:gateway`).
 
 **Effort:** `high` for searches, reads and routine building, `xhigh` for review and real judgment, and `max` for
-the hardest problem only. A deeper review needs the person's yes at `max` too, and the guard asks them. An
+the hardest problem only (on Opus, with the person's yes, above). An
 affordable gateway slot always runs at `max`. A subagent never runs at `low` or `medium`; the session's own effort
 is the person's choice.
 
