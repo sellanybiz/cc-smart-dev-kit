@@ -1,9 +1,9 @@
 /**
  * The Agent guard (`agent-guard.ts`): which model a launch really runs on, and the owner's
  * verdict for each — effort high or above (never `low` or `medium`), an affordable slot at
- * effort max, Claude Sonnet/Haiku free of the model rules, Claude Opus only for a review or a
- * reason line, Claude Fable only read-only with a reason and a person to answer. Plus the
- * record `cc-smart-dev-kit usage` reads.
+ * effort max, Claude Sonnet/Haiku free of the model rules, the opus tier free below `max` and
+ * asked at `max` (D11), Claude Fable only read-only with a reason and a person to answer. Plus
+ * the record `cc-smart-dev-kit usage` reads.
  */
 import { describe, expect, it } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -129,11 +129,12 @@ describe("which model a launch runs on", () => {
     expect(
       resolveLaunchModel("fable", NO_GATEWAY, { ANTHROPIC_DEFAULT_FABLE_MODEL: "openai:gpt-5.5" }),
     ).toEqual({ claude: false, family: "fable", model: "openai:gpt-5.5", tier: "fable" });
-    // The id an override names is that tier wherever it appears, the session's model included.
+    // The id an override names is that tier — and that family — wherever it appears, the
+    // session's model included: the person's own setting proves what the id stands for.
     const env = { ANTHROPIC_DEFAULT_FABLE_MODEL: "openai:gpt-5.5" };
     expect(resolveLaunchModel("openai:gpt-5.5", NO_GATEWAY, env)).toEqual({
       claude: false,
-      family: null,
+      family: "fable",
       model: "openai:gpt-5.5",
       tier: "fable",
     });
@@ -253,8 +254,12 @@ describe("the session's own model, for a fork", () => {
       sessionModel: "claude-haiku-4-5",
     };
     expect(verdict({ prompt: "x", subagent_type: "fork" }, sonnet).decision).toBe("allow");
-    // Nobody named it: the strictest reading, so it needs the Opus reason line.
-    expect(verdict({ prompt: "x", subagent_type: "fork" }, CTX).decision).toBe("deny");
+    // Nobody named it: the strictest reading, the opus tier — which runs at the session's own
+    // effort with no question (D11).
+    const unknown = verdict({ prompt: "x", subagent_type: "fork" }, CTX);
+    expect(unknown.decision).toBe("allow");
+    expect(unknown.real?.tier).toBe("opus");
+    expect(unknown.why).toBe("opus:session-effort");
   });
 });
 
@@ -263,61 +268,106 @@ describe("the verdict", () => {
     expect(verdict({ prompt: "x", effort: "high" }).decision).toBe("deny");
     expect(verdict({ model: "sonnet", prompt: "x" }).decision).toBe("deny");
     // A fork needs neither line — it always inherits both — but it still runs on a model:
-    // an unknown session model counts as Claude Opus, so it needs the Opus reason.
+    // an unknown session model counts as Claude Opus, which runs at the session's own effort
+    // with no question (D11); a reason line, when it has one, is kept for the record.
     const fork = verdict({ prompt: "x", subagent_type: "fork" });
-    expect(fork.decision).toBe("deny");
+    expect(fork.decision).toBe("allow");
     expect(fork.real?.family).toBe("opus");
-    expect(
-      verdict({ prompt: "Opus reason: debugging - it is", subagent_type: "fork" }).decision,
-    ).toBe("ask");
+    const said = verdict({ prompt: "Opus reason: debugging - it is", subagent_type: "fork" });
+    expect(said.decision).toBe("allow");
+    expect(said.why).toBe("opus:session-effort:debugging");
+    // A fork that names `max` itself is held to the same rule as any opus-tier launch.
+    expect(verdict({ effort: "max", prompt: "x", subagent_type: "fork" }).decision).toBe("ask");
   });
 
-  it("a full Opus id is denied too, with the rule in words", () => {
-    const result = verdict({ effort: "high", model: OPUS_ID, prompt: "do it" });
-    expect(result.decision).toBe("deny");
-    expect(result.reason).toContain("Opus is for reviews and the owner's listed exceptions");
-    expect(result.reason).toContain("Opus reason: <security|money|");
+  it("a full Opus id is the opus tier: allowed at `high` with no reason line, asked at `max`", () => {
+    const allowed = verdict({ effort: "high", model: OPUS_ID, prompt: "do it" });
+    expect(allowed.decision).toBe("allow");
+    expect(allowed.why).toBe("opus:high");
+    // `max` asks, and the ask states the rule in words.
+    const max = verdict({ effort: "max", model: OPUS_ID, prompt: "do it" });
+    expect(max.decision).toBe("ask");
+    expect(max.reason).toContain("Claude Opus launch at effort `max`");
+    expect(max.reason).toContain("The opus tier runs at `high` or `xhigh` with no question");
   });
 
-  it("Opus with an `Opus reason:` line asks the person, who sees the reason", () => {
+  it("Opus with an `Opus reason:` line: allowed below max, the word kept for the record", () => {
     const result = verdict({
       effort: "xhigh",
       model: "opus",
       prompt: "Rewrite the router.\nOpus reason: architecture - the routing table is the core",
     });
-    expect(result.decision).toBe("ask");
-    expect(result.reason).toContain("Opus reason: architecture - the routing table is the core");
-    expect(result.why).toBe("opus:architecture");
+    expect(result.decision).toBe("allow");
+    expect(result.why).toBe("opus:xhigh:architecture");
+    // At `max` the ask shows the line, and the word stays part of the record.
+    const max = verdict({
+      effort: "max",
+      model: "opus",
+      prompt: "Rewrite the router.\nOpus reason: architecture - the routing table is the core",
+    });
+    expect(max.decision).toBe("ask");
+    expect(max.reason).toContain("Opus reason: architecture - the routing table is the core");
+    expect(max.why).toBe("opus:max:architecture");
   });
 
-  it("nobody to answer (`claude -p`): a non-review Opus launch is denied, a review is allowed", () => {
+  it("nobody to answer (`claude -p`): an Opus launch below max is allowed, review or not; max is denied", () => {
     const unattended = { CLAUDE_CODE_SESSION_ATTENDED: "0" };
-    const asked = verdict(
-      { effort: "xhigh", model: "opus", prompt: "Opus reason: debugging - it is" },
+    // No reason line, attended or not: nothing below `max` asks (D11).
+    expect(
+      verdict({ effort: "high", model: "opus", prompt: "build it" }, CTX, unattended).decision,
+    ).toBe("allow");
+    expect(
+      verdict(
+        { effort: "xhigh", model: "opus", prompt: "Opus reason: debugging - it is" },
+        CTX,
+        unattended,
+      ).decision,
+    ).toBe("allow");
+    const max = verdict(
+      { effort: "max", model: "opus", prompt: "Opus reason: debugging - it is" },
       CTX,
       unattended,
     );
-    expect(asked.decision).toBe("deny");
-    expect(asked.reason).toContain("nobody to answer");
+    expect(max.decision).toBe("deny");
+    expect(max.reason).toContain("nobody to answer");
+    expect(max.reason).toContain("Run it at `high` or `xhigh`");
     expect(
       verdict(
-        { effort: "xhigh", model: "opus", prompt: "review", subagent_type: "Reviewer" },
+        { effort: "high", model: "opus", prompt: "review", subagent_type: "Reviewer" },
         CTX,
         unattended,
       ).decision,
     ).toBe("allow");
   });
 
-  it("Opus with a reason word nobody listed is denied", () => {
+  it("D11: `opus` runs with no question at `high` or `xhigh`, attended or not; `max` asks", () => {
+    const unattended = { CLAUDE_CODE_SESSION_ATTENDED: "0" };
+    for (const effort of ["high", "xhigh"]) {
+      for (const env of [NO_ENV, unattended]) {
+        const result = verdict({ effort, model: "opus", prompt: "build it" }, CTX, env);
+        expect(result.decision).toBe("allow");
+        expect(result.reason).toBe("");
+        expect(result.why).toBe(`opus:${effort}`);
+      }
+    }
+    // `max` asks the person; where nobody can answer (`claude -p`), it is refused.
+    expect(verdict({ effort: "max", model: "opus", prompt: "build it" }).decision).toBe("ask");
+    const max = verdict({ effort: "max", model: "opus", prompt: "build it" }, CTX, unattended);
+    expect(max.decision).toBe("deny");
+    expect(max.reason).toContain("nobody to answer");
+  });
+
+  it("an `Opus reason:` word nobody lists is still recorded: it never decides anything", () => {
     const result = verdict({
       effort: "high",
       model: "opus",
       prompt: "Opus reason: because I like it",
     });
-    expect(result.decision).toBe("deny");
+    expect(result.decision).toBe("allow");
+    expect(result.why).toBe("opus:high:because");
   });
 
-  it("a review agent on Opus is allowed; at effort max it asks the person", () => {
+  it("a review agent on Opus is allowed below max; at effort max it asks the person", () => {
     expect(
       verdict({ effort: "xhigh", model: "opus", prompt: "review", subagent_type: "Reviewer" })
         .decision,
@@ -330,7 +380,7 @@ describe("the verdict", () => {
         subagent_type: "cc-smart-dev-kit:reviewer",
       }).decision,
     ).toBe("allow");
-    // A deeper review: `max` asks, and the person's yes is the ask's answer (no reason line).
+    // `max` asks like any opus-tier launch, review or not, and the person's yes is the answer.
     const max = verdict({
       effort: "max",
       model: "opus",
@@ -338,9 +388,9 @@ describe("the verdict", () => {
       subagent_type: "Reviewer",
     });
     expect(max.decision).toBe("ask");
-    expect(max.reason).toContain("Claude Opus review at effort `max`");
-    expect(max.reason).toContain("reviews run at `xhigh` unless you asked for a deeper one");
-    expect(max.why).toBe("opus:review-max");
+    expect(max.reason).toContain("Claude Opus launch at effort `max`");
+    expect(max.reason).toContain("`Reviewer`");
+    expect(max.why).toBe("opus:max");
   });
 
   it("a review at effort max under `claude -p` is denied: nobody is there to approve it", () => {
@@ -361,7 +411,6 @@ describe("the verdict", () => {
       ).decision,
     ).toBe("allow");
   });
-
   it("Sonnet and Haiku are free of the model rules, and are never recorded", () => {
     const sonnet = verdict({ effort: "high", model: "sonnet", prompt: "build" });
     expect(sonnet.decision).toBe("allow");
@@ -427,19 +476,24 @@ describe("the verdict", () => {
   it("a name the guard does not know is never affordable: the strictest rule answers", () => {
     const on: GuardContext = { ...CTX, config: configWithModelSlot(), gatewayOn: true };
     // Only a slot key and a `<backend>:<model>` target count as affordable: an unknown name
-    // could be anything, so it is judged like a Claude id with no family to read.
+    // could be anything, so it is judged like a Claude id with no family to read: the opus
+    // tier, but not proved Opus — it may stand for a higher tier, so the person approves it at
+    // every effort (D11's free path is for a reading proved as Opus), never forced to `max`.
     for (const model of ["best", "opusplan", "default", "inherit", "gpt-5", "some-custom-model"]) {
-      const result = verdict({ effort: "max", model, prompt: "build it" }, on);
-      expect(result.decision).toBe("deny");
-      expect(result.reason).toContain("This launch would run on Claude Opus");
+      for (const effort of ["high", "xhigh", "max"]) {
+        const result = verdict({ effort, model, prompt: "build it" }, on);
+        expect(result.decision).toBe("ask");
+        expect(result.reason).toContain("cannot read the model behind it as Claude Opus");
+        expect(result.reason).not.toContain("affordable");
+      }
     }
-    const asked = verdict({
+    const said = verdict({
       effort: "xhigh",
       model: "opusplan",
       prompt: "Opus reason: debugging - it is",
     });
-    expect(asked.decision).toBe("ask");
-    expect(asked.real?.family).toBeNull();
+    expect(said.decision).toBe("ask");
+    expect(said.real?.family).toBeNull();
     // A fork's session model follows the same rule: a family name is that family, an unknown
     // name is the strict one.
     const fork = (sessionModel: string) =>
@@ -448,7 +502,8 @@ describe("the verdict", () => {
         { config: null, gatewayOn: false, sessionModel },
       );
     expect(fork("sonnet").decision).toBe("allow");
-    expect(fork("best").decision).toBe("deny");
+    expect(fork("best").decision).toBe("ask");
+    expect(fork("best").real?.tier).toBe("opus");
     expect(fork("best").real?.family).toBeNull();
   });
 
@@ -545,7 +600,8 @@ describe("the verdict", () => {
     );
     expect(built.decision).toBe("ask");
     expect(built.real?.tier).toBe("fable");
-    // A fork naming Sonnet in an Opus session runs on Opus: with no reason line, denied.
+    // A fork naming Sonnet in an Opus session runs on Opus: allowed at `high` (D11), asked at
+    // `max` — never judged as Sonnet.
     const opusSession: GuardContext = {
       config: null,
       gatewayOn: false,
@@ -555,26 +611,33 @@ describe("the verdict", () => {
       { effort: "high", model: "sonnet", prompt: "do it", subagent_type: "fork" },
       opusSession,
     );
-    expect(named.decision).toBe("deny");
-    expect(named.reason).toContain("Opus reason: <security|money|");
+    expect(named.decision).toBe("allow");
+    expect(named.why).toBe("opus:high");
     expect(named.real?.tier).toBe("opus");
     expect(named.real?.model).toBe("claude-opus-5-5");
+    expect(
+      verdict(
+        { effort: "max", model: "sonnet", prompt: "do it", subagent_type: "fork" },
+        opusSession,
+      ).decision,
+    ).toBe("ask");
   });
 
-  it("a review whose model the guard cannot read asks about that reading", () => {
-    // The review shortcut needs a model the guard can really read as Opus (owner, 2026-10-16):
-    // an unreadable name asks about the reading instead of passing on a guess or denying it.
-    const asked = verdict({
+  it("a review whose model the guard cannot read asks like any launch (D11)", () => {
+    // There is no review shortcut any more: an unreadable name is the opus tier without a
+    // family, so the person approves it at every effort, a review or not.
+    const unread = verdict({
       effort: "xhigh",
       model: "best",
       prompt: "r",
       subagent_type: "Reviewer",
     });
-    expect(asked.decision).toBe("ask");
-    expect(asked.reason).toContain("A review on `best` at effort `xhigh`");
-    expect(asked.reason).toContain("cannot read the model behind it as Claude Opus");
-    expect(asked.why).toBe("opus:review-unreadable");
-    // A review on a readable Opus stays allowed with no question.
+    expect(unread.decision).toBe("ask");
+    expect(unread.why).toBe("opus:unreadable");
+    const max = verdict({ effort: "max", model: "best", prompt: "r", subagent_type: "Reviewer" });
+    expect(max.decision).toBe("ask");
+    expect(max.why).toBe("opus:unreadable");
+    // A review on a readable Opus is allowed with no question the same way.
     expect(
       verdict({ effort: "xhigh", model: "opus", prompt: "r", subagent_type: "Reviewer" }).decision,
     ).toBe("allow");
@@ -697,7 +760,7 @@ describe("the verdict", () => {
     expect(result.reason).toContain("nobody to answer");
   });
 
-  it("the two lists are configurable through the environment", () => {
+  it("the read-only list is configurable through the environment; Opus needs no review list (D11)", () => {
     const readOnly = verdict(
       {
         effort: "max",
@@ -709,18 +772,23 @@ describe("the verdict", () => {
       { CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS: "UI Verifier" },
     );
     expect(readOnly.decision).toBe("ask");
-    const review = verdict(
-      {
-        effort: "xhigh",
-        model: "opus",
-        prompt: "check it",
-        subagent_type: "my-auditor",
-      },
+    // Any agent type runs on the opus tier below `max` with no list naming it; the old review
+    // list's variable no longer changes anything — `max` still asks.
+    const audit = verdict({
+      effort: "high",
+      model: "opus",
+      prompt: "check it",
+      subagent_type: "my-auditor",
+    });
+    expect(audit.decision).toBe("allow");
+    expect(audit.why).toBe("opus:high");
+    const deep = verdict(
+      { effort: "max", model: "opus", prompt: "check it", subagent_type: "my-auditor" },
       CTX,
       { CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS: "my-auditor" },
     );
-    expect(review.decision).toBe("allow");
-    expect(review.why).toBe("review");
+    expect(deep.decision).toBe("ask");
+    expect(deep.why).toBe("opus:max");
   });
 
   it("the old tool name `Task` is read the same way, and another tool is not read at all", () => {
@@ -743,21 +811,22 @@ describe("tiers, not vendors (owner, 2026-10-16)", () => {
   const OPENAI_FABLE = { ANTHROPIC_DEFAULT_FABLE_MODEL: "openai:gpt-5.5" };
   const ON: GuardContext = { config: null, gatewayOn: true, sessionModel: null };
 
-  it("`opus` over a backend keeps the Opus gate, and the affordable rule never applies", () => {
+  it("`opus` over a backend keeps the opus tier's gate, and the affordable rule never applies", () => {
+    // With the gateway on, a missing `max` is never a reason to refuse a tier: `high` is allowed.
     const bare = verdict({ effort: "high", model: "opus", prompt: "do it" }, ON, OPENAI_OPUS);
-    expect(bare.decision).toBe("deny");
-    expect(bare.reason).toContain("`opus` (answered by openai:gpt-5.5)");
-    expect(bare.reason).toContain("Opus reason: <security|money|");
-    // With the gateway on, a missing `max` is never a reason for a tier.
-    expect(bare.reason).not.toContain("affordable");
+    expect(bare.decision).toBe("allow");
+    expect(bare.real?.tier).toBe("opus");
+    expect(bare.why).toBe("opus:high");
+    // At `max` the tier asks, naming the model behind it, and never as an affordable slot.
     const asked = verdict(
-      { effort: "high", model: "opus", prompt: "Opus reason: architecture - it is" },
+      { effort: "max", model: "opus", prompt: "Opus reason: architecture - it is" },
       ON,
       OPENAI_OPUS,
     );
     expect(asked.decision).toBe("ask");
     expect(asked.reason).toContain("`opus` (answered by openai:gpt-5.5)");
-    // A review on the tier: allowed at xhigh, an ask at max, naming the model behind it.
+    expect(asked.reason).not.toContain("affordable");
+    // A review on the tier: allowed at high, an ask at max, naming the model behind it.
     expect(
       verdict(
         { effort: "xhigh", model: "opus", prompt: "r", subagent_type: "Reviewer" },
@@ -773,7 +842,7 @@ describe("tiers, not vendors (owner, 2026-10-16)", () => {
     expect(deep.decision).toBe("ask");
     expect(deep.reason).toContain("`opus` (answered by openai:gpt-5.5)");
     expect(deep.reason).toContain("at effort `max`");
-    expect(deep.why).toBe("opus:review-max");
+    expect(deep.why).toBe("opus:max");
   });
 
   it("`fable` over a backend keeps the Fable gate: a builder needs `build`", () => {
@@ -875,19 +944,20 @@ describe("a Workflow script", () => {
     expect(workflowRefusal(script)).toBeNull();
   });
 
-  it("judges every launch of the call: a heavy one denies the whole Workflow call", () => {
+  it("judges every launch of the call: a denied one denies the whole Workflow call", () => {
     const script = [
       'await agent("build it", { model: "sonnet", effort: "high" });',
-      'await agent("do it", { model: "opus", effort: "high" });',
+      'await agent("plan it", { model: "opus", effort: "xhigh" });',
+      'await agent("do it", { model: "fable", effort: "high", agentType: "Plan" });',
     ].join("\n");
     const results = judgeWorkflow(script, CTX, NO_ENV);
-    expect(results.map((one) => one.verdict.decision)).toEqual(["allow", "deny"]);
+    expect(results.map((one) => one.verdict.decision)).toEqual(["allow", "allow", "deny"]);
     const answer = JSON.parse(
       agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app").stdout ?? "{}",
     ).hookSpecificOutput;
     expect(answer.permissionDecision).toBe("deny");
     expect(answer.permissionDecisionReason).toContain('In this workflow, the launch "do it"');
-    expect(answer.permissionDecisionReason).toContain("Opus is for reviews");
+    expect(answer.permissionDecisionReason).toContain("Fable advises");
   });
 
   it("a Fable launch with a reason line asks; the ask names the launch", () => {
@@ -915,13 +985,13 @@ describe("a Workflow script", () => {
   });
 
   it("an ask that rests on the effort, not the prompt, survives a built prompt", () => {
-    // The review at `max` asks for the effort: a prompt the guard cannot read does not matter.
+    // The opus tier at `max` asks for the effort: a prompt the guard cannot read does not matter.
     const review =
       // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture is a template that builds its prompt.
       'await agent(`review ${x}`, { agentType: "Reviewer", model: "opus", effort: "max", label: "deep" });';
     const deep = judgeWorkflow(review, CTX, NO_ENV);
     expect(deep[0]?.verdict.decision).toBe("ask");
-    expect(deep[0]?.verdict.why).toBe("opus:review-max");
+    expect(deep[0]?.verdict.why).toBe("opus:max");
     // A reason-line ask in the same shape is refused instead: there is nothing to approve.
     const advice =
       // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture is a template that builds its prompt.
@@ -940,12 +1010,17 @@ describe("a Workflow script", () => {
     expect(model[0]?.verdict.decision).toBe("deny");
     expect(model[0]?.verdict.reason).toContain("names no `model` the guard can read");
     const prompt = judgeWorkflow(
-      'await agent(thePrompt, { model: "opus", effort: "high" });',
+      'await agent(thePrompt, { model: "fable", effort: "high", agentType: "Plan" });',
       CTX,
       NO_ENV,
     );
     expect(prompt[0]?.verdict.decision).toBe("deny");
     expect(prompt[0]?.verdict.reason).toContain("prompt is built at run time");
+    // The opus tier reads no reason line (D11), so its prompt does not matter below `max`.
+    expect(
+      judgeWorkflow('await agent(thePrompt, { model: "opus", effort: "high" });', CTX, NO_ENV)[0]
+        ?.verdict.decision,
+    ).toBe("allow");
   });
 
   it("a backtick literal that builds its text is not a literal: denied, never guessed", () => {
@@ -964,7 +1039,7 @@ describe("a Workflow script", () => {
     ).toBe("allow");
     const prompt = judgeWorkflow(
       // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture is a template that builds its prompt.
-      'await agent(`fix ${file}`, { model: "opus", effort: "high" });',
+      'await agent(`fix ${file}`, { model: "fable", effort: "high", agentType: "Plan" });',
       CTX,
       NO_ENV,
     );
@@ -1022,13 +1097,17 @@ describe("a Workflow script", () => {
   });
 
   it("a direct call is read wherever it is written: in a helper, in a template's placeholder", () => {
-    const helper = [
-      "async function one(file) {",
-      '  return agent("fix " + file, { model: "opus", effort: "high" });',
-      "}",
-    ].join("\n");
-    expect(workflowRefusal(helper)).toBeNull();
-    expect(judgeWorkflow(helper, CTX, NO_ENV)[0]?.verdict.decision).toBe("deny");
+    // The prompt is built (`"fix " + file`), which matters only to a tier that reads a reason
+    // line: at `max` the opus tier asks for the effort, and below it the prompt changes nothing.
+    const helper = (effort: string) =>
+      [
+        "async function one(file) {",
+        `  return agent("fix " + file, { model: "opus", effort: "${effort}" });`,
+        "}",
+      ].join("\n");
+    expect(workflowRefusal(helper("high"))).toBeNull();
+    expect(judgeWorkflow(helper("max"), CTX, NO_ENV)[0]?.verdict.decision).toBe("ask");
+    expect(judgeWorkflow(helper("high"), CTX, NO_ENV)[0]?.verdict.decision).toBe("allow");
     const inTemplate =
       // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture calls `agent` inside a template.
       'const done = `result: ${await agent("x", { model: "haiku", effort: "high" })}`;';
@@ -1079,7 +1158,7 @@ describe("the hook's answer, and the record", () => {
   it("denied: a PreToolUse deny on stdout, and nothing recorded", () => {
     const where = paths();
     const result = agentGuard(
-      agentCall({ effort: "high", model: "opus", prompt: "x" }),
+      agentCall({ effort: "medium", model: "opus", prompt: "x" }),
       NO_ENV,
       where,
       "/tmp/app",
@@ -1106,7 +1185,7 @@ describe("the hook's answer, and the record", () => {
     expect(result).toEqual({});
     const [launch] = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
     expect(launch?.family).toBe("opus");
-    expect(launch?.reason).toBe("review");
+    expect(launch?.reason).toBe("opus:xhigh");
     expect(launch?.project).toBe("/tmp/app");
     expect(launch?.subagentType).toBe("Reviewer");
   });
@@ -1116,7 +1195,7 @@ describe("the hook's answer, and the record", () => {
     mkdirSync(where.stateDir, { recursive: true });
     const input = {
       ...agentCall({
-        effort: "xhigh",
+        effort: "max",
         model: "opus",
         prompt: "Opus reason: debugging - the router hangs",
       }),
@@ -1130,7 +1209,7 @@ describe("the hook's answer, and the record", () => {
     agentGuard(input, NO_ENV, where, "/tmp/app");
     const launches = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
     expect(launches).toHaveLength(1);
-    expect(launches[0]?.reason).toBe("opus:debugging");
+    expect(launches[0]?.reason).toBe("opus:max:debugging");
     expect(launches[0]?.toolUseId).toBe("toolu_1");
     // Another tool call in the same session is a second launch.
     agentGuard({ ...input, tool_use_id: "toolu_2" }, NO_ENV, where, "/tmp/app");
@@ -1142,7 +1221,7 @@ describe("the hook's answer, and the record", () => {
     mkdirSync(where.stateDir, { recursive: true });
     const denied = [
       'await agent("Fable reason: plan - look", { label: "advice", model: "fable", effort: "max", agentType: "Plan" });',
-      'await agent("do it", { label: "plain", model: "opus", effort: "high" });',
+      'await agent("build it", { label: "worker", model: "haiku", effort: "medium" });',
     ].join("\n");
     const answer = JSON.parse(
       agentGuard(workflowCall(denied), NO_ENV, where, "/tmp/app").stdout ?? "{}",
@@ -1186,7 +1265,7 @@ describe("the hook's answer, and the record", () => {
     expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toHaveLength(1);
   });
 
-  it("a deeper review at effort max is recorded as `opus:review-max`, so `usage` lists it", () => {
+  it("an opus launch at effort max is recorded as `opus:max`, so `usage` lists it", () => {
     const where = paths();
     mkdirSync(where.stateDir, { recursive: true });
     const result = agentGuard(
@@ -1198,7 +1277,7 @@ describe("the hook's answer, and the record", () => {
     expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
     const [launch] = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
     expect(launch?.family).toBe("opus");
-    expect(launch?.reason).toBe("opus:review-max");
+    expect(launch?.reason).toBe("opus:max");
     expect(launch?.subagentType).toBe("Reviewer");
   });
 
@@ -1235,13 +1314,14 @@ describe("the hook's answer, and the record", () => {
       tool: "Agent",
       why: "fable:hard",
     });
-    // The tier an override answers with is the tier the guard judged by.
+    // The tier an override answers with is the tier the guard judged by: an `opus` name whose
+    // backend answers it is still the opus tier, allowed at `high` (D11).
     const overridden = guardFacts(agentCall({ effort: "high", model: "opus", prompt: "do it" }), {
       env: { ANTHROPIC_DEFAULT_OPUS_MODEL: "openai:gpt-5.5" },
       paths: where,
     });
     expect(overridden).toEqual({
-      decision: "deny",
+      decision: "allow",
       effort: "high",
       family: "opus",
       fork: false,
@@ -1249,6 +1329,7 @@ describe("the hook's answer, and the record", () => {
       subagent_type: null,
       tier: "opus",
       tool: "Agent",
+      why: "opus:high",
     });
   });
 
@@ -1342,10 +1423,12 @@ describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's 
       expect(answer(where, { effort: "high", model: "sonnet", prompt: "build it" })).toBeNull();
     }
     // With the gateway off nothing reaches the router: an opus chain there answers nothing, and
-    // the launch is named for the Claude model that runs it.
+    // the launch is named for the Claude model that runs it. Below `max` that is a silent allow;
+    // at `max` the ask names Claude Opus.
     const off = machine({ "cc-smart-dev-kit-opus": ["omniroute:glm-x"] }, false);
-    expect(answer(off, { effort: "high", model: "opus", prompt: "do it" })?.reason).toContain(
-      "This launch would run on Claude Opus.",
+    expect(answer(off, { effort: "high", model: "opus", prompt: "do it" })).toBeNull();
+    expect(answer(off, { effort: "max", model: "opus", prompt: "do it" })?.reason).toContain(
+      "Claude Opus launch at effort `max`",
     );
   });
 
@@ -1357,27 +1440,16 @@ describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's 
       },
       true,
     );
-    // Never affordable, never forced to `max`: the Opus rule, naming what answers it.
+    // Never affordable, never forced to `max`: the opus tier at `max` asks, naming what answers it.
     const bare = answer(where, { effort: "max", model: "opus", prompt: "do it" });
-    expect(bare?.decision).toBe("deny");
-    expect(bare?.reason).toContain(
-      "This launch would run on `opus` (answered by omniroute:glm-x).",
-    );
-    expect(bare?.reason).toContain("Opus reason: <security|money|");
+    expect(bare?.decision).toBe("ask");
+    expect(bare?.reason).toContain("`opus` (answered by omniroute:glm-x) launch at effort `max`");
     expect(bare?.reason).not.toContain("affordable");
-    // A review on the tier at xhigh: allowed with no question, as before.
+    // Below `max` the tier runs with no question, review or not (D11).
+    expect(answer(where, { effort: "high", model: "opus", prompt: "do it" })).toBeNull();
     expect(
       answer(where, { effort: "xhigh", model: "opus", prompt: "r", subagent_type: "Reviewer" }),
     ).toBeNull();
-    const asked = answer(where, {
-      effort: "high",
-      model: "opus",
-      prompt: "Opus reason: debugging - it is",
-    });
-    expect(asked?.decision).toBe("ask");
-    expect(asked?.reason).toContain(
-      "`opus` (answered by omniroute:glm-x) launch: not a review, at effort `high`",
-    );
     // Fable: a read-only agent with its reason asks, naming what answers it; a builder without
     // the word `build` is refused.
     const advice = answer(where, {
@@ -1396,5 +1468,118 @@ describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's 
     const [record] = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
     expect(record?.family).toBe("opus");
     expect(record?.model).toBe("omniroute:glm-x");
+  });
+});
+
+describe("the opus tier's free path needs a reading proved as Opus (D11)", () => {
+  const unattended = { CLAUDE_CODE_SESSION_ATTENDED: "0" };
+  const bedrockFable = "us.anthropic.claude-fable-5-1-20261001-v1:0";
+
+  it("a name the guard cannot read asks at any effort, and is refused where nobody answers", () => {
+    for (const name of ["inherit", "best", "some-new-model"]) {
+      const real = resolveLaunchModel(name, NO_GATEWAY, NO_ENV);
+      expect(real.tier).toBe("opus");
+      expect(real.family).toBeNull();
+      const launch = { effort: "high", model: name, prompt: "do it" };
+      const asked = verdict(launch);
+      expect(asked.decision).toBe("ask");
+      expect(asked.why).toBe("opus:unreadable");
+      expect(asked.reason).toContain("cannot read the model behind it as Claude Opus");
+      const refused = verdict(launch, CTX, unattended);
+      expect(refused.decision).toBe("deny");
+      expect(refused.reason).toContain("Name `opus` (or a Claude Opus id) as its model.");
+    }
+  });
+
+  it("a cloud provider's Claude id has its own family: Fable is the fable tier", () => {
+    const real = resolveLaunchModel(bedrockFable, NO_GATEWAY, NO_ENV);
+    expect(real.family).toBe("fable");
+    expect(real.tier).toBe("fable");
+    const opus = resolveLaunchModel(
+      "us.anthropic.claude-opus-5-5-20261001-v1:0",
+      NO_GATEWAY,
+      NO_ENV,
+    );
+    expect(opus.family).toBe("opus");
+    // A backend target is still a backend's model, whatever its name says.
+    expect(resolveLaunchModel("omniroute:claude-opus-5-5", NO_GATEWAY, NO_ENV).tier).toBeNull();
+  });
+
+  it("the person's own override names an id for its family, over the unknown-name default", () => {
+    const fable = resolveLaunchModel("my-fable", NO_GATEWAY, {
+      ANTHROPIC_DEFAULT_FABLE_MODEL: "my-fable",
+    });
+    expect(fable.tier).toBe("fable");
+    const opus = resolveLaunchModel("my-opus", NO_GATEWAY, {
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "my-opus",
+    });
+    expect(opus.tier).toBe("opus");
+    expect(opus.family).toBe("opus");
+    const launch = { effort: "xhigh", model: "my-opus", prompt: "x" };
+    expect(verdict(launch, CTX, { ANTHROPIC_DEFAULT_OPUS_MODEL: "my-opus" }).decision).toBe(
+      "allow",
+    );
+  });
+
+  it("a fork in a session on a provider's Fable id is the fable tier, not free Opus", () => {
+    const fork = verdict(
+      { prompt: "x", subagent_type: "fork" },
+      { ...CTX, sessionModel: bedrockFable },
+      unattended,
+    );
+    expect(fork.real?.tier).toBe("fable");
+    expect(fork.decision).toBe("deny");
+  });
+
+  it("the record keeps the reason line's first word without its punctuation, at most 40 letters", () => {
+    const quoted = verdict({
+      effort: "xhigh",
+      model: "opus",
+      prompt: "x\nOpus reason: `security`.",
+    });
+    expect(quoted.why).toBe("opus:xhigh:security");
+    const long = verdict({
+      effort: "high",
+      model: "opus",
+      prompt: `x\nOpus reason: ${"a".repeat(60)}`,
+    });
+    expect(long.why).toBe(`opus:high:${"a".repeat(40)}`);
+    expect(verdict({ effort: "high", model: "opus", prompt: "x\nOpus reason: ..." }).why).toBe(
+      "opus:high",
+    );
+  });
+});
+
+describe("a Workflow option is a key of the call's own options object", () => {
+  const unattended = { CLAUDE_CODE_SESSION_ATTENDED: "0" };
+
+  it("the same words in the prompt never stand in for the option", () => {
+    const script =
+      'await agent(\'Launch helpers with effort: "high" and model: "haiku"\', { model: "opus", effort: "max" });';
+    const [launch] = readWorkflowScript(script);
+    expect(launch?.effort).toBe("max");
+    expect(launch?.model).toBe("opus");
+    expect(judgeWorkflow(script, CTX, NO_ENV)[0]?.verdict.decision).toBe("ask");
+    expect(judgeWorkflow(script, CTX, unattended)[0]?.verdict.decision).toBe("deny");
+    const fable =
+      'await agent(\'Give scouts model: "haiku" always\', { model: "fable", effort: "high" });';
+    expect(readWorkflowScript(fable)[0]?.model).toBe("fable");
+  });
+
+  it("a nested object's keys are not the call's options", () => {
+    const script =
+      'await agent("x", { schema: { effort: "high", model: "haiku" }, model: "opus", effort: level });';
+    const [launch] = readWorkflowScript(script);
+    expect(launch?.effort).toBeNull();
+    expect(launch?.model).toBe("opus");
+    expect(judgeWorkflow(script, CTX, NO_ENV)[0]?.verdict.decision).toBe("deny");
+  });
+
+  it("a quoted key is read, and the same key twice, quoted or not, refuses the whole call", () => {
+    const quoted = 'await agent("x", { "model": "opus", \'effort\': "high" });';
+    expect(readWorkflowScript(quoted)[0]).toMatchObject({ effort: "high", model: "opus" });
+    expect(workflowRefusal(quoted)).toBeNull();
+    const twice = 'await agent("x", { model: "haiku", effort: "high", "model": "fable" });';
+    expect(workflowRefusal(twice)).toContain("the same option written twice");
   });
 });

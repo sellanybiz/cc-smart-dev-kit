@@ -1226,7 +1226,7 @@ worktrees).
 | `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
 | `merge-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks the person before a command that merges a pull request. Every merge of the line is judged (`gh pr merge`, `gh pr -R owner/repo merge 5`, an alias from `gh alias list`, `--auto` included), and the first the policy does not allow asks, naming that pull request: `autoMerge` on, the base is the integration base (`autoMergeAllowed`), the merge names THIS project's repository (its `origin`), every required check `gh pr checks --required` reports green, and (with `reviewBeforePush`) the head commit's review is recorded. The forms it does not judge ask with the reason — a `gh api` merge, a GraphQL query it cannot read, a shell alias, an extension whose words name a merge — as does a step that moves the merge's folder, branch or repository (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing or does not answer. Read-only `gh`, 10 s a call of the hook's 30 s. § The workflow › The merge guard. |
 | `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists | Denies a message to a session that works outside this repo (from Claude Code's session records). |
-| `agent-guard` | PreToolUse (Agent, Task) | **machine-wide** | The model a launch really runs on, and the owner's model rules (2026-10-16): no `model`/no `effort` → deny; `low`/`medium` effort → deny on every model; an affordable slot needs `effort: "max"`; the **`opus` tier** — whatever answers behind the name — is a review at `high`/`xhigh`, a review at `max` as an **ask**, an unreadable review as an ask, or an `Opus reason:` word; the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. Every allowed or asked premium launch is recorded with its reason. § The Agent guard. |
+| `agent-guard` | PreToolUse (Agent, Task) | **machine-wide** | The model a launch really runs on, and the owner's model rules (2026-10-16): no `model`/no `effort` → deny; `low`/`medium` effort → deny on every model; an affordable slot needs `effort: "max"`; the **`opus` tier** — whatever answers behind the name — is allowed at `high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. Every allowed or asked premium launch is recorded with its reason. § The Agent guard. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
 | `job-route` | PreToolUse (Bash) | `jobs.route` | A heavy command is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301). § The job route. |
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, and the message to send the other sessions when it went into `worktrees.base`. A form that names no pull request gets no note. |
@@ -1281,26 +1281,46 @@ no hook of their own (proved live on 2.1.301 — a project hook with the matcher
 `Agent|Task|Workflow` saw the `Workflow` call and nothing else), so the guard reads the
 `script` text: the `model`, `effort` and `agentType` of each call, and its prompt when that
 is a fixed string literal (`readWorkflowScript` — a template that builds its text, `` `${…}` ``,
-is not one). A `model` held in a variable, or a prompt built at run time, is refused for an
-Opus or Fable launch rather than guessed. Two things are refused for the whole call
-(`workflowRefusal`), because no rule can hold for a launch the guard cannot follow: `agent`
-mentioned without a direct call (`const run = agent; run(…)`, `agent?.(…)`, `agent` passed
-around), and a call whose options are built at run time (a `...spread`, a computed `[…]`
-key). The strictest launch of the call answers for the whole call.
+is not one). An option counts only as a key of the call's own options object, quoted or not
+— never the same words in the prompt or in a nested object (`schema: { effort: … }`). A
+`model` held in a variable is refused rather than guessed, and a prompt built at run time is
+refused for a Fable launch (its reason line cannot be read). Two things are refused for the
+whole call (`workflowRefusal`), because no rule can hold for a launch the guard cannot follow:
+`agent` mentioned without a direct call (`const run = agent; run(…)`, `agent?.(…)`, `agent`
+passed around), and a call whose options are built at run time (a `...spread`, a computed
+`[…]` key, the same key twice). The strictest launch of the call answers for the whole call.
 
-The rules are in one table in `src/hooks/agent-guard.ts` (its header), the two lists a person
-may extend are environment variables (`CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS`,
-`CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS`), and the answer is a PreToolUse `deny` (the rule, in
-words, to Claude) or an `ask` (a Fable launch, a review at effort `max` — the deeper review is
-the person's own call, and its ask rests on the effort, not on a prompt — a review whose model
-the guard cannot read as Opus, and an Opus launch that is not a review and carries an
-`Opus reason:` line; the person approves each one). An `ask` in a session nobody
+The rules are in one table in `src/hooks/agent-guard.ts` (its header), the one list a person
+may extend is an environment variable (`CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS`, the
+read-only agent types the Fable rule reads), and the answer is a PreToolUse `deny` (the rule, in
+words, to Claude) or an `ask` (a Fable launch, and an `opus`-tier launch at effort `max`; the
+person approves each one, and the opus-tier ask rests on the effort, not on a prompt).
+
+**The `opus` tier** (the owner's decision D11, 2026-10-17) is judged by its effort alone: at
+`high` or `xhigh` it runs with no question, for any agent type and any purpose — a review or a
+build, with or without a reason line — and at `max` (`OPUS_ASK_EFFORT`) it asks the person,
+naming the model and the effort. An `Opus reason: <word>` line is optional: when a prompt has
+one, its first word goes into the record, and nothing else reads it. A fork names no effort —
+it runs at the session's own, which the person chose — so an `opus`-tier fork is allowed; a
+fork that names `max` itself is held to the same rule. **The free path is for a reading the
+guard can prove is the Opus family**: the `opus` name, a Claude Opus id (a cloud provider's
+`us.anthropic.claude-opus-…` too), the opus slot, or an id the person's own
+`ANTHROPIC_DEFAULT_<FAMILY>_MODEL` names for it. A reading with no family — a name no rule
+knows (`best`, `inherit`, an id the guard cannot read) — may stand for a higher tier, so it
+asks at any effort, is refused in `claude -p`, and is recorded as `opus:unreadable`. (Before D11 the tier needed a review
+agent type or a listed reason word, and refused every launch but a review at `high`; that
+reason list, the review-agent list and its variable are gone.)
+
+An `ask` in a session nobody
 watches (`claude -p`, `CLAUDE_CODE_SESSION_ATTENDED=0`) is refused just like a deny — Claude
 Code cannot ask anyone there (proved live on 2.1.301) — so the guard answers that denial with
-a message that says why; only a review the guard reads as Opus, at `high` or `xhigh`, stays
-allowed there. Every allowed or asked premium launch is recorded once, by its `tool_use_id`, in
-`<stateDir>/agent-launches.jsonl` with its reason (`opus:review-max` for a review at `max`,
-`fable:build` for a builder the person asked for), and `cc-smart-dev-kit usage` lists them (count,
+a message that says why; an Opus-family launch below `max` needs no answer, so it stays
+allowed there, one at `max` is told to run at `high` or `xhigh`, or in an interactive
+session, and one with no family is told to name `opus`. Every allowed or asked premium launch is recorded once, by its `tool_use_id`, in
+`<stateDir>/agent-launches.jsonl` with why it ran — the `opus` tier as `opus:<effort>`, with
+the prompt's reason word after it when there is one (`opus:xhigh`, `opus:max:security`; a fork
+`opus:session-effort`), and the `fable` tier by its word (`fable:build` for a builder the
+person asked for) — and `cc-smart-dev-kit usage` lists them (count,
 why) — the transcripts say which model wrote a reply, never why it was allowed. A Workflow call
 denied as a whole records none of its launches: nothing in it ran; an `ask` names every launch
 of the script that asks, not only the first.
@@ -1310,7 +1330,7 @@ of the script that asks, not only the first.
 through `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` and through its family's slot, a Claude id has its
 family's, and a name the guard cannot read is the `opus` tier, the strict reading. So an
 override that points `opus` at a backend never becomes an affordable slot, is never forced to
-`max`, and never loses the reason line; the messages name both, `` `opus` (answered by
+`max`, and still asks at `max`; the messages name both, `` `opus` (answered by
 openai:gpt-5.5) ``.
 
 The Fable rules are the owner's of 2026-10-16, and each is the person's call:

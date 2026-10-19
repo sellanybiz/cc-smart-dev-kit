@@ -333,7 +333,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "0.5.4",
+  version: "0.5.5",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -19239,17 +19239,6 @@ function startedByPeer(transcriptPath) {
 var AGENT_TOOLS = ["Agent", "Task"];
 var WORKFLOW_TOOLS = ["Workflow"];
 var FORK = "fork";
-var OPUS_REASONS = [
-  "security",
-  "money",
-  "permissions",
-  "schema",
-  "deploy",
-  "ui",
-  "architecture",
-  "plan-review",
-  "debugging"
-];
 var FABLE_BUILD_REASON = "build";
 var BUILDER_WORDS = [FABLE_BUILD_REASON];
 var FABLE_REASONS = [
@@ -19262,10 +19251,10 @@ var FABLE_REASONS = [
   "unsatisfied"
 ];
 var READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore", "Code Explorer"];
-var REVIEW_AGENTS = ["Reviewer"];
-var REVIEW_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS";
 var READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";
 var ALLOWED_EFFORTS = ["high", "xhigh", "max"];
+var OPUS_ASK_EFFORT = "max";
+var OPUS_FREE_EFFORTS = ALLOWED_EFFORTS.filter((one) => one !== OPUS_ASK_EFFORT);
 function effortAllowed(effort) {
   return ALLOWED_EFFORTS.includes(effort.toLowerCase());
 }
@@ -19312,8 +19301,10 @@ function throughFamilySlot(claude, family, gateway) {
   return { ...resolveTarget(first), family, tier };
 }
 function resolveName(text, gateway) {
-  if (text.startsWith("claude-"))
-    return throughFamilySlot(text, claudeFamily(text), gateway);
+  const family = claudeFamily(text);
+  if (family !== null || text.startsWith("claude-")) {
+    return throughFamilySlot(text, family, gateway);
+  }
   if (isSlotKey(text)) {
     const first = gateway.config?.slots[text]?.[0];
     const model = first === undefined ? { claude: false, family: null, model: text, tier: null } : resolveTarget(first);
@@ -19340,7 +19331,9 @@ function resolveLaunchModel(name, gateway, env) {
   if (family === undefined) {
     const mapped = tierOfMappedId(text, gateway, env);
     const resolved = resolveName(text, gateway);
-    return mapped === null || resolved.tier !== null ? resolved : { ...resolved, tier: mapped };
+    if (mapped === null || resolved.tier !== null && resolved.family !== null)
+      return resolved;
+    return { ...resolved, family: resolved.family ?? mapped, tier: mapped };
   }
   const tier = premiumTier(family);
   const override = stringField(env[familyEnv(family)]);
@@ -19433,11 +19426,13 @@ function firstArgument(call) {
   return literal === null ? null : literal.value;
 }
 function stringOption(call, name) {
-  const found = new RegExp(`(^|[{,\\s])${name}\\s*:\\s*`).exec(call);
-  if (found === null)
+  const at = readOptions(call).keys.get(name);
+  if (at === undefined)
     return null;
-  const at = found.index + found[0].length;
-  const literal = literalAt(call, at);
+  const colon = /^\s*:\s*/.exec(call.slice(at));
+  if (colon === null)
+    return null;
+  const literal = literalAt(call, at + colon[0].length);
   return literal === null ? null : literal.value;
 }
 function callOpen(at, script) {
@@ -19525,51 +19520,71 @@ function lineOf2(script, index) {
   return script.slice(0, index).split(`
 `).length;
 }
-function builtAtRuntime(call) {
+function readOptions(call) {
   const stack = [];
-  const keys = [];
+  const seen = [];
+  const keys = new Map;
+  let optionsDone = false;
   let keyExpected = false;
+  const found = (hidden) => ({ hidden, keys });
+  const twice = (key, end) => {
+    const open = seen.at(-1);
+    if (open !== undefined) {
+      if (open.has(key))
+        return true;
+      open.add(key);
+    }
+    if (stack.length === 1 && !optionsDone)
+      keys.set(key, end);
+    return false;
+  };
   for (let index = 1;index < call.length; index += 1) {
     const char = call[index] ?? "";
     const next = call[index + 1] ?? "";
     if (char === '"' || char === "'" || char === "`") {
       const literal = stringAt(call, index);
       if (literal === null)
-        return false;
+        return found(false);
+      if (keyExpected && char !== "`" && twice(literal.value, literal.end))
+        return found(true);
       index = literal.end - 1;
+      keyExpected = false;
       continue;
     }
     if (char === "/" && next === "/") {
       const end = call.indexOf(`
 `, index);
       if (end === -1)
-        return false;
+        return found(false);
       index = end;
       continue;
     }
     if (char === "/" && next === "*") {
       const end = call.indexOf("*/", index + 2);
       if (end === -1)
-        return false;
+        return found(false);
       index = end + 1;
       continue;
     }
     if (call.startsWith("...", index))
-      return true;
+      return found(true);
     if (/\s/.test(char))
       continue;
     if (char === "{" || char === "(" || char === "[") {
       if (keyExpected && char === "[")
-        return true;
+        return found(true);
       stack.push(char);
       if (char === "{")
-        keys.push(new Set);
+        seen.push(new Set);
       keyExpected = char === "{";
       continue;
     }
     if (char === "}" || char === ")" || char === "]") {
-      if (char === "}")
-        keys.pop();
+      if (char === "}") {
+        seen.pop();
+        if (stack.length === 1)
+          optionsDone = true;
+      }
       stack.pop();
       keyExpected = false;
       continue;
@@ -19580,17 +19595,16 @@ function builtAtRuntime(call) {
     }
     const key = keyExpected ? /^[A-Za-z_$][\w$]*/.exec(call.slice(index))?.[0] : undefined;
     if (key !== undefined) {
-      const open = keys.at(-1);
-      if (open !== undefined) {
-        if (open.has(key))
-          return true;
-        open.add(key);
-      }
+      if (twice(key, index + key.length))
+        return found(true);
       index += key.length - 1;
     }
     keyExpected = false;
   }
-  return false;
+  return found(false);
+}
+function builtAtRuntime(call) {
+  return readOptions(call).hidden;
 }
 function callsOf(script) {
   return agentMentions(script).filter((mention) => mention.call).map((mention) => callOpen(mention.at, script));
@@ -19660,7 +19674,7 @@ var NO_WORKFLOW_MODEL = [
   "Write `model` and `effort` as string literals in the `agent(...)` options."
 ].join(`
 `);
-var PROMPT_UNREADABLE = "The launch's prompt is built at run time, so the guard cannot read an `Opus reason:` or `Fable reason:` line in it.";
+var PROMPT_UNREADABLE = "The launch's prompt is built at run time, so the guard cannot read a `Fable reason:` line in it.";
 function judgeWorkflow(script, ctx, env) {
   return readWorkflowScript(script).map((launch) => {
     const verdict = judgeLaunch(asLaunch(launch), ctx, env);
@@ -19705,12 +19719,21 @@ function reasonWord2(text, allowed) {
   const word = text?.split(/\s+/)[0]?.toLowerCase() ?? "";
   return allowed.includes(word) ? word : null;
 }
+var REASON_WORD_MAX = 40;
+function firstWord2(text) {
+  const found = /^[^a-z0-9]*([a-z0-9]+(?:-[a-z0-9]+)*)/.exec(text?.toLowerCase() ?? "");
+  return found?.[1]?.slice(0, REASON_WORD_MAX) ?? null;
+}
 var NO_MODEL = [
   "This Agent launch names no `model`.",
   "An agent given none runs on the session's model and effort, which nobody chose: pass `model` and `effort` on every launch."
 ].join(`
 `);
 var EFFORTS = ALLOWED_EFFORTS.map((one) => `\`${one}\``).join(", ");
+function levelsText(levels) {
+  const named = levels.map((one) => `\`${one}\``);
+  return named.length < 2 ? named.join("") : `${named.slice(0, -1).join(", ")} or ${named.at(-1)}`;
+}
 var NO_EFFORT = [
   "This Agent launch names no `effort`.",
   `An agent given none runs at the session's effort: pass \`effort\` on every launch \u2014 ${EFFORTS} only, never \`low\` or \`medium\` (\`max\` for the hardest problem, always on an affordable gateway slot).`
@@ -19732,13 +19755,9 @@ function namedModel(real) {
 function atEffort(effort) {
   return effort === null ? "at the session's own effort" : `at effort \`${effort.toLowerCase()}\``;
 }
-function opusDenial(real) {
-  return [
-    `This launch would run on ${namedModel(real)}.`,
-    "Opus is for reviews and the owner's listed exceptions only: launch it as a review agent (`subagent_type` Reviewer, or one ending `:reviewer`), or put a line in the prompt saying why \u2014 the person is then asked to approve each one:",
-    `Opus reason: <${OPUS_REASONS.join("|")}>`
-  ].join(`
-`);
+function opusWhy(effort, word) {
+  const level = effort ?? "session-effort";
+  return word === null ? `opus:${level}` : `opus:${level}:${word}`;
 }
 function fableDenial(real) {
   return [
@@ -19770,9 +19789,7 @@ function judgeLaunch(launch, ctx, env) {
     return deny(real, effortDenial(launch.effort));
   }
   const type = launch.subagentType ?? "";
-  const review = ctx.reviewAgents === undefined ? agentList(REVIEW_AGENTS, env, REVIEW_AGENTS_ENV) : new Set(ctx.reviewAgents.map(agentKey));
   const readOnly = ctx.readOnlyAgents === undefined ? agentList(READ_ONLY_AGENTS, env, READ_ONLY_AGENTS_ENV) : new Set(ctx.readOnlyAgents.map(agentKey));
-  const isReview = review.has(agentKey(type));
   const builder = !readOnly.has(agentKey(type));
   if (real.tier === "fable") {
     const said = reasonLine(launch.prompt, "Fable reason");
@@ -19803,46 +19820,34 @@ function judgeLaunch(launch, ctx, env) {
     };
   }
   if (real.tier === "opus") {
-    if (isReview) {
-      if (real.family !== "opus") {
-        if (nobodyWatches(env)) {
-          return deny(real, "A review whose model the guard cannot read as Claude Opus is approved by the person, one by one, and this session has nobody to answer (`claude -p`).");
-        }
-        return {
-          decision: "ask",
-          real,
-          reason: [
-            `A review on \`${real.model}\` ${atEffort(launch.effort)}: the guard cannot read the model behind it as Claude Opus.`,
-            "Approve only if this review really runs on the opus tier."
-          ].join(`
-`),
-          why: "opus:review-unreadable"
-        };
-      }
-      if (launch.effort?.toLowerCase() !== "max")
-        return allow(real, "review");
+    const said = reasonLine(launch.prompt, "Opus reason");
+    const effort = launch.effort?.toLowerCase() ?? null;
+    if (real.family !== "opus") {
       if (nobodyWatches(env)) {
         return deny(real, [
-          "A review at effort `max` is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
-          "Run it at `xhigh`, or in an interactive session."
+          `This launch names \`${real.model}\`, which the guard cannot read as Claude Opus, and such a launch is approved by the person, one by one: this session has nobody to answer (\`claude -p\`).`,
+          "Name `opus` (or a Claude Opus id) as its model."
         ].join(`
 `));
       }
       return {
         decision: "ask",
         real,
-        reason: `${namedModel(real)} review at effort \`max\`: reviews run at \`xhigh\` unless you asked for a deeper one. Approve if you did.`,
-        why: "opus:review-max"
+        reason: [
+          `A launch on \`${real.model}\` ${atEffort(launch.effort)}: the guard cannot read the model behind it as Claude Opus, so it may be a higher tier.`,
+          "Approve only if this launch really runs on the opus tier."
+        ].join(`
+`),
+        why: "opus:unreadable"
       };
     }
-    const said = reasonLine(launch.prompt, "Opus reason");
-    const word = reasonWord2(said, OPUS_REASONS);
-    if (word === null)
-      return deny(real, opusDenial(real));
+    const why = opusWhy(effort, firstWord2(said));
+    if (effort !== OPUS_ASK_EFFORT)
+      return allow(real, why);
     if (nobodyWatches(env)) {
       return deny(real, [
-        "An Opus launch other than a review is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
-        "Run it in an interactive session, or launch it as a review agent."
+        `A launch on ${namedModel(real)} at effort \`${effort}\` is approved by the person, one by one, and this session has nobody to answer (\`claude -p\`).`,
+        `Run it at ${levelsText(OPUS_FREE_EFFORTS)}, or in an interactive session.`
       ].join(`
 `));
     }
@@ -19850,12 +19855,11 @@ function judgeLaunch(launch, ctx, env) {
       decision: "ask",
       real,
       reason: [
-        `${namedModel(real)} launch: not a review, ${atEffort(launch.effort)}, with the reason line \`Opus reason: ${said}\`.`,
-        "Opus is for reviews and the listed exceptions. Approve only if this launch is one of them."
+        `${namedModel(real)} launch at effort \`${effort}\`: \`${type || "general-purpose"}\`${said === null ? "" : `, with the reason line "Opus reason: ${said}"`}.`,
+        `The opus tier runs at ${levelsText(OPUS_FREE_EFFORTS)} with no question; \`${effort}\` only when the person asks for it. Approve only if you did.`
       ].join(`
 `),
-      why: `opus:${word}`,
-      restsOnPrompt: true
+      why
     };
   }
   if (!real.claude) {

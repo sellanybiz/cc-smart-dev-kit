@@ -176,12 +176,12 @@ describe("usage", () => {
       launch(SINCE + 3, "opus", "opus:security", "general-purpose"),
       // A builder on Fable, with the word the person's request carries (`fable:build`).
       launch(SINCE + 4, "fable", "fable:build", "general-purpose"),
-      // The deeper review the person approved, recorded with its own why (`opus:review-max`).
-      launch(SINCE + 5, "opus", "opus:review-max", "Reviewer"),
+      // The opus launch the person approved at `max` (its effort is its why since D11).
+      launch(SINCE + 5, "opus", "opus:max", "Reviewer"),
     ]);
     expect(text.split("\n").slice(-2)).toEqual([
       "",
-      "Opus / Fable launches: 5 (Opus 3, Fable 2); why: build 1, plan 1, review 1, review-max 1, security 1",
+      "Opus / Fable launches: 5 (Opus 3, Fable 2); why: build 1, max 1, plan 1, review 1, security 1",
     ]);
     // No launch: no line at all (an older machine has no record file).
     expect(formatUsage(sessions, 6, root, "/home/user")).toBe(
