@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { VERSION } from "../build-info";
 import { tempDir } from "../testing/temp";
 import { parseCcSmartDevKitConfig } from "./config";
 import {
@@ -21,6 +22,11 @@ import {
   requiresFor,
 } from "./init";
 
+/**
+ * A range one minor above this build's: a file that already needs a newer plugin than this
+ * one. From the built-in version, so it stays newer at every release.
+ */
+const NEXT_MINOR = `>=${VERSION.split(".")[0]}.${Number(VERSION.split(".")[1]) + 1}`;
 /** The first plugin version that accepts `worktrees` without a prefix, written by hand. */
 const NO_PREFIX_MINOR = ">=0.5.2";
 
@@ -132,6 +138,13 @@ describe("planProjectInit", () => {
     expect(planProjectInit(input({ existing: '{"requires": ">=0.5.3"}' })).text).toContain(
       '"requires": ">=0.5.3"',
     );
+    expect(
+      planProjectInit(
+        input({
+          existing: `{"requires": "${NEXT_MINOR}", "worktrees": {"base": "dev", "prefix": "app-wt-"}}\n`,
+        }),
+      ).text,
+    ).toContain(`"requires": "${NEXT_MINOR}"`);
   });
 
   test("a file whose answers are unchanged: not rewritten", () => {

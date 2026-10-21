@@ -90,7 +90,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.6.0",
+  version: "0.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6867,11 +6867,11 @@ gpgcheck=1
 gpgkey=${WARP_KEY_URL}
 `;
 
-// src/path-compare.ts
-var IGNORE_CASE = process.platform === "win32";
-
 // src/setup/lock.ts
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
+
+// src/path-compare.ts
+var IGNORE_CASE = process.platform === "win32";
 
 // src/setup/managed-hook.ts
 var PLUGIN_CACHE = `plugins/cache/${MARKETPLACE}/${PLUGIN}/`;

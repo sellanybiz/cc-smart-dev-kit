@@ -417,12 +417,9 @@ export const BOOKKEEPING_NAMES: readonly string[] = [
   "lock",
   "migrate-progress.json",
   "notify.json",
-  "sessions",
-  "update",
-  "update-check.json",
-  "update-hold",
-  "update-reported",
-  "update.log",
+  // Every file and folder of the self-update (`sessions/`, `update-major.json`, …), from the
+  // one list of them, so a new one is never taken for a setup of this version's.
+  ...Object.values(updateFiles("")).map((path) => basename(path)),
 ];
 
 /** The new state folder's entries that are not this plugin's own bookkeeping. */

@@ -782,8 +782,11 @@ describe("migrate — the real 0.2.1 machine", () => {
     writeFileSync(join(m.paths.stateDir, "sessions", "4242.json"), '{"pid":4242}\n');
     writeFileSync(join(m.paths.stateDir, "update-check.json"), '{"result":"skipped"}\n');
     writeFileSync(join(m.paths.stateDir, "update.log"), "a line\n");
+    // A held major version (D33): the background check writes it with no command run.
+    writeFileSync(join(m.paths.stateDir, "update-major.json"), '{"version":"1.0.0"}\n');
     expect(await m.run({ yes: true })).toBe(0);
     expectMoved(m);
+    expect(existsSync(join(m.new.stateDir, "update-major.json"))).toBe(true);
     // The old setup's records are in, and the session's own bookkeeping stays.
     expect(existsSync(join(m.new.stateDir, "owned.json"))).toBe(true);
     expect(existsSync(join(m.new.stateDir, "changed.json"))).toBe(true);
@@ -1129,6 +1132,11 @@ describe("migrate — the later 0.3.0 development build", () => {
     expect(BOOKKEEPING_NAMES).toContain("update-check.json");
     expect(BOOKKEEPING_NAMES).toContain("update.log");
     expect(BOOKKEEPING_NAMES).toContain("notify.json");
+    // The held major version (D33): a background check writes it with no command run.
+    expect(BOOKKEEPING_NAMES).toContain("update-major.json");
+    expect(BOOKKEEPING_NAMES).toContain("update-hold");
+    expect(BOOKKEEPING_NAMES).toContain("update-reported");
+    expect(BOOKKEEPING_NAMES).toContain("update");
     expect(BOOKKEEPING_NAMES).not.toContain("owned.json");
     expect(BOOKKEEPING_NAMES).not.toContain("changed.json");
     expect(BOOKKEEPING_NAMES).not.toContain("instructions");

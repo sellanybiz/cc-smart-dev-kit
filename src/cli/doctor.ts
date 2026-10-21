@@ -13,6 +13,7 @@ import {
   PLUGIN_UPDATE_COMMAND,
   VERSION,
 } from "../build-info";
+import { messageOf } from "../gateway/config";
 import { gatewayChecks } from "../gateway/doctor";
 import type { RouterServiceKind, Runner } from "../gateway/service";
 import { hasDesktop } from "../hooks/desktop-alert";
@@ -30,6 +31,7 @@ import { warpCheck } from "../machine/warp";
 import { type McpDoctorDeps, mcpChecks } from "../mcp/doctor";
 import { omnirouteDoctorLine } from "../omniroute/commands";
 import type { RegistryFetch } from "../omniroute/registry";
+import { AUTO_UPDATE_KEY, type AutoUpdateState, autoUpdateState } from "../setup/auto-update";
 import { findUserInstall } from "../setup/installed-plugins";
 import {
   copyDifferences,
@@ -70,6 +72,7 @@ import {
 import { USER_NOTIFY_COMMAND, userNotifyHookState } from "../setup/user-notify-hook";
 import { realTarget } from "../setup/write";
 import { isOlder } from "../update/check";
+import { isNewMajor, majorHeldDetail, readMajorNotes } from "../update/major";
 import { FORCE_PLUGIN_UPDATES_VAR, updateOptOuts } from "../update/opt-out";
 import {
   heldSince,
@@ -321,9 +324,10 @@ async function checkMarketplaceAccess(paths: CliPaths, env: Env): Promise<Check>
 }
 
 /**
- * Is the installed version behind the marketplace's local copy? Then auto-update did not
- * install it (Claude Code's `autoUpdate` may refresh only the catalog). Null when there is
- * nothing to compare: no install, or no marketplace (other checks report those).
+ * Is the installed version behind the marketplace's local copy? Then the self-update did not
+ * install it. A new major version is not behind in that sense: it waits for the person's
+ * `update` (D33), an information line. Null when there is nothing to compare: no install, or
+ * no marketplace (other checks report those).
  */
 function checkInstalledVersion(paths: CliPaths): Check | null {
   const install = findUserInstall(paths.installedPluginsFile);
@@ -353,6 +357,15 @@ function checkInstalledVersion(paths: CliPaths): Check | null {
       text: `cannot compare the installed version ${installed} with the marketplace's ${latest}`,
     };
   }
+  if (order < 0 && isNewMajor(installed, latest)) {
+    // A major version waits for the person's `update` (D33): information, never a failure.
+    // Never "claude plugin update" here: that would skip the hold and its one-time steps.
+    return {
+      ok: true,
+      info: true,
+      text: `installed ${installed}; ${majorHeldDetail(latest, readMajorNotes(location, installed, latest))}`,
+    };
+  }
   if (order < 0) {
     return {
       ok: false,
@@ -362,16 +375,43 @@ function checkInstalledVersion(paths: CliPaths): Check | null {
   return { ok: true, text: `the installed version ${installed} is not behind the marketplace` };
 }
 
-function checkAutoUpdate(settings: Record<string, unknown> | null, paths: CliPaths): Check {
-  const marketplaces = settings?.extraKnownMarketplaces as
-    | Record<string, { autoUpdate?: unknown }>
-    | undefined;
-  return marketplaces?.[MARKETPLACE]?.autoUpdate === true
-    ? { ok: true, text: "plugin auto-update is on" }
-    : {
-        ok: false,
-        text: `plugin auto-update is off in ${tildify(paths.settingsFile, paths.home)}. Run: cc-smart-dev-kit setup`,
+/**
+ * Claude Code's own plugin auto-update must be off for this marketplace (D39): it knows nothing
+ * of the major hold (D33), so it would install a major version by itself. The kit's own check
+ * updates the plugin. Why only an explicit `false` turns it off: `src/setup/auto-update.ts`.
+ */
+function checkAutoUpdate(paths: CliPaths): Check {
+  const settingsFile = tildify(paths.settingsFile, paths.home);
+  const key = formatKeyPath(AUTO_UPDATE_KEY);
+  const risk = "a major version would install with no hold";
+  let state: AutoUpdateState;
+  try {
+    state = autoUpdateState(paths);
+  } catch (error) {
+    return { ok: false, text: `cannot read Claude Code's plugin auto-update: ${messageOf(error)}` };
+  }
+  switch (state) {
+    case "off":
+      return {
+        ok: true,
+        text: `Claude Code's own plugin auto-update is off: ${COMMAND}'s own check updates the plugin`,
       };
+    case "ours":
+      return {
+        ok: false,
+        text: `Claude Code's own plugin auto-update is on (${key} is true in ${settingsFile}, set by an older setup): ${risk}. Run: ${COMMAND} setup`,
+      };
+    case "yours":
+      return {
+        ok: false,
+        text: `Claude Code's own plugin auto-update is on (${key} is true in ${settingsFile}, not set by ${COMMAND}): ${risk}. Remove that key from ${settingsFile} by hand, then run: ${COMMAND} setup`,
+      };
+    case "known":
+      return {
+        ok: false,
+        text: `Claude Code's own plugin auto-update is on (its own record, ${tildify(paths.knownMarketplacesFile, paths.home)}, says so): ${risk}. Run: ${COMMAND} setup`,
+      };
+  }
 }
 
 /**
@@ -1045,7 +1085,7 @@ export async function doctorChecks(
     checkInstructions(paths, local.instructionsSource),
     checkProjectImports(paths, local.cwd),
     await checkMarketplaceAccess(paths, env),
-    checkAutoUpdate(settings, paths),
+    checkAutoUpdate(paths),
     checkUpdatesNotOff(settings, env, paths),
     ...checkSelfUpdate(paths),
     checkNameClash(settings),

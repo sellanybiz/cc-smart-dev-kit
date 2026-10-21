@@ -1,8 +1,13 @@
 /**
  * A major version waits for the person (D33). The background check installs a patch or a
- * minor version by itself, but a new major one (0.6.0 → 1.0.0, 1.4.2 → 2.0.0) may need the
+ * minor version by itself, but a new major one (0.7.0 → 1.0.0, 1.4.2 → 2.0.0) may need the
  * person's own work first — 1.0.0 refuses the retired worktree fields — so it is held until
  * the person runs `update`.
+ *
+ * AN INSTALLED VERSION THAT CANNOT BE READ IS NO MAJOR STEP. `installed_plugins.json` may name
+ * no version (`findUserInstall` gives null), or one that is not a version. Then `isNewMajor` is
+ * false, and the background check installs the newer version as it did before this rule: with
+ * no version to compare, it cannot tell a major step from any other one.
  *
  * WHY THE NOTES ARE READ FROM THE NEW VERSION. The code that holds a major is the INSTALLED
  * version's code, and it cannot know why a later major is one. So each major says why in
@@ -11,7 +16,7 @@
  * version's own repo, refreshed a moment before. A copy without the file (another layout, a
  * marketplace that is not this repo) gives no note, and the line goes without one.
  *
- * NEVER MOVE `major-notes.json`: every installed version since 1.0.0 reads it at
+ * NEVER MOVE `major-notes.json`: every installed version since 0.7.0 reads it at
  * `MAJOR_NOTES_PATH` in the new version's copy.
  */
 
@@ -99,6 +104,16 @@ export function majorReadyLine(version: string, notes: string[]): string {
 /** What `update` says before it installs a major version, on the person's word. */
 export function majorInstallLine(version: string, notes: string[]): string {
   return `${PLUGIN} ${version} is a major version${why(notes)}: installing it.`;
+}
+
+/** What `update` says after it installed a major version: its own one-time steps run in setup. */
+export function majorSetupLine(): string {
+  return `Run \`${COMMAND} setup\` now: a major version may need it.`;
+}
+
+/** What `update` says when a major version it tried to install is still not installed. */
+export function majorStillWaitsLine(version: string, notes: string[]): string {
+  return `${PLUGIN} ${version} is a major version${why(notes)}: it was not installed, and it still waits for \`${COMMAND} update\`.`;
 }
 
 /** The background check's record of a held major: `update-check.json`, the log, `doctor`. */

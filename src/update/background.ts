@@ -8,6 +8,8 @@
  * hand worked at once. The person chose this self-update, and accepted its trade-off: a
  * bad release reaches every machine within the hour. `cc-smart-dev-kit update --hold` stops it on
  * one machine, and Claude Code's own switches for updates stop it too (`./opt-out.ts`).
+ * Since 0.7.0 it is the only updater: Claude Code's own auto-update for this marketplace is
+ * switched off (D39, `src/setup/auto-update.ts`), because it knows nothing of the major hold.
  *
  * What it never does: restart the router, a service or a session; change a permission;
  * ask a question; install a new major version (D33: that waits for the person's `update`,
@@ -18,6 +20,11 @@
 import { COMMAND, PLUGIN, PLUGIN_ID } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { detachedArgv } from "../hooks/detached";
+import {
+  AUTO_UPDATE_KEY,
+  AUTO_UPDATE_VALUE,
+  turnOffLeftoverAutoUpdate,
+} from "../setup/auto-update";
 import { bunConfigArg } from "../setup/bun-config";
 import { findUserInstall } from "../setup/installed-plugins";
 import {
@@ -26,6 +33,7 @@ import {
   refreshRefusal,
 } from "../setup/instructions";
 import { LockBusyError, withLock } from "../setup/lock";
+import { formatKeyPath } from "../setup/managed-json";
 import { redactUrlsIn } from "../setup/marketplace-access";
 import { userNotifyHookState } from "../setup/user-notify-hook";
 import {
@@ -243,6 +251,36 @@ export async function refreshInstructionsAtSessionStart(
 }
 
 /**
+ * Turns setup's own leftover `autoUpdate: true` off (`turnOffLeftoverAutoUpdate`). Each
+ * outcome goes to `update.log` and nowhere else: a busy state lock (setup runs now, and does
+ * the same), a value the person set, a settings file that is not valid JSON. It never throws.
+ */
+async function turnOffAutoUpdateQuietly(
+  paths: CliPaths,
+  log: (line: string) => void,
+): Promise<void> {
+  const key = formatKeyPath(AUTO_UPDATE_KEY);
+  try {
+    const { result, state } = await turnOffLeftoverAutoUpdate(paths);
+    if (result?.written === true) {
+      log(
+        `auto-update: ${key} set to ${AUTO_UPDATE_VALUE} in ${tildify(result.file, paths.home)}: Claude Code's own plugin auto-update is off`,
+      );
+    } else if (state === "yours") {
+      log(
+        `auto-update: left on: ${key} is true in ${tildify(paths.settingsFile, paths.home)}, set by you; \`${COMMAND} doctor\` says how to turn it off`,
+      );
+    }
+  } catch (error) {
+    const why =
+      error instanceof LockBusyError
+        ? "the state lock is busy (a setup runs now)"
+        : redactUrlsIn(messageOf(error));
+    log(`auto-update: not turned off (${why}); the next check tries again`);
+  }
+}
+
+/**
  * The background check, in a detached process. Under the update lock (`update/lock` in
  * the state folder; a busy lock means another check runs, so it leaves at once), it asks
  * again whether a check is due, updates are not held and not switched off, so two
@@ -262,10 +300,14 @@ export async function backgroundCheck(deps: BackgroundDeps): Promise<void> {
   try {
     await withLock(
       files.lockDir,
-      () => {
+      async () => {
         const previous = readLastCheck(files);
         if (isHeld(files) || !isDue(previous, deps.now())) return;
         at = isoSeconds(deps.now());
+        // A machine that reached this version through an older background update never ran
+        // setup: its settings may still turn Claude Code's own auto-update on, which would
+        // install a major version with no hold (D39). It never stops the check.
+        await turnOffAutoUpdateQuietly(deps.paths, log);
         const write = (check: LastCheck) => {
           writeLastCheck(files, check);
           log(`${check.result}: ${check.detail}`);

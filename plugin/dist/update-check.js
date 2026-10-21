@@ -7,7 +7,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.6.0",
+  version: "0.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -407,12 +407,20 @@ function lsRemote(url, ref, baseEnv) {
   }
 }
 function marketplaceInstallLocation(knownMarketplacesFile, name) {
+  const location = knownMarketplaceEntry(knownMarketplacesFile, name)?.installLocation;
+  return typeof location === "string" && location !== "" ? location : null;
+}
+function marketplaceAutoUpdate(knownMarketplacesFile, name) {
+  const autoUpdate = knownMarketplaceEntry(knownMarketplacesFile, name)?.autoUpdate;
+  return typeof autoUpdate === "boolean" ? autoUpdate : undefined;
+}
+function knownMarketplaceEntry(knownMarketplacesFile, name) {
   if (!existsSync2(knownMarketplacesFile))
     return null;
   try {
     const known = JSON.parse(readFileSync2(knownMarketplacesFile, "utf8"));
-    const location = known?.[name]?.installLocation;
-    return typeof location === "string" && location !== "" ? location : null;
+    const entry = known?.[name];
+    return typeof entry === "object" && entry !== null && !Array.isArray(entry) ? entry : null;
   } catch {
     return null;
   }
@@ -2240,6 +2248,31 @@ function capturingRunner(env, home) {
   };
 }
 
+// src/setup/auto-update.ts
+var AUTO_UPDATE_KEY = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
+var AUTO_UPDATE_VALUE = false;
+function autoUpdateState(paths) {
+  const current = getKey(readJsonObject(paths.settingsFile).data, AUTO_UPDATE_KEY);
+  if (current.found) {
+    if (current.value !== true)
+      return "off";
+    const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
+    return ownership(records, AUTO_UPDATE_KEY, current) === "ours" ? "ours" : "yours";
+  }
+  return marketplaceAutoUpdate(paths.knownMarketplacesFile, MARKETPLACE) === true ? "known" : "off";
+}
+async function turnOffLeftoverAutoUpdate(paths) {
+  const state = autoUpdateState(paths);
+  if (state !== "ours")
+    return { result: null, state };
+  const result = await withLock(paths.stateDir, () => applyManagedJson({
+    file: paths.settingsFile,
+    stateDir: paths.stateDir,
+    set: [[AUTO_UPDATE_KEY, AUTO_UPDATE_VALUE]]
+  }));
+  return { result, state };
+}
+
 // src/setup/user-notify-hook.ts
 import { existsSync as existsSync12 } from "fs";
 
@@ -2574,16 +2607,31 @@ async function refreshInstructionsAtSessionStart(deps) {
     deps.log(`${PLUGIN}: the instructions copy was not refreshed (${messageOf(error)}). A plain ${COMMAND} setup brings it up to date.`);
   }
 }
+async function turnOffAutoUpdateQuietly(paths, log) {
+  const key = formatKeyPath(AUTO_UPDATE_KEY);
+  try {
+    const { result, state } = await turnOffLeftoverAutoUpdate(paths);
+    if (result?.written === true) {
+      log(`auto-update: ${key} set to ${AUTO_UPDATE_VALUE} in ${tildify(result.file, paths.home)}: Claude Code's own plugin auto-update is off`);
+    } else if (state === "yours") {
+      log(`auto-update: left on: ${key} is true in ${tildify(paths.settingsFile, paths.home)}, set by you; \`${COMMAND} doctor\` says how to turn it off`);
+    }
+  } catch (error) {
+    const why = error instanceof LockBusyError ? "the state lock is busy (a setup runs now)" : redactUrlsIn(messageOf(error));
+    log(`auto-update: not turned off (${why}); the next check tries again`);
+  }
+}
 async function backgroundCheck(deps) {
   const files = updateFiles(deps.paths.stateDir);
   const log = (line) => appendLog(files, line, deps.now());
   let at = isoSeconds(deps.now());
   try {
-    await withLock(files.lockDir, () => {
+    await withLock(files.lockDir, async () => {
       const previous = readLastCheck(files);
       if (isHeld(files) || !isDue(previous, deps.now()))
         return;
       at = isoSeconds(deps.now());
+      await turnOffAutoUpdateQuietly(deps.paths, log);
       const write = (check) => {
         writeLastCheck(files, check);
         log(`${check.result}: ${check.detail}`);

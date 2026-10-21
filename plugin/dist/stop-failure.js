@@ -6328,7 +6328,7 @@ import { existsSync, readFileSync as readFileSync2 } from "fs";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.6.0",
+  version: "0.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6916,11 +6916,11 @@ var FIND_INSTALL_JS = [
   "process.stdout.write(e.installPath);"
 ].join("");
 
-// src/path-compare.ts
-var IGNORE_CASE = process.platform === "win32";
-
 // src/setup/lock.ts
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
+
+// src/path-compare.ts
+var IGNORE_CASE = process.platform === "win32";
 
 // src/setup/managed-hook.ts
 var PLUGIN_CACHE = `plugins/cache/${MARKETPLACE}/${PLUGIN}/`;

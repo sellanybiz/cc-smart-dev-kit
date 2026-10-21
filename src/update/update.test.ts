@@ -10,6 +10,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { decodedToastText } from "../hooks/windows-toast";
+import { AUTO_UPDATE_KEY } from "../setup/auto-update";
 import {
   installInstructions,
   instructionsPaths,
@@ -17,6 +18,7 @@ import {
   readVersionStamp,
 } from "../setup/instructions";
 import { lockIsHeld, withLock } from "../setup/lock";
+import { applyManagedJson } from "../setup/managed-json";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
 import { capturingRunner, installedText, notifyCommand } from "./apply";
@@ -63,6 +65,8 @@ interface MachineOptions {
   gitFails?: boolean;
   /** `claude plugin update` fails. */
   claudeFails?: boolean;
+  /** `claude plugin update` ends with exit 0 and installs nothing. */
+  claudeInstallsNothing?: boolean;
   /** `claude plugin marketplace update` fails, printing this line on stderr. */
   refreshFails?: string;
   /** Seconds the fake `claude` sleeps in `marketplace update`. */
@@ -163,7 +167,9 @@ function machine(options: MachineOptions = {}) {
       : `  "plugin marketplace update cc-smart-dev-kit") sleep ${options.claudeSleeps ?? 0}; cp ${q(join(fake, "copy-after"))} ${q(join(copy, "plugin", ".claude-plugin", "plugin.json"))}; echo '${remoteHead}' > ${q(join(fake, "local-head"))}; echo refreshed ;;`,
     options.claudeFails === true
       ? '  "plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user") echo "Failed to update: network" >&2; exit 1 ;;'
-      : `  "plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user") cp ${q(join(fake, "installed-after"))} ${q(join(plugins, "installed_plugins.json"))}; echo updated ;;`,
+      : options.claudeInstallsNothing === true
+        ? '  "plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user") echo updated ;;'
+        : `  "plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user") cp ${q(join(fake, "installed-after"))} ${q(join(plugins, "installed_plugins.json"))}; echo updated ;;`,
     "esac",
   ]);
   for (const notifier of ["notify-send", "osascript"]) {
@@ -1168,24 +1174,24 @@ describe("the instructions copy at a session start", () => {
   });
 });
 
+/** The detached check in this process, with the machine's fakes; what it recorded and notified. */
+async function checkHere(m: ReturnType<typeof machine>) {
+  const notified: string[] = [];
+  await backgroundCheck({
+    claude: Bun.which("claude", { PATH: m.env.PATH ?? "" }),
+    env: m.env,
+    notify: (text) => notified.push(text),
+    now: () => NOW,
+    paths: m.paths,
+    run: capturingRunner(m.env, m.home),
+  });
+  return { last: readLastCheck(m.files), notified };
+}
+
 describe("D33: a major version waits for the person", () => {
   const NOTES = JSON.stringify({ "1.0.0": "it refuses old project fields" });
   const LINE_1_0_0 =
     "cc-smart-dev-kit 1.0.0 is ready: it is a major version (it refuses old project fields). Read What's new, then run `cc-smart-dev-kit update`.";
-
-  /** The detached check in this process, with the machine's fakes; what it recorded and notified. */
-  async function checkHere(m: ReturnType<typeof machine>) {
-    const notified: string[] = [];
-    await backgroundCheck({
-      claude: Bun.which("claude", { PATH: m.env.PATH ?? "" }),
-      env: m.env,
-      notify: (text) => notified.push(text),
-      now: () => NOW,
-      paths: m.paths,
-      run: capturingRunner(m.env, m.home),
-    });
-    return { last: readLastCheck(m.files), notified };
-  }
 
   /** A held major, as the background check leaves it. */
   const holdMajor = (m: ReturnType<typeof machine>, notes: string[] = []) =>
@@ -1429,6 +1435,7 @@ describe("D33: a major version waits for the person", () => {
         "$ claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user",
         "updated",
         "cc-smart-dev-kit 1.0.0 installed (was 0.6.0). Restart Claude sessions to load it.",
+        "Run `cc-smart-dev-kit setup` now: a major version may need it.",
         "",
       ].join("\n"),
     );
@@ -1438,10 +1445,182 @@ describe("D33: a major version waits for the person", () => {
     expect(readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8")).toBe(config);
   }, 30_000);
 
+  test("D33: `update` whose install fails keeps the hold, and says the major still waits", async () => {
+    const m = machine({
+      claudeFails: true,
+      inCopy: "0.6.0",
+      installed: "0.6.0",
+      majorNotes: NOTES,
+      newVersion: "1.0.0",
+      remoteHead: HEAD_B,
+    });
+    holdMajor(m, ["it refuses old project fields"]);
+    const run = await m.cli(["update"]);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain(
+      "cc-smart-dev-kit 1.0.0 is a major version (it refuses old project fields): it was not installed, and it still waits for `cc-smart-dev-kit update`.\n",
+    );
+    expect(run.stdout).not.toContain("cc-smart-dev-kit setup");
+    expect(m.installedVersion()).toBe("0.6.0");
+    expect(readHeldMajor(m.files)?.version).toBe("1.0.0");
+  }, 30_000);
+
+  test("D33: `update` whose install ends well but installs nothing keeps the hold", async () => {
+    const m = machine({
+      claudeInstallsNothing: true,
+      inCopy: "0.6.0",
+      installed: "0.6.0",
+      majorNotes: NOTES,
+      newVersion: "1.0.0",
+      remoteHead: HEAD_B,
+    });
+    holdMajor(m, ["it refuses old project fields"]);
+    const run = await m.cli(["update"]);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toBe(
+      "cc-smart-dev-kit 1.0.0 is a major version (it refuses old project fields): it was not installed, and it still waits for `cc-smart-dev-kit update`.\n",
+    );
+    expect(run.stdout).not.toContain("is the newest version");
+    expect(m.installedVersion()).toBe("0.6.0");
+    expect(readHeldMajor(m.files)?.version).toBe("1.0.0");
+    expect(readLastCheck(m.files)?.detail).toBe(
+      "1.0.0 is a major version (it refuses old project fields): it waits for `cc-smart-dev-kit update`",
+    );
+  }, 30_000);
+  test("D33: `update` whose install fails keeps the hold, and says the major still waits", async () => {
+    const m = machine({
+      claudeFails: true,
+      inCopy: "0.6.0",
+      installed: "0.6.0",
+      majorNotes: NOTES,
+      newVersion: "1.0.0",
+      remoteHead: HEAD_B,
+    });
+    holdMajor(m, ["it refuses old project fields"]);
+    const run = await m.cli(["update"]);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain(
+      "cc-smart-dev-kit 1.0.0 is a major version (it refuses old project fields): it was not installed, and it still waits for `cc-smart-dev-kit update`.\n",
+    );
+    expect(run.stdout).not.toContain("cc-smart-dev-kit setup");
+    expect(m.installedVersion()).toBe("0.6.0");
+    expect(readHeldMajor(m.files)?.version).toBe("1.0.0");
+  }, 30_000);
+
+  test("D33: `update` whose install ends well but installs nothing keeps the hold", async () => {
+    const m = machine({
+      claudeInstallsNothing: true,
+      inCopy: "0.6.0",
+      installed: "0.6.0",
+      majorNotes: NOTES,
+      newVersion: "1.0.0",
+      remoteHead: HEAD_B,
+    });
+    holdMajor(m, ["it refuses old project fields"]);
+    const run = await m.cli(["update"]);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toBe(
+      "cc-smart-dev-kit 1.0.0 is a major version (it refuses old project fields): it was not installed, and it still waits for `cc-smart-dev-kit update`.\n",
+    );
+    expect(run.stdout).not.toContain("is the newest version");
+    expect(m.installedVersion()).toBe("0.6.0");
+    expect(readHeldMajor(m.files)?.version).toBe("1.0.0");
+    expect(readLastCheck(m.files)?.detail).toBe(
+      "1.0.0 is a major version (it refuses old project fields): it waits for `cc-smart-dev-kit update`",
+    );
+  }, 30_000);
+
   test("D33: `update --check` says a major is one", async () => {
     const m = machine({ inCopy: "1.0.0", installed: "0.6.0" });
     expect((await m.cli(["update", "--check"])).stdout).toBe(
       "cc-smart-dev-kit 1.0.0 is available (installed: 0.6.0). It is a major version: read What's new first. Run: cc-smart-dev-kit update\n",
     );
   }, 30_000);
+});
+
+describe("D39: the background check turns setup's own leftover autoUpdate true off", () => {
+  const KEY = 'extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate';
+  const autoUpdateIn = (m: ReturnType<typeof machine>) =>
+    JSON.parse(readFileSync(m.paths.settingsFile, "utf8")).extraKnownMarketplaces?.[
+      "cc-smart-dev-kit"
+    ]?.autoUpdate;
+  const autoUpdateLines = (m: ReturnType<typeof machine>) =>
+    readFileSync(m.files.log, "utf8")
+      .split("\n")
+      .filter((line) => line.includes("auto-update:"))
+      .map((line) => line.replace(/^\S+ /, ""));
+  /** What an older setup left: the key at true, written and owned by the managed writer. */
+  const olderSetupRan = (m: ReturnType<typeof machine>) =>
+    applyManagedJson({
+      file: m.paths.settingsFile,
+      set: [[AUTO_UPDATE_KEY, true]],
+      stateDir: m.paths.stateDir,
+    });
+
+  test("D39: setup's own true becomes false, once; the check goes on", async () => {
+    const m = machine();
+    olderSetupRan(m);
+    expect((await checkHere(m)).last?.result).toBe("up-to-date");
+    expect(autoUpdateIn(m)).toBe(false);
+    expect(autoUpdateLines(m)).toEqual([
+      `auto-update: ${KEY} set to false in ~/.claude/settings.json: Claude Code's own plugin auto-update is off`,
+    ]);
+    // The next check changes nothing more.
+    writeLastCheck(m.files, { at: "2026-10-15T08:00:00Z", detail: "", result: "up-to-date" });
+    await checkHere(m);
+    expect(autoUpdateLines(m)).toHaveLength(1);
+  });
+
+  test("D39: a true the person set stays; the log says so, and the check goes on", async () => {
+    const m = machine();
+    writeFileSync(
+      m.paths.settingsFile,
+      JSON.stringify({ extraKnownMarketplaces: { "cc-smart-dev-kit": { autoUpdate: true } } }),
+    );
+    expect((await checkHere(m)).last?.result).toBe("up-to-date");
+    expect(autoUpdateIn(m)).toBe(true);
+    expect(autoUpdateLines(m)).toEqual([
+      `auto-update: left on: ${KEY} is true in ~/.claude/settings.json, set by you; \`cc-smart-dev-kit doctor\` says how to turn it off`,
+    ]);
+  });
+
+  test("D39: no key (a restore took it): nothing is written", async () => {
+    const m = machine();
+    expect((await checkHere(m)).last?.result).toBe("up-to-date");
+    expect(existsSync(m.paths.settingsFile)).toBe(false);
+    expect(autoUpdateLines(m)).toEqual([]);
+  });
+
+  test("D39: a busy state lock: not changed, one log line, the check goes on", async () => {
+    const m = machine();
+    olderSetupRan(m);
+    let release = () => {};
+    const busy = withLock(
+      m.paths.stateDir,
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    await Bun.sleep(20);
+    expect((await checkHere(m)).last?.result).toBe("up-to-date");
+    release();
+    await busy;
+    expect(autoUpdateIn(m)).toBe(true);
+    expect(autoUpdateLines(m)).toEqual([
+      "auto-update: not turned off (the state lock is busy (a setup runs now)); the next check tries again",
+    ]);
+  });
+
+  test("D39: a settings file that is not valid JSON: one log line, the check goes on", async () => {
+    const m = machine();
+    writeFileSync(m.paths.settingsFile, "{ not json");
+    expect((await checkHere(m)).last?.result).toBe("up-to-date");
+    expect(readFileSync(m.paths.settingsFile, "utf8")).toBe("{ not json");
+    const lines = autoUpdateLines(m);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toStartWith(
+      `auto-update: not turned off (${m.paths.settingsFile} is not valid JSON`,
+    );
+  });
 });
