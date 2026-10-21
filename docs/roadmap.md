@@ -12,7 +12,7 @@ parts fit: `design.md`.
 | 5 | Instructions, skills, agents | Done (0.3.0) |
 | 6 | Notifications, claude-mem settings, the auto-mode block | Done (0.3.0) |
 | 7 | Opus and Fable slots, the usage-limit alert | Done (0.3.0) |
-| 8 | Web search | Done (0.3.0) |
+| 8 | Web search | Done (0.3.0); the command was removed in 1.0.0 |
 | 9 | The local portal | Done (0.3.0) |
 | 10 | Rollout to machines | Planned |
 | 12 | The heavy-job queue | Done (0.3.0) |
@@ -21,6 +21,11 @@ parts fit: `design.md`.
 command, its folders and its slots were `anymodel` in 0.2.x, and are
 `cc-smart-dev-kit` now. `cc-smart-dev-kit migrate` moves a machine that still has the
 old names (`README.md` § Moving from anymodel).
+
+## 1.0.0 — the search command is gone
+
+The plugin's `search` command is gone. Use Claude Code's own WebSearch and WebFetch, or
+the Tavily MCP server.
 
 ## 0.4.0 — the workflow, and a project that sets itself up
 
@@ -309,9 +314,9 @@ warning. The fallback's answers are made safe for Claude Code (`fallback-answer.
 a judge target is used only after it passed the judge test. (0.5.0 changed how a slot is reached: by the model's family, not
 by an exact id, and each slot has its own fallback switch.)
 
-## 8 — Web search (done, 0.3.0)
+## 8 — Web search (done in 0.3.0, removed in 1.0.0)
 
-`cc-smart-dev-kit search "<query>"` asks the local OmniRoute gateway for web results (Ollama's web search, included with the Ollama account: $0 per search, about 0.9 s, cached for 5 minutes). `--fetch <url>` needs a fetch provider's key inside OmniRoute. How it works and its limits: [search.md](search.md).
+The search command asked the local OmniRoute gateway for web results (Ollama's web search, included with the Ollama account: $0 per search, about 0.9 s, cached for 5 minutes), and `--fetch <url>` read one page's text through a fetch provider's key inside OmniRoute. The command was removed in 1.0.0; that section above says what to use instead.
 
 ## 9 — The local portal (done, 0.3.0)
 

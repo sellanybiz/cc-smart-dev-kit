@@ -1,7 +1,6 @@
 ---
 paths:
   - "src/gateway/**"
-  - "src/search/**"
   - "src/entries/router.ts"
   - "plugin/skills/gateway/**"
   - "docs/gateway.md"
@@ -172,8 +171,8 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
   needs Bun ≥ `MIN_BUN` (`src/build-info/bun.ts`): never add a workaround for an older
   Bun (owner, 2026-10-15). A new command that sends a key must not be on the CLI's
   any-Bun list (`src/cli/bun-check.ts`).
-- Text from outside (an upstream's answer, a fetch error, web text) is printed or logged
-  only through `src/gateway/plain-text.ts` (`oneLine`, `plainText`, `printableJson`;
+- Text from outside (an upstream's answer, a fetch error) is printed or logged
+  only through `src/gateway/plain-text.ts` (`oneLine`, `plainText`;
   `maskedLine` for an error): never a second copy of that logic.
 - **A key is tested before it is saved** (`checkBackendKey`, `src/gateway/backends.ts`): one
   cheap authenticated request (`GET /v1/models`, `KEY_CHECK_TIMEOUT_MS`) with the key. 401/403

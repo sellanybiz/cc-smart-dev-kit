@@ -562,8 +562,8 @@ reaches Claude Code**.
   or `-`, except a run with `__` (an MCP tool name) or a UUID. A masked value of 12 or
   more characters keeps its last four. Then it is made one line of printable ASCII
   (`maskedLine` and `oneLine` in `src/gateway/plain-text.ts`: the one home for making
-  outside text safe to print, which the gateway's commands, claude-mem's check and
-  `cc-smart-dev-kit search` use too). The line
+  outside text safe to print, which the gateway's commands and claude-mem's check use
+  too). The line
   is written in the background, so the answer reaches Claude Code whole and at once; it
   can come after the request's own log line. A failed read gives one `WARN` line, not two.
 
@@ -659,8 +659,8 @@ The router builds a **new** request for an affordable backend:
   or a name under `.localhost` is called straight (`directIfLoopback`), and a redirect is
   never followed (`redirect: "manual"`). Its callers: the router, the model list and the
   key check (`gateway models`, `slot`, `status`, `doctor`), the model probe and OmniRoute's
-  wait after an update, the judge test, claude-mem's check, `cc-smart-dev-kit search`, and
-  the OmniRoute key made with the dashboard password. A test (`src/gateway/proxy.test.ts` ›
+  wait after an update, the judge test, claude-mem's check, and the OmniRoute key made
+  with the dashboard password. A test (`src/gateway/proxy.test.ts` ›
   "backendFetch is the only way") reads every file in `src/` and fails on a `fetch` that
   sends an `authorization` or `x-api-key` header any other way: a hand-kept list of callers is
   how the judge test and claude-mem's check were missed before 1.0.0. A

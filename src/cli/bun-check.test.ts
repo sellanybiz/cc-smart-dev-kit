@@ -5,7 +5,7 @@ const OLD = "1.4.2";
 const BUN = "/opt/bun/bin/bun";
 
 describe("oldBunRefusal", () => {
-  test.each(["setup", "gateway", "search", "unknown-command"])(
+  test.each(["setup", "gateway", "portal", "unknown-command"])(
     "on an older Bun, %p stops with the reason and the next step",
     (command) => {
       expect(oldBunRefusal(command, OLD, BUN)).toBe(
@@ -21,7 +21,7 @@ describe("oldBunRefusal", () => {
     },
   );
 
-  test.each(["setup", "gateway", "search"])("on Bun 1.4.3, %p runs", (command) => {
+  test.each(["setup", "gateway", "portal"])("on Bun 1.4.3, %p runs", (command) => {
     expect(oldBunRefusal(command, "1.4.3", BUN)).toBeNull();
   });
 });

@@ -377,27 +377,6 @@ An optional local router between Claude Code and the model providers
 - The router bundle carries no version (`src/build-info/names.ts`), so a version bump
   alone never changes `router.js` and never makes a machine restart its router.
 
-## Web search
-
-`cc-smart-dev-kit search` (`src/search/`) searches the web, or reads one page's text, through the
-same local OmniRoute the gateway uses — same config file, same `omniroute` backend, same
-key (`docs/search.md`):
-
-- The command reads the key through the gateway's own config reader, never a copy of it,
-  and never prints it: an OmniRoute error answer, or a failed request's reason, is
-  masked with the router's own `maskSecrets` before it reaches the terminal. To an
-  OmniRoute on this machine the key never goes through a proxy (`directIfLoopback`, the
-  rule the gateway's own backend calls use; it needs Bun ≥ 1.4.3, § The Bun it needs).
-- Web text is data, not terminal input: every field is printed through
-  `src/gateway/plain-text.ts`, the one home (shared with the router's log) that turns
-  each control character into a space.
-- The plain output is cut (about 2500 characters, 300 a snippet), because Ollama's web
-  search puts a whole page in each result's snippet; `--json` prints the whole answer.
-- The query, and a `--fetch` URL, go to a third party (the search or fetch provider), so
-  `--fetch` refuses a local or private address.
-- It is a command, not a service: no part of it runs in the background, and nothing
-  changes on a machine until a person runs it.
-
 ## Heavy jobs
 
 One queue for the whole machine (`src/jobs/`, design and limits in `jobs.md`):
@@ -1045,7 +1024,7 @@ its own repo.
 
 ## Instructions, skills and agents
 
-The plugin carries general working instructions for Claude, 19 skills and 3 agents, all
+The plugin carries general working instructions for Claude, 18 skills and 3 agents, all
 written for any project (`README.md` § Instructions, skills and agents lists them).
 
 **The always-on instructions reach Claude through the user's `CLAUDE.md`.** A plugin cannot

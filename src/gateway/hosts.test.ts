@@ -1,13 +1,11 @@
 /**
- * Which machine a host is: this one, a private network, or the internet; and the fetch
- * options that keep a request to this machine away from a proxy. `privateHostKind` is
- * tested as a person meets it, through `cc-smart-dev-kit search --fetch`
- * (src/search/command.test.ts); the proxy itself in proxy.test.ts.
+ * Which machine a host is: this one or another; and the fetch options that keep a request
+ * to this machine away from a proxy. The proxy itself in proxy.test.ts.
  * Every expected value is written by hand.
  */
 import { describe, expect, it } from "bun:test";
 import { withProxyEnv } from "../testing/proxy-env";
-import { directIfLoopback, isLoopbackHost, privateHostKind } from "./hosts";
+import { directIfLoopback, isLoopbackHost } from "./hosts";
 
 describe("isLoopbackHost", () => {
   it("this machine: 127.0.0.0/8, ::1 (also IPv4-mapped), localhost", () => {
@@ -51,14 +49,6 @@ describe("isLoopbackHost", () => {
     ]) {
       expect(`${url} ${isLoopbackHost(new URL(url).hostname)}`).toBe(`${url} false`);
     }
-  });
-});
-
-describe("privateHostKind", () => {
-  it("null for a host on the internet", () => {
-    expect(privateHostKind("example.com")).toBeNull();
-    expect(privateHostKind("8.8.8.8")).toBeNull();
-    expect(privateHostKind("[2001:db8::1]")).toBeNull();
   });
 });
 

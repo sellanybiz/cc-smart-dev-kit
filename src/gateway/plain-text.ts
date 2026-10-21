@@ -1,8 +1,8 @@
 /**
- * Text from outside — an upstream's error answer, a web page, a search result — made safe
+ * Text from outside — an upstream's error answer, a web page — made safe
  * to print on a terminal or in one log line, and anything in it that looks like a key masked
  * (`maskSecrets`, `maskedLine`). The one home for this: the router's log (`router.ts`), the
- * gateway's commands, claude-mem's check and `cc-smart-dev-kit search` (`src/search/`) use it.
+ * gateway's commands and claude-mem's check use it.
  *
  * A terminal obeys control characters inside text: ESC starts a sequence that can write
  * the clipboard (OSC 52), hide text, move the cursor or clear the screen; a C1 control
@@ -53,19 +53,6 @@ export function oneLine(
       : plainText(text).replace(/\s+/g, " ");
   const line = flat.trim();
   return line.length > max ? `${cutText(line, max)}${options.mark ?? ""}` : line;
-}
-
-/**
- * A value as JSON (two-space indent) that is safe to print: the same JSON, but every
- * control or format character JSON.stringify leaves as it is (C1 controls, U+007F, bidi
- * overrides, …) is written as a `\uXXXX` escape. It parses back to the same value. Only
- * the line breaks between JSON's own lines stay: inside a string, `\n` is already escaped.
- */
-export function printableJson(value: unknown): string {
-  return JSON.stringify(value, null, 2).replace(
-    /[^\P{Cc}\n]|\p{Cf}/gu,
-    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
-  );
 }
 
 /** A secret as the log shows it: `****` and, for a long one, its last four characters. */
@@ -143,7 +130,7 @@ export function maskSecrets(text: string, known: readonly string[] = []): string
  * An outside error text as one line to show: anything like a key masked first
  * (`maskSecrets`, with the `known` secrets), then made one line of at most `max`
  * characters with no control character (`oneLine`). The router's log passes `ascii`;
- * `cc-smart-dev-kit search` shows Unicode and marks a cut with `…`.
+ * the others show Unicode.
  */
 export function maskedLine(
   text: string,

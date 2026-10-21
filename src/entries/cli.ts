@@ -55,7 +55,6 @@ import { runOmniroute } from "../omniroute/commands";
 import { runPortal } from "../portal/command";
 import { WORKTREE_ENGINE_RETIRED_IN } from "../project/config";
 import { locateCheckout } from "../project/resolve";
-import { runSearch } from "../search/command";
 import { runSessions } from "../sessions/command";
 import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
@@ -751,8 +750,6 @@ async function main(argv: string[]): Promise<number> {
         },
         rest,
       );
-    case "search":
-      return runSearch(rest, { paths });
     case "worker":
       return await runWorker(rest, realWorkerContext(paths));
     case "job":

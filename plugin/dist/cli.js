@@ -1,6 +1,6 @@
 // @bun
 // src/entries/cli.ts
-import { existsSync as existsSync65, statSync as statSync23 } from "fs";
+import { existsSync as existsSync64, statSync as statSync23 } from "fs";
 import { uptime as uptime2 } from "os";
 import { join as join69, resolve as resolve13 } from "path";
 
@@ -8389,18 +8389,6 @@ function normalHost(hostname) {
   const lower = hostname.toLowerCase();
   return lower.endsWith(".") ? lower.slice(0, -1) : lower;
 }
-function ipv4Kind([a = 0, b = 0]) {
-  if (a === 127)
-    return "a loopback address";
-  if (a === 0)
-    return "an unspecified address";
-  if (a === 169 && b === 254)
-    return "a link-local address";
-  if (a === 10 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168) {
-    return "a private address";
-  }
-  return null;
-}
 function isLoopbackHost(hostname) {
   const host = normalHost(hostname);
   if (host === "localhost" || host.endsWith(".localhost"))
@@ -8415,37 +8403,6 @@ function isLoopbackHost(hostname) {
   if (mapped !== null)
     return mapped[0] === 127;
   return v6.slice(0, 7).every((group) => group === 0) && v6[7] === 1;
-}
-function privateHostKind(hostname) {
-  const host = normalHost(hostname);
-  if (host === "localhost" || host.endsWith(".localhost"))
-    return "a loopback name";
-  const v4 = ipv4Parts(host);
-  if (v4 !== null)
-    return ipv4Kind(v4);
-  const v6 = ipv6Groups(host);
-  if (v6 !== null) {
-    const mapped = mappedIpv4(v6);
-    if (mapped !== null)
-      return ipv4Kind(mapped);
-    if (isLoopbackHost(host))
-      return "a loopback address";
-    if (v6.every((group) => group === 0))
-      return "an unspecified address";
-    const first = v6[0] ?? 0;
-    if ((first & 65472) === 65152)
-      return "a link-local address";
-    if ((first & 65024) === 64512)
-      return "a private address";
-    return null;
-  }
-  if (host.startsWith("["))
-    return null;
-  if (!host.includes("."))
-    return "a private host name";
-  if (/\.(local|internal|home\.arpa)$/.test(host))
-    return "a private host name";
-  return null;
 }
 function directIfLoopback(url) {
   const parsed = URL.parse(url);
@@ -8476,9 +8433,6 @@ function oneLine(text, max, options = {}) {
   const flat = options.ascii === true ? text.replace(/\s+/g, " ").replace(/[^\x20-\x7e]/g, "?") : plainText(text).replace(/\s+/g, " ");
   const line = flat.trim();
   return line.length > max ? `${cutText(line, max)}${options.mark ?? ""}` : line;
-}
-function printableJson(value) {
-  return JSON.stringify(value, null, 2).replace(/[^\P{Cc}\n]|\p{Cf}/gu, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 function maskedTail(secret) {
   return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
@@ -28402,335 +28356,6 @@ ${PORTAL_USAGE}`);
   return ctx.runChild(argv, { cwd: process.cwd(), env: ctx.env });
 }
 
-// src/search/command.ts
-import { existsSync as existsSync55 } from "fs";
-
-// src/search/client.ts
-var REQUEST_TIMEOUT_MS = 30000;
-var ERROR_CHARS = 300;
-function isJsonObject14(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function textOf(value) {
-  return typeof value === "string" ? value : "";
-}
-function numberIn(holder, key) {
-  if (!isJsonObject14(holder))
-    return null;
-  const value = holder[key];
-  return typeof value === "number" ? value : null;
-}
-function waited(ms) {
-  return ms < 1000 ? `${ms} ms` : `${Math.round(ms / 1000)} s`;
-}
-function isTimeout(error) {
-  return error instanceof Error && error.name === "TimeoutError";
-}
-function errorText(text, backend) {
-  return maskedLine(text, [backend.apiKey], ERROR_CHARS, { mark: "\u2026" });
-}
-function reasonOf(text, backend) {
-  let reason = text;
-  try {
-    const body = JSON.parse(text);
-    if (isJsonObject14(body)) {
-      const error = body.error;
-      if (isJsonObject14(error) && typeof error.message === "string")
-        reason = error.message;
-      else if (typeof error === "string")
-        reason = error;
-    }
-  } catch {}
-  return errorText(reason, backend);
-}
-async function post(backend, path, body, timeoutMs) {
-  const url = `${backend.baseUrl}${path}`;
-  const address = shownValue(backend.baseUrl);
-  let response;
-  try {
-    response = await backendFetch(url, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${backend.apiKey}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-  } catch (error) {
-    if (isTimeout(error)) {
-      return {
-        error: `cannot reach OmniRoute at ${address} (no answer within ${waited(timeoutMs)})`
-      };
-    }
-    return {
-      error: `cannot reach OmniRoute at ${address} (${errorText(messageOf(error), backend)}). Is it running?`
-    };
-  }
-  if (response.type === "opaqueredirect" || response.status >= 300 && response.status < 400) {
-    return {
-      error: `OmniRoute answered a redirect (HTTP ${response.status === 0 ? "3xx" : response.status}); ` + "it is not followed, so the key stays with the address in the gateway config. Check backends.omniroute.baseUrl."
-    };
-  }
-  let text;
-  try {
-    text = await response.text();
-  } catch (error) {
-    return {
-      error: isTimeout(error) ? `OmniRoute at ${address} did not finish answering within ${waited(timeoutMs)}` : `OmniRoute's answer broke off (${errorText(messageOf(error), backend)})`
-    };
-  }
-  if (!response.ok) {
-    return { error: `OmniRoute answered HTTP ${response.status}: ${reasonOf(text, backend)}` };
-  }
-  try {
-    return { raw: JSON.parse(text) };
-  } catch {
-    return { error: `OmniRoute's HTTP ${response.status} answer is not JSON` };
-  }
-}
-function parseSearchAnswer(body) {
-  if (!isJsonObject14(body) || !Array.isArray(body.results))
-    return null;
-  const results = [];
-  for (const entry of body.results) {
-    if (!isJsonObject14(entry) || typeof entry.url !== "string")
-      continue;
-    results.push({ snippet: textOf(entry.snippet), title: textOf(entry.title), url: entry.url });
-  }
-  if (body.results.length > 0 && results.length === 0)
-    return null;
-  return {
-    cached: body.cached === true,
-    costUsd: numberIn(body.usage, "search_cost_usd") ?? 0,
-    provider: textOf(body.provider),
-    results,
-    tookMs: numberIn(body.metrics, "response_time_ms")
-  };
-}
-function parseFetchedPage(body, requested) {
-  if (!isJsonObject14(body) || typeof body.content !== "string")
-    return null;
-  const metadata = body.metadata;
-  const url = textOf(body.url);
-  return {
-    content: body.content,
-    title: isJsonObject14(metadata) ? textOf(metadata.title) : "",
-    url: url === "" ? requested : url
-  };
-}
-async function searchWeb(options) {
-  const sent = await post(options.backend, "/v1/search", { query: options.query, max_results: options.max }, options.timeoutMs ?? REQUEST_TIMEOUT_MS);
-  if ("error" in sent)
-    return sent;
-  const answer = parseSearchAnswer(sent.raw);
-  if (answer === null) {
-    const listed = isJsonObject14(sent.raw) && Array.isArray(sent.raw.results);
-    return {
-      error: listed ? "OmniRoute's results have no url this version can read; they are not a shape this version knows" : "OmniRoute's answer has no results list; it is not a shape this version knows"
-    };
-  }
-  return { answer, raw: sent.raw };
-}
-async function fetchPage(options) {
-  const sent = await post(options.backend, "/v1/web/fetch", { url: options.url, format: "markdown", include_metadata: true }, options.timeoutMs ?? REQUEST_TIMEOUT_MS);
-  if ("error" in sent)
-    return sent;
-  const page = parseFetchedPage(sent.raw, options.url);
-  if (page === null) {
-    return { error: "OmniRoute's answer has no page text; it is not a shape this version knows" };
-  }
-  return { page, raw: sent.raw };
-}
-
-// src/search/format.ts
-var MAX_OUTPUT_CHARS = 2500;
-var SNIPPET_CHARS = 300;
-var CUT_NOTE = "\u2026 (output cut; --json prints the whole answer)";
-function took(ms) {
-  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
-}
-function line3(text) {
-  return oneLine(text, Number.POSITIVE_INFINITY);
-}
-function cutOutput(text) {
-  if (text.length <= MAX_OUTPUT_CHARS)
-    return text;
-  const room = MAX_OUTPUT_CHARS - CUT_NOTE.length - 1;
-  const head = cutText(text, room);
-  const lastBreak = head.lastIndexOf(`
-`);
-  const kept = lastBreak > room / 2 ? head.slice(0, lastBreak) : head;
-  return `${kept}
-${CUT_NOTE}`;
-}
-function searchOutput(query, answer) {
-  const provider = line3(answer.provider);
-  const facts = [
-    `${answer.results.length} result${answer.results.length === 1 ? "" : "s"}`,
-    provider === "" ? "" : `from ${provider}`,
-    answer.tookMs === null ? "" : `in ${took(answer.tookMs)}`,
-    answer.cached ? "(cached)" : "",
-    answer.costUsd > 0 ? `cost $${answer.costUsd.toFixed(4)}` : ""
-  ].filter((fact) => fact !== "");
-  const lines = [`Search: ${line3(query)}`, facts.join(" ")];
-  answer.results.forEach((result, index) => {
-    const url = line3(result.url);
-    const title = line3(result.title);
-    lines.push("", `${index + 1}. ${title === "" ? url : title}`, `   ${url}`);
-    const snippet = oneLine(result.snippet, SNIPPET_CHARS, { mark: "\u2026" });
-    if (snippet !== "")
-      lines.push(`   ${snippet}`);
-  });
-  return cutOutput(lines.join(`
-`));
-}
-function pageOutput(page) {
-  const head = [`Page: ${line3(page.url)}`];
-  const title = line3(page.title);
-  if (title !== "")
-    head.push(title);
-  const text = plainText(page.content, { keepNewlines: true }).trim();
-  return cutOutput(`${head.join(`
-`)}
-
-${text}`);
-}
-
-// src/search/command.ts
-var DEFAULT_MAX = 5;
-var MAX_RESULTS = 50;
-var SEARCH_BACKEND = "omniroute";
-var USAGE4 = `Usage: ${COMMAND} search "<query>" [--max <n>] [--json]
-       ${COMMAND} search --fetch <url> [--json]
-
-Searches the web through the gateway's OmniRoute backend (Ollama's web search among its
-providers) and prints each result's title, its URL and a short snippet. The whole output
-is cut to about 2500 characters; --json prints OmniRoute's whole answer instead. The
-query, or the URL, goes to that search or fetch provider on the internet.
-
-  --max <n>       how many results to ask for, 1 to ${MAX_RESULTS} (default ${DEFAULT_MAX}; the provider may cap it)
-  --fetch <url>   fetch one page's text, instead of searching (not a local or private address)
-  --json          the answer as JSON, uncut
-
-Needs the gateway: ${COMMAND} gateway setup --backend-key-stdin omniroute`;
-function httpUrl(text) {
-  const url = URL.parse(text);
-  return url !== null && (url.protocol === "http:" || url.protocol === "https:") ? url : null;
-}
-function refusedFetchUrl(url) {
-  const kind = privateHostKind(url.hostname);
-  if (kind === null)
-    return null;
-  return `--fetch does not read ${url.hostname}: it is ${kind}. The page is read by a fetch ` + "provider on the internet, which cannot reach it, and the address would leave this machine.";
-}
-function parseSearchArgs(args) {
-  const parsed = { fetch: null, json: false, max: DEFAULT_MAX, query: null };
-  const rest = [];
-  let maxGiven = false;
-  for (let index = 0;index < args.length; index += 1) {
-    const arg = args[index] ?? "";
-    if (arg === "--json")
-      parsed.json = true;
-    else if (arg === "--max") {
-      const value = args[index + 1];
-      if (value === undefined || !/^\d+$/.test(value) || Number(value) < 1) {
-        return { error: `--max needs a whole number of results, 1 or more (not "${value ?? ""}")` };
-      }
-      if (Number(value) > MAX_RESULTS) {
-        return { error: `--max asks for at most ${MAX_RESULTS} results (not "${value}")` };
-      }
-      parsed.max = Number(value);
-      maxGiven = true;
-      index += 1;
-    } else if (arg === "--fetch") {
-      const value = args[index + 1];
-      const url = value === undefined ? null : httpUrl(value);
-      if (value === undefined || url === null) {
-        return { error: `--fetch needs an http(s) URL (not "${value ?? ""}")` };
-      }
-      const refused = refusedFetchUrl(url);
-      if (refused !== null)
-        return { error: refused };
-      parsed.fetch = value;
-      index += 1;
-    } else if (arg.startsWith("--"))
-      return { error: `Unknown option: ${arg}` };
-    else
-      rest.push(arg);
-  }
-  if (rest.length > 1)
-    return { error: "give one query, in quotes" };
-  const query = rest[0]?.trim() ?? null;
-  parsed.query = query === "" ? null : query;
-  if (parsed.fetch !== null && parsed.query !== null) {
-    return { error: "give either a query or --fetch <url>, not both" };
-  }
-  if (parsed.fetch !== null && maxGiven) {
-    return { error: "--max counts search results; --fetch reads one page, so leave --max out" };
-  }
-  if (parsed.fetch === null && parsed.query === null) {
-    return { error: "give a query, or --fetch <url>" };
-  }
-  return parsed;
-}
-function searchBackend(configFile) {
-  if (!existsSync55(configFile)) {
-    return {
-      error: `the gateway is not set up: ${configFile} does not exist.
-` + `Search goes through the gateway's OmniRoute backend. Set it up with: ${COMMAND} gateway setup --backend-key-stdin omniroute`
-    };
-  }
-  let config;
-  try {
-    config = loadConfigFile(configFile);
-  } catch (error) {
-    return { error: messageOf(error) };
-  }
-  const backend = Object.hasOwn(config.backends, SEARCH_BACKEND) ? config.backends[SEARCH_BACKEND] : undefined;
-  if (backend === undefined) {
-    const names = Object.keys(config.backends);
-    return {
-      error: `the gateway has no "${SEARCH_BACKEND}" backend: ${configFile} names ${names.length === 0 ? "none" : names.join(", ")}.
-` + `Search goes through OmniRoute. Add it with: ${COMMAND} gateway setup --backend-key-stdin omniroute`
-    };
-  }
-  return { backend: { apiKey: backend.apiKey, baseUrl: backend.baseUrl } };
-}
-function failed(reason, paths) {
-  console.error(reason);
-  console.error(`  config: ${tildify(paths.gatewayConfigFile, paths.home)}`);
-  return 1;
-}
-async function runSearch(args, ctx) {
-  const parsed = parseSearchArgs(args);
-  if ("error" in parsed) {
-    console.error(`${parsed.error}
-
-${USAGE4}`);
-    return 2;
-  }
-  const { paths } = ctx;
-  const found = searchBackend(paths.gatewayConfigFile);
-  if ("error" in found) {
-    console.error(found.error);
-    return 1;
-  }
-  if (parsed.fetch !== null) {
-    const said = await fetchPage({ backend: found.backend, url: parsed.fetch });
-    if ("error" in said)
-      return failed(said.error, paths);
-    console.log(parsed.json ? printableJson(said.raw) : pageOutput(said.page));
-    return 0;
-  }
-  const query = parsed.query ?? "";
-  const said = await searchWeb({ backend: found.backend, max: parsed.max, query });
-  if ("error" in said)
-    return failed(said.error, paths);
-  console.log(parsed.json ? printableJson(said.raw) : searchOutput(query, said.answer));
-  return 0;
-}
-
 // src/workers/brief.ts
 var REPORT_COMMAND = `${COMMAND} worker report`;
 function briefFrame(facts) {
@@ -29110,7 +28735,7 @@ function realProcessFacts(platform) {
 }
 
 // src/workers/caller.ts
-function reasonOf2(error) {
+function reasonOf(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function readCaller(command, ctx) {
@@ -29128,7 +28753,7 @@ function readCaller(command, ctx) {
     checkout = locateCheckout(ctx.cwd, { env: ctx.env });
     config = checkout === null ? null : loadProjectConfig(checkout).config;
   } catch (error) {
-    return refuse(reasonOf2(error));
+    return refuse(reasonOf(error));
   }
   if (checkout === null) {
     return refuse("this folder is not in a git project", "run it in the project's folder");
@@ -29137,7 +28762,7 @@ function readCaller(command, ctx) {
   try {
     resolved = resolveWorkflow(ctx.paths, config);
   } catch (error) {
-    return refuse(reasonOf2(error));
+    return refuse(reasonOf(error));
   }
   if (!resolved.workers.enabled.value) {
     return refuse("workers are off in this project: turn them on with workflow.workers.enabled", `${COMMAND} workflow set workers.enabled true --project (this project), or the same without --project (every project of yours)`);
@@ -29146,7 +28771,7 @@ function readCaller(command, ctx) {
   try {
     session = callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf);
   } catch (error) {
-    return refuse(reasonOf2(error));
+    return refuse(reasonOf(error));
   }
   if (session === null) {
     return refuse("no Claude Code session runs this command", "run it from the Bash tool of the session that leads");
@@ -29163,7 +28788,7 @@ function readCaller(command, ctx) {
 import {
   appendFileSync as appendFileSync3,
   closeSync as closeSync7,
-  existsSync as existsSync56,
+  existsSync as existsSync55,
   fstatSync as fstatSync3,
   mkdirSync as mkdirSync19,
   openSync as openSync7,
@@ -29337,7 +28962,7 @@ function iso(atMs) {
 function notThere(error) {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
-function reasonOf3(error) {
+function reasonOf2(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function checked(schema, value, file) {
@@ -29354,19 +28979,19 @@ function readRecord(schema, file) {
   } catch (error) {
     if (notThere(error))
       return null;
-    throw new WorkerStoreError(`Cannot read ${file}: ${reasonOf3(error)}`);
+    throw new WorkerStoreError(`Cannot read ${file}: ${reasonOf2(error)}`);
   }
   let value;
   try {
     value = JSON.parse(raw);
   } catch (error) {
-    throw new WorkerStoreError(`Invalid ${file}: not valid JSON (${reasonOf3(error)})`);
+    throw new WorkerStoreError(`Invalid ${file}: not valid JSON (${reasonOf2(error)})`);
   }
   return checked(schema, value, file);
 }
 function listRecords(schema, folder) {
   const listed = { broken: [], records: [] };
-  if (!existsSync56(folder))
+  if (!existsSync55(folder))
     return listed;
   const found = [];
   for (const name of readdirSync20(folder).sort()) {
@@ -29378,7 +29003,7 @@ function listRecords(schema, folder) {
       if (record !== null)
         found.push({ file, record });
     } catch (error) {
-      listed.broken.push({ file, why: reasonOf3(error) });
+      listed.broken.push({ file, why: reasonOf2(error) });
     }
   }
   found.sort((a, b) => a.record.createdAt.localeCompare(b.record.createdAt) || a.file.localeCompare(b.file));
@@ -29408,7 +29033,7 @@ async function underStoreLock(stateDir, repo, write) {
 function listAllWorkers(stateDir) {
   const root = workersRootDir(stateDir);
   const all = { broken: [], records: [] };
-  if (!existsSync56(root))
+  if (!existsSync55(root))
     return all;
   for (const key of readdirSync20(root).sort()) {
     const one = listRecords(workerRecordSchema, join56(root, key, "workers"));
@@ -29423,7 +29048,7 @@ async function createWorker(stateDir, worker, atMs) {
   const at = iso(atMs);
   const record = checked(workerRecordSchema, { version: WORKER_STORE_VERSION, ...worker, createdAt: at, updatedAt: at }, file);
   return await underStoreLock(stateDir, worker.repo, () => {
-    if (existsSync56(file)) {
+    if (existsSync55(file)) {
       throw new WorkerStoreError(`a worker "${worker.id}" is already recorded for ${worker.repo} (${file})`);
     }
     writeRecord(file, record);
@@ -29513,7 +29138,7 @@ async function runWorkerLead(args, ctx) {
   try {
     before = readLead(ctx.paths.stateDir, repo, session.sessionId);
   } catch (error) {
-    return refuse(reasonOf2(error), "remove that record, then run this again", 1);
+    return refuse(reasonOf(error), "remove that record, then run this again", 1);
   }
   const branch = runGit(checkout.root, ["symbolic-ref", "--quiet", "--short", "HEAD"], ctx.env, GIT_TIMEOUT_MS2);
   const plan = args.plan ?? before?.plan ?? (branch.ok ? branch.out : null);
@@ -29526,12 +29151,12 @@ async function runWorkerLead(args, ctx) {
     tag = args.tag ?? workerTag(repo, resolved.workers.tag.value);
     name = leadName(tag, plan);
   } catch (error) {
-    return refuse(reasonOf2(error), "pass --plan <slug> and --tag <tag>", 2);
+    return refuse(reasonOf(error), "pass --plan <slug> and --tag <tag>", 2);
   }
   try {
     await writeLead(ctx.paths.stateDir, { cwd: checkout.root, name, plan, repo, sessionId: session.sessionId, tag }, ctx.now());
   } catch (error) {
-    ctx.error(`worker lead: ${reasonOf2(error)}`);
+    ctx.error(`worker lead: ${reasonOf(error)}`);
     return 1;
   }
   ctx.print(`lead ${name} (${session.sessionId.slice(0, 8)}): the workers this session starts in ${tildify(repo, ctx.paths.home)} report to it; to show the name now, type the next line in this session`);
@@ -29540,16 +29165,16 @@ async function runWorkerLead(args, ctx) {
 }
 
 // src/workers/start.ts
-import { existsSync as existsSync58, readFileSync as readFileSync60 } from "fs";
+import { existsSync as existsSync57, readFileSync as readFileSync60 } from "fs";
 import { join as join59, resolve as resolve10 } from "path";
 
 // src/worktrees/include.ts
-import { copyFileSync, existsSync as existsSync57, mkdirSync as mkdirSync20 } from "fs";
+import { copyFileSync, existsSync as existsSync56, mkdirSync as mkdirSync20 } from "fs";
 import { dirname as dirname18, join as join57 } from "path";
 var INCLUDE_TIMEOUT_MS = 60000;
 function copyWorktreeInclude(source, target, env) {
   const includeFile = join57(source, ".worktreeinclude");
-  if (!existsSync57(includeFile))
+  if (!existsSync56(includeFile))
     return [];
   const listed = runGit(source, ["ls-files", "-z", "--others", "--ignored", `--exclude-from=${includeFile}`], env, INCLUDE_TIMEOUT_MS);
   if (!listed.ok || listed.out === "")
@@ -29565,7 +29190,7 @@ function copyWorktreeInclude(source, target, env) {
   });
   const copied = [];
   for (const path of ignored.stdout.toString().split("\x00")) {
-    if (path === "" || existsSync57(join57(target, path)))
+    if (path === "" || existsSync56(join57(target, path)))
       continue;
     mkdirSync20(dirname18(join57(target, path)), { recursive: true });
     copyFileSync(join57(source, path), join57(target, path));
@@ -29945,7 +29570,7 @@ async function readBrief(args, ctx) {
     try {
       text = readFileSync60(resolve10(ctx.cwd, args.brief), "utf8");
     } catch (error) {
-      throw refusal(`the brief ${args.brief} cannot be read (${reasonOf2(error)})`);
+      throw refusal(`the brief ${args.brief} cannot be read (${reasonOf(error)})`);
     }
   }
   if (text.trim() === "")
@@ -29961,7 +29586,7 @@ async function plan(args, ctx) {
   try {
     lead = readLead(ctx.paths.stateDir, caller.repo, caller.session.sessionId);
   } catch (error) {
-    throw refusal(reasonOf2(error));
+    throw refusal(reasonOf(error));
   }
   if (lead === null) {
     throw refusal(`this session is no lead in ${tildify(caller.repo, ctx.paths.home)}`, `run ${COMMAND} worker lead --plan <slug> in it first`);
@@ -29988,7 +29613,7 @@ async function plan(args, ctx) {
   try {
     name = workerName(lead.tag, args.phase, args.slug);
   } catch (error) {
-    throw refusal(reasonOf2(error), undefined, 2);
+    throw refusal(reasonOf(error), undefined, 2);
   }
   const worktree = join59(caller.repo, ".claude", "worktrees", worktreeName(args.phase, args.slug));
   return { baseRef, baseSha, branch, briefGiven, caller, chosen, claude, lead, name, worktree };
@@ -29996,7 +29621,7 @@ async function plan(args, ctx) {
 function holdsName(record) {
   if (record.state === "removed")
     return false;
-  return !(record.state === "failed" && record.shortId === null && !existsSync58(record.worktree));
+  return !(record.state === "failed" && record.shortId === null && !existsSync57(record.worktree));
 }
 function inUse(planned, records, ctx) {
   const { branch, caller, name, worktree } = planned;
@@ -30007,7 +29632,7 @@ function inUse(planned, records, ctx) {
   if (gitOut(caller.repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], ctx.env) !== null) {
     return refusal(`the branch ${branch} is there already, for ${name}`, "delete it, or pick another --slug");
   }
-  if (existsSync58(worktree)) {
+  if (existsSync57(worktree)) {
     return refusal(`the folder ${tildify(worktree, ctx.paths.home)} is there already`, "remove that worktree (git worktree remove), or pick another --slug");
   }
   return null;
@@ -30021,11 +29646,11 @@ function takeBack(planned, env) {
     return null;
   return `left behind: ${removed.ok ? "" : `the worktree ${worktree} `}${deleted ? "" : `the branch ${branch}`}`.trim();
 }
-async function failed2(record, reason, ctx, change = {}) {
+async function failed(record, reason, ctx, change = {}) {
   try {
     await updateWorker(ctx.paths.stateDir, record.repo, record.id, { ...change, state: "failed" }, ctx.now(), reason);
   } catch (error) {
-    ctx.error(`worker start: the store could not record the failure: ${reasonOf2(error)}`);
+    ctx.error(`worker start: the store could not record the failure: ${reasonOf(error)}`);
   }
   ctx.print(`failed ${record.name}: ${reason}`);
   return 1;
@@ -30037,11 +29662,11 @@ async function launch(planned, record, ctx) {
   const { caller, chosen, worktree } = planned;
   const added = runGit(caller.repo, ["worktree", "add", "-b", planned.branch, worktree, planned.baseSha], ctx.env, WORKTREE_ADD_TIMEOUT_MS);
   if (!added.ok)
-    return await failed2(record, `git worktree add failed: ${lastLine2(added.err)}`, ctx);
+    return await failed(record, `git worktree add failed: ${lastLine2(added.err)}`, ctx);
   try {
     copyWorktreeInclude(caller.repo, worktree, ctx.env);
   } catch (error) {
-    ctx.error(`worker start: the .worktreeinclude files were not copied: ${reasonOf2(error)}`);
+    ctx.error(`worker start: the .worktreeinclude files were not copied: ${reasonOf(error)}`);
   }
   const deps = {
     env: ctx.env,
@@ -30061,7 +29686,7 @@ async function launch(planned, record, ctx) {
   });
   const nothingStarted = async (reason) => {
     const left = takeBack(planned, ctx.env);
-    return await failed2(record, left === null ? reason : `${reason}; ${left}`, ctx);
+    return await failed(record, left === null ? reason : `${reason}; ${left}`, ctx);
   };
   const started = callClaude(deps, planned.claude, args, caller.repo);
   if (!started.ok)
@@ -30070,7 +29695,7 @@ async function launch(planned, record, ctx) {
   const output = `${run.stdout}
 ${run.stderr}`;
   if (run.timedOut) {
-    return await failed2(record, "claude --bg did not answer in time: a session may have started; see claude agents", ctx);
+    return await failed(record, "claude --bg did not answer in time: a session may have started; see claude agents", ctx);
   }
   if (refusedUntrusted(output)) {
     return await nothingStarted("Workspace not trusted: open this repo once with claude and accept the trust prompt");
@@ -30080,30 +29705,30 @@ ${run.stderr}`;
   }
   const backgrounded = parseBackgrounded(output);
   if (backgrounded === null) {
-    return await failed2(record, "claude --bg printed no line backgrounded \xB7 <id> \xB7 <name>: a session may have started; see claude agents", ctx);
+    return await failed(record, "claude --bg printed no line backgrounded \xB7 <id> \xB7 <name>: a session may have started; see claude agents", ctx);
   }
   const { shortId } = backgrounded;
   const listed = callClaude(deps, planned.claude, ["agents", "--json", "--all"], caller.repo);
   const rows = listed.ok && listed.run.exitCode === 0 ? parseAgents(listed.run.stdout) : null;
   if (rows === null) {
-    return await failed2(record, `session ${shortId} started, but claude agents --json could not be read`, ctx, { shortId });
+    return await failed(record, `session ${shortId} started, but claude agents --json could not be read`, ctx, { shortId });
   }
   const row = agentRow(rows, shortId);
   if (row === null) {
-    return await failed2(record, `session ${shortId} started, but claude agents does not list it`, ctx, { shortId });
+    return await failed(record, `session ${shortId} started, but claude agents does not list it`, ctx, { shortId });
   }
   const sessionId = row.sessionId;
   if (row.cwd === null || !samePath3(row.cwd, worktree)) {
     const stop = callClaude(deps, planned.claude, ["stop", shortId], caller.repo);
     const stopped = stop.ok && stop.run.exitCode === 0;
-    return await failed2(record, `session ${shortId} works in ${row.cwd ?? "an unknown folder"}, not in its worktree: ${stopped ? "it was stopped" : `stop it: claude stop ${shortId}`}`, ctx, { sessionId, shortId });
+    return await failed(record, `session ${shortId} works in ${row.cwd ?? "an unknown folder"}, not in its worktree: ${stopped ? "it was stopped" : `stop it: claude stop ${shortId}`}`, ctx, { sessionId, shortId });
   }
   let recorded = true;
   try {
     await updateWorker(ctx.paths.stateDir, caller.repo, record.id, { sessionId, shortId, state: "working" }, ctx.now(), `started (${shortId})`);
   } catch (error) {
     recorded = false;
-    ctx.error(`worker start: the store could not record the start: ${reasonOf2(error)}`);
+    ctx.error(`worker start: the store could not record the start: ${reasonOf(error)}`);
   }
   ctx.print(`started ${record.name} (${shortId}) \xB7 ${modelText(chosen)} ${chosen.effort} \xB7 ${planned.branch} @ ${planned.baseSha.slice(0, 7)}`);
   return recorded ? 0 : 1;
@@ -30183,7 +29808,7 @@ async function runWorkerStart(args, ctx) {
         ctx.error(line);
       return error.code;
     }
-    ctx.error(`worker start: ${reasonOf2(error)}`);
+    ctx.error(`worker start: ${reasonOf(error)}`);
     return 1;
   }
   const { record, why } = decided;
@@ -30199,7 +29824,7 @@ async function runWorkerStart(args, ctx) {
     writeStoreFile(workerSettingsFile(ctx.paths.stateDir, caller.repo, record.id), `${JSON.stringify({ env: { [WORKER_ENV]: record.id } }, null, 2)}
 `);
   } catch (error) {
-    return await failed2(record, `its brief could not be written: ${reasonOf2(error)}`, ctx);
+    return await failed(record, `its brief could not be written: ${reasonOf(error)}`, ctx);
   }
   if (why !== null) {
     ctx.print(`queued ${record.name}: ${why}`);
@@ -30783,9 +30408,9 @@ import { closeSync as closeSync8, mkdirSync as mkdirSync23, openSync as openSync
 import { dirname as dirname20, join as join61 } from "path";
 
 // src/cli/usage.ts
-import { existsSync as existsSync59, readdirSync as readdirSync21, readFileSync as readFileSync61, statSync as statSync17 } from "fs";
+import { existsSync as existsSync58, readdirSync as readdirSync21, readFileSync as readFileSync61, statSync as statSync17 } from "fs";
 import { basename as basename8, join as join60, resolve as resolve11 } from "path";
-function isJsonObject15(value) {
+function isJsonObject14(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function entries(path) {
@@ -30834,11 +30459,11 @@ function readTranscript(path, sinceMs, sidechains) {
     } catch {
       continue;
     }
-    if (!isJsonObject15(entry))
+    if (!isJsonObject14(entry))
       continue;
     if (cwd === null && typeof entry.cwd === "string")
       cwd = entry.cwd;
-    if (entry.type !== "assistant" || !isJsonObject15(entry.message))
+    if (entry.type !== "assistant" || !isJsonObject14(entry.message))
       continue;
     if (!sidechains && entry.isSidechain === true)
       continue;
@@ -30887,7 +30512,7 @@ function collectUsage(projectsDir, options) {
       usage.cwd = own.cwd;
       count2(usage.main, own.replies);
       const subagents = join60(folder, session, "subagents");
-      const metas = existsSync59(subagents) ? entries(subagents).files.filter((name) => name.endsWith(".meta.json")) : [];
+      const metas = existsSync58(subagents) ? entries(subagents).files.filter((name) => name.endsWith(".meta.json")) : [];
       for (const name of metas) {
         const transcript = join60(subagents, name.replace(/\.meta\.json$/, ".jsonl"));
         const started = changedAt(join60(subagents, name));
@@ -30897,7 +30522,7 @@ function collectUsage(projectsDir, options) {
         const meta = readJson2(join60(subagents, name));
         usage.cwd ??= cwd;
         usage.subagents += 1;
-        const launched = isJsonObject15(meta) && typeof meta.model === "string" ? meta.model : "inherited";
+        const launched = isJsonObject14(meta) && typeof meta.model === "string" ? meta.model : "inherited";
         usage.launched[launched] = (usage.launched[launched] ?? 0) + 1;
         count2(usage.replies, replies);
       }
@@ -31049,7 +30674,7 @@ var LAUNCH_TOOLS = new Set(["Agent", "Task"]);
 var QUESTION_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
 var MERGE_COMMAND = /(^|[\s;&|()])gh\s+pr\s+merge\b/;
 var RULE_LABEL = /\[([A-Z][A-Za-z0-9'&.-]*(?: [A-Za-z0-9'&.-]+){0,4})\]/;
-function isJsonObject16(value) {
+function isJsonObject15(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringField2(value) {
@@ -31134,7 +30759,7 @@ function readCounts(record) {
 function readAskers(record) {
   const out = {};
   for (const [key, value] of Object.entries(record)) {
-    if (!isJsonObject16(value))
+    if (!isJsonObject15(value))
       continue;
     const count = numberField2(value.count);
     const ms = numberField2(value.ms);
@@ -31154,7 +30779,7 @@ function readBucket(bucket) {
     }
   }
   for (const [key, record] of Object.entries(bucket)) {
-    if (!isJsonObject16(record))
+    if (!isJsonObject15(record))
       continue;
     if (key === "byAsker")
       out.byAsker = readAskers(record);
@@ -31179,15 +30804,15 @@ function parseCache(text, project) {
   } catch {
     return fresh;
   }
-  if (!isJsonObject16(parsed) || parsed.version !== CACHE_VERSION)
+  if (!isJsonObject15(parsed) || parsed.version !== CACHE_VERSION)
     return fresh;
-  if (!isJsonObject16(parsed.sessions))
+  if (!isJsonObject15(parsed.sessions))
     return fresh;
   for (const [id, value] of Object.entries(parsed.sessions)) {
-    if (!isJsonObject16(value) || !isJsonObject16(value.hours) || !isJsonObject16(value.transcripts)) {
+    if (!isJsonObject15(value) || !isJsonObject15(value.hours) || !isJsonObject15(value.transcripts)) {
       continue;
     }
-    if (!isJsonObject16(value.seen))
+    if (!isJsonObject15(value.seen))
       continue;
     const session = emptySession();
     session.cwd = stringField2(value.cwd);
@@ -31202,11 +30827,11 @@ function parseCache(text, project) {
       turnMs: value.seen.turnMs === true
     };
     for (const [hour, bucket] of Object.entries(value.hours)) {
-      if (isJsonObject16(bucket))
+      if (isJsonObject15(bucket))
         session.hours[hour] = readBucket(bucket);
     }
     for (const [name, transcript] of Object.entries(value.transcripts)) {
-      if (!isJsonObject16(transcript))
+      if (!isJsonObject15(transcript))
         continue;
       const entry = emptyTranscript();
       entry.offset = numberField2(transcript.offset) ?? 0;
@@ -31217,13 +30842,13 @@ function parseCache(text, project) {
       entry.endAt = numberField2(transcript.endAt);
       entry.replyId = stringField2(transcript.replyId);
       entry.replyLaunches = numberField2(transcript.replyLaunches) ?? 0;
-      entry.turnEnd = isJsonObject16(transcript.turnEnd) ? {
+      entry.turnEnd = isJsonObject15(transcript.turnEnd) ? {
         at: numberField2(transcript.turnEnd.at) ?? 0,
         background: numberField2(transcript.turnEnd.background) ?? 0
       } : null;
-      if (isJsonObject16(transcript.pending)) {
+      if (isJsonObject15(transcript.pending)) {
         for (const [toolId, tool] of Object.entries(transcript.pending)) {
-          if (!isJsonObject16(tool) || numberField2(tool.at) === null)
+          if (!isJsonObject15(tool) || numberField2(tool.at) === null)
             continue;
           entry.pending[toolId] = {
             at: numberField2(tool.at) ?? 0,
@@ -31232,9 +30857,9 @@ function parseCache(text, project) {
           };
         }
       }
-      if (isJsonObject16(transcript.asks)) {
+      if (isJsonObject15(transcript.asks)) {
         for (const [toolId, ask] of Object.entries(transcript.asks)) {
-          if (!isJsonObject16(ask) || numberField2(ask.at) === null)
+          if (!isJsonObject15(ask) || numberField2(ask.at) === null)
             continue;
           entry.asks[toolId] = {
             at: numberField2(ask.at) ?? 0,
@@ -31287,7 +30912,7 @@ function readAskLog(file) {
       skipped += 1;
       continue;
     }
-    if (!isJsonObject16(entry)) {
+    if (!isJsonObject15(entry)) {
       skipped += 1;
       continue;
     }
@@ -31309,9 +30934,9 @@ function readAskLog(file) {
 }
 function blockLabel(result, record) {
   const decision = record.permissionDecision;
-  const reasonType = isJsonObject16(decision) ? stringField2(decision.reasonType) : null;
+  const reasonType = isJsonObject15(decision) ? stringField2(decision.reasonType) : null;
   const content = result.content;
-  const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((block) => isJsonObject16(block) && block.type === "text").map((block) => isJsonObject16(block) ? String(block.text ?? "") : "").join(" ") : "";
+  const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((block) => isJsonObject15(block) && block.type === "text").map((block) => isJsonObject15(block) ? String(block.text ?? "") : "").join(" ") : "";
   const label = RULE_LABEL.exec(text);
   if (label?.[1] !== undefined)
     return label[1];
@@ -31356,7 +30981,7 @@ function applyAssistant(record, session, transcript, bucket, subagent, ts) {
   if (!subagent && record.isSidechain === true)
     return;
   const message = record.message;
-  if (!isJsonObject16(message)) {
+  if (!isJsonObject15(message)) {
     session.skipped += 1;
     return;
   }
@@ -31368,7 +30993,7 @@ function applyAssistant(record, session, transcript, bucket, subagent, ts) {
   const id = stringField2(message.id) ?? stringField2(record.uuid);
   let launches = 0;
   for (const block of content) {
-    if (!isJsonObject16(block) || block.type !== "tool_use")
+    if (!isJsonObject15(block) || block.type !== "tool_use")
       continue;
     const name = stringField2(block.name);
     if (name === null)
@@ -31381,7 +31006,7 @@ function applyAssistant(record, session, transcript, bucket, subagent, ts) {
       launches += 1;
     const toolId = stringField2(block.id);
     if (toolId !== null) {
-      const input = isJsonObject16(block.input) ? block.input : {};
+      const input = isJsonObject15(block.input) ? block.input : {};
       const command = stringField2(input.command);
       transcript.pending[toolId] = {
         at: ts,
@@ -31439,14 +31064,14 @@ function applyUser(record, session, transcript, bucket, context, ts) {
   if (origin !== null)
     closeTurn(transcript, bucket, ts, origin);
   const decision = record.permissionDecision;
-  const source = isJsonObject16(decision) ? stringField2(decision.source) : null;
-  if (isJsonObject16(decision))
+  const source = isJsonObject15(decision) ? stringField2(decision.source) : null;
+  if (isJsonObject15(decision))
     session.seen.permission = true;
-  const content = isJsonObject16(record.message) ? record.message.content : null;
+  const content = isJsonObject15(record.message) ? record.message.content : null;
   const blocks = Array.isArray(content) ? content : [];
   if (source?.startsWith("user")) {
     for (const block of blocks) {
-      if (!isJsonObject16(block) || block.type !== "tool_result")
+      if (!isJsonObject15(block) || block.type !== "tool_result")
         continue;
       const toolId = stringField2(block.tool_use_id);
       if (toolId === null) {
@@ -31477,13 +31102,13 @@ function applyUser(record, session, transcript, bucket, context, ts) {
       }
     }
   }
-  if (isJsonObject16(decision) && decision.decision === "reject" && source === "config") {
-    const result = blocks.find((block) => isJsonObject16(block) && block.type === "tool_result");
-    if (isJsonObject16(result))
+  if (isJsonObject15(decision) && decision.decision === "reject" && source === "config") {
+    const result = blocks.find((block) => isJsonObject15(block) && block.type === "tool_result");
+    if (isJsonObject15(result))
       addTo(bucket.autoMode, blockLabel(result, record));
   }
   for (const block of blocks) {
-    if (!isJsonObject16(block) || block.type !== "tool_result")
+    if (!isJsonObject15(block) || block.type !== "tool_result")
       continue;
     const toolId = stringField2(block.tool_use_id);
     if (toolId === null)
@@ -31510,7 +31135,7 @@ function applySystem(record, session, transcript, bucket, ts) {
   }
   if (record.subtype === "compact_boundary") {
     session.seen.compact = true;
-    const meta = isJsonObject16(record.compactMetadata) ? record.compactMetadata : {};
+    const meta = isJsonObject15(record.compactMetadata) ? record.compactMetadata : {};
     bucket.compactions += 1;
     addTo(bucket.compactByTrigger, stringField2(meta.trigger) ?? "unknown");
     bucket.compactPreTokens += numberField2(meta.preTokens) ?? 0;
@@ -31519,7 +31144,7 @@ function applySystem(record, session, transcript, bucket, ts) {
 }
 function applyAttachment(record, session, transcript, ts) {
   const attachment = record.attachment;
-  if (!isJsonObject16(attachment) || attachment.type !== "hook_success")
+  if (!isJsonObject15(attachment) || attachment.type !== "hook_success")
     return;
   const stdout = stringField2(attachment.stdout);
   if (stdout === null || !stdout.includes('"permissionDecision":"ask"'))
@@ -31617,7 +31242,7 @@ function readTranscriptFile(file, session, transcript, subagent, context) {
           session.skipped += 1;
           continue;
         }
-        if (!isJsonObject16(record)) {
+        if (!isJsonObject15(record)) {
           session.skipped += 1;
           continue;
         }
@@ -32602,7 +32227,6 @@ var COMMAND_HELP = [
   { name: "worktrees", listed: "more", help: WORKTREES_HELP },
   { name: "usage", listed: "more", help: USAGE_HELP },
   { name: "report", listed: "more", help: REPORT_USAGE },
-  { name: "search", listed: "more", help: USAGE4 },
   { name: "portal", listed: "more", help: PORTAL_USAGE },
   { name: "mcp", listed: "more", help: MCP_HELP },
   { name: "omniroute", listed: "more", help: USAGE2 },
@@ -32704,7 +32328,7 @@ function topLevelHelp() {
 }
 
 // src/cli/migrate.ts
-import { existsSync as existsSync60, readdirSync as readdirSync22, readFileSync as readFileSync63, renameSync as renameSync4, rmSync as rmSync12, statSync as statSync19 } from "fs";
+import { existsSync as existsSync59, readdirSync as readdirSync22, readFileSync as readFileSync63, renameSync as renameSync4, rmSync as rmSync12, statSync as statSync19 } from "fs";
 import { basename as basename9, dirname as dirname21, join as join62 } from "path";
 var OLD = {
   name: "anymodel",
@@ -32865,7 +32489,7 @@ var BOOKKEEPING_NAMES = [
   "update.log"
 ];
 function foreignStateEntries(old) {
-  if (!existsSync60(old.stateDir))
+  if (!existsSync59(old.stateDir))
     return [];
   return readdirSync22(old.stateDir).filter((name) => !BOOKKEEPING_NAMES.includes(name));
 }
@@ -32878,12 +32502,12 @@ function oldPiecesPresent(paths, old, renamer) {
     old.oldLauncher,
     old.oldUnitFile,
     old.oldSocketFile
-  ].some((path) => existsSync60(path))) {
+  ].some((path) => existsSync59(path))) {
     return true;
   }
   if (readProgress(old.stateDir) !== null)
     return true;
-  const configFile = existsSync60(paths.gatewayConfigFile) ? paths.gatewayConfigFile : join62(old.oldConfigDir, "gateway.json");
+  const configFile = existsSync59(paths.gatewayConfigFile) ? paths.gatewayConfigFile : join62(old.oldConfigDir, "gateway.json");
   if (oldNamesInConfig(configFile, renamer))
     return true;
   const claudeMd = join62(paths.claudeConfigDir, "CLAUDE.md");
@@ -32892,7 +32516,7 @@ function oldPiecesPresent(paths, old, renamer) {
   return recordsNameOldPaths(oldStateFolder(old), renamer);
 }
 function oldStateFolder(old) {
-  return existsSync60(old.oldStateDir) ? old.oldStateDir : old.stateDir;
+  return existsSync59(old.oldStateDir) ? old.oldStateDir : old.stateDir;
 }
 function readText3(file) {
   try {
@@ -32934,7 +32558,7 @@ function recordsNameOldPaths(stateDir, renamer) {
     } catch {}
   }
   const backups = join62(stateDir, "backups");
-  if (existsSync60(backups)) {
+  if (existsSync59(backups)) {
     for (const folder of readdirSync22(backups)) {
       if (renamer.path(decodeURIComponent(folder)) !== decodeURIComponent(folder))
         return true;
@@ -32945,33 +32569,33 @@ function recordsNameOldPaths(stateDir, renamer) {
 function blockedTargets(old) {
   const blocked = [];
   for (const { from, to } of movedFolders(old)) {
-    if (!existsSync60(from) || !existsSync60(to))
+    if (!existsSync59(from) || !existsSync59(to))
       continue;
     if (to === old.stateDir && foreignStateEntries(old).length === 0)
       continue;
     const foreign = to === old.stateDir ? foreignStateEntries(old) : null;
     blocked.push(foreign === null || foreign.length === 0 ? `${to} is already there: ${from} cannot be moved onto it, and two folders are never merged by themselves. Move or remove one of them by hand, then run again.` : `${to} is already there, and it holds ${foreign.join(", ")}: it is this version's own state folder. ${from} holds the old setup's files, which this move brings in, so move or remove ${to} by hand (its own files are the ones to look at first), then run again.`);
   }
-  if (existsSync60(old.oldLauncher) && existsSync60(old.launcher)) {
+  if (existsSync59(old.oldLauncher) && existsSync59(old.launcher)) {
     blocked.push(`${old.launcher} is already there: ${old.oldLauncher} cannot be moved onto it. Remove the old launcher by hand, then run again.`);
   }
   return blocked;
 }
 function move(from, to, dryRun) {
-  if (!existsSync60(from))
+  if (!existsSync59(from))
     return false;
   if (!dryRun)
     renameSync4(from, to);
   return true;
 }
 function absorbStateFolder(from, to, dryRun) {
-  if (!existsSync60(from))
+  if (!existsSync59(from))
     return 0;
   let moved = 0;
   for (const name of readdirSync22(from)) {
     const source = join62(from, name);
     const target = join62(to, name);
-    if (!existsSync60(target)) {
+    if (!existsSync59(target)) {
       moved += 1;
       if (!dryRun)
         renameSync4(source, target);
@@ -32995,7 +32619,7 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
   let backups = 0;
   const rewriteJson = (name, rewrite) => {
     const file = join62(stateDir, name);
-    if (!existsSync60(file))
+    if (!existsSync59(file))
       return;
     const text = readFileSync63(file, "utf8");
     const next = `${JSON.stringify(rewrite(JSON.parse(text)), null, 2)}
@@ -33026,7 +32650,7 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
     };
   });
   const backupsDir = join62(stateDir, "backups");
-  if (!existsSync60(backupsDir))
+  if (!existsSync59(backupsDir))
     return { files, backups };
   const folders = readdirSync22(backupsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   for (const folder of folders) {
@@ -33046,7 +32670,7 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
     if (dryRun)
       continue;
     const target = join62(backupsDir, renamedFolder);
-    if (existsSync60(target)) {
+    if (existsSync59(target)) {
       for (const name of readdirSync22(folderPath))
         renameSync4(join62(folderPath, name), join62(target, name));
       rmSync12(folderPath, { recursive: true, force: true });
@@ -33060,7 +32684,7 @@ function settingsChanges(settingsFile, stateDir, oldEnv, newEnv) {
   const set = [];
   const remove = [];
   const kept = [];
-  if (!existsSync60(settingsFile))
+  if (!existsSync59(settingsFile))
     return { set, remove, kept };
   const parsed = JSON.parse(readFileSync63(settingsFile, "utf8"));
   const settings = isObject(parsed) ? parsed : {};
@@ -33134,7 +32758,7 @@ function oldConfigPort(config) {
   return typeof port === "number" && Number.isInteger(port) ? port : DEFAULT_PORT;
 }
 function rewriteLimitState(file, stateDir, renamer, dryRun) {
-  if (!existsSync60(file))
+  if (!existsSync59(file))
     return 0;
   let parsed;
   try {
@@ -33173,7 +32797,7 @@ function migrateInstructions(paths, stateDir, options) {
     });
     return lines;
   }
-  const text = existsSync60(claudeMd) ? readFileSync63(claudeMd, "utf8") : null;
+  const text = existsSync59(claudeMd) ? readFileSync63(claudeMd, "utf8") : null;
   if (text === null || !text.includes(OLD.blockBegin))
     return lines;
   const block = text.replaceAll(OLD.blockBegin, BLOCK_BEGIN).replaceAll(OLD.blockEnd, BLOCK_END);
@@ -33216,7 +32840,7 @@ function readPlan(paths, old, units, renamer, options) {
   if (blocked.length > 0)
     return { error: blocked.join(`
 `) };
-  const configFile = existsSync60(paths.gatewayConfigFile) ? paths.gatewayConfigFile : existsSync60(join62(old.oldConfigDir, "gateway.json")) ? join62(old.oldConfigDir, "gateway.json") : null;
+  const configFile = existsSync59(paths.gatewayConfigFile) ? paths.gatewayConfigFile : existsSync59(join62(old.oldConfigDir, "gateway.json")) ? join62(old.oldConfigDir, "gateway.json") : null;
   let rawConfig = null;
   if (configFile !== null) {
     try {
@@ -33237,7 +32861,7 @@ ${parsed.error}` };
     port = parsed.config.port;
   }
   const stateDir = oldStateFolder(old);
-  if (existsSync60(paths.settingsFile)) {
+  if (existsSync59(paths.settingsFile)) {
     try {
       const parsed = JSON.parse(readFileSync63(paths.settingsFile, "utf8"));
       if (!isObject(parsed)) {
@@ -33260,13 +32884,13 @@ ${parsed.error}` };
   }
   return {
     plan: {
-      absorbState: existsSync60(old.stateDir) && foreignStateEntries(old).length === 0,
+      absorbState: existsSync59(old.stateDir) && foreignStateEntries(old).length === 0,
       config,
       configFile,
       done: readProgress(old.stateDir)?.steps ?? [],
       judgeTargets: judgeTargets(rawConfig),
       oldPlugin: findUserInstall(paths.installedPluginsFile, OLD.pluginId),
-      oldRouterActive: options.systemd && (unitActive(options.runner, units.oldUnit) || existsSync60(old.oldSocketFile) && unitActive(options.runner, units.oldSocket)),
+      oldRouterActive: options.systemd && (unitActive(options.runner, units.oldUnit) || existsSync59(old.oldSocketFile) && unitActive(options.runner, units.oldSocket)),
       port: options.router?.port ?? port,
       rewrite,
       running: runningSessions(updateFiles(stateDir))
@@ -33373,7 +32997,7 @@ Dry run: nothing was written, run or stopped.`);
       const launcher = movedFile(old);
       for (const { from, to, what } of [...movedFolders(old), launcher]) {
         const into = to === old.stateDir && plan.absorbState;
-        const absorb = to === old.stateDir && existsSync60(from) && existsSync60(to);
+        const absorb = to === old.stateDir && existsSync59(from) && existsSync59(to);
         const moved = absorb ? absorbStateFolder(from, to, options.dryRun) : Number(move(from, to, options.dryRun));
         if (moved === 0)
           continue;
@@ -33425,7 +33049,7 @@ ${parsed.error}`);
         if (result.changes.length > 0) {
           say("~", short(paths.settingsFile), `${String(result.changes.length)} gateway key(s) changed to this version's, or taken out where it writes none`);
         }
-      } else if (existsSync60(paths.settingsFile)) {
+      } else if (existsSync59(paths.settingsFile)) {
         say(" ", null, `${short(paths.settingsFile)}: no gateway key of the old setup's is left to change`);
       }
       for (const key of changes.kept) {
@@ -33438,10 +33062,10 @@ ${parsed.error}`);
       }
     },
     launcher: () => {
-      if (!existsSync60(old.oldLauncher) && !existsSync60(old.launcher))
+      if (!existsSync59(old.oldLauncher) && !existsSync59(old.launcher))
         return;
       if (options.dryRun) {
-        const outcome = existsSync60(old.oldLauncher) ? "updated" : "created";
+        const outcome = existsSync59(old.oldLauncher) ? "updated" : "created";
         say("~", short(old.launcher), `written for this version (${outcome})`);
         return;
       }
@@ -33457,7 +33081,7 @@ ${parsed.error}`);
       const existing = [
         { file: old.oldSocketFile, name: units.oldSocket },
         { file: old.oldUnitFile, name: units.oldUnit }
-      ].filter((unit) => existsSync60(unit.file));
+      ].filter((unit) => existsSync59(unit.file));
       if (existing.length === 0)
         return;
       const names = existing.map((unit) => unit.name).join(", ");
@@ -33560,7 +33184,7 @@ function instructionsToSetup(paths, options) {
 }
 
 // src/cli/restore.ts
-import { existsSync as existsSync61, rmSync as rmSync13 } from "fs";
+import { existsSync as existsSync60, rmSync as rmSync13 } from "fs";
 import { dirname as dirname22, join as join63 } from "path";
 function describe2(result, short) {
   const file = short(result.file);
@@ -33582,7 +33206,7 @@ var STOP_WARNING = "cc-smart-dev-kit-router is running. Stopping it cuts the ans
 var NOW_WARNING = `restore --now stops cc-smart-dev-kit-router while Claude sessions still use it: every running Claude session fails until it restarts.`;
 function stageOneDone(paths, cliBundle, bunPath = process.execPath) {
   const launcher = join63(paths.binDir, LAUNCHER_NAME);
-  if (existsSync61(launcher)) {
+  if (existsSync60(launcher)) {
     return `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
   }
   const bunfig = bunConfigPath(dirname22(dirname22(cliBundle)));
@@ -33622,7 +33246,7 @@ function removeMcp(paths, options, short) {
     forgetMcpServer(paths.stateDir, name);
   const lines = [...removal.removed, ...removal.notes];
   const ok = !removal.recordsUnreadable && removal.kept.length === 0;
-  if (ok && existsSync61(mcpRecordsFile(paths.stateDir))) {
+  if (ok && existsSync60(mcpRecordsFile(paths.stateDir))) {
     rmSync13(mcpRecordsFile(paths.stateDir), { force: true });
     lines.push(`- ${short(mcpRecordsFile(paths.stateDir))}: removed (the record of the MCP servers)`);
   }
@@ -33724,7 +33348,7 @@ async function runRestore(paths, options) {
     const mcp = removeMcp(paths, options, short);
     const browser = removeBrowser(paths, browserRecord, options.runner);
     rmSync13(restartPendingFile(paths.stateDir), { force: true });
-    const stateGone = routerTracked && existsSync61(paths.gatewayStateFile);
+    const stateGone = routerTracked && existsSync60(paths.gatewayStateFile);
     if (stateGone)
       rmSync13(paths.gatewayStateFile, { force: true });
     print(results, short);
@@ -33747,15 +33371,15 @@ async function runRestore(paths, options) {
 
 // src/cli/statusline.ts
 import { readFileSync as readFileSync64 } from "fs";
-function isJsonObject17(value) {
+function isJsonObject16(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function window(input, name) {
   const limits = input.rate_limits;
-  if (!isJsonObject17(limits))
+  if (!isJsonObject16(limits))
     return null;
   const entry = limits[name];
-  if (!isJsonObject17(entry) || typeof entry.used_percentage !== "number")
+  if (!isJsonObject16(entry) || typeof entry.used_percentage !== "number")
     return null;
   return {
     percent: entry.used_percentage,
@@ -33764,8 +33388,8 @@ function window(input, name) {
 }
 function statuslineText(input, state, nowMs, timeZone, warnPercent = workflowDefaults.alerts.usagePercent) {
   const parts = [];
-  const data = isJsonObject17(input) ? input : {};
-  const model = isJsonObject17(data.model) ? data.model.display_name : undefined;
+  const data = isJsonObject16(input) ? input : {};
+  const model = isJsonObject16(data.model) ? data.model.display_name : undefined;
   if (typeof model === "string" && model !== "")
     parts.push(model);
   const until = (resetsAt) => resetsAt === null ? "" : ` until ${formatClock(resetsAt, nowMs, timeZone)}`;
@@ -33886,7 +33510,7 @@ var WARP_PLUGIN_ID2 = "warp@claude-code-warp";
 var WARP_AGENT_TITLE = "warp://cli-agent";
 var WARP_AGENT_PROTOCOL = 1;
 var WARP_TERMINAL_NAME = "warpterminal";
-function isJsonObject18(value) {
+function isJsonObject17(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function shown2(text, fallback) {
@@ -33933,7 +33557,7 @@ function isWarpTerminal(env) {
 function warpPluginOn(claudeConfigDir) {
   try {
     const settings = JSON.parse(readFileSync65(join65(claudeConfigDir, "settings.json"), "utf8"));
-    if (!isJsonObject18(settings) || !isJsonObject18(settings.enabledPlugins))
+    if (!isJsonObject17(settings) || !isJsonObject17(settings.enabledPlugins))
       return false;
     if (settings.enabledPlugins[WARP_PLUGIN_ID2] !== true)
       return false;
@@ -33942,7 +33566,7 @@ function warpPluginOn(claudeConfigDir) {
   }
   try {
     const installed = JSON.parse(readFileSync65(join65(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
-    if (!isJsonObject18(installed) || !isJsonObject18(installed.plugins))
+    if (!isJsonObject17(installed) || !isJsonObject17(installed.plugins))
       return false;
     const entries = installed.plugins[WARP_PLUGIN_ID2];
     return Array.isArray(entries) && entries.length > 0;
@@ -34009,7 +33633,7 @@ function sessionLabel2(transcript, cwd) {
 function askAlert(input, ctx) {
   markWaiting(ctx.mark);
   const tool = typeof input.tool_name === "string" ? input.tool_name : "";
-  const toolInput = isJsonObject18(input.tool_input) ? input.tool_input : {};
+  const toolInput = isJsonObject17(input.tool_input) ? input.tool_input : {};
   if (tool === "ExitPlanMode") {
     return {
       body: "A plan is ready for your OK",
@@ -34020,8 +33644,8 @@ function askAlert(input, ctx) {
     };
   }
   const questions = Array.isArray(toolInput.questions) ? toolInput.questions : [];
-  const first = questions.find((question) => isJsonObject18(question) && question !== null);
-  const asked = (isJsonObject18(first) && typeof first.question === "string" ? first.question : null) ?? (typeof toolInput.question === "string" ? toolInput.question : null) ?? "";
+  const first = questions.find((question) => isJsonObject17(question) && question !== null);
+  const asked = (isJsonObject17(first) && typeof first.question === "string" ? first.question : null) ?? (typeof toolInput.question === "string" ? toolInput.question : null) ?? "";
   return {
     body: shown2(asked, "Claude has a question for you"),
     critical: true,
@@ -34162,7 +33786,7 @@ function readNotifyConfig(file) {
   } catch {
     return DEFAULT_NOTIFY_CONFIG;
   }
-  if (!isJsonObject18(parsed))
+  if (!isJsonObject17(parsed))
     return DEFAULT_NOTIFY_CONFIG;
   return {
     desktopSound: typeof parsed.desktopSound === "boolean" ? parsed.desktopSound : true,
@@ -34215,7 +33839,7 @@ function playSound(alert, deps, config, alerts) {
     deps.run(argv);
 }
 function notifyHook(input, event, deps) {
-  if (!isJsonObject18(input))
+  if (!isJsonObject17(input))
     return SILENT;
   if ((deps.env.CLAUDE_CODE_ENTRYPOINT ?? "cli") !== "cli")
     return SILENT;
@@ -34304,7 +33928,7 @@ function withProblem(result, problem) {
 }
 
 // src/hooks/notify-entry.ts
-import { existsSync as existsSync62 } from "fs";
+import { existsSync as existsSync61 } from "fs";
 import { join as join67 } from "path";
 
 // src/hooks/terminal.ts
@@ -34395,7 +34019,7 @@ async function runNotifyEntry() {
     const result = notifyHook(input, typeof event === "string" ? event : "", {
       capture: spawnRunner,
       env,
-      launcher: existsSync62(launcher) ? launcher : null,
+      launcher: existsSync61(launcher) ? launcher : null,
       nowMs: Date.now(),
       paths,
       platform: process.platform,
@@ -34418,14 +34042,14 @@ async function runNotifyEntry() {
 }
 
 // src/machine/machine.ts
-import { existsSync as existsSync63, readFileSync as readFileSync66 } from "fs";
+import { existsSync as existsSync62, readFileSync as readFileSync66 } from "fs";
 var RUN_TIMEOUT_MS2 = 300000;
 function hostFacts(env) {
   const real = {
-    exists: (path) => existsSync63(path),
+    exists: (path) => existsSync62(path),
     platform: hostPlatform(env),
     arch: process.arch,
-    osRelease: () => existsSync63("/etc/os-release") ? readFileSync66("/etc/os-release", "utf8") : null,
+    osRelease: () => existsSync62("/etc/os-release") ? readFileSync66("/etc/os-release", "utf8") : null,
     macApp: "/Applications/Warp.app"
   };
   const text = env[TEST_HOST_VAR];
@@ -34555,7 +34179,7 @@ var LOCK_PORTS = {
 };
 
 // src/worktrees/scan.ts
-import { existsSync as existsSync64, mkdtempSync as mkdtempSync5, readdirSync as readdirSync23, rmSync as rmSync15, statSync as statSync22 } from "fs";
+import { existsSync as existsSync63, mkdtempSync as mkdtempSync5, readdirSync as readdirSync23, rmSync as rmSync15, statSync as statSync22 } from "fs";
 import { tmpdir as tmpdir8 } from "os";
 import { join as join68 } from "path";
 
@@ -34829,7 +34453,7 @@ function scanWorktrees(repo, options) {
       });
       continue;
     }
-    if (listed.prunable || !existsSync64(listed.path)) {
+    if (listed.prunable || !existsSync63(listed.path)) {
       scanned.push({ listed, state: "gone" });
       continue;
     }
@@ -34840,7 +34464,7 @@ function scanWorktrees(repo, options) {
 function removeWorktree(repo, listed, options) {
   const all = listWorktrees(repo, options.env);
   const current = all.find((one) => samePath3(one.path, listed.path));
-  if (current === undefined || !existsSync64(current.path)) {
+  if (current === undefined || !existsSync63(current.path)) {
     return {
       said: [`kept ${listed.path}: its folder is gone \u2014 \`${COMMAND} worktrees\` forgets it`],
       status: "kept"
@@ -35042,7 +34666,7 @@ async function runWorktrees(paths, options, env, cwd = process.cwd()) {
 // src/entries/cli.ts
 function distBundle(name) {
   const beside = join69(import.meta.dir, name);
-  return existsSync65(beside) ? beside : join69(import.meta.dir, "..", "..", "plugin", "dist", name);
+  return existsSync64(beside) ? beside : join69(import.meta.dir, "..", "..", "plugin", "dist", name);
 }
 function routerBundle() {
   return distBundle("router.js");
@@ -35182,7 +34806,7 @@ async function main(argv) {
         console.error(usageError2("--warp and --remove-warp do opposite things: give one", "setup"));
         return 2;
       }
-      if (!existsSync65(project) || !statSync23(project).isDirectory()) {
+      if (!existsSync64(project) || !statSync23(project).isDirectory()) {
         console.error(`Not a folder: ${project}
 Fix: give the folder of a project, or leave --project out to use the folder you are in`);
         return 1;
@@ -35556,8 +35180,6 @@ ${String(result.failed)} of ${String(result.total)} checks failed.`);
           }
         }
       }, rest);
-    case "search":
-      return runSearch(rest, { paths });
     case "worker":
       return await runWorker(rest, realWorkerContext(paths));
     case "job":

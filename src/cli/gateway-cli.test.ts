@@ -42,15 +42,13 @@ afterEach(() => {
 });
 
 /**
- * A fake OmniRoute (`/v1/models`, the judge test's `/v1/messages`, and `cc-smart-dev-kit search`'s
- * `/v1/search` and `/v1/web/fetch`) and a fake router health page, on one free port. Its
- * search answers 401 with the key it was sent echoed back, as an upstream may.
+ * A fake OmniRoute (`/v1/models` and the judge test's `/v1/messages`) and a fake router health
+ * page, on one free port.
  */
 function fakeServer(
   options: { judge?: Record<string, "allow" | "block">; modelsStatus?: number } = {},
 ) {
   const seenKeys: string[] = [];
-  const searchKeys: string[] = [];
   /** Each judge test request: its model, the key it carried, and its body. */
   const judged: { body: Record<string, unknown>; key: string; model: string }[] = [];
   const server: Bun.Server<undefined> = Bun.serve({
@@ -58,17 +56,6 @@ function fakeServer(
     port: 0,
     async fetch(req): Promise<Response> {
       const url = new URL(req.url);
-      if (url.pathname === "/v1/search" || url.pathname === "/v1/web/fetch") {
-        const authorization = req.headers.get("authorization") ?? "";
-        searchKeys.push(authorization);
-        if (url.pathname === "/v1/web/fetch") {
-          return Response.json({ content: "Page text.", url: "https://example.com/" });
-        }
-        return Response.json(
-          { error: { message: `invalid key in "${authorization}"` } },
-          { status: 401 },
-        );
-      }
       if (url.pathname === "/v1/messages" && options.judge !== undefined) {
         const body = (await req.json()) as Record<string, unknown>;
         const model = String(body.model);
@@ -108,7 +95,7 @@ function fakeServer(
     },
   });
   servers.push(server);
-  return { judged, port: server.port as number, searchKeys, seenKeys };
+  return { judged, port: server.port as number, seenKeys };
 }
 
 /** Another program on a free port: it answers, but not as this router (an older one, say). */
@@ -2073,13 +2060,6 @@ describe("secrets", () => {
     record(await m.run(["doctor"]));
     record(await m.run(["gateway", "help"]));
     record(await m.run(["gateway", "setup", "--backend-key-stdin"], PLANTED_KEY));
-    // `cc-smart-dev-kit search` reads the same config and key: its search answers 401 with the key
-    // echoed, its fetch a page.
-    const searchFailed = record(await m.run(["search", "bun runtime"]));
-    record(await m.run(["search", "--json", "bun runtime"]));
-    record(await m.run(["search", "--fetch", "https://example.com/"]));
-    record(await m.run(["search", "--json", "--fetch", "https://example.com/"]));
-    record(await m.run(["search", "--max", "99", "bun runtime"]));
     // A broken file: the error must not quote the text around the mistake.
     writeFileSync(m.paths.config, `{"backends":{"omniroute":{"apiKey":"${PLANTED_KEY}",}}}`, {
       mode: 0o600,
@@ -2089,7 +2069,6 @@ describe("secrets", () => {
     record(await m.run(["gateway", "models"]));
     record(await m.run(["gateway", "slot", "worker", "claude-sonnet-5-5"]));
     record(await m.run(["doctor"]));
-    record(await m.run(["search", "bun runtime"]));
     // Valid JSON that fails the schema: the error names fields, not values.
     writeFileSync(
       m.paths.config,
@@ -2102,18 +2081,10 @@ describe("secrets", () => {
     );
     record(await m.run(["gateway", "models"]));
     record(await m.run(["doctor"]));
-    record(await m.run(["search", "bun runtime"]));
     const all = outputs.join("\n");
 
     // The backend did receive the key: the test would see a leak if one were printed.
     expect(server.seenKeys).toContain(`Bearer ${PLANTED_KEY}`);
-    // So did the search and the fetch, four times; the broken configs never sent it.
-    expect(server.searchKeys).toEqual(Array(4).fill(`Bearer ${PLANTED_KEY}`));
-    // The failed search printed the echoed key masked.
-    expect(searchFailed.exitCode).toBe(1);
-    expect(searchFailed.stderr).toStartWith(
-      'OmniRoute answered HTTP 401: invalid key in "Bearer ****cdef"\n',
-    );
     // The URL with the password was printed, masked, by status, models and doctor.
     const maskedUrl = `••••${String(server.port).slice(-4)}`;
     expect(all).toContain(`backend creds: ${maskedUrl} key ••••cdef → HTTP 200`);

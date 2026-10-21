@@ -602,7 +602,6 @@ Five pages say how, and what still has to be tested there:
 | `cc-smart-dev-kit worktrees [--clean] [--remove <path>] [--no-fetch]` | Every worktree of this repo: who works in it, and which are finished ([Worktrees](#worktrees)). `--clean` removes the finished ones with their branches; `--remove <path>` removes one now, for the session that has just finished in it, so without the one-hour wait; `--no-fetch` judges against `origin/<base>` as it is. `--clean` and `--remove` run in the main checkout only, one at a time. |
 | `cc-smart-dev-kit omniroute <status\|update\|rollback>` | The OmniRoute behind the gateway's affordable slots (below): what is installed, the newest npm release at least three days old, the user unit that runs it, and the backend that talks to it. `update` installs the newest such release, restarts its unit, checks the model path, and puts the old version back when the new one does not answer. `rollback` installs the version the last update replaced. `update` and `rollback` refuse to run inside a Claude Code session, and are never in the background. |
 | `cc-smart-dev-kit portal [--port <port>] [--no-open]` | The local portal (below): a page on this machine to see and change the gateway's settings, the updates, the heavy-job queue, the companions and the OmniRoute. It binds `127.0.0.1` only, prints a link with a one-time token, and stops after 30 minutes with no request. It refuses to run inside a Claude Code session: the portal is for you, not for Claude. |
-| `cc-smart-dev-kit search "<query>" [--max <n>] [--json]`<br>`cc-smart-dev-kit search --fetch <url> [--json]` | Searches the web through the gateway's OmniRoute backend (Ollama's web search among its providers), or reads one page's text with `--fetch`. Prints each result's title, its URL and a short snippet. `--max` asks for 1 to 50 results. The query, or the URL, goes to that search or fetch provider on the internet; `--fetch` refuses a local or private address. Needs the gateway set up (below). |
 | `cc-smart-dev-kit job <command>` | The machine-wide queue for heavy jobs (below). |
 | `cc-smart-dev-kit worker lead [--plan <slug>] [--tag <tag>]` | Records the Claude Code session that runs it (from its own Bash tool) as the lead of a plan in this repository, named `LEAD <tag> <plan>`. The tag is `--tag`, else [`workers.tag`](#the-workflow), else the main checkout's folder name; the plan is `--plan`, else the plan this session already leads, else the branch. It prints the `/rename` line that shows the name now. Refused outside a Claude Code session, in a worker, in a session in bypass mode, and while workers are off ([`workers.enabled`](#the-workflow)). |
 | `cc-smart-dev-kit worker start <phase> --slug <slug> --kind <kind> --brief <file\|-> [--base <ref>] [--files <glob,…>] [--model <model>] [--effort <effort>] [--waits-for <phase,…>]` | Starts one worker for a lead: a background Claude Code session named `W <tag> <phase> <slug>`, in its own worktree `.claude/worktrees/wk-<phase>-<slug>` on the branch `wk/<phase>-<slug>`, cut from `--base` or the lead's branch. **It returns at once** with one line: `started` (with the session's short id, the model and effort, the branch and its base commit), `queued` (and why: the phases it waits for, [`workers.max`](#the-workflow) or `workers.maxOpus` reached, or too little free memory — the lead's watch starts it later), or `failed` (and why). The kind gives the model and effort (`build`, `docs`, `tests` on sonnet; `security`, `money`, `permissions`, `schema`, `deploy`, `architecture`, `ui` on opus at `xhigh`); `--model`/`--effort` override them, judged by the agent guard's rules, and one the guard would ask you about (opus at `max`, Fable) is refused: start that session yourself. The brief (`-`: stdin) is saved with a fixed frame: commit on your branch and never push (the lead handles git), how to hand back, and how to ask the lead a question — a worker never asks you. Run `worker lead` in the session first. A repository you never opened with `claude` is refused ("Workspace not trusted"): open it once and accept the trust prompt. |
@@ -1098,19 +1097,6 @@ recognises the check by its prompt. If Claude Code rewords that prompt, the chec
 routed by its model name until the router is updated (see
 [docs/gateway.md](docs/gateway.md) § Known limits; [roadmap](docs/roadmap.md) Phase 3).
 
-### Web search
-
-`cc-smart-dev-kit search "bun runtime latest version"` searches the web through the same
-OmniRoute backend, with the same key: it prints each result's title, its URL and a short
-snippet, and the whole output is cut to about 2500 characters (`--json` prints the whole
-answer). `--fetch <url>` reads one page's text instead. It needs the gateway set up — its
-own error says so when it is not — and `--fetch` needs a web-fetch provider key inside
-OmniRoute. With the default setup a search is free: Ollama's web search costs $0.00, and
-OmniRoute caches a query for five minutes. Your OmniRoute key goes only to OmniRoute, but
-the query (or the URL) goes on to the search or fetch provider on the internet, so never
-put a key, a private host name or private data in it. The details, the measured numbers
-and the limits: [docs/search.md](docs/search.md).
-
 ### OmniRoute updates
 
 The affordable slots answer through OmniRoute, a program a person installs themselves (a
@@ -1390,7 +1376,7 @@ cc-smart-dev-kit, or one who ran `cc-smart-dev-kit setup --no-instructions`, the
 import loads nothing — Claude Code gives no error. `cc-smart-dev-kit doctor`, run in the project,
 names such a missing import.
 
-**19 skills** (`/cc-smart-dev-kit:<name>`; each also loads on its own when its topic comes up):
+**18 skills** (`/cc-smart-dev-kit:<name>`; each also loads on its own when its topic comes up):
 
 | Skill | Use it for |
 |---|---|
@@ -1410,7 +1396,6 @@ names such a missing import.
 | `ui-verify` | A browser check of a UI change, and your design verdict. |
 | `worktree` | The steps of one-worktree-per-session work (for projects that opt in). |
 | `gateway` | The optional AI gateway. |
-| `search` | Quick web lookups and one page's text through the gateway (`cc-smart-dev-kit search`). |
 | `lead` | Leading worker sessions: register, start each phase, hear the news without waiting, route questions, merge. |
 | `worker` | Inside a worker session: build the phase end to end, mark each step, ask the lead, hand back the report. |
 
@@ -2501,7 +2486,6 @@ See `.claude/CLAUDE.md`. In short: `bun install`, change `src/`, `bun run build`
 
 - [Design](docs/design.md): how the parts fit, and why.
 - [The AI gateway](docs/gateway.md): the router, its slots, and the judge.
-- [Web search](docs/search.md): `cc-smart-dev-kit search`, its cost and its limits.
 - [Roadmap](docs/roadmap.md): the phases, done and ahead.
 - [Heavy jobs](docs/jobs.md): the machine-wide queue, its kinds, config and limits.
 - [Claude Code contract](docs/claude-code-contract.md): the Claude Code behaviour the

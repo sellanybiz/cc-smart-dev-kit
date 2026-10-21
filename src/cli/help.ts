@@ -25,7 +25,6 @@ import { ALERT_WORKER_COMMAND } from "../hooks/stop-failure";
 import { USAGE as JOB_USAGE } from "../jobs/commands";
 import { USAGE as OMNIROUTE_USAGE } from "../omniroute/commands";
 import { PORTAL_USAGE } from "../portal/command";
-import { USAGE as SEARCH_USAGE } from "../search/command";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { WORKER_USAGE } from "../workers/command";
 import { WORKFLOW_USAGE } from "../workflow/commands";
@@ -266,7 +265,6 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   { name: "worktrees", listed: "more", help: WORKTREES_HELP },
   { name: "usage", listed: "more", help: USAGE_HELP },
   { name: "report", listed: "more", help: REPORT_USAGE },
-  { name: "search", listed: "more", help: SEARCH_USAGE },
   { name: "portal", listed: "more", help: PORTAL_USAGE },
   { name: "mcp", listed: "more", help: MCP_HELP },
   { name: "omniroute", listed: "more", help: OMNIROUTE_USAGE },

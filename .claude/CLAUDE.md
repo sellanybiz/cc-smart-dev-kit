@@ -65,7 +65,6 @@ the first time you use it.
 | `src/omniroute/` | OmniRoute, the program the affordable slots answer from: which release a machine may install (`registry.ts`), where it is installed and its unit (`install.ts`), and the `omniroute` command (`commands.ts`). |
 | `src/portal/` | The portal's server and its door (`guard.ts`), the pages (`views.ts`, `assets.ts`), the actions that run the CLI's own code, and the `portal` command (`command.ts`; `.claude/rules/portal.md`). |
 | `src/update/` | The self-update: the SessionStart hook's part, the detached background check, `cc-smart-dev-kit update`'s steps, and their state files. |
-| `src/search/` | The `cc-smart-dev-kit search` command: web search and one page's text through the gateway's OmniRoute backend. |
 | `src/browser/` | The browser: finding the person's Chrome and its `claude-code` profile, the token file, the Playwright MCP launcher (`browser mcp`, extension mode), `browser setup`/`token`/`check`, and `doctor`'s browser lines (`.claude/rules/browser.md`). |
 | `src/mcp/` | The MCP servers `setup` registers at user scope: the registrations (`servers.ts`), Claude Code's own `claude mcp` commands around them (`register.ts`), the record of what it registered (`records.ts`), the Tavily key (`tavily.ts`), what `mcp status` reports (`status.ts`), `doctor`'s lines (`doctor.ts`), and what setup takes back of a server it retired — Serena's registration, context file and records (`retired.ts`). |
 | `src/sessions/` | The `cc-smart-dev-kit sessions` command: reading Claude Code's saved sessions, and reopening the ones a restart or a closed window stopped. |
@@ -113,7 +112,7 @@ Each rule loads itself when you touch a file it covers.
 | `hooks.md` | `src/hooks/`, the hook entries in `src/entries/`, `plugin/hooks/`, `plugin/bin/` | The hook contract (Phase 3). |
 | `browser.md` | `src/browser/`, `src/hooks/playwright-output*`, `src/mcp/`, `src/testing/chrome-world.ts` | The browser: never stdout, the required token, Chrome's own profile, read-only Preferences, the costs upstream will not fix. |
 | `setup-and-managed-files.md` | `src/setup/`, `src/cli/`, `src/machine/`, `src/mcp/`, `src/update/`, `src/workflow/write.ts` | How the command changes user files and the system. |
-| `gateway.md` | `src/gateway/`, `src/search/`, `src/entries/router.ts`, the gateway skill and doc | Never change prompt text; the login reaches Anthropic only; the judge is a fallback only; every slot works the same way, each with its own fallback switch; secrets; restarts. |
+| `gateway.md` | `src/gateway/`, `src/entries/router.ts`, the gateway skill and doc | Never change prompt text; the login reaches Anthropic only; the judge is a fallback only; every slot works the same way, each with its own fallback switch; secrets; restarts. |
 | `portal.md` | `src/portal/`, `src/omniroute/`, `src/entries/portal.ts` | The portal's door; OmniRoute's three-day rule. |
 | `cc-smart-dev-kit-json.md` | `src/project/`, `src/workflow/schema.ts`, `src/jobs/kinds.ts` | The `.claude/cc-smart-dev-kit.json` contract. |
 | `installer.md` | `install.sh`, `install.ps1`, `scripts/install*` | The one-command installer: it ships on merge, its exit codes, its secret cleaners, the Windows smoke test. |
@@ -135,7 +134,6 @@ Each rule loads itself when you touch a file it covers.
   version it was last proved on, and how.
 - `docs/gateway.md` — the AI gateway: how it routes, what it changes and never changes,
   the service, and its limits.
-- `docs/search.md` — `cc-smart-dev-kit search`: how it works, what a search costs, and its limits.
 - `docs/jobs.md` — the heavy-job queue: how a job waits and runs, the kinds, the config,
   the shared view, and its limits.
 - `docs/windows-setup.md` — native Windows: the one path layout, the `.cmd` launcher, file

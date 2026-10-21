@@ -12,7 +12,6 @@ import { ALERT_WORKER_COMMAND } from "../hooks/stop-failure";
 import { USAGE as JOB_USAGE } from "../jobs/commands";
 import { USAGE as OMNIROUTE_USAGE } from "../omniroute/commands";
 import { PORTAL_USAGE } from "../portal/command";
-import { USAGE as SEARCH_USAGE } from "../search/command";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { WORKFLOW_USAGE } from "../workflow/commands";
 import { workflowDefaults } from "../workflow/schema";
@@ -67,7 +66,6 @@ describe("the command table", () => {
     expect(helpTextFor(["omniroute"])).toBe(OMNIROUTE_USAGE);
     expect(helpTextFor(["job"])).toBe(JOB_USAGE);
     expect(helpTextFor(["workflow"])).toBe(WORKFLOW_USAGE);
-    expect(helpTextFor(["search"])).toBe(SEARCH_USAGE);
     expect(helpTextFor(["portal"])).toBe(PORTAL_USAGE);
     expect(helpTextFor(["project", "init"])).toBe(PROJECT_INIT_USAGE);
     expect(helpTextFor(["update"])).toStartWith(UPDATE_USAGE);
@@ -108,8 +106,8 @@ describe("the top-level help", () => {
       `  ${COMMAND} doctor              the health check`,
       "",
       "More commands: workflow, update, restore, migrate, sessions, worktrees,",
-      "  usage, report, search, portal, mcp, omniroute, job, worker, hook,",
-      "  statusline, version",
+      "  usage, report, portal, mcp, omniroute, job, worker, hook, statusline,",
+      "  version",
       `Help on one:  ${COMMAND} ${HELP_COMMAND} <command>   (or <command> --help)`,
     ].join("\n");
     expect(topLevelHelp()).toBe(expected);
