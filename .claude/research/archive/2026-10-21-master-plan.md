@@ -486,3 +486,38 @@ Probe sessions on `--model haiku --effort max`; the person's settings run every 
   rm' again" — the worktree was locked "claude session wk-probe-trust (pid … start …)" after a
   `claude stop`. So `worker rm`: stop, unlock, the kit's own verdict and removal, then
   `claude rm`.
+
+## L1a.2–L1a.5 — Guard, task-tool, gateway and auto-mode proofs (2026-10-21, 2.1.306)
+
+- **A named workflow (R9 P1): proved.** The PreToolUse `tool_input` is `{"name":"probe"}` for a
+  saved workflow, `{"scriptPath":"<abs>"}` for a path run, and `{"name":"<plugin>:<meta.name>"}`
+  for a plugin's workflow (its slash command expands to `Workflow({ name: "<plugin>:<name>" })`)
+  — never a `script`. An unknown bare name fails validation before PreToolUse. A built-in
+  (`deep-research`) has no file to read. Each run's script is saved under
+  `~/.claude/projects/<slug>/<session>/workflows/scripts/`, and `workflows/<runId>.json` holds
+  `workflowProgress[]` with each agent's resolved model.
+- **SubagentStart / SubagentStop for workflow agents (R9 P2): proved — both fire once per
+  `agent()`**, nested ones too. `agent_type` is `"workflow-subagent"`, or the script's
+  `agentType`; SubagentStop carries `agent_transcript_path`, `effort.level`,
+  `last_assistant_message`. (Undocumented: a "seen" contract row.)
+- **The override order (R9 P6): proved.** Model: `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` (with
+  `CLAUDE_CODE_SUBAGENT_MODEL`, else the session's model) > `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`
+  (workflow agents only) > the call's `model` > plain `CLAUDE_CODE_SUBAGENT_MODEL` (only when the
+  call names none — a hunch). Effort: `CLAUDE_CODE_EFFORT_LEVEL` > the call's `effort` and the
+  session's `--effort`. The process environment and the settings' `env` behave the same.
+  **Under FORCE or `CLAUDE_CODE_EFFORT_LEVEL`, Claude Code removes `model` / `effort` from the
+  Agent tool's schema, and the PreToolUse input carries `null` for them — so the installed
+  0.6.0 agent guard refuses every Agent launch ("names no `model`" / "names no `effort`")
+  there.** A live bug; G1 fixes it by judging the forced model and effort from the environment.
+- **Task tools (L1a.3): proved.** TaskCreate/Get/List/Update are absent in `claude -p` (Opus and
+  Haiku), present in every `claude --bg` session, and turned on by
+  `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`. This lead is a background session, which is why it has them.
+  So M also manages `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` (an interactive session is still unproved).
+- **The gateway with `--model sonnet --effort max` (P11): proved.** The whole background session
+  ran on the worker slot's first target; every request carried `output_config.effort: "max"`.
+- **D31 (auto mode's "Merge Without Review"): proved.** In auto mode, a `gh pr merge` that comes
+  only from a project instruction (not the person's own message) is blocked by the classifier
+  ("[Merge Without Review]"); a PreToolUse hook answering `allow` on that call skips the
+  classifier ("source hook") and it runs. The person's own message naming the command is allowed
+  by the classifier itself. The hook's `allow` skips every classifier rule for that call — so it
+  must fire only for an exact merge command whose whole policy passes.
