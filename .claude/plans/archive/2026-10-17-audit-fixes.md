@@ -2,9 +2,9 @@
 
 **Summary.** Ten read-only audits of 0.5.0 found 8 high and about 40 medium findings: backend keys sent through a proxy, guard bypasses, a review gate a session can switch off, Windows paths that break the job queue and the instructions copy, and portal and browser gaps. This plan fixes all of them in one release (0.6.0), adds the owner's slot switch (Claude | Custom on every slot, a chain never forgotten), rebuilds the CLI's output and the portal (live updates, a real design), and cuts the always-loaded instructions roughly in half, measured by a new eval suite. Each fix starts with a failing test that reproduces its finding.
 
-**Status:** In progress (approved by the owner 2026-10-17; wave 1 started)
+**Status:** Superseded on 2026-10-21 by `.claude/plans/2026-10-21-master-plan.md`, which carries every phase still open (merged on `release-0.6.0`: A1, A3, A5, A7, B4, C0, C3, C5a; the rest continues there by name). Its briefs below stay the reference for those phases.
 
-**Evidence:** `2026-10-17-audit-fixes.findings.md` (every finding, condensed). Baseline at HEAD 8584167: `bun run check` green (3,028 tests pass), both validates pass, `core.md` 189 lines.
+**Evidence:** `.claude/research/archive/2026-10-17-audit-fixes.findings.md` (every finding, condensed). Baseline at HEAD 8584167: `bun run check` green (3,028 tests pass), both validates pass, `core.md` 189 lines.
 
 ## Decisions
 

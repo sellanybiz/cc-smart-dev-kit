@@ -1,0 +1,317 @@
+# The kit, A to Z: safety and workers (1.0.0), the portal and instructions (1.1.0), the gateway per project (1.2.0)
+
+**Summary.** Three releases finish everything that is open. **1.0.0** merges main into the paused audit release, deletes the old worktree engine (its fields are rejected, and a major version waits for the person), finishes the safety track, makes a review count for its fix commits, closes the agent guard's holes, switches claude-mem's start blocks off, and adds **lead + worker sessions**: a small lead that starts background workers, never waits, and hears from them as they finish. **1.1.0**, built by those workers, rebuilds the portal (live, with a Work view of every session and worker), trims the instructions, adds the auditor and builder agents and an audit workflow. **1.2.0** turns the gateway on or off, and picks its models, per project and per session.
+
+**Status:** In progress (approved by the owner 2026-10-21; wave 0 started)
+
+**Supersedes** `.claude/plans/archive/2026-10-17-audit-fixes.md` ("the audit plan": its phases, briefs and § Portal design are folded in here by name; its findings, `.claude/research/archive/2026-10-17-audit-fixes.findings.md`, stay the evidence for them). **Evidence:** `.claude/research/archive/2026-10-21-master-plan.md` ("the research file": R1–R9, with every claim the lead checked in the code; archived on approval, D32). Baseline: `release-0.6.0` `01a808a` (pushed as a backup, 2026-10-21), `origin/main` `1c3c0b2` (0.6.0), Claude Code 2.1.306 installed, 2.1.300 tested. Second read: `cc-smart-dev-kit:reviewer` (opus, xhigh), 5 high / 13 medium / 17 low findings, all applied below.
+
+## Decisions
+
+D1–D16 are the audit plan's and keep their meaning, with three changes: **D4** (one release) is replaced by D18; **D5** is replaced by D13; **D11** shipped in 0.5.5 and is merged, not rebuilt (C3b is reference only).
+
+| # | Decision | Status |
+|---|---|---|
+| D17 | **A review counts for its PR or branch and the fix commits after it.** A review of commit R covers head H when R's record names H's branch and the change since R — the base's own changes taken out — stays within the limits committed on the base: `workflow.fixesAfterReview` `{lines: 200, files: 10, percent: 20}` (0/0/0 = exact head only). Generated files are listed, not counted; a binary file or anything unreadable asks, with the reason. A bigger change still asks. `review-record` stores the branch and records the start commit when HEAD moved during the review. Needs git ≥ 2.40 (doctor says so); older git means exact head only. | Owner's direction 2026-10-19; limits are the lead's (R5): of the measured fix rounds, 10% is covered, 105% and 160% ask |
+| D18 | **Three releases:** 1.0.0 safety + workers; 1.1.0 portal, instructions, agents, workflows; 1.2.0 the gateway per project and per session. Workers build 1.1.0 and 1.2.0. | Owner, 2026-10-21 |
+| D19 | **Version 1.0.0** for the first: rejecting a `cc-smart-dev-kit.json` field is a major step by the release skill's own rule. | Owner, 2026-10-21 |
+| D20 | **The worktree engine is deleted, and its fields are rejected** (`worktrees.prefix`, `setup`, `engine`): the error names the field, the fix and `doctor`; `project init` removes them, and any engine hook lines, in one run; doctor finds leftover engine lines by their text. `hook notify` stays. | Owner, 2026-10-21 |
+| D21 | **Workers by phase kind:** build, docs, tests → `sonnet` (the worker slot; effort `max` on an affordable slot, `high` on Claude); security, money, permissions, schema, deploy, architecture, UI → `opus` at `xhigh`. Every worker's one review is an Opus subagent at `xhigh`. One person override per worker. | Owner, 2026-10-21 |
+| D22 | **A worker makes its phase fully ready** (code, failing test first, docs, the whole suite, its own pass, one Opus review, the fixes, its commits, a hand-back report). **The lead's gate is mechanical:** the report, `workflow merge-check --branch` (the review record covers the branch head under D17), and one full check run on the integrated branch after each merge (in the background); a diff only when something does not add up. | Owner, 2026-10-21; the local gate follows from D24 |
+| D23 | **claude-mem's two start blocks off on every machine** (`CLAUDE_MEM_WORK_STATE_ENABLED=false` also removes the work_state tools; `CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED=false`). To-do lists → Claude Code's task tools where the session has them (L1a proves which sessions do; M turns them on if needed), else the plan file; durable state → the plan file; knowledge → claude-mem memory. `setup` lists every project's open lists, read-only, before it switches, with the one-line way back. | Owner, 2026-10-21 |
+| D24 | **A worker commits on its own branch and never pushes; the lead merges locally.** The git guard refuses a push from a worker session whatever `autoPush` says. Only the lead's final push asks. | Owner, 2026-10-21 |
+| D25 | **Nothing blocks the lead.** `worker start` returns at once (proved: 1.1 s); a worker's news arrives by itself (a monitor line, a hook note, or a message); the lead never sleeps, polls or asks "done?"; its own long waits run in the background. Long workers hand off rather than run forever. | Owner, 2026-10-21 |
+| D26 | **Names that show the role:** `LEAD <tag> <plan>` and `W <tag> <phase> <slug>` (role and phase first, so they survive truncation; never a trailing `]`). One home: `src/workers/names.ts`. | Owner's ask; scheme is the lead's (R4) |
+| D27 | **The portal shows everything it can about work:** every session and worker (role, name, project, plan, phase, model and slot, effort, state and since when, worktree, branch, PR with CI and review, last line, what it waits for, tokens), the flow report, and each open PR's and worker branch's merge-guard verdict. On the page: Stop and copy-attach only. | Owner, 2026-10-21 |
+| D28 | **Claude Code workflows, a few:** the audit skill with an `audit-run` workflow (1.1.0); a review split by track after its proof; a research sweep later. Never for a release check, a worker's loop, or starting workers. The guard learns to judge every workflow run first (1.0.0). | Owner's ask; scope is the lead's (R9) |
+| D29 | **Gateway per project through profiles:** a project's URL names a profile (`…/p/<profile>`); `gateway.json` gains `profiles`; an unknown profile answers as plain Claude; the team file holds only off or default; a session launch uses `--settings`. | Lead's recommendation (R6); the owner confirms at 1.2.0's start |
+| D30 | **Planning rules:** before a major change the plan offers "play safe" (keep fallbacks, compatibility, legacy paths) or "go fully new"; every plan's last stage is a heavy cleanup, run only once everything is verified live. | Owner, 2026-10-19 |
+| D31 | **Auto mode's built-in "Merge Without Review" block:** after the proof L1a.5, either the merge guard answers `allow` when its whole policy passes, or setup writes one narrow `autoMode.allow` entry the person approves; built in D17b. | Pending the proof |
+| D32 | **Research has its own folder.** Research for a plan is saved in `.claude/research/<date>-<slug>.md` before the plan is written (a project's add-on may name another place); the plan's Research section condenses it and links it; when the plan is approved, the research file moves to `.claude/research/archive/` and the link follows. Built into the plan-task and research-first skills (W5); this plan follows it now. | Owner, 2026-10-21 |
+| D33 | **A major version waits for the person.** The self-update installs patch and minor versions as today, but holds a new major until the person runs `cc-smart-dev-kit update`; each session start shows one line pointing to "What's new". `update` and `setup` first list every repo the session records name that still carries a retired field or an engine hook line. | Lead, from the second read (a 1.0.0 that rejects old fields must not reach every machine within the hour) |
+
+Defaults the lead set, the owner may change at approval: a worker cap of 4 per machine plus a free-memory check; workers run in `auto` permission mode (the person's rules plus the safety classifier; `dontAsk` with an allow list would fail closed instead — L1a proves a worker runs the whole suite and commits without a prompt); quiet after 20 minutes (alert only); hand-off at 70% context, a note at 2 hours, a hand-off at 4; the lead hears through a plugin monitor (`worker watch`), with `worker watch --once` in the background and SendMessage as fallbacks; a raw `claude --bg` asks and shows the launcher's line.
+
+## Goal
+
+The kit makes Claude Code fast, parallel and professional, and is safe to hand to anyone. When this plan is done:
+
+1. A person talks to one small lead session. It plans, starts workers in parallel, never waits, merges their finished phases and asks only real decisions. Every session and worker is visible in agent view and the portal, by name, with its state.
+2. A finished, reviewed PR or branch merges without a question when the project allows it; a large unreviewed change still asks.
+3. No audit finding above "low" is open; every guard judges what really runs (models forced by the environment, workflows run by name).
+4. The always-loaded instructions are shorter and measured; to-dos have one home.
+5. The gateway can be on in one project and off in another, and one session can start without it.
+
+## Research
+
+Nine read-only agents (R1–R9) and the lead's own checks; condensed with sources in the research file. What it changes in this plan:
+- The release branch is half built (8 phases merged, 8 saved as work in progress, 15 not started), and its merge with main has three traps that do not show as conflicts — R2.
+- The merge waits come from the guard's exact-head rule (waits up to 716 minutes in real transcripts) and, in auto mode, from a built-in classifier rule no environment entry can lift — R5.
+- Background sessions are the right worker: started from the lead's Bash, they return at once and show in agent view (proved live 2026-10-21); messages between sessions reach busy and idle receivers; what is missing natively (a lifecycle, a report, a board, guard coverage, names, stuck alerts) the kit builds — R4.
+- claude-mem's to-do push is why sessions use work_state; its start note overflows Claude Code's hook limit in one start in six — R7.
+- The agent guard misses four routes: `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`, `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`, `CLAUDE_CODE_EFFORT_LEVEL`, and any workflow run by name or path — R8, R9.
+- A per-session gateway cannot work through environment variables (a settings file beats them); `--settings` can — R6.
+
+## Code exploration
+
+The lead checked in the code: `src/workflow/reviews.ts:134` (exact sha), `src/hooks/merge-guard.ts:544`, `src/hooks/review-record.ts:98-99` and `merge-guard.ts:414` (a repo with no `.claude/cc-smart-dev-kit.json` records and checks nothing — this repo has none), `src/hooks/agent-guard.ts:1282` (no script → silent), no override variable read anywhere in the guard, `src/hooks/agent-launches.ts:136` (`reasonWord`), `src/hooks/review-record.ts:91-94` (`agent-<hex>` skipped), `src/gateway/router.ts:1444,1515`, `src/cli/restore.ts:260`, `src/update/background.ts` (a release reaches every machine within the hour; `update --hold` exists), the merge tree's `src/cli/setup.ts:883`, `src/hooks/matrix.test.ts:112,226`, `.claude/rules/hooks.md:15`, claude-mem 13.40.0's two switches, `claude auto-mode defaults`, and this interactive session (Opus 5.5) offering Claude Code's task tools with no setting forcing them. This repo sets no `worktree.baseRef`, so subagent worktrees branch from `main` today.
+
+## How we build
+
+- **The lead** (this session; named `LEAD kit master-plan` once W1a lands) owns: this plan file, the merge of main, `plugin/.claude-plugin/plugin.json` and the installers' version lines, `plugin/dist` (one `bun run build` in the main folder after each merge — never in a worktree), `bun.lock`, `docs/roadmap.md`, `docs/claude-code-contract.md` rows, `.github/workflows/*.yml`, README "What's new", the `.claude/CLAUDE.md` Layout table, the "plugin/ holds" list in `.claude/rules/bundles-and-releases.md`, the live proofs, the release PRs.
+- **1.0.0 is built with subagents** in their own worktrees (`isolation: "worktree"`), branched from the release branch once L0 sets `worktree.baseRef: "head"`. **1.1.0 and 1.2.0 are built by workers** — the kit's own system on itself. If P14 shows workers are not ready, 1.1.0 is built with subagents too.
+- **A builder's brief** names its phase, files, patterns, done-check and limits; a failing test per finding first; `bun run typecheck`, `bun run lint`, its done-check, `check:neutral`, `check:duplicates` and the whole `bun test` once; never `build:check` (the lead's). A builder commits `wip(<phase>)` checkpoints on its own worktree branch at each green step, so a stopped session loses nothing; the lead reads its full diff, reruns its tests, squashes it into one phase commit and merges it. Approving this plan is the owner's yes to those local commits; every push and PR still follows `cc-smart-dev-kit workflow show`.
+- **Models** (1.0.0): `opus` → Claude Opus (the opus slot is off), effort `high` for building, `xhigh` for the hardest design (K, W1a); `sonnet` → the worker slot (an affordable model; effort `max`). **At most 4 Opus builders at once** — the lead shares the same login and plan window; the waves below keep to it. Reviews: `cc-smart-dev-kit:reviewer` on `opus` at `xhigh`.
+- **One review per release**, before its push, split by track into parallel reviewers, once the release is complete and green — never per phase in 1.0.0. From 1.1.0, each worker's phase carries its own review (D22) and the lead's integration commits get one small integration review.
+
+## Release 1.0.0 — safety and workers
+
+### Waves
+
+| Wave | Phases (start together) | Waits for |
+|---|---|---|
+| 0 | L0 merge and set-up; L1a the deciding proofs (both lead) | nothing |
+| 1 | K contracts (opus), E1a (opus), A1b (opus), B1 (sonnet), M (sonnet) | L0 |
+| 2 | E1b (sonnet) | E1a |
+| | G1 (opus) | K, L1a.2 |
+| | D17a (opus) | K |
+| | W1a (opus) | K, L1a.1 |
+| | U1 (opus) | E1a |
+| | R1 (sonnet) | B1 (help table) |
+| 3 | A2 (opus), A6 (sonnet) | E1b; A6 also K |
+| | G2 (opus) | G1, L1a.2 |
+| | W1b, W1c (sonnet) | W1a; W1b also L1a.1 (monitors) |
+| | W5 (rules-maintainer, opus) | W1a |
+| 4 | A4 (opus) | A2, E1b, G2 |
+| 5 | A4e (opus), A4b (opus) | A4 |
+| | W2 (sonnet) | W1b, A4 |
+| 6 | W4 (opus) | A4b, G1, L1a.1 |
+| | D17b (opus) | A4b, D17a, L1a.5 |
+| 7 | L2 close (lead); L1b the remaining proofs run during waves 1–6 | every phase |
+
+A phase whose files another phase edits branches after that phase lands; everything else runs at once. On each hand-back the lead checks it, merges it, rebuilds, and in the same turn starts what it unblocked. Each wave holds at most 4 Opus builders.
+
+### L0 — Merge main and set up (lead)
+
+- Create `release-1.0.0` at `01a808a` (`release-0.6.0` stays untouched as the backup); on it, `git merge --no-ff --no-commit origin/main`; resolve per the research file § R2 (main's instructions-copy rule; agent-guard = main's D11 plus C3's parts, D13's `EFFORT_USE`; after-merge without the engine check, its fallback line `worktrees --remove`; setup's MCP plan combined; no Serena anywhere). Fix what merges silently: `src/cli/setup.ts:883` `mcp.removed`; `matrix.test.ts:112,226` and `agent-guard.test.ts:1203` → `low`; `.claude/CLAUDE.md:79`, `.claude/rules/hooks.md:15,362`; `reviews.ts:69,116`; `design.md:1284,1781`; README:2127-2132; `gateway.md:604` (each line checked on the merged tree first). Switch main's three raw `JSON.parse` user-file readers to `readUserJson` (`managed-hook.ts:171`, `user-notify-hook.ts:105`, `retired.ts:187`).
+- Check: no conflict markers; `git grep -n -i serena` shows only main's retired lines; `bun run build` in the main folder; `git diff --stat plugin/dist` shows no `router.js` line for the merge and `serena-root.js` deleted; `bun run check` and both validates green. Commit the merge with the bundles.
+- Small contracts every later phase builds on, in their own commit: move `subagentWorktreeOf` out of `worktree-remove.ts` into its own home (E1 and D17a both need it).
+- Set `worktree.baseRef: "head"` in this repo's `.claude/settings.json`. Run C0's fast eval tier once and save the new baseline (W5 compares against it). Delete the untracked `.serena/` folder (`supabase/` is not ours: leave it, never stage it). Remove the probe session (`claude rm 1e5573fd`) once the owner has seen it. Prune merged builder worktrees with `cc-smart-dev-kit worktrees`.
+- This repo's own kit settings (the owner said yes, 2026-10-21): `cc-smart-dev-kit project init` writes `.claude/cc-smart-dev-kit.json` (`worktrees.base: main`, `guardMainFolder: false` — the lead merges and builds in the main folder —, the review gate on, `autoMerge` off: the merge waits for the owner), so the review record and the merge guard work here; otherwise L1a proves D17 and the worker review in a temp repo.
+- Close this repo's open work_state lists into this plan (§ Carried over) before M ships.
+- On approval (done 2026-10-21): the research file and the audit plan's findings moved into `.claude/research/archive/` (D32); the audit plan marked Superseded and moved to `.claude/plans/archive/`.
+
+### L1a — The proofs that decide a design (lead), wave 0
+
+Each in its own process with its own settings and a temp repo where needed, never through this session's own model path. Each result goes into `docs/claude-code-contract.md` and settles the branch named.
+1. **Workers (R4):** P1 the launch shape (`--settings` env reaches the worker's Bash; `--session-id`); P4 a plugin monitor wakes an idle session, **and runs inside a `--bg` session, and with telemetry off**; P5 an added `run_in_background` is honoured; P6 the reminder events; P7 a launcher-made worktree opened with `claude --bg -w <name>` (and EnterWorktree by name), an Edit into the main checkout refused, a commit without a prompt, the reviewer's record of the worktree's HEAD; P13 the lead's identity; a worker in `auto` mode runs the whole suite and commits with no prompt. → W1a, W1b, W2, W4.
+2. **The guard (R9):** P1 what a named workflow run puts in `tool_input`; P2 whether SubagentStart and SubagentStop fire for workflow agents; P6 the order of the model and effort overrides. → G1, G2.
+3. **Task tools:** which sessions offer TaskCreate — interactive on the default model, background, `-p` — and whether `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` turns them on. → M, W5.
+4. **The gateway:** `--model sonnet --effort max` routes the whole worker through the slot (P11). → W1a's effort reader.
+5. **D31:** does the merge guard's `allow` pass auto mode's "Merge Without Review" block? Then the owner chooses. → D17b.
+
+### L1b — The other proofs (lead), during waves 1–6
+
+R4's P3 (a worker's SendMessage to a busy and an idle lead, interactive and background), P8 (names and truncation in agent view, `claude attach` by part of the name, `sessionTitle` renaming a row), P9 (a nested review's cost inside a worker), P10 (`claude agents --json` timing and states), P12 (memory per worker); A1b's thinking proof; GW-4 (the backend 4xx answer), SubagentStart and the PostToolUse launch record — the rows the audit owed; from the hand-over, the 0.5.3 managed hook's needs-input alert from the agent list, and an Opus builder from a background session running with no question; P14 (one real worker for about 2 hours on an affordable slot) once W2 lands.
+
+### K — The contracts
+
+Owner: general-purpose builder, `opus`, xhigh (architecture). Wave 1, alone in its files, short. No behaviour change.
+- `src/models/launch-policy.ts`: the pure policy moved out of `agent-guard.ts` (`resolveLaunchModel`, tiers, `ALLOWED_EFFORTS`, the Fable reason words) plus `WORKER_KINDS` (D21) — the one home the guard, the launcher and the Bash judge import; `agent-guard.ts` re-imports it.
+- `src/workers/names.ts`: `leadName`, `workerName`, `roleOf`, `cleanSessionName` with `MAX_SESSION_NAME` moved from `session-name.ts` (which keeps importing it; `notify.ts` too).
+- `src/workers/store.ts`: the worker record and the lead record, `events.jsonl` (with a schema version for older processes), paths under the state folder by repo key (the key `reviews.ts` uses), atomic writes, the states (`queued | starting | working | blocked | paused | quiet | done | failed | stopped | handoff | merged | removed`), the hand-back report's shape.
+- `src/workflow/schema.ts`: the `workflow.workers` block (`max`, `memoryGb`, `quietMinutes`, `handoffPercent`, `softHours`, `maxHours`, `tag`) and the `workflow.fixesAfterReview` gate key, with defaults and comments; nothing reads them yet. `.claude/rules/cc-smart-dev-kit-json.md` rows (optional fields: minor contract change).
+- `docs/design.md` § Lead and workers (the store and the names; later phases extend it).
+- Done-check: `bun test src/models src/workers src/workflow src/hooks/agent-guard* src/hooks/session-name*`; names under truncation keep role and phase; a record from a newer schema is read without error; the guard's tests pass unchanged.
+
+### E1a, E1b — Delete the worktree engine; reject its fields (D20)
+
+- **E1a** (`opus`, high, schema; wave 1): one `RETIRED_WORKTREE_FIELDS` list in `src/project/config.ts`, checked in `parseCcSmartDevKitConfig` after `checkRequires`: "`worktrees.prefix` is no longer supported: remove it — Claude Code's own worktrees need none (`cc-smart-dev-kit project init` does it; README § Worktrees)"; `src/workflow/write.ts` routes through the same check; `project init` (CLI and portal) removes the retired fields and any `cc-smart-dev-kit hook worktree-create|worktree-remove|subagent-stop` lines from the project's settings, shown as − lines before it writes, through `src/setup/`; doctor names leftover engine lines by their command text; `hook` with an engine name prints the fix on stderr. Edge cases: a file with only `prefix`; one with all three; a committed base file still holding them (the merge guard asks, naming the field); engine lines beside other hooks; a worktree's file that differs from the main checkout's. Done-check: `bun test src/project src/cli/project-init* src/cli/project-checks* src/workflow`; each retired field fails with its named message; `project init` on that fixture writes a file that loads.
+- **E1b** (`sonnet`, max; wave 2): delete per the research file § R3 — `src/hooks/worktree-create.ts`, `worktree-remove.ts`, `create-lock.ts`, `project-wiring.ts` and tests; the engine specs, `needsWorktrees`, `PROJECT_HOOKS` (`specs.ts`), the frame's `wiring: "project"` step (`run.ts`); the engine parts of `project-checks.ts`, `live-check.ts`, `hook-commands.test.ts`, `entries/cli.ts` (keep `hook notify`), the sessions prefix matching, `scripts/windows-hook-smoke.sh:85-98`, `evals/cases/edit-in-worktree/scaffold.sh:9`; docs (README, design.md, roadmap, contract, `windows-hooks.md`, `.claude/rules/hooks.md`, `.claude/rules/cc-smart-dev-kit-json.md`, `plugin/instructions/optin/worktrees.md`; the `.claude/CLAUDE.md:74` text goes to the lead). Done-check: `bun test src/hooks src/cli src/sessions src/worktrees`; `hook notify` still dispatches; the whole `bun test`.
+
+### U1 — A major version waits for the person (D33)
+
+Owner: general-purpose builder, `opus`, high (deploy plumbing). Wave 2.
+- `src/update/`: the background check installs a patch or minor as today and holds a new major (`Bun.semver`), writing a "held" state; the session-start part prints one line ("cc-smart-dev-kit 1.0.0 is ready: it rejects old project fields — read What's new, then run `cc-smart-dev-kit update`"); `update` installs it on the person's word. `update` and `setup` first scan the repos named in Claude Code's session records (`src/sessions/`) for retired fields and engine hook lines and list them with the fix. README § update, `docs/design.md` § the self-update.
+- Edge cases: `update --hold` already set; a machine two majors behind; an old process's background check (it cannot know the rule — the held state is written by the new code only, so an old checker installs 1.0.0 once: say so in What's new and test what an old checker does with a major).
+- Done-check: `bun test src/update src/cli/setup*`; a fake catalog with 0.6.0 → 0.6.1 installs, 0.6.0 → 1.0.0 holds.
+
+### A1b, A2, A6, B1 — continue the saved work
+
+Each builder starts from its WIP commit (check out its WIP branch in a fresh worktree and merge `release-1.0.0` in), reads the audit plan's brief for its phase, and finishes the missing parts the research file § R1 lists, with R2's notes.
+- **A1b** (`opus`, high, security; wave 1): finish; the contract row text to the lead.
+- **B1** (`sonnet`, max; wave 1): rebuild the help on main's `HOOK_NAMES` (only `notify`); `src/cli/help.ts`'s command table is the contract R1, W1c and D17b add their rows to; UX-13's other sites move to B2 (1.1.0). The lead merges its `src/entries/cli.ts` change against E1b's.
+- **A2** (`opus`, high, security; wave 3): finish `docs/jobs.md`; keep A2's lexer imports and the merged `clearWorktreeNote`; HK hunch 1 (job-route's `bash -c`) goes to A4b with A2's proof.
+- **A6** (`sonnet`, max; wave 3): drop all prefix work; finish `docs/jobs.md`, `docs/windows-jobs.md`, CM-12's workflow overclaim, review-done with a broken config, session-name exit 2 (on K's `names.ts`), doctor's bare hook line; re-derive `raisedRequires` from main.
+
+### G1, G2 — The agent guard judges what really runs
+
+Owner: general-purpose builder, `opus`, high (permissions).
+- **G1** (wave 2, after K and L1a.2): `effectiveLaunch(launch, env, sessionModel)` before `judgeLaunch`, for Agent, Task and Workflow: `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` (with or without `CLAUDE_CODE_SUBAGENT_MODEL`), `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`, `CLAUDE_CODE_EFFORT_LEVEL`, from the process environment and the settings files' `env`, in the order L1a.2 proved; the message names the override. A reader of "is this slot affordable now" (the policy plus the gateway's slot state) for W1a's effort. Edge cases: FORCE with no `SUBAGENT_MODEL` (the session's model, except Explore); FORCE in a project file; a fork under FORCE; an affordable slot forced onto Opus. Done-check: `bun test src/hooks/agent-guard* src/models`; a `sonnet` call under FORCE onto Opus is judged as Opus.
+- **G2** (wave 3, after G1): workflows run by `name` or `scriptPath` resolved in the order L1a.2's P1 showed (the plugin's `workflows/`, `.claude/workflows/` up to the repo root, `~/.claude/workflows/`); a nested `workflow(...)` one level; one it cannot read, a built-in one, or a `resumeFromRunId` asks (denied in `-p`); today's "no script → silent" test replaced. The launch record carries `effort` and `word` as fields, de-duplicated by id and launch index (G2 alone owns `agent-launches.ts`); `usage` counts by the fields; README, design.md and contract row 54 say exactly what the guard covers. Done-check: `bun test src/hooks/agent-guard* src/hooks/agent-launches* src/cli/usage*`; a named workflow's `agent()` launches are judged; an old `opus:xhigh:security` record counts by its effort.
+
+### W1a, W1b, W1c — The launcher and the board
+
+- **W1a** (`opus`, xhigh, architecture; wave 2, after K and L1a.1): `worker start` and `worker lead`, in `src/workers/`, one dispatch line in `src/entries/cli.ts`.
+  - `start`: returns at once with one line, no `--wait`; finds its lead from its parent process (`src/jobs/ancestry.ts`, `src/hooks/sessions.ts`) or refuses without a registered lead; refuses inside a worker (`CC_SMART_DEV_KIT_WORKER` set), without a kind or a brief, or with bypass permissions; model and effort from K's policy and G1's slot reader; at the cap (`workflow.workers.max`, plus free memory from `src/jobs/memory.ts`) the phase is `queued`; `--waits-for` queues it until its phases are done; `git worktree add -b wk/<phase>-<slug> .claude/worktrees/wk-<phase>-<slug> <lead's HEAD>` (fast; anything slow — a dependency install — is the worker's first step, after the spawn); writes the brief to the state folder; runs `claude --bg -w wk-<phase>-<slug> --name … --model … --effort … --permission-mode auto --autocompact <clamped to 100k–1M, or auto> --settings <one settings file in the state folder, also on Windows>` with a prompt that repeats the essentials (the brief's path, "commit on your branch, never push, the lead handles git", the report command); checks in `claude agents --json` that the new session's `cwd` is the `wk-` folder, else marks it failed; records the session. The exact form follows P7.
+  - `lead`: records the calling session as a lead (from its parent process; P13) and writes its `LEAD <tag> <plan>` name for the session-name hook to apply (P8 shows whether `sessionTitle` renames the agent-view row; if not, the lead skill tells the person to `/rename` once).
+  - Edge cases: two leads in one repo; a worker started from a worktree; the daemon's older spare process; a name already used; `claude.cmd` on Windows; `Workspace not trusted`; a worktree removed by hand.
+  - Done-check: `bun test src/workers`; a fake `claude` on PATH proves the exact argv, the one-line return, the queue at the cap and the store's events; no test starts a real session.
+- **W1b** (`sonnet`, max; wave 3): `worker watch` (one line per change for this lead's workers, from the store's events and a `claude agents --json` read every 15–30 s — blocked, permission waits, crashes, quiet —, starting queued workers as slots free), `worker self-watch` (the worker's own context use and time caps → the hand-off line), `worker step`, `worker report` (fills branch, sha, diff stat, files outside the brief, the review record, the PR). `plugin/monitors/monitors.json`: `worker-events` (`on-skill-invoke` of the lead skill) and `worker-self` (of the worker skill), running `"$HOME/.local/bin/cc-smart-dev-kit"` (session-scoped: it ends with the session, so the long-lived-parts rule of `bundles-and-releases.md` does not apply — the doc says why). Where L1a.1 shows a monitor does not run (a background session, telemetry off), the lead uses `worker watch --once` with `run_in_background: true`, re-armed per event, and self-watch's check moves into W2's hooks. Done-check: `bun test src/workers`; fixture stores and a fake `claude agents --json`.
+- **W1c** (`sonnet`, max; wave 3): `worker list|status|stop|rm|resume|attach|kinds` (`rm` refuses while the lead has not merged the worker's branch, then runs `claude rm <id>` and the kit's worktree verdict; `resume` runs `claude respawn <id>` for that one session, never `--all`); the help rows in B1's table; README § Commands. Done-check: `bun test src/workers src/cli`.
+
+### W2 — The worker and lead hooks
+
+Owner: general-purpose builder, `sonnet`, max. Wave 5, after W1b and A4 — it adds its own entries to `src/hooks/specs.ts` and `plugin/hooks/hooks.json` and its `matrix.test.ts` rows.
+- `src/hooks/worker-role.ts` (silent unless `CC_SMART_DEV_KIT_WORKER` is set; the shim checks the variable before bun starts, so a plain session pays nothing): SessionStart (startup, resume, compact) gives back the role card (name, lead, brief path, worktree, branch, git policy, the last step and commit, "never wait on the lead", the report command); Stop writes `lastLine` and blocks once when the turn ends with no report and nothing running; StopFailure `rate_limit` marks the worker paused until the reset.
+- `src/hooks/lead-notes.ts`: on a turn that a subagent's or worker's hand-back, a peer message or a task notification started — in any session — one short note ("start, in this turn, every phase this unblocked; then integrate"); for a registered lead, also what finished, what is blocked and what is free, and after compaction what runs and what is free. Where it speaks (UserPromptSubmit, PostToolBatch, SessionStart `compact`) follows L1a.1's P6.
+- The session-name hook uses `roleOf`, applies the lead's name, and never renames a worker.
+- Done-check: `bun test src/hooks/worker-role* src/hooks/lead-notes* src/hooks/session-name* src/hooks/matrix*`; each hook prints nothing in a plain session.
+
+### W4 — The Bash judge: launches judged, waits moved to the background
+
+Owner: general-purpose builder, `opus`, high (permissions). Wave 6, after A4b, G1 and L1a.1.
+- `job-route` keeps its public name (`ownHooks` values and project files stay valid) and grows: its spec becomes machine-wide (it runs outside git, and the frame's `ownHooks` step skips it like the escape guard); the routing part still reads `jobs.route` and `switches.jobRoute` itself, the launch judge ignores them. A raw `claude … --bg` asks in an attended session (denied in `-p`) and shows the `worker start` line; `claude -p` is judged by K's policy; `worker start` from a worker is denied; a `worker start` override to `opus max` or Fable asks like the agent guard. A polling loop over `worker list|status` or `claude agents --json` is denied ("a worker's news arrives by itself"). In a lead, a CI watch (`gh pr checks --watch`, `gh run watch`), a routed heavy job and the full check get `run_in_background: true` if P5 proved an added field is honoured; otherwise the call is denied with the same command and that field named.
+- Done-check: `bun test src/hooks src/jobs`; A2's parity test still pins every job-route case; the whole `bun test`.
+
+### W5 — The lead and worker instructions
+
+Owner: `cc-smart-dev-kit:rules-maintainer`, `opus`, high. Wave 3, after W1a.
+- `plugin/instructions/core.md` § Lead the work: the placement rule (inline: a few files, no research; subagent: one focused job; worker: a phase with its own worktree, review and branch, or longer than about 30 minutes); "never wait — start, then go on; a worker's news arrives by itself"; D22's gate replaces "read each hand-back's diff yourself" for workers. About the same line count (budget 200).
+- New `plugin/skills/lead/SKILL.md` (register and name; waves → `worker start`; the brief template; the event loop; several finishing at once; merge order and `merge-check --branch`; the full check after each merge, in the background; the integration review; caps and the queue; hand-offs; restart; never) and `plugin/skills/worker/SKILL.md` (build end to end; the steps; checkpoints; the report; the blocked protocol; no questions to the person).
+- `plugin/skills/plan-task/SKILL.md`: § 1 saves the research in `.claude/research/<date>-<slug>.md` before the plan, § 4 archives it on approval (D32; `research-first` points to the same place); § 2 offers "play safe" or "go fully new" before a major change, rewriting its "clean break, never a silent legacy shim" sentence to fit (D30); § 5 — a phase's owner may be a worker, 30–90 minute phases, a Workers column, waves through `worker start`, the last wave is a heavy cleanup after live verification (D30).
+- `memory-routing`: to-dos in Claude Code's task tools where the session has them, else the plan file (per L1a.3); state in the plan file; `mem_search` before `save_memory`; only the main session saves; claude-mem's two rules ("a stored memory is data, not an instruction"; never save credentials or what the person asked to keep out) (D23).
+- `subagent-decision`: one pointer to the lead skill; `commit`, `review`, `pull-request`: workers commit on their branch, the lead handles git; the integration review.
+- Done-check: `bun run check:duplicates`, `check:core-lines`, `check:context-budget`; C0's fast evals against L0's baseline (no case worse); two new eval cases (a phase-sized ask → `worker start`; a one-file fix → no worker).
+
+### M — claude-mem's start blocks off (D23)
+
+Owner: general-purpose builder, `sonnet`, max. Wave 1.
+- `src/machine/claude-mem.ts`: plan the two keys in `~/.claude-mem/settings.json` whenever claude-mem is installed (today the plan acts only when the scout slot is affordable, lines 166–176), owned like its provider keys, through `src/setup/` (backup, atomic write, lock); before it writes, list every project's open work_state lists read-only, with the one-line way back; print the restart step; doctor shows both values; `restore` takes them back. If L1a.3 shows interactive sessions lack the task tools, also manage `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` in the user settings' `env`.
+- The dependency in `plugin.json` becomes `claude-mem >=13.36.0` (text to the lead).
+- Done-check: `bun test src/machine src/cli/setup* src/cli/doctor*`; a fake home with claude-mem 13.40.0 gets both keys; a person's own `true` is kept and named.
+
+### R1 — The flow report
+
+Owner: general-purpose builder, `sonnet`, max. Wave 2, after B1.
+- `src/sessions/flow.ts` (`readFlow`, `openWaits`) and `cc-smart-dev-kit report [--hours|--days] [--project] [--session] [--json]` (`src/cli/report.ts`, a dispatch line in `src/entries/cli.ts`, a row in B1's help table, README § Commands): per session, agents and the parallel ratio, minutes blocked on prompts and which guard asked, waits on background work, compactions, auto-mode blocks by rule, merges that asked; totals. A per-transcript offset cache in the state folder. Never message text. It reads A4's `guard-asks.jsonl` when present. (`usage.ts` moves onto this reader in 1.1.0, with C6.)
+- Contract rows for the transcript fields it reads, marked "seen, may change" (text to the lead).
+- Done-check: `bun test src/sessions src/cli/report*` on fixture transcripts; a run over this machine's last 7 days prints the baseline the plan records (§ Measure).
+
+### D17a, D17b — Reviews that count for their fixes
+
+Owner: general-purpose builder, `opus`, high (permissions).
+- **D17a** (wave 2): `src/workflow/review-cover.ts` (`coverRefusal`, `readCover` — the merge-tree comparison with a temporary object folder, so nothing is written into the repo; a conflicted merge-tree still gives a valid tree and counts its conflict as change), `reviewsOn(file, branch, agents)` in `reviews.ts`, `review-record.ts` stores the branch and records the start commit when HEAD moved, the gate key read from the base like the others, `plugin/dist/** linguist-generated=true` in `.gitattributes`, a doctor line for git older than 2.40; tests named `D17: …` (the research file § R5 lists them).
+- **D17b** (wave 6): `src/workflow/merge-check.ts` (the judgment moved out of the hook, for a PR and for a local branch against a base: `workflow merge-check [<pr>… | --branch <b> --base <base>]`, a row in B1's help table), the merge guard's call site and message, `workflow show`; D31's chosen option; README, design.md § The review record, `.claude/rules/hooks.md`.
+- Done-check: `bun test src/workflow src/hooks/merge-guard* src/hooks/review-record*`; a real temp repo with a kit config: review → small fix → merge is silent; review → base merged in → fix is silent; review → 600-line rewrite asks naming the counts and the limit; `merge-check --branch` gives the same verdicts.
+
+### A4, A4e, A4b — The hook frame, the escape guard, the workflow switches
+
+As the audit plan's briefs, split and changed:
+- **A4** (`opus`, high; wave 4, after A2, E1b, G2): the frame fails closed (`onFailure: "block"`, `onCrash`, the shim's `--missing=fail`), the create-lock takeover is gone with the engine; wire agent-guard's PostToolUse (a **release gate**: until then asked launches go unrecorded); the frame writes each guard's ask to `guard-asks.jsonl`; `hook notify` in the fail-safe table.
+- **A4e** (`opus`, high; wave 5): the machine-wide session-escape guard, without the Serena write.
+- **A4b** (`opus`, high; wave 5): D15 and D16 as written; HK hunch 1 with A2's proof (job-route leaves a line raw unless every command in it is heavy, a `cd` or an assignment); after-merge's time budget; `openPr: draft` with `autoMerge` on gets a `!` note; **the git guard refuses any `git push` from a worker session** (`CC_SMART_DEV_KIT_WORKER` set), whatever `autoPush` says (D24).
+
+### L2 — Close 1.0.0 (lead)
+
+- The Claude Code upgrade to 2.1.306 by the `claude-code-upgrade` skill (the changelog rows in the research file § R8; tool search on by default behind a custom base URL since 2.1.304 — `ENABLE_TOOL_SEARCH` becomes optional; `.claude-code-version`).
+- The owed rows and texts: contract rows (GW-4, GW-5, SubagentStart, the `cmd /c` launch, the PostToolUse record, every L1 proof, the Remote Control limit), `.github/workflows` (A5's Windows steps, C0's eval tiers), the `readCommittedConfig` line in `.claude/rules/cc-smart-dev-kit-json.md`, the Remote Control line in `docs/gateway.md` § Known limits and the gateway skill; the `.claude/CLAUDE.md` Layout rows (`src/workers/`, `src/models/`, `plugin/monitors/`, `.claude/research/`) and the "plugin/ holds" list (`monitors/`).
+- `plugin.json` 1.0.0, `install.sh` `INSTALLER_VERSION`, `install.ps1` `$InstallerVersion`; README "What's new in 1.0.0" (run `update`, then `setup`, then hand the person `gateway setup` — `router.js` changed and the session must never restart its own router; remove the retired fields with `project init`; reviews recorded before 1.0.0 no longer count; `medium` allowed; claude-mem's start blocks off and how to turn them back on; a major version now waits for you); `docs/roadmap.md` newest first.
+- `bun run build`, `bun run check`, both validates, C0's evals; the one review (three reviewers on `opus` xhigh, in parallel: the safety track; workers; the rest), fixes, the PR body by the `pull-request` skill, the owner's yes, the `release` skill's update of this machine and `doctor`.
+
+## Release 1.1.0 — the portal, the instructions, the agents (built by workers)
+
+Each phase below is one worker (D21 kind), started by the lead with `worker start`; each makes its phase ready (D22). Briefs: the audit plan's phase text plus the notes here.
+
+| Phase | Kind | Notes | Waits for |
+|---|---|---|---|
+| B0 slot modes | schema | finish from `4a97a33`: tests (none yet), `facts.ts` `claudeModels`, every doc, rule and the skill | — |
+| B6a client and look | ui | finish from `3bd0a9d`: tests and PX tests; port main's 0.5.2 project form (no engine fields) | — |
+| B2 output module, doctor | build | + UX-13's other sites from B1 | — |
+| B3 setup, project init prompts | build | | B2 |
+| B5 interactive `gateway setup` | security | | B0, B2, B3 |
+| B7 always-on portal | security | | B2 (`doctor.ts`) |
+| B6b live stream | security | + the Work view's data hub (research file § R4), the flow report reader | B6a, B7 |
+| B6c actions, slots page | ui | | B6b, B0 |
+| B8 projects | ui | + each open PR's and worker branch's merge-guard verdict (`merge-check`) | B7, B6c |
+| B6d pages | ui | Overview, Health, Machine, Settings, **Work** (D27: the lead with nested workers, the person's other sessions, Stop + copy attach), **Flow** (the report, 24 h / 7 days) | B6c, B8 |
+| B6e verify and judge | ui | `/cc-smart-dev-kit:ui-verify`, then the owner | B6d |
+| C1 core.md trim | architecture | measured by C0's evals; the owner reads it before it merges | — |
+| C2 skills and agents | architecture | finish from `8afd98f`; main's agents (no code-explorer); no Serena; agents' tools per R7 (`smart_*`, `LSP`, no `memory:`); the Grep/Glob trade-off for agents that need Bash written down for the owner (Claude Code drops Grep and Glob from an agent that lists Bash on Linux and macOS) | — |
+| C4 auditor, builder, audit | architecture | the `audit` skill + `plugin/workflows/audit-run.js` (D28); the test folder that runs shipped scripts against fakes and checks the guard allows each launch; Biome skips `plugin/workflows`; `check:duplicates` reads their strings; `READ_ONLY_AGENTS` gains `auditor` | C2 |
+| C5b trim rules, split README/design | docs | | every other 1.1.0 phase |
+| C6 verify gate, cost record, status line | build | `usage.ts` onto R1's reader; `usage --tools` (R7's measures) | B3 (`project-init.ts`) |
+| WF2 review-split workflow | architecture | only if L1a.2's P2 passed | C4 |
+| MD-4 the guard as an `agent.spawn` mod | permissions | only if its proof holds (R9 P7) | C4 |
+
+Close: one integration review, `plugin.json` 1.1.0, the release skill, the owner's yes.
+
+## Release 1.2.0 — the gateway per project and per session (built by workers)
+
+First the owner confirms D29 and R6's open questions (profiles; team file off only; unknown profile = Claude; the prefix only when needed); then the proofs R6 lists (P1 the explicit URL keeps the login; P3 `--settings` over project files; P4; P5 the prefix is kept; P6 worktree and subfolder; P7 live switch and removal; P8 trust; P9; P10; P12), each in its own `claude -p` with a probe server — never the live router or a session's own settings.
+
+| Phase | Kind | What |
+|---|---|---|
+| GP1 profiles in the router | security | `profileFromPath` in `targets.ts`, `profiles` in `config.ts` (`profileView`), the strip before every branch, health `features`/`profiles`, limit-state per profile; `.claude/rules/gateway.md` gains the strip clause |
+| GP2 project on/off | security | `gateway project status|on|off|default [--team] [--profile] [--folder]`, `gateway projects`, `gateway profile …`; the writers through `src/setup/`; the refusals; the `.git/info/exclude` line; one effective-state reader |
+| GP3 `launch` | build | `cc-smart-dev-kit launch [--no-gateway|--gateway|--profile] [-- claude args]` through `--settings` (W1a's settings-file helper, one home) |
+| GP4 doctor, portal card, restore | build | doctor lines (each project's state and its source file; a warning when a project's `model` or `ANTHROPIC_DEFAULT_*_MODEL` names a slot or a backend target, or a project file sets `CLAUDE_CODE_SUBAGENT_MODEL[_FORCE]` — Claude Code's own model keys are documented, not written); the project page's Gateway card (after B8); `restore` counts keys in every owned file; `gateway off` lists projects still on |
+| GP5 explicit URL instead of removal | security | `gateway off` and `restore` set `https://api.anthropic.com` so running sessions switch at once — only if P7 confirms |
+
+Close: integration review, 1.2.0, the release skill, the owner's yes.
+
+## The last stage — heavy cleanup (D30), after 1.0.0–1.2.0 are verified live on this machine
+
+Only once each release has run on this machine and the owner has checked it: decide `release-0.6.0` and `release-1.0.0` on origin (the owner's yes before deleting a pushed branch); remove the leftover builder and worker worktrees; drop B0's one-release `portal.json` read; archive this plan (Done) into `.claude/plans/archive/`; check that no doc still names a removed command, field or hook.
+
+## Edge cases across the plan
+
+- **Old state on disk:** a project file with the retired fields (named error, `project init` fixes it, `update` lists it first); reviews recorded by 0.6.0 (no longer count — said in "What's new"); a 0.5.x `gateway.json` and `portal.json` (B0's migration); worker records from an older schema; launch records with the old reason string.
+- **Older processes:** the daemon's spare processes and sessions started before an update run old plugin code (worker prompts repeat the essentials; the store has a schema version; an old update checker may install 1.0.0 once — What's new says so).
+- **Two leads, or two sessions at once:** the store, the review record and config writes under their locks; the worker cap counts across leads.
+- **Headless `claude -p`:** an ask is a deny; a lead or worker never runs in bypass permissions (its inbox holds every message).
+- **Windows:** the launcher with `claude.cmd` and a settings file, worktree paths, the local settings file per folder (1.2.0), the shim (A4); what only a real Windows machine proves stays listed as owed in `docs/windows-setup.md`.
+- **Usage limits:** the lead and Opus builders share one login (at most 4 Opus builders at once); an Opus worker pauses at the plan limit (marked; the lead goes on, unless the lead itself is at the limit); affordable-slot workers do not spend it; a workflow's agents fail at a limit in a background session (D28 keeps workflows out of workers).
+- **Same-user limits:** every guard is a seatbelt, not a lock; the docs say so where each lives.
+
+## What could break
+
+- The merge: every resolution in the research file § R2, and the three silent traps; `bun run check` after L0 is the gate.
+- Every reader of the project config, once three fields are rejected (the research file § R3's consumer table) — and every machine within the hour, which D33 stops.
+- `resolveLaunchModel`'s callers when the policy moves to `src/models/` (agent-guard, usage, the portal's model labels, the status line).
+- `job-route`'s behaviour when it grows (A2's parity test pins it).
+- `hasReview`'s callers (merge guard, `workflow show`) under D17.
+- core.md and the skills: C0's evals and `check:duplicates` catch drift; the owner reads core.md before it merges.
+
+## A simpler approach?
+
+- Subagents only, with stricter rules, instead of workers: rejected — 70–80% of launches stayed single under rules alone, every hand-back lands in the lead's context, and long phases rot it (R4).
+- Agent teams: rejected — experimental, no worktree isolation, no resume, prompts bubble up to the lead.
+- A time-out instead of non-blocking launches: rejected — a time-out still blocks until it fires.
+- Re-review the final head instead of D17: possible, and the fallback if D17's comparison proves fragile; it costs one more Opus review per PR and keeps the wait.
+- Keep claude-mem's to-do list and drop Claude Code's: rejected — work_state shows every session's lists to every session, needs claude-mem's worker running, and is what overflows the start note.
+
+## Rollback
+
+- Before 1.0.0 ships: a phase is undone by reverting its merge on `release-1.0.0`; the merge of main by recreating `release-1.0.0` from `01a808a` (`release-0.6.0` is untouched).
+- After a release ships: a bad part is undone by a new patch version with the old behaviour, never a lower number. The engine's deletion is undone only by a new release that accepts the fields again (with the owner's yes). claude-mem's switches are the person's to turn back on (`restore`, or the setting by hand). The router restarts with each release that changes it (1.0.0, 1.1.0, 1.2.0).
+- If P14 shows workers are not reliable: 1.1.0 is built with subagents as 1.0.0 was; the worker code ships as it is, marked early.
+
+## Test with the person
+
+- **1.0.0:** watch one real worker from start to hand-back in `claude agents` and the lead (P14: about 2 hours on an affordable slot); attach to it once; see that the lead keeps working while it runs; in a project with a kit config, merge a branch whose review was followed by a small fix — no question; see `update` hold 1.0.0 until you run it; read the new core.md section; start a new session and check claude-mem's start note is short.
+- **1.1.0:** the audit plan's § Test with the person (portal, setup, slots), plus the Work and Flow pages while workers run.
+- **1.2.0:** turn the gateway off in one project and keep it on in another; start one session with `launch --no-gateway`; check Remote Control works there.
+
+## Measure
+
+Baseline now (R1's report and R7's numbers), then again 14 days after each release: parallel ratio of agent launches; minutes blocked on prompts, and which guard asked; merges that asked; context per lead request; workers per day, their hand-offs and quiet alerts; to-dos kept in task tools or plan files; start notes cut to a preview (target 0).
+
+## Carried over
+
+Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later`, `tools-usage-later` and `plan-task-later` is a phase or a decision above. The hand-over's item 7 (the instructions copy rolling back) needs nothing now: `doctor` on 2026-10-21 says the copy is this version's; L2's `doctor` run checks it again. Not in this plan (each needs its own session; one line each): the application repo's account-lease test that fails under the full suite's load, and that suite's growth; its `chore/deps-majors-2026-10-03` work in progress; the optional re-run of its remote-desktop installer on the owner's PC (never without the owner's yes); the owner's old test sessions in `claude agents` (Ctrl+X removes them); claude-mem upstream issues (its uncounted start block; its file-context hook's cost) — the owner decides whether to file them; MD-6 (sandbox first) and MD-8 (the advisor tool) stay later; the release skill's "run `gateway setup`" step conflicts with the rule that a session never restarts its own router — L2 hands the command to the person, and fixing the skill's text is C5b's.
+
+## Progress
+
+- 2026-10-21: hand-over read; owner decisions D18–D25, D30, D32 (and the asks behind D26–D28); `release-0.6.0` pushed as a backup; research R1–R9 done and saved in `.claude/research/`; live proof: a session started with `claude --bg` from the Bash tool returns in 1.1 s and shows in agent view; plan written; second read (5 high, 13 medium, 17 low) applied: workers open their worktree with `-w`, a local merge gate, D33 (a major waits for the person), deciding proofs first (L1a), the big phases split (K, E1a/E1b, G1/G2, W1a/b/c, A4/A4e/A4b), at most 4 Opus builders at once, builder checkpoints, `job-route` keeps its name, the git guard refuses a worker's push.
+- 2026-10-21: approved by the owner, with this repo opting into its own kit (L0). Research and the audit plan archived; branch `release-1.0.0` cut from `01a808a`. Wave 0 started.
