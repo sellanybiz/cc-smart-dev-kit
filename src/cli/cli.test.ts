@@ -499,7 +499,7 @@ const INSTRUCTIONS_OK =
   "✓ the instructions copy ~/.claude/cc-smart-dev-kit/instructions/ is this version's, and ~/.claude/CLAUDE.md imports it";
 
 describe("cc-smart-dev-kit setup", () => {
-  test("installs the launcher and turns on auto-update, keeping the other settings", () => {
+  test("installs the launcher and turns Claude Code's own plugin auto-update off, keeping the other settings", () => {
     const { settingsFile, launcher, run, pluginCalls } = setup();
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
@@ -509,7 +509,7 @@ describe("cc-smart-dev-kit setup", () => {
       [
         ...MCP_REGISTERED,
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
-        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
         NOTIFY_HOOK_ADDED,
         ...INSTRUCTIONS_CREATED,
         TAVILY_SKIPPED,
@@ -529,10 +529,42 @@ describe("cc-smart-dev-kit setup", () => {
       extraKnownMarketplaces: {
         "cc-smart-dev-kit": {
           source: { source: "github", repo: "example-org/cc-smart-dev-kit" },
-          autoUpdate: true,
+          autoUpdate: false,
         },
       },
     });
+  });
+
+  test("D39: an older setup's own autoUpdate true becomes false; the record follows", () => {
+    const { stateDir, settingsFile, run } = setup();
+    run(["setup"]);
+    // What 0.6.0's setup left: the key at true, and owned.json saying it wrote true.
+    const settings = readJson(settingsFile);
+    settings.extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate = true;
+    writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+    const ownedFile = join(stateDir, "owned.json");
+    writeFileSync(
+      ownedFile,
+      readFileSync(ownedFile, "utf8").replace(
+        '"autoUpdate"\n      ],\n      "value": false',
+        '"autoUpdate"\n      ],\n      "value": true',
+      ),
+    );
+    expect(readFileSync(ownedFile, "utf8")).toContain('"value": true');
+    const result = run(["setup"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      [
+        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: true -> false',
+        TAVILY_SKIPPED,
+        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
+        "",
+      ].join("\n"),
+    );
+    expect(readJson(settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(
+      false,
+    );
+    expect(readFileSync(ownedFile, "utf8")).not.toContain('"value": true');
   });
 
   test("the backups go into the state folder, never beside the files", () => {
@@ -569,7 +601,7 @@ describe("cc-smart-dev-kit setup", () => {
       [
         ...mcpDryRunLines(home),
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
-        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
         NOTIFY_HOOK_ADDED,
         ...INSTRUCTIONS_CREATED,
         TAVILY_SKIPPED,
@@ -582,40 +614,36 @@ describe("cc-smart-dev-kit setup", () => {
     expect(existsSync(join(home, ".local"))).toBe(false);
   });
 
-  test("a key the user set (autoUpdate: false) fails before anything is written", () => {
+  test("a key the user set (autoUpdate: true) fails before anything is written", () => {
     const { stateDir, settingsFile, launcher, run } = setup();
     const settings = readJson(settingsFile);
-    settings.extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate = false;
+    settings.extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate = true;
     writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
     const before = readFileSync(settingsFile, "utf8");
     const result = run(["setup"]);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain(
-      'extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate is false, set by someone else.',
+      'extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate is true, set by someone else.',
     );
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
     expect(existsSync(launcher)).toBe(false);
     expect(existsSync(stateDir)).toBe(false);
   });
 
-  test("auto-update turned off by the person after setup: theirs now; setup stops, restore leaves it", () => {
+  test("auto-update turned on by the person after setup: theirs now; setup stops, restore leaves it", () => {
     const { settingsFile, launcher, run } = setup();
     run(["setup"]);
     const settings = readJson(settingsFile);
-    settings.extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate = false;
+    settings.extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate = true;
     writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
     const result = run(["setup"]);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain(
-      'extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate is false: it was changed after cc-smart-dev-kit set it, so it is your choice now.',
+      'extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate is true: it was changed after cc-smart-dev-kit set it, so it is your choice now.',
     );
-    expect(readJson(settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(
-      false,
-    );
+    expect(readJson(settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(true);
     expect(run(["restore"]).exitCode).toBe(0);
-    expect(readJson(settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(
-      false,
-    );
+    expect(readJson(settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(true);
     expect(existsSync(launcher)).toBe(false);
   });
 
@@ -709,7 +737,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
       [
         ...MCP_REGISTERED,
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
-        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
         NOTIFY_HOOK_ADDED,
         OPT_OUT_STORED,
         TAVILY_SKIPPED,
@@ -858,7 +886,7 @@ describe("cc-smart-dev-kit doctor", () => {
         `✓ the launcher ~/.local/bin/cc-smart-dev-kit runs cc-smart-dev-kit ${VERSION}`,
         INSTRUCTIONS_OK,
         "✓ can read the marketplace at git@github.com:example-org/cc-smart-dev-kit.git",
-        "✓ plugin auto-update is on",
+        "✓ Claude Code's own plugin auto-update is off: cc-smart-dev-kit's own check updates the plugin",
         "✓ plugin updates are not switched off",
         // The self-update has not checked yet: information, not a failure.
         "· background update: no check yet (a new Claude session checks, at most once an hour)",
@@ -1062,7 +1090,7 @@ describe("cc-smart-dev-kit doctor", () => {
       "✗ no launcher at ~/.local/bin/cc-smart-dev-kit. Run: cc-smart-dev-kit setup",
       "✗ the instructions are not installed in ~/.claude/cc-smart-dev-kit/instructions/. Run: cc-smart-dev-kit setup",
       "✓ the marketplace folder ~/marketplace exists",
-      "✗ plugin auto-update is off in ~/.claude/settings.json. Run: cc-smart-dev-kit setup",
+      "✓ Claude Code's own plugin auto-update is off: cc-smart-dev-kit's own check updates the plugin",
       "✓ plugin updates are not switched off",
       "· background update: no check yet (a new Claude session checks, at most once an hour)",
       "✓ no other enabled plugin is named cc-smart-dev-kit",
@@ -1209,13 +1237,26 @@ describe("cc-smart-dev-kit doctor", () => {
   });
 
   test("the installed version is behind the marketplace: ✗ with the update command", () => {
-    const { run } = setup({ marketplaceVersion: "99.0.0" });
+    // A newer minor of this major: the self-update installs it by itself.
+    const newerMinor = `${VERSION.split(".")[0]}.99.0`;
+    const { run } = setup({ marketplaceVersion: newerMinor });
     run(["setup"]);
     const result = run(["doctor"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      `✗ installed ${VERSION}, marketplace has 99.0.0. Run: claude plugin update cc-smart-dev-kit@cc-smart-dev-kit\n`,
+      `✗ installed ${VERSION}, marketplace has ${newerMinor}. Run: claude plugin update cc-smart-dev-kit@cc-smart-dev-kit\n`,
     );
+  });
+
+  test("D33: a new major version in the marketplace: a · line naming update, never `claude plugin update`", () => {
+    const { run } = setup({ marketplaceVersion: "99.0.0" });
+    run(["setup"]);
+    const result = run(["doctor"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(
+      `· installed ${VERSION}; 99.0.0 is a major version: it waits for \`cc-smart-dev-kit update\`\n`,
+    );
+    expect(result.stdout).not.toContain("Run: claude plugin update");
   });
 
   test("the marketplace's local copy has no plugin manifest: ✗ with the marketplace update command", () => {
@@ -1294,12 +1335,80 @@ describe("cc-smart-dev-kit doctor", () => {
     );
   });
 
-  test("before setup: no launcher and auto-update off, exit 1", () => {
+  test("before setup: no launcher, exit 1; with no key and no record, Claude Code's own auto-update is off", () => {
     const { run } = setup();
     const result = run(["doctor"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain("✗ no launcher at ~/.local/bin/cc-smart-dev-kit");
-    expect(result.stdout).toContain("✗ plugin auto-update is off");
+    expect(result.stdout).toContain(
+      "✓ Claude Code's own plugin auto-update is off: cc-smart-dev-kit's own check updates the plugin\n",
+    );
+  });
+
+  describe("D39: Claude Code's own plugin auto-update", () => {
+    const RISK = "a major version would install with no hold";
+    const KEY = 'extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate';
+
+    test("an older setup's own true: ✗, and setup is the fix", () => {
+      const { stateDir, settingsFile, run } = setup();
+      run(["setup"]);
+      const settings = readJson(settingsFile);
+      settings.extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate = true;
+      writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+      const ownedFile = join(stateDir, "owned.json");
+      writeFileSync(
+        ownedFile,
+        readFileSync(ownedFile, "utf8").replace('"value": false', '"value": true'),
+      );
+      const result = run(["doctor"]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).toContain(
+        `✗ Claude Code's own plugin auto-update is on (${KEY} is true in ~/.claude/settings.json, set by an older setup): ${RISK}. Run: cc-smart-dev-kit setup\n`,
+      );
+    });
+
+    test("a true the person set: ✗, removed by hand, then setup", () => {
+      const { settingsFile, run } = setup();
+      const settings = readJson(settingsFile);
+      settings.extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate = true;
+      writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+      const result = run(["doctor"]);
+      expect(result.stdout).toContain(
+        `✗ Claude Code's own plugin auto-update is on (${KEY} is true in ~/.claude/settings.json, not set by cc-smart-dev-kit): ${RISK}. Remove that key from ~/.claude/settings.json by hand, then run: cc-smart-dev-kit setup\n`,
+      );
+    });
+
+    test("no key, but Claude Code's own record still says true: ✗, and setup is the fix", () => {
+      const { configDir, run } = setup();
+      const known = join(configDir, "plugins", "known_marketplaces.json");
+      const record = readJson(known);
+      record["cc-smart-dev-kit"].autoUpdate = true;
+      writeFileSync(known, JSON.stringify(record));
+      const result = run(["doctor"]);
+      expect(result.stdout).toContain(
+        `✗ Claude Code's own plugin auto-update is on (its own record, ~/.claude/plugins/known_marketplaces.json, says so): ${RISK}. Run: cc-smart-dev-kit setup\n`,
+      );
+    });
+
+    test("an explicit false wins over the record's true: ✓", () => {
+      const { configDir, run } = setup();
+      run(["setup"]);
+      const known = join(configDir, "plugins", "known_marketplaces.json");
+      const record = readJson(known);
+      record["cc-smart-dev-kit"].autoUpdate = true;
+      writeFileSync(known, JSON.stringify(record));
+      expect(run(["doctor"]).stdout).toContain(
+        "✓ Claude Code's own plugin auto-update is off: cc-smart-dev-kit's own check updates the plugin\n",
+      );
+    });
+
+    test("a settings file that is not valid JSON: ✗, naming the file", () => {
+      const { settingsFile, run } = setup();
+      writeFileSync(settingsFile, "{ not json");
+      expect(run(["doctor"]).stdout).toContain(
+        `✗ cannot read Claude Code's plugin auto-update: ${settingsFile} is not valid JSON`,
+      );
+    });
   });
 
   test("not installed: one ✗ for it, and no version line", () => {
@@ -1549,7 +1658,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
         "+ marketplace claude-plugins-official (anthropics/claude-plugins-official), which installs frontend-design@claude-plugins-official",
         ...MCP_REGISTERED,
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
-        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
         NOTIFY_HOOK_ADDED,
         ...INSTRUCTIONS_CREATED,
         TAVILY_SKIPPED,
@@ -1628,7 +1737,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
     expect(result.stdout).toBe(
       [
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
-        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
         NOTIFY_HOOK_ADDED,
         ...INSTRUCTIONS_CREATED,
         "! The claude command is not on PATH, so setup skipped these steps. Run them once it is:",
@@ -1642,7 +1751,9 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
       ].join("\n"),
     );
     expect(existsSync(launcher)).toBe(true);
-    expect(readJson(settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(true);
+    expect(readJson(settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(
+      false,
+    );
   });
 
   test("the first run: claude-mem comes with its marketplace, and is pointed at the gateway in the same run", async () => {
@@ -2408,7 +2519,7 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
           extraKnownMarketplaces: {
             "cc-smart-dev-kit": {
               ...settings.extraKnownMarketplaces["cc-smart-dev-kit"],
-              autoUpdate: false,
+              autoUpdate: true,
             },
           },
         }),

@@ -92,7 +92,7 @@ Each of them:
 - A Markdown file with a broken block (not exactly one begin and one end marker, in
   that order) throws and is not written.
 - **Check before the first write.** Setup checks `settings.json` before it writes the
-  launcher, so a key the user set (for example `autoUpdate: false`) fails before
+  launcher, so a key the user set (for example `autoUpdate: true`) fails before
   anything is written.
 
 ## State, lock and paths
@@ -237,7 +237,9 @@ valid across updates.
   service says what it cuts, and asks: `confirm()` on a terminal; with no terminal, it
   stops and changes nothing unless `--yes` was given. The SessionStart hook only starts
   the background self-update (`hooks.md`), which installs a new plugin version with
-  `claude plugin` commands and restarts nothing.
+  `claude plugin` commands and restarts nothing. Its one write to a user file is the
+  managed `autoUpdate` key, `true` → `false`, only while that `true` is still setup's own
+  (`src/setup/auto-update.ts`, D39).
 - **A running program is never changed behind the person's back**: the tmux line
   (`src/setup/tmux.ts`) goes into `~/.tmux.conf` only when `tmux` is on PATH, and setup
   **prints** `tmux set -g allow-passthrough all` for a running server instead of running

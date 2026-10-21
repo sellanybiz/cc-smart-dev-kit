@@ -87,6 +87,16 @@ Done in this release:
   it may still have running — is reported by `doctor` (with the command that deletes the folder,
   which is the person's own call, and the pid of that Chrome) and is never deleted or used.
 
+## 0.7.0 — a major version waits for the person (D33)
+
+The background update holds a new major version instead of installing it: it records why,
+writes `update-major.json`, and each interactive session start shows one line until the
+person runs `cc-smart-dev-kit update` (`design.md` § Updates). It ships on
+its own, before 1.0.0, so that machines take the rule first and hold 1.0.0 (a version
+before 0.7.0 installs any newer one by itself). Claude Code's own plugin auto-update for
+this marketplace goes off with it (D39: `setup` writes `autoUpdate: false`, and the
+background check turns an older setup's `true` off), because it knows nothing of the hold.
+
 ## 0.6.0 — Serena is removed
 
 The owner's decision (2026-10-19), from a measurement on one machine: one Serena MCP server
@@ -109,8 +119,9 @@ Code's own LSP plugin is not added in its place (one TypeScript server per sessi
 - **`serena-root` in a project's `ownHooks`** is still accepted, silences nothing, and gets a
   `·` line in `doctor`.
 
-The release that was planned as 0.6.0 (the one 0.5.5 brought D11 forward from) is 0.7.0 now;
-the deprecated worktree engine (§ 0.5.2) is not removed in this release.
+The release that was planned as 0.6.0 (the one 0.5.5 brought D11 forward from) is 1.0.0 now
+(0.7.0 is the hold above, so that machines hold it); the deprecated worktree engine (§ 0.5.2)
+is not removed in this release.
 
 ## 0.5.5 — Opus runs without asking below `max` (D11)
 

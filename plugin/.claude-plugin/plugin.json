@@ -1,6 +1,6 @@
 {
   "name": "cc-smart-dev-kit",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Use any model with Claude Code, for any project: a local gateway, hooks, skills, agents and machine setup.",
   "author": {
     "name": "SellAnyBiz"

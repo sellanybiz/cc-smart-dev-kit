@@ -1,7 +1,7 @@
 // @bun
 // src/entries/stop-failure.ts
 import { existsSync as existsSync6 } from "fs";
-import { join as join5 } from "path";
+import { join as join6 } from "path";
 
 // src/cli/paths.ts
 import { join as join2, sep } from "path";
@@ -6324,7 +6324,7 @@ import { existsSync, readFileSync as readFileSync2 } from "fs";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.6.0",
+  version: "0.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6971,6 +6971,10 @@ function windowsToastArgvFor(title, body, critical = false) {
   return windowsToastArgv(TOAST_SHELL, title, body, critical);
 }
 
+// src/update/major.ts
+import { join as join5 } from "path";
+var MAJOR_NOTES_PATH = join5("src", "update", "major-notes.json");
+
 // src/update/apply.ts
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
 var NOTIFY_HOOK_SETUP_HINT = `agent view's notification hook is missing: ${COMMAND} setup writes it`;
@@ -7264,7 +7268,7 @@ async function hook() {
     if (argv !== null)
       detached(argv);
   }
-  const launcher = join5(paths.binDir, LAUNCHER_NAME);
+  const launcher = join6(paths.binDir, LAUNCHER_NAME);
   if (usesAlertWorker(process.platform, existsSync6(launcher))) {
     detached([launcher, ALERT_WORKER_COMMAND, JSON.stringify(alert)]);
     return;

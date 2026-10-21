@@ -8,21 +8,32 @@
  * hand worked at once. The person chose this self-update, and accepted its trade-off: a
  * bad release reaches every machine within the hour. `cc-smart-dev-kit update --hold` stops it on
  * one machine, and Claude Code's own switches for updates stop it too (`./opt-out.ts`).
+ * Since 0.7.0 it is the only updater: Claude Code's own auto-update for this marketplace is
+ * switched off (D39, `src/setup/auto-update.ts`), because it knows nothing of the major hold.
  *
  * What it never does: restart the router, a service or a session; change a permission;
- * ask a question. It installs the new version only; a session loads it when it restarts.
+ * ask a question; install a new major version (D33: that waits for the person's `update`,
+ * and a session start says so). It installs the new version only; a session loads it when
+ * it restarts.
  */
 
 import { COMMAND, PLUGIN, PLUGIN_ID } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { detachedArgv } from "../hooks/detached";
+import {
+  AUTO_UPDATE_KEY,
+  AUTO_UPDATE_VALUE,
+  turnOffLeftoverAutoUpdate,
+} from "../setup/auto-update";
 import { bunConfigArg } from "../setup/bun-config";
+import { findUserInstall } from "../setup/installed-plugins";
 import {
   type InstructionsPaths,
   refreshInstructionsCopy,
   refreshRefusal,
 } from "../setup/instructions";
 import { LockBusyError, withLock } from "../setup/lock";
+import { formatKeyPath } from "../setup/managed-json";
 import { redactUrlsIn } from "../setup/marketplace-access";
 import { userNotifyHookState } from "../setup/user-notify-hook";
 import {
@@ -34,21 +45,25 @@ import {
   ROUTER_SETUP_HINT,
   routerNeedsSetup,
 } from "./apply";
-import { checkForUpdate } from "./check";
+import { checkForUpdate, isOlder } from "./check";
+import { majorHeldDetail, majorReadyLine } from "./major";
 import { blockingVar } from "./opt-out";
 import {
   appendLog,
   type CheckResult,
+  clearHeldMajor,
   isDue,
   isHeld,
   isoSeconds,
   type LastCheck,
   markReported,
+  readHeldMajor,
   readLastCheck,
   registerSession,
   unreachableCheck,
   updateFiles,
   wasReported,
+  writeHeldMajor,
   writeLastCheck,
 } from "./state";
 
@@ -93,8 +108,28 @@ export interface SessionStartDeps {
   sessionPid: null | number;
   /** The plugin version this hook belongs to: the one the session loaded. */
   version: string;
+  /**
+   * Why the hook runs, from its input (`startup`, `resume`, `clear`, `compact`); null when
+   * the input does not say. A `clear` or a `compact` is the same session going on.
+   */
+  source: null | string;
   /** Starts `backgroundCheck` in a detached process and returns at once. */
   spawnBackground: () => void;
+}
+
+/** The `source` of a SessionStart hook's input (`startup`, `compact`, …); null when it has none. */
+export function sessionSourceOf(input: string): null | string {
+  try {
+    const source = (JSON.parse(input) as { source?: unknown } | null)?.source;
+    return typeof source === "string" ? source : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The hook runs because a session starts: a new one, or a resumed one (or the input does not say). */
+function sessionStarts(source: null | string): boolean {
+  return source === null || source === "startup" || source === "resume";
 }
 
 /**
@@ -106,9 +141,12 @@ export interface SessionStartDeps {
  * without `FORCE_AUTOUPDATE_PLUGINS`), it starts nothing and says nothing: it records
  * "skipped: <name> is set", once (a record that says so already stays, with its time).
  *
- * Its answer (stdout) is empty, unless the last background check failed and no session
- * was told yet: then one `systemMessage`, to an attended session only. A `claude -p`
- * session does not count as told, so the next interactive one says it.
+ * Its answer (stdout) is empty, unless one of two things is to be said, in one
+ * `systemMessage`, to an attended session only:
+ *   - the last background check failed and no session was told yet; a `claude -p` session
+ *     does not count as told, so the next interactive one says it;
+ *   - a new major version is held (D33) and still not installed: one line at every session
+ *     start (`startup` or `resume`), never on a `clear` or a `compact` of the same session.
  */
 export function sessionStart(deps: SessionStartDeps): string {
   const files = updateFiles(deps.paths.stateDir);
@@ -123,17 +161,25 @@ export function sessionStart(deps: SessionStartDeps): string {
     }
     return "";
   }
-  let answer = "";
+  const messages: string[] = [];
   // One streak of an unreadable marketplace is told once, not once per hourly check.
   const reportKey = last?.since ?? last?.at ?? "";
   if (last?.result === "failed" && !wasReported(files, reportKey) && isAttended(deps.env)) {
     markReported(files, reportKey);
-    answer = JSON.stringify({
-      systemMessage: `${PLUGIN}: the background update failed at ${last.at} (${last.detail}). The log: ${tildify(files.log, deps.paths.home)}. To try now: ${COMMAND} update`,
-    });
+    messages.push(
+      `${PLUGIN}: the background update failed at ${last.at} (${last.detail}). The log: ${tildify(files.log, deps.paths.home)}. To try now: ${COMMAND} update`,
+    );
+  }
+  const major = readHeldMajor(files);
+  if (major !== null && sessionStarts(deps.source) && isAttended(deps.env)) {
+    // Installed since by hand (`claude plugin update`): the next check forgets it.
+    const installed = findUserInstall(deps.paths.installedPluginsFile)?.version ?? null;
+    if (isOlder(installed, major.version)) {
+      messages.push(majorReadyLine(major.version, major.notes));
+    }
   }
   if (isDue(last, deps.nowMs)) deps.spawnBackground();
-  return answer;
+  return messages.length === 0 ? "" : JSON.stringify({ systemMessage: messages.join("\n") });
 }
 
 /**
@@ -205,6 +251,36 @@ export async function refreshInstructionsAtSessionStart(
 }
 
 /**
+ * Turns setup's own leftover `autoUpdate: true` off (`turnOffLeftoverAutoUpdate`). Each
+ * outcome goes to `update.log` and nowhere else: a busy state lock (setup runs now, and does
+ * the same), a value the person set, a settings file that is not valid JSON. It never throws.
+ */
+async function turnOffAutoUpdateQuietly(
+  paths: CliPaths,
+  log: (line: string) => void,
+): Promise<void> {
+  const key = formatKeyPath(AUTO_UPDATE_KEY);
+  try {
+    const { result, state } = await turnOffLeftoverAutoUpdate(paths);
+    if (result?.written === true) {
+      log(
+        `auto-update: ${key} set to ${AUTO_UPDATE_VALUE} in ${tildify(result.file, paths.home)}: Claude Code's own plugin auto-update is off`,
+      );
+    } else if (state === "yours") {
+      log(
+        `auto-update: left on: ${key} is true in ${tildify(paths.settingsFile, paths.home)}, set by you; \`${COMMAND} doctor\` says how to turn it off`,
+      );
+    }
+  } catch (error) {
+    const why =
+      error instanceof LockBusyError
+        ? "the state lock is busy (a setup runs now)"
+        : redactUrlsIn(messageOf(error));
+    log(`auto-update: not turned off (${why}); the next check tries again`);
+  }
+}
+
+/**
  * The background check, in a detached process. Under the update lock (`update/lock` in
  * the state folder; a busy lock means another check runs, so it leaves at once), it asks
  * again whether a check is due, updates are not held and not switched off, so two
@@ -214,7 +290,8 @@ export async function refreshInstructionsAtSessionStart(
  *
  * A marketplace that cannot be read is `unreachable` (information) until it has been so
  * for 24 h in a row, then `failed`. Claude Code busy with the same marketplace copy is
- * `skipped`.
+ * `skipped`. A new major version is `skipped` too, and held (`update-major.json`) until the
+ * person's `update`; a check that finds the installed version current forgets it.
  */
 export async function backgroundCheck(deps: BackgroundDeps): Promise<void> {
   const files = updateFiles(deps.paths.stateDir);
@@ -223,10 +300,14 @@ export async function backgroundCheck(deps: BackgroundDeps): Promise<void> {
   try {
     await withLock(
       files.lockDir,
-      () => {
+      async () => {
         const previous = readLastCheck(files);
         if (isHeld(files) || !isDue(previous, deps.now())) return;
         at = isoSeconds(deps.now());
+        // A machine that reached this version through an older background update never ran
+        // setup: its settings may still turn Claude Code's own auto-update on, which would
+        // install a major version with no hold (D39). It never stops the check.
+        await turnOffAutoUpdateQuietly(deps.paths, log);
         const write = (check: LastCheck) => {
           writeLastCheck(files, check);
           log(`${check.result}: ${check.detail}`);
@@ -256,15 +337,33 @@ export async function backgroundCheck(deps: BackgroundDeps): Promise<void> {
             write(unreachableCheck(previous, at, deps.now(), status.detail));
             return;
           case "up-to-date":
+            clearHeldMajor(files);
             record("up-to-date", status.installed);
             return;
           case "behind": {
             log(
               `newer: installed ${status.installed ?? "(no version)"}, the marketplace copy ${status.inCopy ?? "(unreadable)"}${status.catalogBehind ? ", and the copy is behind the remote" : ""}`,
             );
-            const result: ApplyResult = applyUpdate(deps.paths, deps.claude, deps.run, (line) =>
-              log(`run: ${line}`),
+            // A new major version is never installed behind the person's back (D33).
+            const result: ApplyResult = applyUpdate(
+              deps.paths,
+              deps.claude,
+              deps.run,
+              (line) => log(`run: ${line}`),
+              () => false,
             );
+            if (result.held !== undefined) {
+              const { from, notes, to } = result.held;
+              const known = readHeldMajor(files);
+              writeHeldMajor(files, {
+                at: known?.version === to ? known.at : at,
+                from,
+                notes,
+                version: to,
+              });
+              record("skipped", majorHeldDetail(to, notes));
+              return;
+            }
             if (result.busy === true) {
               record("skipped", result.detail);
               return;
@@ -273,6 +372,7 @@ export async function backgroundCheck(deps: BackgroundDeps): Promise<void> {
               record("failed", result.detail);
               return;
             }
+            clearHeldMajor(files);
             if (result.after === result.before) {
               record("up-to-date", result.after ?? "(no version)");
               return;

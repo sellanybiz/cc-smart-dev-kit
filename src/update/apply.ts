@@ -3,7 +3,7 @@
  * <marketplace>`, then, when the refreshed copy holds a newer version, `claude plugin
  * update <plugin>@<marketplace> --scope user`. Nothing else: it never restarts the router,
  * a service or a session. A new router version still needs `cc-smart-dev-kit gateway setup`,
- * which asks first.
+ * which asks first. A new major version goes only on the caller's word (`onMajor`, D33).
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -19,6 +19,7 @@ import {
   redactUrlsIn,
 } from "../setup/marketplace-access";
 import { isOlder } from "./check";
+import { isNewMajor, readMajorNotes } from "./major";
 
 type Env = Record<string, string | undefined>;
 
@@ -40,6 +41,18 @@ export interface ApplyResult {
   after: null | string;
   /** Why it failed, in words, URLs without credentials; empty when it did not. */
   detail: string;
+  /** A new major version the caller held (`onMajor` said no): nothing was installed. */
+  held?: MajorStep;
+}
+
+/** A step to a new major version, found in the refreshed marketplace copy. */
+export interface MajorStep {
+  /** The installed version (null: not recorded). */
+  from: null | string;
+  /** The major version in the copy. */
+  to: string;
+  /** Why it is a major step, from the new version's own notes (`./major.ts`). */
+  notes: string[];
 }
 
 /** The two commands, as a person would type them. */
@@ -53,7 +66,8 @@ export const BUSY_DETAIL =
 /**
  * Refreshes the marketplace, then updates the plugin when the copy holds a newer version.
  * `claude` is the path of the claude command (null: not found on PATH). `say` gets one
- * line before each command.
+ * line before each command. When that version is a new major one, `onMajor` decides first:
+ * true installs it, false holds it (`held`, `ok`, nothing installed).
  *
  * A failed command's last output line goes into `detail` (the log, `update-check.json`,
  * `doctor`, a session's `systemMessage`), so every URL in it is shown without its
@@ -65,6 +79,7 @@ export function applyUpdate(
   claude: null | string,
   run: CommandRunner,
   say: (line: string) => void,
+  onMajor: (step: MajorStep) => boolean,
 ): ApplyResult {
   const before = findUserInstall(paths.installedPluginsFile)?.version ?? null;
   const fail = (detail: string): ApplyResult => ({ after: before, before, detail, ok: false });
@@ -87,7 +102,15 @@ export function applyUpdate(
   if (refreshed !== null) return refreshed;
   const location = marketplaceInstallLocation(paths.knownMarketplacesFile, MARKETPLACE);
   const inCopy = location === null ? null : marketplaceCopyVersion(location, PLUGIN).version;
-  if (isOlder(before, inCopy)) {
+  if (inCopy !== null && isOlder(before, inCopy)) {
+    if (isNewMajor(before, inCopy)) {
+      const major: MajorStep = {
+        from: before,
+        notes: readMajorNotes(location, before, inCopy),
+        to: inCopy,
+      };
+      if (!onMajor(major)) return { after: before, before, detail: "", held: major, ok: true };
+    }
     const updated = step(PLUGIN_UPDATE);
     if (updated !== null) return updated;
   }

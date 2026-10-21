@@ -7,7 +7,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.6.0",
+  version: "0.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -384,12 +384,20 @@ function lsRemote(url, ref, baseEnv) {
   }
 }
 function marketplaceInstallLocation(knownMarketplacesFile, name) {
+  const location = knownMarketplaceEntry(knownMarketplacesFile, name)?.installLocation;
+  return typeof location === "string" && location !== "" ? location : null;
+}
+function marketplaceAutoUpdate(knownMarketplacesFile, name) {
+  const autoUpdate = knownMarketplaceEntry(knownMarketplacesFile, name)?.autoUpdate;
+  return typeof autoUpdate === "boolean" ? autoUpdate : undefined;
+}
+function knownMarketplaceEntry(knownMarketplacesFile, name) {
   if (!existsSync2(knownMarketplacesFile))
     return null;
   try {
     const known = JSON.parse(readFileSync2(knownMarketplacesFile, "utf8"));
-    const location = known?.[name]?.installLocation;
-    return typeof location === "string" && location !== "" ? location : null;
+    const entry = known?.[name];
+    return typeof entry === "object" && entry !== null && !Array.isArray(entry) ? entry : null;
   } catch {
     return null;
   }
@@ -1967,8 +1975,8 @@ async function refreshInstructionsCopy(paths, version, options = {}) {
 }
 
 // src/update/apply.ts
-import { existsSync as existsSync11, readFileSync as readFileSync12 } from "fs";
-import { join as join11 } from "path";
+import { existsSync as existsSync11, readFileSync as readFileSync13 } from "fs";
+import { join as join12 } from "path";
 
 // src/shell/powershell.ts
 var SINGLE_QUOTES = /['\u2018\u2019\u201A\u201B]/g;
@@ -2034,12 +2042,70 @@ function windowsToastArgv(shell, title, body, critical = false) {
   ];
 }
 
+// src/update/major.ts
+import { readFileSync as readFileSync12 } from "fs";
+import { join as join11 } from "path";
+var MAJOR_NOTES_PATH = join11("src", "update", "major-notes.json");
+var NOTE_MAX = 120;
+function majorOf(version) {
+  const major = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)/.exec(version.trim())?.[1];
+  return major === undefined ? null : Number(major);
+}
+function isNewMajor(from, to) {
+  if (from === null || to === null)
+    return false;
+  const major = majorOf(from);
+  if (major === null)
+    return false;
+  try {
+    return Bun.semver.order(to, `${major + 1}.0.0-0`) >= 0;
+  } catch {
+    return false;
+  }
+}
+function shownNote(note) {
+  if (typeof note !== "string")
+    return null;
+  const text = note.trim();
+  return text !== "" && text.length <= NOTE_MAX && !/[\p{Cc}\p{Cf}]/u.test(text) ? text : null;
+}
+function majorNotesBetween(text, from, to) {
+  let table;
+  try {
+    table = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  if (typeof table !== "object" || table === null || Array.isArray(table))
+    return [];
+  const crossed = Object.keys(table).filter((version) => majorOf(version) !== null && isNewMajor(from, version) && !isNewMajor(to, version));
+  return crossed.sort((a, b) => Bun.semver.order(a, b)).map((version) => shownNote(table[version])).filter((note) => note !== null);
+}
+function readMajorNotes(location, from, to) {
+  if (location === null)
+    return [];
+  try {
+    return majorNotesBetween(readFileSync12(join11(location, MAJOR_NOTES_PATH), "utf8"), from, to);
+  } catch {
+    return [];
+  }
+}
+function why(notes) {
+  return notes.length === 0 ? "" : ` (${notes.join("; ")})`;
+}
+function majorReadyLine(version, notes) {
+  return `${PLUGIN} ${version} is ready: it is a major version${why(notes)}. Read What's new, then run \`${COMMAND} update\`.`;
+}
+function majorHeldDetail(version, notes) {
+  return `${version} is a major version${why(notes)}: it waits for \`${COMMAND} update\``;
+}
+
 // src/update/apply.ts
 var CLAUDE_TIMEOUT_MS = 180000;
 var MARKETPLACE_REFRESH = ["plugin", "marketplace", "update", MARKETPLACE];
 var PLUGIN_UPDATE = ["plugin", "update", PLUGIN_ID, "--scope", "user"];
 var BUSY_DETAIL = "Claude Code was refreshing the same marketplace (git's index.lock was taken); the next check tries again";
-function applyUpdate(paths, claude, run, say) {
+function applyUpdate(paths, claude, run, say, onMajor) {
   const before = findUserInstall(paths.installedPluginsFile)?.version ?? null;
   const fail = (detail) => ({ after: before, before, detail, ok: false });
   if (claude === null)
@@ -2061,7 +2127,16 @@ function applyUpdate(paths, claude, run, say) {
     return refreshed;
   const location = marketplaceInstallLocation(paths.knownMarketplacesFile, MARKETPLACE);
   const inCopy = location === null ? null : marketplaceCopyVersion(location, PLUGIN).version;
-  if (isOlder(before, inCopy)) {
+  if (inCopy !== null && isOlder(before, inCopy)) {
+    if (isNewMajor(before, inCopy)) {
+      const major = {
+        from: before,
+        notes: readMajorNotes(location, before, inCopy),
+        to: inCopy
+      };
+      if (!onMajor(major))
+        return { after: before, before, detail: "", held: major, ok: true };
+    }
     const updated = step(PLUGIN_UPDATE);
     if (updated !== null)
       return updated;
@@ -2073,8 +2148,8 @@ function routerNeedsSetup(paths) {
   const install = findUserInstall(paths.installedPluginsFile);
   if (install === null || !existsSync11(paths.routerCopy))
     return false;
-  const bundle = join11(install.installPath, "dist", "router.js");
-  return existsSync11(bundle) && readFileSync12(bundle, "utf8") !== readFileSync12(paths.routerCopy, "utf8");
+  const bundle = join12(install.installPath, "dist", "router.js");
+  return existsSync11(bundle) && readFileSync13(bundle, "utf8") !== readFileSync13(paths.routerCopy, "utf8");
 }
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
 var NOTIFY_HOOK_SETUP_HINT = `agent view's notification hook is missing: ${COMMAND} setup writes it`;
@@ -2132,8 +2207,33 @@ function capturingRunner(env, home) {
   };
 }
 
+// src/setup/auto-update.ts
+var AUTO_UPDATE_KEY = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
+var AUTO_UPDATE_VALUE = false;
+function autoUpdateState(paths) {
+  const current = getKey(readJsonObject(paths.settingsFile).data, AUTO_UPDATE_KEY);
+  if (current.found) {
+    if (current.value !== true)
+      return "off";
+    const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
+    return ownership(records, AUTO_UPDATE_KEY, current) === "ours" ? "ours" : "yours";
+  }
+  return marketplaceAutoUpdate(paths.knownMarketplacesFile, MARKETPLACE) === true ? "known" : "off";
+}
+async function turnOffLeftoverAutoUpdate(paths) {
+  const state = autoUpdateState(paths);
+  if (state !== "ours")
+    return { result: null, state };
+  const result = await withLock(paths.stateDir, () => applyManagedJson({
+    file: paths.settingsFile,
+    stateDir: paths.stateDir,
+    set: [[AUTO_UPDATE_KEY, AUTO_UPDATE_VALUE]]
+  }));
+  return { result, state };
+}
+
 // src/setup/user-notify-hook.ts
-import { existsSync as existsSync12, readFileSync as readFileSync13 } from "fs";
+import { existsSync as existsSync12, readFileSync as readFileSync14 } from "fs";
 
 // src/hooks/notify-types.ts
 var PLUGIN_NOTIFY_TYPES = [
@@ -2178,7 +2278,7 @@ function userNotifyHookState(file) {
     return "missing";
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync13(file, "utf8"));
+    parsed = JSON.parse(readFileSync14(file, "utf8"));
   } catch {
     return "missing";
   }
@@ -2199,7 +2299,7 @@ function userNotifyHookState(file) {
 }
 
 // src/update/opt-out.ts
-import { readFileSync as readFileSync14 } from "fs";
+import { readFileSync as readFileSync15 } from "fs";
 var UPDATE_BLOCKING_VARS = [
   "DISABLE_AUTOUPDATER",
   "DISABLE_UPDATES",
@@ -2213,7 +2313,7 @@ function isSet(value) {
 }
 function settingsEnv(settingsFile) {
   try {
-    const parsed = JSON.parse(readFileSync14(settingsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync15(settingsFile, "utf8"));
     const env = parsed?.env;
     return typeof env === "object" && env !== null && !Array.isArray(env) ? env : {};
   } catch {
@@ -2242,22 +2342,23 @@ import {
   existsSync as existsSync13,
   mkdirSync as mkdirSync3,
   readdirSync as readdirSync4,
-  readFileSync as readFileSync15,
+  readFileSync as readFileSync16,
   rmSync as rmSync2,
   statSync as statSync3,
   writeFileSync as writeFileSync2
 } from "fs";
-import { join as join12 } from "path";
+import { join as join13 } from "path";
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
 var LOG_MAX_BYTES = 256 * 1024;
 function updateFiles(stateDir) {
   return {
-    hold: join12(stateDir, "update-hold"),
-    check: join12(stateDir, "update-check.json"),
-    reported: join12(stateDir, "update-reported"),
-    log: join12(stateDir, "update.log"),
-    lockDir: join12(stateDir, "update"),
-    sessions: join12(stateDir, "sessions")
+    hold: join13(stateDir, "update-hold"),
+    check: join13(stateDir, "update-check.json"),
+    reported: join13(stateDir, "update-reported"),
+    major: join13(stateDir, "update-major.json"),
+    log: join13(stateDir, "update.log"),
+    lockDir: join13(stateDir, "update"),
+    sessions: join13(stateDir, "sessions")
   };
 }
 var RESULTS = [
@@ -2285,7 +2386,7 @@ function ensureDir(dir) {
 }
 function readLastCheck(files) {
   try {
-    const parsed = JSON.parse(readFileSync15(files.check, "utf8"));
+    const parsed = JSON.parse(readFileSync16(files.check, "utf8"));
     if (typeof parsed?.at !== "string" || Number.isNaN(Date.parse(parsed.at)) || !RESULTS.includes(parsed.result) || typeof parsed.detail !== "string") {
       return null;
     }
@@ -2303,7 +2404,7 @@ function readLastCheck(files) {
   }
 }
 function writeLastCheck(files, check) {
-  ensureDir(join12(files.check, ".."));
+  ensureDir(join13(files.check, ".."));
   atomicWrite(files.check, `${JSON.stringify(check, null, 2)}
 `, 384);
 }
@@ -2320,10 +2421,10 @@ function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
 }
 function appendLog(files, line, nowMs) {
-  ensureDir(join12(files.log, ".."));
+  ensureDir(join13(files.log, ".."));
   try {
     if (statSync3(files.log).size > LOG_MAX_BYTES) {
-      const text = readFileSync15(files.log, "utf8");
+      const text = readFileSync16(files.log, "utf8");
       const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
       writeFileSync2(files.log, keep.slice(keep.indexOf(`
 `) + 1), { mode: 384 });
@@ -2334,19 +2435,38 @@ function appendLog(files, line, nowMs) {
 }
 function wasReported(files, at) {
   try {
-    return readFileSync15(files.reported, "utf8").trim() === at;
+    return readFileSync16(files.reported, "utf8").trim() === at;
   } catch {
     return false;
   }
 }
 function markReported(files, at) {
-  ensureDir(join12(files.reported, ".."));
+  ensureDir(join13(files.reported, ".."));
   atomicWrite(files.reported, `${at}
 `, 384);
 }
+function readHeldMajor(files) {
+  try {
+    const parsed = JSON.parse(readFileSync16(files.major, "utf8"));
+    if (typeof parsed?.version !== "string" || typeof parsed.at !== "string" || parsed.from !== null && typeof parsed.from !== "string" || !Array.isArray(parsed.notes) || !parsed.notes.every((note) => typeof note === "string")) {
+      return null;
+    }
+    return { at: parsed.at, from: parsed.from, notes: parsed.notes, version: parsed.version };
+  } catch {
+    return null;
+  }
+}
+function writeHeldMajor(files, held) {
+  ensureDir(join13(files.major, ".."));
+  atomicWrite(files.major, `${JSON.stringify(held, null, 2)}
+`, 384);
+}
+function clearHeldMajor(files) {
+  rmSync2(files.major, { force: true });
+}
 function readSession(file) {
   try {
-    const parsed = JSON.parse(readFileSync15(file, "utf8"));
+    const parsed = JSON.parse(readFileSync16(file, "utf8"));
     if (typeof parsed?.pid !== "number" || typeof parsed.start !== "string" || typeof parsed.version !== "string") {
       return null;
     }
@@ -2365,13 +2485,13 @@ function registerSession(files, pid, version) {
     return;
   ensureDir(files.sessions);
   for (const name of readdirSync4(files.sessions).filter((entry) => SESSION_FILE.test(entry))) {
-    const file = join12(files.sessions, name);
+    const file = join13(files.sessions, name);
     const session = readSession(file);
     if (session === null || !isRunning(session))
       rmSync2(file, { force: true });
   }
   const record = { pid, start, version };
-  atomicWrite(join12(files.sessions, `${pid}.json`), `${JSON.stringify(record)}
+  atomicWrite(join13(files.sessions, `${pid}.json`), `${JSON.stringify(record)}
 `, 384);
 }
 
@@ -2388,6 +2508,17 @@ function isAttended(env) {
 function backgroundCommand(bunPath, entryPath, pluginDir) {
   return [bunPath, "--no-env-file", bunConfigArg(pluginDir), entryPath, "--background"];
 }
+function sessionSourceOf(input) {
+  try {
+    const source = JSON.parse(input)?.source;
+    return typeof source === "string" ? source : null;
+  } catch {
+    return null;
+  }
+}
+function sessionStarts(source) {
+  return source === null || source === "startup" || source === "resume";
+}
 function sessionStart(deps) {
   const files = updateFiles(deps.paths.stateDir);
   if (deps.sessionPid !== null)
@@ -2403,17 +2534,23 @@ function sessionStart(deps) {
     }
     return "";
   }
-  let answer = "";
+  const messages = [];
   const reportKey = last?.since ?? last?.at ?? "";
   if (last?.result === "failed" && !wasReported(files, reportKey) && isAttended(deps.env)) {
     markReported(files, reportKey);
-    answer = JSON.stringify({
-      systemMessage: `${PLUGIN}: the background update failed at ${last.at} (${last.detail}). The log: ${tildify(files.log, deps.paths.home)}. To try now: ${COMMAND} update`
-    });
+    messages.push(`${PLUGIN}: the background update failed at ${last.at} (${last.detail}). The log: ${tildify(files.log, deps.paths.home)}. To try now: ${COMMAND} update`);
+  }
+  const major = readHeldMajor(files);
+  if (major !== null && sessionStarts(deps.source) && isAttended(deps.env)) {
+    const installed = findUserInstall(deps.paths.installedPluginsFile)?.version ?? null;
+    if (isOlder(installed, major.version)) {
+      messages.push(majorReadyLine(major.version, major.notes));
+    }
   }
   if (isDue(last, deps.nowMs))
     deps.spawnBackground();
-  return answer;
+  return messages.length === 0 ? "" : JSON.stringify({ systemMessage: messages.join(`
+`) });
 }
 function backgroundCheckArgv(platform, bun, bundle, pluginDir) {
   return detachedArgv(platform, backgroundCommand(bun, bundle, pluginDir));
@@ -2430,16 +2567,31 @@ async function refreshInstructionsAtSessionStart(deps) {
     deps.log(`${PLUGIN}: the instructions copy was not refreshed (${messageOf(error)}). A plain ${COMMAND} setup brings it up to date.`);
   }
 }
+async function turnOffAutoUpdateQuietly(paths, log) {
+  const key = formatKeyPath(AUTO_UPDATE_KEY);
+  try {
+    const { result, state } = await turnOffLeftoverAutoUpdate(paths);
+    if (result?.written === true) {
+      log(`auto-update: ${key} set to ${AUTO_UPDATE_VALUE} in ${tildify(result.file, paths.home)}: Claude Code's own plugin auto-update is off`);
+    } else if (state === "yours") {
+      log(`auto-update: left on: ${key} is true in ${tildify(paths.settingsFile, paths.home)}, set by you; \`${COMMAND} doctor\` says how to turn it off`);
+    }
+  } catch (error) {
+    const why = error instanceof LockBusyError ? "the state lock is busy (a setup runs now)" : redactUrlsIn(messageOf(error));
+    log(`auto-update: not turned off (${why}); the next check tries again`);
+  }
+}
 async function backgroundCheck(deps) {
   const files = updateFiles(deps.paths.stateDir);
   const log = (line) => appendLog(files, line, deps.now());
   let at = isoSeconds(deps.now());
   try {
-    await withLock(files.lockDir, () => {
+    await withLock(files.lockDir, async () => {
       const previous = readLastCheck(files);
       if (isHeld(files) || !isDue(previous, deps.now()))
         return;
       at = isoSeconds(deps.now());
+      await turnOffAutoUpdateQuietly(deps.paths, log);
       const write = (check) => {
         writeLastCheck(files, check);
         log(`${check.result}: ${check.detail}`);
@@ -2468,11 +2620,24 @@ async function backgroundCheck(deps) {
           write(unreachableCheck(previous, at, deps.now(), status.detail));
           return;
         case "up-to-date":
+          clearHeldMajor(files);
           record("up-to-date", status.installed);
           return;
         case "behind": {
           log(`newer: installed ${status.installed ?? "(no version)"}, the marketplace copy ${status.inCopy ?? "(unreadable)"}${status.catalogBehind ? ", and the copy is behind the remote" : ""}`);
-          const result = applyUpdate(deps.paths, deps.claude, deps.run, (line) => log(`run: ${line}`));
+          const result = applyUpdate(deps.paths, deps.claude, deps.run, (line) => log(`run: ${line}`), () => false);
+          if (result.held !== undefined) {
+            const { from, notes, to } = result.held;
+            const known = readHeldMajor(files);
+            writeHeldMajor(files, {
+              at: known?.version === to ? known.at : at,
+              from,
+              notes,
+              version: to
+            });
+            record("skipped", majorHeldDetail(to, notes));
+            return;
+          }
           if (result.busy === true) {
             record("skipped", result.detail);
             return;
@@ -2481,6 +2646,7 @@ async function backgroundCheck(deps) {
             record("failed", result.detail);
             return;
           }
+          clearHeldMajor(files);
           if (result.after === result.before) {
             record("up-to-date", result.after ?? "(no version)");
             return;
@@ -2529,11 +2695,13 @@ if (process.argv.includes("--background")) {
   });
 } else {
   try {
+    const input = process.stdin.isTTY ? "" : await Bun.stdin.text();
     const answer = sessionStart({
       paths,
       env,
       nowMs: Date.now(),
       sessionPid: sessionPid(),
+      source: sessionSourceOf(input),
       version: VERSION,
       spawnBackground: () => {
         startDetached(process.platform, backgroundCheckArgv(process.platform, process.execPath, Bun.main, pluginFolderBeside(import.meta.dir)), {
