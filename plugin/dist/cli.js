@@ -20584,6 +20584,33 @@ function resolveLaunchModel(name, gateway, env) {
 function isAffordable(real) {
   return !real.claude && real.tier === null;
 }
+var SUBAGENT_MODEL_FORCE_ENV = "CLAUDE_CODE_SUBAGENT_MODEL_FORCE";
+var SUBAGENT_MODEL_ENV = "CLAUDE_CODE_SUBAGENT_MODEL";
+var WORKFLOW_SUBAGENT_MODEL_ENV = "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL";
+var EFFORT_LEVEL_ENV = "CLAUDE_CODE_EFFORT_LEVEL";
+var EFFORT_AUTO = "auto";
+function switchOn(value) {
+  return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
+}
+function modelVariable(env, name) {
+  const value = stringField(env[name])?.trim() ?? "";
+  return value === "" || value.toLowerCase() === "inherit" ? null : value;
+}
+function effectiveLaunch(launch, env, sessionModel) {
+  if (launch.fork) {
+    return { effort: launch.effort, effortFrom: null, model: sessionModel, modelFrom: "fork" };
+  }
+  const level = stringField(env[EFFORT_LEVEL_ENV])?.trim().toLowerCase() ?? "";
+  const effort = level === "" ? { effort: launch.effort, effortFrom: null } : { effort: level, effortFrom: EFFORT_LEVEL_ENV };
+  if (switchOn(env[SUBAGENT_MODEL_FORCE_ENV])) {
+    const forced = modelVariable(env, SUBAGENT_MODEL_ENV);
+    return forced === null ? { ...effort, model: sessionModel, modelFrom: "force-session" } : { ...effort, model: forced, modelFrom: "force" };
+  }
+  const workflowModel = launch.workflow ? modelVariable(env, WORKFLOW_SUBAGENT_MODEL_ENV) : null;
+  if (workflowModel !== null)
+    return { ...effort, model: workflowModel, modelFrom: "workflow" };
+  return { ...effort, model: launch.model, modelFrom: "call" };
+}
 var WORKER_KINDS = {
   build: { about: "routine building", affordableEffort: "max", effort: "high", model: "sonnet" },
   docs: {
@@ -21172,8 +21199,8 @@ var PROMPT_UNREADABLE = "The launch's prompt is built at run time, so the guard 
 function judgeWorkflow(script, ctx, env) {
   return readWorkflowScript(script).map((launch) => {
     const verdict = judgeLaunch(asLaunch(launch), ctx, env);
-    if (launch.model === null) {
-      return { launch, verdict: deny(verdict.real, NO_WORKFLOW_MODEL) };
+    if (launch.model === null && verdict.ran.modelFrom === "call") {
+      return { launch, verdict: { ...deny(verdict.real, NO_WORKFLOW_MODEL), ran: verdict.ran } };
     }
     if (launch.prompt === null && (verdict.decision === "deny" || verdict.restsOnPrompt === true)) {
       return {
@@ -21272,18 +21299,75 @@ function fableBuildDenial(real, type) {
   ].join(`
 `);
 }
+var WHERE_SET = "where it is set \u2014 the environment Claude Code was started with, or the `env` of a Claude Code settings file (the user's, the project's, or the project's local one)";
+function effortLevelDenial(level) {
+  return [
+    `\`${EFFORT_LEVEL_ENV}\` is \`${level}\`, and Claude Code runs every subagent at it: no subagent may run at \`${level}\` (the plugin's rule).`,
+    `A subagent runs at ${EFFORTS} \u2014 never \`low\`, on any model.`,
+    `Only the person can change the variable: ask them to set it to one of those levels, or to remove it, ${WHERE_SET}.`
+  ].join(`
+`);
+}
+function modelNote(ran) {
+  const ignored = "Claude Code ignores the launch's own `model`.";
+  if (ran.modelFrom === "force") {
+    return `This launch runs on \`${ran.model}\` because \`${SUBAGENT_MODEL_FORCE_ENV}\` is set, with \`${SUBAGENT_MODEL_ENV}=${ran.model}\`: ${ignored}`;
+  }
+  if (ran.modelFrom === "force-session") {
+    const which = ran.model === null ? "" : `, \`${ran.model}\`,`;
+    const unknown = ran.model === null ? " The guard cannot read the session's model, so it judges the launch as the opus tier." : "";
+    return `This launch runs on the session's own model${which} because \`${SUBAGENT_MODEL_FORCE_ENV}\` is set without \`${SUBAGENT_MODEL_ENV}\`: ${ignored}${unknown}`;
+  }
+  if (ran.modelFrom === "workflow") {
+    return `This launch runs on \`${ran.model}\` because \`${WORKFLOW_SUBAGENT_MODEL_ENV}\` is set: Claude Code ignores the script's own \`model\`.`;
+  }
+  return null;
+}
+function effortNote(ran) {
+  if (ran.effortFrom === null)
+    return null;
+  return `It runs at effort \`${ran.effort}\` because \`${ran.effortFrom}\` is set: Claude Code ignores the launch's own \`effort\`, and only the person can change the variable, ${WHERE_SET}.`;
+}
 function judgeLaunch(launch, ctx, env) {
-  const named = launch.model;
+  const ran = effectiveLaunch({
+    effort: launch.effort,
+    fork: launch.fork,
+    model: launch.model,
+    workflow: launch.tool === "Workflow"
+  }, env, ctx.sessionModel);
+  const { verdict, namesEffortLevel } = judgeRan(launch, ran, ctx, env);
+  if (verdict.decision === "allow")
+    return { ...verdict, ran };
+  const notes = [modelNote(ran), namesEffortLevel ? null : effortNote(ran)].filter((one) => one !== null);
+  return { ...verdict, ran, reason: [...notes, verdict.reason].join(`
+`) };
+}
+function judgeRan(launch, ran, ctx, env) {
+  const judged = (verdict) => ({ namesEffortLevel: false, verdict });
   if (!launch.fork) {
-    if (named === null)
-      return deny(null, NO_MODEL);
-    if (launch.effort === null)
-      return deny(null, NO_EFFORT);
+    if (ran.modelFrom === "call" && ran.model === null)
+      return judged(deny(null, NO_MODEL));
+    if (ran.effort === null)
+      return judged(deny(null, NO_EFFORT));
   }
-  const real = launch.fork ? forkModel(ctx.sessionModel, ctx, env) : resolveLaunchModel(named ?? "", ctx, env);
-  if (launch.effort !== null && !effortAllowed(launch.effort)) {
-    return deny(real, effortDenial(launch.effort));
+  const real = ran.modelFrom === "fork" || ran.modelFrom === "force-session" ? sessionLaunchModel(ran.model, ctx, env) : resolveLaunchModel(ran.model ?? "", ctx, env);
+  const auto = ran.effortFrom !== null && ran.effort === EFFORT_AUTO;
+  if (ran.effort !== null && !auto && !effortAllowed(ran.effort)) {
+    return ran.effortFrom === null ? judged(deny(real, effortDenial(ran.effort))) : { namesEffortLevel: true, verdict: deny(real, effortLevelDenial(ran.effort)) };
   }
+  if (ran.effortFrom !== null && isAffordable(real) && ctx.gatewayOn && ran.effort !== AFFORDABLE_EFFORT) {
+    return {
+      namesEffortLevel: true,
+      verdict: deny(real, [
+        `This launch runs on ${real.model}, an affordable gateway slot.`,
+        `An affordable slot runs at effort \`${AFFORDABLE_EFFORT}\` (its reasoning costs cents), and \`${ran.effortFrom}\` runs every subagent at \`${ran.effort}\`: only the person can change the variable \u2014 ask them to set it to \`${AFFORDABLE_EFFORT}\`, or to remove it, ${WHERE_SET}.`
+      ].join(`
+`))
+    };
+  }
+  return judged(judgeModel({ ...launch, effort: ran.effort }, real, ctx, env));
+}
+function judgeModel(launch, real, ctx, env) {
   const type = launch.subagentType ?? "";
   const readOnly = ctx.readOnlyAgents === undefined ? agentList(READ_ONLY_AGENTS, env, READ_ONLY_AGENTS_ENV) : new Set(ctx.readOnlyAgents.map(agentKey));
   const builder = !readOnly.has(agentKey(type));
@@ -21373,7 +21457,7 @@ function judgeLaunch(launch, ctx, env) {
 function nobodyWatches(env) {
   return (env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0";
 }
-function forkModel(sessionModel, gateway, env) {
+function sessionLaunchModel(sessionModel, gateway, env) {
   if (sessionModel === null)
     return { claude: true, family: "opus", model: "the session's model (unknown)", tier: "opus" };
   return resolveLaunchModel(sessionModel, gateway, env);
@@ -21440,7 +21524,21 @@ function guardFacts(input, context) {
     subagent_type: launch.subagentType,
     tier: result.real?.tier ?? null,
     tool: launch.tool,
-    ...result.why === "" ? {} : { why: result.why }
+    ...result.why === "" ? {} : { why: result.why },
+    ...overrideFacts(result.ran)
+  };
+}
+function modelOverride(ran) {
+  if (ran.modelFrom === "force" || ran.modelFrom === "force-session") {
+    return SUBAGENT_MODEL_FORCE_ENV;
+  }
+  return ran.modelFrom === "workflow" ? WORKFLOW_SUBAGENT_MODEL_ENV : null;
+}
+function overrideFacts(ran) {
+  const model = modelOverride(ran);
+  return {
+    ...model === null ? {} : { model_override: model, ran_model: ran.model },
+    ...ran.effortFrom === null ? {} : { effort_override: ran.effortFrom, ran_effort: ran.effort }
   };
 }
 function recorded(result, launch, input, cwd, nowMs) {

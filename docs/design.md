@@ -1323,6 +1323,40 @@ run on:
    sidechain line is a subagent's, not the session's), else from `ANTHROPIC_MODEL`; an
    unknown one counts as Claude Opus.
 
+**Before those steps, Claude Code's own overrides decide which name and which effort the launch
+really gets** (`effectiveLaunch` in the launch policy; the order proved live on 2.1.306, and in
+Claude Code's own docs and code):
+
+| Override | What the launch runs on |
+|---|---|
+| `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` on (`1`, `true`, `yes` or `on`, the values Claude Code reads as on) | `CLAUDE_CODE_SUBAGENT_MODEL`; unset or `inherit`: the session's own model (step 3's reading; unknown → the `opus` tier). The call's `model` does not count. |
+| `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` (not empty, not `inherit`) | its model, for a Workflow `agent()` only; FORCE comes first; an Agent call is not touched |
+| neither | the call's own `model`. A plain `CLAUDE_CODE_SUBAGENT_MODEL` is only a default for a call that names none, after the agent's own definition, which no hook can read — so such a call is still refused for naming no model |
+| `CLAUDE_CODE_EFFORT_LEVEL` (not empty) | that effort for every launch, whatever the call names |
+
+The guard reads them from its own environment. **A settings file's `env` reaches a hook's
+environment** (proved live on 2.1.306, for `--settings` and for a project's
+`.claude/settings.json`), so that is all it reads — no settings file of its own. **Under FORCE
+Claude Code takes `model` off the Agent tool, and under `CLAUDE_CODE_EFFORT_LEVEL` it takes
+`effort` off** (proved live: the PreToolUse `tool_input` carries neither). So before 1.0.0
+the guard refused every Agent launch there ("names no `model`"); now such a launch is judged on
+what the variable sets. Every ask and refusal says which override applied ("This launch runs on
+`haiku` because `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is set …"), and the record names the model
+the launch really runs on. Two refusals rest on the variable alone, and only the person can
+change it, so the message says where it is set: a `CLAUDE_CODE_EFFORT_LEVEL` no subagent may run
+at (`low`, or a level no rule knows), and anything but `max` while an affordable slot answers.
+`auto` (`EFFORT_AUTO`: the model picks its own default) is the person's own choice, like a
+fork's inherited effort: it is never refused for itself, and since no model's default is `max`,
+the `opus` tier runs it with no question (recorded as `opus:auto`); Sonnet and Haiku run it, the
+`fable` tier keeps its reason-line rules, and only an affordable slot refuses it. Refusing it
+would lock out every launch, the same way the missing `effort` once did. A fork keeps its rule: the session's model, and the effort it names,
+else the session's own. Two readings are the stricter one on purpose: under FORCE alone the
+built-in Explore agent runs on its own listed model (Opus where the session runs Fable), but a
+person's own agent named `Explore` runs on the session's, and a hook cannot tell them apart, so
+both read as the session's model. One case is not covered: Claude Code's code (2.1.306) still
+reads `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` under FORCE when an admin's managed settings set it,
+and the guard reads no managed settings, so it judges FORCE's model there.
+
 A **Workflow** tool call is judged too: its `agent(...)` launches run inside the tool and pass
 no hook of their own (proved live on 2.1.301 — a project hook with the matcher
 `Agent|Task|Workflow` saw the `Workflow` call and nothing else), so the guard reads the
@@ -1336,6 +1370,8 @@ whole call (`workflowRefusal`), because no rule can hold for a launch the guard 
 `agent` mentioned without a direct call (`const run = agent; run(…)`, `agent?.(…)`, `agent`
 passed around), and a call whose options are built at run time (a `...spread`, a computed
 `[…]` key, the same key twice). The strictest launch of the call answers for the whole call.
+A launch with no readable `model` is judged, not refused, when FORCE or
+`CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` names the model it runs on.
 
 The rules are in one table in `src/hooks/agent-guard.ts` (its header). The policy under them —
 which model a launch really runs on (`resolveLaunchModel`), the effort levels

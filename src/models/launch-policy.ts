@@ -1,6 +1,7 @@
 /**
- * The launch policy: which model a launch really runs on, the effort levels a subagent may run
- * at, the Fable reason words, and the model and effort each kind of worker phase runs on (D21).
+ * The launch policy: which model and effort a launch really runs on (Claude Code's own overrides,
+ * `effectiveLaunch`, then the model's resolution), the effort levels a subagent may run at, the
+ * Fable reason words, and the model and effort each kind of worker phase runs on (D21).
  *
  * **One home, pure.** The Agent guard (`src/hooks/agent-guard.ts`) judges every Agent, Task and
  * Workflow launch by it; the worker launcher and the Bash judge read the same table, so a
@@ -284,6 +285,123 @@ export function resolveLaunchModel(name: string, gateway: GatewayFacts, env: Env
  */
 export function isAffordable(real: LaunchModel): boolean {
   return !real.claude && real.tier === null;
+}
+
+/**
+ * Claude Code's switch that puts every subagent, teammate and Workflow agent on one model:
+ * `CLAUDE_CODE_SUBAGENT_MODEL` when it is set too, else the session's own model.
+ */
+export const SUBAGENT_MODEL_FORCE_ENV = "CLAUDE_CODE_SUBAGENT_MODEL_FORCE";
+
+/** The subagent model Claude Code uses: forced with `SUBAGENT_MODEL_FORCE_ENV`, else a default. */
+export const SUBAGENT_MODEL_ENV = "CLAUDE_CODE_SUBAGENT_MODEL";
+
+/** The model every Workflow `agent()` runs on, whatever the script names. */
+export const WORKFLOW_SUBAGENT_MODEL_ENV = "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL";
+
+/** The effort every subagent runs at, whatever the call names (and the session's own). */
+export const EFFORT_LEVEL_ENV = "CLAUDE_CODE_EFFORT_LEVEL";
+
+/**
+ * The `EFFORT_LEVEL_ENV` value that lets the model pick its own default level (Claude Code's
+ * docs). The person chose it, like a fork's inherited effort: a launch is never refused for it,
+ * and it is never `max` — no model's default is — so the opus tier does not ask. An affordable
+ * slot still needs `AFFORDABLE_EFFORT`.
+ */
+export const EFFORT_AUTO = "auto";
+
+/** What a launch asks for, before Claude Code's overrides: the call's own fields. */
+export interface LaunchAsked {
+  /** The effort the call names; null when it names none. */
+  effort: null | string;
+  /** True for `subagent_type: "fork"`: it runs on the session's model and effort. */
+  fork: boolean;
+  /** The model the call names; null when it names none. */
+  model: null | string;
+  /** True for a Workflow script's `agent()` launch, false for the Agent (or Task) tool. */
+  workflow: boolean;
+}
+
+/**
+ * Where the model a launch really runs on comes from: the call itself, the session (a fork),
+ * `SUBAGENT_MODEL_FORCE_ENV` with `SUBAGENT_MODEL_ENV` (`force`) or without it
+ * (`force-session`: the session's own model), or `WORKFLOW_SUBAGENT_MODEL_ENV`.
+ */
+export type ModelSource = "call" | "fork" | "force" | "force-session" | "workflow";
+
+/** The model and effort a launch really runs on, and which override set each. */
+export interface EffectiveLaunch {
+  /** The effort it runs at; null when nothing names one (a fork runs at the session's own). */
+  effort: null | string;
+  /** `EFFORT_LEVEL_ENV` when that variable set the effort; null when the call (or a fork) did. */
+  effortFrom: null | typeof EFFORT_LEVEL_ENV;
+  /**
+   * The model name it runs on; null when the call names none and no override names one, or when
+   * it runs on the session's own model and the session's model cannot be read.
+   */
+  model: null | string;
+  modelFrom: ModelSource;
+}
+
+/** True where Claude Code reads a switch as on: `1`, `true`, `yes` or `on`, any case. */
+function switchOn(value: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
+}
+
+/** A model variable as Claude Code reads it: trimmed; empty and `inherit` are unset. */
+function modelVariable(env: Env, name: string): null | string {
+  const value = stringField(env[name])?.trim() ?? "";
+  return value === "" || value.toLowerCase() === "inherit" ? null : value;
+}
+
+/**
+ * The model and effort a launch will REALLY run on, after Claude Code's own overrides — the
+ * order proved live on 2.1.306 (and in Claude Code's docs):
+ *
+ * - **Model.** `SUBAGENT_MODEL_FORCE_ENV` comes first: the model in `SUBAGENT_MODEL_ENV`, else
+ *   the session's own. Then `WORKFLOW_SUBAGENT_MODEL_ENV`, for a Workflow agent only. Then the
+ *   call's own `model`. A plain `SUBAGENT_MODEL_ENV` never beats the call's model: it is only a
+ *   default for a call that names none, after the agent's own definition, which no hook can
+ *   read — so such a call stays one that names no model.
+ * - **Effort.** `EFFORT_LEVEL_ENV` beats the call's `effort` and the session's own.
+ * - **A fork** runs on the session's own model under every override (the docs: "These
+ *   subagents still run on the main conversation's model: a fork"), and is judged at the effort
+ *   it names, else at the session's own — the guard's rule before these overrides.
+ *
+ * Under FORCE Claude Code removes `model` from the Agent tool, and under `EFFORT_LEVEL_ENV` it
+ * removes `effort`: the call carries none, and this is what the launch runs on all the same.
+ * The built-in Explore agent under FORCE alone runs on its own listed model (Opus where the
+ * session runs Fable); a person's own agent named `Explore` runs on the session's. A hook cannot
+ * tell the two apart, so both read as the session's model: the stricter reading.
+ *
+ * The caller reads these variables from the hook's own environment: a settings file's `env`
+ * reaches it there too (proved live on 2.1.306, for `--settings` and a project's
+ * `.claude/settings.json`).
+ */
+export function effectiveLaunch(
+  launch: LaunchAsked,
+  env: Env,
+  sessionModel: null | string,
+): EffectiveLaunch {
+  // A fork keeps the guard's own rule: the session's model, and the effort the call names, if
+  // any (none: the session's own, which the person chose).
+  if (launch.fork) {
+    return { effort: launch.effort, effortFrom: null, model: sessionModel, modelFrom: "fork" };
+  }
+  const level = stringField(env[EFFORT_LEVEL_ENV])?.trim().toLowerCase() ?? "";
+  const effort: Pick<EffectiveLaunch, "effort" | "effortFrom"> =
+    level === ""
+      ? { effort: launch.effort, effortFrom: null }
+      : { effort: level, effortFrom: EFFORT_LEVEL_ENV };
+  if (switchOn(env[SUBAGENT_MODEL_FORCE_ENV])) {
+    const forced = modelVariable(env, SUBAGENT_MODEL_ENV);
+    return forced === null
+      ? { ...effort, model: sessionModel, modelFrom: "force-session" }
+      : { ...effort, model: forced, modelFrom: "force" };
+  }
+  const workflowModel = launch.workflow ? modelVariable(env, WORKFLOW_SUBAGENT_MODEL_ENV) : null;
+  if (workflowModel !== null) return { ...effort, model: workflowModel, modelFrom: "workflow" };
+  return { ...effort, model: launch.model, modelFrom: "call" };
 }
 
 /** The model a worker kind names, and the effort it runs at. */

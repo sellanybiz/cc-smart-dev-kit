@@ -33,11 +33,25 @@
  * | Claude Sonnet or Haiku (the gateway off, the family's slot off, or its chain starting with a `claude-…` model) | allow (the effort rule above still holds) |
  * | the `opus` tier | read as the Opus family (the `opus` name, a Claude Opus id, the opus slot, an id the person's own override names for it): effort `medium`, `high` or `xhigh`: allow, for any agent and any purpose; effort `max`: **ask** (the person approves each one, and sees the model and the effort); a fork names no effort: it runs at the session's own, which the person chose, so it is allowed. A reading with no family (a name no rule knows, an id the guard cannot read): **ask** at any effort — it may stand for a higher tier |
  * | the `fable` tier | a read-only agent type with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: **ask** (the word `build` is not one of them: a read-only agent never builds); an agent that can change files (any other type, a fork included) with `Fable reason: build - <why>`: **ask** (the person asked for it); no line, a builder without the word `build`, or an unattended session (`claude -p`): deny |
- * | no `model` / no `effort` | deny (a launch that names neither would inherit the session's, which nobody chose) — except a `fork`, which always inherits both |
+ * | no `model` / no `effort` | deny (a launch that names neither would inherit the session's, which nobody chose) — except a `fork`, which always inherits both, and a launch whose model or effort one of Claude Code's overrides sets (below) |
  * | a session nobody watches (`claude -p`) | every premium launch that would ask is denied (there is nobody to approve it): the `opus` tier at `max` says to run it at `medium`, `high` or `xhigh`, or in an interactive session; a reading with no family says to name `opus`; the Opus family below `max` stays allowed |
  *
  * A reason word is read with the punctuation around it dropped: `Fable reason: plan.` names
  * `plan`.
+ *
+ * **What really runs.** Every rule above judges the model and effort the launch REALLY runs
+ * on, after Claude Code's own overrides (`effectiveLaunch`, in the launch policy, read from the
+ * hook's own environment, which a settings file's `env` reaches too):
+ * `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` (its `CLAUDE_CODE_SUBAGENT_MODEL`, else the session's own
+ * model) > `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` (a Workflow agent only) > the call's `model`;
+ * `CLAUDE_CODE_EFFORT_LEVEL` > the call's `effort`. Under FORCE or `CLAUDE_CODE_EFFORT_LEVEL`
+ * Claude Code removes `model` or `effort` from the Agent tool, so a call that names neither is
+ * judged on what the variable sets, never refused for it. An ask or a denial names the override.
+ * A level `CLAUDE_CODE_EFFORT_LEVEL` names that no subagent may run at (`low`, a level no rule
+ * knows) is refused, and so is anything but `max` on an affordable slot: only the person can
+ * change the variable, and the message says where. `auto` is the person's own choice, like a
+ * fork's effort (`EFFORT_AUTO`): never refused for itself, never asked on the `opus` tier (no
+ * model's default is `max`). A fork keeps its own rule.
  *
  * **Tiers, not vendors** (the owner, 2026-10-16). `opus` and `fable` mean the TIER: whatever
  * model answers behind them — Claude, a backend through an override or the family's slot, a
@@ -84,6 +98,10 @@ import { settingsReport } from "../gateway/settings";
 import {
   AFFORDABLE_EFFORT,
   ALLOWED_EFFORTS,
+  EFFORT_AUTO,
+  EFFORT_LEVEL_ENV,
+  type EffectiveLaunch,
+  effectiveLaunch,
   effortAllowed,
   FABLE_BUILD_REASON,
   FABLE_REASONS,
@@ -93,6 +111,9 @@ import {
   OPUS_ASK_EFFORT,
   OPUS_FREE_EFFORTS,
   resolveLaunchModel,
+  SUBAGENT_MODEL_ENV,
+  SUBAGENT_MODEL_FORCE_ENV,
+  WORKFLOW_SUBAGENT_MODEL_ENV,
 } from "../models/launch-policy";
 import { type AgentLaunch, agentLaunchesFile, appendAgentLaunch } from "./agent-launches";
 import {
@@ -610,9 +631,10 @@ const PROMPT_UNREADABLE =
 export function judgeWorkflow(script: string, ctx: GuardContext, env: Env): WorkflowResult[] {
   return readWorkflowScript(script).map((launch) => {
     const verdict = judgeLaunch(asLaunch(launch), ctx, env);
-    // A model the script builds at run time cannot be read by a hook: refused, never guessed.
-    if (launch.model === null) {
-      return { launch, verdict: deny(verdict.real, NO_WORKFLOW_MODEL) };
+    // A model the script builds at run time cannot be read by a hook: refused, never guessed —
+    // unless an override names the model it runs on whatever the script says.
+    if (launch.model === null && verdict.ran.modelFrom === "call") {
+      return { launch, verdict: { ...deny(verdict.real, NO_WORKFLOW_MODEL), ran: verdict.ran } };
     }
     // An ask that rests on the launch's own prompt — a reason line — cannot stand with a prompt
     // the guard cannot read: there is nothing to approve, so it is refused instead. An ask that
@@ -641,6 +663,8 @@ export function workflowReason(result: WorkflowResult): string {
 /** The guard's answer: what to do, in words for the person or Claude, and what it read. */
 export interface Verdict {
   decision: "allow" | "ask" | "deny";
+  /** The model and effort the launch really runs on, after Claude Code's overrides. */
+  ran: EffectiveLaunch;
   /** The launch's real model; null when the call named none and is not a fork. */
   real: LaunchModel | null;
   /** One short paragraph: the ask shown to the person, or the denial shown to Claude. */
@@ -652,11 +676,14 @@ export interface Verdict {
   why: string;
 }
 
-function allow(real: LaunchModel | null, why = ""): Verdict {
+/** A verdict before `judgeLaunch` adds what the launch really runs on. */
+type Judged = Omit<Verdict, "ran">;
+
+function allow(real: LaunchModel | null, why = ""): Judged {
   return { decision: "allow", real, reason: "", why };
 }
 
-function deny(real: LaunchModel | null, reason: string, why = ""): Verdict {
+function deny(real: LaunchModel | null, reason: string, why = ""): Judged {
   return { decision: "deny", real, reason, why };
 }
 
@@ -780,24 +807,126 @@ function fableBuildDenial(real: LaunchModel, type: string): string {
   ].join("\n");
 }
 
-/** Judges one launch against the owner's rules; pure, so a test can drive every branch. */
+/**
+ * Where a person changes one of Claude Code's own variables: Claude cannot, since the call no
+ * longer carries the field the variable replaces.
+ */
+const WHERE_SET =
+  "where it is set — the environment Claude Code was started with, or the `env` of a Claude Code settings file (the user's, the project's, or the project's local one)";
+
+/** Said when `CLAUDE_CODE_EFFORT_LEVEL` names a level no subagent may run at. */
+function effortLevelDenial(level: string): string {
+  return [
+    `\`${EFFORT_LEVEL_ENV}\` is \`${level}\`, and Claude Code runs every subagent at it: no subagent may run at \`${level}\` (the plugin's rule).`,
+    `A subagent runs at ${EFFORTS} — never \`low\`, on any model.`,
+    `Only the person can change the variable: ask them to set it to one of those levels, or to remove it, ${WHERE_SET}.`,
+  ].join("\n");
+}
+
+/** Said when an override puts the launch on a model other than the one it names. */
+function modelNote(ran: EffectiveLaunch): null | string {
+  const ignored = "Claude Code ignores the launch's own `model`.";
+  if (ran.modelFrom === "force") {
+    return `This launch runs on \`${ran.model}\` because \`${SUBAGENT_MODEL_FORCE_ENV}\` is set, with \`${SUBAGENT_MODEL_ENV}=${ran.model}\`: ${ignored}`;
+  }
+  if (ran.modelFrom === "force-session") {
+    const which = ran.model === null ? "" : `, \`${ran.model}\`,`;
+    const unknown =
+      ran.model === null
+        ? " The guard cannot read the session's model, so it judges the launch as the opus tier."
+        : "";
+    return `This launch runs on the session's own model${which} because \`${SUBAGENT_MODEL_FORCE_ENV}\` is set without \`${SUBAGENT_MODEL_ENV}\`: ${ignored}${unknown}`;
+  }
+  if (ran.modelFrom === "workflow") {
+    return `This launch runs on \`${ran.model}\` because \`${WORKFLOW_SUBAGENT_MODEL_ENV}\` is set: Claude Code ignores the script's own \`model\`.`;
+  }
+  return null;
+}
+
+/** Said when `CLAUDE_CODE_EFFORT_LEVEL` sets the effort the launch runs at. */
+function effortNote(ran: EffectiveLaunch): null | string {
+  if (ran.effortFrom === null) return null;
+  return `It runs at effort \`${ran.effort}\` because \`${ran.effortFrom}\` is set: Claude Code ignores the launch's own \`effort\`, and only the person can change the variable, ${WHERE_SET}.`;
+}
+
+/**
+ * Judges one launch against the owner's rules; pure, so a test can drive every branch. It
+ * judges what the launch REALLY runs on (`effectiveLaunch`: Claude Code's FORCE, Workflow and
+ * effort overrides, read from `env`), and an ask or a denial names the override that applied.
+ */
 export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdict {
-  const named = launch.model;
+  const ran = effectiveLaunch(
+    {
+      effort: launch.effort,
+      fork: launch.fork,
+      model: launch.model,
+      workflow: launch.tool === "Workflow",
+    },
+    env,
+    ctx.sessionModel,
+  );
+  const { verdict, namesEffortLevel } = judgeRan(launch, ran, ctx, env);
+  if (verdict.decision === "allow") return { ...verdict, ran };
+  const notes = [modelNote(ran), namesEffortLevel ? null : effortNote(ran)].filter(
+    (one): one is string => one !== null,
+  );
+  return { ...verdict, ran, reason: [...notes, verdict.reason].join("\n") };
+}
+
+/** The verdict on what a launch really runs on; `namesEffortLevel` when its words already do. */
+function judgeRan(
+  launch: Launch,
+  ran: EffectiveLaunch,
+  ctx: GuardContext,
+  env: Env,
+): { namesEffortLevel: boolean; verdict: Judged } {
+  const judged = (verdict: Judged) => ({ namesEffortLevel: false, verdict });
   if (!launch.fork) {
-    if (named === null) return deny(null, NO_MODEL);
-    if (launch.effort === null) return deny(null, NO_EFFORT);
+    // A call that names no model, with no override to name it, would inherit the session's.
+    if (ran.modelFrom === "call" && ran.model === null) return judged(deny(null, NO_MODEL));
+    if (ran.effort === null) return judged(deny(null, NO_EFFORT));
   }
   // A fork always runs on the session's own model and effort: Claude Code ignores a `model` a
   // fork is given (`docs/claude-code-contract.md`), so judging the name it carries would judge a
-  // model it never runs on.
-  const real = launch.fork
-    ? forkModel(ctx.sessionModel, ctx, env)
-    : resolveLaunchModel(named ?? "", ctx, env);
+  // model it never runs on. FORCE without a model of its own does the same for every launch.
+  const real =
+    ran.modelFrom === "fork" || ran.modelFrom === "force-session"
+      ? sessionLaunchModel(ran.model, ctx, env)
+      : resolveLaunchModel(ran.model ?? "", ctx, env);
   // The effort rule, before every model rule: a subagent never runs at `low` — on a Claude model
   // and an affordable slot alike. A level no rule knows is refused, not guessed.
-  if (launch.effort !== null && !effortAllowed(launch.effort)) {
-    return deny(real, effortDenial(launch.effort));
+  // `CLAUDE_CODE_EFFORT_LEVEL=auto` is the person's own choice (`EFFORT_AUTO`): the model picks
+  // its default, which is never `max`, so it passes the effort rule and the opus tier's ask.
+  const auto = ran.effortFrom !== null && ran.effort === EFFORT_AUTO;
+  if (ran.effort !== null && !auto && !effortAllowed(ran.effort)) {
+    return ran.effortFrom === null
+      ? judged(deny(real, effortDenial(ran.effort)))
+      : { namesEffortLevel: true, verdict: deny(real, effortLevelDenial(ran.effort)) };
   }
+  // The affordable slot's own effort, when the variable sets it to another level: only the
+  // person can change that.
+  if (
+    ran.effortFrom !== null &&
+    isAffordable(real) &&
+    ctx.gatewayOn &&
+    ran.effort !== AFFORDABLE_EFFORT
+  ) {
+    return {
+      namesEffortLevel: true,
+      verdict: deny(
+        real,
+        [
+          `This launch runs on ${real.model}, an affordable gateway slot.`,
+          `An affordable slot runs at effort \`${AFFORDABLE_EFFORT}\` (its reasoning costs cents), and \`${ran.effortFrom}\` runs every subagent at \`${ran.effort}\`: only the person can change the variable — ask them to set it to \`${AFFORDABLE_EFFORT}\`, or to remove it, ${WHERE_SET}.`,
+        ].join("\n"),
+      ),
+    };
+  }
+  return judged(judgeModel({ ...launch, effort: ran.effort }, real, ctx, env));
+}
+
+/** The model rules, on the launch's real model and the effort it really runs at. */
+function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: Env): Judged {
   const type = launch.subagentType ?? "";
   const readOnly =
     ctx.readOnlyAgents === undefined
@@ -920,8 +1049,15 @@ function nobodyWatches(env: Env): boolean {
   return (env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0";
 }
 
-/** The model behind a fork: the session's own, unknowable → Claude Opus. */
-function forkModel(sessionModel: null | string, gateway: GatewayFacts, env: Env): LaunchModel {
+/**
+ * The model behind a launch on the session's own model (a fork, or FORCE with no model of its
+ * own): unknowable → Claude Opus.
+ */
+function sessionLaunchModel(
+  sessionModel: null | string,
+  gateway: GatewayFacts,
+  env: Env,
+): LaunchModel {
   if (sessionModel === null)
     return { claude: true, family: "opus", model: "the session's model (unknown)", tier: "opus" };
   return resolveLaunchModel(sessionModel, gateway, env);
@@ -1015,6 +1151,24 @@ export function guardFacts(input: HookInput, context: HookEnvContext): Record<st
     tier: result.real?.tier ?? null,
     tool: launch.tool,
     ...(result.why === "" ? {} : { why: result.why }),
+    ...overrideFacts(result.ran),
+  };
+}
+
+/** The variable that set the model a launch runs on, for the log; null when none did. */
+function modelOverride(ran: EffectiveLaunch): null | string {
+  if (ran.modelFrom === "force" || ran.modelFrom === "force-session") {
+    return SUBAGENT_MODEL_FORCE_ENV;
+  }
+  return ran.modelFrom === "workflow" ? WORKFLOW_SUBAGENT_MODEL_ENV : null;
+}
+
+/** The overrides that applied, and what the launch ran on because of them: only when one did. */
+function overrideFacts(ran: EffectiveLaunch): Record<string, unknown> {
+  const model = modelOverride(ran);
+  return {
+    ...(model === null ? {} : { model_override: model, ran_model: ran.model }),
+    ...(ran.effortFrom === null ? {} : { effort_override: ran.effortFrom, ran_effort: ran.effort }),
   };
 }
 

@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 import type { GatewayConfig } from "../gateway/config";
 import { judgeLaunch, readLaunch } from "../hooks/agent-guard";
 import {
+  effectiveLaunch,
   effortAllowed,
   type GatewayFacts,
   isAffordable,
@@ -226,5 +227,118 @@ describe("the effort levels", () => {
     for (const level of ["medium", "HIGH", "xHigh", "max"]) expect(effortAllowed(level)).toBe(true);
     for (const level of ["low", "LOW", "", "ultra", "minimal"])
       expect(effortAllowed(level)).toBe(false);
+  });
+});
+
+describe("G1: what a launch really runs on (`effectiveLaunch`, proved live on 2.1.306)", () => {
+  const CALL = { effort: "high", fork: false, model: "opus", workflow: false };
+  const FORCE = { CLAUDE_CODE_SUBAGENT_MODEL_FORCE: "1" };
+
+  test("G1: no override: the call's own model and effort", () => {
+    expect(effectiveLaunch(CALL, NO_ENV, "claude-sonnet-5-5")).toEqual({
+      effort: "high",
+      effortFrom: null,
+      model: "opus",
+      modelFrom: "call",
+    });
+  });
+
+  test("G1: FORCE with CLAUDE_CODE_SUBAGENT_MODEL: that model, whatever the call names", () => {
+    const env = { ...FORCE, CLAUDE_CODE_SUBAGENT_MODEL: " haiku " };
+    expect(effectiveLaunch(CALL, env, "claude-opus-5-5")).toEqual({
+      effort: "high",
+      effortFrom: null,
+      model: "haiku",
+      modelFrom: "force",
+    });
+    // The input Claude Code really sends under FORCE: no `model` at all.
+    expect(effectiveLaunch({ ...CALL, model: null }, env, null).model).toBe("haiku");
+  });
+
+  test("G1: FORCE alone, or with CLAUDE_CODE_SUBAGENT_MODEL=inherit: the session's own model", () => {
+    for (const env of [FORCE, { ...FORCE, CLAUDE_CODE_SUBAGENT_MODEL: "inherit" }]) {
+      expect(effectiveLaunch(CALL, env, "claude-fable-5")).toEqual({
+        effort: "high",
+        effortFrom: null,
+        model: "claude-fable-5",
+        modelFrom: "force-session",
+      });
+    }
+    // A session model the guard cannot read stays unknown: the guard judges it as the opus tier.
+    expect(effectiveLaunch(CALL, FORCE, null).model).toBeNull();
+    expect(effectiveLaunch(CALL, FORCE, null).modelFrom).toBe("force-session");
+  });
+
+  test("G1: FORCE is on exactly where Claude Code reads it as on: 1, true, yes, on", () => {
+    for (const value of ["1", "true", "YES", " on "]) {
+      const env = { CLAUDE_CODE_SUBAGENT_MODEL: "haiku", CLAUDE_CODE_SUBAGENT_MODEL_FORCE: value };
+      expect(`${value}: ${effectiveLaunch(CALL, env, null).modelFrom}`).toBe(`${value}: force`);
+    }
+    for (const value of ["", "0", "false", "off", "2"]) {
+      const env = { CLAUDE_CODE_SUBAGENT_MODEL: "haiku", CLAUDE_CODE_SUBAGENT_MODEL_FORCE: value };
+      expect(`${value}: ${effectiveLaunch(CALL, env, null).modelFrom}`).toBe(`${value}: call`);
+    }
+  });
+
+  test("G1: plain CLAUDE_CODE_SUBAGENT_MODEL never beats the call's model", () => {
+    const env = { CLAUDE_CODE_SUBAGENT_MODEL: "haiku" };
+    expect(effectiveLaunch(CALL, env, null).model).toBe("opus");
+    // A call that names none may still run on its agent's own definition, which no hook sees.
+    expect(effectiveLaunch({ ...CALL, model: null }, env, null)).toEqual({
+      effort: "high",
+      effortFrom: null,
+      model: null,
+      modelFrom: "call",
+    });
+  });
+
+  test("G1: CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL moves a Workflow agent, never an Agent call", () => {
+    const env = { CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: "sonnet" };
+    expect(effectiveLaunch(CALL, env, null).modelFrom).toBe("call");
+    expect(effectiveLaunch({ ...CALL, workflow: true }, env, null)).toEqual({
+      effort: "high",
+      effortFrom: null,
+      model: "sonnet",
+      modelFrom: "workflow",
+    });
+    // `inherit` is the same as unset (Claude Code's own reading).
+    const inherit = { CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: "inherit" };
+    expect(effectiveLaunch({ ...CALL, workflow: true }, inherit, null).modelFrom).toBe("call");
+    // FORCE comes first, for a Workflow agent too.
+    const both = { ...env, ...FORCE, CLAUDE_CODE_SUBAGENT_MODEL: "haiku" };
+    expect(effectiveLaunch({ ...CALL, workflow: true }, both, null).model).toBe("haiku");
+  });
+
+  test("G1: CLAUDE_CODE_EFFORT_LEVEL beats the call's effort, also when the call names none", () => {
+    const env = { CLAUDE_CODE_EFFORT_LEVEL: " High " };
+    expect(effectiveLaunch({ ...CALL, effort: "max" }, env, null)).toEqual({
+      effort: "high",
+      effortFrom: "CLAUDE_CODE_EFFORT_LEVEL",
+      model: "opus",
+      modelFrom: "call",
+    });
+    expect(effectiveLaunch({ ...CALL, effort: null }, env, null).effort).toBe("high");
+    // Empty is unset.
+    expect(effectiveLaunch(CALL, { CLAUDE_CODE_EFFORT_LEVEL: " " }, null).effortFrom).toBeNull();
+  });
+
+  test("G1: a fork keeps today's rule under every override: the session's model, its own effort", () => {
+    const env = {
+      ...FORCE,
+      CLAUDE_CODE_EFFORT_LEVEL: "max",
+      CLAUDE_CODE_SUBAGENT_MODEL: "haiku",
+    };
+    expect(effectiveLaunch({ ...CALL, fork: true }, env, "claude-opus-5-5")).toEqual({
+      effort: "high",
+      effortFrom: null,
+      model: "claude-opus-5-5",
+      modelFrom: "fork",
+    });
+    expect(effectiveLaunch({ ...CALL, effort: null, fork: true }, env, null)).toEqual({
+      effort: null,
+      effortFrom: null,
+      model: null,
+      modelFrom: "fork",
+    });
   });
 });

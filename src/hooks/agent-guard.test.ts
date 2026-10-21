@@ -23,6 +23,7 @@ import {
   readLaunch,
   readWorkflowScript,
   reasonLine,
+  workflowReason,
   workflowRefusal,
 } from "./agent-guard";
 import { agentLaunchesFile, parseAgentLaunch, readAgentLaunches } from "./agent-launches";
@@ -1857,5 +1858,325 @@ describe("the audit fixes carried onto D11 (C3, merged with 0.5.5)", () => {
     // `opus` stays the opus tier when its own slot answers with a Claude Sonnet: never lower.
     config.slots["cc-smart-dev-kit-opus"] = ["claude-sonnet-5-5"];
     expect(resolveLaunchModel("opus", on, NO_ENV).tier).toBe("opus");
+  });
+});
+
+describe("G1: the guard judges what really runs (Claude Code's overrides, 2.1.306)", () => {
+  function paths(): CliPaths {
+    const home = tempDir("guard-g1");
+    return cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+  }
+  const FORCE = { CLAUDE_CODE_SUBAGENT_MODEL_FORCE: "1" };
+  const WHERE =
+    "where it is set — the environment Claude Code was started with, or the `env` of a Claude Code settings file (the user's, the project's, or the project's local one)";
+  const OPUS_MAX_ASK = [
+    "Claude Opus launch at effort `max`: `general-purpose`.",
+    "The opus tier runs at `medium`, `high` or `xhigh` with no question; `max` only when the person asks for it. Approve only if you did.",
+  ];
+  /**
+   * The input Claude Code really sent under FORCE and `CLAUDE_CODE_EFFORT_LEVEL` (seen live on
+   * 2.1.306): the Agent tool had lost `model` and `effort`, so the call carries neither. It is
+   * read from its JSON text, the way the hook reads stdin.
+   */
+  const LIVE_FORCED_INPUT = (): HookInput =>
+    JSON.parse(
+      JSON.stringify({
+        cwd: "/tmp/app",
+        effort: { level: "high" },
+        hook_event_name: "PreToolUse",
+        permission_mode: "auto",
+        session_id: "8110edd1-9058-4aea-a039-fdbcecdaca81",
+        tool_input: {
+          description: "Answer 2+2",
+          prompt: "Answer this question and report back the answer in one short sentence.",
+          run_in_background: false,
+          subagent_type: "general-purpose",
+        },
+        tool_name: "Agent",
+        tool_use_id: "call_1",
+      }),
+    );
+
+  it("G1: the live bug — the input FORCE and EFFORT_LEVEL leave is allowed, not refused", () => {
+    const env = {
+      ...FORCE,
+      CLAUDE_CODE_EFFORT_LEVEL: "high",
+      CLAUDE_CODE_SUBAGENT_MODEL: "haiku",
+    };
+    const where = paths();
+    expect(agentGuard(LIVE_FORCED_INPUT(), env, where, "/tmp/app")).toEqual({});
+    expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toEqual([]);
+    // The same call with no override still names nothing: refused, as before.
+    const plain = readLaunch(LIVE_FORCED_INPUT());
+    if (plain === null) throw new Error("not an Agent call");
+    expect(judgeLaunch(plain, CTX, NO_ENV).decision).toBe("deny");
+    // `null` for both fields (the other shape seen for a removed field) reads the same.
+    const nulls = verdict(
+      { effort: null, model: null, prompt: "x", subagent_type: "general-purpose" },
+      CTX,
+      env,
+    );
+    expect(nulls.decision).toBe("allow");
+    expect(nulls.real?.model).toBe("haiku");
+  });
+
+  it("G1: FORCE with CLAUDE_CODE_SUBAGENT_MODEL=haiku and a call naming opus: judged as haiku, recorded nowhere", () => {
+    const env = { ...FORCE, CLAUDE_CODE_SUBAGENT_MODEL: "haiku" };
+    const where = paths();
+    const call = agentCall({ effort: "max", model: "opus", prompt: "x" });
+    expect(agentGuard(call, env, where, "/tmp/app")).toEqual({});
+    expect(agentGuard({ ...call, hook_event_name: "PostToolUse" }, env, where, "/tmp/app")).toEqual(
+      {},
+    );
+    expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toEqual([]);
+  });
+
+  it("G1: FORCE with CLAUDE_CODE_SUBAGENT_MODEL=opus and a call naming sonnet: the opus tier, recorded as opus", () => {
+    const env = { ...FORCE, CLAUDE_CODE_SUBAGENT_MODEL: "opus" };
+    const where = paths();
+    mkdirSync(where.stateDir, { recursive: true });
+    expect(
+      agentGuard(agentCall({ effort: "high", model: "sonnet", prompt: "x" }), env, where, "/a"),
+    ).toEqual({});
+    const [launch] = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
+    expect(launch?.family).toBe("opus");
+    expect(launch?.model).toBe("opus");
+    expect(launch?.reason).toBe("opus:high");
+    const asked = verdict({ effort: "max", model: "sonnet", prompt: "x" }, CTX, env);
+    expect(asked.decision).toBe("ask");
+    expect(asked.reason).toBe(
+      [
+        "This launch runs on `opus` because `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is set, with `CLAUDE_CODE_SUBAGENT_MODEL=opus`: Claude Code ignores the launch's own `model`.",
+        ...OPUS_MAX_ASK,
+      ].join("\n"),
+    );
+  });
+
+  it("G1: FORCE alone: the session's own model; one the guard cannot read is the opus tier", () => {
+    const fable: GuardContext = { ...CTX, sessionModel: "claude-fable-5-1" };
+    const built = verdict({ effort: "high", model: "haiku", prompt: "build it" }, fable, FORCE);
+    expect(built.decision).toBe("deny");
+    expect(built.reason).toBe(
+      [
+        "This launch runs on the session's own model, `claude-fable-5-1`, because `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is set without `CLAUDE_CODE_SUBAGENT_MODEL`: Claude Code ignores the launch's own `model`.",
+        "This launch would run on Claude Fable, and it asks for `(no type)`, which can change files.",
+        "Fable builds only when the person asks: put what they asked for in the prompt as this line, and they approve this one launch:",
+        "Fable reason: build - <what the person asked>",
+      ].join("\n"),
+    );
+    // `inherit` is the same as no model of its own.
+    const inherit = { ...FORCE, CLAUDE_CODE_SUBAGENT_MODEL: "inherit" };
+    expect(verdict({ effort: "high", model: "haiku", prompt: "x" }, fable, inherit).decision).toBe(
+      "deny",
+    );
+    // A Haiku session: a call naming opus at max runs on Haiku, with no question.
+    const haiku: GuardContext = { ...CTX, sessionModel: "claude-haiku-4-5" };
+    expect(verdict({ effort: "max", model: "opus", prompt: "x" }, haiku, FORCE).decision).toBe(
+      "allow",
+    );
+    // A session model nobody can read: the opus tier — free below `max`, asked at `max`.
+    const free = verdict({ effort: "high", model: "haiku", prompt: "x" }, CTX, FORCE);
+    expect(free.decision).toBe("allow");
+    expect(free.real?.tier).toBe("opus");
+    expect(free.why).toBe("opus:high");
+    const asked = verdict({ effort: "max", model: "haiku", prompt: "x" }, CTX, FORCE);
+    expect(asked.decision).toBe("ask");
+    expect(asked.reason).toBe(
+      [
+        "This launch runs on the session's own model because `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is set without `CLAUDE_CODE_SUBAGENT_MODEL`: Claude Code ignores the launch's own `model`. The guard cannot read the session's model, so it judges the launch as the opus tier.",
+        ...OPUS_MAX_ASK,
+      ].join("\n"),
+    );
+  });
+
+  it("G1: FORCE and a fork: the fork still runs on the session's model", () => {
+    const env = { ...FORCE, CLAUDE_CODE_SUBAGENT_MODEL: "haiku" };
+    const opusSession: GuardContext = { ...CTX, sessionModel: OPUS_ID };
+    const fork = verdict({ prompt: "x", subagent_type: "fork" }, opusSession, env);
+    expect(fork.decision).toBe("allow");
+    expect(fork.real?.tier).toBe("opus");
+    expect(fork.why).toBe("opus:session-effort");
+    expect(fork.ran.modelFrom).toBe("fork");
+  });
+
+  it("G1: CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: no effect on an Agent call; a Workflow agent runs on it", () => {
+    const env = { CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: "opus" };
+    const agent = verdict({ effort: "high", model: "sonnet", prompt: "x" }, CTX, env);
+    expect(agent.decision).toBe("allow");
+    expect(agent.real?.tier).toBeNull();
+    const script = 'await agent("look", { label: "scan", model: "haiku", effort: "max" });';
+    const [one] = judgeWorkflow(script, CTX, env);
+    expect(one?.verdict.decision).toBe("ask");
+    expect(one === undefined ? "" : workflowReason(one)).toBe(
+      [
+        'In this workflow, the launch "scan": This launch runs on `opus` because `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` is set: Claude Code ignores the script\'s own `model`.',
+        ...OPUS_MAX_ASK,
+      ].join("\n"),
+    );
+    // A launch that names no model runs on the variable's: it is judged, not refused.
+    const unnamed = 'await agent("look", { label: "scan", effort: "high" });';
+    expect(judgeWorkflow(unnamed, CTX, env)[0]?.verdict.decision).toBe("allow");
+    expect(judgeWorkflow(unnamed, CTX, NO_ENV)[0]?.verdict.decision).toBe("deny");
+    // FORCE comes first, for a Workflow agent too.
+    const forced = { ...env, ...FORCE, CLAUDE_CODE_SUBAGENT_MODEL: "haiku" };
+    expect(judgeWorkflow(script, CTX, forced)[0]?.verdict.decision).toBe("allow");
+    // The hook: the ask reaches the person.
+    const answer = JSON.parse(
+      agentGuard(workflowCall(script), env, paths(), "/tmp/app").stdout ?? "{}",
+    ).hookSpecificOutput;
+    expect(answer.permissionDecision).toBe("ask");
+  });
+
+  it("G1: CLAUDE_CODE_EFFORT_LEVEL=high and a call naming max: judged at high, no ask", () => {
+    const env = { CLAUDE_CODE_EFFORT_LEVEL: "high" };
+    const launch = verdict({ effort: "max", model: "opus", prompt: "x" }, CTX, env);
+    expect(launch.decision).toBe("allow");
+    expect(launch.why).toBe("opus:high");
+    // The call carries no `effort` at all there: still judged at high.
+    expect(verdict({ model: "opus", prompt: "x" }, CTX, env).decision).toBe("allow");
+    // At max, the opus tier asks, and the ask says where the effort comes from.
+    const asked = verdict({ model: "opus", prompt: "x" }, CTX, { CLAUDE_CODE_EFFORT_LEVEL: "max" });
+    expect(asked.decision).toBe("ask");
+    expect(asked.reason).toBe(
+      [
+        `It runs at effort \`max\` because \`CLAUDE_CODE_EFFORT_LEVEL\` is set: Claude Code ignores the launch's own \`effort\`, and only the person can change the variable, ${WHERE}.`,
+        ...OPUS_MAX_ASK,
+      ].join("\n"),
+    );
+  });
+
+  it("G1: CLAUDE_CODE_EFFORT_LEVEL=auto on Claude Sonnet or Haiku: allowed", () => {
+    for (const model of ["sonnet", "haiku"]) {
+      const env = { CLAUDE_CODE_EFFORT_LEVEL: "auto" };
+      expect(verdict({ model, prompt: "x" }, CTX, env).decision).toBe("allow");
+      // Any case, as Claude Code reads it; and the call's own `max` does not count.
+      const upper = { CLAUDE_CODE_EFFORT_LEVEL: " AUTO " };
+      expect(verdict({ effort: "max", model, prompt: "x" }, CTX, upper).decision).toBe("allow");
+    }
+  });
+
+  it("G1: CLAUDE_CODE_EFFORT_LEVEL=auto on the opus tier: allowed with no ask, recorded as opus:auto", () => {
+    const env = { CLAUDE_CODE_EFFORT_LEVEL: "auto" };
+    const free = verdict({ model: "opus", prompt: "x" }, CTX, env);
+    expect(free.decision).toBe("allow");
+    expect(free.why).toBe("opus:auto");
+    const where = paths();
+    mkdirSync(where.stateDir, { recursive: true });
+    expect(agentGuard(agentCall({ model: "opus", prompt: "x" }), env, where, "/a")).toEqual({});
+    expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)[0]?.reason).toBe("opus:auto");
+    // Unattended too: `auto` is never `max`, so nothing waits for a person.
+    expect(
+      verdict({ model: "opus", prompt: "x" }, CTX, { ...env, CLAUDE_CODE_SESSION_ATTENDED: "0" })
+        .decision,
+    ).toBe("allow");
+  });
+
+  it("G1: CLAUDE_CODE_EFFORT_LEVEL=auto on an affordable slot: refused, naming the variable", () => {
+    const on: GuardContext = { ...ON_SLOTS, sessionModel: null };
+    const refused = verdict({ model: "sonnet", prompt: "x" }, on, {
+      CLAUDE_CODE_EFFORT_LEVEL: "auto",
+    });
+    expect(refused.decision).toBe("deny");
+    expect(refused.reason).toBe(
+      [
+        "This launch runs on omniroute:glm-5.3-flash, an affordable gateway slot.",
+        `An affordable slot runs at effort \`max\` (its reasoning costs cents), and \`CLAUDE_CODE_EFFORT_LEVEL\` runs every subagent at \`auto\`: only the person can change the variable — ask them to set it to \`max\`, or to remove it, ${WHERE}.`,
+      ].join("\n"),
+    );
+  });
+
+  it("G1: CLAUDE_CODE_EFFORT_LEVEL=auto on the fable tier: its reason-line rules, as before", () => {
+    const env = { CLAUDE_CODE_EFFORT_LEVEL: "auto" };
+    const read = verdict(
+      { model: "fable", prompt: "Fable reason: plan - look", subagent_type: "Plan" },
+      CTX,
+      env,
+    );
+    expect(read.decision).toBe("ask");
+    expect(read.why).toBe("fable:plan");
+    expect(read.reason).toContain("a read-only agent (`Plan`) at effort `auto`");
+    expect(verdict({ model: "fable", prompt: "build it" }, CTX, env).decision).toBe("deny");
+    expect(
+      verdict({ model: "fable", prompt: "Fable reason: build - asked" }, CTX, env).decision,
+    ).toBe("ask");
+  });
+
+  it("G1: CLAUDE_CODE_EFFORT_LEVEL=low (or a level no rule knows): refused, naming the variable and where to change it", () => {
+    for (const level of ["low", "ultra"]) {
+      const refused = verdict({ model: "sonnet", prompt: "x" }, CTX, {
+        CLAUDE_CODE_EFFORT_LEVEL: level,
+      });
+      expect(refused.decision).toBe("deny");
+      expect(refused.reason).toBe(
+        [
+          `\`CLAUDE_CODE_EFFORT_LEVEL\` is \`${level}\`, and Claude Code runs every subagent at it: no subagent may run at \`${level}\` (the plugin's rule).`,
+          "A subagent runs at `medium`, `high`, `xhigh` or `max` — never `low`, on any model.",
+          `Only the person can change the variable: ask them to set it to one of those levels, or to remove it, ${WHERE}.`,
+        ].join("\n"),
+      );
+    }
+    // A call that names `low` itself keeps today's words.
+    expect(verdict({ effort: "low", model: "sonnet", prompt: "x" }).reason).toStartWith(
+      "This launch asks for effort `low`",
+    );
+  });
+
+  it("G1: FORCE onto an affordable slot: its `max` comes from the call, or from CLAUDE_CODE_EFFORT_LEVEL", () => {
+    const on: GuardContext = { ...ON_SLOTS, sessionModel: null };
+    const slot = { ...FORCE, CLAUDE_CODE_SUBAGENT_MODEL: "cc-smart-dev-kit-worker" };
+    const forcedNote =
+      "This launch runs on `cc-smart-dev-kit-worker` because `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is set, with `CLAUDE_CODE_SUBAGENT_MODEL=cc-smart-dev-kit-worker`: Claude Code ignores the launch's own `model`.";
+    const low = verdict({ effort: "high", prompt: "x" }, on, slot);
+    expect(low.decision).toBe("deny");
+    expect(low.reason).toBe(
+      [
+        forcedNote,
+        "This launch runs on omniroute:glm-5.3-flash, an affordable gateway slot.",
+        'An affordable slot runs at effort `max` (its reasoning costs cents): pass `effort: "max"`.',
+      ].join("\n"),
+    );
+    expect(verdict({ effort: "max", prompt: "x" }, on, slot).decision).toBe("allow");
+    // The variable sets the effort: only the person can change it.
+    const levelled = verdict({ prompt: "x" }, on, { ...slot, CLAUDE_CODE_EFFORT_LEVEL: "high" });
+    expect(levelled.decision).toBe("deny");
+    expect(levelled.reason).toBe(
+      [
+        forcedNote,
+        "This launch runs on omniroute:glm-5.3-flash, an affordable gateway slot.",
+        `An affordable slot runs at effort \`max\` (its reasoning costs cents), and \`CLAUDE_CODE_EFFORT_LEVEL\` runs every subagent at \`high\`: only the person can change the variable — ask them to set it to \`max\`, or to remove it, ${WHERE}.`,
+      ].join("\n"),
+    );
+    expect(
+      verdict({ prompt: "x" }, on, { ...slot, CLAUDE_CODE_EFFORT_LEVEL: "max" }).decision,
+    ).toBe("allow");
+    // A `<backend>:<model>` target forced the same way.
+    const backend = { ...FORCE, CLAUDE_CODE_SUBAGENT_MODEL: "omniroute:glm-5.3" };
+    expect(verdict({ effort: "max", prompt: "x" }, on, backend).decision).toBe("allow");
+    expect(verdict({ effort: "high", prompt: "x" }, on, backend).decision).toBe("deny");
+    // With the gateway off, the affordable rule does not apply (as before).
+    expect(verdict({ effort: "high", prompt: "x" }, CTX, backend).decision).toBe("allow");
+  });
+
+  it("G1: guardFacts logs the override and what the launch ran on", () => {
+    const env = {
+      ...FORCE,
+      CLAUDE_CODE_EFFORT_LEVEL: "high",
+      CLAUDE_CODE_SUBAGENT_MODEL: "opus",
+    };
+    expect(guardFacts(LIVE_FORCED_INPUT(), { env, paths: paths() })).toEqual({
+      decision: "allow",
+      effort: null,
+      effort_override: "CLAUDE_CODE_EFFORT_LEVEL",
+      family: "opus",
+      fork: false,
+      model: null,
+      model_override: "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
+      ran_effort: "high",
+      ran_model: "opus",
+      subagent_type: "general-purpose",
+      tier: "opus",
+      tool: "Agent",
+      why: "opus:high",
+    });
   });
 });
