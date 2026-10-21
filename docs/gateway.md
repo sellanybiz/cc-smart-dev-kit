@@ -19,7 +19,8 @@ The rules for changing it: `.claude/rules/gateway.md`.
   `cc-smart-dev-kit-opus`, Fable → `cc-smart-dev-kit-fable`. A newer version of a family
   (`claude-opus-6-0`) reaches the same slot with no change to the plugin.
 - **A slot with no chain is off**: that model is plain Claude, and its request goes to
-  Anthropic **byte for byte**, the id Claude Code sent included. A fresh setup gives no slot
+  Anthropic **byte for byte**, the id Claude Code sent included (the one exception: a
+  thinking block a backend wrote, marked by the router, leaves it; § Model slots). A fresh setup gives no slot
   a chain; the person picks every target from the live model list (§ Slots and defaults).
 - **A slot with a chain** sends the request to its first target. Its next target answers
   only while the slot's **fallback switch** is on (§ The fallback switch). A target is any
@@ -149,7 +150,8 @@ cc-smart-dev-kit gateway slot judge off         # Claude judges again
    Code retries the check on another Claude model. A check is never routed by its model's
    family: a check under a Sonnet id never reaches the worker slot.
 2. **A chain:** the check goes to the judge's tested targets in order, with the named
-   backend translations only (`reasoningOffForBackend`, `toolSearchForBackend`); every judge
+   backend translations only (`reasoningOffForBackend`, `toolSearchForBackend`,
+   `thinkingForBackend`); every judge
    target gets `timeouts.firstByteMs` for its answer's headers, the last one too, and when
    its answer is a stream, for its first real event as well (a stream of heartbeats alone
    would hold every action): a judge that hangs is given up on, the next one is asked
@@ -261,31 +263,88 @@ cc-smart-dev-kit gateway slot opus off                            # Opus answers
   taken out of the config, or whose fallback switch goes off, loses its record at once.
 - **Never** the safety check (§ The judge slot), or a name an alias changed.
 - **Thinking blocks in the request:** an Opus conversation carries thinking blocks with
-  signatures. A backend gets them as they are (no request changes). Measured once
+  signatures. A backend gets them as they are, but for the router's marked ones, which get
+  back the signature their backend wrote (`thinkingForBackend`, below). Measured once
   (2026-10-15), GLM 5.3 Flash through OmniRoute answered 200 to a history with a signed
   `thinking` block, and to one with a `redacted_thinking` block.
-- **Thinking blocks in another target's answer are removed** (the owner's yes, 2026-10-15,
-  for a model slot's fallback answers; `cleanFallbackResponse`,
-  `src/gateway/fallback-answer.ts`). Claude Code keeps the answer in the conversation, and
-  once the Claude model answers that conversation again (the slot turned off, or its Claude
-  target answering) it checks the signature of every thinking block there. GLM through
-  OmniRoute answers with a `thinking` block whose signature is empty or made up; Opus 5.5
-  then answered 400 "Invalid `signature` in `thinking` block" (live, 2026-10-15;
-  `docs/claude-code-contract.md` § The gateway). So, for an answer to a request that named a
-  Claude model, from any target that is not that same model: `thinking` and
-  `redacted_thinking` blocks go (in a stream, their events go and the later `index` values
-  are renumbered from 0, across chunk boundaries); an answer left with no block gets one
-  text block, "(The fallback model answered with thinking only.)", because Anthropic refuses
-  an assistant message with no content, and an empty text block too; a `tool_use` id that
-  Anthropic would refuse (it wants `^[a-zA-Z0-9_-]+$`) becomes
-  `toolu_cc-smart-dev-kit_<24 hex of its SHA-256>`, the same every time. Claude Code answers a
-  tool with the id it was given, so the history only ever holds the safe id, and nothing is
-  mapped back. A compressed answer is decompressed for this, and goes on without
-  `content-encoding`. The model's own answers, and an answer to a request that named a slot
-  (not a Claude model), are never touched. The log says so once per kind:
-  `cc-smart-dev-kit-opus: <target>'s answers: thinking blocks removed (…)`. **Since 0.5.0 every
-  slot reached by a Claude family gets this**, scout and worker included: their requests now
-  carry the real Haiku and Sonnet ids, and the same history problem applies.
+- **A backend's thinking stays visible, marked as the router's** (the owner's D6,
+  2026-10-17; `src/gateway/fallback-answer.ts`). Claude Code keeps an answer in the
+  conversation, and once a Claude model answers that conversation again (the slot turned
+  off, or its Claude target answering) Anthropic checks the signature of every thinking block
+  there. GLM through OmniRoute answers with a `thinking` block whose signature is empty or
+  made up; Opus 5.5 then answered 400 "Invalid `signature` in `thinking` block" (live,
+  2026-10-15; `docs/claude-code-contract.md` § The gateway). From 2026-10-15 until D6 the
+  router removed those blocks, and the person never saw an affordable model's reasoning.
+  Now it works in two halves:
+  - **The answer.** For a request that named a Claude model and that a **backend** answered
+    (`cleanFallbackResponse`): each `thinking` block stays, its `signature` replaced by the
+    router's mark, `cc-smart-dev-kit-router:thinking:<a random UUID>:<the backend's own
+    signature>`. The prefix holds `:`, which no base64 text holds, and Anthropic's
+    signatures are base64, so no signature Anthropic issues can start with it. The UUID is
+    always 36 characters with no `:`, so whatever follows it and the next `:` is the
+    backend's signature exactly, even one with `:` in it; an empty one stays empty. A block
+    the backend sent with no `signature` gets the bare mark (prefix and UUID). In a stream
+    the block's `content_block_start` carries the bare mark, the backend's own
+    `signature_delta` events are held back, and one `signature_delta` with the whole mark
+    comes just before the block's `content_block_stop` (the shape Anthropic streams). It
+    carries what Claude Code would have stored: Claude Code 2.1.306 (read in its binary)
+    sets a thinking block's signature to "" at its start and to each `signature_delta` in
+    turn, so the last delta wins, and none leaves "". Claude Code stores a block only at its
+    stop, so a stream cut mid-thinking stores no block. A
+    `redacted_thinking` block goes: its `data` is encrypted, so the person sees nothing in
+    it and a Claude model refuses it. Then the later `index` values are renumbered from 0,
+    across chunk boundaries, and an answer left with no block gets one text block, "(The
+    fallback model answered with thinking only.)". A `tool_use` id that Anthropic would
+    refuse (it wants `^[a-zA-Z0-9_-]+$`) becomes `toolu_cc-smart-dev-kit_<24 hex of its
+    SHA-256>`, the same every time; Claude Code answers a tool with the id it was given, so
+    the history only ever holds the safe id, and nothing is mapped back. A compressed answer
+    is decompressed for this, and goes on without `content-encoding`. The log says so once
+    per kind: `cc-smart-dev-kit-opus: <target>'s answers: thinking blocks marked as the
+    router's (…)`.
+  - **The way back.** On **every** request to a Claude target (an off slot's model, a
+    chain's `claude-…` target, an alias to a `claude-…` model, a safety check Claude judges;
+    `/v1/messages` and `count_tokens`), exactly the `thinking` blocks whose signature starts with the mark leave
+    the assistant messages (`forClaude` in `router.ts`, `withoutRouterThinking`). Nothing else
+    changes: not `system`, not a message's words, not a tool block, not a block Anthropic
+    signed, not a user's words that quote the mark. A body with no marked block goes as its
+    own bytes (the bytes are searched for the mark first; only a hit is parsed). An
+    assistant message left with no block gets the one text block above, because Anthropic
+    refuses a message with no content other than the last one (its 400 "all messages must
+    have non-empty content except for the optional final assistant message"); the last
+    message is left as it is. The log says it once per model: `removed N of the router's own thinking
+    blocks for <model> (…)`.
+  - **Back to a backend.** On every request to a backend, each marked block gets back
+    exactly the signature its mark carries (`thinkingForBackend`, one of the named
+    translations, § What an affordable backend sees); a bare mark goes with no `signature`
+    field, as the backend sent it. So a backend's model sees its own reasoning again across
+    tool calls, and a backend that checks its own signatures (a Claude model reached through
+    a backend) gets the history it would get with no router in between. The mark does not
+    say which backend wrote a block: when the chain moves to another backend, that one gets
+    the first backend's signature as it was written, exactly what it would get without the
+    router; a backend that checks signatures may refuse one it did not write, as it would
+    then. The log says it once per target: `<target> got its own signature back on N of the
+    router's thinking blocks, M sent with none (thinkingForBackend; …)`.
+  - **Another Claude model's answer is not touched** (a chain whose target is another
+    `claude-…` model): Anthropic drops a thinking block the target model cannot read,
+    without an error ("A block from a model the target model can't read never produces this
+    error: the API drops it",
+    platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting). The model's own
+    answers, an answer to a request that named a slot (not a Claude model), and an answer to
+    an explicit `<backend>:<model>` are never touched either: their thinking keeps the
+    signature its model wrote, so a Claude target later in that conversation may refuse it
+    (§ What a Claude target sees).
+
+  **Every slot reached by a Claude family gets this**, scout and worker included: their
+  requests carry the real Haiku and Sonnet ids. Removing a backend's block always gives the
+  same history, so a later Claude block, bound by Anthropic to the history before it,
+  stays valid (Anthropic accepts a replayed block "only while the `system` prompt, `tools`,
+  and messages that preceded it are unchanged", the troubleshooting page above). Claude
+  Code compacting the history changes nothing here: the summary request is a request like
+  any other (to a Claude target, the marked blocks leave it), and so is every request after
+  it. A turn that moves from a backend to Claude between a tool call and its
+  result loses that turn's thinking on the Claude side; Anthropic then answers with
+  thinking off for that one request ("Mid-turn conflicts degrade gracefully",
+  platform.claude.com/docs/en/build-with-claude/thinking).
 - **A WARN names a stuck conversation:** when a Claude model answers 400 "Invalid
   `signature`" after another target answered for it since the router started (a history
   from before this version, or the test switch), one WARN names the cause and the way out:
@@ -553,10 +612,11 @@ on a Claude target:
 
 - an assistant **prefill** (the conversation ending on an assistant turn), which a newer
   Claude model may refuse;
-- **thinking blocks an affordable model wrote** earlier in the same conversation, whose
-  signature a Claude model cannot check. (Another target's answers to a request that named a
-  Claude model lose theirs before Claude Code stores them: § Model slots. Answers to a
-  request that named a slot do not.)
+- **thinking blocks an affordable model wrote** earlier in the same conversation that do
+  not carry the router's mark, whose signature a Claude model cannot check. (A backend's
+  answer to a request that named a Claude model gets the mark, and the marked blocks leave
+  every request to a Claude target: § Model slots. Answers to a request that named a slot,
+  or an explicit `<backend>:<model>`, are not marked.)
 
 The `WARN` line names Anthropic's reason when one of them is the cause.
 
@@ -565,20 +625,22 @@ Two requests are never translated **for a Claude target**:
 - **Auto mode's safety check**, on every route it can take to Claude (`/v1/messages` and
   `count_tokens`, a slot's Claude target or an alias to a `claude-…` model): auto mode
   stays exactly as Claude Code ships it, so a check reaches its Claude target with only
-  `model` changed, every other byte as sent. Its newer form carries no field the table
+  `model` changed, every other byte as sent (a thinking block with the router's mark leaves
+  it too, as it leaves every request to Claude: § Model slots). Its newer form carries no field the table
   would change, and Sonnet 5.5 took it (200). On the judge's route to an affordable
   backend, the check gets that backend's named translations (`reasoningOffForBackend`,
-  `toolSearchForBackend`, § What an affordable backend sees), like every request to it.
+  `toolSearchForBackend`, `thinkingForBackend`, § What an affordable backend sees), like
+  every request to it.
 - A `claude-…` model that Claude Code sent itself, to that same model (an off slot, or the
   model in its own slot's chain): Claude Code built that body for that model, and it goes
-  byte for byte.
+  byte for byte (but for the router's own marked thinking blocks, § Model slots).
 
 Why: on 2026-10-15 both affordable targets of the worker slot answered 503 and the fallback,
 Claude Sonnet 5.5, answered 400 to one request. Its reason was not logged then, so which
 field it refused is not known; `thinking: disabled` is the one field Claude Code is known
 to send that Sonnet 5.5 refuses. Thinking blocks an affordable model wrote earlier in the same
-conversation are a second suspect the translation does not touch (it never changes a
-message); the next live case's `WARN` line will tell.
+conversation were a second suspect; since D6 the marked ones leave every request to Claude,
+and the next live case's `WARN` line will tell about the rest.
 
 ## What an affordable backend sees
 
@@ -609,7 +671,7 @@ The router builds a **new** request for an affordable backend:
   `src/build-info/bun.ts`): the router does not start on an older Bun, `gateway setup`
   does not install it there, and `doctor` skips the gateway checks there
   (`src/gateway/proxy.test.ts`; `docs/design.md` § The Bun it needs).
-- **Prompt text exactly as sent.** Only two named translations, each tested:
+- **Prompt text exactly as sent.** Only three named translations, each tested:
   - `toolSearchForBackend`: with `ENABLE_TOOL_SEARCH=true`, Claude Code marks most tools
     `defer_loading` and answers its `ToolSearch` with `tool_reference` blocks. Anthropic
     expands those; other backends do not. So a deferred tool no `tool_reference` names is
@@ -619,6 +681,9 @@ The router builds a **new** request for an affordable backend:
     `output_config.effort: "none"`, which OmniRoute passes on as `reasoning_effort`.
     Without it, a model that reasons by default spent a 64-token answer on reasoning and
     came back empty. A model in a slot must accept `"none"`.
+  - `thinkingForBackend`: a thinking block the router marked in a backend's answer (§ Model
+    slots) gets back the signature that backend wrote; a bare mark loses its `signature`
+    field. Nothing else in the body changes.
 
 An Opus- or Fable-shaped body (adaptive thinking, an effort up to `max`, context
 management) goes as it is: § Model slots says what OmniRoute does with each field.

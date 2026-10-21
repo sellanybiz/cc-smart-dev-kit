@@ -28,13 +28,21 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
   `claude-…` model, change `model`, and only the fields that model refuses, through
   `requestForClaudeFallback` (its table names each FAMILY's rules, from Anthropic's
   migration guides). Never `system`, a message or a tool.
+  **The one named exception (the owner's D6, 2026-10-17):** every request to a Claude
+  target loses the thinking blocks whose signature carries the router's own mark, and
+  nothing else (`forClaude` → `withoutRouterThinking`; § Answers another target gives for a
+  Claude model). Its tests: `gateway.test.ts` › "prompts stay as Claude Code wrote them" ›
+  "D6: the one exception on the way to Claude: …", and the "D6: …" tests in "model slots"
+  and "auto mode's safety check".
   **Auto mode's safety check is never translated for a Claude target**, on any route: it
-  reaches it with only `model` changed (the router skips the translation when `guard` is
-  set). On the opt-in judge route to an affordable backend, the check gets that backend's named
-  translations (`reasoningOffForBackend`, `toolSearchForBackend`), like any request there.
+  reaches it with only `model` changed, and only D6's marked blocks gone (the router skips
+  the translation when `guard` is set). On the opt-in judge route to an affordable backend, the check gets that backend's named
+  translations (`reasoningOffForBackend`, `toolSearchForBackend`, `thinkingForBackend`), like
+  any request there.
 - An affordable backend gets only the **named format translations**: `toolSearchForBackend`
-  (tool search made plain) and `reasoningOffForBackend` ("no reasoning" in a form the
-  backend reads). **A new translation, or a new row in a translation's table, needs its
+  (tool search made plain), `reasoningOffForBackend` ("no reasoning" in a form the backend
+  reads) and `thinkingForBackend` (each router-marked thinking block gets back the signature
+  its backend wrote; § Answers another target gives for a Claude model). **A new translation, or a new row in a translation's table, needs its
   own named, tested function or test, plus a row in `docs/claude-code-contract.md`** naming
   the Claude Code shape it relies on. The tests in `gateway.test.ts` › "prompts stay as
   Claude Code wrote them" and "a slot's Claude target: only the fields it refuses change"
@@ -110,15 +118,43 @@ Claude judges auto mode's safety checks unless the person gives the judge slot a
 
 ## Answers another target gives for a Claude model
 
-**The owner's yes (2026-10-15), first for a model slot's fallback, now for every answer that
-another target gives to a request that named a Claude model** (every slot is reached by
-family since 0.5.0, and the history problem is the same): the answer loses its `thinking` /
-`redacted_thinking` blocks, gets one text block when nothing is left, and gets a safe
-`tool_use` id (`cleanFallbackResponse`, `fallback-answer.ts`). Claude Code keeps the answer,
-and the Claude model refuses a thinking block it cannot verify once it answers that
-conversation again. Never an answer of the model itself, never an answer to a slot-named
-request, never a request. `fallbackAnswersAsIs` is a test-only switch for the live proof;
-never set it in use.
+**Thinking stays visible (the owner's D6, 2026-10-17; before it, from 2026-10-15, such
+answers lost their thinking).** Every slot is reached by a Claude model's family, so a
+backend's answer lands in that model's conversation, and a Claude model refuses a thinking
+block whose signature it did not issue. So, in `fallback-answer.ts`:
+
+- **What is kept and marked:** a BACKEND's answer to a request that named a Claude model
+  (`cleanAnswer` → `cleanFallbackResponse`) keeps each `thinking` block, its `signature`
+  replaced by the router's mark (`routerSignature`): `ROUTER_THINKING_MARK`, a fixed prefix
+  with a `:` in it (never in base64, so never at the start of a signature Anthropic issues),
+  a random UUID, then `:` and the backend's own signature exactly as it came (`""`
+  included). The UUID's fixed 36 characters make it unambiguous whatever the signature
+  holds (`backendSignatureOf`). A block the backend sent with no signature gets the bare
+  mark (prefix and UUID). In a stream the start carries the bare mark, the backend's
+  `signature_delta`s are held back, and one marked delta comes just before the block's stop,
+  carrying the last of them ("" for none): what Claude Code would have stored (it sets the
+  signature to "" at the start and to each delta in turn). Never change the prefix or this
+  shape: people's stored conversations hold it.
+- **What the answer loses:** a backend's `redacted_thinking` block (nobody can read it); an
+  answer left with no block gets one text block; a `tool_use` id Anthropic would refuse gets
+  a safe one (`safeToolUseId`).
+- **What is stripped, and where:** every request to a Claude target (`anthropicUpstream` →
+  `forClaude` → `withoutRouterThinking`: an off slot, a chain's `claude-…` target, an alias
+  to one, the safety check; `/v1/messages` and `count_tokens`) loses exactly the `thinking`
+  blocks in assistant messages whose signature starts with the mark, and nothing else; an
+  assistant message left empty, other than the last, gets the one text block. A body without
+  the mark goes as its own bytes.
+- **What a backend gets back:** every request to a backend (`targetUpstream` →
+  `thinkingForBackend`) gives each marked block exactly the signature its mark carries; a
+  bare mark (the backend sent none, or an older router marked it) goes with no `signature`
+  field. So a backend gets the history it would get with no router in between. The mark does
+  not say which backend wrote a block: another backend gets that signature too, as it would
+  without the router.
+- **Never touched:** an answer of the model itself, another Claude model's answer (Anthropic
+  drops a block the target cannot read), an answer to a slot-named request or an explicit
+  `<backend>:<model>`, and any block Anthropic signed.
+
+`fallbackAnswersAsIs` is a test-only switch for the live proof; never set it in use.
 
 ## Settings and secrets
 

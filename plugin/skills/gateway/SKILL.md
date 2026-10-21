@@ -101,8 +101,9 @@ Opus request, the main session's included:
 - Off: `cc-smart-dev-kit gateway slot opus off`: Opus answers itself again.
 - Only when the person asks. Say what leaves Claude: the whole Opus conversation goes to
   that provider whenever it answers.
-- The router removes the thinking blocks from another model's answers before Claude Code
-  stores them (Opus refuses a thinking block it cannot verify). If Opus still answers 400
+- The router keeps a backend's thinking, marked as its own with the backend's signature
+  inside: removed on a request to Claude (Opus refuses a signature it did not issue), its own
+  signature given back on a request to a backend. If Opus still answers 400
   "Invalid `signature`" (an older conversation), the router log says so: `/rewind` to the
   message before the other model answered, or start a new session.
 - A long (`[1m]`, 200k+ tokens) or rich (images, documents, server tools) Opus

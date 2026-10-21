@@ -267,9 +267,9 @@ The gateway:
   and `sonnet`. A newer version of a family (`claude-opus-6-0`) reaches its slot with no change.
 - **The judge judges every check** ([First setup](#first-setup)), once you give it a chain; with
   no chain, Claude judges, as before.
-- **Another model's thinking never goes back to Claude** ([The AI gateway](#the-ai-gateway-optional)):
-  when a target answers for a Claude model, its thinking blocks are dropped from the answer, so a
-  later turn on Claude cannot refuse them (an "Invalid `signature` in `thinking` block" 400).
+- **An affordable model's thinking stays visible** ([The AI gateway](#the-ai-gateway-optional)): the
+  router keeps it, marked as its own with the backend's signature inside. It removes it only on a
+  request to Claude (no "Invalid `signature`" 400), and gives a backend its own signature back.
 - **The usage-limit alert names no model of its own** ([The usage
   limit](#the-usage-limit-the-alert-the-status-line-and-usage)): it offers your model first, then
   targets from your own chains, and its action also turns that slot's fallback on. It covers

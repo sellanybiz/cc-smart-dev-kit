@@ -6364,17 +6364,104 @@ ${good ? "keeping the last good config" : NO_CONFIG_MEANS}`);
 }
 
 // src/gateway/fallback-answer.ts
-import { createHash as createHash2 } from "crypto";
-var DROPPED_BLOCKS = new Set(["redacted_thinking", "thinking"]);
+import { createHash as createHash2, randomUUID } from "crypto";
+var ROUTER_THINKING_MARK = "cc-smart-dev-kit-router:thinking:";
+var MARK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+var MARK_ID_LENGTH = 36;
+function routerSignature(own) {
+  return carrying(`${ROUTER_THINKING_MARK}${randomUUID()}`, own);
+}
+function carrying(mark, own) {
+  return own === undefined ? mark : `${mark}:${own}`;
+}
+function backendSignatureOf(signature) {
+  if (!signature.startsWith(ROUTER_THINKING_MARK))
+    return;
+  const rest = signature.slice(ROUTER_THINKING_MARK.length);
+  if (!MARK_ID.test(rest.slice(0, MARK_ID_LENGTH)))
+    return null;
+  if (rest.length === MARK_ID_LENGTH || rest[MARK_ID_LENGTH] !== ":")
+    return null;
+  return { own: rest.slice(MARK_ID_LENGTH + 1) };
+}
+var DROPPED_BLOCKS = new Set(["redacted_thinking"]);
 var TOOL_USE_ID = /^[a-zA-Z0-9_-]+$/;
 var EMPTY_ANSWER_TEXT = "(The fallback model answered with thinking only.)";
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+function isRouterThinking(block) {
+  return isJsonObject(block) && block.type === "thinking" && typeof block.signature === "string" && block.signature.startsWith(ROUTER_THINKING_MARK);
+}
+function holdsRouterMark(bytes) {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).includes(ROUTER_THINKING_MARK);
+}
+function withoutRouterThinking(body) {
+  const messages = body.messages;
+  if (!Array.isArray(messages))
+    return { body, filled: 0, removed: 0 };
+  let removed = 0;
+  let filled = 0;
+  const out = messages.map((message, at) => {
+    if (!isJsonObject(message) || message.role !== "assistant")
+      return message;
+    if (!Array.isArray(message.content))
+      return message;
+    const content = message.content.filter((block) => !isRouterThinking(block));
+    if (content.length === message.content.length)
+      return message;
+    removed += message.content.length - content.length;
+    if (content.length === 0 && at < messages.length - 1) {
+      filled += 1;
+      content.push({ text: EMPTY_ANSWER_TEXT, type: "text" });
+    }
+    return { ...message, content };
+  });
+  if (removed === 0)
+    return { body, filled, removed };
+  return { body: { ...body, messages: out }, filled, removed };
+}
+function thinkingForBackend(body) {
+  const messages = body.messages;
+  if (!Array.isArray(messages))
+    return { bare: 0, body, restored: 0 };
+  let restored = 0;
+  let bare = 0;
+  const out = messages.map((message) => {
+    if (!isJsonObject(message) || message.role !== "assistant")
+      return message;
+    if (!Array.isArray(message.content))
+      return message;
+    let changed = false;
+    const content = message.content.map((block) => {
+      if (!isJsonObject(block) || !isRouterThinking(block))
+        return block;
+      changed = true;
+      const carried = backendSignatureOf(String(block.signature));
+      if (carried) {
+        restored += 1;
+        return { ...block, signature: carried.own };
+      }
+      bare += 1;
+      const { signature: _mark, ...unsigned } = block;
+      return unsigned;
+    });
+    return changed ? { ...message, content } : message;
+  });
+  if (restored === 0 && bare === 0)
+    return { bare, body, restored };
+  return { bare, body: { ...body, messages: out }, restored };
+}
 function safeToolUseId(id) {
   if (TOOL_USE_ID.test(id))
     return id;
   return `toolu_cc-smart-dev-kit_${createHash2("sha256").update(id).digest("hex").slice(0, 24)}`;
+}
+function noChanges() {
+  return { ids: 0, marked: 0, redacted: 0 };
+}
+function changedAny(changes) {
+  return changes.ids > 0 || changes.marked > 0 || changes.redacted > 0;
 }
 function withSafeId(block, changes) {
   if (block.type !== "tool_use" || typeof block.id !== "string")
@@ -6385,19 +6472,28 @@ function withSafeId(block, changes) {
   changes.ids += 1;
   return { ...block, id };
 }
+function isDropped(block) {
+  return isJsonObject(block) && typeof block.type === "string" && DROPPED_BLOCKS.has(block.type);
+}
 function cleanFallbackMessage(message) {
-  const changes = { ids: 0, thinking: 0 };
+  const changes = noChanges();
   if (!isJsonObject(message) || !Array.isArray(message.content))
     return { changes, message };
   const content = [];
   for (const block of message.content) {
-    if (isJsonObject(block) && typeof block.type === "string" && DROPPED_BLOCKS.has(block.type)) {
-      changes.thinking += 1;
+    if (isDropped(block)) {
+      changes.redacted += 1;
+      continue;
+    }
+    if (isJsonObject(block) && block.type === "thinking") {
+      changes.marked += 1;
+      const own = typeof block.signature === "string" ? block.signature : undefined;
+      content.push({ ...block, signature: routerSignature(own) });
       continue;
     }
     content.push(isJsonObject(block) ? withSafeId(block, changes) : block);
   }
-  if (changes.thinking === 0 && changes.ids === 0)
+  if (!changedAny(changes))
     return { changes, message };
   if (content.length === 0)
     content.push({ text: EMPTY_ANSWER_TEXT, type: "text" });
@@ -6435,8 +6531,9 @@ function cleanFallbackStream(onDone = () => {
 }) {
   const decoder = new TextDecoder;
   const encoder = new TextEncoder;
-  const changes = { ids: 0, thinking: 0 };
+  const changes = noChanges();
   const dropped = new Set;
+  const thinking = new Map;
   let kept = 0;
   let filled = false;
   let buffer = "";
@@ -6483,24 +6580,50 @@ function cleanFallbackStream(onDone = () => {
     if (!isBlock || typeof event.index !== "number")
       return text;
     const index = event.index;
+    const next = renumber(index);
     if (event.type === "content_block_start") {
       const block = event.content_block;
-      if (isJsonObject(block) && typeof block.type === "string" && DROPPED_BLOCKS.has(block.type)) {
+      if (isDropped(block)) {
         dropped.add(index);
-        changes.thinking += 1;
+        changes.redacted += 1;
         return "";
       }
       kept += 1;
+      if (isJsonObject(block) && block.type === "thinking") {
+        const mark = routerSignature();
+        thinking.set(index, { mark, own: "" });
+        changes.marked += 1;
+        return eventText(label, {
+          ...event,
+          content_block: { ...block, signature: mark },
+          index: next
+        });
+      }
       const safe = isJsonObject(block) ? withSafeId(block, changes) : block;
-      const next = renumber(index);
       if (next === index && safe === block)
         return text;
       return eventText(label, { ...event, content_block: safe, index: next });
     }
     if (dropped.has(index))
       return "";
-    const next = renumber(index);
-    return next === index ? text : eventText(label, { ...event, index: next });
+    const open = thinking.get(index);
+    if (open !== undefined && event.type === "content_block_delta") {
+      const delta = event.delta;
+      if (isJsonObject(delta) && delta.type === "signature_delta") {
+        if (typeof delta.signature === "string")
+          open.own = delta.signature;
+        return "";
+      }
+    }
+    const passed = next === index ? text : eventText(label, { ...event, index: next });
+    if (open === undefined || event.type !== "content_block_stop")
+      return passed;
+    thinking.delete(index);
+    return eventText("content_block_delta", {
+      delta: { signature: carrying(open.mark, open.own), type: "signature_delta" },
+      index: next,
+      type: "content_block_delta"
+    }) + passed;
   };
   const drain = (controller) => {
     for (;; ) {
@@ -6556,7 +6679,7 @@ function cleanFallbackResponse(response, onChanged) {
   const format = decoding(encoding);
   if (format === null) {
     return {
-      note: `its answer is "${encoding.slice(0, 40)}" encoded, which the router cannot read: thinking blocks were not removed`,
+      note: `its answer is "${encoding.slice(0, 40)}" encoded, which the router cannot read: its thinking blocks were not marked as the router's`,
       response
     };
   }
@@ -6565,7 +6688,7 @@ function cleanFallbackResponse(response, onChanged) {
   headers.delete("content-length");
   const plain = format === "identity" ? response.body : response.body.pipeThrough(new DecompressionStream(format));
   const report = (changes) => {
-    if (changes.thinking > 0 || changes.ids > 0)
+    if (changedAny(changes))
       onChanged(changes);
   };
   const init = { headers, status: response.status, statusText: response.statusText };
@@ -6584,7 +6707,7 @@ function cleanFallbackResponse(response, onChanged) {
     }
     const result = cleanFallbackMessage(parsed);
     report(result.changes);
-    return result.changes.thinking > 0 || result.changes.ids > 0 ? new TextEncoder().encode(JSON.stringify(result.message)) : new Uint8Array(bytes);
+    return changedAny(result.changes) ? new TextEncoder().encode(JSON.stringify(result.message)) : new Uint8Array(bytes);
   });
   const body = new ReadableStream({
     async pull(controller) {
@@ -7521,6 +7644,8 @@ function createRouter(deps) {
   const fellBack = new Set;
   const untestedLogged = new Set;
   const cleanedLogged = new Set;
+  const markedLogged = new Set;
+  const restoredLogged = new Set;
   let checkedConfig = null;
   const persist = stateWriter(deps, "the limit state", deps.saveState === undefined ? undefined : () => deps.saveState?.(formatLimitState(limitState)));
   const persistChecks = stateWriter(deps, "the safety-check counts", deps.saveSafetyChecks === undefined ? undefined : () => deps.saveSafetyChecks?.(formatSafetyCheckState(safetyChecks)));
@@ -7838,11 +7963,30 @@ function createRouter(deps) {
   }
   function anthropicUpstream(req, url, config, body) {
     return {
-      body,
+      body: forClaude(url, body),
       headers: anthropicRequestHeaders(req.headers),
       method: req.method,
       url: `${deps.anthropicBaseUrl ?? config.anthropicBaseUrl}${url.pathname}${url.search}`
     };
+  }
+  function forClaude(url, body) {
+    if (body === null || url.pathname !== MESSAGES_PATH && url.pathname !== COUNT_TOKENS_PATH) {
+      return body;
+    }
+    if (!holdsRouterMark(body))
+      return body;
+    const parsed = parseBody(body);
+    if (parsed === null)
+      return body;
+    const out = withoutRouterThinking(parsed);
+    if (out.removed === 0)
+      return body;
+    const model = typeof parsed.model === "string" ? parsed.model : "-";
+    if (!markedLogged.has(model)) {
+      markedLogged.add(model);
+      deps.log(`removed ${out.removed} of the router's own thinking blocks for ${printable(model)} (a Claude model refuses a signature it did not issue; logged once per model)`);
+    }
+    return encoder.encode(JSON.stringify(out.body));
   }
   function fitForClaude(body, model, guard) {
     if (guard)
@@ -7854,6 +7998,15 @@ function createRouter(deps) {
       deps.log(`translated for ${printable(text, 200)} (requestForClaudeFallback; logged once per kind)`);
     }
     return fitted.body;
+  }
+  function ownThinkingFor(body, target) {
+    const out = thinkingForBackend(body);
+    const label = formatTarget(target);
+    if (out.restored + out.bare > 0 && !restoredLogged.has(label)) {
+      restoredLogged.add(label);
+      deps.log(`${printable(label)} got its own signature back on ${out.restored} of the router's thinking blocks, ${out.bare} sent with none (thinkingForBackend; logged once per target)`);
+    }
+    return out.body;
   }
   function targetUpstream(req, url, config, body, target, guard, asked) {
     if (target.kind === "anthropic" && asked !== null && sameModel(target.model, asked.model)) {
@@ -7870,7 +8023,9 @@ function createRouter(deps) {
     if (backend === undefined)
       return { error: `backend "${target.backend}" is not in the config` };
     const affordableBody = {
-      ...reasoningOffForBackend(toolSearchForBackend(body), { absentIsOff: guard }),
+      ...reasoningOffForBackend(toolSearchForBackend(ownThinkingFor(body, target)), {
+        absentIsOff: guard
+      }),
       model: target.model
     };
     delete affordableBody.metadata;
@@ -8042,21 +8197,25 @@ function createRouter(deps) {
       return outcome;
     if (outcome.response.ok)
       fellBack.add(asked.model);
-    return { ...outcome, response: cleanAnswer(slot, asked.model, outcome) };
+    const answered = targets.find((target) => formatTarget(target) === outcome.target);
+    if (answered?.kind !== "backend")
+      return outcome;
+    return { ...outcome, response: cleanAnswer(slot, outcome) };
   }
-  function cleanAnswer(slot, model, outcome) {
+  function cleanAnswer(slot, outcome) {
     if (deps.fallbackAnswersAsIs === true)
       return outcome.response;
     const cleaned = cleanFallbackResponse(outcome.response, (changes) => {
       const kinds = [
-        changes.thinking > 0 ? "thinking blocks removed" : "",
+        changes.marked > 0 ? "thinking blocks marked as the router's (removed on the way to a Claude model, their own signature given back on the way to a backend)" : "",
+        changes.redacted > 0 ? "redacted_thinking blocks removed" : "",
         changes.ids > 0 ? "tool_use ids made safe" : ""
       ].filter((part) => part !== "");
       const text = `${slot}: ${outcome.target}'s answers: ${kinds.join(", ")}`;
       if (cleanedLogged.has(text))
         return;
       cleanedLogged.add(text);
-      deps.log(`${text} (${model} refuses them in its history; logged once per kind)`);
+      deps.log(`${text}; logged once per kind`);
     });
     if (cleaned.note !== null)
       deps.log(`WARN ${slot}: ${outcome.target}: ${cleaned.note}`);

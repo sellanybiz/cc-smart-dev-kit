@@ -1080,6 +1080,32 @@ describe("auto mode's safety check", () => {
     expect(calls[0]?.headers).toContainEqual(["authorization", `Bearer ${TOKEN}`]);
   });
 
+  it("D6: a check whose messages hold the router's marked thinking loses exactly that block on its way to Claude; every other byte as sent", async () => {
+    const { calls, handle } = router([() => new Response("{}", { status: 200 })]);
+    const base = guardBody();
+    const withAssistant = (content: unknown[]) => ({
+      ...base,
+      messages: [
+        ...(Array.isArray(base.messages) ? base.messages : []),
+        { content, role: "assistant" },
+        { content: "and this one?", role: "user" },
+      ],
+    });
+    const verdict = { text: "<block>no</block>", type: "text" };
+    const sent = withAssistant([
+      {
+        signature: "cc-smart-dev-kit-router:thinking:44444444-4444-4444-8444-444444444444",
+        thinking: "A backend judged it.",
+        type: "thinking",
+      },
+      verdict,
+    ]);
+    await handle(clientRequest({ body: JSON.stringify(sent) }));
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+    // By hand: the same check without the marked block, in Claude Code's own field order.
+    expect(calls[0]?.body).toBe(JSON.stringify(withAssistant([verdict])));
+  });
+
   it("the newer form on a slot goes to that slot's Claude target only, never an affordable backend", async () => {
     // config()'s cc-smart-dev-kit-scout: GLM, DeepSeek, then Claude Sonnet 5.5. With `[1m]`, as sent.
     const { calls, handle } = router([() => new Response("{}", { status: 200 })]);
@@ -3241,6 +3267,63 @@ describe("prompts stay as Claude Code wrote them", () => {
     expect(sent.output_config).toEqual({ effort: "none" });
   });
 
+  it("D6: the one exception on the way to Claude: the router's own marked thinking blocks go; system, text, tool_use and tool_result stay byte for byte", async () => {
+    const { calls, handle } = router([() => new Response("{}")]);
+    const body = promptBody("claude-opus-5-5");
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const marked = {
+      ...body,
+      messages: messages.map((message: Record<string, unknown>) =>
+        message.role === "assistant" && Array.isArray(message.content)
+          ? {
+              ...message,
+              content: [
+                {
+                  signature:
+                    "cc-smart-dev-kit-router:thinking:33333333-3333-4333-8333-333333333333",
+                  thinking: "A backend's reasoning.",
+                  type: "thinking",
+                },
+                ...message.content,
+              ],
+            }
+          : message,
+      ),
+    };
+    await handle(clientRequest({ body: JSON.stringify(marked) }));
+    // Exactly the body without that block: the same bytes Claude Code would have sent.
+    expect(nth(calls, 0).body).toBe(JSON.stringify(promptBody("claude-opus-5-5")));
+  });
+
+  it("D6: thinkingForBackend changes no prompt text: a backend gets every message as sent, a marked block's signature its own again", async () => {
+    const { calls, handle } = router([() => new Response("{}")]);
+    const body = promptBody("cc-smart-dev-kit-affordable");
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const withThinking = (signature: string) =>
+      messages.map((message: Record<string, unknown>) =>
+        message.role === "assistant" && Array.isArray(message.content)
+          ? {
+              ...message,
+              content: [
+                { signature, thinking: "A backend's reasoning.", type: "thinking" },
+                ...message.content,
+              ],
+            }
+          : message,
+      );
+    const sent = {
+      ...body,
+      messages: withThinking(
+        "cc-smart-dev-kit-router:thinking:33333333-3333-4333-8333-333333333333:its-own:sig",
+      ),
+    };
+    await handle(clientRequest({ body: JSON.stringify(sent) }));
+    const got = JSON.parse(nth(calls, 0).body ?? "");
+    expect(got.messages).toEqual(withThinking("its-own:sig"));
+    expect(got.system).toEqual(body.system);
+    expect(got.tools).toEqual(body.tools);
+  });
+
   it("the two translations change no prompt text: only the tool_reference block becomes its named text", () => {
     // promptBody, plus what tool search adds: a ToolSearch answer with a tool_reference
     // block, and a deferred tool it names.
@@ -3875,23 +3958,443 @@ describe("model slots (opus, fable) and every slot by its family", () => {
   const streamOf = (text: string) => () =>
     new Response(text, { headers: { "content-type": "text/event-stream" }, status: 200 });
 
-  it("a backend's answer for a Claude model reaches Claude Code without its thinking blocks; one log line names it", async () => {
+  /** A router mark, as `routerSignature` writes one: the prefix and a random UUID. */
+  const MARKED =
+    /^cc-smart-dev-kit-router:thinking:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  /** A bare mark's length: 33 for the prefix, 36 for the UUID. */
+  const BARE_LENGTH = 69;
+  /**
+   * Two marks as a backend's answers carried them, written by hand: each carries the
+   * backend's own signature after the UUID and a ':' (the second has ':' in it too).
+   */
+  const MARK_A = "cc-smart-dev-kit-router:thinking:11111111-1111-4111-8111-111111111111:glm-sig-a";
+  const MARK_B = "cc-smart-dev-kit-router:thinking:22222222-2222-4222-8222-222222222222:Eq:b+/=";
+  /** A mark an older router wrote: bare, no signature carried. */
+  const OLD_MARK = "cc-smart-dev-kit-router:thinking:33333333-3333-4333-8333-333333333333";
+  const signaturesIn = (text: string) =>
+    [...text.matchAll(/"signature":"([^"]*)"/g)].map((match) => match[1] ?? "");
+  /** A whole answer's `content` blocks, as Claude Code stores them. */
+  async function contentOf(res: Response): Promise<unknown[]> {
+    const answer: unknown = await res.json();
+    if (typeof answer !== "object" || answer === null || !("content" in answer)) return [];
+    return Array.isArray(answer.content) ? answer.content : [];
+  }
+  const jsonOf = (value: unknown) => () =>
+    new Response(JSON.stringify(value), {
+      headers: { "content-type": "application/json" },
+      status: 200,
+    });
+
+  /**
+   * opusBody, whose history also holds an earlier backend answer: a marked thinking block
+   * before its text and its tool call, and the tool's result.
+   */
+  function withMarkedHistory(model = "claude-opus-5-5"): Record<string, unknown> {
+    const base = opusBody(model);
+    return {
+      ...base,
+      messages: [
+        ...(Array.isArray(base.messages) ? base.messages : []),
+        {
+          content: [
+            { signature: MARK_A, thinking: "The backend read the log.", type: "thinking" },
+            { text: "Reading the log.", type: "text" },
+            { id: "toolu_9", input: { path: "build.log" }, name: "Read", type: "tool_use" },
+          ],
+          role: "assistant",
+        },
+        {
+          content: [{ content: "error at line 3", tool_use_id: "toolu_9", type: "tool_result" }],
+          role: "user",
+        },
+      ],
+    };
+  }
+
+  /** withMarkedHistory without the marked block: what a Claude target must get, by hand. */
+  function markedHistoryForClaude(model = "claude-opus-5-5"): Record<string, unknown> {
+    const base = opusBody(model);
+    return {
+      ...base,
+      messages: [
+        ...(Array.isArray(base.messages) ? base.messages : []),
+        {
+          content: [
+            { text: "Reading the log.", type: "text" },
+            { id: "toolu_9", input: { path: "build.log" }, name: "Read", type: "tool_use" },
+          ],
+          role: "assistant",
+        },
+        {
+          content: [{ content: "error at line 3", tool_use_id: "toolu_9", type: "tool_result" }],
+          role: "user",
+        },
+      ],
+    };
+  }
+
+  it("D6: a backend's streamed answer for a Claude model keeps its thinking, marked as the router's; one log line names it", async () => {
     const { handle, logs } = router([streamOf(THINKING_STREAM)], {
       config: withOpus(["omniroute:glm-5.3-flash"]),
     });
     const res = await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
-    expect(await res.text()).toBe(
+    const text = await res.text();
+    const [mark = "", again = ""] = signaturesIn(text);
+    expect(mark).toMatch(MARKED);
+    // The delta's mark carries the backend's own signature, "made-up".
+    expect(again).toBe(`${mark}:made-up`);
+    expect(text).toBe(
       [
         'event: message_start\ndata: {"type":"message_start","message":{"content":[],"role":"assistant"}}\n\n',
-        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
-        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Fixed."}}\n\n',
+        `event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":"${mark}"}}\n\n`,
+        `event: content_block_delta\ndata: {"delta":{"signature":"${mark}:made-up","type":"signature_delta"},"index":0,"type":"content_block_delta"}\n\n`,
         'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Fixed."}}\n\n',
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
         'event: message_stop\ndata: {"type":"message_stop"}\n\n',
       ].join(""),
     );
     expect(logs.at(-1)).toBe(
-      "cc-smart-dev-kit-opus: omniroute:glm-5.3-flash's answers: thinking blocks removed (claude-opus-5-5 refuses them in its history; logged once per kind)",
+      "cc-smart-dev-kit-opus: omniroute:glm-5.3-flash's answers: thinking blocks marked as the router's (removed on the way to a Claude model, their own signature given back on the way to a backend); logged once per kind",
     );
+  });
+
+  it("D6: a backend's whole answer keeps its thinking, marked; its redacted_thinking goes", async () => {
+    const { handle } = router(
+      [
+        jsonOf({
+          content: [
+            { signature: "made-up", thinking: "Backend thought.", type: "thinking" },
+            { data: "opaque", type: "redacted_thinking" },
+            { text: "Fixed.", type: "text" },
+          ],
+          role: "assistant",
+          type: "message",
+        }),
+      ],
+      { config: withOpus(["omniroute:glm-5.3-flash"]) },
+    );
+    const res = await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+    const answer = await res.json();
+    const [mark = ""] = signaturesIn(JSON.stringify(answer));
+    expect(mark.slice(0, BARE_LENGTH)).toMatch(MARKED);
+    expect(mark.slice(BARE_LENGTH)).toBe(":made-up");
+    expect(answer).toEqual({
+      content: [
+        { signature: mark, thinking: "Backend thought.", type: "thinking" },
+        { text: "Fixed.", type: "text" },
+      ],
+      role: "assistant",
+      type: "message",
+    });
+  });
+
+  it("D6: an answer another Claude model gave keeps its blocks as Anthropic sent them, streamed and whole", async () => {
+    const claudeStream = THINKING_STREAM.replace("made-up", "EqQBCgIYAhIM1gbcDa9GJwZA2b");
+    const whole =
+      '{"content":[{"signature":"EosnCkYICxIM","thinking":"","type":"thinking"},{"data":"EmwKAhgB","type":"redacted_thinking"},{"text":"Done.","type":"text"}],"type":"message"}';
+    const { handle, logs } = router(
+      [
+        streamOf(claudeStream),
+        () => new Response(whole, { headers: { "content-type": "application/json" } }),
+      ],
+      { config: withOpus(["claude-sonnet-5-5"]) },
+    );
+    const streamed = await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+    expect(await streamed.text()).toBe(claudeStream);
+    const answered = await handle(clientRequest({ body: JSON.stringify(opusBody()) }));
+    expect(await answered.text()).toBe(whole);
+    expect(logs.some((line) => line.includes("'s answers:"))).toBe(false);
+  });
+
+  it("D6: a request to a Claude target loses exactly the router's marked blocks, on every way to Anthropic; one log line per model", async () => {
+    const expected = markedHistoryForClaude();
+    const sent = JSON.stringify(withMarkedHistory());
+    // An off slot (the request goes straight on), a chain whose Claude target is the model
+    // itself, and a chain whose Claude target is another model (`model` changed).
+    for (const [cfg, model] of [
+      [config(), "claude-opus-5-5"],
+      [withOpus(["claude-opus-5-5", "omniroute:glm-5.3-flash"], true), "claude-opus-5-5"],
+      [withOpus(["claude-sonnet-5-5"]), "claude-sonnet-5-5"],
+    ] as const) {
+      const { calls, handle, logs } = router([ok, ok], { config: cfg });
+      expect((await handle(clientRequest({ body: sent }))).status).toBe(200);
+      expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+      expect(JSON.parse(nth(calls, 0).body ?? "")).toEqual({ ...expected, model });
+      expect(nth(calls, 0).headers).toContainEqual(["authorization", `Bearer ${TOKEN}`]);
+      // count_tokens takes the same body, and gets the same removal.
+      await handle(clientRequest({ body: sent, path: "/v1/messages/count_tokens?beta=true" }));
+      expect(nth(calls, 1).url).toBe(COUNT_URL);
+      expect(JSON.parse(nth(calls, 1).body ?? "")).toEqual({ ...expected, model });
+      expect(logs.filter((line) => line.includes("of the router's own thinking"))).toEqual([
+        `removed 1 of the router's own thinking blocks for ${model} (a Claude model refuses a signature it did not issue; logged once per model)`,
+      ]);
+    }
+  });
+
+  it("D6: a request whose thinking Anthropic signed, and whose words quote the mark, reaches Anthropic as the same bytes", async () => {
+    const { calls, handle } = router([ok]);
+    const body = opusBody();
+    const quoted = {
+      ...body,
+      messages: [
+        ...(Array.isArray(body.messages) ? body.messages : []),
+        { content: `why does ${MARK_B} show up in my log?`, role: "user" },
+      ],
+    };
+    const sent = JSON.stringify(quoted, null, 1); // spaced: a re-written body would differ
+    await handle(clientRequest({ body: sent }));
+    expect(nth(calls, 0).body).toBe(sent);
+  });
+
+  it("D6: a request to a backend gets each marked block back with its own signature (thinkingForBackend); an older router's bare mark goes unsigned; one log line", async () => {
+    const { calls, handle, logs } = router([ok], {
+      config: withOpus(["omniroute:glm-5.3-flash"]),
+    });
+    const marked = withMarkedHistory();
+    const history = Array.isArray(marked.messages) ? marked.messages : [];
+    const old = {
+      content: [
+        { signature: OLD_MARK, thinking: "An older router marked this.", type: "thinking" },
+        { text: "Line 3.", type: "text" },
+      ],
+      role: "assistant",
+    };
+    await handle(
+      clientRequest({ body: JSON.stringify({ ...marked, messages: [...history, old] }) }),
+    );
+    expect(calls.map((c) => c.url)).toEqual([OMNI_URL]);
+    const base = opusBody();
+    expect(JSON.parse(nth(calls, 0).body ?? "").messages).toEqual([
+      ...(Array.isArray(base.messages) ? base.messages : []),
+      {
+        content: [
+          { signature: "glm-sig-a", thinking: "The backend read the log.", type: "thinking" },
+          { text: "Reading the log.", type: "text" },
+          { id: "toolu_9", input: { path: "build.log" }, name: "Read", type: "tool_use" },
+        ],
+        role: "assistant",
+      },
+      {
+        content: [{ content: "error at line 3", tool_use_id: "toolu_9", type: "tool_result" }],
+        role: "user",
+      },
+      {
+        content: [
+          { thinking: "An older router marked this.", type: "thinking" },
+          { text: "Line 3.", type: "text" },
+        ],
+        role: "assistant",
+      },
+    ]);
+    expect(logs.filter((line) => line.includes("thinkingForBackend"))).toEqual([
+      "omniroute:glm-5.3-flash got its own signature back on 1 of the router's thinking blocks, 1 sent with none (thinkingForBackend; logged once per target)",
+    ]);
+  });
+
+  it("D6: an alias to a Claude model loses the router's marked blocks too", async () => {
+    const cfg = { ...config(), aliases: { "old-opus": "claude-opus-5-5" } };
+    const { calls, handle } = router([ok], { config: cfg });
+    await handle(clientRequest({ body: JSON.stringify(withMarkedHistory("old-opus")) }));
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+    expect(JSON.parse(nth(calls, 0).body ?? "")).toEqual(markedHistoryForClaude());
+  });
+
+  it("D6: Claude Code compacting the history: the summary request and the history after it lose only the marked blocks", async () => {
+    // Two backend turns with interleaved thinking: thinking, a tool call, its result, more
+    // thinking and a second tool call in one stored assistant message.
+    const backendTurns = (withMarks: boolean) => {
+      const think = (mark: string, thinking: string) =>
+        withMarks ? [{ signature: mark, thinking, type: "thinking" }] : [];
+      return [
+        { content: "fix the build", role: "user" },
+        {
+          content: [
+            ...think(MARK_A, "Read the log first."),
+            { id: "toolu_1", input: { path: "build.log" }, name: "Read", type: "tool_use" },
+          ],
+          role: "assistant",
+        },
+        {
+          content: [{ content: "error at line 3", tool_use_id: "toolu_1", type: "tool_result" }],
+          role: "user",
+        },
+        {
+          content: [
+            ...think(MARK_B, "Line 3 imports a removed file."),
+            { text: "Fixing the import.", type: "text" },
+            { id: "toolu_2", input: { path: "a.ts" }, name: "Edit", type: "tool_use" },
+          ],
+          role: "assistant",
+        },
+        {
+          content: [{ content: "edited", tool_use_id: "toolu_2", type: "tool_result" }],
+          role: "user",
+        },
+      ];
+    };
+    const summaryAsk = {
+      content: "Your task is to create a detailed summary of the conversation so far.",
+      role: "user",
+    };
+    const compactRequest = (withMarks: boolean) => ({
+      max_tokens: 20000,
+      messages: [...backendTurns(withMarks), summaryAsk],
+      model: "claude-opus-5-5",
+      stream: true,
+      system: [{ text: "You are a helpful AI assistant tasked with summarizing.", type: "text" }],
+    });
+    // After it: the summary, then the last backend turn Claude Code kept.
+    const afterCompact = (withMarks: boolean) => ({
+      max_tokens: 32000,
+      messages: [
+        { content: "This session continues from a summary: the build was fixed.", role: "user" },
+        ...backendTurns(withMarks).slice(3),
+        { content: "go on", role: "user" },
+      ],
+      model: "claude-opus-5-5",
+      stream: true,
+    });
+    const { calls, handle, logs } = router([ok, ok]);
+    await handle(clientRequest({ body: JSON.stringify(compactRequest(true)) }));
+    await handle(clientRequest({ body: JSON.stringify(afterCompact(true)) }));
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, ANTHROPIC_URL]);
+    // By hand, the same bytes Claude Code would have sent with no backend thinking in them.
+    expect(nth(calls, 0).body).toBe(JSON.stringify(compactRequest(false)));
+    expect(nth(calls, 1).body).toBe(JSON.stringify(afterCompact(false)));
+    expect(logs.filter((line) => line.includes("of the router's own thinking"))).toEqual([
+      "removed 2 of the router's own thinking blocks for claude-opus-5-5 (a Claude model refuses a signature it did not issue; logged once per model)",
+    ]);
+    // The same summary request to a backend keeps both blocks, each with its own signature.
+    const backend = router([ok], { config: withOpus(["omniroute:glm-5.3-flash"]) });
+    await backend.handle(clientRequest({ body: JSON.stringify(compactRequest(true)) }));
+    const sentBack = JSON.parse(nth(backend.calls, 0).body ?? "").messages;
+    expect(sentBack).toEqual(
+      JSON.parse(
+        JSON.stringify(compactRequest(true).messages)
+          .replace(MARK_A, "glm-sig-a")
+          .replace(MARK_B, "Eq:b+/="),
+      ),
+    );
+    expect(signaturesIn(JSON.stringify(sentBack))).toEqual(["glm-sig-a", "Eq:b+/="]);
+  });
+
+  it("D6: an assistant message left with no block on its way to Claude gets one text block", async () => {
+    const { calls, handle } = router([ok]);
+    const body = opusBody();
+    const history = Array.isArray(body.messages) ? body.messages : [];
+    const sent = {
+      ...body,
+      messages: [
+        ...history,
+        {
+          content: [{ signature: MARK_A, thinking: "only this", type: "thinking" }],
+          role: "assistant",
+        },
+        { content: "and now?", role: "user" },
+      ],
+    };
+    await handle(clientRequest({ body: JSON.stringify(sent) }));
+    expect(JSON.parse(nth(calls, 0).body ?? "")).toEqual({
+      ...body,
+      messages: [
+        ...history,
+        {
+          content: [{ text: "(The fallback model answered with thinking only.)", type: "text" }],
+          role: "assistant",
+        },
+        { content: "and now?", role: "user" },
+      ],
+    });
+  });
+
+  it("D6: backend, then Claude, then the backend again: each answer and each request as it should be", async () => {
+    let cfg = withOpus(["omniroute:glm-5.3-flash"]);
+    const { calls, handle } = router(
+      [
+        jsonOf({
+          content: [
+            { signature: "made-up", thinking: "Backend thought.", type: "thinking" },
+            { id: "toolu_b1", input: { path: "a.ts" }, name: "Read", type: "tool_use" },
+          ],
+          role: "assistant",
+          type: "message",
+        }),
+        jsonOf({
+          content: [
+            { signature: "EqClaudeSigned", thinking: "", type: "thinking" },
+            { text: "The fix is on line 3.", type: "text" },
+          ],
+          role: "assistant",
+          type: "message",
+        }),
+        ok,
+        ok,
+      ],
+      { getConfig: () => cfg },
+    );
+    // Turn 1: the backend answers, with a tool call after its thinking.
+    const first = opusBody();
+    const firstAnswer = await contentOf(
+      await handle(clientRequest({ body: JSON.stringify(first) })),
+    );
+    const [mark = ""] = signaturesIn(JSON.stringify(firstAnswer));
+    expect(mark.slice(0, BARE_LENGTH)).toMatch(MARKED);
+    expect(mark.slice(BARE_LENGTH)).toBe(":made-up");
+    // Turn 2: the person turns the slot off; Claude answers the same conversation.
+    cfg = config();
+    const history = [
+      ...(Array.isArray(first.messages) ? first.messages : []),
+      { content: firstAnswer, role: "assistant" },
+      { content: [{ content: "x", tool_use_id: "toolu_b1", type: "tool_result" }], role: "user" },
+    ];
+    const second = { ...first, messages: history };
+    const secondAnswer = await contentOf(
+      await handle(clientRequest({ body: JSON.stringify(second) })),
+    );
+    expect(nth(calls, 1).url).toBe(ANTHROPIC_URL);
+    expect(JSON.parse(nth(calls, 1).body ?? "").messages).toEqual([
+      ...(Array.isArray(first.messages) ? first.messages : []),
+      {
+        content: [{ id: "toolu_b1", input: { path: "a.ts" }, name: "Read", type: "tool_use" }],
+        role: "assistant",
+      },
+      { content: [{ content: "x", tool_use_id: "toolu_b1", type: "tool_result" }], role: "user" },
+    ]);
+    // Claude's own answer is not touched.
+    expect(secondAnswer[0]).toEqual({
+      signature: "EqClaudeSigned",
+      thinking: "",
+      type: "thinking",
+    });
+    // Turn 3: the slot back on; the backend gets every block, its own with the signature it
+    // wrote ("made-up"), Claude's as Anthropic signed it.
+    cfg = withOpus(["omniroute:glm-5.3-flash"]);
+    const third = {
+      ...first,
+      messages: [
+        ...history,
+        { content: secondAnswer, role: "assistant" },
+        { content: "thanks, go on", role: "user" },
+      ],
+    };
+    const ownBack = JSON.parse(JSON.stringify(third.messages).replace(mark, "made-up"));
+    await handle(clientRequest({ body: JSON.stringify(third) }));
+    expect(nth(calls, 2).url).toBe(OMNI_URL);
+    expect(JSON.parse(nth(calls, 2).body ?? "").messages).toEqual(ownBack);
+    expect(signaturesIn(nth(calls, 2).body ?? "")).toEqual([
+      "sig-abc",
+      "made-up",
+      "EqClaudeSigned",
+    ]);
+    // Turn 4: the chain now starts with ANOTHER backend. It gets the first backend's
+    // signature as that backend wrote it: what it would get with no router in between (the
+    // mark does not say which backend wrote a block).
+    cfg = withOpus(["ollama:deepseek-v4.1-flash"]);
+    await handle(clientRequest({ body: JSON.stringify(third) }));
+    expect(nth(calls, 3).url).toBe("https://ollama.test/v1/messages");
+    expect(JSON.parse(nth(calls, 3).body ?? "").messages).toEqual(ownBack);
   });
 
   it("Claude's own answer keeps its thinking blocks, byte for byte; the test-only switch keeps another target's", async () => {

@@ -48,9 +48,14 @@
  *     StopFailure alert (`limit-state.ts`), with the slot whose next target answers while
  *     its first, a Claude model, is at that limit.
  *   - No prompt text is ever changed. An affordable backend gets only the named format
- *     translations below; a `claude-…` request reaches Anthropic as the bytes it came as.
+ *     translations below; a `claude-…` request reaches Anthropic as the bytes it came as,
+ *     but for one named exception (the owner's D6): the thinking blocks a backend wrote,
+ *     which the router marked in that backend's answer, leave every request to a Claude
+ *     target (`forClaude`), because a Claude model refuses a signature it did not issue.
  *   - An affordable backend never sees Claude Code's tool search: `toolSearchForBackend`.
  *   - An affordable backend gets "no reasoning" in a form it reads: `reasoningOffForBackend`.
+ *   - An affordable backend gets its own thinking blocks back as it wrote them, signature
+ *     and all: `thinkingForBackend` (the router's mark carries that signature).
  *   - A redirect from an affordable backend becomes a 502: Claude Code must never follow a
  *     `Location` it chose. Anthropic's own redirects pass as they are.
  *   - Only this machine: it binds 127.0.0.1, refuses a foreign `Host` and any `Origin`
@@ -89,7 +94,12 @@ import {
   messageOf,
   watchConfig,
 } from "./config";
-import { cleanFallbackResponse } from "./fallback-answer";
+import {
+  cleanFallbackResponse,
+  holdsRouterMark,
+  thinkingForBackend,
+  withoutRouterThinking,
+} from "./fallback-answer";
 import { type BackendFetchOptions, backendFetch } from "./hosts";
 import {
   currentLimits,
@@ -170,10 +180,11 @@ export interface RouterDeps {
   /** Named in the error a request for an unknown slot gets. */
   configPath: string;
   /**
-   * TESTS ONLY, never set in use: the answers another target gives for a Claude model's
-   * request reach Claude Code as that target sent them, thinking blocks and all
-   * (`cleanFallbackResponse` is skipped). It exists for the live proof that the cleaning is
-   * needed (docs/claude-code-contract.md).
+   * TESTS ONLY, never set in use: the answers a backend gives for a Claude model's request
+   * reach Claude Code as that backend sent them, thinking blocks unmarked and all
+   * (`cleanFallbackResponse` is skipped). It exists for the live proof that the marking is
+   * needed (docs/claude-code-contract.md): an unmarked block is never removed on the way to
+   * Claude.
    */
   fallbackAnswersAsIs?: boolean;
   fetch: FetchLike;
@@ -962,6 +973,10 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   const untestedLogged = new Set<string>();
   /** What `cleanAnswer` changed, per slot and target: logged once each. */
   const cleanedLogged = new Set<string>();
+  /** Claude models whose request lost the router's marked thinking blocks (`forClaude`): once each. */
+  const markedLogged = new Set<string>();
+  /** Backend targets whose request got the router's thinking blocks' own signatures back. */
+  const restoredLogged = new Set<string>();
   /** The config the fallback records were last checked against (`dropRemovedFallbacks`). */
   let checkedConfig: GatewayConfig | null = null;
 
@@ -1431,6 +1446,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     });
   }
 
+  /**
+   * The call to Anthropic: the one way every request reaches a Claude target (an off slot's
+   * model, a chain's `claude-…` target, a safety check Claude judges). A model call's body
+   * loses the router's own marked thinking blocks on the way (`forClaude`); every other
+   * byte goes as it is.
+   */
   function anthropicUpstream(
     req: Request,
     url: URL,
@@ -1438,11 +1459,41 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     body: null | Uint8Array<ArrayBuffer>,
   ): Upstream {
     return {
-      body,
+      body: forClaude(url, body),
       headers: anthropicRequestHeaders(req.headers),
       method: req.method,
       url: `${deps.anthropicBaseUrl ?? config.anthropicBaseUrl}${url.pathname}${url.search}`,
     };
+  }
+
+  /**
+   * A model call's body for a Claude target, without the thinking blocks a backend wrote
+   * (the owner's D6, 2026-10-17): exactly the blocks whose signature carries the router's
+   * mark (`withoutRouterThinking`), which Anthropic would refuse with a 400. The one change a
+   * request to Claude ever gets beyond the named translations. The same bytes when there is
+   * none: the bytes are searched for the mark first, and parsed only on a hit. Logged once
+   * per model.
+   */
+  function forClaude(
+    url: URL,
+    body: null | Uint8Array<ArrayBuffer>,
+  ): null | Uint8Array<ArrayBuffer> {
+    if (body === null || (url.pathname !== MESSAGES_PATH && url.pathname !== COUNT_TOKENS_PATH)) {
+      return body;
+    }
+    if (!holdsRouterMark(body)) return body;
+    const parsed = parseBody(body);
+    if (parsed === null) return body;
+    const out = withoutRouterThinking(parsed);
+    if (out.removed === 0) return body;
+    const model = typeof parsed.model === "string" ? parsed.model : "-";
+    if (!markedLogged.has(model)) {
+      markedLogged.add(model);
+      deps.log(
+        `removed ${out.removed} of the router's own thinking blocks for ${printable(model)} (a Claude model refuses a signature it did not issue; logged once per model)`,
+      );
+    }
+    return encoder.encode(JSON.stringify(out.body));
   }
 
   /**
@@ -1466,6 +1517,22 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       );
     }
     return fitted.body;
+  }
+
+  /**
+   * A body for a backend, its router-marked thinking blocks given back the signature their
+   * backend wrote (`thinkingForBackend`). Logged once per backend target.
+   */
+  function ownThinkingFor(body: Record<string, unknown>, target: Target): Record<string, unknown> {
+    const out = thinkingForBackend(body);
+    const label = formatTarget(target);
+    if (out.restored + out.bare > 0 && !restoredLogged.has(label)) {
+      restoredLogged.add(label);
+      deps.log(
+        `${printable(label)} got its own signature back on ${out.restored} of the router's thinking blocks, ${out.bare} sent with none (thinkingForBackend; logged once per target)`,
+      );
+    }
+    return out.body;
   }
 
   /**
@@ -1502,7 +1569,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     if (backend === undefined) return { error: `backend "${target.backend}" is not in the config` };
     // `metadata` carries the Claude account id; an affordable backend never sees it.
     const affordableBody: Record<string, unknown> = {
-      ...reasoningOffForBackend(toolSearchForBackend(body), { absentIsOff: guard }),
+      ...reasoningOffForBackend(toolSearchForBackend(ownThinkingFor(body, target)), {
+        absentIsOff: guard,
+      }),
       model: target.model,
     };
     delete affordableBody.metadata;
@@ -1766,8 +1835,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    *
    * Then, for a slot whose first target is a Claude model at its plan limit, a next target
    * that answered starts its fallback record (`noteFallback`). And an answer for `asked` that
-   * another target gave loses its thinking blocks (`cleanAnswer`): Claude Code keeps it in
-   * that model's conversation.
+   * a backend gave gets its thinking marked as the router's (`cleanAnswer`): Claude Code
+   * keeps it in that model's conversation. Another Claude model's answer is left as it is.
    */
   async function slotRequest(
     req: Request,
@@ -1806,27 +1875,34 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
     if (asked === null || sameModel(outcome.target, asked.model)) return outcome;
     if (outcome.response.ok) fellBack.add(asked.model);
-    return { ...outcome, response: cleanAnswer(slot, asked.model, outcome) };
+    // Another Claude model's answer goes as Anthropic sent it: the API drops a thinking
+    // block the next Claude model cannot read (`fallback-answer.ts`).
+    const answered = targets.find((target) => formatTarget(target) === outcome.target);
+    if (answered?.kind !== "backend") return outcome;
+    return { ...outcome, response: cleanAnswer(slot, outcome) };
   }
 
   /**
-   * An answer another target gave for a Claude model's request, without thinking blocks and
-   * with `tool_use` ids Claude takes (`cleanFallbackResponse`): Claude Code keeps it in the
-   * conversation, and the Claude model, once it answers that conversation again (the slot
-   * turned off, or its Claude target answering), refuses a thinking block it cannot verify.
-   * `fallbackAnswersAsIs` (tests only) skips it.
+   * A backend's answer for a Claude model's request (`cleanFallbackResponse`): its thinking
+   * kept, each block's signature the router's mark, its `redacted_thinking` out, `tool_use`
+   * ids Claude takes. Claude Code keeps it in the conversation; on the way to any Claude
+   * target the marked blocks go again (`forClaude`), since a Claude model refuses a
+   * signature it did not issue. `fallbackAnswersAsIs` (tests only) skips it.
    */
-  function cleanAnswer(slot: string, model: string, outcome: Outcome): Response {
+  function cleanAnswer(slot: string, outcome: Outcome): Response {
     if (deps.fallbackAnswersAsIs === true) return outcome.response;
     const cleaned = cleanFallbackResponse(outcome.response, (changes) => {
       const kinds = [
-        changes.thinking > 0 ? "thinking blocks removed" : "",
+        changes.marked > 0
+          ? "thinking blocks marked as the router's (removed on the way to a Claude model, their own signature given back on the way to a backend)"
+          : "",
+        changes.redacted > 0 ? "redacted_thinking blocks removed" : "",
         changes.ids > 0 ? "tool_use ids made safe" : "",
       ].filter((part) => part !== "");
       const text = `${slot}: ${outcome.target}'s answers: ${kinds.join(", ")}`;
       if (cleanedLogged.has(text)) return;
       cleanedLogged.add(text);
-      deps.log(`${text} (${model} refuses them in its history; logged once per kind)`);
+      deps.log(`${text}; logged once per kind`);
     });
     if (cleaned.note !== null) deps.log(`WARN ${slot}: ${outcome.target}: ${cleaned.note}`);
     return cleaned.response;

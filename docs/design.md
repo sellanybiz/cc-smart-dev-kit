@@ -303,8 +303,9 @@ An optional local router between Claude Code and the model providers
   fable), read from the id Claude Code sends. A slot with no chain is off: that model stays
   byte for byte on Anthropic. A chain is the person's, any targets in any order, and each
   slot's fallback switch decides whether its next target may answer; the router never adds
-  a target, Claude included. Another target's answers for a Claude model lose their
-  thinking blocks (the model refuses one it cannot verify; the owner's yes); the router
+  a target, Claude included. A backend's thinking stays, marked as the router's with its
+  own signature inside: removed on a request to Claude, which refuses a signature it did not
+  issue, and given back its own signature on a request to a backend (D6); the router
   writes the plan limits it saw to a small state file that the status line and the
   StopFailure alert read. The alert's worker runs through the launcher, never from the
   plugin's version folder.
